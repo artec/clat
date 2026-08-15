@@ -337,18 +337,22 @@ mod tests {
 
     #[test]
     fn selects_the_matching_platform_asset_preferring_bare_binaries() {
-        // 与 release 工作流的资产命名一致：clat-{tag}-{triple}.tar.gz/.zip。
+        // 资产名按当前平台三元组动态构造，测试在任何 CI 平台都成立。
+        // 命名与 release 工作流一致：clat-{tag}-{triple}[.tar.gz|.zip]。
+        let triple = target_triple();
+        let bare = format!("clat-v0.2.0-{triple}");
+        let archived = format!("clat-v0.2.0-{triple}.tar.gz");
         let assets = vec![
             ReleaseAsset {
                 name: "clat-v0.2.0-x86_64-pc-windows-msvc.zip".into(),
                 url: "u1".into(),
             },
             ReleaseAsset {
-                name: "clat-v0.2.0-aarch64-apple-darwin.tar.gz".into(),
+                name: archived.clone(),
                 url: "u2".into(),
             },
             ReleaseAsset {
-                name: "clat-v0.2.0-aarch64-apple-darwin".into(),
+                name: bare.clone(),
                 url: "u3".into(),
             },
             // GitHub 自动生成的源码包不含目标三元组，永不匹配。
@@ -357,15 +361,22 @@ mod tests {
                 url: "u4".into(),
             },
         ];
-        let selected = select_asset(&assets).expect("asset");
+        let selected = select_asset(&assets).expect("asset for this platform");
         // 同平台下裸二进制优先于压缩包。
-        assert_eq!(selected.name, "clat-v0.2.0-aarch64-apple-darwin");
-        // 没有当前平台资产时返回 None。
-        let others = vec![ReleaseAsset {
-            name: "clat-v0.2.0-x86_64-pc-windows-msvc.zip".into(),
-            url: "u".into(),
-        }];
-        #[cfg(not(target_os = "windows"))]
+        assert_eq!(selected.name, bare);
+
+        // 没有当前平台资产（只有别平台 + 源码包）时返回 None。
+        let others = vec![
+            ReleaseAsset {
+                name: "clat-v0.2.0-x86_64-pc-windows-msvc.zip".into(),
+                url: "u".into(),
+            },
+            ReleaseAsset {
+                name: "Source code (zip)".into(),
+                url: "s".into(),
+            },
+        ];
+        #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
         assert!(select_asset(&others).is_none());
     }
 
