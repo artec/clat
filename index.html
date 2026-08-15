@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CLAT — command line agent</title>
+  <meta name="description" content="CLAT：本地优先的命令行 AI 编程助手（Rust 单二进制）。">
+  <style>
+    :root { color-scheme: light dark; }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #fafafa;
+      color: #1f2328;
+    }
+    @media (prefers-color-scheme: dark) {
+      body { background: #0d1117; color: #e6edf3; }
+      a { color: #58a6ff; }
+    }
+    a { color: #0969da; }
+    main {
+      max-width: 560px;
+      padding: 48px 24px;
+      text-align: center;
+    }
+    h1 { font-size: 3rem; letter-spacing: 0.08em; margin-bottom: 8px; }
+    .tagline { font-size: 1.05rem; opacity: 0.75; margin-bottom: 32px; }
+    .install {
+      display: inline-block;
+      background: rgba(127, 127, 127, 0.12);
+      border: 1px solid rgba(127, 127, 127, 0.35);
+      border-radius: 8px;
+      padding: 12px 20px;
+      margin-bottom: 32px;
+      font-size: 0.95rem;
+    }
+    .links { display: flex; gap: 24px; justify-content: center; font-size: 0.95rem; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>CLAT</h1>
+    <p class="tagline">command line agent · 本地优先 · Rust 单二进制</p>
+    <p class="install">clat upgrade</p>
+    <nav class="links">
+      <a href="https://github.com/artec/clat">GitHub</a>
+      <a href="https://github.com/artec/clat/releases">Releases</a>
+      <a href="https://github.com/artec/clat/blob/main/README.md">Docs</a>
+    </nav>
+  </main>
+</body>
+</html>
