@@ -8,13 +8,31 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const STORAGE_VERSION: u32 = 1;
+const STORAGE_VERSION: u32 = 2;
 const DEFAULT_DATABASE: &str = "clat.db";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StoredMessage {
     pub role: String,
     pub content: String,
+}
+
+/// 会话摘要，`/resume` 类列表界面的数据来源。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SessionSummary {
+    pub id: i64,
+    /// 由首条用户消息自动生成的标题；空会话为空字符串。
+    pub title: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub archived: bool,
+}
+
+/// 命名模型档案的摘要（Codex `model_profiles` 同款概念）。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ModelProfileSummary {
+    pub name: String,
+    pub updated_at: i64,
 }
 
 #[derive(Debug)]
@@ -79,7 +97,7 @@ impl Storage {
 
         let bootstrap_path = root.join("config.json");
         let bootstrap = load_or_create_bootstrap(&bootstrap_path)?;
-        if bootstrap.version != STORAGE_VERSION {
+        if bootstrap.version > STORAGE_VERSION {
             return Err(StorageError::new(format!(
                 "unsupported ~/.clat config version {} (expected {})",
                 bootstrap.version, STORAGE_VERSION
@@ -91,6 +109,18 @@ impl Storage {
         restrict_file(&database_path)?;
         let storage = Self { root, connection };
         storage.initialize()?;
+        // v1 库缺少 v2 的列与表（会话标题/归档、模型档案）；ALTER 与
+        // CREATE IF NOT EXISTS 都是幂等的，老数据原样保留。
+        if bootstrap.version < STORAGE_VERSION {
+            storage.migrate_v1_to_v2()?;
+            fs::write(
+                &bootstrap_path,
+                serde_json::to_string_pretty(&BootstrapConfig {
+                    version: STORAGE_VERSION,
+                    database: bootstrap.database,
+                })?,
+            )?;
+        }
         Ok(storage)
     }
 
@@ -105,11 +135,14 @@ impl Storage {
                  id INTEGER PRIMARY KEY CHECK (id = 1),
                  config_json TEXT NOT NULL,
                  runtime_json TEXT NOT NULL,
+                 active_profile TEXT,
                  updated_at INTEGER NOT NULL
              );
              CREATE TABLE IF NOT EXISTS sessions (
                  id INTEGER PRIMARY KEY AUTOINCREMENT,
                  project_root TEXT NOT NULL,
+                 title TEXT NOT NULL DEFAULT '',
+                 archived INTEGER NOT NULL DEFAULT 0,
                  created_at INTEGER NOT NULL,
                  updated_at INTEGER NOT NULL
              );
@@ -139,9 +172,48 @@ impl Storage {
                  created_at INTEGER NOT NULL
              );
              CREATE INDEX IF NOT EXISTS input_history_project_id
-                 ON input_history(project_root, id DESC);",
+                 ON input_history(project_root, id DESC);
+             CREATE TABLE IF NOT EXISTS model_profiles (
+                 name TEXT PRIMARY KEY,
+                 config_json TEXT NOT NULL,
+                 runtime_json TEXT NOT NULL,
+                 created_at INTEGER NOT NULL,
+                 updated_at INTEGER NOT NULL
+             );",
         )?;
         Ok(())
+    }
+
+    /// v1 → v2：sessions 补 title/archived 列，model_state 补
+    /// active_profile 列。列已存在时跳过（幂等），model_profiles 表由
+    /// initialize 的 CREATE IF NOT EXISTS 覆盖。
+    fn migrate_v1_to_v2(&self) -> Result<(), StorageError> {
+        for (table, column, definition) in [
+            ("sessions", "title", "TEXT NOT NULL DEFAULT ''"),
+            ("sessions", "archived", "INTEGER NOT NULL DEFAULT 0"),
+            ("model_state", "active_profile", "TEXT"),
+        ] {
+            if !self.has_column(table, column)? {
+                self.connection.execute(
+                    &format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"),
+                    [],
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    fn has_column(&self, table: &str, column: &str) -> Result<bool, StorageError> {
+        let mut statement = self
+            .connection
+            .prepare(&format!("PRAGMA table_info({table})"))?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(1))?;
+        for row in rows {
+            if row? == column {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     pub fn load_model_state(&self) -> Result<Option<(ModelConfig, ProviderRuntime)>, StorageError> {
@@ -187,7 +259,9 @@ impl Storage {
         let existing = self
             .connection
             .query_row(
-                "SELECT id FROM sessions WHERE project_root = ?1 ORDER BY updated_at DESC LIMIT 1",
+                "SELECT id FROM sessions
+                 WHERE project_root = ?1 AND archived = 0
+                 ORDER BY updated_at DESC LIMIT 1",
                 params![root],
                 |row| row.get::<_, i64>(0),
             )
@@ -196,6 +270,49 @@ impl Storage {
             return Ok(id);
         }
         self.create_session(project)
+    }
+
+    /// 列出某项目的全部会话（含已归档），按最近更新在前，供
+    /// `/resume` 类选择界面使用。
+    pub fn list_sessions(&self, project: &Project) -> Result<Vec<SessionSummary>, StorageError> {
+        let mut statement = self.connection.prepare(
+            "SELECT id, title, created_at, updated_at, archived FROM sessions
+             WHERE project_root = ?1
+             ORDER BY updated_at DESC, id DESC",
+        )?;
+        let rows = statement.query_map(params![project.root().to_string_lossy()], |row| {
+            Ok(SessionSummary {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                created_at: row.get(2)?,
+                updated_at: row.get(3)?,
+                archived: row.get::<_, i64>(4)? != 0,
+            })
+        })?;
+        let mut sessions = Vec::new();
+        for row in rows {
+            sessions.push(row?);
+        }
+        Ok(sessions)
+    }
+
+    /// 设置会话标题。传入空串视为清除。
+    pub fn set_session_title(&self, session_id: i64, title: &str) -> Result<(), StorageError> {
+        self.connection.execute(
+            "UPDATE sessions SET title = ?2 WHERE id = ?1",
+            params![session_id, title],
+        )?;
+        Ok(())
+    }
+
+    /// 归档会话（软删除）：数据保留，`load_or_create_session` 不再选中，
+    /// 下次启动将开启新会话。
+    pub fn archive_session(&self, session_id: i64) -> Result<(), StorageError> {
+        self.connection.execute(
+            "UPDATE sessions SET archived = 1 WHERE id = ?1",
+            params![session_id],
+        )?;
+        Ok(())
     }
 
     pub fn create_session(&self, project: &Project) -> Result<i64, StorageError> {
@@ -235,6 +352,15 @@ impl Storage {
             "INSERT INTO messages(session_id, role, content, created_at) VALUES(?1, ?2, ?3, ?4)",
             params![session_id, role, content, timestamp],
         )?;
+        // Claude Code 风格：首条用户消息成为会话标题（单行、截断），
+        // 将来 /resume 列表无需读全文即可识别会话。
+        if role == "user" {
+            self.connection.execute(
+                "UPDATE sessions SET title = ?2
+                 WHERE id = ?1 AND (title IS NULL OR title = '')",
+                params![session_id, session_title_from(content)],
+            )?;
+        }
         self.connection.execute(
             "UPDATE sessions SET updated_at = ?2 WHERE id = ?1",
             params![session_id, timestamp],
@@ -307,6 +433,127 @@ impl Storage {
         )?;
         Ok(())
     }
+
+    /// 保存（或按名称覆盖）一个命名模型档案。与 `model_state` 的关系
+    /// 遵循 Codex `model_profiles` 的设计：档案是可命名的快照集合，
+    /// `model_state` 始终代表当前激活的配置，激活指针另存
+    /// （`set_active_profile`），互不干扰。
+    pub fn save_profile(
+        &self,
+        name: &str,
+        config: &ModelConfig,
+        runtime: &ProviderRuntime,
+    ) -> Result<(), StorageError> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(StorageError::new("profile name must not be empty"));
+        }
+        let config_json = serde_json::to_string(config)?;
+        let runtime_json = serde_json::to_string(&runtime.to_json())?;
+        let timestamp = now_unix();
+        self.connection.execute(
+            "INSERT INTO model_profiles(name, config_json, runtime_json, created_at, updated_at)
+             VALUES(?1, ?2, ?3, ?4, ?4)
+             ON CONFLICT(name) DO UPDATE SET
+                 config_json = excluded.config_json,
+                 runtime_json = excluded.runtime_json,
+                 updated_at = excluded.updated_at",
+            params![name, config_json, runtime_json, timestamp],
+        )?;
+        Ok(())
+    }
+
+    /// 加载指定名称的档案。名称不存在返回 None。
+    pub fn load_profile(
+        &self,
+        name: &str,
+    ) -> Result<Option<(ModelConfig, ProviderRuntime)>, StorageError> {
+        let row = self
+            .connection
+            .query_row(
+                "SELECT config_json, runtime_json FROM model_profiles WHERE name = ?1",
+                params![name.trim()],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()?;
+        let Some((config_json, runtime_json)) = row else {
+            return Ok(None);
+        };
+        let config: ModelConfig = serde_json::from_str(&config_json)?;
+        let runtime_value = serde_json::from_str(&runtime_json)?;
+        let runtime = ProviderRuntime::from_json(config.protocol, &runtime_value);
+        Ok(Some((config, runtime)))
+    }
+
+    /// 全部档案摘要，按名称排序。
+    pub fn list_profiles(&self) -> Result<Vec<ModelProfileSummary>, StorageError> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT name, updated_at FROM model_profiles ORDER BY name ASC")?;
+        let rows = statement.query_map([], |row| {
+            Ok(ModelProfileSummary {
+                name: row.get(0)?,
+                updated_at: row.get(1)?,
+            })
+        })?;
+        let mut profiles = Vec::new();
+        for row in rows {
+            profiles.push(row?);
+        }
+        Ok(profiles)
+    }
+
+    /// 删除档案。删除当前激活档案时同时清除激活指针。
+    pub fn delete_profile(&self, name: &str) -> Result<(), StorageError> {
+        self.connection.execute(
+            "DELETE FROM model_profiles WHERE name = ?1",
+            params![name.trim()],
+        )?;
+        if self.active_profile()?.as_deref() == Some(name.trim()) {
+            self.set_active_profile(None)?;
+        }
+        Ok(())
+    }
+
+    /// 当前激活档案的名称；未激活任何档案（手写配置）返回 None。
+    pub fn active_profile(&self) -> Result<Option<String>, StorageError> {
+        let name = self
+            .connection
+            .query_row(
+                "SELECT active_profile FROM model_state WHERE id = 1",
+                [],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()?;
+        Ok(name.flatten())
+    }
+
+    /// 记录激活档案指针。档案本身仍在 model_profiles 中。
+    pub fn set_active_profile(&self, name: Option<&str>) -> Result<(), StorageError> {
+        self.connection.execute(
+            "INSERT INTO model_state(id, config_json, runtime_json, active_profile, updated_at)
+             VALUES(1, '{}', '[]', ?1, ?2)
+             ON CONFLICT(id) DO UPDATE SET
+                 active_profile = excluded.active_profile,
+                 updated_at = excluded.updated_at",
+            params![
+                name.map(str::trim).filter(|name| !name.is_empty()),
+                now_unix()
+            ],
+        )?;
+        Ok(())
+    }
+}
+
+/// 从首条用户消息生成会话标题：取第一行非空文本，截断到 60 个字符
+/// （按 char 边界，CJK 安全）。
+fn session_title_from(content: &str) -> String {
+    let first_line = content
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("");
+    first_line.chars().take(60).collect()
 }
 
 fn load_or_create_bootstrap(path: &Path) -> Result<BootstrapConfig, StorageError> {
@@ -373,6 +620,216 @@ mod tests {
             .unwrap()
             .as_nanos();
         env::temp_dir().join(format!("clat-storage-{name}-{unique}"))
+    }
+
+    /// 构造一个 v1 形态的存储目录（旧 schema：无 title/archived/
+    /// active_profile 列，无 model_profiles 表），用于验证迁移。
+    fn legacy_v1_root(name: &str) -> PathBuf {
+        let root = temp_root(name);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("config.json"),
+            serde_json::to_string_pretty(&BootstrapConfig {
+                version: 1,
+                database: DEFAULT_DATABASE.into(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let connection = Connection::open(root.join(DEFAULT_DATABASE)).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE sessions (
+                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                     project_root TEXT NOT NULL,
+                     created_at INTEGER NOT NULL,
+                     updated_at INTEGER NOT NULL
+                 );
+                 CREATE TABLE messages (
+                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                     session_id INTEGER NOT NULL,
+                     role TEXT NOT NULL,
+                     content TEXT NOT NULL,
+                     created_at INTEGER NOT NULL
+                 );",
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO sessions(project_root, created_at, updated_at) VALUES('legacy', 1, 1)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO messages(session_id, role, content, created_at)
+                 VALUES(1, 'user', 'old message', 1)",
+                [],
+            )
+            .unwrap();
+        root
+    }
+
+    #[test]
+    fn migrates_v1_databases_without_losing_data() {
+        let root = legacy_v1_root("migrate");
+        let storage = Storage::open(root.clone()).expect("storage migrates in place");
+        let project_root = root.join("project");
+        fs::create_dir_all(&project_root).unwrap();
+        let project = Project::new(&project_root);
+
+        // 老会话行在新列上带默认值（title 空、archived 0），直接按
+        // project_root 查询验证迁移后的行存活。
+        let mut check = storage
+            .connection
+            .prepare("SELECT id, title, archived FROM sessions WHERE project_root = 'legacy'")
+            .unwrap();
+        let rows = check
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })
+            .unwrap()
+            .count();
+        drop(check);
+        assert_eq!(rows, 1, "legacy session row survives");
+        let title = storage
+            .connection
+            .query_row(
+                "SELECT title FROM sessions WHERE project_root = 'legacy'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap();
+        assert_eq!(title, "");
+
+        // v1 消息可读，新写入走 v2 逻辑（自动标题）。
+        let messages = storage
+            .connection
+            .query_row(
+                "SELECT content FROM messages WHERE session_id = 1",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap();
+        assert_eq!(messages, "old message");
+
+        let session = storage.load_or_create_session(&project).unwrap();
+        storage
+            .append_message(session, "user", "fresh start")
+            .unwrap();
+        assert_eq!(
+            storage.load_messages(session).unwrap(),
+            vec![StoredMessage {
+                role: "user".into(),
+                content: "fresh start".into(),
+            }]
+        );
+
+        // 迁移后 config.json 版本号已升级，二次打开不再走迁移路径。
+        let bootstrap: BootstrapConfig =
+            serde_json::from_str(&fs::read_to_string(root.join("config.json")).unwrap()).unwrap();
+        assert_eq!(bootstrap.version, STORAGE_VERSION);
+        Storage::open(root.clone()).expect("reopen at v2");
+
+        drop(storage);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn sessions_carry_titles_and_archive_excludes_them() {
+        let root = temp_root("sessions");
+        let storage = Storage::open(root.clone()).expect("storage");
+        let project_root = root.join("project");
+        fs::create_dir_all(&project_root).unwrap();
+        let project = Project::new(&project_root);
+
+        let first = storage.load_or_create_session(&project).unwrap();
+        storage
+            .append_message(first, "user", "修复登录超时 bug\n后续细节")
+            .unwrap();
+        // 首条用户消息成为标题：单行、保留全部语义。
+        assert_eq!(
+            storage.list_sessions(&project).unwrap()[0].title,
+            "修复登录超时 bug"
+        );
+
+        // 归档后 load_or_create 不再选中，而是开新会话。
+        storage.archive_session(first).unwrap();
+        let second = storage.load_or_create_session(&project).unwrap();
+        assert_ne!(first, second);
+        let sessions = storage.list_sessions(&project).unwrap();
+        assert_eq!(sessions.len(), 2);
+        assert!(sessions.iter().find(|s| s.id == first).unwrap().archived);
+        assert!(!sessions.iter().find(|s| s.id == second).unwrap().archived);
+
+        // 显式标题可覆盖自动标题。
+        storage.set_session_title(second, "手工命名").unwrap();
+        assert_eq!(
+            storage.list_sessions(&project).unwrap()[0].title,
+            "手工命名"
+        );
+
+        drop(storage);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn model_profiles_roundtrip_and_active_pointer() {
+        let root = temp_root("profiles");
+        let storage = Storage::open(root.clone()).expect("storage");
+        let project_root = root.join("project");
+        fs::create_dir_all(&project_root).unwrap();
+        let _project = Project::new(&project_root);
+
+        let config = ModelConfig {
+            model: "glm-5.3".into(),
+            endpoint: "https://open.bigmodel.cn/api/coding/paas/v4".into(),
+            ..ModelConfig::default()
+        };
+        let mut runtime = ProviderRuntime::for_protocol(config.protocol);
+        runtime.push_str(0, "profile-key");
+
+        storage.save_profile("glm", &config, &runtime).unwrap();
+        // 同名覆盖更新而非报错。
+        storage.save_profile("glm", &config, &runtime).unwrap();
+        storage
+            .save_profile(
+                "deepseek",
+                &ModelConfig::default(),
+                &ProviderRuntime::for_protocol(ModelConfig::default().protocol),
+            )
+            .unwrap();
+        assert_eq!(
+            storage
+                .list_profiles()
+                .unwrap()
+                .into_iter()
+                .map(|profile| profile.name)
+                .collect::<Vec<_>>(),
+            vec!["deepseek".to_owned(), "glm".to_owned()]
+        );
+
+        // 档案加载与激活指针独立于 model_state（后者仍为空）。
+        assert_eq!(storage.active_profile().unwrap(), None);
+        storage.set_active_profile(Some("glm")).unwrap();
+        assert_eq!(storage.active_profile().unwrap().as_deref(), Some("glm"));
+        let (loaded, loaded_runtime) = storage.load_profile("glm").unwrap().unwrap();
+        assert_eq!(loaded, config);
+        assert_eq!(loaded_runtime.value(0), Some("profile-key"));
+        assert!(storage.load_profile("glm").unwrap().is_some());
+        assert!(storage.load_profile("missing").unwrap().is_none());
+
+        // 删除激活档案同时清除指针。
+        storage.delete_profile("glm").unwrap();
+        assert_eq!(storage.active_profile().unwrap(), None);
+        assert_eq!(storage.list_profiles().unwrap().len(), 1);
+
+        drop(storage);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

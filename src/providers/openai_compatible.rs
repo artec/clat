@@ -51,6 +51,9 @@ impl OpenAiCompatibleModel {
         let mut body = Map::new();
         body.insert("model".into(), Value::String(self.config.model.clone()));
         body.insert("stream".into(), Value::Bool(true));
+        // 流式 usage 开关（stream_options.include_usage）是厂商差异：
+        // DeepSeek 需要它才回传 usage（官方 harness 常开），GLM 流式
+        // 默认携带。由各厂商预设的 extra_body 提供，通用通道不注入。
         body.insert(
             "messages".into(),
             Value::Array(map_messages(request.instructions, request.items)?),
@@ -202,7 +205,9 @@ fn map_messages(instructions: Option<&str>, items: &[ModelItem]) -> Result<Vec<V
         }
         let mut message = json!({
             "role": "assistant",
-            "content": pending.content.map_or(Value::Null, Value::String),
+            // 官方 harness 规则：无文本的工具调用轮回传 ""——NEVER
+            // null。官方示例按原文重放空串，部分网关直接拒绝 null。
+            "content": pending.content.unwrap_or_default(),
             "tool_calls": pending.calls,
         });
         if let Some(reasoning) = pending.reasoning.filter(|value| !value.is_empty()) {
@@ -533,12 +538,17 @@ fn map_finish_reason(reason: &str) -> FinishReason {
 }
 
 fn parse_usage(value: &Value) -> Option<Usage> {
+    // 兼容两种缓存字段：OpenAI 风格 `prompt_tokens_details.cached_tokens`
+    // 与 DeepSeek 原生 `prompt_cache_hit_tokens`（官方 harness 的 mapUsage
+    // 同样按此优先级回退）。注意 prompt_tokens 已包含缓存命中部分。
+    let cached_input_tokens = value
+        .pointer("/prompt_tokens_details/cached_tokens")
+        .and_then(Value::as_u64)
+        .or_else(|| value.get("prompt_cache_hit_tokens").and_then(Value::as_u64));
     Some(Usage {
         input_tokens: value.get("prompt_tokens")?.as_u64()?,
         output_tokens: value.get("completion_tokens")?.as_u64()?,
-        cached_input_tokens: value
-            .pointer("/prompt_tokens_details/cached_tokens")
-            .and_then(Value::as_u64),
+        cached_input_tokens,
         reasoning_tokens: value
             .pointer("/completion_tokens_details/reasoning_tokens")
             .and_then(Value::as_u64),
@@ -566,6 +576,48 @@ mod tests {
     use std::net::TcpListener;
     use std::sync::mpsc;
     use std::thread;
+
+    #[test]
+    fn parses_usage_with_openai_and_deepseek_cache_fields() {
+        // OpenAI 风格：prompt_tokens_details.cached_tokens
+        let openai_style = parse_usage(&json!({
+            "prompt_tokens": 1000,
+            "completion_tokens": 200,
+            "prompt_tokens_details": {"cached_tokens": 800}
+        }))
+        .unwrap();
+        assert_eq!(openai_style.cached_input_tokens, Some(800));
+
+        // DeepSeek 原生：prompt_cache_hit_tokens
+        let deepseek_style = parse_usage(&json!({
+            "prompt_tokens": 1000,
+            "completion_tokens": 200,
+            "prompt_cache_hit_tokens": 700,
+            "prompt_cache_miss_tokens": 300
+        }))
+        .unwrap();
+        assert_eq!(deepseek_style.input_tokens, 1000);
+        assert_eq!(deepseek_style.cached_input_tokens, Some(700));
+
+        // OpenAI 风格优先于 DeepSeek 原生字段
+        let both = parse_usage(&json!({
+            "prompt_tokens": 1000,
+            "completion_tokens": 200,
+            "prompt_tokens_details": {"cached_tokens": 800},
+            "prompt_cache_hit_tokens": 700
+        }))
+        .unwrap();
+        assert_eq!(both.cached_input_tokens, Some(800));
+
+        // 两者皆缺：cached 为 None，其余照常解析
+        let none = parse_usage(&json!({
+            "prompt_tokens": 10,
+            "completion_tokens": 5
+        }))
+        .unwrap();
+        assert_eq!(none.cached_input_tokens, None);
+        assert_eq!(none.input_tokens, 10);
+    }
 
     #[test]
     fn maps_chat_completion_request_and_custom_fields() {
@@ -603,6 +655,10 @@ mod tests {
         assert_eq!(body["model"], "custom");
         assert_eq!(body["max_tokens"], 100);
         assert_eq!(body["top_p"], 0.9);
+        assert_eq!(body["stream"], true);
+        // 通用通道不注入厂商特有开关：stream_options 由各厂商预设的
+        // extra_body 提供（DeepSeek 预设开启，GLM 不需要）。
+        assert!(body.get("stream_options").is_none());
         assert_eq!(body["messages"][0]["role"], "system");
         assert_eq!(body["tools"][0]["type"], "function");
     }
@@ -712,7 +768,7 @@ mod tests {
     }
 
     #[test]
-    fn bare_tool_call_turn_has_null_content_and_no_reasoning() {
+    fn bare_tool_call_turn_replays_empty_content_and_no_reasoning() {
         let items = vec![
             ModelItem::user_text("go"),
             ModelItem::ToolCall(ToolCall {
@@ -730,7 +786,8 @@ mod tests {
         let messages = map_messages(None, &items).expect("messages");
         assert_eq!(messages.len(), 3);
         assert_eq!(messages[1]["role"], "assistant");
-        assert!(messages[1]["content"].is_null());
+        // 官方 harness 规则：无文本的工具轮回传 ""，绝不为 null。
+        assert_eq!(messages[1]["content"], "");
         assert!(messages[1].get("reasoning_content").is_none());
         assert_eq!(
             messages[1]["tool_calls"].as_array().expect("calls").len(),

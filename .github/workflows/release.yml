@@ -15,21 +15,27 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # 资产矩阵：macOS 与 Windows 各两组，与 `clat upgrade` 的
+        # target_triple 识别一一对应。Linux 资产暂缓，后续再上架。
         include:
-          - os: macos-14
+          - os: macos-latest
             target: aarch64-apple-darwin
-          - os: macos-13
+          - os: macos-latest
             target: x86_64-apple-darwin
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
+          - os: windows-latest
+            target: aarch64-pc-windows-msvc
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
 
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }}
@@ -48,6 +54,7 @@ jobs:
           tar -czf clat-${{ github.ref_name }}-${{ matrix.target }}.tar.gz \
             -C target/${{ matrix.target }}/release clat
 
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
+          generate_release_notes: true
           files: clat-${{ github.ref_name }}-${{ matrix.target }}.*

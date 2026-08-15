@@ -13,6 +13,7 @@ mod tui_input;
 mod tui_markdown;
 mod tui_model;
 mod tui_worker;
+pub mod upgrade;
 
 pub use event::{EventSink, ModelOutcome, RunEvent};
 pub use model::{

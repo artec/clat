@@ -66,11 +66,17 @@ install_from_release() {
   asset="clat-${tag}-${target}.tar.gz"
   url="https://github.com/$REPO/releases/download/${tag}/${asset}"
   tmp=$(mktemp -d)
-  trap 'rm -rf "$tmp"' RETURN
   info "downloading $url"
-  curl -fsSL -o "$tmp/$asset" "$url" || return 1
-  tar -xzf "$tmp/$asset" -C "$tmp" || return 1
+  if ! curl -fsSL -o "$tmp/$asset" "$url"; then
+    rm -rf "$tmp"
+    return 1
+  fi
+  if ! tar -xzf "$tmp/$asset" -C "$tmp"; then
+    rm -rf "$tmp"
+    return 1
+  fi
   install_binary "$tmp/$BIN"
+  rm -rf "$tmp"
 }
 
 install_from_source() {

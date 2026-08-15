@@ -1,4 +1,4 @@
-use crate::presets::{MODEL_PRESETS, ModelPreset, preset_by_id};
+use crate::presets::{MODEL_PRESETS, ModelPreset, preset_by_id, preset_vendors, presets_by_vendor};
 use crate::providers::ProviderRuntime;
 use crate::{ModelConfig, ModelProtocol};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -7,7 +7,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
-use serde_json::{Value, json};
+use serde_json::Value;
 use unicode_width::UnicodeWidthChar;
 
 pub(crate) enum EditorAction {
@@ -517,10 +517,8 @@ impl ModelEditor {
         self.output_limit = preset.output_limit.to_string();
         self.temperature = String::new();
         self.parallel_tool_calls = true;
-        self.extra_body = json_text(&match preset.reasoning_effort {
-            Some(effort) => json!({"reasoning_effort": effort}),
-            None => json!({}),
-        });
+        // 与 presets::apply 共用同一构造，避免两处字段漂移。
+        self.extra_body = json_text(&preset.extra_body());
         self.error = None;
     }
 
@@ -533,6 +531,19 @@ impl ModelEditor {
         // A manually chosen protocol no longer matches the preset.
         self.preset = None;
         self.error = None;
+    }
+
+    /// 应用预设并聚焦到 API Key 行：二级选择器确认预设但缺少该厂商
+    /// 密钥时使用，用户补完密钥 Ctrl+S 即可。
+    pub fn apply_preset_and_focus_key(&mut self, preset: &'static ModelPreset) {
+        self.preset = Some(preset);
+        self.apply_preset_fields(preset);
+        self.provider_runtime.set_value(0, String::new());
+        self.selected = self
+            .visible_rows()
+            .iter()
+            .position(|candidate| *candidate == RowKind::ApiKey)
+            .unwrap_or(0);
     }
 
     fn save_action(&mut self) -> EditorAction {
@@ -583,6 +594,195 @@ impl ModelEditor {
             self.provider_runtime.clone(),
         ))
     }
+}
+
+/// 二级选择器动作，由 App 决定立即保存还是转交编辑器补密钥。
+#[derive(Debug)]
+pub(crate) enum PickerAction {
+    Continue,
+    /// 用户在二级列表确认了某个预设。
+    SelectPreset(&'static ModelPreset),
+    /// 用户选择 Custom，打开完整编辑器。
+    EditCustom,
+    Cancel,
+}
+
+/// Claude Code 风格的二级 /model 选择器：
+///
+/// - 一级：厂商列表（内置预设按 vendor 去重 + Custom 入口）
+/// - 二级：该厂商的模型列表
+///
+/// Enter 进入/确认，Esc 在二级返回一级、在一级关闭，数字键 1-9 快选，
+/// 鼠标点击行等价于选中并 Enter。
+pub(crate) struct ModelPicker {
+    /// 当前展示的厂商；None 表示一级列表。
+    vendor: Option<&'static str>,
+    selected: usize,
+    /// 当前配置来自的预设，用于在列表中标记 current。
+    current_preset: Option<&'static ModelPreset>,
+}
+
+impl ModelPicker {
+    pub fn new(config: &ModelConfig) -> Self {
+        Self {
+            vendor: None,
+            selected: 0,
+            current_preset: config.preset.as_deref().and_then(preset_by_id),
+        }
+    }
+
+    pub fn row_count(&self) -> usize {
+        self.rows().len()
+    }
+
+    fn rows(&self) -> Vec<PickerRow> {
+        match self.vendor {
+            None => {
+                let mut rows: Vec<PickerRow> = preset_vendors()
+                    .into_iter()
+                    .map(PickerRow::Vendor)
+                    .collect();
+                rows.push(PickerRow::Custom);
+                rows
+            }
+            Some(vendor) => presets_by_vendor(vendor)
+                .into_iter()
+                .map(PickerRow::Preset)
+                .collect(),
+        }
+    }
+
+    pub fn handle_key(&mut self, key: KeyEvent) -> PickerAction {
+        match key.code {
+            KeyCode::Esc | KeyCode::Left if self.vendor.is_some() => {
+                // 二级返回一级。
+                self.vendor = None;
+                self.selected = 0;
+                PickerAction::Continue
+            }
+            KeyCode::Esc => PickerAction::Cancel,
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.selected = (self.selected + self.row_count() - 1) % self.row_count();
+                PickerAction::Continue
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.selected = (self.selected + 1) % self.row_count();
+                PickerAction::Continue
+            }
+            KeyCode::Enter | KeyCode::Right => self.activate(self.selected),
+            KeyCode::Char(ch) if ch.is_ascii_digit() && ch != '0' => {
+                let index = (ch as usize - '1' as usize).min(8);
+                if index < self.row_count() {
+                    self.activate(index)
+                } else {
+                    PickerAction::Continue
+                }
+            }
+            _ => PickerAction::Continue,
+        }
+    }
+
+    pub fn handle_mouse(&mut self, mouse: MouseEvent, area: Rect) -> PickerAction {
+        if mouse.kind != MouseEventKind::Down(MouseButton::Left) {
+            return PickerAction::Continue;
+        }
+        if mouse.column < area.x || mouse.column >= area.x + area.width {
+            return PickerAction::Continue;
+        }
+        if mouse.row <= area.y || mouse.row >= area.y + area.height.saturating_sub(1) {
+            return PickerAction::Continue;
+        }
+        let row = mouse.row.saturating_sub(area.y + 1) as usize;
+        if row >= self.row_count() {
+            return PickerAction::Continue;
+        }
+        self.activate(row)
+    }
+
+    fn activate(&mut self, index: usize) -> PickerAction {
+        match self.rows().get(index) {
+            Some(PickerRow::Vendor(vendor)) => {
+                self.vendor = Some(vendor);
+                self.selected = 0;
+                PickerAction::Continue
+            }
+            Some(PickerRow::Preset(preset)) => PickerAction::SelectPreset(preset),
+            Some(PickerRow::Custom) => PickerAction::EditCustom,
+            None => PickerAction::Continue,
+        }
+    }
+
+    pub fn draw(&self, frame: &mut Frame, area: Rect) {
+        frame.render_widget(Clear, area);
+        let mut lines = Vec::new();
+        for (index, row) in self.rows().iter().enumerate() {
+            let (label, hint, current) = self.row_display(row);
+            let style = if index == self.selected {
+                Style::default().add_modifier(Modifier::REVERSED)
+            } else {
+                Style::default()
+            };
+            let marker = if current { " ●" } else { "" };
+            let number = if index < 9 {
+                format!("{}", index + 1)
+            } else {
+                " ".into()
+            };
+            lines.push(Line::from(vec![
+                Span::styled(format!("{number}  "), style),
+                Span::styled(format!("{label:<24}"), style),
+                Span::styled(format!("{hint}{marker}"), style),
+            ]));
+        }
+        lines.push(Line::from(""));
+        let footer = match self.vendor {
+            None => "↑↓ select · Enter open · 1-9 quick pick · Esc close",
+            Some(_) => "↑↓ select · Enter confirm · Esc back",
+        };
+        lines.push(Line::from(Span::styled(
+            footer,
+            Style::default().add_modifier(Modifier::DIM),
+        )));
+        let title = match self.vendor {
+            None => "/model".to_owned(),
+            Some(vendor) => format!("/model · {vendor}"),
+        };
+        frame.render_widget(
+            Paragraph::new(lines)
+                .block(Block::default().title(title).borders(Borders::ALL))
+                .wrap(Wrap { trim: false }),
+            area,
+        );
+    }
+
+    fn row_display(&self, row: &PickerRow) -> (String, String, bool) {
+        match row {
+            PickerRow::Vendor(vendor) => {
+                let count = presets_by_vendor(vendor).len();
+                let current = self
+                    .current_preset
+                    .is_some_and(|preset| preset.vendor == *vendor);
+                ((*vendor).to_owned(), format!("{count} models"), current)
+            }
+            PickerRow::Preset(preset) => (
+                preset.name.to_owned(),
+                preset.description.to_owned(),
+                self.current_preset
+                    .is_some_and(|current| current.id == preset.id),
+            ),
+            PickerRow::Custom => (
+                "Custom".to_owned(),
+                "any OpenAI-compatible endpoint".to_owned(),
+                self.current_preset.is_none(),
+            ),
+        }
+    }
+}
+
+enum PickerRow {
+    Vendor(&'static str),
+    Preset(&'static ModelPreset),
+    Custom,
 }
 
 fn centered_rect_abs(area: Rect, width: u16, height: u16) -> Rect {
@@ -775,13 +975,22 @@ mod tests {
         assert_eq!(config.output_limit, Some(384 * 1024));
         assert_eq!(config.temperature, None);
         assert_eq!(config.extra_body["reasoning_effort"], "high");
+        assert_eq!(config.extra_body["thinking"]["type"], "enabled");
 
-        // Next step lands on Pro, then back to Custom.
+        // Next step lands on Pro, then GLM, then back to Custom.
         editor.handle_key(key(KeyCode::Right));
         assert_eq!(
             editor.preset.map(|preset| preset.id),
             Some("deepseek-v4-pro")
         );
+        editor.handle_key(key(KeyCode::Right));
+        assert_eq!(editor.preset.map(|preset| preset.id), Some("glm-5.3"));
+        let (config, _) = editor.build().unwrap();
+        assert_eq!(
+            config.endpoint,
+            "https://open.bigmodel.cn/api/coding/paas/v4"
+        );
+        assert_eq!(config.extra_body["thinking"]["clear_thinking"], false);
         editor.handle_key(key(KeyCode::Right));
         assert_eq!(editor.preset, None);
     }
@@ -824,5 +1033,96 @@ mod tests {
         let editor = editor();
         // Preset, Model, Endpoint, API Key, Advanced, Save, Cancel.
         assert_eq!(editor.row_count(), 7);
+    }
+
+    fn new_picker() -> ModelPicker {
+        ModelPicker::new(&ModelConfig::default())
+    }
+
+    fn picker_key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn picker_lists_vendors_then_models_in_two_levels() {
+        let mut picker = new_picker();
+        // 一级：厂商 + Custom。
+        assert_eq!(picker.row_count(), 3);
+
+        // Enter 进入 DeepSeek 二级。
+        assert!(matches!(
+            picker.handle_key(picker_key(KeyCode::Enter)),
+            PickerAction::Continue
+        ));
+        assert_eq!(picker.row_count(), 2);
+
+        // 确认第一个模型。
+        let action = picker.handle_key(picker_key(KeyCode::Enter));
+        let PickerAction::SelectPreset(preset) = action else {
+            panic!("expected SelectPreset, got {action:?}");
+        };
+        assert_eq!(preset.id, "deepseek-v4-flash");
+    }
+
+    #[test]
+    fn picker_esc_backtracks_one_level_then_cancels() {
+        let mut picker = new_picker();
+        picker.handle_key(picker_key(KeyCode::Down));
+        picker.handle_key(picker_key(KeyCode::Enter));
+        assert_eq!(picker.row_count(), 1); // GLM Coding Plan 下只有一个模型
+
+        // 二级 Esc 返回一级。
+        assert!(matches!(
+            picker.handle_key(picker_key(KeyCode::Esc)),
+            PickerAction::Continue
+        ));
+        assert_eq!(picker.row_count(), 3);
+        // 一级 Esc 关闭。
+        assert!(matches!(
+            picker.handle_key(picker_key(KeyCode::Esc)),
+            PickerAction::Cancel
+        ));
+    }
+
+    #[test]
+    fn picker_digits_quick_select_models_and_custom() {
+        let mut picker = new_picker();
+        // 数字 2 直接进入第二个厂商（GLM Coding Plan）。
+        assert!(matches!(
+            picker.handle_key(picker_key(KeyCode::Char('2'))),
+            PickerAction::Continue
+        ));
+        assert_eq!(picker.row_count(), 1);
+        // 数字 1 确认其唯一模型。
+        let PickerAction::SelectPreset(preset) = picker.handle_key(picker_key(KeyCode::Char('1')))
+        else {
+            panic!("expected SelectPreset");
+        };
+        assert_eq!(preset.id, "glm-5.3");
+
+        // 一级数字 3 快选 Custom。
+        let mut picker = new_picker();
+        assert!(matches!(
+            picker.handle_key(picker_key(KeyCode::Char('3'))),
+            PickerAction::EditCustom
+        ));
+    }
+
+    #[test]
+    fn editor_prefills_preset_and_focuses_the_api_key_row() {
+        let config = ModelConfig::default();
+        let runtime = ProviderRuntime::for_protocol(config.protocol);
+        let mut editor = ModelEditor::new(&config, runtime);
+        editor
+            .provider_runtime
+            .set_value(0, "old-vendor-key".into());
+
+        let preset = preset_by_id("glm-5.3").expect("preset");
+        editor.apply_preset_and_focus_key(preset);
+
+        // 预设参数就位，旧厂商密钥被清空，焦点落在 API Key 行。
+        assert_eq!(editor.model, "glm-5.3");
+        assert_eq!(editor.provider_runtime.value(0), Some(""));
+        assert_eq!(editor.visible_rows()[editor.selected], RowKind::ApiKey);
     }
 }

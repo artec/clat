@@ -2,7 +2,7 @@
 
 **cl + at = command-line agent**
 
-CLAT is a fast, local-first, open-source command line agent runtime
+CLAT is a fast, local-first, open-source command-line agent runtime
 written in Rust. The project starts with a simple rule: build the agent
 we actually want to use every day, dogfood it on real repositories, and
 generalize those needs into reusable open-source capabilities.

@@ -17,10 +17,6 @@ impl InputBuffer {
         }
     }
 
-    pub fn text(&self) -> &str {
-        &self.text
-    }
-
     pub fn clear(&mut self) {
         self.text.clear();
         self.cursor = 0;
@@ -180,6 +176,76 @@ impl InputBuffer {
         (row, column)
     }
 
+    /// 每个视觉行的文本，按宽度硬换行，与 `cursor_position` 使用同一
+    /// 换行算法。渲染、光标定位与鼠标选区映射共用这一份布局。
+    pub fn visual_rows(&self, width: usize) -> Vec<String> {
+        let width = width.max(1);
+        let mut rows = vec![String::new()];
+        let mut column = 0usize;
+        for ch in self.text.chars() {
+            let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+            if ch == '\n' {
+                rows.push(String::new());
+                column = 0;
+            } else if column + ch_width > width {
+                rows.push(String::new());
+                rows.last_mut().expect("row").push(ch);
+                column = ch_width;
+            } else {
+                rows.last_mut().expect("row").push(ch);
+                column += ch_width;
+            }
+        }
+        rows
+    }
+
+    /// 视觉坐标 (row, col) 处的字符字节边界：指向该字符的起始位置，
+    /// 列超出行尾时落到下一行首字符（或文本末尾），因此可直接当作
+    /// 选区边界使用。
+    pub fn char_index_at(&self, width: usize, row: usize, col: usize) -> usize {
+        let width = width.max(1);
+        let mut current_row = 0usize;
+        let mut column = 0usize;
+        for (index, ch) in self.text.char_indices() {
+            let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+            // 触发换行的字符本身就是新行的第一个字符，先算出它的
+            // 显示位置再比较，否则首字符永远匹配不到目标行。
+            let display_row = if ch != '\n' && column + ch_width > width {
+                current_row + 1
+            } else {
+                current_row
+            };
+            let display_col = if display_row > current_row { 0 } else { column };
+            if display_row == row && display_col >= col {
+                return index;
+            }
+            if ch == '\n' {
+                current_row += 1;
+                column = 0;
+            } else if column + ch_width > width {
+                current_row += 1;
+                column = ch_width;
+            } else {
+                column += ch_width;
+            }
+        }
+        self.text.len()
+    }
+
+    /// 光标移动到指定字节位置（单击输入框定位光标用）。
+    pub fn set_cursor(&mut self, index: usize) {
+        self.cursor = index.min(self.text.len());
+    }
+
+    /// 删除字节区间 [start, end) 的文本并把光标移到 start，返回被删
+    /// 除的内容（剪切选区用）。
+    pub fn remove_range(&mut self, start: usize, end: usize) -> String {
+        self.leave_history();
+        let removed = self.text.drain(start..end).collect();
+        self.cursor = start;
+        removed
+    }
+
     fn leave_history(&mut self) {
         if self.history_index.is_some() {
             self.history_index = None;
@@ -220,10 +286,10 @@ mod tests {
         input.insert_str("你a好");
         input.left();
         input.backspace();
-        assert_eq!(input.text(), "你好");
+        assert_eq!(&input.text, "你好");
         input.home();
         input.delete();
-        assert_eq!(input.text(), "好");
+        assert_eq!(&input.text, "好");
     }
 
     #[test]
@@ -231,13 +297,13 @@ mod tests {
         let mut input = InputBuffer::new(vec!["one".into(), "two".into()]);
         input.insert_str("draft");
         input.history_previous();
-        assert_eq!(input.text(), "two");
+        assert_eq!(&input.text, "two");
         input.history_previous();
-        assert_eq!(input.text(), "one");
+        assert_eq!(&input.text, "one");
         input.history_next();
-        assert_eq!(input.text(), "two");
+        assert_eq!(&input.text, "two");
         input.history_next();
-        assert_eq!(input.text(), "draft");
+        assert_eq!(&input.text, "draft");
     }
 
     #[test]
@@ -246,7 +312,7 @@ mod tests {
         input.insert_str("ab");
         input.insert_newline();
         input.insert_str("cd");
-        assert_eq!(input.text(), "ab\ncd");
+        assert_eq!(&input.text, "ab\ncd");
         assert_eq!(input.line_count(10), 2);
         assert_eq!(input.cursor_position(10), (1, 2));
     }
@@ -257,5 +323,47 @@ mod tests {
         input.insert_str("你好世界\nhi");
         assert_eq!(input.line_count(4), 3);
         assert_eq!(input.cursor_position(4), (2, 2));
+    }
+
+    #[test]
+    fn visual_rows_match_the_cursor_wrap_algorithm() {
+        let mut input = InputBuffer::default();
+        input.insert_str("你好世界\nhi there");
+        // 宽度 4：CJK 每行两个汉字，硬换行后从 "hi there" 继续按宽度断行。
+        assert_eq!(
+            input.visual_rows(4),
+            vec![
+                "你好".to_string(),
+                "世界".to_string(),
+                "hi t".to_string(),
+                "here".to_string()
+            ]
+        );
+        // 空输入仍然占一行
+        assert_eq!(InputBuffer::default().visual_rows(4), vec![String::new()]);
+    }
+
+    #[test]
+    fn char_index_at_maps_visual_positions_to_byte_boundaries() {
+        let mut input = InputBuffer::default();
+        input.insert_str("你好世界\nhi");
+        // 行 1 列 0 → "世" 的字节起点（每个汉字 3 字节）
+        assert_eq!(input.char_index_at(4, 1, 0), 6);
+        // 行 1 列 2 → "界" 的起点（"世" 占据行 1 的列 0-2）
+        assert_eq!(input.char_index_at(4, 1, 2), 9);
+        // 列超过行尾 → 换行符位置
+        assert_eq!(input.char_index_at(4, 1, 4), 12);
+        // 超出末行 → 文本末尾
+        assert_eq!(input.char_index_at(4, 9, 0), input.text.len());
+    }
+
+    #[test]
+    fn remove_range_cuts_text_and_moves_cursor() {
+        let mut input = InputBuffer::default();
+        input.insert_str("hello world");
+        let removed = input.remove_range(0, 5);
+        assert_eq!(removed, "hello");
+        assert_eq!(&input.text, " world");
+        assert_eq!(input.cursor_position(20), (0, 0));
     }
 }

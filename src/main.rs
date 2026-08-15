@@ -22,6 +22,7 @@ where
     match args.next().as_deref() {
         None => run_tui(),
         Some("demo") => run_demo(),
+        Some("upgrade") => run_upgrade(args.next().as_deref() == Some("--check")),
         Some("-V" | "--version") => {
             println!("{NAME} {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
@@ -48,6 +49,7 @@ fn print_help() {
     println!();
     println!("Commands:");
     println!("  demo             Run the deterministic model → tool → model loop");
+    println!("  upgrade          Upgrade to the latest GitHub release");
     println!();
     println!("Options:");
     println!("  -h, --help       Print help");
@@ -82,6 +84,34 @@ fn run_demo() -> ExitCode {
     };
     let mut model = DemoModel;
     execute_demo(&mut model, &project, "prove the agent loop works".into())
+}
+
+/// `clat upgrade [--check]`：检查并安装 GitHub 最新 release。
+/// `--check` 只报告不安装；已是最新输出提示并以 0 退出。
+fn run_upgrade(check_only: bool) -> ExitCode {
+    use clat::upgrade::UpgradeOutcome;
+    match clat::upgrade::upgrade(check_only) {
+        Ok(UpgradeOutcome::UpToDate { latest }) => {
+            println!(
+                "{NAME} {} is up to date (latest release {latest})",
+                env!("CARGO_PKG_VERSION")
+            );
+            ExitCode::SUCCESS
+        }
+        Ok(UpgradeOutcome::Available { tag }) => {
+            println!("{NAME} {} → {tag} available", env!("CARGO_PKG_VERSION"));
+            println!("Run `clat upgrade` to install {tag}.");
+            ExitCode::SUCCESS
+        }
+        Ok(UpgradeOutcome::Installed { tag }) => {
+            println!("{NAME} upgraded to {tag}");
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("clat: upgrade failed: {error}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 fn execute_demo(model: &mut dyn Model, project: &Project, prompt: String) -> ExitCode {

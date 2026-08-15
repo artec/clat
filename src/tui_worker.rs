@@ -2,7 +2,7 @@ use crate::permission::{InteractivePermissionPolicy, PermissionDecision, Permiss
 use crate::providers::ProviderRuntime;
 use crate::{
     CancelToken, EventSink, ModelConfig, ModelItem, ModelOptions, Project, Run, RunEvent,
-    RunOutput, SafeByDefault, ToolRegistry, register_native_read_tools,
+    RunOutput, SafeByDefault, ToolRegistry, Usage, register_native_read_tools,
 };
 use std::sync::Mutex;
 use std::sync::mpsc::{self, Sender};
@@ -61,11 +61,16 @@ pub(crate) fn execute_run(
         .execute_with_items(history_items, prompt, &mut sink)
         .map_err(|error| error.to_string())?;
     let RunOutput {
-        text, turns, items, ..
+        text,
+        turns,
+        items,
+        usage,
+        ..
     } = output;
     Ok(RunDone {
         output: text,
         turns,
+        usage,
         cancelled: cancel.is_cancelled(),
         // Everything the run appended after the supplied history is new
         // conversation context for the UI to persist.
@@ -93,6 +98,7 @@ pub(crate) enum WorkerMessage {
 pub(crate) struct RunDone {
     pub output: String,
     pub turns: usize,
+    pub usage: Usage,
     pub cancelled: bool,
     pub new_items: Vec<ModelItem>,
 }
