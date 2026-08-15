@@ -53,16 +53,19 @@ clat demo     # deterministic model → tool → model loop, no remote model nee
 ## Documentation
 
 - [Architecture](docs/architecture.md) — core abstractions, model
-  protocol, conversation model, native read tools
+  protocol, conversation model, trust gate, native read tools
 - [Using the TUI](docs/usage.md) — panels, keys, commands, markdown,
-  scrolling
+  scrolling, status line
 - [Model editor](docs/model-editor.md) — presets (DeepSeek V4.0
   Flash/Pro), advanced fields
-- [Permissions](docs/permissions.md) — safe-by-default policy and
-  interactive approvals
+- [Permissions](docs/permissions.md) — safe-by-default policy,
+  interactive approvals with mandatory argument review
+- [MCP integration](docs/mcp.md) — `~/.clat/mcp.json`, protocol
+  support, tool mapping, resource limits
 - [Providers](docs/providers.md) — OpenAI Responses and Compatible
   adapters, DeepSeek reasoning replay
-- [Persistent state](docs/storage.md) — `~/.clat` layout and contents
+- [Persistent state](docs/storage.md) — `~/.clat` layout, contents, and
+  integrity guarantees
 - [Live-model validation](docs/live-validation.md) — the two gates
   before the first dogfood run
 

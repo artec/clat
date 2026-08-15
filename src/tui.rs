@@ -4,10 +4,10 @@ use crate::storage::{Storage, StoredMessage};
 use crate::tui_input::InputBuffer;
 use crate::tui_markdown::render_markdown;
 use crate::tui_model::{EditorAction, ModelEditor, ModelPicker, PickerAction};
-use crate::tui_worker::{WorkerMessage, execute_run};
+use crate::tui_worker::{UiEvent, WorkerMessage, execute_run};
 use crate::{
     CancelToken, ModelConfig, ModelEvent, ModelItem, PermissionDecision, PermissionRequest,
-    Project, RunEvent, Usage,
+    Project, RunEvent, ToolRegistry, Usage, register_native_read_tools,
 };
 use crossterm::event::{
     self, DisableBracketedPaste, DisableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
@@ -26,7 +26,7 @@ use std::collections::HashMap;
 use std::env;
 use std::io::{self, Write, stdout};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -120,61 +120,62 @@ fn is_glm_endpoint(config: &ModelConfig) -> bool {
     endpoint.contains("bigmodel.cn") || endpoint.contains("z.ai")
 }
 
-/// 余额查询的最小间隔。官方平台的用量数据本身有约 5 分钟延迟，
-/// 更频繁的查询拿不到新数字，只是给官方服务器徒增压力。
-const BALANCE_MIN_INTERVAL: Duration = Duration::from_secs(5 * 60);
+/// 余额监控线程读取的共享上下文：配置或密钥变更后主循环原地更新，
+/// 线程每次查询前取最新值，无需重启。
+#[derive(Clone)]
+struct BalanceContext {
+    config: ModelConfig,
+    runtime: ProviderRuntime,
+}
 
-/// 节流判定：强制刷新总是放行；否则距上次查询至少间隔
-/// `BALANCE_MIN_INTERVAL`（从未查询过视为可查）。
-fn should_fetch_balance(last_fetch: Option<Instant>, force: bool) -> bool {
-    if force {
-        return true;
+/// 查询一次余额/额度（DeepSeek 余额或 GLM 窗口百分比）。非厂商
+/// 端点或未配置密钥返回 None——状态栏对应段落随之隐藏。
+fn fetch_balance_value(context: &BalanceContext) -> Option<String> {
+    if !is_deepseek_endpoint(&context.config) && !is_glm_endpoint(&context.config) {
+        return None;
     }
-    match last_fetch {
-        Some(last) => last.elapsed() >= BALANCE_MIN_INTERVAL,
-        None => true,
+    let api_key = context.runtime.value(0)?.trim().to_owned();
+    if api_key.is_empty() {
+        return None;
+    }
+    if is_glm_endpoint(&context.config) {
+        fetch_glm_quota(&context.config.endpoint, &api_key)
+    } else {
+        fetch_deepseek_balance(&context.config.endpoint, &api_key)
     }
 }
 
-/// 当前配置指向 DeepSeek 或 GLM Coding Plan 且持有 API key 时，后台
-/// 线程查询一次账户信息写回共享槽位：DeepSeek 查余额（"110.00"），
-/// GLM 查 5 小时窗口剩余额度（"62%"）。查询期间清空旧值，避免换端点
-/// 后残留旧数字。`force` 为 true 时绕过节流（启动、保存配置后），否则
-/// 受 `last_fetch` 节流约束（run 结束后的例行刷新）。
-fn refresh_balance(
-    balance: &Arc<Mutex<Option<String>>>,
-    last_fetch: &mut Option<Instant>,
-    config: &ModelConfig,
-    runtime: &ProviderRuntime,
-    force: bool,
+/// 余额后台监控：启动立即查询一次，此后每 `BALANCE_REFRESH_INTERVAL`
+/// 主动巡查一次；`trigger` 收到信号（配置变更、模型运行结束）则立即
+/// 额外查询。查询在别的端点/密钥上跳过但保持周期。结果经统一事件
+/// 通道送回主循环，线程随通道关闭退出。
+fn spawn_balance_monitor(
+    ui: Sender<UiEvent>,
+    context: Arc<Mutex<BalanceContext>>,
+    trigger: Receiver<()>,
 ) {
-    if !is_deepseek_endpoint(config) && !is_glm_endpoint(config) {
-        return;
-    }
-    let Some(api_key) = runtime.value(0).map(str::to_owned) else {
-        return;
-    };
-    if api_key.trim().is_empty() {
-        return;
-    }
-    if !should_fetch_balance(*last_fetch, force) {
-        return;
-    }
-    *last_fetch = Some(Instant::now());
-    let endpoint = config.endpoint.clone();
-    let glm = is_glm_endpoint(config);
-    let slot = balance.clone();
-    if let Ok(mut guard) = slot.lock() {
-        *guard = None;
-    }
     thread::spawn(move || {
-        let fetched = if glm {
-            fetch_glm_quota(&endpoint, &api_key)
-        } else {
-            fetch_deepseek_balance(&endpoint, &api_key)
-        };
-        if let Ok(mut guard) = slot.lock() {
-            *guard = fetched;
+        let mut next_sweep = Instant::now();
+        loop {
+            let wait = next_sweep.saturating_duration_since(Instant::now());
+            match trigger.recv_timeout(wait) {
+                // 被触发（立即查询）或巡查周期到：两者都执行查询。
+                Ok(()) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+            next_sweep = Instant::now() + BALANCE_REFRESH_INTERVAL;
+            let value = context
+                .lock()
+                .ok()
+                .map(|context| fetch_balance_value(&context));
+            let value = match value {
+                Some(value) => value,
+                // 锁中毒：跳过本轮，下个周期再试。
+                None => continue,
+            };
+            if ui.send(UiEvent::Balance(value)).is_err() {
+                break;
+            }
         }
     });
 }
@@ -380,15 +381,11 @@ fn copy_to_clipboard(text: &str) -> bool {
 /// 思考开关关闭时省略后两项；槽位无值（未配置 key 或查询失败）返回
 /// 空，状态栏保持原样。思考强度按官方规则展示为 High/Max，未显式
 /// 设置时按官方默认 high 显示 High。
-fn deepseek_status_prefix(
-    config: &ModelConfig,
-    balance: &Arc<Mutex<Option<String>>>,
-    usage: &Usage,
-) -> String {
+fn deepseek_status_prefix(config: &ModelConfig, balance: &Option<String>, usage: &Usage) -> String {
     if !is_deepseek_endpoint(config) && !is_glm_endpoint(config) {
         return String::new();
     }
-    let Some(balance) = balance.lock().ok().and_then(|guard| guard.clone()) else {
+    let Some(balance) = balance else {
         return String::new();
     };
     // DeepSeek 槽位存余额文本，展示加货币符号；GLM 槽位存 5 小时
@@ -396,7 +393,7 @@ fn deepseek_status_prefix(
     let first = if is_deepseek_endpoint(config) {
         format!("￥{balance}")
     } else {
-        balance
+        balance.clone()
     };
     let mut parts = vec![first];
     if let Some(percent) = cache_hit_percent(usage) {
@@ -439,29 +436,19 @@ const PAGE_SCROLL_ROWS: usize = 8;
 /// 光标定位与鼠标选区映射统一扣除该宽度，保持三者坐标一致。
 const INPUT_MARKER_WIDTH: usize = 2;
 
-/// Input-poll interval while idle: wake often enough to keep animations on
-/// schedule without pointlessly spinning the CPU.
-const IDLE_POLL: Duration = Duration::from_millis(60);
-/// Input-poll interval while the user is active (typing or scrolling), so
-/// input feels immediate.
-const ACTIVE_POLL: Duration = Duration::from_millis(16);
-/// How long after the last input the fast interval is kept before drifting
-/// back to the idle interval.
-const ACTIVE_HOLD: Duration = Duration::from_secs(6);
+/// 思考动画的帧间隔：thinking 期间后台按时刻唤醒主循环换帧。
+const SPINNER_FRAME: Duration = Duration::from_millis(80);
+
+/// 余额/额度后台监控的主动刷新周期。官方平台的用量数据本身有约
+/// 5 分钟延迟，更频繁的查询拿不到新数字，只是给官方服务器徒增压力。
+/// 与旧的"被动刷新 + 最小间隔门禁"不同：这里是监控线程的巡查周期，
+/// 配置变更与模型运行结束会立即触发一次计划外刷新。
+const BALANCE_REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
 /// 瞬时提示（copied N chars、model switched 等）在状态栏停留的时长，
 /// 到期回落为默认的当前目录显示——与 Claude Code 等终端工具一致：
 /// 提示是瞬态的，目录才是常驻信息。
 const STATUS_TTL: Duration = Duration::from_secs(4);
-
-/// Adaptive polling: any recent input keeps the fast interval; after a
-/// quiet `ACTIVE_HOLD` the loop drifts back to the idle interval.
-fn active_poll_interval(last_activity: Option<Instant>) -> Duration {
-    match last_activity {
-        Some(at) if at.elapsed() < ACTIVE_HOLD => ACTIVE_POLL,
-        _ => IDLE_POLL,
-    }
-}
 
 /// 瞬时提示是否已到期：无过期时刻（常驻状态）视为未到期。
 fn status_expired(until: Option<Instant>, now: Instant) -> bool {
@@ -581,16 +568,32 @@ pub fn run(project: Project) -> io::Result<()> {
 struct PendingPermission {
     request: PermissionRequest,
     decision_tx: Sender<PermissionDecision>,
+    argument_scroll: usize,
+    argument_page_size: usize,
+    argument_line_count: usize,
+    /// 从首行起连续进入过视口的行数；跳到 End 不会跨过未审阅区。
+    reviewed_through: usize,
+    /// 只有参数最后一页实际进入过视口，才允许批准。
+    reviewed_to_end: bool,
 }
 
 struct App {
     project: Project,
     storage: Storage,
-    session_id: i64,
+    /// 当前会话 id；`None` 表示项目尚未受信（延迟初始化前不可对话）。
+    /// 确权门保证所有用到它的路径只在 Some 时可达。
+    session_id: Option<i64>,
     config: ModelConfig,
     provider_runtime: ProviderRuntime,
+    /// 本会话共享的工具注册表：内建工具 + MCP 工具。MCP 子进程随
+    /// 注册表存活（App 生命周期），跨多次 Run 复用，不在每次运行间
+    /// 反复启停服务器。
+    tools: Arc<ToolRegistry>,
     messages: Vec<ChatMessage>,
     input: InputBuffer,
+    /// 启动时项目未受信：渲染确权对话框并拦截一切按键，直到用户
+    /// 信任（Enter，持久化）或退出（Esc）。
+    trust_prompt: bool,
     /// 常驻状态栏文本（当前项目目录），瞬时提示过期后回落到这里。
     default_status: String,
     status: String,
@@ -600,7 +603,11 @@ struct App {
     /// 二级模型选择器；与 editor 互斥，/model 命令打开。
     picker: Option<ModelPicker>,
     running: bool,
-    receiver: Option<Receiver<WorkerMessage>>,
+    /// 统一事件通道：输入线程、余额监控、worker 的消息都汇到这里。
+    /// `None` 表示尚未启动（run() 建立通道后填充）。
+    events: Option<Receiver<UiEvent>>,
+    /// 统一事件通道的发送端克隆：start_run 移交 worker，刷新触发用。
+    event_sender: Option<Sender<UiEvent>>,
     pending_permission: Option<PendingPermission>,
     cancel_token: Option<CancelToken>,
     thinking: bool,
@@ -622,71 +629,68 @@ struct App {
     /// 与复制仍然有效。
     selection: Option<TextSelection>,
     should_quit: bool,
-    /// DeepSeek 账户余额，由后台线程查询后写入，状态栏每帧读取。
-    balance: Arc<Mutex<Option<String>>>,
-    /// 上次发起余额查询的时刻，用于 run 结束后例行刷新的节流。
-    balance_last_fetch: Option<Instant>,
+    /// 余额/额度当前值：监控线程查询后经事件通道写回，状态栏读取。
+    balance: Option<String>,
+    /// 余额监控的共享上下文（配置/密钥变更后原地更新）与立即刷新
+    /// 触发器。
+    balance_context: Arc<Mutex<BalanceContext>>,
+    balance_trigger: Option<Sender<()>>,
     /// 本会话累计 token 用量，用于状态栏缓存命中百分比。
     session_usage: Usage,
 }
 
 impl App {
+    /// 两阶段构造（A-02）：
+    ///
+    /// 1. **最小构造**——只打开全局存储、查询信任表。未受信目录在
+    ///    此阶段不建会话、不读项目历史、不发任何网络请求、不启动
+    ///    任何 MCP 子进程（恶意项目可用本地文件劫持 `npx` 等查询
+    ///    cwd 的命令，确权前绝不能替它拉起进程）。
+    /// 2. **项目初始化**（已受信时立即执行；未受信时在确权成功后
+    ///    执行）——加载会话/消息/历史/模型配置，并以 `~/.clat` 为
+    ///    固定 cwd 启动 MCP 服务器。
     fn new(project: Project) -> Result<Self, String> {
         let storage = Storage::open_default().map_err(|error| error.to_string())?;
-        let session_id = storage
-            .load_or_create_session(&project)
-            .map_err(|error| error.to_string())?;
-        let messages = storage
-            .load_messages(session_id)
-            .map_err(|error| error.to_string())?
-            .into_iter()
-            .filter_map(ChatMessage::from_stored)
-            .collect();
-        let history = storage
-            .load_input_history(&project, 500)
-            .map_err(|error| error.to_string())?;
-        let (mut config, provider_runtime) = storage
-            .load_model_state()
-            .map_err(|error| error.to_string())?
-            .unwrap_or_else(|| {
-                let config = ModelConfig::default();
-                let runtime = ProviderRuntime::for_protocol(config.protocol);
-                (config, runtime)
-            });
-        // 预设代表厂商官方参数，随版本演进（如 DeepSeek 补充流式
-        // usage 开关）。启动时重刷预设参数，存量配置自动获得修复；
-        // 认证与自定义传输设置不受影响，用户手动改过的配置
-        // （preset 为 None）保持原样。
-        if let Some(preset) = config.preset.as_deref().and_then(preset_by_id) {
-            preset.apply(&mut config);
-        }
-        // 状态栏初始显示当前打开的项目目录（home 缩写为 ~），不占多余字符。
-        let status = abbreviate_home(project.root());
-        let balance = Arc::new(Mutex::new(None));
-        let mut balance_last_fetch = None;
-        refresh_balance(
-            &balance,
-            &mut balance_last_fetch,
-            &config,
-            &provider_runtime,
-            true,
-        );
+        let trusted = storage.is_project_trusted(project.root());
 
-        Ok(Self {
+        // 最小工具集（纯注册，无进程、无 I/O）。
+        let mut tools = ToolRegistry::new();
+        register_native_read_tools(&mut tools);
+        let tools = Arc::new(tools);
+
+        let (config, provider_runtime) = if trusted {
+            Self::load_model_state(&storage)?
+        } else {
+            let config = ModelConfig::default();
+            let runtime = ProviderRuntime::for_protocol(config.protocol);
+            (config, runtime)
+        };
+
+        // 状态栏初始显示当前打开的项目目录（home 缩写为 ~）。
+        let status = abbreviate_home(project.root());
+        let balance_context = Arc::new(Mutex::new(BalanceContext {
+            config: config.clone(),
+            runtime: provider_runtime.clone(),
+        }));
+
+        let mut app = Self {
             project,
             storage,
-            session_id,
+            session_id: None,
+            tools,
             config,
             provider_runtime,
-            messages,
-            input: InputBuffer::new(history),
+            messages: Vec::new(),
+            input: InputBuffer::new(Vec::new()),
+            trust_prompt: !trusted,
             default_status: status.clone(),
             status,
             status_until: None,
             editor: None,
             picker: None,
             running: false,
-            receiver: None,
+            events: None,
+            event_sender: None,
             pending_permission: None,
             cancel_token: None,
             thinking: false,
@@ -702,64 +706,237 @@ impl App {
             conversation_rows: 0,
             selection: None,
             should_quit: false,
-            balance,
-            balance_last_fetch,
+            balance: None,
+            balance_context,
+            balance_trigger: None,
             session_usage: Usage::default(),
-        })
+        };
+        if trusted {
+            app.initialize_project()?;
+        }
+        Ok(app)
+    }
+
+    /// 全局模型配置（与项目无关，但同样推迟到确权后加载以保持
+    /// "未信任阶段零读取"的简单不变量）。预设代表厂商官方参数，
+    /// 随版本演进（如 DeepSeek 补充流式 usage 开关）；启动时重刷
+    /// 预设参数，存量配置自动获得修复，用户手动改过的配置
+    /// （preset 为 None）保持原样。
+    fn load_model_state(storage: &Storage) -> Result<(ModelConfig, ProviderRuntime), String> {
+        let (mut config, runtime) = storage
+            .load_model_state()
+            .map_err(|error| error.to_string())?
+            .unwrap_or_else(|| {
+                let config = ModelConfig::default();
+                let runtime = ProviderRuntime::for_protocol(config.protocol);
+                (config, runtime)
+            });
+        if let Some(preset) = config.preset.as_deref().and_then(preset_by_id) {
+            preset.apply(&mut config);
+        }
+        Ok((config, runtime))
+    }
+
+    /// 项目级资源初始化：会话、历史消息、输入历史、模型配置与
+    /// MCP 服务器。只在项目已受信后调用（构造时已信任，或确权
+    /// 成功后）。任何失败向上报告——确权流程据此保持阻断。
+    fn initialize_project(&mut self) -> Result<(), String> {
+        let session_id = self
+            .storage
+            .load_or_create_session(&self.project)
+            .map_err(|error| error.to_string())?;
+        self.session_id = Some(session_id);
+        self.messages = self
+            .storage
+            .load_messages(session_id)
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .filter_map(ChatMessage::from_stored)
+            .collect();
+        let history = self
+            .storage
+            .load_input_history(&self.project, 500)
+            .map_err(|error| error.to_string())?;
+        self.input = InputBuffer::new(history);
+        self.markdown_cache.clear();
+
+        let (config, provider_runtime) = Self::load_model_state(&self.storage)?;
+        self.config = config;
+        self.provider_runtime = provider_runtime;
+
+        // MCP 服务器是全局能力，但绝不在项目目录里启动：固定以
+        // `~/.clat` 为工作目录，杜绝未受信项目通过 cwd 劫持命令。
+        let mut tools = ToolRegistry::new();
+        register_native_read_tools(&mut tools);
+        let mcp_config = crate::mcp_client::load_mcp_config(self.storage.root())
+            .map_err(|error| error.to_string())?;
+        let (mcp_connected, mcp_failures) =
+            crate::mcp_client::register_mcp_tools(&mut tools, &mcp_config, self.storage.root());
+        self.tools = Arc::new(tools);
+        if !mcp_config.is_empty() {
+            if mcp_failures.is_empty() {
+                self.flash_status(format!("mcp: {mcp_connected} server(s) connected"));
+            } else {
+                self.flash_status(format!("mcp: {}", mcp_failures.join("; ")));
+            }
+        }
+        self.refresh_balance_now();
+        Ok(())
+    }
+
+    /// start_run 等对话路径使用的会话 id。确权门保证只在已信任
+    /// 状态可达；防御性地兜底为失败而不是 panic。
+    fn current_session(&self) -> Result<i64, String> {
+        self.session_id
+            .ok_or_else(|| "project is not trusted yet".to_owned())
     }
 
     fn run(&mut self, terminal: &mut DefaultTerminal) -> io::Result<()> {
-        // Event-driven loop with adaptive polling. Input is polled on a
-        // slow interval while idle, switches to a fast interval as soon as
-        // any input arrives, and drifts back after a quiet hold — so a
-        // scrolling burst or typing feels immediate without paying for
-        // frequent wake-ups while nothing happens. Idle redraws stay on
-        // the frame interval so animations keep their designed speed, and
-        // a burst of pending events (a fast wheel scroll) is drained and
-        // applied in one go, then rendered once.
-        const FRAME_INTERVAL: Duration = Duration::from_millis(80);
-        let mut last_activity: Option<Instant> = None;
-        let mut last_draw = Instant::now() - FRAME_INTERVAL;
+        // 统一事件通道与后台监控：主循环从此只与消息打交道。
+        //
+        // - 输入线程阻塞读终端事件（event::read），按键到达即刻转发，
+        //   零轮询、零节流——不再有 60ms/16ms 的自适应间隔；
+        // - 余额监控线程启动立即查询，此后每 5 分钟巡查一次；
+        // - 无消息时主循环挂起在 recv_timeout 上，唤醒时刻是"最近
+        //   一次必须重绘的deadline"（状态栏 TTL 到期、思考动画换帧），
+        //   空闲时一次唤醒都没有。
+        let (event_sender, events) = mpsc::channel::<UiEvent>();
+        self.event_sender = Some(event_sender.clone());
+        self.events = Some(events);
+
+        let input_sender = event_sender.clone();
+        // detach：通道关闭（run 返回）后 send 失败线程自行退出；
+        // 阻塞中的 read 随进程结束回收，不影响终端恢复。
+        thread::spawn(move || {
+            while let Ok(event) = event::read()
+                && input_sender.send(UiEvent::Terminal(event)).is_ok()
+            {}
+        });
+
+        let (balance_trigger, trigger_receiver) = mpsc::channel::<()>();
+        self.balance_trigger = Some(balance_trigger);
+        spawn_balance_monitor(
+            event_sender.clone(),
+            Arc::clone(&self.balance_context),
+            trigger_receiver,
+        );
+
+        let events = self
+            .events
+            .take()
+            .expect("events channel was just installed");
         while !self.should_quit {
-            self.drain_worker();
-
-            if last_draw.elapsed() >= FRAME_INTERVAL {
-                terminal.draw(|frame| self.draw(frame))?;
-                last_draw = Instant::now();
-            }
-
-            let poll_interval = active_poll_interval(last_activity);
-            if event::poll(poll_interval)? {
-                loop {
-                    match event::read()? {
-                        Event::Key(key) if key.kind == KeyEventKind::Press => {
-                            self.handle_key(key);
-                            last_activity = Some(Instant::now());
+            let deadline = self.next_repaint_deadline();
+            let received = match deadline {
+                Some(deadline) => events.recv_timeout(deadline - Instant::now()),
+                // 没有任何未来重绘需求：无限挂起直到下一条消息。
+                None => events
+                    .recv()
+                    .map_err(|_| mpsc::RecvTimeoutError::Disconnected),
+            };
+            match received {
+                Ok(event) => {
+                    self.handle_ui_event(event);
+                    // 批量收割全部已就绪事件并合并成一帧绘制。不能用
+                    // `while let Terminal = try_recv()`：模式不匹配也会
+                    // 消费 Worker/Permission 消息，令运行永久等待。
+                    // 权限审阅期间每个导航键后都要先绘制，确保只有
+                    // 真正进入过视口的连续参数页会计入 reviewed。
+                    if self.pending_permission.is_none() {
+                        while let Ok(event) = events.try_recv() {
+                            self.handle_ui_event(event);
+                            if self.pending_permission.is_some() {
+                                break;
+                            }
                         }
-                        Event::Paste(text) => {
-                            self.handle_paste(&text);
-                            last_activity = Some(Instant::now());
-                        }
-                        Event::Mouse(mouse) => {
-                            self.handle_mouse(mouse);
-                            last_activity = Some(Instant::now());
-                        }
-                        _ => {}
-                    }
-                    if !event::poll(Duration::ZERO)? {
-                        break;
                     }
                 }
-                terminal.draw(|frame| self.draw(frame))?;
-                last_draw = Instant::now();
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
+            self.expire_status();
+            terminal.draw(|frame| self.draw(frame))?;
         }
         Ok(())
+    }
+
+    fn handle_ui_event(&mut self, event: UiEvent) {
+        match event {
+            UiEvent::Terminal(event) => self.handle_terminal_event(event),
+            UiEvent::Worker(message) => self.handle_worker_message(message),
+            UiEvent::Balance(value) => self.balance = value,
+        }
+    }
+
+    /// 处理一条终端事件：按键/粘贴/鼠标。
+    ///
+    /// 项目确权门拦截**一切**终端事件：只有按键转给 handle_key（其
+    /// 中的确权分支只认 Enter/y 与 Esc/n）。鼠标滚动、拖拽选区、粘贴
+    /// 全部吞掉——否则确权框后面还能滚动会话、往输入框粘贴内容，
+    /// 甚至选区高亮会盖住对话框边框，看起来像边框被切掉。
+    fn handle_terminal_event(&mut self, event: Event) {
+        if self.trust_prompt {
+            if let Event::Key(key) = event
+                && key.kind == KeyEventKind::Press
+            {
+                self.handle_key(key);
+            }
+            return;
+        }
+        match event {
+            Event::Key(key) if key.kind == KeyEventKind::Press => self.handle_key(key),
+            Event::Paste(text) => self.handle_paste(&text),
+            Event::Mouse(mouse) => self.handle_mouse(mouse),
+            _ => {}
+        }
+    }
+
+    /// 最近一次必须重绘的时刻：状态栏瞬时提示到期、思考动画换帧。
+    /// None 表示可以无限挂起等待下一条消息。
+    fn next_repaint_deadline(&self) -> Option<Instant> {
+        let now = Instant::now();
+        let mut deadline = self.status_until.filter(|until| *until > now);
+        if self.thinking {
+            let frame = now + SPINNER_FRAME;
+            deadline = Some(deadline.map_or(frame, |current| current.min(frame)));
+        }
+        deadline
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             self.should_quit = true;
+            return;
+        }
+
+        // 项目确权门优先于一切按键交互：未信任的目录只认
+        // Enter/y（信任并持久化）与 Esc/n（直接退出 CLAT）。
+        // 信任成功后才初始化项目资源（会话/历史/MCP），失败保持阻断。
+        if self.trust_prompt {
+            let trust = matches!(
+                key.code,
+                KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y')
+            );
+            let leave = matches!(
+                key.code,
+                KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N')
+            );
+            if trust {
+                let trusted = self
+                    .storage
+                    .trust_project(self.project.root())
+                    .map_err(|error| error.to_string())
+                    .and_then(|()| self.initialize_project());
+                match trusted {
+                    Ok(()) => {
+                        self.trust_prompt = false;
+                        self.flash_status("project trusted — welcome");
+                    }
+                    Err(error) => self.flash_status(format!("failed to trust project: {error}")),
+                }
+            } else if leave {
+                self.should_quit = true;
+            }
             return;
         }
 
@@ -786,7 +963,7 @@ impl App {
         // A permission decision is pending: every key belongs to the dialog
         // until the user allows or denies it.
         if self.pending_permission.is_some() {
-            let allow = matches!(
+            let requested_allow = matches!(
                 key.code,
                 KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y')
             );
@@ -794,6 +971,40 @@ impl App {
                 key.code,
                 KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N')
             );
+            let mut blocked_allow = false;
+            let mut allow = false;
+            if let Some(pending) = self.pending_permission.as_mut() {
+                let max_scroll = pending
+                    .argument_line_count
+                    .saturating_sub(pending.argument_page_size.max(1));
+                match key.code {
+                    KeyCode::Down => {
+                        pending.argument_scroll =
+                            pending.argument_scroll.saturating_add(1).min(max_scroll);
+                    }
+                    KeyCode::Up => {
+                        pending.argument_scroll = pending.argument_scroll.saturating_sub(1);
+                    }
+                    KeyCode::PageDown => {
+                        pending.argument_scroll = pending
+                            .argument_scroll
+                            .saturating_add(pending.argument_page_size.max(1))
+                            .min(max_scroll);
+                    }
+                    KeyCode::PageUp => {
+                        pending.argument_scroll = pending
+                            .argument_scroll
+                            .saturating_sub(pending.argument_page_size.max(1));
+                    }
+                    KeyCode::End => pending.argument_scroll = max_scroll,
+                    KeyCode::Home => pending.argument_scroll = 0,
+                    _ => {}
+                }
+                if requested_allow {
+                    allow = pending.reviewed_to_end;
+                    blocked_allow = !allow;
+                }
+            }
             if (allow || deny)
                 && let Some(pending) = self.pending_permission.take()
             {
@@ -810,6 +1021,9 @@ impl App {
                 } else {
                     self.flash_status("permission denied — informing the model");
                 }
+            }
+            if blocked_allow {
+                self.flash_status("review all permission arguments before allowing");
             }
             return;
         }
@@ -1132,6 +1346,18 @@ impl App {
         }
     }
 
+    /// 触发余额监控线程立即重新查询一次：把最新配置/密钥写入共享
+    /// 上下文并发信号。用于配置变更与模型运行结束（额度刚被消耗）。
+    fn refresh_balance_now(&mut self) {
+        if let Ok(mut context) = self.balance_context.lock() {
+            context.config = self.config.clone();
+            context.runtime = self.provider_runtime.clone();
+        }
+        if let Some(trigger) = &self.balance_trigger {
+            let _ = trigger.send(());
+        }
+    }
+
     /// 处理二级选择器的动作。确认预设时：同端点且已存有密钥 → 直接
     /// 保存切换；跨厂商或缺密钥 → 转入编辑器补密钥（清空旧厂商密钥，
     /// 避免把一家厂商的 key 发给另一家）。
@@ -1166,14 +1392,8 @@ impl App {
                     {
                         Ok(()) => {
                             self.config = config;
-                            // 端点或密钥可能已变化，强制重新查询余额。
-                            refresh_balance(
-                                &self.balance,
-                                &mut self.balance_last_fetch,
-                                &self.config,
-                                &self.provider_runtime,
-                                true,
-                            );
+                            // 端点或密钥可能已变化，触发立即重新查询。
+                            self.refresh_balance_now();
                             self.picker = None;
                             self.flash_status(format!("model switched to {}", preset.name));
                         }
@@ -1203,14 +1423,8 @@ impl App {
                     Ok(()) => {
                         self.config = config;
                         self.provider_runtime = runtime;
-                        // 端点或密钥可能已变化，强制重新查询 DeepSeek 余额。
-                        refresh_balance(
-                            &self.balance,
-                            &mut self.balance_last_fetch,
-                            &self.config,
-                            &self.provider_runtime,
-                            true,
-                        );
+                        // 端点或密钥可能已变化，触发立即重新查询。
+                        self.refresh_balance_now();
                         self.flash_status(format!(
                             "model saved: {} · {}",
                             self.config.protocol, self.config.model
@@ -1248,7 +1462,7 @@ impl App {
             }
             "/new" | "/clear" => match self.storage.create_session(&self.project) {
                 Ok(session_id) => {
-                    self.session_id = session_id;
+                    self.session_id = Some(session_id);
                     self.messages.clear();
                     self.markdown_cache.clear();
                     self.conversation_scroll_from_bottom = 0;
@@ -1269,18 +1483,25 @@ impl App {
             self.flash_status("model is not configured — run /model first");
             return;
         }
+        let session_id = match self.current_session() {
+            Ok(session_id) => session_id,
+            Err(error) => {
+                self.flash_status(error);
+                return;
+            }
+        };
 
         // Build the model context before touching display state, so the new
         // prompt is appended exactly once. Persisted items are the source of
         // truth for context; legacy sessions that only have display messages
         // are seeded from them once.
-        let mut history_items = match self.storage.load_items(self.session_id) {
+        let mut history_items = match self.storage.load_items(session_id) {
             Ok(items) if !items.is_empty() => items,
             _ => {
                 let seeded: Vec<ModelItem> =
                     self.messages.iter().map(ChatMessage::model_item).collect();
                 for item in &seeded {
-                    let _ = self.storage.append_item(self.session_id, item);
+                    let _ = self.storage.append_item(session_id, item);
                 }
                 seeded
             }
@@ -1289,13 +1510,10 @@ impl App {
         history_items.push(user_item.clone());
 
         self.messages.push(ChatMessage::user(prompt.clone()));
-        if let Err(error) = self
-            .storage
-            .append_message(self.session_id, "user", &prompt)
-        {
+        if let Err(error) = self.storage.append_message(session_id, "user", &prompt) {
             self.flash_status(format!("failed to persist user message: {error}"));
         }
-        if let Err(error) = self.storage.append_item(self.session_id, &user_item) {
+        if let Err(error) = self.storage.append_item(session_id, &user_item) {
             self.flash_status(format!("failed to persist user context: {error}"));
         }
         self.conversation_scroll_from_bottom = 0;
@@ -1303,59 +1521,60 @@ impl App {
         let project = self.project.clone();
         let config = self.config.clone();
         let provider_runtime = self.provider_runtime.clone();
-        let (sender, receiver) = mpsc::channel();
+        let tools = Arc::clone(&self.tools);
+        let sender = self
+            .event_sender
+            .clone()
+            .expect("event channel is installed by run()");
         let cancel = CancelToken::new();
-        self.receiver = Some(receiver);
         self.cancel_token = Some(cancel.clone());
         self.running = true;
         self.assistant_message_index = None;
         self.flash_status("starting model…");
 
+        // worker 直接把消息发进统一通道（Terminal/Balance 同流），
+        // 主循环消息驱动即时处理。
+        let worker_events = sender.clone();
         thread::spawn(move || {
             let result = execute_run(
-                project,
-                config,
-                provider_runtime,
-                history_items,
-                prompt,
-                sender.clone(),
-                cancel,
+                crate::tui_worker::RunRequest {
+                    project,
+                    config,
+                    provider_runtime,
+                    tools,
+                    history_items,
+                    prompt,
+                    cancel,
+                },
+                worker_events.clone(),
             );
-            let _ = sender.send(WorkerMessage::Done(result));
+            let _ = worker_events.send(UiEvent::Worker(WorkerMessage::Done(result)));
         });
     }
 
-    fn drain_worker(&mut self) {
-        loop {
-            let message = match &self.receiver {
-                Some(receiver) => receiver.try_recv(),
-                None => return,
-            };
-            match message {
-                Ok(WorkerMessage::Event(event)) => self.handle_run_event(event),
-                Ok(WorkerMessage::PermissionRequest {
+    /// 主循环收到一条 worker 消息：流事件、权限请求或运行结束。
+    fn handle_worker_message(&mut self, message: WorkerMessage) {
+        match message {
+            WorkerMessage::Event(event) => self.handle_run_event(event),
+            WorkerMessage::PermissionRequest {
+                request,
+                decision_tx,
+            } => {
+                self.thinking = false;
+                self.thinking_since = None;
+                self.pending_permission = Some(PendingPermission {
                     request,
                     decision_tx,
-                }) => {
-                    self.thinking = false;
-                    self.thinking_since = None;
-                    self.pending_permission = Some(PendingPermission {
-                        request,
-                        decision_tx,
-                    });
-                    self.flash_status("permission required — allow or deny");
-                }
-                Ok(WorkerMessage::Done(result)) => {
-                    self.finish_run(result);
-                    return;
-                }
-                Err(TryRecvError::Empty) => return,
-                Err(TryRecvError::Disconnected) => {
-                    self.running = false;
-                    self.receiver = None;
-                    self.flash_status("run worker disconnected unexpectedly");
-                    return;
-                }
+                    argument_scroll: 0,
+                    argument_page_size: 1,
+                    argument_line_count: 0,
+                    reviewed_through: 0,
+                    reviewed_to_end: false,
+                });
+                self.flash_status("permission required — review arguments, then allow or deny");
+            }
+            WorkerMessage::Done(result) => {
+                self.finish_run(result);
             }
         }
     }
@@ -1424,19 +1643,12 @@ impl App {
 
     fn finish_run(&mut self, result: Result<crate::tui_worker::RunDone, String>) {
         self.running = false;
-        self.receiver = None;
         self.cancel_token = None;
         self.thinking = false;
         self.thinking_since = None;
-        // run 结束后例行刷新余额；受 5 分钟节流约束，密集对话时
-        // 不会给官方余额接口造成压力。
-        refresh_balance(
-            &self.balance,
-            &mut self.balance_last_fetch,
-            &self.config,
-            &self.provider_runtime,
-            false,
-        );
+        // run 刚消耗了额度：触发监控线程立即重新查询一次（计划外，
+        // 不影响 5 分钟巡查周期）。
+        self.refresh_balance_now();
         match result {
             Ok(done) => {
                 // 累计会话用量，供状态栏缓存命中百分比使用。
@@ -1465,8 +1677,15 @@ impl App {
     }
 
     fn persist_items(&mut self, items: Vec<ModelItem>) {
+        let session_id = match self.current_session() {
+            Ok(session_id) => session_id,
+            Err(error) => {
+                self.flash_status(error);
+                return;
+            }
+        };
         for item in items {
-            if let Err(error) = self.storage.append_item(self.session_id, &item) {
+            if let Err(error) = self.storage.append_item(session_id, &item) {
                 self.flash_status(format!("failed to persist conversation context: {error}"));
             }
         }
@@ -1476,19 +1695,26 @@ impl App {
         let Some(index) = self.assistant_message_index else {
             return;
         };
+        let session_id = match self.current_session() {
+            Ok(session_id) => session_id,
+            Err(error) => {
+                self.flash_status(error);
+                return;
+            }
+        };
         let content = self.messages[index].content.clone();
         if content.trim().is_empty() {
             return;
         }
         if let Err(error) = self
             .storage
-            .append_message(self.session_id, "assistant", &content)
+            .append_message(session_id, "assistant", &content)
         {
             self.flash_status(format!("failed to persist assistant message: {error}"));
         }
         if also_item {
             let item = ModelItem::assistant_text(content);
-            if let Err(error) = self.storage.append_item(self.session_id, &item) {
+            if let Err(error) = self.storage.append_item(session_id, &item) {
                 self.flash_status(format!("failed to persist assistant context: {error}"));
             }
         }
@@ -1518,6 +1744,14 @@ impl App {
 
     fn draw(&mut self, frame: &mut Frame) {
         let area = frame.area();
+        // 未确权：不渲染主界面（会话/输入框/状态栏全部不可见），
+        // 清屏后只画确权对话框——没有可滚动的层、没有可输入的框、
+        // 没有闪烁的光标，确权是唯一可能的交互。
+        if self.trust_prompt {
+            frame.render_widget(Clear, area);
+            render_trust_dialog(frame, area, self.project.root());
+            return;
+        }
         self.spinner_tick += 1;
         // 瞬时提示到期回落为常驻状态（当前目录）。
         self.expire_status();
@@ -1595,12 +1829,15 @@ impl App {
             }
         }
 
-        if let Some(pending) = &self.pending_permission {
-            self.draw_permission_dialog(frame, pending);
+        if self.pending_permission.is_some() {
+            self.draw_permission_dialog(frame);
         }
     }
 
-    fn draw_permission_dialog(&self, frame: &mut Frame, pending: &PendingPermission) {
+    fn draw_permission_dialog(&mut self, frame: &mut Frame) {
+        let Some(pending) = self.pending_permission.as_mut() else {
+            return;
+        };
         let area = frame.area();
         let inner_width = 84usize.saturating_sub(2);
         let mut lines = vec![
@@ -1612,22 +1849,85 @@ impl App {
             Line::from(format!("tool:      {}", pending.request.tool)),
             Line::from(format!("effect:    {}", pending.request.effect)),
             Line::from(format!("reason:    {}", pending.request.reason)),
-            Line::from("arguments:"),
         ];
+        // 危险字段摘要：参数的顶层键全部列出，一眼可见隐藏在长
+        // JSON 深处的 command/path/url 等目标——批准前不可错过。
+        if let Some(keys) = top_level_argument_keys(&pending.request.arguments) {
+            lines.push(Line::from(format!("fields:    {keys}")));
+        }
+        lines.push(Line::from("arguments:"));
+        // 完整 pretty JSON 逐行入列（不再静默截断到 8 行）；对框高
+        // 不足时在尾部追加"还有 N 行未显示"的醒目计数。
         let pretty = serde_json::to_string_pretty(&pending.request.arguments)
             .unwrap_or_else(|_| "<unavailable>".into());
-        for source_line in pretty.split('\n').take(8) {
-            for wrapped in wrap_text(source_line, inner_width.saturating_sub(2)) {
-                lines.push(Line::from(format!("  {wrapped}")));
+        let mut argument_lines = Vec::new();
+        for source_line in pretty.split('\n') {
+            for wrapped in wrap_text(source_line, inner_width.saturating_sub(4)) {
+                argument_lines.push(Line::from(format!("  {wrapped}")));
             }
         }
-        lines.push(Line::from(""));
+        // 对话框最高占屏（减边距）。参数可滚动，且只有最后一页
+        // 确实进入视口后才开放批准键，避免隐藏字段未审阅即放行。
+        let max_dialog_height = area.height.saturating_sub(2);
+        let reserved = lines.len() + 5; // 状态 + 空行 + 快捷键 + 边框
+        let available_for_arguments = (max_dialog_height as usize).saturating_sub(reserved);
+        if available_for_arguments == 0 {
+            pending.argument_page_size = 0;
+            pending.argument_line_count = argument_lines.len();
+            let compact = vec![
+                Line::from(Span::styled(
+                    "Permission required",
+                    Style::default().add_modifier(Modifier::BOLD),
+                )),
+                Line::from("Terminal is too small to review arguments."),
+                Line::from("Maximize to continue · Esc / n — deny"),
+            ];
+            let height = (compact.len() as u16 + 2).min(max_dialog_height);
+            let dialog = centered_rect(84, height, area);
+            frame.render_widget(Clear, dialog);
+            frame.render_widget(
+                Paragraph::new(compact)
+                    .block(Block::default().borders(Borders::ALL).title(" Permission ")),
+                dialog,
+            );
+            return;
+        }
+        pending.argument_page_size = available_for_arguments;
+        pending.argument_line_count = argument_lines.len();
+        let max_scroll = argument_lines.len().saturating_sub(available_for_arguments);
+        pending.argument_scroll = pending.argument_scroll.min(max_scroll);
+        let start = pending.argument_scroll;
+        let shown = argument_lines
+            .len()
+            .saturating_sub(start)
+            .min(available_for_arguments);
+        lines.extend(argument_lines.into_iter().skip(start).take(shown));
+        let end = start + shown;
+        // 只累计从首行起连续看过的区间。End 跳跃只用于查看，不会
+        // 越过中间未显示内容而解锁 Allow。
+        pending.reviewed_through = advance_reviewed_through(pending.reviewed_through, start, end);
+        pending.reviewed_to_end = pending.reviewed_through >= pending.argument_line_count;
         lines.push(Line::from(Span::styled(
-            "Enter / y — allow      ·      Esc / n — deny",
+            format!(
+                "arguments lines {}–{} of {} · ↑/↓ PgUp/PgDn Home/End",
+                start.saturating_add(1).min(pending.argument_line_count),
+                end,
+                pending.argument_line_count
+            ),
+            Style::default().add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(""));
+        let actions = if pending.reviewed_to_end {
+            "Enter / y — allow      ·      Esc / n — deny"
+        } else {
+            "Review through the final line to enable Allow · Esc / n — deny"
+        };
+        lines.push(Line::from(Span::styled(
+            actions,
             Style::default().add_modifier(Modifier::BOLD),
         )));
 
-        let height = (lines.len() as u16 + 2).min(area.height.saturating_sub(2));
+        let height = (lines.len() as u16 + 2).min(max_dialog_height);
         let dialog = centered_rect(84, height.max(10), area);
         frame.render_widget(Clear, dialog);
         frame.render_widget(
@@ -1856,6 +2156,35 @@ fn scrollbar_position(start: usize, max_start: usize, content_length: usize) -> 
     (start.saturating_mul(domain) / max_start).min(domain)
 }
 
+/// 权限对话框的参数字段摘要：对象时列出全部顶层键（截断到 10 个
+/// 并标注剩余数），非对象（字符串/数字等）返回 None——摘要只在
+/// 键存在时才有意义。危险目标（command/path/url 等）可能藏在长
+/// JSON 深处，顶层键一览让批准前不可错过。
+fn top_level_argument_keys(arguments: &serde_json::Value) -> Option<String> {
+    let map = arguments.as_object()?;
+    if map.is_empty() {
+        return None;
+    }
+    let mut keys: Vec<&str> = map.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    let shown: Vec<&str> = keys.iter().take(10).copied().collect();
+    let mut summary = shown.join(", ");
+    if keys.len() > 10 {
+        summary.push_str(&format!(" (+{} more)", keys.len() - 10));
+    }
+    Some(summary)
+}
+
+/// 扩展“从首行起连续看过”的区间。新视口与既有区间相接/重叠时
+/// 才前进；跳过中间行（例如直接 End）不能伪造完整审阅。
+fn advance_reviewed_through(reviewed_through: usize, start: usize, end: usize) -> usize {
+    if start <= reviewed_through {
+        reviewed_through.max(end)
+    } else {
+        reviewed_through
+    }
+}
+
 fn wrap_text(text: &str, width: usize) -> Vec<String> {
     if text.is_empty() {
         return vec![String::new()];
@@ -1896,9 +2225,133 @@ fn centered_rect(percent_x: u16, height: u16, area: Rect) -> Rect {
     horizontal[1]
 }
 
+/// 渲染项目确权对话框。独立于 App 以便用 TestBackend 验证边框完整。
+fn render_trust_dialog(frame: &mut Frame, area: Rect, root: &Path) {
+    // 文本按对话框 84% 宽的“最小合理终端”（约 80 列内宽）换行；
+    // 更宽的终端留白更多，更窄的终端由 Paragraph 截断右侧。
+    let inner_width = 84usize.saturating_sub(2);
+    let mut lines = vec![
+        Line::from(Span::styled(
+            "Trust this project?",
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from("CLAT reads and modifies files, and runs tools inside:"),
+    ];
+    for wrapped in wrap_text(&root.display().to_string(), inner_width.saturating_sub(2)) {
+        lines.push(Line::from(format!("  {wrapped}")));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(
+        "Trusting is remembered per directory. Review the project (e.g. its",
+    ));
+    lines.push(Line::from(
+        "README and configs) before granting an agent access to it.",
+    ));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "Enter / y — trust this project      ·      Esc / n — exit CLAT",
+        Style::default().add_modifier(Modifier::BOLD),
+    )));
+
+    let height = (lines.len() as u16 + 2).min(area.height.saturating_sub(2));
+    let dialog = centered_rect(84, height.max(10), area);
+    frame.render_widget(Clear, dialog);
+    frame.render_widget(
+        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(" Trust ")),
+        dialog,
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    #[test]
+    fn permission_review_requires_a_contiguous_path_to_the_last_line() {
+        let reviewed = advance_reviewed_through(0, 0, 10);
+        assert_eq!(reviewed, 10);
+        // 直接跳到末页，中间 10..90 未进入视口，不能解锁。
+        assert_eq!(advance_reviewed_through(reviewed, 90, 100), 10);
+        // 逐页连续审阅会一直推进到末尾。
+        let reviewed = advance_reviewed_through(reviewed, 10, 50);
+        let reviewed = advance_reviewed_through(reviewed, 50, 100);
+        assert_eq!(reviewed, 100);
+    }
+
+    /// 确权对话框四条边框必须完整渲染：定位左上角 `┌`，断言左列
+    /// 全部为竖线、顶行/底行为横线，且左右均有留白（未被切出屏外）。
+    /// 这是实机 bug（"左边竖线不见了"）的回归测试。
+    #[test]
+    fn trust_dialog_renders_all_four_borders() {
+        for (width, height) in [(100u16, 30u16), (80, 24), (213, 55), (48, 20)] {
+            let backend = TestBackend::new(width, height);
+            let mut terminal = Terminal::new(backend).expect("terminal");
+            terminal
+                .draw(|frame| {
+                    render_trust_dialog(
+                        frame,
+                        frame.area(),
+                        Path::new("/Users/deng/Documents/GitHub/clat"),
+                    );
+                })
+                .expect("draw");
+            let buffer = terminal.backend().buffer();
+
+            // 找左上角 ┌（圆角边框是 ratatui 默认 BorderType::Rounded）
+            let mut corner = None;
+            for y in 0..height {
+                for x in 0..width {
+                    if buffer[(x, y)].symbol() == "┌" {
+                        corner = Some((x, y));
+                        break;
+                    }
+                }
+                if corner.is_some() {
+                    break;
+                }
+            }
+            let Some((left, top)) = corner else {
+                panic!("top-left border corner not found at {width}x{height}");
+            };
+
+            // 左右边框：顶行之下、底行之上的每一行都是竖线。
+            // 沿顶行走到 ┐ 定位右列，沿左列走到 └ 定位底行。
+            let mut right = left + 1;
+            while right < width && buffer[(right, top)].symbol() != "┐" {
+                right += 1;
+            }
+            assert!(right < width, "right corner not found at {width}x{height}");
+            let mut bottom = top + 1;
+            while bottom < height && buffer[(left, bottom)].symbol() != "└" {
+                bottom += 1;
+            }
+            assert!(
+                bottom < height,
+                "bottom corner not found at {width}x{height}"
+            );
+            for y in (top + 1)..bottom {
+                assert_eq!(
+                    buffer[(left, y)].symbol(),
+                    "│",
+                    "left border missing at x={left} y={y} ({width}x{height})"
+                );
+                assert_eq!(
+                    buffer[(right, y)].symbol(),
+                    "│",
+                    "right border missing at x={right} y={y} ({width}x{height})"
+                );
+            }
+            // 对话框完整在屏内：左侧与右侧都有留白。
+            assert!(left > 0, "dialog touches the left edge at {width}x{height}");
+            assert!(
+                right + 1 < width,
+                "dialog touches the right edge at {width}x{height}"
+            );
+        }
+    }
 
     #[test]
     fn wraps_cjk_by_terminal_width() {
@@ -2116,7 +2569,7 @@ mod tests {
 
     #[test]
     fn deepseek_prefix_combines_balance_thinking_and_effort() {
-        let balance = Arc::new(Mutex::new(Some("110.00".into())));
+        let balance = Some("110.00".to_owned());
         // 无缓存数据：前缀不含百分比
         let no_cache = Usage::default();
 
@@ -2185,14 +2638,14 @@ mod tests {
 
         // DeepSeek 端点但余额未就绪（未配置 key 或查询失败）：无前缀
         config.endpoint = "https://api.deepseek.com".into();
-        let empty = Arc::new(Mutex::new(None));
+        let empty = None;
         assert_eq!(deepseek_status_prefix(&config, &empty, &cached), "");
 
         // GLM Coding Plan 端点：槽位存 5 小时窗口剩余额度百分比，
         // 替代 DeepSeek 余额的位置，不再加货币符号。
         config.endpoint = "https://open.bigmodel.cn/api/coding/paas/v4".into();
         config.extra_body = serde_json::json!({"thinking": {"type": "enabled"}});
-        let quota = Arc::new(Mutex::new(Some("62%".into())));
+        let quota = Some("62%".to_owned());
         assert_eq!(
             deepseek_status_prefix(&config, &quota, &no_cache),
             "62% · Thinking · High"
@@ -2222,30 +2675,6 @@ mod tests {
             deepseek_status_prefix(&config, &balance, &zero_cache),
             "￥110.00 · Thinking · High"
         );
-    }
-
-    #[test]
-    fn balance_throttle_allows_first_force_and_interval_queries() {
-        // 从未查询过：放行
-        assert!(should_fetch_balance(None, false));
-        // 强制刷新总是放行
-        assert!(should_fetch_balance(Some(Instant::now()), true));
-        // 刚查过且未到最小间隔：拦截
-        assert!(!should_fetch_balance(Some(Instant::now()), false));
-        // 距上次查询已超过最小间隔：放行
-        let stale = Some(Instant::now() - BALANCE_MIN_INTERVAL - Duration::from_secs(1));
-        assert!(should_fetch_balance(stale, false));
-    }
-
-    #[test]
-    fn adaptive_polling_fast_after_input_and_decays_after_hold() {
-        assert_eq!(active_poll_interval(None), IDLE_POLL);
-        let recent = Some(Instant::now() - Duration::from_secs(1));
-        assert_eq!(active_poll_interval(recent), ACTIVE_POLL);
-        let near_boundary = Some(Instant::now() - ACTIVE_HOLD + Duration::from_millis(10));
-        assert_eq!(active_poll_interval(near_boundary), ACTIVE_POLL);
-        let stale = Some(Instant::now() - ACTIVE_HOLD - Duration::from_millis(10));
-        assert_eq!(active_poll_interval(stale), IDLE_POLL);
     }
 
     #[test]

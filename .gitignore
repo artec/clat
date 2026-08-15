@@ -21,3 +21,10 @@
 
 # Rust editor/backup artifacts
 **/*.rs.bk
+
+# GitHub Pages 工作目录：pages 分支的本地检出（工作树），
+# 内容发布到 pages 分支，不属于 main。
+/pages/
+
+# 文档相关文件
+docs/audit/

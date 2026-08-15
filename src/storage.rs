@@ -1,6 +1,6 @@
 use crate::providers::ProviderRuntime;
 use crate::{ModelConfig, ModelItem, Project};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::fmt;
@@ -8,7 +8,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const STORAGE_VERSION: u32 = 2;
+const STORAGE_VERSION: u32 = 3;
 const DEFAULT_DATABASE: &str = "clat.db";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -92,7 +92,22 @@ impl Storage {
     }
 
     pub fn open(root: PathBuf) -> Result<Self, StorageError> {
+        if fs::symlink_metadata(&root).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+            return Err(StorageError::new(format!(
+                "storage root must not be a symbolic link: {}",
+                root.display()
+            )));
+        }
         fs::create_dir_all(&root)?;
+        if fs::symlink_metadata(&root).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+            return Err(StorageError::new(format!(
+                "storage root must not be a symbolic link: {}",
+                root.display()
+            )));
+        }
+        // 消除 `/var -> /private/var` 之类的父级系统链接；SQLite
+        // NOFOLLOW 随后可严格检查规范路径而不误伤合法存储目录。
+        let root = fs::canonicalize(root)?;
         restrict_directory(&root)?;
 
         let bootstrap_path = root.join("config.json");
@@ -103,9 +118,29 @@ impl Storage {
                 bootstrap.version, STORAGE_VERSION
             )));
         }
+        // A-11：数据库文件名只允许裸文件名——拒绝绝对路径、任意
+        // 路径分隔符与父级遍历，保证数据库（及其 chmod）不会落到
+        // 存储根之外。
+        validate_database_name(&bootstrap.database)?;
 
         let database_path = root.join(&bootstrap.database);
-        let connection = Connection::open(&database_path)?;
+        if fs::symlink_metadata(&database_path)
+            .is_ok_and(|metadata| metadata.file_type().is_symlink())
+        {
+            return Err(StorageError::new(format!(
+                "database file must not be a symbolic link: {}",
+                database_path.display()
+            )));
+        }
+        // 路径词法校验不足以阻止 `clat.db -> /outside/file`。SQLite 的
+        // NOFOLLOW 在实际 open 系统调用处拒绝最终路径符号链接，避免
+        // Connection::open 和后续 chmod 跟随到存储根之外。
+        let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
+            | OpenFlags::SQLITE_OPEN_CREATE
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX
+            | OpenFlags::SQLITE_OPEN_URI
+            | OpenFlags::SQLITE_OPEN_NOFOLLOW;
+        let connection = Connection::open_with_flags(&database_path, flags)?;
         restrict_file(&database_path)?;
         let storage = Self { root, connection };
         storage.initialize()?;
@@ -179,6 +214,10 @@ impl Storage {
                  runtime_json TEXT NOT NULL,
                  created_at INTEGER NOT NULL,
                  updated_at INTEGER NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS trusted_projects (
+                 root TEXT PRIMARY KEY,
+                 trusted_at INTEGER NOT NULL
              );",
         )?;
         Ok(())
@@ -543,6 +582,47 @@ impl Storage {
         )?;
         Ok(())
     }
+
+    /// 项目目录是否已被用户信任。路径先 canonicalize 再比对，避免
+    /// 符号链接或 `.`/`..` 拼写差异绕过信任检查。
+    pub fn is_project_trusted(&self, root: &Path) -> bool {
+        let key = trust_key(root);
+        self.connection
+            .query_row(
+                "SELECT 1 FROM trusted_projects WHERE root = ?1",
+                params![key],
+                |_| Ok(()),
+            )
+            .optional()
+            .map(|row| row.is_some())
+            .unwrap_or(false)
+    }
+
+    /// 将项目目录标记为受信（幂等：重复信任仅刷新时间戳）。
+    pub fn trust_project(&self, root: &Path) -> Result<(), StorageError> {
+        self.connection.execute(
+            "INSERT INTO trusted_projects(root, trusted_at) VALUES(?1, ?2)
+             ON CONFLICT(root) DO UPDATE SET trusted_at = excluded.trusted_at",
+            params![trust_key(root), now_unix()],
+        )?;
+        Ok(())
+    }
+
+    /// 取消项目目录的信任，下次进入该目录会再次弹出确权对话框。
+    pub fn untrust_project(&self, root: &Path) -> Result<(), StorageError> {
+        self.connection.execute(
+            "DELETE FROM trusted_projects WHERE root = ?1",
+            params![trust_key(root)],
+        )?;
+        Ok(())
+    }
+}
+
+/// 信任表的目录键：canonicalize 失败（目录刚被删除等）时退回原始
+/// 路径的绝对化形式，保证查询与写入用同一把钥匙。
+fn trust_key(root: &Path) -> String {
+    let canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    canonical.to_string_lossy().into_owned()
 }
 
 /// 从首条用户消息生成会话标题：取第一行非空文本，截断到 60 个字符
@@ -582,6 +662,27 @@ fn now_unix() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64
+}
+
+/// bootstrap 的数据库字段只接受裸文件名：非空、无 `/` 与 `\`、
+/// 无 `..` 段、非 Windows 前缀（`C:`）。防止被篡改的 config.json
+/// 把 SQLite 连接（和随后的 chmod）指向 `~/.clat` 之外的任意路径。
+fn validate_database_name(name: &str) -> Result<(), StorageError> {
+    // 冒号一并拒绝：既是 Windows 盘符前缀，也是 NTFS 备用数据流
+    // （`file.db:stream`）的语法，都属于存储根之外的攻击面。
+    let invalid = name.is_empty()
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains("..")
+        || name.contains(':')
+        || name == "."
+        || std::path::Path::new(name).is_absolute();
+    if invalid {
+        return Err(StorageError::new(format!(
+            "invalid database file name in config.json: {name:?} (must be a bare file name inside the storage root)"
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -827,6 +928,126 @@ mod tests {
         storage.delete_profile("glm").unwrap();
         assert_eq!(storage.active_profile().unwrap(), None);
         assert_eq!(storage.list_profiles().unwrap().len(), 1);
+
+        drop(storage);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn project_trust_roundtrips_on_canonicalized_paths() {
+        let root = temp_root("trust");
+        let storage = Storage::open(root.clone()).expect("storage");
+        let project_root = root.join("project");
+        fs::create_dir_all(&project_root).unwrap();
+
+        // 新目录未受信。
+        assert!(!storage.is_project_trusted(&project_root));
+
+        // 信任后，经符号链接或带 `.` 的等价路径访问仍然受信。
+        storage.trust_project(&project_root).unwrap();
+        assert!(storage.is_project_trusted(&project_root));
+        let dotted = project_root.join(".");
+        assert!(storage.is_project_trusted(&dotted));
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&project_root, root.join("alias")).unwrap();
+            assert!(storage.is_project_trusted(&root.join("alias")));
+        }
+
+        // 取消信任后回到未受信。
+        storage.untrust_project(&project_root).unwrap();
+        assert!(!storage.is_project_trusted(&project_root));
+
+        drop(storage);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A-11：bootstrap 的 database 字段只接受裸文件名——路径分隔符、
+    /// 父级遍历、绝对路径与 Windows 前缀全部拒绝。
+    #[test]
+    fn rejects_database_names_that_escape_the_storage_root() {
+        for bad in [
+            "",
+            "sub/clat.db",
+            "sub\\clat.db",
+            "../clat.db",
+            "..",
+            ".",
+            "/etc/passwd",
+            "C:clat.db",
+        ] {
+            assert!(validate_database_name(bad).is_err(), "must reject {bad:?}");
+        }
+        assert!(validate_database_name("clat.db").is_ok());
+        assert!(validate_database_name("my db v2.sqlite").is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_database_symlink_that_escapes_the_storage_root() {
+        let container = temp_root("database-symlink");
+        let root = container.join("storage");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("config.json"),
+            serde_json::to_string_pretty(&BootstrapConfig {
+                version: STORAGE_VERSION,
+                database: DEFAULT_DATABASE.into(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let outside = container.join("outside.db");
+        fs::write(&outside, b"must remain untouched").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join(DEFAULT_DATABASE)).unwrap();
+
+        let error = Storage::open(root).err().expect("symlink must be rejected");
+        assert!(error.to_string().contains("must not be a symbolic link"));
+        assert_eq!(fs::read(&outside).unwrap(), b"must remain untouched");
+
+        fs::remove_dir_all(container).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_a_symlink_as_the_storage_root() {
+        let container = temp_root("storage-root-symlink");
+        let real_root = container.join("real");
+        fs::create_dir_all(&real_root).unwrap();
+        let alias = container.join("alias");
+        std::os::unix::fs::symlink(&real_root, &alias).unwrap();
+
+        let error = Storage::open(alias).err().expect("symlink root must fail");
+        assert!(error.to_string().contains("must not be a symbolic link"));
+
+        fs::remove_dir_all(container).unwrap();
+    }
+
+    #[test]
+    fn v2_databases_gain_the_trusted_projects_table() {
+        // v2 库没有 trusted_projects；打开即迁移到 v3，信任 API 可用。
+        let root = legacy_v1_root("trust-migrate");
+        // 手工把版本号标成 v2，模拟 v2 形态（表结构是 v1 子集，
+        // migrate_v1_to_v2 的 ALTER 幂等补齐列）。
+        fs::write(
+            root.join("config.json"),
+            serde_json::to_string_pretty(&BootstrapConfig {
+                version: 2,
+                database: DEFAULT_DATABASE.into(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let storage = Storage::open(root.clone()).expect("migrate to v3");
+
+        let project_root = root.join("p");
+        fs::create_dir_all(&project_root).unwrap();
+        storage.trust_project(&project_root).unwrap();
+        assert!(storage.is_project_trusted(&project_root));
+
+        let bootstrap: BootstrapConfig =
+            serde_json::from_str(&fs::read_to_string(root.join("config.json")).unwrap()).unwrap();
+        assert_eq!(bootstrap.version, STORAGE_VERSION);
 
         drop(storage);
         fs::remove_dir_all(root).unwrap();

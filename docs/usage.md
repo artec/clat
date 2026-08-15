@@ -55,7 +55,32 @@ dependency is used.
 
 ## Input responsiveness
 
-The input loop uses adaptive polling: it polls every 60 ms while idle and
-switches to 16 ms as soon as any input arrives, drifting back after 6
-seconds of quiet. Scrolling and typing therefore feel immediate without
-paying for constant wake-ups while nothing happens.
+The UI is fully event-driven. A dedicated input thread blocks on terminal
+events and forwards them the instant they arrive, so keystrokes and mouse
+input have zero polling latency. When nothing happens, the main loop
+suspends until the next event (or the next scheduled repaint, such as a
+spinner frame or a status flash expiring) — an idle CLAT consumes no CPU.
+
+## Project trust
+
+The first time CLAT opens a directory you have not trusted before, it
+shows a full-screen trust dialog instead of the chat UI. Until you press
+`Enter`/`y` (trust and remember) or `Esc`/`n` (exit), no session is
+created, no project file is read, and no MCP server is started — the
+prompt is a security boundary, not a decoration.
+
+## Status line extras
+
+- DeepSeek endpoints show the account balance; GLM Coding Plan endpoints
+  show the 5-hour window quota. A background monitor refreshes both every
+  five minutes and immediately after each run or model switch.
+- A cache-hit percentage is shown once the provider reports cached input
+  tokens.
+
+## MCP tools
+
+Tools exposed by configured MCP servers (`~/.clat/mcp.json`) appear with
+an `mcp_{server}_{tool}` name and are always classified as
+side-effecting: every call opens a permission dialog. MCP servers are
+global: their subprocesses run with `~/.clat` as the working directory,
+never inside the project.

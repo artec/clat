@@ -86,3 +86,40 @@ All paths are constrained to the current project root. Absolute paths,
 `..` traversal, and paths that resolve outside the project are rejected.
 Common generated and dependency directories such as `.git`, `node_modules`,
 `target`, `dist`, and `build` are skipped by default.
+
+## Project trust
+
+The trust gate is part of the startup state machine, not a UI overlay:
+
+```text
+App::new (minimal)
+├── open global storage, query trust table
+└── untrusted → render trust dialog; no session, no project reads,
+                no MCP subprocesses
+       │ Enter/y
+       ▼
+initialize_project
+├── session, messages, input history, model config
+└── MCP servers (cwd fixed to ~/.clat)
+```
+
+Trust is persisted per canonical directory path. `session_id` is an
+`Option` until initialization succeeds, so every conversation path is
+structurally gated on trust.
+
+## MCP adapter
+
+MCP servers are adapters around the core: a `StdioSession` (single
+reader thread with id-routed responses, bounded writer queue, per-call
+deadlines) hosts the subprocess; `McpTool` adapts each remote tool into
+the core `Tool` trait. See [MCP integration](mcp.md) for the protocol
+posture, naming rules, and resource limits.
+
+## TUI event loop
+
+The TUI is fully event-driven: a dedicated input thread forwards
+terminal events, model workers report through the same channel, and a
+balance monitor thread refreshes DeepSeek/GLM quotas every five minutes.
+The main loop suspends on a bounded receive with the next repaint
+deadline (spinner frame, status flash expiry) and wakes only on real
+work — no polling intervals anywhere.

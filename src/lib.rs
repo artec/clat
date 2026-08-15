@@ -1,4 +1,6 @@
 pub mod event;
+pub mod mcp;
+pub mod mcp_client;
 pub mod model;
 pub mod native_tools;
 pub mod permission;

@@ -54,7 +54,21 @@ jobs:
           tar -czf clat-${{ github.ref_name }}-${{ matrix.target }}.tar.gz \
             -C target/${{ matrix.target }}/release clat
 
+      # 随资产发布 SHA-256 校验文件：`clat upgrade` 下载后强制校验，
+      # 不匹配即中止（防 CDN/传输篡改；账户失陷需进一步签名链）。
+      - name: Checksums
+        shell: bash
+        run: |
+          for f in clat-${{ github.ref_name }}-${{ matrix.target }}.*; do
+            case "$f" in
+              *.sha256) ;;
+              *) sha256sum "$f" > "$f.sha256" ;;
+            esac
+          done
+
       - uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true
-          files: clat-${{ github.ref_name }}-${{ matrix.target }}.*
+          files: |
+            clat-${{ github.ref_name }}-${{ matrix.target }}.*
+            clat-${{ github.ref_name }}-${{ matrix.target }}.*.sha256

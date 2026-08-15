@@ -50,9 +50,71 @@ function Install-FromRelease($target) {
     New-Item -ItemType Directory -Force -Path $tmp | Out-Null
     try {
         Info "downloading $url"
-        Invoke-WebRequest -Uri $url -OutFile (Join-Path $tmp $asset)
-        Expand-Archive (Join-Path $tmp $asset) -DestinationPath $tmp
-        Install-Binary (Join-Path $tmp "$Bin.exe")
+        $archive = Join-Path $tmp $asset
+        Invoke-WebRequest -Uri $url -OutFile $archive
+        # The checksum is mandatory. Missing, malformed, misnamed, and
+        # mismatched checksum files all abort the release install.
+        $checksumFile = Join-Path $tmp "$asset.sha256"
+        try {
+            Invoke-WebRequest -Uri "$url.sha256" -OutFile $checksumFile
+        } catch {
+            Fail "required checksum unavailable for $asset - aborting"
+        }
+        Info "verifying checksum"
+        $checksumLines = @(Get-Content $checksumFile |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        if ($checksumLines.Count -ne 1) {
+            Fail "invalid checksum file for $asset - aborting"
+        }
+        $checksumLine = $checksumLines[0]
+        $checksumParts = @($checksumLine.Trim() -split '\s+')
+        if ($checksumParts.Count -ne 2 -or
+            $checksumParts[0] -notmatch '^[0-9a-fA-F]{64}$' -or
+            $checksumParts[1].TrimStart('*') -ne $asset) {
+            Fail "invalid checksum file for $asset - aborting"
+        }
+        $expected = $checksumParts[0].ToLowerInvariant()
+        $actual = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($expected -ne $actual) {
+            Fail "checksum mismatch for $asset - aborting"
+        }
+
+        # Inspect every ZIP entry before extraction. Expand-Archive must never
+        # see parent traversal, absolute/drive paths, or a Unix symlink entry.
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $zip = [System.IO.Compression.ZipFile]::OpenRead($archive)
+        $unsafeEntry = $null
+        try {
+            foreach ($entry in $zip.Entries) {
+                $name = $entry.FullName
+                $parts = @($name -split '[\\/]')
+                $unixType = (($entry.ExternalAttributes -shr 16) -band 0xF000)
+                if ([string]::IsNullOrWhiteSpace($name) -or
+                    [System.IO.Path]::IsPathRooted($name) -or
+                    $name -match '^[a-zA-Z]:' -or
+                    $parts -contains '..' -or
+                    $unixType -eq 0xA000) {
+                    $unsafeEntry = $name
+                    break
+                }
+            }
+        } finally {
+            $zip.Dispose()
+        }
+        if ($null -ne $unsafeEntry) {
+            Fail "unsafe path or link in release archive: $unsafeEntry"
+        }
+        Expand-Archive $archive -DestinationPath $tmp
+        $binary = Join-Path $tmp "$Bin.exe"
+        # Reject reparse points anywhere in the extracted tree, not only at
+        # the final binary path.
+        $link = Get-ChildItem $tmp -Recurse -Force |
+            Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint } |
+            Select-Object -First 1
+        if ($null -ne $link -or -not (Test-Path $binary -PathType Leaf)) {
+            Fail "release archive did not contain a regular $Bin.exe file"
+        }
+        Install-Binary $binary
         return $true
     } catch {
         return $false

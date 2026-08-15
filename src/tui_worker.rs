@@ -2,25 +2,43 @@ use crate::permission::{InteractivePermissionPolicy, PermissionDecision, Permiss
 use crate::providers::ProviderRuntime;
 use crate::{
     CancelToken, EventSink, ModelConfig, ModelItem, ModelOptions, Project, Run, RunEvent,
-    RunOutput, SafeByDefault, ToolRegistry, Usage, register_native_read_tools,
+    RunOutput, SafeByDefault, ToolRegistry, Usage,
 };
-use std::sync::Mutex;
 use std::sync::mpsc::{self, Sender};
+use std::sync::{Arc, Mutex};
 
-pub(crate) fn execute_run(
-    project: Project,
-    config: ModelConfig,
-    provider_runtime: ProviderRuntime,
-    history_items: Vec<ModelItem>,
-    prompt: String,
-    sender: Sender<WorkerMessage>,
-    cancel: CancelToken,
-) -> Result<RunDone, String> {
+/// TUI 统一事件通道：输入线程、余额监控、模型运行 worker 的消息汇
+/// 成一条流，主循环消息驱动处理，不再轮询任何源。
+pub(crate) enum UiEvent {
+    Terminal(crossterm::event::Event),
+    Worker(WorkerMessage),
+    Balance(Option<String>),
+}
+
+/// 一次模型运行的装配参数。
+pub(crate) struct RunRequest {
+    pub project: Project,
+    pub config: ModelConfig,
+    pub provider_runtime: ProviderRuntime,
+    pub tools: Arc<ToolRegistry>,
+    pub history_items: Vec<ModelItem>,
+    pub prompt: String,
+    pub cancel: CancelToken,
+}
+
+pub(crate) fn execute_run(request: RunRequest, sender: Sender<UiEvent>) -> Result<RunDone, String> {
+    let RunRequest {
+        project,
+        config,
+        provider_runtime,
+        tools,
+        history_items,
+        prompt,
+        cancel,
+    } = request;
     let mut model = provider_runtime
         .build_model(&config)
         .map_err(|error| error.to_string())?;
-    let mut tools = ToolRegistry::new();
-    register_native_read_tools(&mut tools);
 
     // Side-effecting tools are classified by SafeByDefault and then resolved
     // interactively: the policy posts the request to the UI and blocks until
@@ -30,10 +48,10 @@ pub(crate) fn execute_run(
     let decision_rx = Mutex::new(decision_rx);
     let ask_sender = sender.clone();
     let ask = move |request: PermissionRequest| {
-        let _ = ask_sender.send(WorkerMessage::PermissionRequest {
+        let _ = ask_sender.send(UiEvent::Worker(WorkerMessage::PermissionRequest {
             request,
             decision_tx: decision_tx.clone(),
-        });
+        }));
         decision_rx
             .lock()
             .ok()
@@ -50,8 +68,8 @@ pub(crate) fn execute_run(
         parallel_tool_calls: Some(config.parallel_tool_calls),
         ..ModelOptions::default()
     };
-    let mut sink = ChannelEventSink(sender);
     let history_len = history_items.len();
+    let mut sink = ChannelEventSink(sender);
     let output = Run::new(model.as_mut(), &tools, &permissions, &project)
         .with_model_options(options)
         .with_cancel_token(cancel.clone())
@@ -78,11 +96,11 @@ pub(crate) fn execute_run(
     })
 }
 
-struct ChannelEventSink(Sender<WorkerMessage>);
+struct ChannelEventSink(Sender<UiEvent>);
 
 impl EventSink for ChannelEventSink {
     fn emit(&mut self, event: RunEvent) {
-        let _ = self.0.send(WorkerMessage::Event(event));
+        let _ = self.0.send(UiEvent::Worker(WorkerMessage::Event(event)));
     }
 }
 
