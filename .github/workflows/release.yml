@@ -69,6 +69,7 @@ jobs:
       - uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true
-          files: |
-            clat-${{ github.ref_name }}-${{ matrix.target }}.*
-            clat-${{ github.ref_name }}-${{ matrix.target }}.*.sha256
+          # 单个 glob 已同时覆盖压缩包与 .sha256（`*.*` 也匹配
+          # `*.sha256`）。再显式列第二行会双重匹配同一文件，触发
+          # action 对刚上传资产的 update-asset 调用并报 Not Found。
+          files: clat-${{ github.ref_name }}-${{ matrix.target }}.*

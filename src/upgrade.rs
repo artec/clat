@@ -208,13 +208,43 @@ fn sha256_hex(bytes: &[u8]) -> String {
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+/// 已知可执行格式的魔数：ELF、Mach-O（32/64 位两种字节序、fat）、
+/// Windows PE（MZ）。下载或解包产物必须匹配其一，否则视为非二进制
+/// （例如误抓的校验文本），在替换自身之前中止——0.2.0 曾因把
+/// `.sha256` 文本当选"裸二进制"安装，把用户可执行文件变成一行哈希。
+fn looks_like_executable(bytes: &[u8]) -> bool {
+    bytes.starts_with(&[0x7f, b'E', b'L', b'F'])        // ELF
+        || bytes.starts_with(&[0xFE, 0xED, 0xFA, 0xCE]) // Mach-O 32 BE
+        || bytes.starts_with(&[0xFE, 0xED, 0xFA, 0xCF]) // Mach-O 64 BE
+        || bytes.starts_with(&[0xCE, 0xFA, 0xED, 0xFE]) // Mach-O 32 LE
+        || bytes.starts_with(&[0xCF, 0xFA, 0xED, 0xFE]) // Mach-O 64 LE
+        || bytes.starts_with(&[0xCA, 0xFE, 0xBA, 0xBE]) // Mach-O universal
+        || bytes.starts_with(&[0x4D, 0x5A]) // PE / MZ
+}
+
+/// 替换自身前的最后一道闸：产物必须是普通文件且带可执行魔数。
+fn verify_executable_file(path: &Path) -> Result<(), String> {
+    let mut header = [0u8; 4];
+    fs::File::open(path)
+        .and_then(|mut file| std::io::Read::read_exact(&mut file, &mut header))
+        .map_err(|error| format!("inspect {}: {error}", path.display()))?;
+    if !looks_like_executable(&header) {
+        return Err(format!(
+            "{} is not an executable binary (unexpected magic bytes)",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
 /// 下载资产到临时文件；压缩包用系统 `tar`/`unzip` 解出二进制。
 /// 返回待安装二进制的临时路径。
 ///
 /// 完整性（A-10）：
 /// - URL 主机必须在 GitHub 白名单内（防元数据被篡改后拉取任意站）；
 /// - `{asset}.sha256` 是必需资产，缺失、格式错误或不匹配均中止；
-/// - 解包前验证所有 entry 路径，解包后拒绝任意符号链接。
+/// - 解包前验证所有 entry 路径，解包后拒绝任意符号链接；
+/// - 替换前验证产物带可执行魔数（ELF/Mach-O/PE）。
 fn download_asset(
     asset: &ReleaseAsset,
     checksum_asset: &ReleaseAsset,
@@ -253,6 +283,7 @@ fn download_asset(
     if is_bare_binary(&asset.name) {
         let target = work_dir.join("clat-download");
         fs::write(&target, &bytes).map_err(|error| format!("write download: {error}"))?;
+        verify_executable_file(&target)?;
         return Ok(target);
     }
 
@@ -301,6 +332,7 @@ fn download_asset(
             .map(|metadata| metadata.is_file())
             .unwrap_or(false);
         if is_regular_file {
+            verify_executable_file(&path)?;
             return Ok(path);
         }
     }
@@ -630,6 +662,28 @@ mod tests {
             sha256_hex(b"abc"),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
+    }
+
+    /// 0.2.0 → 0.3.0 升级事故的回归测试：`.sha256` 校验文本（hex 开头
+    /// 的一行 ASCII）不是可执行文件，必须在替换前被魔数检查拒绝；
+    /// 各平台真实魔数必须放行。
+    #[test]
+    fn executable_magic_rejects_checksum_text_and_accepts_real_binaries() {
+        // 事故现场：下载的其实是校验文件内容。
+        let checksum_text =
+            b"8e16e8c91167e96b673f8165edd1773442429de39ef379ae0446c3bb8b3c2b18  clat.tar.gz\n";
+        assert!(!looks_like_executable(checksum_text));
+        assert!(!looks_like_executable(b"#!/bin/sh\necho hi\n"));
+        assert!(!looks_like_executable(b""));
+        assert!(!looks_like_executable(&[0x00, 0x01, 0x02, 0x03]));
+
+        // 真实平台魔数。
+        assert!(looks_like_executable(&[0x7f, b'E', b'L', b'F', 0x02]));
+        assert!(looks_like_executable(&[0xCF, 0xFA, 0xED, 0xFE])); // macOS arm64
+        assert!(looks_like_executable(&[0xFE, 0xED, 0xFA, 0xCF])); // macOS 64 BE
+        assert!(looks_like_executable(&[0xCE, 0xFA, 0xED, 0xFE])); // macOS 32 LE
+        assert!(looks_like_executable(&[0xCA, 0xFE, 0xBA, 0xBE])); // universal
+        assert!(looks_like_executable(&[0x4D, 0x5A, 0x90, 0x00])); // Windows PE
     }
 
     #[test]
