@@ -745,23 +745,27 @@ impl App {
     /// MCP 服务器。只在项目已受信后调用（构造时已信任，或确权
     /// 成功后）。任何失败向上报告——确权流程据此保持阻断。
     fn initialize_project(&mut self) -> Result<(), String> {
-        let session_id = self
+        // 默认恢复最近会话；无可恢复会话时 session_id 保持 None，
+        // 首条内容写入时才按需建会话（见 current_session）。
+        if let Some(session_id) = self
             .storage
-            .load_or_create_session(&self.project)
-            .map_err(|error| error.to_string())?;
-        self.session_id = Some(session_id);
-        self.messages = self
-            .storage
-            .load_messages(session_id)
+            .current_session(&self.project)
             .map_err(|error| error.to_string())?
-            .into_iter()
-            .filter_map(ChatMessage::from_stored)
-            .collect();
-        let history = self
-            .storage
-            .load_input_history(session_id, 500)
-            .map_err(|error| error.to_string())?;
-        self.input = InputBuffer::new(history);
+        {
+            self.session_id = Some(session_id);
+            self.messages = self
+                .storage
+                .load_messages(session_id)
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .filter_map(ChatMessage::from_stored)
+                .collect();
+            let history = self
+                .storage
+                .load_input_history(session_id, 500)
+                .map_err(|error| error.to_string())?;
+            self.input = InputBuffer::new(history);
+        }
         self.markdown_cache.clear();
 
         let (config, provider_runtime) = Self::load_model_state(&self.storage)?;
@@ -788,11 +792,21 @@ impl App {
         Ok(())
     }
 
-    /// start_run 等对话路径使用的会话 id。确权门保证只在已信任
-    /// 状态可达；防御性地兜底为失败而不是 panic。
-    fn current_session(&self) -> Result<i64, String> {
-        self.session_id
-            .ok_or_else(|| "project is not trusted yet".to_owned())
+    /// 写路径使用的会话 id：`None` 表示尚无会话——/new 之后或
+    /// 从未有过会话——此时**按需创建**（首条内容写入才落盘），
+    /// 空会话永远不进库。确权门保证只在已信任状态可达。
+    fn current_session(&mut self) -> Result<i64, String> {
+        match self.session_id {
+            Some(id) => Ok(id),
+            None => {
+                let id = self
+                    .storage
+                    .create_session(&self.project)
+                    .map_err(|error| error.to_string())?;
+                self.session_id = Some(id);
+                Ok(id)
+            }
+        }
     }
 
     fn run(&mut self, terminal: &mut DefaultTerminal) -> io::Result<()> {
@@ -860,6 +874,11 @@ impl App {
             }
             self.expire_status();
             terminal.draw(|frame| self.draw(frame))?;
+        }
+        // 退出时清场：按需建会话语义下 None 即未落盘（无需处理）；
+        // 有会话且为空（历史版本遗留/异常路径）则物理删除兜底。
+        if let Some(current) = self.session_id {
+            let _ = self.storage.archive_session_if_empty(current);
         }
         Ok(())
     }
@@ -1393,19 +1412,15 @@ impl App {
         }
     }
 
-    /// 切换到指定会话：离开当前会话前，若其为空（无消息、无上下文）
-    /// 则自动归档——空会话不该留在 resume 列表里，用户也回不去它。
-    /// 随后加载目标会话的消息并重置视图状态。
+    /// 切换到指定会话（/resume 确认时）：离开的会话必非空（/new
+    /// 语义下空会话不落盘），直接软归档；随后加载目标会话并重置
+    /// 视图状态。
     fn switch_session(&mut self, session_id: i64) -> Result<(), String> {
         if let Some(current) = self.session_id
             && current != session_id
-            && self
-                .storage
-                .session_is_empty(current)
-                .map_err(|error| error.to_string())?
         {
             self.storage
-                .archive_session(current)
+                .archive_session_if_empty(current)
                 .map_err(|error| error.to_string())?;
         }
         self.storage
@@ -1519,7 +1534,16 @@ impl App {
         if value.is_empty() {
             return;
         }
-        let _ = self.storage.record_input(self.session_id, &value);
+        // 输入历史随首条输入一起按需建会话：提交任何实质输入
+        // （含命令）即视为会话开始。
+        let session = match self.current_session() {
+            Ok(id) => Some(id),
+            Err(error) => {
+                self.flash_status(format!("failed to open conversation: {error}"));
+                return;
+            }
+        };
+        let _ = self.storage.record_input(session, &value);
         self.input.remember(value.clone());
 
         match value.as_str() {
@@ -1535,33 +1559,24 @@ impl App {
                     "/model · /new · /clear · /resume · /quit · ↑/↓ input history · PgUp/PgDn chat"
                         .into();
             }
-            "/resume" => {
-                // 列表排除空会话：无消息的会话没有可恢复的内容，
-                // 打开选择器前直接归档当前空会话。
-                if let Some(current) = self.session_id
-                    && matches!(self.storage.session_is_empty(current), Ok(true))
-                {
-                    let _ = self.storage.archive_session(current);
+            "/resume" => match self.storage.list_sessions(&self.project) {
+                Ok(sessions) => {
+                    let current = self.session_id.unwrap_or(-1);
+                    self.session_picker = Some(SessionPicker::new(sessions, current));
                 }
-                match self.storage.list_sessions(&self.project) {
-                    Ok(sessions) => {
-                        let current = self.session_id.unwrap_or(-1);
-                        self.session_picker = Some(SessionPicker::new(sessions, current));
-                    }
-                    Err(error) => {
-                        self.flash_status(format!("failed to list conversations: {error}"))
-                    }
-                }
-            }
-            "/new" | "/clear" => match self.storage.create_session(&self.project) {
-                Ok(session_id) => match self.switch_session(session_id) {
-                    Ok(()) => self.flash_status("new conversation"),
-                    Err(error) => {
-                        self.flash_status(format!("failed to create conversation: {error}"))
-                    }
-                },
-                Err(error) => self.flash_status(format!("failed to create conversation: {error}")),
+                Err(error) => self.flash_status(format!("failed to list conversations: {error}")),
             },
+            "/new" | "/clear" => {
+                // 纯内存切换：session_id 置 None，首条内容写入时才
+                // 落盘建会话（/new 十次不产生任何库行）。
+                self.session_id = None;
+                self.messages.clear();
+                self.markdown_cache.clear();
+                self.conversation_scroll_from_bottom = 0;
+                self.assistant_message_index = None;
+                self.input = InputBuffer::new(Vec::new());
+                self.flash_status("new conversation");
+            }
             "/quit" | "/exit" => self.should_quit = true,
             command if command.starts_with('/') => {
                 self.flash_status(format!("unknown command: {command}"));

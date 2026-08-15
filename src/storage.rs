@@ -214,8 +214,6 @@ impl Storage {
              );
              CREATE INDEX IF NOT EXISTS input_history_project_id
                  ON input_history(project_root, id DESC);
-             CREATE INDEX IF NOT EXISTS input_history_session_id
-                 ON input_history(session_id, id DESC);
              CREATE TABLE IF NOT EXISTS model_profiles (
                  name TEXT PRIMARY KEY,
                  config_json TEXT NOT NULL,
@@ -228,6 +226,22 @@ impl Storage {
                  trusted_at INTEGER NOT NULL
              );",
         )?;
+        // input_history 的 session_id 列随"会话级输入历史"引入，但
+        // 没有伴随存储版本号提升——存量 v3 库没有这一列。索引引用
+        // 缺失列会让上面的建表批处理直接失败，因此：列补齐与索引
+        // 创建放在批处理之后、按列存在性幂等执行，与版本号无关。
+        if !self.has_column("input_history", "session_id")? {
+            self.connection.execute(
+                "ALTER TABLE input_history
+                 ADD COLUMN session_id INTEGER REFERENCES sessions(id) ON DELETE CASCADE",
+                [],
+            )?;
+        }
+        self.connection.execute(
+            "CREATE INDEX IF NOT EXISTS input_history_session_id
+             ON input_history(session_id, id DESC)",
+            [],
+        )?;
         Ok(())
     }
 
@@ -235,18 +249,13 @@ impl Storage {
     /// active_profile 列。列已存在时跳过（幂等），model_profiles 表由
     /// initialize 的 CREATE IF NOT EXISTS 覆盖。
     ///
-    /// v2 → v3 在同一路径内完成：input_history 补 session_id 列
-    /// （可空，见建表注释）。旧库的历史行保持 NULL，不归属任何会话。
+    /// v2 → v3 在同一路径内完成：input_history 的 session_id 列由
+    /// initialize 幂等补齐（见其尾部），不依赖版本号判断。
     fn migrate_v1_to_v2(&self) -> Result<(), StorageError> {
         for (table, column, definition) in [
             ("sessions", "title", "TEXT NOT NULL DEFAULT ''"),
             ("sessions", "archived", "INTEGER NOT NULL DEFAULT 0"),
             ("model_state", "active_profile", "TEXT"),
-            (
-                "input_history",
-                "session_id",
-                "INTEGER REFERENCES sessions(id) ON DELETE CASCADE",
-            ),
         ] {
             if !self.has_column(table, column)? {
                 self.connection.execute(
@@ -369,14 +378,33 @@ impl Storage {
         self.create_session(project)
     }
 
-    /// 列出某项目的全部会话（含已归档），按最近更新在前，供
-    /// `/resume` 类选择界面使用。
+    /// 返回项目当前默认会话；没有任何可恢复会话时返回 None
+    /// （`/new` 后的按需创建语义：不落盘，直到首条内容写入）。
+    pub fn current_session(&self, project: &Project) -> Result<Option<i64>, StorageError> {
+        let root = project_key(project.root());
+        let existing = self
+            .connection
+            .query_row(
+                "SELECT id FROM sessions
+                 WHERE project_root = ?1 AND archived = 0
+                 ORDER BY updated_at DESC LIMIT 1",
+                params![root],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?;
+        Ok(existing)
+    }
+
+    /// 列出某项目**未归档**的会话，按最近更新在前，供 `/resume`
+    /// 选择界面使用。已归档会话对 /resume 不可见——归档即"从
+    /// 可恢复列表移除"，且空会话离开时会被物理删除（见
+    /// `archive_session_if_empty`）。
     pub fn list_sessions(&self, project: &Project) -> Result<Vec<SessionSummary>, StorageError> {
         let mut statement = self.connection.prepare(
             "SELECT s.id, s.title, s.created_at, s.updated_at, s.archived,
                     (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id)
              FROM sessions s
-             WHERE s.project_root = ?1
+             WHERE s.project_root = ?1 AND s.archived = 0
              ORDER BY s.updated_at DESC, s.id DESC",
         )?;
         let rows = statement.query_map(params![project_key(project.root())], |row| {
@@ -426,8 +454,7 @@ impl Storage {
     }
 
     /// 会话是否有任何持久化消息或上下文条目。`/new`、`/resume`
-    /// 切换离开时，空会话自动归档——用户没有留下任何内容的会话
-    /// 不应出现在 resume 列表里（也无法回到它）。
+    /// 切换离开时，空会话不保留——见 [`archive_session_if_empty`]。
     pub fn session_is_empty(&self, session_id: i64) -> Result<bool, StorageError> {
         let message_count: i64 = self.connection.query_row(
             "SELECT COUNT(*) FROM messages WHERE session_id = ?1",
@@ -443,6 +470,26 @@ impl Storage {
             |row| row.get(0),
         )?;
         Ok(item_count == 0)
+    }
+
+    /// 离开会话时的保留策略：**空会话物理删除**（用户没留任何
+    /// 内容，连行都不该占——`/new` 十次不会攒出十个空会话）；
+    /// 非空会话软归档（数据保留，`/resume` 列表不显示，历史数据
+    /// 仍可查询）。返回 true 表示会话已被移除/归档。
+    pub fn archive_session_if_empty(&self, session_id: i64) -> Result<bool, StorageError> {
+        if self.session_is_empty(session_id)? {
+            self.connection
+                .execute("DELETE FROM sessions WHERE id = ?1", params![session_id])?;
+            // input_history 对 sessions 的外键是 ON DELETE CASCADE；
+            // 但 NULL 归属的历史行与无外键行仍需显式清理。
+            self.connection.execute(
+                "DELETE FROM input_history WHERE session_id = ?1",
+                params![session_id],
+            )?;
+            return Ok(true);
+        }
+        self.archive_session(session_id)?;
+        Ok(false)
     }
 
     pub fn create_session(&self, project: &Project) -> Result<i64, StorageError> {
@@ -875,6 +922,83 @@ mod tests {
         root
     }
 
+    /// 构造"会话级输入历史"引入前的 v3 形态库：完整 v3 schema 但
+    /// input_history 没有 session_id 列（v0.3.1 及更早的实机形态，
+    /// 当时索引误建于建表批处理内，打开即报 no such column）。
+    fn legacy_v3_no_session_history_root(name: &str) -> PathBuf {
+        let root = temp_root(name);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("config.json"),
+            serde_json::to_string_pretty(&BootstrapConfig {
+                version: 3,
+                database: "clat.db".into(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let connection = Connection::open(root.join("clat.db")).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE sessions (
+                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                     project_root TEXT NOT NULL,
+                     title TEXT NOT NULL DEFAULT '',
+                     archived INTEGER NOT NULL DEFAULT 0,
+                     created_at INTEGER NOT NULL,
+                     updated_at INTEGER NOT NULL
+                 );
+                 CREATE TABLE input_history (
+                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                     project_root TEXT NOT NULL,
+                     content TEXT NOT NULL,
+                     created_at INTEGER NOT NULL
+                 );
+                 INSERT INTO input_history(project_root, content, created_at)
+                 VALUES('legacy', '旧输入', 1);",
+            )
+            .unwrap();
+        root
+    }
+
+    /// v0.3.2 回归：无 session_id 列的存量 v3 库（config 版本已等于
+    /// 当前版本，版本驱动的迁移路径不会触发）必须能正常打开——
+    /// initialize 按列存在性幂等补列并建索引，与版本号无关。
+    #[test]
+    fn legacy_v3_databases_gain_the_session_history_column_on_open() {
+        let root = legacy_v3_no_session_history_root("v3-session-column");
+        // 回归现场：修复前这一步直接报 no such column: session_id。
+        let storage = Storage::open(root.clone()).expect("legacy v3 storage opens in place");
+
+        // 列与索引都已补齐，旧输入行保留且不归属任何会话。
+        assert!(storage.has_column("input_history", "session_id").unwrap());
+        let index_count: i64 = storage
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index'
+                 AND name='input_history_session_id'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(index_count, 1);
+        let legacy_rows: i64 = storage
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM input_history WHERE content='旧输入' AND session_id IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(legacy_rows, 1);
+
+        // 再次打开仍幂等（不重复 ALTER/报错）。
+        drop(storage);
+        let storage = Storage::open(root.clone()).expect("reopen is idempotent");
+        drop(storage);
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn migrates_v1_databases_without_losing_data() {
         let root = legacy_v1_root("migrate");
@@ -962,14 +1086,15 @@ mod tests {
             "修复登录超时 bug"
         );
 
-        // 归档后 load_or_create 不再选中，而是开新会话。
+        // 归档后 load_or_create 不再选中，而是开新会话；/resume 列表
+        // 只显示未归档会话（归档对恢复界面不可见）。
         storage.archive_session(first).unwrap();
         let second = storage.load_or_create_session(&project).unwrap();
         assert_ne!(first, second);
         let sessions = storage.list_sessions(&project).unwrap();
-        assert_eq!(sessions.len(), 2);
-        assert!(sessions.iter().find(|s| s.id == first).unwrap().archived);
-        assert!(!sessions.iter().find(|s| s.id == second).unwrap().archived);
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, second);
+        assert!(!sessions[0].archived);
 
         // 显式标题可覆盖自动标题。
         storage.set_session_title(second, "手工命名").unwrap();
@@ -1006,12 +1131,86 @@ mod tests {
 
         // 归档 first 后恢复它：unarchive 使其重新成为默认会话。
         storage.archive_session(first).unwrap();
+        // 归档后 /resume 列表不可见。
+        assert!(
+            storage
+                .list_sessions(&project)
+                .unwrap()
+                .iter()
+                .all(|s| s.id != first)
+        );
         storage.unarchive_session(first).unwrap();
         assert_eq!(
             storage.load_or_create_session(&project).unwrap(),
             first,
             "unarchived session must become the default candidate again"
         );
+
+        drop(storage);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// 离开会话的保留策略：空会话物理删除（连 input_history 一起
+    /// 清掉），非空会话软归档。模拟"/new 十次"——一个空会话都不剩。
+    #[test]
+    fn leaving_empty_sessions_deletes_them_instead_of_hoarding() {
+        let root = temp_root("empty-sessions");
+        let storage = Storage::open(root.clone()).expect("storage");
+        let project_root = root.join("project");
+        fs::create_dir_all(&project_root).unwrap();
+        let project = Project::new(&project_root);
+
+        let keep = storage.load_or_create_session(&project).unwrap();
+        storage
+            .append_message(keep, "user", "有内容的会话")
+            .unwrap();
+
+        // 连开十个空会话并逐个离开：全部物理删除。
+        let mut drained = Vec::new();
+        for _ in 0..10 {
+            let empty = storage.create_session(&project).unwrap();
+            storage
+                .record_input(Some(empty), "还没说话的草稿输入")
+                .unwrap();
+            assert!(storage.archive_session_if_empty(empty).unwrap());
+            drained.push(empty);
+        }
+        // 列表只剩有内容的会话；被删会话的输入历史也一并清掉。
+        let sessions = storage.list_sessions(&project).unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, keep);
+        for empty in drained {
+            let rows: i64 = storage
+                .connection
+                .query_row(
+                    "SELECT COUNT(*) FROM sessions WHERE id = ?1",
+                    params![empty],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(rows, 0, "session {empty} must be physically deleted");
+            let history: i64 = storage
+                .connection
+                .query_row(
+                    "SELECT COUNT(*) FROM input_history WHERE session_id = ?1",
+                    params![empty],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(history, 0, "orphan input history must be removed");
+        }
+
+        // 非空会话离开：软归档，数据保留。
+        assert!(!storage.archive_session_if_empty(keep).unwrap());
+        let rows: i64 = storage
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM sessions WHERE id = ?1",
+                params![keep],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(rows, 1);
 
         drop(storage);
         fs::remove_dir_all(root).unwrap();

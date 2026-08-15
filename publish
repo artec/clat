@@ -11,19 +11,25 @@ KEY="$REPO_ROOT/.release-secrets/clat-minisign.key"
 PUBLIC_KEY="$REPO_ROOT/release/minisign.pub"
 
 fail() { printf 'clat release: %s\n' "$*" >&2; exit 1; }
+gh_cli() { env -u GH_TOKEN -u GITHUB_TOKEN gh "$@"; }
 
 command -v gh >/dev/null 2>&1 || fail "GitHub CLI (gh) is required"
 command -v minisign >/dev/null 2>&1 || fail "minisign is required"
 [ -f "$WORKFLOW" ] || fail "release workflow not found: $WORKFLOW"
 [ -f "$KEY" ] || fail "release key not found: $KEY"
+if ! gh_cli auth status >/dev/null 2>&1; then
+  printf 'clat release: opening GitHub browser login; the device code has been copied to the clipboard\n'
+  gh_cli auth login --web --clipboard --git-protocol https
+fi
+gh_cli auth status >/dev/null 2>&1 || fail "GitHub CLI login did not complete"
 
-TAG=$(gh release list --repo "$REPO" --limit 100 \
+TAG=$(gh_cli release list --repo "$REPO" --limit 100 \
   --json tagName,isDraft \
   --jq '.[] | select(.isDraft) | .tagName' | head -n 1)
 [ -n "$TAG" ] || fail "GitHub has no draft release waiting to be published"
 [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "unsafe or invalid release tag: $TAG"
 
-draft=$(gh release view "$TAG" --repo "$REPO" --json isDraft --jq .isDraft)
+draft=$(gh_cli release view "$TAG" --repo "$REPO" --json isDraft --jq .isDraft)
 [ "$draft" = "true" ] || fail "release $TAG must exist and still be a draft"
 
 work_dir=$(mktemp -d)
@@ -45,7 +51,7 @@ done < <(sed -nE \
 [ "${#targets[@]}" -gt 0 ] || fail "release workflow has no target matrix"
 
 asset_names="$work_dir/release-assets.txt"
-gh release view "$TAG" --repo "$REPO" --json assets \
+gh_cli release view "$TAG" --repo "$REPO" --json assets \
   --jq '.assets[].name' > "$asset_names"
 
 manifests=()
@@ -63,7 +69,7 @@ for target in "${targets[@]}"; do
 done
 
 for manifest in "${manifests[@]}"; do
-  gh release download "$TAG" --repo "$REPO" \
+  gh_cli release download "$TAG" --repo "$REPO" \
     --pattern "$manifest" --dir "$work_dir"
 done
 
@@ -79,6 +85,6 @@ for manifest in "${manifests[@]}"; do
   count=$((count + 1))
 done
 
-gh release upload "$TAG" --repo "$REPO" "$work_dir"/*.minisig --clobber
-gh release edit "$TAG" --repo "$REPO" --draft=false
+gh_cli release upload "$TAG" --repo "$REPO" "$work_dir"/*.minisig --clobber
+gh_cli release edit "$TAG" --repo "$REPO" --draft=false
 printf 'clat release: published %s with %s signed manifests\n' "$TAG" "$count"

@@ -118,15 +118,11 @@ impl SessionPicker {
                 } else {
                     " "
                 };
-                let status = if session.archived { "archived" } else { "" };
                 lines.push(Line::from(vec![
                     Span::styled(format!("{number}  "), style),
                     Span::raw(format!("{marker} ")),
                     Span::styled(format!("{title:<32}"), style),
-                    Span::styled(
-                        format!("{} msgs · {}", session.message_count, status),
-                        style,
-                    ),
+                    Span::styled(format!("{} msgs", session.message_count), style),
                 ]));
             }
             lines.push(Line::from(""));

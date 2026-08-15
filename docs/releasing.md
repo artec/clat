@@ -31,7 +31,12 @@ remain offline from GitHub and CI. Before publishing a tag:
 4. Confirm that the draft workflow ran from the intended tag commit and review
    the build before signing. A signature authenticates what the maintainer
    approved; it cannot turn an unreviewed build into trusted code.
-5. From the maintainer machine, run `./publish`. It finds the draft release on
+5. From the maintainer machine, run `./publish`. If the GitHub CLI has no
+   credential in the local credential store, the script opens the browser
+   login automatically, copies GitHub's one-time device code to the clipboard,
+   and reuses that login on later runs. It deliberately ignores `GH_TOKEN` and
+   `GITHUB_TOKEN` only inside its own child processes; it never deletes or
+   changes those environment variables. The script finds the draft release on
    GitHub, derives the complete expected asset set from the target matrix in
    `.github/workflows/release.yml`, and stops if any archive or SHA-256
    manifest is still missing. It then downloads the manifests, signs and
