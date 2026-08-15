@@ -40,3 +40,39 @@ survives restarts; the database is not application-level encrypted yet.
 - The storage root and the database file must not be symbolic links;
   SQLite is opened with `SQLITE_OPEN_NOFOLLOW` so the final open itself
   refuses to follow a link.
+
+## Session lifecycle
+
+A conversation is in one of three states:
+
+```text
+absent      no database row (fresh `/new`, or never opened)
+live        row exists, zero chat content
+persistent  row exists, ≥1 chat item (message or message_items row)
+```
+
+Invariants (tests derive from these, not from the code):
+
+- **INV1 — content survives everything.** A persistent session is never
+  automatically deleted or archived. Exit, `/resume` away, restart: it
+  stays resumable. `archived = 1` is reserved for an explicit user
+  action (no automatic path may set it).
+- **INV2 — emptiness never persists.** "Empty" means **chat history**
+  is empty (no `messages`, no `message_items`). Input history is recall
+  convenience and never counts toward content. Leaving or exiting a
+  live session deletes the row (and its input history) physically.
+- **INV3 — lazy creation.** `/new` writes nothing. The row appears only
+  when the first model-bound input is submitted; command input
+  (`/help`, `/model`, …) never creates a session.
+- **INV4 — history is session-scoped.** Input history belongs to one
+  session and is deleted with it; sessions never see each other's
+  inputs.
+- **INV5 — reopening follows the last *opened* session.** Resuming a
+  session read-only counts as opening it (the resumed session is
+  touched and becomes the startup conversation, and sorts first in
+  `/resume`). Known boundary: "last opened" is derived from a
+  second-granularity timestamp — a resume in the same second as
+  another session's write loses to it, and an explicit `/new` followed
+  by exit restores the previously opened session rather than a fresh
+  start. The exact model would be a persisted per-project
+  last-opened pointer; adopt it only if this boundary ever bites.

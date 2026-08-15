@@ -875,10 +875,11 @@ impl App {
             self.expire_status();
             terminal.draw(|frame| self.draw(frame))?;
         }
-        // 退出时清场：按需建会话语义下 None 即未落盘（无需处理）；
-        // 有会话且为空（历史版本遗留/异常路径）则物理删除兜底。
+        // 退出时清场：只删空会话（历史遗留/异常路径兜底）。
+        // 非空会话**绝不归档**——否则 resume 过的会话下次启动
+        // "消失"（v0.3.3 前的实机事故）。
         if let Some(current) = self.session_id {
-            let _ = self.storage.archive_session_if_empty(current);
+            let _ = self.storage.delete_session_if_empty(current);
         }
         Ok(())
     }
@@ -1412,20 +1413,23 @@ impl App {
         }
     }
 
-    /// 切换到指定会话（/resume 确认时）：离开的会话必非空（/new
-    /// 语义下空会话不落盘），直接软归档；随后加载目标会话并重置
-    /// 视图状态。
+    /// 切换到指定会话（/resume 确认时）：离开的会话若为空（历史
+    /// 遗留行）物理删除，非空会话**原样保留**（仍可再次 resume）；
+    /// 随后加载目标会话并重置视图状态。
     fn switch_session(&mut self, session_id: i64) -> Result<(), String> {
         if let Some(current) = self.session_id
             && current != session_id
         {
             self.storage
-                .archive_session_if_empty(current)
+                .delete_session_if_empty(current)
                 .map_err(|error| error.to_string())?;
         }
+        // INV5：只读 resume 也算"打开"——触碰时间戳，让下次启动
+        // 回到这里而不是最后写入过的会话。
         self.storage
-            .unarchive_session(session_id)
+            .touch_session(session_id)
             .map_err(|error| error.to_string())?;
+        // /resume 列表只含未归档会话，无需 unarchive。
         self.messages = self
             .storage
             .load_messages(session_id)
@@ -1534,16 +1538,24 @@ impl App {
         if value.is_empty() {
             return;
         }
-        // 输入历史随首条输入一起按需建会话：提交任何实质输入
-        // （含命令）即视为会话开始。
-        let session = match self.current_session() {
-            Ok(id) => Some(id),
-            Err(error) => {
-                self.flash_status(format!("failed to open conversation: {error}"));
-                return;
+        // 输入历史归属会话，但**命令输入不建会话**：空会话语义以
+        // 聊天历史（messages/message_items）为准，`/help`、`/model`
+        // 这类 UI 操作不该在库里留下任何行。只有发往模型的实质
+        // 输入（start_run）才按需建会话。
+        let session_for_history = if value.starts_with('/') {
+            self.session_id
+        } else {
+            match self.current_session() {
+                Ok(id) => Some(id),
+                Err(error) => {
+                    self.flash_status(format!("failed to open conversation: {error}"));
+                    return;
+                }
             }
         };
-        let _ = self.storage.record_input(session, &value);
+        let _ = self.storage.record_input(session_for_history, &value);
+        // 命令也进内存历史：↑ 仍可召回；无会话时的命令（record_input
+        // 已静默丢弃）不落盘。
         self.input.remember(value.clone());
 
         match value.as_str() {

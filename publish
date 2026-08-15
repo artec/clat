@@ -73,18 +73,25 @@ for manifest in "${manifests[@]}"; do
     --pattern "$manifest" --dir "$work_dir"
 done
 
-count=0
+manifest_paths=()
 for manifest in "${manifests[@]}"; do
   manifest_path="$work_dir/$manifest"
   [ -f "$manifest_path" ] || fail "failed to download checksum $manifest"
-  minisign -Sm "$manifest_path" -s "$KEY" \
-    -x "$manifest_path.minisig" \
-    -t "CLAT $TAG release manifest: $manifest"
+  manifest_paths+=("$manifest_path")
+done
+
+# Minisign accepts multiple input files in one signing invocation, so the
+# encrypted private key is unlocked only once regardless of asset count.
+minisign -S -s "$KEY" \
+  -t "CLAT $TAG release checksum manifests" \
+  -m "${manifest_paths[@]}"
+
+for manifest_path in "${manifest_paths[@]}"; do
   minisign -Vm "$manifest_path" -x "$manifest_path.minisig" \
     -p "$PUBLIC_KEY" -q
-  count=$((count + 1))
 done
 
 gh_cli release upload "$TAG" --repo "$REPO" "$work_dir"/*.minisig --clobber
 gh_cli release edit "$TAG" --repo "$REPO" --draft=false
-printf 'clat release: published %s with %s signed manifests\n' "$TAG" "$count"
+printf 'clat release: published %s with %s signed manifests\n' \
+  "$TAG" "${#manifest_paths[@]}"

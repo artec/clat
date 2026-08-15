@@ -367,7 +367,7 @@ impl Storage {
             .query_row(
                 "SELECT id FROM sessions
                  WHERE project_root = ?1 AND archived = 0
-                 ORDER BY updated_at DESC LIMIT 1",
+                 ORDER BY updated_at DESC, id DESC LIMIT 1",
                 params![root],
                 |row| row.get::<_, i64>(0),
             )
@@ -385,9 +385,12 @@ impl Storage {
         let existing = self
             .connection
             .query_row(
+                // id DESC 决胜：updated_at 是秒级时间戳，同一秒内的
+                // 多个会话必须确定性地取最新（不变量矩阵测试首跑
+                // 抓到的真 bug——无决胜时 SQLite 返回顺序未定义）。
                 "SELECT id FROM sessions
                  WHERE project_root = ?1 AND archived = 0
-                 ORDER BY updated_at DESC LIMIT 1",
+                 ORDER BY updated_at DESC, id DESC LIMIT 1",
                 params![root],
                 |row| row.get::<_, i64>(0),
             )
@@ -396,9 +399,8 @@ impl Storage {
     }
 
     /// 列出某项目**未归档**的会话，按最近更新在前，供 `/resume`
-    /// 选择界面使用。已归档会话对 /resume 不可见——归档即"从
-    /// 可恢复列表移除"，且空会话离开时会被物理删除（见
-    /// `archive_session_if_empty`）。
+    /// 选择界面使用。已归档会话对 /resume 不可见；空会话在离开时
+    /// 被物理删除（见 [`delete_session_if_empty`]）。
     pub fn list_sessions(&self, project: &Project) -> Result<Vec<SessionSummary>, StorageError> {
         let mut statement = self.connection.prepare(
             "SELECT s.id, s.title, s.created_at, s.updated_at, s.archived,
@@ -433,8 +435,10 @@ impl Storage {
         Ok(())
     }
 
-    /// 归档会话（软删除）：数据保留，`load_or_create_session` 不再选中，
-    /// 下次启动将开启新会话。
+    /// 归档会话（软删除）：数据保留，`load_or_create_session` 与
+    /// `/resume` 列表都不再选中。仅供显式归档（尚无入口）；
+    /// **离开/退出会话绝不能调用**——非空会话离开后必须仍可 resume
+    /// （历史 bug：退出时归档当前会话导致 resume 过的会话"消失"）。
     pub fn archive_session(&self, session_id: i64) -> Result<(), StorageError> {
         self.connection.execute(
             "UPDATE sessions SET archived = 1 WHERE id = ?1",
@@ -443,18 +447,18 @@ impl Storage {
         Ok(())
     }
 
-    /// 恢复归档会话：`/resume` 选中已归档会话时自动取消归档，
-    /// 使其重新成为下次启动的默认会话候选。
-    pub fn unarchive_session(&self, session_id: i64) -> Result<(), StorageError> {
+    /// 触碰会话：只读 resume 也算"打开"。默认会话与 /resume 排序
+    /// 都跟随 updated_at，因此打开即触碰（INV5）。已知边界见
+    /// docs/storage.md "Session lifecycle"。
+    pub fn touch_session(&self, session_id: i64) -> Result<(), StorageError> {
         self.connection.execute(
-            "UPDATE sessions SET archived = 0 WHERE id = ?1",
-            params![session_id],
+            "UPDATE sessions SET updated_at = ?2 WHERE id = ?1",
+            params![session_id, now_unix()],
         )?;
         Ok(())
     }
 
-    /// 会话是否有任何持久化消息或上下文条目。`/new`、`/resume`
-    /// 切换离开时，空会话不保留——见 [`archive_session_if_empty`]。
+    /// 会话是否有任何持久化消息或上下文条目。
     pub fn session_is_empty(&self, session_id: i64) -> Result<bool, StorageError> {
         let message_count: i64 = self.connection.query_row(
             "SELECT COUNT(*) FROM messages WHERE session_id = ?1",
@@ -472,24 +476,22 @@ impl Storage {
         Ok(item_count == 0)
     }
 
-    /// 离开会话时的保留策略：**空会话物理删除**（用户没留任何
-    /// 内容，连行都不该占——`/new` 十次不会攒出十个空会话）；
-    /// 非空会话软归档（数据保留，`/resume` 列表不显示，历史数据
-    /// 仍可查询）。返回 true 表示会话已被移除/归档。
-    pub fn archive_session_if_empty(&self, session_id: i64) -> Result<bool, StorageError> {
-        if self.session_is_empty(session_id)? {
-            self.connection
-                .execute("DELETE FROM sessions WHERE id = ?1", params![session_id])?;
-            // input_history 对 sessions 的外键是 ON DELETE CASCADE；
-            // 但 NULL 归属的历史行与无外键行仍需显式清理。
-            self.connection.execute(
-                "DELETE FROM input_history WHERE session_id = ?1",
-                params![session_id],
-            )?;
-            return Ok(true);
+    /// 离开/退出会话时的**唯一**清理动作：空会话物理删除（连同
+    /// 输入历史），非空会话**原样保留**——必须仍出现在 `/resume`
+    /// 列表并可再次进入。返回 true 表示已删除。
+    pub fn delete_session_if_empty(&self, session_id: i64) -> Result<bool, StorageError> {
+        if !self.session_is_empty(session_id)? {
+            return Ok(false);
         }
-        self.archive_session(session_id)?;
-        Ok(false)
+        self.connection
+            .execute("DELETE FROM sessions WHERE id = ?1", params![session_id])?;
+        // messages/message_items 靠外键级联；input_history 的 NULL
+        // 归属行与无外键行需显式清理。
+        self.connection.execute(
+            "DELETE FROM input_history WHERE session_id = ?1",
+            params![session_id],
+        )?;
+        Ok(true)
     }
 
     pub fn create_session(&self, project: &Project) -> Result<i64, StorageError> {
@@ -1129,29 +1131,47 @@ mod tests {
         let summary = sessions.iter().find(|s| s.id == first).unwrap();
         assert_eq!(summary.message_count, 1);
 
-        // 归档 first 后恢复它：unarchive 使其重新成为默认会话。
-        storage.archive_session(first).unwrap();
-        // 归档后 /resume 列表不可见。
-        assert!(
-            storage
-                .list_sessions(&project)
-                .unwrap()
-                .iter()
-                .all(|s| s.id != first)
-        );
-        storage.unarchive_session(first).unwrap();
-        assert_eq!(
-            storage.load_or_create_session(&project).unwrap(),
-            first,
-            "unarchived session must become the default candidate again"
-        );
+        drop(storage);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// 用户事故回归（v0.3.3 前）：resume 到一个有历史的会话 → 不输入
+    /// 直接退出 → 退出清理绝不能归档它——会话必须仍在列表且仍是
+    /// 下次启动的默认会话。
+    #[test]
+    fn resumed_sessions_survive_exit_without_new_input() {
+        let root = temp_root("resume-exit");
+        let storage = Storage::open(root.clone()).expect("storage");
+        let project_root = root.join("project");
+        fs::create_dir_all(&project_root).unwrap();
+        let project = Project::new(&project_root);
+
+        let a = storage.create_session(&project).unwrap();
+        storage.append_message(a, "user", "会话 A 的历史").unwrap();
+        let b = storage.create_session(&project).unwrap();
+        storage.append_message(b, "user", "会话 B 的历史").unwrap();
+
+        // 模拟 TUI 生命周期：resume 到 a（离开 b），然后退出。
+        // 退出清理对当前会话 a 只做空删除检查——非空即原样保留。
+        assert!(!storage.delete_session_if_empty(b).unwrap());
+        assert!(!storage.delete_session_if_empty(a).unwrap());
+
+        // 两个会话都仍可 resume（本测试的全部意图——存活）。
+        let sessions = storage.list_sessions(&project).unwrap();
+        assert_eq!(sessions.len(), 2);
+        assert!(sessions.iter().any(|s| s.id == a));
+        assert!(sessions.iter().any(|s| s.id == b));
+        // 默认会话语义见 INV5：跟随最后**打开**的会话。本测试未执行
+        // resume 触碰（那是矩阵测试 INV5 块的职责），b 是最后写入者
+        // 故为默认。曾在此断言 Some(a)——那是未决胜排序下的偶然结果。
+        assert_eq!(storage.current_session(&project).unwrap(), Some(b));
 
         drop(storage);
         fs::remove_dir_all(root).unwrap();
     }
 
     /// 离开会话的保留策略：空会话物理删除（连 input_history 一起
-    /// 清掉），非空会话软归档。模拟"/new 十次"——一个空会话都不剩。
+    /// 清掉），非空会话原样保留。模拟"/new 十次"——一个空会话都不剩。
     #[test]
     fn leaving_empty_sessions_deletes_them_instead_of_hoarding() {
         let root = temp_root("empty-sessions");
@@ -1172,7 +1192,7 @@ mod tests {
             storage
                 .record_input(Some(empty), "还没说话的草稿输入")
                 .unwrap();
-            assert!(storage.archive_session_if_empty(empty).unwrap());
+            assert!(storage.delete_session_if_empty(empty).unwrap());
             drained.push(empty);
         }
         // 列表只剩有内容的会话；被删会话的输入历史也一并清掉。
@@ -1200,8 +1220,8 @@ mod tests {
             assert_eq!(history, 0, "orphan input history must be removed");
         }
 
-        // 非空会话离开：软归档，数据保留。
-        assert!(!storage.archive_session_if_empty(keep).unwrap());
+        // 非空会话离开：原样保留，仍在列表。
+        assert!(!storage.delete_session_if_empty(keep).unwrap());
         let rows: i64 = storage
             .connection
             .query_row(
@@ -1211,6 +1231,156 @@ mod tests {
             )
             .unwrap();
         assert_eq!(rows, 1);
+
+        drop(storage);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// 会话生命周期不变量矩阵（见 docs/storage.md "Session lifecycle"）。
+    /// 断言从 INV1–INV5 推导，**不是**从实现誊写；每处标注它本可
+    /// 拦下的历史事故。
+    #[test]
+    fn session_lifecycle_invariant_matrix() {
+        let root = temp_root("lifecycle-matrix");
+        let storage = Storage::open(root.clone()).expect("storage");
+        let project_root = root.join("project");
+        fs::create_dir_all(&project_root).unwrap();
+        let project = Project::new(&project_root);
+
+        // —— INV2：空会话在任何离开路径后物理消失 ——
+        // （事故：/new ×10 攒出十个空会话。）
+        for leave in ["exit", "switch-away"] {
+            let live = storage.create_session(&project).unwrap();
+            storage
+                .record_input(Some(live), "只有输入历史的草稿")
+                .unwrap();
+            assert!(
+                storage.delete_session_if_empty(live).unwrap(),
+                "{leave}: empty session must be deleted"
+            );
+            assert_eq!(
+                storage.list_sessions(&project).unwrap().len(),
+                0,
+                "{leave}: empty session must leave no residue"
+            );
+        }
+
+        // —— INV2 定义边界：输入历史不算聊天内容 ——
+        // （事故：曾按"提交任何输入即建会话"理解，命令也会落库。）
+        let input_only = storage.create_session(&project).unwrap();
+        storage
+            .record_input(Some(input_only), "输入历史不应让会话非空")
+            .unwrap();
+        assert!(
+            storage.session_is_empty(input_only).unwrap(),
+            "input history alone must never count as chat content"
+        );
+        assert!(storage.delete_session_if_empty(input_only).unwrap());
+
+        // —— INV3：命令输入不建会话 ——
+        // record_input(None, cmd) 是 TUI 对无会话命令的调用形态。
+        storage.record_input(None, "/help").unwrap();
+        assert_eq!(
+            storage.list_sessions(&project).unwrap().len(),
+            0,
+            "command input must not create a session"
+        );
+
+        // —— INV1：有内容的会话在任何离开路径后原样保留 ——
+        // （事故：resume 后直接 exit，会话被退出清理归档而"消失"。）
+        let keep_ids: Vec<i64> = ["exit", "switch-away"]
+            .iter()
+            .map(|leave| {
+                let id = storage.create_session(&project).unwrap();
+                storage
+                    .append_item(id, &ModelItem::user_text("用户消息"))
+                    .unwrap();
+                assert!(
+                    !storage.delete_session_if_empty(id).unwrap(),
+                    "{leave}: session with chat content must never be deleted"
+                );
+                id
+            })
+            .collect();
+        let listed = storage.list_sessions(&project).unwrap();
+        assert_eq!(
+            listed.len(),
+            keep_ids.len(),
+            "all persistent sessions resumable"
+        );
+        for id in &keep_ids {
+            assert!(
+                listed.iter().any(|s| s.id == *id),
+                "session {id} must remain in /resume list"
+            );
+            let archived: i64 = storage
+                .connection
+                .query_row(
+                    "SELECT archived FROM sessions WHERE id = ?1",
+                    params![id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(archived, 0, "no automatic path may archive a session");
+        }
+
+        // —— INV1 跨进程：重启后最近的有内容会话仍是默认会话 ——
+        // （事故：被归档的会话重启后从 current_session 消失。）
+        drop(storage);
+        let storage = Storage::open(root.clone()).expect("reopen");
+        let latest = storage
+            .current_session(&project)
+            .expect("query default session");
+        assert_eq!(
+            latest,
+            keep_ids.last().copied(),
+            "restart must resume the latest persistent session"
+        );
+
+        // —— INV5：只读 resume 也成为下次启动的默认会话 ——
+        // （本轮用户报告：resume 旧会话不说话直接退出，重启没回到
+        // 该会话。根因：默认会话从 updated_at 推导，查看不触碰，
+        // "最后打开"被混同于"最后写入"。）
+        let old = storage.create_session(&project).unwrap();
+        storage
+            .append_item(old, &ModelItem::user_text("旧会话"))
+            .unwrap();
+        let recent = storage.create_session(&project).unwrap();
+        storage
+            .append_item(recent, &ModelItem::user_text("新会话"))
+            .unwrap();
+        // updated_at 是秒级时间戳，而测试在同一秒内跑完：把 old/recent
+        // 分别拨回 1/2（模拟二者先后写入于过去），触碰把 old 拉回
+        // "现在"后严格领先——触碰成为翻转排序的唯一因素，删掉
+        // touch 调用本断言必红，杜绝空转断言。
+        storage
+            .connection
+            .execute(
+                "UPDATE sessions SET updated_at = 1 WHERE id = ?1",
+                params![old],
+            )
+            .unwrap();
+        storage
+            .connection
+            .execute(
+                "UPDATE sessions SET updated_at = 2 WHERE id = ?1",
+                params![recent],
+            )
+            .unwrap();
+        assert_ne!(
+            storage.current_session(&project).unwrap(),
+            Some(old),
+            "pre-resume: aged session must not be the default"
+        );
+        // TUI switch_session 进入 old 时触碰（见 touch_session）。
+        storage.touch_session(old).unwrap();
+        assert_eq!(
+            storage.current_session(&project).unwrap(),
+            Some(old),
+            "read-only resume must become the startup session (INV5)"
+        );
+        let listed = storage.list_sessions(&project).unwrap();
+        assert_eq!(listed[0].id, old, "resumed session sorts first in /resume");
 
         drop(storage);
         fs::remove_dir_all(root).unwrap();

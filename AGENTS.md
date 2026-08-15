@@ -67,3 +67,28 @@ Known current debt (accepted, tracked here): the DeepSeek/GLM balance
 monitor lives in `tui.rs` and must move to core before a second
 frontend exists; `UiEvent` in `tui_worker.rs` mixes UI concerns with
 worker plumbing and will need re-scoping then.
+
+## State discipline (invariants before code, tests from invariants)
+
+Every bug shipped in the v0.3.x session-lifecycle work shared one root:
+code written against a freshly imagined scenario instead of the state
+space, verified by tests transcribed from the implementation. These
+rules exist to break that pattern.
+
+- Before changing persistent state (schema, lifecycle, files), write
+  down the invariants that must hold and audit **every reader and every
+  writer** of that state. An unspoken invariant will be violated by the
+  next cleanup. (The vanishing-session bug was exactly an unspoken
+  invariant: *automatic code may never archive or delete a session that
+  has chat content*.)
+- Behavior tests are derived from invariants or written specs — never
+  from reading the implementation. A test that asserts what the code
+  just did is transcription, not verification; it cannot fail when the
+  design is wrong because it shares the author's mental model with the
+  bug.
+- Every bug fix ships with a test that **fails on the pre-fix code**.
+  If such a test cannot be written, the bug is not understood yet.
+- Stateful features are verified by walking real user operation
+  sequences through the code path by path (resume → exit → reopen),
+  not only by the test suite. fmt / clippy / cargo test green is
+  hygiene, not evidence of correctness.

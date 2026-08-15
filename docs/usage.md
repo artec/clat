@@ -40,8 +40,9 @@ instead of cancelling the run.
   dropped automatically when you leave it)
 - `/clear` — alias for `/new`
 - `/resume` — pick a previous conversation of this project and continue
-  it; the list shows title, message count, and archived state, with the
-  current conversation marked
+  it; the list shows title and message count, with the current
+  conversation marked. Entering a conversation (even read-only) makes
+  it the startup conversation for the next launch
 - `/help` — show commands
 - `/quit` or `/exit` — leave CLAT
 
