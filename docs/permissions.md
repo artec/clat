@@ -9,7 +9,7 @@ Each tool declares a `ToolEffect`:
 | Effect | SafeByDefault decision |
 |---|---|
 | `Pure`, `Read` | allow automatically |
-| `Write`, `Execute`, `Network` | require approval |
+| `Write`, `Execute`, `Network`, `ExternalRead`, `Destructive` | require approval |
 
 ## Interactive approval
 
@@ -63,6 +63,8 @@ fails the run — there is nobody to answer it.
 
 ## MCP tools
 
-Remote MCP tools cannot be statically classified, so they are always
-treated as `Execute` — every call asks, with the full argument review
-described above.
+Remote MCP tool annotations are used only to improve the permission
+description (`ExternalRead`, `Network`, `Write`, or `Destructive`). They
+are untrusted server hints and never produce the auto-allowed native
+`Read` classification. Every MCP call therefore asks, with the full
+argument review described above.

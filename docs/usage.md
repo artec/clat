@@ -36,8 +36,12 @@ instead of cancelling the run.
 ## Commands
 
 - `/model` — configure the active model/provider
-- `/new` — start a new persisted conversation
+- `/new` — start a new persisted conversation (an empty conversation is
+  dropped automatically when you leave it)
 - `/clear` — alias for `/new`
+- `/resume` — pick a previous conversation of this project and continue
+  it; the list shows title, message count, and archived state, with the
+  current conversation marked
 - `/help` — show commands
 - `/quit` or `/exit` — leave CLAT
 
@@ -80,7 +84,8 @@ prompt is a security boundary, not a decoration.
 ## MCP tools
 
 Tools exposed by configured MCP servers (`~/.clat/mcp.json`) appear with
-an `mcp_{server}_{tool}` name and are always classified as
-side-effecting: every call opens a permission dialog. MCP servers are
-global: their subprocesses run with `~/.clat` as the working directory,
-never inside the project.
+an `mcp_{server}_{tool}` name. Their untrusted annotations refine the
+permission label, but every call still opens a permission dialog. MCP
+servers are global: their subprocesses run with `~/.clat` as the working
+directory, never inside the project. Pressing `Esc` during a call also
+propagates cancellation to the MCP request.

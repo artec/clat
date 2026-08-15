@@ -14,6 +14,7 @@
 # Environment and secrets
 .env
 .env.*
+/.release-secrets/
 
 # Logs and local scratch
 *.log

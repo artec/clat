@@ -1,3 +1,4 @@
+use crate::CancelToken;
 use crate::project::Project;
 use crate::tool::{Tool, ToolDefinition, ToolEffect, ToolError, ToolRegistry};
 use serde_json::{Value, json};
@@ -57,7 +58,12 @@ impl Tool for ListFilesTool {
         }
     }
 
-    fn invoke(&self, arguments: &Value, project: &Project) -> Result<Value, ToolError> {
+    fn invoke(
+        &self,
+        arguments: &Value,
+        project: &Project,
+        cancel: &CancelToken,
+    ) -> Result<Value, ToolError> {
         let requested = string_arg(arguments, "path").unwrap_or(".");
         let max_depth = usize_arg(arguments, "max_depth")
             .unwrap_or(DEFAULT_LIST_DEPTH)
@@ -81,10 +87,13 @@ impl Tool for ListFilesTool {
             project,
             &root,
             0,
-            max_depth,
-            max_entries,
+            WalkLimits {
+                depth: max_depth,
+                entries: max_entries,
+            },
             &mut entries,
             &mut truncated,
+            cancel,
         )?;
 
         Ok(json!({
@@ -135,7 +144,12 @@ impl Tool for ReadFileTool {
         }
     }
 
-    fn invoke(&self, arguments: &Value, project: &Project) -> Result<Value, ToolError> {
+    fn invoke(
+        &self,
+        arguments: &Value,
+        project: &Project,
+        cancel: &CancelToken,
+    ) -> Result<Value, ToolError> {
         let requested = required_string_arg(arguments, "path", "read_file")?;
         let start_line = usize_arg(arguments, "start_line").unwrap_or(1).max(1);
         let end_line = usize_arg(arguments, "end_line");
@@ -164,6 +178,7 @@ impl Tool for ReadFileTool {
         let mut truncated = false;
 
         for (index, line) in BufReader::new(file).lines().enumerate() {
+            check_cancelled(cancel)?;
             let line_number = index + 1;
             if line_number < start_line {
                 continue;
@@ -230,7 +245,12 @@ impl Tool for SearchTool {
         }
     }
 
-    fn invoke(&self, arguments: &Value, project: &Project) -> Result<Value, ToolError> {
+    fn invoke(
+        &self,
+        arguments: &Value,
+        project: &Project,
+        cancel: &CancelToken,
+    ) -> Result<Value, ToolError> {
         let query = required_string_arg(arguments, "query", "search")?;
         if query.is_empty() {
             return Err(ToolError::new("search: `query` cannot be empty"));
@@ -248,13 +268,14 @@ impl Tool for SearchTool {
             .map_err(|error| tool_io_error("search", requested, error))?;
 
         let mut files = Vec::new();
-        collect_search_files(&root, &mut files, DEFAULT_SEARCH_FILES)?;
+        collect_search_files(&root, &mut files, DEFAULT_SEARCH_FILES, cancel)?;
         let mut matches = Vec::new();
         let mut files_searched = 0usize;
         let mut truncated = false;
         let normalized_query = (!case_sensitive).then(|| query.to_lowercase());
 
         for path in files {
+            check_cancelled(cancel)?;
             if matches.len() >= max_results {
                 truncated = true;
                 break;
@@ -311,23 +332,30 @@ impl Tool for SearchTool {
     }
 }
 
+#[derive(Clone, Copy)]
+struct WalkLimits {
+    depth: usize,
+    entries: usize,
+}
+
 fn walk_directory(
     project: &Project,
     directory: &Path,
     depth: usize,
-    max_depth: usize,
-    max_entries: usize,
+    limits: WalkLimits,
     output: &mut Vec<Value>,
     truncated: &mut bool,
+    cancel: &CancelToken,
 ) -> Result<(), ToolError> {
-    if depth > max_depth || output.len() >= max_entries {
-        *truncated = output.len() >= max_entries;
+    check_cancelled(cancel)?;
+    if depth > limits.depth || output.len() >= limits.entries {
+        *truncated = output.len() >= limits.entries;
         return Ok(());
     }
 
     let mut entries = sorted_entries(directory)?;
     for entry in entries.drain(..) {
-        if output.len() >= max_entries {
+        if output.len() >= limits.entries {
             *truncated = true;
             return Ok(());
         }
@@ -355,16 +383,8 @@ fn walk_directory(
             "kind": kind
         }));
 
-        if file_type.is_dir() && depth < max_depth {
-            walk_directory(
-                project,
-                &path,
-                depth + 1,
-                max_depth,
-                max_entries,
-                output,
-                truncated,
-            )?;
+        if file_type.is_dir() && depth < limits.depth {
+            walk_directory(project, &path, depth + 1, limits, output, truncated, cancel)?;
         }
     }
 
@@ -375,7 +395,9 @@ fn collect_search_files(
     path: &Path,
     output: &mut Vec<PathBuf>,
     max_files: usize,
+    cancel: &CancelToken,
 ) -> Result<(), ToolError> {
+    check_cancelled(cancel)?;
     if output.len() >= max_files {
         return Ok(());
     }
@@ -399,12 +421,20 @@ fn collect_search_files(
             if is_ignored_directory(&name.to_string_lossy()) {
                 continue;
             }
-            collect_search_files(&entry.path(), output, max_files)?;
+            collect_search_files(&entry.path(), output, max_files, cancel)?;
         } else if file_type.is_file() {
             output.push(entry.path());
         }
     }
     Ok(())
+}
+
+fn check_cancelled(cancel: &CancelToken) -> Result<(), ToolError> {
+    if cancel.is_cancelled() {
+        Err(ToolError::new("tool invocation cancelled"))
+    } else {
+        Ok(())
+    }
 }
 
 fn sorted_entries(path: &Path) -> Result<Vec<fs::DirEntry>, ToolError> {
@@ -510,7 +540,11 @@ mod tests {
     fn lists_project_files_and_skips_dependency_directories() {
         let (root, project) = fixture();
         let output = ListFilesTool
-            .invoke(&json!({"path": ".", "max_depth": 3}), &project)
+            .invoke(
+                &json!({"path": ".", "max_depth": 3}),
+                &project,
+                &CancelToken::new(),
+            )
             .expect("list");
         let serialized = output.to_string();
 
@@ -528,6 +562,7 @@ mod tests {
             .invoke(
                 &json!({"path": "src/main.rs", "start_line": 2, "end_line": 2}),
                 &project,
+                &CancelToken::new(),
             )
             .expect("read");
 
@@ -542,7 +577,7 @@ mod tests {
     fn searches_text_files_and_skips_dependency_directories() {
         let (root, project) = fixture();
         let output = SearchTool
-            .invoke(&json!({"query": "hello"}), &project)
+            .invoke(&json!({"query": "hello"}), &project, &CancelToken::new())
             .expect("search");
         let matches = output["matches"].as_array().expect("matches");
 
@@ -557,7 +592,11 @@ mod tests {
     fn read_file_rejects_parent_traversal() {
         let (root, project) = fixture();
         let error = ReadFileTool
-            .invoke(&json!({"path": "../secret.txt"}), &project)
+            .invoke(
+                &json!({"path": "../secret.txt"}),
+                &project,
+                &CancelToken::new(),
+            )
             .expect_err("must reject");
 
         assert!(error.to_string().contains("parent traversal"));

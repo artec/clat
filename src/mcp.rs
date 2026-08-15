@@ -16,6 +16,7 @@
 //!   到期 `kill` 再回收；沉默服务不会拖死 CLAT 退出。
 //! - 子进程以调用方指定的固定 cwd 启动，绝不继承未受信项目目录。
 
+use crate::model::CancelToken;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
@@ -33,6 +34,7 @@ const SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
 
 /// Notification 没有调用方提供的 deadline，仍需给写入设置硬上限。
 const NOTIFY_TIMEOUT: Duration = Duration::from_secs(10);
+const CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
 /// stdio 会话错误。
 #[derive(Debug)]
@@ -268,7 +270,12 @@ impl StdioSession {
         })
     }
 
-    fn send_frame_until(&self, frame: String, deadline: Instant) -> Result<(), McpError> {
+    fn send_frame_until(
+        &self,
+        frame: String,
+        deadline: Instant,
+        cancel: Option<&CancelToken>,
+    ) -> Result<(), McpError> {
         if frame.len() > MAX_FRAME_BYTES {
             return Err(McpError::new(format!(
                 "outbound MCP frame exceeds {MAX_FRAME_BYTES} byte limit"
@@ -288,20 +295,62 @@ impl StdioSession {
                 mpsc::TrySendError::Full(_) => McpError::new("MCP writer is busy"),
                 mpsc::TrySendError::Disconnected(_) => McpError::new("MCP writer closed"),
             })?;
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        match result_rx.recv_timeout(remaining) {
-            Ok(Ok(())) => Ok(()),
-            Ok(Err(error)) => Err(McpError::new(error)),
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                Err(McpError::new("write to MCP server timed out"))
+        loop {
+            if cancel.is_some_and(CancelToken::is_cancelled) {
+                return Err(McpError::new("MCP request cancelled while writing"));
             }
-            Err(mpsc::RecvTimeoutError::Disconnected) => Err(McpError::new("MCP writer closed")),
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(McpError::new("write to MCP server timed out"));
+            }
+            let wait = if cancel.is_some() {
+                remaining.min(CANCEL_POLL_INTERVAL)
+            } else {
+                remaining
+            };
+            match result_rx.recv_timeout(wait) {
+                Ok(Ok(())) => return Ok(()),
+                Ok(Err(error)) => return Err(McpError::new(error)),
+                Err(mpsc::RecvTimeoutError::Timeout) if Instant::now() < deadline => continue,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    return Err(McpError::new("write to MCP server timed out"));
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err(McpError::new("MCP writer closed"));
+                }
+            }
         }
     }
 
     /// 发送请求并在 `timeout` 内等待同 id 响应。超时即失败并注销
     /// pending 槽位（迟到的响应由 reader 丢弃）。
     pub fn call(&self, method: &str, params: Value, timeout: Duration) -> Result<Value, McpError> {
+        self.call_inner(method, params, timeout, None)
+    }
+
+    /// 发送一个可取消请求。取消令牌触发后，调用在一个短轮询周期内
+    /// 返回，并尽力发送标准 `notifications/cancelled` 通知；超时仍是
+    /// 最终兜底。迟到响应会因 pending 槽已移除而被安全丢弃。
+    pub fn call_cancellable(
+        &self,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+        cancel: &CancelToken,
+    ) -> Result<Value, McpError> {
+        self.call_inner(method, params, timeout, Some(cancel))
+    }
+
+    fn call_inner(
+        &self,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+        cancel: Option<&CancelToken>,
+    ) -> Result<Value, McpError> {
+        if cancel.is_some_and(CancelToken::is_cancelled) {
+            return Err(McpError::new(format!("MCP request `{method}` cancelled")));
+        }
         let deadline = Instant::now() + timeout;
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let frame = request_frame(method, params, id);
@@ -312,20 +361,45 @@ impl StdioSession {
             .insert(id, sender);
 
         // 必须先注册 pending 再写：极速服务可能在 flush 返回前就响应。
-        if let Err(error) = self.send_frame_until(frame, deadline) {
+        if let Err(error) = self.send_frame_until(frame, deadline, cancel) {
             if let Ok(mut map) = self.pending.lock() {
                 map.remove(&id);
             }
+            if cancel.is_some_and(CancelToken::is_cancelled) {
+                self.try_cancel_request(id, method);
+            }
             return Err(error);
         }
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        let outcome = receiver.recv_timeout(remaining);
+        let outcome = loop {
+            if cancel.is_some_and(CancelToken::is_cancelled) {
+                break Err(mpsc::RecvTimeoutError::Timeout);
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break Err(mpsc::RecvTimeoutError::Timeout);
+            }
+            let wait = if cancel.is_some() {
+                remaining.min(CANCEL_POLL_INTERVAL)
+            } else {
+                remaining
+            };
+            match receiver.recv_timeout(wait) {
+                Err(mpsc::RecvTimeoutError::Timeout) if Instant::now() < deadline => continue,
+                outcome => break outcome,
+            }
+        };
         // 无论结果如何都注销槽位，防止迟到响应占用。
         if let Ok(mut map) = self.pending.lock() {
             map.remove(&id);
         }
         match outcome {
             Ok(result) => result.map_err(McpError::new),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                if cancel.is_some_and(CancelToken::is_cancelled) =>
+            {
+                self.try_cancel_request(id, method);
+                Err(McpError::new(format!("MCP request `{method}` cancelled")))
+            }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(McpError::new(format!(
                 "MCP request `{method}` timed out after {}s",
                 timeout.as_secs()
@@ -339,7 +413,25 @@ impl StdioSession {
     /// 发送 notification，不等待响应。
     pub fn notify(&self, method: &str, params: Value) -> Result<(), McpError> {
         let frame = notification_frame(method, params);
-        self.send_frame_until(frame, Instant::now() + NOTIFY_TIMEOUT)
+        self.send_frame_until(frame, Instant::now() + NOTIFY_TIMEOUT, None)
+    }
+
+    fn try_cancel_request(&self, id: u64, method: &str) {
+        let frame = notification_frame(
+            "notifications/cancelled",
+            json!({
+                "requestId": id,
+                "reason": format!("CLAT cancelled `{method}`"),
+            }),
+        );
+        if frame.len() > MAX_FRAME_BYTES {
+            return;
+        }
+        let Some(writer) = &self.writer else {
+            return;
+        };
+        let (result, _ignored) = mpsc::channel();
+        let _ = writer.try_send(WriterRequest { frame, result });
     }
 }
 
@@ -469,5 +561,73 @@ mod tests {
         );
         assert!(outcome.is_err());
         assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    /// 取消令牌必须打断正在等待的 MCP 调用，并尽力把标准 cancellation
+    /// notification 发给仍在处理请求的服务端。
+    #[test]
+    #[ignore = "spawns a python3 subprocess; run explicitly with --ignored"]
+    fn cancellation_interrupts_call_and_notifies_server() {
+        let marker = std::env::temp_dir().join(format!(
+            "clat-mcp-cancel-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let script = r#"
+import json, sys
+pending = None
+for line in sys.stdin:
+    msg = json.loads(line)
+    if msg.get("method") == "tools/call" and "id" in msg:
+        pending = msg["id"]
+    elif msg.get("method") == "notifications/cancelled":
+        if msg.get("params", {}).get("requestId") == pending:
+            with open(sys.argv[1], "w") as marker:
+                marker.write("cancelled")
+            break
+"#;
+        let session = StdioSession::spawn(
+            "python3",
+            &[
+                "-c".to_owned(),
+                script.to_owned(),
+                marker.to_string_lossy().into_owned(),
+            ],
+            &[],
+            std::path::Path::new("/tmp"),
+        )
+        .expect("spawn");
+        let cancel = CancelToken::new();
+        let trigger = cancel.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            trigger.cancel();
+        });
+        let started = Instant::now();
+        let error = session
+            .call_cancellable(
+                "tools/call",
+                json!({"name": "slow"}),
+                Duration::from_secs(10),
+                &cancel,
+            )
+            .expect_err("cancelled call");
+        assert!(error.to_string().contains("cancel"), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(1));
+
+        for _ in 0..20 {
+            if marker.exists() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        assert_eq!(
+            std::fs::read_to_string(&marker).expect("server observed cancellation"),
+            "cancelled"
+        );
+        let _ = std::fs::remove_file(marker);
     }
 }

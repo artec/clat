@@ -23,7 +23,9 @@ Run
 - Tool execution failures are returned to the model as structured error
   results instead of aborting the run, so the agent can recover.
 - Cancellation is cooperative: a shared `CancelToken` is polled between
-  turns, before each tool call, and between SSE chunks.
+  turns, before each tool call, between SSE chunks, and — via
+  `Tool::invoke` — inside long-running tool waits (an in-flight MCP
+  request aborts within ~25 ms and notifies the server).
 
 ## Model Protocol v0.1
 

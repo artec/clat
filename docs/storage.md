@@ -16,10 +16,10 @@ database is the source of truth:
 | Table | Content |
 |---|---|
 | `model_state` | model configuration and provider runtime values (API key) |
-| `sessions` | conversations, keyed by project root |
+| `sessions` | conversations, keyed by the canonicalized project root (symlinked and real paths share a session; legacy keys are migrated in place on open) |
 | `messages` | display text (user/assistant), per session |
 | `message_items` | the full conversation context: user/assistant text, tool calls, tool results, provider state, reasoning — persisted in order |
-| `input_history` | previously submitted inputs, per project |
+| `input_history` | previously submitted inputs, isolated per session |
 | `trusted_projects` | directories the user has explicitly trusted |
 
 The display `messages` table and the context `message_items` table are

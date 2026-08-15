@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# Offline release-signing gate. CI stages an unsigned draft; this script runs
+# on a maintainer-controlled machine, verifies that every workflow target has
+# finished packaging, signs all checksum manifests, and publishes the release.
+set -euo pipefail
+
+REPO="artec/clat"
+REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+WORKFLOW="$REPO_ROOT/.github/workflows/release.yml"
+KEY="$REPO_ROOT/.release-secrets/clat-minisign.key"
+PUBLIC_KEY="$REPO_ROOT/release/minisign.pub"
+
+fail() { printf 'clat release: %s\n' "$*" >&2; exit 1; }
+
+command -v gh >/dev/null 2>&1 || fail "GitHub CLI (gh) is required"
+command -v minisign >/dev/null 2>&1 || fail "minisign is required"
+[ -f "$WORKFLOW" ] || fail "release workflow not found: $WORKFLOW"
+[ -f "$KEY" ] || fail "release key not found: $KEY"
+
+TAG=$(gh release list --repo "$REPO" --limit 100 \
+  --json tagName,isDraft \
+  --jq '.[] | select(.isDraft) | .tagName' | head -n 1)
+[ -n "$TAG" ] || fail "GitHub has no draft release waiting to be published"
+[[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "unsafe or invalid release tag: $TAG"
+
+draft=$(gh release view "$TAG" --repo "$REPO" --json isDraft --jq .isDraft)
+[ "$draft" = "true" ] || fail "release $TAG must exist and still be a draft"
+
+work_dir=$(mktemp -d)
+trap 'rm -rf "$work_dir"' EXIT
+
+# The workflow matrix is the release asset source of truth. Adding another
+# target (for example Linux) automatically adds its archive and manifest to
+# this gate without changing the publishing script.
+targets=()
+while IFS= read -r target; do
+  target=${target#\"}
+  target=${target%\"}
+  target=${target#\'}
+  target=${target%\'}
+  [ -n "$target" ] && targets+=("$target")
+done < <(sed -nE \
+  's/^[[:space:]]*(-[[:space:]]*)?target:[[:space:]]*([^[:space:]#]+).*$/\2/p' \
+  "$WORKFLOW")
+[ "${#targets[@]}" -gt 0 ] || fail "release workflow has no target matrix"
+
+asset_names="$work_dir/release-assets.txt"
+gh release view "$TAG" --repo "$REPO" --json assets \
+  --jq '.assets[].name' > "$asset_names"
+
+manifests=()
+for target in "${targets[@]}"; do
+  case "$target" in
+    *windows*) asset="clat-$TAG-$target.zip" ;;
+    *) asset="clat-$TAG-$target.tar.gz" ;;
+  esac
+  manifest="$asset.sha256"
+  grep -Fxq "$asset" "$asset_names" || \
+    fail "draft $TAG is not ready: missing asset $asset"
+  grep -Fxq "$manifest" "$asset_names" || \
+    fail "draft $TAG is not ready: missing checksum $manifest"
+  manifests+=("$manifest")
+done
+
+for manifest in "${manifests[@]}"; do
+  gh release download "$TAG" --repo "$REPO" \
+    --pattern "$manifest" --dir "$work_dir"
+done
+
+count=0
+for manifest in "${manifests[@]}"; do
+  manifest_path="$work_dir/$manifest"
+  [ -f "$manifest_path" ] || fail "failed to download checksum $manifest"
+  minisign -Sm "$manifest_path" -s "$KEY" \
+    -x "$manifest_path.minisig" \
+    -t "CLAT $TAG release manifest: $manifest"
+  minisign -Vm "$manifest_path" -x "$manifest_path.minisig" \
+    -p "$PUBLIC_KEY" -q
+  count=$((count + 1))
+done
+
+gh release upload "$TAG" --repo "$REPO" "$work_dir"/*.minisig --clobber
+gh release edit "$TAG" --repo "$REPO" --draft=false
+printf 'clat release: published %s with %s signed manifests\n' "$TAG" "$count"

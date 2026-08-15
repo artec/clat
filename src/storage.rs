@@ -26,6 +26,8 @@ pub struct SessionSummary {
     pub created_at: i64,
     pub updated_at: i64,
     pub archived: bool,
+    /// 会话已持久化的消息条数（列表展示用；0 = 空会话）。
+    pub message_count: i64,
 }
 
 /// 命名模型档案的摘要（Codex `model_profiles` 同款概念）。
@@ -156,6 +158,7 @@ impl Storage {
                 })?,
             )?;
         }
+        storage.normalize_project_keys()?;
         Ok(storage)
     }
 
@@ -204,10 +207,15 @@ impl Storage {
                  id INTEGER PRIMARY KEY AUTOINCREMENT,
                  project_root TEXT NOT NULL,
                  content TEXT NOT NULL,
-                 created_at INTEGER NOT NULL
+                 created_at INTEGER NOT NULL,
+                 -- 会话级隔离（v3）：NULL = 无会话归属（历史遗留行），
+                 -- 查询时按当前会话过滤，不匹配任何会话即不可见。
+                 session_id INTEGER REFERENCES sessions(id) ON DELETE CASCADE
              );
              CREATE INDEX IF NOT EXISTS input_history_project_id
                  ON input_history(project_root, id DESC);
+             CREATE INDEX IF NOT EXISTS input_history_session_id
+                 ON input_history(session_id, id DESC);
              CREATE TABLE IF NOT EXISTS model_profiles (
                  name TEXT PRIMARY KEY,
                  config_json TEXT NOT NULL,
@@ -226,11 +234,19 @@ impl Storage {
     /// v1 → v2：sessions 补 title/archived 列，model_state 补
     /// active_profile 列。列已存在时跳过（幂等），model_profiles 表由
     /// initialize 的 CREATE IF NOT EXISTS 覆盖。
+    ///
+    /// v2 → v3 在同一路径内完成：input_history 补 session_id 列
+    /// （可空，见建表注释）。旧库的历史行保持 NULL，不归属任何会话。
     fn migrate_v1_to_v2(&self) -> Result<(), StorageError> {
         for (table, column, definition) in [
             ("sessions", "title", "TEXT NOT NULL DEFAULT ''"),
             ("sessions", "archived", "INTEGER NOT NULL DEFAULT 0"),
             ("model_state", "active_profile", "TEXT"),
+            (
+                "input_history",
+                "session_id",
+                "INTEGER REFERENCES sessions(id) ON DELETE CASCADE",
+            ),
         ] {
             if !self.has_column(table, column)? {
                 self.connection.execute(
@@ -253,6 +269,48 @@ impl Storage {
             }
         }
         Ok(false)
+    }
+
+    /// Canonicalize existing absolute project keys in place. This repairs
+    /// databases written before sessions and input history adopted the same
+    /// key semantics as project trust, including paths reached through a
+    /// symlink. Missing/relative legacy paths remain untouched.
+    fn normalize_project_keys(&self) -> Result<(), StorageError> {
+        let keys = {
+            let mut statement = self.connection.prepare(
+                "SELECT project_root FROM sessions
+                 UNION SELECT project_root FROM input_history
+                 UNION SELECT root FROM trusted_projects",
+            )?;
+            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
+        for old in keys {
+            let path = Path::new(&old);
+            if !path.is_absolute() {
+                continue;
+            }
+            let Ok(canonical) = path.canonicalize() else {
+                continue;
+            };
+            let new = canonical.to_string_lossy().into_owned();
+            if new == old {
+                continue;
+            }
+            self.connection.execute(
+                "UPDATE sessions SET project_root = ?2 WHERE project_root = ?1",
+                params![old, new],
+            )?;
+            self.connection.execute(
+                "UPDATE input_history SET project_root = ?2 WHERE project_root = ?1",
+                params![old, new],
+            )?;
+            self.connection.execute(
+                "UPDATE OR IGNORE trusted_projects SET root = ?2 WHERE root = ?1",
+                params![old, new],
+            )?;
+        }
+        Ok(())
     }
 
     pub fn load_model_state(&self) -> Result<Option<(ModelConfig, ProviderRuntime)>, StorageError> {
@@ -294,7 +352,7 @@ impl Storage {
     }
 
     pub fn load_or_create_session(&self, project: &Project) -> Result<i64, StorageError> {
-        let root = project.root().to_string_lossy().to_string();
+        let root = project_key(project.root());
         let existing = self
             .connection
             .query_row(
@@ -315,17 +373,20 @@ impl Storage {
     /// `/resume` 类选择界面使用。
     pub fn list_sessions(&self, project: &Project) -> Result<Vec<SessionSummary>, StorageError> {
         let mut statement = self.connection.prepare(
-            "SELECT id, title, created_at, updated_at, archived FROM sessions
-             WHERE project_root = ?1
-             ORDER BY updated_at DESC, id DESC",
+            "SELECT s.id, s.title, s.created_at, s.updated_at, s.archived,
+                    (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id)
+             FROM sessions s
+             WHERE s.project_root = ?1
+             ORDER BY s.updated_at DESC, s.id DESC",
         )?;
-        let rows = statement.query_map(params![project.root().to_string_lossy()], |row| {
+        let rows = statement.query_map(params![project_key(project.root())], |row| {
             Ok(SessionSummary {
                 id: row.get(0)?,
                 title: row.get(1)?,
                 created_at: row.get(2)?,
                 updated_at: row.get(3)?,
                 archived: row.get::<_, i64>(4)? != 0,
+                message_count: row.get(5)?,
             })
         })?;
         let mut sessions = Vec::new();
@@ -354,11 +415,41 @@ impl Storage {
         Ok(())
     }
 
+    /// 恢复归档会话：`/resume` 选中已归档会话时自动取消归档，
+    /// 使其重新成为下次启动的默认会话候选。
+    pub fn unarchive_session(&self, session_id: i64) -> Result<(), StorageError> {
+        self.connection.execute(
+            "UPDATE sessions SET archived = 0 WHERE id = ?1",
+            params![session_id],
+        )?;
+        Ok(())
+    }
+
+    /// 会话是否有任何持久化消息或上下文条目。`/new`、`/resume`
+    /// 切换离开时，空会话自动归档——用户没有留下任何内容的会话
+    /// 不应出现在 resume 列表里（也无法回到它）。
+    pub fn session_is_empty(&self, session_id: i64) -> Result<bool, StorageError> {
+        let message_count: i64 = self.connection.query_row(
+            "SELECT COUNT(*) FROM messages WHERE session_id = ?1",
+            params![session_id],
+            |row| row.get(0),
+        )?;
+        if message_count > 0 {
+            return Ok(false);
+        }
+        let item_count: i64 = self.connection.query_row(
+            "SELECT COUNT(*) FROM message_items WHERE session_id = ?1",
+            params![session_id],
+            |row| row.get(0),
+        )?;
+        Ok(item_count == 0)
+    }
+
     pub fn create_session(&self, project: &Project) -> Result<i64, StorageError> {
         let timestamp = now_unix();
         self.connection.execute(
             "INSERT INTO sessions(project_root, created_at, updated_at) VALUES(?1, ?2, ?2)",
-            params![project.root().to_string_lossy(), timestamp],
+            params![project_key(project.root()), timestamp],
         )?;
         Ok(self.connection.last_insert_rowid())
     }
@@ -407,20 +498,21 @@ impl Storage {
         Ok(())
     }
 
+    /// 加载某个会话的输入历史（旧→新）。按会话隔离：其他会话的
+    /// 输入不会出现；NULL 归属的历史遗留行不匹配任何会话。
     pub fn load_input_history(
         &self,
-        project: &Project,
+        session_id: i64,
         limit: usize,
     ) -> Result<Vec<String>, StorageError> {
         let mut statement = self.connection.prepare(
             "SELECT content FROM input_history
-             WHERE project_root = ?1
+             WHERE session_id = ?1
              ORDER BY id DESC LIMIT ?2",
         )?;
-        let rows = statement.query_map(
-            params![project.root().to_string_lossy(), limit as i64],
-            |row| row.get::<_, String>(0),
-        )?;
+        let rows = statement.query_map(params![session_id, limit as i64], |row| {
+            row.get::<_, String>(0)
+        })?;
         let mut values = Vec::new();
         for row in rows {
             values.push(row?);
@@ -462,13 +554,25 @@ impl Storage {
         Ok(items)
     }
 
-    pub fn record_input(&self, project: &Project, content: &str) -> Result<(), StorageError> {
-        if content.trim().is_empty() {
+    /// 记录一条输入到指定会话的历史。`session_id` 为 None 时（尚未
+    /// 确权/无会话，理论上不可达）静默丢弃——历史必须可归属。
+    pub fn record_input(&self, session_id: Option<i64>, content: &str) -> Result<(), StorageError> {
+        let content = content.trim();
+        if content.is_empty() {
             return Ok(());
         }
+        let Some(session_id) = session_id else {
+            return Ok(());
+        };
+        let project_root: String = self.connection.query_row(
+            "SELECT project_root FROM sessions WHERE id = ?1",
+            params![session_id],
+            |row| row.get(0),
+        )?;
         self.connection.execute(
-            "INSERT INTO input_history(project_root, content, created_at) VALUES(?1, ?2, ?3)",
-            params![project.root().to_string_lossy(), content, now_unix()],
+            "INSERT INTO input_history(project_root, session_id, content, created_at)
+             VALUES(?1, ?2, ?3, ?4)",
+            params![project_root, session_id, content, now_unix()],
         )?;
         Ok(())
     }
@@ -586,7 +690,7 @@ impl Storage {
     /// 项目目录是否已被用户信任。路径先 canonicalize 再比对，避免
     /// 符号链接或 `.`/`..` 拼写差异绕过信任检查。
     pub fn is_project_trusted(&self, root: &Path) -> bool {
-        let key = trust_key(root);
+        let key = project_key(root);
         self.connection
             .query_row(
                 "SELECT 1 FROM trusted_projects WHERE root = ?1",
@@ -603,7 +707,7 @@ impl Storage {
         self.connection.execute(
             "INSERT INTO trusted_projects(root, trusted_at) VALUES(?1, ?2)
              ON CONFLICT(root) DO UPDATE SET trusted_at = excluded.trusted_at",
-            params![trust_key(root), now_unix()],
+            params![project_key(root), now_unix()],
         )?;
         Ok(())
     }
@@ -612,7 +716,7 @@ impl Storage {
     pub fn untrust_project(&self, root: &Path) -> Result<(), StorageError> {
         self.connection.execute(
             "DELETE FROM trusted_projects WHERE root = ?1",
-            params![trust_key(root)],
+            params![project_key(root)],
         )?;
         Ok(())
     }
@@ -620,7 +724,7 @@ impl Storage {
 
 /// 信任表的目录键：canonicalize 失败（目录刚被删除等）时退回原始
 /// 路径的绝对化形式，保证查询与写入用同一把钥匙。
-fn trust_key(root: &Path) -> String {
+fn project_key(root: &Path) -> String {
     let canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     canonical.to_string_lossy().into_owned()
 }
@@ -878,6 +982,41 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    /// /resume 语义：空会话判定 + 恢复归档会话后它重新成为默认候选。
+    #[test]
+    fn resume_round_trips_and_empty_sessions_are_detectable() {
+        let root = temp_root("resume");
+        let storage = Storage::open(root.clone()).expect("storage");
+        let project_root = root.join("project");
+        fs::create_dir_all(&project_root).unwrap();
+        let project = Project::new(&project_root);
+
+        let first = storage.load_or_create_session(&project).unwrap();
+        storage.append_message(first, "user", "第一段工作").unwrap();
+
+        // 空会话：仅创建、无消息无上下文。
+        let empty = storage.create_session(&project).unwrap();
+        assert!(storage.session_is_empty(empty).unwrap());
+        assert!(!storage.session_is_empty(first).unwrap());
+
+        // 列表带消息计数。
+        let sessions = storage.list_sessions(&project).unwrap();
+        let summary = sessions.iter().find(|s| s.id == first).unwrap();
+        assert_eq!(summary.message_count, 1);
+
+        // 归档 first 后恢复它：unarchive 使其重新成为默认会话。
+        storage.archive_session(first).unwrap();
+        storage.unarchive_session(first).unwrap();
+        assert_eq!(
+            storage.load_or_create_session(&project).unwrap(),
+            first,
+            "unarchived session must become the default candidate again"
+        );
+
+        drop(storage);
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn model_profiles_roundtrip_and_active_pointer() {
         let root = temp_root("profiles");
@@ -957,6 +1096,31 @@ mod tests {
         // 取消信任后回到未受信。
         storage.untrust_project(&project_root).unwrap();
         assert!(!storage.is_project_trusted(&project_root));
+
+        drop(storage);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn equivalent_project_paths_share_the_same_sessions() {
+        let root = temp_root("session-project-key");
+        let storage = Storage::open(root.clone()).expect("storage");
+        let project_root = root.join("project");
+        let alias = root.join("project-alias");
+        fs::create_dir_all(&project_root).unwrap();
+        std::os::unix::fs::symlink(&project_root, &alias).unwrap();
+
+        let direct = Project::new(&project_root);
+        let through_alias = Project::new(&alias);
+        let session = storage.load_or_create_session(&direct).unwrap();
+        assert_eq!(
+            storage.load_or_create_session(&through_alias).unwrap(),
+            session
+        );
+        storage.create_session(&through_alias).unwrap();
+        assert_eq!(storage.list_sessions(&direct).unwrap().len(), 2);
+        assert_eq!(storage.list_sessions(&through_alias).unwrap().len(), 2);
 
         drop(storage);
         fs::remove_dir_all(root).unwrap();
@@ -1080,11 +1244,61 @@ mod tests {
             .unwrap();
         assert_eq!(storage.load_messages(session).unwrap().len(), 2);
 
-        storage.record_input(&project, "first").unwrap();
-        storage.record_input(&project, "second").unwrap();
+        storage.record_input(Some(session), "first").unwrap();
+        storage.record_input(Some(session), "second").unwrap();
         assert_eq!(
-            storage.load_input_history(&project, 10).unwrap(),
+            storage.load_input_history(session, 10).unwrap(),
             vec!["first".to_owned(), "second".to_owned()]
+        );
+
+        drop(storage);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// 输入历史按会话隔离：两个会话各自只看到自己的输入；旧库
+    /// NULL 归属的遗留行不匹配任何会话。
+    #[test]
+    fn input_history_is_isolated_per_session() {
+        let root = temp_root("input-history-sessions");
+        let storage = Storage::open(root.clone()).expect("storage");
+        let project_root = root.join("project");
+        fs::create_dir_all(&project_root).unwrap();
+        let project = Project::new(&project_root);
+
+        let first = storage.load_or_create_session(&project).unwrap();
+        let second = storage.create_session(&project).unwrap();
+        storage.record_input(Some(first), "第一会话输入").unwrap();
+        storage.record_input(Some(second), "第二会话输入").unwrap();
+        storage.record_input(Some(second), "第二条").unwrap();
+
+        // 各自只看到自己的，顺序保持旧→新。
+        assert_eq!(
+            storage.load_input_history(first, 10).unwrap(),
+            vec!["第一会话输入".to_owned()]
+        );
+        assert_eq!(
+            storage.load_input_history(second, 10).unwrap(),
+            vec!["第二会话输入".to_owned(), "第二条".to_owned()]
+        );
+
+        // None 会话：静默丢弃（未确权路径不可达时的防御）。
+        storage.record_input(None, "孤儿输入").unwrap();
+
+        // 模拟旧库遗留行：NULL 归属不匹配任何会话。
+        storage
+            .connection
+            .execute(
+                "INSERT INTO input_history(project_root, content, created_at)
+                 VALUES('legacy-root', '旧行', 0)",
+                [],
+            )
+            .unwrap();
+        assert!(
+            storage
+                .load_input_history(first, 10)
+                .unwrap()
+                .iter()
+                .all(|v| v != "旧行")
         );
 
         drop(storage);

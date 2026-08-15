@@ -26,7 +26,10 @@ pub(crate) struct RunRequest {
     pub cancel: CancelToken,
 }
 
-pub(crate) fn execute_run(request: RunRequest, sender: Sender<UiEvent>) -> Result<RunDone, String> {
+pub(crate) fn execute_run(
+    request: RunRequest,
+    sender: Sender<UiEvent>,
+) -> Result<RunDone, RunFailure> {
     let RunRequest {
         project,
         config,
@@ -36,9 +39,15 @@ pub(crate) fn execute_run(request: RunRequest, sender: Sender<UiEvent>) -> Resul
         prompt,
         cancel,
     } = request;
+    let history_len = history_items.len();
     let mut model = provider_runtime
         .build_model(&config)
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| RunFailure {
+            error: error.to_string(),
+            turns: 0,
+            usage: Usage::default(),
+            new_items: Vec::new(),
+        })?;
 
     // Side-effecting tools are classified by SafeByDefault and then resolved
     // interactively: the policy posts the request to the UI and blocks until
@@ -68,7 +77,6 @@ pub(crate) fn execute_run(request: RunRequest, sender: Sender<UiEvent>) -> Resul
         parallel_tool_calls: Some(config.parallel_tool_calls),
         ..ModelOptions::default()
     };
-    let history_len = history_items.len();
     let mut sink = ChannelEventSink(sender);
     let output = Run::new(model.as_mut(), &tools, &permissions, &project)
         .with_model_options(options)
@@ -77,7 +85,15 @@ pub(crate) fn execute_run(request: RunRequest, sender: Sender<UiEvent>) -> Resul
             "You are CLAT, a command line agent operating on the current project. Use project tools to inspect real files when needed. Use project-relative paths and recover from tool errors instead of guessing.",
         )
         .execute_with_items(history_items, prompt, &mut sink)
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| {
+            let (error, turns, usage, items) = error.into_parts();
+            RunFailure {
+                error,
+                turns,
+                usage,
+                new_items: items.into_iter().skip(history_len).collect(),
+            }
+        })?;
     let RunOutput {
         text,
         turns,
@@ -110,7 +126,7 @@ pub(crate) enum WorkerMessage {
         request: PermissionRequest,
         decision_tx: Sender<PermissionDecision>,
     },
-    Done(Result<RunDone, String>),
+    Done(Result<RunDone, RunFailure>),
 }
 
 pub(crate) struct RunDone {
@@ -118,5 +134,12 @@ pub(crate) struct RunDone {
     pub turns: usize,
     pub usage: Usage,
     pub cancelled: bool,
+    pub new_items: Vec<ModelItem>,
+}
+
+pub(crate) struct RunFailure {
+    pub error: String,
+    pub turns: usize,
+    pub usage: Usage,
     pub new_items: Vec<ModelItem>,
 }

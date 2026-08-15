@@ -25,9 +25,13 @@ runs.
 
 ## Protocol support
 
-CLAT speaks the **legacy handshake era** of the protocol
-(`initialize` / `notifications/initialized`) and accepts these negotiated
-versions:
+CLAT auto-negotiates both protocol eras. It first probes a disposable
+stdio session with modern `server/discover`; if that fails, it starts a
+fresh process and performs the legacy `initialize` /
+`notifications/initialized` handshake. The fresh fallback prevents the
+probe request from contaminating a strict legacy server's state machine.
+
+Supported versions:
 
 | Version | Notes |
 |---|---|
@@ -35,12 +39,13 @@ versions:
 | `2025-03-26` | streamable HTTP, structured output groundwork |
 | `2025-06-18` | structured output, elicitation |
 | `2025-11-25` | tasks, simplified authorization |
+| `2026-07-28` | modern stateless core and per-request envelope |
 
-The MCP 2.0 stateless core (`2026-07-28`) removed the initialize
-handshake and moved per-request metadata into `_meta`. CLAT does **not**
-implement that envelope yet: a server that rejects the legacy handshake
-is reported as an error (with an explicit "MCP 2.0 not yet supported"
-message) rather than being silently mis-handled.
+Every modern request carries the protocol version, CLAT client identity,
+and per-request client capabilities in `_meta`. Modern responses must
+declare `resultType`; normal `complete` results are supported.
+`input_required` multi-round-trip results are rejected with an explicit
+unsupported-feature error instead of being mistaken for completed output.
 
 ## Tool mapping
 
@@ -48,8 +53,10 @@ message) rather than being silently mis-handled.
   normalized to `[a-zA-Z0-9_]`; names longer than 64 characters are
   truncated with a stable hash suffix. Collisions after normalization
   are skipped and reported instead of silently routed.
-- Every MCP tool is classified as `Execute` — see
-  [permissions](permissions.md).
+- MCP annotations refine the approval label into `ExternalRead`,
+  `Network`, `Write`, or `Destructive`. The annotations are untrusted
+  hints: no remote tool can become the auto-allowed native `Read` effect.
+  Missing annotations use the protocol's conservative defaults.
 
 ## Security posture
 
@@ -68,6 +75,7 @@ Resource limits protect against misbehaving or malicious servers:
 |---|---|
 | single frame (line) size | 4 MiB |
 | handshake timeout | 10 s |
+| modern discovery timeout | 3 s, then fresh legacy fallback |
 | `tools/list` page timeout | 30 s, at most 32 pages |
 | tools per server | 512 |
 | pagination cursors | repeated cursor aborts |
@@ -78,3 +86,9 @@ The transport uses a single reader thread that routes responses by
 request id (out-of-order and concurrent responses are handled), a
 bounded writer queue, and a shutdown sequence of close-stdin → grace
 period → kill, so a silent server can never hang CLAT's exit.
+
+`Esc` cancellation propagates through `Tool::invoke` into an in-flight
+MCP request. CLAT removes the pending response slot, returns within a
+short polling interval, and best-effort sends `notifications/cancelled`
+with the original request id; the 120-second timeout remains the final
+fallback for a server that ignores cancellation.

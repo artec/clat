@@ -4,6 +4,7 @@ use crate::storage::{Storage, StoredMessage};
 use crate::tui_input::InputBuffer;
 use crate::tui_markdown::render_markdown;
 use crate::tui_model::{EditorAction, ModelEditor, ModelPicker, PickerAction};
+use crate::tui_sessions::{ResumeAction, SessionPicker};
 use crate::tui_worker::{UiEvent, WorkerMessage, execute_run};
 use crate::{
     CancelToken, ModelConfig, ModelEvent, ModelItem, PermissionDecision, PermissionRequest,
@@ -602,6 +603,8 @@ struct App {
     editor: Option<ModelEditor>,
     /// 二级模型选择器；与 editor 互斥，/model 命令打开。
     picker: Option<ModelPicker>,
+    /// /resume 会话选择器；打开期间独占按键与鼠标。
+    session_picker: Option<SessionPicker>,
     running: bool,
     /// 统一事件通道：输入线程、余额监控、worker 的消息都汇到这里。
     /// `None` 表示尚未启动（run() 建立通道后填充）。
@@ -688,6 +691,7 @@ impl App {
             status_until: None,
             editor: None,
             picker: None,
+            session_picker: None,
             running: false,
             events: None,
             event_sender: None,
@@ -755,7 +759,7 @@ impl App {
             .collect();
         let history = self
             .storage
-            .load_input_history(&self.project, 500)
+            .load_input_history(session_id, 500)
             .map_err(|error| error.to_string())?;
         self.input = InputBuffer::new(history);
         self.markdown_cache.clear();
@@ -1028,6 +1032,15 @@ impl App {
             return;
         }
 
+        // /resume 会话选择器：独占按键直到恢复或取消。
+        if self.session_picker.is_some() {
+            if let Some(picker) = self.session_picker.as_mut() {
+                let action = picker.handle_key(key);
+                self.apply_resume_action(action);
+            }
+            return;
+        }
+
         // 二级选择器优先于编辑器接管按键。
         if let Some(picker) = self.picker.as_mut() {
             let action = picker.handle_key(key);
@@ -1111,6 +1124,11 @@ impl App {
     }
 
     fn handle_mouse(&mut self, mouse: MouseEvent) {
+        if let (Some(picker), Some(area)) = (self.session_picker.as_mut(), self.editor_area) {
+            let action = picker.handle_mouse(mouse, area);
+            self.apply_resume_action(action);
+            return;
+        }
         if let (Some(picker), Some(area)) = (self.picker.as_mut(), self.editor_area) {
             let action = picker.handle_mouse(mouse, area);
             self.apply_picker_action(action);
@@ -1358,6 +1376,62 @@ impl App {
         }
     }
 
+    /// 处理 /resume 选择器的动作：确认则切换会话，取消则关闭。
+    fn apply_resume_action(&mut self, action: ResumeAction) {
+        match action {
+            ResumeAction::Continue => {}
+            ResumeAction::Cancel => {
+                self.session_picker = None;
+            }
+            ResumeAction::Open(session_id) => {
+                self.session_picker = None;
+                match self.switch_session(session_id) {
+                    Ok(()) => self.flash_status("conversation resumed"),
+                    Err(error) => self.flash_status(format!("failed to resume: {error}")),
+                }
+            }
+        }
+    }
+
+    /// 切换到指定会话：离开当前会话前，若其为空（无消息、无上下文）
+    /// 则自动归档——空会话不该留在 resume 列表里，用户也回不去它。
+    /// 随后加载目标会话的消息并重置视图状态。
+    fn switch_session(&mut self, session_id: i64) -> Result<(), String> {
+        if let Some(current) = self.session_id
+            && current != session_id
+            && self
+                .storage
+                .session_is_empty(current)
+                .map_err(|error| error.to_string())?
+        {
+            self.storage
+                .archive_session(current)
+                .map_err(|error| error.to_string())?;
+        }
+        self.storage
+            .unarchive_session(session_id)
+            .map_err(|error| error.to_string())?;
+        self.messages = self
+            .storage
+            .load_messages(session_id)
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .filter_map(ChatMessage::from_stored)
+            .collect();
+        self.session_id = Some(session_id);
+        // 输入历史随会话切换：恢复目标会话自己的历史（含内存中
+        // 未持久化的导航状态一并重置）。
+        let history = self
+            .storage
+            .load_input_history(session_id, 500)
+            .map_err(|error| error.to_string())?;
+        self.input = InputBuffer::new(history);
+        self.markdown_cache.clear();
+        self.conversation_scroll_from_bottom = 0;
+        self.assistant_message_index = None;
+        Ok(())
+    }
+
     /// 处理二级选择器的动作。确认预设时：同端点且已存有密钥 → 直接
     /// 保存切换；跨厂商或缺密钥 → 转入编辑器补密钥（清空旧厂商密钥，
     /// 避免把一家厂商的 key 发给另一家）。
@@ -1445,7 +1519,7 @@ impl App {
         if value.is_empty() {
             return;
         }
-        let _ = self.storage.record_input(&self.project, &value);
+        let _ = self.storage.record_input(self.session_id, &value);
         self.input.remember(value.clone());
 
         match value.as_str() {
@@ -1458,16 +1532,34 @@ impl App {
             }
             "/help" => {
                 self.status =
-                    "/model · /new · /clear · /quit · ↑/↓ input history · PgUp/PgDn chat".into();
+                    "/model · /new · /clear · /resume · /quit · ↑/↓ input history · PgUp/PgDn chat"
+                        .into();
+            }
+            "/resume" => {
+                // 列表排除空会话：无消息的会话没有可恢复的内容，
+                // 打开选择器前直接归档当前空会话。
+                if let Some(current) = self.session_id
+                    && matches!(self.storage.session_is_empty(current), Ok(true))
+                {
+                    let _ = self.storage.archive_session(current);
+                }
+                match self.storage.list_sessions(&self.project) {
+                    Ok(sessions) => {
+                        let current = self.session_id.unwrap_or(-1);
+                        self.session_picker = Some(SessionPicker::new(sessions, current));
+                    }
+                    Err(error) => {
+                        self.flash_status(format!("failed to list conversations: {error}"))
+                    }
+                }
             }
             "/new" | "/clear" => match self.storage.create_session(&self.project) {
-                Ok(session_id) => {
-                    self.session_id = Some(session_id);
-                    self.messages.clear();
-                    self.markdown_cache.clear();
-                    self.conversation_scroll_from_bottom = 0;
-                    self.flash_status("new conversation");
-                }
+                Ok(session_id) => match self.switch_session(session_id) {
+                    Ok(()) => self.flash_status("new conversation"),
+                    Err(error) => {
+                        self.flash_status(format!("failed to create conversation: {error}"))
+                    }
+                },
                 Err(error) => self.flash_status(format!("failed to create conversation: {error}")),
             },
             "/quit" | "/exit" => self.should_quit = true,
@@ -1641,7 +1733,10 @@ impl App {
         self.conversation_scroll_from_bottom = 0;
     }
 
-    fn finish_run(&mut self, result: Result<crate::tui_worker::RunDone, String>) {
+    fn finish_run(
+        &mut self,
+        result: Result<crate::tui_worker::RunDone, crate::tui_worker::RunFailure>,
+    ) {
         self.running = false;
         self.cancel_token = None;
         self.thinking = false;
@@ -1665,11 +1760,16 @@ impl App {
                     self.flash_status(format!("completed · {} model turns", done.turns));
                 }
             }
-            Err(error) => {
-                // A failed run has no item list, so persist whatever partial
-                // assistant text was streamed before the failure.
-                self.persist_current_assistant(true);
-                self.flash_status(format!("run failed: {error}"));
+            Err(failure) => {
+                self.session_usage.add_assign(&failure.usage);
+                // RunError carries exact completed context plus any partial
+                // assistant delta from the failing provider turn.
+                self.persist_current_assistant(false);
+                self.persist_items(failure.new_items);
+                self.flash_status(format!(
+                    "run failed after {} model turns: {}",
+                    failure.turns, failure.error
+                ));
             }
         }
         self.assistant_message_index = None;
@@ -1805,7 +1905,12 @@ impl App {
             frame.render_widget(Paragraph::new(deepseek).right_aligned(), columns[1]);
         }
 
-        if let Some(picker) = &self.picker {
+        if let Some(picker) = &self.session_picker {
+            let height = (picker.row_count() as u16 + 4).min(area.height.saturating_sub(2));
+            let picker_area = centered_rect(84, height.max(6), area);
+            self.editor_area = Some(picker_area);
+            picker.draw(frame, picker_area);
+        } else if let Some(picker) = &self.picker {
             let height = (picker.row_count() as u16 + 4).min(area.height.saturating_sub(2));
             let picker_area = centered_rect(94, height.max(8), area);
             self.editor_area = Some(picker_area);

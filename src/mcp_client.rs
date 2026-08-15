@@ -1,18 +1,15 @@
-//! MCP 客户端会话与工具适配：initialize 握手、tools/list 发现、
-//! tools/call 调用，并把远端工具映射为 CLAT 的 [`Tool`] trait。
-//!
-//! 协议姿态：**只支持 legacy 握手时代**（initialize/initialized，
-//! 2024-11-05 … 2025-11-25）。MCP 2.0（2026-07-28）移除了握手并要求
-//! 每请求 `_meta` 自描述——在实现 modern envelope 之前，握手失败
-//! 一律如实报错，绝不假装协商成功。
+//! MCP 客户端会话与工具适配：支持 legacy initialize 握手和
+//! 2026-07-28 modern per-request envelope，并把远端工具映射为 CLAT
+//! 的 [`Tool`] trait。
 //!
 //! 资源上限（对抗恶意服务）：分页页数/工具数/cursor 循环/结果大小
 //! 均有界，超限隔离该服务器。
 //!
-//! effect 固定为 [`ToolEffect::Execute`]——远端能力不可静态分类，
-//! 一律过权限询问（安全默认）。
+//! 远端 annotations 仅用于细分权限提示，永远不会把 MCP 工具降级成
+//! 可自动放行的本地只读能力。
 
 use crate::mcp::{McpError, StdioSession};
+use crate::model::CancelToken;
 use crate::project::Project;
 use crate::tool::{Tool, ToolDefinition, ToolEffect, ToolError};
 use serde::{Deserialize, Serialize};
@@ -21,9 +18,10 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::time::Duration;
 
-/// CLAT 使用的协议版本（legacy 握手时代的最新规范）。服务器不支持时
-/// 会返回它自己的版本；只有下方白名单中的 legacy 版本会被接受。
+/// CLAT legacy 握手首选版本。
 pub const PROTOCOL_VERSION: &str = "2025-11-25";
+/// CLAT 支持的 modern per-request envelope 版本。
+pub const MODERN_PROTOCOL_VERSION: &str = "2026-07-28";
 
 /// CLAT 已验证可按 legacy initialize/initialized 语义处理的版本。
 /// 服务器返回 modern 或未知版本时必须拒绝，不能继续发送 legacy
@@ -33,6 +31,8 @@ const SUPPORTED_LEGACY_VERSIONS: &[&str] =
 
 /// 握手（initialize）超时。
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+/// modern 探测必须短且可回退；legacy 服务可能不认识 discover。
+const DISCOVER_TIMEOUT: Duration = Duration::from_secs(3);
 /// tools/list 单页超时。
 const LIST_TIMEOUT: Duration = Duration::from_secs(30);
 /// tools/call 超时。工具可能合法地运行较久（构建、批处理），
@@ -66,6 +66,13 @@ pub struct McpServer {
     server_version: String,
     /// 握手协商出的协议版本（服务器回显或其支持的最新版）。
     negotiated_version: String,
+    era: ProtocolEra,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProtocolEra {
+    Legacy,
+    Modern,
 }
 
 /// tools/list 返回的单个工具描述。
@@ -74,28 +81,84 @@ pub struct McpToolInfo {
     pub name: String,
     pub description: String,
     pub input_schema: Value,
+    pub annotations: McpToolAnnotations,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct McpToolAnnotations {
+    pub read_only: Option<bool>,
+    pub destructive: Option<bool>,
+    pub open_world: Option<bool>,
 }
 
 impl McpServer {
-    /// 启动子进程（固定 `cwd`）并完成 legacy initialize 握手。
+    /// 启动子进程（固定 `cwd`）并自动协商协议时代。先用一次性会话
+    /// 探测 modern `server/discover`；失败后丢弃探测进程并用全新会话
+    /// 执行 legacy initialize，避免探测帧污染旧服务器状态机。
     pub fn connect(name: &str, config: &McpServerConfig, cwd: &Path) -> Result<Self, McpError> {
         let env: Vec<(String, String)> = config
             .env
             .iter()
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect();
-        let session = StdioSession::spawn(&config.command, &config.args, &env, cwd)?;
-        let (server_version, negotiated_version) = Self::handshake(&session).map_err(|error| {
-            McpError::new(format!(
-                "legacy initialize failed ({error}); CLAT 尚未支持无握手的 MCP 2.0"
-            ))
-        })?;
-        Ok(Self {
-            name: name.to_owned(),
-            session,
-            server_version,
-            negotiated_version,
-        })
+        let probe = StdioSession::spawn(&config.command, &config.args, &env, cwd)?;
+        match Self::discover(&probe) {
+            Ok(server_version) => Ok(Self {
+                name: name.to_owned(),
+                session: probe,
+                server_version,
+                negotiated_version: MODERN_PROTOCOL_VERSION.to_owned(),
+                era: ProtocolEra::Modern,
+            }),
+            Err(modern_error) => {
+                drop(probe);
+                let session = StdioSession::spawn(&config.command, &config.args, &env, cwd)?;
+                let (server_version, negotiated_version) =
+                    Self::handshake(&session).map_err(|legacy_error| {
+                        McpError::new(format!(
+                            "MCP negotiation failed: modern discover: {modern_error}; legacy initialize: {legacy_error}"
+                        ))
+                    })?;
+                Ok(Self {
+                    name: name.to_owned(),
+                    session,
+                    server_version,
+                    negotiated_version,
+                    era: ProtocolEra::Legacy,
+                })
+            }
+        }
+    }
+
+    fn discover(session: &StdioSession) -> Result<String, McpError> {
+        let result = session.call(
+            "server/discover",
+            modern_params(json!({})),
+            DISCOVER_TIMEOUT,
+        )?;
+        validate_modern_result(&result, "server/discover")?;
+        let versions = result
+            .get("supportedVersions")
+            .and_then(Value::as_array)
+            .ok_or_else(|| McpError::new("server/discover missing supportedVersions"))?;
+        if !versions
+            .iter()
+            .any(|version| version.as_str() == Some(MODERN_PROTOCOL_VERSION))
+        {
+            return Err(McpError::new(format!(
+                "server/discover does not offer {MODERN_PROTOCOL_VERSION}"
+            )));
+        }
+        if !result.get("capabilities").is_some_and(Value::is_object) {
+            return Err(McpError::new("server/discover missing capabilities"));
+        }
+        Ok(result
+            .get("_meta")
+            .and_then(|meta| meta.get("io.modelcontextprotocol/serverInfo"))
+            .and_then(|info| info.get("version"))
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .to_owned())
     }
 
     /// legacy initialize 握手：返回 (serverInfo.version, 协商出的协议版本)。
@@ -154,7 +217,7 @@ impl McpServer {
                 Some(cursor) => json!({"cursor": cursor}),
                 None => json!({}),
             };
-            let result = self.session.call("tools/list", params, LIST_TIMEOUT)?;
+            let result = self.call("tools/list", params, LIST_TIMEOUT, None)?;
             if let Some(list) = result.get("tools").and_then(Value::as_array) {
                 for tool in list {
                     let name = tool
@@ -181,6 +244,7 @@ impl McpServer {
                             .get("inputSchema")
                             .cloned()
                             .unwrap_or_else(|| json!({"type": "object"})),
+                        annotations: parse_annotations(tool.get("annotations")),
                         name,
                     });
                 }
@@ -208,11 +272,17 @@ impl McpServer {
     }
 
     /// 调用远端工具，返回 content 块拼接的文本（CLAT 的输出模型）。
-    fn call_tool(&self, name: &str, arguments: &Value) -> Result<Value, McpError> {
-        let result = self.session.call(
+    fn call_tool(
+        &self,
+        name: &str,
+        arguments: &Value,
+        cancel: &CancelToken,
+    ) -> Result<Value, McpError> {
+        let result = self.call(
             "tools/call",
             json!({"name": name, "arguments": arguments}),
             CALL_TIMEOUT,
+            Some(cancel),
         )?;
         let is_error = result
             .get("isError")
@@ -251,6 +321,94 @@ impl McpServer {
             text = format!("(MCP tool `{name}` returned no text content)");
         }
         Ok(Value::String(text))
+    }
+
+    fn call(
+        &self,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+        cancel: Option<&CancelToken>,
+    ) -> Result<Value, McpError> {
+        let params = match self.era {
+            ProtocolEra::Legacy => params,
+            ProtocolEra::Modern => modern_params(params),
+        };
+        let result = match cancel {
+            Some(cancel) => self
+                .session
+                .call_cancellable(method, params, timeout, cancel)?,
+            None => self.session.call(method, params, timeout)?,
+        };
+        if self.era == ProtocolEra::Modern {
+            validate_modern_result(&result, method)?;
+        }
+        Ok(result)
+    }
+}
+
+fn modern_params(mut params: Value) -> Value {
+    let object = params
+        .as_object_mut()
+        .expect("CLAT MCP request params are always objects");
+    object.insert(
+        "_meta".into(),
+        json!({
+            "io.modelcontextprotocol/protocolVersion": MODERN_PROTOCOL_VERSION,
+            "io.modelcontextprotocol/clientCapabilities": {},
+            "io.modelcontextprotocol/clientInfo": {
+                "name": "clat",
+                "version": env!("CARGO_PKG_VERSION"),
+            }
+        }),
+    );
+    params
+}
+
+fn validate_modern_result(result: &Value, method: &str) -> Result<(), McpError> {
+    match result.get("resultType").and_then(Value::as_str) {
+        Some("complete") => Ok(()),
+        Some("input_required") => Err(McpError::new(format!(
+            "MCP request `{method}` requires multi-round-trip input, which CLAT does not support yet"
+        ))),
+        Some(other) => Err(McpError::new(format!(
+            "MCP request `{method}` returned unsupported resultType {other:?}"
+        ))),
+        None => Err(McpError::new(format!(
+            "modern MCP response for `{method}` missing resultType"
+        ))),
+    }
+}
+
+fn parse_annotations(value: Option<&Value>) -> McpToolAnnotations {
+    McpToolAnnotations {
+        read_only: value
+            .and_then(|value| value.get("readOnlyHint"))
+            .and_then(Value::as_bool),
+        destructive: value
+            .and_then(|value| value.get("destructiveHint"))
+            .and_then(Value::as_bool),
+        open_world: value
+            .and_then(|value| value.get("openWorldHint"))
+            .and_then(Value::as_bool),
+    }
+}
+
+fn effect_from_annotations(annotations: McpToolAnnotations) -> ToolEffect {
+    let read_only = annotations.read_only.unwrap_or(false);
+    let open_world = annotations.open_world.unwrap_or(true);
+    if read_only {
+        if open_world {
+            ToolEffect::Network
+        } else {
+            ToolEffect::ExternalRead
+        }
+    } else if annotations.destructive.unwrap_or(true) {
+        ToolEffect::Destructive
+    } else if open_world {
+        ToolEffect::Network
+    } else {
+        ToolEffect::Write
     }
 }
 
@@ -330,14 +488,19 @@ impl Tool for McpTool {
             name: self.qualified_name.clone(),
             description: format!("[mcp:{}] {}", self.server.name(), self.info.description),
             input_schema: self.info.input_schema.clone(),
-            effect: ToolEffect::Execute,
+            effect: effect_from_annotations(self.info.annotations),
             strict: false,
         }
     }
 
-    fn invoke(&self, arguments: &Value, _project: &Project) -> Result<Value, ToolError> {
+    fn invoke(
+        &self,
+        arguments: &Value,
+        _project: &Project,
+        cancel: &CancelToken,
+    ) -> Result<Value, ToolError> {
         self.server
-            .call_tool(&self.info.name, arguments)
+            .call_tool(&self.info.name, arguments, cancel)
             .map_err(|error| ToolError::new(error.to_string()))
     }
 }
@@ -452,6 +615,49 @@ mod tests {
         }
     }
 
+    #[test]
+    fn modern_envelope_and_tool_effects_are_conservative() {
+        let params = modern_params(json!({"cursor": "next"}));
+        let meta = &params["_meta"];
+        assert_eq!(
+            meta["io.modelcontextprotocol/protocolVersion"],
+            MODERN_PROTOCOL_VERSION
+        );
+        assert!(meta["io.modelcontextprotocol/clientCapabilities"].is_object());
+        assert_eq!(meta["io.modelcontextprotocol/clientInfo"]["name"], "clat");
+
+        assert_eq!(
+            effect_from_annotations(McpToolAnnotations {
+                read_only: Some(true),
+                destructive: None,
+                open_world: Some(false),
+            }),
+            ToolEffect::ExternalRead
+        );
+        assert_eq!(
+            effect_from_annotations(McpToolAnnotations {
+                read_only: Some(true),
+                destructive: None,
+                open_world: None,
+            }),
+            ToolEffect::Network
+        );
+        assert_eq!(
+            effect_from_annotations(McpToolAnnotations {
+                read_only: Some(false),
+                destructive: Some(false),
+                open_world: Some(false),
+            }),
+            ToolEffect::Write
+        );
+        // Missing annotations use the MCP defaults and remain destructive;
+        // no remote hint can produce the auto-allowed native Read effect.
+        assert_eq!(
+            effect_from_annotations(McpToolAnnotations::default()),
+            ToolEffect::Destructive
+        );
+    }
+
     /// 工具名规则（A-08）：白名单清洗、非法字符归一、空段拒绝、
     /// 长名截断加哈希、易碰撞对保留可区分性。
     #[test]
@@ -529,38 +735,77 @@ for line in sys.stdin:
         assert_eq!(tools[0].name, "echo");
 
         let output = server
-            .call_tool("echo", &json!({"text": "hello"}))
+            .call_tool("echo", &json!({"text": "hello"}), &CancelToken::new())
             .expect("call");
         assert_eq!(output, json!("echo: hello"));
     }
 
-    /// 对 initialize 报 method not found 的服务（MCP 2.0 形态）：
-    /// 必须如实报错并说明 CLAT 尚不支持，绝不静默"协商成功"。
+    /// 严格 modern 链路：discover → tools/list → tools/call；所有请求
+    /// 必须携带 2026-07-28 的 per-request `_meta`，且不发送 initialize。
     #[test]
     #[ignore = "spawns a python3 subprocess; run explicitly with --ignored"]
-    fn handshake_rejection_is_reported_not_masked() {
+    fn end_to_end_modern_discover_list_and_call() {
         let script = r#"
 import json, sys
 def send(obj):
     sys.stdout.write(json.dumps(obj) + "\n")
     sys.stdout.flush()
+stage = 0
 for line in sys.stdin:
     msg = json.loads(line)
     if "id" not in msg:
         continue
-    if msg.get("method", "") == "initialize":
+    method = msg.get("method", "")
+    meta = msg.get("params", {}).get("_meta", {})
+    valid_meta = (
+        meta.get("io.modelcontextprotocol/protocolVersion") == "2026-07-28" and
+        isinstance(meta.get("io.modelcontextprotocol/clientCapabilities"), dict) and
+        meta.get("io.modelcontextprotocol/clientInfo", {}).get("name") == "clat")
+    if not valid_meta:
         send({"jsonrpc": "2.0", "id": msg["id"],
-              "error": {"code": -32601, "message": "method not found: initialize"}})
+              "error": {"code": -32602, "message": "missing modern envelope"}})
+    elif method == "server/discover" and stage == 0:
+        stage = 1
+        send({"jsonrpc": "2.0", "id": msg["id"], "result": {
+            "resultType": "complete",
+            "supportedVersions": ["2026-07-28"],
+            "capabilities": {"tools": {}},
+            "_meta": {"io.modelcontextprotocol/serverInfo": {
+                "name": "strict-modern", "version": "2.0"}}}})
+    elif method == "tools/list" and stage == 1:
+        stage = 2
+        send({"jsonrpc": "2.0", "id": msg["id"], "result": {
+            "resultType": "complete", "tools": [{
+                "name": "echo", "description": "echoes text",
+                "annotations": {"readOnlyHint": True, "openWorldHint": False},
+                "inputSchema": {"type": "object"}}]}})
+    elif method == "tools/call" and stage == 2:
+        stage = 3
+        text = msg["params"]["arguments"].get("text", "")
+        send({"jsonrpc": "2.0", "id": msg["id"], "result": {
+            "resultType": "complete",
+            "content": [{"type": "text", "text": "modern: " + text}]}})
     else:
-        send({"jsonrpc": "2.0", "id": msg["id"], "result": {"tools": []}})
+        send({"jsonrpc": "2.0", "id": msg["id"],
+              "error": {"code": -32600, "message": "wrong method order"}})
 "#;
         let config = McpServerConfig {
             command: "python3".into(),
             args: vec!["-c".into(), script.into()],
             ..Default::default()
         };
-        let outcome = McpServer::connect("v2", &config, Path::new("/tmp"));
-        let error = outcome.err().expect("must fail honestly");
-        assert!(error.to_string().contains("MCP 2.0"), "{error}");
+        let server = McpServer::connect("v2", &config, Path::new("/tmp")).expect("modern");
+        assert_eq!(server.negotiated_version(), MODERN_PROTOCOL_VERSION);
+        assert_eq!(server.server_version(), "2.0");
+        let tools = server.list_tools().expect("tools");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(
+            effect_from_annotations(tools[0].annotations),
+            ToolEffect::ExternalRead
+        );
+        let output = server
+            .call_tool("echo", &json!({"text": "hello"}), &CancelToken::new())
+            .expect("call");
+        assert_eq!(output, json!("modern: hello"));
     }
 }

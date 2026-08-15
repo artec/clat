@@ -40,7 +40,10 @@ irm https://raw.githubusercontent.com/artec/clat/main/install.ps1 | iex
 The scripts detect the operating system and architecture, prefer a
 prebuilt binary from GitHub Releases, and fall back to building from
 source when no release is available yet (they will offer to install the
-Rust toolchain if it is missing).
+Rust toolchain if it is missing). First installation needs no extra
+verification tool: the scripts download over HTTPS and require a matching
+SHA-256 manifest. Once installed, `clat upgrade` authenticates future release
+manifests with the public key embedded in the binary.
 
 ## Quick start
 
@@ -66,6 +69,8 @@ clat demo     # deterministic model → tool → model loop, no remote model nee
   adapters, DeepSeek reasoning replay
 - [Persistent state](docs/storage.md) — `~/.clat` layout, contents, and
   integrity guarantees
+- [Release signing](docs/releasing.md) — Minisign trust root, offline
+  signing, draft publishing, and key rotation
 - [Live-model validation](docs/live-validation.md) — the two gates
   before the first dogfood run
 

@@ -103,10 +103,26 @@ impl<'a> Run<'a> {
                 options: &self.model_options,
                 cancel: &self.cancel,
             };
-            let mut model_events = RunModelEventForwarder { turn, events };
+            let mut partial_text = String::new();
+            let mut model_events = RunModelEventForwarder {
+                turn,
+                events,
+                partial_text: &mut partial_text,
+            };
             let response = match self.model.stream(request, &mut model_events) {
                 Ok(response) => response,
-                Err(error) => return Err(fail(events, format!("model error: {error}"))),
+                Err(error) => {
+                    if !partial_text.is_empty() {
+                        items.push(ModelItem::assistant_text(partial_text));
+                    }
+                    return Err(fail(
+                        events,
+                        format!("model error: {error}"),
+                        turn,
+                        total_usage,
+                        items,
+                    ));
+                }
             };
 
             if let Some(usage) = &response.usage {
@@ -145,7 +161,13 @@ impl<'a> Run<'a> {
                 match response.finish_reason {
                     FinishReason::Completed | FinishReason::Refusal => {
                         if response.text.is_empty() {
-                            return Err(fail(events, "model completed without text or tool calls"));
+                            return Err(fail(
+                                events,
+                                "model completed without text or tool calls",
+                                turn,
+                                total_usage,
+                                items,
+                            ));
                         }
                         events.emit(RunEvent::RunCompleted {
                             output: response.text.clone(),
@@ -169,6 +191,9 @@ impl<'a> Run<'a> {
                         return Err(fail(
                             events,
                             format!("model stopped before completion: {reason:?}"),
+                            turn,
+                            total_usage,
+                            items,
                         ));
                     }
                 }
@@ -188,7 +213,13 @@ impl<'a> Run<'a> {
                 events.emit(RunEvent::ToolRequested { call: call.clone() });
 
                 let Some(tool) = self.tools.get(&call.name) else {
-                    return Err(fail(events, format!("unknown tool `{}`", call.name)));
+                    return Err(fail(
+                        events,
+                        format!("unknown tool `{}`", call.name),
+                        turn,
+                        total_usage,
+                        items,
+                    ));
                 };
                 let definition = tool.definition();
                 let decision = self.permissions.check(self.project, &definition, &call);
@@ -207,6 +238,9 @@ impl<'a> Run<'a> {
                                 "permission required for tool `{}`: {reason}",
                                 definition.name
                             ),
+                            turn,
+                            total_usage,
+                            items,
                         ));
                     }
                     PermissionDecision::Deny { reason } => {
@@ -238,7 +272,17 @@ impl<'a> Run<'a> {
                     tool: call.name.clone(),
                 });
 
-                let (output, is_error) = match tool.invoke(&call.arguments, self.project) {
+                let invocation = tool.invoke(&call.arguments, self.project, &self.cancel);
+                if self.cancel.is_cancelled() {
+                    return Ok(cancelled(
+                        events,
+                        turn,
+                        &total_usage,
+                        response.text.clone(),
+                        items,
+                    ));
+                }
+                let (output, is_error) = match invocation {
                     Ok(output) => (output, false),
                     Err(error) => (
                         serde_json::json!({
@@ -262,6 +306,9 @@ impl<'a> Run<'a> {
         Err(fail(
             events,
             format!("run exceeded the maximum of {} model turns", self.max_turns),
+            self.max_turns,
+            total_usage,
+            items,
         ))
     }
 }
@@ -269,10 +316,14 @@ impl<'a> Run<'a> {
 struct RunModelEventForwarder<'a> {
     turn: usize,
     events: &'a mut dyn EventSink,
+    partial_text: &'a mut String,
 }
 
 impl ModelEventSink for RunModelEventForwarder<'_> {
     fn emit(&mut self, event: ModelEvent) {
+        if let ModelEvent::TextDelta { delta } | ModelEvent::RefusalDelta { delta } = &event {
+            self.partial_text.push_str(delta);
+        }
         self.events.emit(RunEvent::ModelStream {
             turn: self.turn,
             event,
@@ -280,12 +331,18 @@ impl ModelEventSink for RunModelEventForwarder<'_> {
     }
 }
 
-fn fail(events: &mut dyn EventSink, message: impl Into<String>) -> RunError {
+fn fail(
+    events: &mut dyn EventSink,
+    message: impl Into<String>,
+    turns: usize,
+    usage: Usage,
+    items: Vec<ModelItem>,
+) -> RunError {
     let message = message.into();
     events.emit(RunEvent::RunFailed {
         message: message.clone(),
     });
-    RunError::new(message)
+    RunError::with_state(message, turns, usage, items)
 }
 
 /// Builds the success-shaped output for a user-cancelled run. Cancellation
@@ -321,13 +378,49 @@ pub struct RunOutput {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RunError {
     message: String,
+    turns: usize,
+    usage: Usage,
+    items: Vec<ModelItem>,
 }
 
 impl RunError {
     pub fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
+            turns: 0,
+            usage: Usage::default(),
+            items: Vec::new(),
         }
+    }
+
+    fn with_state(
+        message: impl Into<String>,
+        turns: usize,
+        usage: Usage,
+        items: Vec<ModelItem>,
+    ) -> Self {
+        Self {
+            message: message.into(),
+            turns,
+            usage,
+            items,
+        }
+    }
+
+    pub fn turns(&self) -> usize {
+        self.turns
+    }
+
+    pub fn usage(&self) -> &Usage {
+        &self.usage
+    }
+
+    pub fn items(&self) -> &[ModelItem] {
+        &self.items
+    }
+
+    pub fn into_parts(self) -> (String, usize, Usage, Vec<ModelItem>) {
+        (self.message, self.turns, self.usage, self.items)
     }
 }
 
@@ -342,7 +435,7 @@ impl std::error::Error for RunError {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{ModelError, ModelEvent, ModelResponse};
+    use crate::model::{ContentPart, ModelError, ModelEvent, ModelResponse};
     use crate::permission::{AllowAll, SafeByDefault};
     use crate::tool::{Tool, ToolCall, ToolDefinition, ToolEffect, ToolError};
     use serde_json::{Value, json};
@@ -365,7 +458,12 @@ mod tests {
             }
         }
 
-        fn invoke(&self, arguments: &Value, _project: &Project) -> Result<Value, ToolError> {
+        fn invoke(
+            &self,
+            arguments: &Value,
+            _project: &Project,
+            _cancel: &CancelToken,
+        ) -> Result<Value, ToolError> {
             Ok(arguments["text"].clone())
         }
     }
@@ -466,6 +564,86 @@ mod tests {
         assert!(matches!(events.last(), Some(RunEvent::RunCompleted { .. })));
     }
 
+    struct FailsAfterToolModel {
+        calls: usize,
+    }
+
+    impl Model for FailsAfterToolModel {
+        fn provider(&self) -> &str {
+            "test"
+        }
+
+        fn model_id(&self) -> &str {
+            "fails-after-tool"
+        }
+
+        fn stream(
+            &mut self,
+            request: ModelRequest<'_>,
+            events: &mut dyn ModelEventSink,
+        ) -> Result<ModelResponse, ModelError> {
+            self.calls += 1;
+            if self.calls == 2 {
+                assert!(matches!(
+                    request.items.last(),
+                    Some(ModelItem::ToolResult(_))
+                ));
+                events.emit(ModelEvent::TextDelta {
+                    delta: "partial before disconnect".into(),
+                });
+                return Err(ModelError::new("provider disconnected"));
+            }
+            Ok(ModelResponse {
+                text: String::new(),
+                tool_calls: vec![ToolCall {
+                    id: "call-before-failure".into(),
+                    name: "echo".into(),
+                    arguments: json!({"text": "keep me"}),
+                }],
+                finish_reason: FinishReason::ToolCalls,
+                usage: Some(Usage {
+                    input_tokens: 7,
+                    output_tokens: 2,
+                    ..Usage::default()
+                }),
+                provider_response_id: None,
+                provider_state: vec![],
+                reasoning: None,
+            })
+        }
+    }
+
+    #[test]
+    fn failed_runs_return_items_and_usage_produced_before_failure() {
+        let project = Project::new(".");
+        let mut tools = ToolRegistry::new();
+        tools.register(EchoTool);
+        let mut model = FailsAfterToolModel { calls: 0 };
+        let mut events = Vec::new();
+
+        let error = Run::new(&mut model, &tools, &AllowAll, &project)
+            .execute("persist the failed run", &mut events)
+            .expect_err("second provider turn fails");
+
+        assert_eq!(error.turns(), 2);
+        assert_eq!(error.usage().input_tokens, 7);
+        assert_eq!(error.usage().output_tokens, 2);
+        assert!(error.items().iter().any(|item| matches!(
+            item,
+            ModelItem::ToolCall(call) if call.id == "call-before-failure"
+        )));
+        assert!(error.items().iter().any(|item| matches!(
+            item,
+            ModelItem::ToolResult(result) if result.call_id == "call-before-failure"
+        )));
+        assert!(error.items().iter().any(|item| matches!(
+            item,
+            ModelItem::Assistant { content, .. }
+                if matches!(content.as_slice(), [ContentPart::Text(text)] if text == "partial before disconnect")
+        )));
+        assert!(matches!(events.last(), Some(RunEvent::RunFailed { .. })));
+    }
+
     struct FailingReadTool;
 
     impl Tool for FailingReadTool {
@@ -479,7 +657,12 @@ mod tests {
             }
         }
 
-        fn invoke(&self, _arguments: &Value, _project: &Project) -> Result<Value, ToolError> {
+        fn invoke(
+            &self,
+            _arguments: &Value,
+            _project: &Project,
+            _cancel: &CancelToken,
+        ) -> Result<Value, ToolError> {
             Err(ToolError::new("file not found"))
         }
     }
@@ -570,7 +753,12 @@ mod tests {
             }
         }
 
-        fn invoke(&self, _arguments: &Value, _project: &Project) -> Result<Value, ToolError> {
+        fn invoke(
+            &self,
+            _arguments: &Value,
+            _project: &Project,
+            _cancel: &CancelToken,
+        ) -> Result<Value, ToolError> {
             panic!("write tool must not execute before permission is granted")
         }
     }

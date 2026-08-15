@@ -14,6 +14,7 @@ pub mod tui;
 mod tui_input;
 mod tui_markdown;
 mod tui_model;
+mod tui_sessions;
 mod tui_worker;
 pub mod upgrade;
 

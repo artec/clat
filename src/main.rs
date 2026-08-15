@@ -1,5 +1,5 @@
 use clat::{
-    EventSink, FinishReason, Model, ModelError, ModelEvent, ModelEventSink, ModelItem,
+    CancelToken, EventSink, FinishReason, Model, ModelError, ModelEvent, ModelEventSink, ModelItem,
     ModelRequest, ModelResponse, Project, Run, RunEvent, SafeByDefault, Tool, ToolCall,
     ToolDefinition, ToolEffect, ToolError, ToolRegistry, Usage, register_native_read_tools,
 };
@@ -167,7 +167,12 @@ impl Tool for EchoTool {
         }
     }
 
-    fn invoke(&self, arguments: &Value, _project: &Project) -> Result<Value, ToolError> {
+    fn invoke(
+        &self,
+        arguments: &Value,
+        _project: &Project,
+        _cancel: &CancelToken,
+    ) -> Result<Value, ToolError> {
         arguments
             .get("text")
             .and_then(Value::as_str)

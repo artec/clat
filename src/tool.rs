@@ -1,3 +1,4 @@
+use crate::model::CancelToken;
 use crate::project::Project;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -10,6 +11,12 @@ pub enum ToolEffect {
     Write,
     Execute,
     Network,
+    /// Read-only work performed by an untrusted external process. Unlike
+    /// native [`Read`](Self::Read), this still crosses a permission boundary.
+    ExternalRead,
+    /// An external operation advertised as destructive (delete, overwrite,
+    /// revoke, and similar irreversible effects).
+    Destructive,
 }
 
 impl fmt::Display for ToolEffect {
@@ -20,6 +27,8 @@ impl fmt::Display for ToolEffect {
             Self::Write => f.write_str("writes files"),
             Self::Execute => f.write_str("runs commands"),
             Self::Network => f.write_str("network access"),
+            Self::ExternalRead => f.write_str("external read access"),
+            Self::Destructive => f.write_str("destructive external action"),
         }
     }
 }
@@ -72,7 +81,12 @@ impl std::error::Error for ToolError {}
 pub trait Tool: Send + Sync {
     fn definition(&self) -> ToolDefinition;
 
-    fn invoke(&self, arguments: &Value, project: &Project) -> Result<Value, ToolError>;
+    fn invoke(
+        &self,
+        arguments: &Value,
+        project: &Project,
+        cancel: &CancelToken,
+    ) -> Result<Value, ToolError>;
 }
 
 #[derive(Default)]

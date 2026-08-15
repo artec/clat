@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
@@ -54,8 +54,8 @@ jobs:
           tar -czf clat-${{ github.ref_name }}-${{ matrix.target }}.tar.gz \
             -C target/${{ matrix.target }}/release clat
 
-      # 随资产发布 SHA-256 校验文件：`clat upgrade` 下载后强制校验，
-      # 不匹配即中止（防 CDN/传输篡改；账户失陷需进一步签名链）。
+      # 每个平台只产出单项清单。CI 无权签名；离线维护者验收 draft
+      # 后才运行 ./publish 完成签名和发布。
       - name: Checksums
         shell: bash
         run: |
@@ -66,10 +66,31 @@ jobs:
             esac
           done
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: clat-${{ github.ref_name }}-${{ matrix.target }}.*
+          if-no-files-found: error
+
+  stage-draft:
+    name: Stage unsigned draft
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+
       - uses: softprops/action-gh-release@v3
         with:
-          generate_release_notes: true
-          # 单个 glob 已同时覆盖压缩包与 .sha256（`*.*` 也匹配
-          # `*.sha256`）。再显式列第二行会双重匹配同一文件，触发
-          # action 对刚上传资产的 update-asset 调用并报 Not Found。
-          files: clat-${{ github.ref_name }}-${{ matrix.target }}.*
+          # CI deliberately cannot access the offline release key. Assets and
+          # manifests stay invisible to latest-release clients until a
+          # maintainer runs ./publish and uploads signatures.
+          draft: true
+          generate_release_notes: false
+          body: ""
+          files: dist/*

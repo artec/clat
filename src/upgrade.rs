@@ -15,6 +15,10 @@ use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use ureq::Agent;
 
+const RELEASE_PUBLIC_KEY_FILE: &str = include_str!("../release/minisign.pub");
+const MAX_CHECKSUM_BYTES: usize = 4 * 1024;
+const MAX_SIGNATURE_BYTES: usize = 16 * 1024;
+
 /// CLAT 的官方仓库（owner/repo）。
 pub const REPO: &str = "artec/clat";
 
@@ -139,9 +143,11 @@ fn parse_release(body: &str) -> Result<Release, String> {
 /// 可执行资产，排除。
 pub fn select_asset(assets: &[ReleaseAsset]) -> Option<&ReleaseAsset> {
     let triple = target_triple();
-    let matches = assets
-        .iter()
-        .filter(|asset| asset.name.contains(triple) && !asset.name.ends_with(".sha256"));
+    let matches = assets.iter().filter(|asset| {
+        asset.name.contains(triple)
+            && !asset.name.ends_with(".sha256")
+            && !asset.name.ends_with(".minisig")
+    });
     matches
         .clone()
         .find(|asset| is_bare_binary(&asset.name))
@@ -242,16 +248,19 @@ fn verify_executable_file(path: &Path) -> Result<(), String> {
 ///
 /// 完整性（A-10）：
 /// - URL 主机必须在 GitHub 白名单内（防元数据被篡改后拉取任意站）；
-/// - `{asset}.sha256` 是必需资产，缺失、格式错误或不匹配均中止；
+/// - `{asset}.sha256` 及其 `.minisig` 签名均为必需资产；先用内置公钥
+///   验签清单，再按清单核对 SHA-256，任一步失败都中止；
 /// - 解包前验证所有 entry 路径，解包后拒绝任意符号链接；
 /// - 替换前验证产物带可执行魔数（ELF/Mach-O/PE）。
 fn download_asset(
     asset: &ReleaseAsset,
     checksum_asset: &ReleaseAsset,
+    signature_asset: &ReleaseAsset,
     work_dir: &Path,
 ) -> Result<PathBuf, String> {
     validate_asset_name(&asset.name)?;
     validate_asset_name(&checksum_asset.name)?;
+    validate_asset_name(&signature_asset.name)?;
     if !is_allowed_download_host(&asset.url) {
         let url = &asset.url;
         return Err(format!(
@@ -278,7 +287,7 @@ fn download_asset(
         .map_err(|error| format!("read {}: {error}", asset.name))?;
 
     // 哈希校验文件是发布契约的一部分；缺失由调用方在下载前拒绝。
-    verify_checksum(checksum_asset, &bytes, &asset.name)?;
+    verify_checksum(checksum_asset, signature_asset, &bytes, &asset.name)?;
 
     if is_bare_binary(&asset.name) {
         let target = work_dir.join("clat-download");
@@ -442,37 +451,21 @@ fn reject_extracted_links(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// 下载并比对 `{asset}.sha256`：文件内容应为 `<hex>  <name>` 格式
-/// （sha256sum 输出）。不匹配即中止升级，保留旧二进制。
+/// 下载、验签并比对 `{asset}.sha256`。签名覆盖清单的原始字节，公钥
+/// 编译进 CLAT 二进制，因此 GitHub 账户/CDN 只能替换资产而无法伪造
+/// 一份可通过验证的新清单。
 fn verify_checksum(
     checksum: &ReleaseAsset,
+    signature: &ReleaseAsset,
     asset_bytes: &[u8],
     asset_name: &str,
 ) -> Result<(), String> {
-    if !is_allowed_download_host(&checksum.url) {
-        return Err(format!(
-            "checksum {}: host not in the GitHub allowlist",
-            checksum.name
-        ));
-    }
-    let response = agent()
-        .get(&checksum.url)
-        .header("User-Agent", format!("clat/{}", env!("CARGO_PKG_VERSION")))
-        .call()
-        .map_err(|error| format!("download {}: {error}", checksum.name))?;
-    if !response.status().is_success() {
-        return Err(format!(
-            "download {}: HTTP {}",
-            checksum.name,
-            response.status()
-        ));
-    }
-    let mut text = String::new();
-    let (_, mut body) = response.into_parts();
-    body.as_reader()
-        .read_to_string(&mut text)
-        .map_err(|error| format!("read {}: {error}", checksum.name))?;
-    let expected = parse_checksum_file(&text, &checksum.name, asset_name)?;
+    let checksum_bytes = download_small_asset(checksum, "checksum", MAX_CHECKSUM_BYTES)?;
+    let signature_bytes = download_small_asset(signature, "signature", MAX_SIGNATURE_BYTES)?;
+    verify_manifest_signature(&checksum_bytes, &signature_bytes)?;
+    let text = std::str::from_utf8(&checksum_bytes)
+        .map_err(|_| format!("checksum {} is not UTF-8", checksum.name))?;
+    let expected = parse_checksum_file(text, &checksum.name, asset_name)?;
     let actual = sha256_hex(asset_bytes);
     if expected != actual {
         return Err(format!(
@@ -480,6 +473,56 @@ fn verify_checksum(
         ));
     }
     Ok(())
+}
+
+fn download_small_asset(asset: &ReleaseAsset, kind: &str, cap: usize) -> Result<Vec<u8>, String> {
+    if !is_allowed_download_host(&asset.url) {
+        return Err(format!(
+            "{kind} {}: host not in the GitHub allowlist",
+            asset.name
+        ));
+    }
+    let response = agent()
+        .get(&asset.url)
+        .header("User-Agent", format!("clat/{}", env!("CARGO_PKG_VERSION")))
+        .call()
+        .map_err(|error| format!("download {}: {error}", asset.name))?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "download {}: HTTP {}",
+            asset.name,
+            response.status()
+        ));
+    }
+    let (_, body) = response.into_parts();
+    let mut bytes = Vec::new();
+    body.into_reader()
+        .take((cap + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("read {}: {error}", asset.name))?;
+    if bytes.len() > cap {
+        return Err(format!("{kind} {} exceeds {cap} bytes", asset.name));
+    }
+    Ok(bytes)
+}
+
+fn release_public_key() -> Result<minisign_verify::PublicKey, String> {
+    let encoded = RELEASE_PUBLIC_KEY_FILE
+        .lines()
+        .find(|line| !line.trim().is_empty() && !line.starts_with("untrusted comment:"))
+        .ok_or("embedded release public key is missing")?;
+    minisign_verify::PublicKey::from_base64(encoded.trim())
+        .map_err(|error| format!("invalid embedded release public key: {error}"))
+}
+
+fn verify_manifest_signature(manifest: &[u8], signature: &[u8]) -> Result<(), String> {
+    let signature = std::str::from_utf8(signature)
+        .map_err(|_| "release manifest signature is not UTF-8".to_owned())?;
+    let signature = minisign_verify::Signature::decode(signature)
+        .map_err(|error| format!("invalid release manifest signature: {error}"))?;
+    release_public_key()?
+        .verify(manifest, &signature, false)
+        .map_err(|error| format!("release manifest signature verification failed: {error}"))
 }
 
 fn parse_checksum_file(
@@ -579,6 +622,17 @@ pub fn upgrade(check_only: bool) -> Result<UpgradeOutcome, String> {
                 release.tag
             )
         })?;
+    let signature_name = format!("{checksum_name}.minisig");
+    let signature_asset = release
+        .assets
+        .iter()
+        .find(|candidate| candidate.name == signature_name)
+        .ok_or_else(|| {
+            format!(
+                "release {} is missing required signature asset {signature_name}",
+                release.tag
+            )
+        })?;
     let exe = std::env::current_exe().map_err(|error| format!("locate clat binary: {error}"))?;
     // 临时目录带纳秒级随机后缀并以独占方式创建：同用户进程无法
     // 预建目录/符号链接制造竞争（A-10）。碰撞时换名重试。
@@ -601,7 +655,7 @@ pub fn upgrade(check_only: bool) -> Result<UpgradeOutcome, String> {
     let Some(work_dir) = work_dir else {
         return Err("create work dir: all attempts failed".into());
     };
-    let result = download_asset(asset, checksum_asset, &work_dir)
+    let result = download_asset(asset, checksum_asset, signature_asset, &work_dir)
         .and_then(|binary| replace_binary(&binary, &exe));
     let _ = fs::remove_dir_all(&work_dir);
     result.map(|()| UpgradeOutcome::Installed { tag: release.tag })
@@ -746,6 +800,18 @@ mod tests {
         ] {
             assert!(parse_checksum_file(invalid, "clat.tar.gz.sha256", "clat.tar.gz").is_err());
         }
+    }
+
+    #[test]
+    fn release_manifest_requires_a_valid_signature_from_embedded_key() {
+        let manifest = include_bytes!("../tests/fixtures/release-manifest.sha256");
+        let signature = include_bytes!("../tests/fixtures/release-manifest.sha256.minisig");
+        verify_manifest_signature(manifest, signature).expect("fixture signature");
+
+        let mut tampered = manifest.to_vec();
+        tampered[0] = if tampered[0] == b'a' { b'b' } else { b'a' };
+        assert!(verify_manifest_signature(&tampered, signature).is_err());
+        assert!(verify_manifest_signature(manifest, b"not a minisign signature").is_err());
     }
 
     #[test]

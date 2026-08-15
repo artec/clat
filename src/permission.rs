@@ -95,11 +95,13 @@ impl PermissionPolicy for SafeByDefault {
     ) -> PermissionDecision {
         match tool.effect {
             ToolEffect::Pure | ToolEffect::Read => PermissionDecision::Allow,
-            ToolEffect::Write | ToolEffect::Execute | ToolEffect::Network => {
-                PermissionDecision::Ask {
-                    reason: format!("tool `{}` can cause side effects", tool.name),
-                }
-            }
+            ToolEffect::Write
+            | ToolEffect::Execute
+            | ToolEffect::Network
+            | ToolEffect::ExternalRead
+            | ToolEffect::Destructive => PermissionDecision::Ask {
+                reason: format!("tool `{}` can cause side effects", tool.name),
+            },
         }
     }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "clat"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2024"
 description = "A fast, local-first, open-source command-line agent runtime"
 license-file = "LICENSE"
@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 crossterm = "0.29"
+minisign-verify = "0.2.5"
 ratatui = "0.30.2"
 rusqlite = { version = "0.40.1", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
