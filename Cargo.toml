@@ -1,6 +1,6 @@
 [package]
 name = "clat"
-version = "0.3.4"
+version = "0.4.0"
 edition = "2024"
 description = "A fast, local-first, open-source command-line agent runtime"
 license-file = "LICENSE"
@@ -10,6 +10,12 @@ name = "clat"
 path = "src/main.rs"
 
 [dependencies]
+# Capability-relative filesystem operations keep project writes bound to an
+# opened directory handle across symlink and directory-replacement races.
+cap-std = "4.0.2"
+# Cross-platform process groups (Unix) and Job Objects (Windows) make command
+# timeout/cancellation cover the complete descendant tree.
+command-group = "5.0.1"
 crossterm = "0.29"
 minisign-verify = "0.2.5"
 ratatui = "0.30.2"

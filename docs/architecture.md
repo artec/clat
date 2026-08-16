@@ -27,6 +27,38 @@ Run
   `Tool::invoke` — inside long-running tool waits (an in-flight MCP
   request aborts within ~25 ms and notifies the server).
 
+## Agentic loop (v0.3.4)
+
+CLAT is now a **minimal viable agent**: the read → change → verify loop is
+closed. What the agent can do autonomously:
+
+```text
+inspect (list/read/search)
+   → locate a problem
+      → change it (edit_file / write_file)
+         → verify (run_command: build, test)
+            → read the failure → change again → until green
+```
+
+Current boundaries of that capability, and what is deliberately **not**
+built yet:
+
+| Capability | State |
+|---|---|
+| Multi-turn run with cancellation and failure persistence | done |
+| Read tools (list/read/search), project-scoped | done |
+| Write/edit tools with capability-relative path binding | done |
+| Command execution with process-tree ownership, timeout, output budget | done |
+| Permission review for every side-effecting call | done |
+| Project context injection (CLAT.md, git state into the system prompt) | not built — the system prompt is a fixed string today |
+| Context management (compaction/truncation for long sessions) | not built — `message_items` grows unbounded |
+| Turn budget configurability | not built — fixed 32 turns, exceeding it fails the run |
+| Headless mode (`clat exec "prompt"`) | not built — the core is client-neutral but only the TUI drives it |
+| Subagents, image input, multi-agent orchestration | deferred by constitution |
+
+The intended growth order is: project context injection → context
+management → headless mode, each driven by real dogfood need.
+
 ## Model Protocol v0.1
 
 CLAT models exchange typed, provider-neutral data:
@@ -76,18 +108,41 @@ A conversation is an ordered list of `ModelItem`s:
 The item list is the source of truth for model context and is persisted
 verbatim (see [storage](storage.md)).
 
-## Native read tools
+## Native tools
 
-CLAT ships three project-scoped read tools:
+CLAT ships project-scoped read tools:
 
 - `list_files` — inspect repository structure with depth and entry limits
 - `read_file` — read UTF-8 files by line range with byte limits
 - `search` — search project text files and return path/line/text matches
 
-All paths are constrained to the current project root. Absolute paths,
-`..` traversal, and paths that resolve outside the project are rejected.
+and, for trusted projects, three side-effecting tools that close the
+agentic loop (read → change → verify):
+
+- `write_file` — create or overwrite files atomically (temp file +
+  rename; a failed write never leaves partial content); existing file
+  permissions are preserved
+- `edit_file` — replace one exact, unique text snippet; ambiguous or
+  missing matches error without touching the file; the commit
+  re-verifies the read snapshot under a parent-directory lock, so
+  cooperating CLAT writers conflict instead of overwriting each other
+- `run_command` — run a shell command in the project root; termination
+  covers the whole process tree (Unix process group TERM → unconditional
+  KILL after a fixed grace; Windows Job Object), output past the 32 KiB
+  cap is drained without changing command semantics; `exit_code` /
+  `signal` / `timed_out` form the result contract
+
+All paths are constrained to the current project root. Absolute paths and
+`..` traversal are rejected. Reads reject paths that resolve outside the
+project; writes perform parent creation, inspection, temporary-file creation,
+and rename relative to opened capability directory handles, so a symlink or
+concurrent directory replacement cannot retarget later I/O outside the root.
 Common generated and dependency directories such as `.git`, `node_modules`,
-`target`, `dist`, and `build` are skipped by default.
+`target`, `dist`, and `build` are skipped by default. Side-effecting
+tools pass through the permission model on every call — see
+[permissions](permissions.md) and the audit trail under
+[docs/audit](audit/) for the adversarial review these guarantees went
+through.
 
 ## Project trust
 

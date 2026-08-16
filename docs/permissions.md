@@ -38,6 +38,12 @@ shows a permission dialog instead of aborting:
 - The `fields` line lists every top-level argument key, so dangerous
   targets (a `command`, a `path`, a URL) cannot hide at the bottom of a
   long JSON payload.
+- `write_file`, `edit_file`, and `run_command` render a readable
+  preview instead of raw JSON: `edit_file` shows the `- old_str` /
+  `+ new_str` diff, `write_file` shows the target path and full
+  content, `run_command` shows the command line and its working
+  directory / timeout. The preview is the reviewed content — the same
+  scroll-and-unlock rules apply to it.
 - Long arguments scroll (`↑`/`↓` line by line, `PageUp`/`PageDown` by
   page, `Home`/`End` to the ends). **Allow is disabled until the final
   line has actually been visible** — jumping to `End` alone does not
@@ -45,11 +51,34 @@ shows a permission dialog instead of aborting:
   available.
 - If the terminal is too small to show any argument lines, Allow stays
   disabled until the window is enlarged.
+- Preview wrapping uses the dialog's actual rendered width (84% of the
+  current terminal), so a narrow terminal cannot horizontally clip a long
+  command tail while still counting that line as reviewed.
 
 A denial is returned to the model as a structured tool error
 (`ToolResult` with `is_error`), so the agent can adapt its approach
 instead of the run aborting. The tool itself never executes — the
 permission check happens before invocation.
+
+## Native write and execute tools
+
+The side-effecting native tools and their guarantees:
+
+| Tool | Effect | Guarantees |
+|---|---|---|
+| `write_file` | `Write` | project-relative only; parent creation, reads, temporary-file creation, and rename are all capability-relative to opened project directory handles, so symlink or directory-replacement races cannot redirect I/O outside the project; final symlink targets are rejected; atomic temp-file+rename — a failed write never leaves partial content; existing file permissions (mode bits) are preserved; content capped at 1 MiB |
+| `edit_file` | `Write` | exact unique match required (zero or multiple matches error out, file untouched); a parent-directory lock serializes cooperating CLAT writers, and the commit re-verifies the read snapshot inside the same lock before rename — a competing CLAT modification surfaces as a conflict error instead of a silent overwrite |
+| `run_command` | `Execute` | runs only in the canonical project root; always terminates (exit, bounded timeout, or `Esc` cancellation); Unix uses a dedicated process group and sends TERM followed by an unconditional group KILL after the grace period, even if the leader shell already exited; Windows uses a Job Object so termination covers `cmd.exe` and descendants; stdout/stderr each capped at 32 KiB **without changing command semantics** — output past the cap is drained and discarded, never closing the pipe on the command |
+
+Write and execute tools are registered only for trusted projects (the
+trust gate), and every call still asks. Environment variables are
+inherited from the CLAT process — a command sees what you would see.
+
+The edit lock coordinates CLAT writers that follow this protocol. It is not
+a transaction against arbitrary external editors: filesystem locks are
+advisory on some platforms, so a non-cooperating process can still change the
+same entry. Capability-relative I/O still prevents such a process from using
+path replacement to redirect CLAT's write outside the project.
 
 ## Design
 

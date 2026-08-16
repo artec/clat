@@ -2,6 +2,8 @@
 
 **cl + at = command-line agent**
 
+Homepage: <https://cl.at.cn>
+
 CLAT is a fast, local-first, open-source command-line agent runtime
 written in Rust. The project starts with a simple rule: build the agent
 we actually want to use every day, dogfood it on real repositories, and
@@ -11,6 +13,13 @@ generalize those needs into reusable open-source capabilities.
 
 Early development. The first milestone is a useful single-agent coding
 workflow that can work on real projects such as ECAR and CLAT itself.
+
+Since v0.3.4 that loop is closed: the agent can inspect the repository
+(`list_files` / `read_file` / `search`), change it (`write_file` /
+`edit_file`), and verify its own work (`run_command`) — every
+side-effecting step behind interactive permission review. Current
+boundaries and the growth plan are tracked in
+[docs/architecture.md](docs/architecture.md#agentic-loop-v034).
 
 ## Principles
 

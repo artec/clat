@@ -82,7 +82,11 @@ pub(crate) fn execute_run(
         .with_model_options(options)
         .with_cancel_token(cancel.clone())
         .with_instructions(
-            "You are CLAT, a command line agent operating on the current project. Use project tools to inspect real files when needed. Use project-relative paths and recover from tool errors instead of guessing.",
+            "You are CLAT, a command line agent operating on the current project. \
+             Use project tools to inspect real files when needed and run commands to \
+             verify your own work (build, test). Use project-relative paths and \
+             recover from tool errors instead of guessing. Prefer edit_file with the \
+             exact text from read_file over rewriting whole files.",
         )
         .execute_with_items(history_items, prompt, &mut sink)
         .map_err(|error| {

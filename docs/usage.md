@@ -82,6 +82,26 @@ prompt is a security boundary, not a decoration.
 - A cache-hit percentage is shown once the provider reports cached input
   tokens.
 
+## The agent can edit and run commands
+
+Since v0.3.4 CLAT is not read-only: for trusted projects the model has
+`write_file`, `edit_file`, and `run_command`, so it can fix a bug, run
+the tests, read the failure, and try again on its own. Two habits make
+this safe:
+
+- **Review before approving.** Every write/execute call opens a
+  permission dialog: `edit_file` shows the old→new diff, `write_file`
+  the full content, `run_command` the command with its working directory
+  and timeout. Approval unlocks only after the whole preview has been
+  scrolled through — a dangerous tail cannot hide below the fold.
+- **Work on a clean tree.** The natural undo for anything the agent does
+  is `git checkout .` / `git clean`. Start dogfooding sessions from a
+  committed state so a bad edit is always one command away from gone.
+
+`run_command` output is capped (32 KiB per stream) but the command
+itself is never killed by the cap; timeouts and `Esc` terminate the
+whole process tree, not just the shell.
+
 ## MCP tools
 
 Tools exposed by configured MCP servers (`~/.clat/mcp.json`) appear with

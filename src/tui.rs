@@ -774,8 +774,11 @@ impl App {
 
         // MCP 服务器是全局能力，但绝不在项目目录里启动：固定以
         // `~/.clat` 为工作目录，杜绝未受信项目通过 cwd 劫持命令。
+        // 写入/执行工具只对已信任项目注册（本函数仅在确权后调用），
+        // 每次调用仍经权限审阅。
         let mut tools = ToolRegistry::new();
         register_native_read_tools(&mut tools);
+        crate::native_tools::register_native_write_tools(&mut tools);
         let mcp_config = crate::mcp_client::load_mcp_config(self.storage.root())
             .map_err(|error| error.to_string())?;
         let (mcp_connected, mcp_failures) =
@@ -1971,7 +1974,10 @@ impl App {
             return;
         };
         let area = frame.area();
-        let inner_width = 84usize.saturating_sub(2);
+        // `centered_rect(84, ..)` 的 84 是百分比，不是 84 列。预览
+        // 必须使用本次真实矩形宽度换行，否则在 80 列终端里会按
+        // 78 列排版、再被约 65 列的框裁掉危险命令尾部。
+        let argument_width = permission_argument_width(area);
         let mut lines = vec![
             Line::from(Span::styled(
                 "Permission required",
@@ -1987,23 +1993,38 @@ impl App {
         if let Some(keys) = top_level_argument_keys(&pending.request.arguments) {
             lines.push(Line::from(format!("fields:    {keys}")));
         }
-        lines.push(Line::from("arguments:"));
-        // 完整 pretty JSON 逐行入列（不再静默截断到 8 行）；对框高
-        // 不足时在尾部追加"还有 N 行未显示"的醒目计数。
-        let pretty = serde_json::to_string_pretty(&pending.request.arguments)
-            .unwrap_or_else(|_| "<unavailable>".into());
-        let mut argument_lines = Vec::new();
-        for source_line in pretty.split('\n') {
-            for wrapped in wrap_text(source_line, inner_width.saturating_sub(4)) {
-                argument_lines.push(Line::from(format!("  {wrapped}")));
+        // 写/执行类工具的专用预览：JSON 转义长串对内容审阅不友好
+        // （write_file 的 content 会变成一行带 \n 的转义串）。改为
+        // 人类可读形式：edit_file 显示 old→new 的迷你 diff，write_file
+        // 显示目标与内容，run_command 突出命令与执行环境。其余工具
+        // 回退完整 pretty JSON。两种形态共享同一滚动/强制审阅机制
+        // ——预览行就是被审阅的参数。
+        let argument_lines = match write_tool_preview(
+            &pending.request.tool,
+            &pending.request.arguments,
+            argument_width,
+        ) {
+            Some(preview) => preview,
+            None => {
+                // 完整 pretty JSON 逐行入列（不再静默截断到 8 行）；
+                // 对框高不足时在尾部追加"还有 N 行未显示"的醒目计数。
+                let pretty = serde_json::to_string_pretty(&pending.request.arguments)
+                    .unwrap_or_else(|_| "<unavailable>".into());
+                let mut json_lines = Vec::new();
+                for source_line in pretty.split('\n') {
+                    for wrapped in wrap_text(source_line, argument_width) {
+                        json_lines.push(Line::from(format!("  {wrapped}")));
+                    }
+                }
+                json_lines
             }
-        }
+        };
         // 对话框最高占屏（减边距）。参数可滚动，且只有最后一页
         // 确实进入视口后才开放批准键，避免隐藏字段未审阅即放行。
         let max_dialog_height = area.height.saturating_sub(2);
         let reserved = lines.len() + 5; // 状态 + 空行 + 快捷键 + 边框
         let available_for_arguments = (max_dialog_height as usize).saturating_sub(reserved);
-        if available_for_arguments == 0 {
+        if available_for_arguments == 0 || argument_width < 8 {
             pending.argument_page_size = 0;
             pending.argument_line_count = argument_lines.len();
             let compact = vec![
@@ -2307,6 +2328,106 @@ fn top_level_argument_keys(arguments: &serde_json::Value) -> Option<String> {
     Some(summary)
 }
 
+/// 权限对话框的写/执行工具专用预览。返回 None 表示该工具不适用
+/// （回退完整 JSON）。预览行就是被审阅的参数：强制滚动与批准解锁
+/// 逻辑对它一视同仁——渲染形式变了，审阅义务不变。
+///
+/// NWE-04：命令/路径/内容一律**逻辑行拆分 + wrap_text 换行**——
+/// 未换行的超长命令尾部会被水平裁掉，而审阅计数只有 1 行，批准
+/// 在用户没看到命令尾部时就解锁。控制字符（\n、\t 之外）转成
+/// 可见的 ^X 记法，不可再藏。
+fn write_tool_preview(
+    tool: &str,
+    arguments: &serde_json::Value,
+    width: usize,
+) -> Option<Vec<Line<'static>>> {
+    let object = arguments.as_object()?;
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    // 控制字符可见化：\r、\0、ESC 等 shell 语义字符在预览里显形
+    // 为 ^M、^@、^[，无法借零宽度隐身。
+    fn visible(text: &str) -> String {
+        text.chars()
+            .map(|ch| match ch {
+                '\t' => "    ".to_owned(),
+                '\n' => ch.to_string(),
+                '\x00'..='\x1f' => format!("^{}", (b'@' + ch as u8) as char),
+                '\x7f' => "^?".to_owned(),
+                _ => ch.to_string(),
+            })
+            .collect()
+    }
+    // 标题（edit/write 路径、$ 命令）也换行并可见化控制字符——
+    // 路径和命令同样可能长于对话框宽度，藏尾部即藏目标。
+    fn push_header(lines: &mut Vec<Line<'static>>, title: String, width: usize) {
+        for logical in visible(&title).split('\n') {
+            for wrapped in wrap_text(logical, width.saturating_sub(2)) {
+                lines.push(Line::from(Span::styled(
+                    format!("  {wrapped}"),
+                    Style::default().add_modifier(Modifier::BOLD),
+                )));
+            }
+        }
+    }
+    // 多行文本先按逻辑行拆分再换行：wrap_text 视 \n 为零宽字符，
+    // 直接喂多行会把内容挤成一坨，审阅时无法分清结构。
+    let push_wrapped = |lines: &mut Vec<Line<'static>>, prefix: &str, text: &str| {
+        for logical in visible(text).split('\n') {
+            for wrapped in wrap_text(logical, width.saturating_sub(prefix.len() + 2)) {
+                lines.push(Line::from(format!("{prefix} {wrapped}")));
+            }
+        }
+    };
+    match tool {
+        "edit_file" => {
+            let path = object.get("path")?.as_str()?;
+            let old_str = object.get("old_str")?.as_str()?;
+            let new_str = object
+                .get("new_str")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            push_header(&mut lines, format!("edit {path}"), width);
+            lines.push(Line::from(Span::styled(
+                "- old_str (must match the file exactly, once):",
+                Style::default().add_modifier(Modifier::DIM),
+            )));
+            push_wrapped(&mut lines, "-", old_str);
+            lines.push(Line::from(Span::styled(
+                "+ new_str:",
+                Style::default().add_modifier(Modifier::DIM),
+            )));
+            push_wrapped(&mut lines, "+", new_str);
+        }
+        "write_file" => {
+            let path = object.get("path")?.as_str()?;
+            let content = object.get("content")?.as_str()?;
+            push_header(
+                &mut lines,
+                format!("write {path} ({} bytes)", content.len()),
+                width,
+            );
+            for logical in visible(content).split('\n') {
+                for wrapped in wrap_text(logical, width.saturating_sub(2)) {
+                    lines.push(Line::from(format!("  {wrapped}")));
+                }
+            }
+        }
+        "run_command" => {
+            let command = object.get("command")?.as_str()?;
+            let timeout = object
+                .get("timeout_seconds")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(120);
+            push_header(&mut lines, format!("$ {command}"), width);
+            lines.push(Line::from(Span::styled(
+                format!("  in the project root · timeout {timeout}s"),
+                Style::default().add_modifier(Modifier::DIM),
+            )));
+        }
+        _ => return None,
+    }
+    Some(lines)
+}
+
 /// 扩展“从首行起连续看过”的区间。新视口与既有区间相接/重叠时
 /// 才前进；跳过中间行（例如直接 End）不能伪造完整审阅。
 fn advance_reviewed_through(reviewed_through: usize, start: usize, end: usize) -> usize {
@@ -2355,6 +2476,16 @@ fn centered_rect(percent_x: u16, height: u16, area: Rect) -> Rect {
         ])
         .split(vertical);
     horizontal[1]
+}
+
+/// 权限参数内容在给定终端区域内实际可用的列数。与
+/// `draw_permission_dialog` 共用同一矩形和边距计算，避免测试或
+/// 预览再次把百分比误当成固定列数。
+fn permission_argument_width(area: Rect) -> usize {
+    centered_rect(84, 1, area)
+        .width
+        .saturating_sub(2) // 边框
+        .saturating_sub(4) as usize // 参数缩进/留白
 }
 
 /// 渲染项目确权对话框。独立于 App 以便用 TestBackend 验证边框完整。
@@ -2411,6 +2542,129 @@ mod tests {
         let reviewed = advance_reviewed_through(reviewed, 10, 50);
         let reviewed = advance_reviewed_through(reviewed, 50, 100);
         assert_eq!(reviewed, 100);
+    }
+
+    /// NWE-04：超长命令必须换行成多个审阅行——危险尾部（藏在第
+    /// 200 列的 `; shred`）要成为**可滚动到的独立行**，而不是被
+    /// 水平裁掉后永不可见。旧实现单行预览 + 1 行计数 = 尾部不可见
+    /// 即解锁批准。
+    #[test]
+    fn long_command_previews_as_multiple_reviewable_lines() {
+        let command = format!(
+            "cargo test --features long-boring-prefix-{} ; shred /tmp/victim",
+            "x".repeat(200)
+        );
+        let lines = write_tool_preview(
+            "run_command",
+            &serde_json::json!({"command": command, "timeout_seconds": 30}),
+            60,
+        )
+        .expect("preview");
+        assert!(
+            lines.len() > 2,
+            "a 200+ column command must wrap into many review lines, got {}",
+            lines.len()
+        );
+        let rendered: String = lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            rendered.contains("shred"),
+            "the dangerous tail must be present in reviewable lines"
+        );
+        // 尾部落在自己的审阅行上：含 shred/victim 的行存在，且
+        // 任何单行宽度不超过可用宽度（没有被水平裁掉的内容）。
+        assert!(
+            rendered.split('\n').any(|line| line.contains("victim")),
+            "the dangerous tail must land on its own reviewable line"
+        );
+    }
+
+    /// 审计回归：80 列终端的权限框只有约 67 列，参数区更窄。
+    /// 换行宽度必须来自真实矩形；旧实现固定传 78，命令尾部会在
+    /// Paragraph 渲染时被水平裁掉，但一行审阅计数仍可解锁批准。
+    #[test]
+    fn permission_preview_uses_the_actual_dialog_width() {
+        let area = Rect::new(0, 0, 80, 24);
+        let width = permission_argument_width(area);
+        assert!(width < 78, "84% must not be treated as 84 columns");
+        let command = format!("printf safe-{}; rm -rf ./victim", "x".repeat(70));
+        let lines = write_tool_preview(
+            "run_command",
+            &serde_json::json!({"command": command, "timeout_seconds": 30}),
+            width,
+        )
+        .expect("preview");
+        let rendered = lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            rendered
+                .iter()
+                .all(|line| UnicodeWidthStr::width(line.as_str()) <= width),
+            "no review line may be clipped by the actual dialog"
+        );
+        assert!(
+            rendered.iter().any(|line| line.contains("rm -rf ./victim")),
+            "the dangerous command tail must be a visible review line"
+        );
+    }
+
+    /// NWE-04：命令内嵌换行拆成独立审阅行（shell 语义上它们就是
+    /// 两条命令）；控制字符显形为 ^X 记法，不可借零宽度隐身。
+    #[test]
+    fn multiline_and_control_characters_are_visible_in_previews() {
+        let lines = write_tool_preview(
+            "run_command",
+            &serde_json::json!({"command": "echo a\necho b\rc\x1b[2J tail"}),
+            60,
+        )
+        .expect("preview");
+        let rendered: Vec<String> = lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect();
+        let joined = rendered.join("\n");
+        assert!(
+            rendered.iter().any(|line| line.contains("echo b")),
+            "embedded newlines must split into separate review lines"
+        );
+        assert!(joined.contains("^M"), "CR must be visible as ^M");
+        assert!(joined.contains("^["), "ESC must be visible as ^[");
+
+        // edit_file 的多行 old_str 保持行结构。
+        let lines = write_tool_preview(
+            "edit_file",
+            &serde_json::json!({
+                "path": "src/main.rs",
+                "old_str": "fn a() {\n    body\n}",
+                "new_str": "fn a() {\n    body2\n}"
+            }),
+            60,
+        )
+        .expect("preview");
+        assert!(
+            lines.len() >= 8,
+            "three-line old_str and new_str must render as distinct lines"
+        );
     }
 
     /// 确权对话框四条边框必须完整渲染：定位左上角 `┌`，断言左列
