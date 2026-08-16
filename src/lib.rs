@@ -24,15 +24,16 @@ pub mod upgrade;
 
 pub use application::{
     ApplicationError, ApplicationEvent, ApplicationRunDone, ApplicationRunFailure,
-    ApplicationRunRequest, ApplicationRunResult, BootstrapApplication, McpServerInfoDto,
-    McpStatusDto, ProjectSnapshot, RunHandle, SessionSnapshot, TrustedProjectApplication,
+    ApplicationRunRequest, ApplicationRunResult, BootstrapApplication, CompactHandle,
+    CompactReport, McpServerInfoDto, McpStatusDto, ProjectSnapshot, RunHandle, SessionSnapshot,
+    TrustedProjectApplication,
 };
 pub use event::{EventSink, ModelOutcome, RunEvent};
 pub use model::{
-    CancelToken, ContentPart, FinishReason, Model, ModelConfig, ModelError, ModelEvent,
-    ModelEventSink, ModelFactory, ModelItem, ModelOptions, ModelProtocol, ModelRequest,
+    CancelToken, ContentPart, FinishReason, Model, ModelConfig, ModelError, ModelErrorKind,
+    ModelEvent, ModelEventSink, ModelFactory, ModelItem, ModelOptions, ModelProtocol, ModelRequest,
     ModelResponse, ProviderCredentials, ProviderDescriptor, ProviderFieldDescriptor,
-    ProviderFieldKind, ProviderState, Usage,
+    ProviderFieldKind, ProviderState, RetryHint, Usage,
 };
 pub use permission::{
     AllowAll, InteractivePermissionPolicy, PermissionApprover, PermissionDecision,

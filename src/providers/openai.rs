@@ -108,7 +108,7 @@ impl OpenAiModel {
         if let Value::Object(provider_options) = &request.options.provider_options {
             for (key, value) in provider_options {
                 if is_reserved_request_key(key) {
-                    return Err(ModelError::new(format!(
+                    return Err(ModelError::request(format!(
                         "OpenAI provider option `{key}` conflicts with a CLAT-managed request field"
                     )));
                 }
@@ -119,10 +119,10 @@ impl OpenAiModel {
         Ok(Value::Object(body))
     }
 
-    fn send(&self, body: &Value) -> Result<Response<Body>, ModelError> {
+    fn send(&self, body: &Value, cancel: &CancelToken) -> Result<Response<Body>, ModelError> {
         let url = format!("{}/responses", self.base_url);
         let body = serde_json::to_string(body).map_err(|error| {
-            ModelError::new(format!("failed to serialize OpenAI request: {error}"))
+            ModelError::request(format!("failed to serialize OpenAI request: {error}"))
         })?;
         let mut request = self
             .agent
@@ -132,23 +132,41 @@ impl OpenAiModel {
         if let Some(api_key) = &self.api_key {
             request = request.header("Authorization", &format!("Bearer {api_key}"));
         }
+        if let Some(remaining) = cancel.remaining() {
+            let remaining = remaining.max(Duration::from_millis(1));
+            request = request
+                .config()
+                .timeout_global(Some(remaining))
+                .timeout_connect(Some(remaining.min(CONNECT_TIMEOUT)))
+                .timeout_recv_response(Some(remaining.min(RECV_RESPONSE_TIMEOUT)))
+                .build();
+        }
         let mut response = request
             .send(body)
-            .map_err(|error| ModelError::new(format!("OpenAI request failed: {error}")))?;
+            .map_err(|error| ModelError::transport(format!("OpenAI request failed: {error}")))?;
 
         if response.status().is_success() {
             return Ok(response);
         }
 
         let status = response.status();
+        let kind = super::error_kind_from_status(status.as_u16());
+        let hint = super::retry_hint_from_headers(response.headers());
         let body = response
             .body_mut()
             .read_to_string()
             .unwrap_or_else(|_| "<failed to read response body>".into());
-        Err(ModelError::new(format!(
-            "OpenAI API returned {status}: {}",
-            extract_error_message(&body)
-        )))
+        let mut error = ModelError::with_kind(
+            kind,
+            format!(
+                "OpenAI API returned {status}: {}",
+                extract_error_message(&body)
+            ),
+        );
+        if let Some(hint) = hint {
+            error = error.with_retry_hint(hint);
+        }
+        Err(error)
     }
 }
 
@@ -168,7 +186,7 @@ impl Model for OpenAiModel {
     ) -> Result<ModelResponse, ModelError> {
         let cancel = request.cancel;
         let body = self.request_body(request)?;
-        let response = self.send(&body)?;
+        let response = self.send(&body, cancel)?;
         let (_, body) = response.into_parts();
         consume_sse(
             BufReader::new(CancelAwareReader::new(body.into_reader(), cancel)),
@@ -196,7 +214,7 @@ fn map_input_items(items: &[ModelItem]) -> Result<Vec<Value>, ModelError> {
                 "call_id": call.id,
                 "name": call.name,
                 "arguments": serde_json::to_string(&call.arguments)
-                    .map_err(|error| ModelError::new(format!("invalid tool arguments: {error}")))?,
+                    .map_err(|error| ModelError::request(format!("invalid tool arguments: {error}")))?,
             })),
             ModelItem::ToolResult(result) => input.push(json!({
                 "type": "function_call_output",
@@ -254,7 +272,7 @@ fn consume_sse<R: BufRead>(
                 continue;
             }
             Err(error) => {
-                return Err(ModelError::new(format!(
+                return Err(ModelError::transport(format!(
                     "failed to read OpenAI stream: {error}"
                 )));
             }
@@ -342,7 +360,7 @@ fn dispatch_sse_data(
     }
 
     let value: Value = serde_json::from_str(data)
-        .map_err(|error| ModelError::new(format!("invalid OpenAI SSE event: {error}")))?;
+        .map_err(|error| ModelError::decode(format!("invalid OpenAI SSE event: {error}")))?;
     let event_type = value
         .get("type")
         .and_then(Value::as_str)
@@ -406,7 +424,7 @@ fn dispatch_sse_data(
             let name = required_string(&value, "name", &event_type)?;
             let raw_arguments = required_string(&value, "arguments", &event_type)?;
             let arguments = serde_json::from_str(&raw_arguments).map_err(|error| {
-                ModelError::new(format!(
+                ModelError::decode(format!(
                     "OpenAI returned invalid JSON arguments for tool `{name}`: {error}"
                 ))
             })?;
@@ -476,7 +494,7 @@ fn dispatch_sse_data(
                 .pointer("/response/error/message")
                 .and_then(Value::as_str)
                 .unwrap_or("OpenAI response failed");
-            return Err(ModelError::new(message));
+            return Err(ModelError::server(message));
         }
         "response.cancelled" => {
             accumulator.finish_reason = Some(FinishReason::Cancelled);
@@ -497,7 +515,9 @@ fn required_string(value: &Value, key: &str, event_type: &str) -> Result<String,
         .get(key)
         .and_then(Value::as_str)
         .map(str::to_owned)
-        .ok_or_else(|| ModelError::new(format!("OpenAI event `{event_type}` is missing `{key}`")))
+        .ok_or_else(|| {
+            ModelError::decode(format!("OpenAI event `{event_type}` is missing `{key}`"))
+        })
 }
 
 fn parse_usage(value: Option<&Value>) -> Option<Usage> {

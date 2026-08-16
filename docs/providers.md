@@ -39,6 +39,52 @@ messages that carry tool calls. CLAT:
    into one assistant message followed by the turn's tool results — the
    official replay shape.
 
+## Retry and deadlines
+
+Every model call the agent makes goes through a factory-backed `RetryModel`
+wrapper. Each attempt builds a fresh model instance from the provider
+factory, so no connection state is reused across attempts.
+
+Retry decisions come from the typed `ModelError` classification:
+
+- `Transport`, `RateLimited`, `Server` are retriable.
+- `Decode`, `Auth`, `Request`, `Other` fail immediately — retrying a decode
+  or auth error can only produce the same failure.
+- Factory (constructor) failures follow the same rule: transient typed
+  errors retry, everything else surfaces.
+- **Event safety**: once an attempt has emitted any stream event to the
+  caller, the failure is never retried — a resend would duplicate model
+  output the user already saw.
+
+`Retry-After` hints from 429/503 responses are honored, capped at 30s.
+
+**Total deadlines are request capabilities, not just backoff budgets.**
+When a retry policy carries a `total_deadline` (internal consumers always
+do), the deadline is attached to the request's `CancelToken`:
+
+- the token reports itself cancelled at expiry, so SSE body polling stops
+  even when the server goes silent after sending headers;
+- providers clamp their HTTP timeouts (`timeout_global`, connect, and
+  response-header wait) to the remaining time, so connection setup and
+  header waits are bounded by the same deadline — the provider's default
+  30s/60s timeouts never override a shorter internal deadline;
+- a parent cancellation (user `Esc`, run cancel, scope close) short-circuits
+  immediately; it never waits out the deadline.
+
+A second policy field, `total_attempt_cap`, bounds the number of underlying
+HTTP/factory attempts across the wrapper's whole lifetime — map/reduce
+style consumers share one wrapper so the cap covers every request.
+
+Internal consumers:
+
+| Consumer | Deadline | Attempt cap | Notes |
+|---|---|---|---|
+| Session titles | 15s | 2 | background worker; cancelled on close |
+| Compaction summaries | 60s | 8 | one shared wrapper across map and reduce rounds |
+
+Normal agent turns run without a total deadline and remain bounded only by
+the user's cancellation token.
+
 ## Cancellation
 
 Providers poll the shared `CancelToken` between SSE chunks and stop

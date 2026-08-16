@@ -30,8 +30,18 @@ There are three scope-specific explicit catalogs:
 | Scope | Lifetime | Built-in responsibilities |
 |---|---|---|
 | Bootstrap | Application open → exit | shared storage backend, narrow `TrustStore` only |
-| Trusted Project | trust accepted → project close | Session/Config stores, Tool/Provider/Prompt registries, native tools, MCP adapter, permission and Agent services, monitor |
+| Trusted Project | trust accepted → project close | Session/Config stores, Tool/Provider/Prompt registries, native tools, MCP adapter, permission and Agent services, monitor, project instructions, tool-result pruning, compaction, per-session todo, session-title services |
 | Run | one active run | `CancelToken` and injected `PermissionApprover`; worker ownership stays in Application |
+
+The batch-1 capability plugins (`ProjectInstructionsPlugin`,
+`ToolResultPrunerPlugin`, `CompactionPlugin`, `TodoPlugin`,
+`SessionTitlePlugin`) are optional: a minimal catalog without them keeps
+every existing test green. `ToolResultTransformer` is a narrow post-result
+seam with exactly one real consumer (the pruner) — it is not a general
+hook, and the tool pipeline remains the only extension point that invokes
+it. Compaction and title generation run as background work with enforced
+total deadlines and attempt caps; application close cancels and joins
+their workers, so no scope teardown waits unboundedly.
 
 The catalog is validated before the first plugin produces a side effect.
 Duplicate plugin IDs or services, missing dependencies, scope mismatches, parent
@@ -88,15 +98,17 @@ built yet:
 | Write/edit tools with capability-relative path binding | done |
 | Command execution with process-tree ownership, timeout, output budget | done |
 | Permission review for every side-effecting call | done |
-| Project context injection (CLAT.md, git state into the system prompt) | not built — the system prompt is a fixed string today |
-| Context management (compaction/truncation for long sessions) | not built — `message_items` grows unbounded |
+| Project instruction injection (`AGENTS.md`, then `CLAUDE.md`) | done — capability-bound read in Trusted Project Scope |
+| Context management | done — tool-result pruning, append-only compaction markers, manual `/compact`, optional automatic budget |
+| Per-session agent todo state | done — `SessionWrite`, append-only snapshots, dynamic model context |
+| Automatic session titles | done — first successful run, bounded background worker, CAS against manual rename |
+| Typed provider retry | done — fresh model attempts, Retry-After, event-safe retry, internal deadlines |
 | Turn budget configurability | not built — fixed 32 turns, exceeding it fails the run |
 | Headless Application API | done — tests and `demo` execute without TUI; a public `clat exec` command is still not built |
 | Subagents, image input, multi-agent orchestration | deferred by constitution |
 
-The intended growth order is: project context injection → context management →
-a user-facing headless CLI, each driven by real dogfood need. The underlying
-Application API is already frontend-neutral.
+The next growth step is a user-facing headless CLI, driven by real dogfood
+need. The underlying Application API is already frontend-neutral.
 
 ## Model Protocol v0.1
 

@@ -3,7 +3,7 @@ use cap_std::fs::{Dir, OpenOptions};
 use std::env;
 use std::ffi::OsString;
 use std::io;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -78,6 +78,43 @@ impl Project {
             parent: parent_dir,
             file_name: file_name.to_os_string(),
         })
+    }
+
+    /// 相对已打开的项目根 capability 读取普通文件。不存在返回 None；
+    /// symlink（含 broken link）和非普通文件显式失败。最终 open 仍由
+    /// cap-std 的目录句柄解析，检查后目录项替换不能把读取重定向到根外。
+    pub(crate) fn read_file_limited(
+        &self,
+        relative: impl AsRef<Path>,
+        max_bytes: usize,
+    ) -> io::Result<Option<Vec<u8>>> {
+        let relative = relative.as_ref();
+        validate_relative_path(relative)?;
+        let root = self.root.canonicalize()?;
+        let root_dir = Dir::open_ambient_dir(root, ambient_authority())?;
+        let metadata = match root_dir.symlink_metadata(relative) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        if metadata.file_type().is_symlink() {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "read target must not be a symbolic link",
+            ));
+        }
+        if !metadata.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "read target is not a regular file",
+            ));
+        }
+        let mut bytes = Vec::new();
+        root_dir
+            .open(relative)?
+            .take(max_bytes as u64)
+            .read_to_end(&mut bytes)?;
+        Ok(Some(bytes))
     }
 
     pub fn relative_path(&self, path: &Path) -> io::Result<PathBuf> {

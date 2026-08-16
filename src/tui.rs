@@ -5,8 +5,8 @@ use crate::tui_model::{EditorAction, ModelEditor, ModelPicker, PickerAction};
 use crate::tui_sessions::{ResumeAction, SessionPicker};
 use crate::tui_worker::{ChannelApprover, ChannelEventSink, UiEvent, WorkerMessage};
 use crate::{
-    ApplicationEvent, ApplicationRunRequest, BootstrapApplication, ModelConfig, ModelEvent,
-    ModelItem, PermissionDecision, PermissionRequest, Project, ProviderCredentials,
+    ApplicationEvent, ApplicationRunRequest, BootstrapApplication, CompactHandle, ModelConfig,
+    ModelEvent, ModelItem, PermissionDecision, PermissionRequest, Project, ProviderCredentials,
     ProviderDescriptor, RunEvent, RunHandle, StoredMessage, TrustedProjectApplication, Usage,
 };
 use crossterm::event::{
@@ -542,6 +542,8 @@ struct App {
     event_sender: Option<Sender<UiEvent>>,
     pending_permission: Option<PendingPermission>,
     run_handle: Option<RunHandle>,
+    /// `/compact` 进行中的句柄；Esc 取消。
+    compact_handle: Option<CompactHandle>,
     thinking: bool,
     thinking_since: Option<Instant>,
     spinner_tick: u64,
@@ -608,6 +610,7 @@ impl App {
             event_sender: None,
             pending_permission: None,
             run_handle: None,
+            compact_handle: None,
             thinking: false,
             thinking_since: None,
             spinner_tick: 0,
@@ -794,6 +797,10 @@ impl App {
             UiEvent::Application(ApplicationEvent::MonitorUpdated(value)) => {
                 self.balance = value;
             }
+            UiEvent::Application(ApplicationEvent::CompactionUpdated(status)) => match status {
+                Some(note) => self.flash_status(note),
+                None => self.flash_status("compacting…"),
+            },
         }
     }
 
@@ -1031,6 +1038,16 @@ impl App {
                         handle.cancel();
                         self.flash_status("cancelling…");
                     }
+                } else if let Some(handle) = self
+                    .compact_handle
+                    .as_ref()
+                    .filter(|handle| !handle.is_finished())
+                {
+                    // 与 Run 取消一致：只发令牌不 join——摘要请求带 60s
+                    // 总截止，join 最长会冻结 UI 一分钟；完成事件（失败
+                    // 文本）异步回流覆盖状态栏。
+                    handle.cancel();
+                    self.flash_status("cancelling compaction…");
                 } else {
                     self.input.clear();
                 }
@@ -1483,8 +1500,23 @@ impl App {
             }
             "/help" => {
                 self.status =
-                    "/model · /new · /clear · /resume · /quit · ↑/↓ input history · PgUp/PgDn chat"
+                    "/model · /new · /clear · /compact · /resume · /quit · ↑/↓ input history · PgUp/PgDn chat"
                         .into();
+            }
+            "/compact" => {
+                // 异步：立即返回 handle，状态经 CompactionUpdated 事件回流
+                // （启动时 "compacting…"，完成/失败时结果文本）；Esc 取消。
+                match self.application.as_mut() {
+                    Some(application) => match application.compact_session() {
+                        Ok(handle) => {
+                            self.compact_handle = Some(handle);
+                        }
+                        Err(error) => {
+                            self.flash_status(format!("compaction unavailable: {error}"));
+                        }
+                    },
+                    None => self.flash_status("project application is unavailable"),
+                }
             }
             "/resume" => match self
                 .application
@@ -1503,11 +1535,22 @@ impl App {
             },
             "/new" | "/clear" => {
                 // 纯内存切换：session_id 置 None，首条内容写入时才
-                // 落盘建会话（/new 十次不产生任何库行）。
-                self.session_id = None;
-                if let Some(application) = &mut self.application {
-                    application.new_session();
+                // 落盘建会话（/new 十次不产生任何库行）。活动 Run/
+                // 压缩期间拒绝（INV-T3）。
+                let switched = match &mut self.application {
+                    Some(application) => match application.new_session() {
+                        Ok(()) => true,
+                        Err(error) => {
+                            self.flash_status(format!("{error}"));
+                            false
+                        }
+                    },
+                    None => true,
+                };
+                if !switched {
+                    return;
                 }
+                self.session_id = None;
                 self.messages.clear();
                 self.markdown_cache.clear();
                 self.conversation_scroll_from_bottom = 0;

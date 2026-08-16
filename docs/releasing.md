@@ -54,3 +54,21 @@ Do not rotate the key by simply replacing the public key: already-installed
 CLAT binaries would reject releases signed only by the new key. A rotation
 must first ship a transition release that trusts both old and new public keys,
 then switch signing keys, and remove the old key in a later release.
+
+## Platform baseline
+
+Release archives are built by
+[`.github/workflows/release.yml`](../.github/workflows/release.yml):
+
+| Asset | Build runner | Supported baseline |
+|---|---|---|
+| `aarch64-apple-darwin`, `x86_64-apple-darwin` | `macos-latest` | oldest macOS still targeted by the Rust toolchain |
+| `x86_64-pc-windows-msvc`, `aarch64-pc-windows-msvc` | `windows-latest` | Windows 10+ |
+| `x86_64-unknown-linux-gnu` | `ubuntu-24.04` (pinned) | glibc 2.39+ (Ubuntu 24.04 generation and newer) |
+| `aarch64-unknown-linux-gnu` | `ubuntu-24.04-arm` (pinned) | glibc 2.39+ (Ubuntu 24.04 generation and newer) |
+
+Linux policy: the runners are pinned to GitHub's lowest supported generation,
+not `-latest`. Raising the baseline is a deliberate, documented decision that
+happens only when the pinned runner is retired — never as silent drift of the
+runner label. Users on older distributions can build from source: the tree
+bundles SQLite and uses rustls, so a Rust toolchain is the only requirement.

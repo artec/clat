@@ -90,6 +90,21 @@ impl SessionStore for StorageCapabilities {
             .with(|storage| storage.set_session_title(session_id, title))
     }
 
+    fn session_title(&self, session_id: i64) -> Result<String, StoreError> {
+        self.backend
+            .with(|storage| storage.session_title(session_id))
+    }
+
+    fn set_session_title_if(
+        &self,
+        session_id: i64,
+        expected: &str,
+        new: &str,
+    ) -> Result<bool, StoreError> {
+        self.backend
+            .with(|storage| storage.set_session_title_if(session_id, expected, new))
+    }
+
     fn archive_session(&self, session_id: i64) -> Result<(), StoreError> {
         self.backend
             .with(|storage| storage.archive_session(session_id))

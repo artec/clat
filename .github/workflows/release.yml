@@ -16,7 +16,9 @@ jobs:
       fail-fast: false
       matrix:
         # 资产矩阵：macOS 与 Windows 各两组，与 `clat upgrade` 的
-        # target_triple 识别一一对应。Linux 资产暂缓，后续再上架。
+        # target_triple 识别一一对应。Linux 钉在 ubuntu-24.04（GitHub
+        # 当前最低规范基线），不用 -latest：产物要求 glibc 2.39+
+        # （Ubuntu 24.04 同代及以上）；更老的发行版请从源码构建。
         include:
           - os: macos-latest
             target: aarch64-apple-darwin
@@ -26,6 +28,10 @@ jobs:
             target: x86_64-pc-windows-msvc
           - os: windows-latest
             target: aarch64-pc-windows-msvc
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
     steps:
       - uses: actions/checkout@v5
 
@@ -33,7 +39,9 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - uses: Swatinem/rust-cache@v2
+      # rust-cache 钉 v2.9.2：v2.9.0 起才是 node24 运行时，浮动 @v2
+      # 无法保证不回落到 node20 构建并触发弃用警告（与 ci.yml 一致）。
+      - uses: Swatinem/rust-cache@v2.9.2
         with:
           key: ${{ matrix.target }}
 

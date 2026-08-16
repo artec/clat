@@ -437,6 +437,32 @@ impl Storage {
         Ok(())
     }
 
+    /// 读取会话当前标题。行不存在视为空串。
+    pub fn session_title(&self, session_id: i64) -> Result<String, StorageError> {
+        self.connection
+            .query_row(
+                "SELECT COALESCE(title, '') FROM sessions WHERE id = ?1",
+                params![session_id],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(StorageError::from)
+    }
+
+    /// CAS 条件更新标题：仅当当前标题仍等于 `expected` 时写入 `new`。
+    /// 返回是否实际更新（CB1-04：自动命名不得覆盖并发手工改名）。
+    pub fn set_session_title_if(
+        &self,
+        session_id: i64,
+        expected: &str,
+        new: &str,
+    ) -> Result<bool, StorageError> {
+        let updated = self.connection.execute(
+            "UPDATE sessions SET title = ?3 WHERE id = ?1 AND COALESCE(title, '') = ?2",
+            params![session_id, expected, new],
+        )?;
+        Ok(updated == 1)
+    }
+
     /// 归档会话（软删除）：数据保留，`load_or_create_session` 与
     /// `/resume` 列表都不再选中。仅供显式归档（尚无入口）；
     /// **离开/退出会话绝不能调用**——非空会话离开后必须仍可 resume
@@ -782,7 +808,7 @@ fn project_key(root: &Path) -> String {
 
 /// 从首条用户消息生成会话标题：取第一行非空文本，截断到 60 个字符
 /// （按 char 边界，CJK 安全）。
-fn session_title_from(content: &str) -> String {
+pub(crate) fn session_title_from(content: &str) -> String {
     let first_line = content
         .lines()
         .map(str::trim)

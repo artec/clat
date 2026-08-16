@@ -21,6 +21,11 @@ side-effecting step behind interactive permission review. Current
 boundaries and the growth plan are tracked in
 [docs/architecture.md](docs/architecture.md#agentic-loop-v034).
 
+The runtime also retries transient model failures, injects trusted project
+instructions, bounds tool results, compacts long conversations without
+deleting raw history, maintains per-session todos, and assigns background
+session titles without overriding manual renames.
+
 ## Principles
 
 - Local first
@@ -53,6 +58,12 @@ Rust toolchain if it is missing). First installation needs no extra
 verification tool: the scripts download over HTTPS and require a matching
 SHA-256 manifest. Once installed, `clat upgrade` authenticates future release
 manifests with the public key embedded in the binary.
+
+Prebuilt binaries cover macOS (arm64, x86_64), Windows (x86_64, arm64),
+and Linux (x86_64, aarch64; glibc 2.39+ — Ubuntu 24.04 generation and
+newer). Older Linux distributions are outside the prebuilt baseline; build
+from source instead — the tree bundles SQLite and uses rustls, so a Rust
+toolchain is the only requirement.
 
 ## Quick start
 

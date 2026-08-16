@@ -29,6 +29,7 @@ enum RowKind {
     ExtraHeaders,
     ExtraBody,
     OutputLimit,
+    ContextWindow,
     Temperature,
     Parallel,
     Save,
@@ -46,6 +47,7 @@ enum EditTarget {
     ExtraHeaders,
     ExtraBody,
     OutputLimit,
+    ContextWindow,
     Temperature,
 }
 
@@ -65,6 +67,9 @@ pub(crate) struct ModelEditor {
     extra_body: String,
     output_limit: String,
     temperature: String,
+    /// 编辑缓冲（字符串）；保存时解析为 Option<u32>。CB1-14：自动压缩
+    /// 的配置入口。
+    context_window: String,
     parallel_tool_calls: bool,
     credentials: ProviderCredentials,
     provider_descriptors: Vec<ProviderDescriptor>,
@@ -96,6 +101,10 @@ impl ModelEditor {
                 .unwrap_or_default(),
             temperature: config
                 .temperature
+                .map(|value| value.to_string())
+                .unwrap_or_default(),
+            context_window: config
+                .max_context_tokens
                 .map(|value| value.to_string())
                 .unwrap_or_default(),
             parallel_tool_calls: config.parallel_tool_calls,
@@ -257,6 +266,10 @@ impl ModelEditor {
             ExtraHeaders => ("Extra Headers JSON".into(), self.extra_headers.clone()),
             ExtraBody => ("Extra Body JSON".into(), self.extra_body.clone()),
             OutputLimit => ("Max Output Tokens".into(), self.output_limit.clone()),
+            ContextWindow => (
+                "Context Window (auto-compact)".into(),
+                self.context_window.clone(),
+            ),
             Temperature => ("Temperature".into(), self.temperature.clone()),
             Parallel => (
                 "Parallel Tool Calls".into(),
@@ -292,6 +305,7 @@ impl ModelEditor {
                 ExtraHeaders,
                 ExtraBody,
                 OutputLimit,
+                ContextWindow,
                 Temperature,
                 Parallel,
             ]);
@@ -349,6 +363,7 @@ impl ModelEditor {
             EditTarget::ExtraHeaders => self.extra_headers = buffer,
             EditTarget::ExtraBody => self.extra_body = buffer,
             EditTarget::OutputLimit => self.output_limit = buffer,
+            EditTarget::ContextWindow => self.context_window = buffer,
             EditTarget::Temperature => self.temperature = buffer,
         }
         self.error = None;
@@ -373,6 +388,7 @@ impl ModelEditor {
             RowKind::ExtraHeaders => Some(EditTarget::ExtraHeaders),
             RowKind::ExtraBody => Some(EditTarget::ExtraBody),
             RowKind::OutputLimit => Some(EditTarget::OutputLimit),
+            RowKind::ContextWindow => Some(EditTarget::ContextWindow),
             RowKind::Temperature => Some(EditTarget::Temperature),
             _ => None,
         }
@@ -389,6 +405,7 @@ impl ModelEditor {
             EditTarget::ExtraHeaders => self.extra_headers.clone(),
             EditTarget::ExtraBody => self.extra_body.clone(),
             EditTarget::OutputLimit => self.output_limit.clone(),
+            EditTarget::ContextWindow => self.context_window.clone(),
             EditTarget::Temperature => self.temperature.clone(),
         }
     }
@@ -404,6 +421,7 @@ impl ModelEditor {
             EditTarget::ExtraHeaders => "Extra Headers JSON",
             EditTarget::ExtraBody => "Extra Body JSON",
             EditTarget::OutputLimit => "Max Output Tokens",
+            EditTarget::ContextWindow => "Context Window (tokens, empty = off)",
             EditTarget::Temperature => "Temperature",
         }
     }
@@ -582,6 +600,10 @@ impl ModelEditor {
         if output_limit == Some(0) {
             return Err("Max Output Tokens must be greater than zero".into());
         }
+        let max_context_tokens = parse_optional_u32(&self.context_window, "Context Window")?;
+        if max_context_tokens.is_some_and(|tokens| tokens < 4_096) {
+            return Err("Context Window must be at least 4096 tokens".into());
+        }
         let temperature = parse_optional_f64(&self.temperature, "Temperature")?;
         if temperature.is_some_and(|value| !value.is_finite() || value < 0.0) {
             return Err("Temperature must be a finite non-negative number".into());
@@ -600,6 +622,7 @@ impl ModelEditor {
                 output_limit,
                 temperature,
                 parallel_tool_calls: self.parallel_tool_calls,
+                max_context_tokens,
             },
             self.credentials.clone(),
         ))

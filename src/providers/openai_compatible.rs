@@ -93,7 +93,7 @@ impl OpenAiCompatibleModel {
         if let Value::Object(options) = &request.options.provider_options {
             for (key, value) in options {
                 if is_reserved_body_key(key) {
-                    return Err(ModelError::new(format!(
+                    return Err(ModelError::request(format!(
                         "provider option `{key}` conflicts with a CLAT-managed request field"
                     )));
                 }
@@ -103,10 +103,11 @@ impl OpenAiCompatibleModel {
         Ok(Value::Object(body))
     }
 
-    fn send(&self, body: &Value) -> Result<Response<Body>, ModelError> {
+    fn send(&self, body: &Value, cancel: &CancelToken) -> Result<Response<Body>, ModelError> {
         let url = join_endpoint(&self.config.endpoint, &self.config.request_path);
-        let encoded = serde_json::to_string(body)
-            .map_err(|error| ModelError::new(format!("failed to serialize request: {error}")))?;
+        let encoded = serde_json::to_string(body).map_err(|error| {
+            ModelError::request(format!("failed to serialize request: {error}"))
+        })?;
         let mut request = self
             .agent
             .post(url)
@@ -116,12 +117,12 @@ impl OpenAiCompatibleModel {
         if let Value::Object(headers) = &self.config.extra_headers {
             for (name, value) in headers {
                 let value = value.as_str().ok_or_else(|| {
-                    ModelError::new(format!("extra header `{name}` must be a string"))
+                    ModelError::request(format!("extra header `{name}` must be a string"))
                 })?;
                 request = request.header(name, value);
             }
         } else if !self.config.extra_headers.is_null() {
-            return Err(ModelError::new("extra headers must be a JSON object"));
+            return Err(ModelError::request("extra headers must be a JSON object"));
         }
 
         if let Some(value) = &self.runtime_value {
@@ -131,21 +132,40 @@ impl OpenAiCompatibleModel {
             }
         }
 
-        let mut response = request
-            .send(encoded)
-            .map_err(|error| ModelError::new(format!("compatible API request failed: {error}")))?;
+        if let Some(remaining) = cancel.remaining() {
+            let remaining = remaining.max(Duration::from_millis(1));
+            request = request
+                .config()
+                .timeout_global(Some(remaining))
+                .timeout_connect(Some(remaining.min(CONNECT_TIMEOUT)))
+                .timeout_recv_response(Some(remaining.min(RECV_RESPONSE_TIMEOUT)))
+                .build();
+        }
+
+        let mut response = request.send(encoded).map_err(|error| {
+            ModelError::transport(format!("compatible API request failed: {error}"))
+        })?;
         if response.status().is_success() {
             return Ok(response);
         }
         let status = response.status();
+        let kind = super::error_kind_from_status(status.as_u16());
+        let hint = super::retry_hint_from_headers(response.headers());
         let text = response
             .body_mut()
             .read_to_string()
             .unwrap_or_else(|_| "<failed to read response body>".into());
-        Err(ModelError::new(format!(
-            "compatible API returned {status}: {}",
-            extract_error_message(&text)
-        )))
+        let mut error = ModelError::with_kind(
+            kind,
+            format!(
+                "compatible API returned {status}: {}",
+                extract_error_message(&text)
+            ),
+        );
+        if let Some(hint) = hint {
+            error = error.with_retry_hint(hint);
+        }
+        Err(error)
     }
 }
 
@@ -165,7 +185,7 @@ impl Model for OpenAiCompatibleModel {
     ) -> Result<ModelResponse, ModelError> {
         let cancel = request.cancel;
         let body = self.request_body(request)?;
-        let response = self.send(&body)?;
+        let response = self.send(&body, cancel)?;
         let (_, body) = response.into_parts();
         consume_sse(
             BufReader::new(CancelAwareReader::new(body.into_reader(), cancel)),
@@ -260,7 +280,7 @@ fn map_messages(instructions: Option<&str>, items: &[ModelItem]) -> Result<Vec<V
                     "function": {
                         "name": call.name,
                         "arguments": serde_json::to_string(&call.arguments)
-                            .map_err(|error| ModelError::new(format!("invalid tool arguments: {error}")))?,
+                            .map_err(|error| ModelError::request(format!("invalid tool arguments: {error}")))?,
                     }
                 }));
             }
@@ -320,11 +340,11 @@ fn merge_extra_body(body: &mut Map<String, Value>, extra: &Value) -> Result<(), 
         if extra.is_null() {
             return Ok(());
         }
-        return Err(ModelError::new("extra body must be a JSON object"));
+        return Err(ModelError::request("extra body must be a JSON object"));
     };
     for (key, value) in extra {
         if is_reserved_body_key(key) {
-            return Err(ModelError::new(format!(
+            return Err(ModelError::request(format!(
                 "extra body key `{key}` conflicts with a CLAT-managed request field"
             )));
         }
@@ -375,7 +395,7 @@ fn consume_sse<R: BufRead>(
                 continue;
             }
             Err(error) => {
-                return Err(ModelError::new(format!(
+                return Err(ModelError::transport(format!(
                     "failed to read compatible stream: {error}"
                 )));
             }
@@ -416,7 +436,7 @@ fn dispatch(
         return Ok(());
     }
     let value: Value = serde_json::from_str(data)
-        .map_err(|error| ModelError::new(format!("invalid compatible SSE event: {error}")))?;
+        .map_err(|error| ModelError::decode(format!("invalid compatible SSE event: {error}")))?;
 
     if accumulator.response_id.is_none() {
         let id = value.get("id").and_then(Value::as_str).map(str::to_owned);
@@ -507,7 +527,7 @@ fn finish(
                 builder.arguments.trim()
             };
             let arguments = serde_json::from_str(raw).map_err(|error| {
-                ModelError::new(format!(
+                ModelError::decode(format!(
                     "compatible provider returned invalid JSON arguments for `{}`: {error}",
                     builder.name
                 ))

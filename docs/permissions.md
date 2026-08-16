@@ -8,8 +8,13 @@ Each tool declares a `ToolEffect`:
 
 | Effect | SafeByDefault decision |
 |---|---|
-| `Pure`, `Read` | allow automatically |
+| `Pure`, `Read`, `SessionWrite` | allow automatically |
 | `Write`, `Execute`, `Network`, `ExternalRead`, `Destructive` | require approval |
+
+`SessionWrite` is for tools that only mutate CLAT-local session metadata
+(currently `todo_write`). The exemption comes from the effect
+classification — a tool that also touches files, processes, or the
+network must not declare it.
 
 ## Interactive approval
 

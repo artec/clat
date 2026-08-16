@@ -125,7 +125,9 @@ impl PermissionPolicy for SafeByDefault {
         _call: &ToolCall,
     ) -> PermissionDecision {
         match tool.effect {
-            ToolEffect::Pure | ToolEffect::Read => PermissionDecision::Allow,
+            ToolEffect::Pure | ToolEffect::Read | ToolEffect::SessionWrite => {
+                PermissionDecision::Allow
+            }
             ToolEffect::Write
             | ToolEffect::Execute
             | ToolEffect::Network
@@ -185,6 +187,26 @@ mod tests {
             policy.check(&project, &definition(ToolEffect::Read), &call()),
             PermissionDecision::Allow
         );
+    }
+
+    #[test]
+    fn safe_policy_allows_session_write_but_not_other_side_effects() {
+        // INV-T2：SessionWrite 由准确 effect 分类获得免审；Pure 语义
+        // 不变，其余副作用仍需询问。
+        let policy = SafeByDefault;
+        let project = Project::new(".");
+        assert_eq!(
+            policy.check(&project, &definition(ToolEffect::SessionWrite), &call()),
+            PermissionDecision::Allow
+        );
+        assert_eq!(
+            policy.check(&project, &definition(ToolEffect::Pure), &call()),
+            PermissionDecision::Allow
+        );
+        assert!(matches!(
+            policy.check(&project, &definition(ToolEffect::Write), &call()),
+            PermissionDecision::Ask { .. }
+        ));
     }
 
     #[test]

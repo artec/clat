@@ -101,3 +101,45 @@ the TUI never writes completion state.
 
 Usage stays in the existing run result/event contract; this migration does not
 add a usage column or otherwise change the database schema.
+
+## Local-state markers
+
+Two `ModelItem::ProviderState` providers carry CLAT-local state inside
+`message_items`; the model never sees them (they are filtered from the
+conversation view and rebuilt on load):
+
+- `clat.compaction.v1` — `{version, summary, covered_count, usage}`. An
+  absolute prefix marker: items before `covered_count` are summarized in
+  `summary` and rebuilt as a short user turn on the next run. A marker is
+  valid only when the version matches, `covered_count` sits on a user-turn
+  boundary (tool call/result pairs are never split), `covered_count` does
+  not contradict the marker's own row position, and the summary is
+  non-empty within a hard size cap. Invalid markers are ignored with safe
+  fallback to an earlier valid marker or the raw history.
+- `clat.todo.v1` — `{version, todos: [{content, status}]}`. A full snapshot
+  of the session todo list, persisted **after** the run items that produced
+  it, so replay order stays `ToolCall → ToolResult → marker`. Restores bind
+  the snapshot to its session; a snapshot is valid only under the same
+  rules as a live `todo_write` (entry count, content length, single
+  in-progress entry), so corrupt or oversized snapshots fall back to an
+  earlier valid one or an empty list.
+
+Both markers are append-only rows; compaction never rewrites or deletes
+existing items — the raw history always remains on disk.
+
+Compaction semantics worth knowing on restore:
+
+- **Summaries cascade.** Each compaction feeds the previous summary into
+  the next one as carry-forward context, so facts from conversations
+  covered by the first compaction survive any number of later compactions.
+- **Failure keeps the last good view.** If a new marker is generated but
+  its row cannot be persisted, the run proceeds with the view rebuilt from
+  the last *persisted* marker (not the raw history), so an already-compacted
+  session cannot blow the context window again because of one write error.
+
+Session titles remain a `sessions.title` column: the first user message is
+still the derived default; after the first successful (non-cancelled) run
+CLAT may replace that default once with a model-generated title (≤16
+characters). The replacement is a compare-and-set against the derived
+default, so a manual rename issued while the title request is in flight is
+never overwritten; manually renamed sessions are never auto-retitled.

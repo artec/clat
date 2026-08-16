@@ -1,8 +1,10 @@
 use super::{
-    BootstrapStoragePlugin, DefaultAgentPlugin, DefaultPermissionPlugin, DefaultPromptPlugin,
-    McpAdapterPlugin, MonitorPlugin, NativeReadToolsPlugin, NativeWriteToolsPlugin,
-    OpenAiCompatiblePlugin, OpenAiResponsesPlugin, ProjectStoragePlugin, PromptRegistryPlugin,
-    ProviderRegistryPlugin, RunScopePlugin, StorageBackend, ToolPipelinePlugin, ToolRegistryPlugin,
+    BootstrapStoragePlugin, CompactionPlugin, DefaultAgentPlugin, DefaultPermissionPlugin,
+    DefaultPromptPlugin, McpAdapterPlugin, MonitorPlugin, NativeReadToolsPlugin,
+    NativeWriteToolsPlugin, OpenAiCompatiblePlugin, OpenAiResponsesPlugin,
+    ProjectInstructionsPlugin, ProjectStoragePlugin, PromptRegistryPlugin, ProviderRegistryPlugin,
+    RunScopePlugin, SessionTitlePlugin, StorageBackend, TodoPlugin, ToolPipelinePlugin,
+    ToolRegistryPlugin, ToolResultPrunerPlugin,
 };
 use crate::plugin::Plugin;
 use crate::{CancelToken, PermissionApprover, Project};
@@ -48,7 +50,12 @@ pub(crate) fn trusted_project_catalog_with_providers(
         Arc::new(DefaultPermissionPlugin),
         Arc::new(PromptRegistryPlugin),
         Arc::new(DefaultPromptPlugin),
+        Arc::new(ProjectInstructionsPlugin::new(project.clone())),
         Arc::new(ToolPipelinePlugin),
+        Arc::new(ToolResultPrunerPlugin),
+        Arc::new(CompactionPlugin),
+        Arc::new(TodoPlugin),
+        Arc::new(SessionTitlePlugin),
         Arc::new(DefaultAgentPlugin::new(project)),
         Arc::new(MonitorPlugin),
     ]);

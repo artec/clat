@@ -39,12 +39,27 @@ instead of cancelling the run.
 - `/new` — start a new persisted conversation (an empty conversation is
   dropped automatically when you leave it)
 - `/clear` — alias for `/new`
+- `/compact` — summarize this conversation's earlier turns into a compact
+  marker to free context; runs in the background (Esc cancels) and the
+  original history stays on disk
+- `/model` — configure the active model/provider. The advanced rows include
+  a context-window field: once set, history that exceeds the window is
+  compacted automatically at the start of the next run (compaction inherits
+  the previous summary, so earlier facts survive repeated compactions).
+  Without a context window, automatic compaction stays off and only
+  `/compact` triggers it
 - `/resume` — pick a previous conversation of this project and continue
   it; the list shows title and message count, with the current
   conversation marked. Entering a conversation (even read-only) makes
   it the startup conversation for the next launch
 - `/help` — show commands
 - `/quit` or `/exit` — leave CLAT
+
+Sessions get their title from your first message; after a successful run
+CLAT may replace that default once with a shorter model-generated title
+(manual renames always win). The model can also maintain a per-session
+todo list via the `todo_write` tool — it only touches CLAT's own session
+state and needs no approval.
 
 ## Markdown rendering
 

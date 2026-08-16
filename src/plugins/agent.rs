@@ -130,12 +130,16 @@ struct DefaultAgentRuntime {
 
 impl AgentRuntime for DefaultAgentRuntime {
     fn execute(&self, mut request: AgentRequest) -> Result<crate::RunOutput, AgentFailure> {
-        let mut model = self
-            .providers
-            .build(&request.config, &request.credentials)
-            .map_err(|error| AgentFailure {
-                error: crate::RunError::new(error.to_string()),
-            })?;
+        // 每次尝试经工厂构造新 Model；瞬态失败（传输/429/5xx）由
+        // RetryModel 按策略重试，取消降格为正常 Cancelled 响应。
+        let providers = Arc::clone(&self.providers);
+        let config = request.config.clone();
+        let credentials = request.credentials.clone();
+        let mut model = crate::providers::retry_model(
+            request.config.protocol.to_string(),
+            request.config.model.clone(),
+            Box::new(move || providers.build(&config, &credentials)),
+        );
         let permissions = self.permissions.create(request.approver);
         let options = ModelOptions {
             output_limit: request.config.output_limit,

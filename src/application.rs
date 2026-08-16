@@ -6,10 +6,11 @@ use crate::model::{
 };
 use crate::plugin::{Plugin, PluginManager, ScopeKind};
 use crate::plugins::services::{
-    AGENT_SERVICE, AgentRequest, CONFIG_SERVICE, ConfigStore, MCP_STATUS_SERVICE, MONITOR_SERVICE,
+    AGENT_SERVICE, AgentRequest, COMPACTION_SERVICE, CONFIG_SERVICE, CompactionOutcome,
+    CompactionRequest, ConfigStore, HistoryCompactor, MCP_STATUS_SERVICE, MONITOR_SERVICE,
     McpStatus, MonitorService, PROMPT_SERVICE, PROVIDER_SERVICE, ProviderRegistry,
-    RUN_SCOPE_SERVICE, SESSION_SERVICE, SessionStore, TOOL_PIPELINE_SERVICE, TOOL_SERVICE,
-    TRUST_SERVICE, TrustStore,
+    RUN_SCOPE_SERVICE, SESSION_SERVICE, SESSION_TITLE_SERVICE, SessionStore, SessionTitler,
+    TODO_SERVICE, TOOL_PIPELINE_SERVICE, TOOL_SERVICE, TRUST_SERVICE, TodoService, TrustStore,
 };
 use crate::plugins::{StorageBackend, bootstrap_catalog, run_catalog, trusted_project_catalog};
 use crate::presets::preset_by_id;
@@ -21,6 +22,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
+use std::time::Duration;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ApplicationError(String);
@@ -42,6 +44,9 @@ impl std::error::Error for ApplicationError {}
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ApplicationEvent {
     MonitorUpdated(Option<String>),
+    /// 自动压缩的结果提示：`Some(text)` 为完成/降级说明；绝不携带
+    /// RunEvent 语义（协议冻结）。
+    CompactionUpdated(Option<String>),
 }
 
 #[derive(Clone, Debug)]
@@ -242,9 +247,25 @@ impl BootstrapApplication {
         let monitor = project_manager
             .require(MONITOR_SERVICE)
             .map_err(|error| ApplicationError::new(error.to_string()))?;
+        // 可选服务：测试/最小 Catalog 不装配 CompactionPlugin。
+        let compactor = project_manager.require(COMPACTION_SERVICE).ok();
+        let todo_service = project_manager.require(TODO_SERVICE).ok();
+        let titler = project_manager.require(SESSION_TITLE_SERVICE).ok();
         let current_session = sessions
             .current_session(&self.project)
             .map_err(|error| ApplicationError::new(error.to_string()))?;
+        // INV-T5：进入 Trusted Project 立即恢复当前会话的 todo 快照。
+        if let (Some(todo_service), Some(id)) = (&todo_service, current_session) {
+            let items = sessions.load_items(id).map_err(store_error)?;
+            todo_service.restore(Some(id), &items);
+        }
+        let title_worker = match &titler {
+            Some(titler) => Some(TitleWorker::spawn(
+                Arc::clone(titler),
+                Arc::clone(&sessions),
+            )?),
+            None => None,
+        };
 
         Ok(TrustedProjectApplication {
             project: self.project,
@@ -256,8 +277,14 @@ impl BootstrapApplication {
             agent,
             mcp_status,
             monitor,
+            compactor,
+            todo: todo_service,
+            titler,
+            title_worker,
+            subscribers: Arc::new(Mutex::new(Vec::new())),
             current_session,
             active_run: None,
+            active_compaction: None,
             #[cfg(test)]
             fail_next_run_spawn: false,
         })
@@ -280,8 +307,19 @@ pub struct TrustedProjectApplication {
     agent: Arc<dyn crate::plugins::services::AgentRuntime>,
     mcp_status: Arc<McpStatus>,
     monitor: Arc<dyn MonitorService>,
+    /// 可选服务：最小 Catalog（无 CompactionPlugin）下为 None。
+    compactor: Option<Arc<dyn HistoryCompactor>>,
+    /// 可选服务：最小 Catalog（无 TodoPlugin）下为 None。
+    todo: Option<Arc<TodoService>>,
+    /// 可选服务：最小 Catalog（无 SessionTitlePlugin）下为 None。
+    titler: Option<Arc<dyn SessionTitler>>,
+    /// 单 worker + 容量 1 的旁路标题队列。enqueue 永不阻塞 run，Scope
+    /// close 取消并 join 唯一线程，不存在 detached title 任务。
+    title_worker: Option<TitleWorker>,
+    subscribers: Arc<Mutex<Vec<mpsc::Sender<ApplicationEvent>>>>,
     current_session: Option<i64>,
     active_run: Option<RunHandle>,
+    active_compaction: Option<CompactHandle>,
     #[cfg(test)]
     fail_next_run_spawn: bool,
 }
@@ -318,6 +356,43 @@ impl TrustedProjectApplication {
         self.current_session
     }
 
+    #[cfg(test)]
+    pub(crate) fn todo_snapshot_for_test(&self) -> Vec<(String, &'static str)> {
+        self.todo
+            .as_ref()
+            .map(|service| {
+                service
+                    .snapshot()
+                    .into_iter()
+                    .map(|entry| (entry.content, entry.status.as_str()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// INV-T3：活动 Run 或压缩期间拒绝会话切换（new/switch/archive）。
+    fn reject_session_switch_while_busy(&self) -> Result<(), ApplicationError> {
+        if self
+            .active_run
+            .as_ref()
+            .is_some_and(|handle| !handle.is_finished())
+        {
+            return Err(ApplicationError::new(
+                "cannot switch sessions while a run is active",
+            ));
+        }
+        if self
+            .active_compaction
+            .as_ref()
+            .is_some_and(|handle| !handle.is_finished())
+        {
+            return Err(ApplicationError::new(
+                "cannot switch sessions while a compaction is active",
+            ));
+        }
+        Ok(())
+    }
+
     pub fn ensure_session(&mut self) -> Result<i64, ApplicationError> {
         match self.current_session {
             Some(id) => Ok(id),
@@ -327,13 +402,24 @@ impl TrustedProjectApplication {
                     .create_session(&self.project)
                     .map_err(store_error)?;
                 self.current_session = Some(id);
+                // 新会话从空 todo 开始，但显式绑定（INV-T5）。
+                if let Some(todo_service) = &self.todo {
+                    todo_service.restore(Some(id), &[]);
+                }
                 Ok(id)
             }
         }
     }
 
-    pub fn new_session(&mut self) {
+    pub fn new_session(&mut self) -> Result<(), ApplicationError> {
+        self.reject_session_switch_while_busy()?;
+        // CB1-03：切换前必须先落盘 dirty todo，失败则拒绝切换。
+        flush_dirty_todo(self.todo.as_deref(), self.sessions.as_ref())?;
         self.current_session = None;
+        if let Some(todo_service) = &self.todo {
+            todo_service.restore(None, &[]);
+        }
+        Ok(())
     }
 
     pub fn list_sessions(&self) -> Result<Vec<SessionSummary>, ApplicationError> {
@@ -349,10 +435,17 @@ impl TrustedProjectApplication {
     }
 
     pub fn archive_session(&self, id: i64) -> Result<(), ApplicationError> {
+        self.reject_session_switch_while_busy()?;
+        // 归档不得成为绕过 dirty Todo 提交门的路径。即使归档的是其他
+        // session，先把当前唯一的内存快照落盘，保持所有会话状态可恢复。
+        flush_dirty_todo(self.todo.as_deref(), self.sessions.as_ref())?;
         self.sessions.archive_session(id).map_err(store_error)
     }
 
     pub fn switch_session(&mut self, id: i64) -> Result<SessionSnapshot, ApplicationError> {
+        self.reject_session_switch_while_busy()?;
+        // CB1-03：切换前必须先落盘 dirty todo，失败则拒绝切换。
+        flush_dirty_todo(self.todo.as_deref(), self.sessions.as_ref())?;
         if let Some(current) = self.current_session
             && current != id
         {
@@ -370,6 +463,11 @@ impl TrustedProjectApplication {
                 .map_err(store_error)?,
         };
         self.current_session = Some(id);
+        // INV-T3/T5：切换即恢复目标会话的 todo 快照。
+        if let Some(todo_service) = &self.todo {
+            let items = self.sessions.load_items(id).map_err(store_error)?;
+            todo_service.restore(Some(id), &items);
+        }
         Ok(snapshot)
     }
 
@@ -459,6 +557,9 @@ impl TrustedProjectApplication {
     }
 
     pub fn subscribe(&self, sender: mpsc::Sender<ApplicationEvent>) {
+        if let Ok(mut subscribers) = self.subscribers.lock() {
+            subscribers.push(sender.clone());
+        }
         self.monitor.subscribe(sender);
     }
 
@@ -490,6 +591,20 @@ impl TrustedProjectApplication {
         if let Some(previous) = self.active_run.take() {
             previous.join()?;
         }
+        if self
+            .active_compaction
+            .as_ref()
+            .is_some_and(|handle| !handle.is_finished())
+        {
+            return Err(ApplicationError::new("a compaction is already active"));
+        }
+        if let Some(previous) = self.active_compaction.take() {
+            previous.join()?;
+        }
+        // INV-T4：上一轮 marker 未落盘时，必须在接受/持久化本轮 user
+        // 输入之前重试。失败直接拒绝 start，不能在 worker 中吞错后让新
+        // todo_write 覆盖唯一的 dirty 快照。
+        flush_dirty_todo(self.todo.as_deref(), self.sessions.as_ref())?;
         let (config, credentials) = self.model_state()?;
         if !config.is_configured() {
             return Err(ApplicationError::new(
@@ -520,6 +635,14 @@ impl TrustedProjectApplication {
         let sessions = Arc::clone(&self.sessions);
         let agent = Arc::clone(&self.agent);
         let monitor = Arc::clone(&self.monitor);
+        let compactor = self.compactor.clone();
+        let todo_service = self.todo.clone();
+        let titler = self.titler.clone();
+        let title_sender = self
+            .title_worker
+            .as_ref()
+            .map(|worker| worker.sender.clone());
+        let subscribers = Arc::clone(&self.subscribers);
         let (start_sender, start_receiver) = mpsc::sync_channel::<PreparedRun>(1);
         #[cfg(test)]
         if std::mem::take(&mut self.fail_next_run_spawn) {
@@ -540,18 +663,71 @@ impl TrustedProjectApplication {
                 };
                 let PreparedRun {
                     session_id,
-                    history,
-                    history_len,
+                    mut history,
+                    mut history_len,
+                    first_run,
                     prompt,
                     events,
                     completion,
                 } = prepared;
+                // todo（INV-T3/T4）：旧 dirty 已在接受本轮输入前同步 flush；
+                // worker 只负责绑定本轮会话和注入当前快照。
+                let todo_context = if let Some(todo_service) = &todo_service {
+                    todo_service.bind_run(session_id);
+                    todo_service.model_context()
+                } else {
+                    None
+                };
+                // 自动压缩（INV-C6/C11）：无条件重建既有 marker，再按预算
+                // 压缩。网络摘要只发生在 worker 内；失败降级绝不 fail run。
+                if let Some(compactor) = &compactor {
+                    let outcome = compactor.compact(CompactionRequest {
+                        config: &config,
+                        credentials: &credentials,
+                        raw_items: history.clone(),
+                        todo_context,
+                        instructions: String::new(),
+                        tool_definitions: Vec::new(),
+                        force: false,
+                        cancel: cancel.clone(),
+                    });
+                    // marker 落盘成功才采用新压缩视图。落盘失败时
+                    // （CB1-09）回退 baseline_view——仅由**已持久化** marker
+                    // 重建的视图，而不是整段 raw history：既有合法压缩不因
+                    // 单次写故障作废，请求不会重新撑爆窗口。
+                    let adopted = match &outcome.marker {
+                        Some(marker) => sessions
+                            .append_item(session_id, &ModelItem::ProviderState(marker.clone()))
+                            .is_ok(),
+                        None => true,
+                    };
+                    let note = compaction_note(&outcome, adopted);
+                    if adopted {
+                        // P1 切片修正：finish_and_persist 的 history_len 是
+                        // "view 中已持久化代表的前缀长度"，取 view 长度。
+                        history_len = outcome.view.len();
+                        history = outcome.view;
+                    } else if !outcome.baseline_view.is_empty() {
+                        history_len = outcome.baseline_view.len();
+                        history = outcome.baseline_view;
+                    }
+                    if let Some(note) = note {
+                        broadcast_to(
+                            &subscribers,
+                            ApplicationEvent::CompactionUpdated(Some(note)),
+                        );
+                    }
+                }
                 let captured_text = Arc::new(Mutex::new(String::new()));
                 let events: Box<dyn EventSink + Send> = Box::new(CapturingEventSink {
                     inner: events,
                     text: Arc::clone(&captured_text),
                 });
                 let panic_text = Arc::clone(&captured_text);
+                // 标题生成需要 config/credentials，而它们随后被 move 进
+                // AgentRequest；提前克隆。
+                let title_config = config.clone();
+                let title_credentials = credentials.clone();
                 let execution = catch_unwind(AssertUnwindSafe(|| {
                     let outcome = agent.execute(AgentRequest {
                         config,
@@ -571,8 +747,9 @@ impl TrustedProjectApplication {
                         outcome,
                     )
                 }));
-                let result = match execution {
-                    Ok(result) => result,
+                // (结果, 本轮应持久化 items 是否全部落盘成功)。
+                let (result, persisted_clean) = match execution {
+                    Ok(pair) => pair,
                     Err(payload) => persist_panicked_run(
                         sessions.as_ref(),
                         session_id,
@@ -596,6 +773,33 @@ impl TrustedProjectApplication {
                         Err(failure)
                     }
                 };
+                // CB1-03：Run items 全部落盘成功才允许提交 todo marker——
+                // 部分持久化（ToolCall 成功、ToolResult 失败）时保留 dirty
+                // 且不写 marker，避免"run 事实不完整但 todo 已提交"。
+                let result = commit_todo_after_run(
+                    todo_service.as_deref(),
+                    sessions.as_ref(),
+                    session_id,
+                    result,
+                    persisted_clean,
+                );
+                // CB1-01/04：自动命名移出 run worker——独立线程执行，完
+                // 成信号先于标题返回；仅首条消息且成功未取消的 run 触发
+                // 一次，失败不重试。取消令牌与 close 联动（有界 join）。
+                if persisted_clean
+                    && first_run
+                    && let Ok(done) = &result
+                    && !done.cancelled
+                    && titler.is_some()
+                    && let Some(sender) = &title_sender
+                {
+                    // 有界队列满时直接放弃；绝不让 run completion 等标题。
+                    let _ = sender.try_send(AutotitleJob {
+                        config: title_config,
+                        credentials: title_credentials,
+                        session_id,
+                    });
+                }
                 busy.store(false, Ordering::Release);
                 let _ = completion.send(result);
             })
@@ -618,6 +822,9 @@ impl TrustedProjectApplication {
         let prepared = (|| -> Result<PreparedRun, ApplicationError> {
             let session_id = self.ensure_session()?;
             let mut history = self.sessions.load_items(session_id).map_err(store_error)?;
+            // CB1-04：在写入本轮 user item **之前**捕获"首条消息"快照——
+            // 自动命名只对首条消息的 run 一次生效，失败不重试。
+            let first_run = history.is_empty() && legacy_seed_items.is_empty();
             if history.is_empty() {
                 for item in legacy_seed_items {
                     self.sessions
@@ -639,6 +846,7 @@ impl TrustedProjectApplication {
                 session_id,
                 history,
                 history_len,
+                first_run,
                 prompt,
                 events,
                 completion,
@@ -668,26 +876,338 @@ impl TrustedProjectApplication {
         }
     }
 
+    /// 手动 `/compact`：异步 worker 内执行（含网络摘要），立即返回可取
+    /// 消的 handle（INV-C11）；与活动 Run 互斥。完成经
+    /// `ApplicationEvent::CompactionUpdated` 报告。
+    pub fn compact_session(&mut self) -> Result<CompactHandle, ApplicationError> {
+        if self
+            .active_run
+            .as_ref()
+            .is_some_and(|handle| !handle.is_finished())
+        {
+            return Err(ApplicationError::new("another run is already active"));
+        }
+        if let Some(previous) = self.active_compaction.take() {
+            previous.join()?;
+        }
+        let session_id = self
+            .current_session
+            .ok_or_else(|| ApplicationError::new("no conversation to compact"))?;
+        let (config, credentials) = self.model_state()?;
+        if !config.is_configured() {
+            return Err(ApplicationError::new(
+                "model is not configured; configure a model and endpoint first",
+            ));
+        }
+        let compactor = self
+            .compactor
+            .clone()
+            .ok_or_else(|| ApplicationError::new("compaction service is not available"))?;
+        let sessions = Arc::clone(&self.sessions);
+        let subscribers = Arc::clone(&self.subscribers);
+        let cancel = CancelToken::new();
+        let busy = Arc::new(AtomicBool::new(true));
+        let join_slot = Arc::new(Mutex::new(None));
+        let report_slot: Arc<Mutex<Option<Result<CompactReport, String>>>> =
+            Arc::new(Mutex::new(None));
+        let handle = CompactHandle {
+            cancel: cancel.clone(),
+            busy: Arc::clone(&busy),
+            join: Arc::clone(&join_slot),
+            report: Arc::clone(&report_slot),
+        };
+        broadcast_to(&subscribers, ApplicationEvent::CompactionUpdated(None));
+        let worker = std::thread::Builder::new()
+            .name("clat-compact".into())
+            .spawn(move || {
+                let result = (|| -> Result<CompactReport, String> {
+                    let raw_items = sessions
+                        .load_items(session_id)
+                        .map_err(|error| error.to_string())?;
+                    let outcome = compactor.compact(CompactionRequest {
+                        config: &config,
+                        credentials: &credentials,
+                        raw_items,
+                        todo_context: None,
+                        instructions: String::new(),
+                        tool_definitions: Vec::new(),
+                        force: true,
+                        cancel: cancel.clone(),
+                    });
+                    let marker = outcome.marker.ok_or_else(|| {
+                        outcome
+                            .degraded
+                            .clone()
+                            .unwrap_or_else(|| "nothing to compact".into())
+                    })?;
+                    sessions
+                        .append_item(session_id, &ModelItem::ProviderState(marker))
+                        .map_err(|error| format!("failed to persist compaction marker: {error}"))?;
+                    Ok(CompactReport {
+                        covered_count: outcome.covered_count,
+                        previously_covered: outcome.previously_covered,
+                        degraded: outcome.degraded,
+                    })
+                })();
+                // CB1-11：结构化结果存入 handle，供 join_report 消费。
+                if let Ok(mut slot) = report_slot.lock() {
+                    *slot = Some(result.clone());
+                }
+                let note = match &result {
+                    Ok(report) => report.status_text(),
+                    Err(error) => format!("compaction failed: {error}"),
+                };
+                broadcast_to(
+                    &subscribers,
+                    ApplicationEvent::CompactionUpdated(Some(note)),
+                );
+                busy.store(false, Ordering::Release);
+            })
+            .map_err(|error| ApplicationError::new(format!("spawn compaction worker: {error}")))?;
+        *join_slot
+            .lock()
+            .map_err(|_| ApplicationError::new("compaction join lock poisoned"))? = Some(worker);
+        self.active_compaction = Some(handle.clone());
+        Ok(handle)
+    }
+
     pub fn close(mut self) -> Result<(), ApplicationError> {
         self.close_inner()
     }
 
     fn close_inner(&mut self) -> Result<(), ApplicationError> {
+        let mut errors = Vec::new();
+        // 先停止会产生 Todo dirty 的活动 Run，再提交最终快照。清理始终
+        // 继续，但任何失败都会在最后明确返回，不能以 teardown 为由吞错。
         if let Some(handle) = self.active_run.take() {
             handle.cancel();
-            handle.join()?;
+            if let Err(error) = handle.join() {
+                errors.push(error.to_string());
+            }
         }
-        if let Some(mut manager) = self.project_manager.take() {
-            manager
-                .close()
-                .map_err(|error| ApplicationError::new(error.to_string()))?;
+        if let Some(handle) = self.active_compaction.take() {
+            handle.cancel();
+            if let Err(error) = handle.join() {
+                errors.push(error.to_string());
+            }
         }
-        if let Some(mut manager) = self.bootstrap_manager.take() {
-            manager
-                .close()
-                .map_err(|error| ApplicationError::new(error.to_string()))?;
+        if let Err(error) = flush_dirty_todo(self.todo.as_deref(), self.sessions.as_ref()) {
+            errors.push(error.to_string());
+        }
+        if let Some(worker) = self.title_worker.as_mut()
+            && let Err(error) = worker.shutdown()
+        {
+            errors.push(error.to_string());
+        }
+        if let Some(mut manager) = self.project_manager.take()
+            && let Err(error) = manager.close()
+        {
+            errors.push(error.to_string());
+        }
+        if let Some(mut manager) = self.bootstrap_manager.take()
+            && let Err(error) = manager.close()
+        {
+            errors.push(error.to_string());
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(ApplicationError::new(format!(
+                "application close failed: {}",
+                errors.join("; ")
+            )))
+        }
+    }
+}
+
+/// 生成自动压缩的状态提示；无事发生时返回 None（不打扰用户）。
+fn compaction_note(outcome: &CompactionOutcome, adopted: bool) -> Option<String> {
+    if let Some(reason) = &outcome.degraded {
+        return Some(format!("compaction degraded: {reason}"));
+    }
+    if let Some(marker) = &outcome.marker {
+        if !adopted {
+            return Some("compaction marker could not be persisted".into());
+        }
+        return Some(format!(
+            "compacted history: covered {} items",
+            parse_covered_count(marker)
+        ));
+    }
+    None
+}
+
+fn parse_covered_count(marker: &crate::model::ProviderState) -> usize {
+    marker
+        .data
+        .get("covered_count")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0) as usize
+}
+
+/// 一次性自动命名任务（仅 first_run；CAS 防覆盖并发手工改名）。
+struct AutotitleJob {
+    config: ModelConfig,
+    credentials: ProviderCredentials,
+    session_id: i64,
+}
+
+struct TitleWorker {
+    sender: mpsc::SyncSender<AutotitleJob>,
+    cancel: CancelToken,
+    join: Option<JoinHandle<()>>,
+}
+
+impl TitleWorker {
+    fn spawn(
+        titler: Arc<dyn SessionTitler>,
+        sessions: Arc<dyn SessionStore>,
+    ) -> Result<Self, ApplicationError> {
+        let (sender, receiver) = mpsc::sync_channel::<AutotitleJob>(1);
+        let cancel = CancelToken::new();
+        let worker_cancel = cancel.clone();
+        let join = std::thread::Builder::new()
+            .name("clat-title".into())
+            .spawn(move || {
+                while !worker_cancel.is_cancelled() {
+                    match receiver.recv_timeout(Duration::from_millis(100)) {
+                        Ok(job) => maybe_autotitle(
+                            titler.as_ref(),
+                            sessions.as_ref(),
+                            &job.config,
+                            &job.credentials,
+                            job.session_id,
+                            &worker_cancel,
+                        ),
+                        Err(mpsc::RecvTimeoutError::Timeout) => {}
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    }
+                }
+            })
+            .map_err(|error| ApplicationError::new(format!("spawn title worker: {error}")))?;
+        Ok(Self {
+            sender,
+            cancel,
+            join: Some(join),
+        })
+    }
+
+    fn shutdown(&mut self) -> Result<(), ApplicationError> {
+        self.cancel.cancel();
+        if let Some(join) = self.join.take() {
+            join.join()
+                .map_err(|_| ApplicationError::new("title worker panicked"))?;
         }
         Ok(())
+    }
+}
+
+/// INV-F 一次性自动命名：仅当当前标题仍等于首条用户消息的派生默认值
+/// 时，经 CAS 条件更新替换——请求期间的手工改名不会被迟到的模型标题
+/// 覆盖（CB1-04）。任何失败静默返回。
+fn maybe_autotitle(
+    titler: &dyn SessionTitler,
+    sessions: &dyn SessionStore,
+    config: &ModelConfig,
+    credentials: &ProviderCredentials,
+    session_id: i64,
+    cancel: &CancelToken,
+) {
+    let Ok(messages) = sessions.load_messages(session_id) else {
+        return;
+    };
+    let Some(first_user) = messages.iter().find(|message| message.role == "user") else {
+        return;
+    };
+    let derived = crate::storage::session_title_from(&first_user.content);
+    if derived.is_empty() {
+        return;
+    }
+    let Ok(current) = sessions.session_title(session_id) else {
+        return;
+    };
+    if current != derived {
+        return;
+    }
+    let Some(title) = titler.generate_title(config, credentials, &first_user.content, cancel)
+    else {
+        return;
+    };
+    if !title.is_empty() && title != derived {
+        // CAS：仅当标题仍是派生默认值时替换；期间被手工改名则放弃。
+        let _ = sessions.set_session_title_if(session_id, &derived, &title);
+    }
+}
+
+/// CB1-03：run 收尾的 todo marker 提交门。仅当本轮应持久化 items 全部
+/// 成功落盘且 dirty 时写 marker；marker 失败保留 dirty 并把失败并入
+/// run 结果（下一轮 start_run 会重试 flush）。
+fn commit_todo_after_run(
+    todo: Option<&TodoService>,
+    sessions: &dyn SessionStore,
+    session_id: i64,
+    result: ApplicationRunResult,
+    persisted_clean: bool,
+) -> ApplicationRunResult {
+    let Some(todo) = todo else {
+        return result;
+    };
+    if !persisted_clean {
+        // Run 事实不完整：绝不提交 marker，dirty 留待下一次完整 run。
+        todo.unbind();
+        return result;
+    }
+    let flush_error = if todo.is_dirty() {
+        match sessions.append_item(session_id, &todo.marker()) {
+            Ok(()) => {
+                todo.clear_dirty();
+                None
+            }
+            Err(error) => Some(format!("todo state persist failed: {error}")),
+        }
+    } else {
+        None
+    };
+    todo.unbind();
+    match (result, flush_error) {
+        (result, None) => result,
+        (Ok(done), Some(error)) => Err(ApplicationRunFailure {
+            error,
+            turns: done.turns,
+            usage: done.usage,
+        }),
+        (Err(mut failure), Some(error)) => {
+            failure.error.push_str(&format!("; {error}"));
+            Err(failure)
+        }
+    }
+}
+
+/// CB1-03：会话切换/新建前 flush 既有 dirty todo；失败则拒绝切换（返回
+/// Err），内存态不被覆盖丢失。
+fn flush_dirty_todo(
+    todo: Option<&TodoService>,
+    sessions: &dyn SessionStore,
+) -> Result<(), ApplicationError> {
+    let Some(todo) = todo else {
+        return Ok(());
+    };
+    if let Some(session) = todo.dirty_session() {
+        sessions
+            .append_item(session, &todo.marker())
+            .map(|_| todo.clear_dirty())
+            .map_err(|error| {
+                ApplicationError::new(format!(
+                    "uncommitted todo state for session {session} could not be flushed: {error}"
+                ))
+            })?;
+    }
+    Ok(())
+}
+
+fn broadcast_to(subscribers: &Mutex<Vec<mpsc::Sender<ApplicationEvent>>>, event: ApplicationEvent) {
+    if let Ok(mut subscribers) = subscribers.lock() {
+        subscribers.retain(|sender| sender.send(event.clone()).is_ok());
     }
 }
 
@@ -709,6 +1229,8 @@ struct PreparedRun {
     session_id: i64,
     history: Vec<ModelItem>,
     history_len: usize,
+    /// 本轮是否写入该会话首条 user item（CB1-04：一次性自动命名的门）。
+    first_run: bool,
     prompt: String,
     events: Box<dyn EventSink + Send>,
     completion: mpsc::Sender<ApplicationRunResult>,
@@ -762,6 +1284,71 @@ impl RunHandle {
     }
 }
 
+/// `/compact` 的可取消句柄：取消令牌 + 幂等 join + 业务结果
+/// （CB1-11：headless 调用方经 `join_report` 拿到结构化 CompactReport）。
+#[derive(Clone)]
+pub struct CompactHandle {
+    cancel: CancelToken,
+    busy: Arc<AtomicBool>,
+    join: Arc<Mutex<Option<JoinHandle<()>>>>,
+    report: Arc<Mutex<Option<Result<CompactReport, String>>>>,
+}
+
+impl CompactHandle {
+    pub fn cancel(&self) {
+        self.cancel.cancel();
+    }
+
+    pub fn is_finished(&self) -> bool {
+        !self.busy.load(Ordering::Acquire)
+    }
+
+    pub fn join(&self) -> Result<(), ApplicationError> {
+        let handle = self
+            .join
+            .lock()
+            .map_err(|_| ApplicationError::new("compaction join lock poisoned"))?
+            .take();
+        if let Some(handle) = handle {
+            handle
+                .join()
+                .map_err(|_| ApplicationError::new("compaction worker panicked"))?;
+        }
+        Ok(())
+    }
+
+    /// join 后返回压缩业务结果（Ok=成功落 marker；Err=失败原因）。
+    /// ApplicationEvent 只是展示通道，这里才是结构化结果。
+    pub fn join_report(&self) -> Result<Result<CompactReport, String>, ApplicationError> {
+        self.join()?;
+        self.report
+            .lock()
+            .map_err(|_| ApplicationError::new("compaction report lock poisoned"))
+            .map(|slot| slot.clone().unwrap_or(Err("no compaction result".into())))
+    }
+}
+
+/// 手动压缩结果报告。
+#[derive(Clone, Debug)]
+pub struct CompactReport {
+    pub covered_count: usize,
+    pub previously_covered: usize,
+    pub degraded: Option<String>,
+}
+
+impl CompactReport {
+    fn status_text(&self) -> String {
+        let base = format!(
+            "compacted: covered {} new items",
+            self.covered_count.saturating_sub(self.previously_covered)
+        );
+        match &self.degraded {
+            Some(reason) => format!("{base} (degraded: {reason})"),
+            None => base,
+        }
+    }
+}
+
 fn finish_and_persist(
     sessions: &dyn SessionStore,
     session_id: i64,
@@ -769,7 +1356,7 @@ fn finish_and_persist(
     captured_text: Arc<Mutex<String>>,
     cancelled: bool,
     outcome: Result<crate::RunOutput, crate::plugins::services::AgentFailure>,
-) -> ApplicationRunResult {
+) -> (ApplicationRunResult, bool) {
     let assistant_text = captured_text
         .lock()
         .map(|text| text.clone())
@@ -794,21 +1381,27 @@ fn finish_and_persist(
                 }
             }
             if !persistence_errors.is_empty() {
-                return Err(ApplicationRunFailure {
-                    error: format!(
-                        "run completed but persistence failed: {}",
-                        persistence_errors.join("; ")
-                    ),
+                return (
+                    Err(ApplicationRunFailure {
+                        error: format!(
+                            "run completed but persistence failed: {}",
+                            persistence_errors.join("; ")
+                        ),
+                        turns: output.turns,
+                        usage: output.usage,
+                    }),
+                    false,
+                );
+            }
+            (
+                Ok(ApplicationRunDone {
+                    output: output.text,
                     turns: output.turns,
                     usage: output.usage,
-                });
-            }
-            Ok(ApplicationRunDone {
-                output: output.text,
-                turns: output.turns,
-                usage: output.usage,
-                cancelled,
-            })
+                    cancelled,
+                }),
+                true,
+            )
         }
         Err(failure) => {
             let (error, turns, usage, items) = failure.error.into_parts();
@@ -824,18 +1417,21 @@ fn finish_and_persist(
                     persistence_errors.push(error.to_string());
                 }
             }
-            Err(ApplicationRunFailure {
-                error: if persistence_errors.is_empty() {
-                    error
-                } else {
-                    format!(
-                        "{error}; partial-state persistence failed: {}",
-                        persistence_errors.join("; ")
-                    )
-                },
-                turns,
-                usage,
-            })
+            (
+                Err(ApplicationRunFailure {
+                    error: if persistence_errors.is_empty() {
+                        error
+                    } else {
+                        format!(
+                            "{error}; partial-state persistence failed: {}",
+                            persistence_errors.join("; ")
+                        )
+                    },
+                    turns,
+                    usage,
+                }),
+                persistence_errors.is_empty(),
+            )
         }
     }
 }
@@ -845,7 +1441,7 @@ fn persist_panicked_run(
     session_id: i64,
     captured_text: Arc<Mutex<String>>,
     panic: String,
-) -> ApplicationRunResult {
+) -> (ApplicationRunResult, bool) {
     let assistant_text = captured_text
         .lock()
         .map(|text| text.clone())
@@ -855,16 +1451,22 @@ fn persist_panicked_run(
     } else {
         sessions.append_message(session_id, "assistant", &assistant_text)
     };
-    Err(ApplicationRunFailure {
-        error: match persistence {
-            Ok(()) => format!("run worker panicked: {panic}"),
-            Err(error) => {
-                format!("run worker panicked: {panic}; partial-state persistence failed: {error}")
-            }
-        },
-        turns: 0,
-        usage: Usage::default(),
-    })
+    let clean = persistence.is_ok();
+    (
+        Err(ApplicationRunFailure {
+            error: match persistence {
+                Ok(()) => format!("run worker panicked: {panic}"),
+                Err(error) => {
+                    format!(
+                        "run worker panicked: {panic}; partial-state persistence failed: {error}"
+                    )
+                }
+            },
+            turns: 0,
+            usage: Usage::default(),
+        }),
+        clean,
+    )
 }
 
 fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
@@ -911,9 +1513,9 @@ mod tests {
         DisposeError, PluginContext, PluginDescriptor, PluginError, PluginId, ServiceId,
     };
     use crate::plugins::services::{PROVIDER_SERVICE, PROVIDER_SERVICE_ID};
-    use crate::{PermissionDecision, ProviderDescriptor};
+    use crate::{PermissionDecision, PermissionRequest, ProviderDescriptor};
     use std::fs;
-    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     const TEST_PROVIDER_ID: PluginId = PluginId::new("test.application_provider");
     const TEST_PROVIDER_REQUIRES: &[ServiceId] = &[PROVIDER_SERVICE_ID];
@@ -978,9 +1580,13 @@ mod tests {
     #[derive(Clone, Copy)]
     enum TestBehavior {
         Success,
+        /// 标题请求慢 3s、普通对话快返回（验证旁路命名不阻塞 run）。
+        SlowTitle,
         Failure,
         Cancel,
         Panic,
+        /// 第一轮调用 todo_write 工具，第二轮完成：锁定 marker 落盘顺序。
+        Todo,
     }
 
     struct TestFactory {
@@ -1037,6 +1643,22 @@ mod tests {
                     });
                     Ok(response("done", FinishReason::Completed))
                 }
+                TestBehavior::SlowTitle => {
+                    // 标题请求（由 instructions 识别）慢 3s；普通对话快返回。
+                    let is_title = request
+                        .instructions
+                        .is_some_and(|text| text.contains("Generate a concise title"));
+                    if is_title {
+                        std::thread::sleep(Duration::from_secs(3));
+                        Ok(response("slow title", FinishReason::Completed))
+                    } else {
+                        std::thread::sleep(Duration::from_millis(50));
+                        events.emit(ModelEvent::TextDelta {
+                            delta: "done".into(),
+                        });
+                        Ok(response("done", FinishReason::Completed))
+                    }
+                }
                 TestBehavior::Failure => {
                     events.emit(ModelEvent::TextDelta {
                         delta: "partial".into(),
@@ -1057,6 +1679,36 @@ mod tests {
                         delta: "partial-panic".into(),
                     });
                     panic!("intentional provider panic");
+                }
+                TestBehavior::Todo => {
+                    let has_todo_result = request.items.iter().any(|item| {
+                        matches!(item, crate::model::ModelItem::ToolResult(result) if result.tool_name == "todo_write")
+                    });
+                    if has_todo_result {
+                        events.emit(ModelEvent::TextDelta {
+                            delta: "todos updated".into(),
+                        });
+                        Ok(response("todos updated", FinishReason::Completed))
+                    } else {
+                        Ok(ModelResponse {
+                            text: String::new(),
+                            tool_calls: vec![crate::tool::ToolCall {
+                                id: "call-todo".into(),
+                                name: "todo_write".into(),
+                                arguments: serde_json::json!({
+                                    "todos": [
+                                        {"content": "write tests", "status": "in_progress"},
+                                        {"content": "ship release", "status": "pending"},
+                                    ],
+                                }),
+                            }],
+                            finish_reason: FinishReason::ToolCalls,
+                            usage: None,
+                            provider_response_id: None,
+                            provider_state: Vec::new(),
+                            reasoning: None,
+                        })
+                    }
                 }
             }
         }
@@ -1085,6 +1737,618 @@ mod tests {
         fn emit(&mut self, event: RunEvent) {
             self.0.lock().expect("events").push(event);
         }
+    }
+
+    /// 计数 approver：SessionWrite 免审意味着 todo run 期间零调用。
+    struct CountingApprover(Arc<std::sync::atomic::AtomicUsize>);
+
+    impl PermissionApprover for CountingApprover {
+        fn decide(&self, _request: PermissionRequest) -> PermissionDecision {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            PermissionDecision::Allow
+        }
+    }
+
+    /// E.3.2/8：ToolCall → ToolResult → todo marker 的持久化顺序，以及
+    /// 免审（零权限请求）。
+    #[test]
+    fn todo_marker_persists_after_run_items_without_permission_prompts() {
+        let (storage_root, project_root) = roots("todo-order");
+        fs::create_dir_all(&project_root).expect("project");
+        let project = Project::new(&project_root);
+        let bootstrap =
+            BootstrapApplication::open(project.clone(), storage_root.clone()).expect("bootstrap");
+        bootstrap.trust_project().expect("trust");
+        let mut application = bootstrap
+            .into_trusted_with_provider(Arc::new(TestProviderPlugin {
+                behavior: TestBehavior::Todo,
+            }))
+            .expect("trusted");
+        configure_test_model(&application);
+
+        let approvals = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (completion, completed) = mpsc::channel();
+        let handle = application
+            .start_run(ApplicationRunRequest {
+                prompt: "plan the release".into(),
+                legacy_seed_items: Vec::new(),
+                approver: Arc::new(CountingApprover(Arc::clone(&approvals))),
+                events: Box::new(Vec::<RunEvent>::new()),
+                completion,
+            })
+            .expect("start");
+        handle.join().expect("join");
+        match completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("completed")
+        {
+            Ok(_) => {}
+            Err(failure) => panic!("todo run failed: {}", failure.error),
+        }
+        // INV-T2：SessionWrite 免审。
+        assert_eq!(
+            approvals.load(Ordering::SeqCst),
+            0,
+            "todo_write must not prompt for permission"
+        );
+
+        let session_id = application.current_session_id().expect("session");
+        let items = {
+            let storage = Storage::open(storage_root.clone()).expect("inspect storage");
+            storage.load_items(session_id).expect("items")
+        };
+        // 顺序：user → ToolCall → ToolResult → todo marker → assistant。
+        let kinds: Vec<&str> = items
+            .iter()
+            .map(|item| match item {
+                ModelItem::User { .. } => "user",
+                ModelItem::Assistant { .. } => "assistant",
+                ModelItem::ToolCall(call) => call.name.as_str(),
+                ModelItem::ToolResult(result) => result.tool_name.as_str(),
+                ModelItem::ProviderState(state) => state.provider.as_str(),
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                "user",
+                "todo_write",
+                "todo_write",
+                "assistant",
+                "clat.todo.v1",
+            ],
+            "marker must follow all run items that produced it"
+        );
+
+        application.close().expect("close");
+        fs::remove_dir_all(storage_root).expect("remove storage");
+        fs::remove_dir_all(project_root).expect("remove project");
+    }
+
+    /// E.3.3/4：重开应用恢复快照；快照随会话隔离。
+    #[test]
+    fn todo_snapshots_restore_on_reopen_and_stay_session_scoped() {
+        let (storage_root, project_root) = roots("todo-restore");
+        fs::create_dir_all(&project_root).expect("project");
+        let project = Project::new(&project_root);
+        let bootstrap =
+            BootstrapApplication::open(project.clone(), storage_root.clone()).expect("bootstrap");
+        bootstrap.trust_project().expect("trust");
+        let mut application = bootstrap
+            .into_trusted_with_provider(Arc::new(TestProviderPlugin {
+                behavior: TestBehavior::Todo,
+            }))
+            .expect("trusted");
+        configure_test_model(&application);
+
+        let (completion, completed) = mpsc::channel();
+        let handle = application
+            .start_run(ApplicationRunRequest {
+                prompt: "first session".into(),
+                legacy_seed_items: Vec::new(),
+                approver: Arc::new(|_| PermissionDecision::Allow),
+                events: Box::new(Vec::<RunEvent>::new()),
+                completion,
+            })
+            .expect("start");
+        handle.join().expect("join");
+        assert!(completed.recv_timeout(Duration::from_secs(10)).is_ok());
+        let first_session = application.current_session_id().expect("first session");
+        assert_eq!(
+            application.todo_snapshot_for_test(),
+            vec![
+                ("write tests".into(), "in_progress"),
+                ("ship release".into(), "pending"),
+            ]
+        );
+
+        // 新会话：todo 清空；两 会话互不污染。
+        application.new_session().expect("new session");
+        assert!(application.todo_snapshot_for_test().is_empty());
+        let (completion, completed) = mpsc::channel();
+        let handle = application
+            .start_run(ApplicationRunRequest {
+                prompt: "second session".into(),
+                legacy_seed_items: Vec::new(),
+                approver: Arc::new(|_| PermissionDecision::Allow),
+                events: Box::new(Vec::<RunEvent>::new()),
+                completion,
+            })
+            .expect("start");
+        handle.join().expect("join");
+        assert!(completed.recv_timeout(Duration::from_secs(10)).is_ok());
+        // switch 回第一个会话：快照恢复为第一会话内容。
+        application
+            .switch_session(first_session)
+            .expect("switch back");
+        assert_eq!(
+            application.todo_snapshot_for_test(),
+            vec![
+                ("write tests".into(), "in_progress"),
+                ("ship release".into(), "pending"),
+            ]
+        );
+
+        // 重开应用：进入 Trusted Project 即恢复（INV-T5）。
+        application.close().expect("close");
+        let bootstrap =
+            BootstrapApplication::open(project, storage_root.clone()).expect("reopen bootstrap");
+        let application = bootstrap
+            .into_trusted_with_provider(Arc::new(TestProviderPlugin {
+                behavior: TestBehavior::Success,
+            }))
+            .expect("reopen trusted");
+        assert_eq!(
+            application.todo_snapshot_for_test(),
+            vec![
+                ("write tests".into(), "in_progress"),
+                ("ship release".into(), "pending"),
+            ],
+            "todo snapshot must survive reopening without an explicit switch"
+        );
+        drop(application);
+        fs::remove_dir_all(storage_root).expect("remove storage");
+        fs::remove_dir_all(project_root).expect("remove project");
+    }
+
+    /// F.3：自动命名一次性生效；手工命名的会话永不被覆盖。
+    #[test]
+    fn auto_title_replaces_default_once_and_never_touches_renamed_sessions() {
+        let (storage_root, project_root) = roots("auto-title");
+        fs::create_dir_all(&project_root).expect("project");
+        let project = Project::new(&project_root);
+        let bootstrap =
+            BootstrapApplication::open(project.clone(), storage_root.clone()).expect("bootstrap");
+        bootstrap.trust_project().expect("trust");
+        let mut application = bootstrap
+            .into_trusted_with_provider(Arc::new(TestProviderPlugin {
+                behavior: TestBehavior::Success,
+            }))
+            .expect("trusted");
+        configure_test_model(&application);
+
+        // 会话 A：首轮后标题从派生默认值替换为模型输出（"done"），
+        // 第二轮不再改。
+        let (completion, completed) = mpsc::channel();
+        let handle = application
+            .start_run(ApplicationRunRequest {
+                prompt: "help me fix the flaky login test".into(),
+                legacy_seed_items: Vec::new(),
+                approver: Arc::new(|_| PermissionDecision::Allow),
+                events: Box::new(Vec::<RunEvent>::new()),
+                completion,
+            })
+            .expect("start");
+        handle.join().expect("join");
+        assert!(completed.recv_timeout(Duration::from_secs(10)).is_ok());
+        let first_session = application.current_session_id().expect("session");
+        {
+            let storage = Storage::open(storage_root.clone()).expect("inspect storage");
+            // CB1-01：标题经旁路线程异步落库——有界轮询而非立即断言。
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                if storage.session_title(first_session).expect("title") == "done" {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "model-generated title must eventually replace the derived default, got: {}",
+                    storage.session_title(first_session).expect("title")
+                );
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+        let (completion, completed) = mpsc::channel();
+        let handle = application
+            .start_run(ApplicationRunRequest {
+                prompt: "and also the signup flow".into(),
+                legacy_seed_items: Vec::new(),
+                approver: Arc::new(|_| PermissionDecision::Allow),
+                events: Box::new(Vec::<RunEvent>::new()),
+                completion,
+            })
+            .expect("start");
+        handle.join().expect("join");
+        assert!(completed.recv_timeout(Duration::from_secs(10)).is_ok());
+        {
+            let storage = Storage::open(storage_root.clone()).expect("inspect storage");
+            assert_eq!(
+                storage.session_title(first_session).expect("title"),
+                "done",
+                "auto-title runs at most once per session"
+            );
+        }
+
+        // 会话 B：手工命名后自动命名绝不覆盖。
+        application.new_session().expect("new session");
+        let second_session = application.ensure_session().expect("second session");
+        application
+            .rename_session(second_session, "My custom name")
+            .expect("rename");
+        let (completion, completed) = mpsc::channel();
+        let handle = application
+            .start_run(ApplicationRunRequest {
+                prompt: "anything at all".into(),
+                legacy_seed_items: Vec::new(),
+                approver: Arc::new(|_| PermissionDecision::Allow),
+                events: Box::new(Vec::<RunEvent>::new()),
+                completion,
+            })
+            .expect("start");
+        handle.join().expect("join");
+        assert!(completed.recv_timeout(Duration::from_secs(10)).is_ok());
+        {
+            let storage = Storage::open(storage_root.clone()).expect("inspect storage");
+            assert_eq!(
+                storage.session_title(second_session).expect("title"),
+                "My custom name",
+                "renamed sessions are never auto-retitled"
+            );
+        }
+
+        application.close().expect("close");
+        fs::remove_dir_all(storage_root).expect("remove storage");
+        fs::remove_dir_all(project_root).expect("remove project");
+    }
+
+    /// CB1-01：标题生成不得阻塞 run 完成——completion 必须先于慢标题
+    /// 网络请求到达；标题随后异步落库。
+    #[test]
+    fn title_generation_does_not_block_run_completion() {
+        let (storage_root, project_root) = roots("title-bypass");
+        fs::create_dir_all(&project_root).expect("project");
+        let project = Project::new(&project_root);
+        let bootstrap =
+            BootstrapApplication::open(project.clone(), storage_root.clone()).expect("bootstrap");
+        bootstrap.trust_project().expect("trust");
+        let mut application = bootstrap
+            .into_trusted_with_provider(Arc::new(TestProviderPlugin {
+                behavior: TestBehavior::SlowTitle,
+            }))
+            .expect("trusted");
+        configure_test_model(&application);
+
+        let (completion, completed) = mpsc::channel();
+        let handle = application
+            .start_run(ApplicationRunRequest {
+                prompt: "fix the login bug now".into(),
+                legacy_seed_items: Vec::new(),
+                approver: Arc::new(|_| PermissionDecision::Allow),
+                events: Box::new(Vec::<RunEvent>::new()),
+                completion,
+            })
+            .expect("start");
+        handle.join().expect("join");
+        // run 本身 ~50ms；若标题（3s）仍同步阻塞 worker，这里会超时。
+        assert!(
+            completed.recv_timeout(Duration::from_millis(800)).is_ok(),
+            "run completion must not wait for the slow title request"
+        );
+        let session_id = application.current_session_id().expect("session");
+        // 标题随后异步就位。
+        std::thread::sleep(Duration::from_millis(3_800));
+        {
+            let storage = Storage::open(storage_root.clone()).expect("inspect storage");
+            assert_eq!(
+                storage.session_title(session_id).expect("title"),
+                "slow title"
+            );
+        }
+
+        application.close().expect("close");
+        fs::remove_dir_all(storage_root).expect("remove storage");
+        fs::remove_dir_all(project_root).expect("remove project");
+    }
+
+    /// CB1-04：标题请求期间的手工改名必须胜出（CAS 条件更新）。
+    #[test]
+    fn rename_during_title_generation_wins_the_race() {
+        let (storage_root, project_root) = roots("title-race");
+        fs::create_dir_all(&project_root).expect("project");
+        let project = Project::new(&project_root);
+        let bootstrap =
+            BootstrapApplication::open(project.clone(), storage_root.clone()).expect("bootstrap");
+        bootstrap.trust_project().expect("trust");
+        let mut application = bootstrap
+            .into_trusted_with_provider(Arc::new(TestProviderPlugin {
+                behavior: TestBehavior::SlowTitle,
+            }))
+            .expect("trusted");
+        configure_test_model(&application);
+
+        let (completion, completed) = mpsc::channel();
+        let handle = application
+            .start_run(ApplicationRunRequest {
+                prompt: "help me refactor everything".into(),
+                legacy_seed_items: Vec::new(),
+                approver: Arc::new(|_| PermissionDecision::Allow),
+                events: Box::new(Vec::<RunEvent>::new()),
+                completion,
+            })
+            .expect("start");
+        handle.join().expect("join");
+        assert!(completed.recv_timeout(Duration::from_millis(800)).is_ok());
+        let session_id = application.current_session_id().expect("session");
+        // 标题请求仍在飞行中：用户手工改名。
+        application
+            .rename_session(session_id, "My custom name")
+            .expect("rename");
+        std::thread::sleep(Duration::from_millis(3_800));
+        {
+            let storage = Storage::open(storage_root.clone()).expect("inspect storage");
+            assert_eq!(
+                storage.session_title(session_id).expect("title"),
+                "My custom name",
+                "a manual rename during title generation must never be overwritten"
+            );
+        }
+
+        application.close().expect("close");
+        fs::remove_dir_all(storage_root).expect("remove storage");
+        fs::remove_dir_all(project_root).expect("remove project");
+    }
+
+    /// CB1-03：todo marker 提交门控矩阵——部分持久化失败绝不提交 marker；
+    /// 全部干净时才写；写入失败保留 dirty 并把 run 结果改为失败。
+    #[test]
+    fn todo_marker_submission_respects_the_persistence_gate() {
+        use crate::plugins::services::{StoreError, TodoEntry, TodoStatus};
+        use std::sync::atomic::AtomicUsize;
+
+        struct FakeStore {
+            items: Mutex<Vec<ModelItem>>,
+            fail_nth_append: AtomicUsize,
+            next_append_index: AtomicUsize,
+        }
+
+        impl SessionStore for FakeStore {
+            fn current_session(&self, _project: &Project) -> Result<Option<i64>, StoreError> {
+                Ok(Some(1))
+            }
+            fn create_session(&self, _project: &Project) -> Result<i64, StoreError> {
+                Ok(1)
+            }
+            fn list_sessions(
+                &self,
+                _project: &Project,
+            ) -> Result<Vec<crate::SessionSummary>, StoreError> {
+                Ok(Vec::new())
+            }
+            fn touch_session(&self, _session_id: i64) -> Result<(), StoreError> {
+                Ok(())
+            }
+            fn set_session_title(&self, _session_id: i64, _title: &str) -> Result<(), StoreError> {
+                Ok(())
+            }
+            fn set_session_title_if(
+                &self,
+                _session_id: i64,
+                _expected: &str,
+                _new: &str,
+            ) -> Result<bool, StoreError> {
+                Ok(true)
+            }
+            fn session_title(&self, _session_id: i64) -> Result<String, StoreError> {
+                Ok(String::new())
+            }
+            fn archive_session(&self, _session_id: i64) -> Result<(), StoreError> {
+                Ok(())
+            }
+            fn delete_session_if_empty(&self, _session_id: i64) -> Result<bool, StoreError> {
+                Ok(false)
+            }
+            fn load_messages(
+                &self,
+                _session_id: i64,
+            ) -> Result<Vec<crate::StoredMessage>, StoreError> {
+                Ok(Vec::new())
+            }
+            fn append_message(
+                &self,
+                _session_id: i64,
+                _role: &str,
+                _content: &str,
+            ) -> Result<(), StoreError> {
+                Ok(())
+            }
+            fn load_items(&self, _session_id: i64) -> Result<Vec<ModelItem>, StoreError> {
+                Ok(self.items.lock().expect("items").clone())
+            }
+            fn append_item(&self, _session_id: i64, item: &ModelItem) -> Result<(), StoreError> {
+                let index = self
+                    .next_append_index
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let fail_at = self
+                    .fail_nth_append
+                    .load(std::sync::atomic::Ordering::SeqCst);
+                if fail_at > 0 && index + 1 == fail_at {
+                    return Err(StoreError::new("injected append failure"));
+                }
+                self.items.lock().expect("items").push(item.clone());
+                Ok(())
+            }
+            fn load_input_history(
+                &self,
+                _session_id: i64,
+                _limit: usize,
+            ) -> Result<Vec<String>, StoreError> {
+                Ok(Vec::new())
+            }
+            fn record_input(
+                &self,
+                _session_id: Option<i64>,
+                _content: &str,
+            ) -> Result<(), StoreError> {
+                Ok(())
+            }
+        }
+
+        let todo = Arc::new(crate::plugins::services::TodoService::new());
+        let done = ApplicationRunDone {
+            output: "done".into(),
+            turns: 1,
+            usage: Usage::default(),
+            cancelled: false,
+        };
+
+        // 场景 1：Run items 部分持久化失败（persisted_clean=false）——
+        // dirty 存在也不得写 marker。
+        {
+            todo.restore(Some(1), &[]);
+            todo.bind_run(1);
+            todo.write(&[TodoEntry {
+                content: "task".into(),
+                status: TodoStatus::InProgress,
+            }])
+            .expect("write");
+            let store = FakeStore {
+                items: Mutex::new(Vec::new()),
+                fail_nth_append: AtomicUsize::new(1),
+                next_append_index: AtomicUsize::new(0),
+            };
+            let result = commit_todo_after_run(
+                Some(&todo),
+                &store,
+                1,
+                Err(ApplicationRunFailure {
+                    error: "run completed but persistence failed: injected".into(),
+                    turns: 1,
+                    usage: Usage::default(),
+                }),
+                false,
+            );
+            assert!(result.is_err());
+            assert!(todo.is_dirty(), "dirty must survive a gated submission");
+            let written = store.items.lock().expect("items").len();
+            assert_eq!(
+                written, 0,
+                "no todo marker may be written after a partial run"
+            );
+        }
+
+        // 场景 2：全部干净——marker 落盘成功，dirty 清零。
+        {
+            todo.restore(Some(1), &[]);
+            todo.bind_run(1);
+            todo.write(&[TodoEntry {
+                content: "task".into(),
+                status: TodoStatus::Completed,
+            }])
+            .expect("write");
+            let store = FakeStore {
+                items: Mutex::new(Vec::new()),
+                fail_nth_append: AtomicUsize::new(0),
+                next_append_index: AtomicUsize::new(0),
+            };
+            let result = commit_todo_after_run(Some(&todo), &store, 1, Ok(done.clone()), true);
+            assert!(result.is_ok());
+            assert!(!todo.is_dirty());
+            let items = store.items.lock().expect("items").clone();
+            assert_eq!(items.len(), 1, "exactly the todo marker is appended");
+            assert!(matches!(
+                &items[0],
+                ModelItem::ProviderState(state) if state.provider == "clat.todo.v1"
+            ));
+        }
+
+        // 场景 3：干净但 marker 写入失败——run 结果并入持久化失败，
+        // dirty 保留（下一次 run start 会重试 flush）。
+        {
+            todo.restore(Some(1), &[]);
+            todo.bind_run(1);
+            todo.write(&[TodoEntry {
+                content: "task".into(),
+                status: TodoStatus::Pending,
+            }])
+            .expect("write");
+            let store = FakeStore {
+                items: Mutex::new(Vec::new()),
+                fail_nth_append: AtomicUsize::new(1),
+                next_append_index: AtomicUsize::new(0),
+            };
+            let result = commit_todo_after_run(Some(&todo), &store, 1, Ok(done), true);
+            let failure = result.expect_err("marker failure must surface");
+            assert!(
+                failure.error.contains("todo state persist failed"),
+                "got: {}",
+                failure.error
+            );
+            assert!(todo.is_dirty(), "dirty survives for the next-run retry");
+        }
+
+        // 场景 4：下一轮/归档/close 共用的同步 flush 必须把失败向上
+        // 返回，且绝不清 dirty；调用方据此拒绝后续状态转换。
+        {
+            let store = FakeStore {
+                items: Mutex::new(Vec::new()),
+                fail_nth_append: AtomicUsize::new(1),
+                next_append_index: AtomicUsize::new(0),
+            };
+            let error = flush_dirty_todo(Some(&todo), &store).expect_err("flush must fail");
+            assert!(error.to_string().contains("could not be flushed"));
+            assert!(todo.is_dirty());
+            assert!(store.items.lock().expect("items").is_empty());
+        }
+    }
+
+    /// E.3.6：活动 Run 期间 new/switch/archive 返回 Busy。
+    #[test]
+    fn session_switching_is_rejected_while_a_run_is_active() {
+        let (storage_root, project_root) = roots("todo-busy");
+        fs::create_dir_all(&project_root).expect("project");
+        let project = Project::new(&project_root);
+        let bootstrap =
+            BootstrapApplication::open(project, storage_root.clone()).expect("bootstrap");
+        bootstrap.trust_project().expect("trust");
+        let mut application = bootstrap
+            .into_trusted_with_provider(Arc::new(TestProviderPlugin {
+                behavior: TestBehavior::Cancel,
+            }))
+            .expect("trusted");
+        configure_test_model(&application);
+
+        let (completion, _completed) = mpsc::channel();
+        let handle = application
+            .start_run(ApplicationRunRequest {
+                prompt: "blocks until cancelled".into(),
+                legacy_seed_items: Vec::new(),
+                approver: Arc::new(|_| PermissionDecision::Allow),
+                events: Box::new(Vec::<RunEvent>::new()),
+                completion,
+            })
+            .expect("start");
+        // Run 活动中：三类切换全部拒绝。
+        assert!(application.new_session().is_err());
+        assert!(application.switch_session(99).is_err());
+        assert!(application.archive_session(99).is_err());
+        // rename 仍允许（INV-S3 竞态保护需要）。
+        assert!(application.rename_session(99, "renamed").is_ok());
+
+        handle.cancel();
+        handle.join().expect("join");
+        application.close().expect("close");
+        fs::remove_dir_all(storage_root).expect("remove storage");
+        fs::remove_dir_all(project_root).expect("remove project");
     }
 
     #[test]
@@ -1472,6 +2736,179 @@ mod tests {
         application
             .save_model_state(&config, &credentials)
             .expect("save test model");
+    }
+
+    fn configure_test_model_with_budget(
+        application: &TrustedProjectApplication,
+        max_context_tokens: u32,
+    ) {
+        let config = ModelConfig {
+            model: "deterministic".into(),
+            endpoint: "https://application-test.invalid".into(),
+            output_limit: Some(256),
+            max_context_tokens: Some(max_context_tokens),
+            ..ModelConfig::default()
+        };
+        let credentials = ProviderCredentials::for_protocol(config.protocol);
+        application
+            .save_model_state(&config, &credentials)
+            .expect("save test model");
+    }
+
+    /// P1 切片修正（D.3.14）：压缩发生后，本轮新 items 必须全部落盘——
+    /// `skip` 从 view 长度起算，静默丢持久化即失败。
+    #[test]
+    fn compaction_preserves_new_run_items_persistence() {
+        let (storage_root, project_root) = roots("compaction-slice");
+        fs::create_dir_all(&project_root).expect("project");
+        let project = Project::new(&project_root);
+        let bootstrap =
+            BootstrapApplication::open(project.clone(), storage_root.clone()).expect("bootstrap");
+        bootstrap.trust_project().expect("trust");
+        let mut application = bootstrap
+            .into_trusted_with_provider(Arc::new(TestProviderPlugin {
+                behavior: TestBehavior::Success,
+            }))
+            .expect("trusted");
+        // 4k 小窗口但仍大于摘要输出/instructions/安全余量；历史必然超
+        // 预算，且每个摘要请求都严格落在剩余输入预算内。
+        configure_test_model_with_budget(&application, 4_000);
+        // 20 轮种子（40 items），每条内容足够大以撑爆预算。摘要模型固定
+        // 回 "done"（远小于占位估算），CB1-07 的动态块预算约 1.3k，
+        // 区域分块归并且全部 attempts 低于 8 上限。
+        let mut seeds = Vec::new();
+        for index in 0..20 {
+            seeds.push(ModelItem::user_text(format!(
+                "seed turn {index}: {}",
+                "x".repeat(300)
+            )));
+            seeds.push(ModelItem::assistant_text(format!(
+                "seed answer {index}: {}",
+                "y".repeat(300)
+            )));
+        }
+        let (completion, completed) = mpsc::channel();
+        let (event_sender, event_receiver) = mpsc::channel();
+        application.subscribe(event_sender);
+        let handle = application
+            .start_run(ApplicationRunRequest {
+                prompt: "fresh question".into(),
+                legacy_seed_items: seeds.clone(),
+                approver: Arc::new(|_| PermissionDecision::Allow),
+                events: Box::new(Vec::<RunEvent>::new()),
+                completion,
+            })
+            .expect("start");
+        handle.join().expect("join");
+        let result = completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("completed");
+        let done = result.expect("run succeeds despite compaction");
+        drop(event_receiver);
+        let session_id = application.current_session_id().expect("session");
+        let items = {
+            let storage = Storage::open(storage_root.clone()).expect("inspect storage");
+            storage.load_items(session_id).expect("items")
+        };
+        // marker 已追加。
+        let markers = items
+            .iter()
+            .filter(|item| {
+                matches!(item, ModelItem::ProviderState(state) if state.provider == "clat.compaction.v1")
+            })
+            .count();
+        assert_eq!(markers, 1);
+        // 40 种子 + 本轮 user prompt = 41 个原始 items；压缩绝不删改。
+        let conversation: Vec<&ModelItem> = items
+            .iter()
+            .filter(|item| {
+                !matches!(item, ModelItem::ProviderState(state) if state.provider.starts_with("clat."))
+            })
+            .collect();
+        assert_eq!(conversation.len(), 42, "seeds(40) + user + assistant(done)");
+        // P1 核心：本轮 assistant 输出必须在（若 skip 从 raw 长度起算，
+        // 这一条会被静默丢弃）。
+        assert_eq!(done.output, "done");
+        assert!(
+            conversation
+                .iter()
+                .any(|item| **item == ModelItem::assistant_text("done")),
+            "new assistant item must be persisted"
+        );
+
+        application.close().expect("close");
+        fs::remove_dir_all(storage_root).expect("remove storage");
+        fs::remove_dir_all(project_root).expect("remove project");
+    }
+
+    /// 手动 `/compact`：成功落 marker 并经 ApplicationEvent 报告。
+    #[test]
+    fn manual_compaction_persists_marker_and_reports() {
+        let (storage_root, project_root) = roots("manual-compact");
+        fs::create_dir_all(&project_root).expect("project");
+        let project = Project::new(&project_root);
+        let bootstrap =
+            BootstrapApplication::open(project.clone(), storage_root.clone()).expect("bootstrap");
+        bootstrap.trust_project().expect("trust");
+        let mut application = bootstrap
+            .into_trusted_with_provider(Arc::new(TestProviderPlugin {
+                behavior: TestBehavior::Success,
+            }))
+            .expect("trusted");
+        configure_test_model(&application);
+        // 两轮对话：单轮无可切割点（正确行为），手动压缩需要 ≥2 轮。
+        for prompt in ["hello there", "second question"] {
+            let (completion, completed) = mpsc::channel();
+            let handle = application
+                .start_run(ApplicationRunRequest {
+                    prompt: prompt.into(),
+                    legacy_seed_items: Vec::new(),
+                    approver: Arc::new(|_| PermissionDecision::Allow),
+                    events: Box::new(Vec::<RunEvent>::new()),
+                    completion,
+                })
+                .expect("start");
+            handle.join().expect("join");
+            assert!(completed.recv_timeout(Duration::from_secs(10)).is_ok());
+        }
+
+        // INV-C11：手动压缩必须经 ApplicationEvent 报告——启动 None
+        // （"compacting…"）+ 完成带结果文本。
+        let (event_sender, event_receiver) = mpsc::channel();
+        application.subscribe(event_sender);
+        let handle = application.compact_session().expect("compact");
+        handle.join().expect("join");
+        let started = event_receiver
+            .recv_timeout(Duration::from_secs(5))
+            .expect("start event");
+        assert_eq!(started, ApplicationEvent::CompactionUpdated(None));
+        let finished = event_receiver
+            .recv_timeout(Duration::from_secs(5))
+            .expect("finish event");
+        let ApplicationEvent::CompactionUpdated(Some(note)) = finished else {
+            panic!("expected a completion note, got {finished:?}");
+        };
+        assert!(
+            note.starts_with("compacted"),
+            "completion note should report the outcome: {note}"
+        );
+        let session_id = application.current_session_id().expect("session");
+        let items = {
+            let storage = Storage::open(storage_root.clone()).expect("inspect storage");
+            storage.load_items(session_id).expect("items")
+        };
+        let markers = items
+            .iter()
+            .filter(|item| {
+                matches!(item, ModelItem::ProviderState(state) if state.provider == "clat.compaction.v1")
+            })
+            .count();
+        assert_eq!(markers, 1, "manual compaction persisted a marker");
+
+        // 与活动 Run 互斥：压缩中再启动 run → Busy。
+        application.close().expect("close");
+        fs::remove_dir_all(storage_root).expect("remove storage");
+        fs::remove_dir_all(project_root).expect("remove project");
     }
 
     fn roots(name: &str) -> (PathBuf, PathBuf) {

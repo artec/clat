@@ -250,7 +250,7 @@ impl<'a> Run<'a> {
                         // A denial is an ordinary tool failure from the model's
                         // point of view: report it as a structured error result
                         // so the model can adapt instead of aborting the run.
-                        let result = ToolResult {
+                        let mut result = ToolResult {
                             call_id: call.id.clone(),
                             tool_name: call.name.clone(),
                             output: serde_json::json!({
@@ -261,6 +261,9 @@ impl<'a> Run<'a> {
                             }),
                             is_error: true,
                         };
+                        if let Some(pipeline) = self.tool_pipeline {
+                            pipeline.transform_result(&mut result);
+                        }
                         items.push(ModelItem::ToolResult(result));
                         events.emit(RunEvent::PermissionDenied {
                             tool: call.name,
@@ -302,12 +305,15 @@ impl<'a> Run<'a> {
                         true,
                     ),
                 };
-                let result = ToolResult {
+                let mut result = ToolResult {
                     call_id: call.id,
                     tool_name: call.name,
                     output,
                     is_error,
                 };
+                if let Some(pipeline) = self.tool_pipeline {
+                    pipeline.transform_result(&mut result);
+                }
 
                 items.push(ModelItem::ToolResult(result.clone()));
                 events.emit(RunEvent::ToolFinished { result });
@@ -488,6 +494,129 @@ mod tests {
             _cancel: &CancelToken,
         ) -> Result<Value, ToolError> {
             Ok(arguments["text"].clone())
+        }
+    }
+
+    /// 返回超阈值输出的工具：锁定 Run → ToolResultTransformer →
+    /// items/ToolFinished 的端到端链路。该链路是原生与 MCP 工具的共同
+    /// 路径（INV-P4）。
+    struct NoisyTool;
+
+    impl Tool for NoisyTool {
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: "noisy".into(),
+                description: "Returns oversized output".into(),
+                input_schema: json!({"type": "object"}),
+                effect: ToolEffect::Pure,
+                strict: true,
+            }
+        }
+
+        fn invoke(
+            &self,
+            _arguments: &Value,
+            _project: &Project,
+            _cancel: &CancelToken,
+        ) -> Result<Value, ToolError> {
+            Ok(json!({ "log": "x".repeat(20_000) }))
+        }
+    }
+
+    #[test]
+    fn oversized_tool_results_are_pruned_through_the_pipeline() {
+        use crate::plugins::ResultPruner;
+
+        let project = Project::new(".");
+        let permissions = AllowAll;
+        let tools = ToolRegistry::new();
+        register_test_tool(&tools, NoisyTool);
+        let pipeline = ToolExecutionPipeline::new();
+        let _lease = pipeline
+            .register_result_transformer(
+                crate::plugin::PluginOwner::for_test(crate::plugin::PluginId::new("test.pruner")),
+                std::sync::Arc::new(ResultPruner),
+            )
+            .map_err(|error| error.to_string())
+            .expect("register pruner");
+        let mut model = PruningCheckModel { calls: 0 };
+        let mut events = Vec::new();
+
+        let output = Run::new(&mut model, &tools, &permissions, &project)
+            .with_tool_pipeline(&pipeline)
+            .execute("use noisy", &mut events)
+            .expect("run");
+
+        assert_eq!(output.turns, 2);
+        // 持久化 items 中的工具结果与 ToolFinished 事件载荷都是截断视图。
+        let truncated_items = output
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                ModelItem::ToolResult(result) => Some(result),
+                _ => None,
+            })
+            .count();
+        assert_eq!(truncated_items, 1);
+        let finished = events
+            .iter()
+            .find_map(|event| match event {
+                RunEvent::ToolFinished { result } => Some(result),
+                _ => None,
+            })
+            .expect("ToolFinished");
+        assert_eq!(finished.output["clat_truncated"], json!(true));
+        assert!(!finished.output["head"].as_str().expect("head").is_empty());
+    }
+
+    struct PruningCheckModel {
+        calls: usize,
+    }
+
+    impl Model for PruningCheckModel {
+        fn provider(&self) -> &str {
+            "test"
+        }
+
+        fn model_id(&self) -> &str {
+            "pruning-check"
+        }
+
+        fn stream(
+            &mut self,
+            request: ModelRequest<'_>,
+            _events: &mut dyn ModelEventSink,
+        ) -> Result<ModelResponse, ModelError> {
+            self.calls += 1;
+            if self.calls == 1 {
+                return Ok(ModelResponse {
+                    text: String::new(),
+                    tool_calls: vec![ToolCall {
+                        id: "call-noisy".into(),
+                        name: "noisy".into(),
+                        arguments: json!({}),
+                    }],
+                    finish_reason: FinishReason::ToolCalls,
+                    usage: None,
+                    provider_response_id: None,
+                    provider_state: vec![],
+                    reasoning: None,
+                });
+            }
+            // 第二轮：模型看到的是截断视图而非原始洪流。
+            assert!(matches!(
+                request.items.last(),
+                Some(ModelItem::ToolResult(result)) if result.output.get("clat_truncated") == Some(&json!(true))
+            ));
+            Ok(ModelResponse {
+                text: "done".into(),
+                tool_calls: vec![],
+                finish_reason: FinishReason::Completed,
+                usage: None,
+                provider_response_id: None,
+                provider_state: vec![],
+                reasoning: None,
+            })
         }
     }
 

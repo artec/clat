@@ -20,6 +20,10 @@ pub enum ToolEffect {
     /// An external operation advertised as destructive (delete, overwrite,
     /// revoke, and similar irreversible effects).
     Destructive,
+    /// Mutates CLAT-local session metadata only (e.g. the todo list): no
+    /// project files, no processes, no network. Safe to auto-allow because
+    /// the effect is confined to the current conversation's own state.
+    SessionWrite,
 }
 
 impl fmt::Display for ToolEffect {
@@ -32,6 +36,7 @@ impl fmt::Display for ToolEffect {
             Self::Network => f.write_str("network access"),
             Self::ExternalRead => f.write_str("external read access"),
             Self::Destructive => f.write_str("destructive external action"),
+            Self::SessionWrite => f.write_str("updates this session's local state"),
         }
     }
 }
@@ -118,10 +123,20 @@ pub(crate) trait ToolObserver: Send + Sync {
     fn finished(&self, invocation: &ToolInvocation<'_>, result: &Result<Value, ToolError>);
 }
 
+/// Post-result seam: runs after the Run has constructed the final
+/// [`ToolResult`] (success, tool error, or permission denial) and before the
+/// item is persisted or `ToolFinished` is emitted. Unlike execute middleware
+/// it sees `is_error` results too; unlike permission checks it runs strictly
+/// after the decision, so it can never widen what a denied call leaked.
+pub(crate) trait ToolResultTransformer: Send + Sync {
+    fn transform_result(&self, result: &mut ToolResult);
+}
+
 #[derive(Default)]
 struct ToolExecutionState {
     middleware: Vec<(u64, PluginId, Arc<dyn ToolMiddleware>)>,
     observers: Vec<(u64, PluginId, Arc<dyn ToolObserver>)>,
+    result_transformers: Vec<(u64, PluginId, Arc<dyn ToolResultTransformer>)>,
     next_contribution: u64,
     frozen: bool,
 }
@@ -199,6 +214,51 @@ impl ToolExecutionPipeline {
         Ok(())
     }
 
+    /// Registers a post-result transformer. Contribution order is stable and
+    /// revocable like every other pipeline contribution.
+    pub(crate) fn register_result_transformer(
+        &self,
+        owner: PluginOwner,
+        transformer: Arc<dyn ToolResultTransformer>,
+    ) -> Result<ToolPipelineLease, ToolRegistryError> {
+        let mut state = self
+            .inner
+            .write()
+            .map_err(|_| ToolRegistryError::Poisoned)?;
+        if state.frozen {
+            return Err(ToolRegistryError::Frozen);
+        }
+        let owner = owner.id();
+        let contribution = state.next_contribution;
+        state.next_contribution = state.next_contribution.wrapping_add(1);
+        state
+            .result_transformers
+            .push((contribution, owner, transformer));
+        Ok(ToolPipelineLease {
+            pipeline: Arc::downgrade(&self.inner),
+            contribution,
+            kind: PipelineContribution::ResultTransformer,
+        })
+    }
+
+    /// Applies registered transformers in registration order to the final
+    /// `ToolResult` before it is persisted or reported.
+    pub(crate) fn transform_result(&self, result: &mut ToolResult) {
+        let transformers = {
+            let Ok(state) = self.inner.read() else {
+                return;
+            };
+            state
+                .result_transformers
+                .iter()
+                .map(|(_, _, item)| Arc::clone(item))
+                .collect::<Vec<_>>()
+        };
+        for transformer in transformers {
+            transformer.transform_result(result);
+        }
+    }
+
     pub(crate) fn execute(&self, invocation: &ToolInvocation<'_>) -> Result<Value, ToolError> {
         let (middleware, observers) = {
             let state = self
@@ -269,6 +329,7 @@ enum PipelineContribution {
         expect(dead_code, reason = "reserved for registered post observers")
     )]
     Observer,
+    ResultTransformer,
 }
 
 pub(crate) struct ToolPipelineLease {
@@ -292,6 +353,11 @@ impl ToolPipelineLease {
             PipelineContribution::Observer => {
                 state
                     .observers
+                    .retain(|(contribution, _, _)| *contribution != self.contribution);
+            }
+            PipelineContribution::ResultTransformer => {
+                state
+                    .result_transformers
                     .retain(|(contribution, _, _)| *contribution != self.contribution);
             }
         }
