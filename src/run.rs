@@ -5,10 +5,10 @@ use crate::model::{
 };
 use crate::permission::{PermissionDecision, PermissionPolicy};
 use crate::project::Project;
-use crate::tool::{ToolRegistry, ToolResult};
+use crate::tool::{ToolExecutionPipeline, ToolInvocation, ToolRegistry, ToolResult};
 use std::fmt;
 
-pub struct Run<'a> {
+pub(crate) struct Run<'a> {
     model: &'a mut dyn Model,
     tools: &'a ToolRegistry,
     permissions: &'a dyn PermissionPolicy,
@@ -17,10 +17,11 @@ pub struct Run<'a> {
     model_options: ModelOptions,
     max_turns: usize,
     cancel: CancelToken,
+    tool_pipeline: Option<&'a ToolExecutionPipeline>,
 }
 
 impl<'a> Run<'a> {
-    pub fn new(
+    pub(crate) fn new(
         model: &'a mut dyn Model,
         tools: &'a ToolRegistry,
         permissions: &'a dyn PermissionPolicy,
@@ -35,33 +36,35 @@ impl<'a> Run<'a> {
             model_options: ModelOptions::default(),
             max_turns: 32,
             cancel: CancelToken::new(),
+            tool_pipeline: None,
         }
     }
 
-    pub fn with_instructions(mut self, instructions: impl Into<String>) -> Self {
+    pub(crate) fn with_instructions(mut self, instructions: impl Into<String>) -> Self {
         self.instructions = Some(instructions.into());
         self
     }
 
-    pub fn with_model_options(mut self, options: ModelOptions) -> Self {
+    pub(crate) fn with_model_options(mut self, options: ModelOptions) -> Self {
         self.model_options = options;
-        self
-    }
-
-    pub fn with_max_turns(mut self, max_turns: usize) -> Self {
-        self.max_turns = max_turns.max(1);
         self
     }
 
     /// Shares an external cancellation signal with the run. The run checks
     /// it between turns and tool calls, and passes it to the model so
     /// providers can stop streaming early.
-    pub fn with_cancel_token(mut self, cancel: CancelToken) -> Self {
+    pub(crate) fn with_cancel_token(mut self, cancel: CancelToken) -> Self {
         self.cancel = cancel;
         self
     }
 
-    pub fn execute(
+    pub(crate) fn with_tool_pipeline(mut self, pipeline: &'a ToolExecutionPipeline) -> Self {
+        self.tool_pipeline = Some(pipeline);
+        self
+    }
+
+    #[cfg(test)]
+    fn execute(
         &mut self,
         prompt: impl Into<String>,
         events: &mut dyn EventSink,
@@ -70,7 +73,7 @@ impl<'a> Run<'a> {
         self.execute_with_items(vec![ModelItem::user_text(prompt.clone())], prompt, events)
     }
 
-    pub fn execute_with_items(
+    pub(crate) fn execute_with_items(
         &mut self,
         mut items: Vec<ModelItem>,
         prompt: impl Into<String>,
@@ -272,7 +275,15 @@ impl<'a> Run<'a> {
                     tool: call.name.clone(),
                 });
 
-                let invocation = tool.invoke(&call.arguments, self.project, &self.cancel);
+                let invocation = match self.tool_pipeline {
+                    Some(pipeline) => pipeline.execute(&ToolInvocation {
+                        tool: tool.as_ref(),
+                        arguments: &call.arguments,
+                        project: self.project,
+                        cancel: &self.cancel,
+                    }),
+                    None => tool.invoke(&call.arguments, self.project, &self.cancel),
+                };
                 if self.cancel.is_cancelled() {
                     return Ok(cancelled(
                         events,
@@ -437,8 +448,20 @@ mod tests {
     use super::*;
     use crate::model::{ContentPart, ModelError, ModelEvent, ModelResponse};
     use crate::permission::{AllowAll, SafeByDefault};
-    use crate::tool::{Tool, ToolCall, ToolDefinition, ToolEffect, ToolError};
+    use crate::tool::{
+        Tool, ToolCall, ToolDefinition, ToolEffect, ToolError, ToolInvocation, ToolMiddleware,
+        ToolNext,
+    };
     use serde_json::{Value, json};
+
+    fn register_test_tool<T: Tool + 'static>(registry: &ToolRegistry, tool: T) {
+        registry
+            .register(
+                crate::plugin::PluginOwner::for_test(crate::plugin::PluginId::new("test.run")),
+                std::sync::Arc::new(tool),
+            )
+            .expect("test tool name is unique");
+    }
 
     struct EchoTool;
 
@@ -540,8 +563,8 @@ mod tests {
     fn executes_streaming_model_tool_model_loop() {
         let project = Project::new(".");
         let permissions = AllowAll;
-        let mut tools = ToolRegistry::new();
-        tools.register(EchoTool);
+        let tools = ToolRegistry::new();
+        register_test_tool(&tools, EchoTool);
         let mut model = ScriptedModel { calls: 0 };
         let mut events = Vec::new();
 
@@ -562,6 +585,93 @@ mod tests {
             } if delta == "tool said: hello"
         )));
         assert!(matches!(events.last(), Some(RunEvent::RunCompleted { .. })));
+    }
+
+    /// Stage-0 protocol characterization. This deliberately locks complete
+    /// relative ordering and representative payloads, rather than merely
+    /// checking that selected variants appeared somewhere.
+    #[test]
+    fn run_event_protocol_order_and_payload_remain_compatible() {
+        let project = Project::new("/tmp/clat-event-baseline");
+        let tools = ToolRegistry::new();
+        register_test_tool(&tools, EchoTool);
+        let mut model = ScriptedModel { calls: 0 };
+        let mut events = Vec::new();
+        let output = Run::new(&mut model, &tools, &AllowAll, &project)
+            .execute("use echo", &mut events)
+            .expect("run");
+
+        let variants = events
+            .iter()
+            .map(|event| match event {
+                RunEvent::RunStarted { .. } => "RunStarted",
+                RunEvent::ModelRequested { .. } => "ModelRequested",
+                RunEvent::ModelStream { .. } => "ModelStream",
+                RunEvent::ModelResponded { .. } => "ModelResponded",
+                RunEvent::ToolRequested { .. } => "ToolRequested",
+                RunEvent::PermissionChecked { .. } => "PermissionChecked",
+                RunEvent::PermissionDenied { .. } => "PermissionDenied",
+                RunEvent::ToolStarted { .. } => "ToolStarted",
+                RunEvent::ToolFinished { .. } => "ToolFinished",
+                RunEvent::RunCompleted { .. } => "RunCompleted",
+                RunEvent::RunCancelled { .. } => "RunCancelled",
+                RunEvent::RunFailed { .. } => "RunFailed",
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            variants,
+            [
+                "RunStarted",
+                "ModelRequested",
+                "ModelStream",
+                "ModelStream",
+                "ModelResponded",
+                "ToolRequested",
+                "PermissionChecked",
+                "ToolStarted",
+                "ToolFinished",
+                "ModelRequested",
+                "ModelStream",
+                "ModelStream",
+                "ModelResponded",
+                "RunCompleted"
+            ]
+        );
+        assert!(matches!(
+            &events[0],
+            RunEvent::RunStarted { project, prompt }
+                if project == std::path::Path::new("/tmp/clat-event-baseline")
+                    && prompt == "use echo"
+        ));
+        assert!(matches!(
+            &events[1],
+            RunEvent::ModelRequested { turn: 1, provider, model }
+                if provider == "test" && model == "scripted"
+        ));
+        assert!(matches!(
+            &events[5],
+            RunEvent::ToolRequested { call }
+                if call.id == "call-1" && call.name == "echo"
+                    && call.arguments == json!({"text": "hello"})
+        ));
+        assert!(matches!(
+            &events[6],
+            RunEvent::PermissionChecked {
+                tool,
+                decision: PermissionDecision::Allow,
+            } if tool == "echo"
+        ));
+        assert!(matches!(
+            events.last(),
+            Some(RunEvent::RunCompleted { turns: 2, usage, output })
+                if output == "tool said: hello"
+                    && usage.input_tokens == 7
+                    && usage.output_tokens == 4
+        ));
+        assert_eq!(
+            output.items.last(),
+            Some(&ModelItem::assistant_text("tool said: hello"))
+        );
     }
 
     struct FailsAfterToolModel {
@@ -616,8 +726,8 @@ mod tests {
     #[test]
     fn failed_runs_return_items_and_usage_produced_before_failure() {
         let project = Project::new(".");
-        let mut tools = ToolRegistry::new();
-        tools.register(EchoTool);
+        let tools = ToolRegistry::new();
+        register_test_tool(&tools, EchoTool);
         let mut model = FailsAfterToolModel { calls: 0 };
         let mut events = Vec::new();
 
@@ -721,8 +831,8 @@ mod tests {
     fn tool_execution_errors_are_returned_to_model_for_recovery() {
         let project = Project::new(".");
         let permissions = SafeByDefault;
-        let mut tools = ToolRegistry::new();
-        tools.register(FailingReadTool);
+        let tools = ToolRegistry::new();
+        register_test_tool(&tools, FailingReadTool);
         let mut model = RecoveringModel { calls: 0 };
         let mut events = Vec::new();
 
@@ -799,12 +909,23 @@ mod tests {
     fn side_effects_stop_at_permission_boundary() {
         let project = Project::new(".");
         let permissions = SafeByDefault;
-        let mut tools = ToolRegistry::new();
-        tools.register(WriteTool);
+        let tools = ToolRegistry::new();
+        register_test_tool(&tools, WriteTool);
         let mut model = WriteRequestModel;
         let mut events = Vec::new();
+        let middleware_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let pipeline = ToolExecutionPipeline::new();
+        pipeline
+            .register_middleware(
+                crate::plugin::PluginOwner::for_test(crate::plugin::PluginId::new(
+                    "test.permission_order",
+                )),
+                std::sync::Arc::new(CountingMiddleware(std::sync::Arc::clone(&middleware_calls))),
+            )
+            .expect("middleware");
 
         let error = Run::new(&mut model, &tools, &permissions, &project)
+            .with_tool_pipeline(&pipeline)
             .execute("write something", &mut events)
             .expect_err("run should require approval");
 
@@ -816,6 +937,24 @@ mod tests {
                 ..
             }
         )));
+        assert_eq!(
+            middleware_calls.load(std::sync::atomic::Ordering::Acquire),
+            0,
+            "middleware must be unreachable until permission allows the final call"
+        );
+    }
+
+    struct CountingMiddleware(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+    impl ToolMiddleware for CountingMiddleware {
+        fn execute(
+            &self,
+            invocation: &ToolInvocation<'_>,
+            next: &dyn ToolNext,
+        ) -> Result<Value, ToolError> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            next.execute(invocation)
+        }
     }
 
     struct DenyEverything;
@@ -888,8 +1027,8 @@ mod tests {
     fn permission_denial_is_returned_to_model_for_recovery() {
         let project = Project::new(".");
         let permissions = DenyEverything;
-        let mut tools = ToolRegistry::new();
-        tools.register(WriteTool);
+        let tools = ToolRegistry::new();
+        register_test_tool(&tools, WriteTool);
         let mut model = DenyRecoveringModel;
         let mut events = Vec::new();
 
@@ -936,8 +1075,8 @@ mod tests {
     fn cancellation_before_first_turn_stops_without_calling_model() {
         let project = Project::new(".");
         let permissions = AllowAll;
-        let mut tools = ToolRegistry::new();
-        tools.register(EchoTool);
+        let tools = ToolRegistry::new();
+        register_test_tool(&tools, EchoTool);
         let mut model = PanicModel;
         let mut events = Vec::new();
 
@@ -995,9 +1134,9 @@ mod tests {
     fn cancellation_after_tool_request_skips_tool_execution() {
         let project = Project::new(".");
         let permissions = AllowAll;
-        let mut tools = ToolRegistry::new();
+        let tools = ToolRegistry::new();
         // Panics if invoked, proving the cancel check runs before execution.
-        tools.register(WriteTool);
+        register_test_tool(&tools, WriteTool);
         let cancel = CancelToken::new();
         let mut model = CancelAfterToolRequestModel {
             token: cancel.clone(),
@@ -1070,8 +1209,8 @@ mod tests {
     fn reasoning_is_kept_on_tool_turns_and_dropped_on_answer_turns() {
         let project = Project::new(".");
         let permissions = AllowAll;
-        let mut tools = ToolRegistry::new();
-        tools.register(EchoTool);
+        let tools = ToolRegistry::new();
+        register_test_tool(&tools, EchoTool);
         let mut model = ReasoningToolModel { calls: 0 };
         let mut events = Vec::new();
 

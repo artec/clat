@@ -1,3 +1,4 @@
+use super::{CancelAwareReader, STREAM_BODY_POLL_TIMEOUT, is_stream_poll_timeout};
 use crate::model::{
     CancelToken, ContentPart, FinishReason, Model, ModelError, ModelEvent, ModelEventSink,
     ModelItem, ModelRequest, ModelResponse, ProviderState, Usage,
@@ -12,8 +13,7 @@ use ureq::{Agent, Body};
 /// 连接超时：防止 TCP 连接阶段无限阻塞。
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// 等待响应头超时：防止服务端接受连接后不返回响应头。进入 SSE
-/// 流式读取阶段后由 CancelToken 保护，不受此超时约束。
+/// 等待响应头超时：防止服务端接受连接后不返回响应头。
 const RECV_RESPONSE_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
@@ -31,6 +31,7 @@ impl OpenAiModel {
             .http_status_as_error(false)
             .timeout_connect(Some(CONNECT_TIMEOUT))
             .timeout_recv_response(Some(RECV_RESPONSE_TIMEOUT))
+            .timeout_recv_body(Some(STREAM_BODY_POLL_TIMEOUT))
             .build()
             .new_agent();
         let api_key = api_key.into();
@@ -169,7 +170,11 @@ impl Model for OpenAiModel {
         let body = self.request_body(request)?;
         let response = self.send(&body)?;
         let (_, body) = response.into_parts();
-        consume_sse(BufReader::new(body.into_reader()), events, cancel)
+        consume_sse(
+            BufReader::new(CancelAwareReader::new(body.into_reader(), cancel)),
+            events,
+            cancel,
+        )
     }
 }
 
@@ -243,12 +248,26 @@ fn consume_sse<R: BufRead>(
             break;
         }
 
-        line.clear();
-        let bytes = reader
-            .read_line(&mut line)
-            .map_err(|error| ModelError::new(format!("failed to read OpenAI stream: {error}")))?;
+        let bytes = match reader.read_line(&mut line) {
+            Ok(bytes) => bytes,
+            Err(error) if is_stream_poll_timeout(&error) => {
+                continue;
+            }
+            Err(error) => {
+                return Err(ModelError::new(format!(
+                    "failed to read OpenAI stream: {error}"
+                )));
+            }
+        };
 
         if bytes == 0 {
+            if cancel.is_cancelled() {
+                accumulator.finish_reason = Some(FinishReason::Cancelled);
+                events.emit(ModelEvent::ResponseCompleted {
+                    finish_reason: FinishReason::Cancelled,
+                });
+                break;
+            }
             if !data_lines.is_empty() {
                 dispatch_sse_data(&data_lines.join("\n"), &mut accumulator, events)?;
             }
@@ -261,12 +280,14 @@ fn consume_sse<R: BufRead>(
                 dispatch_sse_data(&data_lines.join("\n"), &mut accumulator, events)?;
                 data_lines.clear();
             }
+            line.clear();
             continue;
         }
 
         if let Some(data) = trimmed.strip_prefix("data:") {
             data_lines.push(data.trim_start().to_owned());
         }
+        line.clear();
     }
 
     accumulator.finish()
@@ -658,12 +679,18 @@ mod tests {
             );
             write!(
                 stream,
-                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                body.len(),
-                body
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
             )
-            .expect("write response");
-            stream.flush().expect("flush response");
+            .expect("write response headers");
+            stream.flush().expect("flush response headers");
+            // Exceed one body poll interval: an idle poll timeout must be
+            // retryable when the run has not been cancelled.
+            thread::sleep(STREAM_BODY_POLL_TIMEOUT + Duration::from_millis(100));
+            stream
+                .write_all(body.as_bytes())
+                .expect("write response body");
+            stream.flush().expect("flush response body");
         });
 
         let mut model = OpenAiModel::new("test-key", "gpt-test")
@@ -698,6 +725,64 @@ mod tests {
         assert_eq!(response.text, "hello from stream");
         assert_eq!(response.finish_reason, FinishReason::Completed);
         assert_eq!(response.usage.expect("usage").output_tokens, 4);
+    }
+
+    #[test]
+    fn cancellation_interrupts_a_server_silent_after_response_headers() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+        let address = listener.local_addr().expect("address");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut request = [0_u8; 4096];
+            let _ = stream.read(&mut request).expect("read request");
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: 1000\r\nConnection: close\r\n\r\n",
+                )
+                .expect("write response headers");
+            stream.flush().expect("flush response headers");
+            thread::sleep(Duration::from_secs(1));
+        });
+
+        let mut model = OpenAiModel::new("test-key", "gpt-test")
+            .expect("model")
+            .with_base_url(format!("http://{address}/v1"));
+        let token = CancelToken::new();
+        let worker_token = token.clone();
+        let (result_tx, result_rx) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            let items = vec![ModelItem::user_text("hello")];
+            let tools = Vec::new();
+            let options = ModelOptions::default();
+            let mut events = Vec::new();
+            let result = model.stream(
+                ModelRequest {
+                    instructions: None,
+                    items: &items,
+                    tools: &tools,
+                    options: &options,
+                    cancel: &worker_token,
+                },
+                &mut events,
+            );
+            result_tx.send(result).expect("send stream result");
+        });
+
+        thread::sleep(Duration::from_millis(50));
+        let cancelled_at = std::time::Instant::now();
+        token.cancel();
+        let response = result_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("cancelled stream returned")
+            .expect("cancellation is a normal response");
+
+        assert_eq!(response.finish_reason, FinishReason::Cancelled);
+        assert!(
+            cancelled_at.elapsed() < Duration::from_millis(750),
+            "silent SSE cancellation exceeded the polling deadline"
+        );
+        worker.join().expect("stream worker");
+        server.join().expect("server");
     }
 
     fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {

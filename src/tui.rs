@@ -1,14 +1,13 @@
 use crate::presets::preset_by_id;
-use crate::providers::{ProviderRuntime, fetch_deepseek_balance, fetch_glm_quota};
-use crate::storage::{Storage, StoredMessage};
 use crate::tui_input::InputBuffer;
 use crate::tui_markdown::render_markdown;
 use crate::tui_model::{EditorAction, ModelEditor, ModelPicker, PickerAction};
 use crate::tui_sessions::{ResumeAction, SessionPicker};
-use crate::tui_worker::{UiEvent, WorkerMessage, execute_run};
+use crate::tui_worker::{ChannelApprover, ChannelEventSink, UiEvent, WorkerMessage};
 use crate::{
-    CancelToken, ModelConfig, ModelEvent, ModelItem, PermissionDecision, PermissionRequest,
-    Project, RunEvent, ToolRegistry, Usage, register_native_read_tools,
+    ApplicationEvent, ApplicationRunRequest, BootstrapApplication, ModelConfig, ModelEvent,
+    ModelItem, PermissionDecision, PermissionRequest, Project, ProviderCredentials,
+    ProviderDescriptor, RunEvent, RunHandle, StoredMessage, TrustedProjectApplication, Usage,
 };
 use crossterm::event::{
     self, DisableBracketedPaste, DisableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
@@ -27,8 +26,8 @@ use std::collections::HashMap;
 use std::env;
 use std::io::{self, Write, stdout};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -114,71 +113,9 @@ fn is_deepseek_endpoint(config: &ModelConfig) -> bool {
     config.endpoint.to_lowercase().contains("deepseek.com")
 }
 
-/// 配置是否指向 GLM Coding Plan 端点（国内 open.bigmodel.cn 或海外
-/// api.z.ai）。
 fn is_glm_endpoint(config: &ModelConfig) -> bool {
     let endpoint = config.endpoint.to_lowercase();
     endpoint.contains("bigmodel.cn") || endpoint.contains("z.ai")
-}
-
-/// 余额监控线程读取的共享上下文：配置或密钥变更后主循环原地更新，
-/// 线程每次查询前取最新值，无需重启。
-#[derive(Clone)]
-struct BalanceContext {
-    config: ModelConfig,
-    runtime: ProviderRuntime,
-}
-
-/// 查询一次余额/额度（DeepSeek 余额或 GLM 窗口百分比）。非厂商
-/// 端点或未配置密钥返回 None——状态栏对应段落随之隐藏。
-fn fetch_balance_value(context: &BalanceContext) -> Option<String> {
-    if !is_deepseek_endpoint(&context.config) && !is_glm_endpoint(&context.config) {
-        return None;
-    }
-    let api_key = context.runtime.value(0)?.trim().to_owned();
-    if api_key.is_empty() {
-        return None;
-    }
-    if is_glm_endpoint(&context.config) {
-        fetch_glm_quota(&context.config.endpoint, &api_key)
-    } else {
-        fetch_deepseek_balance(&context.config.endpoint, &api_key)
-    }
-}
-
-/// 余额后台监控：启动立即查询一次，此后每 `BALANCE_REFRESH_INTERVAL`
-/// 主动巡查一次；`trigger` 收到信号（配置变更、模型运行结束）则立即
-/// 额外查询。查询在别的端点/密钥上跳过但保持周期。结果经统一事件
-/// 通道送回主循环，线程随通道关闭退出。
-fn spawn_balance_monitor(
-    ui: Sender<UiEvent>,
-    context: Arc<Mutex<BalanceContext>>,
-    trigger: Receiver<()>,
-) {
-    thread::spawn(move || {
-        let mut next_sweep = Instant::now();
-        loop {
-            let wait = next_sweep.saturating_duration_since(Instant::now());
-            match trigger.recv_timeout(wait) {
-                // 被触发（立即查询）或巡查周期到：两者都执行查询。
-                Ok(()) | Err(mpsc::RecvTimeoutError::Timeout) => {}
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
-            }
-            next_sweep = Instant::now() + BALANCE_REFRESH_INTERVAL;
-            let value = context
-                .lock()
-                .ok()
-                .map(|context| fetch_balance_value(&context));
-            let value = match value {
-                Some(value) => value,
-                // 锁中毒：跳过本轮，下个周期再试。
-                None => continue,
-            };
-            if ui.send(UiEvent::Balance(value)).is_err() {
-                break;
-            }
-        }
-    });
 }
 
 /// 会话累计的缓存命中百分比文本（如 "87%"）。无输入 token 或服务端
@@ -440,12 +377,6 @@ const INPUT_MARKER_WIDTH: usize = 2;
 /// 思考动画的帧间隔：thinking 期间后台按时刻唤醒主循环换帧。
 const SPINNER_FRAME: Duration = Duration::from_millis(80);
 
-/// 余额/额度后台监控的主动刷新周期。官方平台的用量数据本身有约
-/// 5 分钟延迟，更频繁的查询拿不到新数字，只是给官方服务器徒增压力。
-/// 与旧的"被动刷新 + 最小间隔门禁"不同：这里是监控线程的巡查周期，
-/// 配置变更与模型运行结束会立即触发一次计划外刷新。
-const BALANCE_REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
-
 /// 瞬时提示（copied N chars、model switched 等）在状态栏停留的时长，
 /// 到期回落为默认的当前目录显示——与 Claude Code 等终端工具一致：
 /// 提示是瞬态的，目录才是常驻信息。
@@ -580,16 +511,14 @@ struct PendingPermission {
 
 struct App {
     project: Project,
-    storage: Storage,
+    bootstrap: Option<BootstrapApplication>,
+    application: Option<TrustedProjectApplication>,
     /// 当前会话 id；`None` 表示项目尚未受信（延迟初始化前不可对话）。
     /// 确权门保证所有用到它的路径只在 Some 时可达。
     session_id: Option<i64>,
     config: ModelConfig,
-    provider_runtime: ProviderRuntime,
-    /// 本会话共享的工具注册表：内建工具 + MCP 工具。MCP 子进程随
-    /// 注册表存活（App 生命周期），跨多次 Run 复用，不在每次运行间
-    /// 反复启停服务器。
-    tools: Arc<ToolRegistry>,
+    credentials: ProviderCredentials,
+    provider_descriptors: Vec<ProviderDescriptor>,
     messages: Vec<ChatMessage>,
     input: InputBuffer,
     /// 启动时项目未受信：渲染确权对话框并拦截一切按键，直到用户
@@ -612,7 +541,7 @@ struct App {
     /// 统一事件通道的发送端克隆：start_run 移交 worker，刷新触发用。
     event_sender: Option<Sender<UiEvent>>,
     pending_permission: Option<PendingPermission>,
-    cancel_token: Option<CancelToken>,
+    run_handle: Option<RunHandle>,
     thinking: bool,
     thinking_since: Option<Instant>,
     spinner_tick: u64,
@@ -632,12 +561,8 @@ struct App {
     /// 与复制仍然有效。
     selection: Option<TextSelection>,
     should_quit: bool,
-    /// 余额/额度当前值：监控线程查询后经事件通道写回，状态栏读取。
+    /// 余额/额度当前值：核心 Monitor 插件经 ApplicationEvent 写回，状态栏读取。
     balance: Option<String>,
-    /// 余额监控的共享上下文（配置/密钥变更后原地更新）与立即刷新
-    /// 触发器。
-    balance_context: Arc<Mutex<BalanceContext>>,
-    balance_trigger: Option<Sender<()>>,
     /// 本会话累计 token 用量，用于状态栏缓存命中百分比。
     session_usage: Usage,
 }
@@ -653,36 +578,22 @@ impl App {
     ///    执行）——加载会话/消息/历史/模型配置，并以 `~/.clat` 为
     ///    固定 cwd 启动 MCP 服务器。
     fn new(project: Project) -> Result<Self, String> {
-        let storage = Storage::open_default().map_err(|error| error.to_string())?;
-        let trusted = storage.is_project_trusted(project.root());
-
-        // 最小工具集（纯注册，无进程、无 I/O）。
-        let mut tools = ToolRegistry::new();
-        register_native_read_tools(&mut tools);
-        let tools = Arc::new(tools);
-
-        let (config, provider_runtime) = if trusted {
-            Self::load_model_state(&storage)?
-        } else {
-            let config = ModelConfig::default();
-            let runtime = ProviderRuntime::for_protocol(config.protocol);
-            (config, runtime)
-        };
+        let bootstrap = BootstrapApplication::open_default(project.clone())
+            .map_err(|error| error.to_string())?;
+        let trusted = bootstrap.is_trusted().map_err(|error| error.to_string())?;
+        let config = ModelConfig::default();
+        let credentials = ProviderCredentials::for_protocol(config.protocol);
 
         // 状态栏初始显示当前打开的项目目录（home 缩写为 ~）。
         let status = abbreviate_home(project.root());
-        let balance_context = Arc::new(Mutex::new(BalanceContext {
-            config: config.clone(),
-            runtime: provider_runtime.clone(),
-        }));
-
         let mut app = Self {
             project,
-            storage,
+            bootstrap: Some(bootstrap),
+            application: None,
             session_id: None,
-            tools,
             config,
-            provider_runtime,
+            credentials,
+            provider_descriptors: Vec::new(),
             messages: Vec::new(),
             input: InputBuffer::new(Vec::new()),
             trust_prompt: !trusted,
@@ -696,7 +607,7 @@ impl App {
             events: None,
             event_sender: None,
             pending_permission: None,
-            cancel_token: None,
+            run_handle: None,
             thinking: false,
             thinking_since: None,
             spinner_tick: 0,
@@ -711,8 +622,6 @@ impl App {
             selection: None,
             should_quit: false,
             balance: None,
-            balance_context,
-            balance_trigger: None,
             session_usage: Usage::default(),
         };
         if trusted {
@@ -721,76 +630,57 @@ impl App {
         Ok(app)
     }
 
-    /// 全局模型配置（与项目无关，但同样推迟到确权后加载以保持
-    /// "未信任阶段零读取"的简单不变量）。预设代表厂商官方参数，
-    /// 随版本演进（如 DeepSeek 补充流式 usage 开关）；启动时重刷
-    /// 预设参数，存量配置自动获得修复，用户手动改过的配置
-    /// （preset 为 None）保持原样。
-    fn load_model_state(storage: &Storage) -> Result<(ModelConfig, ProviderRuntime), String> {
-        let (mut config, runtime) = storage
-            .load_model_state()
-            .map_err(|error| error.to_string())?
-            .unwrap_or_else(|| {
-                let config = ModelConfig::default();
-                let runtime = ProviderRuntime::for_protocol(config.protocol);
-                (config, runtime)
-            });
-        if let Some(preset) = config.preset.as_deref().and_then(preset_by_id) {
-            preset.apply(&mut config);
-        }
-        Ok((config, runtime))
-    }
-
     /// 项目级资源初始化：会话、历史消息、输入历史、模型配置与
     /// MCP 服务器。只在项目已受信后调用（构造时已信任，或确权
     /// 成功后）。任何失败向上报告——确权流程据此保持阻断。
     fn initialize_project(&mut self) -> Result<(), String> {
-        // 默认恢复最近会话；无可恢复会话时 session_id 保持 None，
-        // 首条内容写入时才按需建会话（见 current_session）。
-        if let Some(session_id) = self
-            .storage
-            .current_session(&self.project)
-            .map_err(|error| error.to_string())?
-        {
-            self.session_id = Some(session_id);
-            self.messages = self
-                .storage
-                .load_messages(session_id)
-                .map_err(|error| error.to_string())?
-                .into_iter()
-                .filter_map(ChatMessage::from_stored)
-                .collect();
-            let history = self
-                .storage
-                .load_input_history(session_id, 500)
-                .map_err(|error| error.to_string())?;
-            self.input = InputBuffer::new(history);
-        }
+        let bootstrap = self
+            .bootstrap
+            .take()
+            .ok_or_else(|| "bootstrap scope is unavailable".to_owned())?;
+        let application = match bootstrap.into_trusted() {
+            Ok(application) => application,
+            Err(error) => {
+                self.bootstrap = Some(
+                    BootstrapApplication::open_default(self.project.clone())
+                        .map_err(|open_error| open_error.to_string())?,
+                );
+                return Err(error.to_string());
+            }
+        };
+        let snapshot = match application.snapshot() {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                drop(application);
+                self.bootstrap = Some(
+                    BootstrapApplication::open_default(self.project.clone())
+                        .map_err(|open_error| open_error.to_string())?,
+                );
+                return Err(error.to_string());
+            }
+        };
+        self.session_id = snapshot.session_id;
+        self.messages = snapshot
+            .messages
+            .into_iter()
+            .filter_map(ChatMessage::from_stored)
+            .collect();
+        self.input = InputBuffer::new(snapshot.input_history);
         self.markdown_cache.clear();
-
-        let (config, provider_runtime) = Self::load_model_state(&self.storage)?;
-        self.config = config;
-        self.provider_runtime = provider_runtime;
-
-        // MCP 服务器是全局能力，但绝不在项目目录里启动：固定以
-        // `~/.clat` 为工作目录，杜绝未受信项目通过 cwd 劫持命令。
-        // 写入/执行工具只对已信任项目注册（本函数仅在确权后调用），
-        // 每次调用仍经权限审阅。
-        let mut tools = ToolRegistry::new();
-        register_native_read_tools(&mut tools);
-        crate::native_tools::register_native_write_tools(&mut tools);
-        let mcp_config = crate::mcp_client::load_mcp_config(self.storage.root())
-            .map_err(|error| error.to_string())?;
-        let (mcp_connected, mcp_failures) =
-            crate::mcp_client::register_mcp_tools(&mut tools, &mcp_config, self.storage.root());
-        self.tools = Arc::new(tools);
-        if !mcp_config.is_empty() {
-            if mcp_failures.is_empty() {
-                self.flash_status(format!("mcp: {mcp_connected} server(s) connected"));
+        self.config = snapshot.config;
+        self.credentials = snapshot.credentials;
+        self.provider_descriptors = snapshot.provider_descriptors;
+        if snapshot.mcp.configured != 0 {
+            if snapshot.mcp.failures.is_empty() {
+                self.flash_status(format!(
+                    "mcp: {} server(s) connected",
+                    snapshot.mcp.connected
+                ));
             } else {
-                self.flash_status(format!("mcp: {}", mcp_failures.join("; ")));
+                self.flash_status(format!("mcp: {}", snapshot.mcp.failures.join("; ")));
             }
         }
+        self.application = Some(application);
         self.refresh_balance_now();
         Ok(())
     }
@@ -803,8 +693,10 @@ impl App {
             Some(id) => Ok(id),
             None => {
                 let id = self
-                    .storage
-                    .create_session(&self.project)
+                    .application
+                    .as_mut()
+                    .ok_or_else(|| "project application is unavailable".to_owned())?
+                    .ensure_session()
                     .map_err(|error| error.to_string())?;
                 self.session_id = Some(id);
                 Ok(id)
@@ -813,11 +705,11 @@ impl App {
     }
 
     fn run(&mut self, terminal: &mut DefaultTerminal) -> io::Result<()> {
-        // 统一事件通道与后台监控：主循环从此只与消息打交道。
+        // 统一事件通道：主循环从此只与消息打交道。
         //
         // - 输入线程阻塞读终端事件（event::read），按键到达即刻转发，
         //   零轮询、零节流——不再有 60ms/16ms 的自适应间隔；
-        // - 余额监控线程启动立即查询，此后每 5 分钟巡查一次；
+        // - 核心 Monitor 插件的 ApplicationEvent 由前端桥接线程转发；
         // - 无消息时主循环挂起在 recv_timeout 上，唤醒时刻是"最近
         //   一次必须重绘的deadline"（状态栏 TTL 到期、思考动画换帧），
         //   空闲时一次唤醒都没有。
@@ -834,13 +726,19 @@ impl App {
             {}
         });
 
-        let (balance_trigger, trigger_receiver) = mpsc::channel::<()>();
-        self.balance_trigger = Some(balance_trigger);
-        spawn_balance_monitor(
-            event_sender.clone(),
-            Arc::clone(&self.balance_context),
-            trigger_receiver,
-        );
+        if let Some(application) = &self.application {
+            let (application_sender, application_events) = mpsc::channel();
+            application.subscribe(application_sender);
+            let ui = event_sender.clone();
+            thread::spawn(move || {
+                while let Ok(event) = application_events.recv() {
+                    if ui.send(UiEvent::Application(event)).is_err() {
+                        break;
+                    }
+                }
+            });
+            application.refresh_monitor();
+        }
 
         let events = self
             .events
@@ -881,8 +779,10 @@ impl App {
         // 退出时清场：只删空会话（历史遗留/异常路径兜底）。
         // 非空会话**绝不归档**——否则 resume 过的会话下次启动
         // "消失"（v0.3.3 前的实机事故）。
-        if let Some(current) = self.session_id {
-            let _ = self.storage.delete_session_if_empty(current);
+        if self.session_id.is_some()
+            && let Some(application) = &self.application
+        {
+            let _ = application.delete_current_if_empty();
         }
         Ok(())
     }
@@ -891,7 +791,9 @@ impl App {
         match event {
             UiEvent::Terminal(event) => self.handle_terminal_event(event),
             UiEvent::Worker(message) => self.handle_worker_message(message),
-            UiEvent::Balance(value) => self.balance = value,
+            UiEvent::Application(ApplicationEvent::MonitorUpdated(value)) => {
+                self.balance = value;
+            }
         }
     }
 
@@ -950,9 +852,12 @@ impl App {
             );
             if trust {
                 let trusted = self
-                    .storage
-                    .trust_project(self.project.root())
-                    .map_err(|error| error.to_string())
+                    .bootstrap
+                    .as_ref()
+                    .ok_or_else(|| "bootstrap scope is unavailable".to_owned())
+                    .and_then(|bootstrap| {
+                        bootstrap.trust_project().map_err(|error| error.to_string())
+                    })
                     .and_then(|()| self.initialize_project());
                 match trusted {
                     Ok(()) => {
@@ -1122,8 +1027,8 @@ impl App {
             KeyCode::PageDown => self.scroll_down(PAGE_SCROLL_ROWS),
             KeyCode::Esc => {
                 if self.running {
-                    if let Some(cancel) = &self.cancel_token {
-                        cancel.cancel();
+                    if let Some(handle) = &self.run_handle {
+                        handle.cancel();
                         self.flash_status("cancelling…");
                     }
                 } else {
@@ -1387,15 +1292,11 @@ impl App {
         }
     }
 
-    /// 触发余额监控线程立即重新查询一次：把最新配置/密钥写入共享
-    /// 上下文并发信号。用于配置变更与模型运行结束（额度刚被消耗）。
+    /// 请求核心 Monitor 插件立即重新查询一次。用于配置变更与模型
+    /// 运行结束（额度刚被消耗）。
     fn refresh_balance_now(&mut self) {
-        if let Ok(mut context) = self.balance_context.lock() {
-            context.config = self.config.clone();
-            context.runtime = self.provider_runtime.clone();
-        }
-        if let Some(trigger) = &self.balance_trigger {
-            let _ = trigger.send(());
+        if let Some(application) = &self.application {
+            application.refresh_monitor();
         }
     }
 
@@ -1420,34 +1321,21 @@ impl App {
     /// 遗留行）物理删除，非空会话**原样保留**（仍可再次 resume）；
     /// 随后加载目标会话并重置视图状态。
     fn switch_session(&mut self, session_id: i64) -> Result<(), String> {
-        if let Some(current) = self.session_id
-            && current != session_id
-        {
-            self.storage
-                .delete_session_if_empty(current)
-                .map_err(|error| error.to_string())?;
-        }
-        // INV5：只读 resume 也算"打开"——触碰时间戳，让下次启动
-        // 回到这里而不是最后写入过的会话。
-        self.storage
-            .touch_session(session_id)
+        let snapshot = self
+            .application
+            .as_mut()
+            .ok_or_else(|| "project application is unavailable".to_owned())?
+            .switch_session(session_id)
             .map_err(|error| error.to_string())?;
-        // /resume 列表只含未归档会话，无需 unarchive。
-        self.messages = self
-            .storage
-            .load_messages(session_id)
-            .map_err(|error| error.to_string())?
+        self.messages = snapshot
+            .messages
             .into_iter()
             .filter_map(ChatMessage::from_stored)
             .collect();
         self.session_id = Some(session_id);
         // 输入历史随会话切换：恢复目标会话自己的历史（含内存中
         // 未持久化的导航状态一并重置）。
-        let history = self
-            .storage
-            .load_input_history(session_id, 500)
-            .map_err(|error| error.to_string())?;
-        self.input = InputBuffer::new(history);
+        self.input = InputBuffer::new(snapshot.input_history);
         self.markdown_cache.clear();
         self.conversation_scroll_from_bottom = 0;
         self.assistant_message_index = None;
@@ -1466,9 +1354,10 @@ impl App {
             }
             PickerAction::EditCustom => {
                 self.picker = None;
-                self.editor = Some(ModelEditor::new(
+                self.editor = Some(ModelEditor::new_with_descriptors(
                     &self.config,
-                    self.provider_runtime.clone(),
+                    self.credentials.clone(),
+                    self.provider_descriptors.clone(),
                 ));
                 self.flash_status("editing model configuration");
             }
@@ -1478,14 +1367,19 @@ impl App {
                 let same_endpoint = self.config.endpoint.trim_end_matches('/')
                     == preset.endpoint.trim_end_matches('/');
                 let key_present = self
-                    .provider_runtime
+                    .credentials
                     .value(0)
                     .is_some_and(|value| !value.trim().is_empty());
                 if same_endpoint && key_present {
                     match self
-                        .storage
-                        .save_model_state(&config, &self.provider_runtime)
-                    {
+                        .application
+                        .as_ref()
+                        .ok_or_else(|| "project application is unavailable".to_owned())
+                        .and_then(|application| {
+                            application
+                                .save_model_state(&config, &self.credentials)
+                                .map_err(|error| error.to_string())
+                        }) {
                         Ok(()) => {
                             self.config = config;
                             // 端点或密钥可能已变化，触发立即重新查询。
@@ -1497,7 +1391,11 @@ impl App {
                     }
                 } else {
                     self.picker = None;
-                    let mut editor = ModelEditor::new(&config, self.provider_runtime.clone());
+                    let mut editor = ModelEditor::new_with_descriptors(
+                        &config,
+                        self.credentials.clone(),
+                        self.provider_descriptors.clone(),
+                    );
                     editor.apply_preset_and_focus_key(preset);
                     self.editor = Some(editor);
                     self.flash_status(format!("enter the API key for {}", preset.vendor));
@@ -1514,11 +1412,23 @@ impl App {
                 self.flash_status("model configuration cancelled");
             }
             EditorAction::Save(saved) => {
-                let (config, runtime) = *saved;
-                match self.storage.save_model_state(&config, &runtime) {
+                let (config, credentials) = *saved;
+                match self
+                    .application
+                    .as_ref()
+                    .ok_or_else(|| "project application is unavailable".to_owned())
+                    .and_then(|application| {
+                        application
+                            .save_model_state(&config, &credentials)
+                            .map_err(|error| error.to_string())
+                    }) {
                     Ok(()) => {
                         self.config = config;
-                        self.provider_runtime = runtime;
+                        self.credentials = credentials;
+                        if let Some(application) = &self.application {
+                            self.provider_descriptors =
+                                application.provider_descriptors(&self.credentials);
+                        }
                         // 端点或密钥可能已变化，触发立即重新查询。
                         self.refresh_balance_now();
                         self.flash_status(format!(
@@ -1545,7 +1455,7 @@ impl App {
         // 聊天历史（messages/message_items）为准，`/help`、`/model`
         // 这类 UI 操作不该在库里留下任何行。只有发往模型的实质
         // 输入（start_run）才按需建会话。
-        let session_for_history = if value.starts_with('/') {
+        let _session_for_history = if value.starts_with('/') {
             self.session_id
         } else {
             match self.current_session() {
@@ -1556,7 +1466,9 @@ impl App {
                 }
             }
         };
-        let _ = self.storage.record_input(session_for_history, &value);
+        if let Some(application) = &self.application {
+            let _ = application.record_input(&value);
+        }
         // 命令也进内存历史：↑ 仍可召回；无会话时的命令（record_input
         // 已静默丢弃）不落盘。
         self.input.remember(value.clone());
@@ -1574,7 +1486,15 @@ impl App {
                     "/model · /new · /clear · /resume · /quit · ↑/↓ input history · PgUp/PgDn chat"
                         .into();
             }
-            "/resume" => match self.storage.list_sessions(&self.project) {
+            "/resume" => match self
+                .application
+                .as_ref()
+                .ok_or_else(|| "project application is unavailable".to_owned())
+                .and_then(|application| {
+                    application
+                        .list_sessions()
+                        .map_err(|error| error.to_string())
+                }) {
                 Ok(sessions) => {
                     let current = self.session_id.unwrap_or(-1);
                     self.session_picker = Some(SessionPicker::new(sessions, current));
@@ -1585,6 +1505,9 @@ impl App {
                 // 纯内存切换：session_id 置 None，首条内容写入时才
                 // 落盘建会话（/new 十次不产生任何库行）。
                 self.session_id = None;
+                if let Some(application) = &mut self.application {
+                    application.new_session();
+                }
                 self.messages.clear();
                 self.markdown_cache.clear();
                 self.conversation_scroll_from_bottom = 0;
@@ -1605,72 +1528,55 @@ impl App {
             self.flash_status("model is not configured — run /model first");
             return;
         }
-        let session_id = match self.current_session() {
-            Ok(session_id) => session_id,
+        match self.current_session() {
+            Ok(_) => {}
             Err(error) => {
                 self.flash_status(error);
                 return;
             }
-        };
-
-        // Build the model context before touching display state, so the new
-        // prompt is appended exactly once. Persisted items are the source of
-        // truth for context; legacy sessions that only have display messages
-        // are seeded from them once.
-        let mut history_items = match self.storage.load_items(session_id) {
-            Ok(items) if !items.is_empty() => items,
-            _ => {
-                let seeded: Vec<ModelItem> =
-                    self.messages.iter().map(ChatMessage::model_item).collect();
-                for item in &seeded {
-                    let _ = self.storage.append_item(session_id, item);
-                }
-                seeded
-            }
-        };
-        let user_item = ModelItem::user_text(prompt.clone());
-        history_items.push(user_item.clone());
-
-        self.messages.push(ChatMessage::user(prompt.clone()));
-        if let Err(error) = self.storage.append_message(session_id, "user", &prompt) {
-            self.flash_status(format!("failed to persist user message: {error}"));
         }
-        if let Err(error) = self.storage.append_item(session_id, &user_item) {
-            self.flash_status(format!("failed to persist user context: {error}"));
-        }
-        self.conversation_scroll_from_bottom = 0;
 
-        let project = self.project.clone();
-        let config = self.config.clone();
-        let provider_runtime = self.provider_runtime.clone();
-        let tools = Arc::clone(&self.tools);
         let sender = self
             .event_sender
             .clone()
             .expect("event channel is installed by run()");
-        let cancel = CancelToken::new();
-        self.cancel_token = Some(cancel.clone());
+        let legacy_seed_items = self.messages.iter().map(ChatMessage::model_item).collect();
+        let (completion, completed) = mpsc::channel();
+        let request = ApplicationRunRequest {
+            prompt: prompt.clone(),
+            legacy_seed_items,
+            approver: Arc::new(ChannelApprover::new(sender.clone())),
+            events: Box::new(ChannelEventSink(sender.clone())),
+            completion,
+        };
+        let handle = match self
+            .application
+            .as_mut()
+            .ok_or_else(|| "project application is unavailable".to_owned())
+            .and_then(|application| {
+                application
+                    .start_run(request)
+                    .map_err(|error| error.to_string())
+            }) {
+            Ok(handle) => handle,
+            Err(error) => {
+                self.flash_status(format!("failed to start run: {error}"));
+                return;
+            }
+        };
+        self.messages.push(ChatMessage::user(prompt));
+        self.conversation_scroll_from_bottom = 0;
+        self.run_handle = Some(handle);
         self.running = true;
         self.assistant_message_index = None;
         self.flash_status("starting model…");
 
-        // worker 直接把消息发进统一通道（Terminal/Balance 同流），
-        // 主循环消息驱动即时处理。
-        let worker_events = sender.clone();
+        // Completion is already post-persistence and post-scope-cleanup; this
+        // tiny frontend bridge only multiplexes it into the terminal channel.
         thread::spawn(move || {
-            let result = execute_run(
-                crate::tui_worker::RunRequest {
-                    project,
-                    config,
-                    provider_runtime,
-                    tools,
-                    history_items,
-                    prompt,
-                    cancel,
-                },
-                worker_events.clone(),
-            );
-            let _ = worker_events.send(UiEvent::Worker(WorkerMessage::Done(result)));
+            if let Ok(result) = completed.recv() {
+                let _ = sender.send(UiEvent::Worker(WorkerMessage::Done(result)));
+            }
         });
     }
 
@@ -1763,12 +1669,11 @@ impl App {
         self.conversation_scroll_from_bottom = 0;
     }
 
-    fn finish_run(
-        &mut self,
-        result: Result<crate::tui_worker::RunDone, crate::tui_worker::RunFailure>,
-    ) {
+    fn finish_run(&mut self, result: crate::ApplicationRunResult) {
         self.running = false;
-        self.cancel_token = None;
+        if let Some(handle) = self.run_handle.take() {
+            let _ = handle.join();
+        }
         self.thinking = false;
         self.thinking_since = None;
         // run 刚消耗了额度：触发监控线程立即重新查询一次（计划外，
@@ -1782,8 +1687,6 @@ impl App {
                     self.messages.push(ChatMessage::assistant(done.output));
                     self.assistant_message_index = Some(self.messages.len() - 1);
                 }
-                self.persist_current_assistant(false);
-                self.persist_items(done.new_items);
                 if done.cancelled {
                     self.flash_status(format!("cancelled · {} model turns", done.turns));
                 } else {
@@ -1792,10 +1695,6 @@ impl App {
             }
             Err(failure) => {
                 self.session_usage.add_assign(&failure.usage);
-                // RunError carries exact completed context plus any partial
-                // assistant delta from the failing provider turn.
-                self.persist_current_assistant(false);
-                self.persist_items(failure.new_items);
                 self.flash_status(format!(
                     "run failed after {} model turns: {}",
                     failure.turns, failure.error
@@ -1804,50 +1703,6 @@ impl App {
         }
         self.assistant_message_index = None;
         self.conversation_scroll_from_bottom = 0;
-    }
-
-    fn persist_items(&mut self, items: Vec<ModelItem>) {
-        let session_id = match self.current_session() {
-            Ok(session_id) => session_id,
-            Err(error) => {
-                self.flash_status(error);
-                return;
-            }
-        };
-        for item in items {
-            if let Err(error) = self.storage.append_item(session_id, &item) {
-                self.flash_status(format!("failed to persist conversation context: {error}"));
-            }
-        }
-    }
-
-    fn persist_current_assistant(&mut self, also_item: bool) {
-        let Some(index) = self.assistant_message_index else {
-            return;
-        };
-        let session_id = match self.current_session() {
-            Ok(session_id) => session_id,
-            Err(error) => {
-                self.flash_status(error);
-                return;
-            }
-        };
-        let content = self.messages[index].content.clone();
-        if content.trim().is_empty() {
-            return;
-        }
-        if let Err(error) = self
-            .storage
-            .append_message(session_id, "assistant", &content)
-        {
-            self.flash_status(format!("failed to persist assistant message: {error}"));
-        }
-        if also_item {
-            let item = ModelItem::assistant_text(content);
-            if let Err(error) = self.storage.append_item(session_id, &item) {
-                self.flash_status(format!("failed to persist assistant context: {error}"));
-            }
-        }
     }
 
     fn scroll_up(&mut self, amount: usize) {

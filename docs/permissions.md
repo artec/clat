@@ -82,13 +82,37 @@ path replacement to redirect CLAT's write outside the project.
 
 ## Design
 
-The runtime core stays client-neutral: an `InteractivePermissionPolicy`
-wraps the safe-by-default classification and resolves `Ask` decisions
-through an injected approver closure. The TUI is one approver (a dialog
-over a channel); headless clients can supply their own.
+The runtime core stays client-neutral. A built-in Project plugin provides the
+permission-policy factory; each Run Scope receives a `PermissionApprover` port
+from its client and creates an `InteractivePermissionPolicy` around the
+safe-by-default classifier. The TUI implementation is only a dialog adapter
+over a channel. Tests, future headless clients, and desktop clients can inject
+their own approver without importing terminal code or implementing permission
+semantics.
+
+An approver must not retain its own response sender while waiting. The TUI
+creates one response channel per request; dropping the dialog disconnects the
+receiver and resolves to `Deny`, so application shutdown cannot deadlock on an
+orphaned permission prompt.
 
 In non-interactive contexts (no approver), an unresolved `Ask` still
 fails the run — there is nobody to answer it.
+
+The execution boundary is deliberately ordered:
+
+```text
+final Tool arguments
+  → PermissionPolicy decision
+    → ordered Tool middleware
+      → Tool::invoke
+    → ordered post observers
+```
+
+Middleware cannot see or execute an `Ask`/`Deny` call before approval. A denial
+therefore produces the existing structured `ToolResult` without entering
+middleware or the Tool. Middleware and observers are static plugin
+contributions with scope-owned leases; they are frozen before runs and revoked
+during reverse teardown.
 
 ## MCP tools
 

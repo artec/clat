@@ -90,7 +90,7 @@ pub struct ModelOptions {
     pub provider_options: Value,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelProtocol {
     OpenAiResponses,
@@ -171,6 +171,135 @@ impl ModelConfig {
     pub fn is_configured(&self) -> bool {
         !self.model.trim().is_empty() && !self.endpoint.trim().is_empty()
     }
+}
+
+/// Provider-neutral persisted credentials. The JSON representation remains
+/// the legacy string array so existing databases round-trip unchanged.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ProviderCredentials {
+    values: Vec<String>,
+}
+
+impl ProviderCredentials {
+    pub fn for_protocol(protocol: ModelProtocol) -> Self {
+        let field_count = match protocol {
+            ModelProtocol::OpenAiResponses | ModelProtocol::OpenAiCompatible => 1,
+        };
+        Self {
+            values: vec![String::new(); field_count],
+        }
+    }
+
+    pub fn field_count(&self) -> usize {
+        self.values.len()
+    }
+
+    pub(crate) fn to_json(&self) -> Value {
+        Value::Array(self.values.iter().cloned().map(Value::String).collect())
+    }
+
+    pub(crate) fn from_json(protocol: ModelProtocol, value: &Value) -> Self {
+        let expected = Self::for_protocol(protocol).field_count();
+        let mut values = value
+            .as_array()
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item.as_str().map(str::to_owned))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        values.resize(expected, String::new());
+        values.truncate(expected);
+        Self { values }
+    }
+
+    pub fn field_label(protocol: ModelProtocol, index: usize) -> &'static str {
+        match (protocol, index) {
+            (ModelProtocol::OpenAiResponses, 0) | (ModelProtocol::OpenAiCompatible, 0) => "API Key",
+            (ModelProtocol::OpenAiResponses, _) | (ModelProtocol::OpenAiCompatible, _) => {
+                "Provider value"
+            }
+        }
+    }
+
+    pub fn masked_value(&self, index: usize) -> String {
+        let Some(value) = self.values.get(index) else {
+            return String::new();
+        };
+        if value.is_empty() {
+            "<optional>".into()
+        } else {
+            "•".repeat(value.chars().count().min(48))
+        }
+    }
+
+    pub fn push_char(&mut self, index: usize, ch: char) {
+        if let Some(value) = self.values.get_mut(index) {
+            value.push(ch);
+        }
+    }
+
+    pub fn push_str(&mut self, index: usize, text: &str) {
+        if let Some(value) = self.values.get_mut(index) {
+            value.push_str(text);
+        }
+    }
+
+    pub fn value(&self, index: usize) -> Option<&str> {
+        self.values.get(index).map(String::as_str)
+    }
+
+    pub fn values(&self) -> &[String] {
+        &self.values
+    }
+
+    pub fn set_value(&mut self, index: usize, value: String) {
+        if let Some(slot) = self.values.get_mut(index) {
+            *slot = value;
+        }
+    }
+
+    pub fn pop(&mut self, index: usize) {
+        if let Some(value) = self.values.get_mut(index) {
+            value.pop();
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProviderFieldKind {
+    Secret,
+    Text,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProviderFieldDescriptor {
+    pub key: String,
+    pub label: String,
+    pub kind: ProviderFieldKind,
+    pub required: bool,
+    pub sensitive: bool,
+    pub has_value: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProviderDescriptor {
+    pub protocol: ModelProtocol,
+    pub display_name: String,
+    pub fields: Vec<ProviderFieldDescriptor>,
+}
+
+pub trait ModelFactory: Send + Sync {
+    fn protocol(&self) -> ModelProtocol;
+
+    fn describe(&self, credentials: &ProviderCredentials) -> ProviderDescriptor;
+
+    fn build(
+        &self,
+        config: &ModelConfig,
+        credentials: &ProviderCredentials,
+    ) -> Result<Box<dyn Model>, ModelError>;
 }
 
 pub struct ModelRequest<'a> {
@@ -311,4 +440,20 @@ pub trait Model {
         request: ModelRequest<'_>,
         events: &mut dyn ModelEventSink,
     ) -> Result<ModelResponse, ModelError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn provider_credentials_preserve_the_legacy_json_array_contract() {
+        for protocol in ModelProtocol::ALL {
+            let legacy = json!(["legacy-secret"]);
+            let credentials = ProviderCredentials::from_json(protocol, &legacy);
+            assert_eq!(credentials.value(0), Some("legacy-secret"));
+            assert_eq!(credentials.to_json(), legacy);
+        }
+    }
 }

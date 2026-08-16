@@ -20,8 +20,13 @@ and exposes their tools to the model alongside the native read tools.
 ```
 
 The file is optional; without it CLAT runs with native tools only.
-Server subprocesses live for the whole CLAT session and are shared across
-runs.
+The built-in MCP Adapter plugin reads it only after project trust succeeds.
+Server subprocesses belong to that Trusted Project Scope and are shared across
+runs in the project; closing the project tears them down.
+
+Connection state is exposed through Application DTOs (`configured`,
+`connected`, per-server protocol/version, and isolated failures). Frontends do
+not receive `McpServer`, `StdioSession`, or the Tool Registry.
 
 ## Protocol support
 
@@ -68,6 +73,9 @@ MCP servers are **global capabilities, not project content**:
 - Servers are only started after the project trust gate passes.
 - Each server failure (spawn error, handshake failure, tool-list failure)
   only skips that server; the rest of CLAT keeps working.
+- Remote Tool contributions carry the MCP plugin owner and a revocable lease.
+  A name collision is reported and never silently replaces a native or earlier
+  remote tool.
 
 Resource limits protect against misbehaving or malicious servers:
 
@@ -82,10 +90,14 @@ Resource limits protect against misbehaving or malicious servers:
 | `tools/call` timeout | 120 s |
 | tool result size | 1 MiB |
 
-The transport uses a single reader thread that routes responses by
-request id (out-of-order and concurrent responses are handled), a
-bounded writer queue, and a shutdown sequence of close-stdin → grace
-period → kill, so a silent server can never hang CLAT's exit.
+The transport uses a single reader thread that routes responses by request id
+(out-of-order and concurrent responses are handled) and a bounded writer
+queue. Shutdown is explicit and idempotent: reject new work and wake pending
+calls → close stdin → wait for a bounded grace period → kill/reap if necessary
+→ join writer and reader threads. Project-scope teardown revokes MCP Tool
+leases before shutting down their server, so a silent server or stale Tool
+reference cannot hang or outlive CLAT's project scope. `Drop` remains only a
+best-effort fallback.
 
 `Esc` cancellation propagates through `Tool::invoke` into an in-flight
 MCP request. CLAT removes the pending response slot, returns within a

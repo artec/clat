@@ -1,6 +1,6 @@
 [package]
 name = "clat"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 description = "A fast, local-first, open-source command-line agent runtime"
 license-file = "LICENSE"

@@ -1,6 +1,5 @@
 use crate::presets::{MODEL_PRESETS, ModelPreset, preset_by_id, preset_vendors, presets_by_vendor};
-use crate::providers::ProviderRuntime;
-use crate::{ModelConfig, ModelProtocol};
+use crate::{ModelConfig, ModelProtocol, ProviderCredentials, ProviderDescriptor};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -12,7 +11,7 @@ use unicode_width::UnicodeWidthChar;
 
 pub(crate) enum EditorAction {
     Continue,
-    Save(Box<(ModelConfig, ProviderRuntime)>),
+    Save(Box<(ModelConfig, ProviderCredentials)>),
     Cancel,
 }
 
@@ -67,7 +66,8 @@ pub(crate) struct ModelEditor {
     output_limit: String,
     temperature: String,
     parallel_tool_calls: bool,
-    provider_runtime: ProviderRuntime,
+    credentials: ProviderCredentials,
+    provider_descriptors: Vec<ProviderDescriptor>,
     preset: Option<&'static ModelPreset>,
     show_advanced: bool,
     selected: usize,
@@ -76,7 +76,11 @@ pub(crate) struct ModelEditor {
 }
 
 impl ModelEditor {
-    pub fn new(config: &ModelConfig, provider_runtime: ProviderRuntime) -> Self {
+    pub fn new_with_descriptors(
+        config: &ModelConfig,
+        credentials: ProviderCredentials,
+        provider_descriptors: Vec<ProviderDescriptor>,
+    ) -> Self {
         Self {
             protocol: config.protocol,
             model: config.model.clone(),
@@ -95,7 +99,8 @@ impl ModelEditor {
                 .map(|value| value.to_string())
                 .unwrap_or_default(),
             parallel_tool_calls: config.parallel_tool_calls,
-            provider_runtime,
+            credentials,
+            provider_descriptors,
             preset: config.preset.as_deref().and_then(preset_by_id),
             show_advanced: false,
             selected: 0,
@@ -236,7 +241,7 @@ impl ModelEditor {
             ),
             Model => ("Model".into(), display_placeholder(&self.model)),
             Endpoint => ("Endpoint".into(), display_placeholder(&self.endpoint)),
-            ApiKey => ("API Key".into(), self.provider_runtime.masked_value(0)),
+            ApiKey => (self.credential_label(0), self.credentials.masked_value(0)),
             Advanced => (
                 "[ Advanced ]".into(),
                 if self.show_advanced {
@@ -264,6 +269,15 @@ impl ModelEditor {
             Save => ("[ Save ]".into(), "Ctrl+S".into()),
             Cancel => ("[ Cancel ]".into(), "Esc".into()),
         }
+    }
+
+    fn credential_label(&self, index: usize) -> String {
+        self.provider_descriptors
+            .iter()
+            .find(|descriptor| descriptor.protocol == self.protocol)
+            .and_then(|descriptor| descriptor.fields.get(index))
+            .map(|field| field.label.clone())
+            .unwrap_or_else(|| "API Key".into())
     }
 
     fn visible_rows(&self) -> Vec<RowKind> {
@@ -328,7 +342,7 @@ impl ModelEditor {
                 self.endpoint = buffer;
                 self.preset = None;
             }
-            EditTarget::ApiKey => self.provider_runtime.set_value(0, buffer),
+            EditTarget::ApiKey => self.credentials.set_value(0, buffer),
             EditTarget::RequestPath => self.request_path = buffer,
             EditTarget::AuthHeader => self.auth_header = buffer,
             EditTarget::AuthPrefix => self.auth_prefix = buffer,
@@ -368,11 +382,7 @@ impl ModelEditor {
         match target {
             EditTarget::Model => self.model.clone(),
             EditTarget::Endpoint => self.endpoint.clone(),
-            EditTarget::ApiKey => self
-                .provider_runtime
-                .value(0)
-                .unwrap_or_default()
-                .to_owned(),
+            EditTarget::ApiKey => self.credentials.value(0).unwrap_or_default().to_owned(),
             EditTarget::RequestPath => self.request_path.clone(),
             EditTarget::AuthHeader => self.auth_header.clone(),
             EditTarget::AuthPrefix => self.auth_prefix.clone(),
@@ -538,7 +548,7 @@ impl ModelEditor {
     pub fn apply_preset_and_focus_key(&mut self, preset: &'static ModelPreset) {
         self.preset = Some(preset);
         self.apply_preset_fields(preset);
-        self.provider_runtime.set_value(0, String::new());
+        self.credentials.set_value(0, String::new());
         self.selected = self
             .visible_rows()
             .iter()
@@ -556,7 +566,7 @@ impl ModelEditor {
         }
     }
 
-    fn build(&self) -> Result<(ModelConfig, ProviderRuntime), String> {
+    fn build(&self) -> Result<(ModelConfig, ProviderCredentials), String> {
         if self.model.trim().is_empty() {
             return Err("Model is required".into());
         }
@@ -591,7 +601,7 @@ impl ModelEditor {
                 temperature,
                 parallel_tool_calls: self.parallel_tool_calls,
             },
-            self.provider_runtime.clone(),
+            self.credentials.clone(),
         ))
     }
 }
@@ -874,8 +884,8 @@ mod tests {
 
     fn editor() -> ModelEditor {
         let config = ModelConfig::default();
-        let runtime = ProviderRuntime::for_protocol(config.protocol);
-        ModelEditor::new(&config, runtime)
+        let credentials = ProviderCredentials::for_protocol(config.protocol);
+        ModelEditor::new_with_descriptors(&config, credentials, Vec::new())
     }
 
     fn key(code: KeyCode) -> KeyEvent {
@@ -1111,18 +1121,16 @@ mod tests {
     #[test]
     fn editor_prefills_preset_and_focuses_the_api_key_row() {
         let config = ModelConfig::default();
-        let runtime = ProviderRuntime::for_protocol(config.protocol);
-        let mut editor = ModelEditor::new(&config, runtime);
-        editor
-            .provider_runtime
-            .set_value(0, "old-vendor-key".into());
+        let credentials = ProviderCredentials::for_protocol(config.protocol);
+        let mut editor = ModelEditor::new_with_descriptors(&config, credentials, Vec::new());
+        editor.credentials.set_value(0, "old-vendor-key".into());
 
         let preset = preset_by_id("glm-5.3").expect("preset");
         editor.apply_preset_and_focus_key(preset);
 
         // 预设参数就位，旧厂商密钥被清空，焦点落在 API Key 行。
         assert_eq!(editor.model, "glm-5.3");
-        assert_eq!(editor.provider_runtime.value(0), Some(""));
+        assert_eq!(editor.credentials.value(0), Some(""));
         assert_eq!(editor.visible_rows()[editor.selected], RowKind::ApiKey);
     }
 }

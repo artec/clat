@@ -101,7 +101,7 @@ impl McpServer {
             .iter()
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect();
-        let probe = StdioSession::spawn(&config.command, &config.args, &env, cwd)?;
+        let mut probe = StdioSession::spawn(&config.command, &config.args, &env, cwd)?;
         match Self::discover(&probe) {
             Ok(server_version) => Ok(Self {
                 name: name.to_owned(),
@@ -111,14 +111,20 @@ impl McpServer {
                 era: ProtocolEra::Modern,
             }),
             Err(modern_error) => {
-                drop(probe);
-                let session = StdioSession::spawn(&config.command, &config.args, &env, cwd)?;
-                let (server_version, negotiated_version) =
-                    Self::handshake(&session).map_err(|legacy_error| {
-                        McpError::new(format!(
-                            "MCP negotiation failed: modern discover: {modern_error}; legacy initialize: {legacy_error}"
-                        ))
-                    })?;
+                let _ = probe.shutdown();
+                let mut session = StdioSession::spawn(&config.command, &config.args, &env, cwd)?;
+                let (server_version, negotiated_version) = match Self::handshake(&session) {
+                    Ok(negotiated) => negotiated,
+                    Err(legacy_error) => {
+                        let cleanup = session.shutdown().err();
+                        let cleanup = cleanup
+                            .map(|error| format!("; cleanup: {error}"))
+                            .unwrap_or_default();
+                        return Err(McpError::new(format!(
+                            "MCP negotiation failed: modern discover: {modern_error}; legacy initialize: {legacy_error}{cleanup}"
+                        )));
+                    }
+                };
                 Ok(Self {
                     name: name.to_owned(),
                     session,
@@ -204,6 +210,10 @@ impl McpServer {
     /// 握手协商出的协议版本，供将来按版本启用特性开关。
     pub fn negotiated_version(&self) -> &str {
         &self.negotiated_version
+    }
+
+    pub fn shutdown(mut self) -> Result<(), McpError> {
+        self.session.shutdown()
     }
 
     /// 列出远端工具（含 cursor 分页），映射为 CLAT 工具定义。
@@ -443,7 +453,7 @@ fn sanitize_segment(segment: &str) -> String {
 
 /// MCP 工具映射到 CLAT 的全名：`mcp_{server}_{tool}`。server 与 tool
 /// 两段都清洗；总长超过 64 截断为 56 + 稳定短哈希，保证唯一性靠
-/// 注册表去重（见 [`register_mcp_tools`]）。空段返回 None（工具被跳过）。
+/// 注册表去重。空段返回 None（工具被跳过）。
 pub fn qualify_tool_name(server: &str, tool: &str) -> Option<String> {
     let server = sanitize_segment(server);
     let tool = sanitize_segment(tool);
@@ -465,17 +475,19 @@ pub fn qualify_tool_name(server: &str, tool: &str) -> Option<String> {
 
 /// 把一个远端 MCP 工具适配为 CLAT 工具。
 pub struct McpTool {
-    server: std::sync::Arc<McpServer>,
+    server: std::sync::Weak<McpServer>,
+    server_name: String,
     info: McpToolInfo,
     qualified_name: String,
 }
 
 impl McpTool {
-    pub fn new(server: std::sync::Arc<McpServer>, info: McpToolInfo) -> Self {
+    pub fn new(server: &std::sync::Arc<McpServer>, info: McpToolInfo) -> Self {
         let qualified_name = qualify_tool_name(server.name(), &info.name)
             .unwrap_or_else(|| format!("mcp_unnamed_{}", info.name.len()));
         Self {
-            server,
+            server: std::sync::Arc::downgrade(server),
+            server_name: server.name().to_owned(),
             info,
             qualified_name,
         }
@@ -486,7 +498,7 @@ impl Tool for McpTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.qualified_name.clone(),
-            description: format!("[mcp:{}] {}", self.server.name(), self.info.description),
+            description: format!("[mcp:{}] {}", self.server_name, self.info.description),
             input_schema: self.info.input_schema.clone(),
             effect: effect_from_annotations(self.info.annotations),
             strict: false,
@@ -500,6 +512,8 @@ impl Tool for McpTool {
         cancel: &CancelToken,
     ) -> Result<Value, ToolError> {
         self.server
+            .upgrade()
+            .ok_or_else(|| ToolError::new("MCP server is shutting down"))?
             .call_tool(&self.info.name, arguments, cancel)
             .map_err(|error| ToolError::new(error.to_string()))
     }
@@ -525,53 +539,6 @@ pub fn load_mcp_config(root: &Path) -> Result<McpConfig, String> {
         Err(error) => return Err(format!("read {}: {error}", path.display())),
     };
     parse_mcp_config(&text)
-}
-
-/// 按 mcp.json 连接全部服务器并把工具注册进注册表。
-///
-/// - 子进程以 `cwd`（调用方传入 `~/.clat`）为固定工作目录；
-/// - 同名工具（跨服务器清洗后碰撞，或单服务器内 `a-b`/`a.b` 重名）
-///   只注册第一个，其余记入失败提示——绝不静默路由到错误实现；
-/// - 单个服务器失败只跳过并收集为提示信息，不拖垮 CLAT 启动。
-///
-/// 返回 (成功的服务器数, 失败提示)。
-pub fn register_mcp_tools(
-    registry: &mut crate::tool::ToolRegistry,
-    config: &McpConfig,
-    cwd: &Path,
-) -> (usize, Vec<String>) {
-    let mut connected = 0;
-    let mut failures = Vec::new();
-    let mut seen_names: HashSet<String> = HashSet::new();
-    for (name, server_config) in config {
-        if server_config.command.trim().is_empty() {
-            failures.push(format!("mcp `{name}`: empty command"));
-            continue;
-        }
-        match McpServer::connect(name, server_config, cwd) {
-            Ok(server) => match server.list_tools() {
-                Ok(tools) => {
-                    let server = std::sync::Arc::new(server);
-                    for info in tools {
-                        let tool = McpTool::new(server.clone(), info);
-                        let qualified = tool.definition().name;
-                        if !seen_names.insert(qualified.clone()) {
-                            failures.push(format!(
-                                "mcp `{name}`: tool `{}` collides with an existing tool, skipped",
-                                tool.definition().name
-                            ));
-                            continue;
-                        }
-                        registry.register(tool);
-                    }
-                    connected += 1;
-                }
-                Err(error) => failures.push(format!("mcp `{name}`: {error}")),
-            },
-            Err(error) => failures.push(format!("mcp `{name}`: {error}")),
-        }
-    }
-    (connected, failures)
 }
 
 #[cfg(test)]

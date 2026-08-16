@@ -1,6 +1,7 @@
 use crate::project::Project;
 use crate::tool::{ToolCall, ToolDefinition, ToolEffect};
 use serde_json::Value;
+use std::sync::Arc;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PermissionDecision {
@@ -22,6 +23,21 @@ pub struct PermissionRequest {
     pub arguments: Value,
 }
 
+/// UI-independent port implemented by TUI, desktop, headless clients, or
+/// tests. It answers requests; permission classification remains in core.
+pub trait PermissionApprover: Send + Sync {
+    fn decide(&self, request: PermissionRequest) -> PermissionDecision;
+}
+
+impl<F> PermissionApprover for F
+where
+    F: Fn(PermissionRequest) -> PermissionDecision + Send + Sync,
+{
+    fn decide(&self, request: PermissionRequest) -> PermissionDecision {
+        self(request)
+    }
+}
+
 pub trait PermissionPolicy: Send + Sync {
     fn check(
         &self,
@@ -40,7 +56,7 @@ pub trait PermissionPolicy: Send + Sync {
 /// pass through untouched; only `Ask` invokes the approver.
 pub struct InteractivePermissionPolicy {
     delegate: Box<dyn PermissionPolicy>,
-    ask: Box<dyn Fn(PermissionRequest) -> PermissionDecision + Send + Sync>,
+    approver: Arc<dyn PermissionApprover>,
 }
 
 impl InteractivePermissionPolicy {
@@ -48,10 +64,25 @@ impl InteractivePermissionPolicy {
         delegate: impl PermissionPolicy + 'static,
         ask: Box<dyn Fn(PermissionRequest) -> PermissionDecision + Send + Sync>,
     ) -> Self {
+        Self::with_approver(delegate, Arc::new(BoxedApprover(ask)))
+    }
+
+    pub fn with_approver(
+        delegate: impl PermissionPolicy + 'static,
+        approver: Arc<dyn PermissionApprover>,
+    ) -> Self {
         Self {
             delegate: Box::new(delegate),
-            ask,
+            approver,
         }
+    }
+}
+
+struct BoxedApprover(Box<dyn Fn(PermissionRequest) -> PermissionDecision + Send + Sync>);
+
+impl PermissionApprover for BoxedApprover {
+    fn decide(&self, request: PermissionRequest) -> PermissionDecision {
+        (self.0)(request)
     }
 }
 
@@ -70,7 +101,7 @@ impl PermissionPolicy for InteractivePermissionPolicy {
                     reason,
                     arguments: call.arguments.clone(),
                 };
-                match (self.ask)(request) {
+                match self.approver.decide(request) {
                     // The approver answers with a final decision only.
                     PermissionDecision::Ask { .. } => PermissionDecision::Deny {
                         reason: "approver returned an unresolved decision".into(),

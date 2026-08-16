@@ -1,6 +1,6 @@
 # CLAT Project Constitution
 
-CLAT is a fast, local-first, open-source command line agent runtime.
+CLAT is a fast, local-first, open-source command-line agent runtime.
 
 All contributors and coding agents working in this repository should preserve these principles unless a deliberate project decision changes them.
 
@@ -63,10 +63,9 @@ day.
 4. New background threads or channels? They must belong to one layer:
    runtime workers belong to core, render/input plumbing to the UI.
 
-Known current debt (accepted, tracked here): the DeepSeek/GLM balance
-monitor lives in `tui.rs` and must move to core before a second
-frontend exists; `UiEvent` in `tui_worker.rs` mixes UI concerns with
-worker plumbing and will need re-scoping then.
+Current boundary note: the DeepSeek/GLM monitor and run workers live in core
+plugins/Application. `UiEvent` in `tui_worker.rs` is frontend-local channel
+multiplexing only; core lifecycle and persistence must not move back into it.
 
 ## State discipline (invariants before code, tests from invariants)
 

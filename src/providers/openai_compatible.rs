@@ -1,3 +1,4 @@
+use super::{CancelAwareReader, STREAM_BODY_POLL_TIMEOUT, is_stream_poll_timeout};
 use crate::ModelConfig;
 use crate::model::{
     CancelToken, ContentPart, FinishReason, Model, ModelError, ModelEvent, ModelEventSink,
@@ -14,8 +15,7 @@ use ureq::{Agent, Body};
 /// 连接超时：防止 TCP 连接阶段无限阻塞。
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// 等待响应头超时：防止服务端接受连接后不返回响应头。进入 SSE
-/// 流式读取阶段后由 CancelToken 保护，不受此超时约束。
+/// 等待响应头超时：防止服务端接受连接后不返回响应头。
 const RECV_RESPONSE_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub struct OpenAiCompatibleModel {
@@ -33,6 +33,7 @@ impl OpenAiCompatibleModel {
             .http_status_as_error(false)
             .timeout_connect(Some(CONNECT_TIMEOUT))
             .timeout_recv_response(Some(RECV_RESPONSE_TIMEOUT))
+            .timeout_recv_body(Some(STREAM_BODY_POLL_TIMEOUT))
             .build()
             .new_agent();
         let value = if fields.is_empty() {
@@ -166,7 +167,11 @@ impl Model for OpenAiCompatibleModel {
         let body = self.request_body(request)?;
         let response = self.send(&body)?;
         let (_, body) = response.into_parts();
-        consume_sse(BufReader::new(body.into_reader()), events, cancel)
+        consume_sse(
+            BufReader::new(CancelAwareReader::new(body.into_reader(), cancel)),
+            events,
+            cancel,
+        )
     }
 }
 
@@ -364,11 +369,22 @@ fn consume_sse<R: BufRead>(
             accumulator.finish_reason = Some(FinishReason::Cancelled);
             break;
         }
-        line.clear();
-        let bytes = reader.read_line(&mut line).map_err(|error| {
-            ModelError::new(format!("failed to read compatible stream: {error}"))
-        })?;
+        let bytes = match reader.read_line(&mut line) {
+            Ok(bytes) => bytes,
+            Err(error) if is_stream_poll_timeout(&error) => {
+                continue;
+            }
+            Err(error) => {
+                return Err(ModelError::new(format!(
+                    "failed to read compatible stream: {error}"
+                )));
+            }
+        };
         if bytes == 0 {
+            if cancel.is_cancelled() {
+                accumulator.finish_reason = Some(FinishReason::Cancelled);
+                break;
+            }
             if !data_lines.is_empty() {
                 dispatch(&data_lines.join("\n"), &mut accumulator, events)?;
             }
@@ -380,11 +396,13 @@ fn consume_sse<R: BufRead>(
                 dispatch(&data_lines.join("\n"), &mut accumulator, events)?;
                 data_lines.clear();
             }
+            line.clear();
             continue;
         }
         if let Some(data) = trimmed.strip_prefix("data:") {
             data_lines.push(data.trim_start().to_owned());
         }
+        line.clear();
     }
     finish(accumulator, events)
 }

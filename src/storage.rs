@@ -1,5 +1,4 @@
-use crate::providers::ProviderRuntime;
-use crate::{ModelConfig, ModelItem, Project};
+use crate::{ModelConfig, ModelItem, Project, ProviderCredentials};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use std::env;
@@ -322,7 +321,9 @@ impl Storage {
         Ok(())
     }
 
-    pub fn load_model_state(&self) -> Result<Option<(ModelConfig, ProviderRuntime)>, StorageError> {
+    pub fn load_model_state(
+        &self,
+    ) -> Result<Option<(ModelConfig, ProviderCredentials)>, StorageError> {
         let row = self
             .connection
             .query_row(
@@ -337,14 +338,14 @@ impl Storage {
         };
         let config: ModelConfig = serde_json::from_str(&config_json)?;
         let runtime_value = serde_json::from_str(&runtime_json)?;
-        let runtime = ProviderRuntime::from_json(config.protocol, &runtime_value);
+        let runtime = ProviderCredentials::from_json(config.protocol, &runtime_value);
         Ok(Some((config, runtime)))
     }
 
     pub fn save_model_state(
         &self,
         config: &ModelConfig,
-        runtime: &ProviderRuntime,
+        runtime: &ProviderCredentials,
     ) -> Result<(), StorageError> {
         let config_json = serde_json::to_string(config)?;
         let runtime_json = serde_json::to_string(&runtime.to_json())?;
@@ -360,6 +361,7 @@ impl Storage {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn load_or_create_session(&self, project: &Project) -> Result<i64, StorageError> {
         let root = project_key(project.root());
         let existing = self
@@ -634,7 +636,7 @@ impl Storage {
         &self,
         name: &str,
         config: &ModelConfig,
-        runtime: &ProviderRuntime,
+        runtime: &ProviderCredentials,
     ) -> Result<(), StorageError> {
         let name = name.trim();
         if name.is_empty() {
@@ -659,7 +661,7 @@ impl Storage {
     pub fn load_profile(
         &self,
         name: &str,
-    ) -> Result<Option<(ModelConfig, ProviderRuntime)>, StorageError> {
+    ) -> Result<Option<(ModelConfig, ProviderCredentials)>, StorageError> {
         let row = self
             .connection
             .query_row(
@@ -673,7 +675,7 @@ impl Storage {
         };
         let config: ModelConfig = serde_json::from_str(&config_json)?;
         let runtime_value = serde_json::from_str(&runtime_json)?;
-        let runtime = ProviderRuntime::from_json(config.protocol, &runtime_value);
+        let runtime = ProviderCredentials::from_json(config.protocol, &runtime_value);
         Ok(Some((config, runtime)))
     }
 
@@ -1399,7 +1401,7 @@ mod tests {
             endpoint: "https://open.bigmodel.cn/api/coding/paas/v4".into(),
             ..ModelConfig::default()
         };
-        let mut runtime = ProviderRuntime::for_protocol(config.protocol);
+        let mut runtime = ProviderCredentials::for_protocol(config.protocol);
         runtime.push_str(0, "profile-key");
 
         storage.save_profile("glm", &config, &runtime).unwrap();
@@ -1409,7 +1411,7 @@ mod tests {
             .save_profile(
                 "deepseek",
                 &ModelConfig::default(),
-                &ProviderRuntime::for_protocol(ModelConfig::default().protocol),
+                &ProviderCredentials::for_protocol(ModelConfig::default().protocol),
             )
             .unwrap();
         assert_eq!(
@@ -1599,7 +1601,7 @@ mod tests {
             endpoint: "https://example.test/v1".into(),
             ..ModelConfig::default()
         };
-        let mut runtime = ProviderRuntime::for_protocol(config.protocol);
+        let mut runtime = ProviderCredentials::for_protocol(config.protocol);
         runtime.push_str(0, "runtime-value");
         storage.save_model_state(&config, &runtime).unwrap();
         let (loaded, loaded_runtime) = storage.load_model_state().unwrap().unwrap();

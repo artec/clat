@@ -15,7 +15,7 @@ database is the source of truth:
 
 | Table | Content |
 |---|---|
-| `model_state` | model configuration and provider runtime values (API key) |
+| `model_state` | model configuration and provider-neutral credential values (API key) |
 | `sessions` | conversations, keyed by the canonicalized project root (symlinked and real paths share a session; legacy keys are migrated in place on open) |
 | `messages` | display text (user/assistant), per session |
 | `message_items` | the full conversation context: user/assistant text, tool calls, tool results, provider state, reasoning — persisted in order |
@@ -25,6 +25,18 @@ database is the source of truth:
 The display `messages` table and the context `message_items` table are
 kept in sync at the same lifecycle points; tool activity stays in the
 status line rather than the chat panel.
+
+Storage is assembled once, behind a shared core backend. Bootstrap Scope
+registers only the narrow `TrustStore`; Session and Config stores are not
+registered until a successful transition to Trusted Project Scope. Frontends
+never open the database or receive a raw store. They use
+`BootstrapApplication` for trust and `TrustedProjectApplication` for session,
+history, profile, and model-state use cases.
+
+The static-plugin migration does not change the schema or persisted JSON
+contracts. `ProviderCredentials` remains encoded as the legacy JSON string
+array, and `ModelProtocol` values retain their previous representation. The
+storage layer no longer depends on concrete Provider runtime implementations.
 
 On Unix, CLAT attempts to create `~/.clat` with mode `0700` and the
 bootstrap/database files with mode `0600`. Provider credentials are
@@ -76,3 +88,16 @@ Invariants (tests derive from these, not from the code):
   by exit restores the previously opened session rather than a fresh
   start. The exact model would be a persisted per-project
   last-opened pointer; adopt it only if this boundary ever bites.
+
+## Run persistence boundary
+
+Application owns run persistence. It appends the user display message and
+`ModelItem` before starting the core worker. On success it persists assistant
+display text and every newly produced item before publishing completion. On
+failure or cancellation it performs the same best-effort persistence for
+partial text/items and reports any persistence failure alongside the run
+failure instead of silently discarding it. `RunEvent` remains observational;
+the TUI never writes completion state.
+
+Usage stays in the existing run result/event contract; this migration does not
+add a usage column or otherwise change the database schema.

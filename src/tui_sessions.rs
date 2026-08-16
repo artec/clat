@@ -4,7 +4,7 @@
 //! 会话列表按最近更新在前；空会话（0 条消息）在打开选择器时已被
 //! 自动归档，因此列表里出现的都是可恢复的实质会话。
 
-use crate::storage::SessionSummary;
+use crate::SessionSummary;
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::Frame;
 use ratatui::layout::Rect;

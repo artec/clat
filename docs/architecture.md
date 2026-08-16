@@ -1,33 +1,71 @@
 # Architecture
 
-## Core
+## Core and static plugin composition
 
-The runtime owns the execution loop and core abstractions. Model providers
-and external protocols such as MCP remain adapters around that core.
+CLAT has a UI-independent Application facade over a small, Rust-native static
+plugin kernel. Plugin implementations are compiled into the single `clat`
+binary; explicit catalogs select and order them at runtime. CLAT does not load
+Rust dynamic libraries, WASM, JavaScript, or automatically discovered code.
 
 ```text
-Run
-├── Project
-├── Model
-├── ToolRegistry
-├── PermissionPolicy
-└── EventSink
+TUI / demo / future desktop or headless client
+                    │
+                    ▼
+ BootstrapApplication ── trust transition ──► TrustedProjectApplication
+                    │                              │
+                    ▼                              ▼
+              Bootstrap Scope              Trusted Project Scope
+                                                   │
+                                                   ▼
+                                               Run Scope
+                    ┌──────────────────────────────┴────────────────────┐
+                    ▼                                                   ▼
+       ServiceRegistry + PluginManager                 EventSink / RunEvent
+       dependency plan, mount, rollback,               stable client protocol
+       child scopes, reverse teardown
 ```
 
-- `Run` drives the streaming model → tool → model loop, capped at a
-  configurable number of turns.
-- Every observable step (`ModelRequested`, `ModelStream`, `ToolRequested`,
-  `ToolFinished`, `PermissionChecked`, `RunCompleted`, …) is emitted through
-  an `EventSink`, so CLI, TUI, IDE, desktop, or remote clients consume the
-  same runtime events.
-- Tool execution failures are returned to the model as structured error
-  results instead of aborting the run, so the agent can recover.
-- Cancellation is cooperative: a shared `CancelToken` is polled between
-  turns, before each tool call, between SSE chunks, and — via
-  `Tool::invoke` — inside long-running tool waits (an in-flight MCP
-  request aborts within ~25 ms and notifies the server).
+There are three scope-specific explicit catalogs:
 
-## Agentic loop (v0.3.4)
+| Scope | Lifetime | Built-in responsibilities |
+|---|---|---|
+| Bootstrap | Application open → exit | shared storage backend, narrow `TrustStore` only |
+| Trusted Project | trust accepted → project close | Session/Config stores, Tool/Provider/Prompt registries, native tools, MCP adapter, permission and Agent services, monitor |
+| Run | one active run | `CancelToken` and injected `PermissionApprover`; worker ownership stays in Application |
+
+The catalog is validated before the first plugin produces a side effect.
+Duplicate plugin IDs or services, missing dependencies, scope mismatches, parent
+service overrides, and required/optional dependency cycles all fail early.
+Plugins on the same dependency layer retain catalog order. A failed mount rolls
+back the current plugin and every prior plugin in reverse order while retaining
+the primary error and all cleanup errors. Scope close is idempotent, reverse
+ordered, panic-isolated, and refuses to close a parent with active children.
+
+Services have typed `ServiceKey<T>` values. Collection extension points use
+domain registries instead of competing service providers: Provider factories,
+Tools, Prompt fragments, Tool middleware, and post observers each carry an
+unforgeable plugin owner and a revocable lease. Registries freeze before a run,
+but existing leases can still revoke contributions during teardown.
+
+The kernel, domain DTOs/contracts, and frontend ports are deliberately **not**
+plugins. `Project`, `ModelItem`, `RunEvent`, `EventSink`, `PermissionApprover`,
+and Application DTOs remain ordinary typed interfaces. `PluginContext`, raw
+registries, storage, concrete providers, MCP clients, and the `Run` algorithm
+are crate-private so frontends cannot bypass the facade.
+
+`Run` still owns the streaming model → tool → model algorithm, capped at a
+configurable number of turns. Every observable step (`ModelRequested`,
+`ModelStream`, `ToolRequested`, `ToolFinished`, `PermissionChecked`,
+`RunCompleted`, …) is emitted through `EventSink`. Application-level facts such
+as quota refreshes use `ApplicationEvent`; plugin hooks never enter the
+`RunEvent` protocol.
+
+Tool execution failures are returned to the model as structured error results
+so the agent can recover. Cancellation is cooperative: the same `CancelToken`
+is checked between turns, before each tool call, between SSE chunks, inside
+native tools, and inside MCP waits.
+
+## Agentic loop (v0.4.0)
 
 CLAT is now a **minimal viable agent**: the read → change → verify loop is
 closed. What the agent can do autonomously:
@@ -53,11 +91,12 @@ built yet:
 | Project context injection (CLAT.md, git state into the system prompt) | not built — the system prompt is a fixed string today |
 | Context management (compaction/truncation for long sessions) | not built — `message_items` grows unbounded |
 | Turn budget configurability | not built — fixed 32 turns, exceeding it fails the run |
-| Headless mode (`clat exec "prompt"`) | not built — the core is client-neutral but only the TUI drives it |
+| Headless Application API | done — tests and `demo` execute without TUI; a public `clat exec` command is still not built |
 | Subagents, image input, multi-agent orchestration | deferred by constitution |
 
-The intended growth order is: project context injection → context
-management → headless mode, each driven by real dogfood need.
+The intended growth order is: project context injection → context management →
+a user-facing headless CLI, each driven by real dogfood need. The underlying
+Application API is already frontend-neutral.
 
 ## Model Protocol v0.1
 
@@ -149,34 +188,57 @@ through.
 The trust gate is part of the startup state machine, not a UI overlay:
 
 ```text
-App::new (minimal)
-├── open global storage, query trust table
-└── untrusted → render trust dialog; no session, no project reads,
-                no MCP subprocesses
-       │ Enter/y
+BootstrapApplication::open
+├── Bootstrap Catalog: storage backend + TrustStore
+└── untrusted: no Session/Config/Tool/Provider service,
+               no project reads, MCP, monitor, or model request
+       │ trust_project + into_trusted
        ▼
-initialize_project
-├── session, messages, input history, model config
-└── MCP servers (cwd fixed to ~/.clat)
+TrustedProjectApplication
+├── mounts Project Catalog once
+├── exposes Session/Config/Provider/MCP DTO use cases
+└── starts Run child scopes only through start_run
 ```
 
-Trust is persisted per canonical directory path. `session_id` is an
-`Option` until initialization succeeds, so every conversation path is
-structurally gated on trust.
+Trust is persisted per canonical directory path. The two Application types make
+the boundary structural: pre-trust code has no API that can list sessions,
+load credentials, access tools, start MCP, or run a model. The storage backend
+is shared across the transition, but only the narrow `TrustStore` is registered
+in Bootstrap Scope.
 
 ## MCP adapter
 
-MCP servers are adapters around the core: a `StdioSession` (single
-reader thread with id-routed responses, bounded writer queue, per-call
-deadlines) hosts the subprocess; `McpTool` adapts each remote tool into
-the core `Tool` trait. See [MCP integration](mcp.md) for the protocol
-posture, naming rules, and resource limits.
+The built-in `McpAdapterPlugin` mounts only in Trusted Project Scope. A
+`StdioSession` hosts each subprocess and `McpTool` contributes remote tools to
+the shared Tool Registry through leases. Teardown first revokes those tools,
+then explicitly closes stdin, bounds the child grace period, kills/reaps if
+needed, and joins both I/O threads. See [MCP integration](mcp.md) for the
+protocol posture, naming rules, and resource limits.
 
 ## TUI event loop
 
-The TUI is fully event-driven: a dedicated input thread forwards
-terminal events, model workers report through the same channel, and a
-balance monitor thread refreshes DeepSeek/GLM quotas every five minutes.
-The main loop suspends on a bounded receive with the next repaint
-deadline (spinner frame, status flash expiry) and wakes only on real
-work — no polling intervals anywhere.
+The TUI is a thin frontend. It owns terminal input, rendering, dialog state,
+view-model mapping, an approver adapter, and channels that multiplex
+`RunEvent`/`ApplicationEvent` into UI events. It never opens Storage, builds a
+Model or `Run`, registers tools, launches MCP, persists completion state, or
+owns provider business logic.
+
+`TrustedProjectApplication::start_run` creates the run scope and core worker;
+`RunHandle` provides cancel/join/finished. Application persists the user turn
+before starting work and persists successful or partial assistant items before
+publishing completion. It rejects a second concurrent run with `Busy` and
+cancels/joins the active run before project teardown.
+
+The provider quota monitor is a Project plugin. Its stop/wake channel, bounded
+provider requests, five-minute refresh policy, and thread join belong to core;
+the TUI only renders `ApplicationEvent::MonitorUpdated`.
+
+## Adding a built-in extension
+
+For an existing model protocol or runtime extension, implement the narrow
+domain trait, wrap registration in a scope-correct `Plugin`, declare its stable
+ID and service dependencies, and add it to the explicit catalog. Do not add a
+central provider match, expose a raw registry to a frontend, or create another
+assembly path. The test-only extension catalog demonstrates a typed service,
+ordered Tool contribution, short-circuit middleware, post observer, and full
+revocation without modifying TUI code.

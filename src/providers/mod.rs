@@ -1,23 +1,75 @@
 pub mod openai;
 pub mod openai_compatible;
 
-use crate::{Model, ModelConfig, ModelError, ModelProtocol};
+use crate::CancelToken;
+use std::io::{self, Read};
 use std::time::Duration;
 use ureq::Agent;
 
 pub use openai::OpenAiModel;
 pub use openai_compatible::OpenAiCompatibleModel;
 
+const MONITOR_HTTP_TIMEOUT: Duration = Duration::from_secs(15);
+pub(super) const STREAM_BODY_POLL_TIMEOUT: Duration = Duration::from_millis(250);
+
+pub(super) struct CancelAwareReader<'a, R> {
+    inner: R,
+    cancel: &'a CancelToken,
+}
+
+impl<'a, R> CancelAwareReader<'a, R> {
+    pub(super) fn new(inner: R, cancel: &'a CancelToken) -> Self {
+        Self { inner, cancel }
+    }
+}
+
+impl<R: Read> Read for CancelAwareReader<'_, R> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        if self.cancel.is_cancelled() {
+            return Ok(0);
+        }
+        self.inner.read(buffer)
+    }
+}
+
+pub(super) fn is_stream_poll_timeout(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+    ) || error
+        .get_ref()
+        .and_then(|source| source.downcast_ref::<ureq::Error>())
+        .is_some_and(|source| matches!(source, ureq::Error::Timeout(_)))
+}
+
+fn monitor_agent(timeout: Duration) -> Agent {
+    Agent::config_builder()
+        .http_status_as_error(false)
+        // Monitor shutdown joins its worker synchronously. The global timeout
+        // bounds the whole request, including a server that sends headers and
+        // then trickles or withholds the body; recv_body also bounds an
+        // individual body read.
+        .timeout_global(Some(timeout))
+        .timeout_connect(Some(timeout))
+        .timeout_recv_response(Some(timeout))
+        .timeout_recv_body(Some(timeout))
+        .build()
+        .new_agent()
+}
+
 /// 查询 DeepSeek 账户余额（`GET /user/balance`），返回可用总余额文本
 /// （如 "110.00"）。任何失败——网络错误、非 2xx、解析失败——都返回
 /// None，余额展示随之留空，不影响主流程。
-pub fn fetch_deepseek_balance(endpoint: &str, api_key: &str) -> Option<String> {
-    let agent = Agent::config_builder()
-        .http_status_as_error(false)
-        .timeout_connect(Some(Duration::from_secs(15)))
-        .timeout_recv_response(Some(Duration::from_secs(15)))
-        .build()
-        .new_agent();
+pub(crate) fn fetch_deepseek_balance(endpoint: &str, api_key: &str) -> Option<String> {
+    fetch_deepseek_balance_with_timeout(endpoint, api_key, MONITOR_HTTP_TIMEOUT)
+}
+
+fn fetch_deepseek_balance_with_timeout(
+    endpoint: &str,
+    api_key: &str,
+    timeout: Duration,
+) -> Option<String> {
+    let agent = monitor_agent(timeout);
     let base = endpoint.trim().trim_end_matches('/');
     let url = format!("{base}/user/balance");
     let mut response = agent
@@ -46,13 +98,16 @@ pub fn fetch_deepseek_balance(endpoint: &str, api_key: &str) -> Option<String> {
 ///
 /// 注意该监控接口的鉴权与模型接口不同：`Authorization` 头直接传
 /// token，不带 Bearer 前缀。
-pub fn fetch_glm_quota(endpoint: &str, api_key: &str) -> Option<String> {
-    let agent = Agent::config_builder()
-        .http_status_as_error(false)
-        .timeout_connect(Some(Duration::from_secs(15)))
-        .timeout_recv_response(Some(Duration::from_secs(15)))
-        .build()
-        .new_agent();
+pub(crate) fn fetch_glm_quota(endpoint: &str, api_key: &str) -> Option<String> {
+    fetch_glm_quota_with_timeout(endpoint, api_key, MONITOR_HTTP_TIMEOUT)
+}
+
+fn fetch_glm_quota_with_timeout(
+    endpoint: &str,
+    api_key: &str,
+    timeout: Duration,
+) -> Option<String> {
+    let agent = monitor_agent(timeout);
     let domain = endpoint_domain(endpoint)?;
     let url = format!("{domain}/api/monitor/usage/quota/limit");
     let mut response = agent
@@ -101,124 +156,29 @@ fn parse_glm_quota(value: &serde_json::Value) -> Option<String> {
     Some(format!("{}%", remaining.round() as u64))
 }
 
-#[derive(Clone, Default)]
-pub struct ProviderRuntime {
-    values: Vec<String>,
-}
-
-impl ProviderRuntime {
-    pub fn for_protocol(protocol: ModelProtocol) -> Self {
-        let field_count = match protocol {
-            ModelProtocol::OpenAiResponses | ModelProtocol::OpenAiCompatible => 1,
-        };
-        Self {
-            values: vec![String::new(); field_count],
-        }
-    }
-
-    pub fn field_count(&self) -> usize {
-        self.values.len()
-    }
-
-    pub(crate) fn to_json(&self) -> serde_json::Value {
-        serde_json::Value::Array(
-            self.values
-                .iter()
-                .cloned()
-                .map(serde_json::Value::String)
-                .collect(),
-        )
-    }
-
-    pub(crate) fn from_json(protocol: ModelProtocol, value: &serde_json::Value) -> Self {
-        let expected = Self::for_protocol(protocol).field_count();
-        let mut values = value
-            .as_array()
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(|item| item.as_str().map(str::to_owned))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        values.resize(expected, String::new());
-        values.truncate(expected);
-        Self { values }
-    }
-
-    pub fn field_label(protocol: ModelProtocol, index: usize) -> &'static str {
-        match (protocol, index) {
-            (ModelProtocol::OpenAiResponses | ModelProtocol::OpenAiCompatible, 0) => "API Key",
-            _ => "Provider value",
-        }
-    }
-
-    pub fn masked_value(&self, index: usize) -> String {
-        let Some(value) = self.values.get(index) else {
-            return String::new();
-        };
-        if value.is_empty() {
-            "<optional>".into()
-        } else {
-            "•".repeat(value.chars().count().min(48))
-        }
-    }
-
-    pub fn push_char(&mut self, index: usize, ch: char) {
-        if let Some(value) = self.values.get_mut(index) {
-            value.push(ch);
-        }
-    }
-
-    pub fn push_str(&mut self, index: usize, text: &str) {
-        if let Some(value) = self.values.get_mut(index) {
-            value.push_str(text);
-        }
-    }
-
-    pub fn value(&self, index: usize) -> Option<&str> {
-        self.values.get(index).map(String::as_str)
-    }
-
-    pub fn set_value(&mut self, index: usize, value: String) {
-        if let Some(slot) = self.values.get_mut(index) {
-            *slot = value;
-        }
-    }
-
-    pub fn pop(&mut self, index: usize) {
-        if let Some(value) = self.values.get_mut(index) {
-            value.pop();
-        }
-    }
-
-    pub fn build_model(&self, config: &ModelConfig) -> Result<Box<dyn Model>, ModelError> {
-        match config.protocol {
-            ModelProtocol::OpenAiResponses => Ok(Box::new(OpenAiModel::from_runtime_fields(
-                self.values.clone(),
-                config.model.trim(),
-                config.endpoint.trim(),
-            )?)),
-            ModelProtocol::OpenAiCompatible => Ok(Box::new(
-                OpenAiCompatibleModel::from_runtime_fields(self.values.clone(), config)?,
-            )),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{ModelProtocol, ProviderCredentials};
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::time::Instant;
 
     #[test]
-    fn masks_provider_runtime_values() {
-        let mut runtime = ProviderRuntime::for_protocol(ModelProtocol::OpenAiResponses);
-        runtime.push_str(0, "abcdef");
-        assert_eq!(runtime.masked_value(0), "••••••");
-        assert_eq!(
-            ProviderRuntime::field_label(ModelProtocol::OpenAiResponses, 0),
-            "API Key"
-        );
+    fn masks_provider_credentials_values() {
+        let mut credentials = ProviderCredentials::for_protocol(ModelProtocol::OpenAiResponses);
+        credentials.push_str(0, "abcdef");
+        assert_eq!(credentials.masked_value(0), "••••••");
+        for protocol in [
+            ModelProtocol::OpenAiResponses,
+            ModelProtocol::OpenAiCompatible,
+        ] {
+            assert_eq!(ProviderCredentials::field_label(protocol, 0), "API Key");
+            assert_eq!(
+                ProviderCredentials::field_label(protocol, 1),
+                "Provider value"
+            );
+        }
     }
 
     #[test]
@@ -260,5 +220,39 @@ mod tests {
         assert_eq!(parse_glm_quota(&exhausted).as_deref(), Some("0%"));
         let missing = serde_json::json!({"data": {"limits": [{"type": "TIME_LIMIT"}]}});
         assert_eq!(parse_glm_quota(&missing), None);
+    }
+
+    #[test]
+    fn monitor_request_has_an_end_to_end_body_deadline() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind slow monitor server");
+        let address = listener.local_addr().expect("monitor server address");
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept monitor request");
+            let mut request = [0_u8; 2048];
+            let _ = stream.read(&mut request).expect("read monitor request");
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 54\r\nConnection: close\r\n\r\n",
+                )
+                .expect("write response headers");
+            stream.flush().expect("flush response headers");
+            std::thread::sleep(Duration::from_millis(250));
+            let _ = stream.write_all(br#"{"balance_infos":[{"total_balance":"110.00"}]}"#);
+        });
+
+        let started = Instant::now();
+        let result = fetch_deepseek_balance_with_timeout(
+            &format!("http://{address}"),
+            "test-key",
+            Duration::from_millis(50),
+        );
+        let elapsed = started.elapsed();
+
+        assert_eq!(result, None);
+        assert!(
+            elapsed < Duration::from_millis(200),
+            "body read exceeded its end-to-end deadline: {elapsed:?}"
+        );
+        server.join().expect("join slow monitor server");
     }
 }

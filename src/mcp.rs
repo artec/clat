@@ -150,6 +150,7 @@ pub struct StdioSession {
     /// Drop 时丢弃 sender；writer 队列耗尽后关闭 stdin。
     writer: Option<mpsc::SyncSender<WriterRequest>>,
     writer_handle: Option<JoinHandle<()>>,
+    reader_handle: Option<JoinHandle<()>>,
     /// 每个在途请求的响应回传通道，按 id 注册，由 reader 线程消费。
     pending: Arc<Mutex<PendingMap>>,
     next_id: AtomicU64,
@@ -191,47 +192,50 @@ impl StdioSession {
 
         let pending: Arc<Mutex<PendingMap>> = Arc::new(Mutex::new(HashMap::new()));
         let reader_pending = Arc::clone(&pending);
-        if let Err(error) = std::thread::Builder::new()
-            .name("mcp-reader".into())
-            .spawn(move || {
-                let mut reader = BufReader::new(stdout);
-                loop {
-                    let line = match read_capped_line(&mut reader, MAX_FRAME_BYTES) {
-                        Ok(Some(line)) => line,
-                        Ok(None) => break,
-                        Err(error) => {
-                            eprintln!("clat: mcp reader stopping: {error}");
-                            break;
+        let reader_handle =
+            match std::thread::Builder::new()
+                .name("mcp-reader".into())
+                .spawn(move || {
+                    let mut reader = BufReader::new(stdout);
+                    loop {
+                        let line = match read_capped_line(&mut reader, MAX_FRAME_BYTES) {
+                            Ok(Some(line)) => line,
+                            Ok(None) => break,
+                            Err(error) => {
+                                eprintln!("clat: mcp reader stopping: {error}");
+                                break;
+                            }
+                        };
+                        let Some((id, outcome)) = parse_response(&line) else {
+                            continue; // notification 或坏行
+                        };
+                        let slot = reader_pending
+                            .lock()
+                            .ok()
+                            .and_then(|mut map| map.remove(&id));
+                        match slot {
+                            Some(sender) => {
+                                let _ = sender.send(outcome);
+                            }
+                            // 未知 id：超时后被放弃的请求的迟到响应，
+                            // 或服务端违反协议。记录但不中断会话。
+                            None => eprintln!("clat: mcp response for unknown id {id} dropped"),
                         }
-                    };
-                    let Some((id, outcome)) = parse_response(&line) else {
-                        continue; // notification 或坏行
-                    };
-                    let slot = reader_pending
-                        .lock()
-                        .ok()
-                        .and_then(|mut map| map.remove(&id));
-                    match slot {
-                        Some(sender) => {
-                            let _ = sender.send(outcome);
+                    }
+                    // 流结束：叫醒所有在途调用方，绝不留人挂死。
+                    if let Ok(mut map) = reader_pending.lock() {
+                        for (_, sender) in map.drain() {
+                            let _ = sender.send(Err("MCP server closed the connection".into()));
                         }
-                        // 未知 id：超时后被放弃的请求的迟到响应，
-                        // 或服务端违反协议。记录但不中断会话。
-                        None => eprintln!("clat: mcp response for unknown id {id} dropped"),
                     }
+                }) {
+                Ok(handle) => handle,
+                Err(error) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(McpError::new(format!("spawn MCP reader thread: {error}")));
                 }
-                // 流结束：叫醒所有在途调用方，绝不留人挂死。
-                if let Ok(mut map) = reader_pending.lock() {
-                    for (_, sender) in map.drain() {
-                        let _ = sender.send(Err("MCP server closed the connection".into()));
-                    }
-                }
-            })
-        {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(McpError::new(format!("spawn MCP reader thread: {error}")));
-        }
+            };
 
         // 只允许一个待写帧排队；若服务卡住读取，后续调用快速失败，
         // 不能把最多 4 MiB 的帧无限堆进内存。
@@ -257,6 +261,7 @@ impl StdioSession {
                 Err(error) => {
                     let _ = child.kill();
                     let _ = child.wait();
+                    let _ = reader_handle.join();
                     return Err(McpError::new(format!("spawn MCP writer thread: {error}")));
                 }
             };
@@ -265,6 +270,7 @@ impl StdioSession {
             child,
             writer: Some(writer),
             writer_handle: Some(writer_handle),
+            reader_handle: Some(reader_handle),
             pending,
             next_id: AtomicU64::new(1),
         })
@@ -433,29 +439,57 @@ impl StdioSession {
         let (result, _ignored) = mpsc::channel();
         let _ = writer.try_send(WriterRequest { frame, result });
     }
-}
 
-impl Drop for StdioSession {
-    fn drop(&mut self) {
-        // 1) 关闭 writer 队列；writer 退出时销毁 stdin，触发服务优雅退出。
+    /// Idempotently stop accepting calls, wake pending callers, close stdin,
+    /// terminate/reap the child within a bounded grace period, then join both
+    /// I/O threads. Normal plugin teardown calls this explicitly; `Drop` is a
+    /// best-effort fallback only.
+    pub fn shutdown(&mut self) -> Result<(), McpError> {
         self.writer.take();
-        // 2) 宽限期内轮询 try_wait。
+        if let Ok(mut pending) = self.pending.lock() {
+            for (_, sender) in pending.drain() {
+                let _ = sender.send(Err("MCP session is shutting down".into()));
+            }
+        }
+
         let deadline = Instant::now() + SHUTDOWN_GRACE;
         while Instant::now() < deadline {
             match self.child.try_wait() {
                 Ok(Some(_)) => break,
                 Ok(None) => std::thread::sleep(Duration::from_millis(50)),
-                Err(_) => break,
+                Err(error) => return Err(McpError::new(format!("wait for MCP server: {error}"))),
             }
         }
-        // 3) 若仍存活则强杀并回收；kill 会解除 writer 的阻塞写。
-        if self.child.try_wait().ok().flatten().is_none() {
-            let _ = self.child.kill();
-            let _ = self.child.wait();
+        if self
+            .child
+            .try_wait()
+            .map_err(|error| McpError::new(format!("query MCP server: {error}")))?
+            .is_none()
+        {
+            self.child
+                .kill()
+                .map_err(|error| McpError::new(format!("kill MCP server: {error}")))?;
+            self.child
+                .wait()
+                .map_err(|error| McpError::new(format!("reap MCP server: {error}")))?;
         }
         if let Some(handle) = self.writer_handle.take() {
-            let _ = handle.join();
+            handle
+                .join()
+                .map_err(|_| McpError::new("MCP writer thread panicked"))?;
         }
+        if let Some(handle) = self.reader_handle.take() {
+            handle
+                .join()
+                .map_err(|_| McpError::new("MCP reader thread panicked"))?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for StdioSession {
+    fn drop(&mut self) {
+        let _ = self.shutdown();
     }
 }
 

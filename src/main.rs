@@ -1,15 +1,10 @@
-use clat::{
-    CancelToken, EventSink, FinishReason, Model, ModelError, ModelEvent, ModelEventSink, ModelItem,
-    ModelRequest, ModelResponse, Project, Run, RunEvent, SafeByDefault, Tool, ToolCall,
-    ToolDefinition, ToolEffect, ToolError, ToolRegistry, Usage, register_native_read_tools,
-};
-use serde_json::{Value, json};
+use clat::{EventSink, ModelEvent, Project, RunEvent};
 use std::env;
 use std::io::{self, Write};
 use std::process::ExitCode;
 
 const NAME: &str = "clat";
-const TAGLINE: &str = "command line agent";
+const TAGLINE: &str = "command-line agent";
 
 fn main() -> ExitCode {
     run(env::args().skip(1))
@@ -82,8 +77,25 @@ fn run_demo() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let mut model = DemoModel;
-    execute_demo(&mut model, &project, "prove the agent loop works".into())
+    let result = clat::demo::run_demo(
+        project,
+        "prove the agent loop works",
+        Box::new(DemoEventSink),
+    );
+    match result {
+        Ok(output) => {
+            println!();
+            eprintln!(
+                "[{} turns, {} input tokens, {} output tokens]",
+                output.turns, output.usage.input_tokens, output.usage.output_tokens
+            );
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("clat: {error}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 /// `clat upgrade [--check]`：检查并安装 GitHub 最新 release。
@@ -114,136 +126,7 @@ fn run_upgrade(check_only: bool) -> ExitCode {
     }
 }
 
-fn execute_demo(model: &mut dyn Model, project: &Project, prompt: String) -> ExitCode {
-    let mut tools = ToolRegistry::new();
-    register_native_read_tools(&mut tools);
-    tools.register(EchoTool);
-
-    let permissions = SafeByDefault;
-    let mut sink = DemoEventSink::default();
-    let result = Run::new(model, &tools, &permissions, project)
-        .with_instructions(
-            "You are CLAT, a command line agent. Use provided tools when they help satisfy the user request.",
-        )
-        .execute(prompt, &mut sink);
-
-    match result {
-        Ok(output) => {
-            if !sink.streamed_text {
-                println!("{}", output.text);
-            } else {
-                println!();
-            }
-            eprintln!(
-                "[{} turns, {} input tokens, {} output tokens]",
-                output.turns, output.usage.input_tokens, output.usage.output_tokens
-            );
-            ExitCode::SUCCESS
-        }
-        Err(error) => {
-            eprintln!("clat: {error}");
-            ExitCode::FAILURE
-        }
-    }
-}
-
-struct EchoTool;
-
-impl Tool for EchoTool {
-    fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "echo".into(),
-            description: "Echo text back to the model. Useful for validating the tool loop.".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "text": {"type": "string", "description": "Text to echo"}
-                },
-                "required": ["text"],
-                "additionalProperties": false
-            }),
-            effect: ToolEffect::Pure,
-            strict: true,
-        }
-    }
-
-    fn invoke(
-        &self,
-        arguments: &Value,
-        _project: &Project,
-        _cancel: &CancelToken,
-    ) -> Result<Value, ToolError> {
-        arguments
-            .get("text")
-            .and_then(Value::as_str)
-            .map(|text| Value::String(text.to_owned()))
-            .ok_or_else(|| ToolError::new("echo requires a string `text` argument"))
-    }
-}
-
-struct DemoModel;
-
-impl Model for DemoModel {
-    fn provider(&self) -> &str {
-        "demo"
-    }
-
-    fn model_id(&self) -> &str {
-        "deterministic"
-    }
-
-    fn stream(
-        &mut self,
-        request: ModelRequest<'_>,
-        events: &mut dyn ModelEventSink,
-    ) -> Result<ModelResponse, ModelError> {
-        if let Some(ModelItem::ToolResult(result)) = request.items.last() {
-            let text = format!(
-                "Agent loop completed successfully. Tool returned: {}",
-                result.output.as_str().unwrap_or_default()
-            );
-            events.emit(ModelEvent::TextDelta {
-                delta: text.clone(),
-            });
-            events.emit(ModelEvent::ResponseCompleted {
-                finish_reason: FinishReason::Completed,
-            });
-            return Ok(ModelResponse {
-                text,
-                tool_calls: vec![],
-                finish_reason: FinishReason::Completed,
-                usage: Some(Usage::default()),
-                provider_response_id: None,
-                provider_state: vec![],
-                reasoning: None,
-            });
-        }
-
-        let call = ToolCall {
-            id: "demo-call-1".into(),
-            name: "echo".into(),
-            arguments: json!({"text": "model → tool → model"}),
-        };
-        events.emit(ModelEvent::ToolCallCompleted { call: call.clone() });
-        events.emit(ModelEvent::ResponseCompleted {
-            finish_reason: FinishReason::ToolCalls,
-        });
-        Ok(ModelResponse {
-            text: String::new(),
-            tool_calls: vec![call],
-            finish_reason: FinishReason::ToolCalls,
-            usage: Some(Usage::default()),
-            provider_response_id: None,
-            provider_state: vec![],
-            reasoning: None,
-        })
-    }
-}
-
-#[derive(Default)]
-struct DemoEventSink {
-    streamed_text: bool,
-}
+struct DemoEventSink;
 
 impl EventSink for DemoEventSink {
     fn emit(&mut self, event: RunEvent) {
@@ -261,7 +144,6 @@ impl EventSink for DemoEventSink {
                 event: ModelEvent::RefusalDelta { delta },
                 ..
             } => {
-                self.streamed_text = true;
                 print!("{delta}");
                 let _ = io::stdout().flush();
             }

@@ -1,6 +1,6 @@
 use crate::CancelToken;
 use crate::project::Project;
-use crate::tool::{Tool, ToolDefinition, ToolEffect, ToolError, ToolRegistry};
+use crate::tool::{Tool, ToolDefinition, ToolEffect, ToolError};
 use command_group::CommandGroup;
 use serde_json::{Value, json};
 use std::fs;
@@ -18,10 +18,12 @@ const MAX_SEARCH_RESULTS: usize = 500;
 const DEFAULT_SEARCH_FILES: usize = 20_000;
 const MAX_SEARCH_FILE_BYTES: u64 = 1024 * 1024;
 
-pub fn register_native_read_tools(registry: &mut ToolRegistry) {
-    registry.register(ListFilesTool);
-    registry.register(ReadFileTool);
-    registry.register(SearchTool);
+pub(crate) fn native_read_tools() -> Vec<std::sync::Arc<dyn Tool>> {
+    vec![
+        std::sync::Arc::new(ListFilesTool),
+        std::sync::Arc::new(ReadFileTool),
+        std::sync::Arc::new(SearchTool),
+    ]
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -333,12 +335,12 @@ impl Tool for SearchTool {
     }
 }
 
-/// 写入类工具注册（W/C 系不变量的载体）。调用方负责只在已信任
-/// 项目注册（信任门），每次调用仍经权限审阅（SafeByDefault → Ask）。
-pub fn register_native_write_tools(registry: &mut ToolRegistry) {
-    registry.register(WriteFileTool);
-    registry.register(EditFileTool);
-    registry.register(RunCommandTool);
+pub(crate) fn native_write_tools() -> Vec<std::sync::Arc<dyn Tool>> {
+    vec![
+        std::sync::Arc::new(WriteFileTool),
+        std::sync::Arc::new(EditFileTool),
+        std::sync::Arc::new(RunCommandTool),
+    ]
 }
 
 const MAX_WRITE_BYTES: usize = 1024 * 1024;
@@ -1394,5 +1396,27 @@ mod tests {
                 definition.name
             );
         }
+    }
+
+    /// Stage-0 characterization: model-visible tool order is part of the
+    /// request/cache surface and must survive registry/plugin migration.
+    #[test]
+    fn native_tool_definition_order_is_stable() {
+        let definitions = native_read_tools()
+            .into_iter()
+            .chain(native_write_tools())
+            .map(|tool| tool.definition().name)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            definitions,
+            [
+                "list_files",
+                "read_file",
+                "search",
+                "write_file",
+                "edit_file",
+                "run_command"
+            ]
+        );
     }
 }
