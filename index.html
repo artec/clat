@@ -371,11 +371,13 @@
         <tbody>
           <tr><td>macOS</td><td><code>clat-v*-aarch64-apple-darwin.tar.gz</code></td><td>Apple Silicon</td></tr>
           <tr><td>macOS</td><td><code>clat-v*-x86_64-apple-darwin.tar.gz</code></td><td>Intel</td></tr>
+          <tr><td>Linux</td><td><code>clat-v*-x86_64-unknown-linux-gnu.tar.gz</code></td><td>x64</td></tr>
+          <tr><td>Linux</td><td><code>clat-v*-aarch64-unknown-linux-gnu.tar.gz</code></td><td>ARM64</td></tr>
           <tr><td>Windows</td><td><code>clat-v*-x86_64-pc-windows-msvc.zip</code></td><td>x64</td></tr>
           <tr><td>Windows</td><td><code>clat-v*-aarch64-pc-windows-msvc.zip</code></td><td>ARM64</td></tr>
         </tbody>
       </table>
-      <p class="lede">解压后先 <code>clat --help</code> 看一眼，进入项目目录运行 <code>clat</code>，首次会请求信任该目录。脚本安装同理，装完直接运行 <code>clat</code> 即可。</p>
+      <p class="lede">Linux 产物要求 glibc 2.39+（Ubuntu 24.04 同代及以上），更老的发行版请从源码构建。解压后先 <code>clat --help</code> 看一眼，进入项目目录运行 <code>clat</code>，首次会请求信任该目录。脚本安装同理，装完直接运行 <code>clat</code> 即可。</p>
     </section>
 
     <footer>
