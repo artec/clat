@@ -16,15 +16,26 @@ the Preset row cycles through Custom → the built-ins → Custom:
 |---|---|---|
 | DeepSeek V4.0 Flash | `deepseek-v4-flash` (V4-Flash-0731) | `https://api.deepseek.com` |
 | DeepSeek V4.0 Pro | `deepseek-v4-pro` (V4-Pro-0813) | `https://api.deepseek.com` |
+| GLM 5.3 | `glm-5.3` | `https://open.bigmodel.cn/api/coding/paas/v4` |
 
-Both use the official OpenAI-compatible API with a 384K output limit and
-`reasoning_effort: high` (the official default; DeepSeek thinking mode
-ignores `temperature`, so presets leave it unset). Picking a preset fills
-Model, Endpoint, and the request parameters; the API Key is never
-touched.
+All three use the official OpenAI-compatible API with a 1M context
+window. The DeepSeek presets set a 384K output limit and
+`reasoning_effort: high` (thinking mode ignores `temperature`, so
+presets leave it unset); the GLM 5.3 preset targets the dedicated
+Coding Plan endpoint with a 128K output limit, preserved thinking
+(`clear_thinking: false`), and `reasoning_effort: high` as well.
+GLM 5.3 cannot disable thinking (the API rejects `disabled`), while
+DeepSeek's non-thinking mode stays available through the raw extra
+body. Picking a preset fills Model, Endpoint, and the request
+parameters; the API Key is never touched.
 
-Editing Model, Endpoint, or Protocol by hand marks the configuration as
-Custom, so the preset label never lies about what is active.
+Editing any preset-controlled field by hand — Model, Endpoint,
+Protocol, Request Path, Extra Body, Max Output Tokens, Temperature, or
+Parallel Tool Calls — marks the configuration as Custom, so the preset
+label never lies about what is active (and preset defaults never
+overwrite your saved values on the next run). Editing the Extra Body
+also clears the `Shift+Tab`-saved thinking level: the raw body becomes
+the source of truth.
 
 ## DeepSeek reasoning content
 
@@ -47,6 +58,8 @@ The `[ Advanced ]` row reveals fields for custom setups only when needed:
 - Extra Headers JSON, for example `{"X-Tenant":"acme"}`
 - Extra Body JSON, for example `{"top_p":0.9}`
 - Max Output Tokens
+- Context Window — the auto-compact budget in tokens; once set, history
+  beyond it is compacted automatically at the start of the next run
 - Temperature
 - Parallel Tool Calls
 

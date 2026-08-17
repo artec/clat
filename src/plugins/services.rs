@@ -311,6 +311,10 @@ pub(crate) trait SessionStore: Send + Sync {
     fn create_session(&self, project: &Project) -> Result<i64, StoreError>;
     fn list_sessions(&self, project: &Project) -> Result<Vec<SessionSummary>, StoreError>;
     fn touch_session(&self, session_id: i64) -> Result<(), StoreError>;
+    /// 会话是否属于该项目且未归档。switch_session 的合法性前置：
+    /// 不允许把 current_session 指向不存在的行（否则后续 append 触发
+    /// 外键错误）。
+    fn session_exists(&self, project: &Project, session_id: i64) -> Result<bool, StoreError>;
     fn set_session_title(&self, session_id: i64, title: &str) -> Result<(), StoreError>;
     /// CAS 条件更新：仅当当前标题等于 `expected` 时写入 `new`；
     /// 返回是否实际更新（CB1-04：防止迟到的自动命名覆盖并发手工改名）。

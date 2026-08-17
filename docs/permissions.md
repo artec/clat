@@ -103,6 +103,22 @@ orphaned permission prompt.
 In non-interactive contexts (no approver), an unresolved `Ask` still
 fails the run — there is nobody to answer it.
 
+`clat exec` is the first non-TUI approver and follows that rule: when
+stdin is a pipe it resolves every `Ask` to `Deny` with a reason the model
+can read, so scripts and CI fail closed without failing the run. `--yes`
+replaces the approver with allow-everything and is the only
+non-interactive way to approve side effects.
+
+With a terminal stdin, the runner asks through a **request-scoped input
+port**: the answer is only read while a concrete permission request is
+displayed, keys typed before the prompt appeared are discarded (a stale
+`y` cannot approve a future call), `y`+`Enter` allows, `Esc` or anything
+else denies, and a single Ctrl-C interrupts the wait (resolving to deny
+and unwinding the run). The port itself is frontend-neutral; the raw-mode
+terminal adapter lives at the process boundary in `main.rs`, and desktop
+or IDE clients can supply their own dialog implementation without
+touching permission semantics.
+
 The execution boundary is deliberately ordered:
 
 ```text

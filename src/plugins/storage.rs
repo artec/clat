@@ -85,6 +85,11 @@ impl SessionStore for StorageCapabilities {
             .with(|storage| storage.touch_session(session_id))
     }
 
+    fn session_exists(&self, project: &Project, session_id: i64) -> Result<bool, StoreError> {
+        self.backend
+            .with(|storage| storage.session_exists(project, session_id))
+    }
+
     fn set_session_title(&self, session_id: i64, title: &str) -> Result<(), StoreError> {
         self.backend
             .with(|storage| storage.set_session_title(session_id, title))

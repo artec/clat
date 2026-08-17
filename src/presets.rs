@@ -23,6 +23,10 @@ pub struct ModelPreset {
     pub request_path: &'static str,
     /// Official maximum output length in tokens.
     pub output_limit: u32,
+    /// Official context window in tokens（状态栏 `Context: 120k/1M` 的
+    /// 分母；与自动压缩预算 `max_context_tokens` 是两回事）。逐模型
+    /// 维护、逐模型核验来源（见模块文档），新增预设不得默认沿用 1M。
+    pub context_window: u32,
     /// Official default reasoning effort, applied as `reasoning_effort`.
     pub reasoning_effort: Option<&'static str>,
     /// 保持式思考（preserved thinking）：在思考开关中显式声明
@@ -37,34 +41,43 @@ pub struct ModelPreset {
 }
 
 /// Official DeepSeek parameters as documented at
-/// <https://api-docs.deepseek.com>:
+/// <https://api-docs.deepseek.com> (Models & Pricing, 2026-08):
 ///
 /// - model ids `deepseek-v4-flash` (DeepSeek-V4-Flash-0731) and
 ///   `deepseek-v4-pro` (DeepSeek-V4-Pro-0813)
 /// - OpenAI-compatible base URL `https://api.deepseek.com`
-/// - 1M context, 384K maximum output
+/// - 1M context, 384K maximum output（两个模型规格完全相同；最大输出
+///   是 GLM 5.3 的 3 倍）
 /// - thinking mode on by default, switched via `{"thinking":
 ///   {"type": "enabled"}}` (per the official thinking-mode guide, agent
-///   callers should pass it explicitly); `reasoning_effort` defaults to
-///   `high` for ordinary requests (`low`/`medium` map to `high`,
-///   `xhigh` maps to `max`)
+///   callers should pass it explicitly); `reasoning_effort` 默认 `high`，
+///   官方归并表：`low`→low，`medium`/`high`/`xhigh`→high，
+///   `max`→max；官方另有 non-thinking 模式，本项目统一
+///   不提供关闭档（见 `ThinkingLevel`）
 /// - thinking mode ignores `temperature`, `top_p`, `presence_penalty`,
 ///   and `frequency_penalty` (defaults 1, 1, 0, 0), so presets leave
 ///   them unset and rely on server defaults
 ///
 /// Official GLM Coding Plan parameters as documented at
-/// <https://docs.bigmodel.cn/cn/coding-plan>:
+/// <https://docs.z.ai/guides/llm/glm-5.3>:
 ///
-/// - model id `glm-5.3` (GLM Coding Plan 全量上线；1M context, 128K
-///   maximum output)
+/// - model id `glm-5.3`（1M context, 128K maximum output）
 /// - OpenAI-compatible coding endpoint
 ///   `https://open.bigmodel.cn/api/coding/paas/v4` — the dedicated
 ///   Coding Plan endpoint, NOT the generic `/api/paas/v4`
-/// - thinking enabled by default; the Coding Plan endpoint enables
-///   preserved thinking (`clear_thinking: false`) by default and the
-///   official agent examples pass it explicitly, so the preset does too
-/// - `reasoning_effort` maps `low`/`medium`/`high` → `high` and
-///   `xhigh`/`max` → `max`, same shape as DeepSeek
+/// - thinking cannot be disabled（官方原文 "Disabling reasoning is no
+///   longer supported"，`thinking.type: "disabled"` 会让请求失败，官方
+///   建议以 `enabled` + `reasoning_effort: "low"` 迁移）；the Coding
+///   Plan endpoint enables preserved thinking (`clear_thinking: false`)
+///   by default and the official agent examples pass it explicitly, so
+///   the preset does too
+/// - `reasoning_effort` 支持 `low`/`high`/`max`（无 medium），`max` 为
+///   官方默认；本项目预设 pin `high`，用户可 Shift+Tab 改选
+///
+/// 证据链（TUI-L03/RE-L03）：z.ai 规格页于 2026-08-17、08-18、08-19
+/// 三次抓取一致（1M/128K、low|high|max、不可关闭）；项目所有者第一方
+/// 确认 Coding Plan 端点仅服务 DeepSeek V4.0 正式版与 GLM 5.3；
+/// `glm-5.3` 打真实端点的请求实测成功。
 pub const MODEL_PRESETS: &[ModelPreset] = &[
     ModelPreset {
         id: "deepseek-v4-flash",
@@ -76,6 +89,7 @@ pub const MODEL_PRESETS: &[ModelPreset] = &[
         endpoint: "https://api.deepseek.com",
         request_path: "/chat/completions",
         output_limit: 384 * 1024,
+        context_window: 1_000_000,
         reasoning_effort: Some("high"),
         preserve_thinking: false,
         include_usage: true,
@@ -90,6 +104,7 @@ pub const MODEL_PRESETS: &[ModelPreset] = &[
         endpoint: "https://api.deepseek.com",
         request_path: "/chat/completions",
         output_limit: 384 * 1024,
+        context_window: 1_000_000,
         reasoning_effort: Some("high"),
         preserve_thinking: false,
         include_usage: true,
@@ -104,6 +119,7 @@ pub const MODEL_PRESETS: &[ModelPreset] = &[
         endpoint: "https://open.bigmodel.cn/api/coding/paas/v4",
         request_path: "/chat/completions",
         output_limit: 128 * 1024,
+        context_window: 1_000_000,
         reasoning_effort: Some("high"),
         preserve_thinking: true,
         include_usage: false,
@@ -244,6 +260,28 @@ mod tests {
         assert_eq!(pro.model, "deepseek-v4-pro");
         assert_eq!(flash.endpoint, "https://api.deepseek.com");
         assert_eq!(pro.endpoint, "https://api.deepseek.com");
+    }
+
+    /// TUI-L03：逐模型断言已核验的官方规格，不把"所有未来预设=1M"
+    /// 固化进测试——新增预设必须在此显式给出已核验值与来源：
+    /// - deepseek-v4-flash / -pro：1M context / 384K output
+    ///   （api-docs.deepseek.com Models & Pricing，2026-08 核验）
+    /// - glm-5.3：1M context / 128K output
+    ///   （docs.z.ai/guides/llm/glm-5.3，08-17/18/19 三次核验一致；
+    ///   另有项目所有者第一方确认与真实端点实测，见模块文档证据链）
+    #[test]
+    fn official_context_windows_and_output_limits() {
+        let flash = preset_by_id("deepseek-v4-flash").expect("flash");
+        assert_eq!(flash.context_window, 1_000_000);
+        assert_eq!(flash.output_limit, 384 * 1024);
+
+        let pro = preset_by_id("deepseek-v4-pro").expect("pro");
+        assert_eq!(pro.context_window, 1_000_000);
+        assert_eq!(pro.output_limit, 384 * 1024);
+
+        let glm = preset_by_id("glm-5.3").expect("glm");
+        assert_eq!(glm.context_window, 1_000_000);
+        assert_eq!(glm.output_limit, 128 * 1024);
     }
 
     #[test]

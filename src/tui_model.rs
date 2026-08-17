@@ -1,5 +1,5 @@
 use crate::presets::{MODEL_PRESETS, ModelPreset, preset_by_id, preset_vendors, presets_by_vendor};
-use crate::{ModelConfig, ModelProtocol, ProviderCredentials, ProviderDescriptor};
+use crate::{ModelConfig, ModelProtocol, ProviderCredentials, ProviderDescriptor, ThinkingLevel};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -70,6 +70,10 @@ pub(crate) struct ModelEditor {
     /// 编辑缓冲（字符串）；保存时解析为 Option<u32>。CB1-14：自动压缩
     /// 的配置入口。
     context_window: String,
+    /// INV-E：编辑器不提供思考档位行（Shift+Tab 是唯一 UI），但保存
+    /// 必须原样带回用户已选档位；切换预设时归位 `None`（新模型跟随
+    /// 预设默认）。
+    thinking_level: Option<ThinkingLevel>,
     parallel_tool_calls: bool,
     credentials: ProviderCredentials,
     provider_descriptors: Vec<ProviderDescriptor>,
@@ -107,6 +111,7 @@ impl ModelEditor {
                 .max_context_tokens
                 .map(|value| value.to_string())
                 .unwrap_or_default(),
+            thinking_level: config.thinking_level,
             parallel_tool_calls: config.parallel_tool_calls,
             credentials,
             provider_descriptors,
@@ -351,20 +356,43 @@ impl ModelEditor {
             EditTarget::Model => {
                 self.model = buffer;
                 self.preset = None;
+                // TUI-L01：手工改模型即离开原模型，隐藏档位字段不跨
+                // 模型携带。
+                self.thinking_level = None;
             }
             EditTarget::Endpoint => {
                 self.endpoint = buffer;
                 self.preset = None;
+                self.thinking_level = None;
             }
             EditTarget::ApiKey => self.credentials.set_value(0, buffer),
-            EditTarget::RequestPath => self.request_path = buffer,
+            EditTarget::RequestPath => {
+                self.request_path = buffer;
+                self.preset = None;
+            }
             EditTarget::AuthHeader => self.auth_header = buffer,
             EditTarget::AuthPrefix => self.auth_prefix = buffer,
             EditTarget::ExtraHeaders => self.extra_headers = buffer,
-            EditTarget::ExtraBody => self.extra_body = buffer,
-            EditTarget::OutputLimit => self.output_limit = buffer,
+            EditTarget::ExtraBody => {
+                self.extra_body = buffer;
+                // Extra Body 也是预设整体控制的字段；仅清档位还不够，
+                // preset.apply 会在下次 model_state() 把原始 JSON 整体
+                // 写回预设值。
+                self.preset = None;
+                // TUI-L01：Extra Body 是思考参数的原始事实源，手工提交
+                // 即废除隐藏档位字段——否则 model_state 的二次应用会在
+                // 下一次 run 静默否决用户刚保存的内容。
+                self.thinking_level = None;
+            }
+            EditTarget::OutputLimit => {
+                self.output_limit = buffer;
+                self.preset = None;
+            }
             EditTarget::ContextWindow => self.context_window = buffer,
-            EditTarget::Temperature => self.temperature = buffer,
+            EditTarget::Temperature => {
+                self.temperature = buffer;
+                self.preset = None;
+            }
         }
         self.error = None;
     }
@@ -468,6 +496,7 @@ impl ModelEditor {
             }
             RowKind::Parallel => {
                 self.parallel_tool_calls = !self.parallel_tool_calls;
+                self.preset = None;
                 EditorAction::Continue
             }
             RowKind::Save => self.save_action(),
@@ -482,7 +511,10 @@ impl ModelEditor {
     fn space_selected(&mut self) -> EditorAction {
         match self.selected_row() {
             RowKind::Advanced => self.toggle_advanced(),
-            RowKind::Parallel => self.parallel_tool_calls = !self.parallel_tool_calls,
+            RowKind::Parallel => {
+                self.parallel_tool_calls = !self.parallel_tool_calls;
+                self.preset = None;
+            }
             _ => {
                 self.open_popup_for_selected();
                 if let Some(popup) = &mut self.editing {
@@ -545,6 +577,9 @@ impl ModelEditor {
         self.output_limit = preset.output_limit.to_string();
         self.temperature = String::new();
         self.parallel_tool_calls = true;
+        // 换模型不携带旧档位：归位 None，新模型跟随预设默认
+        // （extra_body 已被下一行整体替换为预设官方参数）。
+        self.thinking_level = None;
         // 与 presets::apply 共用同一构造，避免两处字段漂移。
         self.extra_body = json_text(&preset.extra_body());
         self.error = None;
@@ -558,6 +593,8 @@ impl ModelEditor {
         self.protocol = protocol;
         // A manually chosen protocol no longer matches the preset.
         self.preset = None;
+        // TUI-L01：协议是预设控制字段，手工选择同样废除隐藏档位。
+        self.thinking_level = None;
         self.error = None;
     }
 
@@ -623,6 +660,7 @@ impl ModelEditor {
                 temperature,
                 parallel_tool_calls: self.parallel_tool_calls,
                 max_context_tokens,
+                thinking_level: self.thinking_level,
             },
             self.credentials.clone(),
         ))
@@ -904,6 +942,9 @@ fn display_spaces(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::roots;
+    use crate::{BootstrapApplication, Project};
+    use std::fs;
 
     fn editor() -> ModelEditor {
         let config = ModelConfig::default();
@@ -924,7 +965,17 @@ mod tests {
     }
 
     fn commit_popup(editor: &mut ModelEditor, text: &str) {
-        select(editor, RowKind::Model);
+        commit_popup_on(editor, RowKind::Model, text);
+    }
+
+    /// 在指定行上打开编辑弹窗并提交文本；高级区行（如 ExtraBody）
+    /// 先自动展开 Advanced。
+    fn commit_popup_on(editor: &mut ModelEditor, kind: RowKind, text: &str) {
+        if !editor.visible_rows().contains(&kind) {
+            select(editor, RowKind::Advanced);
+            editor.handle_key(key(KeyCode::Enter));
+        }
+        select(editor, kind);
         editor.handle_key(key(KeyCode::Enter));
         editor.handle_key(key(KeyCode::Delete));
         for ch in text.chars() {
@@ -987,6 +1038,182 @@ mod tests {
         assert!(editor.editing.is_some());
         editor.handle_key(key(KeyCode::Enter));
         assert_eq!(editor.endpoint, "h");
+    }
+
+    /// INV-E：编辑器没有思考档位行，保存必须原样带回用户已选档位。
+    #[test]
+    fn build_preserves_persisted_thinking_level() {
+        let config = ModelConfig {
+            model: "custom-model".into(),
+            endpoint: "https://api.deepseek.com".into(),
+            thinking_level: Some(ThinkingLevel::Max),
+            ..ModelConfig::default()
+        };
+        let credentials = ProviderCredentials::for_protocol(config.protocol);
+        let editor = ModelEditor::new_with_descriptors(&config, credentials, Vec::new());
+        let (built, _) = editor.build().unwrap();
+        assert_eq!(built.thinking_level, Some(ThinkingLevel::Max));
+    }
+
+    /// INV-E：切换预设意味着换模型，旧档位不跨模型携带——归位
+    /// `None`（新模型跟随预设默认），避免把 DeepSeek 档位错带给
+    /// GLM 或反之。
+    #[test]
+    fn cycling_preset_resets_thinking_level() {
+        let config = ModelConfig {
+            preset: Some("deepseek-v4-pro".into()),
+            model: "deepseek-v4-pro".into(),
+            endpoint: "https://api.deepseek.com".into(),
+            thinking_level: Some(ThinkingLevel::Max),
+            ..ModelConfig::default()
+        };
+        let credentials = ProviderCredentials::for_protocol(config.protocol);
+        let mut editor = ModelEditor::new_with_descriptors(&config, credentials, Vec::new());
+        select(&mut editor, RowKind::Preset);
+        // 从 pro 起步，一步右移到 GLM。
+        editor.handle_key(key(KeyCode::Right));
+        assert_eq!(editor.preset.map(|preset| preset.id), Some("glm-5.3"));
+        let (built, _) = editor.build().unwrap();
+        assert_eq!(built.thinking_level, None);
+    }
+
+    /// TUI-L01：Extra Body 是思考参数的原始事实源。手工提交新 JSON
+    /// 必须废除隐藏的档位字段——否则 model_state 的二次应用会在下一
+    /// 次 run 静默否决用户刚保存的内容（如手工 disabled）。
+    #[test]
+    fn manual_extra_body_edit_clears_thinking_level() {
+        let config = ModelConfig {
+            model: "deepseek-v4-pro".into(),
+            endpoint: "https://api.deepseek.com".into(),
+            thinking_level: Some(ThinkingLevel::Max),
+            ..ModelConfig::default()
+        };
+        let credentials = ProviderCredentials::for_protocol(config.protocol);
+        let mut editor = ModelEditor::new_with_descriptors(&config, credentials, Vec::new());
+        commit_popup_on(
+            &mut editor,
+            RowKind::ExtraBody,
+            r#"{"thinking":{"type":"disabled"}}"#,
+        );
+        let (built, _) = editor.build().unwrap();
+        assert_eq!(
+            built.thinking_level, None,
+            "hand-committed extra body must revoke the hidden level field"
+        );
+        assert_eq!(built.extra_body["thinking"]["type"], "disabled");
+        assert_eq!(
+            built.preset, None,
+            "raw extra body must also leave the preset or model_state will overwrite it"
+        );
+    }
+
+    /// TUI-L01：预设控制字段一旦由用户手工修改，配置就必须转为
+    /// Custom。否则 `ModelPreset::apply` 会在下一次加载时覆盖编辑值。
+    #[test]
+    fn manual_preset_controlled_fields_mark_the_config_custom() {
+        let mut preset_config = ModelConfig::default();
+        preset_by_id("deepseek-v4-pro")
+            .expect("preset")
+            .apply(&mut preset_config);
+        let credentials = ProviderCredentials::for_protocol(preset_config.protocol);
+
+        for (row, value) in [
+            (RowKind::RequestPath, "/custom/chat"),
+            (RowKind::ExtraBody, r#"{"top_p":0.5}"#),
+            (RowKind::OutputLimit, "1234"),
+            (RowKind::Temperature, "0.4"),
+        ] {
+            let mut editor =
+                ModelEditor::new_with_descriptors(&preset_config, credentials.clone(), Vec::new());
+            commit_popup_on(&mut editor, row, value);
+            assert_eq!(
+                editor.build().expect("build").0.preset,
+                None,
+                "editing {row:?} must leave the preset"
+            );
+        }
+
+        for key_code in [KeyCode::Enter, KeyCode::Char(' ')] {
+            let mut editor =
+                ModelEditor::new_with_descriptors(&preset_config, credentials.clone(), Vec::new());
+            select(&mut editor, RowKind::Advanced);
+            editor.handle_key(key(KeyCode::Enter));
+            select(&mut editor, RowKind::Parallel);
+            editor.handle_key(key(key_code));
+            assert_eq!(editor.build().expect("build").0.preset, None);
+        }
+    }
+
+    /// 跨层状态序列：预设 → 手工 Extra Body → 持久化 → application
+    /// 重载。修复前编辑器测试会绿，但 `model_state()` 会把 disabled
+    /// 静默改回预设的 enabled。
+    #[test]
+    fn manual_extra_body_survives_application_model_state_reload() {
+        let mut preset_config = ModelConfig::default();
+        preset_by_id("deepseek-v4-pro")
+            .expect("preset")
+            .apply(&mut preset_config);
+        preset_config.thinking_level = Some(ThinkingLevel::Max);
+        let credentials = ProviderCredentials::for_protocol(preset_config.protocol);
+        let mut editor = ModelEditor::new_with_descriptors(&preset_config, credentials, Vec::new());
+        commit_popup_on(
+            &mut editor,
+            RowKind::ExtraBody,
+            r#"{"thinking":{"type":"disabled"},"top_p":0.5}"#,
+        );
+        let (edited, credentials) = editor.build().expect("build edited config");
+        assert_eq!(edited.preset, None);
+        assert_eq!(edited.thinking_level, None);
+
+        let (storage_root, project_root) = roots("manual-extra-body-reload");
+        fs::create_dir_all(&project_root).expect("project");
+        let project = Project::new(&project_root);
+        let bootstrap =
+            BootstrapApplication::open(project, storage_root.clone()).expect("bootstrap");
+        bootstrap.trust_project().expect("trust");
+        let application = bootstrap.into_trusted().expect("trusted");
+        application
+            .save_model_state(&edited, &credentials)
+            .expect("save model state");
+
+        let (reloaded, _) = application.model_state().expect("reload model state");
+        assert_eq!(reloaded.preset, None);
+        assert_eq!(reloaded.extra_body["thinking"]["type"], "disabled");
+        assert_eq!(reloaded.extra_body["top_p"], 0.5);
+
+        application.close().expect("close");
+        fs::remove_dir_all(storage_root).expect("remove storage");
+        fs::remove_dir_all(project_root).expect("remove project");
+    }
+
+    /// TUI-L01：手工改 Model/Endpoint 意味着离开原模型，旧档位不得
+    /// 跨厂商携带（DeepSeek 的 Max 不能在改到 GLM 端点后无提示复活）。
+    #[test]
+    fn manual_model_or_endpoint_edit_clears_thinking_level() {
+        let config = ModelConfig {
+            preset: Some("deepseek-v4-pro".into()),
+            model: "deepseek-v4-pro".into(),
+            endpoint: "https://api.deepseek.com".into(),
+            thinking_level: Some(ThinkingLevel::Max),
+            ..ModelConfig::default()
+        };
+        let credentials = ProviderCredentials::for_protocol(config.protocol);
+
+        let mut editor =
+            ModelEditor::new_with_descriptors(&config.clone(), credentials.clone(), Vec::new());
+        commit_popup_on(
+            &mut editor,
+            RowKind::Endpoint,
+            "https://open.bigmodel.cn/api/coding/paas/v4",
+        );
+        let (built, _) = editor.build().unwrap();
+        assert_eq!(built.thinking_level, None);
+        assert_eq!(built.preset, None);
+
+        let mut editor = ModelEditor::new_with_descriptors(&config, credentials, Vec::new());
+        commit_popup_on(&mut editor, RowKind::Model, "glm-5.3");
+        let (built, _) = editor.build().unwrap();
+        assert_eq!(built.thinking_level, None);
     }
 
     #[test]

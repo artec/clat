@@ -486,6 +486,17 @@ impl Storage {
         Ok(())
     }
 
+    /// 会话是否属于该项目且未归档（switch/续接的合法性检查）。
+    pub fn session_exists(&self, project: &Project, session_id: i64) -> Result<bool, StorageError> {
+        let exists: bool = self.connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sessions
+              WHERE id = ?1 AND project_root = ?2 AND archived = 0)",
+            params![session_id, project_key(project.root())],
+            |row| row.get(0),
+        )?;
+        Ok(exists)
+    }
+
     /// 会话是否有任何持久化消息或上下文条目。
     pub fn session_is_empty(&self, session_id: i64) -> Result<bool, StorageError> {
         let message_count: i64 = self.connection.query_row(

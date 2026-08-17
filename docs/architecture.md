@@ -8,7 +8,7 @@ binary; explicit catalogs select and order them at runtime. CLAT does not load
 Rust dynamic libraries, WASM, JavaScript, or automatically discovered code.
 
 ```text
-TUI / demo / future desktop or headless client
+TUI / demo / exec (headless CLI) / future desktop or IDE client
                     │
                     ▼
  BootstrapApplication ── trust transition ──► TrustedProjectApplication
@@ -63,6 +63,30 @@ and Application DTOs remain ordinary typed interfaces. `PluginContext`, raw
 registries, storage, concrete providers, MCP clients, and the `Run` algorithm
 are crate-private so frontends cannot bypass the facade.
 
+## Frontends
+
+Three frontends exist today, all talking to the same Application facade:
+
+- **TUI** (`tui*.rs`) — full-screen terminal client; owns raw-mode handling
+  and dialog rendering only.
+- **demo** (`demo.rs`) — the deterministic model → tool → model loop used by
+  `clat demo` and as a living proof that core runs without a UI.
+- **exec** (`exec.rs`) — the headless one-shot CLI behind `clat exec`. It
+  supplies an `EventSink` that streams assistant text to stdout and status
+  to stderr, a permission approver (terminal prompt via a request-scoped
+  input port, deny-on-pipe by default, `--yes` to allow all), and a
+  completion channel. Interrupt routing (`ExecCancel`) is injected by the
+  process boundary in `main.rs`, so the library entry is repeatable
+  in-process and never installs global signal handlers. A stdout write
+  failure (broken pipe) cancels the active run instead of pretending
+  success; stdin is read with an explicit byte budget and combined with
+  the positional instruction into one prompt.
+
+Every frontend is presentation and input handling only; run lifecycle,
+persistence, and permission semantics stay in core. A future desktop or
+IDE client reuses the facade the same way, supplying its own approver and
+event presentation.
+
 `Run` still owns the streaming model → tool → model algorithm, capped at a
 configurable number of turns. Every observable step (`ModelRequested`,
 `ModelStream`, `ToolRequested`, `ToolFinished`, `PermissionChecked`,
@@ -104,11 +128,14 @@ built yet:
 | Automatic session titles | done — first successful run, bounded background worker, CAS against manual rename |
 | Typed provider retry | done — fresh model attempts, Retry-After, event-safe retry, internal deadlines |
 | Turn budget configurability | not built — fixed 32 turns, exceeding it fails the run |
-| Headless Application API | done — tests and `demo` execute without TUI; a public `clat exec` command is still not built |
+| Headless CLI (`clat exec`) | done — one-shot runs with stdout-only assistant output; dual-input prompt (instruction + piped context, 8 MiB budget); TTY permission prompts with stale-input discard, deny-on-pipe default, `--yes` bypass; `--continue` / `--session` resume; graceful Ctrl-C everywhere (including pending-run and permission-wait windows); broken-pipe cancels the run and fails the exit; closed by the 2026-08-17 headless audit (HL-01…09) |
 | Subagents, image input, multi-agent orchestration | deferred by constitution |
 
-The next growth step is a user-facing headless CLI, driven by real dogfood
-need. The underlying Application API is already frontend-neutral.
+The next growth step is driven by real dogfood need; candidates include a
+structured `--json` event stream for `clat exec` (consumed by editors and CI)
+and turn-budget configurability. The Application API remains frontend-neutral:
+every frontend — TUI, `exec`, a future desktop or IDE client — supplies only
+an `EventSink`, a `PermissionApprover`, and a completion channel.
 
 ## Model Protocol v0.1
 

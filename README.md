@@ -17,8 +17,9 @@ workflow that can work on real projects such as ECAR and CLAT itself.
 Since v0.3.4 that loop is closed: the agent can inspect the repository
 (`list_files` / `read_file` / `search`), change it (`write_file` /
 `edit_file`), and verify its own work (`run_command`) — every
-side-effecting step behind interactive permission review. Current
-boundaries and the growth plan are tracked in
+side-effecting step behind interactive permission review. The same loop
+also runs headless (`clat exec`) for scripts and CI, with the same
+permission model. Current boundaries and the growth plan are tracked in
 [docs/architecture.md](docs/architecture.md#agentic-loop-v034).
 
 The runtime also retries transient model failures, injects trusted project
@@ -69,6 +70,8 @@ toolchain is the only requirement.
 
 ```bash
 clat          # open the TUI, then /model to configure a provider
+clat exec "explain this repository in one sentence"   # headless one-shot run
+git diff | clat exec "review this diff"               # piped input becomes context
 clat --help   # usage
 clat demo     # deterministic model → tool → model loop, no remote model needed
 ```

@@ -5,9 +5,11 @@ use crate::tui_model::{EditorAction, ModelEditor, ModelPicker, PickerAction};
 use crate::tui_sessions::{ResumeAction, SessionPicker};
 use crate::tui_worker::{ChannelApprover, ChannelEventSink, UiEvent, WorkerMessage};
 use crate::{
-    ApplicationEvent, ApplicationRunRequest, BootstrapApplication, CompactHandle, ModelConfig,
-    ModelEvent, ModelItem, PermissionDecision, PermissionRequest, Project, ProviderCredentials,
-    ProviderDescriptor, RunEvent, RunHandle, StoredMessage, TrustedProjectApplication, Usage,
+    ApplicationEvent, ApplicationRunRequest, BootstrapApplication, CompactHandle, CompactionStatus,
+    ModelConfig, ModelEvent, ModelItem, ModelVendor, PermissionDecision, PermissionRequest,
+    Project, ProviderCredentials, ProviderDescriptor, RunEvent, RunHandle, StoredMessage,
+    ThinkingLevel, TrustedProjectApplication, Usage, apply_thinking_level,
+    effective_thinking_level, next_thinking_level, thinking_levels,
 };
 use crossterm::event::{
     self, DisableBracketedPaste, DisableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
@@ -15,11 +17,12 @@ use crossterm::event::{
     PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{
-    Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap,
+    Block, Borders, Clear, Padding, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+    Wrap,
 };
 use ratatui::{DefaultTerminal, Frame};
 use std::collections::HashMap;
@@ -108,25 +111,29 @@ fn blend_color(from: Color, to: Color, amount: f64) -> Color {
     }
 }
 
-/// 配置是否指向 DeepSeek 官方端点。
-fn is_deepseek_endpoint(config: &ModelConfig) -> bool {
-    config.endpoint.to_lowercase().contains("deepseek.com")
-}
-
-fn is_glm_endpoint(config: &ModelConfig) -> bool {
-    let endpoint = config.endpoint.to_lowercase();
-    endpoint.contains("bigmodel.cn") || endpoint.contains("z.ai")
-}
-
-/// 会话累计的缓存命中百分比文本（如 "87%"）。无输入 token 或服务端
-/// 未上报缓存命中时不显示（返回 None）。
+/// 会话累计的缓存命中百分比文本（如 "99.99%"，两位小数）。无输入
+/// token 或服务端未上报缓存命中时不显示（返回 None）。
 fn cache_hit_percent(usage: &Usage) -> Option<String> {
     let cached = usage.cached_input_tokens?;
     if usage.input_tokens == 0 || cached == 0 {
         return None;
     }
     let percent = cached as f64 / usage.input_tokens as f64 * 100.0;
-    Some(format!("{}%", percent.round() as u64))
+    Some(format!("{percent:.2}%"))
+}
+
+/// token 数的紧凑展示：`1M` / `1.5M` / `120k` / `999`。千位以上四舍
+/// 五入到 k，百万以上保留一位小数（整数则省略小数部分）。
+fn format_tokens(tokens: u64) -> String {
+    if tokens >= 1_000_000 {
+        // 一位小数，整数值省略小数部分（1.0M → 1M）。
+        let millions = format!("{:.1}", tokens as f64 / 1_000_000.0);
+        format!("{}M", millions.trim_end_matches(".0"))
+    } else if tokens >= 1_000 {
+        format!("{}k", (tokens + 500) / 1_000)
+    } else {
+        tokens.to_string()
+    }
 }
 
 /// 缩短路径用于状态栏展示：home 前缀替换为 `~`
@@ -311,56 +318,115 @@ fn copy_to_clipboard(text: &str) -> bool {
         .is_ok()
 }
 
-/// 构建厂商状态栏后缀，渲染在底部状态栏最右边（间隔号连接）：
-/// - DeepSeek：`￥余额 · 缓存% · Thinking · 强度`
-/// - GLM Coding Plan：`剩余额度% · 缓存% · Thinking · 强度`（5 小时
-///   窗口剩余额度，替代 DeepSeek 余额的位置）
+/// 状态栏右侧遥测段，按优先级降序（额度 > Cache > Context）。各段
+/// 无值即不产生；仅 DeepSeek/GLM 端点有遥测。渲染时
+/// `fit_status_suffix` 在窄终端从尾部（最低优先）开始让位。
 ///
-/// 思考开关关闭时省略后两项；槽位无值（未配置 key 或查询失败）返回
-/// 空，状态栏保持原样。思考强度按官方规则展示为 High/Max，未显式
-/// 设置时按官方默认 high 显示 High。
-fn deepseek_status_prefix(config: &ModelConfig, balance: &Option<String>, usage: &Usage) -> String {
-    if !is_deepseek_endpoint(config) && !is_glm_endpoint(config) {
-        return String::new();
+/// - DeepSeek：`Wallet: ￥89.35 · Cache: 99.99% · Context: 120k/1M`
+/// - GLM Coding Plan：`Token: 87% · Cache: 99.99% · Context: 120k/1M`
+///   （Token 段是 5 小时窗口剩余额度）
+///
+/// 思考档位不在这里——它属于标题栏（`compose_header_rest`）。
+fn status_suffix_segments(
+    config: &ModelConfig,
+    balance: &Option<String>,
+    session_usage: &Usage,
+    last_turn_usage: Option<&Usage>,
+) -> Vec<String> {
+    let mut parts = Vec::new();
+    if config.vendor() == ModelVendor::Other {
+        return parts;
     }
-    let Some(balance) = balance else {
-        return String::new();
-    };
-    // DeepSeek 槽位存余额文本，展示加货币符号；GLM 槽位存 5 小时
-    // 窗口剩余额度百分比（如 "62%"），原样展示。
-    let first = if is_deepseek_endpoint(config) {
-        format!("￥{balance}")
-    } else {
-        balance.clone()
-    };
-    let mut parts = vec![first];
-    if let Some(percent) = cache_hit_percent(usage) {
-        parts.push(percent);
-    }
-
-    // 未显式设置 thinking 时，DeepSeek 服务端默认开启思考模式。
-    let thinking_enabled = config
-        .extra_body
-        .get("thinking")
-        .and_then(|thinking| thinking.get("type"))
-        .and_then(serde_json::Value::as_str)
-        .map(|kind| kind == "enabled")
-        .unwrap_or(true);
-    if thinking_enabled {
-        parts.push("Thinking".into());
-        let effort = config
-            .extra_body
-            .get("reasoning_effort")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("high");
-        let label = if effort.eq_ignore_ascii_case("max") {
-            "Max"
+    // DeepSeek 槽位存余额文本，加 Wallet 标签与货币符号；GLM 槽位存
+    // 5 小时窗口剩余额度百分比（如 "87%"），加 Token 标签。
+    if let Some(balance) = balance {
+        if config.vendor() == ModelVendor::DeepSeek {
+            parts.push(format!("Wallet: ￥{balance}"));
         } else {
-            "High"
-        };
-        parts.push(label.into());
+            parts.push(format!("Token: {balance}"));
+        }
     }
-    parts.join(" · ")
+    if let Some(percent) = cache_hit_percent(session_usage) {
+        parts.push(format!("Cache: {percent}"));
+    }
+    // Context 当前值 ≈ 最近一次模型请求的 input+output（下一次请求
+    // 的近似起点）；分母是预设的官方上下文窗口，自定义端点未知则
+    // 省略整段。
+    let window = config
+        .preset
+        .as_deref()
+        .and_then(preset_by_id)
+        .map(|preset| preset.context_window);
+    if let (Some(usage), Some(window)) = (last_turn_usage, window) {
+        let current = usage.input_tokens + usage.output_tokens;
+        parts.push(format!(
+            "Context: {}/{}",
+            format_tokens(current),
+            format_tokens(window as u64)
+        ));
+    }
+    parts
+}
+
+/// 左侧常规状态（错误/取消/权限提示）的最小保留宽度（TUI-L02）：
+/// 右侧遥测宁可整段省略也不挤掉左侧。
+const MIN_STATUS_LEFT: u16 = 20;
+
+/// 在 `budget` 显示宽度内按优先级保留遥测段：装不下低优先段时，它
+/// 及其后继全部省略；首段都装不下则整体让位（左侧状态优先）。
+fn fit_status_suffix(segments: &[String], budget: usize) -> String {
+    let mut kept: Vec<&str> = Vec::new();
+    for segment in segments {
+        let width = kept
+            .iter()
+            .map(|text| UnicodeWidthStr::width(*text))
+            .chain(std::iter::once(UnicodeWidthStr::width(segment.as_str())))
+            .sum::<usize>()
+            + 3 * kept.len();
+        if width > budget {
+            break;
+        }
+        kept.push(segment.as_str());
+    }
+    kept.join(" · ")
+}
+
+/// 标题栏首行在 "CLAT" 之后的内容，按可用显示宽度逐级退化（TUI-L02），
+/// 保证档位在窄终端仍可见：
+///
+/// 1. 完整：` v0.5.1  ready  ·  {model} · Thinking · {level}`
+/// 2. 紧凑：` v0.5.1 ready · {model} · {level}`（压缩间距、省略
+///    "Thinking · " 文案）
+/// 3. 最小：` v0.5.1 ready · Thinking · {level}`（省略模型名）
+///
+/// 模型+思考+强度是一个整体：组内分隔符统一窄间距 ` · `，与主分段
+/// 的宽间距 `  ·  ` 区分。无档位（未配置 / 非 DeepSeek/GLM / 手工
+/// 关闭）时各层级不含档位片段；三级都放不下交由终端截断。
+fn compose_header_rest(
+    version: &str,
+    state: &str,
+    model: &str,
+    level: Option<&str>,
+    width: usize,
+) -> String {
+    let full_suffix = level
+        .map(|level| format!(" · Thinking · {level}"))
+        .unwrap_or_default();
+    let full = format!(" v{version}  {state}  ·  {model}{full_suffix}");
+    if UnicodeWidthStr::width(full.as_str()) <= width {
+        return full;
+    }
+    let compact = match level {
+        Some(level) => format!(" v{version} {state} · {model} · {level}"),
+        None => format!(" v{version} {state} · {model}"),
+    };
+    if UnicodeWidthStr::width(compact.as_str()) <= width {
+        return compact;
+    }
+    match level {
+        Some(level) => format!(" v{version} {state} · Thinking · {level}"),
+        None => format!(" v{version} {state}"),
+    }
 }
 
 /// Rows moved per mouse-wheel notch (and per Up/Down press while those
@@ -567,6 +633,9 @@ struct App {
     balance: Option<String>,
     /// 本会话累计 token 用量，用于状态栏缓存命中百分比。
     session_usage: Usage,
+    /// 最近一次模型请求的用量（INV-F：随会话切换/新建重置），用于
+    /// 状态栏 `Context: 120k/1M` 的当前值近似。
+    last_turn_usage: Option<Usage>,
 }
 
 impl App {
@@ -626,6 +695,7 @@ impl App {
             should_quit: false,
             balance: None,
             session_usage: Usage::default(),
+            last_turn_usage: None,
         };
         if trusted {
             app.initialize_project()?;
@@ -798,8 +868,16 @@ impl App {
                 self.balance = value;
             }
             UiEvent::Application(ApplicationEvent::CompactionUpdated(status)) => match status {
-                Some(note) => self.flash_status(note),
-                None => self.flash_status("compacting…"),
+                CompactionStatus::Started => self.flash_status("compacting…"),
+                CompactionStatus::Finished { note, succeeded } => {
+                    self.flash_status(note);
+                    // 仅当历史确实收缩（成功且 marker 落盘）时，压缩前的
+                    // 水位才过期（TUI-L05：失败/nothing-to-compact 保留
+                    // 原读数，直到下一次 run 上报新的 usage）。
+                    if succeeded {
+                        self.last_turn_usage = None;
+                    }
+                }
             },
         }
     }
@@ -1032,6 +1110,10 @@ impl App {
             }
             KeyCode::PageUp => self.scroll_up(PAGE_SCROLL_ROWS),
             KeyCode::PageDown => self.scroll_down(PAGE_SCROLL_ROWS),
+            // Shift+Tab 循环思考档位（Low→High→Max→Low）。不 gate
+            // running：配置每次 run 重读，对下一次 run 生效；当前 run
+            // 不受影响。
+            KeyCode::BackTab => self.cycle_thinking_level(),
             KeyCode::Esc => {
                 if self.running {
                     if let Some(handle) = &self.run_handle {
@@ -1356,7 +1438,46 @@ impl App {
         self.markdown_cache.clear();
         self.conversation_scroll_from_bottom = 0;
         self.assistant_message_index = None;
+        // 用量指标归属会话（TUI-L04）：缓存命中率与上下文水位都随切换
+        // 清零，目标会话首次 run 后重新累计/上报。
+        self.session_usage = Usage::default();
+        self.last_turn_usage = None;
         Ok(())
+    }
+
+    /// Shift+Tab：循环思考档位并随模型配置持久化（INV-D）。生效于
+    /// 下一次 run（`start_run` 每次重读 `model_state`）；标题栏即时
+    /// 同步（`self.config` 原地更新，重绘即见）。保存失败整体回滚，
+    /// 内存与库不出现半套配置。
+    fn cycle_thinking_level(&mut self) {
+        let vendor = self.config.vendor();
+        if thinking_levels(vendor).is_empty() {
+            self.flash_status("thinking levels apply to DeepSeek and GLM models");
+            return;
+        }
+        // 当前生效档位：一等字段优先，其次解析 extra_body；手工编辑成
+        // disabled 视为关闭，从 High 起步一键恢复。
+        let current = effective_thinking_level(&self.config).unwrap_or(ThinkingLevel::High);
+        let Some(next) = next_thinking_level(vendor, current) else {
+            return;
+        };
+        let previous = self.config.clone();
+        self.config.thinking_level = Some(next);
+        apply_thinking_level(&mut self.config.extra_body, next);
+        let saved = match self.application.as_ref() {
+            Some(application) => application
+                .save_model_state(&self.config, &self.credentials)
+                .map_err(|error| error.to_string()),
+            // 未确权阶段没有项目应用：只改内存配置，确权后落盘。
+            None => Ok(()),
+        };
+        match saved {
+            Ok(()) => self.flash_status(format!("Thinking · {}", next.label())),
+            Err(error) => {
+                self.config = previous;
+                self.flash_status(format!("failed to save thinking level: {error}"));
+            }
+        }
     }
 
     /// 处理二级选择器的动作。确认预设时：同端点且已存有密钥 → 直接
@@ -1381,6 +1502,9 @@ impl App {
             PickerAction::SelectPreset(preset) => {
                 let mut config = self.config.clone();
                 preset.apply(&mut config);
+                // 换模型不携带旧档位：归位 None，新模型跟随预设默认
+                // （与编辑器 cycle_preset 同一不变量）。
+                config.thinking_level = None;
                 let same_endpoint = self.config.endpoint.trim_end_matches('/')
                     == preset.endpoint.trim_end_matches('/');
                 let key_present = self
@@ -1499,9 +1623,8 @@ impl App {
                 self.flash_status("select a model");
             }
             "/help" => {
-                self.status =
-                    "/model · /new · /clear · /compact · /resume · /quit · ↑/↓ input history · PgUp/PgDn chat"
-                        .into();
+                self.status = "/model · /new · /clear · /compact · /resume · /quit · ↑/↓ input history · PgUp/PgDn chat · Shift+Tab thinking level"
+                    .into();
             }
             "/compact" => {
                 // 异步：立即返回 handle，状态经 CompactionUpdated 事件回流
@@ -1556,6 +1679,9 @@ impl App {
                 self.conversation_scroll_from_bottom = 0;
                 self.assistant_message_index = None;
                 self.input = InputBuffer::new(Vec::new());
+                // 用量指标归属会话（TUI-L04）：新会话从零累计。
+                self.session_usage = Usage::default();
+                self.last_turn_usage = None;
                 self.flash_status("new conversation");
             }
             "/quit" | "/exit" => self.should_quit = true,
@@ -1680,6 +1806,15 @@ impl App {
                     self.thinking_since = Some(Instant::now());
                 }
                 self.thinking = true;
+            }
+            // 流式 usage（DeepSeek 经 stream_options.include_usage，GLM
+            // 默认携带）只取最近一次：input+output 近似当前上下文水位，
+            // 供状态栏 Context 段使用。多轮 run 每轮覆盖前一轮。
+            RunEvent::ModelStream {
+                event: ModelEvent::Usage(usage),
+                ..
+            } => {
+                self.last_turn_usage = Some(usage);
             }
             RunEvent::ToolRequested { call } => {
                 self.flash_status(format!("tool → {} {}", call.name, call.arguments));
@@ -1807,30 +1942,40 @@ impl App {
         self.draw_header(frame, chunks[0]);
         self.draw_conversation(frame, chunks[1]);
         self.draw_input(frame, chunks[2]);
-        // 状态栏：左边是 storage 等常规状态，最右边是 DeepSeek 前缀
-        // （余额 · 缓存% · Thinking · 强度）。
-        let deepseek = deepseek_status_prefix(&self.config, &self.balance, &self.session_usage);
+        // 状态栏：左边是 storage 等常规状态，最右边是模型遥测
+        // （Wallet/Token · Cache% · Context current/total）。窄终端时
+        // 左侧保底 MIN_STATUS_LEFT，右侧按优先级让位（TUI-L02）。
+        // 左右各留 1 列边距，文字不贴终端边缘。
+        let bar = chunks[3].inner(Margin::new(1, 0));
+        let segments = status_suffix_segments(
+            &self.config,
+            &self.balance,
+            &self.session_usage,
+            self.last_turn_usage.as_ref(),
+        );
+        let budget = (bar.width.saturating_sub(MIN_STATUS_LEFT + 2)) as usize;
+        let suffix = fit_status_suffix(&segments, budget);
         let status_line = if self.thinking {
             let elapsed = self.thinking_since.map(|since| since.elapsed());
             thinking_line(self.spinner_tick, elapsed)
         } else {
             Line::from(self.status.as_str())
         };
-        if deepseek.is_empty() {
-            frame.render_widget(Paragraph::new(status_line), chunks[3]);
+        if suffix.is_empty() {
+            frame.render_widget(Paragraph::new(status_line), bar);
         } else {
-            // 右侧前缀按内容宽度分配，剩余空间全部留给左侧状态。
-            let prefix_width = UnicodeWidthStr::width(deepseek.as_str()) as u16;
-            let status_width = chunks[3].width.saturating_sub(prefix_width + 2);
+            // 右侧后缀按内容宽度分配，剩余空间全部留给左侧状态。
+            let suffix_width = UnicodeWidthStr::width(suffix.as_str()) as u16;
+            let status_width = bar.width.saturating_sub(suffix_width + 2);
             let columns = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Length(status_width), Constraint::Min(0)])
-                .split(chunks[3]);
+                .split(bar);
             frame.render_widget(
                 Paragraph::new(status_line).wrap(Wrap { trim: false }),
                 columns[0],
             );
-            frame.render_widget(Paragraph::new(deepseek).right_aligned(), columns[1]);
+            frame.render_widget(Paragraph::new(suffix).right_aligned(), columns[1]);
         }
 
         if let Some(picker) = &self.session_picker {
@@ -1989,28 +2134,39 @@ impl App {
     }
 
     fn draw_header(&self, frame: &mut Frame, area: Rect) {
-        let model = if self.config.is_configured() {
-            match self.config.preset.as_deref().and_then(preset_by_id) {
+        let (model, level) = if self.config.is_configured() {
+            let name = match self.config.preset.as_deref().and_then(preset_by_id) {
                 // 预设模型的 name 与 model id 重复（仅大小写不同），只展示名称。
                 Some(preset) => preset.name.to_owned(),
                 None => format!("{} · {}", self.config.protocol, self.config.model),
-            }
+            };
+            (
+                name,
+                effective_thinking_level(&self.config).map(|level| level.label()),
+            )
         } else {
-            "not configured — /model".into()
+            ("not configured — /model".into(), None)
         };
         let state = if self.running { "running" } else { "ready" };
+        // 首行内容预算：总宽减边框 2 列、水平内边距 2 列与 "CLAT " 前缀
+        // 5 列；宽度不足时逐级退化（TUI-L02），档位优先于模型名保留。
+        let rest_budget = area.width.saturating_sub(2 + 2 + 5) as usize;
+        let rest =
+            compose_header_rest(env!("CARGO_PKG_VERSION"), state, &model, level, rest_budget);
         frame.render_widget(
             Paragraph::new(vec![
                 Line::from(vec![
                     Span::styled("CLAT", Style::default().add_modifier(Modifier::BOLD)),
-                    Span::raw(format!(
-                        " v{}  {state}  ·  {model}",
-                        env!("CARGO_PKG_VERSION")
-                    )),
+                    Span::raw(rest),
                 ]),
                 Line::from(format!("project: {}", self.project.root().display())),
             ])
-            .block(Block::default().borders(Borders::ALL)),
+            // 水平内边距 1 列：文字与边框字符之间留空，不贴框。
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .padding(Padding::horizontal(1)),
+            ),
             area,
         );
     }
@@ -2851,114 +3007,211 @@ mod tests {
         );
     }
 
+    /// INV-C：状态栏后缀只有 Wallet/Token、Cache、Context 三段，思考
+    /// 档位不在这里（属标题栏）；三段各自缺值即省略。
     #[test]
-    fn deepseek_prefix_combines_balance_thinking_and_effort() {
+    fn status_suffix_combines_wallet_cache_and_context() {
+        // 全宽拼接（生产路径按宽度经 fit_status_suffix 裁剪，另测）。
+        fn full_suffix(
+            config: &ModelConfig,
+            balance: &Option<String>,
+            session_usage: &Usage,
+            last_turn_usage: Option<&Usage>,
+        ) -> String {
+            status_suffix_segments(config, balance, session_usage, last_turn_usage).join(" · ")
+        }
+
         let balance = Some("110.00".to_owned());
-        // 无缓存数据：前缀不含百分比
-        let no_cache = Usage::default();
-
-        // 开启思考 + high：余额 · Thinking · High
-        let mut config = ModelConfig {
-            endpoint: "https://api.deepseek.com".into(),
-            extra_body: serde_json::json!({
-                "thinking": {"type": "enabled"},
-                "reasoning_effort": "high",
-            }),
-            ..ModelConfig::default()
-        };
-        assert_eq!(
-            deepseek_status_prefix(&config, &balance, &no_cache),
-            "￥110.00 · Thinking · High"
-        );
-
-        // 有缓存命中：余额后插入百分比（无"缓存"字样）
+        let no_data = Usage::default();
         let cached = Usage {
             input_tokens: 1000,
             cached_input_tokens: Some(870),
             ..Usage::default()
         };
-        assert_eq!(
-            deepseek_status_prefix(&config, &balance, &cached),
-            "￥110.00 · 87% · Thinking · High"
-        );
+        let turn = Usage {
+            input_tokens: 115_000,
+            output_tokens: 5_000,
+            ..Usage::default()
+        };
+        let mut config = ModelConfig {
+            preset: Some("deepseek-v4-pro".into()),
+            endpoint: "https://api.deepseek.com".into(),
+            ..ModelConfig::default()
+        };
 
-        // max 强度显示为 Max
-        config.extra_body = serde_json::json!({
-            "thinking": {"type": "enabled"},
-            "reasoning_effort": "max",
-        });
+        // 三段齐全（DeepSeek）。
         assert_eq!(
-            deepseek_status_prefix(&config, &balance, &cached),
-            "￥110.00 · 87% · Thinking · Max"
+            full_suffix(&config, &balance, &cached, Some(&turn)),
+            "Wallet: ￥110.00 · Cache: 87.00% · Context: 120k/1M"
         );
-
-        // 未显式声明 effort 时按官方默认 high 显示
-        config.extra_body = serde_json::json!({"thinking": {"type": "enabled"}});
+        // 无任何数据：空串，状态栏保持原样。
+        assert_eq!(full_suffix(&config, &None, &no_data, None), "");
+        // 余额未就绪：Cache/Context 照常显示（不再整条消失）。
         assert_eq!(
-            deepseek_status_prefix(&config, &balance, &no_cache),
-            "￥110.00 · Thinking · High"
+            full_suffix(&config, &None, &cached, Some(&turn)),
+            "Cache: 87.00% · Context: 120k/1M"
         );
-
-        // 未显式声明 thinking 时按服务端默认开启处理
-        config.extra_body = serde_json::json!({});
+        // 尚无上下文样本：省略 Context 段。
         assert_eq!(
-            deepseek_status_prefix(&config, &balance, &no_cache),
-            "￥110.00 · Thinking · High"
+            full_suffix(&config, &balance, &cached, None),
+            "Wallet: ￥110.00 · Cache: 87.00%"
         );
-
-        // 思考开关关闭：余额与百分比
-        config.extra_body = serde_json::json!({
-            "thinking": {"type": "disabled"},
-            "reasoning_effort": "high",
-        });
-        assert_eq!(
-            deepseek_status_prefix(&config, &balance, &cached),
-            "￥110.00 · 87%"
-        );
-
-        // 非 DeepSeek/GLM 端点：无前缀
-        config.endpoint = "https://api.openai.com/v1".into();
-        assert_eq!(deepseek_status_prefix(&config, &balance, &cached), "");
-
-        // DeepSeek 端点但余额未就绪（未配置 key 或查询失败）：无前缀
-        config.endpoint = "https://api.deepseek.com".into();
-        let empty = None;
-        assert_eq!(deepseek_status_prefix(&config, &empty, &cached), "");
-
-        // GLM Coding Plan 端点：槽位存 5 小时窗口剩余额度百分比，
-        // 替代 DeepSeek 余额的位置，不再加货币符号。
-        config.endpoint = "https://open.bigmodel.cn/api/coding/paas/v4".into();
-        config.extra_body = serde_json::json!({"thinking": {"type": "enabled"}});
-        let quota = Some("62%".to_owned());
-        assert_eq!(
-            deepseek_status_prefix(&config, &quota, &no_cache),
-            "62% · Thinking · High"
-        );
-        assert_eq!(
-            deepseek_status_prefix(&config, &quota, &cached),
-            "62% · 87% · Thinking · High"
-        );
-        // 海外 z.ai 端点同样生效
-        config.endpoint = "https://api.z.ai/api/coding/paas/v4".into();
-        assert_eq!(
-            deepseek_status_prefix(&config, &quota, &no_cache),
-            "62% · Thinking · High"
-        );
-        // 槽位无值时不显示
-        assert_eq!(deepseek_status_prefix(&config, &empty, &no_cache), "");
-
-        // 缓存命中为零时不显示百分比（回到 DeepSeek 端点验证 ￥ 前缀）
-        config.endpoint = "https://api.deepseek.com".into();
-        config.extra_body = serde_json::json!({"thinking": {"type": "enabled"}});
+        // 缓存命中为零：省略 Cache 段。
         let zero_cache = Usage {
             input_tokens: 1000,
             cached_input_tokens: Some(0),
             ..Usage::default()
         };
         assert_eq!(
-            deepseek_status_prefix(&config, &balance, &zero_cache),
-            "￥110.00 · Thinking · High"
+            full_suffix(&config, &balance, &zero_cache, Some(&turn)),
+            "Wallet: ￥110.00 · Context: 120k/1M"
         );
+
+        // GLM Coding Plan：Token 前缀替代 Wallet，不加货币符号。
+        config.preset = Some("glm-5.3".into());
+        config.endpoint = "https://open.bigmodel.cn/api/coding/paas/v4".into();
+        let quota = Some("87%".to_owned());
+        assert_eq!(
+            full_suffix(&config, &quota, &cached, Some(&turn)),
+            "Token: 87% · Cache: 87.00% · Context: 120k/1M"
+        );
+        // 海外 z.ai 端点同样生效。
+        config.endpoint = "https://api.z.ai/api/coding/paas/v4".into();
+        assert_eq!(
+            full_suffix(&config, &quota, &cached, Some(&turn)),
+            "Token: 87% · Cache: 87.00% · Context: 120k/1M"
+        );
+
+        // 自定义端点（无预设）：Context 分母未知，省略整段。
+        config.preset = None;
+        config.endpoint = "https://api.deepseek.com".into();
+        assert_eq!(
+            full_suffix(&config, &balance, &cached, Some(&turn)),
+            "Wallet: ￥110.00 · Cache: 87.00%"
+        );
+
+        // 非 DeepSeek/GLM 端点：无后缀。
+        config.endpoint = "https://api.openai.com/v1".into();
+        assert_eq!(full_suffix(&config, &balance, &cached, Some(&turn)), "");
+    }
+
+    #[test]
+    fn format_tokens_uses_compact_units() {
+        assert_eq!(format_tokens(0), "0");
+        assert_eq!(format_tokens(999), "999");
+        // 千位就近取整。
+        assert_eq!(format_tokens(1_000), "1k");
+        assert_eq!(format_tokens(120_000), "120k");
+        assert_eq!(format_tokens(120_499), "120k");
+        assert_eq!(format_tokens(120_500), "121k");
+        // 百万位保留一位小数，整数省略小数部分。
+        assert_eq!(format_tokens(1_000_000), "1M");
+        assert_eq!(format_tokens(1_048_576), "1M");
+        assert_eq!(format_tokens(1_500_000), "1.5M");
+        assert_eq!(format_tokens(2_000_000), "2M");
+    }
+
+    /// INV-C + TUI-L02：标题栏首行按宽度三级退化，档位优先于模型名
+    /// 保留；无档位时各层级不含档位片段。模型+思考+强度是一体：
+    /// 组内分隔符统一窄间距（模型↔Thinking 与 Thinking↔强度一致），
+    /// 与主分段宽间距区分。
+    #[test]
+    fn header_rest_degrades_by_width_keeping_the_level_visible() {
+        let full = compose_header_rest("0.5.1", "ready", "DeepSeek V4.0 Flash", Some("High"), 200);
+        assert_eq!(
+            full,
+            " v0.5.1  ready  ·  DeepSeek V4.0 Flash · Thinking · High"
+        );
+        // 宽度恰好：完整。
+        let fit = UnicodeWidthStr::width(full.as_str());
+        assert_eq!(
+            compose_header_rest("0.5.1", "ready", "DeepSeek V4.0 Flash", Some("High"), fit),
+            full
+        );
+        // 差一列 → 紧凑（保留模型与档位、省略 "Thinking · " 文案）。
+        let compact = " v0.5.1 ready · DeepSeek V4.0 Flash · High";
+        assert_eq!(
+            compose_header_rest(
+                "0.5.1",
+                "ready",
+                "DeepSeek V4.0 Flash",
+                Some("High"),
+                fit - 1
+            ),
+            compact
+        );
+        // 紧凑也放不下 → 最小（省略模型名，档位仍在）。
+        let compact_fit = UnicodeWidthStr::width(compact);
+        assert_eq!(
+            compose_header_rest(
+                "0.5.1",
+                "ready",
+                "DeepSeek V4.0 Flash",
+                Some("High"),
+                compact_fit - 1
+            ),
+            " v0.5.1 ready · Thinking · High"
+        );
+        // 60 列终端（预算 60-7=53）：紧凑。紧凑层级宽 42 列：预算 42
+        // 仍完整，41（48 列终端）即降到最小——档位保留、模型名省略。
+        assert_eq!(
+            compose_header_rest("0.5.1", "ready", "DeepSeek V4.0 Flash", Some("High"), 53),
+            compact
+        );
+        assert_eq!(
+            compose_header_rest("0.5.1", "ready", "DeepSeek V4.0 Flash", Some("High"), 42),
+            compact
+        );
+        assert_eq!(
+            compose_header_rest("0.5.1", "ready", "DeepSeek V4.0 Flash", Some("High"), 41),
+            " v0.5.1 ready · Thinking · High"
+        );
+        assert_eq!(
+            compose_header_rest("0.5.1", "ready", "DeepSeek V4.0 Flash", Some("High"), 40),
+            " v0.5.1 ready · Thinking · High"
+        );
+        // 无档位（未配置 / 其它厂商 / 手工 disabled 由调用方归为 None）：
+        // 各层级不出现档位片段，最小层级只剩版本与状态。
+        assert_eq!(
+            compose_header_rest("0.5.1", "ready", "DeepSeek V4.0 Flash", None, 200),
+            " v0.5.1  ready  ·  DeepSeek V4.0 Flash"
+        );
+        assert_eq!(
+            compose_header_rest("0.5.1", "ready", "DeepSeek V4.0 Flash", None, 35),
+            " v0.5.1 ready · DeepSeek V4.0 Flash"
+        );
+        assert_eq!(
+            compose_header_rest("0.5.1", "ready", "DeepSeek V4.0 Flash", None, 34),
+            " v0.5.1 ready"
+        );
+    }
+
+    /// TUI-L02：窄终端下右侧遥测按优先级让位（Context 先弃，Cache 次
+    /// 之，余额最后），左侧常规状态保底不小于 MIN_STATUS_LEFT。
+    #[test]
+    fn status_suffix_yields_to_left_status_by_priority() {
+        let segments = vec![
+            "Wallet: ￥89.35".to_owned(),
+            "Cache: 99.99%".to_owned(),
+            "Context: 120k/1M".to_owned(),
+        ];
+        // 120/80 列终端：预算充足，三段齐全。
+        assert_eq!(
+            fit_status_suffix(&segments, 52),
+            "Wallet: ￥89.35 · Cache: 99.99% · Context: 120k/1M"
+        );
+        // 60 列（预算 60-22=38）：放弃 Context。
+        assert_eq!(
+            fit_status_suffix(&segments, 38),
+            "Wallet: ￥89.35 · Cache: 99.99%"
+        );
+        // 48 列（预算 26）：仅余额。
+        assert_eq!(fit_status_suffix(&segments, 26), "Wallet: ￥89.35");
+        // 首段都装不下：整体让位，左侧状态独占整行。
+        assert_eq!(fit_status_suffix(&segments, 14), "");
+        // 恰好等于段宽时保留（含全角 ￥ 的宽度计入）。
+        assert_eq!(fit_status_suffix(&segments, 15), "Wallet: ￥89.35");
+        assert_eq!(fit_status_suffix(&[], 100), "");
     }
 
     #[test]

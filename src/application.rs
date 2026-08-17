@@ -41,12 +41,21 @@ impl fmt::Display for ApplicationError {
 
 impl std::error::Error for ApplicationError {}
 
+/// 压缩进度事件负载。`Started` 表示压缩已启动；`Finished` 携带结果
+/// 说明与成功标志——成功 = 摘要确实覆盖了历史条目且 marker 已持久
+/// 化（历史上下文收缩）。失败、降级或 nothing-to-compact 均为
+/// `succeeded: false`：前端不得据此丢弃仍有效的上下文水位（TUI-L05）。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CompactionStatus {
+    Started,
+    Finished { note: String, succeeded: bool },
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ApplicationEvent {
     MonitorUpdated(Option<String>),
-    /// 自动压缩的结果提示：`Some(text)` 为完成/降级说明；绝不携带
-    /// RunEvent 语义（协议冻结）。
-    CompactionUpdated(Option<String>),
+    /// 自动压缩的结果提示；绝不携带 RunEvent 语义（协议冻结）。
+    CompactionUpdated(CompactionStatus),
 }
 
 #[derive(Clone, Debug)]
@@ -161,7 +170,7 @@ impl BootstrapApplication {
     }
 
     #[cfg(test)]
-    fn into_trusted_with_provider(
+    pub(crate) fn into_trusted_with_provider(
         self,
         provider: Arc<dyn Plugin>,
     ) -> Result<TrustedProjectApplication, ApplicationError> {
@@ -444,6 +453,17 @@ impl TrustedProjectApplication {
 
     pub fn switch_session(&mut self, id: i64) -> Result<SessionSnapshot, ApplicationError> {
         self.reject_session_switch_while_busy()?;
+        // 不变量：current_session 只能指向存在的行。否则 run 的
+        // append_message 会在外键约束上失败，错误既晚又不可读。
+        if !self
+            .sessions
+            .session_exists(&self.project, id)
+            .map_err(store_error)?
+        {
+            return Err(ApplicationError::new(format!(
+                "session {id} does not exist"
+            )));
+        }
         // CB1-03：切换前必须先落盘 dirty todo，失败则拒绝切换。
         flush_dirty_todo(self.todo.as_deref(), self.sessions.as_ref())?;
         if let Some(current) = self.current_session
@@ -499,6 +519,16 @@ impl TrustedProjectApplication {
             });
         if let Some(preset) = config.preset.as_deref().and_then(preset_by_id) {
             preset.apply(&mut config);
+        }
+        // `preset.apply` 会整体重置 `extra_body`，用户显式选择的思考
+        // 档位存成一等字段、在回填之后二次应用，否则每次加载都被清回
+        // 预设默认。仅 DeepSeek/GLM 端点参与：字段可能在用户改端点前
+        // 设置，注入到其它厂商的请求体会被严格网关拒绝（与
+        // `effective_thinking_level` 的 Other→None 口径一致）。
+        if let Some(level) = config.thinking_level
+            && crate::model::endpoint_vendor(&config.endpoint) != crate::model::ModelVendor::Other
+        {
+            crate::model::apply_thinking_level(&mut config.extra_body, level);
         }
         Ok((config, credentials))
     }
@@ -695,14 +725,21 @@ impl TrustedProjectApplication {
                     // （CB1-09）回退 baseline_view——仅由**已持久化** marker
                     // 重建的视图，而不是整段 raw history：既有合法压缩不因
                     // 单次写故障作废，请求不会重新撑爆窗口。
-                    let adopted = match &outcome.marker {
+                    let marker_persisted = match &outcome.marker {
                         Some(marker) => sessions
                             .append_item(session_id, &ModelItem::ProviderState(marker.clone()))
                             .is_ok(),
-                        None => true,
+                        None => false,
                     };
-                    let note = compaction_note(&outcome, adopted);
-                    if adopted {
+                    // 无新 marker 时仍可安全采用 compactor 重建的 view（例如
+                    // 复用既有 marker 或失败降级到 baseline），但这不等于
+                    // “本次压缩成功”。两种语义必须分开，否则降级会让前端
+                    // 清掉仍有效的 Context 水位。
+                    let view_adopted = outcome.marker.is_none() || marker_persisted;
+                    let succeeded =
+                        outcome.marker.is_some() && marker_persisted && outcome.degraded.is_none();
+                    let note = compaction_note(&outcome, marker_persisted);
+                    if view_adopted {
                         // P1 切片修正：finish_and_persist 的 history_len 是
                         // "view 中已持久化代表的前缀长度"，取 view 长度。
                         history_len = outcome.view.len();
@@ -714,7 +751,12 @@ impl TrustedProjectApplication {
                     if let Some(note) = note {
                         broadcast_to(
                             &subscribers,
-                            ApplicationEvent::CompactionUpdated(Some(note)),
+                            ApplicationEvent::CompactionUpdated(CompactionStatus::Finished {
+                                note,
+                                // 成功严格等于：本次生成 marker、marker 已落盘，
+                                // 且没有降级。仅采用重建视图不算压缩成功。
+                                succeeded,
+                            }),
                         );
                     }
                 }
@@ -916,7 +958,10 @@ impl TrustedProjectApplication {
             join: Arc::clone(&join_slot),
             report: Arc::clone(&report_slot),
         };
-        broadcast_to(&subscribers, ApplicationEvent::CompactionUpdated(None));
+        broadcast_to(
+            &subscribers,
+            ApplicationEvent::CompactionUpdated(CompactionStatus::Started),
+        );
         let worker = std::thread::Builder::new()
             .name("clat-compact".into())
             .spawn(move || {
@@ -959,7 +1004,10 @@ impl TrustedProjectApplication {
                 };
                 broadcast_to(
                     &subscribers,
-                    ApplicationEvent::CompactionUpdated(Some(note)),
+                    ApplicationEvent::CompactionUpdated(CompactionStatus::Finished {
+                        note,
+                        succeeded: result.is_ok(),
+                    }),
                 );
                 busy.store(false, Ordering::Release);
             })
@@ -1021,12 +1069,12 @@ impl TrustedProjectApplication {
 }
 
 /// 生成自动压缩的状态提示；无事发生时返回 None（不打扰用户）。
-fn compaction_note(outcome: &CompactionOutcome, adopted: bool) -> Option<String> {
+fn compaction_note(outcome: &CompactionOutcome, marker_persisted: bool) -> Option<String> {
     if let Some(reason) = &outcome.degraded {
         return Some(format!("compaction degraded: {reason}"));
     }
     if let Some(marker) = &outcome.marker {
-        if !adopted {
+        if !marker_persisted {
             return Some("compaction marker could not be persisted".into());
         }
         return Some(format!(
@@ -1505,27 +1553,15 @@ fn store_error(error: crate::plugins::services::StoreError) -> ApplicationError 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{
-        FinishReason, Model, ModelError, ModelEvent, ModelEventSink, ModelFactory, ModelProtocol,
-        ModelRequest, ModelResponse,
+    use crate::PermissionDecision;
+    use crate::plugin::{PluginContext, PluginDescriptor, PluginError, PluginId};
+    use crate::test_support::{
+        CountingApprover, SharedEvents, TestBehavior, TestProviderPlugin, configure_test_model,
+        configure_test_model_with_budget, roots,
     };
-    use crate::plugin::{
-        DisposeError, PluginContext, PluginDescriptor, PluginError, PluginId, ServiceId,
-    };
-    use crate::plugins::services::{PROVIDER_SERVICE, PROVIDER_SERVICE_ID};
-    use crate::{PermissionDecision, PermissionRequest, ProviderDescriptor};
     use std::fs;
-    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, Instant};
 
-    const TEST_PROVIDER_ID: PluginId = PluginId::new("test.application_provider");
-    const TEST_PROVIDER_REQUIRES: &[ServiceId] = &[PROVIDER_SERVICE_ID];
-    const TEST_PROVIDER_DESCRIPTOR: PluginDescriptor = PluginDescriptor {
-        id: TEST_PROVIDER_ID,
-        scope: ScopeKind::TrustedProject,
-        provides: &[],
-        requires: TEST_PROVIDER_REQUIRES,
-        optional: &[],
-    };
     const FAILING_RUN_PLUGIN_ID: PluginId = PluginId::new("test.failing_run_mount");
     const FAILING_RUN_PLUGIN_DESCRIPTOR: PluginDescriptor = PluginDescriptor {
         id: FAILING_RUN_PLUGIN_ID,
@@ -1544,208 +1580,6 @@ mod tests {
 
         fn mount(&self, _context: &mut PluginContext<'_>) -> Result<(), PluginError> {
             Err(PluginError::new("intentional run mount failure"))
-        }
-    }
-
-    struct TestProviderPlugin {
-        behavior: TestBehavior,
-    }
-
-    impl Plugin for TestProviderPlugin {
-        fn descriptor(&self) -> &'static PluginDescriptor {
-            &TEST_PROVIDER_DESCRIPTOR
-        }
-
-        fn mount(&self, context: &mut PluginContext<'_>) -> Result<(), PluginError> {
-            let providers = context
-                .require(PROVIDER_SERVICE)
-                .map_err(|error| PluginError::new(error.to_string()))?;
-            let lease = providers
-                .register(
-                    context.owner(),
-                    Arc::new(TestFactory {
-                        behavior: self.behavior,
-                    }),
-                )
-                .map_err(|error| PluginError::new(error.to_string()))?;
-            context.defer(move || {
-                lease
-                    .revoke()
-                    .map_err(|error| DisposeError::new(error.to_string()))
-            });
-            Ok(())
-        }
-    }
-
-    #[derive(Clone, Copy)]
-    enum TestBehavior {
-        Success,
-        /// 标题请求慢 3s、普通对话快返回（验证旁路命名不阻塞 run）。
-        SlowTitle,
-        Failure,
-        Cancel,
-        Panic,
-        /// 第一轮调用 todo_write 工具，第二轮完成：锁定 marker 落盘顺序。
-        Todo,
-    }
-
-    struct TestFactory {
-        behavior: TestBehavior,
-    }
-
-    impl ModelFactory for TestFactory {
-        fn protocol(&self) -> ModelProtocol {
-            ModelConfig::default().protocol
-        }
-
-        fn describe(&self, _credentials: &ProviderCredentials) -> ProviderDescriptor {
-            ProviderDescriptor {
-                protocol: self.protocol(),
-                display_name: "Application test".into(),
-                fields: Vec::new(),
-            }
-        }
-
-        fn build(
-            &self,
-            _config: &ModelConfig,
-            _credentials: &ProviderCredentials,
-        ) -> Result<Box<dyn Model>, ModelError> {
-            Ok(Box::new(TestModel {
-                behavior: self.behavior,
-            }))
-        }
-    }
-
-    struct TestModel {
-        behavior: TestBehavior,
-    }
-
-    impl Model for TestModel {
-        fn provider(&self) -> &str {
-            "application-test"
-        }
-
-        fn model_id(&self) -> &str {
-            "deterministic"
-        }
-
-        fn stream(
-            &mut self,
-            request: ModelRequest<'_>,
-            events: &mut dyn ModelEventSink,
-        ) -> Result<ModelResponse, ModelError> {
-            match self.behavior {
-                TestBehavior::Success => {
-                    std::thread::sleep(Duration::from_millis(100));
-                    events.emit(ModelEvent::TextDelta {
-                        delta: "done".into(),
-                    });
-                    Ok(response("done", FinishReason::Completed))
-                }
-                TestBehavior::SlowTitle => {
-                    // 标题请求（由 instructions 识别）慢 3s；普通对话快返回。
-                    let is_title = request
-                        .instructions
-                        .is_some_and(|text| text.contains("Generate a concise title"));
-                    if is_title {
-                        std::thread::sleep(Duration::from_secs(3));
-                        Ok(response("slow title", FinishReason::Completed))
-                    } else {
-                        std::thread::sleep(Duration::from_millis(50));
-                        events.emit(ModelEvent::TextDelta {
-                            delta: "done".into(),
-                        });
-                        Ok(response("done", FinishReason::Completed))
-                    }
-                }
-                TestBehavior::Failure => {
-                    events.emit(ModelEvent::TextDelta {
-                        delta: "partial".into(),
-                    });
-                    Err(ModelError::new("intentional failure"))
-                }
-                TestBehavior::Cancel => {
-                    events.emit(ModelEvent::TextDelta {
-                        delta: "partial-cancel".into(),
-                    });
-                    while !request.cancel.is_cancelled() {
-                        std::thread::sleep(Duration::from_millis(5));
-                    }
-                    Ok(response("partial-cancel", FinishReason::Cancelled))
-                }
-                TestBehavior::Panic => {
-                    events.emit(ModelEvent::TextDelta {
-                        delta: "partial-panic".into(),
-                    });
-                    panic!("intentional provider panic");
-                }
-                TestBehavior::Todo => {
-                    let has_todo_result = request.items.iter().any(|item| {
-                        matches!(item, crate::model::ModelItem::ToolResult(result) if result.tool_name == "todo_write")
-                    });
-                    if has_todo_result {
-                        events.emit(ModelEvent::TextDelta {
-                            delta: "todos updated".into(),
-                        });
-                        Ok(response("todos updated", FinishReason::Completed))
-                    } else {
-                        Ok(ModelResponse {
-                            text: String::new(),
-                            tool_calls: vec![crate::tool::ToolCall {
-                                id: "call-todo".into(),
-                                name: "todo_write".into(),
-                                arguments: serde_json::json!({
-                                    "todos": [
-                                        {"content": "write tests", "status": "in_progress"},
-                                        {"content": "ship release", "status": "pending"},
-                                    ],
-                                }),
-                            }],
-                            finish_reason: FinishReason::ToolCalls,
-                            usage: None,
-                            provider_response_id: None,
-                            provider_state: Vec::new(),
-                            reasoning: None,
-                        })
-                    }
-                }
-            }
-        }
-    }
-
-    fn response(text: &str, finish_reason: FinishReason) -> ModelResponse {
-        ModelResponse {
-            text: text.into(),
-            tool_calls: Vec::new(),
-            finish_reason,
-            usage: Some(Usage {
-                input_tokens: 2,
-                output_tokens: 3,
-                ..Usage::default()
-            }),
-            provider_response_id: None,
-            provider_state: Vec::new(),
-            reasoning: None,
-        }
-    }
-
-    #[derive(Clone)]
-    struct SharedEvents(Arc<Mutex<Vec<RunEvent>>>);
-
-    impl EventSink for SharedEvents {
-        fn emit(&mut self, event: RunEvent) {
-            self.0.lock().expect("events").push(event);
-        }
-    }
-
-    /// 计数 approver：SessionWrite 免审意味着 todo run 期间零调用。
-    struct CountingApprover(Arc<std::sync::atomic::AtomicUsize>);
-
-    impl PermissionApprover for CountingApprover {
-        fn decide(&self, _request: PermissionRequest) -> PermissionDecision {
-            self.0.fetch_add(1, Ordering::SeqCst);
-            PermissionDecision::Allow
         }
     }
 
@@ -1907,6 +1741,36 @@ mod tests {
             "todo snapshot must survive reopening without an explicit switch"
         );
         drop(application);
+        fs::remove_dir_all(storage_root).expect("remove storage");
+        fs::remove_dir_all(project_root).expect("remove project");
+    }
+
+    /// 不变量：switch_session 只接受存在的会话。修复前对未知 id 静默
+    /// "成功"，current_session 指向不存在的行，run 持久化时才触发
+    /// 外键错误（headless `--session` 手输 id 暴露了这条路径）。
+    #[test]
+    fn switch_session_rejects_unknown_session_ids() {
+        let (storage_root, project_root) = roots("switch-unknown-session");
+        fs::create_dir_all(&project_root).expect("project");
+        let project = Project::new(&project_root);
+        let bootstrap =
+            BootstrapApplication::open(project.clone(), storage_root.clone()).expect("bootstrap");
+        bootstrap.trust_project().expect("trust");
+        let mut application = bootstrap
+            .into_trusted_with_provider(Arc::new(TestProviderPlugin {
+                behavior: TestBehavior::Success,
+            }))
+            .expect("trusted");
+        let error = application
+            .switch_session(9999)
+            .expect_err("unknown id must be rejected");
+        assert!(error.to_string().contains("session 9999"), "{error}");
+        assert_eq!(
+            application.current_session_id(),
+            None,
+            "failed switch must not move the current pointer"
+        );
+        application.close().expect("close");
         fs::remove_dir_all(storage_root).expect("remove storage");
         fs::remove_dir_all(project_root).expect("remove project");
     }
@@ -2136,6 +2000,13 @@ mod tests {
             }
             fn touch_session(&self, _session_id: i64) -> Result<(), StoreError> {
                 Ok(())
+            }
+            fn session_exists(
+                &self,
+                _project: &Project,
+                _session_id: i64,
+            ) -> Result<bool, StoreError> {
+                Ok(true)
             }
             fn set_session_title(&self, _session_id: i64, _title: &str) -> Result<(), StoreError> {
                 Ok(())
@@ -2726,35 +2597,6 @@ mod tests {
         }
     }
 
-    fn configure_test_model(application: &TrustedProjectApplication) {
-        let config = ModelConfig {
-            model: "deterministic".into(),
-            endpoint: "https://application-test.invalid".into(),
-            ..ModelConfig::default()
-        };
-        let credentials = ProviderCredentials::for_protocol(config.protocol);
-        application
-            .save_model_state(&config, &credentials)
-            .expect("save test model");
-    }
-
-    fn configure_test_model_with_budget(
-        application: &TrustedProjectApplication,
-        max_context_tokens: u32,
-    ) {
-        let config = ModelConfig {
-            model: "deterministic".into(),
-            endpoint: "https://application-test.invalid".into(),
-            output_limit: Some(256),
-            max_context_tokens: Some(max_context_tokens),
-            ..ModelConfig::default()
-        };
-        let credentials = ProviderCredentials::for_protocol(config.protocol);
-        application
-            .save_model_state(&config, &credentials)
-            .expect("save test model");
-    }
-
     /// P1 切片修正（D.3.14）：压缩发生后，本轮新 items 必须全部落盘——
     /// `skip` 从 view 长度起算，静默丢持久化即失败。
     #[test]
@@ -2841,6 +2683,83 @@ mod tests {
         fs::remove_dir_all(project_root).expect("remove project");
     }
 
+    /// TUI-L05：自动压缩摘要失败时只采用降级视图，不得把“视图可用”
+    /// 当成“压缩成功”。修复前 `marker == None` 被折算成 adopted=true，
+    /// 前端因此清掉仍有效的 Context 水位。
+    #[test]
+    fn automatic_compaction_degradation_is_reported_as_unsuccessful() {
+        let (storage_root, project_root) = roots("auto-compaction-degraded-status");
+        fs::create_dir_all(&project_root).expect("project");
+        let project = Project::new(&project_root);
+        let bootstrap =
+            BootstrapApplication::open(project, storage_root.clone()).expect("bootstrap");
+        bootstrap.trust_project().expect("trust");
+        let mut application = bootstrap
+            .into_trusted_with_provider(Arc::new(TestProviderPlugin {
+                behavior: TestBehavior::CompactionFailure,
+            }))
+            .expect("trusted");
+        configure_test_model_with_budget(&application, 4_000);
+
+        let mut seeds = Vec::new();
+        for index in 0..20 {
+            seeds.push(ModelItem::user_text(format!(
+                "seed turn {index}: {}",
+                "x".repeat(300)
+            )));
+            seeds.push(ModelItem::assistant_text(format!(
+                "seed answer {index}: {}",
+                "y".repeat(300)
+            )));
+        }
+
+        let (event_sender, event_receiver) = mpsc::channel();
+        application.subscribe(event_sender);
+        let (completion, completed) = mpsc::channel();
+        let handle = application
+            .start_run(ApplicationRunRequest {
+                prompt: "run despite failed summary".into(),
+                legacy_seed_items: seeds,
+                approver: Arc::new(|_| PermissionDecision::Allow),
+                events: Box::new(Vec::<RunEvent>::new()),
+                completion,
+            })
+            .expect("start");
+        handle.join().expect("join");
+        assert_eq!(
+            completed
+                .recv_timeout(Duration::from_secs(10))
+                .expect("completion")
+                .expect("run succeeds after degradation")
+                .output,
+            "done"
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (note, succeeded) = loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let event = event_receiver
+                .recv_timeout(remaining)
+                .expect("automatic compaction completion event");
+            if let ApplicationEvent::CompactionUpdated(CompactionStatus::Finished {
+                note,
+                succeeded,
+            }) = event
+            {
+                break (note, succeeded);
+            }
+        };
+        assert!(note.starts_with("compaction degraded:"), "note: {note}");
+        assert!(
+            !succeeded,
+            "a degraded view without a persisted marker is not a successful compaction"
+        );
+
+        application.close().expect("close");
+        fs::remove_dir_all(storage_root).expect("remove storage");
+        fs::remove_dir_all(project_root).expect("remove project");
+    }
+
     /// 手动 `/compact`：成功落 marker 并经 ApplicationEvent 报告。
     #[test]
     fn manual_compaction_persists_marker_and_reports() {
@@ -2872,8 +2791,8 @@ mod tests {
             assert!(completed.recv_timeout(Duration::from_secs(10)).is_ok());
         }
 
-        // INV-C11：手动压缩必须经 ApplicationEvent 报告——启动 None
-        // （"compacting…"）+ 完成带结果文本。
+        // INV-C11：手动压缩必须经 ApplicationEvent 报告——启动 Started
+        // （"compacting…"）+ 完成带结果文本与成功标志。
         let (event_sender, event_receiver) = mpsc::channel();
         application.subscribe(event_sender);
         let handle = application.compact_session().expect("compact");
@@ -2881,16 +2800,46 @@ mod tests {
         let started = event_receiver
             .recv_timeout(Duration::from_secs(5))
             .expect("start event");
-        assert_eq!(started, ApplicationEvent::CompactionUpdated(None));
+        assert_eq!(
+            started,
+            ApplicationEvent::CompactionUpdated(CompactionStatus::Started)
+        );
         let finished = event_receiver
             .recv_timeout(Duration::from_secs(5))
             .expect("finish event");
-        let ApplicationEvent::CompactionUpdated(Some(note)) = finished else {
+        let ApplicationEvent::CompactionUpdated(CompactionStatus::Finished { note, succeeded }) =
+            finished
+        else {
             panic!("expected a completion note, got {finished:?}");
         };
         assert!(
             note.starts_with("compacted"),
             "completion note should report the outcome: {note}"
+        );
+        assert!(succeeded, "successful compaction must be marked succeeded");
+
+        // 失败路径（TUI-L05）：内容已全部被上一轮 marker 覆盖，二次手动
+        // 压缩必然失败——事件必须标记 succeeded: false，前端据此保留
+        // 仍有效的上下文水位。
+        let handle = application.compact_session().expect("compact again");
+        handle.join().expect("join");
+        let _started = event_receiver
+            .recv_timeout(Duration::from_secs(5))
+            .expect("start event");
+        let failed = event_receiver
+            .recv_timeout(Duration::from_secs(5))
+            .expect("fail event");
+        let ApplicationEvent::CompactionUpdated(CompactionStatus::Finished {
+            note: failed_note,
+            succeeded: failed_succeeded,
+        }) = failed
+        else {
+            panic!("expected a finished event, got {failed:?}");
+        };
+        assert!(!failed_succeeded, "second compact has nothing new to cover");
+        assert!(
+            failed_note.starts_with("compaction failed"),
+            "failure note: {failed_note}"
         );
         let session_id = application.current_session_id().expect("session");
         let items = {
@@ -2911,12 +2860,116 @@ mod tests {
         fs::remove_dir_all(project_root).expect("remove project");
     }
 
-    fn roots(name: &str) -> (PathBuf, PathBuf) {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos();
-        let base = std::env::temp_dir().join(format!("clat-application-{name}-{unique}"));
-        (base.join("storage"), base.join("project"))
+    /// INV-A：用户显式选择的思考档位必须经 `model_state()` 存活。每次
+    /// 加载 `preset.apply` 都会整体重置 `extra_body`，一等字段在回填
+    /// 之后二次应用——回写缺失时档位被清回预设默认 "high"。
+    #[test]
+    fn persisted_thinking_level_survives_preset_reapplication() {
+        let (storage_root, project_root) = roots("thinking-level");
+        fs::create_dir_all(&project_root).expect("project");
+        let project = Project::new(&project_root);
+        let bootstrap =
+            BootstrapApplication::open(project.clone(), storage_root.clone()).expect("bootstrap");
+        bootstrap.trust_project().expect("trust");
+        let application = bootstrap.into_trusted().expect("trusted");
+
+        let mut config = ModelConfig::default();
+        preset_by_id("deepseek-v4-pro")
+            .expect("preset")
+            .apply(&mut config);
+        config.thinking_level = Some(crate::model::ThinkingLevel::Max);
+        application
+            .save_model_state(&config, &ProviderCredentials::for_protocol(config.protocol))
+            .expect("save model state");
+
+        let (loaded, _) = application.model_state().expect("model state");
+        assert_eq!(
+            loaded.thinking_level,
+            Some(crate::model::ThinkingLevel::Max)
+        );
+        assert_eq!(loaded.extra_body["reasoning_effort"], "max");
+        assert_eq!(loaded.extra_body["thinking"]["type"], "enabled");
+        // DeepSeek 思考对象不带 clear_thinking，写入不应臆造该键。
+        assert!(
+            loaded.extra_body["thinking"]
+                .get("clear_thinking")
+                .is_none()
+        );
+
+        application.close().expect("close");
+        fs::remove_dir_all(storage_root).expect("remove storage");
+        fs::remove_dir_all(project_root).expect("remove project");
+    }
+
+    /// GLM 路径同一条不变量：二次应用必须保留 Coding Plan 的
+    /// `clear_thinking: false`，快捷档位选择时写 `enabled`（GLM 5.3
+    /// 官方不可关闭思考，`disabled` 会让请求失败）。
+    #[test]
+    fn glm_thinking_level_reapplication_keeps_clear_thinking() {
+        let (storage_root, project_root) = roots("thinking-level-glm");
+        fs::create_dir_all(&project_root).expect("project");
+        let project = Project::new(&project_root);
+        let bootstrap =
+            BootstrapApplication::open(project.clone(), storage_root.clone()).expect("bootstrap");
+        bootstrap.trust_project().expect("trust");
+        let application = bootstrap.into_trusted().expect("trusted");
+
+        let mut config = ModelConfig::default();
+        preset_by_id("glm-5.3").expect("preset").apply(&mut config);
+        config.thinking_level = Some(crate::model::ThinkingLevel::High);
+        application
+            .save_model_state(&config, &ProviderCredentials::for_protocol(config.protocol))
+            .expect("save model state");
+
+        let (loaded, _) = application.model_state().expect("model state");
+        assert_eq!(loaded.extra_body["reasoning_effort"], "high");
+        assert_eq!(loaded.extra_body["thinking"]["type"], "enabled");
+        assert_eq!(loaded.extra_body["thinking"]["clear_thinking"], false);
+
+        application.close().expect("close");
+        fs::remove_dir_all(storage_root).expect("remove storage");
+        fs::remove_dir_all(project_root).expect("remove project");
+    }
+
+    /// F1（对抗式审查）：思考档位只属于 DeepSeek/GLM。用户在编辑器里
+    /// 把端点改成其它厂商（改 endpoint 只置 Custom、不清字段）后，
+    /// 一等字段不得再向请求体注入 `thinking`/`reasoning_effort`——
+    /// 严格网关（如 OpenAI）拒绝未知参数，且字段在编辑器中不可见。
+    #[test]
+    fn thinking_level_is_not_injected_into_other_vendor_endpoints() {
+        let (storage_root, project_root) = roots("thinking-level-other");
+        fs::create_dir_all(&project_root).expect("project");
+        let project = Project::new(&project_root);
+        let bootstrap =
+            BootstrapApplication::open(project.clone(), storage_root.clone()).expect("bootstrap");
+        bootstrap.trust_project().expect("trust");
+        let application = bootstrap.into_trusted().expect("trusted");
+
+        // 模拟"GLM 下 Shift+Tab 后把端点改成 OpenAI"的持久化结果：
+        // 字段仍在，extra_body 已是目标端点的干净配置。
+        let config = ModelConfig {
+            model: "gpt-custom".into(),
+            endpoint: "https://api.openai.com/v1".into(),
+            thinking_level: Some(crate::model::ThinkingLevel::Max),
+            extra_body: serde_json::json!({}),
+            ..ModelConfig::default()
+        };
+        application
+            .save_model_state(&config, &ProviderCredentials::for_protocol(config.protocol))
+            .expect("save model state");
+
+        let (loaded, _) = application.model_state().expect("model state");
+        assert!(
+            loaded.extra_body.get("reasoning_effort").is_none(),
+            "must not inject reasoning_effort into non-DeepSeek/GLM endpoints"
+        );
+        assert!(
+            loaded.extra_body.get("thinking").is_none(),
+            "must not inject thinking into non-DeepSeek/GLM endpoints"
+        );
+
+        application.close().expect("close");
+        fs::remove_dir_all(storage_root).expect("remove storage");
+        fs::remove_dir_all(project_root).expect("remove project");
     }
 }
