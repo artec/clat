@@ -50,6 +50,16 @@
     }
     .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; letter-spacing: 0.06em; }
     .brand img { width: 28px; height: 28px; border-radius: 7px; }
+    /* logo 字标：默认收起为 CLAT，悬停展开为 cmd-Line AgenT。
+       无底卡、贴左对齐；slot 预留展开宽度，svg 绝对定位，伸缩不引起导航重排。 */
+    .brand .logo-slot { position: relative; margin-top: 3px; height: 44px; user-select: none; }
+    .brand .logo-slot svg {
+      position: absolute; top: 0; left: 0; display: block;
+      width: 52px; height: 44px;
+      transition: width 0.45s cubic-bezier(0.34, 1.4, 0.64, 1);
+    }
+    .brand .logo-slot svg:hover { width: 158px; }
+    @media (max-width: 480px) { .brand .logo-slot { width: 56px; } }
     nav .links { display: flex; gap: 20px; font-size: 0.9rem; }
 
     /* hero */
@@ -194,7 +204,83 @@
 <body>
   <div class="wrap">
     <nav>
-      <div class="brand"><img src="logo.png" alt="CLAT logo">CLAT</div>
+      <div class="brand">
+        <img src="logo.png" alt="CLAT logo">
+        <span class="logo-slot">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 370 90" preserveAspectRatio="xMinYMid slice" role="img" aria-label="CLAT">
+            <defs>
+              <style>
+                .char {
+                  fill: var(--fg);
+                  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                  font-size: 38px;
+                  font-weight: 800;
+                }
+
+                /* 基础平移动画配置（带弹性回弹） */
+                .movable {
+                  transition: transform 0.45s cubic-bezier(0.34, 1.4, 0.64, 1);
+                }
+
+                /* 收起状态：精确对齐成字距均匀的 CLAT */
+                .move-l { transform: translateX(-74px); }
+                .move-a { transform: translateX(-144px); }
+                .move-t { transform: translateX(-212px); }
+
+                /* 中间折叠组 */
+                .collapsible {
+                  opacity: 0;
+                  pointer-events: none;
+                  transition: opacity 0.25s ease, transform 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+                }
+                .fold-1 { transform: translateX(-10px) scale(0.6); transform-origin: 30px 50%; }
+                .fold-2 { transform: translateX(-10px) scale(0.6); transform-origin: 126px 50%; }
+                .fold-3 { transform: translateX(-10px) scale(0.6); transform-origin: 221px 50%; }
+
+                /* 悬停展开状态 (Hover) */
+                svg:hover .movable { transform: translateX(0); }
+                svg:hover .collapsible { opacity: 1; transform: translateX(0) scale(1); }
+              </style>
+            </defs>
+
+            <!-- 文字组（x 平移 34→0，字标贴左） -->
+            <g transform="translate(0, 56)">
+              <!-- 1. C (固定基准) -->
+              <text class="char" x="0" y="0">C</text>
+
+              <!-- 2. md- -->
+              <g class="collapsible fold-1">
+                <text class="char" x="28" y="0">md-</text>
+              </g>
+
+              <!-- 3. L (保持在 102px) -->
+              <g class="movable move-l">
+                <text class="char" x="102" y="0">L</text>
+              </g>
+
+              <!-- 4. ine  -->
+              <g class="collapsible fold-2">
+                <text class="char" x="126" y="0">ine </text>
+              </g>
+
+              <!-- 5. A -->
+              <g class="movable move-a">
+                <text class="char" x="196" y="0">A</text>
+              </g>
+
+              <!-- 6. gen -->
+              <g class="collapsible fold-3">
+                <text class="char" x="224" y="0">gen</text>
+              </g>
+
+              <!-- 7. T (微调：x 从 288 -> 290，往右 2px) -->
+              <g class="movable move-t">
+                <text class="char" x="290" y="0">T</text>
+              </g>
+            </g>
+          </svg>
+        </span>
+      </div>
       <div class="links">
         <a href="https://github.com/artec/clat">GitHub</a>
         <a href="https://github.com/artec/clat/releases">Releases</a>
