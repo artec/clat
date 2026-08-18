@@ -43,7 +43,7 @@ pub struct ExecArgs {
     /// stdin 作为 prompt；与管道 stdin 同时存在时二者按 INV-6 合并。
     pub prompt: Option<String>,
     pub continue_session: bool,
-    pub session: Option<i64>,
+    pub session: Option<String>,
     pub yes: bool,
     pub trust: bool,
     pub quiet: bool,
@@ -76,11 +76,12 @@ where
                 let value = iter
                     .next()
                     .ok_or_else(|| "--session requires a session id".to_string())?;
-                parsed.session = Some(
-                    value
-                        .parse()
-                        .map_err(|_| format!("invalid session id: {value}"))?,
-                );
+                if value.trim().is_empty() {
+                    return Err("invalid session id: empty".to_string());
+                }
+                // DSH SessionId 是开放字符串（CLAT 生成 UUID）；不在此
+                // 强加格式，resume 时的存在性校验才是权威。
+                parsed.session = Some(value.to_string());
             }
             "--" => positional_only = true,
             other if other.starts_with('-') && other != "-" => {
@@ -447,12 +448,18 @@ where
         Ok(bootstrap) => bootstrap,
         Err(error) => return ExecOutcome::Failure(error.to_string()),
     };
-    // INV-2：未信任 → 只做过 trust 查询即退出；--trust 是唯一非交互通路。
-    match bootstrap.is_trusted() {
-        Ok(true) => {}
+    // INV-2：未信任 → 只读检查即退出；--trust 是唯一非交互通路，经
+    // 一次性 ProjectAuthorization + authorize_and_mount（无独立
+    // trust 写入口，plan §16 阶段5）。
+    let mut application = match bootstrap.is_trusted() {
+        Ok(true) => match into_trusted(bootstrap) {
+            Ok(application) => application,
+            Err(error) => return ExecOutcome::Failure(error.to_string()),
+        },
         Ok(false) if args.trust => {
-            if let Err(error) = bootstrap.trust_project() {
-                return ExecOutcome::Failure(error.to_string());
+            match bootstrap.authorize_and_mount(crate::ProjectAuthorization::grant()) {
+                Ok(application) => application,
+                Err(error) => return ExecOutcome::Failure(error.to_string()),
             }
         }
         Ok(false) => {
@@ -463,39 +470,32 @@ where
             );
         }
         Err(error) => return ExecOutcome::Failure(error.to_string()),
-    }
-    let mut application = match into_trusted(bootstrap) {
-        Ok(application) => application,
-        Err(error) => return ExecOutcome::Failure(error.to_string()),
     };
 
     // 会话策略：默认新会话（脚本可预测）；--continue / --session 显式续接。
     if let Err(error) = apply_session_policy(&mut application, &args) {
-        let _ = application.close();
-        return ExecOutcome::Failure(error);
+        return close_application(application, ExecOutcome::Failure(error));
     }
 
     let (config, _credentials) = match application.model_state() {
         Ok(state) => state,
         Err(error) => {
-            let _ = application.close();
-            return ExecOutcome::Failure(error.to_string());
+            return close_application(application, ExecOutcome::Failure(error.to_string()));
         }
     };
     if !config.is_configured() {
-        let _ = application.close();
-        return ExecOutcome::Failure(
-            "model is not configured — run `clat` and use /model to configure a model".into(),
+        return close_application(
+            application,
+            ExecOutcome::Failure(
+                "model is not configured — run `clat` and use /model to configure a model".into(),
+            ),
         );
     }
 
     // INV-6：prompt 在信任门/模型检查之后才读 stdin（无效调用不吞输入）。
     let prompt = match resolve_prompt(&args, &io, MAX_STDIN_BYTES) {
         Ok(prompt) => prompt,
-        Err(outcome) => {
-            let _ = application.close();
-            return outcome;
-        }
+        Err(outcome) => return close_application(application, outcome),
     };
 
     // 压缩状态可见性（ApplicationEvent 只是展示通道，不进入退出语义）。
@@ -536,15 +536,13 @@ where
     let (completion_tx, completion_rx) = mpsc::channel();
     let handle = match application.start_run(ApplicationRunRequest {
         prompt,
-        legacy_seed_items: Vec::new(),
         approver,
         events: Box::new(sink),
         completion: completion_tx,
     }) {
         Ok(handle) => handle,
         Err(error) => {
-            let _ = application.close();
-            return ExecOutcome::Failure(error.to_string());
+            return close_application(application, ExecOutcome::Failure(error.to_string()));
         }
     };
     // 发布 handle 会兑现句柄就位前的 pending Ctrl-C；stdout failure
@@ -557,14 +555,15 @@ where
         Err(_) => {
             let _ = handle.join();
             cancel.detach();
-            let _ = application.close();
-            return ExecOutcome::Failure("run worker exited without a result".into());
+            return close_application(
+                application,
+                ExecOutcome::Failure("run worker exited without a result".into()),
+            );
         }
     };
     if let Err(error) = handle.join() {
         cancel.detach();
-        let _ = application.close();
-        return ExecOutcome::Failure(error.to_string());
+        return close_application(application, ExecOutcome::Failure(error.to_string()));
     }
     cancel.detach();
 
@@ -611,14 +610,6 @@ where
         Err(failure) => ExecOutcome::Failure(failure.error),
     };
 
-    // INV-5：干净退出。run 失败也要走 close（join 后台 worker、flush
-    // todo），随后 join 状态转发线程并排空最后的状态事件。
-    let _ = application.delete_current_if_empty();
-    let closed = application.close();
-    if let Some(forwarder) = forwarder.as_mut() {
-        forwarder.join();
-    }
-
     // HL-04：输出写失败不得伪装成功。取消（下游已关）+ 成功都改判失败；
     // 已有失败保留原错误并追加 I/O 错误。
     let io_failure = io_state.take_first_error();
@@ -633,9 +624,36 @@ where
         (Some(_), outcome @ ExecOutcome::UsageError(_)) => outcome,
         (None, outcome) => outcome,
     };
-    match closed {
+
+    // INV-5：干净退出。run 失败也要走 close（join 后台 worker、flush
+    // 会话与 checkpoint）；close 必须先于 forwarder.join——monitor 的
+    // sender 在 close 内释放，通道关闭后转发线程才能排空退出。
+    let closed_outcome = close_application(application, outcome);
+    if let Some(forwarder) = forwarder.as_mut() {
+        forwarder.join();
+    }
+    closed_outcome
+}
+
+/// 观察每个退出路径上的 application.close()（审计 P2-01）：早退不再吞掉
+/// flush/join 失败；已有失败时追加而不是覆盖，用户能同时看到主错误与
+/// 持久化收尾错误。
+fn close_application(application: TrustedProjectApplication, outcome: ExecOutcome) -> ExecOutcome {
+    match application.close() {
         Ok(()) => outcome,
-        Err(error) => ExecOutcome::Failure(format!("application close failed: {error}")),
+        Err(error) => match outcome {
+            ExecOutcome::Failure(message) => {
+                ExecOutcome::Failure(format!("{message}; application close failed: {error}"))
+            }
+            // UsageError keeps its exit-code contract, but the close
+            // failure still reaches the user (never swallowed).
+            ExecOutcome::UsageError(message) => {
+                ExecOutcome::UsageError(format!("{message}; application close failed: {error}"))
+            }
+            ExecOutcome::Success { .. } | ExecOutcome::Cancelled { .. } => {
+                ExecOutcome::Failure(format!("application close failed: {error}"))
+            }
+        },
     }
 }
 
@@ -703,14 +721,32 @@ fn apply_session_policy(
     args: &ExecArgs,
 ) -> Result<(), String> {
     if args.continue_session {
-        if application.current_session_id().is_none() {
-            return Err("no session to continue".into());
+        // 优先 workspace 选择；缺失时回退该项目最近会话（plan §13.1
+        // 的回退语义，不再复刻旧 SQLite 秒级排序细节）。
+        if application.current_session_id().is_some() {
+            return Ok(());
         }
-        return Ok(());
+        let sessions = application
+            .list_sessions()
+            .map_err(|error| error.to_string())?;
+        let most_recent = sessions.first().cloned();
+        return match most_recent {
+            Some(session) => {
+                let display_id = session.id.to_string();
+                application
+                    .switch_session(session.id)
+                    .map(|_| ())
+                    .map_err(move |error| {
+                        format!("could not switch to session {display_id}: {error}")
+                    })
+            }
+            None => Err("no session to continue".into()),
+        };
     }
-    if let Some(id) = args.session {
+    if let Some(id) = args.session.clone() {
+        let session_id = crate::SessionId::new(id.clone());
         return application
-            .switch_session(id)
+            .switch_session(session_id)
             .map(|_| ())
             .map_err(|error| format!("could not switch to session {id}: {error}"));
     }
@@ -779,7 +815,7 @@ impl PermissionApprover for ExecApprover {
     fn decide(&self, request: PermissionRequest) -> PermissionDecision {
         match self.mode {
             PermissionMode::AllowAll => PermissionDecision::Allow,
-            PermissionMode::NonInteractive => PermissionDecision::Deny {
+            PermissionMode::NonInteractive => PermissionDecision::Unavailable {
                 reason: format!(
                     "non-interactive run denied `{}`; pass --yes to allow side effects",
                     request.tool
@@ -804,7 +840,7 @@ impl PermissionApprover for ExecApprover {
                     self.io_state.note("stderr", error);
                 }
                 let Some(input) = &self.input else {
-                    return PermissionDecision::Deny {
+                    return PermissionDecision::Unavailable {
                         reason: "interactive input is unavailable".into(),
                     };
                 };
@@ -823,10 +859,10 @@ impl PermissionApprover for ExecApprover {
                     ExecPermissionAnswer::Interrupted => PermissionDecision::Deny {
                         reason: "interrupted by user".into(),
                     },
-                    ExecPermissionAnswer::Closed => PermissionDecision::Deny {
+                    ExecPermissionAnswer::Closed => PermissionDecision::Unavailable {
                         reason: "no answer available (stdin closed)".into(),
                     },
-                    ExecPermissionAnswer::Error(error) => PermissionDecision::Deny {
+                    ExecPermissionAnswer::Error(error) => PermissionDecision::Unavailable {
                         reason: format!("permission input failed: {error}"),
                     },
                 }
@@ -951,9 +987,8 @@ mod tests {
     fn prepare_storage(project: &Project, storage_root: &std::path::Path, behavior: TestBehavior) {
         let bootstrap =
             BootstrapApplication::open(project.clone(), storage_root.to_path_buf()).unwrap();
-        bootstrap.trust_project().unwrap();
         let application = bootstrap
-            .into_trusted_with_provider(Arc::new(TestProviderPlugin { behavior }))
+            .authorize_and_mount_with_provider(Arc::new(TestProviderPlugin { behavior }))
             .unwrap();
         crate::test_support::configure_test_model(&application);
         application.close().unwrap();
@@ -990,7 +1025,8 @@ mod tests {
             args,
             io,
             |bootstrap| {
-                bootstrap.into_trusted_with_provider(Arc::new(TestProviderPlugin { behavior }))
+                bootstrap
+                    .authorize_and_mount_with_provider(Arc::new(TestProviderPlugin { behavior }))
             },
             cancel,
         )
@@ -1004,7 +1040,10 @@ mod tests {
     }
 
     /// 重开应用读取最近会话的首条 user 消息（持久化断言用）。
-    fn persisted_user_message(project: &Project, storage_root: &std::path::Path) -> (i64, String) {
+    fn persisted_user_message(
+        project: &Project,
+        storage_root: &std::path::Path,
+    ) -> (crate::SessionId, String) {
         let bootstrap =
             BootstrapApplication::open(project.clone(), storage_root.to_path_buf()).unwrap();
         let application = bootstrap
@@ -1013,9 +1052,13 @@ mod tests {
             }))
             .unwrap();
         let id = application.current_session_id().expect("session");
-        let messages = application.snapshot().unwrap().messages;
+        let transcript = application.snapshot().unwrap().transcript;
         application.close().unwrap();
-        (id, messages[0].content.clone())
+        let first_user = transcript
+            .iter()
+            .find(|line| line.kind == "user")
+            .expect("a user line");
+        (id, first_user.text.clone())
     }
 
     // ---- 参数解析 ----
@@ -1041,14 +1084,14 @@ mod tests {
         assert!(parse_exec_args(["--yolo".into()]).is_err());
         assert!(parse_exec_args(["a".into(), "b".into()]).is_err());
         assert!(parse_exec_args(["--session".into()]).is_err());
-        assert!(parse_exec_args(["--session".into(), "x".into()]).is_err());
+        assert!(parse_exec_args(["--session".into(), " ".into()]).is_err());
         assert!(parse_exec_args(["--continue".into(), "--session".into(), "1".into()]).is_err());
     }
 
     #[test]
-    fn parse_session_id_is_numeric() {
-        let parsed = parse_exec_args(["--session".into(), "42".into()]).unwrap();
-        assert_eq!(parsed.session, Some(42));
+    fn parse_session_id_is_an_opaque_string() {
+        let parsed = parse_exec_args(["--session".into(), "0f8c2a4e-uuid-like-id".into()]).unwrap();
+        assert_eq!(parsed.session.as_deref(), Some("0f8c2a4e-uuid-like-id"));
     }
 
     #[test]
@@ -1166,9 +1209,8 @@ mod tests {
         }
         // 信任门失败 → 没有会话被创建。
         let bootstrap = BootstrapApplication::open(project, storage_root.clone()).unwrap();
-        bootstrap.trust_project().unwrap();
         let application = bootstrap
-            .into_trusted_with_provider(Arc::new(TestProviderPlugin {
+            .authorize_and_mount_with_provider(Arc::new(TestProviderPlugin {
                 behavior: TestBehavior::Success,
             }))
             .unwrap();
@@ -1185,7 +1227,8 @@ mod tests {
         // 预置信任 + 模型，再撤销信任：--trust 必须走真正的重信任路径。
         prepare_storage(&project, &storage_root, TestBehavior::Success);
         let bootstrap = BootstrapApplication::open(project.clone(), storage_root.clone()).unwrap();
-        bootstrap.untrust_project().unwrap();
+        // 撤销信任经控制面 remove_trust；TrustedProjectApplication 不再
+        // 暴露写入口（untrust 是 Ready 控制面上的独立命令）。
         drop(bootstrap);
         let mut options = args(Some("hi"));
         options.trust = true;
@@ -1400,10 +1443,15 @@ mod tests {
                 behavior: TestBehavior::Success,
             }))
             .unwrap();
-        let messages = application.snapshot().unwrap().messages;
+        let transcript = application.snapshot().unwrap().transcript;
         application.close().unwrap();
-        assert_eq!(messages.len(), 4, "second run must append to the session");
-        assert_eq!(messages[2].content, "plain instruction");
+        let user_lines: Vec<&str> = transcript
+            .iter()
+            .filter(|line| line.kind == "user")
+            .map(|line| line.text.as_str())
+            .collect();
+        assert_eq!(user_lines.len(), 2, "second run must append to the session");
+        assert!(user_lines[1].contains("plain instruction"));
         fs::remove_dir_all(storage_root).ok();
         fs::remove_dir_all(project_root).ok();
     }
@@ -1607,6 +1655,7 @@ mod tests {
             effect: ToolEffect::Write,
             reason: "test".into(),
             arguments: serde_json::json!({}),
+            call_id: "call-1".into(),
         });
         assert!(
             matches!(&decision, PermissionDecision::Deny { reason } if reason.contains("interrupted")),
@@ -1644,7 +1693,7 @@ mod tests {
                     behavior: TestBehavior::Success,
                 }))
                 .unwrap();
-            assert_eq!(application.snapshot().unwrap().messages.len(), 2);
+            assert_eq!(application.snapshot().unwrap().transcript.len(), 2);
             application.close().unwrap();
         }
 
@@ -1659,8 +1708,8 @@ mod tests {
                 behavior: TestBehavior::Success,
             }))
             .unwrap();
-        assert_eq!(application.current_session_id(), Some(session_id));
-        assert_eq!(application.snapshot().unwrap().messages.len(), 4);
+        assert_eq!(application.current_session_id(), Some(session_id.clone()));
+        assert_eq!(application.snapshot().unwrap().transcript.len(), 4);
         application.close().unwrap();
 
         // 默认（无 --continue）→ 新会话，不污染旧会话。
@@ -1680,7 +1729,7 @@ mod tests {
             .unwrap();
         let fresh_id = application.current_session_id().expect("fresh session");
         assert_ne!(fresh_id, session_id);
-        assert_eq!(application.snapshot().unwrap().messages.len(), 2);
+        assert_eq!(application.snapshot().unwrap().transcript.len(), 2);
         application.close().unwrap();
         fs::remove_dir_all(storage_root).ok();
         fs::remove_dir_all(project_root).ok();
@@ -1700,7 +1749,7 @@ mod tests {
             other => panic!("expected failure, got {other:?}"),
         }
         let mut options = args(Some("hi"));
-        options.session = Some(9999);
+        options.session = Some("9999".into());
         let (io, _) = ExecIo::capture(b"");
         match exec(&project, &storage_root, TestBehavior::Success, options, io) {
             ExecOutcome::Failure(message) => {
@@ -1741,10 +1790,15 @@ mod tests {
                 behavior: TestBehavior::Success,
             }))
             .unwrap();
-        let messages = application.snapshot().unwrap().messages;
+        let transcript = application.snapshot().unwrap().transcript;
         application.close().unwrap();
-        assert_eq!(messages.len(), 4);
-        assert_eq!(messages[2].content, "second run");
+        let user_lines: Vec<&str> = transcript
+            .iter()
+            .filter(|line| line.kind == "user")
+            .map(|line| line.text.as_str())
+            .collect();
+        assert_eq!(user_lines.len(), 2);
+        assert_eq!(user_lines[1], "second run");
         fs::remove_dir_all(storage_root).ok();
         fs::remove_dir_all(project_root).ok();
     }
@@ -1756,9 +1810,8 @@ mod tests {
         let (storage_root, project_root, project) = setup("exec-unconfigured");
         // 只信任，不配置模型。
         let bootstrap = BootstrapApplication::open(project.clone(), storage_root.clone()).unwrap();
-        bootstrap.trust_project().unwrap();
         bootstrap
-            .into_trusted_with_provider(Arc::new(TestProviderPlugin {
+            .authorize_and_mount_with_provider(Arc::new(TestProviderPlugin {
                 behavior: TestBehavior::Success,
             }))
             .unwrap()

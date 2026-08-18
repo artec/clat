@@ -1,0 +1,107 @@
+//! Capability-held session root and no-follow directory traversal.
+//!
+//! A startup preflight is an admission check, not a lasting filesystem
+//! capability. Every later operation therefore starts from this already-open
+//! root handle and opens the opaque bucket/session components with an atomic
+//! no-follow operation. Replacing any checked parent with a symlink cannot
+//! redirect reads, log writes, or checkpoint publication outside the root.
+
+use crate::session::key::SessionKey;
+use crate::session::path_layout;
+use cap_std::ambient_authority;
+use cap_std::fs::Dir;
+use std::io;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+pub(crate) struct SessionRootDir {
+    display_path: PathBuf,
+    dir: Dir,
+}
+
+impl SessionRootDir {
+    pub(crate) fn open_or_create(path: &Path) -> io::Result<Arc<Self>> {
+        let parent = path
+            .parent()
+            .ok_or_else(|| io::Error::other("session root has no parent"))?;
+        let name = path
+            .file_name()
+            .ok_or_else(|| io::Error::other("session root has no file name"))?;
+        let parent = Dir::open_ambient_dir(parent, ambient_authority())?;
+        match parent.create_dir(name) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+        let dir = open_dir_nofollow(&parent, Path::new(name))?;
+        set_private_dir(&dir)?;
+        dir.try_clone()?.into_std_file().sync_all()?;
+        parent.try_clone()?.into_std_file().sync_all()?;
+        Ok(Arc::new(Self {
+            display_path: path.to_path_buf(),
+            dir,
+        }))
+    }
+
+    pub(crate) fn display_path(&self) -> &Path {
+        &self.display_path
+    }
+
+    pub(crate) fn root(&self) -> io::Result<Dir> {
+        self.dir.try_clone()
+    }
+
+    pub(crate) fn open_session(&self, key: &SessionKey) -> io::Result<Dir> {
+        let bucket = open_dir_nofollow(&self.dir, Path::new(&key.project.bucket))?;
+        open_dir_nofollow(
+            &bucket,
+            Path::new(&path_layout::encode_segment(key.id.as_str())),
+        )
+    }
+
+    pub(crate) fn create_session(&self, key: &SessionKey) -> io::Result<Dir> {
+        let bucket = open_or_create_child(&self.dir, Path::new(&key.project.bucket))?;
+        let session = open_or_create_child(
+            &bucket,
+            Path::new(&path_layout::encode_segment(key.id.as_str())),
+        )?;
+        self.dir.try_clone()?.into_std_file().sync_all()?;
+        bucket.try_clone()?.into_std_file().sync_all()?;
+        session.try_clone()?.into_std_file().sync_all()?;
+        Ok(session)
+    }
+
+    pub(crate) fn open_bucket(&self, bucket: &str) -> io::Result<Dir> {
+        open_dir_nofollow(&self.dir, Path::new(bucket))
+    }
+
+    pub(crate) fn open_child(parent: &Dir, name: &Path) -> io::Result<Dir> {
+        open_dir_nofollow(parent, name)
+    }
+}
+
+fn open_or_create_child(parent: &Dir, name: &Path) -> io::Result<Dir> {
+    match parent.create_dir(name) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error),
+    }
+    let child = open_dir_nofollow(parent, name)?;
+    set_private_dir(&child)?;
+    parent.try_clone()?.into_std_file().sync_all()?;
+    Ok(child)
+}
+
+fn open_dir_nofollow(parent: &Dir, name: &Path) -> io::Result<Dir> {
+    let parent_file = parent.try_clone()?.into_std_file();
+    cap_primitives::fs::open_dir_nofollow(&parent_file, name).map(Dir::from_std_file)
+}
+
+fn set_private_dir(dir: &Dir) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use cap_std::fs::{Permissions, PermissionsExt as _};
+        dir.set_permissions(".", Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}

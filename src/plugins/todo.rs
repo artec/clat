@@ -1,10 +1,9 @@
-//! todo 工具（能力批次 1 / E）。
+//! todo 工具（事件原生版，plan §13.3）。
 //!
 //! `TodoWriteTool` 声明 `ToolEffect::SessionWrite`：只改本会话的本地
 //! 元数据，SafeByDefault 免审——免审来自准确的 effect 分类而非工具名
-//! 特例。执行期只更新内存快照并置 dirty；marker 由 application 在本轮
-//! Run items 持久化之后统一落盘，保证 ToolCall → ToolResult → marker
-//! 的顺序（INV-T4）。
+//! 特例。执行期在绑定的 RunJournal 上追加一条 `todo/write` 事件；恢复
+//! 走 todo 投影，内存快照只是投影的运行时镜像。
 
 use super::services::{
     SESSION_SERVICE_ID, TODO_SERVICE, TODO_SERVICE_ID, TOOL_SERVICE, TOOL_SERVICE_ID, TodoEntry,
@@ -145,8 +144,9 @@ fn parse_entries(arguments: &Value) -> Result<Vec<TodoEntry>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{ModelItem, ProviderState};
-    use crate::plugins::services::TODO_MARKER_PROVIDER;
+    use crate::session::run_journal::{NewSessionEvent, RunJournal, SeqRange};
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     fn entry(content: &str, status: TodoStatus) -> TodoEntry {
         TodoEntry {
@@ -155,12 +155,58 @@ mod tests {
         }
     }
 
+    /// 记录事件供断言的测试 journal；`fail_appends` 可注入持久化失败。
+    #[derive(Default)]
+    struct RecordingJournal {
+        events: Mutex<Vec<NewSessionEvent>>,
+        fail_appends: bool,
+    }
+
+    impl RunJournal for RecordingJournal {
+        fn append_atomic(&self, events: &[NewSessionEvent]) -> Result<SeqRange, String> {
+            if self.fail_appends {
+                return Err("injected journal failure".into());
+            }
+            self.events.lock().unwrap().extend(events.iter().cloned());
+            Ok(SeqRange {
+                start: 0,
+                end_inclusive: 0,
+            })
+        }
+        fn flush(&self) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    fn recording_journal() -> (Arc<RecordingJournal>, Arc<dyn RunJournal>) {
+        let journal = Arc::new(RecordingJournal::default());
+        (
+            Arc::clone(&journal),
+            Arc::clone(&journal) as Arc<dyn RunJournal>,
+        )
+    }
+
+    fn failing_journal() -> Arc<RecordingJournal> {
+        Arc::new(RecordingJournal {
+            events: Mutex::new(Vec::new()),
+            fail_appends: true,
+        })
+    }
+
+    fn session(id: u64) -> crate::SessionId {
+        crate::SessionId::new(format!("session-{id}"))
+    }
+
     /// CB1-06/INV-T3：绑定后才允许写入；未绑定/解绑后/错会话一律拒绝。
-    fn bound_service(session: i64) -> TodoService {
+    fn bound_service(id: u64) -> (TodoService, Arc<RecordingJournal>) {
         let service = TodoService::new();
-        service.restore(Some(session), &[]);
-        assert!(service.bind_run(session), "binding must match the session");
-        service
+        service.restore(Some(session(id)), &[]);
+        let (recording, journal) = recording_journal();
+        assert!(
+            service.bind_run(&session(id), journal),
+            "binding must match the session"
+        );
+        (service, recording)
     }
 
     #[test]
@@ -172,13 +218,18 @@ mod tests {
             .expect_err("unbound write must fail");
         assert!(error.contains("active run"));
         // 恢复到会话但尚未 bind（run 间隙）。
-        service.restore(Some(7), &[]);
+        service.restore(Some(session(7)), &[]);
         assert!(service.write(&[entry("x", TodoStatus::Pending)]).is_err());
         // bind 到**另一个**会话：拒绝。
-        assert!(!service.bind_run(8), "binding a foreign session must fail");
+        let (_, journal) = recording_journal();
+        assert!(
+            !service.bind_run(&session(8), journal),
+            "binding a foreign session must fail"
+        );
         assert!(service.write(&[entry("x", TodoStatus::Pending)]).is_err());
         // 正确 bind：可写；unbind 后再写拒绝。
-        assert!(service.bind_run(7));
+        let (_, journal) = recording_journal();
+        assert!(service.bind_run(&session(7), journal));
         service
             .write(&[entry("x", TodoStatus::Pending)])
             .expect("bound write succeeds");
@@ -187,9 +238,8 @@ mod tests {
     }
 
     #[test]
-    fn write_validates_and_updates_the_snapshot() {
-        let service = bound_service(1);
-        assert!(!service.is_dirty());
+    fn write_validates_appends_an_event_and_updates_the_snapshot() {
+        let (service, journal) = bound_service(1);
         let entries = service
             .write(&[
                 entry("first", TodoStatus::Completed),
@@ -197,7 +247,11 @@ mod tests {
             ])
             .expect("write");
         assert_eq!(entries.len(), 2);
-        assert!(service.is_dirty());
+        let recorded = journal.events.lock().unwrap();
+        assert_eq!(recorded.len(), 1, "exactly one todo/write event");
+        assert_eq!(recorded[0].event_type, "todo/write");
+        assert_eq!(recorded[0].data["todos"][0]["status"], "completed");
+        drop(recorded);
         assert!(service.model_context().is_some());
         // 校验规则：两个 in_progress 拒绝；空内容拒绝；超长拒绝。
         assert!(
@@ -223,66 +277,151 @@ mod tests {
                 )
                 .is_err()
         );
-        // 拒绝的写入不改变既有快照内容之外的 dirty 语义之外的状态。
+        // 拒绝的写入不产生事件、不改变快照。
+        assert_eq!(journal.events.lock().unwrap().len(), 1);
         assert_eq!(service.snapshot().len(), 2);
+        // 相同内容重复写入幂等：不追加事件。
+        service
+            .write(&[
+                entry("first", TodoStatus::Completed),
+                entry("second", TodoStatus::InProgress),
+            ])
+            .expect("idempotent write");
+        assert_eq!(journal.events.lock().unwrap().len(), 1);
     }
 
     #[test]
-    fn empty_list_write_clears_context_but_still_marks_dirty() {
-        let service = bound_service(2);
+    fn empty_list_write_clears_context_and_persists_an_empty_event() {
+        let (service, journal) = bound_service(2);
         service
             .write(&[entry("only", TodoStatus::Pending)])
             .expect("write");
-        service.clear_dirty();
         service.write(&[]).expect("clear");
-        assert!(service.is_dirty());
         assert!(service.model_context().is_none());
-        let marker = service.marker();
-        let ModelItem::ProviderState(state) = &marker else {
-            panic!("todo marker must be a ProviderState item");
-        };
+        let recorded = journal.events.lock().unwrap();
         assert_eq!(
-            state.data,
-            json!({"version": 1, "todos": []}),
-            "explicit clearing must persist an empty marker"
+            recorded[1].data,
+            json!({"todos": []}),
+            "explicit clearing must persist an empty todo/write event"
         );
     }
 
     #[test]
-    fn corrupted_or_unknown_markers_fall_back_safely() {
-        let valid = ModelItem::ProviderState(ProviderState {
-            provider: TODO_MARKER_PROVIDER.into(),
-            data: json!({"version": 1, "todos": [
-                {"content": "keep", "status": "pending"},
-            ]}),
-        });
-        let bad_version = ModelItem::ProviderState(ProviderState {
-            provider: TODO_MARKER_PROVIDER.into(),
-            data: json!({"version": 2, "todos": []}),
-        });
-        let bad_status = ModelItem::ProviderState(ProviderState {
-            provider: TODO_MARKER_PROVIDER.into(),
-            data: json!({"version": 1, "todos": [
-                {"content": "x", "status": "wat"},
-            ]}),
-        });
-        // 末尾损坏 → 回退到更早的合法快照。
-        let items = vec![valid, bad_version.clone(), bad_status.clone()];
+    fn failed_append_leaves_the_published_snapshot_untouched_and_retry_writes() {
         let service = TodoService::new();
-        service.restore(Some(7), &items);
-        assert_eq!(service.snapshot(), vec![entry("keep", TodoStatus::Pending)]);
-        // 全部损坏 → 空清单，无 panic。
-        service.restore(Some(7), &[bad_version, bad_status]);
+        service.restore(Some(session(11)), &[entry("old", TodoStatus::Pending)]);
+        service
+            .bind_run(&session(11), failing_journal() as Arc<dyn RunJournal>)
+            .then_some(())
+            .expect("bind");
+        // 修复前：内存快照先于 append 更新——失败后同一批 todos 会被
+        // 幂等快路吞掉，事件永远不落盘（审计 P1-10 的失败序列）。
+        assert!(
+            service.write(&[entry("new", TodoStatus::Pending)]).is_err(),
+            "the write must fail with the journal"
+        );
+        assert_eq!(
+            service.snapshot(),
+            vec![entry("old", TodoStatus::Pending)],
+            "a failed write must not publish new todo state"
+        );
+        assert!(service.model_context().unwrap().contains("old"));
+        // Retry the same todos through a healthy journal: the event lands.
+        let (healthy, journal) = recording_journal();
+        service.bind_run(&session(11), journal);
+        service
+            .write(&[entry("new", TodoStatus::Pending)])
+            .expect("retry succeeds");
+        let recorded = healthy.events.lock().unwrap();
+        assert_eq!(recorded.len(), 1, "the retried write appends its event");
+        assert_eq!(recorded[0].data["todos"][0]["content"], "new");
+        drop(recorded);
+        assert_eq!(service.snapshot(), vec![entry("new", TodoStatus::Pending)]);
+    }
+
+    struct OverlapDetectingJournal {
+        active_writes: AtomicUsize,
+        overlap: AtomicBool,
+        first_append_seen: AtomicBool,
+    }
+
+    impl RunJournal for OverlapDetectingJournal {
+        fn append_atomic(&self, _events: &[NewSessionEvent]) -> Result<SeqRange, String> {
+            if self.active_writes.fetch_add(1, Ordering::SeqCst) != 0 {
+                self.overlap.store(true, Ordering::SeqCst);
+            }
+            self.first_append_seen.store(true, Ordering::SeqCst);
+            Ok(SeqRange {
+                start: 0,
+                end_inclusive: 0,
+            })
+        }
+
+        fn flush(&self) -> Result<(), String> {
+            // Keep the append→flush operation open long enough for a
+            // parallel caller to overlap on the pre-fix implementation.
+            std::thread::sleep(std::time::Duration::from_millis(40));
+            self.active_writes.fetch_sub(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn concurrent_todo_writes_share_one_commit_and_publish_lane() {
+        let service = Arc::new(TodoService::new());
+        service.restore(Some(session(12)), &[]);
+        let journal = Arc::new(OverlapDetectingJournal {
+            active_writes: AtomicUsize::new(0),
+            overlap: AtomicBool::new(false),
+            first_append_seen: AtomicBool::new(false),
+        });
+        assert!(service.bind_run(&session(12), Arc::clone(&journal) as Arc<dyn RunJournal>));
+
+        let first_service = Arc::clone(&service);
+        let first =
+            std::thread::spawn(move || first_service.write(&[entry("first", TodoStatus::Pending)]));
+        while !journal.first_append_seen.load(Ordering::SeqCst) {
+            std::thread::yield_now();
+        }
+        let second_service = Arc::clone(&service);
+        let second = std::thread::spawn(move || {
+            second_service.write(&[entry("second", TodoStatus::Pending)])
+        });
+        first.join().unwrap().expect("first write");
+        second.join().unwrap().expect("second write");
+
+        assert!(
+            !journal.overlap.load(Ordering::SeqCst),
+            "append→flush→publish transactions must not overlap"
+        );
+        assert_eq!(
+            service.snapshot(),
+            vec![entry("second", TodoStatus::Pending)]
+        );
+    }
+
+    #[test]
+    fn restore_validates_entries_from_the_projection() {
+        let service = TodoService::new();
+        service.restore(
+            Some(session(3)),
+            &[
+                entry("keep", TodoStatus::Pending),
+                entry("x", TodoStatus::InProgress),
+                entry("y", TodoStatus::InProgress),
+            ],
+        );
+        // 恢复侧复用写入校验：非法清单整体回退为空。
         assert!(service.snapshot().is_empty());
+        service.restore(Some(session(3)), &[entry("keep", TodoStatus::Pending)]);
+        assert_eq!(service.snapshot(), vec![entry("keep", TodoStatus::Pending)]);
     }
 
     #[test]
     fn tool_parses_arguments_and_reports_the_full_list() {
-        let service = Arc::new(TodoService::new());
-        service.restore(Some(5), &[]);
-        assert!(service.bind_run(5));
+        let (service, _) = bound_service(5);
         let tool = TodoWriteTool {
-            service: Arc::clone(&service),
+            service: Arc::new(service),
         };
         let project = Project::new(".");
         let cancel = CancelToken::new();
@@ -308,8 +447,17 @@ mod tests {
             )
             .is_err()
         );
-        // 无活动 Run 绑定时工具必须失败（CB1-06）。
-        service.unbind();
+    }
+
+    #[test]
+    fn unbound_tool_invoke_fails() {
+        let service = Arc::new(TodoService::new());
+        service.restore(Some(session(5)), &[]);
+        let tool = TodoWriteTool {
+            service: Arc::clone(&service),
+        };
+        let project = Project::new(".");
+        let cancel = CancelToken::new();
         let error = tool
             .invoke(
                 &json!({"todos": [{"content": "x", "status": "pending"}]}),

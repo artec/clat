@@ -1,7 +1,7 @@
 use crate::event::{EventSink, ModelOutcome, RunEvent};
 use crate::model::{
     CancelToken, FinishReason, Model, ModelEvent, ModelEventSink, ModelItem, ModelOptions,
-    ModelRequest, Usage,
+    ModelRequest, ModelResponse, Usage,
 };
 use crate::permission::{PermissionDecision, PermissionPolicy};
 use crate::project::Project;
@@ -139,6 +139,7 @@ impl<'a> Run<'a> {
                     tool_calls: response.tool_calls.len(),
                 },
                 finish_reason: response.finish_reason.clone(),
+                provider_replay: provider_replay(&response, self.model.provider()),
             });
 
             for state in response.provider_state {
@@ -246,10 +247,13 @@ impl<'a> Run<'a> {
                             items,
                         ));
                     }
-                    PermissionDecision::Deny { reason } => {
+                    PermissionDecision::Deny { reason }
+                    | PermissionDecision::Unavailable { reason } => {
                         // A denial is an ordinary tool failure from the model's
                         // point of view: report it as a structured error result
                         // so the model can adapt instead of aborting the run.
+                        // `Unavailable` (fail-closed, no approver) shares the
+                        // run semantics; the journal maps the distinction.
                         let mut result = ToolResult {
                             call_id: call.id.clone(),
                             tool_name: call.name.clone(),
@@ -328,6 +332,20 @@ impl<'a> Run<'a> {
             items,
         ))
     }
+}
+
+/// Extract every provider-matching opaque state for persistence (P1-11).
+/// OpenAI Responses can emit several reasoning output items in one response;
+/// keeping only `.find()` made restart history observably different from the
+/// in-process history. The replay slot therefore carries the ordered array.
+fn provider_replay(response: &ModelResponse, provider: &str) -> Option<serde_json::Value> {
+    let states: Vec<serde_json::Value> = response
+        .provider_state
+        .iter()
+        .filter(|state| state.provider == provider && !state.data.is_null())
+        .map(|state| state.data.clone())
+        .collect();
+    (!states.is_empty()).then_some(serde_json::Value::Array(states))
 }
 
 struct RunModelEventForwarder<'a> {
@@ -1367,5 +1385,38 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn provider_replay_preserves_every_matching_state_in_order() {
+        let response = ModelResponse {
+            text: String::new(),
+            tool_calls: Vec::new(),
+            finish_reason: FinishReason::Completed,
+            usage: None,
+            provider_response_id: None,
+            provider_state: vec![
+                crate::model::ProviderState {
+                    provider: "openai".into(),
+                    data: json!({"id": "reasoning-1"}),
+                },
+                crate::model::ProviderState {
+                    provider: "other".into(),
+                    data: json!({"ignored": true}),
+                },
+                crate::model::ProviderState {
+                    provider: "openai".into(),
+                    data: json!({"id": "reasoning-2"}),
+                },
+            ],
+            reasoning: None,
+        };
+        assert_eq!(
+            provider_replay(&response, "openai"),
+            Some(json!([
+                {"id": "reasoning-1"},
+                {"id": "reasoning-2"}
+            ]))
+        );
     }
 }

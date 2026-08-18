@@ -5,7 +5,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, Padding, Paragraph, Wrap};
 use serde_json::Value;
 use unicode_width::UnicodeWidthChar;
 
@@ -226,7 +226,7 @@ impl ModelEditor {
         )));
         frame.render_widget(
             Paragraph::new(lines)
-                .block(Block::default().title("/model").borders(Borders::ALL))
+                .block(crate::tui::popup_block(" /model "))
                 .wrap(Wrap { trim: false }),
             area,
         );
@@ -456,8 +456,9 @@ impl ModelEditor {
 
     fn draw_edit_popup(&self, frame: &mut Frame, popup: &EditPopup) {
         let area = frame.area();
-        let width = 68u16.min(area.width.saturating_sub(2)).max(24);
-        let inner = width.saturating_sub(2) as usize;
+        let width = edit_popup_width(area);
+        // 边框 2 列 + 弹窗内边距 2×POPUP_TEXT_PADDING 列后才是文本宽度。
+        let inner = width.saturating_sub(2 + 2 * crate::tui::POPUP_TEXT_PADDING) as usize;
         let popup_area = centered_rect_abs(area, width, 5);
         frame.render_widget(Clear, popup_area);
         let (shown, shown_width) = tail_window(&popup.buffer, inner);
@@ -473,11 +474,16 @@ impl ModelEditor {
             Paragraph::new(lines).block(
                 Block::default()
                     .title(format!(" {} ", self.edit_target_label(popup.target)))
-                    .borders(Borders::ALL),
+                    .borders(Borders::ALL)
+                    .padding(Padding::horizontal(crate::tui::POPUP_TEXT_PADDING)),
             ),
             popup_area,
         );
-        frame.set_cursor_position((popup_area.x + 1 + shown_width, popup_area.y + 1));
+        // 光标跳过边框 1 列 + 内边距 POPUP_TEXT_PADDING 列。
+        frame.set_cursor_position((
+            popup_area.x + 1 + crate::tui::POPUP_TEXT_PADDING + shown_width,
+            popup_area.y + 1,
+        ));
     }
 
     fn enter_selected(&mut self) -> EditorAction {
@@ -815,12 +821,12 @@ impl ModelPicker {
             Style::default().add_modifier(Modifier::DIM),
         )));
         let title = match self.vendor {
-            None => "/model".to_owned(),
-            Some(vendor) => format!("/model · {vendor}"),
+            None => " /model ".to_owned(),
+            Some(vendor) => format!(" /model · {vendor} "),
         };
         frame.render_widget(
             Paragraph::new(lines)
-                .block(Block::default().title(title).borders(Borders::ALL))
+                .block(crate::tui::popup_block(&title))
                 .wrap(Wrap { trim: false }),
             area,
         );
@@ -854,6 +860,15 @@ enum PickerRow {
     Vendor(&'static str),
     Preset(&'static ModelPreset),
     Custom,
+}
+
+/// 行内编辑弹窗的目标宽度：上限 68 列，且任何终端下都为
+/// [`crate::tui::POPUP_H_MARGIN`] 的左右边距留出空间（此前只减 2，
+/// 窄分屏里弹窗几乎贴住屏幕左右墙）。
+fn edit_popup_width(area: Rect) -> u16 {
+    68u16
+        .min(area.width.saturating_sub(2 * crate::tui::POPUP_H_MARGIN))
+        .max(24)
 }
 
 fn centered_rect_abs(area: Rect, width: u16, height: u16) -> Rect {
@@ -954,6 +969,20 @@ mod tests {
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    /// 实机回归：编辑弹窗宽度此前只按 `area.width - 2` 收上限，窄
+    /// 分屏里左右只剩 1 列、几乎贴墙。现在必须为 POPUP_H_MARGIN
+    /// 的两侧留白让位；宽终端维持 68 列上限不变。
+    #[test]
+    fn edit_popup_width_reserves_horizontal_margins() {
+        assert_eq!(
+            edit_popup_width(Rect::new(0, 0, 50, 24)),
+            50 - 2 * crate::tui::POPUP_H_MARGIN,
+            "narrow panes shrink the popup, not its margins"
+        );
+        assert_eq!(edit_popup_width(Rect::new(0, 0, 80, 24)), 68);
+        assert_eq!(edit_popup_width(Rect::new(0, 0, 200, 24)), 68);
     }
 
     fn select(editor: &mut ModelEditor, kind: RowKind) {
@@ -1170,8 +1199,9 @@ mod tests {
         let project = Project::new(&project_root);
         let bootstrap =
             BootstrapApplication::open(project, storage_root.clone()).expect("bootstrap");
-        bootstrap.trust_project().expect("trust");
-        let application = bootstrap.into_trusted().expect("trusted");
+        let application = bootstrap
+            .authorize_and_mount(crate::ProjectAuthorization::grant())
+            .expect("authorize and mount");
         application
             .save_model_state(&edited, &credentials)
             .expect("save model state");

@@ -82,6 +82,7 @@ mod tests {
                 effect: ToolEffect::Write,
                 reason: "test".into(),
                 arguments: json!({}),
+                call_id: "call-1".into(),
             })
         });
         match receiver.recv().expect("permission event") {

@@ -20,6 +20,7 @@
 # Logs and local scratch
 *.log
 .tmp/
+tmp/
 
 # Rust editor/backup artifacts
 **/*.rs.bk

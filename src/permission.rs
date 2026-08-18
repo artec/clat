@@ -6,8 +6,19 @@ use std::sync::Arc;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PermissionDecision {
     Allow,
-    Ask { reason: String },
-    Deny { reason: String },
+    Ask {
+        reason: String,
+    },
+    Deny {
+        reason: String,
+    },
+    /// Fail-closed because no approver exists to answer (non-interactive
+    /// stdin, headless pipe). Run semantics are identical to `Deny`; the
+    /// distinction exists so the journal can record the DSH outcome
+    /// `unavailable` instead of `rejected` (event catalog §2.4).
+    Unavailable {
+        reason: String,
+    },
 }
 
 /// A side-effecting tool call a policy needs a human to approve or deny.
@@ -21,6 +32,9 @@ pub struct PermissionRequest {
     pub effect: ToolEffect,
     pub reason: String,
     pub arguments: Value,
+    /// The model-issued tool-call id; lets journaling approvals reference
+    /// the exact pending call (`tool/call`, `approval/asked` payloads).
+    pub call_id: String,
 }
 
 /// UI-independent port implemented by TUI, desktop, headless clients, or
@@ -100,6 +114,7 @@ impl PermissionPolicy for InteractivePermissionPolicy {
                     effect: tool.effect,
                     reason,
                     arguments: call.arguments.clone(),
+                    call_id: call.id.clone(),
                 };
                 match self.approver.decide(request) {
                     // The approver answers with a final decision only.

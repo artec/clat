@@ -472,9 +472,11 @@ impl Model for RetryModel {
                     {
                         return Err(Self::exhausted(error, attempt, " (deadline exceeded)"));
                     }
+                    emit_retry_scheduled(events, self, attempt, &error, delay);
                     if self.sleep_interruptibly(delay, request.cancel, start) {
                         return Ok(cancelled_response());
                     }
+                    events.emit(ModelEvent::RetryStarted { retry: attempt });
                     continue;
                 }
             };
@@ -499,13 +501,55 @@ impl Model for RetryModel {
                     {
                         return Err(Self::exhausted(error, attempt, " (deadline exceeded)"));
                     }
+                    emit_retry_scheduled(events, self, attempt, &error, delay);
                     if self.sleep_interruptibly(delay, request.cancel, start) {
                         return Ok(cancelled_response());
                     }
+                    events.emit(ModelEvent::RetryStarted { retry: attempt });
                 }
             }
         }
     }
+}
+
+/// `llm/retry` 前置事件（catalog §2.3）：一次可重试失败 + 即将退避。
+/// 仅在尚未发出任何流事件时到达这里（INV-R1），因此直接走外层 sink。
+fn emit_retry_scheduled(
+    events: &mut dyn ModelEventSink,
+    model: &RetryModel,
+    attempt: usize,
+    error: &ModelError,
+    delay: Duration,
+) {
+    events.emit(ModelEvent::RetryScheduled {
+        retry: attempt,
+        max_retries: model.policy.max_attempts.saturating_sub(1),
+        delay_ms: delay.as_millis() as u64,
+        failure: crate::model::RetryFailure {
+            message: error.to_string(),
+            code: error_code(error.kind()),
+            status: None,
+            provider_retry_after_ms: error
+                .retry_hint()
+                .map(|hint| hint.retry_after.as_millis() as u64),
+        },
+    });
+}
+
+/// CLAT ModelErrorKind 的小写串（catalog §2.6 的 code 口径）。
+fn error_code(kind: ModelErrorKind) -> String {
+    let text = match kind {
+        ModelErrorKind::Transport => "transport",
+        ModelErrorKind::RateLimited => "rate_limited",
+        ModelErrorKind::Server => "server",
+        ModelErrorKind::Client => "client",
+        ModelErrorKind::Authentication => "authentication",
+        ModelErrorKind::Decode => "decode",
+        ModelErrorKind::Request => "request",
+        ModelErrorKind::Cancelled => "cancelled",
+        ModelErrorKind::Other => "other",
+    };
+    text.to_owned()
 }
 
 /// deadline watchdog：监控父令牌与绝对到期时刻，任一触发即取消交给
@@ -1046,7 +1090,15 @@ mod tests {
         assert_eq!(response.finish_reason, FinishReason::Cancelled);
         assert!(response.text.is_empty());
         assert_eq!(script.builds(), 1);
-        assert!(sink.is_empty());
+        // 重试元事件（llm/retry 的模型层载体）允许出现；文本类流事件
+        // 仍然一个都没有——重发不会产生重复输出（INV-R1 仍成立）。
+        assert!(
+            sink.iter().all(|event| matches!(
+                event,
+                ModelEvent::RetryScheduled { .. } | ModelEvent::RetryStarted { .. }
+            )),
+            "unexpected stream events in sink: {sink:?}"
+        );
     }
 
     #[test]

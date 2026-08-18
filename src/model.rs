@@ -565,9 +565,34 @@ pub enum ModelEvent {
     ResponseCompleted {
         finish_reason: FinishReason,
     },
+    /// A retryable model attempt failed and a backoff was scheduled. Emitted
+    /// before the wait so journals can record `llm/retry` (event catalog
+    /// §2.3); only fires when no stream event has been emitted yet.
+    RetryScheduled {
+        retry: usize,
+        max_retries: usize,
+        delay_ms: u64,
+        failure: RetryFailure,
+    },
+    /// The backoff after a retryable failure elapsed; the next attempt is
+    /// about to start (`llm/retry-started`).
+    RetryStarted {
+        retry: usize,
+    },
     ProviderEvent {
         name: String,
     },
+}
+
+/// The failure half of `ModelEvent::RetryScheduled`: what the journal needs
+/// to reconstruct the retry decision (message, classification, HTTP status,
+/// server-provided `Retry-After`).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RetryFailure {
+    pub message: String,
+    pub code: String,
+    pub status: Option<u16>,
+    pub provider_retry_after_ms: Option<u64>,
 }
 
 pub trait ModelEventSink {

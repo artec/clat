@@ -29,8 +29,8 @@ There are three scope-specific explicit catalogs:
 
 | Scope | Lifetime | Built-in responsibilities |
 |---|---|---|
-| Bootstrap | Application open → exit | shared storage backend, narrow `TrustStore` only |
-| Trusted Project | trust accepted → project close | Session/Config stores, Tool/Provider/Prompt registries, native tools, MCP adapter, permission and Agent services, monitor, project instructions, tool-result pruning, compaction, per-session todo, session-title services |
+| Bootstrap | Application open → trust decision | no plugin scope at all — a zero-write control-plane preflight (`sentinel` classification, read-only trust lookup) |
+| Trusted Project | trust accepted → project close | control-plane `ConfigStore`, DSH session persistence (`SessionService`), Tool/Provider/Prompt registries, native tools, MCP adapter, permission and Agent services, monitor, project instructions, tool-result pruning, compaction, per-session todo, session-title services |
 | Run | one active run | `CancelToken` and injected `PermissionApprover`; worker ownership stays in Application |
 
 The batch-1 capability plugins (`ProjectInstructionsPlugin`,
@@ -93,6 +93,16 @@ configurable number of turns. Every observable step (`ModelRequested`,
 `RunCompleted`, …) is emitted through `EventSink`. Application-level facts such
 as quota refreshes use `ApplicationEvent`; plugin hooks never enter the
 `RunEvent` protocol.
+
+Protocol notes (session-persistence cutover): `ModelResponded` carries an
+optional `provider_replay` payload (lossless provider state such as OpenAI
+Responses reasoning items) so the journal can persist it as
+`source.replayState`, and `ModelStream` can carry `RetryScheduled` /
+`RetryStarted` meta-events from the retry wrapper (they journal as
+`llm/retry` / `llm/retry-started`). Frontends may ignore both.
+`PermissionDecision::Unavailable` marks fail-closed decisions from
+approvers that could not ask anyone; run semantics match `Deny`, the
+journal records the DSH outcome `unavailable`.
 
 Tool execution failures are returned to the model as structured error results
 so the agent can recover. Cancellation is cooperative: the same `CancelToken`
@@ -227,23 +237,23 @@ through.
 The trust gate is part of the startup state machine, not a UI overlay:
 
 ```text
-BootstrapApplication::open
-├── Bootstrap Catalog: storage backend + TrustStore
+BootstrapApplication::open            (zero-write preflight; no plugin scope)
+├── classifies config.json + clat.db against the sentinel matrix
+├── read-only trust lookup
 └── untrusted: no Session/Config/Tool/Provider service,
                no project reads, MCP, monitor, or model request
-       │ trust_project + into_trusted
+       │ authorize_and_mount(ProjectAuthorization)   ── the only trust write
+       │   storage-root lease → session-root preflight → control commit
        ▼
 TrustedProjectApplication
-├── mounts Project Catalog once
-├── exposes Session/Config/Provider/MCP DTO use cases
+├── mounts the Trusted Project catalog once (holds the root lease)
 └── starts Run child scopes only through start_run
 ```
 
 Trust is persisted per canonical directory path. The two Application types make
 the boundary structural: pre-trust code has no API that can list sessions,
-load credentials, access tools, start MCP, or run a model. The storage backend
-is shared across the transition, but only the narrow `TrustStore` is registered
-in Bootstrap Scope.
+load credentials, access tools, start MCP, or run a model — and no API that
+can write the control plane before the session-root preflight passed.
 
 ## MCP adapter
 

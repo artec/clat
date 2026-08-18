@@ -1,21 +1,22 @@
 //! `/resume` 会话选择器：二级面板，与 /model 选择器同款交互
 //! （↑/↓/j/k 导航、Enter 确认、1-9 快选、Esc 取消、鼠标点击）。
 //!
-//! 会话列表按最近更新在前；空会话（0 条消息）在打开选择器时已被
-//! 自动归档，因此列表里出现的都是可恢复的实质会话。
+//! 会话列表按最近活动在前；会话是懒物化的——从未落盘的空会话不在
+//! 列表里出现，列表里出现的都是可恢复的实质会话。
 
 use crate::SessionSummary;
+use crate::session::id::SessionId;
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Clear, Paragraph, Wrap};
 
 pub(crate) enum ResumeAction {
     Continue,
     /// 用户确认恢复某个会话。
-    Open(i64),
+    Open(SessionId),
     Cancel,
 }
 
@@ -23,11 +24,11 @@ pub(crate) struct SessionPicker {
     sessions: Vec<SessionSummary>,
     selected: usize,
     /// 当前会话 id，列表中标记 current。
-    current: i64,
+    current: Option<SessionId>,
 }
 
 impl SessionPicker {
-    pub fn new(sessions: Vec<SessionSummary>, current: i64) -> Self {
+    pub fn new(sessions: Vec<SessionSummary>, current: Option<SessionId>) -> Self {
         Self {
             sessions,
             selected: 0,
@@ -56,11 +57,11 @@ impl SessionPicker {
                 self.selected = (self.selected + 1) % self.row_count();
                 ResumeAction::Continue
             }
-            KeyCode::Enter => ResumeAction::Open(self.sessions[self.selected].id),
+            KeyCode::Enter => ResumeAction::Open(self.sessions[self.selected].id.clone()),
             KeyCode::Char(ch) if ch.is_ascii_digit() && ch != '0' => {
                 let index = (ch as usize - '1' as usize).min(8);
                 match self.sessions.get(index) {
-                    Some(session) => ResumeAction::Open(session.id),
+                    Some(session) => ResumeAction::Open(session.id.clone()),
                     None => ResumeAction::Continue,
                 }
             }
@@ -81,7 +82,7 @@ impl SessionPicker {
         }
         let row = mouse.row.saturating_sub(area.y + 1) as usize;
         match self.sessions.get(row) {
-            Some(session) => ResumeAction::Open(session.id),
+            Some(session) => ResumeAction::Open(session.id.clone()),
             None => ResumeAction::Continue,
         }
     }
@@ -108,12 +109,8 @@ impl SessionPicker {
                 } else {
                     " ".to_owned()
                 };
-                let title = if session.title.is_empty() {
-                    "(untitled)"
-                } else {
-                    session.title.as_str()
-                };
-                let marker = if session.id == self.current {
+                let title = session.title.clone().unwrap_or_else(|| "(untitled)".into());
+                let marker = if Some(&session.id) == self.current.as_ref() {
                     "●"
                 } else {
                     " "
@@ -133,7 +130,7 @@ impl SessionPicker {
         }
         frame.render_widget(
             Paragraph::new(lines)
-                .block(Block::default().title("/resume").borders(Borders::ALL))
+                .block(crate::tui::popup_block(" /resume "))
                 .wrap(Wrap { trim: false }),
             area,
         );

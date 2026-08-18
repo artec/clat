@@ -28,8 +28,15 @@ project directory.
 | `PageUp` / `PageDown` | scroll the conversation |
 | `Shift+Tab` | cycle the thinking level (`Low → High → Max`) |
 | mouse wheel | scroll the conversation (2 rows per notch) |
+| drag with the mouse | highlight text (in the conversation or the input box); click positions the input cursor |
+| `Cmd+C` / `Ctrl+Shift+C` | copy the current selection (CLAT sends OSC 52; iTerm2/WezTerm/kitty/VS Code honor it) |
+| `Cmd+X` / `Ctrl+Shift+X` | cut the input-box selection |
 | `Esc` | cancel a running request (partial text is kept); otherwise clear the input |
 | `Ctrl+C` | quit |
+
+Selecting alone never touches the clipboard — copying is always an
+explicit keystroke. When CLAT's mouse capture is on, hold `Shift` while
+dragging to use the terminal's own text selection instead.
 
 While a permission dialog is open, `Esc` denies the pending tool call
 instead of cancelling the run.
@@ -118,8 +125,9 @@ Conventions:
   8 MiB. Use `--` before a prompt that itself starts with `-`.
 - **Sessions**: each `exec` starts a fresh session by default
   (predictable for scripts); `--continue` resumes the project's most
-  recent session, `--session <id>` a specific one. Sessions created by
-  `exec` show up in the TUI with auto-generated titles, like any other.
+  recent session, `--session <id>` a specific one (`<id>` is the UUID
+  shown by the TUI `/resume` picker). Sessions created by `exec` show up
+  in the TUI with auto-generated titles, like any other.
 - **Permissions**: with a terminal stdin, side-effecting calls prompt
   inline with the full arguments shown; type `y` and press `Enter` to
   allow, `Esc` or any other answer denies. Input typed before a prompt
@@ -215,3 +223,27 @@ permission label, but every call still opens a permission dialog. MCP
 servers are global: their subprocesses run with `~/.clat` as the working
 directory, never inside the project. Pressing `Esc` during a call also
 propagates cancellation to the MCP request.
+
+## Storage layout
+
+Session facts live in append-only DSH-compatible JSONL logs (zstd-framed)
+under `~/.clat/sessions/<project>/<session-id>/session.jsonl.zstd` — one
+authoritative log per session, replayed through projections on open.
+`~/.clat/clat.db` keeps only control-plane state (model configuration,
+profiles, trusted projects, the per-project "current session" pointer);
+`~/.clat/config.json` is the control-plane version sentinel.
+
+One CLAT process at a time holds the storage root (a kernel-level lease);
+a second process exits with a clear error until the first one closes.
+
+Sessions are materialized lazily: `/new` writes nothing until the first
+prompt, and a session with no content never appears on disk. Input recall
+(`↑`/`↓` after a restart) comes from the conversation transcript itself.
+
+### Upgrading across the storage rewrite
+
+Pre-0.6 storage (SQLite `sessions`/`messages` tables) is **not migrated**:
+CLAT refuses to start with instructions to remove the old files, because
+only pre-release builds ever wrote them. Deleting `~/.clat/config.json`,
+`~/.clat/clat.db`, and `~/.clat/sessions/` (keep `mcp.json`) starts fresh;
+old conversations cannot be carried over.

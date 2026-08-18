@@ -1,20 +1,16 @@
-use crate::model::{
-    ModelConfig, ModelItem, ProviderCredentials, ProviderDescriptor, ProviderState,
-};
+use crate::model::{ModelConfig, ModelItem, ProviderCredentials, ProviderDescriptor, Usage};
 use crate::permission::{PermissionApprover, PermissionPolicy};
 use crate::plugin::{ServiceId, ServiceKey};
-use crate::project::Project;
-use crate::storage::{ModelProfileSummary, SessionSummary, StoredMessage};
+use crate::session::id::SessionId;
+use crate::session::run_journal::RunJournal;
 use crate::tool::ToolRegistry;
 use crate::{
     CancelToken, EventSink, Model, ModelError, ModelProtocol, RunError, RunOutput,
     ToolExecutionPipeline,
 };
 use std::fmt;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-pub(crate) const TRUST_SERVICE_ID: ServiceId = ServiceId::new("core.trust");
 pub(crate) const SESSION_SERVICE_ID: ServiceId = ServiceId::new("core.sessions");
 pub(crate) const CONFIG_SERVICE_ID: ServiceId = ServiceId::new("core.config");
 pub(crate) const TOOL_SERVICE_ID: ServiceId = ServiceId::new("core.tools");
@@ -28,8 +24,7 @@ pub(crate) const RUN_SCOPE_SERVICE_ID: ServiceId = ServiceId::new("core.run_scop
 pub(crate) const MCP_STATUS_SERVICE_ID: ServiceId = ServiceId::new("core.mcp_status");
 pub(crate) const COMPACTION_SERVICE_ID: ServiceId = ServiceId::new("core.compaction");
 
-pub(crate) const TRUST_SERVICE: ServiceKey<dyn TrustStore> = ServiceKey::new(TRUST_SERVICE_ID);
-pub(crate) const SESSION_SERVICE: ServiceKey<dyn SessionStore> =
+pub(crate) const SESSION_SERVICE: ServiceKey<crate::session::use_cases::SessionService> =
     ServiceKey::new(SESSION_SERVICE_ID);
 pub(crate) const CONFIG_SERVICE: ServiceKey<dyn ConfigStore> = ServiceKey::new(CONFIG_SERVICE_ID);
 pub(crate) const TOOL_SERVICE: ServiceKey<ToolRegistry> = ServiceKey::new(TOOL_SERVICE_ID);
@@ -51,9 +46,9 @@ pub(crate) const COMPACTION_SERVICE: ServiceKey<dyn HistoryCompactor> =
 pub(crate) const TODO_SERVICE_ID: ServiceId = ServiceId::new("core.todo");
 pub(crate) const TODO_SERVICE: ServiceKey<TodoService> = ServiceKey::new(TODO_SERVICE_ID);
 
-/// 会话 todo 状态（能力批次 1 / E）。内存快照 + dirty 标记；持久化只经
-/// `clat.todo.v1` marker 由 application 在 Run items 之后统一落盘。
-pub(crate) const TODO_MARKER_PROVIDER: &str = "clat.todo.v1";
+/// 会话 todo 状态（事件原生版，plan §13.3）。内存快照只是投影的运行时
+/// 镜像；持久化只经 `todo/write` 事件——`write` 在活动 Run 绑定的
+/// RunJournal 上追加事件，恢复从 todo 投影读取。
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TodoStatus {
@@ -89,16 +84,19 @@ pub(crate) struct TodoEntry {
 
 pub(crate) struct TodoService {
     inner: std::sync::Mutex<TodoInner>,
+    /// Serialize append→flush→publish as one commit lane. Parallel
+    /// tool calls must not publish an older list after a newer event has
+    /// already committed to the same journal.
+    write_lane: std::sync::Mutex<()>,
 }
 
 struct TodoInner {
     /// 当前内存快照所属会话（restore/ensure 设置）；None = 未挂靠任何
     /// 会话（/new 后）。
-    session: Option<i64>,
+    session: Option<SessionId>,
     /// 活动 Run 绑定（CB1-06）：write 只在绑定存在且与会话一致时可用。
-    active_run: Option<i64>,
+    active_run: Option<(SessionId, Arc<dyn RunJournal>)>,
     entries: Vec<TodoEntry>,
-    dirty: bool,
 }
 
 impl TodoService {
@@ -108,17 +106,17 @@ impl TodoService {
                 session: None,
                 active_run: None,
                 entries: Vec::new(),
-                dirty: false,
             }),
+            write_lane: std::sync::Mutex::new(()),
         }
     }
 
     /// 绑定活动 Run：只有当快照确实属于该会话时才允许（防止错位写入）。
     /// 未绑定成功时 write 拒绝（INV-T3 由行为而非注释保证）。
-    pub(crate) fn bind_run(&self, session: i64) -> bool {
+    pub(crate) fn bind_run(&self, session: &SessionId, journal: Arc<dyn RunJournal>) -> bool {
         let mut inner = self.inner.lock().expect("todo lock");
-        if inner.session == Some(session) {
-            inner.active_run = Some(session);
+        if inner.session.as_ref() == Some(session) {
+            inner.active_run = Some((session.clone(), journal));
             true
         } else {
             inner.active_run = None;
@@ -130,34 +128,78 @@ impl TodoService {
         self.inner.lock().expect("todo lock").active_run = None;
     }
 
-    /// 从完整 raw items 恢复快照并挂靠会话（INV-T5）。**调用方必须先
-    /// flush 既有 dirty 状态**——restore 语义就是"丢弃内存态换成目标
-    /// 会话的磁盘事实"；损坏 marker 安全回退到更早或空（CB1-08：恢复
-    /// 校验与写入规则对称——数量/长度/in_progress 上限全不合法即跳过）。
-    pub(crate) fn restore(&self, session: Option<i64>, items: &[ModelItem]) {
+    /// The session the snapshot is attached to (None after `/new`).
+    pub(crate) fn session(&self) -> Option<SessionId> {
+        self.inner.lock().expect("todo lock").session.clone()
+    }
+
+    /// 从 todo 投影恢复快照并挂靠会话（INV-T5）。restore 语义就是
+    /// "丢弃内存态换成目标会话的投影事实"。
+    pub(crate) fn restore(&self, session: Option<SessionId>, entries: &[TodoEntry]) {
         let mut inner = self.inner.lock().expect("todo lock");
         inner.session = session;
         inner.active_run = None;
-        inner.entries = parse_todo_marker(items).unwrap_or_default();
-        inner.dirty = false;
+        inner.entries = validate_todos(entries).unwrap_or_else(|_| Vec::new());
     }
 
-    /// 校验并全量替换清单（INV-T2/E.2 规则），置 dirty；不触碰 Storage。
-    /// 需要活动 Run 绑定（CB1-06）：无绑定（非 application 编排的直接
-    /// 消费方）一律拒绝，防止内存态永远不落盘。
+    /// 校验并全量替换清单（INV-T2/E.2 规则），经绑定的 RunJournal 追加
+    /// 一条 `todo/write` 事件。需要活动 Run 绑定（CB1-06）：无绑定一律
+    /// 拒绝，防止内存态永远不落盘。
+    ///
+    /// Audit P1-10: the durable event (append + flush) must commit BEFORE
+    /// the in-memory projection publishes the new list. A failed append
+    /// leaves the old entries untouched, so a retried write of the same
+    /// todos is never mistaken for the idempotent no-op — and the model
+    /// never sees todo state the log does not hold.
     pub(crate) fn write(&self, todos: &[TodoEntry]) -> Result<Vec<TodoEntry>, String> {
+        let _lane = self.write_lane.lock().expect("todo write lane");
         let entries = validate_todos(todos)?;
+        let (bound_session, journal) = {
+            let inner = self.inner.lock().expect("todo lock");
+            let Some((session, journal)) = inner.active_run.clone() else {
+                return Err("todo_write requires an active run in this session".into());
+            };
+            if inner.entries == entries {
+                // Idempotent no-op, judged against the *published* state:
+                // a failed write below never mutates it, so this fast path
+                // can never swallow an unwritten change.
+                return Ok(entries);
+            }
+            (session, journal)
+        };
+        let payload_todos: Vec<(String, &'static str)> = entries
+            .iter()
+            .map(|entry| (entry.content.clone(), entry.status.as_str()))
+            .collect();
+        let event = crate::session::run_journal::NewSessionEvent::new(
+            "todo/write",
+            crate::session::event::payloads::todo_write(&payload_todos),
+        )
+        .log_only();
+        journal.append(event)?;
+        // Durability before publication: the tool result reports success
+        // only once the event is on disk.
+        journal.flush()?;
         let mut inner = self.inner.lock().expect("todo lock");
-        if inner.active_run.is_none() {
-            return Err("todo_write requires an active run in this session".into());
+        // The bound run cannot change while we hold no lock only if the
+        // caller honors one-run-at-a-time; publish under the current
+        // binding's session, restoring nothing if it moved.
+        let binding_unchanged = inner.active_run.as_ref().is_some_and(|(session, current)| {
+            *session == bound_session && Arc::ptr_eq(current, &journal)
+        }) && inner.session.as_ref() == Some(&bound_session);
+        if binding_unchanged {
+            inner.entries = entries.clone();
+        } else {
+            return Err(
+                "todo event committed, but the active session binding changed; reload the session"
+                    .into(),
+            );
         }
-        inner.entries = entries.clone();
-        inner.dirty = true;
         Ok(entries)
     }
 
     /// 注入模型视图的动态上下文（纯内容，无标题包装——由视图构建方唯
-    /// 一次加边界）；空清单返回 None。
+    /// 一次加边界）；空清单返回 None。非耐久请求组装的一部分。
     pub(crate) fn model_context(&self) -> Option<String> {
         let inner = self.inner.lock().expect("todo lock");
         if inner.entries.is_empty() {
@@ -172,30 +214,6 @@ impl TodoService {
             ));
         }
         Some(text)
-    }
-
-    /// 当前快照的 marker item（空清单同样产出，保证显式清空语义）。
-    pub(crate) fn marker(&self) -> ModelItem {
-        let inner = self.inner.lock().expect("todo lock");
-        ModelItem::ProviderState(ProviderState {
-            provider: TODO_MARKER_PROVIDER.into(),
-            data: todo_marker_data(&inner.entries),
-        })
-    }
-
-    pub(crate) fn is_dirty(&self) -> bool {
-        self.inner.lock().expect("todo lock").dirty
-    }
-
-    pub(crate) fn clear_dirty(&self) {
-        self.inner.lock().expect("todo lock").dirty = false;
-    }
-
-    /// dirty 快照所属的会话；无 dirty 或未挂靠返回 None。flush 前的
-    /// 守卫检查用（CB1-03）。
-    pub(crate) fn dirty_session(&self) -> Option<i64> {
-        let inner = self.inner.lock().expect("todo lock");
-        if inner.dirty { inner.session } else { None }
     }
 
     /// 仅供测试检视（application 的 todo 断言走这里）。
@@ -234,54 +252,6 @@ fn validate_todos(todos: &[TodoEntry]) -> Result<Vec<TodoEntry>, String> {
     Ok(entries)
 }
 
-fn todo_marker_data(entries: &[TodoEntry]) -> serde_json::Value {
-    serde_json::json!({
-        "version": 1,
-        "todos": entries
-            .iter()
-            .map(|entry| {
-                serde_json::json!({
-                    "content": entry.content,
-                    "status": entry.status.as_str(),
-                })
-            })
-            .collect::<Vec<_>>(),
-    })
-}
-
-/// 从 items 末尾向前找最新合法 `clat.todo.v1` 快照；未知版本/类型错误/
-/// 内容非法一律跳过（安全回退）。
-pub(crate) fn parse_todo_marker(items: &[ModelItem]) -> Option<Vec<TodoEntry>> {
-    for item in items.iter().rev() {
-        if let ModelItem::ProviderState(state) = item
-            && state.provider == TODO_MARKER_PROVIDER
-            && let Some(entries) = parse_todo_data(&state.data)
-        {
-            return Some(entries);
-        }
-    }
-    None
-}
-
-fn parse_todo_data(data: &serde_json::Value) -> Option<Vec<TodoEntry>> {
-    if data.get("version")? != &serde_json::json!(1) {
-        return None;
-    }
-    let todos = data.get("todos")?.as_array()?;
-    let mut entries = Vec::with_capacity(todos.len());
-    for todo in todos {
-        let content = todo.get("content")?.as_str()?.trim().to_owned();
-        if content.is_empty() {
-            return None;
-        }
-        let status = TodoStatus::parse(todo.get("status")?.as_str()?)?;
-        entries.push(TodoEntry { content, status });
-    }
-    // CB1-08：恢复侧复用写入侧全部规则（条数/长度/in_progress 上限），
-    // 损坏或超限 marker 视为非法并跳过（安全回退）。
-    validate_todos(&entries).ok()
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StoreError(String);
 
@@ -298,42 +268,6 @@ impl fmt::Display for StoreError {
 }
 
 impl std::error::Error for StoreError {}
-
-pub(crate) trait TrustStore: Send + Sync {
-    fn storage_root(&self) -> Result<PathBuf, StoreError>;
-    fn is_trusted(&self, root: &Path) -> Result<bool, StoreError>;
-    fn trust(&self, root: &Path) -> Result<(), StoreError>;
-    fn untrust(&self, root: &Path) -> Result<(), StoreError>;
-}
-
-pub(crate) trait SessionStore: Send + Sync {
-    fn current_session(&self, project: &Project) -> Result<Option<i64>, StoreError>;
-    fn create_session(&self, project: &Project) -> Result<i64, StoreError>;
-    fn list_sessions(&self, project: &Project) -> Result<Vec<SessionSummary>, StoreError>;
-    fn touch_session(&self, session_id: i64) -> Result<(), StoreError>;
-    /// 会话是否属于该项目且未归档。switch_session 的合法性前置：
-    /// 不允许把 current_session 指向不存在的行（否则后续 append 触发
-    /// 外键错误）。
-    fn session_exists(&self, project: &Project, session_id: i64) -> Result<bool, StoreError>;
-    fn set_session_title(&self, session_id: i64, title: &str) -> Result<(), StoreError>;
-    /// CAS 条件更新：仅当当前标题等于 `expected` 时写入 `new`；
-    /// 返回是否实际更新（CB1-04：防止迟到的自动命名覆盖并发手工改名）。
-    fn set_session_title_if(
-        &self,
-        session_id: i64,
-        expected: &str,
-        new: &str,
-    ) -> Result<bool, StoreError>;
-    fn session_title(&self, session_id: i64) -> Result<String, StoreError>;
-    fn archive_session(&self, session_id: i64) -> Result<(), StoreError>;
-    fn delete_session_if_empty(&self, session_id: i64) -> Result<bool, StoreError>;
-    fn load_messages(&self, session_id: i64) -> Result<Vec<StoredMessage>, StoreError>;
-    fn append_message(&self, session_id: i64, role: &str, content: &str) -> Result<(), StoreError>;
-    fn load_items(&self, session_id: i64) -> Result<Vec<ModelItem>, StoreError>;
-    fn append_item(&self, session_id: i64, item: &ModelItem) -> Result<(), StoreError>;
-    fn load_input_history(&self, session_id: i64, limit: usize) -> Result<Vec<String>, StoreError>;
-    fn record_input(&self, session_id: Option<i64>, content: &str) -> Result<(), StoreError>;
-}
 
 pub(crate) const SESSION_TITLE_SERVICE_ID: ServiceId = ServiceId::new("core.session_title");
 pub(crate) const SESSION_TITLE_SERVICE: ServiceKey<dyn SessionTitler> =
@@ -370,7 +304,8 @@ pub(crate) trait ConfigStore: Send + Sync {
         &self,
         name: &str,
     ) -> Result<Option<(ModelConfig, ProviderCredentials)>, StoreError>;
-    fn list_profiles(&self) -> Result<Vec<ModelProfileSummary>, StoreError>;
+    fn list_profiles(&self)
+    -> Result<Vec<crate::control_storage::ModelProfileSummary>, StoreError>;
     fn delete_profile(&self, name: &str) -> Result<(), StoreError>;
     fn active_profile(&self) -> Result<Option<String>, StoreError>;
     fn set_active_profile(&self, name: Option<&str>) -> Result<(), StoreError>;
@@ -625,6 +560,9 @@ pub(crate) trait AgentRuntime: Send + Sync {
 
 pub(crate) struct RunScopeResources {
     pub cancel: CancelToken,
+    /// Kept for the run-scope service contract; the journaling approver is
+    /// derived from the request's approver by the run worker.
+    #[allow(dead_code)]
     pub approver: Arc<dyn PermissionApprover>,
 }
 
@@ -649,13 +587,20 @@ pub(crate) trait MonitorService: Send + Sync {
     fn refresh(&self);
 }
 
-/// 一次压缩请求。`raw_items` 是完整 append-only 历史；`todo_context`
-/// 是有界的运行时上下文（阶段 5 注入，现阶段为 None）。
+/// One surface node offered to the compactor: the durable seq plus the
+/// model-facing item it projects to.
+pub(crate) struct CompactionNode {
+    pub seq: u64,
+    pub item: ModelItem,
+}
+
+/// 一次压缩请求。`nodes` 是 surface 投影当前节点序列（post-replace，
+/// 前缀可能已是上一版摘要）；`todo_context` 不再注入压缩视图——它属
+/// 于非耐久的请求组装。
 pub(crate) struct CompactionRequest<'a> {
     pub config: &'a ModelConfig,
     pub credentials: &'a ProviderCredentials,
-    pub raw_items: Vec<ModelItem>,
-    pub todo_context: Option<String>,
+    pub nodes: &'a [CompactionNode],
     pub instructions: String,
     pub tool_definitions: Vec<crate::tool::ToolDefinition>,
     /// `/compact` 手动路径为 true：无视阈值强制压缩。
@@ -663,24 +608,23 @@ pub(crate) struct CompactionRequest<'a> {
     pub cancel: CancelToken,
 }
 
-/// 压缩结果：view 是交给 agent 的重建视图；`marker` 为 Some 表示本次
-/// 产生了新压缩（covered_count 为 raw_items 的绝对前缀长度）；
-/// `degraded` 为 Some 表示摘要请求失败，已按 INV-C2 降级（view 为既有
-/// marker 重建结果或原始 history，marker 必为 None）。
-/// `baseline_view` 恒为"仅由已持久化 marker 重建"的视图：新 marker 落盘
-/// 失败时回退到它而非 raw history（CB1-09）。
+/// 压缩结果（事件原生版）：`summary` 为 Some 表示本次产生了新摘要，
+/// Application 须把 compaction 事件族 + replace 载体经 RunJournal 原子
+/// 写入并 flush；`degraded` 为 Some 表示摘要请求失败，已按 INV-C2 降
+/// 级（绝不追加 replace，继续使用最后耐久 surface）。`shadowed_count`
+/// 是被遮蔽节点数（nodes 前缀 [0..shadowed_count)）。
 #[derive(Debug, Default)]
 pub(crate) struct CompactionOutcome {
-    pub view: Vec<ModelItem>,
-    pub baseline_view: Vec<ModelItem>,
-    pub marker: Option<ProviderState>,
-    pub covered_count: usize,
+    pub summary: Option<String>,
+    pub shadowed_count: usize,
+    pub shadowed_token_count: u64,
+    pub usage: Usage,
+    /// The summary request's output limit (compaction/summary `maxTokens`).
+    pub summary_output_limit: u64,
     pub degraded: Option<String>,
-    /// 重建前缀（既有 marker 覆盖的 items 数），供报告展示。
-    pub previously_covered: usize,
 }
 
 pub(crate) trait HistoryCompactor: Send + Sync {
-    /// 无条件先重建（INV-C6），再按 `force`/预算决定是否新增压缩。
+    /// 按预算决定是否新增压缩并产出摘要文本（`force` 时尽力压缩）。
     fn compact(&self, request: CompactionRequest<'_>) -> CompactionOutcome;
 }

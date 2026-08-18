@@ -4,142 +4,121 @@ CLAT creates:
 
 ```text
 ~/.clat/
-├── config.json
-├── clat.db
-└── mcp.json        (optional, user-managed MCP server definitions)
+├── config.json      # control-plane version sentinel (Ready commit marker)
+├── clat.db          # control plane: model state, profiles, trust, workspace pointers
+├── mcp.json         (optional, user-managed MCP server definitions)
+└── sessions/        # DSH-compatible session logs (zstd-framed JSONL)
+    └── --<project-key>--/<session-id>/session.jsonl.zstd
 ```
 
-`config.json` is intentionally only a small bootstrap file containing
-the storage version and the SQLite database filename. The SQLite
-database is the source of truth:
+## Session facts
+
+Everything a conversation **is** lives in one append-only log per session
+(`docs/research/dsh-session-compatibility.md` pins the format; CLAT logs
+are readable by DSH tooling and vice versa). Events are appended in
+contiguous batches, every batch an independent zstd frame with a content
+checksum; a torn tail frame is truncated and the open turn closed with
+synthetic `tool/result` / `step/end` / `turn/end` events on recovery.
+
+Reads never reconstruct state from raw events on the hot path: each
+session folds into projections (surface, transcript, title, todo, stats,
+compaction), checkpointed beside the log and restored incrementally.
+Committed batches fold directly from the append path (no per-flush
+re-read of the whole log); listing reads only the bounded first
+frame/line of each log, whatever the body size. Checkpoint files have an
+8 MiB final-size cap; oversized derived units are omitted and rebuilt
+from the authoritative log. The model context is
+derived from the *surface* projection (compaction replaces shadowed
+ranges); the human-visible transcript is deliberately not shadowed, so
+history stays readable after compaction. Reading a log is fail-closed:
+unknown required events, retired event types, malformed payloads of the
+vocabulary CLAT folds, and subagent/delegated/agent-preset headers are
+rejected instead of folded with defaults; only `ignorable: true` unknown
+events are skipped.
+
+Sessions materialize lazily: `/new` writes nothing until the first prompt
+reaches the journal. Input recall comes from the transcript projection.
+
+## Control plane (`clat.db`)
 
 | Table | Content |
 |---|---|
-| `model_state` | model configuration and provider-neutral credential values (API key) |
-| `sessions` | conversations, keyed by the canonicalized project root (symlinked and real paths share a session; legacy keys are migrated in place on open) |
-| `messages` | display text (user/assistant), per session |
-| `message_items` | the full conversation context: user/assistant text, tool calls, tool results, provider state, reasoning — persisted in order |
-| `input_history` | previously submitted inputs, isolated per session |
+| `clat_storage_meta` | control schema version + init id, matched against `config.json` |
+| `model_state` | model configuration and provider-neutral credentials |
+| `model_profiles` | named configuration snapshots + the active pointer |
 | `trusted_projects` | directories the user has explicitly trusted |
+| `project_workspace_state` | per-project current-session pointer (Fresh / Materializing / Session) with a revision for compare-and-set |
 
-The display `messages` table and the context `message_items` table are
-kept in sync at the same lifecycle points; tool activity stays in the
-status line rather than the chat panel.
+No session content, titles, or surface state is stored here.
 
-Storage is assembled once, behind a shared core backend. Bootstrap Scope
-registers only the narrow `TrustStore`; Session and Config stores are not
-registered until a successful transition to Trusted Project Scope. Frontends
-never open the database or receive a raw store. They use
-`BootstrapApplication` for trust and `TrustedProjectApplication` for session,
-history, profile, and model-state use cases.
+## Startup state machine
 
-The static-plugin migration does not change the schema or persisted JSON
-contracts. `ProviderCredentials` remains encoded as the legacy JSON string
-array, and `ModelProtocol` values retain their previous representation. The
-storage layer no longer depends on concrete Provider runtime implementations.
+Bootstrap performs a **zero-write** preflight: `config.json` and `clat.db`
+are classified against the sentinel matrix (Fresh / PendingCommit / Ready /
+Unsupported / Inconsistent). Old pre-release layouts — a `version: 3`
+config, or a database with `sessions`/`messages`/`message_items`/
+`input_history` tables — are refused with removal instructions; there is
+no migration and no legacy reader.
 
-On Unix, CLAT attempts to create `~/.clat` with mode `0700` and the
-bootstrap/database files with mode `0600`. Provider credentials are
-currently persisted inside the local SQLite database so `/model`
-survives restarts; the database is not application-level encrypted yet.
+`authorize_and_mount` is the only path that persists trust: it acquires a
+kernel-level storage-root lease (flock on the deepest existing ancestor
+directory — no lock files), validates the session-root layout read-only,
+commits the control plane (temp DB + no-clobber link publish + config
+sentinel), and mounts the Trusted Project scope holding the lease for its
+lifetime. One CLAT process owns the storage root at a time; a second
+process fails fast with a clear error.
 
-## Integrity guarantees
+The session-root preflight is a **strict full walk** (root → project
+bucket → session directory → log file): any symlink anywhere on the path,
+a regular file where a directory belongs, an unreadable directory, an
+unknown entry (except a regular `.DS_Store`), or any mix of
+`session.jsonl` and `session.jsonl.zstd` anywhere in the same session root
+is a hard rejection — before any control-plane commit, Fresh
+or PendingCommit alike. The same SessionId in different project buckets
+is legal; every listing instead verifies that the physical bucket,
+encoded id directory, and Header cwd/id are one consistent SessionKey.
+The database half of a PendingCommit is additionally verified against
+this build's complete schema-object DDL (including indexes, views, and
+triggers), not just its table names.
 
-- The `database` field in `config.json` only accepts a bare file name —
-  absolute paths, separators, `..`, and Windows drive prefixes are
-  rejected, so a tampered bootstrap cannot point SQLite (and its chmod)
-  outside `~/.clat`.
-- The storage root and the database file must not be symbolic links;
-  SQLite is opened with `SQLITE_OPEN_NOFOLLOW` so the final open itself
-  refuses to follow a link.
+Crash windows are covered by the state matrix: a database published
+without its config re-runs the read-only preflight and idempotently
+completes the config; a workspace pointer stuck in `Materializing` is
+normalized to `Session` (log exists) or `Fresh` (it does not) on mount.
 
-## Session lifecycle
+## Run-time persistence
 
-A conversation is in one of three states:
+A run produces two streams from one loop: `RunEvent`s for frontends and
+`SessionEvent`s into the journal. The first batch (`turn/start` +
+`user/message`) is flushed **before** the model is called; side-effecting
+tools flush `approval/asked` before the human answers and the
+`approval/decided` + `tool/call` group before execution; a successful
+terminal `RunEvent` is published only after the closing `turn/end` is
+durable — if that final flush fails, the frontend receives `RunFailed`
+carrying the journal error instead, so the event stream and the
+completion channel can never disagree. Writes go through a 200 ms
+write-behind window whose flush drains to silence; commit outcomes are
+three-state (NotCommitted / Committed / Unknown); a first-batch publish
+that cannot prove its directory sync returns Unknown, and an append whose
+file identity drifted from the prepared handle (external writer) returns
+Unknown — both poison the session until a cold repair reopens it.
 
-```text
-absent      no database row (fresh `/new`, or never opened)
-live        row exists, zero chat content
-persistent  row exists, ≥1 chat item (message or message_items row)
-```
+Session switching is two-phase: the target is first staged read-only
+(admission + cold restore), then armed but kept unpublished while pending
+torn-tail recovery, projection catch-up, and view construction finish.
+Only after those fallible operations succeed is the workspace pointer
+CASed; the old session then quiesces and the in-memory target swap releases
+the withheld resume seed without another fallible storage step. A missing,
+corrupt, or unsupported target fails before the pointer moves. A lost CAS
+race leaves the old session untouched and closes the unpublished writer;
+an idempotent repair already completed while arming may remain, but no
+resume seed or selection change is published. Detaching a session flushes, checkpoints, and
+**joins** its writer thread — session switching does not leak threads
+even when writes keep failing.
 
-Invariants (tests derive from these, not from the code):
+## Layering
 
-- **INV1 — content survives everything.** A persistent session is never
-  automatically deleted or archived. Exit, `/resume` away, restart: it
-  stays resumable. `archived = 1` is reserved for an explicit user
-  action (no automatic path may set it).
-- **INV2 — emptiness never persists.** "Empty" means **chat history**
-  is empty (no `messages`, no `message_items`). Input history is recall
-  convenience and never counts toward content. Leaving or exiting a
-  live session deletes the row (and its input history) physically.
-- **INV3 — lazy creation.** `/new` writes nothing. The row appears only
-  when the first model-bound input is submitted; command input
-  (`/help`, `/model`, …) never creates a session.
-- **INV4 — history is session-scoped.** Input history belongs to one
-  session and is deleted with it; sessions never see each other's
-  inputs.
-- **INV5 — reopening follows the last *opened* session.** Resuming a
-  session read-only counts as opening it (the resumed session is
-  touched and becomes the startup conversation, and sorts first in
-  `/resume`). Known boundary: "last opened" is derived from a
-  second-granularity timestamp — a resume in the same second as
-  another session's write loses to it, and an explicit `/new` followed
-  by exit restores the previously opened session rather than a fresh
-  start. The exact model would be a persisted per-project
-  last-opened pointer; adopt it only if this boundary ever bites.
-
-## Run persistence boundary
-
-Application owns run persistence. It appends the user display message and
-`ModelItem` before starting the core worker. On success it persists assistant
-display text and every newly produced item before publishing completion. On
-failure or cancellation it performs the same best-effort persistence for
-partial text/items and reports any persistence failure alongside the run
-failure instead of silently discarding it. `RunEvent` remains observational;
-the TUI never writes completion state.
-
-Usage stays in the existing run result/event contract; this migration does not
-add a usage column or otherwise change the database schema.
-
-## Local-state markers
-
-Two `ModelItem::ProviderState` providers carry CLAT-local state inside
-`message_items`; the model never sees them (they are filtered from the
-conversation view and rebuilt on load):
-
-- `clat.compaction.v1` — `{version, summary, covered_count, usage}`. An
-  absolute prefix marker: items before `covered_count` are summarized in
-  `summary` and rebuilt as a short user turn on the next run. A marker is
-  valid only when the version matches, `covered_count` sits on a user-turn
-  boundary (tool call/result pairs are never split), `covered_count` does
-  not contradict the marker's own row position, and the summary is
-  non-empty within a hard size cap. Invalid markers are ignored with safe
-  fallback to an earlier valid marker or the raw history.
-- `clat.todo.v1` — `{version, todos: [{content, status}]}`. A full snapshot
-  of the session todo list, persisted **after** the run items that produced
-  it, so replay order stays `ToolCall → ToolResult → marker`. Restores bind
-  the snapshot to its session; a snapshot is valid only under the same
-  rules as a live `todo_write` (entry count, content length, single
-  in-progress entry), so corrupt or oversized snapshots fall back to an
-  earlier valid one or an empty list.
-
-Both markers are append-only rows; compaction never rewrites or deletes
-existing items — the raw history always remains on disk.
-
-Compaction semantics worth knowing on restore:
-
-- **Summaries cascade.** Each compaction feeds the previous summary into
-  the next one as carry-forward context, so facts from conversations
-  covered by the first compaction survive any number of later compactions.
-- **Failure keeps the last good view.** If a new marker is generated but
-  its row cannot be persisted, the run proceeds with the view rebuilt from
-  the last *persisted* marker (not the raw history), so an already-compacted
-  session cannot blow the context window again because of one write error.
-
-Session titles remain a `sessions.title` column: the first user message is
-still the derived default; after the first successful (non-cancelled) run
-CLAT may replace that default once with a model-generated title (≤16
-characters). The replacement is a compare-and-set against the derived
-default, so a manual rename issued while the title request is in flight is
-never overwritten; manually renamed sessions are never auto-retitled.
+Storage is assembled behind `SessionService` (use-case facade) and
+`ControlStorage`. Frontends never see raw persistence: they use
+`BootstrapApplication` (read-only preflight, `authorize_and_mount`) and
+`TrustedProjectApplication` (sessions, model state, profiles, runs).

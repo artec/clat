@@ -13,6 +13,7 @@ pub(crate) use service::ServiceKey;
 use std::fmt;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[allow(dead_code)]
 pub enum ScopeKind {
     Bootstrap,
     TrustedProject,

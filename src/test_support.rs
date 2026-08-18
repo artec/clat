@@ -64,6 +64,7 @@ impl crate::plugin::Plugin for TestProviderPlugin {
 }
 
 #[derive(Clone, Copy)]
+#[allow(dead_code)]
 pub(crate) enum TestBehavior {
     Success,
     /// 标题请求慢 3s、普通对话快返回（验证旁路命名不阻塞 run）。
@@ -294,6 +295,7 @@ pub(crate) fn configure_test_model(application: &TrustedProjectApplication) {
         .expect("save test model");
 }
 
+#[allow(dead_code)]
 pub(crate) fn configure_test_model_with_budget(
     application: &TrustedProjectApplication,
     max_context_tokens: u32,

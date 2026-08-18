@@ -1,5 +1,4 @@
 mod agent;
-mod catalog;
 mod compaction;
 mod instructions;
 mod mcp;
@@ -19,9 +18,6 @@ mod tools;
 mod tests;
 
 pub(crate) use agent::{DefaultAgentPlugin, ToolPipelinePlugin};
-#[cfg(test)]
-pub(crate) use catalog::trusted_project_catalog_with_providers;
-pub(crate) use catalog::{bootstrap_catalog, run_catalog, trusted_project_catalog};
 pub(crate) use compaction::CompactionPlugin;
 pub(crate) use instructions::ProjectInstructionsPlugin;
 pub(crate) use mcp::McpAdapterPlugin;
@@ -33,7 +29,22 @@ pub(crate) use providers::{OpenAiCompatiblePlugin, OpenAiResponsesPlugin, Provid
 pub(crate) use pruner::ResultPruner;
 pub(crate) use pruner::ToolResultPrunerPlugin;
 pub(crate) use run_scope::RunScopePlugin;
-pub(crate) use storage::{BootstrapStoragePlugin, ProjectStoragePlugin, StorageBackend};
+pub(crate) use storage::{ProjectControlStoragePlugin, SessionPersistencePlugin};
 pub(crate) use title::SessionTitlePlugin;
 pub(crate) use todo::TodoPlugin;
 pub(crate) use tools::{NativeReadToolsPlugin, NativeWriteToolsPlugin, ToolRegistryPlugin};
+
+use crate::plugin::Plugin;
+use crate::{CancelToken, PermissionApprover};
+use std::sync::Arc;
+
+/// The run scope mounts a fixed catalog (cancel + approver resources). The
+/// Trusted Project catalog is assembled by `BootstrapApplication::mount`
+/// itself (application.rs) — it owns the control-plane and session-service
+/// handles created during `authorize_and_mount`.
+pub(crate) fn run_catalog(
+    cancel: CancelToken,
+    approver: Arc<dyn PermissionApprover>,
+) -> Vec<Arc<dyn Plugin>> {
+    vec![Arc::new(RunScopePlugin::new(cancel, approver))]
+}

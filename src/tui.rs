@@ -6,11 +6,12 @@ use crate::tui_sessions::{ResumeAction, SessionPicker};
 use crate::tui_worker::{ChannelApprover, ChannelEventSink, UiEvent, WorkerMessage};
 use crate::{
     ApplicationEvent, ApplicationRunRequest, BootstrapApplication, CompactHandle, CompactionStatus,
-    ModelConfig, ModelEvent, ModelItem, ModelVendor, PermissionDecision, PermissionRequest,
-    Project, ProviderCredentials, ProviderDescriptor, RunEvent, RunHandle, StoredMessage,
+    ModelConfig, ModelEvent, ModelVendor, PermissionDecision, PermissionRequest, Project,
+    ProjectAuthorization, ProviderCredentials, ProviderDescriptor, RunEvent, RunHandle,
     ThinkingLevel, TrustedProjectApplication, Usage, apply_thinking_level,
     effective_thinking_level, next_thinking_level, thinking_levels,
 };
+use crate::{SessionId, TranscriptLine};
 use crossterm::event::{
     self, DisableBracketedPaste, DisableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
     KeyModifiers, KeyboardEnhancementFlags, MouseButton, MouseEvent, MouseEventKind,
@@ -484,23 +485,16 @@ impl ChatMessage {
         }
     }
 
-    fn from_stored(message: StoredMessage) -> Option<Self> {
-        let role = match message.role.as_str() {
-            "user" => ChatRole::User,
+    fn from_transcript(line: TranscriptLine) -> Option<Self> {
+        let role = match line.kind.as_str() {
+            "user" | "compaction" => ChatRole::User,
             "assistant" => ChatRole::Assistant,
             _ => return None,
         };
         Some(Self {
             role,
-            content: message.content,
+            content: line.text,
         })
-    }
-
-    fn model_item(&self) -> ModelItem {
-        match self.role {
-            ChatRole::User => ModelItem::user_text(self.content.clone()),
-            ChatRole::Assistant => ModelItem::assistant_text(self.content.clone()),
-        }
     }
 }
 
@@ -552,14 +546,22 @@ pub fn run(project: Project) -> io::Result<()> {
         PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
     );
 
-    let result = App::new(project)
-        .map_err(io::Error::other)
-        .and_then(|mut app| app.run(&mut terminal));
+    let (result, close_error) = match App::new(project) {
+        Err(error) => (Err(io::Error::other(error)), None),
+        Ok(mut app) => {
+            let run_result = app.run(&mut terminal);
+            (run_result, app.take_close_error())
+        }
+    };
 
     let _ = execute!(stdout(), PopKeyboardEnhancementFlags);
     let paste_result = execute!(stdout(), DisableBracketedPaste);
     let mouse_result = execute!(stdout(), DisableMouseCapture);
     ratatui::restore();
+    // 显式 shutdown 的失败在终端恢复后可见地报告（plan §16 阶段5）。
+    if let Some(error) = close_error {
+        let _ = writeln!(io::stderr(), "clat: application close failed: {error}");
+    }
     result.and(mouse_result).and(paste_result)
 }
 
@@ -581,7 +583,9 @@ struct App {
     application: Option<TrustedProjectApplication>,
     /// 当前会话 id；`None` 表示项目尚未受信（延迟初始化前不可对话）。
     /// 确权门保证所有用到它的路径只在 Some 时可达。
-    session_id: Option<i64>,
+    session_id: Option<SessionId>,
+    /// shutdown 时 Application close() 的错误（终端恢复后展示）。
+    close_error: Option<String>,
     config: ModelConfig,
     credentials: ProviderCredentials,
     provider_descriptors: Vec<ProviderDescriptor>,
@@ -662,6 +666,7 @@ impl App {
             bootstrap: Some(bootstrap),
             application: None,
             session_id: None,
+            close_error: None,
             config,
             credentials,
             provider_descriptors: Vec::new(),
@@ -703,9 +708,8 @@ impl App {
         Ok(app)
     }
 
-    /// 项目级资源初始化：会话、历史消息、输入历史、模型配置与
-    /// MCP 服务器。只在项目已受信后调用（构造时已信任，或确权
-    /// 成功后）。任何失败向上报告——确权流程据此保持阻断。
+    /// 项目级资源初始化：挂载 Trusted Project（已信任路径）并采纳
+    /// 快照。任何失败向上报告——确权流程据此保持阻断。
     fn initialize_project(&mut self) -> Result<(), String> {
         let bootstrap = self
             .bootstrap
@@ -721,22 +725,22 @@ impl App {
                 return Err(error.to_string());
             }
         };
-        let snapshot = match application.snapshot() {
-            Ok(snapshot) => snapshot,
-            Err(error) => {
-                drop(application);
-                self.bootstrap = Some(
-                    BootstrapApplication::open_default(self.project.clone())
-                        .map_err(|open_error| open_error.to_string())?,
-                );
-                return Err(error.to_string());
-            }
+        self.application = Some(application);
+        self.adopt_snapshot()
+    }
+
+    /// 从已挂载的 application 读取项目快照并重置前端状态。
+    fn adopt_snapshot(&mut self) -> Result<(), String> {
+        let snapshot = match self.application.as_ref().map(|app| app.snapshot()) {
+            Some(Ok(snapshot)) => snapshot,
+            Some(Err(error)) => return Err(error.to_string()),
+            None => return Err("project application is unavailable".into()),
         };
         self.session_id = snapshot.session_id;
         self.messages = snapshot
-            .messages
+            .transcript
             .into_iter()
-            .filter_map(ChatMessage::from_stored)
+            .filter_map(ChatMessage::from_transcript)
             .collect();
         self.input = InputBuffer::new(snapshot.input_history);
         self.markdown_cache.clear();
@@ -753,28 +757,15 @@ impl App {
                 self.flash_status(format!("mcp: {}", snapshot.mcp.failures.join("; ")));
             }
         }
-        self.application = Some(application);
+        // 挂载期诊断（如 workspace 指针指向不可加载的会话）：订阅尚未
+        // 建立，只能经访问器在此时取走。
+        if let Some(application) = &self.application
+            && let Some(diagnostic) = application.startup_diagnostic()
+        {
+            self.flash_status(diagnostic.to_owned());
+        }
         self.refresh_balance_now();
         Ok(())
-    }
-
-    /// 写路径使用的会话 id：`None` 表示尚无会话——/new 之后或
-    /// 从未有过会话——此时**按需创建**（首条内容写入才落盘），
-    /// 空会话永远不进库。确权门保证只在已信任状态可达。
-    fn current_session(&mut self) -> Result<i64, String> {
-        match self.session_id {
-            Some(id) => Ok(id),
-            None => {
-                let id = self
-                    .application
-                    .as_mut()
-                    .ok_or_else(|| "project application is unavailable".to_owned())?
-                    .ensure_session()
-                    .map_err(|error| error.to_string())?;
-                self.session_id = Some(id);
-                Ok(id)
-            }
-        }
     }
 
     fn run(&mut self, terminal: &mut DefaultTerminal) -> io::Result<()> {
@@ -817,6 +808,12 @@ impl App {
             .events
             .take()
             .expect("events channel was just installed");
+        // 首帧无条件先行：循环内的绘制发生在每次 wait 之后，而无重绘
+        // 需求时 wait 会无限挂起——未受信目录没有任何启动事件（无
+        // monitor 订阅、无 worker），首绘绝不能以"事件先到达"为前提，
+        // 否则用户看到的是空备用屏 + 左上角光标（实机 pty 复现）。
+        self.expire_status();
+        terminal.draw(|frame| self.draw(frame))?;
         while !self.should_quit {
             let deadline = self.next_repaint_deadline();
             let received = match deadline {
@@ -849,15 +846,18 @@ impl App {
             self.expire_status();
             terminal.draw(|frame| self.draw(frame))?;
         }
-        // 退出时清场：只删空会话（历史遗留/异常路径兜底）。
-        // 非空会话**绝不归档**——否则 resume 过的会话下次启动
-        // "消失"（v0.3.3 前的实机事故）。
-        if self.session_id.is_some()
-            && let Some(application) = &self.application
+        // 显式 shutdown：flush 会话与 checkpoint、join 全部 worker，
+        // 消费 close 错误（Drop 只兜底，不算成功关闭）。
+        if let Some(application) = self.application.take()
+            && let Err(error) = application.close()
         {
-            let _ = application.delete_current_if_empty();
+            self.close_error = Some(error.to_string());
         }
         Ok(())
+    }
+
+    fn take_close_error(&mut self) -> Option<String> {
+        self.close_error.take()
     }
 
     fn handle_ui_event(&mut self, event: UiEvent) {
@@ -871,9 +871,9 @@ impl App {
                 CompactionStatus::Started => self.flash_status("compacting…"),
                 CompactionStatus::Finished { note, succeeded } => {
                     self.flash_status(note);
-                    // 仅当历史确实收缩（成功且 marker 落盘）时，压缩前的
-                    // 水位才过期（TUI-L05：失败/nothing-to-compact 保留
-                    // 原读数，直到下一次 run 上报新的 usage）。
+                    // 仅当历史确实收缩（成功且 replace 事件族耐久落盘）时，
+                    // 压缩前的水位才过期（TUI-L05：失败/nothing-to-compact
+                    // 保留原读数，直到下一次 run 上报新的 usage）。
                     if succeeded {
                         self.last_turn_usage = None;
                     }
@@ -936,20 +936,32 @@ impl App {
                 KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N')
             );
             if trust {
-                let trusted = self
+                // authorize_and_mount 消费 bootstrap（lease → preflight →
+                // 控制面提交 → 挂载）；失败时重开 bootstrap 保持阻断。
+                let bootstrap = self
                     .bootstrap
-                    .as_ref()
-                    .ok_or_else(|| "bootstrap scope is unavailable".to_owned())
-                    .and_then(|bootstrap| {
-                        bootstrap.trust_project().map_err(|error| error.to_string())
-                    })
-                    .and_then(|()| self.initialize_project());
+                    .take()
+                    .ok_or_else(|| "bootstrap scope is unavailable".to_owned());
+                let trusted = bootstrap.and_then(|bootstrap| {
+                    bootstrap
+                        .authorize_and_mount(ProjectAuthorization::grant())
+                        .map_err(|error| error.to_string())
+                });
                 match trusted {
-                    Ok(()) => {
+                    Ok(application) => {
+                        self.application = Some(application);
+                        if let Err(error) = self.adopt_snapshot() {
+                            self.flash_status(format!("failed to trust project: {error}"));
+                            return;
+                        }
                         self.trust_prompt = false;
                         self.flash_status("project trusted — welcome");
                     }
-                    Err(error) => self.flash_status(format!("failed to trust project: {error}")),
+                    Err(error) => {
+                        self.bootstrap =
+                            BootstrapApplication::open_default(self.project.clone()).ok();
+                        self.flash_status(format!("failed to trust project: {error}"));
+                    }
                 }
             } else if leave {
                 self.should_quit = true;
@@ -1263,8 +1275,9 @@ impl App {
         }
     }
 
-    /// 松开鼠标：空选区时单击定位输入光标；非空选区保持高亮并立即
-    /// 复制到系统剪贴板（OSC 52）。
+    /// 松开鼠标：空选区时单击定位输入光标；非空选区保持高亮，等用户
+    /// 显式复制（Cmd+C / Ctrl+Shift+C）。选中即复制会静默覆盖系统
+    /// 剪贴板，且 OSC 52 在不支持的终端上假报成功，已移除。
     fn finish_mouse_selection(&mut self) {
         let Some(selection) = self.selection.as_mut() else {
             return;
@@ -1278,15 +1291,6 @@ impl App {
                 self.input.set_cursor(index);
             }
             self.selection = None;
-            return;
-        }
-        if let Some(text) = self.selection_text().filter(|text| !text.is_empty()) {
-            let count = text.chars().count();
-            if copy_to_clipboard(&text) {
-                self.flash_status(format!("copied {count} chars"));
-            } else {
-                self.flash_status("clipboard copy failed");
-            }
         }
     }
 
@@ -1416,20 +1420,19 @@ impl App {
         }
     }
 
-    /// 切换到指定会话（/resume 确认时）：离开的会话若为空（历史
-    /// 遗留行）物理删除，非空会话**原样保留**（仍可再次 resume）；
-    /// 随后加载目标会话并重置视图状态。
-    fn switch_session(&mut self, session_id: i64) -> Result<(), String> {
+    /// 切换到指定会话（/resume 确认时）：workspace 选择 CAS → 冷恢
+    /// 复目标会话（原始事件永不删除，随时可再次 resume）→ 重置视图。
+    fn switch_session(&mut self, session_id: SessionId) -> Result<(), String> {
         let snapshot = self
             .application
             .as_mut()
             .ok_or_else(|| "project application is unavailable".to_owned())?
-            .switch_session(session_id)
+            .switch_session(session_id.clone())
             .map_err(|error| error.to_string())?;
         self.messages = snapshot
-            .messages
+            .transcript
             .into_iter()
-            .filter_map(ChatMessage::from_stored)
+            .filter_map(ChatMessage::from_transcript)
             .collect();
         self.session_id = Some(session_id);
         // 输入历史随会话切换：恢复目标会话自己的历史（含内存中
@@ -1592,26 +1595,8 @@ impl App {
         if value.is_empty() {
             return;
         }
-        // 输入历史归属会话，但**命令输入不建会话**：空会话语义以
-        // 聊天历史（messages/message_items）为准，`/help`、`/model`
-        // 这类 UI 操作不该在库里留下任何行。只有发往模型的实质
-        // 输入（start_run）才按需建会话。
-        let _session_for_history = if value.starts_with('/') {
-            self.session_id
-        } else {
-            match self.current_session() {
-                Ok(id) => Some(id),
-                Err(error) => {
-                    self.flash_status(format!("failed to open conversation: {error}"));
-                    return;
-                }
-            }
-        };
-        if let Some(application) = &self.application {
-            let _ = application.record_input(&value);
-        }
-        // 命令也进内存历史：↑ 仍可召回；无会话时的命令（record_input
-        // 已静默丢弃）不落盘。
+        // 输入历史是进程内的（↑/↓ 召回）；跨重启的回忆来自会话的
+        // transcript 投影（recent_inputs），命令输入永不落盘。
         self.input.remember(value.clone());
 
         match value.as_str() {
@@ -1623,7 +1608,7 @@ impl App {
                 self.flash_status("select a model");
             }
             "/help" => {
-                self.status = "/model · /new · /clear · /compact · /resume · /quit · ↑/↓ input history · PgUp/PgDn chat · Shift+Tab thinking level"
+                self.status = "/model · /new · /clear · /compact · /resume · /quit · ↑/↓ input history · PgUp/PgDn chat · Shift+Tab thinking level · Cmd+C copy selection"
                     .into();
             }
             "/compact" => {
@@ -1651,7 +1636,7 @@ impl App {
                         .map_err(|error| error.to_string())
                 }) {
                 Ok(sessions) => {
-                    let current = self.session_id.unwrap_or(-1);
+                    let current = self.session_id.clone();
                     self.session_picker = Some(SessionPicker::new(sessions, current));
                 }
                 Err(error) => self.flash_status(format!("failed to list conversations: {error}")),
@@ -1697,23 +1682,13 @@ impl App {
             self.flash_status("model is not configured — run /model first");
             return;
         }
-        match self.current_session() {
-            Ok(_) => {}
-            Err(error) => {
-                self.flash_status(error);
-                return;
-            }
-        }
-
         let sender = self
             .event_sender
             .clone()
             .expect("event channel is installed by run()");
-        let legacy_seed_items = self.messages.iter().map(ChatMessage::model_item).collect();
         let (completion, completed) = mpsc::channel();
         let request = ApplicationRunRequest {
             prompt: prompt.clone(),
-            legacy_seed_items,
             approver: Arc::new(ChannelApprover::new(sender.clone())),
             events: Box::new(ChannelEventSink(sender.clone())),
             completion,
@@ -1851,6 +1826,11 @@ impl App {
         self.running = false;
         if let Some(handle) = self.run_handle.take() {
             let _ = handle.join();
+        }
+        // 首 run 可能刚物化会话（Fresh→Session）：同步本地镜像，/resume
+        // 的 current 标记与后续写路径立即正确。
+        if let Some(application) = &self.application {
+            self.session_id = application.current_session_id();
         }
         self.thinking = false;
         self.thinking_since = None;
@@ -2082,8 +2062,7 @@ impl App {
             let dialog = centered_rect(84, height, area);
             frame.render_widget(Clear, dialog);
             frame.render_widget(
-                Paragraph::new(compact)
-                    .block(Block::default().borders(Borders::ALL).title(" Permission ")),
+                Paragraph::new(compact).block(popup_block(" Permission ")),
                 dialog,
             );
             return;
@@ -2127,8 +2106,7 @@ impl App {
         let dialog = centered_rect(84, height.max(10), area);
         frame.render_widget(Clear, dialog);
         frame.render_widget(
-            Paragraph::new(lines)
-                .block(Block::default().borders(Borders::ALL).title(" Permission ")),
+            Paragraph::new(lines).block(popup_block(" Permission ")),
             dialog,
         );
     }
@@ -2518,6 +2496,29 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
     result
 }
 
+/// 弹出窗与屏幕左右边缘的最小留白（列）。纯百分比布局在窄终端/
+/// 分屏下会退化：94% 在 60 列下每侧仅 1 列、40 列下为 0，对话框
+/// 直接贴住左右墙。所有弹出窗共用这一下限，宽度不够时收缩对话框
+/// 并保持居中，而不是牺牲边距。
+pub(crate) const POPUP_H_MARGIN: u16 = 4;
+
+/// 钳制生效所需的最低对话框宽度：更窄的终端连"边距 + 可用宽度"
+/// 都放不下，保留百分比行为，不把对话框挤没。
+const MIN_POPUP_WIDTH: u16 = 16;
+
+/// 弹出窗内容的水平内边距（列）。文字与边框字符之间留空，不贴框；
+/// 手工换行/截断的宽度计算必须同步扣除 `2 × POPUP_TEXT_PADDING`。
+pub(crate) const POPUP_TEXT_PADDING: u16 = 1;
+
+/// 弹出窗统一的边框块：全边框 + 标题 + 1 列水平内边距。标题原样
+/// 使用，调用方自带前后空格（如 `" Permission "`）。
+pub(crate) fn popup_block(title: &str) -> Block<'_> {
+    Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .padding(Padding::horizontal(POPUP_TEXT_PADDING))
+}
+
 fn centered_rect(percent_x: u16, height: u16, area: Rect) -> Rect {
     let top = area.height.saturating_sub(height) / 2;
     let vertical = Rect::new(area.x, area.y + top, area.width, height.min(area.height));
@@ -2529,16 +2530,24 @@ fn centered_rect(percent_x: u16, height: u16, area: Rect) -> Rect {
             Constraint::Percentage((100 - percent_x) / 2),
         ])
         .split(vertical);
-    horizontal[1]
+    let mut rect = horizontal[1];
+    let bounded = area.width.saturating_sub(2 * POPUP_H_MARGIN);
+    if rect.width > bounded && bounded >= MIN_POPUP_WIDTH {
+        rect.x = area.x + (area.width - bounded) / 2;
+        rect.width = bounded;
+    }
+    rect
 }
 
 /// 权限参数内容在给定终端区域内实际可用的列数。与
 /// `draw_permission_dialog` 共用同一矩形和边距计算，避免测试或
-/// 预览再次把百分比误当成固定列数。
+/// 预览再次把百分比误当成固定列数。边框 2 列与弹窗内边距
+/// 2×POPUP_TEXT_PADDING 列必须先扣掉，预览行才不会贴框或右侧被裁。
 fn permission_argument_width(area: Rect) -> usize {
     centered_rect(84, 1, area)
         .width
         .saturating_sub(2) // 边框
+        .saturating_sub(2 * POPUP_TEXT_PADDING) // 弹窗内边距
         .saturating_sub(4) as usize // 参数缩进/留白
 }
 
@@ -2546,7 +2555,8 @@ fn permission_argument_width(area: Rect) -> usize {
 fn render_trust_dialog(frame: &mut Frame, area: Rect, root: &Path) {
     // 文本按对话框 84% 宽的“最小合理终端”（约 80 列内宽）换行；
     // 更宽的终端留白更多，更窄的终端由 Paragraph 截断右侧。
-    let inner_width = 84usize.saturating_sub(2);
+    // 边框 2 列与弹窗内边距 2×POPUP_TEXT_PADDING 列先扣掉。
+    let inner_width = 84usize.saturating_sub(2 + 2 * POPUP_TEXT_PADDING as usize);
     let mut lines = vec![
         Line::from(Span::styled(
             "Trust this project?",
@@ -2574,10 +2584,7 @@ fn render_trust_dialog(frame: &mut Frame, area: Rect, root: &Path) {
     let height = (lines.len() as u16 + 2).min(area.height.saturating_sub(2));
     let dialog = centered_rect(84, height.max(10), area);
     frame.render_widget(Clear, dialog);
-    frame.render_widget(
-        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(" Trust ")),
-        dialog,
-    );
+    frame.render_widget(Paragraph::new(lines).block(popup_block(" Trust ")), dialog);
 }
 
 #[cfg(test)]
@@ -2596,6 +2603,44 @@ mod tests {
         let reviewed = advance_reviewed_through(reviewed, 10, 50);
         let reviewed = advance_reviewed_through(reviewed, 50, 100);
         assert_eq!(reviewed, 100);
+    }
+
+    /// 实机回归：窄终端/分屏下百分比边距退化（94% 在 50 列下每侧仅
+    /// 1 列），弹出窗贴住屏幕左右墙。所有 centered_rect 调用方
+    /// （/model、编辑器、/resume、权限与确权对话框）必须保住
+    /// POPUP_H_MARGIN 的最小左右留白。
+    #[test]
+    fn popup_rects_keep_a_minimum_horizontal_margin() {
+        for width in [50u16, 60, 66, 80, 120] {
+            for percent in [84u16, 94] {
+                let area = Rect::new(0, 0, width, 24);
+                let rect = centered_rect(percent, 10, area);
+                assert!(
+                    rect.x >= POPUP_H_MARGIN,
+                    "width={width} percent={percent}: left margin {} < {POPUP_H_MARGIN}",
+                    rect.x
+                );
+                assert!(
+                    rect.x + rect.width <= width - POPUP_H_MARGIN,
+                    "width={width} percent={percent}: right edge {} exceeds {}",
+                    rect.x + rect.width,
+                    width - POPUP_H_MARGIN
+                );
+            }
+        }
+        // 钳制保持居中：收缩量两侧均分。
+        let rect = centered_rect(94, 10, Rect::new(0, 0, 50, 24));
+        assert_eq!(rect.x, POPUP_H_MARGIN);
+        assert_eq!(rect.width, 50 - 2 * POPUP_H_MARGIN);
+    }
+
+    /// 极窄终端（放不下边距 + MIN_POPUP_WIDTH）保留百分比行为，
+    /// 钳制不得把对话框挤没。
+    #[test]
+    fn popup_margin_never_squeezes_tiny_terminals() {
+        let area = Rect::new(0, 0, 20, 10);
+        let rect = centered_rect(84, 6, area);
+        assert!(rect.width > 0, "tiny terminals still get a usable popup");
     }
 
     /// NWE-04：超长命令必须换行成多个审阅行——危险尾部（藏在第
@@ -2793,16 +2838,106 @@ mod tests {
         }
     }
 
+    /// 实机回归：弹出窗**内部**的文字左右贴着弹窗自己的边框（用户
+    /// 反馈"文字左右贴着弹出窗"）。所有文本行与左右边框之间必须
+    /// 保留 POPUP_TEXT_PADDING 列空白。
+    #[test]
+    fn popup_text_never_touches_its_own_borders() {
+        for (width, height) in [(100u16, 30u16), (80, 24), (213, 55), (48, 20)] {
+            let backend = TestBackend::new(width, height);
+            let mut terminal = Terminal::new(backend).expect("terminal");
+            terminal
+                .draw(|frame| {
+                    render_trust_dialog(
+                        frame,
+                        frame.area(),
+                        Path::new("/Users/deng/Documents/GitHub/clat"),
+                    );
+                })
+                .expect("draw");
+            let buffer = terminal.backend().buffer();
+
+            let mut corner = None;
+            for y in 0..height {
+                for x in 0..width {
+                    if buffer[(x, y)].symbol() == "┌" {
+                        corner = Some((x, y));
+                        break;
+                    }
+                }
+                if corner.is_some() {
+                    break;
+                }
+            }
+            let Some((left, top)) = corner else {
+                panic!("top-left border corner not found at {width}x{height}");
+            };
+            let mut right = left + 1;
+            while right < width && buffer[(right, top)].symbol() != "┐" {
+                right += 1;
+            }
+            let mut bottom = top + 1;
+            while bottom < height && buffer[(left, bottom)].symbol() != "└" {
+                bottom += 1;
+            }
+            assert!(right < width && bottom < height, "borders not found");
+
+            // 修复前文本直接从边框下一列开始（如 'T' of "Trust this
+            // project?"）；修复后该列必须是内边距空白。
+            for y in (top + 1)..bottom {
+                assert_eq!(
+                    buffer[(left + 1, y)].symbol(),
+                    " ",
+                    "text touches the left border at x={} y={y} ({width}x{height})",
+                    left + 1
+                );
+                assert_eq!(
+                    buffer[(right - 1, y)].symbol(),
+                    " ",
+                    "text touches the right border at x={} y={y} ({width}x{height})",
+                    right - 1
+                );
+            }
+        }
+    }
+
+    /// `popup_block` 是所有弹出窗共用的边框块：文字与边框之间固定
+    /// 保留 POPUP_TEXT_PADDING 列。
+    #[test]
+    fn popup_block_pads_text_away_from_the_borders() {
+        let backend = TestBackend::new(40, 7);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| {
+                frame.render_widget(
+                    Paragraph::new("X").block(popup_block(" T ")),
+                    Rect::new(0, 0, 40, 7),
+                );
+            })
+            .expect("draw");
+        let buffer = terminal.backend().buffer();
+        // 内容首行在顶边框之下（y=1）：边框、内边距、文字、内边距。
+        assert_eq!(buffer[(0, 1)].symbol(), "│");
+        assert_eq!(
+            buffer[(1, 1)].symbol(),
+            " ",
+            "no padding inside the left border"
+        );
+        assert_eq!(buffer[(2, 1)].symbol(), "X");
+        assert_eq!(buffer[(3, 1)].symbol(), " ");
+    }
+
     #[test]
     fn wraps_cjk_by_terminal_width() {
         assert_eq!(wrap_text("你好世界", 4), vec!["你好", "世界"]);
     }
 
     #[test]
-    fn converts_stored_messages_to_chat() {
-        let message = ChatMessage::from_stored(StoredMessage {
-            role: "user".into(),
-            content: "hello".into(),
+    fn converts_transcript_lines_to_chat() {
+        let message = ChatMessage::from_transcript(TranscriptLine {
+            kind: "user".into(),
+            text: "hello".into(),
+            is_error: false,
         })
         .unwrap();
         assert_eq!(message.role, ChatRole::User);

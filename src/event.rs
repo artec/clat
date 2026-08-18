@@ -28,6 +28,12 @@ pub enum RunEvent {
         turn: usize,
         outcome: ModelOutcome,
         finish_reason: FinishReason,
+        /// Lossless provider state the next request must replay (OpenAI
+        /// Responses reasoning items). The recorder persists it as the
+        /// assistant message's `source.replayState`; `None` for providers
+        /// without opaque state. Protocol change note: added with the
+        /// dual-stream cutover so replay survives cold resume.
+        provider_replay: Option<serde_json::Value>,
     },
     ToolRequested {
         call: ToolCall,

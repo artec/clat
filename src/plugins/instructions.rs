@@ -128,8 +128,7 @@ fn decode_limited(bytes: &[u8], name: &str) -> Result<(String, bool), PluginErro
 mod tests {
     use super::*;
     use crate::plugin::PluginManager;
-    use crate::plugins::{DefaultPromptPlugin, PromptRegistryPlugin, bootstrap_catalog};
-    use crate::storage::Storage;
+    use crate::plugins::{DefaultPromptPlugin, PromptRegistryPlugin};
     use std::path::PathBuf;
 
     fn temp_root(tag: &str) -> PathBuf {
@@ -283,19 +282,16 @@ mod tests {
     }
 
     #[test]
-    fn bootstrap_scope_has_no_prompt_or_instructions_service() {
-        // 信任门前不存在 PromptRegistry/指令贡献：bootstrap Catalog 只
-        // 提供 core.trust，ProjectInstructionsPlugin 在内的全部项目插件
-        // 只在信任迁移后挂载（零读取的组成事实）。
-        let storage_root = temp_root("bootstrap-storage");
-        let storage = Storage::open(storage_root.clone()).expect("storage");
-        let backend = crate::plugins::storage::StorageBackend::new(storage);
-        let mut manager = PluginManager::root(ScopeKind::Bootstrap);
-        manager
-            .mount_all(bootstrap_catalog(Arc::new(backend)))
-            .expect("mount bootstrap");
-        assert!(manager.require(PROMPT_SERVICE).is_err());
-        manager.close().expect("close");
-        std::fs::remove_dir_all(storage_root).expect("cleanup");
+    fn bootstrap_phase_mounts_no_plugins_at_all() {
+        // 信任门前不存在任何 plugin scope：bootstrap 是纯只读 preflight
+        // （application.rs），PromptRegistry/指令插件在内的全部项目插
+        // 件只在 authorize_and_mount 之后挂载（零读取的组成事实）。
+        let root = temp_root("bootstrap-phase");
+        let opened = crate::BootstrapApplication::open(Project::new(&root), root.clone());
+        assert!(
+            opened.is_ok(),
+            "fresh storage opens without any plugin scope"
+        );
+        std::fs::remove_dir_all(root).expect("cleanup");
     }
 }

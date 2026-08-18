@@ -1,0 +1,1062 @@
+//! Projection registry: every derived read model folds from the same
+//! authoritative event log (plan §11). Units: surface (model view),
+//! transcript (CLAT display view — replace never hides), title, todo,
+//! stats, compaction. Checkpoints are derived, droppable, and never lead
+//! the log.
+
+use crate::session::event::SessionEvent;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use std::collections::HashMap;
+
+pub(crate) trait ProjectionUnit: Send {
+    fn key(&self) -> &'static str;
+    fn state_version(&self) -> u64;
+    /// Fold one event in log order; only events with `seq > as_of_seq()`
+    /// reach here.
+    fn fold(&mut self, event: &SessionEvent) -> Result<(), String>;
+    fn snapshot(&self) -> Value;
+    fn restore(&mut self, row: &CheckpointRow) -> Result<(), String>;
+    /// Watermark as an i64: -1 means nothing folded yet, so the very
+    /// first event (seq 0) folds into a fresh unit.
+    fn as_of(&self) -> i64;
+    fn surface_nodes(&self) -> Option<Result<Vec<(u64, crate::model::ModelItem)>, String>> {
+        None
+    }
+}
+
+pub(crate) struct ProjectionRegistry {
+    units: Vec<Box<dyn ProjectionUnit>>,
+}
+
+impl ProjectionRegistry {
+    /// CLAT's first-batch registry (plan §11.2).
+    pub(crate) fn clat() -> Self {
+        Self {
+            units: vec![
+                Box::new(SurfaceUnit::default()),
+                Box::new(TranscriptUnit::default()),
+                Box::new(TitleUnit::default()),
+                Box::new(TodoUnit::default()),
+                Box::new(StatsUnit::default()),
+                Box::new(CompactionUnit::default()),
+                Box::new(RequestHeaderUnit::default()),
+            ],
+        }
+    }
+
+    /// Serialized state of one unit by key (checkpoint row value shape).
+    pub(crate) fn state_snapshot(&self, unit_key: &str) -> Option<Value> {
+        self.units
+            .iter()
+            .find(|unit| unit.key() == unit_key)
+            .map(|unit| unit.snapshot())
+    }
+
+    pub(crate) fn surface_nodes(&self) -> Result<Vec<(u64, crate::model::ModelItem)>, String> {
+        self.units
+            .iter()
+            .find_map(|unit| unit.surface_nodes())
+            .unwrap_or_else(|| Err("surface projection is not registered".into()))
+    }
+
+    pub(crate) fn fold_all(&mut self, events: &[SessionEvent]) -> Result<(), String> {
+        for event in events {
+            self.fold_one(event)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn fold_one(&mut self, event: &SessionEvent) -> Result<(), String> {
+        for unit in &mut self.units {
+            if event.seq as i64 > unit.as_of() {
+                unit.fold(event)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The first seq the units still need to see (`min(as_of) + 1`, clamped
+    /// to 0). Feeding `read_from(floor)` keeps incremental folds O(tail),
+    /// not O(log) — the hot path folds after every flush window.
+    pub(crate) fn live_floor(&self) -> u64 {
+        let floor = self
+            .units
+            .iter()
+            .map(|unit| unit.as_of() + 1)
+            .min()
+            .unwrap_or(0);
+        floor.max(0) as u64
+    }
+
+    /// Capture the full registry checkpoint (whole record, one snapshot per
+    /// unit; written as one record, never per-unit — plan §11.2).
+    pub(crate) fn checkpoint(
+        &self,
+        identity: CheckpointIdentity,
+        generation: u64,
+    ) -> CheckpointRecord {
+        CheckpointRecord {
+            identity,
+            generation,
+            rows: self
+                .units
+                .iter()
+                .map(|unit| {
+                    (
+                        unit.key().to_owned(),
+                        CheckpointRow {
+                            ver: unit.state_version(),
+                            seq: unit.as_of(),
+                            val: unit.snapshot(),
+                        },
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    /// Build a cache record without ever snapshotting the two unbounded
+    /// event-bearing units. Their authoritative data is streamed from the log
+    /// on restore; serializing them first and dropping them later defeated the
+    /// checkpoint memory cap. Remaining rows are admitted one at a time.
+    pub(crate) fn checkpoint_bounded(
+        &self,
+        identity: CheckpointIdentity,
+        generation: u64,
+        max_bytes: usize,
+    ) -> CheckpointRecord {
+        let mut record = CheckpointRecord {
+            identity,
+            generation,
+            rows: HashMap::new(),
+        };
+        for unit in &self.units {
+            if matches!(unit.key(), "surface" | "transcript") {
+                continue;
+            }
+            let row = CheckpointRow {
+                ver: unit.state_version(),
+                seq: unit.as_of(),
+                val: unit.snapshot(),
+            };
+            let row_size = serde_json::to_vec(&row)
+                .map(|bytes| bytes.len())
+                .unwrap_or(usize::MAX);
+            if row_size > max_bytes {
+                continue;
+            }
+            record.rows.insert(unit.key().to_owned(), row);
+            if serde_json::to_vec(&record)
+                .map(|bytes| bytes.len() > max_bytes)
+                .unwrap_or(true)
+            {
+                record.rows.remove(unit.key());
+            }
+        }
+        record
+    }
+
+    /// Restore from a checkpoint and fold the tail. Mirrors the pinned
+    /// `restore` contract: a row is usable iff its version matches and its
+    /// watermark sits in `[base_seq - 1, end_seq]`; an unusable row with a
+    /// positive base means the log shrank below the watermark — the caller
+    /// must re-read from seq 0 (`Outlived`).
+    pub(crate) fn restore(
+        &mut self,
+        record: &CheckpointRecord,
+        tail: &[SessionEvent],
+        base_seq: u64,
+    ) -> Result<(), RestoreError> {
+        let end_seq = tail
+            .last()
+            .map(|event| event.seq)
+            .unwrap_or(base_seq.saturating_sub(1));
+        self.restore_rows(record, base_seq, end_seq)?;
+        self.fold_all(tail).map_err(RestoreError::Malformed)?;
+        Ok(())
+    }
+
+    pub(crate) fn restore_rows(
+        &mut self,
+        record: &CheckpointRecord,
+        base_seq: u64,
+        end_seq: u64,
+    ) -> Result<(), RestoreError> {
+        for unit in &mut self.units {
+            match record.rows.get(unit.key()) {
+                Some(row)
+                    if row.ver == unit.state_version()
+                        && row.seq >= base_seq as i64 - 1
+                        && row.seq <= end_seq as i64 =>
+                {
+                    unit.restore(row).map_err(RestoreError::Malformed)?;
+                }
+                _ if base_seq > 0 => return Err(RestoreError::Outlived(unit.key().to_owned())),
+                _ => {
+                    // Fresh unit at seq 0 with no usable row: nothing to load.
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum RestoreError {
+    /// The log no longer covers a row's watermark (crash-repair truncation):
+    /// re-read from seq 0 once (compat doc §12, restore contract).
+    Outlived(String),
+    Malformed(String),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub(crate) struct CheckpointIdentity {
+    pub(crate) created_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) cwd: Option<String>,
+}
+
+impl CheckpointIdentity {
+    pub(crate) fn of(header: &crate::session::header::SessionHeader) -> Self {
+        Self {
+            created_at: header.created_at,
+            cwd: header.cwd.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub(crate) struct CheckpointRow {
+    pub(crate) ver: u64,
+    /// -1 legal only for never-folded units.
+    pub(crate) seq: i64,
+    pub(crate) val: Value,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub(crate) struct CheckpointRecord {
+    pub(crate) identity: CheckpointIdentity,
+    /// CLAT cache commit generation (NOT the log revision; plan §11.2).
+    pub(crate) generation: u64,
+    pub(crate) rows: HashMap<String, CheckpointRow>,
+}
+
+impl CheckpointRecord {
+    /// `max(min over units(usable ? row.seq + 1 : 0) - 1, 0)`; `None` when
+    /// no units are registered (compat doc §12, restoreFloor).
+    pub(crate) fn restore_floor(&self, registry: &ProjectionRegistry) -> Option<u64> {
+        let mut floor: Option<i64> = None;
+        for unit in &registry.units {
+            let need = match self.rows.get(unit.key()) {
+                Some(row) if row.ver == unit.state_version() => row.seq + 1,
+                _ => 0,
+            };
+            floor = Some(match floor {
+                Some(current) => current.min(need),
+                None => need,
+            });
+        }
+        floor.map(|floor| (floor - 1).max(0) as u64)
+    }
+
+    pub(crate) fn identity_matches(&self, identity: &CheckpointIdentity) -> bool {
+        self.identity == *identity
+    }
+}
+
+// --- units -----------------------------------------------------------------
+
+/// Model-visible surface: nodes ordered by surface position, replace
+/// applied (compat doc §5). Holds the surface events needed to validate
+/// later tool/result rewrites.
+struct SurfaceUnit {
+    surface: crate::session::surface::Surface,
+    events: Vec<SessionEvent>,
+    as_of: i64,
+}
+
+impl Default for SurfaceUnit {
+    fn default() -> Self {
+        Self {
+            surface: Default::default(),
+            events: Vec::new(),
+            as_of: -1,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct SurfaceState {
+    nodes: Vec<u64>,
+    replacements: Vec<Value>,
+    events: Vec<Value>,
+}
+
+impl ProjectionUnit for SurfaceUnit {
+    fn key(&self) -> &'static str {
+        "surface"
+    }
+    fn state_version(&self) -> u64 {
+        1
+    }
+    fn as_of(&self) -> i64 {
+        self.as_of
+    }
+    fn fold(&mut self, event: &SessionEvent) -> Result<(), String> {
+        // Keep every event (not only surface ones): provenance checks cite
+        // arbitrary earlier seqs and index into the full log. The
+        // take/apply/restore dance keeps this O(1) amortized — cloning the
+        // whole event vec per event was O(N²) over a long session (audit
+        // P1-13).
+        let mut events = std::mem::take(&mut self.events);
+        let mut surface = std::mem::take(&mut self.surface);
+        let result = if crate::session::catalog::is_surface_type(&event.event_type) {
+            surface.apply_public(event, &events)
+        } else {
+            Ok(())
+        };
+        match result {
+            Ok(()) => {
+                events.push(event.clone());
+                self.as_of = event.seq as i64;
+                self.events = events;
+                self.surface = surface;
+                Ok(())
+            }
+            Err(error) => {
+                self.events = events;
+                self.surface = surface;
+                Err(error)
+            }
+        }
+    }
+    fn snapshot(&self) -> Value {
+        json!({
+            "nodes": self.surface.nodes,
+            "replacements": self.surface.replacements.iter().map(|replacement| json!({
+                "seq": replacement.seq, "start": replacement.start,
+                "end": replacement.end, "shadowed": replacement.shadowed,
+            })).collect::<Vec<_>>(),
+            "events": self.events.iter().map(|event| serde_json::to_value(event).expect("plain JSON")).collect::<Vec<_>>(),
+        })
+    }
+    fn restore(&mut self, row: &CheckpointRow) -> Result<(), String> {
+        let state: SurfaceState =
+            serde_json::from_value(row.val.clone()).map_err(|error| error.to_string())?;
+        self.surface.nodes = state.nodes;
+        self.surface.replacements = state
+            .replacements
+            .into_iter()
+            .map(|value| crate::session::surface::Replacement::from_json(&value))
+            .collect::<Result<_, _>>()?;
+        self.events = state
+            .events
+            .into_iter()
+            .map(|value| serde_json::from_value(value).map_err(|error| error.to_string()))
+            .collect::<Result<_, _>>()?;
+        self.as_of = row.seq;
+        Ok(())
+    }
+    fn surface_nodes(&self) -> Option<Result<Vec<(u64, crate::model::ModelItem)>, String>> {
+        Some(crate::session::adapter::surface_to_model_items_with_seq(
+            &self.events,
+            &self.surface,
+        ))
+    }
+}
+
+/// CLAT display view: every surface event stays visible; a replace is
+/// recorded as a marker at its position without hiding anything (§11.1).
+struct TranscriptUnit {
+    entries: Vec<TranscriptEntry>,
+    as_of: i64,
+}
+
+impl Default for TranscriptUnit {
+    fn default() -> Self {
+        Self {
+            entries: Vec::new(),
+            as_of: -1,
+        }
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct TranscriptEntry {
+    seq: u64,
+    /// user | assistant | tool | compaction
+    kind: String,
+    text: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    is_error: bool,
+    /// Shadowed range for compaction markers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    shadowed: Option<Vec<u64>>,
+}
+
+impl ProjectionUnit for TranscriptUnit {
+    fn key(&self) -> &'static str {
+        "transcript"
+    }
+    fn state_version(&self) -> u64 {
+        1
+    }
+    fn as_of(&self) -> i64 {
+        self.as_of
+    }
+    fn fold(&mut self, event: &SessionEvent) -> Result<(), String> {
+        match event.event_type.as_str() {
+            "user/message" => {
+                self.entries.push(TranscriptEntry {
+                    seq: event.seq,
+                    kind: "user".into(),
+                    text: content_text(&event.data["content"]),
+                    is_error: false,
+                    shadowed: None,
+                });
+            }
+            "assistant/message" => {
+                let text = content_text(&event.data["message"]["content"]);
+                if !text.is_empty()
+                    || event
+                        .data
+                        .pointer("/message/content")
+                        .and_then(Value::as_array)
+                        .is_some_and(|blocks| !blocks.is_empty())
+                {
+                    self.entries.push(TranscriptEntry {
+                        seq: event.seq,
+                        kind: "assistant".into(),
+                        text,
+                        is_error: false,
+                        shadowed: None,
+                    });
+                }
+            }
+            "tool/result" => {
+                self.entries.push(TranscriptEntry {
+                    seq: event.seq,
+                    kind: "tool".into(),
+                    text: content_text(&event.data["message"]["content"]),
+                    is_error: event
+                        .data
+                        .pointer("/message/content/0/isError")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                    shadowed: None,
+                });
+            }
+            "compaction/summary" => {
+                self.entries.push(TranscriptEntry {
+                    seq: event.seq,
+                    kind: "compaction".into(),
+                    text: content_text(&event.data["summary"]),
+                    is_error: false,
+                    shadowed: None,
+                });
+            }
+            _ => {}
+        }
+        self.as_of = event.seq as i64;
+        Ok(())
+    }
+    fn snapshot(&self) -> Value {
+        json!({ "entries": self.entries })
+    }
+    fn restore(&mut self, row: &CheckpointRow) -> Result<(), String> {
+        #[derive(Deserialize)]
+        struct State {
+            entries: Vec<TranscriptEntry>,
+        }
+        let state: State =
+            serde_json::from_value(row.val.clone()).map_err(|error| error.to_string())?;
+        self.entries = state.entries;
+        self.as_of = row.seq;
+        Ok(())
+    }
+}
+
+impl TranscriptUnit {
+    #[allow(dead_code)]
+    fn user_texts(&self) -> Vec<String> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.kind == "user")
+            .map(|entry| entry.text.clone())
+            .collect()
+    }
+}
+
+struct TitleUnit {
+    title: Option<String>,
+    source: Option<String>,
+    /// Seq of the event that set the current title (CAS token for
+    /// `SetTitle { expected: Exact(seq) }`).
+    event_seq: Option<u64>,
+    /// First user message text — the derived fallback title's source.
+    first_user_text: Option<String>,
+    /// Seq of that first user/message (provider titles cite it).
+    first_user_seq: Option<u64>,
+    as_of: i64,
+}
+
+impl Default for TitleUnit {
+    fn default() -> Self {
+        Self {
+            title: None,
+            source: None,
+            event_seq: None,
+            first_user_text: None,
+            first_user_seq: None,
+            as_of: -1,
+        }
+    }
+}
+
+impl ProjectionUnit for TitleUnit {
+    fn key(&self) -> &'static str {
+        "title"
+    }
+    fn state_version(&self) -> u64 {
+        2
+    }
+    fn as_of(&self) -> i64 {
+        self.as_of
+    }
+    fn fold(&mut self, event: &SessionEvent) -> Result<(), String> {
+        match event.event_type.as_str() {
+            "session/title" => {
+                self.title = event
+                    .data
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
+                self.source = event
+                    .data
+                    .pointer("/source/kind")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
+                self.event_seq = Some(event.seq);
+            }
+            "user/message" => {
+                if self.first_user_text.is_none()
+                    && let Some(text) = event
+                        .data
+                        .pointer("/content/0/text")
+                        .and_then(Value::as_str)
+                {
+                    self.first_user_text = Some(text.to_owned());
+                    self.first_user_seq = Some(event.seq);
+                }
+            }
+            _ => {}
+        }
+        self.as_of = event.seq as i64;
+        Ok(())
+    }
+    fn snapshot(&self) -> Value {
+        json!({
+            "title": self.effective_title(),
+            "source": self.source,
+            "eventSeq": self.event_seq,
+            "firstUserText": self.first_user_text,
+            "firstUserSeq": self.first_user_seq,
+        })
+    }
+    fn restore(&mut self, row: &CheckpointRow) -> Result<(), String> {
+        self.title = row
+            .val
+            .get("title")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        self.source = row
+            .val
+            .get("source")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        self.event_seq = row.val.get("eventSeq").and_then(Value::as_u64);
+        self.first_user_text = row
+            .val
+            .get("firstUserText")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        self.first_user_seq = row.val.get("firstUserSeq").and_then(Value::as_u64);
+        self.as_of = row.seq;
+        Ok(())
+    }
+}
+
+impl TitleUnit {
+    /// The visible title: an explicit `session/title` event, else the
+    /// first-user-message fallback (catalog §2.2 — the fallback is derived,
+    /// never written as a second fact).
+    fn effective_title(&self) -> Option<String> {
+        if let Some(title) = self.title.as_ref().filter(|title| !title.is_empty()) {
+            return Some(title.clone());
+        }
+        self.first_user_text
+            .as_ref()
+            .map(|text| fallback_title(text))
+            .filter(|title| !title.is_empty())
+    }
+}
+
+/// First non-empty line, truncated to 60 chars on char boundaries.
+pub(crate) fn fallback_title(content: &str) -> String {
+    let first_line = content
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("");
+    first_line.chars().take(60).collect()
+}
+
+struct TodoUnit {
+    todos: Vec<(String, String)>,
+    as_of: i64,
+}
+
+impl Default for TodoUnit {
+    fn default() -> Self {
+        Self {
+            todos: Vec::new(),
+            as_of: -1,
+        }
+    }
+}
+
+impl ProjectionUnit for TodoUnit {
+    fn key(&self) -> &'static str {
+        "todo"
+    }
+    fn state_version(&self) -> u64 {
+        1
+    }
+    fn as_of(&self) -> i64 {
+        self.as_of
+    }
+    fn fold(&mut self, event: &SessionEvent) -> Result<(), String> {
+        if event.event_type == "todo/write" {
+            self.todos = event
+                .data
+                .get("todos")
+                .and_then(Value::as_array)
+                .map(|todos| {
+                    todos
+                        .iter()
+                        .filter_map(|todo| {
+                            Some((
+                                todo.get("content")?.as_str()?.to_owned(),
+                                todo.get("status")?.as_str()?.to_owned(),
+                            ))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+        }
+        self.as_of = event.seq as i64;
+        Ok(())
+    }
+    fn snapshot(&self) -> Value {
+        json!({ "todos": self.todos.iter().map(|(content, status)| json!({
+            "content": content, "status": status,
+        })).collect::<Vec<_>>() })
+    }
+    fn restore(&mut self, row: &CheckpointRow) -> Result<(), String> {
+        self.todos = row
+            .val
+            .get("todos")
+            .and_then(Value::as_array)
+            .map(|todos| {
+                todos
+                    .iter()
+                    .filter_map(|todo| {
+                        Some((
+                            todo.get("content")?.as_str()?.to_owned(),
+                            todo.get("status")?.as_str()?.to_owned(),
+                        ))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.as_of = row.seq;
+        Ok(())
+    }
+}
+
+struct StatsUnit {
+    turns: u64,
+    messages: u64,
+    input_tokens: u64,
+    output_tokens: u64,
+    last_activity_ms: i64,
+    as_of: i64,
+}
+
+impl Default for StatsUnit {
+    fn default() -> Self {
+        Self {
+            turns: 0,
+            messages: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            last_activity_ms: 0,
+            as_of: -1,
+        }
+    }
+}
+
+impl ProjectionUnit for StatsUnit {
+    fn key(&self) -> &'static str {
+        "stats"
+    }
+    fn state_version(&self) -> u64 {
+        1
+    }
+    fn as_of(&self) -> i64 {
+        self.as_of
+    }
+    fn fold(&mut self, event: &SessionEvent) -> Result<(), String> {
+        match event.event_type.as_str() {
+            "turn/end" => self.turns += 1,
+            "user/message" | "assistant/message" | "tool/result" => {
+                self.messages += 1;
+                self.last_activity_ms = event.time;
+            }
+            _ => {}
+        }
+        if let Some(usage) = event.data.get("usage") {
+            self.input_tokens += usage
+                .get("inputTokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            self.output_tokens += usage
+                .get("outputTokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+        }
+        self.as_of = event.seq as i64;
+        Ok(())
+    }
+    fn snapshot(&self) -> Value {
+        json!({
+            "turns": self.turns, "messages": self.messages,
+            "inputTokens": self.input_tokens, "outputTokens": self.output_tokens,
+            "lastActivityMs": self.last_activity_ms,
+        })
+    }
+    fn restore(&mut self, row: &CheckpointRow) -> Result<(), String> {
+        self.turns = row.val.get("turns").and_then(Value::as_u64).unwrap_or(0);
+        self.messages = row.val.get("messages").and_then(Value::as_u64).unwrap_or(0);
+        self.input_tokens = row
+            .val
+            .get("inputTokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        self.output_tokens = row
+            .val
+            .get("outputTokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        self.last_activity_ms = row
+            .val
+            .get("lastActivityMs")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        self.as_of = row.seq;
+        Ok(())
+    }
+}
+
+struct CompactionUnit {
+    count: u64,
+    last_seq: Option<u64>,
+    as_of: i64,
+}
+
+impl Default for CompactionUnit {
+    fn default() -> Self {
+        Self {
+            count: 0,
+            last_seq: None,
+            as_of: -1,
+        }
+    }
+}
+
+impl ProjectionUnit for CompactionUnit {
+    fn key(&self) -> &'static str {
+        "compaction"
+    }
+    fn state_version(&self) -> u64 {
+        1
+    }
+    fn as_of(&self) -> i64 {
+        self.as_of
+    }
+    fn fold(&mut self, event: &SessionEvent) -> Result<(), String> {
+        if event.event_type == "compaction/end" {
+            self.count += 1;
+            self.last_seq = Some(event.seq);
+        }
+        self.as_of = event.seq as i64;
+        Ok(())
+    }
+    fn snapshot(&self) -> Value {
+        json!({ "count": self.count, "lastSeq": self.last_seq })
+    }
+    fn restore(&mut self, row: &CheckpointRow) -> Result<(), String> {
+        self.count = row.val.get("count").and_then(Value::as_u64).unwrap_or(0);
+        self.last_seq = row.val.get("lastSeq").and_then(Value::as_u64);
+        self.as_of = row.seq;
+        Ok(())
+    }
+}
+
+/// Last `request/header` body (catalog §2.7 dedupe authority): the
+/// application compares the next run's header against this instead of a
+/// process-local guess, so reopenings and cross-process runs never
+/// duplicate or lose the header.
+struct RequestHeaderUnit {
+    header: Option<Value>,
+    as_of: i64,
+}
+
+impl Default for RequestHeaderUnit {
+    fn default() -> Self {
+        Self {
+            header: None,
+            as_of: -1,
+        }
+    }
+}
+
+impl ProjectionUnit for RequestHeaderUnit {
+    fn key(&self) -> &'static str {
+        "requestHeader"
+    }
+    fn state_version(&self) -> u64 {
+        1
+    }
+    fn as_of(&self) -> i64 {
+        self.as_of
+    }
+    fn fold(&mut self, event: &SessionEvent) -> Result<(), String> {
+        if event.event_type == "request/header" {
+            self.header = event.data.get("header").cloned();
+        }
+        self.as_of = event.seq as i64;
+        Ok(())
+    }
+    fn snapshot(&self) -> Value {
+        json!({ "header": self.header })
+    }
+    fn restore(&mut self, row: &CheckpointRow) -> Result<(), String> {
+        self.header = row.val.get("header").cloned();
+        self.as_of = row.seq;
+        Ok(())
+    }
+}
+
+fn content_text(blocks: &Value) -> String {
+    match blocks.as_array() {
+        Some(blocks) => blocks
+            .iter()
+            .filter_map(|block| {
+                (block.get("type").and_then(Value::as_str) == Some("text"))
+                    .then(|| block.get("text").and_then(Value::as_str))
+                    .flatten()
+                    .map(str::to_owned)
+            })
+            .collect::<Vec<_>>()
+            .join(""),
+        None => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::event::{SurfaceOp, TurnEndReason, payloads};
+
+    fn surface_events() -> Vec<SessionEvent> {
+        vec![
+            SessionEvent::new("turn/start", 0, 1, payloads::turn_start(1)),
+            SessionEvent::new("user/message", 1, 2, payloads::user_message("hello"))
+                .append(Vec::new()),
+            assistant_event(2, "hi there", Vec::new()),
+            SessionEvent::new(
+                "turn/end",
+                3,
+                4,
+                payloads::turn_end(1, &TurnEndReason::Completed),
+            ),
+        ]
+    }
+
+    fn assistant_event(seq: u64, text: &str, tool_calls: Vec<(&str, &str)>) -> SessionEvent {
+        let mut content = vec![json!({ "type": "text", "text": text })];
+        for (id, name) in tool_calls {
+            content.push(json!({ "type": "tool-call", "id": id, "name": name, "arguments": "{}" }));
+        }
+        SessionEvent::new(
+            "assistant/message",
+            seq,
+            100 + seq as i64,
+            json!({
+                "turn": 1, "step": 0,
+                "message": {
+                    "id": format!("m{seq}"), "role": "assistant", "content": content,
+                    "source": { "kind": "model", "provider": "t", "model": "m" },
+                },
+                "usage": { "inputTokens": 10, "outputTokens": 5 },
+            }),
+        )
+        .append(Vec::new())
+    }
+
+    fn compaction_events(base: &[SessionEvent]) -> Vec<SessionEvent> {
+        let mut events = base.to_vec();
+        let summary = SessionEvent::new(
+            "compaction/summary",
+            4,
+            5,
+            json!({
+                "compactionId": "c1", "summary": [{ "type": "text", "text": "[summarized]" }],
+                "shadowedRange": { "start": 1, "end": 2 }, "shadowedSeqs": [1, 2],
+                "shadowedTokenCount": 7, "provider": "t", "model": "m",
+                "llmStreamCall": true,
+            }),
+        );
+        events.push(summary);
+        let mut replacing = SessionEvent::new("user/message", 5, 6, {
+            let mut payload = payloads::user_message("[summarized]");
+            payload["source"] = json!({ "kind": "plugin", "plugin": "compaction" });
+            payload
+        });
+        replacing.surface_op = Some(SurfaceOp::Replace { start: 1, end: 2 });
+        replacing.source_event_seqs = Some(vec![1, 2]);
+        events.push(replacing);
+        events.push(SessionEvent::new(
+            "compaction/end",
+            6,
+            7,
+            json!({ "compactionId": "c1", "turn": 1 }),
+        ));
+        events
+    }
+
+    #[test]
+    fn checkpoint_plus_tail_equals_full_fold() {
+        let events = surface_events();
+        let mut full = ProjectionRegistry::clat();
+        full.fold_all(&events).expect("full fold");
+
+        // Checkpoint after the first two events, fold the tail.
+        let mut incremental = ProjectionRegistry::clat();
+        incremental.fold_all(&events[..2]).expect("prefix fold");
+        let identity = CheckpointIdentity {
+            created_at: 42,
+            cwd: Some("/p".into()),
+        };
+        let record = incremental.checkpoint(identity.clone(), 1);
+        assert_eq!(
+            record.restore_floor(&ProjectionRegistry::clat()),
+            Some(1),
+            "min watermark is the title row at seq 1 → floor 1"
+        );
+        let mut restored = ProjectionRegistry::clat();
+        restored
+            .restore(&record, &events[2..], 2)
+            .expect("restore tail");
+
+        // Deleting the cache (folding from zero) must yield the same values.
+        assert_eq!(
+            restored.checkpoint(identity, 2).rows,
+            full.checkpoint(
+                CheckpointIdentity {
+                    created_at: 42,
+                    cwd: Some("/p".into())
+                },
+                0
+            )
+            .rows,
+            "checkpoint + tail == full fold, for every unit"
+        );
+    }
+
+    #[test]
+    fn outlived_row_demands_full_reread() {
+        let events = surface_events();
+        let mut registry = ProjectionRegistry::clat();
+        registry.fold_all(&events).expect("fold");
+        let record = registry.checkpoint(
+            CheckpointIdentity {
+                created_at: 42,
+                cwd: None,
+            },
+            1,
+        );
+        // The log shrank to two events: the floor computed from the record
+        // (3) now points past the log, tail is empty, rows outrun end_seq.
+        assert!(matches!(
+            ProjectionRegistry::clat().restore(&record, &[], 3),
+            Err(RestoreError::Outlived(_))
+        ));
+    }
+
+    #[test]
+    fn surface_hides_after_replace_but_transcript_keeps_everything() {
+        let events = compaction_events(&surface_events());
+        let mut registry = ProjectionRegistry::clat();
+        registry.fold_all(&events).expect("fold");
+
+        let surface_row = registry.checkpoint(dummy_identity(), 0).rows["surface"].clone();
+        assert_eq!(
+            surface_row.val["nodes"],
+            json!([5]),
+            "replaced range is hidden; the summary node takes its place"
+        );
+
+        let transcript_row = registry.checkpoint(dummy_identity(), 0).rows["transcript"].clone();
+        let kinds: Vec<&str> = transcript_row.val["entries"]
+            .as_array()
+            .expect("entries")
+            .iter()
+            .map(|entry| entry["kind"].as_str().expect("kind"))
+            .collect();
+        assert_eq!(
+            kinds,
+            vec!["user", "assistant", "compaction", "user"],
+            "display history keeps the shadowed content and marks the compaction"
+        );
+        let compaction = &transcript_row.val["entries"][2];
+        assert_eq!(compaction["text"], "[summarized]");
+    }
+
+    #[test]
+    fn stats_and_todo_units_fold_expected_values() {
+        let mut events = surface_events();
+        events.push(SessionEvent::new(
+            "todo/write",
+            4,
+            5,
+            payloads::todo_write(&[("task".into(), "in_progress")]),
+        ));
+        let mut registry = ProjectionRegistry::clat();
+        registry.fold_all(&events).expect("fold");
+        let rows = registry.checkpoint(dummy_identity(), 0).rows;
+        assert_eq!(rows["stats"].val["turns"], json!(1));
+        assert_eq!(rows["stats"].val["messages"], json!(2));
+        assert_eq!(rows["stats"].val["inputTokens"], json!(10));
+        assert_eq!(rows["todo"].val["todos"][0]["status"], json!("in_progress"));
+    }
+
+    fn dummy_identity() -> CheckpointIdentity {
+        CheckpointIdentity {
+            created_at: 0,
+            cwd: None,
+        }
+    }
+}
