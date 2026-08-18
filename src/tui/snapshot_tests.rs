@@ -74,6 +74,15 @@ impl Drop for Harness {
 fn harness(tag: &str, width: u16, height: u16, trusted: bool) -> Harness {
     let (storage_root, project_root) = roots(tag);
     std::fs::create_dir_all(&project_root).expect("project dir");
+    // 确权对话框逐行换行显示 project root：临时前缀长度随平台不同
+    //（macOS $TMPDIR ~48 字符 vs Linux /tmp 4 字符），换行/裁剪发生在
+    // 渲染期、先于任何投影归一化——跨平台行数都会不同。未确权路径不
+    // 触碰任何文件系统（只显示），用固定虚拟路径钉住形状。
+    let project_for_app = if trusted {
+        project_root.clone()
+    } else {
+        std::path::PathBuf::from("/home/dev/example-project")
+    };
     if trusted {
         // 预授权 storage root（挂载一次以写入信任行后立即关闭），再以
         // 生产构造路径打开 App。受信路径挂载完整生产插件目录——MCP
@@ -89,8 +98,13 @@ fn harness(tag: &str, width: u16, height: u16, trusted: bool) -> Harness {
         application.close().expect("close authorizer");
     }
     let mut app =
-        App::open(Project::new(&project_root), Some(storage_root.clone())).expect("app opens");
+        App::open(Project::new(&project_for_app), Some(storage_root.clone())).expect("app opens");
     app.test_freeze_tick = true;
+    // 底部状态栏默认值是 storage root 绝对路径：同样的渲染期裁剪问题
+    //（macOS 下 79 列处截断、Linux 下整条放得下）。以固定占位符替换
+    // 显示值——"这一行渲染什么"的覆盖保留，环境依赖清零。
+    app.default_status = "<STORAGE-ROOT>".into();
+    app.status = "<STORAGE-ROOT>".into();
     Harness {
         app,
         terminal: Terminal::new(TestBackend::new(width, height)).expect("test terminal"),

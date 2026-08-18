@@ -11,14 +11,14 @@ scroll 0
 007|       │ Trust this project?                                              │  ⟦8..26 BOLD⟧
 008|       │                                                                  │
 009|       │ CLAT reads and modifies files, and runs tools inside:            │
-010|       │   <TMP>/clat-applicat │
-011|       │   <NANOS>/project                                     │
-012|       │                                                                  │
-013|       │ Trusting is remembered per directory. Review the project (e.g. i │
-014|       │ README and configs) before granting an agent access to it.       │
-015|       │                                                                  │
-016|       │ Enter / y — trust this project      ·      Esc / n — exit CLAT   │  ⟦8..69 BOLD⟧
-017|       └──────────────────────────────────────────────────────────────────┘
+010|       │   /home/dev/example-project                                      │
+011|       │                                                                  │
+012|       │ Trusting is remembered per directory. Review the project (e.g. i │
+013|       │ README and configs) before granting an agent access to it.       │
+014|       │                                                                  │
+015|       │ Enter / y — trust this project      ·      Esc / n — exit CLAT   │  ⟦8..69 BOLD⟧
+016|       └──────────────────────────────────────────────────────────────────┘
+017| <blank>
 018| <blank>
 019| <blank>
 020| <blank>
