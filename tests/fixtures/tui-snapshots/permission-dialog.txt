@@ -5,21 +5,21 @@ scroll 0
 001| │ CLAT v<VERSION>  ready  ·  not configured — /model                               │  ⟦2..5 BOLD⟧
 002| └──────────────────────────────────────────────────────────────────────────────┘
 003| ┌Conversation──────────────────────────────────────────────────────────────────┐
-004| │No me┌ Permission ──────────────────────────────────────────────────────┐    ▲│  ⟦78..78 fg=DarkGray⟧
-005| │     │ Permission required                                              │    ┃│  ⟦8..26 BOLD · 78..78 fg=Cyan⟧
-006| │     │                                                                  │    ┃│  ⟦78..78 fg=Cyan⟧
-007| │     │ tool:      write_file                                            │    ┃│  ⟦78..78 fg=Cyan⟧
-008| │     │ effect:    writes files                                          │    ┃│  ⟦78..78 fg=Cyan⟧
-009| │     │ reason:    writes a file                                         │    ┃│  ⟦78..78 fg=Cyan⟧
-010| │     │ fields:    content, path                                         │    ┃│  ⟦78..78 fg=Cyan⟧
-011| │     │   write src/lib.rs (37 bytes)                                    │    ┃│  ⟦8..36 BOLD · 78..78 fg=Cyan⟧
-012| │     │   fn main() {                                                    │    ┃│  ⟦78..78 fg=Cyan⟧
-013| │     │       println!("hello");                                         │    ┃│  ⟦78..78 fg=Cyan⟧
-014| │     │   }                                                              │    ┃│  ⟦78..78 fg=Cyan⟧
-015| │     │                                                                  │    ┃│  ⟦78..78 fg=Cyan⟧
-016| │     │ arguments lines 1–5 of 5 · ↑/↓ PgUp/PgDn Home/End                │    ┃│  ⟦8..56 BOLD · 78..78 fg=Cyan⟧
-017| │     │                                                                  │    ││  ⟦78..78 fg=DarkGray⟧
-018| │     │ Enter / y — allow      ·      Esc / n — deny                     │    ▼│  ⟦8..51 BOLD · 78..78 fg=DarkGray⟧
+004| │     ┌ Permission ──────────────────────────────────────────────────────┐     │
+005| │     │ Permission required                                              │     │  ⟦8..26 BOLD⟧
+006| │     │                                                                  │     │
+007| │     │ tool:      write_file                                            │     │
+008| │     │ effect:    writes files                                          │     │
+009| │     │ reason:    writes a file                                         │     │
+010| │     │ fields:    content, path                                         │     │
+011| │     │   write src/lib.rs (37 bytes)                                    │     │  ⟦8..36 BOLD⟧
+012| │     │   fn main() {                                                    │     │
+013| │     │       println!("hello");                                         │     │
+014| │     │   }                                                              │     │
+015| │     │                                                                  │     │
+016| │     │ arguments lines 1–5 of 5 · ↑/↓ PgUp/PgDn Home/End                │     │  ⟦8..56 BOLD⟧
+017| │     │                                                                  │     │
+018| │     │ Enter / y — allow      ·      Esc / n — deny                     │     │  ⟦8..51 BOLD⟧
 019| └─────└──────────────────────────────────────────────────────────────────┘─────┘
 020| ┌Message───────────────────────────────────────────────────────────────────────┐
 021| │❯                                                                             │

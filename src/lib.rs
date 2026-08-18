@@ -27,6 +27,7 @@ mod tool;
 pub mod tui;
 mod tui_conversation;
 mod tui_input;
+mod tui_logo;
 mod tui_markdown;
 mod tui_model;
 mod tui_sessions;

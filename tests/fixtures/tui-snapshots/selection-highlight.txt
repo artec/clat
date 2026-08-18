@@ -24,4 +24,4 @@ scroll 0
 020| ┌Message───────────────────────────────────────────────────────────────────────┐
 021| │❯                                                                             │
 022| └──────────────────────────────────────────────────────────────────────────────┘
-023|  selected · Ctrl+C copies · Shift+drag uses the terminal's own selection
+023|  copied 12 chars · Shift+drag uses the terminal's own selection

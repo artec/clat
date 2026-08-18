@@ -384,12 +384,15 @@ fn snapshot_files_form_a_closed_set() {
 
 #[test]
 fn idle_transcript_wide() {
+    // 刷新 2026-08-19：空会话占位 "No messages yet." 升级为 LOGO 欢迎页
+    //（tui_logo + Role::Logo 品牌蓝）。
     let mut harness = Harness::trusted("snap-idle-80", 80, 24);
     harness.snapshot("idle-transcript-80");
 }
 
 #[test]
 fn idle_transcript_narrow() {
+    // 刷新 2026-08-19：40 列放不下 LOGO（34 列），退化为单行提示。
     let mut harness = Harness::trusted("snap-idle-40", 40, 24);
     harness.snapshot("idle-transcript-40");
 }
@@ -430,6 +433,8 @@ fn trust_dialog_snapshot() {
 
 #[test]
 fn permission_dialog_snapshot() {
+    // 刷新 2026-08-19：底层空会话改画欢迎页，弹窗左缘露出的
+    // "No me…" 前缀随之消失。
     let mut harness = Harness::trusted("snap-permission", 80, 24);
     let (decision_tx, _decision_rx) = mpsc::channel();
     harness.event(UiEvent::Worker(WorkerMessage::PermissionRequest {
@@ -450,6 +455,7 @@ fn permission_dialog_snapshot() {
 
 #[test]
 fn permission_dialog_reviewed_snapshot() {
+    // 刷新 2026-08-19：同 permission-dialog——空会话底层换欢迎页。
     let mut harness = Harness::trusted("snap-permission-reviewed", 80, 24);
     let (decision_tx, _decision_rx) = mpsc::channel();
     harness.event(UiEvent::Worker(WorkerMessage::PermissionRequest {
@@ -545,6 +551,7 @@ fn executing_tools_phase_snapshot() {
 
 #[test]
 fn model_picker_snapshot() {
+    // 刷新 2026-08-19：空会话底层改画 LOGO 欢迎页（选择器后方）。
     let mut harness = Harness::trusted("snap-model-picker", 80, 24);
     harness.type_text("/model");
     harness.key(KeyCode::Enter);
@@ -723,7 +730,8 @@ fn ask_question_fixture() -> crate::AskQuestion {
 #[test]
 fn ask_dialog_options_snapshot() {
     // 选项模式：游标落在 beta（按过一次 ↓），选中行高亮、描述 dim、
-    // 末行自定义入口、脚注键位。
+    // 末尾自定义入口、脚注键位。刷新 2026-08-19：底层空会话改画
+    // LOGO 欢迎页（弹窗覆盖其上）。
     let mut harness = Harness::trusted("snap-ask-options", 80, 24);
     let (answer_tx, _answer_rx) = mpsc::channel();
     harness.event(UiEvent::Worker(WorkerMessage::AskUserRequest {
@@ -740,6 +748,7 @@ fn ask_dialog_options_snapshot() {
 #[test]
 fn ask_dialog_custom_snapshot() {
     // 自定义输入模式：`c` 进入、键入 canary、下划线标示输入位。
+    // 刷新 2026-08-19：底层空会话改画 LOGO 欢迎页。
     let mut harness = Harness::trusted("snap-ask-custom", 80, 24);
     let (answer_tx, _answer_rx) = mpsc::channel();
     harness.event(UiEvent::Worker(WorkerMessage::AskUserRequest {
@@ -849,4 +858,26 @@ fn ctrl_c_copies_a_selection_instead_of_quitting() {
         KeyModifiers::CONTROL,
     ))));
     assert!(harness.app.should_quit, "Ctrl+C without a selection quits");
+}
+
+#[test]
+fn finishing_a_drag_copies_the_selection_immediately() {
+    // 选中即复制（2026-08-19 按用户决策恢复）：拖选松开即写剪贴板并
+    // 闪现 copied 提示；高亮保留，Ctrl+C 仍是显式重试路径。
+    let mut harness = Harness::trusted("drag-copy", 80, 24);
+    let mut conversation = ConversationModel::new();
+    conversation.push_user("select me: the quick brown fox".into());
+    harness.app.conversation = conversation;
+    harness.project();
+    let area = harness.app.conversation_area;
+    harness.drag_select(area.x + 2, area.y + 1, area.x + 14, area.y + 1);
+    assert!(
+        harness.app.status.contains("copied"),
+        "drag completion must copy immediately: {}",
+        harness.app.status
+    );
+    assert!(
+        harness.app.selection.is_some(),
+        "the highlight stays for the Ctrl+C retry path"
+    );
 }

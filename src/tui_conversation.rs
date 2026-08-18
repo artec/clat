@@ -372,10 +372,15 @@ impl ConversationModel {
         }
     }
 
-    /// 内容总行数（空会话返回占位两行，与旧渲染一致）。
+    /// 空会话（无 items）：draw 以 LOGO 欢迎页接管会话区。
+    pub(crate) fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
+    /// 内容总行数（空会话为 0——空态由欢迎页渲染，不占内容行）。
     pub(crate) fn total_lines(&self, visibility: ToolCardVisibility) -> usize {
         if self.items.is_empty() {
-            return 2;
+            return 0;
         }
         self.items
             .iter()
@@ -400,7 +405,7 @@ impl ConversationModel {
     ) -> Vec<Line<'static>> {
         self.ensure_rendered(width);
         if self.items.is_empty() {
-            return vec![Line::from("No messages yet."), Line::from("")];
+            return Vec::new();
         }
         let mut out = Vec::with_capacity(count.min(64));
         let mut row = 0usize;
@@ -439,11 +444,7 @@ impl ConversationModel {
     ) -> String {
         self.ensure_rendered(width);
         if self.items.is_empty() {
-            return if row == 0 {
-                "No messages yet.".into()
-            } else {
-                String::new()
-            };
+            return String::new();
         }
         let mut current = 0usize;
         for (item, cache) in &self.items {

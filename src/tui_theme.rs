@@ -8,6 +8,7 @@
 //!
 //! 真彩白名单（16 色 + 前景纪律的显式例外，新增必须在此登记并说明）：
 //! - 品牌思考动画 shimmer 的两个端点（运行时在两端之间插值）；
+//! - 静态 ASCII LOGO 复用 shimmer 低端色值（见 `Role::Logo`，不新增色）；
 //! - 用户消息块与代码块的深色背景（浅色终端上的可读性底色）。
 
 use ratatui::style::{Color, Modifier, Style};
@@ -57,6 +58,9 @@ pub(crate) enum Role {
     Link,
     /// 思考动画 spinner 的最低亮度帧（品牌例外）。
     ThinkingGlyph,
+    /// 静态 ASCII LOGO（欢迎页 + 退出告别）。复用白名单 shimmer 低端
+    /// 色值——品牌色的静态呈现，不新增色。
+    Logo,
     /// 成功态（工具卡 ✓、settled 卡头）。
     Success,
     /// 警示态（pending 卡头）。
@@ -96,6 +100,7 @@ pub(crate) fn style(role: Role) -> Style {
             .fg(Color::LightBlue)
             .add_modifier(Modifier::UNDERLINED),
         Role::ThinkingGlyph => Style::default().fg(BRAND_SHIMMER_LOW),
+        Role::Logo => Style::default().fg(BRAND_SHIMMER_LOW),
         Role::Success => Style::default().fg(Color::Green),
         Role::Warning => Style::default().fg(Color::Yellow),
         Role::Error => Style::default().fg(Color::Red),

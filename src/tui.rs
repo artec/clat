@@ -21,7 +21,7 @@ use crossterm::event::{
     PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
-use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{
@@ -570,6 +570,9 @@ pub fn run(project: Project) -> io::Result<()> {
     let paste_result = execute!(stdout(), DisableBracketedPaste);
     let mouse_result = execute!(stdout(), DisableMouseCapture);
     ratatui::restore();
+    // 告别 LOGO：主屏恢复后打印，与启动欢迎页成对（TTY 守卫 + 静默
+    // 失败，纯装饰不影响退出码与管道输出）。
+    crate::tui_logo::print_farewell();
     // 显式 shutdown 的失败在终端恢复后可见地报告（plan §16 阶段5）。
     if let Some(error) = close_error {
         let _ = writeln!(io::stderr(), "clat: application close failed: {error}");
@@ -1476,6 +1479,10 @@ impl App {
     /// 松开鼠标：空选区时单击定位输入光标；非空选区保持高亮，等用户
     /// 显式复制（Cmd+C / Ctrl+Shift+C）。选中即复制会静默覆盖系统
     /// 剪贴板，且 OSC 52 在不支持的终端上假报成功，已移除。
+    /// 松开鼠标：空选区时单击定位输入光标；非空选区保持高亮并**立即
+    /// 复制到系统剪贴板**（OSC 52）。"选中即复制"于 2026-08-19 按用户
+    /// 决策恢复——覆盖系统剪贴板正是预期行为；Ctrl+C 保留为显式重试
+    /// 路径（复制失败或想重发时），Shift+拖选走终端原生选区。
     fn finish_mouse_selection(&mut self) {
         let Some(selection) = self.selection.as_mut() else {
             return;
@@ -1491,13 +1498,15 @@ impl App {
             self.selection = None;
             return;
         }
-        // 拖选完成的教学提示：Cmd+C 被终端截留（鼠标上报又禁用了终端
-        // 原生拖选），用户需要一个可达的复制路径提示；Shift+拖选则让
-        // 终端自己做原生选区，之后 Cmd+C 是终端级复制。
-        if selection.kind == SelectionKind::Conversation {
-            self.flash_status(
-                "selected · Ctrl+C copies · Shift+drag uses the terminal's own selection",
-            );
+        if let Some(text) = self.selection_text().filter(|text| !text.is_empty()) {
+            let count = text.chars().count();
+            if copy_to_clipboard(&text) {
+                self.flash_status(format!(
+                    "copied {count} chars · Shift+drag uses the terminal's own selection"
+                ));
+            } else {
+                self.flash_status("clipboard copy failed — Ctrl+C retries");
+            }
         }
     }
 
@@ -1812,7 +1821,7 @@ impl App {
                 self.flash_status("select a model");
             }
             "/help" => {
-                self.status = "/model · /new · /clear · /compact · /resume · /quit · ↑/↓ input history · PgUp/PgDn chat · Shift+Tab thinking level · Ctrl+O tool cards · Ctrl+C copy selection / quit · Shift+drag then Cmd+C = native copy · Enter while running steers"
+                self.status = "/model · /new · /clear · /compact · /resume · /quit · ↑/↓ input history · PgUp/PgDn chat · Shift+Tab thinking level · Ctrl+O tool cards · drag = select & copy · Ctrl+C re-copies / quit · Shift+drag then Cmd+C = native copy · Enter while running steers"
                     .into();
             }
             "/compact" => {
@@ -2519,6 +2528,16 @@ impl App {
     }
 
     fn draw_conversation(&mut self, frame: &mut Frame, area: Rect) {
+        let block = Block::default().title("Conversation").borders(Borders::ALL);
+        // 空会话：LOGO 欢迎页接管会话区（启动 / `/new` / `/clear` 后的
+        // 起步画面）。0 行内容与画面一致——无滚动、无选区映射。
+        if self.conversation.is_empty() {
+            self.conversation_start = 0;
+            self.conversation_rows = 0;
+            frame.render_widget(&block, area);
+            draw_welcome(frame, block.inner(area));
+            return;
+        }
         let inner_width = area.width.saturating_sub(2).max(1) as usize;
         let total = self.conversation_total_lines(inner_width);
         let visible = area.height.saturating_sub(2) as usize;
@@ -2549,7 +2568,6 @@ impl App {
                 *line = highlight_line(line, highlight_from, highlight_to);
             }
         }
-        let block = Block::default().title("Conversation").borders(Borders::ALL);
         frame.render_widget(
             Paragraph::new(Text::from(visible_lines)).block(block.clone()),
             area,
@@ -2823,6 +2841,44 @@ pub(crate) fn popup_block(title: &str) -> Block<'_> {
         .borders(Borders::ALL)
         .title(title)
         .padding(Padding::horizontal(POPUP_TEXT_PADDING))
+}
+
+/// 空会话欢迎页：LOGO + 版本行 + 起步提示，双向居中于会话区内框。
+/// 窄到放不下 LOGO 的终端退化为单行提示（ASCII 字形无法有意义地缩放）。
+fn draw_welcome(frame: &mut Frame, inner: Rect) {
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+    let welcome = crate::tui_logo::welcome_lines();
+    let content_width = welcome.iter().map(Line::width).max().unwrap_or(0) as u16;
+    if inner.width < content_width {
+        let hint = Line::from(Span::styled(
+            format!(
+                "clat v{} · type a message to begin",
+                env!("CARGO_PKG_VERSION")
+            ),
+            tui_theme::style(tui_theme::Role::Dim),
+        ));
+        let x = inner.x + inner.width.saturating_sub(hint.width() as u16) / 2;
+        let y = inner.y + inner.height / 2;
+        frame.render_widget(
+            Paragraph::new(hint).alignment(Alignment::Center),
+            Rect::new(x, y, inner.width.saturating_sub(x - inner.x), 1),
+        );
+        return;
+    }
+    let content_height = welcome.len() as u16;
+    let x = inner.x + (inner.width - content_width) / 2;
+    let y = inner.y + inner.height.saturating_sub(content_height) / 2;
+    frame.render_widget(
+        Paragraph::new(Text::from(welcome)).alignment(Alignment::Center),
+        Rect::new(
+            x,
+            y,
+            content_width,
+            content_height.min(inner.height.saturating_sub(y - inner.y)),
+        ),
+    );
 }
 
 fn centered_rect(percent_x: u16, height: u16, area: Rect) -> Rect {
