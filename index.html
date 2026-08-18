@@ -311,11 +311,11 @@
       <div class="grid3">
         <div class="card">
           <h3>本地优先</h3>
-          <p>会话、输入历史、模型配置全部存在本地 SQLite（<code>~/.clat</code>）。没有云端依赖，数据不出你的机器。</p>
+          <p>会话以 append-only 日志落盘，配置与信任状态存本地 SQLite（<code>~/.clat</code>）。没有云端依赖，数据不出你的机器。</p>
         </div>
         <div class="card">
           <h3>单二进制</h3>
-          <p>Rust 编译的单文件可执行程序，无运行时、无依赖安装。macOS 与 Windows 四个平台开箱即用。</p>
+          <p>Rust 编译的单文件可执行程序，无运行时、无依赖安装。macOS、Linux 与 Windows 六个平台开箱即用。</p>
         </div>
         <div class="card">
           <h3>安全默认</h3>
@@ -336,8 +336,8 @@
         <p>余额（DeepSeek）、5 小时窗口剩余额度（GLM）、KV 缓存命中百分比与思考强度常驻底部状态栏，成本一目了然。</p>
       </div>
       <div class="feature">
-        <h3>会话持久化</h3>
-        <p>断点续聊：完整工具上下文按会话存档，重启后接着上次的进度继续。输入历史支持 ↑/↓ 召回，按项目隔离。</p>
+        <h3>崩溃安全的会话持久化</h3>
+        <p>完整对话写入 append-only 日志，先落盘再调用模型，崩溃后自动恢复到最近的完整批次；日志为 DSH 兼容格式，可被兼容工具直接读取。输入历史支持 ↑/↓ 召回，按项目隔离。</p>
       </div>
       <div class="feature">
         <h3>自更新</h3>
