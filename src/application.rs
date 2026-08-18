@@ -27,6 +27,7 @@ use crate::session::id::SessionId;
 use crate::session::key::{ProjectKey, SessionKey};
 use crate::session::persistence::JsonlCompression;
 use crate::session::recorder::SessionRecorder;
+use crate::session::replay::ReplayEvent;
 use crate::session::root_lease::{StorageRootLease, try_acquire};
 use crate::session::run_journal::{NewSessionEvent, RunJournal};
 use crate::session::use_cases::{
@@ -80,6 +81,10 @@ pub enum ApplicationEvent {
 pub struct ProjectSnapshot {
     pub session_id: Option<SessionId>,
     pub transcript: Vec<TranscriptLine>,
+    /// Structured replay of the active session's journal (transcript
+    /// rebuild input for frontends; `transcript` above is the legacy
+    /// text-flattened view until the TUI migrates).
+    pub replay: Vec<ReplayEvent>,
     pub input_history: Vec<String>,
     pub config: ModelConfig,
     pub credentials: ProviderCredentials,
@@ -125,6 +130,9 @@ impl From<&McpStatus> for McpStatusDto {
 pub struct SessionSnapshot {
     pub id: SessionId,
     pub transcript: Vec<TranscriptLine>,
+    /// Structured replay of this session's journal (see `ProjectSnapshot::
+    /// replay`).
+    pub replay: Vec<ReplayEvent>,
     pub input_history: Vec<String>,
 }
 
@@ -289,6 +297,9 @@ pub struct TrustedProjectApplication {
     startup_diagnostic: Option<String>,
     active_run: Option<RunHandle>,
     active_compaction: Option<CompactHandle>,
+    /// ask-user 前端插槽：与 `ask_user` 工具共享，每次 run 启动时按
+    /// 请求装入（前端 Some / headless None）。
+    asker_slot: Arc<crate::interaction::AskUserSlot>,
     /// Cross-process storage lease, held for the scope lifetime (plan §3.2).
     /// Never read: dropping it releases the flock.
     #[allow(dead_code)]
@@ -392,12 +403,18 @@ impl TrustedProjectApplication {
         let session_service = Arc::new(
             SessionService::new(session_root, JsonlCompression::Zstd).map_err(session_error)?,
         );
+        // ask-user 插槽：Application 持有克隆，每次 run 启动装入请求的
+        // 前端实现。
+        let asker_slot = crate::interaction::AskUserSlot::shared();
         let mut catalog: Vec<Arc<dyn Plugin>> = vec![
             Arc::new(ProjectControlStoragePlugin::new(Arc::clone(&control))),
             Arc::new(SessionPersistencePlugin::new(Arc::clone(&session_service))),
             Arc::new(crate::plugins::ToolRegistryPlugin),
             Arc::new(crate::plugins::NativeReadToolsPlugin),
             Arc::new(crate::plugins::NativeWriteToolsPlugin),
+            Arc::new(crate::plugins::NativeInteractionToolsPlugin {
+                slot: Arc::clone(&asker_slot),
+            }),
             Arc::new(crate::plugins::ProviderRegistryPlugin),
         ];
         match provider_plugins {
@@ -492,6 +509,7 @@ impl TrustedProjectApplication {
             startup_diagnostic: None,
             active_run: None,
             active_compaction: None,
+            asker_slot,
             lease,
             #[cfg(test)]
             fail_next_run_spawn: false,
@@ -685,17 +703,19 @@ impl TrustedProjectApplication {
     pub fn snapshot(&self) -> Result<ProjectSnapshot, ApplicationError> {
         let (config, credentials) = self.model_state()?;
         self.monitor.configure(config.clone(), credentials.clone());
-        let (transcript, input_history, session_id) = match self.sessions.active_id() {
+        let (transcript, replay, input_history, session_id) = match self.sessions.active_id() {
             Some(id) => {
                 let inputs = self.sessions.recent_inputs(500).map_err(session_error)?;
                 let transcript = self.sessions.transcript_lines().map_err(session_error)?;
-                (transcript, inputs, Some(id))
+                let replay = self.sessions.replay_active().map_err(session_error)?;
+                (transcript, replay, inputs, Some(id))
             }
-            None => (Vec::new(), Vec::new(), None),
+            None => (Vec::new(), Vec::new(), Vec::new(), None),
         };
         Ok(ProjectSnapshot {
             session_id,
             transcript,
+            replay,
             input_history,
             provider_descriptors: self.providers.descriptors(&credentials),
             config,
@@ -824,6 +844,7 @@ impl TrustedProjectApplication {
             return Ok(SessionSnapshot {
                 id,
                 transcript: self.sessions.transcript_lines().map_err(session_error)?,
+                replay: self.sessions.replay_active().map_err(session_error)?,
                 input_history: self.sessions.recent_inputs(500).map_err(session_error)?,
             });
         }
@@ -860,6 +881,7 @@ impl TrustedProjectApplication {
         Ok(SessionSnapshot {
             id,
             transcript: view.transcript,
+            replay: view.replay,
             input_history,
         })
     }
@@ -1089,9 +1111,13 @@ impl TrustedProjectApplication {
         let ApplicationRunRequest {
             prompt,
             approver,
+            asker,
             events,
             completion,
         } = request;
+        // ask-user 前端按本次请求安装（None 清除旧实现——headless 与
+        // 交互前端交替使用同一 Application 时正确降级）。
+        self.asker_slot.install(asker);
         // 标题生成需要 config/credentials，而它们随后被 move 进
         // AgentRequest；提前克隆。request/header 在 spawn 前从真实的
         // 请求输入构建（审计 P1-14）。
@@ -1117,10 +1143,15 @@ impl TrustedProjectApplication {
         let cancel = resources.cancel.clone();
         let busy = Arc::new(AtomicBool::new(true));
         let join_slot = Arc::new(Mutex::new(None));
+        // In-run steering: the same queue is shared by the frontend
+        // (`steer`), the handle (`RunHandle::steering`), and the worker's
+        // `AgentRequest` — the run drains it at each model-request boundary.
+        let steering = crate::run::SteeringQueue::new();
         let handle = RunHandle {
             cancel: cancel.clone(),
             busy: Arc::clone(&busy),
             join: Arc::clone(&join_slot),
+            steering: steering.clone(),
         };
         let sessions = Arc::clone(&self.sessions);
         let agent = Arc::clone(&self.agent);
@@ -1134,6 +1165,7 @@ impl TrustedProjectApplication {
             .map(|worker| worker.sender.clone());
         let subscribers = Arc::clone(&self.subscribers);
         let worker_prompt = prompt.clone();
+        let steering_for_worker = steering.clone();
         // 门控通道（A-03 不变量）：worker 先就位并阻塞等待；持久化预备
         // 在 spawn 之后才发生——mount/spawn 失败不可能留下一条已落盘、
         // 却永远得不到回答的 user 消息；预备失败则撤掉发送端，worker
@@ -1227,6 +1259,7 @@ impl TrustedProjectApplication {
                         history_items: history,
                         prompt: prompt_for_request,
                         cancel: cancel.clone(),
+                        steering: steering_for_worker,
                         approver,
                         events: recorder_sink,
                     })
@@ -1400,6 +1433,20 @@ impl TrustedProjectApplication {
         if let Some(handle) = &self.active_run {
             handle.cancel();
         }
+    }
+
+    /// 运行中插话（DSH `steer()`）：消息进入活动 run 的队列，在下一次
+    /// 模型请求边界并入对话（不打断在途请求）。run 不在执行时返回
+    /// `NotRunning`，调用方回退为普通提交。未被 claim 的消息不落盘。
+    pub fn steer(&self, text: impl Into<String>) -> SteerOutcome {
+        let Some(handle) = &self.active_run else {
+            return SteerOutcome::NotRunning;
+        };
+        if handle.is_finished() {
+            return SteerOutcome::NotRunning;
+        }
+        handle.steering.push(text);
+        SteerOutcome::Queued
     }
 
     /// 手动 `/compact`：异步 worker 内执行（含网络摘要），立即返回可取
@@ -1812,6 +1859,9 @@ impl Drop for TrustedProjectApplication {
 pub struct ApplicationRunRequest {
     pub prompt: String,
     pub approver: Arc<dyn PermissionApprover>,
+    /// 本次 run 的 ask-user 前端实现；`None`（headless）时 `ask_user`
+    /// 工具返回结构化错误。TUI 的实现是无状态的通道包装，随请求安装。
+    pub asker: Option<Arc<dyn crate::interaction::UserAsker>>,
     pub events: Box<dyn EventSink + Send>,
     pub completion: mpsc::Sender<ApplicationRunResult>,
 }
@@ -1842,11 +1892,19 @@ pub struct ApplicationRunFailure {
     pub usage: Usage,
 }
 
+/// `Application::steer` 的结果：入队成功，或当前没有可插话的活动 run。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SteerOutcome {
+    Queued,
+    NotRunning,
+}
+
 #[derive(Clone)]
 pub struct RunHandle {
     cancel: CancelToken,
     busy: Arc<AtomicBool>,
     join: Arc<Mutex<Option<JoinHandle<()>>>>,
+    steering: crate::run::SteeringQueue,
 }
 
 impl RunHandle {
@@ -1995,6 +2053,7 @@ mod tests {
         let (completion, receiver) = mpsc::channel();
         let handle = application
             .start_run(ApplicationRunRequest {
+                asker: None,
                 prompt: prompt.into(),
                 approver: allow_all_approver(),
                 events: Box::new(SharedEvents(Arc::new(Mutex::new(Vec::new())))),
@@ -2132,6 +2191,685 @@ mod tests {
         std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
     }
 
+    /// I1 同形性对拍的规范形：live `RunEvent` 流与 journal 回放各自投影
+    /// 到同一组"前端可见事实"后必须相等。时间戳/turn 编号（两套协议的
+    /// 计数基准不同：live turn = 模型轮，journal turn = 用户轮/step）与
+    /// 已文档化的写侧不可恢复项不参与比较。
+    #[derive(Clone, Debug, PartialEq)]
+    enum Canon {
+        User(String),
+        Assistant {
+            reasoning: Option<String>,
+            text: String,
+            tool_calls: Vec<crate::ToolCall>,
+            provider: String,
+            model: String,
+        },
+        ToolCall(crate::ToolCall),
+        ToolDone {
+            call_id: String,
+            tool: String,
+            output_text: String,
+            is_error: bool,
+            /// A permission denial (no executed call behind it): the two
+            /// protocols carry different non-comparable text (live: the
+            /// approver reason; journal: the fixed policy message), so only
+            /// (call_id, tool, is_error) compare.
+            denied: bool,
+        },
+        Permission(String, &'static str),
+        TurnEnd(&'static str),
+    }
+
+    fn decision_discriminant(decision: &crate::PermissionDecision) -> &'static str {
+        match decision {
+            crate::PermissionDecision::Allow => "allow",
+            crate::PermissionDecision::Ask { .. } => "ask",
+            crate::PermissionDecision::Deny { .. } => "deny",
+            crate::PermissionDecision::Unavailable { .. } => "unavailable",
+        }
+    }
+
+    fn output_text(output: &Value) -> String {
+        match output {
+            Value::String(text) => text.clone(),
+            other => serde_json::to_string(other).unwrap_or_default(),
+        }
+    }
+
+    fn canon_live(events: &[crate::RunEvent]) -> Vec<Canon> {
+        use crate::ModelEvent;
+        use crate::RunEvent;
+        let mut out = Vec::new();
+        let mut reasoning = String::new();
+        let mut text = String::new();
+        let mut tool_calls: Vec<crate::ToolCall> = Vec::new();
+        let mut provider = String::new();
+        let mut model = String::new();
+        // The deny path emits no ToolFinished; the journal records an
+        // isError tool/result instead. Pair it with the last requested call
+        // so both protocols reduce to the same fact.
+        let mut last_call_id = String::new();
+        for event in events {
+            match event {
+                RunEvent::RunStarted { prompt, .. } => out.push(Canon::User(prompt.clone())),
+                RunEvent::ModelRequested {
+                    provider: p,
+                    model: m,
+                    ..
+                } => {
+                    provider = p.clone();
+                    model = m.clone();
+                }
+                RunEvent::ModelStream { event, .. } => match event {
+                    ModelEvent::TextDelta { delta } | ModelEvent::RefusalDelta { delta } => {
+                        text.push_str(delta);
+                    }
+                    ModelEvent::ReasoningDelta { delta }
+                    | ModelEvent::ReasoningSummaryDelta { delta } => reasoning.push_str(delta),
+                    ModelEvent::ToolCallCompleted { call } => tool_calls.push(call.clone()),
+                    _ => {}
+                },
+                RunEvent::ModelResponded { .. } => {
+                    if !text.is_empty() || !reasoning.is_empty() || !tool_calls.is_empty() {
+                        out.push(Canon::Assistant {
+                            reasoning: (!reasoning.is_empty())
+                                .then(|| std::mem::take(&mut reasoning)),
+                            text: std::mem::take(&mut text),
+                            tool_calls: std::mem::take(&mut tool_calls),
+                            provider: provider.clone(),
+                            model: model.clone(),
+                        });
+                    }
+                }
+                RunEvent::ToolRequested { call } => {
+                    last_call_id = call.id.clone();
+                    out.push(Canon::ToolCall(call.clone()));
+                }
+                RunEvent::PermissionChecked { tool, decision } => {
+                    // Policy-direct Allow leaves no journal trace (DSH
+                    // semantics); the replay side only produces approval
+                    // round trips. Compared as multisets in the test body.
+                    // The approver's deny/unavailable reason is physically
+                    // absent from the journal (decided carries only the
+                    // outcome — pinned DSH payload), so parity compares the
+                    // decision discriminant; replay offers the asked reason.
+                    out.push(Canon::Permission(
+                        tool.clone(),
+                        decision_discriminant(decision),
+                    ));
+                }
+                RunEvent::PermissionDenied { tool, .. } => {
+                    // The journal never records a denied call's arguments;
+                    // parity for it is (id, name) only. The Permission item
+                    // for this denial already sits in between, so search
+                    // backwards for the call instead of taking the tail.
+                    if let Some(Canon::ToolCall(call)) =
+                        out.iter_mut().rev().find_map(|item| match item {
+                            Canon::ToolCall(call) if call.id == last_call_id => Some(item),
+                            _ => None,
+                        })
+                    {
+                        call.arguments = Value::Null;
+                    }
+                    out.push(Canon::ToolDone {
+                        call_id: last_call_id.clone(),
+                        tool: tool.clone(),
+                        output_text: String::new(),
+                        is_error: true,
+                        denied: true,
+                    });
+                }
+                RunEvent::ToolStarted { .. } => {}
+                RunEvent::SteeringApplied { text } => out.push(Canon::User(text.clone())),
+                RunEvent::ToolFinished { result } => out.push(Canon::ToolDone {
+                    call_id: result.call_id.clone(),
+                    tool: result.tool_name.clone(),
+                    output_text: output_text(&result.output),
+                    is_error: result.is_error,
+                    denied: false,
+                }),
+                RunEvent::RunCompleted { .. } => out.push(Canon::TurnEnd("completed")),
+                RunEvent::RunCancelled { .. } => out.push(Canon::TurnEnd("aborted:user")),
+                RunEvent::RunFailed { .. } => {
+                    // The recorder appends a settled assistant item for
+                    // partial stream output before the failure, mirroring it.
+                    if !text.is_empty() || !reasoning.is_empty() || !tool_calls.is_empty() {
+                        out.push(Canon::Assistant {
+                            reasoning: (!reasoning.is_empty())
+                                .then(|| std::mem::take(&mut reasoning)),
+                            text: std::mem::take(&mut text),
+                            tool_calls: std::mem::take(&mut tool_calls),
+                            provider: provider.clone(),
+                            model: model.clone(),
+                        });
+                    }
+                    out.push(Canon::TurnEnd("error"));
+                }
+            }
+        }
+        out
+    }
+
+    fn canon_replay(items: &[crate::session::replay::ReplayEvent]) -> Vec<Canon> {
+        use crate::session::replay::{ReplayEvent, ReplayTurnEnd};
+        use std::collections::HashSet;
+        // A denial shows up in the journal as PermissionChecked(deny) right
+        // after the (synthesized, argument-less) call header, or as an
+        // orphan isError result (policy deny). Executed tools always carry
+        // their real tool/call first, so they never classify as denied.
+        let requested: HashSet<&str> = items
+            .iter()
+            .filter_map(|item| match item {
+                ReplayEvent::ToolRequested { call, .. } => Some(call.id.as_str()),
+                _ => None,
+            })
+            .collect();
+        let mut denied_calls: HashSet<String> = HashSet::new();
+        let mut last_call_id = String::new();
+        for item in items {
+            match item {
+                ReplayEvent::ToolRequested { call, .. } => last_call_id = call.id.clone(),
+                ReplayEvent::PermissionChecked { decision, .. } => {
+                    if matches!(
+                        decision,
+                        crate::PermissionDecision::Deny { .. }
+                            | crate::PermissionDecision::Unavailable { .. }
+                    ) {
+                        denied_calls.insert(last_call_id.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+        items
+            .iter()
+            .filter_map(|item| match item {
+                ReplayEvent::UserMessage { text, .. } => Some(Canon::User(text.clone())),
+                ReplayEvent::AssistantMessage {
+                    reasoning,
+                    text,
+                    tool_calls,
+                    provider,
+                    model,
+                    ..
+                } => (!text.is_empty() || reasoning.is_some() || !tool_calls.is_empty()).then_some(
+                    Canon::Assistant {
+                        reasoning: reasoning.clone(),
+                        text: text.clone(),
+                        tool_calls: tool_calls.clone(),
+                        provider: provider.clone(),
+                        model: model.clone(),
+                    },
+                ),
+                ReplayEvent::PermissionChecked { tool, decision, .. } => Some(Canon::Permission(
+                    tool.clone(),
+                    decision_discriminant(decision),
+                )),
+                ReplayEvent::ToolRequested { call, .. } => Some(Canon::ToolCall(call.clone())),
+                ReplayEvent::ToolFinished {
+                    call_id,
+                    tool,
+                    output,
+                    is_error,
+                    ..
+                } => {
+                    let denied = *is_error
+                        && (denied_calls.contains(call_id)
+                            || !requested.contains(call_id.as_str()));
+                    Some(Canon::ToolDone {
+                        call_id: call_id.clone(),
+                        tool: tool.clone(),
+                        // Denial texts are protocol presentation, not facts.
+                        output_text: if denied {
+                            String::new()
+                        } else {
+                            output_text(output)
+                        },
+                        is_error: *is_error,
+                        denied,
+                    })
+                }
+                ReplayEvent::TurnEnded { reason, .. } => Some(match reason {
+                    ReplayTurnEnd::Completed => Canon::TurnEnd("completed"),
+                    ReplayTurnEnd::Aborted { cause } if cause == "user" => {
+                        Canon::TurnEnd("aborted:user")
+                    }
+                    ReplayTurnEnd::Aborted { cause } => {
+                        Canon::TurnEnd(Box::leak(format!("aborted:{cause}").into_boxed_str()))
+                    }
+                    ReplayTurnEnd::Error { .. } => Canon::TurnEnd("error"),
+                    ReplayTurnEnd::Blocked => Canon::TurnEnd("blocked"),
+                    ReplayTurnEnd::MaxTokens => Canon::TurnEnd("max-tokens"),
+                    ReplayTurnEnd::Interrupted => Canon::TurnEnd("interrupted"),
+                }),
+                ReplayEvent::RetryScheduled { .. } | ReplayEvent::Compaction { .. } => None,
+            })
+            .collect()
+    }
+
+    fn assert_replay_parity(behavior: TestBehavior, prompt: &str) {
+        assert_replay_parity_with_approver(
+            behavior,
+            prompt,
+            Arc::new(|_request: crate::PermissionRequest| crate::PermissionDecision::Allow),
+        );
+    }
+
+    /// 对拍断言（共享）：权限事实按多重集比较——replay 侧必须全部在
+    /// live 侧出现；live 侧富余只允许是政策直放行的 allow（Pure/Read
+    /// 自动放行在 journal 无痕，DSH 语义，ask_user 首次触发该路径）。
+    /// 会话事实严格保序相等。
+    fn assert_conversation_parity(
+        live_events: &[crate::RunEvent],
+        events: &[crate::session::event::SessionEvent],
+    ) {
+        let replay = crate::session::replay::ReplayAdapter::fold(events);
+        let mut from_live = canon_live(live_events);
+        let mut from_replay = canon_replay(&replay);
+        // The durable approval barrier orders asked→decided→tool/call while
+        // Run emits ToolRequested before the permission check, so permission
+        // items compare as multisets, not positions.
+        fn permissions(items: &mut Vec<Canon>) -> Vec<Canon> {
+            let mut perms = Vec::new();
+            let mut rest = Vec::new();
+            for item in items.drain(..) {
+                match item {
+                    Canon::Permission(..) => perms.push(item),
+                    other => rest.push(other),
+                }
+            }
+            *items = rest;
+            perms
+        }
+        let mut live_perms = permissions(&mut from_live);
+        let mut replay_perms = permissions(&mut from_replay);
+        replay_perms.sort_by(|a, b| format!("{a:?}").cmp(&format!("{b:?}")));
+        for perm in replay_perms {
+            match live_perms.iter().position(|candidate| *candidate == perm) {
+                Some(index) => {
+                    live_perms.remove(index);
+                }
+                None => panic!("replay permission fact missing from live: {perm:?}"),
+            }
+        }
+        for surplus in &live_perms {
+            assert!(
+                matches!(surplus, Canon::Permission(_, "allow")),
+                "live-only permission facts must be policy-direct allows: {surplus:?}"
+            );
+        }
+        assert_eq!(from_live, from_replay, "conversation facts (strict order)");
+    }
+
+    fn assert_replay_parity_with_approver(
+        behavior: TestBehavior,
+        prompt: &str,
+        approver: Arc<dyn PermissionApprover>,
+    ) {
+        let (storage_root, project_root) = roots("replay-parity");
+        std::fs::create_dir_all(&project_root).unwrap();
+        let project = Project::new(&project_root);
+        let mut application = mount(&project, &storage_root, behavior);
+        configure_test_model(&application);
+
+        let live = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let (completion, receiver) = mpsc::channel();
+        let handle = application
+            .start_run(ApplicationRunRequest {
+                asker: None,
+                prompt: prompt.into(),
+                approver,
+                events: Box::new(SharedEvents(std::sync::Arc::clone(&live))),
+                completion,
+            })
+            .unwrap();
+        handle.join().unwrap();
+        let _ = receiver.recv().unwrap();
+        application.close().unwrap();
+
+        let live_events = live.lock().unwrap().clone();
+        assert_conversation_parity(&live_events, &load_events(&storage_root));
+        std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
+    }
+
+    /// I1：完整工具往返（审批→调用→结果→第二轮回答）的 live↔回放对拍。
+    #[test]
+    fn replay_matches_the_live_stream_for_a_tool_run() {
+        assert_replay_parity(TestBehavior::WriteFile, "please write the file");
+    }
+
+    /// I1：模型中途失败（partial 文本补落盘 + error 终态）同样对拍。
+    #[test]
+    fn replay_matches_the_live_stream_for_a_failed_run() {
+        assert_replay_parity(TestBehavior::Failure, "this will fail");
+    }
+
+    /// 对抗审计 F3：审批**拒绝**路径的 live↔回放对拍。journal 侧该路径
+    /// 没有 tool/call（decided+isError tool/result 原子批），工具名只能
+    /// 从 approval/asked.callId 恢复——此前 T1 只测了 allow 路径，恰好
+    /// 漏掉这条分歧最大的通路。
+    #[test]
+    fn replay_matches_the_live_stream_for_a_denied_tool_run() {
+        assert_replay_parity_with_approver(
+            TestBehavior::WriteFile,
+            "please write the file",
+            Arc::new(
+                |_request: crate::PermissionRequest| crate::PermissionDecision::Deny {
+                    reason: "not allowed".into(),
+                },
+            ),
+        );
+    }
+
+    /// S3/S5：运行中插话端到端。steer() 在第一次模型调用进行中入队；
+    /// run 因 pending steering 延长；第二个请求携带 steering 用户项；
+    /// journal 落 mid-turn user/message；live 流与 journal 回放对拍相等。
+    #[test]
+    fn steered_run_replays_identically() {
+        let (storage_root, project_root) = roots("steer-parity");
+        std::fs::create_dir_all(&project_root).unwrap();
+        let project = Project::new(&project_root);
+        let gate = Arc::new(crate::test_support::SteerGate::default());
+        let mut application = mount(
+            &project,
+            &storage_root,
+            TestBehavior::Steer(Arc::clone(&gate)),
+        );
+        configure_test_model(&application);
+
+        let live = Arc::new(Mutex::new(Vec::new()));
+        let (completion, receiver) = mpsc::channel();
+        let handle = application
+            .start_run(ApplicationRunRequest {
+                asker: None,
+                prompt: "start work".into(),
+                approver: allow_all_approver(),
+                events: Box::new(SharedEvents(Arc::clone(&live))),
+                completion,
+            })
+            .unwrap();
+
+        gate.wait_entered();
+        assert_eq!(
+            application.steer("also run the tests"),
+            SteerOutcome::Queued
+        );
+        gate.release();
+        handle.join().unwrap();
+        let done = receiver.recv().unwrap().unwrap();
+
+        assert!(!done.cancelled);
+        assert_eq!(done.output, "steering handled");
+        assert_eq!(done.turns, 2, "steering extends the run");
+        assert!(
+            gate.saw_steering.load(std::sync::atomic::Ordering::Acquire),
+            "the second model request must carry the steering message"
+        );
+        application.close().unwrap();
+
+        let events = load_events(&storage_root);
+        let types: Vec<&str> = events
+            .iter()
+            .map(|event| event.event_type.as_str())
+            .collect();
+        let steering_index = events
+            .iter()
+            .position(|event| {
+                event.event_type == "user/message"
+                    && event.data["content"][0]["text"] == "also run the tests"
+            })
+            .expect("steering user/message journaled");
+        let first_assistant = types
+            .iter()
+            .position(|kind| *kind == "assistant/message")
+            .expect("first assistant");
+        let last_assistant = types
+            .iter()
+            .rposition(|kind| *kind == "assistant/message")
+            .expect("last assistant");
+        assert!(
+            first_assistant < steering_index && steering_index < last_assistant,
+            "steering lands mid-turn: {types:?}"
+        );
+
+        let live_events = live.lock().unwrap().clone();
+        assert_conversation_parity(&live_events, &events);
+        std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
+    }
+
+    /// S4：取消时未被 claim 的 steering 不落任何 journal 事件，live 与
+    /// 回放同样对拍（两侧都没有这条消息）。
+    #[test]
+    fn steering_during_a_cancelled_run_leaves_no_durable_trace() {
+        let (storage_root, project_root) = roots("steer-cancel");
+        std::fs::create_dir_all(&project_root).unwrap();
+        let project = Project::new(&project_root);
+        let gate = Arc::new(crate::test_support::SteerGate::default());
+        let mut application = mount(
+            &project,
+            &storage_root,
+            TestBehavior::Steer(Arc::clone(&gate)),
+        );
+        configure_test_model(&application);
+
+        let live = Arc::new(Mutex::new(Vec::new()));
+        let (completion, receiver) = mpsc::channel();
+        let handle = application
+            .start_run(ApplicationRunRequest {
+                asker: None,
+                prompt: "start work".into(),
+                approver: allow_all_approver(),
+                events: Box::new(SharedEvents(Arc::clone(&live))),
+                completion,
+            })
+            .unwrap();
+
+        gate.wait_entered();
+        assert_eq!(application.steer("too late"), SteerOutcome::Queued);
+        application.cancel_active_run();
+        gate.release();
+        handle.join().unwrap();
+        let done = receiver.recv().unwrap().unwrap();
+        assert!(done.cancelled, "cancel wins over the steering extension");
+        application.close().unwrap();
+
+        let events = load_events(&storage_root);
+        assert!(
+            !events.iter().any(|event| {
+                event.event_type == "user/message" && event.data["content"][0]["text"] == "too late"
+            }),
+            "unclaimed steering must leave no journal trace"
+        );
+        let live_events = live.lock().unwrap().clone();
+        assert_conversation_parity(&live_events, &events);
+        std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
+    }
+
+    /// S4 契约：没有活动 run 时 steer 回 NotRunning，调用方据此回退为
+    /// 普通提交。
+    #[test]
+    fn steer_without_an_active_run_reports_not_running() {
+        let (storage_root, project_root) = roots("steer-idle");
+        std::fs::create_dir_all(&project_root).unwrap();
+        let project = Project::new(&project_root);
+        let application = mount(&project, &storage_root, TestBehavior::Success);
+        configure_test_model(&application);
+
+        assert_eq!(application.steer("anyone there?"), SteerOutcome::NotRunning);
+        application.close().unwrap();
+        std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
+    }
+
+    /// S3/S6/S7：ask_user 端到端。Pure 效果免审批（journal 无 approval
+    /// 事件）；tool/call 先于 tool/result（等待应答期间问题已耐久）；
+    /// 答案进结果；live 流与 journal 回放对拍。
+    #[test]
+    fn ask_user_tool_round_trips_through_the_journal() {
+        let (storage_root, project_root) = roots("ask-user");
+        std::fs::create_dir_all(&project_root).unwrap();
+        let project = Project::new(&project_root);
+        let asker = Arc::new(crate::test_support::ScriptedAsker {
+            selected: "stable".into(),
+            asked: Mutex::new(Vec::new()),
+        });
+        let mut application = mount(
+            &project,
+            &storage_root,
+            TestBehavior::AskUser(Arc::clone(&asker)),
+        );
+        configure_test_model(&application);
+
+        let live = Arc::new(Mutex::new(Vec::new()));
+        let (completion, receiver) = mpsc::channel();
+        let handle = application
+            .start_run(ApplicationRunRequest {
+                prompt: "pick a channel".into(),
+                approver: allow_all_approver(),
+                asker: Some(Arc::clone(&asker) as Arc<dyn crate::interaction::UserAsker>),
+                events: Box::new(SharedEvents(Arc::clone(&live))),
+                completion,
+            })
+            .unwrap();
+        handle.join().unwrap();
+        let done = receiver.recv().unwrap().unwrap();
+        application.close().unwrap();
+
+        assert_eq!(done.output, "decision recorded");
+        assert_eq!(
+            *asker.asked.lock().unwrap(),
+            vec!["Which release channel should we ship?".to_owned()]
+        );
+
+        let events = load_events(&storage_root);
+        let types: Vec<&str> = events
+            .iter()
+            .map(|event| event.event_type.as_str())
+            .collect();
+        assert!(
+            !types
+                .iter()
+                .any(|kind| *kind == "approval/asked" || *kind == "approval/decided"),
+            "Pure ask_user must not trip the approval flow: {types:?}"
+        );
+        let call_index = events
+            .iter()
+            .position(|event| event.event_type == "tool/call" && event.data["name"] == "ask_user")
+            .expect("ask_user tool/call journaled");
+        let result_index = events
+            .iter()
+            .position(|event| {
+                event.event_type == "tool/result"
+                    && event.data["message"]["source"]["callId"] == "call-ask"
+            })
+            .expect("ask_user tool/result journaled");
+        assert!(call_index < result_index);
+        assert_eq!(
+            events[result_index].data["message"]["content"][0]["isError"],
+            false
+        );
+        let answer_text = events[result_index].data["message"]["content"][0]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(
+            answer_text.contains("stable"),
+            "answer in result: {answer_text}"
+        );
+
+        let live_events = live.lock().unwrap().clone();
+        assert_conversation_parity(&live_events, &events);
+        std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
+    }
+
+    /// S8：headless（asker: None）——ask_user 返回结构化错误结果，模型
+    /// 看到"没有交互前端"后继续，run 正常完成。
+    #[test]
+    fn ask_user_without_a_frontend_degrades_to_an_error_result() {
+        let (storage_root, project_root) = roots("ask-headless");
+        std::fs::create_dir_all(&project_root).unwrap();
+        let project = Project::new(&project_root);
+        let asker = Arc::new(crate::test_support::ScriptedAsker {
+            selected: "stable".into(),
+            asked: Mutex::new(Vec::new()),
+        });
+        let mut application = mount(
+            &project,
+            &storage_root,
+            TestBehavior::AskUser(Arc::clone(&asker)),
+        );
+        configure_test_model(&application);
+
+        let (completion, receiver) = mpsc::channel();
+        let handle = application
+            .start_run(ApplicationRunRequest {
+                prompt: "pick a channel".into(),
+                approver: allow_all_approver(),
+                asker: None,
+                events: Box::new(SharedEvents(Arc::new(Mutex::new(Vec::new())))),
+                completion,
+            })
+            .unwrap();
+        handle.join().unwrap();
+        let done = receiver.recv().unwrap().unwrap();
+        application.close().unwrap();
+
+        assert_eq!(done.output, "decision recorded");
+        assert!(
+            asker.asked.lock().unwrap().is_empty(),
+            "no frontend installed — the asker must never be called"
+        );
+
+        let events = load_events(&storage_root);
+        let result = events
+            .iter()
+            .find(|event| {
+                event.event_type == "tool/result"
+                    && event.data["message"]["source"]["callId"] == "call-ask"
+            })
+            .expect("headless ask_user error result journaled");
+        assert_eq!(result.data["message"]["content"][0]["isError"], true);
+        let message = result.data["message"]["content"][0]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(
+            message.contains("no interactive frontend"),
+            "structured headless error: {message}"
+        );
+        std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
+    }
+
+    /// T5：门面两条出口（mount 恢复的 `snapshot()`、`switch_session` 含
+    /// 同 id 快路径）携带的回放 == 直接折叠 journal；懒会话回放为空。
+    #[test]
+    fn snapshots_carry_the_structured_replay() {
+        let (storage_root, project_root) = roots("replay-facade");
+        std::fs::create_dir_all(&project_root).unwrap();
+        let project = Project::new(&project_root);
+        let mut application = mount(&project, &storage_root, TestBehavior::Success);
+        configure_test_model(&application);
+        run(&mut application, "hello clat").unwrap();
+        let id = application.current_session_id().expect("session id");
+        application.close().unwrap();
+
+        let expected = crate::session::replay::ReplayAdapter::fold(&load_events(&storage_root));
+        assert!(!expected.is_empty());
+
+        // Mount-time resume: snapshot() carries the full replay (the resume
+        // seed marker skipped by the fold never shows up).
+        let mut application = mount(&project, &storage_root, TestBehavior::Success);
+        assert_eq!(application.snapshot().unwrap().replay, expected);
+
+        // Same-id fast path through switch_session.
+        let switched = application.switch_session(id).unwrap();
+        assert_eq!(switched.replay, expected);
+
+        // A lazy fresh session (no log yet) replays empty.
+        application.new_session().unwrap();
+        assert!(application.snapshot().unwrap().replay.is_empty());
+        application.close().unwrap();
+        std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
+    }
+
     #[test]
     fn new_run_resume_exit_reopen_user_sequence() {
         let (storage_root, project_root) = roots("cutover-sequence");
@@ -2253,6 +2991,7 @@ mod tests {
         let (completion, receiver) = mpsc::channel();
         let handle = application
             .start_run(ApplicationRunRequest {
+                asker: None,
                 prompt: "cancel me".into(),
                 approver: allow_all_approver(),
                 events: Box::new(SharedEvents(Arc::new(Mutex::new(Vec::new())))),
@@ -2453,6 +3192,7 @@ mod tests {
         application.fail_next_run_spawn_for_test();
         let (completion, _receiver) = mpsc::channel();
         let error = match application.start_run(ApplicationRunRequest {
+            asker: None,
             prompt: "doomed run".into(),
             approver: allow_all_approver(),
             events: Box::new(SharedEvents(Arc::new(Mutex::new(Vec::new())))),
@@ -2700,6 +3440,7 @@ mod tests {
         let (completion, _receiver) = mpsc::channel();
         let error = application
             .start_run(ApplicationRunRequest {
+                asker: None,
                 prompt: "never persisted".into(),
                 approver: allow_all_approver(),
                 events: Box::new(SharedEvents(Arc::new(Mutex::new(Vec::new())))),
@@ -2731,6 +3472,7 @@ mod tests {
         let (completion, receiver) = mpsc::channel();
         let handle = application
             .start_run(ApplicationRunRequest {
+                asker: None,
                 prompt: "track the work".into(),
                 approver: Arc::new(CountingApprover(Arc::clone(&calls))),
                 events: Box::new(SharedEvents(Arc::new(Mutex::new(Vec::new())))),

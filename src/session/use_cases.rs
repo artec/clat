@@ -14,6 +14,7 @@ use crate::session::id::SessionId;
 use crate::session::key::{ProjectKey, SessionKey};
 use crate::session::persistence::{JsonlBackend, JsonlCompression, SessionError};
 use crate::session::projection::{CheckpointIdentity, ProjectionRegistry, RestoreError};
+use crate::session::replay::{ReplayAdapter, ReplayEvent};
 use crate::session::root_dir::SessionRootDir;
 use crate::session::run_journal::{RunJournal, SessionCoordinator};
 use serde_json::Value;
@@ -43,6 +44,11 @@ pub struct SessionView {
     pub title: Option<String>,
     pub todos: Vec<(String, String)>,
     pub transcript: Vec<TranscriptLine>,
+    /// Structured replay of the whole journal (frontend transcript rebuild).
+    /// Assembled in `arm_session` from the durable log, so repair closers are
+    /// included; the resume seed marker (enqueued at install) never is — it
+    /// is on the replay skip list anyway.
+    pub replay: Vec<ReplayEvent>,
     pub model_items: Vec<ModelItem>,
     pub turns: u64,
 }
@@ -215,7 +221,18 @@ impl SessionService {
             let _ = coordinator.close();
             return Err(error);
         }
-        let view = match self.view_from(&header, &projections.lock().expect("projections")) {
+        // Structured replay for the frontend transcript rebuild. Read after
+        // the catch-up fold so recovery repair events are included; the log
+        // is the authority, so the result never depends on checkpoints.
+        let replay = match self.replay(&key) {
+            Ok(replay) => replay,
+            Err(error) => {
+                let _ = coordinator.close();
+                return Err(error);
+            }
+        };
+        let view = match self.view_from(&header, &projections.lock().expect("projections"), replay)
+        {
             Ok(view) => view,
             Err(error) => {
                 let _ = coordinator.close();
@@ -529,6 +546,40 @@ impl SessionService {
         Ok(true)
     }
 
+    /// Structured replay of a session journal — the frontend transcript
+    /// rebuild input. A pure fold of the durable log: deleting checkpoints
+    /// changes nothing (invariant I4). Lazy sessions without a log replay
+    /// empty. The read streams through `visit_from` so decoded memory stays
+    /// bounded to the output items plus one record (audit F4: the earlier
+    /// `read_from` version materialized the whole decoded log); incremental
+    /// reads are a future scale layer.
+    pub(crate) fn replay(&self, key: &SessionKey) -> Result<Vec<ReplayEvent>, SessionError> {
+        if !self.has_log(key) {
+            return Ok(Vec::new());
+        }
+        let mut adapter = ReplayAdapter::new();
+        let mut out = Vec::new();
+        self.backend.visit_from(key, 0, &mut |event| {
+            adapter.push(event, &mut out);
+            Ok(())
+        })?;
+        Ok(out)
+    }
+
+    /// Structured replay of the active session, if any. Callers run at
+    /// quiescent points (mount, switch); a concurrently appending writer is
+    /// not expected here.
+    pub(crate) fn replay_active(&self) -> Result<Vec<ReplayEvent>, SessionError> {
+        let key = {
+            let guard = self.active.lock().expect("active");
+            match guard.as_ref() {
+                Some(active) => active.key.clone(),
+                None => return Ok(Vec::new()),
+            }
+        };
+        self.replay(&key)
+    }
+
     /// The display transcript of the active session (projection-backed,
     /// compaction-safe).
     pub(crate) fn transcript_lines(&self) -> Result<Vec<TranscriptLine>, SessionError> {
@@ -622,6 +673,7 @@ impl SessionService {
         &self,
         header: &SessionHeader,
         projections: &ProjectionRegistry,
+        replay: Vec<ReplayEvent>,
     ) -> Result<SessionView, SessionError> {
         let row = |unit: &str| projections.state_snapshot(unit).unwrap_or_default();
         let title = row("title")
@@ -682,6 +734,7 @@ impl SessionService {
             title,
             todos,
             transcript,
+            replay,
             model_items,
             turns,
         })
@@ -869,6 +922,7 @@ fn journal_with_projection_fold(
 mod tests {
     use super::*;
     use crate::session::event::payloads;
+    use crate::session::replay::ReplayTurnEnd;
 
     fn service(_tag: &str) -> (SessionService, std::path::PathBuf) {
         let root = std::env::temp_dir().join(format!(
@@ -953,6 +1007,154 @@ mod tests {
         let second = service.checkpoints.load(&key).expect("second checkpoint");
         assert!(second.generation > first.generation);
         service.quiesce_active().expect("close");
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    /// I4：回放是事件日志的纯折叠——删 checkpoint、走完整 resume 冷读
+    /// 阶梯，结果必须逐项相等。
+    #[test]
+    fn replay_is_a_pure_log_fold_checkpoints_change_nothing() {
+        let (service, root) = service("replay-checkpoints");
+        let project = project();
+        let summary = service.new_session(&project).expect("new");
+        run_turn(&service, "hello").expect("run 1");
+        run_turn(&service, "again").expect("run 2");
+        service.sync_active().expect("checkpoint");
+        let key = SessionKey {
+            project: project.clone(),
+            id: summary.id.clone(),
+        };
+        let direct = service.replay(&key).expect("replay with checkpoint");
+        // Shape sanity before the equivalence claims: two user turns, each
+        // explained by a completed turn/end (time/turn metadata varies, so
+        // project to the essentials).
+        let essentials = |items: &[ReplayEvent]| {
+            items
+                .iter()
+                .map(|item| match item {
+                    ReplayEvent::UserMessage { text, .. } => format!("user:{text}"),
+                    ReplayEvent::TurnEnded { reason, .. } => format!("end:{reason:?}"),
+                    other => format!("other:{other:?}"),
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            essentials(&direct),
+            vec![
+                "user:hello".to_owned(),
+                "end:Completed".to_owned(),
+                "user:again".to_owned(),
+                "end:Completed".to_owned(),
+            ]
+        );
+
+        // A lazy session with no log replays empty (never an error).
+        service.checkpoints.drop(&key);
+        let staged = service.stage_resume(&key).expect("stage");
+        let armed = service.arm_session(staged).expect("arm");
+        assert_eq!(&armed.view.replay, &direct, "resume without checkpoint");
+        service.discard_armed(armed).expect("discard");
+        assert!(
+            service
+                .replay(&SessionKey {
+                    project,
+                    id: SessionId::generate()
+                })
+                .unwrap()
+                .is_empty(),
+            "a session without a log replays empty"
+        );
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    /// I5：崩溃残留（open step + 无 result 的 tool/call）经恢复闭合器
+    /// 补齐后，合成事件如常回放——工具名照常配对。
+    #[test]
+    fn interrupted_log_replays_recovery_synthetic_closers() {
+        let (service, root) = service("replay-interrupted");
+        let project = project();
+        let summary = service.new_session(&project).expect("new");
+        let journal = service.journal().expect("journal");
+        journal
+            .append_atomic(&[
+                crate::session::run_journal::NewSessionEvent::new(
+                    "turn/start",
+                    payloads::turn_start(1),
+                ),
+                crate::session::run_journal::NewSessionEvent::new(
+                    "user/message",
+                    payloads::user_message("do things"),
+                )
+                .append(Vec::new()),
+                crate::session::run_journal::NewSessionEvent::new(
+                    "step/start",
+                    payloads::step_start(1, 0),
+                ),
+                // Real producers always announce the call in the settled
+                // assistant message before the durable tool/call (recovery
+                // registers pending calls from these blocks).
+                crate::session::run_journal::NewSessionEvent::new(
+                    "assistant/message",
+                    payloads::assistant_message(
+                        1,
+                        0,
+                        vec![payloads::tool_call_block(
+                            "call-crash",
+                            "read_file",
+                            &serde_json::json!({"path": "x"}),
+                        )],
+                        "application-test",
+                        "deterministic",
+                    ),
+                )
+                .append(Vec::new()),
+                crate::session::run_journal::NewSessionEvent::new(
+                    "tool/call",
+                    payloads::tool_call(
+                        1,
+                        0,
+                        "call-crash",
+                        "read_file",
+                        &serde_json::json!({"path": "x"}),
+                    ),
+                )
+                .log_only(),
+            ])
+            .map_err(SessionError::Corruption)
+            .expect("interrupted batch");
+        journal
+            .flush()
+            .map_err(SessionError::Corruption)
+            .expect("durable");
+        service.quiesce_active().expect("close");
+
+        let key = SessionKey {
+            project,
+            id: summary.id,
+        };
+        let staged = service.stage_resume(&key).expect("stage");
+        let armed = service.arm_session(staged).expect("arm repairs the log");
+        let replay = armed.view.replay.clone();
+        // arm performs recovery before the view is built, so the synthetic
+        // isError tool/result and interrupted turn/end replay like any other
+        // producer event.
+        assert!(
+            replay.iter().any(|item| matches!(item,
+                ReplayEvent::ToolFinished { call_id, tool, is_error, .. }
+                if call_id == "call-crash" && tool == "read_file" && *is_error)),
+            "synthetic outcome-unknown tool result must replay, paired by callId: {replay:?}"
+        );
+        assert!(
+            replay.iter().any(|item| matches!(
+                item,
+                ReplayEvent::TurnEnded {
+                    reason: ReplayTurnEnd::Interrupted,
+                    ..
+                }
+            )),
+            "the interrupted turn must explain its stop: {replay:?}"
+        );
+        service.discard_armed(armed).expect("discard");
         std::fs::remove_dir_all(root).expect("cleanup");
     }
 

@@ -24,6 +24,7 @@ pub(crate) mod preflight;
 pub(crate) mod projection;
 pub(crate) mod recorder;
 pub(crate) mod recovery;
+pub(crate) mod replay;
 pub(crate) mod root_dir;
 pub(crate) mod root_lease;
 pub(crate) mod run_journal;

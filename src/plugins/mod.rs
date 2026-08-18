@@ -32,7 +32,9 @@ pub(crate) use run_scope::RunScopePlugin;
 pub(crate) use storage::{ProjectControlStoragePlugin, SessionPersistencePlugin};
 pub(crate) use title::SessionTitlePlugin;
 pub(crate) use todo::TodoPlugin;
-pub(crate) use tools::{NativeReadToolsPlugin, NativeWriteToolsPlugin, ToolRegistryPlugin};
+pub(crate) use tools::{
+    NativeInteractionToolsPlugin, NativeReadToolsPlugin, NativeWriteToolsPlugin, ToolRegistryPlugin,
+};
 
 use crate::plugin::Plugin;
 use crate::{CancelToken, PermissionApprover};

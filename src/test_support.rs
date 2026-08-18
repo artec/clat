@@ -50,7 +50,7 @@ impl crate::plugin::Plugin for TestProviderPlugin {
             .register(
                 context.owner(),
                 Arc::new(TestFactory {
-                    behavior: self.behavior,
+                    behavior: self.behavior.clone(),
                 }),
             )
             .map_err(|error| PluginError::new(error.to_string()))?;
@@ -63,7 +63,7 @@ impl crate::plugin::Plugin for TestProviderPlugin {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 #[allow(dead_code)]
 pub(crate) enum TestBehavior {
     Success,
@@ -83,6 +83,57 @@ pub(crate) enum TestBehavior {
     /// 先立即输出 delta，再稍等后请求 write_file：用于锁定 stdout 在
     /// handle 发布前失败时，取消必须先于后续副作用生效。
     DeltaThenWrite,
+    /// steering 确定性门闩：第一次模型调用阻塞到测试线程 steer() 并
+    /// 放行（否则按取消退出），第二次调用观测 steering 用户项是否已
+    /// 并入 items。
+    Steer(Arc<SteerGate>),
+    /// 第一轮调用 ask_user 工具（Pure 效果，免审批），拿到答案后第二
+    /// 轮完成：端到端验证 ask-user 端口（asker 由 run 请求安装）。
+    AskUser(Arc<ScriptedAsker>),
+}
+
+/// 脚本化 UserAsker：固定回传一个选项，并记录收到的问题供断言。
+pub(crate) struct ScriptedAsker {
+    pub(crate) selected: String,
+    pub(crate) asked: Mutex<Vec<String>>,
+}
+
+impl crate::interaction::UserAsker for ScriptedAsker {
+    fn ask(
+        &self,
+        question: crate::interaction::AskQuestion,
+        _cancel: &crate::CancelToken,
+    ) -> crate::interaction::AskAnswer {
+        if let Ok(mut asked) = self.asked.lock() {
+            asked.push(question.question.clone());
+        }
+        crate::interaction::AskAnswer::Selected(self.selected.clone())
+    }
+}
+
+/// steering 测试的门闩：`entered` 标记第一次模型调用已开始（此后
+/// steer() 必然晚于第一轮 drain），`released` 放行第一次调用返回，
+/// `saw_steering` 由第二次调用回填。
+#[derive(Default)]
+pub(crate) struct SteerGate {
+    entered: std::sync::atomic::AtomicBool,
+    released: std::sync::atomic::AtomicBool,
+    pub(crate) saw_steering: std::sync::atomic::AtomicBool,
+}
+
+impl SteerGate {
+    pub(crate) fn wait_entered(&self) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !self.entered.load(std::sync::atomic::Ordering::Acquire) {
+            assert!(std::time::Instant::now() < deadline, "model never started");
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+
+    pub(crate) fn release(&self) {
+        self.released
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
 }
 
 struct TestFactory {
@@ -108,7 +159,7 @@ impl ModelFactory for TestFactory {
         _credentials: &ProviderCredentials,
     ) -> Result<Box<dyn Model>, ModelError> {
         Ok(Box::new(TestModel {
-            behavior: self.behavior,
+            behavior: self.behavior.clone(),
         }))
     }
 }
@@ -131,7 +182,7 @@ impl Model for TestModel {
         request: ModelRequest<'_>,
         events: &mut dyn crate::model::ModelEventSink,
     ) -> Result<ModelResponse, ModelError> {
-        match self.behavior {
+        match &self.behavior {
             TestBehavior::Success => {
                 std::thread::sleep(std::time::Duration::from_millis(100));
                 events.emit(ModelEvent::TextDelta {
@@ -218,6 +269,69 @@ impl Model for TestModel {
                     });
                     Ok(response("done", FinishReason::Completed))
                 }
+            }
+            TestBehavior::Steer(gate) => {
+                let has_steering = request.items.iter().any(|item| {
+                    matches!(
+                        item,
+                        crate::model::ModelItem::User { content }
+                            if content
+                                .iter()
+                                .any(|part| matches!(part, crate::model::ContentPart::Text(text) if text == "also run the tests"))
+                    )
+                });
+                if has_steering {
+                    gate.saw_steering
+                        .store(true, std::sync::atomic::Ordering::Release);
+                    events.emit(ModelEvent::TextDelta {
+                        delta: "steering handled".into(),
+                    });
+                    return Ok(response("steering handled", FinishReason::Completed));
+                }
+                gate.entered
+                    .store(true, std::sync::atomic::Ordering::Release);
+                while !gate.released.load(std::sync::atomic::Ordering::Acquire)
+                    && !request.cancel.is_cancelled()
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                }
+                events.emit(ModelEvent::TextDelta {
+                    delta: "first answer".into(),
+                });
+                Ok(response("first answer", FinishReason::Completed))
+            }
+            TestBehavior::AskUser(_) => {
+                let has_ask_result = request.items.iter().any(|item| {
+                    matches!(
+                        item,
+                        crate::model::ModelItem::ToolResult(result) if result.tool_name == "ask_user"
+                    )
+                });
+                if has_ask_result {
+                    events.emit(ModelEvent::TextDelta {
+                        delta: "decision recorded".into(),
+                    });
+                    return Ok(response("decision recorded", FinishReason::Completed));
+                }
+                Ok(ModelResponse {
+                    text: String::new(),
+                    tool_calls: vec![ToolCall {
+                        id: "call-ask".into(),
+                        name: "ask_user".into(),
+                        arguments: json!({
+                            "question": "Which release channel should we ship?",
+                            "options": [
+                                { "label": "stable", "description": "recommended" },
+                                { "label": "beta" },
+                            ],
+                        }),
+                    }],
+                    finish_reason: FinishReason::ToolCalls,
+                    usage: None,
+                    provider_response_id: None,
+                    provider_state: Vec::new(),
+                    reasoning: None,
+                })
             }
             TestBehavior::WriteFile | TestBehavior::DeltaThenWrite => {
                 let has_write_result = request.items.iter().any(|item| {

@@ -3,6 +3,7 @@ pub(crate) mod control_storage;
 pub mod demo;
 pub mod event;
 pub mod exec;
+mod interaction;
 mod mcp;
 mod mcp_client;
 pub mod model;
@@ -24,10 +25,12 @@ pub(crate) mod session;
 pub(crate) mod test_support;
 mod tool;
 pub mod tui;
+mod tui_conversation;
 mod tui_input;
 mod tui_markdown;
 mod tui_model;
 mod tui_sessions;
+mod tui_theme;
 mod tui_worker;
 pub mod upgrade;
 
@@ -35,10 +38,11 @@ pub use application::{
     ApplicationError, ApplicationEvent, ApplicationRunDone, ApplicationRunFailure,
     ApplicationRunRequest, ApplicationRunResult, BootstrapApplication, CompactHandle,
     CompactReport, CompactionStatus, McpServerInfoDto, McpStatusDto, ProjectAuthorization,
-    ProjectSnapshot, RunHandle, SessionSnapshot, TrustedProjectApplication,
+    ProjectSnapshot, RunHandle, SessionSnapshot, SteerOutcome, TrustedProjectApplication,
 };
 pub use control_storage::ModelProfileSummary;
 pub use event::{EventSink, ModelOutcome, RunEvent};
+pub use interaction::{AskAnswer, AskOption, AskQuestion, UserAsker};
 pub use model::{
     CancelToken, ContentPart, FinishReason, Model, ModelConfig, ModelError, ModelErrorKind,
     ModelEvent, ModelEventSink, ModelFactory, ModelItem, ModelOptions, ModelProtocol, ModelRequest,
@@ -55,6 +59,6 @@ pub use project::Project;
 pub(crate) use run::Run;
 pub use run::{RunError, RunOutput};
 pub(crate) use session::id::SessionId;
-pub(crate) use session::use_cases::{SessionSummary, TranscriptLine};
+pub(crate) use session::use_cases::SessionSummary;
 pub use tool::{Tool, ToolCall, ToolDefinition, ToolEffect, ToolError, ToolResult};
 pub(crate) use tool::{ToolExecutionPipeline, ToolRegistry};

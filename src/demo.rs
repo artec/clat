@@ -69,6 +69,7 @@ pub fn run_demo(
             history_items: vec![ModelItem::user_text(prompt.clone())],
             prompt,
             cancel: CancelToken::new(),
+            steering: crate::run::SteeringQueue::new(),
             approver: Arc::new(|_| PermissionDecision::Deny {
                 reason: "demo does not approve side effects".into(),
             }),

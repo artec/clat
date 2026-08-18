@@ -6,7 +6,43 @@ use crate::model::{
 use crate::permission::{PermissionDecision, PermissionPolicy};
 use crate::project::Project;
 use crate::tool::{ToolExecutionPipeline, ToolInvocation, ToolRegistry, ToolResult};
+use std::collections::VecDeque;
 use std::fmt;
+use std::sync::{Arc, Mutex};
+
+/// In-run steering queue (DSH `steer()` semantics): messages submitted by
+/// the frontend while a run is active. The run claims them at the next
+/// model-request boundary — never interrupting the in-flight request — and
+/// pending steering extends a run that would otherwise complete, because
+/// the model still owes the user a response. Messages that were never
+/// claimed (cancel, race at the end) leave no durable trace.
+#[derive(Clone, Default)]
+pub(crate) struct SteeringQueue {
+    pending: Arc<Mutex<VecDeque<String>>>,
+}
+
+impl SteeringQueue {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    pub(crate) fn push(&self, text: impl Into<String>) {
+        if let Ok(mut pending) = self.pending.lock() {
+            pending.push_back(text.into());
+        }
+    }
+
+    pub(crate) fn pop(&self) -> Option<String> {
+        self.pending
+            .lock()
+            .ok()
+            .and_then(|mut pending| pending.pop_front())
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.pending.lock().is_ok_and(|pending| pending.is_empty())
+    }
+}
 
 pub(crate) struct Run<'a> {
     model: &'a mut dyn Model,
@@ -17,6 +53,7 @@ pub(crate) struct Run<'a> {
     model_options: ModelOptions,
     max_turns: usize,
     cancel: CancelToken,
+    steering: SteeringQueue,
     tool_pipeline: Option<&'a ToolExecutionPipeline>,
 }
 
@@ -36,6 +73,7 @@ impl<'a> Run<'a> {
             model_options: ModelOptions::default(),
             max_turns: 32,
             cancel: CancelToken::new(),
+            steering: SteeringQueue::new(),
             tool_pipeline: None,
         }
     }
@@ -55,6 +93,14 @@ impl<'a> Run<'a> {
     /// providers can stop streaming early.
     pub(crate) fn with_cancel_token(mut self, cancel: CancelToken) -> Self {
         self.cancel = cancel;
+        self
+    }
+
+    /// Shares the steering queue the frontend pushes into while the run is
+    /// active. Claimed at the top of each turn iteration, before the model
+    /// request borrows `items`.
+    pub(crate) fn with_steering(mut self, steering: SteeringQueue) -> Self {
+        self.steering = steering;
         self
     }
 
@@ -90,6 +136,15 @@ impl<'a> Run<'a> {
         for turn in 1..=self.max_turns {
             if self.cancel.is_cancelled() {
                 return Ok(cancelled(events, turn, &total_usage, String::new(), items));
+            }
+
+            // Claim queued steering at the next-step boundary (DSH
+            // semantics): never interrupts the in-flight request; the
+            // recorder makes each message durable before the model request
+            // that consumes it.
+            while let Some(text) = self.steering.pop() {
+                events.emit(RunEvent::SteeringApplied { text: text.clone() });
+                items.push(ModelItem::user_text(text));
             }
 
             events.emit(RunEvent::ModelRequested {
@@ -164,6 +219,13 @@ impl<'a> Run<'a> {
             if response.tool_calls.is_empty() {
                 match response.finish_reason {
                     FinishReason::Completed | FinishReason::Refusal => {
+                        // Pending steering extends the run: the model still
+                        // owes the user a response to the queued message(s).
+                        // A cancel flag wins at the next loop-top check,
+                        // before the queue is drained.
+                        if !self.steering.is_empty() {
+                            continue;
+                        }
                         if response.text.is_empty() {
                             return Err(fail(
                                 events,
@@ -706,6 +768,204 @@ mod tests {
         }
     }
 
+    /// S5/协议顺序：运行中入队的 steering 在下一个模型请求边界 claim——
+    /// `SteeringApplied` 夹在上一响应与下一次 `ModelRequested` 之间；模型
+    /// 已给出最终回答时本轮延长（不提前 RunCompleted），下一次请求的
+    /// items 里带着 steering 用户项。
+    struct SteeringModel {
+        steering: SteeringQueue,
+        calls: usize,
+        saw_steering_item: bool,
+    }
+
+    impl Model for SteeringModel {
+        fn provider(&self) -> &str {
+            "test"
+        }
+
+        fn model_id(&self) -> &str {
+            "steering"
+        }
+
+        fn stream(
+            &mut self,
+            request: ModelRequest<'_>,
+            events: &mut dyn ModelEventSink,
+        ) -> Result<ModelResponse, ModelError> {
+            self.calls += 1;
+            if self.calls == 1 {
+                // 模拟前端在第一个请求进行中 steer()：此刻 turn-1 顶部的
+                // drain 已过，消息只能被下一轮 claim。
+                self.steering.push("also run the tests");
+                events.emit(ModelEvent::TextDelta {
+                    delta: "first answer".into(),
+                });
+                return Ok(ModelResponse {
+                    text: "first answer".into(),
+                    tool_calls: vec![],
+                    finish_reason: FinishReason::Completed,
+                    usage: None,
+                    provider_response_id: None,
+                    provider_state: vec![],
+                    reasoning: None,
+                });
+            }
+            self.saw_steering_item = request.items.iter().any(|item| {
+                matches!(
+                    item,
+                    ModelItem::User { content } if content.iter().any(|part| matches!(
+                        part,
+                        crate::model::ContentPart::Text(text) if text == "also run the tests"
+                    ))
+                )
+            });
+            events.emit(ModelEvent::TextDelta {
+                delta: "steering handled".into(),
+            });
+            Ok(ModelResponse {
+                text: "steering handled".into(),
+                tool_calls: vec![],
+                finish_reason: FinishReason::Completed,
+                usage: None,
+                provider_response_id: None,
+                provider_state: vec![],
+                reasoning: None,
+            })
+        }
+    }
+
+    #[test]
+    fn steering_extends_a_completed_run_and_feeds_the_next_request() {
+        let project = Project::new(".");
+        let steering = SteeringQueue::new();
+        let mut model = SteeringModel {
+            steering: steering.clone(),
+            calls: 0,
+            saw_steering_item: false,
+        };
+        let mut events = Vec::new();
+
+        let output = Run::new(&mut model, &ToolRegistry::new(), &AllowAll, &project)
+            .with_steering(steering)
+            .execute("start work", &mut events)
+            .expect("run should succeed");
+
+        // S5：第一个 Completed 不终结 run，模型欠用户一个回应。
+        assert_eq!(model.calls, 2, "steering must extend the run");
+        assert_eq!(output.turns, 2);
+        assert_eq!(output.text, "steering handled");
+        assert!(
+            model.saw_steering_item,
+            "the second request must carry the steering user item"
+        );
+        assert!(output.items.iter().any(|item| matches!(
+            item,
+            ModelItem::User { content } if content.iter().any(|part| matches!(
+                part,
+                crate::model::ContentPart::Text(text) if text == "also run the tests"
+            ))
+        )));
+
+        // S1：SteeringApplied 夹在首个 ModelResponded 与第二次
+        // ModelRequested 之间，载荷为原文。
+        let position = |needle: &str| {
+            events
+                .iter()
+                .position(|event| {
+                    let variant = match event {
+                        RunEvent::RunStarted { .. } => "RunStarted",
+                        RunEvent::ModelRequested { .. } => "ModelRequested",
+                        RunEvent::ModelStream { .. } => "ModelStream",
+                        RunEvent::ModelResponded { .. } => "ModelResponded",
+                        RunEvent::ToolRequested { .. } => "ToolRequested",
+                        RunEvent::PermissionChecked { .. } => "PermissionChecked",
+                        RunEvent::PermissionDenied { .. } => "PermissionDenied",
+                        RunEvent::ToolStarted { .. } => "ToolStarted",
+                        RunEvent::ToolFinished { .. } => "ToolFinished",
+                        RunEvent::SteeringApplied { .. } => "SteeringApplied",
+                        RunEvent::RunCompleted { .. } => "RunCompleted",
+                        RunEvent::RunCancelled { .. } => "RunCancelled",
+                        RunEvent::RunFailed { .. } => "RunFailed",
+                    };
+                    variant == needle
+                })
+                .expect(needle)
+        };
+        let applied = events
+            .iter()
+            .position(|event| matches!(event, RunEvent::SteeringApplied { text } if text == "also run the tests"))
+            .expect("SteeringApplied must be emitted");
+        assert!(applied > position("ModelResponded"));
+        let second_request = events
+            .iter()
+            .position(|event| matches!(event, RunEvent::ModelRequested { turn, .. } if *turn == 2))
+            .expect("second request");
+        assert!(applied < second_request);
+        assert!(matches!(events.last(), Some(RunEvent::RunCompleted { .. })));
+    }
+
+    /// S4：取消优先于延长。模型在流中先取消令牌、再模拟前端 steer()、
+    /// 然后返回最终回答：terminal 门会因队列非空而延长，但下一轮循环
+    /// 顶部的 cancel 检查先于 drain，run 以取消收场，消息不被 claim。
+    struct CancelsMidAnswerModel {
+        steering: SteeringQueue,
+    }
+
+    impl Model for CancelsMidAnswerModel {
+        fn provider(&self) -> &str {
+            "test"
+        }
+
+        fn model_id(&self) -> &str {
+            "cancels"
+        }
+
+        fn stream(
+            &mut self,
+            request: ModelRequest<'_>,
+            _events: &mut dyn ModelEventSink,
+        ) -> Result<ModelResponse, ModelError> {
+            request.cancel.cancel();
+            self.steering.push("too late");
+            Ok(ModelResponse {
+                text: "answer".into(),
+                tool_calls: vec![],
+                finish_reason: FinishReason::Completed,
+                usage: None,
+                provider_response_id: None,
+                provider_state: vec![],
+                reasoning: None,
+            })
+        }
+    }
+
+    #[test]
+    fn cancelled_run_discards_pending_steering() {
+        let project = Project::new(".");
+        let steering = SteeringQueue::new();
+        let mut model = CancelsMidAnswerModel {
+            steering: steering.clone(),
+        };
+        let mut events = Vec::new();
+
+        let _output = Run::new(&mut model, &ToolRegistry::new(), &AllowAll, &project)
+            .with_steering(steering.clone())
+            .execute("start", &mut events)
+            .expect("cancelled run is a normal outcome");
+
+        assert!(
+            matches!(events.last(), Some(RunEvent::RunCancelled { .. })),
+            "cancel must win over the steering extension"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, RunEvent::SteeringApplied { .. })),
+            "unclaimed steering must not be applied"
+        );
+        assert!(!steering.is_empty(), "queue left untouched");
+    }
+
     #[test]
     fn executes_streaming_model_tool_model_loop() {
         let project = Project::new(".");
@@ -760,6 +1020,7 @@ mod tests {
                 RunEvent::PermissionDenied { .. } => "PermissionDenied",
                 RunEvent::ToolStarted { .. } => "ToolStarted",
                 RunEvent::ToolFinished { .. } => "ToolFinished",
+                RunEvent::SteeringApplied { .. } => "SteeringApplied",
                 RunEvent::RunCompleted { .. } => "RunCompleted",
                 RunEvent::RunCancelled { .. } => "RunCancelled",
                 RunEvent::RunFailed { .. } => "RunFailed",

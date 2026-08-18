@@ -1,17 +1,20 @@
+use crate::SessionId;
 use crate::presets::preset_by_id;
+use crate::tui_conversation::ToolCardVisibility;
 use crate::tui_input::InputBuffer;
-use crate::tui_markdown::render_markdown;
 use crate::tui_model::{EditorAction, ModelEditor, ModelPicker, PickerAction};
 use crate::tui_sessions::{ResumeAction, SessionPicker};
-use crate::tui_worker::{ChannelApprover, ChannelEventSink, UiEvent, WorkerMessage};
+use crate::tui_theme;
+use crate::tui_worker::{
+    ChannelApprover, ChannelEventSink, ChannelUserAsker, UiEvent, WorkerMessage,
+};
 use crate::{
     ApplicationEvent, ApplicationRunRequest, BootstrapApplication, CompactHandle, CompactionStatus,
     ModelConfig, ModelEvent, ModelVendor, PermissionDecision, PermissionRequest, Project,
     ProjectAuthorization, ProviderCredentials, ProviderDescriptor, RunEvent, RunHandle,
-    ThinkingLevel, TrustedProjectApplication, Usage, apply_thinking_level,
+    SteerOutcome, ThinkingLevel, TrustedProjectApplication, Usage, apply_thinking_level,
     effective_thinking_level, next_thinking_level, thinking_levels,
 };
-use crate::{SessionId, TranscriptLine};
 use crossterm::event::{
     self, DisableBracketedPaste, DisableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
     KeyModifiers, KeyboardEnhancementFlags, MouseButton, MouseEvent, MouseEventKind,
@@ -19,14 +22,13 @@ use crossterm::event::{
 };
 use crossterm::execute;
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{
     Block, Borders, Clear, Padding, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
     Wrap,
 };
 use ratatui::{DefaultTerminal, Frame};
-use std::collections::HashMap;
 use std::env;
 use std::io::{self, Write, stdout};
 use std::path::{Path, PathBuf};
@@ -36,46 +38,103 @@ use std::thread;
 use std::time::{Duration, Instant};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ChatRole {
-    User,
-    Assistant,
-}
-
 /// Spinner frames for the "thinking" indicator, advancing on every render
 /// tick.
 const SPINNER_FRAMES: [&str; 8] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"];
 
-/// Official DeepSeek palette used by the harness turn-status shimmer: the
-/// text sits in the brand blue while a lighter band glides across it.
-const DEEPSEEK_500: Color = Color::Rgb(65, 118, 230);
-const DEEPSEEK_200: Color = Color::Rgb(211, 226, 255);
+/// run 内当前派生阶段（phase-1 P1-5）：从既有事件流派生，非独立状态机
+/// 输入；每个模型步（ModelRequested）重开 Waiting，步内只前进不回退。
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum Phase {
+    WaitingFirstToken,
+    Thinking,
+    Responding,
+    ExecutingTools,
+}
 
-const THINKING_TEXT: &str = "Thinking…";
+impl Phase {
+    fn label(self) -> &'static str {
+        match self {
+            Self::WaitingFirstToken => "Waiting first token",
+            Self::Thinking => "Thinking…",
+            Self::Responding => "Responding",
+            Self::ExecutingTools => "Executing tools",
+        }
+    }
+}
+
+/// 阶段与双时钟的纯状态机（G6 可直接单测）。
+#[derive(Default)]
+struct PhaseTracker {
+    phase: Option<Phase>,
+    phase_started: Option<Instant>,
+    run_started: Option<Instant>,
+}
+
+impl PhaseTracker {
+    /// 新模型步：阶段重开为 Waiting（DSH ttft 语义），run 钟只启一次。
+    fn model_requested(&mut self) {
+        self.phase = Some(Phase::WaitingFirstToken);
+        self.phase_started = Some(Instant::now());
+        self.run_started.get_or_insert_with(Instant::now);
+    }
+
+    /// 步内只前进：Waiting→Thinking→Responding→ExecutingTools。
+    fn advance(&mut self, target: Phase) {
+        if self.phase.is_none() {
+            return;
+        }
+        if self.phase.is_some_and(|current| target > current) {
+            self.phase = Some(target);
+            self.phase_started = Some(Instant::now());
+        }
+    }
+
+    /// run 终态：全部计时状态清空，不留活计时器（G6）。
+    fn finish(&mut self) {
+        self.phase = None;
+        self.phase_started = None;
+        self.run_started = None;
+    }
+}
+
+/// 双时钟格式：<1 分钟 `8s`，≥1 分钟 `1m05s`。
+fn format_clock(duration: Duration) -> String {
+    let secs = duration.as_secs();
+    if secs < 60 {
+        format!("{secs}s")
+    } else {
+        format!("{}m{:02}s", secs / 60, secs % 60)
+    }
+}
 /// One full band cycle, matching the harness animation duration (1.8s at
 /// ~12.5 render ticks per second).
 const SHIMMER_CYCLE_TICKS: f64 = 22.5;
 /// Softness of the light band, in characters.
 const SHIMMER_SIGMA: f64 = 1.2;
 
-/// Builds the animated status line: a rotating spinner plus "Thinking…" in
-/// the fixed DeepSeek blue, with a soft light band sweeping front to back.
-/// This replicates the harness text-shimmer (a gradient
-/// deepseek-500 → deepseek-200 → deepseek-500 gliding across the text and
-/// wrapping around), and appends the elapsed thinking time like the
-/// harness clock.
-fn thinking_line(tick: u64, elapsed: Option<Duration>) -> Line<'static> {
+/// 派生阶段状态行（phase-1 P1-5）：spinner + shimmer 阶段标签 + 双时钟
+/// `<phase> <phase-elapsed> · total <run-elapsed>`；Waiting 只报总计。
+/// shimmer 品牌动画照旧（B2 白名单例外）。
+fn phase_line(
+    tick: u64,
+    phase: Phase,
+    phase_elapsed: Option<Duration>,
+    run_elapsed: Option<Duration>,
+    steering_queued: usize,
+) -> Line<'static> {
     let frame = SPINNER_FRAMES[(tick as usize) % SPINNER_FRAMES.len()];
-    let base = Style::default().fg(DEEPSEEK_500);
+    let base = tui_theme::style(tui_theme::Role::ThinkingGlyph);
 
     let mut spans = vec![
         Span::styled(frame, base.add_modifier(Modifier::BOLD)),
         Span::styled(" ", base),
     ];
 
-    let text_len = THINKING_TEXT.chars().count() as f64;
+    let label = phase.label();
+    let text_len = label.chars().count() as f64;
     let band_center = (tick as f64 % SHIMMER_CYCLE_TICKS) / SHIMMER_CYCLE_TICKS * text_len;
-    for (index, ch) in THINKING_TEXT.chars().enumerate() {
+    for (index, ch) in label.chars().enumerate() {
         let position = index as f64 + 0.5;
         let mut distance = (position - band_center).abs();
         if distance > text_len / 2.0 {
@@ -84,32 +143,38 @@ fn thinking_line(tick: u64, elapsed: Option<Duration>) -> Line<'static> {
         let intensity = (-(distance * distance) / (2.0 * SHIMMER_SIGMA * SHIMMER_SIGMA)).exp();
         spans.push(Span::styled(
             ch.to_string(),
-            Style::default().fg(blend_color(DEEPSEEK_500, DEEPSEEK_200, intensity)),
+            Style::default().fg(tui_theme::blend(
+                tui_theme::BRAND_SHIMMER_LOW,
+                tui_theme::BRAND_SHIMMER_HIGH,
+                intensity,
+            )),
         ));
     }
 
-    if let Some(elapsed) = elapsed {
+    if let Some(run_elapsed) = run_elapsed {
+        let clocks = match (phase, phase_elapsed) {
+            (Phase::WaitingFirstToken, _) => format!(" {}", format_clock(run_elapsed)),
+            (_, Some(phase_elapsed)) => format!(
+                " {} · total {}",
+                format_clock(phase_elapsed),
+                format_clock(run_elapsed)
+            ),
+            (_, None) => format!(" · total {}", format_clock(run_elapsed)),
+        };
         spans.push(Span::styled(
-            format!(" {:>3}s", elapsed.as_secs()),
-            Style::default().fg(Color::DarkGray),
+            clocks,
+            tui_theme::style(tui_theme::Role::Faint),
+        ));
+    }
+    if steering_queued > 0 {
+        // DSH `N queued` 徽标：advisory 实时状态，claim 后随
+        // SteeringApplied 回收。
+        spans.push(Span::styled(
+            format!(" · steering·{steering_queued}"),
+            tui_theme::style(tui_theme::Role::Warning),
         ));
     }
     Line::from(spans)
-}
-
-/// Linear blend between two RGB colors; `amount` is in 0..=1.
-fn blend_color(from: Color, to: Color, amount: f64) -> Color {
-    fn channel(a: u8, b: u8, amount: f64) -> u8 {
-        (a as f64 + (b as f64 - a as f64) * amount).round() as u8
-    }
-    match (from, to) {
-        (Color::Rgb(fr, fg, fb), Color::Rgb(tr, tg, tb)) => Color::Rgb(
-            channel(fr, tr, amount),
-            channel(fg, tg, amount),
-            channel(fb, tb, amount),
-        ),
-        _ => from,
-    }
 }
 
 /// 会话累计的缓存命中百分比文本（如 "99.99%"，两位小数）。无输入
@@ -255,15 +320,6 @@ fn highlight_line(line: &Line<'static>, from: usize, to: usize) -> Line<'static>
         }
     }
     Line::from(spans)
-}
-
-/// 一行的纯文本（拼接所有 span），用于选区复制。
-fn line_plain_text(line: &Line<'_>) -> String {
-    let mut text = String::new();
-    for span in &line.spans {
-        text.push_str(&span.content);
-    }
-    text
 }
 
 /// 按显示列区间截取纯文本：与 [from, to) 有重叠的字符整字入选区，
@@ -454,50 +510,6 @@ fn status_expired(until: Option<Instant>, now: Instant) -> bool {
     until.is_some_and(|until| now >= until)
 }
 
-/// User messages get a soft dark block with bright text, in the spirit of
-/// Claude Code, so they stand apart from the model's plain replies. The
-/// explicit foreground keeps the block readable on light terminals too.
-const USER_BG: Color = Color::Rgb(48, 50, 60);
-const USER_FG: Color = Color::Rgb(233, 234, 239);
-
-fn user_message_style() -> Style {
-    Style::default().fg(USER_FG).bg(USER_BG)
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct ChatMessage {
-    role: ChatRole,
-    content: String,
-}
-
-impl ChatMessage {
-    fn user(content: impl Into<String>) -> Self {
-        Self {
-            role: ChatRole::User,
-            content: content.into(),
-        }
-    }
-
-    fn assistant(content: impl Into<String>) -> Self {
-        Self {
-            role: ChatRole::Assistant,
-            content: content.into(),
-        }
-    }
-
-    fn from_transcript(line: TranscriptLine) -> Option<Self> {
-        let role = match line.kind.as_str() {
-            "user" | "compaction" => ChatRole::User,
-            "assistant" => ChatRole::Assistant,
-            _ => return None,
-        };
-        Some(Self {
-            role,
-            content: line.text,
-        })
-    }
-}
-
 pub fn run(project: Project) -> io::Result<()> {
     let mut terminal = ratatui::init();
 
@@ -577,6 +589,16 @@ struct PendingPermission {
     reviewed_to_end: bool,
 }
 
+/// ask-user 对话框状态：选项模式（`custom = None`，selection 游标含
+/// 末尾的"自定义输入"行）或自定义输入模式（`custom = Some`）。无选项时
+/// 直接进入输入模式；Esc 拒绝（Declined → isError 结果，run 继续）。
+struct PendingAskUser {
+    question: crate::interaction::AskQuestion,
+    answer_tx: Sender<crate::interaction::AskAnswer>,
+    selection: usize,
+    custom: Option<String>,
+}
+
 struct App {
     project: Project,
     bootstrap: Option<BootstrapApplication>,
@@ -589,7 +611,10 @@ struct App {
     config: ModelConfig,
     credentials: ProviderCredentials,
     provider_descriptors: Vec<ProviderDescriptor>,
-    messages: Vec<ChatMessage>,
+    /// 转录模型：live 与回放的单一装配（G2/G8），渲染缓存内建（G3）。
+    conversation: crate::tui_conversation::ConversationModel,
+    /// 工具卡三态（Ctrl+O 循环）。纯呈现状态：不持久化（G5）。
+    card_visibility: ToolCardVisibility,
     input: InputBuffer,
     /// 启动时项目未受信：渲染确权对话框并拦截一切按键，直到用户
     /// 信任（Enter，持久化）或退出（Esc）。
@@ -605,22 +630,22 @@ struct App {
     /// /resume 会话选择器；打开期间独占按键与鼠标。
     session_picker: Option<SessionPicker>,
     running: bool,
+    /// 已入队、尚未被 claim 的 steering 条数（advisory 实时状态：不进
+    /// 会话日志，resume 后从零开始——DSH TUI 同款）。SteeringApplied
+    /// 回流减一；run 结束清零并提示丢弃。
+    steering_queued: usize,
     /// 统一事件通道：输入线程、余额监控、worker 的消息都汇到这里。
     /// `None` 表示尚未启动（run() 建立通道后填充）。
     events: Option<Receiver<UiEvent>>,
     /// 统一事件通道的发送端克隆：start_run 移交 worker，刷新触发用。
     event_sender: Option<Sender<UiEvent>>,
     pending_permission: Option<PendingPermission>,
+    pending_ask_user: Option<PendingAskUser>,
     run_handle: Option<RunHandle>,
     /// `/compact` 进行中的句柄；Esc 取消。
     compact_handle: Option<CompactHandle>,
-    thinking: bool,
-    thinking_since: Option<Instant>,
+    phases: PhaseTracker,
     spinner_tick: u64,
-    assistant_message_index: Option<usize>,
-    /// Rendered markdown per message, keyed by (index, content length,
-    /// width) so stable messages are not re-parsed every frame.
-    markdown_cache: HashMap<(usize, usize, usize), Vec<Line<'static>>>,
     conversation_scroll_from_bottom: usize,
     input_area: Rect,
     editor_area: Option<Rect>,
@@ -640,6 +665,14 @@ struct App {
     /// 最近一次模型请求的用量（INV-F：随会话切换/新建重置），用于
     /// 状态栏 `Context: 120k/1M` 的当前值近似。
     last_turn_usage: Option<Usage>,
+    /// 快照测试确定性钩子：冻结动画帧号，同一输入序列永远同一画面。
+    #[cfg(test)]
+    test_freeze_tick: bool,
+    /// 快照测试确定性钩子：阶段/run 计时固定值（Instant 不可移植构造）。
+    #[cfg(test)]
+    test_phase_elapsed: Option<Duration>,
+    #[cfg(test)]
+    test_run_elapsed: Option<Duration>,
 }
 
 impl App {
@@ -653,8 +686,16 @@ impl App {
     ///    执行）——加载会话/消息/历史/模型配置，并以 `~/.clat` 为
     ///    固定 cwd 启动 MCP 服务器。
     fn new(project: Project) -> Result<Self, String> {
-        let bootstrap = BootstrapApplication::open_default(project.clone())
-            .map_err(|error| error.to_string())?;
+        Self::open(project, None)
+    }
+
+    /// 快照测试用可注入 storage root 的构造入口；生产路径 `new` 用默认根。
+    fn open(project: Project, storage_root: Option<PathBuf>) -> Result<Self, String> {
+        let bootstrap = match storage_root {
+            Some(root) => BootstrapApplication::open(project.clone(), root),
+            None => BootstrapApplication::open_default(project.clone()),
+        }
+        .map_err(|error| error.to_string())?;
         let trusted = bootstrap.is_trusted().map_err(|error| error.to_string())?;
         let config = ModelConfig::default();
         let credentials = ProviderCredentials::for_protocol(config.protocol);
@@ -670,7 +711,8 @@ impl App {
             config,
             credentials,
             provider_descriptors: Vec::new(),
-            messages: Vec::new(),
+            conversation: crate::tui_conversation::ConversationModel::new(),
+            card_visibility: ToolCardVisibility::default(),
             input: InputBuffer::new(Vec::new()),
             trust_prompt: !trusted,
             default_status: status.clone(),
@@ -680,16 +722,15 @@ impl App {
             picker: None,
             session_picker: None,
             running: false,
+            steering_queued: 0,
             events: None,
             event_sender: None,
             pending_permission: None,
+            pending_ask_user: None,
             run_handle: None,
             compact_handle: None,
-            thinking: false,
-            thinking_since: None,
+            phases: PhaseTracker::default(),
             spinner_tick: 0,
-            assistant_message_index: None,
-            markdown_cache: HashMap::new(),
             conversation_scroll_from_bottom: 0,
             input_area: Rect::default(),
             editor_area: None,
@@ -701,6 +742,12 @@ impl App {
             balance: None,
             session_usage: Usage::default(),
             last_turn_usage: None,
+            #[cfg(test)]
+            test_freeze_tick: false,
+            #[cfg(test)]
+            test_phase_elapsed: None,
+            #[cfg(test)]
+            test_run_elapsed: None,
         };
         if trusted {
             app.initialize_project()?;
@@ -737,13 +784,11 @@ impl App {
             None => return Err("project application is unavailable".into()),
         };
         self.session_id = snapshot.session_id;
-        self.messages = snapshot
-            .transcript
-            .into_iter()
-            .filter_map(ChatMessage::from_transcript)
-            .collect();
+        // 转录一律从 journal 回放构造（G2/G8）：事件日志是唯一权威，
+        // 前端不再维护独立的 TranscriptLine 派生视图。
+        self.conversation =
+            crate::tui_conversation::ConversationModel::from_replay(&snapshot.replay);
         self.input = InputBuffer::new(snapshot.input_history);
-        self.markdown_cache.clear();
         self.config = snapshot.config;
         self.credentials = snapshot.credentials;
         self.provider_descriptors = snapshot.provider_descriptors;
@@ -829,12 +874,13 @@ impl App {
                     // 批量收割全部已就绪事件并合并成一帧绘制。不能用
                     // `while let Terminal = try_recv()`：模式不匹配也会
                     // 消费 Worker/Permission 消息，令运行永久等待。
-                    // 权限审阅期间每个导航键后都要先绘制，确保只有
-                    // 真正进入过视口的连续参数页会计入 reviewed。
-                    if self.pending_permission.is_none() {
+                    // 权限审阅与问答对话框期间每个导航键后都要先绘制
+                    // 一帧（问答侧维持选择高亮与输入回显的即时性）。
+                    if self.pending_permission.is_none() && self.pending_ask_user.is_none() {
                         while let Ok(event) = events.try_recv() {
                             self.handle_ui_event(event);
-                            if self.pending_permission.is_some() {
+                            if self.pending_permission.is_some() || self.pending_ask_user.is_some()
+                            {
                                 break;
                             }
                         }
@@ -858,6 +904,41 @@ impl App {
 
     fn take_close_error(&mut self) -> Option<String> {
         self.close_error.take()
+    }
+
+    /// 快照测试钩：冻结 spinner 帧号（见 `test_freeze_tick`）。
+    #[cfg(test)]
+    fn tick_frozen(&self) -> bool {
+        self.test_freeze_tick
+    }
+
+    #[cfg(not(test))]
+    fn tick_frozen(&self) -> bool {
+        false
+    }
+
+    /// 阶段耗时；测试可注入固定值（见 `test_phase_elapsed`）。
+    #[cfg(test)]
+    fn phase_elapsed(&self) -> Option<Duration> {
+        self.test_phase_elapsed
+            .or_else(|| self.phases.phase_started.map(|since| since.elapsed()))
+    }
+
+    #[cfg(not(test))]
+    fn phase_elapsed(&self) -> Option<Duration> {
+        self.phases.phase_started.map(|since| since.elapsed())
+    }
+
+    /// run 总耗时；测试可注入固定值（见 `test_run_elapsed`）。
+    #[cfg(test)]
+    fn run_elapsed(&self) -> Option<Duration> {
+        self.test_run_elapsed
+            .or_else(|| self.phases.run_started.map(|since| since.elapsed()))
+    }
+
+    #[cfg(not(test))]
+    fn run_elapsed(&self) -> Option<Duration> {
+        self.phases.run_started.map(|since| since.elapsed())
     }
 
     fn handle_ui_event(&mut self, event: UiEvent) {
@@ -910,7 +991,7 @@ impl App {
     fn next_repaint_deadline(&self) -> Option<Instant> {
         let now = Instant::now();
         let mut deadline = self.status_until.filter(|until| *until > now);
-        if self.thinking {
+        if self.phases.phase.is_some() {
             let frame = now + SPINNER_FRAME;
             deadline = Some(deadline.map_or(frame, |current| current.min(frame)));
         }
@@ -918,7 +999,34 @@ impl App {
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
-        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+        // Ctrl+O：工具卡三态循环（collapsed → expanded → hidden），任何
+        // 时刻可用——纯呈现状态，不持久化（G5）。
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('o') {
+            self.card_visibility = self.card_visibility.next();
+            self.flash_status(format!("tool cards: {:?}", self.card_visibility));
+            return;
+        }
+        // Ctrl+C：**有选区时优先复制**。原因：Cmd+C 被终端自身截留
+        //（鼠标上报模式又禁用了终端原生拖选，终端复制的是空选区），
+        // 而多数终端把 Ctrl+Shift+C 编码成 ^C——Ctrl+C 是选区复制唯一
+        // 可靠到达的键。无选区（或复制无内容可复制）才走退出。
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('C'))
+        {
+            if self
+                .selection
+                .as_ref()
+                .is_some_and(|selection| !selection.is_empty())
+                && self.copy_selection()
+            {
+                return;
+            }
+            // Shift 组合（Ctrl+Shift+C）意图是复制而非退出：没选中任何
+            // 内容时给出提示，不退出。
+            if key.modifiers.contains(KeyModifiers::SHIFT) {
+                self.flash_status("nothing selected to copy — drag to select");
+                return;
+            }
             self.should_quit = true;
             return;
         }
@@ -1057,6 +1165,13 @@ impl App {
             return;
         }
 
+        // ask-user 对话框独占按键（S9）：worker 阻塞等待应答，直到选择、
+        // 自定义提交或拒绝。
+        if self.pending_ask_user.is_some() {
+            self.handle_ask_dialog_key(key);
+            return;
+        }
+
         // /resume 会话选择器：独占按键直到恢复或取消。
         if self.session_picker.is_some() {
             if let Some(picker) = self.session_picker.as_mut() {
@@ -1080,7 +1195,9 @@ impl App {
         }
 
         match key.code {
-            KeyCode::Enter if !self.running => {
+            // 输入在 run 进行中保持可用：Enter 变为插话（DSH "steer
+            // while running, send while idle"），其余编辑键不变。
+            KeyCode::Enter => {
                 // Claude Code style: Shift+Enter (or Alt+Enter) inserts a
                 // line break, plain Enter submits. Ctrl+J is the fallback
                 // for terminals that cannot distinguish Shift+Enter.
@@ -1089,22 +1206,22 @@ impl App {
                     .intersects(KeyModifiers::SHIFT | KeyModifiers::ALT)
                 {
                     self.input.insert_newline();
+                } else if self.running {
+                    self.steer_input();
                 } else {
                     self.submit_input();
                 }
             }
-            KeyCode::Char('j')
-                if !self.running && key.modifiers.contains(KeyModifiers::CONTROL) =>
-            {
+            KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.input.insert_newline();
             }
-            KeyCode::Backspace if !self.running => self.input.backspace(),
-            KeyCode::Delete if !self.running => self.input.delete(),
-            KeyCode::Left if !self.running => self.input.left(),
-            KeyCode::Right if !self.running => self.input.right(),
-            KeyCode::Home if !self.running => self.input.home(),
-            KeyCode::End if !self.running => self.input.end(),
-            KeyCode::Up if !self.running => {
+            KeyCode::Backspace => self.input.backspace(),
+            KeyCode::Delete => self.input.delete(),
+            KeyCode::Left => self.input.left(),
+            KeyCode::Right => self.input.right(),
+            KeyCode::Home => self.input.home(),
+            KeyCode::End => self.input.end(),
+            KeyCode::Up => {
                 // With no input history to recall, the arrows scroll the
                 // conversation instead of doing nothing.
                 if self.input.history_is_empty() {
@@ -1113,7 +1230,7 @@ impl App {
                     self.input.history_previous();
                 }
             }
-            KeyCode::Down if !self.running => {
+            KeyCode::Down => {
                 if self.input.history_is_empty() {
                     self.scroll_down(WHEEL_SCROLL_ROWS);
                 } else {
@@ -1146,19 +1263,100 @@ impl App {
                     self.input.clear();
                 }
             }
-            KeyCode::Char(ch) if !self.running => self.input.insert_char(ch),
+            KeyCode::Char(ch) => self.input.insert_char(ch),
             _ => {}
         }
     }
 
     fn handle_paste(&mut self, text: &str) {
-        // 选择器没有文本输入目标，忽略粘贴。
-        if self.picker.is_none() {
+        // 选择器与问答对话框没有文本输入目标，忽略粘贴。
+        if self.picker.is_none() && self.pending_ask_user.is_none() {
             if let Some(editor) = &mut self.editor {
                 editor.handle_paste(text);
-            } else if !self.running {
+            } else {
                 self.input.insert_str(text);
             }
+        }
+    }
+
+    /// ask-user 对话框键位。选项模式：↑↓ 移动（末行是"自定义输入"），
+    /// Enter 选中，c 直接进输入，Esc 拒绝。输入模式：Enter 提交非空
+    /// 文本，Backspace 删字符，Esc 有选项时返回选项、无选项时拒绝。
+    fn handle_ask_dialog_key(&mut self, key: KeyEvent) {
+        enum Resolution {
+            Pending,
+            Answer(crate::interaction::AskAnswer),
+        }
+        let mut resolution = Resolution::Pending;
+        if let Some(pending) = self.pending_ask_user.as_mut() {
+            let has_options = !pending.question.options.is_empty();
+            if let Some(text) = pending.custom.as_mut() {
+                match key.code {
+                    KeyCode::Enter if !text.trim().is_empty() => {
+                        resolution = Resolution::Answer(crate::interaction::AskAnswer::Custom(
+                            std::mem::take(text),
+                        ));
+                    }
+                    KeyCode::Backspace => {
+                        text.pop();
+                    }
+                    KeyCode::Esc => {
+                        if has_options {
+                            pending.custom = None;
+                        } else {
+                            resolution =
+                                Resolution::Answer(crate::interaction::AskAnswer::Declined);
+                        }
+                    }
+                    KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        text.push(ch);
+                    }
+                    _ => {}
+                }
+            } else {
+                // 行数 = 选项 + 可选的"自定义输入"行。
+                let rows =
+                    pending.question.options.len() + usize::from(pending.question.allow_custom);
+                let custom_row = pending.question.allow_custom;
+                match key.code {
+                    KeyCode::Up => pending.selection = pending.selection.saturating_sub(1),
+                    KeyCode::Down => {
+                        pending.selection = (pending.selection + 1).min(rows.saturating_sub(1))
+                    }
+                    KeyCode::Char('c') | KeyCode::Char('C') if custom_row => {
+                        pending.custom = Some(String::new());
+                    }
+                    KeyCode::Enter => {
+                        if custom_row && pending.selection == pending.question.options.len() {
+                            pending.custom = Some(String::new());
+                        } else if let Some(option) = pending.question.options.get(pending.selection)
+                        {
+                            resolution = Resolution::Answer(
+                                crate::interaction::AskAnswer::Selected(option.label.clone()),
+                            );
+                        }
+                    }
+                    KeyCode::Esc => {
+                        resolution = Resolution::Answer(crate::interaction::AskAnswer::Declined);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if let Resolution::Answer(answer) = resolution
+            && let Some(pending) = self.pending_ask_user.take()
+        {
+            let note = match &answer {
+                crate::interaction::AskAnswer::Selected(label)
+                | crate::interaction::AskAnswer::Custom(label) => {
+                    format!("answered: {label}")
+                }
+                crate::interaction::AskAnswer::Declined => {
+                    "declined — the model continues without an answer".to_owned()
+                }
+            };
+            let _ = pending.answer_tx.send(answer);
+            self.flash_status(note);
         }
     }
 
@@ -1291,6 +1489,15 @@ impl App {
                 self.input.set_cursor(index);
             }
             self.selection = None;
+            return;
+        }
+        // 拖选完成的教学提示：Cmd+C 被终端截留（鼠标上报又禁用了终端
+        // 原生拖选），用户需要一个可达的复制路径提示；Shift+拖选则让
+        // 终端自己做原生选区，之后 Cmd+C 是终端级复制。
+        if selection.kind == SelectionKind::Conversation {
+            self.flash_status(
+                "selected · Ctrl+C copies · Shift+drag uses the terminal's own selection",
+            );
         }
     }
 
@@ -1306,10 +1513,12 @@ impl App {
         match selection.kind {
             SelectionKind::Conversation => {
                 let width = self.conversation_area.width.saturating_sub(2).max(1) as usize;
-                let lines = self.conversation_lines(width);
-                let last = to.row.min(lines.len().saturating_sub(1));
-                for (row, line) in lines.iter().enumerate().take(last + 1).skip(from.row) {
-                    let text = line_plain_text(line);
+                let total = self.conversation_total_lines(width);
+                let last = to.row.min(total.saturating_sub(1));
+                for row in from.row..=last {
+                    let text = self
+                        .conversation
+                        .row_plain_text(row, width, self.card_visibility);
                     let start = if row == from.row { from.col } else { 0 };
                     let end = if row == to.row { to.col } else { usize::MAX };
                     pieces.push(slice_by_columns(&text, start, end));
@@ -1429,18 +1638,13 @@ impl App {
             .ok_or_else(|| "project application is unavailable".to_owned())?
             .switch_session(session_id.clone())
             .map_err(|error| error.to_string())?;
-        self.messages = snapshot
-            .transcript
-            .into_iter()
-            .filter_map(ChatMessage::from_transcript)
-            .collect();
         self.session_id = Some(session_id);
-        // 输入历史随会话切换：恢复目标会话自己的历史（含内存中
-        // 未持久化的导航状态一并重置）。
+        // 转录从回放重建（G2/G8）；输入历史随会话切换：恢复目标会话
+        // 自己的历史（含内存中未持久化的导航状态一并重置）。
+        self.conversation =
+            crate::tui_conversation::ConversationModel::from_replay(&snapshot.replay);
         self.input = InputBuffer::new(snapshot.input_history);
-        self.markdown_cache.clear();
         self.conversation_scroll_from_bottom = 0;
-        self.assistant_message_index = None;
         // 用量指标归属会话（TUI-L04）：缓存命中率与上下文水位都随切换
         // 清零，目标会话首次 run 后重新累计/上报。
         self.session_usage = Usage::default();
@@ -1608,7 +1812,7 @@ impl App {
                 self.flash_status("select a model");
             }
             "/help" => {
-                self.status = "/model · /new · /clear · /compact · /resume · /quit · ↑/↓ input history · PgUp/PgDn chat · Shift+Tab thinking level · Cmd+C copy selection"
+                self.status = "/model · /new · /clear · /compact · /resume · /quit · ↑/↓ input history · PgUp/PgDn chat · Shift+Tab thinking level · Ctrl+O tool cards · Ctrl+C copy selection / quit · Shift+drag then Cmd+C = native copy · Enter while running steers"
                     .into();
             }
             "/compact" => {
@@ -1659,10 +1863,8 @@ impl App {
                     return;
                 }
                 self.session_id = None;
-                self.messages.clear();
-                self.markdown_cache.clear();
+                self.conversation = crate::tui_conversation::ConversationModel::new();
                 self.conversation_scroll_from_bottom = 0;
-                self.assistant_message_index = None;
                 self.input = InputBuffer::new(Vec::new());
                 // 用量指标归属会话（TUI-L04）：新会话从零累计。
                 self.session_usage = Usage::default();
@@ -1677,6 +1879,35 @@ impl App {
         }
     }
 
+    /// 运行中提交 = 插话（DSH `steer()`）：消息入队，在下一次模型请求
+    /// 边界并入；转录在 `SteeringApplied` 回流时才出现该消息，徽标计数
+    /// 提示排队中。run 恰好收尾的竞争窗口（NotRunning）回退为普通提交。
+    fn steer_input(&mut self) {
+        let value = self.input.take();
+        let value = value.trim().to_owned();
+        if value.is_empty() {
+            return;
+        }
+        if value.starts_with('/') {
+            // slash 命令只作用于空闲态；退还输入，避免用户丢字。
+            self.input.insert_str(&value);
+            self.flash_status("slash commands run when idle — steering sends plain text");
+            return;
+        }
+        self.input.remember(value.clone());
+        let outcome = self
+            .application
+            .as_ref()
+            .map(|application| application.steer(value.clone()));
+        match outcome {
+            Some(SteerOutcome::Queued) => {
+                self.steering_queued += 1;
+                self.flash_status("steering queued — applies at the next model step");
+            }
+            _ => self.start_run(value),
+        }
+    }
+
     fn start_run(&mut self, prompt: String) {
         if !self.config.is_configured() {
             self.flash_status("model is not configured — run /model first");
@@ -1688,6 +1919,7 @@ impl App {
             .expect("event channel is installed by run()");
         let (completion, completed) = mpsc::channel();
         let request = ApplicationRunRequest {
+            asker: Some(Arc::new(ChannelUserAsker::new(sender.clone()))),
             prompt: prompt.clone(),
             approver: Arc::new(ChannelApprover::new(sender.clone())),
             events: Box::new(ChannelEventSink(sender.clone())),
@@ -1708,11 +1940,10 @@ impl App {
                 return;
             }
         };
-        self.messages.push(ChatMessage::user(prompt));
+        self.conversation.push_user(prompt);
         self.conversation_scroll_from_bottom = 0;
         self.run_handle = Some(handle);
         self.running = true;
-        self.assistant_message_index = None;
         self.flash_status("starting model…");
 
         // Completion is already post-persistence and post-scope-cleanup; this
@@ -1732,8 +1963,7 @@ impl App {
                 request,
                 decision_tx,
             } => {
-                self.thinking = false;
-                self.thinking_since = None;
+                self.phases.finish();
                 self.pending_permission = Some(PendingPermission {
                     request,
                     decision_tx,
@@ -1745,6 +1975,21 @@ impl App {
                 });
                 self.flash_status("permission required — review arguments, then allow or deny");
             }
+            WorkerMessage::AskUserRequest {
+                question,
+                answer_tx,
+            } => {
+                self.phases.finish();
+                // 无选项时直接进入自定义输入模式（无可选内容）。
+                let custom = question.options.is_empty().then(String::new);
+                self.pending_ask_user = Some(PendingAskUser {
+                    question,
+                    answer_tx,
+                    selection: 0,
+                    custom,
+                });
+                self.flash_status("the model asks a question — answer or Esc to decline");
+            }
             WorkerMessage::Done(result) => {
                 self.finish_run(result);
             }
@@ -1752,8 +1997,24 @@ impl App {
     }
 
     fn handle_run_event(&mut self, event: RunEvent) {
-        let was_thinking = self.thinking;
-        self.thinking = false;
+        // 转录装配的唯一 live 入口（G8）：状态行闪烁等呈现逻辑之外，
+        // 事件先喂会话模型。
+        self.conversation.apply_run_event(&event);
+        // 派生阶段（G6）：新模型步重开 Waiting；步内按事件推进、只进
+        // 不退；未知事件落 `_ => {}` 保持现状、永不 panic。
+        match &event {
+            RunEvent::ModelRequested { .. } => self.phases.model_requested(),
+            RunEvent::ModelStream {
+                event: ModelEvent::ReasoningDelta { .. } | ModelEvent::ReasoningSummaryDelta { .. },
+                ..
+            } => self.phases.advance(Phase::Thinking),
+            RunEvent::ModelStream {
+                event: ModelEvent::TextDelta { .. } | ModelEvent::RefusalDelta { .. },
+                ..
+            } => self.phases.advance(Phase::Responding),
+            RunEvent::ToolRequested { .. } => self.phases.advance(Phase::ExecutingTools),
+            _ => {}
+        }
         match event {
             RunEvent::ModelRequested {
                 turn,
@@ -1764,24 +2025,20 @@ impl App {
             }
             RunEvent::ModelStream {
                 turn,
-                event: ModelEvent::TextDelta { delta },
+                event: ModelEvent::TextDelta { .. },
             }
             | RunEvent::ModelStream {
                 turn,
-                event: ModelEvent::RefusalDelta { delta },
+                event: ModelEvent::RefusalDelta { .. },
             } => {
-                self.append_assistant_delta(&delta);
+                // 流式追加与贴底滚动由模型负责；这里只管状态行。
+                self.conversation_scroll_from_bottom = 0;
                 self.flash_status(format!("answering · turn {turn}"));
             }
             RunEvent::ModelStream {
                 event: ModelEvent::ReasoningDelta { .. },
                 ..
-            } => {
-                if !was_thinking {
-                    self.thinking_since = Some(Instant::now());
-                }
-                self.thinking = true;
-            }
+            } => {}
             // 流式 usage（DeepSeek 经 stream_options.include_usage，GLM
             // 默认携带）只取最近一次：input+output 近似当前上下文水位，
             // 供状态栏 Context 段使用。多轮 run 每轮覆盖前一轮。
@@ -1804,22 +2061,13 @@ impl App {
                     self.flash_status(format!("tool ✓ {}", result.tool_name));
                 }
             }
+            RunEvent::SteeringApplied { .. } => {
+                // 转录用户块由会话模型负责（apply_run_event 已推入）；
+                // 这里只回收排队徽标。
+                self.steering_queued = self.steering_queued.saturating_sub(1);
+            }
             _ => {}
         }
-    }
-
-    fn append_assistant_delta(&mut self, delta: &str) {
-        let index = match self.assistant_message_index {
-            Some(index) => index,
-            None => {
-                self.messages.push(ChatMessage::assistant(String::new()));
-                let index = self.messages.len() - 1;
-                self.assistant_message_index = Some(index);
-                index
-            }
-        };
-        self.messages[index].content.push_str(delta);
-        self.conversation_scroll_from_bottom = 0;
     }
 
     fn finish_run(&mut self, result: crate::ApplicationRunResult) {
@@ -1832,8 +2080,7 @@ impl App {
         if let Some(application) = &self.application {
             self.session_id = application.current_session_id();
         }
-        self.thinking = false;
-        self.thinking_since = None;
+        self.phases.finish();
         // run 刚消耗了额度：触发监控线程立即重新查询一次（计划外，
         // 不影响 5 分钟巡查周期）。
         self.refresh_balance_now();
@@ -1841,25 +2088,36 @@ impl App {
             Ok(done) => {
                 // 累计会话用量，供状态栏缓存命中百分比使用。
                 self.session_usage.add_assign(&done.usage);
-                if self.assistant_message_index.is_none() && !done.output.trim().is_empty() {
-                    self.messages.push(ChatMessage::assistant(done.output));
-                    self.assistant_message_index = Some(self.messages.len() - 1);
-                }
+                // 非流式 provider 兜底：本轮无任何 delta 时以最终输出
+                // 回填 assistant（与 journal 的 settled 文本对拍一致）。
+                self.conversation.settle_streamed_output(&done.output);
+                // 终态通知进转录（G7）：与回放 TurnEnded 同源文本。
                 if done.cancelled {
+                    self.conversation.push_turn_end("cancelled".into());
                     self.flash_status(format!("cancelled · {} model turns", done.turns));
                 } else {
+                    self.conversation.push_turn_end("completed".into());
                     self.flash_status(format!("completed · {} model turns", done.turns));
                 }
             }
             Err(failure) => {
                 self.session_usage.add_assign(&failure.usage);
+                self.conversation
+                    .push_turn_end(format!("error: {}", failure.error));
                 self.flash_status(format!(
                     "run failed after {} model turns: {}",
                     failure.turns, failure.error
                 ));
             }
         }
-        self.assistant_message_index = None;
+        if self.steering_queued > 0 {
+            // 未经 claim 的插话不落盘（S4）；显式告知而不是静默吞掉。
+            self.flash_status(format!(
+                "{} steering discarded — run ended before it applied",
+                self.steering_queued
+            ));
+            self.steering_queued = 0;
+        }
         self.conversation_scroll_from_bottom = 0;
     }
 
@@ -1895,7 +2153,9 @@ impl App {
             render_trust_dialog(frame, area, self.project.root());
             return;
         }
-        self.spinner_tick += 1;
+        if !self.tick_frozen() {
+            self.spinner_tick += 1;
+        }
         // 瞬时提示到期回落为常驻状态（当前目录）。
         self.expire_status();
         // The input box grows with the number of wrapped lines, up to
@@ -1935,9 +2195,14 @@ impl App {
         );
         let budget = (bar.width.saturating_sub(MIN_STATUS_LEFT + 2)) as usize;
         let suffix = fit_status_suffix(&segments, budget);
-        let status_line = if self.thinking {
-            let elapsed = self.thinking_since.map(|since| since.elapsed());
-            thinking_line(self.spinner_tick, elapsed)
+        let status_line = if let Some(phase) = self.phases.phase {
+            phase_line(
+                self.spinner_tick,
+                phase,
+                self.phase_elapsed(),
+                self.run_elapsed(),
+                self.steering_queued,
+            )
         } else {
             Line::from(self.status.as_str())
         };
@@ -1975,7 +2240,8 @@ impl App {
             editor.draw(frame, editor_area);
         } else {
             self.editor_area = None;
-            if !self.running && self.input_area.width > 2 && self.input_area.height > 2 {
+            // 运行中也显示光标：输入框此时是 steering 编辑器。
+            if self.input_area.width > 2 && self.input_area.height > 2 {
                 let (row, column) = self.input.cursor_position(self.input_text_width());
                 let visible_rows = self.input_area.height.saturating_sub(2) as usize;
                 let row = row.min(visible_rows.saturating_sub(1));
@@ -1987,9 +2253,112 @@ impl App {
             }
         }
 
+        if self.pending_ask_user.is_some() {
+            self.draw_ask_dialog(frame);
+        }
         if self.pending_permission.is_some() {
             self.draw_permission_dialog(frame);
         }
+    }
+
+    /// ask-user 对话框：问题原文（按实际宽度换行）+ 选项列表（选择行
+    /// 高亮，描述 dim）+ 自定义行 / 输入回显 + 键位脚注。窄屏降级为
+    /// 问题 + 脚注（选项照常可按 ↑↓ 选中）。
+    fn draw_ask_dialog(&mut self, frame: &mut Frame) {
+        let Some(pending) = self.pending_ask_user.as_ref() else {
+            return;
+        };
+        let area = frame.area();
+        let dialog = centered_rect(72, 12.min(area.height.saturating_sub(2)), area);
+        let inner_width = dialog.width.saturating_sub(2 + 2 * POPUP_TEXT_PADDING) as usize;
+
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        for wrapped in wrap_text(&pending.question.question, inner_width) {
+            lines.push(Line::from(wrapped));
+        }
+        lines.push(Line::from(""));
+
+        if let Some(text) = &pending.custom {
+            lines.push(Line::from(vec![
+                Span::styled("❯ ", tui_theme::style(tui_theme::Role::UserMarker)),
+                Span::raw(text.clone()),
+                Span::styled("_", tui_theme::style(tui_theme::Role::Faint)),
+            ]));
+        } else {
+            for (index, option) in pending.question.options.iter().enumerate() {
+                let selected = index == pending.selection;
+                let marker = if selected { "● " } else { "○ " };
+                let mut spans = vec![Span::styled(
+                    marker,
+                    tui_theme::style(if selected {
+                        tui_theme::Role::Selected
+                    } else {
+                        tui_theme::Role::Faint
+                    }),
+                )];
+                spans.push(if selected {
+                    Span::styled(
+                        option.label.clone(),
+                        tui_theme::style(tui_theme::Role::Selected),
+                    )
+                } else {
+                    Span::raw(option.label.clone())
+                });
+                lines.push(Line::from(spans));
+                if let Some(description) = &option.description {
+                    for wrapped in wrap_text(description, inner_width.saturating_sub(2)) {
+                        lines.push(Line::from(Span::styled(
+                            format!("   {wrapped}"),
+                            tui_theme::style(tui_theme::Role::Faint),
+                        )));
+                    }
+                }
+            }
+            if pending.question.allow_custom {
+                let selected = pending.selection == pending.question.options.len();
+                let marker = if selected { "● " } else { "○ " };
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        marker,
+                        tui_theme::style(if selected {
+                            tui_theme::Role::Selected
+                        } else {
+                            tui_theme::Role::Faint
+                        }),
+                    ),
+                    Span::styled(
+                        "type a custom answer…",
+                        tui_theme::style(tui_theme::Role::Italic),
+                    ),
+                ]));
+            }
+        }
+
+        lines.push(Line::from(""));
+        let footer = if pending.custom.is_some() {
+            "Enter send · Esc back / decline"
+        } else {
+            "↑↓ select · Enter confirm · c custom · Esc decline"
+        };
+        lines.push(Line::from(Span::styled(
+            footer,
+            tui_theme::style(tui_theme::Role::Faint),
+        )));
+
+        let mut spans: Vec<Line<'static>> = Vec::new();
+        let visible = (dialog.height as usize).saturating_sub(2);
+        // 底部对齐保留脚注与输入行：超出视口时从顶部截断问题文本。
+        if lines.len() > visible {
+            let tail = lines.split_off(lines.len() - visible.min(lines.len()));
+            spans.extend(tail);
+        } else {
+            spans.extend(lines);
+        }
+        frame.render_widget(Clear, dialog);
+        frame.render_widget(
+            Paragraph::new(spans).block(popup_block(" Question ")),
+            dialog,
+        );
     }
 
     fn draw_permission_dialog(&mut self, frame: &mut Frame) {
@@ -2004,7 +2373,7 @@ impl App {
         let mut lines = vec![
             Line::from(Span::styled(
                 "Permission required",
-                Style::default().add_modifier(Modifier::BOLD),
+                tui_theme::style(tui_theme::Role::Bold),
             )),
             Line::from(""),
             Line::from(format!("tool:      {}", pending.request.tool)),
@@ -2022,7 +2391,7 @@ impl App {
         // 显示目标与内容，run_command 突出命令与执行环境。其余工具
         // 回退完整 pretty JSON。两种形态共享同一滚动/强制审阅机制
         // ——预览行就是被审阅的参数。
-        let argument_lines = match write_tool_preview(
+        let argument_lines = match tool_argument_lines(
             &pending.request.tool,
             &pending.request.arguments,
             argument_width,
@@ -2053,7 +2422,7 @@ impl App {
             let compact = vec![
                 Line::from(Span::styled(
                     "Permission required",
-                    Style::default().add_modifier(Modifier::BOLD),
+                    tui_theme::style(tui_theme::Role::Bold),
                 )),
                 Line::from("Terminal is too small to review arguments."),
                 Line::from("Maximize to continue · Esc / n — deny"),
@@ -2089,7 +2458,7 @@ impl App {
                 end,
                 pending.argument_line_count
             ),
-            Style::default().add_modifier(Modifier::BOLD),
+            tui_theme::style(tui_theme::Role::Bold),
         )));
         lines.push(Line::from(""));
         let actions = if pending.reviewed_to_end {
@@ -2099,7 +2468,7 @@ impl App {
         };
         lines.push(Line::from(Span::styled(
             actions,
-            Style::default().add_modifier(Modifier::BOLD),
+            tui_theme::style(tui_theme::Role::Bold),
         )));
 
         let height = (lines.len() as u16 + 2).min(max_dialog_height);
@@ -2134,7 +2503,7 @@ impl App {
         frame.render_widget(
             Paragraph::new(vec![
                 Line::from(vec![
-                    Span::styled("CLAT", Style::default().add_modifier(Modifier::BOLD)),
+                    Span::styled("CLAT", tui_theme::style(tui_theme::Role::Bold)),
                     Span::raw(rest),
                 ]),
                 Line::from(format!("project: {}", self.project.root().display())),
@@ -2151,19 +2520,17 @@ impl App {
 
     fn draw_conversation(&mut self, frame: &mut Frame, area: Rect) {
         let inner_width = area.width.saturating_sub(2).max(1) as usize;
-        let lines = self.conversation_lines(inner_width);
-        let total = lines.len();
+        let total = self.conversation_total_lines(inner_width);
         let visible = area.height.saturating_sub(2) as usize;
         let max_start = total.saturating_sub(visible);
         let start = max_start.saturating_sub(self.conversation_scroll_from_bottom.min(max_start));
         // 记录视口信息，供鼠标事件把屏幕坐标映射回内容行。
         self.conversation_start = start;
         self.conversation_rows = total;
-        let mut visible_lines = lines
-            .into_iter()
-            .skip(start)
-            .take(visible)
-            .collect::<Vec<_>>();
+        // 每帧只克隆视口行（G3：O(viewport) 取代 O(历史) 全量 clone）。
+        let mut visible_lines =
+            self.conversation
+                .visible_lines(start, visible, inner_width, self.card_visibility);
         // 会话选区按内容行号高亮，滚动后依然正确。
         if let Some((from, to)) = self
             .selection
@@ -2197,42 +2564,25 @@ impl App {
                 .begin_symbol(Some("▲"))
                 .end_symbol(Some("▼"))
                 .track_symbol(Some("│"))
-                .style(Style::default().fg(Color::DarkGray))
-                .thumb_style(Style::default().fg(Color::Cyan)),
+                .style(tui_theme::style(tui_theme::Role::ScrollTrack))
+                .thumb_style(tui_theme::style(tui_theme::Role::ScrollThumb)),
             block.inner(area),
             &mut scrollbar_state,
         );
     }
 
-    /// Builds all conversation lines, caching the per-message markdown
-    /// rendering so a long history is not re-parsed on every frame. Only
-    /// the streaming message (whose length changes) and resized panels
-    /// miss the cache.
-    fn conversation_lines(&mut self, width: usize) -> Vec<Line<'static>> {
-        let mut lines = Vec::new();
-        if self.messages.is_empty() {
-            lines.push(Line::from("No messages yet."));
-            lines.push(Line::from(""));
-            return lines;
-        }
-        for index in 0..self.messages.len() {
-            let key = (index, self.messages[index].content.len(), width);
-            if let Some(cached) = self.markdown_cache.get(&key) {
-                lines.extend(cached.clone());
-            } else {
-                let rendered = message_lines(&self.messages[index], width);
-                self.markdown_cache.insert(key, rendered.clone());
-                lines.extend(rendered);
-            }
-            // One uniform blank row after every message, including the
-            // last, keeps the spacing regular and the panel bottom clear.
-            lines.push(Line::from(""));
-        }
-        lines
+    /// 内容总行数（含分隔空行）；模型内建逐 item 渲染缓存（G3）。
+    fn conversation_total_lines(&mut self, width: usize) -> usize {
+        self.conversation.ensure_rendered(width);
+        self.conversation.total_lines(self.card_visibility)
     }
 
     fn draw_input(&self, frame: &mut Frame, area: Rect) {
-        let title = if self.running { "Running" } else { "Message" };
+        let title = if self.running {
+            "Running — Enter steers · Esc cancels"
+        } else {
+            "Message"
+        };
         // 输入框与聊天记录的用户消息同款排版：首行 `❯ ` 前缀，续行
         // 两个空格保持等宽左缩进，文本按扣除前缀后的宽度换行。与
         // 光标定位、鼠标选区映射共用同一换行算法，三者坐标一致。
@@ -2282,53 +2632,6 @@ impl App {
     }
 }
 
-/// Renders one message into display lines, Claude Code style: user
-/// messages are a solid background block hugging the text exactly,
-/// prefixed with a bright yellow `❯`; assistant messages are plain
-/// markdown text prefixed with `⏺`. Spacing between messages is handled
-/// uniformly by the caller, never by padding rows inside the block.
-fn message_lines(message: &ChatMessage, width: usize) -> Vec<Line<'static>> {
-    let text_width = width.saturating_sub(2).max(1);
-    let mut lines = Vec::new();
-    match message.role {
-        ChatRole::User => {
-            let style = user_message_style();
-            let marker = style.fg(Color::Yellow).add_modifier(Modifier::BOLD);
-            let wrapped = wrap_text(&message.content, text_width.saturating_sub(2).max(1));
-            for (index, line) in wrapped.iter().enumerate() {
-                let (prefix, prefix_style) = if index == 0 {
-                    ("❯ ", marker)
-                } else {
-                    ("  ", style)
-                };
-                let used = UnicodeWidthStr::width(prefix) + UnicodeWidthStr::width(line.as_str());
-                let padding = " ".repeat(width.saturating_sub(used));
-                lines.push(Line::from(vec![
-                    Span::styled(prefix.to_owned(), prefix_style),
-                    Span::styled(line.clone(), style),
-                    Span::styled(padding, style),
-                ]));
-            }
-        }
-        ChatRole::Assistant => {
-            let marker = Span::styled("⏺ ", Style::default().fg(Color::Gray));
-            for (index, line) in render_markdown(&message.content, text_width)
-                .into_iter()
-                .enumerate()
-            {
-                let mut spans = vec![if index == 0 {
-                    marker.clone()
-                } else {
-                    Span::raw("  ")
-                }];
-                spans.extend(line.spans);
-                lines.push(Line::from(spans));
-            }
-        }
-    }
-    lines
-}
-
 /// Maps the first visible row (`start`, in 0..=max_start) to ratatui's
 /// scrollbar position domain 0..=content_length-1, where 0 puts the thumb
 /// at the very top and content_length-1 at the very bottom. Passing the
@@ -2368,7 +2671,10 @@ fn top_level_argument_keys(arguments: &serde_json::Value) -> Option<String> {
 /// 未换行的超长命令尾部会被水平裁掉，而审阅计数只有 1 行，批准
 /// 在用户没看到命令尾部时就解锁。控制字符（\n、\t 之外）转成
 /// 可见的 ^X 记法，不可再藏。
-fn write_tool_preview(
+/// 工具参数的结构化呈现（edit_file 迷你 diff / write_file 全文 /
+/// run_command `$ cmd`）。权限对话框审阅与转录工具卡共用同一渲染器
+/// （phase-1 P1-4：预览即卡片正文）。
+pub(crate) fn tool_argument_lines(
     tool: &str,
     arguments: &serde_json::Value,
     width: usize,
@@ -2395,7 +2701,7 @@ fn write_tool_preview(
             for wrapped in wrap_text(logical, width.saturating_sub(2)) {
                 lines.push(Line::from(Span::styled(
                     format!("  {wrapped}"),
-                    Style::default().add_modifier(Modifier::BOLD),
+                    tui_theme::style(tui_theme::Role::Bold),
                 )));
             }
         }
@@ -2420,12 +2726,12 @@ fn write_tool_preview(
             push_header(&mut lines, format!("edit {path}"), width);
             lines.push(Line::from(Span::styled(
                 "- old_str (must match the file exactly, once):",
-                Style::default().add_modifier(Modifier::DIM),
+                tui_theme::style(tui_theme::Role::Dim),
             )));
             push_wrapped(&mut lines, "-", old_str);
             lines.push(Line::from(Span::styled(
                 "+ new_str:",
-                Style::default().add_modifier(Modifier::DIM),
+                tui_theme::style(tui_theme::Role::Dim),
             )));
             push_wrapped(&mut lines, "+", new_str);
         }
@@ -2452,7 +2758,7 @@ fn write_tool_preview(
             push_header(&mut lines, format!("$ {command}"), width);
             lines.push(Line::from(Span::styled(
                 format!("  in the project root · timeout {timeout}s"),
-                Style::default().add_modifier(Modifier::DIM),
+                tui_theme::style(tui_theme::Role::Dim),
             )));
         }
         _ => return None,
@@ -2470,7 +2776,7 @@ fn advance_reviewed_through(reviewed_through: usize, start: usize, end: usize) -
     }
 }
 
-fn wrap_text(text: &str, width: usize) -> Vec<String> {
+pub(crate) fn wrap_text(text: &str, width: usize) -> Vec<String> {
     if text.is_empty() {
         return vec![String::new()];
     }
@@ -2560,7 +2866,7 @@ fn render_trust_dialog(frame: &mut Frame, area: Rect, root: &Path) {
     let mut lines = vec![
         Line::from(Span::styled(
             "Trust this project?",
-            Style::default().add_modifier(Modifier::BOLD),
+            tui_theme::style(tui_theme::Role::Bold),
         )),
         Line::from(""),
         Line::from("CLAT reads and modifies files, and runs tools inside:"),
@@ -2578,7 +2884,7 @@ fn render_trust_dialog(frame: &mut Frame, area: Rect, root: &Path) {
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         "Enter / y — trust this project      ·      Esc / n — exit CLAT",
-        Style::default().add_modifier(Modifier::BOLD),
+        tui_theme::style(tui_theme::Role::Bold),
     )));
 
     let height = (lines.len() as u16 + 2).min(area.height.saturating_sub(2));
@@ -2588,10 +2894,14 @@ fn render_trust_dialog(frame: &mut Frame, area: Rect, root: &Path) {
 }
 
 #[cfg(test)]
+mod snapshot_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use ratatui::style::Color;
 
     #[test]
     fn permission_review_requires_a_contiguous_path_to_the_last_line() {
@@ -2653,7 +2963,7 @@ mod tests {
             "cargo test --features long-boring-prefix-{} ; shred /tmp/victim",
             "x".repeat(200)
         );
-        let lines = write_tool_preview(
+        let lines = tool_argument_lines(
             "run_command",
             &serde_json::json!({"command": command, "timeout_seconds": 30}),
             60,
@@ -2695,7 +3005,7 @@ mod tests {
         let width = permission_argument_width(area);
         assert!(width < 78, "84% must not be treated as 84 columns");
         let command = format!("printf safe-{}; rm -rf ./victim", "x".repeat(70));
-        let lines = write_tool_preview(
+        let lines = tool_argument_lines(
             "run_command",
             &serde_json::json!({"command": command, "timeout_seconds": 30}),
             width,
@@ -2726,7 +3036,7 @@ mod tests {
     /// 两条命令）；控制字符显形为 ^X 记法，不可借零宽度隐身。
     #[test]
     fn multiline_and_control_characters_are_visible_in_previews() {
-        let lines = write_tool_preview(
+        let lines = tool_argument_lines(
             "run_command",
             &serde_json::json!({"command": "echo a\necho b\rc\x1b[2J tail"}),
             60,
@@ -2750,7 +3060,7 @@ mod tests {
         assert!(joined.contains("^["), "ESC must be visible as ^[");
 
         // edit_file 的多行 old_str 保持行结构。
-        let lines = write_tool_preview(
+        let lines = tool_argument_lines(
             "edit_file",
             &serde_json::json!({
                 "path": "src/main.rs",
@@ -2932,20 +3242,39 @@ mod tests {
         assert_eq!(wrap_text("你好世界", 4), vec!["你好", "世界"]);
     }
 
+    /// G6：阶段步内只前进不回退；未知事件由调用侧 `_ => {}` 分支天然
+    /// 保持现状；run 终态清空全部计时状态，不留活计时器。
     #[test]
-    fn converts_transcript_lines_to_chat() {
-        let message = ChatMessage::from_transcript(TranscriptLine {
-            kind: "user".into(),
-            text: "hello".into(),
-            is_error: false,
-        })
-        .unwrap();
-        assert_eq!(message.role, ChatRole::User);
-        assert_eq!(message.content, "hello");
+    fn phases_only_advance_and_finish_clears() {
+        let mut phases = PhaseTracker::default();
+        assert_eq!(phases.phase, None);
+        // 未开始 run 时的流事件不创建阶段（防御乱序）。
+        phases.advance(Phase::Thinking);
+        assert_eq!(phases.phase, None);
+        phases.model_requested();
+        assert_eq!(phases.phase, Some(Phase::WaitingFirstToken));
+        phases.advance(Phase::Thinking);
+        assert_eq!(phases.phase, Some(Phase::Thinking));
+        // 回退拒绝：thinking 之后的 text 已到 Responding，再来 reasoning
+        // 不回退。
+        phases.advance(Phase::Responding);
+        phases.advance(Phase::Thinking);
+        assert_eq!(phases.phase, Some(Phase::Responding));
+        phases.advance(Phase::ExecutingTools);
+        assert_eq!(phases.phase, Some(Phase::ExecutingTools));
+        // 新模型步重开 Waiting，run 钟不重置。
+        let run_started = phases.run_started;
+        phases.model_requested();
+        assert_eq!(phases.phase, Some(Phase::WaitingFirstToken));
+        assert_eq!(phases.run_started, run_started);
+        phases.finish();
+        assert_eq!(phases.phase, None);
+        assert_eq!(phases.phase_started, None);
+        assert_eq!(phases.run_started, None);
     }
 
     #[test]
-    fn thinking_line_shimmers_a_soft_band_over_the_fixed_tone() {
+    fn phase_line_shimmers_a_soft_band_over_the_fixed_tone() {
         // Extract the (character, style) pairs of the text part; the first
         // two spans are the spinner frame and the separating space.
         fn text_spans(line: &Line<'static>) -> Vec<(char, Style)> {
@@ -2960,11 +3289,14 @@ mod tests {
                 .collect()
         }
 
-        let at_start = thinking_line(0, None);
+        let at_start = phase_line(0, Phase::WaitingFirstToken, None, None, 0);
         let text = text_spans(&at_start);
         // The spinner frame itself rotates and keeps the brand blue.
         assert_eq!(at_start.spans[0].content, SPINNER_FRAMES[0]);
-        assert_eq!(at_start.spans[0].style.fg, Some(DEEPSEEK_500));
+        assert_eq!(
+            at_start.spans[0].style.fg,
+            Some(tui_theme::BRAND_SHIMMER_LOW)
+        );
 
         // The band sits on the seam at the start: both ends glow while the
         // middle stays (approximately) in the fixed tone.
@@ -2984,7 +3316,7 @@ mod tests {
 
         // Mid-cycle the band has moved to the middle: the brightest
         // character is 'k', and its color approaches the light deepseek-200.
-        let mid = thinking_line(11, None);
+        let mid = phase_line(11, Phase::Thinking, None, None, 0);
         let text = text_spans(&mid);
         let brightest = text
             .iter()
@@ -3002,9 +3334,26 @@ mod tests {
         assert!(close_to_base(text[0].1.fg.unwrap_or_default()));
 
         // The elapsed clock is appended when known.
-        let with_clock = thinking_line(0, Some(Duration::from_secs(42)));
+        let with_clock = phase_line(
+            0,
+            Phase::Responding,
+            Some(Duration::from_secs(42)),
+            Some(Duration::from_secs(61)),
+            0,
+        );
         let last = with_clock.spans.last().expect("clock span");
         assert!(last.content.contains("42s"));
+
+        // The steering badge rides after the clocks and hides at zero.
+        let with_steering = phase_line(
+            0,
+            Phase::Responding,
+            Some(Duration::from_secs(4)),
+            Some(Duration::from_secs(8)),
+            2,
+        );
+        let last = with_steering.spans.last().expect("badge span");
+        assert_eq!(last.content, " · steering·2");
     }
 
     #[test]
@@ -3362,49 +3711,5 @@ mod tests {
         // 恰好到达 TTL 或已过期：过期，回落常驻状态。
         assert!(status_expired(Some(now), now));
         assert!(status_expired(Some(now - Duration::from_secs(1)), now));
-    }
-
-    #[test]
-    fn user_messages_render_as_a_full_width_background_block() {
-        let message = ChatMessage::user("hello");
-        let lines = message_lines(&message, 12);
-
-        // One text row only: the block hugs the text exactly, with a
-        // bright yellow "❯ " marker, padded to the full width.
-        assert_eq!(lines.len(), 1);
-        assert_eq!(lines[0].spans[0].content, "❯ ");
-        assert_eq!(lines[0].spans[0].style.bg, Some(USER_BG));
-        assert_eq!(lines[0].spans[0].style.fg, Some(Color::Yellow));
-        assert_eq!(lines[0].spans[1].content, "hello");
-        assert_eq!(lines[0].spans[1].style.bg, Some(USER_BG));
-        let total_width: usize = lines[0]
-            .spans
-            .iter()
-            .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
-            .sum();
-        assert_eq!(total_width, 12);
-    }
-
-    #[test]
-    fn assistant_messages_render_markdown_without_background() {
-        let message = ChatMessage::assistant("**bold** and `code`");
-        let lines = message_lines(&message, 30);
-        // The "⏺" marker prefixes the first line, no background.
-        assert_eq!(lines[0].spans[0].content, "⏺ ");
-        assert!(lines[0].spans[0].style.bg.is_none());
-        // Bold and inline-code segments survive.
-        assert!(
-            lines[0]
-                .spans
-                .iter()
-                .any(|span| span.content == "bold"
-                    && span.style.add_modifier.contains(Modifier::BOLD))
-        );
-        assert!(
-            lines[0]
-                .spans
-                .iter()
-                .any(|span| span.content == "code" && span.style.bg.is_some())
-        );
     }
 }

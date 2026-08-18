@@ -1,5 +1,5 @@
 use super::services::{TOOL_SERVICE, TOOL_SERVICE_ID};
-use crate::native_tools::{native_read_tools, native_write_tools};
+use crate::native_tools::{native_interaction_tools, native_read_tools, native_write_tools};
 use crate::plugin::{
     DisposeError, Plugin, PluginContext, PluginDescriptor, PluginError, PluginId, ScopeKind,
     ServiceId,
@@ -28,6 +28,14 @@ const READ_DESCRIPTOR: PluginDescriptor = PluginDescriptor {
 };
 const WRITE_DESCRIPTOR: PluginDescriptor = PluginDescriptor {
     id: WRITE_ID,
+    scope: ScopeKind::TrustedProject,
+    provides: &[],
+    requires: REQUIRES_REGISTRY,
+    optional: &[],
+};
+const INTERACTION_ID: PluginId = PluginId::new("builtin.native_interaction");
+const INTERACTION_DESCRIPTOR: PluginDescriptor = PluginDescriptor {
+    id: INTERACTION_ID,
     scope: ScopeKind::TrustedProject,
     provides: &[],
     requires: REQUIRES_REGISTRY,
@@ -70,6 +78,22 @@ impl Plugin for NativeWriteToolsPlugin {
 
     fn mount(&self, context: &mut PluginContext<'_>) -> Result<(), PluginError> {
         contribute_tools(context, native_write_tools())
+    }
+}
+
+/// ask-user 工具族：插槽由 Application 持有，每次 run 启动时装入该次
+/// 请求的前端实现（headless 为 None）。
+pub(crate) struct NativeInteractionToolsPlugin {
+    pub(crate) slot: Arc<crate::interaction::AskUserSlot>,
+}
+
+impl Plugin for NativeInteractionToolsPlugin {
+    fn descriptor(&self) -> &'static PluginDescriptor {
+        &INTERACTION_DESCRIPTOR
+    }
+
+    fn mount(&self, context: &mut PluginContext<'_>) -> Result<(), PluginError> {
+        contribute_tools(context, native_interaction_tools(Arc::clone(&self.slot)))
     }
 }
 

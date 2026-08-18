@@ -14,13 +14,22 @@ generalize those needs into reusable open-source capabilities.
 Early development. The first milestone is a useful single-agent coding
 workflow that can work on real projects such as ECAR and CLAT itself.
 
-Since v0.3.4 that loop is closed: the agent can inspect the repository
+That loop is closed: the agent can inspect the repository
 (`list_files` / `read_file` / `search`), change it (`write_file` /
 `edit_file`), and verify its own work (`run_command`) — every
 side-effecting step behind interactive permission review. The same loop
 also runs headless (`clat exec`) for scripts and CI, with the same
 permission model. Current boundaries and the growth plan are tracked in
-[docs/architecture.md](docs/architecture.md#agentic-loop-v034).
+[docs/architecture.md](docs/architecture.md#agentic-loop-v040).
+
+Sessions persist to a DSH-compatible journal: each conversation is one append-only, zstd-framed JSONL log under
+`~/.clat/sessions/`, written ahead of the work it describes — the first
+user turn is durable before the model is called, and a crash mid-turn
+recovers to the last complete batch. Projection checkpoints beside each
+log keep reopening fast, while SQLite retains only control-plane state
+(models, profiles, trust, the current-session pointer). CLAT logs are
+readable by DSH tooling and vice versa; see
+[docs/storage.md](docs/storage.md).
 
 The runtime also retries transient model failures, injects trusted project
 instructions, bounds tool results, compacts long conversations without
@@ -90,8 +99,8 @@ clat demo     # deterministic model → tool → model loop, no remote model nee
   support, tool mapping, resource limits
 - [Providers](docs/providers.md) — OpenAI Responses and Compatible
   adapters, DeepSeek reasoning replay
-- [Persistent state](docs/storage.md) — `~/.clat` layout, contents, and
-  integrity guarantees
+- [Persistent state](docs/storage.md) — `~/.clat` layout,
+  DSH-compatible session journal, crash recovery, integrity guarantees
 - [Release signing](docs/releasing.md) — Minisign trust root, offline
   signing, draft publishing, and key rotation
 - [Live-model validation](docs/live-validation.md) — the two gates

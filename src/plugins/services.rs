@@ -546,6 +546,9 @@ pub(crate) struct AgentRequest {
     pub history_items: Vec<ModelItem>,
     pub prompt: String,
     pub cancel: CancelToken,
+    /// In-run steering queue shared with the frontend; the run claims
+    /// pending messages at the next model-request boundary.
+    pub steering: crate::run::SteeringQueue,
     pub approver: Arc<dyn PermissionApprover>,
     pub events: Box<dyn EventSink + Send>,
 }

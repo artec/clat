@@ -100,7 +100,7 @@ impl SessionPicker {
         } else {
             for (index, session) in self.sessions.iter().enumerate() {
                 let style = if index == self.selected {
-                    Style::default().add_modifier(Modifier::REVERSED)
+                    crate::tui_theme::style(crate::tui_theme::Role::Selected)
                 } else {
                     Style::default()
                 };

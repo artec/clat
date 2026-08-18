@@ -113,4 +113,39 @@ mod tests {
             );
         }
     }
+
+    /// Foreign-produced events (Node primitives, JSON.stringify field order)
+    /// replay through the adapter without panicking: the user message maps,
+    /// and the packed chunk rows expand into ignorable `assistant/chunk`
+    /// events that land on the skip list.
+    #[test]
+    fn node_generated_events_replay() {
+        let Some(log) = fixture("log-two-frames.bin") else {
+            return;
+        };
+        let scan = zstd_frames::scan_frames(&log, usize::MAX).expect("scan node frames");
+        let body_plain = zstd_frames::decompress_frame(&log[scan.frames[1].clone()])
+            .expect("decode node body frame");
+        let lines: Vec<&str> = std::str::from_utf8(&body_plain)
+            .expect("utf8")
+            .trim_end_matches('\n')
+            .split('\n')
+            .collect();
+        let mut events = vec![serde_json::from_str::<SessionEvent>(lines[0]).expect("event")];
+        for line in &lines[1..] {
+            let row: serde_json::Value = serde_json::from_str(line).expect("row value");
+            events.extend(decode_storage_record(row).expect("row expands"));
+        }
+        let replay = crate::session::replay::ReplayAdapter::fold(&events);
+        assert_eq!(
+            replay.len(),
+            1,
+            "one user message, chunks skipped: {replay:?}"
+        );
+        assert!(matches!(
+            &replay[0],
+            crate::session::replay::ReplayEvent::UserMessage { text, .. }
+                if text.contains("héllo")
+        ));
+    }
 }

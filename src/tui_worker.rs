@@ -1,8 +1,11 @@
+use crate::interaction::{AskAnswer, AskQuestion, UserAsker};
+use crate::model::CancelToken;
 use crate::{
     ApplicationEvent, ApplicationRunResult, EventSink, PermissionApprover, PermissionDecision,
     PermissionRequest, RunEvent,
 };
 use std::sync::mpsc::{self, Sender};
+use std::time::Duration;
 
 /// TUI-local event multiplexing. It carries core facts and terminal input;
 /// it does not assemble or execute business runtime components.
@@ -17,6 +20,10 @@ pub(crate) enum WorkerMessage {
     PermissionRequest {
         request: PermissionRequest,
         decision_tx: Sender<PermissionDecision>,
+    },
+    AskUserRequest {
+        question: AskQuestion,
+        answer_tx: Sender<AskAnswer>,
     },
     Done(ApplicationRunResult),
 }
@@ -66,6 +73,48 @@ impl PermissionApprover for ChannelApprover {
     }
 }
 
+/// ask-user 前端实现：把问题送进统一事件通道并阻塞等待对话框应答。
+/// 断连与取消都归约为 Declined（isError 工具结果，run 继续）。
+pub(crate) struct ChannelUserAsker {
+    sender: Sender<UiEvent>,
+}
+
+impl ChannelUserAsker {
+    pub(crate) fn new(sender: Sender<UiEvent>) -> Self {
+        Self { sender }
+    }
+}
+
+impl UserAsker for ChannelUserAsker {
+    fn ask(&self, question: AskQuestion, cancel: &CancelToken) -> AskAnswer {
+        let (answer_tx, answer_rx) = mpsc::channel();
+        if self
+            .sender
+            .send(UiEvent::Worker(WorkerMessage::AskUserRequest {
+                question,
+                answer_tx,
+            }))
+            .is_err()
+        {
+            return AskAnswer::Declined;
+        }
+        // 轮询而非裸阻塞：Esc 之外还有共享取消令牌（run 取消）必须能
+        // 解开 worker 线程。
+        loop {
+            match answer_rx.recv_timeout(Duration::from_millis(50)) {
+                Ok(answer) => return answer,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if cancel.is_cancelled() {
+                        return AskAnswer::Declined;
+                    }
+                }
+                // 对话框被丢弃（UI 退出）：断连 = 拒绝回答。
+                Err(mpsc::RecvTimeoutError::Disconnected) => return AskAnswer::Declined,
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -94,6 +143,32 @@ mod tests {
         assert!(matches!(
             worker.join().expect("approver thread"),
             PermissionDecision::Deny { .. }
+        ));
+    }
+
+    #[test]
+    fn dropping_the_ask_dialog_declines_the_question() {
+        let (sender, receiver) = mpsc::channel();
+        let asker = ChannelUserAsker::new(sender);
+        let worker = std::thread::spawn(move || {
+            asker.ask(
+                AskQuestion {
+                    question: "ship it?".into(),
+                    options: Vec::new(),
+                    allow_custom: true,
+                },
+                &CancelToken::new(),
+            )
+        });
+        match receiver.recv().expect("ask event") {
+            UiEvent::Worker(WorkerMessage::AskUserRequest { answer_tx, .. }) => {
+                drop(answer_tx);
+            }
+            _ => panic!("expected ask request"),
+        }
+        assert!(matches!(
+            worker.join().expect("asker thread"),
+            AskAnswer::Declined
         ));
     }
 }

@@ -23,9 +23,12 @@ fn rust_sources(root: &Path) -> Vec<PathBuf> {
 }
 
 fn is_frontend(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| name == "tui.rs" || name.starts_with("tui_"))
+    let name = path.file_name().and_then(|name| name.to_str());
+    let in_frontend_dir = path
+        .parent()
+        .and_then(|parent| parent.file_name())
+        .is_some_and(|dir| dir == "tui");
+    name.is_some_and(|name| name == "tui.rs" || name.starts_with("tui_")) || in_frontend_dir
 }
 
 fn relative<'a>(root: &'a Path, path: &'a Path) -> &'a Path {
@@ -72,6 +75,29 @@ fn crate_root_does_not_reexport_terminal_frontend_types() {
         assert!(
             !(reexports && compact.contains("tui")),
             "src/lib.rs must not hide a frontend dependency behind `{compact}`"
+        );
+    }
+}
+
+/// Frontend styles come from the theme module (phase-1 P0-2): the
+/// production prefix of the terminal frontend files must not mention
+/// `Color::` — every visual style routes through `tui_theme::style(Role)`.
+/// Test modules after the first `#[cfg(test)]` are exempt (they assert on
+/// concrete colors); the truecolor whitelist lives in `tui_theme.rs`.
+#[test]
+fn frontend_styles_come_from_the_theme_module() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for name in [
+        "src/tui.rs",
+        "src/tui_markdown.rs",
+        "src/tui_model.rs",
+        "src/tui_sessions.rs",
+    ] {
+        let source = fs::read_to_string(root.join(name)).expect("read frontend source");
+        let production = source.split("\n#[cfg(test)]").next().unwrap_or("");
+        assert!(
+            !production.contains("Color::"),
+            "{name} production code must use tui_theme roles, not raw Color::"
         );
     }
 }

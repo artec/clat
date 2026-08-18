@@ -535,6 +535,7 @@ where
 
     let (completion_tx, completion_rx) = mpsc::channel();
     let handle = match application.start_run(ApplicationRunRequest {
+        asker: None,
         prompt,
         approver,
         events: Box::new(sink),

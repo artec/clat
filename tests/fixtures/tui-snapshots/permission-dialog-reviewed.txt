@@ -1,0 +1,27 @@
+size 80x24
+cursor 3,21
+scroll 0
+000| ┌──────────────────────────────────────────────────────────────────────────────┐
+001| │ CLAT v0.6.0  ready  ·  not configured — /model                               │  ⟦2..5 BOLD⟧
+002| └─────┌ Permission ──────────────────────────────────────────────────────┐─────┘
+003| ┌Conve│ Permission required                                              │─────┐  ⟦8..26 BOLD⟧
+004| │No me│                                                                  │    ▲│  ⟦78..78 fg=DarkGray⟧
+005| │     │ tool:      edit_file                                             │    ┃│  ⟦78..78 fg=Cyan⟧
+006| │     │ effect:    writes files                                          │    ┃│  ⟦78..78 fg=Cyan⟧
+007| │     │ reason:    edits a file                                          │    ┃│  ⟦78..78 fg=Cyan⟧
+008| │     │ fields:    new_str, old_str, path                                │    ┃│  ⟦78..78 fg=Cyan⟧
+009| │     │   edit src/lib.rs                                                │    ┃│  ⟦8..24 BOLD · 78..78 fg=Cyan⟧
+010| │     │ - old_str (must match the file exactly, once):                   │    ┃│  ⟦8..53 DIM · 78..78 fg=Cyan⟧
+011| │     │ - fn main() {                                                    │    ┃│  ⟦78..78 fg=Cyan⟧
+012| │     │ -     println!("old");                                           │    ┃│  ⟦78..78 fg=Cyan⟧
+013| │     │ - }                                                              │    ┃│  ⟦78..78 fg=Cyan⟧
+014| │     │ + new_str:                                                       │    ┃│  ⟦8..17 DIM · 78..78 fg=Cyan⟧
+015| │     │ + fn main() {                                                    │    ┃│  ⟦78..78 fg=Cyan⟧
+016| │     │ +     println!("new");                                           │    ┃│  ⟦78..78 fg=Cyan⟧
+017| │     │ + }                                                              │    ││  ⟦78..78 fg=DarkGray⟧
+018| │     │ arguments lines 1–9 of 9 · ↑/↓ PgUp/PgDn Home/End                │    ▼│  ⟦8..56 BOLD · 78..78 fg=DarkGray⟧
+019| └─────│                                                                  │─────┘
+020| ┌Messa│ Enter / y — allow      ·      Esc / n — deny                     │─────┐  ⟦8..51 BOLD⟧
+021| │❯    └──────────────────────────────────────────────────────────────────┘     │
+022| └──────────────────────────────────────────────────────────────────────────────┘
+023|  permission required — review arguments, then allow or deny

@@ -891,6 +891,115 @@ fn tool_io_error(tool: &str, path: &str, error: std::io::Error) -> ToolError {
     ToolError::new(format!("{tool}: cannot access `{path}`: {error}"))
 }
 
+/// ask-user 工具族：一次安装、按 run 换前端实现的交互工具。
+pub(crate) fn native_interaction_tools(
+    slot: std::sync::Arc<crate::interaction::AskUserSlot>,
+) -> Vec<std::sync::Arc<dyn Tool>> {
+    vec![std::sync::Arc::new(AskUserTool { slot })]
+}
+
+/// 模型向用户提问的端口工具（DSH `ask_user_question` 的 CLAT 单问版）。
+/// 阻塞等待前端应答；无前端（headless）时结构化报错，run 不中断。
+/// 效果为 Pure：提问本身就是人机交互，不叠加权限审批。
+pub struct AskUserTool {
+    slot: std::sync::Arc<crate::interaction::AskUserSlot>,
+}
+
+impl Tool for AskUserTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "ask_user".into(),
+            description: "Ask the human user a single question and wait for the answer. Use it only for user-owned choices (preferences, approvals, direction) or genuine ambiguity you cannot resolve from the repository; never for facts you can look up yourself. Provide 2-4 short options when the choice is enumerable; free-text answers are always available.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "question": {
+                        "type": "string",
+                        "description": "The question to show the user, self-contained"
+                    },
+                    "options": {
+                        "type": "array",
+                        "description": "Selectable answers; omit for open-ended questions",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "label": { "type": "string", "description": "Short answer returned to the model" },
+                                "description": { "type": "string", "description": "Optional context shown to the human" }
+                            },
+                            "required": ["label"]
+                        }
+                    },
+                    "allow_custom": {
+                        "type": "boolean",
+                        "description": "Whether the user may type a custom answer (default true)"
+                    }
+                },
+                "required": ["question"]
+            }),
+            effect: ToolEffect::Pure,
+            strict: false,
+        }
+    }
+
+    fn invoke(
+        &self,
+        arguments: &Value,
+        _project: &Project,
+        cancel: &CancelToken,
+    ) -> Result<Value, ToolError> {
+        let question = arguments
+            .get("question")
+            .and_then(Value::as_str)
+            .filter(|text| !text.trim().is_empty())
+            .ok_or_else(|| ToolError::new("ask_user: `question` must be a non-empty string"))?
+            .to_owned();
+        let mut options = Vec::new();
+        if let Some(list) = arguments.get("options").and_then(Value::as_array) {
+            for option in list {
+                let label = option
+                    .get("label")
+                    .and_then(Value::as_str)
+                    .filter(|text| !text.trim().is_empty())
+                    .ok_or_else(|| {
+                        ToolError::new("ask_user: every option needs a non-empty `label`")
+                    })?
+                    .to_owned();
+                options.push(crate::interaction::AskOption {
+                    label,
+                    description: option
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                });
+            }
+        }
+        let allow_custom = arguments
+            .get("allow_custom")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+
+        let Some(asker) = self.slot.asker() else {
+            return Err(ToolError::new(
+                "ask_user: no interactive frontend is attached (headless run); proceed without asking or state what you would have asked",
+            ));
+        };
+        match asker.ask(
+            crate::interaction::AskQuestion {
+                question,
+                options,
+                allow_custom,
+            },
+            cancel,
+        ) {
+            crate::interaction::AskAnswer::Selected(label)
+            | crate::interaction::AskAnswer::Custom(label) => Ok(json!({ "answer": label })),
+            crate::interaction::AskAnswer::Declined => Err(ToolError::new(
+                "ask_user: the user declined to answer; proceed with your best judgment or stop",
+            )),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1398,6 +1507,88 @@ mod tests {
         }
     }
 
+    struct YesAsker;
+
+    impl crate::interaction::UserAsker for YesAsker {
+        fn ask(
+            &self,
+            question: crate::interaction::AskQuestion,
+            _cancel: &CancelToken,
+        ) -> crate::interaction::AskAnswer {
+            assert_eq!(question.question, "ship it?");
+            assert_eq!(question.options.len(), 2);
+            assert!(question.allow_custom);
+            crate::interaction::AskAnswer::Selected("yes".into())
+        }
+    }
+
+    struct DecliningAsker;
+
+    impl crate::interaction::UserAsker for DecliningAsker {
+        fn ask(
+            &self,
+            _question: crate::interaction::AskQuestion,
+            _cancel: &CancelToken,
+        ) -> crate::interaction::AskAnswer {
+            crate::interaction::AskAnswer::Declined
+        }
+    }
+
+    /// S8/答案形状：无前端结构化报错；已安装回传所选标签；拒绝变错误
+    /// 结果（run 继续）；参数校验先行。
+    #[test]
+    fn ask_user_tool_degrades_without_a_frontend_and_returns_answers() {
+        let slot = crate::interaction::AskUserSlot::shared();
+        let tool = AskUserTool {
+            slot: std::sync::Arc::clone(&slot),
+        };
+        let project = Project::new(".");
+        let cancel = CancelToken::new();
+        let arguments = json!({
+            "question": "ship it?",
+            "options": [{"label": "yes"}, {"label": "no"}],
+        });
+
+        let headless = tool
+            .invoke(&arguments, &project, &cancel)
+            .expect_err("no frontend installed");
+        assert!(
+            headless.to_string().contains("no interactive frontend"),
+            "{}",
+            headless
+        );
+
+        slot.install(Some(std::sync::Arc::new(YesAsker)));
+        assert_eq!(
+            tool.invoke(&arguments, &project, &cancel).unwrap(),
+            json!({ "answer": "yes" })
+        );
+
+        slot.install(Some(std::sync::Arc::new(DecliningAsker)));
+        let declined = tool
+            .invoke(&arguments, &project, &cancel)
+            .expect_err("declined is an error result");
+        assert!(declined.to_string().contains("declined"), "{declined}");
+
+        slot.install(Some(std::sync::Arc::new(YesAsker)));
+        assert!(
+            tool.invoke(&json!({"question": "   "}), &project, &cancel)
+                .is_err(),
+            "blank questions are rejected before the frontend"
+        );
+        assert!(
+            tool.invoke(
+                &json!({"question": "q", "options": [{}]}),
+                &project,
+                &cancel
+            )
+            .is_err(),
+            "option without label is rejected before the frontend"
+        );
+
+        slot.install(None);
+    }
+
     /// Stage-0 characterization: model-visible tool order is part of the
     /// request/cache surface and must survive registry/plugin migration.
     #[test]
@@ -1405,6 +1596,9 @@ mod tests {
         let definitions = native_read_tools()
             .into_iter()
             .chain(native_write_tools())
+            .chain(native_interaction_tools(
+                crate::interaction::AskUserSlot::shared(),
+            ))
             .map(|tool| tool.definition().name)
             .collect::<Vec<_>>();
         assert_eq!(
@@ -1415,7 +1609,8 @@ mod tests {
                 "search",
                 "write_file",
                 "edit_file",
-                "run_command"
+                "run_command",
+                "ask_user"
             ]
         );
     }

@@ -155,6 +155,7 @@ impl AgentRuntime for DefaultAgentRuntime {
         )
         .with_model_options(options)
         .with_cancel_token(request.cancel)
+        .with_steering(request.steering)
         .with_tool_pipeline(&self.pipeline)
         .with_instructions(self.prompts.instructions())
         .execute_with_items(

@@ -717,6 +717,18 @@ impl EventSink for SessionRecorder {
                 .append(Vec::new());
                 self.append_quietly(event);
             }
+            RunEvent::SteeringApplied { text } => {
+                // In-run steering claimed into the transcript (DSH: plain
+                // user/message, no catalog extension). Durability barrier:
+                // durable before the consuming model request, and between
+                // steps — close the open step so the message lands after the
+                // previous step's events and before the next step/start.
+                self.close_open_step();
+                let event = NewSessionEvent::new("user/message", payloads::user_message(text))
+                    .append(Vec::new());
+                self.append_quietly(event);
+                self.flush_quietly();
+            }
             RunEvent::RunCompleted { .. } | RunEvent::RunCancelled { .. } => {
                 self.terminal = Some(event);
                 return;
@@ -853,6 +865,84 @@ mod tests {
         fn emit(&mut self, event: RunEvent) {
             self.seen.lock().unwrap().push(event);
         }
+    }
+
+    /// S2：steering claim 落 mid-turn `user/message`——surface Append、
+    /// 夹在上一条 assistant/message 与下一条之间；写侧先于消费它的下一
+    /// step（durability barrier）。
+    #[test]
+    fn steering_applied_journals_a_mid_turn_user_message() {
+        let (mut recorder, journal, _seen) = recorder();
+        recorder.emit(RunEvent::ModelRequested {
+            turn: 1,
+            provider: "p".into(),
+            model: "m".into(),
+        });
+        recorder.emit(RunEvent::ModelStream {
+            turn: 1,
+            event: ModelEvent::TextDelta {
+                delta: "first answer".into(),
+            },
+        });
+        recorder.emit(RunEvent::ModelResponded {
+            turn: 1,
+            outcome: crate::event::ModelOutcome {
+                has_text: true,
+                tool_calls: 0,
+            },
+            finish_reason: crate::model::FinishReason::Completed,
+            provider_replay: None,
+        });
+        recorder.emit(RunEvent::SteeringApplied {
+            text: "also run the tests".into(),
+        });
+        recorder.emit(RunEvent::ModelRequested {
+            turn: 2,
+            provider: "p".into(),
+            model: "m".into(),
+        });
+        recorder.emit(RunEvent::ModelStream {
+            turn: 2,
+            event: ModelEvent::TextDelta {
+                delta: "steering handled".into(),
+            },
+        });
+        recorder.emit(RunEvent::ModelResponded {
+            turn: 2,
+            outcome: crate::event::ModelOutcome {
+                has_text: true,
+                tool_calls: 0,
+            },
+            finish_reason: crate::model::FinishReason::Completed,
+            provider_replay: None,
+        });
+        assert!(recorder.finish(TurnEndReason::Completed).is_none());
+
+        let events = journal.events();
+        let types: Vec<&str> = events.iter().map(|(kind, _)| kind.as_str()).collect();
+        let steering_index = types
+            .iter()
+            .position(|kind| *kind == "user/message")
+            .expect("steering user/message journaled");
+        // 夹在两条 assistant/message 之间（第一条 assistant 之前没有任何
+        // user/message——recorder 不写首条，那是 prepare_run 的职责）。
+        let first_assistant = types
+            .iter()
+            .position(|kind| *kind == "assistant/message")
+            .expect("first assistant");
+        let second_assistant = types
+            .iter()
+            .rposition(|kind| *kind == "assistant/message")
+            .expect("second assistant");
+        assert!(
+            first_assistant < steering_index && steering_index < second_assistant,
+            "steering user/message must sit between the two assistant messages: {types:?}"
+        );
+        // DSH 兼容载荷：role=user、source.kind=user、正文原样。
+        let (_, payload) = &events[steering_index];
+        assert_eq!(payload["role"], "user");
+        assert_eq!(payload["source"]["kind"], "user");
+        assert_eq!(payload["content"][0]["text"], "also run the tests");
     }
 
     #[test]

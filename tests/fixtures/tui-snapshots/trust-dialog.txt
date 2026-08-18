@@ -1,0 +1,27 @@
+size 80x24
+cursor 0,0
+scroll 0
+000| <blank>
+001| <blank>
+002| <blank>
+003| <blank>
+004| <blank>
+005| <blank>
+006|       ┌ Trust ───────────────────────────────────────────────────────────┐
+007|       │ Trust this project?                                              │  ⟦8..26 BOLD⟧
+008|       │                                                                  │
+009|       │ CLAT reads and modifies files, and runs tools inside:            │
+010|       │   /var/folders/y1/tqrp49cn1qb87j_ng7lzgr640000gn/T/clat-applicat │
+011|       │   <NANOS>/project                                     │
+012|       │                                                                  │
+013|       │ Trusting is remembered per directory. Review the project (e.g. i │
+014|       │ README and configs) before granting an agent access to it.       │
+015|       │                                                                  │
+016|       │ Enter / y — trust this project      ·      Esc / n — exit CLAT   │  ⟦8..69 BOLD⟧
+017|       └──────────────────────────────────────────────────────────────────┘
+018| <blank>
+019| <blank>
+020| <blank>
+021| <blank>
+022| <blank>
+023| <blank>

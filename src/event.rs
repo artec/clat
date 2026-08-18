@@ -53,6 +53,15 @@ pub enum RunEvent {
     ToolFinished {
         result: ToolResult,
     },
+    /// A queued steering message was claimed into the transcript, emitted
+    /// immediately before the `ModelRequested` that consumes it. Protocol
+    /// change note: added with in-run steering (DSH `steer()` semantics —
+    /// claim at the next model-request boundary, never interrupting the
+    /// in-flight request). The journal persists it as a plain `user/message`
+    /// surface event; the catalog gains no new type.
+    SteeringApplied {
+        text: String,
+    },
     RunCompleted {
         output: String,
         turns: usize,
