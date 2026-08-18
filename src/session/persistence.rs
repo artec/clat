@@ -631,7 +631,7 @@ impl JsonlBackend {
         }
         if let Err(error) = dir
             .try_clone()
-            .and_then(|dir| dir.into_std_file().sync_all())
+            .and_then(|dir| crate::session::root_dir::sync_dir(&dir))
         {
             let _ = dir.remove_file(&temp);
             return Err(MaterializeFailure::Unknown(error.to_string()));

@@ -40,7 +40,7 @@ impl CheckpointStore {
         // Cache semantics: last writer wins; the record carries its own
         // generation for ordering diagnostics.
         dir.rename(&temp, &dir, "clat-checkpoint.json")?;
-        dir.try_clone()?.into_std_file().sync_all()?;
+        crate::session::root_dir::sync_dir(&dir)?;
         Ok(())
     }
 

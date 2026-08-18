@@ -35,8 +35,8 @@ impl SessionRootDir {
         }
         let dir = open_dir_nofollow(&parent, Path::new(name))?;
         set_private_dir(&dir)?;
-        dir.try_clone()?.into_std_file().sync_all()?;
-        parent.try_clone()?.into_std_file().sync_all()?;
+        sync_dir(&dir)?;
+        sync_dir(&parent)?;
         Ok(Arc::new(Self {
             display_path: path.to_path_buf(),
             dir,
@@ -65,9 +65,9 @@ impl SessionRootDir {
             &bucket,
             Path::new(&path_layout::encode_segment(key.id.as_str())),
         )?;
-        self.dir.try_clone()?.into_std_file().sync_all()?;
-        bucket.try_clone()?.into_std_file().sync_all()?;
-        session.try_clone()?.into_std_file().sync_all()?;
+        sync_dir(&self.dir)?;
+        sync_dir(&bucket)?;
+        sync_dir(&session)?;
         Ok(session)
     }
 
@@ -88,13 +88,26 @@ fn open_or_create_child(parent: &Dir, name: &Path) -> io::Result<Dir> {
     }
     let child = open_dir_nofollow(parent, name)?;
     set_private_dir(&child)?;
-    parent.try_clone()?.into_std_file().sync_all()?;
+    sync_dir(parent)?;
     Ok(child)
 }
 
 fn open_dir_nofollow(parent: &Dir, name: &Path) -> io::Result<Dir> {
     let parent_file = parent.try_clone()?.into_std_file();
     cap_primitives::fs::open_dir_nofollow(&parent_file, name).map(Dir::from_std_file)
+}
+
+/// fsync a capability-held directory through a real descriptor.
+///
+/// cap-primitives opens sandboxed directories with `O_PATH` on Linux
+/// (`compute_oflags`: `dir_required && !readdir_required && !write` ⇒
+/// `O_PATH`). An `O_PATH` fd is a valid `openat` dirfd but `fsync` on it
+/// fails with `EBADF` — every durable-directory sync returned "Bad file
+/// descriptor" on Linux CI while macOS (no `O_PATH`) stayed green.
+/// Re-open `.` through the capability to obtain a regular read-only
+/// directory fd and fsync that.
+pub(crate) fn sync_dir(dir: &Dir) -> io::Result<()> {
+    dir.open(".")?.sync_all()
 }
 
 fn set_private_dir(dir: &Dir) -> io::Result<()> {
@@ -104,4 +117,26 @@ fn set_private_dir(dir: &Dir) -> io::Result<()> {
         dir.set_permissions(".", Permissions::from_mode(0o700))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sync_dir_works_through_path_only_descriptors() {
+        // Linux CI 回归：O_PATH 目录句柄上 fsync 报 EBADF（macOS 无
+        // O_PATH 不可复现，仅断言本平台可用性——真回归由 CI 守护）。
+        let root = std::env::temp_dir().join(format!(
+            "clat-syncdir-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let dir = Dir::open_ambient_dir(&root, ambient_authority()).unwrap();
+        sync_dir(&dir).expect("sync_dir must work on a freshly opened directory");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 }
