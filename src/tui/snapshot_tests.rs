@@ -176,14 +176,21 @@ impl Harness {
     }
 }
 
-/// 临时目录路径在投影中归一化为占位符，保证快照可移植。两道防线：
-/// 完整路径替换 + 裸纳秒数字串替换——路径在窄对话框里换行时，完整
-/// 路径字符串被拆散，只有数字串归一仍能兜住（位数恒定→换行位置恒定）。
-/// 临时目录路径在投影中归一化为占位符，保证快照可移植。两道防线：
-/// 完整路径替换 + 投影级数字串归一——路径在窄对话框里换行时会把纳秒
-/// 串从中间拆开（位数恒定 → 换行位置恒定，但裸数字串本身必须归一）。
+/// 三道环境归一化，保证 fixture 与开发机/CI、crate 版本解耦：
+/// 1. project root 整段替换；
+/// 2. 临时目录前缀替换（macOS `$TMPDIR` vs Linux `/tmp`）——必须在
+///    project root 之后做（project root 是临时目录的子串）；
+/// 3. 版本号打码——发布提交 bump `CARGO_PKG_VERSION` 时，头部的
+///    `CLAT v0.6.x` 不应令全部 fixture 集体失效；
+///
+/// 最后叠加裸纳秒数字串归一——路径在窄对话框里换行时会把纳秒串从
+/// 中间拆开（位数恒定 → 换行位置恒定，但裸数字串本身必须归一）。
 fn normalize_paths(projection: &str, project_root: &Path) -> String {
-    mask_long_digit_runs(&projection.replace(project_root.to_string_lossy().as_ref(), "<ROOT>"))
+    let normalized = projection.replace(project_root.to_string_lossy().as_ref(), "<ROOT>");
+    let tmp = std::env::temp_dir();
+    let normalized = normalized.replace(tmp.to_string_lossy().trim_end_matches('/'), "<TMP>");
+    let version = concat!("v", env!("CARGO_PKG_VERSION"));
+    mask_long_digit_runs(&normalized.replace(version, "v<VERSION>"))
 }
 
 /// 投影中任何 ≥12 位的连续数字串（临时目录纳秒后缀）归一为固定占位

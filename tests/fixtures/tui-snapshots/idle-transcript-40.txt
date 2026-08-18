@@ -2,7 +2,7 @@ size 40x24
 cursor 3,21
 scroll 0
 000| ┌──────────────────────────────────────┐
-001| │ CLAT v0.6.0 ready                    │  ⟦2..5 BOLD⟧
+001| │ CLAT v<VERSION> ready                    │  ⟦2..5 BOLD⟧
 002| └──────────────────────────────────────┘
 003| ┌Conversation──────────────────────────┐
 004| │No messages yet.                     ▲│  ⟦38..38 fg=DarkGray⟧

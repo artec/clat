@@ -1485,8 +1485,10 @@ mod tests {
     }
 
     /// 并行测试会同时持有各自的 writer：断言用"回到基线"的轮询形式。
+    /// 预算 30s（正常路径立即返回）：CI 慢机上兄弟测试的 writer 可能
+    /// 存活数秒；真泄漏时会留下约 100 个 writer 永不退休，照样超时。
     fn wait_for_writer_baseline(baseline: usize) {
-        for _ in 0..200 {
+        for _ in 0..1_200 {
             if crate::session::write_behind::live_writers_for_test() <= baseline {
                 return;
             }

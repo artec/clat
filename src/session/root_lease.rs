@@ -264,7 +264,18 @@ mod tests {
         let second = try_acquire(&root).unwrap();
         assert!(second.is_none(), "second lease must not be granted");
         drop(first);
-        let third = try_acquire(&root).unwrap().expect("lease after release");
+        // close(2) 释放 flock 在高负载下有毫秒级的可见性窗口（诊断
+        // 实测 <10ms 后即可再取）——与跨进程测试一致，用短暂轮询而非
+        // 立即断言；排他性本身已由上面的 second 断言锁定。
+        let mut third = None;
+        for _ in 0..100 {
+            third = try_acquire(&root).unwrap();
+            if third.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let third = third.expect("lease after release");
         drop(third);
         std::fs::remove_dir_all(parent).unwrap();
     }
