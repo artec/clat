@@ -1508,22 +1508,45 @@ mod tests {
     /// drop 的活动会话也必须退役 writer——JoinHandle 的 drop 是分离，
     /// worker 在 condvar 上永生；泄漏的 writer 把并行套件里任何
     /// `wait_for_writer_baseline` 的窗口顶红（慢速 CI 必现）。
-    /// `SessionCoordinator` 的 Drop 安全网保证这一点。pre-fix：本测试
-    /// 在 30s 等待后 panic。
+    /// `SessionCoordinator` 的 Drop 安全网保证这一点。
+    ///
+    /// 观察手段必须是**每实例存活探针**而非全局 writer 计数：全局计
+    /// 数在并行套件里随别家测试的 writer 生灭抖动（第二版测试的
+    /// spawn 断言因此把"计数恰好持平"误报成失败，CI 二连红）。
+    /// pre-fix（无 Drop 安全网）：worker 永生，2s 轮询后断言失败。
     #[test]
     fn dropping_the_active_session_retires_its_writer() {
+        use std::sync::atomic::Ordering;
         let (service, root) = service("drop-retires");
-        let baseline = crate::session::write_behind::live_writers_for_test();
         let summary = service.new_session(&project()).expect("new");
+        let _ = summary;
         run_turn(&service, "leave the writer holding a pending batch").expect("run");
+        let coordinator = {
+            let guard = service.active.lock().expect("active");
+            guard.as_ref().expect("active session").coordinator.clone()
+        };
+        let alive = coordinator.writer_alive_handle_for_test();
         assert!(
-            crate::session::write_behind::live_writers_for_test() > baseline,
+            alive.load(Ordering::SeqCst),
             "the active session spawned a writer"
         );
-        let _ = summary;
         // 故意不 quiesce：drop 路径自己必须收拾线程（并尽力 flush）。
+        drop(coordinator);
         drop(service);
-        wait_for_writer_baseline(baseline);
+        // close 同步 join，drop 返回即已退出——轮询只是 CI 磁盘 hiccup
+        // 的余量（fsync 慢过 5s 才会吃满）。
+        let mut retired = false;
+        for _ in 0..500 {
+            if !alive.load(Ordering::SeqCst) {
+                retired = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(
+            retired,
+            "dropping the active session must retire its writer (still alive after 5s)"
+        );
         std::fs::remove_dir_all(root).expect("cleanup");
     }
 

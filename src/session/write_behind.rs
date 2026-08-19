@@ -27,6 +27,12 @@ pub(crate) struct SessionWriteBehind {
     signal: Arc<Condvar>,
     worker: Mutex<Option<std::thread::JoinHandle<()>>>,
     max_delay: Duration,
+    /// 测试探针（cfg(test)）：spawn 前由父线程置位、worker 退出时清
+    /// 位——每实例存活语义，不受并行套件里其它 writer 生灭影响
+    /// （全局 LIVE_WRITERS 计数做"本会话有没有线程"断言会被别家
+    /// 抖动顶假红/假绿，CI 实红两次的教训）。
+    #[cfg(test)]
+    worker_alive: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl SessionWriteBehind {
@@ -48,16 +54,55 @@ impl SessionWriteBehind {
         let signal = Arc::new(Condvar::new());
         let worker_state = Arc::clone(&state);
         let worker_signal = Arc::clone(&signal);
-        let worker = std::thread::Builder::new()
-            .name("clat-session-writer".into())
-            .spawn(move || worker_loop(worker_state, worker_signal, write, max_delay))
-            .expect("spawn session writer");
+        #[cfg(test)]
+        let worker_alive = {
+            let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            // 父线程置位：new 返回即"worker 存在"可观察，不依赖子线程
+            // 被调度的时机（worker 内置位在忙 runner 上有毫秒级延迟，
+            // 全局计数断言因此假红过）。
+            flag.store(true, std::sync::atomic::Ordering::SeqCst);
+            flag
+        };
+        let spawned = {
+            #[cfg(test)]
+            {
+                let alive_guard = Arc::clone(&worker_alive);
+                std::thread::Builder::new()
+                    .name("clat-session-writer".into())
+                    .spawn(move || {
+                        worker_loop(worker_state, worker_signal, write, max_delay, alive_guard)
+                    })
+            }
+            #[cfg(not(test))]
+            {
+                std::thread::Builder::new()
+                    .name("clat-session-writer".into())
+                    .spawn(move || worker_loop(worker_state, worker_signal, write, max_delay))
+            }
+        };
+        let worker = match spawned {
+            Ok(worker) => worker,
+            Err(error) => {
+                #[cfg(test)]
+                worker_alive.store(false, std::sync::atomic::Ordering::SeqCst);
+                panic!("spawn session writer: {error}");
+            }
+        };
         Self {
             state,
             signal,
             worker: Mutex::new(Some(worker)),
             max_delay,
+            #[cfg(test)]
+            worker_alive,
         }
+    }
+
+    /// 测试探针：worker 存活标志的共享句柄——句柄可以在实例 drop 后
+    /// 继续轮询，从而观察"drop 是否真的 join 了线程"。
+    #[cfg(test)]
+    pub(crate) fn worker_alive_handle_for_test(&self) -> Arc<std::sync::atomic::AtomicBool> {
+        Arc::clone(&self.worker_alive)
     }
 
     /// Enqueue one atomic group: all events enter under one lock, so the
@@ -165,9 +210,14 @@ fn worker_loop(
     signal: Arc<Condvar>,
     write: impl Fn(&[SessionEvent]) -> Result<(), String>,
     max_delay: Duration,
+    #[cfg(test)] alive: Arc<std::sync::atomic::AtomicBool>,
 ) {
     #[cfg(test)]
     LIVE_WRITERS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    // guard 在任何退出路径（含 panic）清掉每实例存活标志——drop 后
+    // 轮询该标志即"线程真的退出了"的可靠证据。
+    #[cfg(test)]
+    let _alive_guard = AliveGuard(alive);
     loop {
         // Decide under a fresh lock; drop it while waiting or writing.
         let batch = loop {
@@ -185,8 +235,6 @@ fn worker_loop(
                 break std::mem::take(&mut guard.pending);
             }
             if guard.closed && guard.pending.is_empty() && !guard.active {
-                #[cfg(test)]
-                LIVE_WRITERS.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
                 return;
             }
             let wait = match guard.deadline {
@@ -227,8 +275,6 @@ fn worker_loop(
                     guard.pending.clear();
                     guard.last_error = Some(error);
                     signal.notify_all();
-                    #[cfg(test)]
-                    LIVE_WRITERS.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
                     return;
                 }
                 let mut restored = batch;
@@ -239,6 +285,20 @@ fn worker_loop(
             }
         }
         signal.notify_all();
+    }
+}
+
+/// 测试专用退出守卫：worker 无论从哪条路径离开（正常收尾、close 后
+/// 放弃批次、panic）都递减全局计数并清掉每实例存活标志——散落各
+/// return 点的手工清理曾覆盖不全且易双重递减。
+#[cfg(test)]
+struct AliveGuard(Arc<std::sync::atomic::AtomicBool>);
+
+#[cfg(test)]
+impl Drop for AliveGuard {
+    fn drop(&mut self) {
+        LIVE_WRITERS.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        self.0.store(false, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -312,32 +372,23 @@ mod tests {
         behind.close().expect("close");
     }
 
-    /// 并行测试会同时持有各自的 writer：断言用"回到基线"的轮询形式，
-    /// 而不是与其它测试的存活期竞态的瞬时相等。
-    fn wait_for_writer_baseline(baseline: usize) {
-        for _ in 0..200 {
-            if live_writers_for_test() <= baseline {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(25));
-        }
-        panic!(
-            "writer threads did not retire (baseline {baseline}, now {})",
-            live_writers_for_test()
-        );
-    }
-
+    /// 并行测试会同时持有各自的 writer：全局计数的"回到基线"轮询只
+    /// 做兜底；持有实例的测试一律用每实例存活探针（close 同步 join，
+    /// 返回即已退出，零抖动面）。
     #[test]
     fn close_with_a_permanently_failing_write_returns_the_error_and_exits() {
-        let before = live_writers_for_test();
         let behind =
             SessionWriteBehind::new(Duration::from_millis(10), |_| Err("disk gone".into()));
+        let alive = behind.worker_alive_handle_for_test();
         behind.enqueue(vec![event(0)]).expect("enqueue");
         // 修复前：closed 后写失败会把 batch 原样放回并停在 1 小时等待，
         // close 内的 join 永久阻塞（审计 P1-07 的挂死反例）。
         let error = behind.close().expect_err("close surfaces the failure");
         assert_eq!(error, "disk gone");
-        wait_for_writer_baseline(before);
+        assert!(
+            !alive.load(Ordering::SeqCst),
+            "close joins the worker even when the write keeps failing"
+        );
     }
 
     /// 第四轮复审 F-B：写入进行期间到达的事件必须获得新的窗口，而不是
@@ -391,10 +442,13 @@ mod tests {
 
     #[test]
     fn idle_close_exits_the_worker() {
-        let before = live_writers_for_test();
         let behind = SessionWriteBehind::new(Duration::from_millis(10), |_| Ok(()));
+        let alive = behind.worker_alive_handle_for_test();
         behind.close().expect("close");
-        wait_for_writer_baseline(before);
+        assert!(
+            !alive.load(Ordering::SeqCst),
+            "an idle worker exits on close"
+        );
     }
 
     #[test]

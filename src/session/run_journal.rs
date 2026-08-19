@@ -97,6 +97,13 @@ struct CoordinatorCore {
 }
 
 impl SessionCoordinator {
+    /// 测试探针：本协调器 writer 线程的存活标志句柄——drop 协调器后
+    /// 仍可轮询，验证 Drop 安全网真的 join 了线程。
+    #[cfg(test)]
+    pub(crate) fn writer_alive_handle_for_test(&self) -> Arc<std::sync::atomic::AtomicBool> {
+        self.writer.worker_alive_handle_for_test()
+    }
+
     pub(crate) fn start(
         backend: Arc<JsonlBackend>,
         key: SessionKey,

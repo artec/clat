@@ -3693,7 +3693,10 @@ mod tests {
             seeds_after, seeds_before,
             "a lost CAS closes the armed target without publishing its seed"
         );
-        for _ in 0..200 {
+        // 30s 容忍窗口（并行套件里别家测试的 writer 会有瞬时存活）：
+        // 真泄漏永不满足，瞬时 +1 在间隙处穿过。5s 窗口在慢 CI 上被
+        // 邻测覆盖时会假红（2026-08-19 两次 CI 事故的方法论修正）。
+        for _ in 0..1_200 {
             if crate::session::write_behind::live_writers_for_test() <= baseline {
                 break;
             }
