@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>CLAT — command-line agent</title>
-  <meta name="description" content="CLAT：本地优先的命令行 AI 编程助手。Rust 单二进制，DeepSeek / GLM Coding Plan 开箱即用。">
+  <meta name="description" content="CLAT：本地优先的命令行 AI 编程助手。Rust 单二进制，DeepSeek / GLM / Qwen / Kimi 开箱即用。">
   <link rel="icon" type="image/png" href="logo.png">
   <link rel="apple-touch-icon" href="logo.png">
   <style>
@@ -319,7 +319,7 @@
         </div>
         <div class="card">
           <h3>安全默认</h3>
-          <p>进入新目录先过信任门；写文件、执行命令逐次询问；路径访问限制在项目根内，杜绝越界。</p>
+          <p>进入新目录先过信任门；权限分只读、项目写入、完全访问三档可切换，默认档位下写文件、执行命令逐次询问，路径不出项目根。</p>
         </div>
       </div>
     </section>
@@ -328,16 +328,36 @@
       <p class="kicker">Features</p>
       <h2>为真实编程工作流设计</h2>
       <div class="feature">
-        <h3>双厂商开箱即用</h3>
-        <p>DeepSeek 与 GLM Coding Plan 官方预设内置。<code>/model</code> 打开两级选择器：先选厂商，再选模型，密钥按厂商分槽保存。</p>
+        <h3>模型厂商开箱即用</h3>
+        <p>DeepSeek、GLM、Qwen、Kimi 官方预设内置，任意 OpenAI 兼容端点同样能用。<code>/model</code> 打开两级选择器：先选厂商，再选模型，密钥按厂商分槽保存。</p>
+      </div>
+      <div class="feature">
+        <h3>图片附件</h3>
+        <p>把本地图片拖进终端即成为会话附件，自动存入会话目录，随消息一起发送给视觉模型。</p>
+      </div>
+      <div class="feature">
+        <h3>交互式询问与会话转向</h3>
+        <p>模型遇到该由你拍板的事会停下来提问；运行中也能随时插入转向消息，改变当前任务的方向。</p>
+      </div>
+      <div class="feature">
+        <h3>无限制轮次与自动压缩</h3>
+        <p>轮次没有上限，任务跑完为止；上下文用到八成自动压缩摘要，原始历史完整保留。</p>
+      </div>
+      <div class="feature">
+        <h3>三档权限模式</h3>
+        <p>只读、项目写入（默认）、完全访问三档随时切换：<code>/perm</code> 或权限弹窗内一键换档、可临时提权，按项目记忆。低两档下写文件、跑命令仍逐次审批。</p>
+      </div>
+      <div class="feature">
+        <h3>MCP 原生</h3>
+        <p>MCP 服务器支持 stdio 与 Streamable HTTP 远程传输；GLM Coding Plan 自动挂载官方四台 MCP 服务器，<code>/mcp</code> 查看连接状态与已注册工具。</p>
       </div>
       <div class="feature">
         <h3>状态栏实时反馈</h3>
-        <p>余额（DeepSeek）、5 小时窗口剩余额度（GLM）、KV 缓存命中百分比与思考强度常驻底部状态栏，成本一目了然。</p>
+        <p>DeepSeek 余额、GLM 5 小时窗口额度、Kimi 额度、KV 缓存命中百分比、上下文占用与思考强度常驻底部状态栏，成本一目了然；统计从会话日志还原，重启不归零。</p>
       </div>
       <div class="feature">
         <h3>崩溃安全的会话持久化</h3>
-        <p>完整对话写入 append-only 日志，先落盘再调用模型，崩溃后自动恢复到最近的完整批次；日志为 DSH 兼容格式，可被兼容工具直接读取。输入历史支持 ↑/↓ 召回，按项目隔离。</p>
+        <p>完整对话写入 append-only 日志，先落盘再调用模型，崩溃后自动恢复到最近的完整批次；日志为 DSH 兼容格式，可被兼容工具直接读取。模型自动为会话起标题，<code>/rename</code> 随时改。输入历史支持 ↑/↓ 召回，按项目隔离。</p>
       </div>
       <div class="feature">
         <h3>自更新</h3>
