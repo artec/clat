@@ -66,6 +66,9 @@ pub(crate) enum ConversationItem {
 struct ItemCache {
     dirty: bool,
     width: Option<usize>,
+    /// 流式 assistant 项渲染时使用的活动帧字形（None=落定 ⏺）。帧变
+    /// 化必须触发重渲染——动画帧与内容/宽度同属缓存键。
+    marker: Option<&'static str>,
     lines: Vec<Line<'static>>,
 }
 
@@ -109,6 +112,9 @@ pub(crate) struct ConversationModel {
     items: Vec<(ConversationItem, ItemCache)>,
     /// 流式 assistant 是否可续写（下一个用户/卡片/压缩项关闭它）。
     assistant_open: bool,
+    /// 流式 assistant 项前缀的当前活动帧（None=落定 ⏺）：由前端每帧
+    /// 设置（run 活动时为 spinner 帧），见 `set_stream_marker`。
+    stream_marker: Option<&'static str>,
     /// 最近一次 ToolRequested 的 call id：live `PermissionDenied` 不带
     /// call id，只能据此回指。
     last_call_id: Option<String>,
@@ -345,17 +351,42 @@ impl ConversationModel {
     /// 其（内容, 宽度）生命周期内只渲染一次。行数 = Σ(item 行数 + 分隔
     /// 空行)；零行项（B5 hidden 卡、B7 前的通知）不占分隔行。
     pub(crate) fn ensure_rendered(&mut self, width: usize) {
+        let open_index = self.open_assistant_index();
         for index in 0..self.items.len() {
+            let marker = if Some(index) == open_index {
+                self.stream_marker
+            } else {
+                None
+            };
             let needs = {
                 let (_, cache) = &self.items[index];
-                cache.dirty || cache.width != Some(width)
+                cache.dirty || cache.width != Some(width) || cache.marker != marker
             };
             if needs {
-                let rendered = render_item(&self.items[index].0, width);
+                let rendered = render_item(&self.items[index].0, width, marker);
                 let (_, cache) = &mut self.items[index];
                 cache.lines = rendered;
                 cache.width = Some(width);
+                cache.marker = marker;
                 cache.dirty = false;
+            }
+        }
+    }
+
+    /// 流式 assistant 项的开放下标（assistant_open ⇒ 末项为 assistant）。
+    fn open_assistant_index(&self) -> Option<usize> {
+        self.assistant_open
+            .then(|| self.items.len().checked_sub(1))
+            .flatten()
+    }
+
+    /// 设置流式 assistant 前缀的活动帧（`None` = 落定 ⏺）。变化时使
+    /// 开放项缓存失效（G3 的帧驱动例外：每帧至多重渲染一个 item）。
+    pub(crate) fn set_stream_marker(&mut self, marker: Option<&'static str>) {
+        if self.stream_marker != marker {
+            self.stream_marker = marker;
+            if let Some(index) = self.open_assistant_index() {
+                self.items[index].1.dirty = true;
             }
         }
     }
@@ -501,12 +532,16 @@ fn item_rows<'a>(
     }
 }
 
-fn render_item(item: &ConversationItem, width: usize) -> Vec<Line<'static>> {
+fn render_item(
+    item: &ConversationItem,
+    width: usize,
+    stream_marker: Option<&'static str>,
+) -> Vec<Line<'static>> {
     match item {
         ConversationItem::User { text } | ConversationItem::Compaction { text } => {
             render_user_block(text, width)
         }
-        ConversationItem::Assistant { text, .. } => render_assistant(text, width),
+        ConversationItem::Assistant { text, .. } => render_assistant(text, width, stream_marker),
         ConversationItem::ToolCard {
             tool,
             arguments,
@@ -653,8 +688,22 @@ fn render_user_block(text: &str, width: usize) -> Vec<Line<'static>> {
         .collect()
 }
 
-fn render_assistant(text: &str, width: usize) -> Vec<Line<'static>> {
-    let marker = Span::styled("⏺ ", tui_theme::style(tui_theme::Role::AssistantMarker));
+fn render_assistant(
+    text: &str,
+    width: usize,
+    stream_marker: Option<&'static str>,
+) -> Vec<Line<'static>> {
+    // 流式进行中的 assistant 以"太阳"四分圆帧作前缀（灰色，保持圆形
+    // 字形——与落定 ⏺ 同色族，与状态栏蓝色盲文 spinner 不同形不同
+    // 色），等待首 token / 长思考时不再是静止的 ⏺；落定后（run 结束）
+    // 回到常驻 ⏺。
+    let marker = match stream_marker {
+        Some(frame) => Span::styled(
+            format!("{frame} "),
+            tui_theme::style(tui_theme::Role::AssistantMarker),
+        ),
+        None => Span::styled("⏺ ", tui_theme::style(tui_theme::Role::AssistantMarker)),
+    };
     let text_width = width.saturating_sub(2).max(1);
     render_markdown(text, text_width)
         .into_iter()
@@ -679,6 +728,44 @@ mod tests {
     };
     use crate::{BootstrapApplication, Project};
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn streaming_assistant_marker_spins_while_open_and_settles_when_closed() {
+        // 2026-08-19 用户反馈：等待首 token / 长思考时，转录区是一动不
+        // 动的 ⏺。不变量：run 进行中（前端设置活动帧），开放 assistant
+        // 项的前缀是 spinner 帧（品牌蓝）；帧切换触发重渲染（缓存键含
+        // 帧）；run 结束落定回 ⏺。
+        let mut model = ConversationModel::new();
+        model.push_user("hello".into());
+        model.apply_run_event(&RunEvent::ModelRequested {
+            turn: 1,
+            provider: "p".into(),
+            model: "m".into(),
+        });
+        let has = |model: &mut ConversationModel, glyph: &str| {
+            let lines = model.visible_lines(0, 20, 40, ToolCardVisibility::Collapsed);
+            lines
+                .iter()
+                .any(|line| line.spans.iter().any(|span| span.content == glyph))
+        };
+        model.set_stream_marker(Some("◐"));
+        assert!(
+            has(&mut model, "◐ "),
+            "open assistant carries the sun frame"
+        );
+        // 换帧必须重渲染（缓存键含帧），不能停留在旧帧。
+        model.set_stream_marker(Some("◓"));
+        assert!(
+            has(&mut model, "◓ "),
+            "frame change re-renders the open item"
+        );
+        // 落定：run 结束后回到常驻 ⏺。
+        model.set_stream_marker(None);
+        assert!(
+            has(&mut model, "⏺ "),
+            "settled assistant keeps the static marker"
+        );
+    }
 
     #[test]
     fn cache_hits_until_content_or_width_changes() {

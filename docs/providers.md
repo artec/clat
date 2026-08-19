@@ -25,6 +25,47 @@ gateways, and other OpenAI-shaped providers.
 - Managed body fields (`model`, `messages`, `tools`, `stream`) are
   protected against overrides.
 
+### Built-in presets (2026-08)
+
+Four vendors ship official presets (pick by name in `/model`; only an
+API key is left to fill):
+
+- **DeepSeek** (`api.deepseek.com`): `thinking {type: enabled}` +
+  `reasoning_effort`, `stream_options.include_usage` for live cache
+  stats. Implicit prompt caching; usage reports
+  `prompt_cache_hit_tokens`.
+- **GLM Coding Plan** (`open.bigmodel.cn/api/coding/paas/v4`): as
+  DeepSeek plus preserved thinking (`clear_thinking: false`); usage
+  rides the stream by default.
+- **Qwen Token Plan**
+  (`token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1`,
+  dedicated subscription key): top-level `reasoning_effort` with the
+  official ladder `low`/`medium`/`xhigh` (CLAT's Low/High/Max tiers map
+  onto them; no `thinking` object). Context caching is implicit and
+  cannot be disabled (~20% hit discount); `include_usage` brings back
+  `prompt_tokens_details.cached_tokens` (some Singapore deployments
+  report the top-level `cached_tokens` transitional field — both are
+  parsed). Explicit `cache_control` marking is deliberately not sent:
+  its availability on the Singapore Token Plan endpoint is not
+  documented and misses cost 125% of input price.
+- **Kimi Coding Plan** (`api.kimi.com/coding/v1`, subscription
+  membership): top-level `reasoning_effort` (`low`/`high`/`max`, no
+  `thinking` object); context caching is fully automatic (≥256-token
+  prefix). The endpoint gates traffic by a User-Agent whitelist
+  (Kimi CLI / Claude Code / Roo Code / Kilo Code …) and returns 403
+  for unknown clients, so the preset injects the field-verified
+  whitelisted UA `claude-cli/2.1.161` (cc-switch PR #3671's fallback
+  constant; their measured whitelist: `claude-cli/*`, `claude-code/*`,
+  and `Kilo-Code/*` pass, while `codex-cli/*`, `kimi-cli/*`, and
+  `openclaw/*` are rejected). This sits in a gray zone of the
+  subscription terms — override it via `/model` → Extra Headers if you
+  want a different choice. The status bar's `Token` segment shows the 5-hour-window
+  remaining percentage from `GET /coding/v1/usages` (same endpoint as
+  cc-switch's Kimi quota query; the request carries the whitelisted
+  UA). Qwen Token Plan has no public balance API (credits are visible
+  only in the console's subscription page), so its status line carries
+  Cache/Context without a Token segment.
+
 ### Reasoning replay (DeepSeek)
 
 DeepSeek thinking mode streams chain-of-thought as

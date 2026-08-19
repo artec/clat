@@ -9,32 +9,55 @@ written in Rust. The project starts with a simple rule: build the agent
 we actually want to use every day, dogfood it on real repositories, and
 generalize those needs into reusable open-source capabilities.
 
-## Status
+## Features
 
-Early development. The first milestone is a useful single-agent coding
-workflow that can work on real projects such as ECAR and CLAT itself.
+**Agent workflow**
 
-That loop is closed: the agent can inspect the repository
-(`list_files` / `read_file` / `search`), change it (`write_file` /
-`edit_file`), and verify its own work (`run_command`) — every
-side-effecting step behind interactive permission review. The same loop
-also runs headless (`clat exec`) for scripts and CI, with the same
-permission model. Current boundaries and the growth plan are tracked in
-[docs/architecture.md](docs/architecture.md#agentic-loop-v040).
+- Inspects the repository, edits files, and runs commands to verify its
+  own work
+- No turn limits — a run continues as long as the task needs it, and
+  long conversations compact automatically without losing the original
+  history
+- Asks you questions when a decision is yours to make, and accepts
+  steering messages while a run is active
+- Keeps a per-session todo list
 
-Sessions persist to a DSH-compatible journal: each conversation is one append-only, zstd-framed JSONL log under
-`~/.clat/sessions/`, written ahead of the work it describes — the first
-user turn is durable before the model is called, and a crash mid-turn
-recovers to the last complete batch. Projection checkpoints beside each
-log keep reopening fast, while SQLite retains only control-plane state
-(models, profiles, trust, the current-session pointer). CLAT logs are
-readable by DSH tooling and vice versa; see
-[docs/storage.md](docs/storage.md).
+**Models**
 
-The runtime also retries transient model failures, injects trusted project
-instructions, bounds tool results, compacts long conversations without
-deleting raw history, maintains per-session todos, and assigns background
-session titles without overriding manual renames.
+- Presets for DeepSeek, GLM, Qwen, and Kimi — pick one in `/model`,
+  paste an API key, and start; any OpenAI-compatible endpoint works too
+- Thinking levels, live usage/cache/context telemetry, and provider
+  balance or quota display in the status bar
+
+**Tools & MCP**
+
+- Built-in file, search, and command tools; MCP servers from
+  `~/.clat/mcp.json` over stdio or HTTP
+- GLM Coding Plan users get the four official GLM MCP servers configured
+  automatically
+- `/mcp` shows every server's connection state, registered tools, and
+  failures
+
+**Safety**
+
+- Every side-effecting action passes interactive permission review with
+  full argument inspection — in the TUI and in headless runs alike
+- Read-only tools run freely; writes and commands wait for your
+  approval
+
+**Sessions**
+
+- Conversations persist locally and survive crashes; `/resume` reopens
+  any previous conversation of the project
+- All state lives under `~/.clat`
+
+**Interfaces**
+
+- Terminal UI with markdown rendering, scrolling, and text
+  selection/copy
+- `clat exec` for headless one-shot runs in scripts and CI, with the
+  same permission model
+- `clat demo` for a deterministic offline walkthrough of the agent loop
 
 ## Principles
 
@@ -87,20 +110,20 @@ clat demo     # deterministic model → tool → model loop, no remote model nee
 
 ## Documentation
 
-- [Architecture](docs/architecture.md) — core abstractions, model
-  protocol, conversation model, trust gate, native read tools
+- [Architecture](docs/architecture.md) — core abstractions, agent loop,
+  trust gate, native read tools
 - [Using the TUI](docs/usage.md) — panels, keys, commands, markdown,
   scrolling, status line
-- [Model editor](docs/model-editor.md) — presets (DeepSeek V4.0
-  Flash/Pro), advanced fields
+- [Model editor](docs/model-editor.md) — provider presets (DeepSeek,
+  GLM, Qwen, Kimi) and advanced fields
 - [Permissions](docs/permissions.md) — safe-by-default policy,
   interactive approvals with mandatory argument review
 - [MCP integration](docs/mcp.md) — `~/.clat/mcp.json`, protocol
   support, tool mapping, resource limits
-- [Providers](docs/providers.md) — OpenAI Responses and Compatible
-  adapters, DeepSeek reasoning replay
-- [Persistent state](docs/storage.md) — `~/.clat` layout,
-  DSH-compatible session journal, crash recovery, integrity guarantees
+- [Providers](docs/providers.md) — provider adapters and
+  vendor-specific behavior (reasoning, caching, quotas)
+- [Persistent state](docs/storage.md) — `~/.clat` layout, session
+  journal, crash recovery, integrity guarantees
 - [Release signing](docs/releasing.md) — Minisign trust root, offline
   signing, draft publishing, and key rotation
 - [Live-model validation](docs/live-validation.md) — the two gates

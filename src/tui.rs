@@ -10,8 +10,8 @@ use crate::tui_worker::{
 };
 use crate::{
     ApplicationEvent, ApplicationRunRequest, BootstrapApplication, CompactHandle, CompactionStatus,
-    ModelConfig, ModelEvent, ModelVendor, PermissionDecision, PermissionRequest, Project,
-    ProjectAuthorization, ProviderCredentials, ProviderDescriptor, RunEvent, RunHandle,
+    McpStatusDto, ModelConfig, ModelEvent, ModelVendor, PermissionDecision, PermissionRequest,
+    Project, ProjectAuthorization, ProviderCredentials, ProviderDescriptor, RunEvent, RunHandle,
     SteerOutcome, ThinkingLevel, TrustedProjectApplication, Usage, apply_thinking_level,
     effective_thinking_level, next_thinking_level, thinking_levels,
 };
@@ -38,9 +38,36 @@ use std::thread;
 use std::time::{Duration, Instant};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-/// Spinner frames for the "thinking" indicator, advancing on every render
-/// tick.
+/// Spinner frames for the "thinking" indicator（状态栏唯一旋转元素）。
+/// 2026-08-19 起帧步进为每 [`SPINNER_STEP_TICKS`] 个渲染 tick（160ms/帧
+/// @80ms 唤醒）：80ms 下盲文旋转快得看不清。
 const SPINNER_FRAMES: [&str; 8] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"];
+/// spinner 帧步进（渲染 tick 数）。
+const SPINNER_STEP_TICKS: u64 = 2;
+
+/// 动画帧号换算（纯函数，供 [`App::animation_tick`] 与不变量测试）：
+/// 帧号 = 流逝时间 / 帧周期。不变量 A-CLK：同一时刻任意次重绘得到
+/// 同一帧；帧差只由时间差决定——与重绘次数、绘制耗时、内容长度
+/// 全部无关（2026-08-19 用户三次反馈的根因是 draw() 自增帧号）。
+fn animation_tick_for(elapsed: Duration) -> u64 {
+    elapsed.as_millis() as u64 / SPINNER_FRAME.as_millis() as u64
+}
+
+/// 当前 spinner 帧字形（阶段行专用）。
+fn spinner_frame(tick: u64) -> &'static str {
+    SPINNER_FRAMES[((tick / SPINNER_STEP_TICKS) % SPINNER_FRAMES.len() as u64) as usize]
+}
+
+/// 会话区流式 assistant 前缀的"太阳"帧：四分圆旋转——保持圆形字形
+///（用户要求：原来的点是圆的，替代品也应是圆的），灰色与落定 ⏺ 同色
+/// 族、与状态栏的蓝色盲文 spinner 不同形不同色，不构成重复（2026-08-19
+/// 第二轮反馈：两个盲文旋转并排不好看）。
+const MARKER_FRAMES: [&str; 4] = ["◐", "◓", "◑", "◒"];
+
+/// 当前流式前缀帧（会话区专用，与 spinner 同步进、不同字形）。
+fn marker_frame(tick: u64) -> &'static str {
+    MARKER_FRAMES[((tick / SPINNER_STEP_TICKS) % MARKER_FRAMES.len() as u64) as usize]
+}
 
 /// run 内当前派生阶段（phase-1 P1-5）：从既有事件流派生，非独立状态机
 /// 输入；每个模型步（ModelRequested）重开 Waiting，步内只前进不回退。
@@ -107,15 +134,15 @@ fn format_clock(duration: Duration) -> String {
         format!("{}m{:02}s", secs / 60, secs % 60)
     }
 }
-/// One full band cycle, matching the harness animation duration (1.8s at
-/// ~12.5 render ticks per second).
-const SHIMMER_CYCLE_TICKS: f64 = 22.5;
-/// Softness of the light band, in characters.
-const SHIMMER_SIGMA: f64 = 1.2;
+/// 呼吸周期（渲染 tick）：状态文字整词亮度 low↔high 起伏一次的时长
+/// （≈2.9s @80ms 唤醒）。2026-08-19 第二轮反馈：移动光带（探照灯）在
+/// 字间的视觉速度必然随标签长度变化，无论周期怎么取都顾此失彼——
+/// 改为整词统一呼吸，没有任何元素在移动，长度依赖从构造上消失。
+const SHIMMER_CYCLE_TICKS: f64 = 36.0;
 
-/// 派生阶段状态行（phase-1 P1-5）：spinner + shimmer 阶段标签 + 双时钟
+/// 派生阶段状态行（phase-1 P1-5）：spinner + 呼吸阶段标签 + 双时钟
 /// `<phase> <phase-elapsed> · total <run-elapsed>`；Waiting 只报总计。
-/// shimmer 品牌动画照旧（B2 白名单例外）。
+/// 标签整词统一呼吸（品牌蓝 low↔high，B2 白名单例外）。
 fn phase_line(
     tick: u64,
     phase: Phase,
@@ -123,7 +150,7 @@ fn phase_line(
     run_elapsed: Option<Duration>,
     steering_queued: usize,
 ) -> Line<'static> {
-    let frame = SPINNER_FRAMES[(tick as usize) % SPINNER_FRAMES.len()];
+    let frame = spinner_frame(tick);
     let base = tui_theme::style(tui_theme::Role::ThinkingGlyph);
 
     let mut spans = vec![
@@ -131,25 +158,16 @@ fn phase_line(
         Span::styled(" ", base),
     ];
 
-    let label = phase.label();
-    let text_len = label.chars().count() as f64;
-    let band_center = (tick as f64 % SHIMMER_CYCLE_TICKS) / SHIMMER_CYCLE_TICKS * text_len;
-    for (index, ch) in label.chars().enumerate() {
-        let position = index as f64 + 0.5;
-        let mut distance = (position - band_center).abs();
-        if distance > text_len / 2.0 {
-            distance = text_len - distance; // the band wraps around the text
-        }
-        let intensity = (-(distance * distance) / (2.0 * SHIMMER_SIGMA * SHIMMER_SIGMA)).exp();
-        spans.push(Span::styled(
-            ch.to_string(),
-            Style::default().fg(tui_theme::blend(
-                tui_theme::BRAND_SHIMMER_LOW,
-                tui_theme::BRAND_SHIMMER_HIGH,
-                intensity,
-            )),
-        ));
-    }
+    // 整词呼吸：亮度 = (1 - cos(2πt/T)) / 2，t=0 最暗、半周期最亮。
+    // 单一 span、无逐字样式——与标签长度彻底无关。
+    let intensity =
+        ((tick as f64 / SHIMMER_CYCLE_TICKS) * std::f64::consts::TAU).cos() * -0.5 + 0.5;
+    let label_style = Style::default().fg(tui_theme::blend(
+        tui_theme::BRAND_SHIMMER_LOW,
+        tui_theme::BRAND_SHIMMER_HIGH,
+        intensity,
+    ));
+    spans.push(Span::styled(phase.label(), label_style));
 
     if let Some(run_elapsed) = run_elapsed {
         let clocks = match (phase, phase_elapsed) {
@@ -181,9 +199,10 @@ fn phase_line(
 /// token 或服务端未上报缓存命中时不显示（返回 None）。
 fn cache_hit_percent(usage: &Usage) -> Option<String> {
     let cached = usage.cached_input_tokens?;
-    if usage.input_tokens == 0 || cached == 0 {
+    if usage.input_tokens == 0 {
         return None;
     }
+    // Some(0) 是"服务端上报了零命中"——真实的 0.00%，不是未知。
     let percent = cached as f64 / usage.input_tokens as f64 * 100.0;
     Some(format!("{percent:.2}%"))
 }
@@ -385,9 +404,12 @@ fn copy_to_clipboard(text: &str) -> bool {
         .is_ok()
 }
 
-/// 状态栏右侧遥测段，按优先级降序（额度 > Cache > Context）。各段
-/// 无值即不产生；仅 DeepSeek/GLM 端点有遥测。渲染时
-/// `fit_status_suffix` 在窄终端从尾部（最低优先）开始让位。
+/// 状态栏右侧遥测段，按优先级降序（额度 > Cache > Context）。Wallet/
+/// Token 段随余额查询就绪；Cache/Context 对 DeepSeek/GLM **常驻**——
+/// 无数据时显示 `--%` / `0`（2026-08-19 用户反馈：启动/首跑中途三段
+/// 必须齐全，布局不跳变）。journal 还原 + 流式实时累计让真实值尽早
+/// 出现。渲染时 `fit_status_suffix` 在窄终端从尾部（最低优先）开始
+/// 让位。
 ///
 /// - DeepSeek：`Wallet: ￥89.35 · Cache: 99.99% · Context: 120k/1M`
 /// - GLM Coding Plan：`Token: 87% · Cache: 99.99% · Context: 120k/1M`
@@ -413,19 +435,22 @@ fn status_suffix_segments(
             parts.push(format!("Token: {balance}"));
         }
     }
-    if let Some(percent) = cache_hit_percent(session_usage) {
-        parts.push(format!("Cache: {percent}"));
-    }
+    // Cache 段对 DeepSeek/GLM 常驻：无数据时显示 `--%`（新会话尚未
+    // 首跑、或适配器未上报），三段布局自启动起稳定。
+    let cache = cache_hit_percent(session_usage).unwrap_or_else(|| "--%".into());
+    parts.push(format!("Cache: {cache}"));
     // Context 当前值 ≈ 最近一次模型请求的 input+output（下一次请求
     // 的近似起点）；分母是预设的官方上下文窗口，自定义端点未知则
-    // 省略整段。
+    // 省略整段。新会话无请求历史时按 0 计。
     let window = config
         .preset
         .as_deref()
         .and_then(preset_by_id)
         .map(|preset| preset.context_window);
-    if let (Some(usage), Some(window)) = (last_turn_usage, window) {
-        let current = usage.input_tokens + usage.output_tokens;
+    if let Some(window) = window {
+        let current = last_turn_usage
+            .map(|usage| usage.input_tokens + usage.output_tokens)
+            .unwrap_or(0);
         parts.push(format!(
             "Context: {}/{}",
             format_tokens(current),
@@ -568,7 +593,7 @@ pub fn run(project: Project) -> io::Result<()> {
         PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
     );
 
-    let (result, close_error) = match App::new(project) {
+    let (result, close_error) = match App::open_deferred(project, None) {
         Err(error) => (Err(io::Error::other(error)), None),
         Ok(mut app) => {
             let run_result = app.run(&mut terminal);
@@ -585,7 +610,7 @@ pub fn run(project: Project) -> io::Result<()> {
     crate::tui_logo::print_farewell();
     // 显式 shutdown 的失败在终端恢复后可见地报告（plan §16 阶段5）。
     if let Some(error) = close_error {
-        let _ = writeln!(io::stderr(), "clat: application close failed: {error}");
+        let _ = writeln!(io::stderr(), "clat: {error}");
     }
     result.and(mouse_result).and(paste_result)
 }
@@ -610,6 +635,27 @@ struct PendingAskUser {
     answer_tx: Sender<crate::interaction::AskAnswer>,
     selection: usize,
     custom: Option<String>,
+}
+
+/// 信息弹窗（/help、/mcp）的种类。两类共用滚动/翻页/绘制骨架；键位
+/// 差异只有 /mcp 多一个 `r` 刷新。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum InfoDialogKind {
+    Help,
+    Mcp,
+}
+
+/// 打开中的信息弹窗：种类 + 当前滚动位（绘制期钳制在
+/// `App::info_scroll_max`）。
+struct InfoDialog {
+    kind: InfoDialogKind,
+    offset: usize,
+}
+
+impl InfoDialog {
+    fn new(kind: InfoDialogKind) -> Self {
+        Self { kind, offset: 0 }
+    }
 }
 
 struct App {
@@ -658,7 +704,12 @@ struct App {
     /// `/compact` 进行中的句柄；Esc 取消。
     compact_handle: Option<CompactHandle>,
     phases: PhaseTracker,
-    spinner_tick: u64,
+    /// 动画时钟起点：帧号 = 流逝时间 / [`SPINNER_FRAME`]（见
+    /// [`App::animation_tick`]）。2026-08-19 第三轮反馈：旧实现每个
+    /// draw() 自增帧号——重绘频率（流式事件洪峰）把旋转/呼吸加速成
+    /// 频闪，单帧绘制耗时长（长转录）又拖成慢动作，速度永远随"这一
+    /// 帧画了多少东西"漂移。真实时间驱动的帧号对重绘次数彻底不敏感。
+    animation_epoch: Instant,
     conversation_scroll_from_bottom: usize,
     input_area: Rect,
     editor_area: Option<Rect>,
@@ -671,13 +722,34 @@ struct App {
     /// 与复制仍然有效。
     selection: Option<TextSelection>,
     should_quit: bool,
+    /// 信息弹窗（/help、/mcp）：`Some` = 打开。两类弹窗共用一套滚动/
+    /// 翻页/绘制骨架（内容驱动高度，2026-08-19 第三轮反馈：旧 /help
+    /// 恒取满额高度，内容再少也是整屏框、上下边距形同虚设）。
+    info_dialog: Option<InfoDialog>,
+    /// 绘制期计算的最大滚动位（info 弹窗每帧刷新，按键翻页用它钳制）。
+    /// 首帧绘制先于任何按键，键处理器读到的总是有效值。
+    info_scroll_max: usize,
+    /// 绘制期记录的弹窗可视行数（PgUp/PgDn 的翻页步长）。
+    info_page: usize,
+    /// /mcp 打开时缓存的 MCP 状态（DTO）；弹窗内 `r` 向 Application 重取。
+    mcp_view: Option<McpStatusDto>,
     /// 余额/额度当前值：核心 Monitor 插件经 ApplicationEvent 写回，状态栏读取。
     balance: Option<String>,
-    /// 本会话累计 token 用量，用于状态栏缓存命中百分比。
+    /// 本会话累计 token 用量，用于状态栏缓存命中百分比。journal 还原
+    /// （挂载/切换）+ 运行中流式实时累计 + run 结束以结果权威覆盖。
     session_usage: Usage,
     /// 最近一次模型请求的用量（INV-F：随会话切换/新建重置），用于
     /// 状态栏 `Context: 120k/1M` 的当前值近似。
     last_turn_usage: Option<Usage>,
+    /// 本次 run 开始时的会话用量基线：流式 Usage 事件在其上累加出
+    /// 实时值，run 结束以 RunOutput 的全量结果替换（权威、不重复计）。
+    run_usage_base: Option<Usage>,
+    /// 本次 run 内流式 Usage 事件的累计（每请求一份）。
+    run_usage_acc: Usage,
+    /// 后台挂载（TUI 先行启动，2026-08-19 用户反馈）：Some = 会话仍在
+    /// 加载（LOGO 欢迎页 + loading 状态 + 禁输入），接收端交出挂载
+    /// 完成的 TrustedProjectApplication。未受信路径无重活，不进入该态。
+    loading: Option<mpsc::Receiver<Result<TrustedProjectApplication, String>>>,
     /// 快照测试确定性钩子：冻结动画帧号，同一输入序列永远同一画面。
     #[cfg(test)]
     test_freeze_tick: bool,
@@ -689,21 +761,45 @@ struct App {
 }
 
 impl App {
-    /// 两阶段构造（A-02）：
-    ///
-    /// 1. **最小构造**——只打开全局存储、查询信任表。未受信目录在
-    ///    此阶段不建会话、不读项目历史、不发任何网络请求、不启动
-    ///    任何 MCP 子进程（恶意项目可用本地文件劫持 `npx` 等查询
-    ///    cwd 的命令，确权前绝不能替它拉起进程）。
-    /// 2. **项目初始化**（已受信时立即执行；未受信时在确权成功后
-    ///    执行）——加载会话/消息/历史/模型配置，并以 `~/.clat` 为
-    ///    固定 cwd 启动 MCP 服务器。
-    fn new(project: Project) -> Result<Self, String> {
-        Self::open(project, None)
+    /// 快照测试用可注入 storage root 的同步构造入口（生产路径是
+    /// [`Self::open_deferred`]：TUI 先行、会话后台加载；测试需要构
+    /// 造即就绪的 App）。
+    #[cfg(test)]
+    fn open(project: Project, storage_root: Option<PathBuf>) -> Result<Self, String> {
+        let mut app = Self::open_minimal(project, storage_root)?;
+        if !app.trust_prompt {
+            app.initialize_project()?;
+        }
+        Ok(app)
     }
 
-    /// 快照测试用可注入 storage root 的构造入口；生产路径 `new` 用默认根。
-    fn open(project: Project, storage_root: Option<PathBuf>) -> Result<Self, String> {
+    /// 生产构造（2026-08-19 用户反馈：大会话启动等待一个黑窗口）：
+    /// 最小阶段同步完成即返回，TUI 先行上屏；重活（挂载 + 大会话
+    /// journal 回放）挪到后台线程，加载画面（LOGO 欢迎页 + loading
+    /// 状态 + 禁输入）接管，完成后经 [`Self::poll_loading`] 交接。
+    /// 未受信路径无重活（无会话可载），走同步确权流程。
+    fn open_deferred(project: Project, storage_root: Option<PathBuf>) -> Result<Self, String> {
+        let mut app = Self::open_minimal(project, storage_root)?;
+        if app.trust_prompt {
+            return Ok(app);
+        }
+        let bootstrap = app
+            .bootstrap
+            .take()
+            .expect("trusted path holds the bootstrap scope");
+        let (loaded, loading) = mpsc::channel();
+        thread::spawn(move || {
+            let _ = loaded.send(bootstrap.into_trusted().map_err(|error| error.to_string()));
+        });
+        app.loading = Some(loading);
+        app.status = "loading conversation…".into();
+        app.status_until = None;
+        Ok(app)
+    }
+
+    /// 最小构造（两阶段构造 A-02 的第一阶段）：打开全局存储、查询信
+    /// 任表；不挂载项目、不读会话、不启动 MCP。
+    fn open_minimal(project: Project, storage_root: Option<PathBuf>) -> Result<Self, String> {
         let bootstrap = match storage_root {
             Some(root) => BootstrapApplication::open(project.clone(), root),
             None => BootstrapApplication::open_default(project.clone()),
@@ -715,7 +811,7 @@ impl App {
 
         // 状态栏初始显示当前打开的项目目录（home 缩写为 ~）。
         let status = abbreviate_home(project.root());
-        let mut app = Self {
+        let app = Self {
             project,
             bootstrap: Some(bootstrap),
             application: None,
@@ -743,7 +839,7 @@ impl App {
             run_handle: None,
             compact_handle: None,
             phases: PhaseTracker::default(),
-            spinner_tick: 0,
+            animation_epoch: Instant::now(),
             conversation_scroll_from_bottom: 0,
             input_area: Rect::default(),
             editor_area: None,
@@ -752,9 +848,16 @@ impl App {
             conversation_rows: 0,
             selection: None,
             should_quit: false,
+            info_dialog: None,
+            info_scroll_max: 0,
+            info_page: 1,
+            mcp_view: None,
             balance: None,
             session_usage: Usage::default(),
             last_turn_usage: None,
+            run_usage_base: None,
+            run_usage_acc: Usage::default(),
+            loading: None,
             #[cfg(test)]
             test_freeze_tick: false,
             #[cfg(test)]
@@ -762,14 +865,13 @@ impl App {
             #[cfg(test)]
             test_run_elapsed: None,
         };
-        if trusted {
-            app.initialize_project()?;
-        }
         Ok(app)
     }
 
     /// 项目级资源初始化：挂载 Trusted Project（已信任路径）并采纳
-    /// 快照。任何失败向上报告——确权流程据此保持阻断。
+    /// 快照。同步构造（测试路径）使用；确权流程走
+    /// `authorize_and_mount`（见 handle_key 的确权分支）。
+    #[cfg(test)]
     fn initialize_project(&mut self) -> Result<(), String> {
         let bootstrap = self
             .bootstrap
@@ -789,6 +891,67 @@ impl App {
         self.adopt_snapshot()
     }
 
+    /// 后台挂载交接（每帧轮询）：完成则订阅 application 事件流、采纳
+    /// 快照、恢复常驻状态栏、解锁输入。失败与同步路径同款语义——
+    /// 报错退出（用户视角与"启动失败"一致，不留在加载死屏）。
+    fn poll_loading(&mut self) {
+        let Some(loading) = self.loading.take() else {
+            return;
+        };
+        let outcome = match loading.try_recv() {
+            Ok(outcome) => outcome,
+            Err(mpsc::TryRecvError::Empty) => {
+                self.loading = Some(loading);
+                return;
+            }
+            Err(mpsc::TryRecvError::Disconnected) => {
+                // 线程未发消息即终止（panic）：按加载失败处理。
+                Err("background mount thread terminated".into())
+            }
+        };
+        match outcome {
+            Ok(application) => {
+                self.application = Some(application);
+                self.wire_application_events();
+                // 先复位常驻状态栏、再采纳快照（对抗审计 2026-08-19 修
+                // 复：adopt_snapshot 里的 MCP 状态提示是 flash——复位放
+                // 在后面会把它立即覆盖，用户永远看不到）。
+                self.status = self.default_status.clone();
+                self.status_until = None;
+                if let Err(error) = self.adopt_snapshot() {
+                    self.close_error = Some(format!("project initialization failed: {error}"));
+                    self.should_quit = true;
+                }
+            }
+            Err(error) => {
+                self.close_error = Some(format!("project initialization failed: {error}"));
+                self.should_quit = true;
+            }
+        }
+    }
+
+    /// 订阅 application 事件流（余额/压缩）并触发首次余额查询。启动
+    /// 即挂载与后台交接两个路径共用——订阅晚于挂载不会丢余额事件
+    ///（refresh_monitor 立即拉一次）。
+    fn wire_application_events(&mut self) {
+        let Some(application) = &self.application else {
+            return;
+        };
+        let Some(ui) = self.event_sender.clone() else {
+            return;
+        };
+        let (application_sender, application_events) = mpsc::channel();
+        application.subscribe(application_sender);
+        thread::spawn(move || {
+            while let Ok(event) = application_events.recv() {
+                if ui.send(UiEvent::Application(event)).is_err() {
+                    break;
+                }
+            }
+        });
+        application.refresh_monitor();
+    }
+
     /// 从已挂载的 application 读取项目快照并重置前端状态。
     fn adopt_snapshot(&mut self) -> Result<(), String> {
         let snapshot = match self.application.as_mut().map(|app| app.snapshot()) {
@@ -805,6 +968,10 @@ impl App {
         self.config = snapshot.config;
         self.credentials = snapshot.credentials;
         self.provider_descriptors = snapshot.provider_descriptors;
+        // journal 用量统计（DSH assistant/message.usage）：状态栏的
+        // Cache/Context 启动即有值，不必等首次 run 上报。
+        self.session_usage = snapshot.session_usage;
+        self.last_turn_usage = snapshot.last_request_usage;
         if snapshot.mcp.configured != 0 {
             if snapshot.mcp.failures.is_empty() {
                 self.flash_status(format!(
@@ -848,19 +1015,9 @@ impl App {
             {}
         });
 
-        if let Some(application) = &self.application {
-            let (application_sender, application_events) = mpsc::channel();
-            application.subscribe(application_sender);
-            let ui = event_sender.clone();
-            thread::spawn(move || {
-                while let Ok(event) = application_events.recv() {
-                    if ui.send(UiEvent::Application(event)).is_err() {
-                        break;
-                    }
-                }
-            });
-            application.refresh_monitor();
-        }
+        // 启动即挂载（同步 open，测试路径）在这里订阅；后台交接路径
+        // 在 poll_loading 完成时订阅——两者共用 wire_application_events。
+        self.wire_application_events();
 
         let events = self
             .events
@@ -887,12 +1044,17 @@ impl App {
                     // 批量收割全部已就绪事件并合并成一帧绘制。不能用
                     // `while let Terminal = try_recv()`：模式不匹配也会
                     // 消费 Worker/Permission 消息，令运行永久等待。
-                    // 权限审阅与问答对话框期间每个导航键后都要先绘制
-                    // 一帧（问答侧维持选择高亮与输入回显的即时性）。
-                    if self.pending_permission.is_none() && self.pending_ask_user.is_none() {
+                    // 权限审阅、问答对话框与帮助弹窗期间每个导航键后都
+                    // 要先绘制一帧（维持滚动/高亮的即时性）。
+                    if self.pending_permission.is_none()
+                        && self.pending_ask_user.is_none()
+                        && self.info_dialog.is_none()
+                    {
                         while let Ok(event) = events.try_recv() {
                             self.handle_ui_event(event);
-                            if self.pending_permission.is_some() || self.pending_ask_user.is_some()
+                            if self.pending_permission.is_some()
+                                || self.pending_ask_user.is_some()
+                                || self.info_dialog.is_some()
                             {
                                 break;
                             }
@@ -903,6 +1065,9 @@ impl App {
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
             self.expire_status();
+            // 后台挂载完成则交接（每帧轮询；loading 态自身保证有唤醒
+            // deadline，不会死等）。
+            self.poll_loading();
             terminal.draw(|frame| self.draw(frame))?;
         }
         // 显式 shutdown：flush 会话与 checkpoint、join 全部 worker，
@@ -910,7 +1075,7 @@ impl App {
         if let Some(application) = self.application.take()
             && let Err(error) = application.close()
         {
-            self.close_error = Some(error.to_string());
+            self.close_error = Some(format!("application close failed: {error}"));
         }
         Ok(())
     }
@@ -919,15 +1084,16 @@ impl App {
         self.close_error.take()
     }
 
-    /// 快照测试钩：冻结 spinner 帧号（见 `test_freeze_tick`）。
-    #[cfg(test)]
-    fn tick_frozen(&self) -> bool {
-        self.test_freeze_tick
-    }
-
-    #[cfg(not(test))]
-    fn tick_frozen(&self) -> bool {
-        false
+    /// 动画帧号：只由真实流逝时间决定（80ms/帧）。事件洪峰里的额外
+    /// 重绘拿到同一帧号，重绘慢时帧号按真实时间推进——旋转/呼吸速度
+    /// 与"画了多少次、每次画多重"彻底解耦。快照测试钩
+    /// （`test_freeze_tick`）冻结为 0，保证同一输入序列永远同一画面。
+    fn animation_tick(&self) -> u64 {
+        #[cfg(test)]
+        if self.test_freeze_tick {
+            return 0;
+        }
+        animation_tick_for(self.animation_epoch.elapsed())
     }
 
     /// 阶段耗时；测试可注入固定值（见 `test_phase_elapsed`）。
@@ -991,10 +1157,24 @@ impl App {
             }
             return;
         }
+        // 会话加载门（2026-08-19）：后台挂载完成前禁止一切交互——无
+        // 会话可提交、无可滚内容、无可粘贴目标；唯一出口是退出键。
+        if self.loading.is_some() {
+            if let Event::Key(key) = event
+                && key.kind == KeyEventKind::Press
+                && key.modifiers.contains(KeyModifiers::CONTROL)
+                && matches!(key.code, KeyCode::Char('c' | 'C'))
+            {
+                self.should_quit = true;
+            }
+            return;
+        }
         match event {
             Event::Key(key) if key.kind == KeyEventKind::Press => self.handle_key(key),
             Event::Paste(text) => self.handle_paste(&text),
-            Event::Mouse(mouse) => self.handle_mouse(mouse),
+            // 帮助弹窗模态期间吞掉鼠标：后面无可选内容，避免选区高亮
+            // 盖住对话框边框（同确权门的做法）。
+            Event::Mouse(mouse) if self.info_dialog.is_none() => self.handle_mouse(mouse),
             _ => {}
         }
     }
@@ -1007,6 +1187,12 @@ impl App {
         if self.phases.phase.is_some() {
             let frame = now + SPINNER_FRAME;
             deadline = Some(deadline.map_or(frame, |current| current.min(frame)));
+        }
+        // 加载中每帧轮询后台挂载：没有这条 deadline，空闲时主循环会
+        // 无限挂起在 recv 上，交接永远不被发现。
+        if self.loading.is_some() {
+            let poll = now + Duration::from_millis(50);
+            deadline = Some(deadline.map_or(poll, |current| current.min(poll)));
         }
         deadline
     }
@@ -1071,6 +1257,10 @@ impl App {
                 match trusted {
                     Ok(application) => {
                         self.application = Some(application);
+                        // 订阅余额/压缩事件流：确权晚于 run() 启动期的
+                        // wire_application_events，此处补挂（同时修复
+                        // 确权路径从未订阅的历史缺口）。
+                        self.wire_application_events();
                         if let Err(error) = self.adopt_snapshot() {
                             self.flash_status(format!("failed to trust project: {error}"));
                             return;
@@ -1185,6 +1375,38 @@ impl App {
             return;
         }
 
+        // 信息弹窗（/help、/mcp）独占按键：Esc/Enter 关闭，↑/↓ 逐行、
+        // PgUp/PgDn 翻页（步长＝绘制期记录的可视行数；钳制在最大滚
+        // 动位）；/mcp 额外接受 `r` 重取状态。
+        if self.info_dialog.is_some() {
+            let max = self.info_scroll_max;
+            let page = self.info_page.max(1);
+            let is_mcp = self
+                .info_dialog
+                .as_ref()
+                .is_some_and(|dialog| dialog.kind == InfoDialogKind::Mcp);
+            let mut close = false;
+            let mut refresh = false;
+            if let Some(dialog) = self.info_dialog.as_mut() {
+                match key.code {
+                    KeyCode::Esc | KeyCode::Enter => close = true,
+                    KeyCode::Char('r') | KeyCode::Char('R') if is_mcp => refresh = true,
+                    KeyCode::Up => dialog.offset = dialog.offset.saturating_sub(1),
+                    KeyCode::Down => dialog.offset = (dialog.offset + 1).min(max),
+                    KeyCode::PageUp => dialog.offset = dialog.offset.saturating_sub(page),
+                    KeyCode::PageDown => dialog.offset = (dialog.offset + page).min(max),
+                    _ => {}
+                }
+            }
+            if close {
+                self.info_dialog = None;
+            }
+            if refresh {
+                self.refresh_mcp_view();
+            }
+            return;
+        }
+
         // /resume 会话选择器：独占按键直到恢复或取消。
         if self.session_picker.is_some() {
             if let Some(picker) = self.session_picker.as_mut() {
@@ -1282,8 +1504,8 @@ impl App {
     }
 
     fn handle_paste(&mut self, text: &str) {
-        // 选择器与问答对话框没有文本输入目标，忽略粘贴。
-        if self.picker.is_none() && self.pending_ask_user.is_none() {
+        // 选择器、问答对话框与信息弹窗没有文本输入目标，忽略粘贴。
+        if self.picker.is_none() && self.pending_ask_user.is_none() && self.info_dialog.is_none() {
             if let Some(editor) = &mut self.editor {
                 editor.handle_paste(text);
             } else {
@@ -1666,10 +1888,10 @@ impl App {
             crate::tui_conversation::ConversationModel::from_replay(&snapshot.replay);
         self.input = InputBuffer::new(snapshot.input_history);
         self.conversation_scroll_from_bottom = 0;
-        // 用量指标归属会话（TUI-L04）：缓存命中率与上下文水位都随切换
-        // 清零，目标会话首次 run 后重新累计/上报。
-        self.session_usage = Usage::default();
-        self.last_turn_usage = None;
+        // 用量指标归属会话（TUI-L04）：恢复目标会话的 journal 统计
+        // （与挂载路径同源），Cache/Context 切换即有值。
+        self.session_usage = snapshot.session_usage;
+        self.last_turn_usage = snapshot.last_request_usage;
         Ok(())
     }
 
@@ -1691,7 +1913,8 @@ impl App {
         };
         let previous = self.config.clone();
         self.config.thinking_level = Some(next);
-        apply_thinking_level(&mut self.config.extra_body, next);
+        let vendor = self.config.vendor();
+        apply_thinking_level(&mut self.config.extra_body, vendor, next);
         let saved = match self.application.as_ref() {
             Some(application) => application
                 .save_model_state(&self.config, &self.credentials)
@@ -1833,8 +2056,20 @@ impl App {
                 self.flash_status("select a model");
             }
             "/help" => {
-                self.status = "/model · /new · /clear · /compact · /resume · /quit · ↑/↓ input history · PgUp/PgDn chat · Shift+Tab thinking level · Ctrl+O tool cards · drag = select & copy · Ctrl+C re-copies / quit · Shift+drag then Cmd+C = native copy · Enter while running steers"
-                    .into();
+                // 帮助改弹窗（2026-08-19）：原先是状态栏一行长文本，
+                // 已长到与右侧遥测段重叠。
+                self.info_dialog = Some(InfoDialog::new(InfoDialogKind::Help));
+            }
+            "/mcp" => {
+                // MCP 状态弹窗：数据来自挂载期的 McpStatus（Application
+                // DTO），弹窗内 `r` 重取。前端不接触会话/注册表本体。
+                match self.application.as_ref() {
+                    Some(application) => {
+                        self.mcp_view = Some(application.mcp_status());
+                        self.info_dialog = Some(InfoDialog::new(InfoDialogKind::Mcp));
+                    }
+                    None => self.flash_status("project application is unavailable"),
+                }
             }
             "/compact" => {
                 // 异步：立即返回 handle，状态经 CompactionUpdated 事件回流
@@ -1890,6 +2125,8 @@ impl App {
                 // 用量指标归属会话（TUI-L04）：新会话从零累计。
                 self.session_usage = Usage::default();
                 self.last_turn_usage = None;
+                self.run_usage_base = None;
+                self.run_usage_acc = Usage::default();
                 self.flash_status("new conversation");
             }
             "/quit" | "/exit" => self.should_quit = true,
@@ -1965,6 +2202,9 @@ impl App {
         self.conversation_scroll_from_bottom = 0;
         self.run_handle = Some(handle);
         self.running = true;
+        // 实时用量基线：流式 Usage 在其上累加，结束以 RunOutput 权威替换。
+        self.run_usage_base = Some(self.session_usage.clone());
+        self.run_usage_acc = Usage::default();
         self.flash_status("starting model…");
 
         // Completion is already post-persistence and post-scope-cleanup; this
@@ -2062,12 +2302,19 @@ impl App {
             } => {}
             // 流式 usage（DeepSeek 经 stream_options.include_usage，GLM
             // 默认携带）只取最近一次：input+output 近似当前上下文水位，
-            // 供状态栏 Context 段使用。多轮 run 每轮覆盖前一轮。
+            // 供状态栏 Context 段使用。多轮 run 每轮覆盖前一轮。同时
+            // 在 run 基线上实时累计会话用量——Cache 段首跑中途即有值。
             RunEvent::ModelStream {
                 event: ModelEvent::Usage(usage),
                 ..
             } => {
-                self.last_turn_usage = Some(usage);
+                self.last_turn_usage = Some(usage.clone());
+                self.run_usage_acc.add_assign(&usage);
+                if let Some(base) = self.run_usage_base.clone() {
+                    let mut live = base;
+                    live.add_assign(&self.run_usage_acc);
+                    self.session_usage = live;
+                }
             }
             RunEvent::ToolRequested { call } => {
                 self.flash_status(format!("tool → {} {}", call.name, call.arguments));
@@ -2107,8 +2354,15 @@ impl App {
         self.refresh_balance_now();
         match result {
             Ok(done) => {
-                // 累计会话用量，供状态栏缓存命中百分比使用。
-                self.session_usage.add_assign(&done.usage);
+                // 会话用量以 run 结果权威覆盖：RunOutput.usage 是全 run
+                // 总量，替换"基线 + 流式累计"的实时近似（不重复计）。
+                match self.run_usage_base.take() {
+                    Some(base) => {
+                        self.session_usage = base;
+                        self.session_usage.add_assign(&done.usage);
+                    }
+                    None => self.session_usage.add_assign(&done.usage),
+                }
                 // 非流式 provider 兜底：本轮无任何 delta 时以最终输出
                 // 回填 assistant（与 journal 的 settled 文本对拍一致）。
                 self.conversation.settle_streamed_output(&done.output);
@@ -2122,7 +2376,13 @@ impl App {
                 }
             }
             Err(failure) => {
-                self.session_usage.add_assign(&failure.usage);
+                match self.run_usage_base.take() {
+                    Some(base) => {
+                        self.session_usage = base;
+                        self.session_usage.add_assign(&failure.usage);
+                    }
+                    None => self.session_usage.add_assign(&failure.usage),
+                }
                 self.conversation
                     .push_turn_end(format!("error: {}", failure.error));
                 self.flash_status(format!(
@@ -2174,9 +2434,12 @@ impl App {
             render_trust_dialog(frame, area, self.project.root());
             return;
         }
-        if !self.tick_frozen() {
-            self.spinner_tick += 1;
-        }
+        let tick = self.animation_tick();
+        // 流式 assistant 前缀的活动帧：run 进行中为 spinner（等待首
+        // token / 长思考时转录区不再是一动不动的 ⏺），run 结束落定。
+        // 太阳帧保持圆形与灰色，不与状态栏的蓝色盲文 spinner 重复。
+        let streaming = self.running.then(|| marker_frame(tick));
+        self.conversation.set_stream_marker(streaming);
         // 瞬时提示到期回落为常驻状态（当前目录）。
         self.expire_status();
         // The input box grows with the number of wrapped lines, up to
@@ -2218,7 +2481,7 @@ impl App {
         let suffix = fit_status_suffix(&segments, budget);
         let status_line = if let Some(phase) = self.phases.phase {
             phase_line(
-                self.spinner_tick,
+                tick,
                 phase,
                 self.phase_elapsed(),
                 self.run_elapsed(),
@@ -2254,6 +2517,7 @@ impl App {
             || self.session_picker.is_some()
             || self.picker.is_some()
             || self.editor.is_some()
+            || self.info_dialog.is_some()
         {
             frame.render_widget(
                 Block::default().style(Style::default().add_modifier(Modifier::DIM)),
@@ -2282,8 +2546,9 @@ impl App {
             editor.draw(frame, editor_area);
         } else {
             self.editor_area = None;
-            // 运行中也显示光标：输入框此时是 steering 编辑器。
-            if self.input_area.width > 2 && self.input_area.height > 2 {
+            // 运行中也显示光标：输入框此时是 steering 编辑器；加载中
+            // 输入被禁用，不显示光标（不暗示可输入）。
+            if self.input_area.width > 2 && self.input_area.height > 2 && self.loading.is_none() {
                 let (row, column) = self.input.cursor_position(self.input_text_width());
                 let visible_rows = self.input_area.height.saturating_sub(2) as usize;
                 let row = row.min(visible_rows.saturating_sub(1));
@@ -2301,6 +2566,109 @@ impl App {
         if self.pending_permission.is_some() {
             self.draw_permission_dialog(frame);
         }
+        if let Some(dialog) = &self.info_dialog {
+            match dialog.kind {
+                InfoDialogKind::Help => self.draw_help_dialog(frame),
+                InfoDialogKind::Mcp => self.draw_mcp_dialog(frame),
+            }
+        }
+    }
+
+    /// /mcp 弹窗内 `r` 刷新：从 Application 重取 MCP 状态并复位滚动
+    /// （内容行数可能变化，旧滚动位不再有意义）。Application 缺席
+    /// （未确权/已关闭）时保留原视图。
+    fn refresh_mcp_view(&mut self) {
+        let refreshed = self
+            .application
+            .as_ref()
+            .map(|application| application.mcp_status());
+        if let Some(refreshed) = refreshed {
+            self.mcp_view = Some(refreshed);
+        }
+        if let Some(dialog) = self.info_dialog.as_mut() {
+            dialog.offset = 0;
+        }
+    }
+
+    /// /help 帮助弹窗（2026-08-19）：黄框 + 压暗 + 四边边距（弹窗规范
+    /// 同其余弹窗）；内容按内宽折行，超出可视高度滚动（↑/↓/PgUp/PgDn），
+    /// 脚注常驻提示键位与是否还有下文。滚动位与翻页步长在绘制期
+    /// 记录，供按键钳制。
+    ///
+    /// 高度内容驱动（2026-08-19 第三轮反馈）：行数 + 边框 + 脚注，钳在
+    /// 高度预算内——短内容得到小框、上下留出真实边距；只有内容超长
+    /// 时才贴满预算（旧实现恒取满额高度，内容再少也是整屏框）。
+    fn draw_help_dialog(&mut self, frame: &mut Frame) {
+        let area = frame.area();
+        let inner_width = popup_inner_width(84, area);
+        let lines = help_dialog_lines(inner_width);
+        let dialog = centered_rect(84, content_dialog_height(lines.len(), area), area);
+        // 可视行数：内框（去边框）减脚注一行。
+        let visible = (dialog.height.saturating_sub(2 + 1)) as usize;
+        let max_scroll = lines.len().saturating_sub(visible);
+        self.info_scroll_max = max_scroll;
+        self.info_page = visible.max(1);
+        let offset = self
+            .info_dialog
+            .as_ref()
+            .map(|dialog| dialog.offset)
+            .unwrap_or(0)
+            .min(max_scroll);
+        let mut body: Vec<Line<'static>> = lines.into_iter().skip(offset).take(visible).collect();
+        let footer = if max_scroll > 0 {
+            if offset < max_scroll {
+                " ↑↓/PgUp/PgDn scroll · more below · Esc close "
+            } else {
+                " ↑↓/PgUp/PgDn scroll · end · Esc close "
+            }
+        } else {
+            " Esc close "
+        };
+        body.push(Line::from(Span::styled(
+            footer.trim(),
+            tui_theme::style(tui_theme::Role::Faint),
+        )));
+        clear_popup_with_guards(frame, dialog);
+        frame.render_widget(Paragraph::new(body).block(popup_block(" Help ")), dialog);
+    }
+
+    /// /mcp 状态弹窗：连接概览 + 每服务器一行（名称 · 传输 · 协议 ·
+    /// 版本 · 工具数）+ 失败条目（含 stderr 尾部，按内宽折行——它们是
+    /// 用户来排查的正文）。骨架与 /help 相同：内容驱动高度、超预算滚
+    /// 动、脚注键位（多一个 `r` 刷新）。数据是打开/刷新时缓存的
+    /// `McpStatusDto`，弹窗自身不触碰会话与注册表。
+    fn draw_mcp_dialog(&mut self, frame: &mut Frame) {
+        let area = frame.area();
+        let inner_width = popup_inner_width(84, area);
+        let view = self.mcp_view.clone().unwrap_or_default();
+        let lines = mcp_dialog_lines(&view, inner_width);
+        let dialog = centered_rect(84, content_dialog_height(lines.len(), area), area);
+        let visible = (dialog.height.saturating_sub(2 + 1)) as usize;
+        let max_scroll = lines.len().saturating_sub(visible);
+        self.info_scroll_max = max_scroll;
+        self.info_page = visible.max(1);
+        let offset = self
+            .info_dialog
+            .as_ref()
+            .map(|dialog| dialog.offset)
+            .unwrap_or(0)
+            .min(max_scroll);
+        let mut body: Vec<Line<'static>> = lines.into_iter().skip(offset).take(visible).collect();
+        let footer = if max_scroll > 0 {
+            if offset < max_scroll {
+                " ↑↓/PgUp/PgDn scroll · more below · r refresh · Esc close "
+            } else {
+                " ↑↓/PgUp/PgDn scroll · end · r refresh · Esc close "
+            }
+        } else {
+            " r refresh · Esc close "
+        };
+        body.push(Line::from(Span::styled(
+            footer.trim(),
+            tui_theme::style(tui_theme::Role::Faint),
+        )));
+        clear_popup_with_guards(frame, dialog);
+        frame.render_widget(Paragraph::new(body).block(popup_block(" MCP ")), dialog);
     }
 
     /// ask-user 对话框：问题原文（按实际宽度换行）+ 选项列表（选择行
@@ -2538,7 +2906,13 @@ impl App {
         } else {
             ("not configured — /model".into(), None)
         };
-        let state = if self.running { "running" } else { "ready" };
+        let state = if self.loading.is_some() {
+            "loading"
+        } else if self.running {
+            "running"
+        } else {
+            "ready"
+        };
         // 首行内容预算：总宽减边框 2 列、水平内边距 2 列与 "CLAT " 前缀
         // 5 列；宽度不足时逐级退化（TUI-L02），档位优先于模型名保留。
         let rest_budget = area.width.saturating_sub(2 + 2 + 5) as usize;
@@ -2633,7 +3007,9 @@ impl App {
     }
 
     fn draw_input(&self, frame: &mut Frame, area: Rect) {
-        let title = if self.running {
+        let title = if self.loading.is_some() {
+            "Loading conversation…"
+        } else if self.running {
             "Running — Enter steers · Esc cancels"
         } else {
             "Message"
@@ -2973,6 +3349,149 @@ pub(crate) fn popup_height_cap(area: Rect) -> u16 {
     } else {
         area.height
     }
+}
+
+/// 弹窗水平切分的实际宽度（列）：与 [`centered_rect`] 同一 Layout 与
+/// `POPUP_H_MARGIN` 钳制，供"行数依赖内宽、而矩形高度又依赖行数"的
+/// 内容驱动弹窗先行取宽（一致性由
+/// `popup_width_matches_centered_rect` 锁定，不共代码路径是为了不动
+/// 既有渲染的百分比取整行为）。
+pub(crate) fn popup_width(percent_x: u16, area: Rect) -> u16 {
+    let horizontal = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(area);
+    let mut width = horizontal[1].width;
+    let bounded = area.width.saturating_sub(2 * POPUP_H_MARGIN);
+    if width > bounded && bounded >= MIN_POPUP_WIDTH {
+        width = bounded;
+    }
+    width
+}
+
+/// 内容驱动弹窗的内宽（列）：弹窗宽减边框 2 列与内边距
+/// 2×POPUP_TEXT_PADDING。内容折行宽度与实际渲染矩形必须同源，否则
+/// 预算行数与真实可放行数错位（权限弹窗分页曾因此翻不到底）。
+pub(crate) fn popup_inner_width(percent_x: u16, area: Rect) -> usize {
+    popup_width(percent_x, area).saturating_sub(2 + 2 * POPUP_TEXT_PADDING) as usize
+}
+
+/// 内容驱动弹窗高度：内容行数 + 边框 2 行 + 脚注 1 行，钳在
+/// [`popup_height_cap`] 预算内。短内容得到小框（上下留出真实边距），
+/// 长内容恰好贴满预算继续滚动（2026-08-19 第三轮反馈：/help 恒取满额
+/// 高度，内容再少也是整屏框、边距形同虚设）。
+pub(crate) fn content_dialog_height(content_lines: usize, area: Rect) -> u16 {
+    (content_lines as u16)
+        .saturating_add(3)
+        .min(popup_height_cap(area))
+}
+
+/// /help 弹窗内容：命令与键位两节，逐条 `命令 — 说明`，按弹窗内宽
+/// 折行（wrap_text）。节标题 Bold，条目默认色。
+fn help_dialog_lines(width: usize) -> Vec<Line<'static>> {
+    let sections: &[(&str, &[(&str, &str)])] = &[
+        (
+            "Commands",
+            &[
+                ("/model", "configure the active model/provider"),
+                ("/new, /clear", "start a new conversation"),
+                ("/compact", "summarize earlier turns into a compact context"),
+                ("/resume", "pick a previous conversation to continue"),
+                ("/mcp", "inspect MCP servers, tools, and failures"),
+                ("/help", "this help"),
+                ("/quit", "exit"),
+            ],
+        ),
+        (
+            "Keys",
+            &[
+                ("Enter", "submit; while a run is active, submit steering"),
+                ("Shift+Enter, Alt+Enter, Ctrl+J", "insert a line break"),
+                (
+                    "Up / Down",
+                    "recall input history (or scroll the conversation)",
+                ),
+                ("PgUp / PgDn, mouse wheel", "scroll the conversation"),
+                ("Shift+Tab", "cycle the thinking level"),
+                ("Ctrl+O", "cycle tool cards (collapsed / expanded / hidden)"),
+                ("drag", "select text and copy it on release"),
+                ("Ctrl+C", "re-copy the selection; otherwise quit"),
+                ("Shift+drag", "the terminal's own selection, then Cmd+C"),
+                ("Esc", "cancel the running request; otherwise clear input"),
+            ],
+        ),
+    ];
+    let mut lines = Vec::new();
+    for (title, entries) in sections {
+        if !lines.is_empty() {
+            lines.push(Line::from(""));
+        }
+        lines.push(Line::from(Span::styled(
+            *title,
+            tui_theme::style(tui_theme::Role::Bold),
+        )));
+        for (name, description) in *entries {
+            for wrapped in wrap_text(&format!("  {name} — {description}"), width) {
+                lines.push(Line::from(wrapped));
+            }
+        }
+    }
+    lines
+}
+
+/// /mcp 弹窗内容行。结构：概览行（`connected/configured`）→ 空行 →
+/// 每服务器一行 `● name  transport · protocol · v版本 · N tools`
+///（名称默认色，其余 dim；这些字段短，保持单行不折）→ 空行 →
+/// `Failures` 节（失败消息按内宽折行，dim——含挂载失败时的 stderr
+/// 尾部，是排查的主要正文）。
+fn mcp_dialog_lines(view: &McpStatusDto, width: usize) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::from(vec![Span::styled(
+        format!(
+            "MCP servers: {}/{} connected",
+            view.connected, view.configured
+        ),
+        tui_theme::style(tui_theme::Role::Bold),
+    )])];
+    if !view.servers.is_empty() {
+        lines.push(Line::from(""));
+        for server in &view.servers {
+            let tools = match server.tools {
+                1 => "1 tool".to_owned(),
+                count => format!("{count} tools"),
+            };
+            lines.push(Line::from(vec![
+                Span::raw("● "),
+                Span::raw(server.name.clone()),
+                Span::styled(
+                    format!(
+                        "  {} · {} · v{} · {}",
+                        server.transport, server.protocol_version, server.server_version, tools
+                    ),
+                    tui_theme::style(tui_theme::Role::Dim),
+                ),
+            ]));
+        }
+    }
+    if !view.failures.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "Failures",
+            tui_theme::style(tui_theme::Role::Bold),
+        )));
+        for failure in &view.failures {
+            for wrapped in wrap_text(&format!("  {failure}"), width) {
+                lines.push(Line::from(Span::styled(
+                    wrapped,
+                    tui_theme::style(tui_theme::Role::Dim),
+                )));
+            }
+        }
+    }
+    lines
 }
 
 fn centered_rect(percent_x: u16, height: u16, area: Rect) -> Rect {
@@ -3425,23 +3944,8 @@ mod tests {
     }
 
     #[test]
-    fn phase_line_shimmers_a_soft_band_over_the_fixed_tone() {
-        // Extract the (character, style) pairs of the text part; the first
-        // two spans are the spinner frame and the separating space.
-        fn text_spans(line: &Line<'static>) -> Vec<(char, Style)> {
-            line.spans[2..]
-                .iter()
-                .map(|span| {
-                    (
-                        span.content.chars().next().expect("one char per span"),
-                        span.style,
-                    )
-                })
-                .collect()
-        }
-
+    fn phase_line_breathes_the_whole_label_at_a_fixed_period() {
         let at_start = phase_line(0, Phase::WaitingFirstToken, None, None, 0);
-        let text = text_spans(&at_start);
         // The spinner frame itself rotates and keeps the brand blue.
         assert_eq!(at_start.spans[0].content, SPINNER_FRAMES[0]);
         assert_eq!(
@@ -3449,40 +3953,57 @@ mod tests {
             Some(tui_theme::BRAND_SHIMMER_LOW)
         );
 
-        // The band sits on the seam at the start: both ends glow while the
-        // middle stays (approximately) in the fixed tone.
-        let brightness = |style: &Style| match style.fg {
+        // 呼吸（2026-08-19 第二轮反馈）：标签是单一 span、整词统一亮
+        // 度起伏——没有任何元素在字间移动，视觉节律与标签长度彻底
+        // 无关（旧探照灯的移动速度必然随字数变化，无论周期怎么取）。
+        assert_eq!(at_start.spans[2].content, "Waiting first token");
+        let brightness = |line: &Line<'static>| match line.spans[2].style.fg {
             Some(Color::Rgb(r, g, b)) => r as u32 + g as u32 + b as u32,
-            _ => 0,
+            other => panic!("expected RGB label, got {other:?}"),
         };
-        let close_to_base = |color: Color| match color {
-            Color::Rgb(r, g, b) => {
-                let (br, bg, bb) = (65u8, 118u8, 230u8);
-                r.abs_diff(br) <= 2 && g.abs_diff(bg) <= 2 && b.abs_diff(bb) <= 2
-            }
-            _ => false,
-        };
-        assert!(brightness(&text[0].1) > brightness(&text[4].1));
-        assert!(close_to_base(text[4].1.fg.unwrap_or_default()));
-
-        // Mid-cycle the band has moved to the middle: the brightest
-        // character is 'k', and its color approaches the light deepseek-200.
-        let mid = phase_line(11, Phase::Thinking, None, None, 0);
-        let text = text_spans(&mid);
-        let brightest = text
-            .iter()
-            .max_by_key(|(_, style)| brightness(style))
-            .expect("text");
-        assert_eq!(brightest.0, 'k');
-        match brightest.1.fg {
+        // 周期起点最暗（恰为品牌蓝低端）。
+        assert_eq!(
+            at_start.spans[2].style.fg,
+            Some(tui_theme::BRAND_SHIMMER_LOW),
+            "the breathing cycle starts at the darkest point"
+        );
+        // 半周期最亮：接近浅端。
+        let mid = phase_line(
+            (SHIMMER_CYCLE_TICKS / 2.0) as u64,
+            Phase::Thinking,
+            None,
+            None,
+            0,
+        );
+        match mid.spans[2].style.fg {
             Some(Color::Rgb(r, g, b)) => {
-                assert!(r > 190 && g > 210 && b > 240, "band color {r},{g},{b}");
+                assert!(
+                    r > 190 && g > 210 && b > 240,
+                    "brightest at half period: {r},{g},{b}"
+                );
             }
             other => panic!("expected RGB, got {other:?}"),
         }
+        assert!(
+            brightness(&mid) > brightness(&at_start),
+            "the label breathes low → high over half a period"
+        );
 
-        // Far from the band the text is (approximately) the base blue.
-        assert!(close_to_base(text[0].1.fg.unwrap_or_default()));
+        // 节律不变量：spinner 每 SPINNER_STEP_TICKS 个 tick 走一帧；
+        // 会话区太阳帧同规则；整周期回到同一亮度。
+        assert_eq!(spinner_frame(4), spinner_frame(5));
+        assert_ne!(spinner_frame(4), spinner_frame(6));
+        assert_eq!(marker_frame(0), MARKER_FRAMES[0]);
+        assert_eq!(marker_frame(2), MARKER_FRAMES[1]);
+        let cycle = SHIMMER_CYCLE_TICKS as u64;
+        let after = phase_line(7 + cycle, Phase::WaitingFirstToken, None, None, 0);
+        assert_eq!(
+            after.spans[2].style.fg,
+            phase_line(7, Phase::WaitingFirstToken, None, None, 0).spans[2]
+                .style
+                .fg,
+            "a full cycle returns the breathing to the same brightness"
+        );
 
         // The elapsed clock is appended when known.
         let with_clock = phase_line(
@@ -3537,6 +4058,68 @@ mod tests {
             "bounded=5 keeps the legacy full-height behavior"
         );
         assert_eq!(popup_height_cap(area(0)), 0);
+    }
+
+    #[test]
+    fn info_dialogs_are_content_sized_with_real_margins() {
+        // 不变量（2026-08-19 第三轮反馈）：信息弹窗高度由内容行数决定，
+        // 不恒取满额高度——短内容必须留出上下真实边距，长内容恰好
+        // 钳满预算（继续靠滚动读完）。
+        let area = Rect::new(0, 0, 80, 24);
+        // 短内容：高度 = 行数 + 边框 2 + 脚注 1，居中后上下各 ≥ 边距。
+        let height = content_dialog_height(5, area);
+        assert_eq!(height, 8, "5 content lines + border + footer");
+        let dialog = centered_rect(84, height, area);
+        assert!(
+            dialog.y >= POPUP_V_MARGIN && dialog.bottom() + POPUP_V_MARGIN <= area.bottom(),
+            "short content keeps real top and bottom margins, got y={} bottom={}",
+            dialog.y,
+            dialog.bottom()
+        );
+        // 长内容：钳在预算上，不再增长，边距仍由预算保证。
+        let capped = content_dialog_height(10_000, area);
+        assert_eq!(capped, popup_height_cap(area));
+        // 0 行内容也给得出最小可用框（不塌缩成负数/零）。
+        assert_eq!(content_dialog_height(0, area), 3);
+    }
+
+    #[test]
+    fn popup_width_matches_centered_rect() {
+        // 不变量：popup_width 是 centered_rect 水平切分的取宽版（含
+        // POPUP_H_MARGIN 钳制），两者在任何终端宽度下必须一致——内容
+        // 折行宽度按它预算，错一列就会出现"预算的行数放不进框"。
+        for width in 10..200u16 {
+            let area = Rect::new(0, 0, width, 24);
+            assert_eq!(
+                popup_width(84, area),
+                centered_rect(84, 6, area).width,
+                "width mismatch at terminal width {width}"
+            );
+        }
+    }
+
+    #[test]
+    fn animation_frames_advance_with_wall_time_not_draw_count() {
+        // 不变量 A-CLK：帧号只由真实时间决定。draw() 自增的旧实现里，
+        // 流式事件洪峰（每秒几十次重绘）把旋转加速成频闪、单帧绘制
+        // 耗时长（长转录）又拖成慢动作——速度随"画了多少"漂移，永远
+        // 修不对。时间驱动的帧号对重绘次数彻底不敏感。
+        let frame = SPINNER_FRAME;
+        assert_eq!(animation_tick_for(Duration::from_millis(0)), 0);
+        assert_eq!(animation_tick_for(frame - Duration::from_millis(1)), 0);
+        assert_eq!(animation_tick_for(frame), 1);
+        assert_eq!(animation_tick_for(2 * frame), 2);
+        // 一帧周期内重绘 100 次，帧号纹丝不动。
+        let epoch = Instant::now();
+        let first = animation_tick_for(epoch.elapsed());
+        for _ in 0..100 {
+            std::thread::sleep(Duration::from_millis(0));
+        }
+        assert_eq!(
+            animation_tick_for(epoch.elapsed()),
+            first,
+            "redraw count cannot advance the animation clock"
+        );
     }
 
     #[test]
@@ -3664,7 +4247,8 @@ mod tests {
     }
 
     /// INV-C：状态栏后缀只有 Wallet/Token、Cache、Context 三段，思考
-    /// 档位不在这里（属标题栏）；三段各自缺值即省略。
+    /// 档位不在这里（属标题栏）；Cache/Context 常驻（缺值兜底 --%/0），
+    /// Wallet/Token 段仍随余额查询就绪。
     #[test]
     fn status_suffix_combines_wallet_cache_and_context() {
         // 全宽拼接（生产路径按宽度经 fit_status_suffix 裁剪，另测）。
@@ -3700,19 +4284,23 @@ mod tests {
             full_suffix(&config, &balance, &cached, Some(&turn)),
             "Wallet: ￥110.00 · Cache: 87.00% · Context: 120k/1M"
         );
-        // 无任何数据：空串，状态栏保持原样。
-        assert_eq!(full_suffix(&config, &None, &no_data, None), "");
+        // 无任何数据（全新会话）：Cache/Context 常驻兜底（--% 与 0），
+        // 三段布局自启动起稳定（2026-08-19 用户反馈）。
+        assert_eq!(
+            full_suffix(&config, &None, &no_data, None),
+            "Cache: --% · Context: 0/1M"
+        );
         // 余额未就绪：Cache/Context 照常显示（不再整条消失）。
         assert_eq!(
             full_suffix(&config, &None, &cached, Some(&turn)),
             "Cache: 87.00% · Context: 120k/1M"
         );
-        // 尚无上下文样本：省略 Context 段。
+        // 尚无上下文样本：Context 按 0 计，段落仍在。
         assert_eq!(
             full_suffix(&config, &balance, &cached, None),
-            "Wallet: ￥110.00 · Cache: 87.00%"
+            "Wallet: ￥110.00 · Cache: 87.00% · Context: 0/1M"
         );
-        // 缓存命中为零：省略 Cache 段。
+        // 缓存命中为零（服务端上报零命中）：真实的 0.00%，不是未知。
         let zero_cache = Usage {
             input_tokens: 1000,
             cached_input_tokens: Some(0),
@@ -3720,7 +4308,7 @@ mod tests {
         };
         assert_eq!(
             full_suffix(&config, &balance, &zero_cache, Some(&turn)),
-            "Wallet: ￥110.00 · Context: 120k/1M"
+            "Wallet: ￥110.00 · Cache: 0.00% · Context: 120k/1M"
         );
 
         // GLM Coding Plan：Token 前缀替代 Wallet，不加货币符号。

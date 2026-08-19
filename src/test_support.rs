@@ -197,6 +197,15 @@ impl Model for TestModel {
                 events.emit(ModelEvent::TextDelta {
                     delta: "done".into(),
                 });
+                // 流末 usage（真实 provider 的同时点，DeepSeek 经
+                // stream_options.include_usage / GLM 默认）：驱动
+                // journal 的 assistant/message.usage 与状态栏实时累计。
+                events.emit(ModelEvent::Usage(Usage {
+                    input_tokens: 120,
+                    output_tokens: 30,
+                    cached_input_tokens: Some(100),
+                    reasoning_tokens: None,
+                }));
                 Ok(response("done", FinishReason::Completed))
             }
             TestBehavior::SlowTitle => {

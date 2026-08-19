@@ -576,13 +576,16 @@ fn map_finish_reason(reason: &str) -> FinishReason {
 }
 
 fn parse_usage(value: &Value) -> Option<Usage> {
-    // 兼容两种缓存字段：OpenAI 风格 `prompt_tokens_details.cached_tokens`
-    // 与 DeepSeek 原生 `prompt_cache_hit_tokens`（官方 harness 的 mapUsage
-    // 同样按此优先级回退）。注意 prompt_tokens 已包含缓存命中部分。
+    // 兼容三种缓存字段：OpenAI 风格 `prompt_tokens_details.cached_tokens`
+    // （Qwen/Kimi）、DeepSeek 原生 `prompt_cache_hit_tokens`（官方
+    // harness 的 mapUsage 同样按此优先级回退）、以及百炼新加坡地域
+    // 部分模型暂用的顶层 `usage.cached_tokens`（Qwen 缓存文档明示的
+    // 过渡形态）。注意 prompt_tokens 已包含缓存命中部分。
     let cached_input_tokens = value
         .pointer("/prompt_tokens_details/cached_tokens")
         .and_then(Value::as_u64)
-        .or_else(|| value.get("prompt_cache_hit_tokens").and_then(Value::as_u64));
+        .or_else(|| value.get("prompt_cache_hit_tokens").and_then(Value::as_u64))
+        .or_else(|| value.get("cached_tokens").and_then(Value::as_u64));
     Some(Usage {
         input_tokens: value.get("prompt_tokens")?.as_u64()?,
         output_tokens: value.get("completion_tokens")?.as_u64()?,
@@ -655,6 +658,16 @@ mod tests {
         .unwrap();
         assert_eq!(none.cached_input_tokens, None);
         assert_eq!(none.input_tokens, 10);
+
+        // 百炼新加坡地域部分模型的过渡形态：顶层 cached_tokens
+        // （Qwen 缓存文档明示，优先级最低）。
+        let singapore = parse_usage(&json!({
+            "prompt_tokens": 1000,
+            "completion_tokens": 200,
+            "cached_tokens": 600
+        }))
+        .unwrap();
+        assert_eq!(singapore.cached_input_tokens, Some(600));
     }
 
     #[test]

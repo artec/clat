@@ -307,8 +307,9 @@ pub(crate) mod payloads {
         content: Vec<Value>,
         provider: &str,
         model: &str,
+        usage: Option<&crate::model::Usage>,
     ) -> Value {
-        json!({
+        let mut payload = json!({
             "turn": turn, "step": step,
             "message": {
                 "id": uuid::Uuid::new_v4().to_string(),
@@ -316,7 +317,23 @@ pub(crate) mod payloads {
                 "content": content,
                 "source": { "kind": "model", "provider": provider, "model": model },
             },
-        })
+        });
+        // DSH `assistant/message.usage`（TokenUsage 形状）：重启后状态栏
+        // 的 Cache/Context 由它还原；适配器未上报则整段省略（同 DSH）。
+        if let Some(usage) = usage {
+            let mut report = json!({
+                "inputTokens": usage.input_tokens,
+                "outputTokens": usage.output_tokens,
+            });
+            if let Some(cached) = usage.cached_input_tokens {
+                report["cacheReadTokens"] = json!(cached);
+            }
+            if let Some(reasoning) = usage.reasoning_tokens {
+                report["reasoningTokens"] = json!(reasoning);
+            }
+            payload["usage"] = report;
+        }
+        payload
     }
 
     /// Attach provider opaque state (OpenAI Responses reasoning items) to an

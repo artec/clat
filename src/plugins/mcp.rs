@@ -2,7 +2,7 @@ use super::services::{
     MCP_STATUS_SERVICE, MCP_STATUS_SERVICE_ID, McpServerStatus, McpStatus, TOOL_SERVICE,
     TOOL_SERVICE_ID,
 };
-use crate::mcp_client::{McpServer, McpTool, load_mcp_config};
+use crate::mcp_client::{McpServer, McpTool, load_mcp_config, merge_vendor_pack};
 use crate::plugin::{
     DisposeError, Plugin, PluginContext, PluginDescriptor, PluginError, PluginId, ScopeKind,
     ServiceId,
@@ -24,11 +24,21 @@ const DESCRIPTOR: PluginDescriptor = PluginDescriptor {
 
 pub(crate) struct McpAdapterPlugin {
     storage_root: PathBuf,
+    /// 厂商专属 MCP 包（如 GLM Coding Plan 的四件套），由 application
+    /// 在挂载期按激活厂商与凭据算好传入；密钥只在内存，用户
+    /// `mcp.json` 同名条目优先（见 `merge_vendor_pack`）。
+    vendor_pack: Vec<(String, crate::mcp_client::McpServerConfig)>,
 }
 
 impl McpAdapterPlugin {
-    pub(crate) fn new(storage_root: PathBuf) -> Self {
-        Self { storage_root }
+    pub(crate) fn new(
+        storage_root: PathBuf,
+        vendor_pack: Vec<(String, crate::mcp_client::McpServerConfig)>,
+    ) -> Self {
+        Self {
+            storage_root,
+            vendor_pack,
+        }
     }
 }
 
@@ -41,15 +51,19 @@ impl Plugin for McpAdapterPlugin {
         let registry = context
             .require(TOOL_SERVICE)
             .map_err(|error| PluginError::new(error.to_string()))?;
-        let config = load_mcp_config(&self.storage_root).map_err(PluginError::new)?;
+        let mut config = load_mcp_config(&self.storage_root).map_err(PluginError::new)?;
+        merge_vendor_pack(&mut config, &self.vendor_pack);
         let mut status = McpStatus {
             configured: config.len(),
             ..McpStatus::default()
         };
 
         for (name, server_config) in &config {
-            if server_config.command.trim().is_empty() {
-                status.failures.push(format!("mcp `{name}`: empty command"));
+            let valid = server_config.is_http() || !server_config.command.trim().is_empty();
+            if !valid {
+                status
+                    .failures
+                    .push(format!("mcp `{name}`: empty command and no url"));
                 continue;
             }
             let server = match McpServer::connect(name, server_config, &self.storage_root) {
@@ -62,16 +76,22 @@ impl Plugin for McpAdapterPlugin {
             let infos = match server.list_tools() {
                 Ok(infos) => infos,
                 Err(error) => {
-                    status.failures.push(format!("mcp `{name}`: {error}"));
+                    // 失败消息带上服务器 stderr 尾部——npx/npm 的报错
+                    // 就在这里，用户不需要去终端日志里翻（stderr 也不
+                    // 再直通终端，见 StdioSession::spawn）。
+                    status.failures.push(format!(
+                        "mcp `{name}`: {error}{}",
+                        crate::mcp_client::format_stderr_tail_public(&server.stderr_tail())
+                    ));
                     let _ = server.shutdown();
                     continue;
                 }
             };
-            status.servers.push(McpServerStatus {
-                name: name.clone(),
-                server_version: server.server_version().to_owned(),
-                protocol_version: server.negotiated_version().to_owned(),
-            });
+            let transport = if server_config.is_http() {
+                "http"
+            } else {
+                "stdio"
+            };
             let server = Arc::new(server);
             let shutdown_server = Arc::clone(&server);
             // Registered before leases so LIFO teardown revokes tools first.
@@ -81,6 +101,7 @@ impl Plugin for McpAdapterPlugin {
                     .shutdown()
                     .map_err(|error| DisposeError::new(error.to_string()))
             });
+            let mut tools = 0usize;
             for info in infos {
                 let remote_name = info.name.clone();
                 let tool: Arc<dyn Tool> = Arc::new(McpTool::new(&server, info));
@@ -88,8 +109,17 @@ impl Plugin for McpAdapterPlugin {
                     status
                         .failures
                         .push(format!("mcp `{name}` tool `{remote_name}`: {error}"));
+                } else {
+                    tools += 1;
                 }
             }
+            status.servers.push(McpServerStatus {
+                name: name.clone(),
+                server_version: server.server_version().to_owned(),
+                protocol_version: server.negotiated_version().to_owned(),
+                tools,
+                transport: transport.to_owned(),
+            });
             status.connected += 1;
         }
         context
@@ -174,7 +204,7 @@ with open(sys.argv[1], "w", encoding="utf-8") as output:
 
         let catalog: Vec<Arc<dyn Plugin>> = vec![
             Arc::new(ToolRegistryPlugin),
-            Arc::new(McpAdapterPlugin::new(root.clone())),
+            Arc::new(McpAdapterPlugin::new(root.clone(), Vec::new())),
         ];
         let mut manager = PluginManager::root(ScopeKind::TrustedProject);
         manager.mount_all(catalog).expect("mount plugins");

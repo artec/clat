@@ -33,12 +33,28 @@ pub struct ModelPreset {
     /// `clear_thinking: false`。GLM Coding Plan 端点默认开启该能力，
     /// 官方 Agent 示例同样显式传递。
     pub preserve_thinking: bool,
+    /// 是否发送 DeepSeek/GLM 风格的 `thinking` 对象。Kimi K3 与
+    /// Qwen3.8-Max 的思考强度是顶层 `reasoning_effort`，不携带该
+    /// 对象（未定义参数不发给严格网关）。
+    pub thinking_object: bool,
     /// 流式请求是否要求回传 usage（`stream_options.include_usage`）。
     /// DeepSeek 默认不在流中回传 usage，官方 harness 常开此开关以
     /// 拿到 prompt_cache_hit_tokens；GLM 流式默认携带 usage，无需
     /// 此字段。厂商差异落在各自预设里，通用通道保持中立。
     pub include_usage: bool,
+    /// 该厂商端点要求的 User-Agent（写入 `extra_headers`，用户可在
+    /// 模型编辑器覆盖）。目前只有 Kimi Coding 端点需要：其对订阅
+    /// 流量按 UA 白名单放行（Kimi CLI / Claude Code / Roo Code /
+    /// Kilo Code…），其它客户端一律 403（社区多方验证，见 Kimi
+    /// 预设注释）。None = 使用默认 UA。
+    pub user_agent: Option<&'static str>,
 }
+
+/// Kimi Coding 端点要求的白名单 UA（cc-switch PR #3671 的回退常量，
+/// 白名单实测 `claude-cli/*` 前缀放行，见 Kimi 预设注释）。既是预设
+/// 注入值，也是 `apply` 清理残留 UA 时的"已知预设值"判据——用户
+/// 自定义 UA（任何其它值）永不被预设触碰。
+const KIMI_WHITELIST_UA: &str = "claude-cli/2.1.161";
 
 /// Official DeepSeek parameters as documented at
 /// <https://api-docs.deepseek.com> (Models & Pricing, 2026-08):
@@ -78,6 +94,52 @@ pub struct ModelPreset {
 /// 三次抓取一致（1M/128K、low|high|max、不可关闭）；项目所有者第一方
 /// 确认 Coding Plan 端点仅服务 DeepSeek V4.0 正式版与 GLM 5.3；
 /// `glm-5.3` 打真实端点的请求实测成功。
+///
+/// Official Qwen3.8-Max (Token Plan) parameters as documented at
+/// <https://help.aliyun.com/zh/model-studio/qwen3-8-max> and
+/// <https://www.alibabacloud.com/help/zh/model-studio/more-tools>
+/// (Token Plan 团队版, 2026-08 抓取):
+///
+/// - model id `qwen3.8-max`（2.4T MoE 旗舰；1M context、131,072 最大
+///   输出、262,144 最大思维链）
+/// - Token Plan 专用 OpenAI 兼容端点
+///   `https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1`
+///   （新加坡 MaaS 域名，与按量计费的 dashscope 域名分离；密钥是
+///   控制台"组织成员"页的专属 API Key）
+/// - `reasoning_effort` 官方档位 `xhigh`（默认）/`medium`/`low`，兼容
+///   表 high/max→xhigh、minimal→low；CLAT 三档经厂商感知映射
+///   Low→low、High→medium、Max→xhigh（见 `ThinkingLevel::wire_effort`），
+///   预设按"pin 中档"政策 pin `medium`；无 `thinking` 对象（该参数
+///   列表适用于 Qwen3.7 及更早，qwen3.8-max 不在其中）
+/// - 上下文缓存：隐式缓存自动开启、不可关闭（agent 上下文远超
+///   ~2000 token 最小前缀），命中价 20%；显式 `cache_control` 在
+///   新加坡 Token Plan 地域的支持面官方未明确列出（文档只确认北京
+///   地域清单）且有 125% 创建成本，预设不发显式标记、吃稳隐式命中；
+///   `stream_options.include_usage` 拿回
+///   `usage.prompt_tokens_details.cached_tokens`（新加坡地域部分模型
+///   暂用顶层 `usage.cached_tokens`，解析两端都支持）
+///
+/// Official Kimi K3 (Coding 会员) parameters as documented at
+/// <https://platform.kimi.com/docs/overview> and Kimi Help Center
+/// "Kimi Code Membership Benefits"（2026-08 抓取）:
+///
+/// - model id `kimi-k3`（旗舰，1M context、~131K 最大输出；视觉理解）
+/// - Coding 会员 OpenAI 兼容端点 `https://api.kimi.com/coding/v1`
+///   （订阅额度计量；开放平台按量端点是 `https://api.moonshot.cn/v1`，
+///   密钥不通用，预设取 Coding 端点与 GLM Coding Plan 同型）
+/// - `reasoning_effort` 支持 `low`/`high`/`max`（`max` 为官方默认），
+///   顶层参数、无 `thinking` 对象；预设按 pin-中档政策 pin `high`
+/// - 上下文缓存全自动（无需参数，前缀 ≥256 token 生效），usage 经
+///   `prompt_tokens_details.cached_tokens` 上报；`stream_options.
+///   include_usage` 让流式也回传
+/// - **UA 白名单**：Coding 端点按 User-Agent 放行，其它客户端 403
+///   "Kimi For Coding is currently only available for Coding Agents…"
+///   （cline#10307、kodus-ai#1257 等多方报告）。预设注入社区实测的
+///   白名单 UA `claude-cli/2.1.161`（cc-switch PR #3671 的回退常量；
+///   其白名单实测矩阵：`claude-cli/*`、`claude-code/*`、`Kilo-Code/*`
+///   放行，`codex-cli/*`、`kimi-cli/*`、`openclaw/*` 被拒）；属订阅
+///   条款边缘操作，用户可在模型编辑器 Extra Headers 覆盖成自己的
+///   合规选择。
 pub const MODEL_PRESETS: &[ModelPreset] = &[
     ModelPreset {
         id: "deepseek-v4-flash",
@@ -92,7 +154,9 @@ pub const MODEL_PRESETS: &[ModelPreset] = &[
         context_window: 1_000_000,
         reasoning_effort: Some("high"),
         preserve_thinking: false,
+        thinking_object: true,
         include_usage: true,
+        user_agent: None,
     },
     ModelPreset {
         id: "deepseek-v4-pro",
@@ -107,7 +171,9 @@ pub const MODEL_PRESETS: &[ModelPreset] = &[
         context_window: 1_000_000,
         reasoning_effort: Some("high"),
         preserve_thinking: false,
+        thinking_object: true,
         include_usage: true,
+        user_agent: None,
     },
     ModelPreset {
         id: "glm-5.3",
@@ -122,7 +188,43 @@ pub const MODEL_PRESETS: &[ModelPreset] = &[
         context_window: 1_000_000,
         reasoning_effort: Some("high"),
         preserve_thinking: true,
+        thinking_object: true,
         include_usage: false,
+        user_agent: None,
+    },
+    ModelPreset {
+        id: "qwen3.8-max",
+        name: "Qwen3.8 Max",
+        description: "Alibaba flagship via Qwen Token Plan (implicit context cache)",
+        vendor: "Qwen Token Plan",
+        protocol: ModelProtocol::OpenAiCompatible,
+        model: "qwen3.8-max",
+        endpoint: "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+        request_path: "/chat/completions",
+        output_limit: 131_072,
+        context_window: 1_000_000,
+        reasoning_effort: Some("medium"),
+        preserve_thinking: false,
+        thinking_object: false,
+        include_usage: true,
+        user_agent: None,
+    },
+    ModelPreset {
+        id: "kimi-k3",
+        name: "Kimi K3",
+        description: "Moonshot flagship via Kimi Coding membership (auto context cache)",
+        vendor: "Kimi Coding Plan",
+        protocol: ModelProtocol::OpenAiCompatible,
+        model: "kimi-k3",
+        endpoint: "https://api.kimi.com/coding/v1",
+        request_path: "/chat/completions",
+        output_limit: 131_072,
+        context_window: 1_000_000,
+        reasoning_effort: Some("high"),
+        preserve_thinking: false,
+        thinking_object: false,
+        include_usage: true,
+        user_agent: Some(KIMI_WHITELIST_UA),
     },
 ];
 
@@ -155,18 +257,16 @@ impl ModelPreset {
     /// 两处构造永不漂移。
     pub fn extra_body(&self) -> Value {
         // 与官方思考模式指南的推荐写法完全一致：显式开启思考模式并
-        // 声明 reasoning_effort，而不是依赖服务端隐式默认。
-        let thinking = if self.preserve_thinking {
-            json!({"type": "enabled", "clear_thinking": false})
-        } else {
-            json!({"type": "enabled"})
-        };
-        let mut extra = match self.reasoning_effort {
-            Some(effort) => json!({
-                "thinking": thinking,
+        // 声明 reasoning_effort，而不是依赖服务端隐式默认。Kimi/Qwen
+        // 没有 thinking 对象，只发顶层 reasoning_effort。
+        let mut extra = match (self.reasoning_effort, self.thinking_object) {
+            (Some(effort), true) => json!({
+                "thinking": self.thinking_object_value(),
                 "reasoning_effort": effort,
             }),
-            None => json!({"thinking": thinking}),
+            (Some(effort), false) => json!({"reasoning_effort": effort}),
+            (None, true) => json!({"thinking": self.thinking_object_value()}),
+            (None, false) => json!({}),
         };
         if self.include_usage {
             extra["stream_options"] = json!({"include_usage": true});
@@ -174,11 +274,22 @@ impl ModelPreset {
         extra
     }
 
+    /// DeepSeek/GLM 风格的 thinking 对象值（保持式思考差异在此分岔）。
+    fn thinking_object_value(&self) -> Value {
+        if self.preserve_thinking {
+            json!({"type": "enabled", "clear_thinking": false})
+        } else {
+            json!({"type": "enabled"})
+        }
+    }
+
     /// Fills a configuration with this preset's official parameters.
     ///
-    /// Authentication and custom transport settings (API key, auth header,
-    /// extra headers) are left untouched so switching presets never wipes
-    /// credentials.
+    /// Authentication and custom transport settings (API key, auth header)
+    /// are left untouched so switching presets never wipes credentials.
+    /// The preset's mandatory `User-Agent`（仅 Kimi Coding 端点需要，
+    /// 见字段注释）合并进 `extra_headers` 的同名键——其余自定义头
+    /// 原样保留，用户覆盖后以用户为准。
     pub fn apply(&self, config: &mut ModelConfig) {
         config.preset = Some(self.id.to_owned());
         config.protocol = self.protocol;
@@ -189,6 +300,31 @@ impl ModelPreset {
         config.temperature = None;
         config.parallel_tool_calls = true;
         config.extra_body = self.extra_body();
+        // UA 是预设管理的键，但用户的自定义值优先（对抗审计 2026-08-19
+        // 修复：`model_state()` 每次加载都执行 apply，无条件覆写会把用户
+        // 在 Extra Headers 里的自定义 UA 静默冲掉；换预设离开 Kimi 时，
+        // 只清理等于已知预设常量的残留值——自定义 UA 同样不动）。
+        let current_ua = config
+            .extra_headers
+            .get("User-Agent")
+            .and_then(Value::as_str);
+        match self.user_agent {
+            Some(user_agent) => {
+                if current_ua.is_none() || current_ua == Some(user_agent) {
+                    if !config.extra_headers.is_object() {
+                        config.extra_headers = serde_json::Map::new().into();
+                    }
+                    config.extra_headers["User-Agent"] = json!(user_agent);
+                }
+            }
+            None => {
+                if current_ua == Some(KIMI_WHITELIST_UA)
+                    && let Some(map) = config.extra_headers.as_object_mut()
+                {
+                    map.remove("User-Agent");
+                }
+            }
+        }
     }
 }
 
@@ -253,6 +389,127 @@ mod tests {
     }
 
     #[test]
+    fn applies_official_qwen_token_plan_parameters() {
+        let mut config = ModelConfig::default();
+
+        preset_by_id("qwen3.8-max")
+            .expect("preset")
+            .apply(&mut config);
+
+        assert_eq!(config.model, "qwen3.8-max");
+        // Token Plan 专用新加坡 MaaS 端点，不是按量 dashscope 域名。
+        assert_eq!(
+            config.endpoint,
+            "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"
+        );
+        assert_eq!(config.request_path, "/chat/completions");
+        assert_eq!(config.output_limit, Some(131_072));
+        // 官方档位 low/medium/xhigh（默认 xhigh）；预设按 pin-中档政策
+        // pin medium＝CLAT 的 High 档。
+        assert_eq!(config.extra_body["reasoning_effort"], "medium");
+        // qwen3.8-max 无 thinking 对象（该参数属于 Qwen3.7 及更早）。
+        assert!(config.extra_body.get("thinking").is_none());
+        // 隐式缓存自动生效；include_usage 拿回 cached_tokens 供状态栏。
+        assert_eq!(config.extra_body["stream_options"]["include_usage"], true);
+        // 无 UA 要求。
+        assert!(config.extra_headers.get("User-Agent").is_none());
+    }
+
+    #[test]
+    fn applies_official_kimi_coding_parameters() {
+        let mut config = ModelConfig::default();
+
+        preset_by_id("kimi-k3").expect("preset").apply(&mut config);
+
+        assert_eq!(config.model, "kimi-k3");
+        // Coding 会员端点（订阅额度），不是开放平台按量端点。
+        assert_eq!(config.endpoint, "https://api.kimi.com/coding/v1");
+        assert_eq!(config.request_path, "/chat/completions");
+        assert_eq!(config.output_limit, Some(131_072));
+        // K3 官方 low/high/max（默认 max）；pin-中档政策 pin high。
+        assert_eq!(config.extra_body["reasoning_effort"], "high");
+        // K3 思考强度是顶层参数，无 thinking 对象。
+        assert!(config.extra_body.get("thinking").is_none());
+        // 缓存全自动；include_usage 让流式也回传 usage。
+        assert_eq!(config.extra_body["stream_options"]["include_usage"], true);
+        // UA 白名单：Coding 端点按 User-Agent 放行，注入社区验证的
+        // 白名单 UA（cc-switch PR #3671 同款）。
+        assert_eq!(
+            config.extra_headers["User-Agent"].as_str(),
+            Some("claude-cli/2.1.161")
+        );
+    }
+
+    /// UA 合并不清空用户的其它自定义头；非 object 的 headers 字段被
+    /// 规整为 object 后写入（apply 不因存量脏数据 panic）。
+    ///
+    /// 对抗审计（2026-08-19）修复语义：`model_state()` 每次加载都执行
+    /// apply——预设 UA 不得覆写用户的自定义值；换预设离开 Kimi 时只
+    /// 清理等于已知预设常量的残留，自定义值不动。
+    #[test]
+    fn kimi_user_agent_merges_into_existing_extra_headers() {
+        let mut config = ModelConfig {
+            extra_headers: json!({"X-Custom": "keep-me"}),
+            ..ModelConfig::default()
+        };
+        preset_by_id("kimi-k3").expect("preset").apply(&mut config);
+        assert_eq!(config.extra_headers["X-Custom"], "keep-me");
+        assert_eq!(
+            config.extra_headers["User-Agent"].as_str(),
+            Some("claude-cli/2.1.161")
+        );
+
+        let mut junk = ModelConfig {
+            extra_headers: json!("not an object"),
+            ..ModelConfig::default()
+        };
+        preset_by_id("kimi-k3").expect("preset").apply(&mut junk);
+        assert_eq!(
+            junk.extra_headers["User-Agent"].as_str(),
+            Some("claude-cli/2.1.161")
+        );
+    }
+
+    /// 用户自定义 UA 在重复 apply（= 每次启动的 model_state 加载）下
+    /// 存活；换到无 UA 要求的预设时，只有等于已知预设常量的残留被清
+    /// 理，自定义值保留。预修复代码（无条件覆写/不清理）上本测试失败。
+    #[test]
+    fn preset_user_agent_never_clobbers_custom_values() {
+        let kimi = preset_by_id("kimi-k3").expect("kimi");
+        let mut config = ModelConfig::default();
+        kimi.apply(&mut config);
+        // 用户覆盖成自己的 UA（如换一个白名单前缀 claude-code/*）。
+        config.extra_headers["User-Agent"] = json!("claude-code/9.9.9");
+        // 模拟重启：model_state 再次 apply 同一预设。
+        kimi.apply(&mut config);
+        assert_eq!(
+            config.extra_headers["User-Agent"].as_str(),
+            Some("claude-code/9.9.9"),
+            "a user override survives preset re-application on every load"
+        );
+
+        // 换到 DeepSeek 预设：已知预设常量被清理……
+        config.extra_headers["User-Agent"] = json!("claude-cli/2.1.161");
+        preset_by_id("deepseek-v4-pro")
+            .expect("deepseek")
+            .apply(&mut config);
+        assert!(
+            config.extra_headers.get("User-Agent").is_none(),
+            "the known preset UA is cleaned when switching away from Kimi"
+        );
+        // ……而自定义值不会被误删。
+        config.extra_headers["User-Agent"] = json!("my-agent/1.0");
+        preset_by_id("deepseek-v4-pro")
+            .expect("deepseek")
+            .apply(&mut config);
+        assert_eq!(
+            config.extra_headers["User-Agent"].as_str(),
+            Some("my-agent/1.0"),
+            "a custom UA is never removed by a preset"
+        );
+    }
+
+    #[test]
     fn flash_and_pro_use_the_official_api_names() {
         let flash = preset_by_id("deepseek-v4-flash").expect("flash");
         let pro = preset_by_id("deepseek-v4-pro").expect("pro");
@@ -269,6 +526,11 @@ mod tests {
     /// - glm-5.3：1M context / 128K output
     ///   （docs.z.ai/guides/llm/glm-5.3，08-17/18/19 三次核验一致；
     ///   另有项目所有者第一方确认与真实端点实测，见模块文档证据链）
+    /// - qwen3.8-max：1M context / 131,072 output
+    ///   （help.aliyun.com/zh/model-studio/qwen3-8-max，2026-08 核验）
+    /// - kimi-k3：1M context / 131,072 output
+    ///   （platform.kimi.com/docs/overview 与 OpenCode 接入指南，
+    ///   2026-08 核验）
     #[test]
     fn official_context_windows_and_output_limits() {
         let flash = preset_by_id("deepseek-v4-flash").expect("flash");
@@ -282,14 +544,31 @@ mod tests {
         let glm = preset_by_id("glm-5.3").expect("glm");
         assert_eq!(glm.context_window, 1_000_000);
         assert_eq!(glm.output_limit, 128 * 1024);
+
+        let qwen = preset_by_id("qwen3.8-max").expect("qwen");
+        assert_eq!(qwen.context_window, 1_000_000);
+        assert_eq!(qwen.output_limit, 131_072);
+
+        let kimi = preset_by_id("kimi-k3").expect("kimi");
+        assert_eq!(kimi.context_window, 1_000_000);
+        assert_eq!(kimi.output_limit, 131_072);
     }
 
     #[test]
     fn vendors_group_presets_for_the_picker() {
         let vendors = preset_vendors();
-        assert_eq!(vendors, vec!["DeepSeek", "GLM Coding Plan"]);
+        assert_eq!(
+            vendors,
+            vec![
+                "DeepSeek",
+                "GLM Coding Plan",
+                "Qwen Token Plan",
+                "Kimi Coding Plan"
+            ]
+        );
         assert_eq!(presets_by_vendor("DeepSeek").len(), 2);
         assert_eq!(presets_by_vendor("GLM Coding Plan").len(), 1);
-        assert_eq!(presets_by_vendor("GLM Coding Plan")[0].id, "glm-5.3");
+        assert_eq!(presets_by_vendor("Qwen Token Plan")[0].id, "qwen3.8-max");
+        assert_eq!(presets_by_vendor("Kimi Coding Plan")[0].id, "kimi-k3");
     }
 }

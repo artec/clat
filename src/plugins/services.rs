@@ -582,6 +582,10 @@ pub(crate) struct McpServerStatus {
     pub name: String,
     pub server_version: String,
     pub protocol_version: String,
+    /// 该服务器成功注册进 Tool Registry 的工具数（/mcp 视图用）。
+    pub tools: usize,
+    /// 传输类型 `"stdio"` / `"http"`（/mcp 视图用）。
+    pub transport: String,
 }
 
 pub(crate) trait MonitorService: Send + Sync {

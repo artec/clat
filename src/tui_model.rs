@@ -1265,7 +1265,8 @@ mod tests {
         assert_eq!(config.extra_body["reasoning_effort"], "high");
         assert_eq!(config.extra_body["thinking"]["type"], "enabled");
 
-        // Next step lands on Pro, then GLM, then back to Custom.
+        // Next step lands on Pro, then GLM, then Qwen, then Kimi, then
+        // back to Custom.
         editor.handle_key(key(KeyCode::Right));
         assert_eq!(
             editor.preset.map(|preset| preset.id),
@@ -1279,6 +1280,10 @@ mod tests {
             "https://open.bigmodel.cn/api/coding/paas/v4"
         );
         assert_eq!(config.extra_body["thinking"]["clear_thinking"], false);
+        editor.handle_key(key(KeyCode::Right));
+        assert_eq!(editor.preset.map(|preset| preset.id), Some("qwen3.8-max"));
+        editor.handle_key(key(KeyCode::Right));
+        assert_eq!(editor.preset.map(|preset| preset.id), Some("kimi-k3"));
         editor.handle_key(key(KeyCode::Right));
         assert_eq!(editor.preset, None);
     }
@@ -1334,8 +1339,8 @@ mod tests {
     #[test]
     fn picker_lists_vendors_then_models_in_two_levels() {
         let mut picker = new_picker();
-        // 一级：厂商 + Custom。
-        assert_eq!(picker.row_count(), 3);
+        // 一级：四个厂商 + Custom。
+        assert_eq!(picker.row_count(), 5);
 
         // Enter 进入 DeepSeek 二级。
         assert!(matches!(
@@ -1364,7 +1369,7 @@ mod tests {
             picker.handle_key(picker_key(KeyCode::Esc)),
             PickerAction::Continue
         ));
-        assert_eq!(picker.row_count(), 3);
+        assert_eq!(picker.row_count(), 5);
         // 一级 Esc 关闭。
         assert!(matches!(
             picker.handle_key(picker_key(KeyCode::Esc)),
@@ -1388,10 +1393,22 @@ mod tests {
         };
         assert_eq!(preset.id, "glm-5.3");
 
-        // 一级数字 3 快选 Custom。
+        // 一级数字 3 进入 Qwen Token Plan（唯一模型），5 快选 Custom。
         let mut picker = new_picker();
         assert!(matches!(
             picker.handle_key(picker_key(KeyCode::Char('3'))),
+            PickerAction::Continue
+        ));
+        assert_eq!(picker.row_count(), 1);
+        let PickerAction::SelectPreset(preset) = picker.handle_key(picker_key(KeyCode::Char('1')))
+        else {
+            panic!("expected SelectPreset");
+        };
+        assert_eq!(preset.id, "qwen3.8-max");
+
+        let mut picker = new_picker();
+        assert!(matches!(
+            picker.handle_key(picker_key(KeyCode::Char('5'))),
             PickerAction::EditCustom
         ));
     }

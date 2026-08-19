@@ -390,7 +390,7 @@ mod tests {
                 "assistant/message",
                 7,
                 8,
-                payloads::assistant_message(1, 0, vec![payloads::text_block("x")], "p", "m"),
+                payloads::assistant_message(1, 0, vec![payloads::text_block("x")], "p", "m", None),
             )
             .append(vec![5]),
             SessionEvent::new(

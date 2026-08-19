@@ -1,7 +1,9 @@
 # MCP integration
 
 CLAT connects to Model Context Protocol servers over the stdio transport
-and exposes their tools to the model alongside the native read tools.
+(local subprocesses) **and the remote Streamable HTTP transport**
+(2026-08-19), exposing their tools to the model alongside the native
+read tools.
 
 ## Configuration
 
@@ -15,6 +17,10 @@ and exposes their tools to the model alongside the native read tools.
   "memory": {
     "command": "mcp-memory",
     "env": { "STORE": "/data" }
+  },
+  "web-search-prime": {
+    "url": "https://open.bigmodel.cn/api/mcp/web_search_prime/mcp",
+    "headers": { "Authorization": "Bearer YOUR_API_KEY" }
   }
 }
 ```
@@ -23,6 +29,40 @@ The file is optional; without it CLAT runs with native tools only.
 The built-in MCP Adapter plugin reads it only after project trust succeeds.
 Server subprocesses belong to that Trusted Project Scope and are shared across
 runs in the project; closing the project tears them down.
+
+A server subprocess's **stderr never reaches your terminal** (2026-08-20):
+it is drained into a bounded tail buffer (last 20 lines) and appended to
+the server's failure message when a connection or `tools/list` fails —
+so `npx` download progress or server banners can neither corrupt the
+TUI nor hide the actual error.
+
+A server entry with a `url` is a remote Streamable HTTP server (no local
+process): each call POSTs one JSON-RPC message with the configured
+`headers`, the initialize response's `Mcp-Session-Id` is echoed on
+subsequent requests, and JSON or SSE-framed response bodies are both
+accepted. Entries without `url` keep the stdio form (`command` / `args`
+/ `env`). The remote transport's key never touches disk unless you put
+it in this file yourself.
+
+### GLM Coding Plan pack (2026-08-19)
+
+When the active model is the GLM preset **and** an API key is
+configured, CLAT automatically injects the four GLM Coding Plan
+exclusive MCP servers at mount time (in-memory merge — the key is read
+from the model credentials and never written to `mcp.json`):
+
+| Name | Transport | Tools |
+|---|---|---|
+| `glm-search` | remote `…/mcp/web_search_prime/mcp` | `webSearchPrime` |
+| `glm-reader` | remote `…/mcp/web_reader/mcp` | `webReader` |
+| `glm-zread` | remote `…/mcp/zread/mcp` | `search_doc`, `get_repo_structure`, `read_file` |
+| `glm-vision` | stdio `npx -y @z_ai/mcp-server@latest` (env `Z_AI_API_KEY`; needs Node.js ≥ 18) | 8 vision tools (screenshot→code, OCR, diagram/chart analysis, video) |
+
+A same-named entry in your `mcp.json` always wins — that is the escape
+hatch for disabling or replacing any pack server (e.g. point `glm-search`
+at your own proxy, or define it with a broken `url` to effectively
+disable it). The pack is evaluated at mount: switching the model vendor
+takes effect on the next CLAT start.
 
 Connection state is exposed through Application DTOs (`configured`,
 `connected`, per-server protocol/version, and isolated failures). Frontends do

@@ -12,7 +12,7 @@ use super::{conversation_wrap_width, slice_by_columns};
 use crate::test_support::{TestBehavior, TestProviderPlugin, roots};
 use crate::tui_conversation::{CardState, ConversationModel, ToolCardVisibility};
 use crate::tui_worker::{UiEvent, WorkerMessage};
-use crate::{BootstrapApplication, PermissionRequest, Project, RunEvent, ToolEffect};
+use crate::{BootstrapApplication, ModelEvent, PermissionRequest, Project, RunEvent, ToolEffect};
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
@@ -28,6 +28,7 @@ use unicode_width::UnicodeWidthStr;
 const SCENARIOS: &[&str] = &[
     "idle-transcript-80",
     "idle-transcript-40",
+    "startup-loading",
     "conversation-with-messages",
     "selection-highlight",
     "trust-dialog",
@@ -49,6 +50,8 @@ const SCENARIOS: &[&str] = &[
     "steered-transcript",
     "ask-dialog-options",
     "ask-dialog-custom",
+    "help-dialog",
+    "mcp-dialog",
 ];
 
 fn snapshot_dir() -> PathBuf {
@@ -522,6 +525,56 @@ fn selection_highlight_snapshot() {
     harness.snapshot("selection-highlight");
 }
 
+/// 运行中实时累计（2026-08-19 用户反馈）：首跑中途 Cache 段即有值，
+/// 不必等 run 结束才三段齐全。不变量：流式 Usage 事件在 run 起点基线
+/// 上累加出实时会话用量（多请求累计、水位取最近一次）；run 结束以
+/// RunOutput 的全量结果权威覆盖——流式值只是近似，不得重复相加。
+#[test]
+fn session_usage_accumulates_live_during_a_run() {
+    let mut harness = Harness::trusted("snap-live-usage", 80, 24);
+    let usage = |input: u64, cached: Option<u64>| crate::model::Usage {
+        input_tokens: input,
+        output_tokens: input / 10,
+        cached_input_tokens: cached,
+        reasoning_tokens: None,
+    };
+    harness.app.running = true;
+    harness.app.run_usage_base = Some(harness.app.session_usage.clone());
+    harness.run_event(RunEvent::ModelStream {
+        turn: 1,
+        event: ModelEvent::Usage(usage(100, Some(90))),
+    });
+    assert_eq!(harness.app.session_usage.input_tokens, 100);
+    assert_eq!(harness.app.session_usage.cached_input_tokens, Some(90));
+    assert_eq!(
+        harness.app.last_turn_usage.as_ref().map(|u| u.input_tokens),
+        Some(100),
+        "the context watermark is the most recent request"
+    );
+    // 第二个请求累计入会话用量，水位换新。
+    harness.run_event(RunEvent::ModelStream {
+        turn: 2,
+        event: ModelEvent::Usage(usage(50, Some(40))),
+    });
+    assert_eq!(harness.app.session_usage.input_tokens, 150);
+    assert_eq!(
+        harness.app.last_turn_usage.as_ref().map(|u| u.input_tokens),
+        Some(50)
+    );
+    // 结束权威覆盖：基线 + RunOutput 全量（流式近似被替换，不重复计）。
+    harness.event(UiEvent::Worker(WorkerMessage::Done(Ok(
+        crate::ApplicationRunDone {
+            output: "done".into(),
+            turns: 2,
+            usage: usage(200, Some(170)),
+            cancelled: false,
+        },
+    ))));
+    assert_eq!(harness.app.session_usage.input_tokens, 200);
+    assert_eq!(harness.app.session_usage.cached_input_tokens, Some(170));
+    assert!(!harness.app.running, "the run finished");
+}
+
 /// 回归（2026-08-19 审计）：滚动条列预留把渲染折行宽度改为
 /// inner-1（conversation_wrap_width），但选区复制仍按 inner 取行——
 /// 复制跨行长文本时，各行来自错误的折行点，拷出内容与显示错位。
@@ -569,6 +622,74 @@ fn copying_a_selection_uses_the_rendered_wrap_width() {
         copied,
         expected.join("\n"),
         "copied rows must match the rendered wrap width"
+    );
+}
+
+/// 启动加载画面（2026-08-19 用户反馈：大会话启动不该等在黑窗口）：
+/// TUI 先行上屏——LOGO 欢迎页 + loading 状态 + 输入禁用。不 poll
+/// 接收端，状态确定性停在加载态（交接只发生在 poll 时）。
+#[test]
+fn startup_loading_snapshot_and_handover() {
+    let (storage_root, project_root) = roots("snap-loading");
+    std::fs::create_dir_all(&project_root).unwrap();
+    // 预信任（同 harness() 受信分支：写入信任行后立即关闭）。
+    let bootstrap =
+        BootstrapApplication::open(Project::new(&project_root), storage_root.clone()).unwrap();
+    let application = bootstrap
+        .authorize_and_mount_with_provider(std::sync::Arc::new(TestProviderPlugin {
+            behavior: TestBehavior::Success,
+        }))
+        .unwrap();
+    application.close().unwrap();
+
+    let mut app =
+        App::open_deferred(Project::new(&project_root), Some(storage_root.clone())).unwrap();
+    assert!(
+        app.loading.is_some(),
+        "the session mounts in the background"
+    );
+    app.test_freeze_tick = true;
+    let mut harness = Harness {
+        app,
+        terminal: Terminal::new(TestBackend::new(80, 24)).expect("test terminal"),
+        project_root,
+        storage_root,
+    };
+    harness.snapshot("startup-loading");
+
+    // 加载门：普通按键被吞，唯一出口是 Ctrl+C。
+    harness.key(KeyCode::Char('h'));
+    assert!(
+        !harness.app.input.visual_rows(60).join("").contains('h'),
+        "typing is blocked while the session loads"
+    );
+    harness.event(UiEvent::Terminal(Event::Key(KeyEvent::new(
+        KeyCode::Char('c'),
+        KeyModifiers::CONTROL,
+    ))));
+    assert!(harness.app.should_quit, "Ctrl+C remains the exit");
+    harness.app.should_quit = false;
+
+    // 后台挂载完成：轮询交接后 loading 解除、状态栏复位、输入解锁。
+    for _ in 0..500 {
+        harness.app.poll_loading();
+        if harness.app.loading.is_none() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        harness.app.loading.is_none(),
+        "the background mount hands over"
+    );
+    assert_eq!(
+        harness.app.status, harness.app.default_status,
+        "the status line returns to the resident directory"
+    );
+    harness.key(KeyCode::Char('h'));
+    assert!(
+        harness.app.input.visual_rows(60).join("").contains('h'),
+        "input unlocks after the handover"
     );
 }
 
@@ -694,6 +815,8 @@ fn permission_dialog_scrolling_reaches_the_last_argument_line() {
 
 #[test]
 fn waiting_first_token_snapshot() {
+    // 刷新 2026-08-19：阶段标签改整词呼吸（单一 span，无逐字光带）。
+
     let mut harness = Harness::trusted("snap-waiting", 80, 24);
     harness.run_event(RunEvent::ModelRequested {
         turn: 1,
@@ -706,6 +829,8 @@ fn waiting_first_token_snapshot() {
 
 #[test]
 fn thinking_phase_snapshot() {
+    // 刷新 2026-08-19：同 waiting——整词呼吸。
+
     let mut harness = Harness::trusted("snap-thinking", 80, 24);
     harness.run_event(RunEvent::ModelRequested {
         turn: 1,
@@ -725,6 +850,8 @@ fn thinking_phase_snapshot() {
 
 #[test]
 fn responding_phase_snapshot() {
+    // 刷新 2026-08-19：同 waiting——整词呼吸。
+
     let mut harness = Harness::trusted("snap-responding", 80, 24);
     harness.run_event(RunEvent::ModelRequested {
         turn: 1,
@@ -744,6 +871,8 @@ fn responding_phase_snapshot() {
 
 #[test]
 fn executing_tools_phase_snapshot() {
+    // 刷新 2026-08-19：同 waiting——整词呼吸。
+
     let mut harness = Harness::trusted("snap-executing", 80, 24);
     harness.run_event(RunEvent::ModelRequested {
         turn: 1,
@@ -769,6 +898,8 @@ fn model_picker_snapshot() {
     // 此前无压暗，与背景同亮度）+ Clear 垫边。
     // 刷新 2026-08-19：宽度 94% → 84%，与其余弹窗统一（94% 在宽终端
     // 上每边仅 3% 边距，用户观感为贴墙）。
+    // 刷新 2026-08-19：新增 Qwen Token Plan / Kimi Coding Plan 两个
+    // 厂商（一级 4 厂商 + Custom）。
     let mut harness = Harness::trusted("snap-model-picker", 80, 24);
     harness.type_text("/model");
     harness.key(KeyCode::Enter);
@@ -923,6 +1054,9 @@ fn markdown_cjk_wrap_snapshot() {
 
 #[test]
 fn steering_badge_snapshot() {
+    // 刷新 2026-08-19：流式前缀改太阳帧（◐ 灰色圆形，不再与状态栏
+    // 盲文 spinner 重复）+ 标签整词呼吸。
+
     // 运行中排队插话：状态行 phase 之后挂 `steering·N` 徽标，输入框
     // 标题提示 Enter 插话 / Esc 取消。
     let mut harness = Harness::trusted("snap-steer-badge", 80, 24);
@@ -946,6 +1080,8 @@ fn steering_badge_snapshot() {
 
 #[test]
 fn steered_transcript_snapshot() {
+    // 刷新 2026-08-19：标签整词呼吸。
+
     // 插话被 claim 后进转录（SteeringApplied → 用户块，与回放 UserMessage
     // 同一位点），模型继续回应。
     let mut harness = Harness::trusted("snap-steered", 80, 24);
@@ -1010,6 +1146,129 @@ fn ask_dialog_options_snapshot() {
         KeyModifiers::NONE,
     ))));
     harness.snapshot("ask-dialog-options");
+}
+
+/// /help 帮助弹窗（2026-08-19：原先是状态栏一行长文本，已长到与
+/// 右侧 Token/Cache/Context 遥测重叠）。弹窗规范同其余弹窗：黄框 +
+/// 背景压暗 + 四边边距；内容超可视高度时滚动，脚注提示还有下文。
+/// 本场景同时验证模态门控（按键被吞）与翻页（Down 推进滚动位）。
+#[test]
+fn help_dialog_snapshot_and_paging() {
+    let mut harness = Harness::trusted("snap-help", 80, 24);
+    harness.type_text("/help");
+    harness.key(KeyCode::Enter);
+    assert!(harness.app.info_dialog.is_some(), "the help dialog opens");
+    harness.project();
+    assert!(
+        harness.app.info_scroll_max > 0,
+        "the help content overflows one page at 80x24 (paging is real)"
+    );
+
+    // 模态门控：弹窗期间普通按键进不了输入框。
+    harness.type_text("abc");
+    assert!(!harness.app.input.visual_rows(60).join("").contains('a'));
+
+    // 翻页：Down 推进滚动位并钳制在最大值；Esc 关闭并交还输入。
+    harness.key(KeyCode::Down);
+    harness.snapshot("help-dialog");
+    let max = harness.app.info_scroll_max;
+    for _ in 0..max + 5 {
+        harness.key(KeyCode::Down);
+    }
+    assert_eq!(
+        harness.app.info_dialog.as_ref().map(|dialog| dialog.offset),
+        Some(max),
+        "scroll clamps at the end"
+    );
+    harness.key(KeyCode::Esc);
+    assert!(harness.app.info_dialog.is_none(), "Esc closes the dialog");
+    harness.type_text("hi");
+    assert!(
+        harness.app.input.visual_rows(60).join("").contains("hi"),
+        "input unlocks after the dialog closes"
+    );
+}
+
+/// /mcp 状态弹窗（2026-08-19）：命令打开 → 弹窗渲染挂载期的
+/// `McpStatusDto`。场景先走真实命令路径（空 MCP 配置 → 0/0 概览），
+/// 再注入富 DTO（两台服务器 + 一条失败含 stderr 尾部）锁定排版：
+/// 快照不拉真实子进程，注入的是 Application 层同型的纯数据。同时
+/// 验证 `r` 刷新复位滚动与模态门控。
+#[test]
+fn mcp_dialog_snapshot_and_refresh() {
+    let mut harness = Harness::trusted("snap-mcp", 80, 24);
+    harness.type_text("/mcp");
+    harness.key(KeyCode::Enter);
+    assert!(
+        harness
+            .app
+            .info_dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.kind == super::InfoDialogKind::Mcp),
+        "the /mcp command opens the MCP dialog"
+    );
+    // 未配置任何服务器：概览行 0/0，无服务器/失败节，高度内容驱动。
+    assert_eq!(
+        harness.app.mcp_view.as_ref().map(|view| view.configured),
+        Some(0)
+    );
+
+    // 注入富视图锁定排版（服务器行 + 折行的失败条目）。
+    harness.app.mcp_view = Some(fake_mcp_view());
+    harness.project();
+    harness.snapshot("mcp-dialog");
+
+    // 模态门控：字母进不了输入框（r 例外——它刷新而不是输入）。
+    harness.type_text("x");
+    assert!(!harness.app.input.visual_rows(60).join("").contains('x'));
+
+    // 翻页后 `r` 刷新：滚动复位、视图被重取（回到真实的空状态）。
+    for _ in 0..5 {
+        harness.key(KeyCode::Down);
+    }
+    harness.key(KeyCode::Char('r'));
+    assert!(
+        harness
+            .app
+            .info_dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.offset == 0),
+        "refresh resets the scroll offset"
+    );
+    assert_eq!(
+        harness.app.mcp_view.as_ref().map(|view| view.servers.len()),
+        Some(0),
+        "refresh pulls the live (empty) status back over the injected view"
+    );
+    harness.key(KeyCode::Esc);
+    assert!(harness.app.info_dialog.is_none(), "Esc closes the dialog");
+}
+
+/// 快照专用富 MCP 视图：与 Application DTO 同型的纯数据（不拉子进程）。
+fn fake_mcp_view() -> crate::McpStatusDto {
+    crate::McpStatusDto {
+        configured: 3,
+        connected: 2,
+        failures: vec![
+            "mcp `broken-server`: MCP negotiation failed: modern discover: timed out; legacy initialize: timed out | npx ERR! code E404 | last lines of stderr kept here".to_owned(),
+        ],
+        servers: vec![
+            crate::McpServerInfoDto {
+                name: "glm-web-search".to_owned(),
+                server_version: "1.9.0".to_owned(),
+                protocol_version: "2025-06-18".to_owned(),
+                tools: 1,
+                transport: "http".to_owned(),
+            },
+            crate::McpServerInfoDto {
+                name: "glm-vision".to_owned(),
+                server_version: "0.4.2".to_owned(),
+                protocol_version: "2024-11-05".to_owned(),
+                tools: 3,
+                transport: "stdio".to_owned(),
+            },
+        ],
+    }
 }
 
 #[test]

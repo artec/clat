@@ -103,7 +103,12 @@ that cannot prove its directory sync returns Unknown, and an append whose
 file identity drifted from the prepared handle (external writer) returns
 Unknown — both poison the session until a cold repair reopens it.
 In-run steering journals as plain mid-turn `user/message` rows,
-durable before the model request that consumes them.
+durable before the model request that consumes them. Each assistant
+message carries the step's token accounting in the DSH `usage` field
+(TokenUsage: `inputTokens` / `outputTokens` / optional
+`cacheReadTokens` / `reasoningTokens`) when the adapter reported it —
+the status bar's Cache/Context restore from these rows at startup in
+the same streaming pass as the replay.
 
 Session switching is two-phase: the target is first staged read-only
 (admission + cold restore), then armed but kept unpublished while pending

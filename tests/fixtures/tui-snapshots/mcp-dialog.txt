@@ -1,0 +1,27 @@
+size 80x24
+cursor 3,21
+scroll 0
+000| ┌──────────────────────────────────────────────────────────────────────────────┐  ⟦0..79 DIM⟧
+001| │ CLAT v<VERSION>  ready  ·  not configured — /model                               │  ⟦0..1 DIM · 2..5 BOLD+DIM · 6..79 DIM⟧
+002| └──────────────────────────────────────────────────────────────────────────────┘  ⟦0..79 DIM⟧
+003| ┌Conversation──────────────────────────────────────────────────────────────────┐  ⟦0..79 DIM⟧
+004| │                                                                              │  ⟦0..79 DIM⟧
+005| │                                                                              │  ⟦0..4 DIM · 75..79 DIM⟧
+006| │     ┌ MCP ─────────────────────────────────────────────────────────────┐     │  ⟦0..4 DIM · 6..6 fg=Yellow · 7..11 fg=Yellow+BOLD · 12..73 fg=Yellow · 75..79 DIM⟧
+007| │     │ MCP servers: 2/3 connected                                       │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 8..33 BOLD · 73..73 fg=Yellow · 75..79 DIM⟧
+008| │     │                                                                  │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+009| │     │ ● glm-web-search  http · 2025-06-18 · v1.9.0 · 1 tool            │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 24..60 DIM · 73..73 fg=Yellow · 75..79 DIM⟧
+010| │     │ ● glm-vision  stdio · 2024-11-05 · v0.4.2 · 3 tools              │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 20..58 DIM · 73..73 fg=Yellow · 75..79 DIM⟧
+011| │     │                                                                  │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+012| │     │ Failures                                                         │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 8..15 BOLD · 73..73 fg=Yellow · 75..79 DIM⟧
+013| │     │   mcp `broken-server`: MCP negotiation failed: modern discover:  │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 8..71 DIM · 73..73 fg=Yellow · 75..79 DIM⟧
+014| │     │ timed out; legacy initialize: timed out | npx ERR! code E404 | l │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 8..71 DIM · 73..73 fg=Yellow · 75..79 DIM⟧
+015| │     │ ast lines of stderr kept here                                    │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 8..36 DIM · 73..73 fg=Yellow · 75..79 DIM⟧
+016| │     │ r refresh · Esc close                                            │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 8..28 fg=DarkGray · 73..73 fg=Yellow · 75..79 DIM⟧
+017| │     └──────────────────────────────────────────────────────────────────┘     │  ⟦0..4 DIM · 6..73 fg=Yellow · 75..79 DIM⟧
+018| │                                                                              │  ⟦0..4 DIM · 75..79 DIM⟧
+019| └──────────────────────────────────────────────────────────────────────────────┘  ⟦0..79 DIM⟧
+020| ┌Message───────────────────────────────────────────────────────────────────────┐  ⟦0..79 DIM⟧
+021| │❯                                                                             │  ⟦0..79 DIM⟧
+022| └──────────────────────────────────────────────────────────────────────────────┘  ⟦0..79 DIM⟧
+023|  <STORAGE-ROOT>  ⟦0..14 DIM · 15..79 PAD:65 DIM⟧

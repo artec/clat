@@ -51,6 +51,33 @@ pub struct SessionView {
     pub replay: Vec<ReplayEvent>,
     pub model_items: Vec<ModelItem>,
     pub turns: u64,
+    /// Journal-derived usage stats (DSH `assistant/message.usage`), folded
+    /// in the same streaming pass as `replay`: the status bar's Cache and
+    /// Context restore from them at startup without a second log stream.
+    pub usage: UsageStats,
+}
+
+/// Usage stats folded from one journal pass: the session aggregate (cache
+/// ratio numerator/denominator) and the most recent report (the current
+/// context watermark).
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct UsageStats {
+    pub session: crate::model::Usage,
+    pub last_request: Option<crate::model::Usage>,
+}
+
+/// Extract a usage report from an `assistant/message` event's DSH-shaped
+/// `usage` object. Messages without a report (adapter did not report) and
+/// unknown shapes are skipped.
+fn usage_from_event(event: &SessionEvent) -> Option<crate::model::Usage> {
+    let usage = event.data.get("usage")?;
+    let number = |field: &str| usage.get(field).and_then(serde_json::Value::as_u64);
+    Some(crate::model::Usage {
+        input_tokens: number("inputTokens")?,
+        output_tokens: number("outputTokens").unwrap_or(0),
+        cached_input_tokens: number("cacheReadTokens"),
+        reasoning_tokens: number("reasoningTokens"),
+    })
 }
 
 /// Use-case-level CAS for title writes (plan §13.2).
@@ -224,21 +251,22 @@ impl SessionService {
         // Structured replay for the frontend transcript rebuild. Read after
         // the catch-up fold so recovery repair events are included; the log
         // is the authority, so the result never depends on checkpoints.
-        let replay = match self.replay(&key) {
-            Ok(replay) => replay,
+        let (replay, usage) = match self.replay_with_usage(&key) {
+            Ok(pair) => pair,
             Err(error) => {
                 let _ = coordinator.close();
                 return Err(error);
             }
         };
-        let view = match self.view_from(&header, &projections.lock().expect("projections"), replay)
-        {
-            Ok(view) => view,
-            Err(error) => {
-                let _ = coordinator.close();
-                return Err(error);
-            }
-        };
+        let mut view =
+            match self.view_from(&header, &projections.lock().expect("projections"), replay) {
+                Ok(view) => view,
+                Err(error) => {
+                    let _ = coordinator.close();
+                    return Err(error);
+                }
+            };
+        view.usage = usage;
         Ok(ArmedSession { active, view })
     }
 
@@ -576,18 +604,36 @@ impl SessionService {
     /// failing the caller (mirrors `read_stable`). A truly external writer
     /// exhausts the budget and the error still surfaces.
     pub(crate) fn replay(&self, key: &SessionKey) -> Result<Vec<ReplayEvent>, SessionError> {
+        self.replay_with_usage(key).map(|(replay, _)| replay)
+    }
+
+    /// One streaming pass producing both the structured replay and the
+    /// journal-derived usage stats: the startup path needs both, and a
+    /// second pass would double the zstd decode cost the mount-time reuse
+    /// exists to avoid.
+    pub(crate) fn replay_with_usage(
+        &self,
+        key: &SessionKey,
+    ) -> Result<(Vec<ReplayEvent>, UsageStats), SessionError> {
         if !self.has_log(key) {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), UsageStats::default()));
         }
         let mut last = None;
         for _ in 0..3 {
             let mut adapter = ReplayAdapter::new();
             let mut out = Vec::new();
+            let mut usage = UsageStats::default();
             match self.backend.visit_from(key, 0, &mut |event| {
                 adapter.push(event, &mut out);
+                if event.event_type == "assistant/message"
+                    && let Some(report) = usage_from_event(event)
+                {
+                    usage.session.add_assign(&report);
+                    usage.last_request = Some(report);
+                }
                 Ok(())
             }) {
-                Ok(_) => return Ok(out),
+                Ok(_) => return Ok((out, usage)),
                 Err(SessionError::Io(message)) => last = Some(SessionError::Io(message)),
                 Err(error) => return Err(error),
             }
@@ -599,14 +645,21 @@ impl SessionService {
     /// quiescent points (mount, switch); a concurrently appending writer is
     /// not expected here.
     pub(crate) fn replay_active(&self) -> Result<Vec<ReplayEvent>, SessionError> {
+        self.replay_active_with_usage().map(|(replay, _)| replay)
+    }
+
+    /// [`Self::replay_active`] + usage stats in the same single pass.
+    pub(crate) fn replay_active_with_usage(
+        &self,
+    ) -> Result<(Vec<ReplayEvent>, UsageStats), SessionError> {
         let key = {
             let guard = self.active.lock().expect("active");
             match guard.as_ref() {
                 Some(active) => active.key.clone(),
-                None => return Ok(Vec::new()),
+                None => return Ok((Vec::new(), UsageStats::default())),
             }
         };
-        self.replay(&key)
+        self.replay_with_usage(&key)
     }
 
     /// The display transcript of the active session (projection-backed,
@@ -766,6 +819,7 @@ impl SessionService {
             replay,
             model_items,
             turns,
+            usage: UsageStats::default(),
         })
     }
 }
@@ -1170,6 +1224,7 @@ mod tests {
                         )],
                         "application-test",
                         "deterministic",
+                        None,
                     ),
                 )
                 .append(Vec::new()),

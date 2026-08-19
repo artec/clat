@@ -235,6 +235,9 @@ pub(crate) struct SessionRecorder {
     reasoning: String,
     completed_calls: Vec<crate::tool::ToolCall>,
     chunk_seqs: Vec<u64>,
+    /// The step's final token usage (stream-end `ModelEvent::Usage`), landed
+    /// on the assistant/message payload (DSH `usage` field). Reset per step.
+    stream_usage: Option<crate::model::Usage>,
     /// Provider opaque state to persist on this step's assistant message
     /// (`source.replayState`), carried by `ModelResponded`.
     replay_state: Option<Value>,
@@ -272,6 +275,7 @@ impl SessionRecorder {
             request_header: request_header.header,
             step_open: false,
             message_emitted: false,
+            stream_usage: None,
             next_block_index: 0,
             text: String::new(),
             reasoning: String::new(),
@@ -437,6 +441,7 @@ impl SessionRecorder {
         self.completed_calls.clear();
         self.chunk_seqs.clear();
         self.replay_state = None;
+        self.stream_usage = None;
         self.pending_retry_id = None;
         self.next_block_index = 0;
     }
@@ -505,8 +510,13 @@ impl SessionRecorder {
             ModelEvent::ToolCallCompleted { call } => {
                 self.completed_calls.push(call.clone());
             }
-            ModelEvent::Usage(_)
-            | ModelEvent::ResponseStarted { .. }
+            // 流末 usage 暂存：随 ModelResponded 落进本条 assistant/
+            // message（DSH usage 字段）。每个 step 重置——重试的失败
+            // 尝试不上报 usage，不能让上一次的值渗进本条消息。
+            ModelEvent::Usage(usage) => {
+                self.stream_usage = Some(usage.clone());
+            }
+            ModelEvent::ResponseStarted { .. }
             | ModelEvent::ResponseCompleted { .. }
             | ModelEvent::ProviderEvent { .. } => {}
             ModelEvent::RetryScheduled { .. } | ModelEvent::RetryStarted { .. } => {}
@@ -539,8 +549,14 @@ impl SessionRecorder {
             ));
         }
         let sources = std::mem::take(&mut self.chunk_seqs);
-        let mut payload =
-            payloads::assistant_message(turn, step, content, &self.provider, &self.model);
+        let mut payload = payloads::assistant_message(
+            turn,
+            step,
+            content,
+            &self.provider,
+            &self.model,
+            self.stream_usage.take().as_ref(),
+        );
         if let Some(replay) = self.replay_state.take() {
             payload = payloads::with_replay_state(payload, &replay);
         }
@@ -943,6 +959,82 @@ mod tests {
         assert_eq!(payload["role"], "user");
         assert_eq!(payload["source"]["kind"], "user");
         assert_eq!(payload["content"][0]["text"], "also run the tests");
+    }
+
+    #[test]
+    fn streamed_usage_lands_on_its_own_step_and_resets_between_steps() {
+        // DSH assistant/message.usage（TokenUsage 字段名）：流末 usage 落
+        // 在当步的 assistant 消息上；每个 step 重置——上一步的值不得
+        // 渗进未上报的下一步（重启还原的状态栏依赖此形状）。
+        let (mut recorder, journal, _seen) = recorder();
+        recorder.emit(RunEvent::ModelRequested {
+            turn: 1,
+            provider: "p".into(),
+            model: "m".into(),
+        });
+        recorder.emit(RunEvent::ModelStream {
+            turn: 1,
+            event: ModelEvent::TextDelta {
+                delta: "with usage".into(),
+            },
+        });
+        recorder.emit(RunEvent::ModelStream {
+            turn: 1,
+            event: ModelEvent::Usage(crate::model::Usage {
+                input_tokens: 10,
+                output_tokens: 2,
+                cached_input_tokens: Some(4),
+                reasoning_tokens: Some(1),
+            }),
+        });
+        recorder.emit(RunEvent::ModelResponded {
+            turn: 1,
+            outcome: crate::event::ModelOutcome {
+                has_text: true,
+                tool_calls: 0,
+            },
+            finish_reason: crate::model::FinishReason::Completed,
+            provider_replay: None,
+        });
+        // 第二步不上报 usage：消息不得携带第一步的旧值。
+        recorder.emit(RunEvent::ModelRequested {
+            turn: 1,
+            provider: "p".into(),
+            model: "m".into(),
+        });
+        recorder.emit(RunEvent::ModelStream {
+            turn: 1,
+            event: ModelEvent::TextDelta {
+                delta: "no usage".into(),
+            },
+        });
+        recorder.emit(RunEvent::ModelResponded {
+            turn: 1,
+            outcome: crate::event::ModelOutcome {
+                has_text: true,
+                tool_calls: 0,
+            },
+            finish_reason: crate::model::FinishReason::Completed,
+            provider_replay: None,
+        });
+        assert!(recorder.finish(TurnEndReason::Completed).is_none());
+
+        let events = journal.events();
+        let messages: Vec<&serde_json::Value> = events
+            .iter()
+            .filter(|(kind, _)| kind == "assistant/message")
+            .map(|(_, payload)| payload)
+            .collect();
+        assert_eq!(messages.len(), 2);
+        let usage = &messages[0]["usage"];
+        assert_eq!(usage["inputTokens"], 10);
+        assert_eq!(usage["outputTokens"], 2);
+        assert_eq!(usage["cacheReadTokens"], 4);
+        assert_eq!(usage["reasoningTokens"], 1);
+        assert!(
+            messages[1].get("usage").is_none(),
+            "an unreported step must not inherit the previous step's usage"
+        );
     }
 
     #[test]

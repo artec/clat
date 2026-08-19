@@ -5,7 +5,7 @@ use crate::plugin::{
     DisposeError, Plugin, PluginContext, PluginDescriptor, PluginError, PluginId, ScopeKind,
     ServiceId,
 };
-use crate::providers::{fetch_deepseek_balance, fetch_glm_quota};
+use crate::providers::{fetch_deepseek_balance, fetch_glm_quota, fetch_kimi_quota};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -154,6 +154,15 @@ fn fetch_value((config, credentials): &(ModelConfig, ProviderCredentials)) -> Op
         fetch_glm_quota(&config.endpoint, api_key)
     } else if endpoint.contains("deepseek.com") {
         fetch_deepseek_balance(&config.endpoint, api_key)
+    } else if endpoint.contains("kimi.com/coding") {
+        // 额度接口与模型接口同源 UA 白名单：带上预设注入的 UA（用户
+        // 在 Extra Headers 覆盖过则以用户为准）。Qwen Token Plan 无
+        // 公开余额 API（官方只提供控制台"我的订阅"页），不在此分支。
+        let user_agent = config
+            .extra_headers
+            .get("User-Agent")
+            .and_then(serde_json::Value::as_str);
+        fetch_kimi_quota(&config.endpoint, api_key, user_agent)
     } else {
         None
     }

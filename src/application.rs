@@ -86,6 +86,10 @@ pub struct ProjectSnapshot {
     /// text-flattened view until the TUI migrates).
     pub replay: Vec<ReplayEvent>,
     pub input_history: Vec<String>,
+    /// Journal-derived session usage aggregate (status-bar Cache ratio).
+    pub session_usage: crate::model::Usage,
+    /// Journal-derived most recent request usage (status-bar Context).
+    pub last_request_usage: Option<crate::model::Usage>,
     pub config: ModelConfig,
     pub credentials: ProviderCredentials,
     pub provider_descriptors: Vec<ProviderDescriptor>,
@@ -105,6 +109,10 @@ pub struct McpServerInfoDto {
     pub name: String,
     pub server_version: String,
     pub protocol_version: String,
+    /// 该服务器注册进 Tool Registry 的工具数（/mcp 视图用）。
+    pub tools: usize,
+    /// 传输类型 `"stdio"` / `"http"`（/mcp 视图用）。
+    pub transport: String,
 }
 
 impl From<&McpStatus> for McpStatusDto {
@@ -120,6 +128,8 @@ impl From<&McpStatus> for McpStatusDto {
                     name: server.name.clone(),
                     server_version: server.server_version.clone(),
                     protocol_version: server.protocol_version.clone(),
+                    tools: server.tools,
+                    transport: server.transport.clone(),
                 })
                 .collect(),
         }
@@ -133,6 +143,10 @@ pub struct SessionSnapshot {
     /// Structured replay of this session's journal (see `ProjectSnapshot::
     /// replay`).
     pub replay: Vec<ReplayEvent>,
+    /// Journal-derived usage stats of the target session (see
+    /// `ProjectSnapshot::session_usage`).
+    pub session_usage: crate::model::Usage,
+    pub last_request_usage: Option<crate::model::Usage>,
     pub input_history: Vec<String>,
 }
 
@@ -280,8 +294,12 @@ pub struct TrustedProjectApplication {
     /// 一次 `snapshot()` 直接复用，不再从 0 重放日志——大会话在 debug
     /// 构建下省掉一整遍 zstd 解码加解析（启动性能）。会话 id 配对防
     /// 错拿；take 后即失效，后续 snapshot 走正常全量流（freshness 语
-    /// 义不变）。
-    mounted_replay: Option<(SessionId, Vec<crate::session::replay::ReplayEvent>)>,
+    /// 义不变）。usage 统计与回放同遍折叠，一并暂存。
+    mounted_replay: Option<(
+        SessionId,
+        Vec<crate::session::replay::ReplayEvent>,
+        crate::session::use_cases::UsageStats,
+    )>,
     subscribers: Arc<Mutex<Vec<mpsc::Sender<ApplicationEvent>>>>,
     /// The workspace selection mirror (control DB is authoritative).
     selection: WorkspaceSelection,
@@ -431,8 +449,10 @@ impl TrustedProjectApplication {
             ]),
         }
         catalog.extend([
-            Arc::new(crate::plugins::McpAdapterPlugin::new(storage_root.clone()))
-                as Arc<dyn Plugin>,
+            Arc::new(crate::plugins::McpAdapterPlugin::new(
+                storage_root.clone(),
+                glm_mcp_pack_from_control(&control),
+            )) as Arc<dyn Plugin>,
             Arc::new(crate::plugins::DefaultPermissionPlugin),
             Arc::new(crate::plugins::PromptRegistryPlugin),
             Arc::new(crate::plugins::DefaultPromptPlugin),
@@ -584,9 +604,10 @@ impl TrustedProjectApplication {
                         self.restore_todo_from(&view);
                         // arm 阶段已经付过一遍全量回放的成本，把结果
                         // 递给第一次 snapshot()（同 switch_session 复用
-                        // view.replay 的先例）。
-                        let SessionView { replay, .. } = view;
-                        self.mounted_replay = Some((id, replay));
+                        // view.replay 的先例）；usage 统计同遍产出，
+                        // 状态栏 Cache/Context 启动即有值。
+                        let SessionView { replay, usage, .. } = view;
+                        self.mounted_replay = Some((id, replay, usage));
                     }
                     Err(error) => {
                         // 缺失/损坏：不修控制行，逻辑回退 Fresh；诊断经
@@ -715,26 +736,38 @@ impl TrustedProjectApplication {
     pub fn snapshot(&mut self) -> Result<ProjectSnapshot, ApplicationError> {
         let (config, credentials) = self.model_state()?;
         self.monitor.configure(config.clone(), credentials.clone());
-        let (transcript, replay, input_history, session_id) = match self.sessions.active_id() {
+        let (transcript, replay, usage, input_history, session_id) = match self.sessions.active_id()
+        {
             Some(id) => {
                 let inputs = self.sessions.recent_inputs(500).map_err(session_error)?;
                 let transcript = self.sessions.transcript_lines().map_err(session_error)?;
                 // 挂载期暂存的回放一次性复用（会话 id 配对）：省掉紧随
                 // mount 的又一整遍全量流式回放。任何后续 snapshot 都走
                 // 正常全量流，freshness 语义不变。
-                let replay = match self.mounted_replay.take() {
-                    Some((stash_id, replay)) if stash_id == id => replay,
-                    _ => self.sessions.replay_active().map_err(session_error)?,
+                let (replay, usage) = match self.mounted_replay.take() {
+                    Some((stash_id, replay, usage)) if stash_id == id => (replay, usage),
+                    _ => self
+                        .sessions
+                        .replay_active_with_usage()
+                        .map_err(session_error)?,
                 };
-                (transcript, replay, inputs, Some(id))
+                (transcript, replay, usage, inputs, Some(id))
             }
-            None => (Vec::new(), Vec::new(), Vec::new(), None),
+            None => (
+                Vec::new(),
+                Vec::new(),
+                crate::session::use_cases::UsageStats::default(),
+                Vec::new(),
+                None,
+            ),
         };
         Ok(ProjectSnapshot {
             session_id,
             transcript,
             replay,
             input_history,
+            session_usage: usage.session,
+            last_request_usage: usage.last_request,
             provider_descriptors: self.providers.descriptors(&credentials),
             config,
             credentials,
@@ -744,6 +777,12 @@ impl TrustedProjectApplication {
 
     pub fn current_session_id(&self) -> Option<SessionId> {
         self.sessions.active_id()
+    }
+
+    /// 当前 MCP 状态快照（前端 `/mcp` 视图的数据源）。挂载完成前返回
+    /// 默认值（0 configured），不阻塞、不触发重连。
+    pub fn mcp_status(&self) -> McpStatusDto {
+        McpStatusDto::from(self.mcp_status.as_ref())
     }
 
     /// 注入下一次 run worker spawn 失败（A-03 不变量的测试钩）。
@@ -859,10 +898,16 @@ impl TrustedProjectApplication {
             )));
         }
         if self.sessions.active_id().as_ref() == Some(&id) {
+            let (replay, usage) = self
+                .sessions
+                .replay_active_with_usage()
+                .map_err(session_error)?;
             return Ok(SessionSnapshot {
                 id,
                 transcript: self.sessions.transcript_lines().map_err(session_error)?,
-                replay: self.sessions.replay_active().map_err(session_error)?,
+                replay,
+                session_usage: usage.session,
+                last_request_usage: usage.last_request,
                 input_history: self.sessions.recent_inputs(500).map_err(session_error)?,
             });
         }
@@ -896,10 +941,13 @@ impl TrustedProjectApplication {
         self.restore_todo_from(&view);
         let input_history = self.sessions.recent_inputs(500).map_err(session_error)?;
         quiesce?;
+        let usage = view.usage;
         Ok(SessionSnapshot {
             id,
             transcript: view.transcript,
             replay: view.replay,
+            session_usage: usage.session,
+            last_request_usage: usage.last_request,
             input_history,
         })
     }
@@ -922,10 +970,11 @@ impl TrustedProjectApplication {
         // 预设默认。仅 DeepSeek/GLM 端点参与：字段可能在用户改端点前
         // 设置，注入到其它厂商的请求体会被严格网关拒绝（与
         // `effective_thinking_level` 的 Other→None 口径一致）。
-        if let Some(level) = config.thinking_level
-            && crate::model::endpoint_vendor(&config.endpoint) != crate::model::ModelVendor::Other
-        {
-            crate::model::apply_thinking_level(&mut config.extra_body, level);
+        if let Some(level) = config.thinking_level {
+            let vendor = crate::model::endpoint_vendor(&config.endpoint);
+            if vendor != crate::model::ModelVendor::Other {
+                crate::model::apply_thinking_level(&mut config.extra_body, vendor, level);
+            }
         }
         Ok((config, credentials))
     }
@@ -1862,6 +1911,26 @@ fn broadcast_to(
 
 fn session_error(error: crate::session::persistence::SessionError) -> ApplicationError {
     ApplicationError::new(error.to_string())
+}
+
+/// 按激活模型算厂商专属 MCP 包（GLM Coding Plan 四件套，2026-08-19）：
+/// 端点识别走 `preset.apply` 后的 vendor，凭据取当前 key。密钥只进
+/// 内存（插件挂载期合并，用户 mcp.json 同名条目优先），不落盘。
+/// 读不到模型状态/无 key/非 GLM 一律空包——MCP 挂载永不因此失败。
+fn glm_mcp_pack_from_control(
+    control: &Arc<ControlStorage>,
+) -> Vec<(String, crate::mcp_client::McpServerConfig)> {
+    let Some((mut config, credentials)) = control.load_model_state().ok().flatten() else {
+        return Vec::new();
+    };
+    if let Some(preset) = config.preset.as_deref().and_then(preset_by_id) {
+        preset.apply(&mut config);
+    }
+    let api_key = credentials.value(0).unwrap_or_default().trim().to_owned();
+    if config.vendor() != crate::model::ModelVendor::Glm || api_key.is_empty() {
+        return Vec::new();
+    }
+    crate::mcp_client::glm_mcp_pack(&api_key)
 }
 
 fn store_error(error: StoreError) -> ApplicationError {
@@ -2927,6 +2996,75 @@ mod tests {
             }),
             "no synthetic continuation note may appear in the journal"
         );
+        std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
+    }
+
+    /// GLM 专属 MCP 包的判定（2026-08-19）：激活厂商为 GLM 且配置了
+    /// API Key 才产出四件套；密钥只进内存配置（服务端地址/鉴权形态
+    /// 见 glm_mcp_pack 测试），非 GLM 或无 key 一律空包——MCP 挂载
+    /// 永不因此失败。
+    #[test]
+    fn glm_mcp_pack_follows_the_active_vendor_and_key() {
+        let (storage_root, project_root) = roots("glm-mcp-pack");
+        std::fs::create_dir_all(&project_root).unwrap();
+        let project = Project::new(&project_root);
+        let application = mount(&project, &storage_root, TestBehavior::Success);
+        configure_test_model(&application);
+
+        // 默认（非 GLM）：空包。
+        assert!(glm_mcp_pack_from_control(&application.control).is_empty());
+
+        // GLM 预设 + key：四件套。
+        let mut config = ModelConfig {
+            preset: Some("glm-5.3".into()),
+            ..ModelConfig::default()
+        };
+        preset_by_id("glm-5.3").expect("preset").apply(&mut config);
+        let mut credentials = crate::model::ProviderCredentials::for_protocol(config.protocol);
+        credentials.set_value(0, "glm-coding-key".into());
+        application
+            .save_model_state(&config, &credentials)
+            .expect("save");
+        let pack = glm_mcp_pack_from_control(&application.control);
+        assert_eq!(pack.len(), 4);
+        assert!(pack.iter().all(|(name, _)| name.starts_with("glm-")));
+
+        // GLM 但无 key：空包。
+        let empty = crate::model::ProviderCredentials::for_protocol(config.protocol);
+        application.save_model_state(&config, &empty).expect("save");
+        assert!(glm_mcp_pack_from_control(&application.control).is_empty());
+
+        application.close().unwrap();
+        std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
+    }
+
+    /// 状态栏 Cache/Context 启动即有值（2026-08-19 用户反馈）：journal
+    /// 的 assistant/message.usage 在挂载回放的同一遍流里折叠（不多流
+    /// 一遍日志），snapshot 还原会话累计与最近一次请求——不待首次
+    /// run 上报。TestModel::Success 每次完成上报 (120/30/100)。
+    #[test]
+    fn snapshot_restores_usage_stats_from_the_journal() {
+        let (storage_root, project_root) = roots("usage-restore");
+        std::fs::create_dir_all(&project_root).unwrap();
+        let project = Project::new(&project_root);
+        let mut application = mount(&project, &storage_root, TestBehavior::Success);
+        configure_test_model(&application);
+        run(&mut application, "one").unwrap();
+        run(&mut application, "two").unwrap();
+        application.close().unwrap();
+
+        let mut application = mount(&project, &storage_root, TestBehavior::Success);
+        let snapshot = application.snapshot().expect("snapshot");
+        assert_eq!(snapshot.session_usage.input_tokens, 240);
+        assert_eq!(snapshot.session_usage.output_tokens, 60);
+        assert_eq!(snapshot.session_usage.cached_input_tokens, Some(200));
+        let last = snapshot.last_request_usage.expect("last request usage");
+        assert_eq!(
+            (last.input_tokens, last.output_tokens),
+            (120, 30),
+            "the context watermark is the most recent report"
+        );
+        application.close().unwrap();
         std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
     }
 

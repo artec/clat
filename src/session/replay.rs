@@ -561,7 +561,7 @@ mod tests {
             payloads::text_block("answer"),
             payloads::tool_call_block("call-1", "write_file", &json!({"path": "a.txt"})),
         ];
-        let mut data = payloads::assistant_message(2, 0, content, "openai", "gpt-test");
+        let mut data = payloads::assistant_message(2, 0, content, "openai", "gpt-test", None);
         data = payloads::with_replay_state(data, &json!([{"kind": "reasoning"}]));
         let out = fold_one(&event("assistant/message", 4, data).append(vec![1, 2, 3]));
         assert_eq!(
@@ -598,6 +598,7 @@ mod tests {
             ],
             "p",
             "m",
+            None,
         );
         let out = fold_one(&event("assistant/message", 2, data).append(Vec::new()));
         let [
@@ -1007,7 +1008,7 @@ mod tests {
             ("user/message", payloads::user_message("hi")),
             (
                 "assistant/message",
-                payloads::assistant_message(1, 0, vec![payloads::text_block("a")], "p", "m"),
+                payloads::assistant_message(1, 0, vec![payloads::text_block("a")], "p", "m", None),
             ),
             ("tool/call", payloads::tool_call(1, 0, "c", "t", &json!({}))),
             (

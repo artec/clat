@@ -161,6 +161,69 @@ fn parse_glm_quota(value: &serde_json::Value) -> Option<String> {
     Some(format!("{}%", remaining.round() as u64))
 }
 
+/// 查询 Kimi Coding 会员的 5 小时窗口剩余额度（`GET
+/// {coding_base}/usages`，Bearer Key；cc-switch `coding_plan.rs` 的
+/// `query_kimi` 同款端点，2026-08 核验）。额度接口与模型接口同源
+/// UA 白名单——请求必须带预设注入的 User-Agent（取自
+/// `extra_headers`），否则 403。响应 `limits[0].detail.{limit,
+/// remaining}` 是 5 小时滚动窗口，剩余百分比 = remaining/limit×100
+/// （与 GLM 的 Token 槽位同语义）；失败返回 None，不影响主流程。
+pub(crate) fn fetch_kimi_quota(
+    endpoint: &str,
+    api_key: &str,
+    user_agent: Option<&str>,
+) -> Option<String> {
+    fetch_kimi_quota_with_timeout(endpoint, api_key, user_agent, MONITOR_HTTP_TIMEOUT)
+}
+
+fn fetch_kimi_quota_with_timeout(
+    endpoint: &str,
+    api_key: &str,
+    user_agent: Option<&str>,
+    timeout: Duration,
+) -> Option<String> {
+    let agent = monitor_agent(timeout);
+    let base = endpoint.trim().trim_end_matches('/');
+    let url = format!("{base}/usages");
+    let mut request = agent
+        .get(url)
+        .header("Authorization", format!("Bearer {api_key}"))
+        .header("Accept", "application/json");
+    if let Some(user_agent) = user_agent {
+        request = request.header("User-Agent", user_agent);
+    }
+    let mut response = request.call().ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let body = response.body_mut().read_to_string().ok()?;
+    let value: serde_json::Value = serde_json::from_str(&body).ok()?;
+    parse_kimi_quota(&value)
+}
+
+/// 解析 `GET /coding/v1/usages` 响应：`limits[]` 首个条目的
+/// `detail.{limit, remaining}` 是 5 小时滚动窗口（数字或字符串两种
+/// 形态都兼容，与 GLM 的 percentage 兼容口径一致）。
+fn parse_kimi_quota(value: &serde_json::Value) -> Option<String> {
+    let number = |field: &serde_json::Value| {
+        field
+            .as_f64()
+            .or_else(|| field.as_str().and_then(|text| text.parse().ok()))
+    };
+    let detail = value
+        .get("limits")?
+        .as_array()?
+        .iter()
+        .find_map(|item| item.get("detail"))?;
+    let limit = number(detail.get("limit")?)?;
+    let remaining = number(detail.get("remaining")?)?;
+    if limit <= 0.0 {
+        return None;
+    }
+    let remaining_pct = (remaining / limit * 100.0).clamp(0.0, 100.0);
+    Some(format!("{}%", remaining_pct.round() as u64))
+}
+
 // ─── LLM 重试（能力批次 1 / A）────────────────────────────────────────────
 //
 // 重试是 provider 层横切行为：factory-backed wrapper 每次尝试构造新的底层
@@ -704,6 +767,37 @@ mod tests {
         assert_eq!(parse_glm_quota(&exhausted).as_deref(), Some("0%"));
         let missing = serde_json::json!({"data": {"limits": [{"type": "TIME_LIMIT"}]}});
         assert_eq!(parse_glm_quota(&missing), None);
+    }
+
+    /// Kimi Coding `/coding/v1/usages` 的解析（cc-switch query_kimi
+    /// 同款响应结构）：`limits[0].detail.{limit, remaining}` 是 5 小时
+    /// 滚动窗口的绝对值，剩余百分比与 GLM Token 槽位同语义。
+    #[test]
+    fn parses_kimi_quota_remaining_percentage() {
+        let body = serde_json::json!({
+            "limits": [
+                {"detail": {"limit": 200.0, "remaining": 130.0, "resetTime": "2026-08-20T00:00:00Z"}}
+            ],
+            "usage": {"limit": 5000.0, "remaining": 4200.0}
+        });
+        assert_eq!(parse_kimi_quota(&body).as_deref(), Some("65%"));
+
+        // 数值为字符串时同样兼容；只认 limits[]，周窗口 usage 不参与。
+        let string_body = serde_json::json!({
+            "limits": [
+                {"detail": {"limit": "200", "remaining": "50"}}
+            ],
+            "usage": {"limit": 5000.0, "remaining": 4900.0}
+        });
+        assert_eq!(parse_kimi_quota(&string_body).as_deref(), Some("25%"));
+
+        // 用尽钳制为 0%；limit 非正数、缺 detail 都返回 None。
+        let exhausted = serde_json::json!({
+            "limits": [{"detail": {"limit": 100.0, "remaining": -3.0}}]
+        });
+        assert_eq!(parse_kimi_quota(&exhausted).as_deref(), Some("0%"));
+        let missing = serde_json::json!({"usage": {"limit": 5000.0, "remaining": 1.0}});
+        assert_eq!(parse_kimi_quota(&missing), None);
     }
 
     #[test]

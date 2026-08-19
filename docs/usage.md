@@ -1,20 +1,27 @@
 # Using the TUI
 
 Running `clat` with no arguments opens the terminal UI in the current
-project directory.
+project directory. The UI appears immediately — resuming the previous
+conversation loads in the background, showing the CLAT logo with a
+`loading conversation…` status while input stays disabled; once the
+session is ready the conversation appears and input unlocks.
 
 ## Panels
 
 - **Conversation** — persisted user/assistant messages for the latest
   conversation in this project. User messages render as a soft dark
   block with a bright yellow `❯` marker; assistant messages are plain
-  text with a quiet `⏺` marker. A vertical scrollbar shows the position.
+  text with a quiet `⏺` marker — while a response is streaming the
+  marker becomes a rotating quarter-circle (◐◓◑◒) so a long wait is
+  never a still screen. A vertical scrollbar shows the position.
 - **Message input** — cursor- and Unicode-aware, grows up to eight rows
   for multi-line messages.
 - **Status line** — model/tool status, kept separate so status messages
   never pollute chat history. While the model reasons, it shows a
-  rotating spinner plus a "Thinking…" text-shimmer with an elapsed
-  counter, in the style of the DeepSeek Harness.
+  rotating spinner plus a "Thinking…" label that breathes (the whole
+  label fades in and out at a fixed period, so the rhythm never changes
+  with the label length) with an elapsed counter, in the style of the
+  DeepSeek Harness.
 
 ## Keyboard
 
@@ -62,7 +69,14 @@ instead of cancelling the run.
   it; the list shows title and message count, with the current
   conversation marked. Entering a conversation (even read-only) makes
   it the startup conversation for the next launch
-- `/help` — show commands
+- `/help` — open the help dialog (commands and keys; `↑`/`↓`,
+  `PgUp`/`PgDn` scroll, `Esc` closes). Like every popup it is sized to its
+  content and keeps margins on all four sides
+- `/mcp` — inspect MCP servers: connection overview, per-server transport,
+  negotiated protocol and server versions, registered tool counts, and
+  mount failures (including the server's stderr tail, which is what npx
+  errors show up in). `↑`/`↓`/`PgUp`/`PgDn` scroll, `r` re-reads the
+  status, `Esc` closes
 - `/quit` or `/exit` — leave CLAT
 
 Sessions get their title from your first message; after a successful run
@@ -153,7 +167,14 @@ The title bar carries the model name followed by the current thinking
 level (`CLAT v… ready · GLM 5.3 · Thinking · High`); on narrow terminals
 it degrades step by step (dropping spacing, then the model name) so the
 level stays visible. The bottom-right status line shows the model
-telemetry, each segment omitted when its value is not (yet) known:
+telemetry; **Cache and Context are always present** for known-vendor
+presets (`--%` / `0/1M` until data exists — the layout never jumps),
+and their values restore from the journal at startup or `/resume`, so
+long sessions show real numbers immediately. The balance/quota segment
+(`Wallet`/`Token`) exists for DeepSeek, GLM, and Kimi Coding (Kimi
+shows the 5-hour-window remaining percentage, like GLM). Qwen Token
+Plan has no public balance API — its status line carries Cache/Context
+alone:
 
 - **DeepSeek**: `Wallet: ￥89.35 · Cache: 99.99% · Context: 120k/1M` —
   account balance, session cache-hit ratio, context usage.
@@ -167,10 +188,12 @@ every five minutes and immediately after each run or model switch.
 `Context` current value is the input+output tokens of the most recent
 model request (the approximate starting point of the next one); the
 denominator is the official context window (1M for both DeepSeek V4
-and GLM 5.3). The telemetry belongs to the current session: both the
-cache ratio and the context reading reset when you switch or start a
-conversation, and a successful compaction clears the context reading
-(a failed one leaves it intact).
+and GLM 5.3). The telemetry belongs to the current session: switching
+or starting a conversation restores the target session's journal
+statistics (a brand-new conversation starts from `--%` / `0/1M`), and
+a successful compaction clears the context reading (a failed one
+leaves it intact). During a run the cache ratio and context update
+live from each response's usage report, not only at the end.
 
 ## Thinking level (`Shift+Tab`)
 
@@ -179,13 +202,18 @@ choice is persisted with the model configuration, so it
 survives restarts and applies to headless `clat exec` runs too. It
 takes effect on the next run (a running turn is not interrupted):
 
-- Both DeepSeek V4 and GLM 5.3 cycle `Low → High → Max → Low`.
+- DeepSeek V4, GLM 5.3, and Kimi K3 cycle `Low → High → Max → Low`
+  (Kimi's official default is `max`).
+- Qwen3.8-Max also cycles three tiers; CLAT's Low/High/Max map onto the
+  official `low`/`medium`/`xhigh` ladder (its default is `xhigh`, i.e.
+  CLAT's Max).
 - DeepSeek V4 also has an official non-thinking mode; CLAT deliberately
   keeps it out of the shortcut cycle (it remains available through the
   raw extra body).
 - GLM 5.3 cannot disable thinking at all — the official API rejects
   `thinking.type: "disabled"` outright.
-- Presets default to `high`; GLM's official default is `max`, so pick
+- Presets default to the middle tier (`high`, or `medium` on Qwen's
+  ladder); GLM's and Kimi's official default is the top tier, so pick
   `Max` if you want the vendor-recommended setting for coding.
 
 Custom (non-preset) endpoints don't participate: the keypress flashes a
@@ -227,11 +255,21 @@ context budget) absorb context pressure.
 ## MCP tools
 
 Tools exposed by configured MCP servers (`~/.clat/mcp.json`) appear with
-an `mcp_{server}_{tool}` name. Their untrusted annotations refine the
+an `mcp_{server}_{tool}` name. Servers can be local subprocesses
+(`command`/`args`/`env`) or remote Streamable HTTP endpoints
+(`url` + `headers`). Their untrusted annotations refine the
 permission label, but every call still opens a permission dialog. MCP
 servers are global: their subprocesses run with `~/.clat` as the working
 directory, never inside the project. Pressing `Esc` during a call also
 propagates cancellation to the MCP request.
+
+With the GLM Coding Plan model active (and an API key configured),
+CLAT additionally mounts the four GLM-exclusive MCP servers at startup:
+web search (`webSearchPrime`), web reader, repository docs (`zread`),
+and the vision suite (needs Node.js for its local helper). They appear
+in the `mcp: N server(s) connected` startup note as `glm-search` /
+`glm-reader` / `glm-zread` / `glm-vision`. Define a same-named entry in
+`~/.clat/mcp.json` to replace or disable any of them.
 
 ## Storage layout
 
