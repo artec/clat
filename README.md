@@ -20,6 +20,8 @@ generalize those needs into reusable open-source capabilities.
   history
 - Asks you questions when a decision is yours to make, and accepts
   steering messages while a run is active
+- Attach local images by dragging them into the terminal — they are
+  stored with the session and sent to vision models
 - Keeps a per-session todo list
 
 **Models**
@@ -40,21 +42,29 @@ generalize those needs into reusable open-source capabilities.
 
 **Safety**
 
-- Every side-effecting action passes interactive permission review with
-  full argument inspection — in the TUI and in headless runs alike
-- Read-only tools run freely; writes and commands wait for your
-  approval
+- Three switchable permission modes — **Read Only**, **Project Write**
+  (default: file edits run, commands still ask), **Full Access** —
+  switched via `/perm` or escalated right from a permission prompt;
+  remembered per project
+- Every side-effecting action still passes interactive review with full
+  argument inspection in the lower modes — in the TUI and in headless
+  runs alike
+- Read-only tools run freely
 
 **Sessions**
 
 - Conversations persist locally and survive crashes; `/resume` reopens
   any previous conversation of the project
+- The model titles each conversation automatically; `/rename` edits the
+  title, shown at the top of the conversation
 - All state lives under `~/.clat`
 
 **Interfaces**
 
 - Terminal UI with markdown rendering, scrolling, and text
   selection/copy
+- A bell (or a custom command via `CLAT_BELL_COMMAND`) notifies you when
+  a run finishes or needs your approval
 - `clat exec` for headless one-shot runs in scripts and CI, with the
   same permission model
 - `clat demo` for a deterministic offline walkthrough of the agent loop

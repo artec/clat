@@ -18,10 +18,14 @@ session is ready the conversation appears and input unlocks.
   for multi-line messages.
 - **Status line** — model/tool status, kept separate so status messages
   never pollute chat history. While the model reasons, it shows a
-  rotating spinner plus a "Thinking…" label that breathes (the whole
-  label fades in and out at a fixed period, so the rhythm never changes
-  with the label length) with an elapsed counter, in the style of the
-  DeepSeek Harness.
+  rotating spinner plus a "Thinking…" label swept by a searchlight: a
+  soft band of light advances one character every 80ms (each character
+  stays lit for a fixed dwell; earlier characters return to the base
+  color as the light passes), and the whole sweep simply takes longer on
+  longer labels. The spinner is on its own constant rhythm — one frame
+  per two illuminated characters — so neither the sweep length nor the
+  label length changes its speed. An elapsed counter rides along, in the
+  style of the DeepSeek Harness.
 
 ## Keyboard
 
@@ -71,6 +75,20 @@ instead of cancelling the run.
   it; the list shows title and message count, with the current
   conversation marked. Entering a conversation (even read-only) makes
   it the startup conversation for the next launch
+- `/perm` — switch the permission mode: **Read Only** (every side effect
+  asks), **Project Write** (default — file edits run without prompts;
+  commands, network, and destructive tools still ask), or **Full Access**
+  (no prompts at all; needs a confirm step). The active mode is shown at
+  the top right of the input box. Switching takes effect at the next
+  permission check and is **remembered per project** — restart (or a new
+  session) picks up where you left off. The permission dialog itself also
+  offers escalation keys (`w` / `f`) for exactly the wider modes that
+  would let the pending call run — see `docs/permissions.md`. The long
+  form `/permission` is an alias
+- `/rename` — rename the current conversation (available as soon as the
+  conversation exists; a late automatic title never overwrites a manual
+  name). The conversation title shows at the top right of the
+  conversation box
 - `/help` — open the help dialog (commands and keys; `↑`/`↓`,
   `PgUp`/`PgDn` scroll, `Esc` closes). Like every popup it is sized to its
   content and keeps margins on all four sides
@@ -83,9 +101,50 @@ instead of cancelling the run.
 
 Sessions get their title from your first message; after a successful run
 CLAT may replace that default once with a shorter model-generated title
-(manual renames always win). The model can also maintain a per-session
+(`TitleUpdated` refreshes the conversation's top-right title immediately;
+manual `/rename` always wins). The model can also maintain a per-session
 todo list via the `todo_write` tool — it only touches CLAT's own session
 state and needs no approval.
+
+## Image attachments
+
+Drag an image file into the terminal — CLAT detects that the pasted
+text is exactly one existing image **absolute path** (`~` allowed;
+png / jpg / webp / gif, ≤4MB) and turns it into an attachment chip
+above the input instead of inserting the path as text. Bare relative
+filenames are never treated as attachments. `Enter` sends it with your message, `Esc`
+drops it; mixed text pastes are never misdetected. You can also type a
+path mentioning the file and let the model read it via an MCP vision
+tool.
+
+Attachments are **copied into the session's own storage** when the
+message is sent, so reopening the conversation later still works after
+you clean up the original file. The journal stores only the reference —
+image bytes never enter the log. In context, an image is counted as
+**vision tokens** (estimated from its resolution, ~512px tiles), which
+the auto-compaction budget includes: old images leave the context when
+their turns are compacted, and oversized files are rejected up front.
+If the chat endpoint is not a vision model, the first request is
+rejected with a 400 — CLAT detects that, replaces the image with a
+text note carrying the attachment's file path, and retries
+automatically; the model can then analyze the file through a vision
+MCP tool (the GLM vision tools accept local paths), or tell you it
+cannot see images. On a vision endpoint, images are sent natively and
+this never triggers.
+
+## Notifications
+
+When a run finishes (successfully or with an error — but not when you
+cancel it yourself) or a permission / ask dialog opens and waits for
+you, CLAT rings the **terminal bell** so you can look away while it
+works. Whether that makes a sound — and which sound — is your terminal
+emulator's bell setting: most terminals (iTerm2, Kitty, WezTerm, …) let
+you pick any sound file for it, or switch to a visual bell.
+
+If you want CLAT itself to control the sound, set `CLAT_BELL_COMMAND`
+to any shell command — it runs detached when a notification fires
+(macOS: `afplay ~/Sounds/ding.aiff`; Linux: `paplay /usr/share/sounds/…`).
+`CLAT_NO_BELL=1` silences notifications entirely.
 
 ## Markdown rendering
 

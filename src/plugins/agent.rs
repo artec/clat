@@ -137,11 +137,15 @@ impl AgentRuntime for DefaultAgentRuntime {
         let providers = Arc::clone(&self.providers);
         let config = request.config.clone();
         let credentials = request.credentials.clone();
-        let mut model = crate::providers::retry_model(
+        let model = crate::providers::retry_model(
             request.config.protocol.to_string(),
             request.config.model.clone(),
             Box::new(move || providers.build(&config, &credentials)),
         );
+        // 非视觉端点降级（2026-08-19）：带图请求撞"端点拒收图片"的
+        // 400 时自动把图片换成路径注记重试——zai-mcp-server 等视觉
+        // 工具收本地路径，非视觉主模型也能借工具看图。
+        let mut model = crate::providers::image_degrade_model(model);
         let permissions = self.permissions.create(request.approver);
         let options = ModelOptions {
             output_limit: request.config.output_limit,
@@ -149,6 +153,17 @@ impl AgentRuntime for DefaultAgentRuntime {
             parallel_tool_calls: Some(request.config.parallel_tool_calls),
             ..ModelOptions::default()
         };
+        // 档位说明注入系统指令（DSH renderPolicyContext 对应物）：让模
+        // 型在尝试前知道审批边界。快照于 run 起点；运行中切档只改决策
+        // （cell），说明下一 run 更新。Classic（exec）不注入。
+        let mut instructions = self.prompts.instructions();
+        if let Some(mode) = request.permission_mode {
+            instructions.push_str("\n\nPermission mode: ");
+            instructions.push_str(&mode.to_string());
+            instructions.push_str(". ");
+            instructions.push_str(crate::permission::mode_guidance(mode));
+            instructions.push('\n');
+        }
         Run::new(
             model.as_mut(),
             &self.tools,
@@ -159,7 +174,7 @@ impl AgentRuntime for DefaultAgentRuntime {
         .with_cancel_token(request.cancel)
         .with_steering(request.steering)
         .with_tool_pipeline(&self.pipeline)
-        .with_instructions(self.prompts.instructions())
+        .with_instructions(instructions)
         .execute_with_items(
             request.history_items,
             request.prompt,

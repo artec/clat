@@ -2,19 +2,81 @@
 
 Every side-effecting operation must pass through the permission model.
 
+## Permission modes (interactive)
+
+The TUI exposes three user-switchable modes (DSH permission-presets adapted
+to CLAT's tool-effect vocabulary). The active mode is shown at the **top
+right of the input box**, symmetric with `Message` at the top left;
+`Full Access` renders in warning yellow as its only risk cue.
+
+| Effect | Read Only | Project Write (default) | Full Access |
+|---|---|---|---|
+| `Pure`, `Read`, `SessionWrite` | allow | allow | allow |
+| `Write` | approval | **allow** | allow |
+| `Execute`, `Network`, `ExternalRead`, `Destructive` | approval | approval | allow |
+
+- The `Write` row is the point of `Project Write`: file edits (already
+  capability-confined to the project root by cap-std) stop prompting;
+  commands, network, and destructive tools still ask. `Read Only`
+  differs from `Project Write` only in that file edits ask again.
+- No mode produces a table-level deny — a refusal always comes from a
+  human (approver), never from the mode itself.
+- Switching takes effect at the **next permission check**; an in-flight
+  approval is unaffected. The mode is **persisted per project** in
+  `<storage root>/permission_modes.json` (a plain control-plane JSON
+  file, kept out of the version-locked `clat.db` schema) and reloaded on
+  startup — each project remembers its own mode. A missing or corrupted
+  file degrades to the default (`Project Write`); a failed save never
+  rolls back the in-process switch (it works until exit, with a notice).
+
+Two switch paths:
+
+1. **`/perm`** (alias `/permission`) — a mode picker popup (arrows +
+   Enter, `Esc` cancels). This is the only way to *downgrade* (under
+   `Full Access` no dialog ever appears). Selecting `Full Access` from
+   another mode requires a confirmation step (risk text + a second
+   `Enter`) — a cold switch has no pending call as context.
+2. **Escalation keys in the permission dialog** — when a dialog is
+   open, the action line additionally offers exactly the wider modes
+   that would let **this specific call** run: `w` (switch to Project
+   Write) for a `Write`-effect call under `Read Only`, and `f`
+   (Full Access) for any gated call. Switching there still requires
+   the full argument review (same gate as `Enter`/`y`), then switches
+   the mode and allows the pending call in one action. The approver
+   contract is unchanged — the frontend sets the shared mode cell and
+   answers `Allow`. Modes that would still ask for this call are never
+   offered (e.g. `Execute` under `Read Only` does not offer
+   `Project Write`).
+
+The active mode is also injected as a one-line note into the system
+instructions at run start (the model knows the approval boundary
+before it tries), and every `Ask` reason names the current mode.
+
 ## Classification
 
 Each tool declares a `ToolEffect`:
 
-| Effect | SafeByDefault decision |
+| Effect | SafeByDefault decision (headless / `clat exec`) |
 |---|---|
 | `Pure`, `Read`, `SessionWrite` | allow automatically |
 | `Write`, `Execute`, `Network`, `ExternalRead`, `Destructive` | require approval |
+
+`SafeByDefault` (ask for every side effect) remains the delegate for
+`clat exec` and other headless clients — the three-mode table is the
+interactive frontend's system and its decisions are identical to the
+`Read Only` column.
 
 `SessionWrite` is for tools that only mutate CLAT-local session metadata
 (currently `todo_write`). The exemption comes from the effect
 classification — a tool that also touches files, processes, or the
 network must not declare it.
+
+CLAT deliberately does **not** classify shell commands (no read-only
+command allowlist). DSH solved auto-running `bash` with OS-level
+sandboxes (Seatbelt / bwrap / Landlock); without a sandbox, a
+command allowlist would be a lie — `rm` hiding behind `ls &&` is one
+character away. Under `Project Write`, `run_command` keeps asking;
+automation-heavy work should switch to `Full Access` knowingly.
 
 ## Interactive approval
 
@@ -76,7 +138,8 @@ The side-effecting native tools and their guarantees:
 | `run_command` | `Execute` | runs only in the canonical project root; always terminates (exit, bounded timeout, or `Esc` cancellation); Unix uses a dedicated process group and sends TERM followed by an unconditional group KILL after the grace period, even if the leader shell already exited; Windows uses a Job Object so termination covers `cmd.exe` and descendants; stdout/stderr each capped at 32 KiB **without changing command semantics** — output past the cap is drained and discarded, never closing the pipe on the command |
 
 Write and execute tools are registered only for trusted projects (the
-trust gate), and every call still asks. Environment variables are
+trust gate); whether a call asks is decided by the permission mode
+(see the table above). Environment variables are
 inherited from the CLAT process — a command sees what you would see.
 
 The edit lock coordinates CLAT writers that follow this protocol. It is not
@@ -89,11 +152,19 @@ path replacement to redirect CLAT's write outside the project.
 
 The runtime core stays client-neutral. A built-in Project plugin provides the
 permission-policy factory; each Run Scope receives a `PermissionApprover` port
-from its client and creates an `InteractivePermissionPolicy` around the
-safe-by-default classifier. The TUI implementation is only a dialog adapter
-over a channel. Tests, future headless clients, and desktop clients can inject
-their own approver without importing terminal code or implementing permission
-semantics.
+from its client and creates an `InteractivePermissionPolicy` around a
+classifier delegate. Which delegate depends on the bootstrap mode:
+
+- `ModeSource::Classic` → `SafeByDefault` (headless `clat exec`; behavior
+  byte-identical to before the mode system existed),
+- `ModeSource::Shared(cell)` → `ModePolicy`, which reads a shared
+  `Arc<RwLock<PermissionMode>>` cell on every check (mode switches are
+  effective immediately, `escalation_targets(mode, effect)` is the single
+  source for which escalation keys a dialog offers).
+
+The TUI implementation is only a dialog adapter over a channel. Tests,
+future headless clients, and desktop clients can inject their own approver
+without importing terminal code or implementing permission semantics.
 
 An approver must not retain its own response sender while waiting. The TUI
 creates one response channel per request; dropping the dialog disconnects the

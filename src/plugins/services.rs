@@ -551,6 +551,9 @@ pub(crate) struct AgentRequest {
     pub steering: crate::run::SteeringQueue,
     pub approver: Arc<dyn PermissionApprover>,
     pub events: Box<dyn EventSink + Send>,
+    /// run 起点的权限档位快照——仅供系统指令注入说明；权限决策读共
+    /// 享 cell，不受此快照限制。None = Classic（exec）——不注入。
+    pub permission_mode: Option<crate::permission::PermissionMode>,
 }
 
 pub(crate) struct AgentFailure {

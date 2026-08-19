@@ -426,6 +426,74 @@ impl SessionService {
         Ok(Arc::clone(journal.as_ref().expect("just initialized")))
     }
 
+    /// 导入图片附件（M4，2026-08-19）：先整体校验（存在、扩展名合法、
+    /// ≤4MB），再复制进会话目录的 `attachments/` 子目录（uuid 文件名
+    /// 保留原扩展名）。返回 (绝对路径, MIME) 列表——绝对引用随后进
+    /// journal，回放零换算；原件此后可删可改，会话自包含。
+    /// 校验失败在任何复制之前返回错误（不留半套附件）。
+    pub(crate) fn import_attachments(
+        &self,
+        sources: &[std::path::PathBuf],
+    ) -> Result<Vec<(String, String)>, SessionError> {
+        if sources.is_empty() {
+            return Ok(Vec::new());
+        }
+        // 预检：全部合法才动手。
+        for source in sources {
+            crate::media::media_type_for_path(source).ok_or_else(|| {
+                SessionError::Io(format!("unsupported image type: {}", source.display()))
+            })?;
+            let metadata = std::fs::metadata(source)
+                .map_err(|error| SessionError::Io(format!("{}: {error}", source.display())))?;
+            if !metadata.is_file() {
+                return Err(SessionError::Io(format!(
+                    "not a file: {}",
+                    source.display()
+                )));
+            }
+            if metadata.len() > crate::media::MAX_ATTACHMENT_BYTES {
+                return Err(SessionError::Io(format!(
+                    "image too large ({} bytes > {}): {}",
+                    metadata.len(),
+                    crate::media::MAX_ATTACHMENT_BYTES,
+                    source.display()
+                )));
+            }
+        }
+        let attachments_dir = {
+            let active = self.active.lock().expect("active");
+            let session = active
+                .as_ref()
+                .ok_or_else(|| SessionError::NotFound("no active session".into()))?;
+            crate::session::path_layout::session_dir(
+                self.backend.root_path(),
+                session.key.project.header_cwd.as_deref(),
+                &session.key.id,
+            )
+            .join("attachments")
+        };
+        std::fs::create_dir_all(&attachments_dir)
+            .map_err(|error| SessionError::Io(format!("create attachments dir: {error}")))?;
+        let mut imported = Vec::new();
+        for source in sources {
+            let media_type =
+                crate::media::media_type_for_path(source).unwrap_or("application/octet-stream");
+            let extension = source
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .unwrap_or("png");
+            let name = format!("{}.{extension}", uuid::Uuid::new_v4().simple());
+            let destination = attachments_dir.join(&name);
+            std::fs::copy(source, &destination)
+                .map_err(|error| SessionError::Io(format!("copy {}: {error}", source.display())))?;
+            imported.push((
+                destination.to_string_lossy().into_owned(),
+                media_type.to_owned(),
+            ));
+        }
+        Ok(imported)
+    }
+
     /// Whether a session log is materialized on disk (Materializing
     /// normalization, plan §13.1).
     pub(crate) fn has_log(&self, key: &SessionKey) -> bool {

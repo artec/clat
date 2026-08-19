@@ -33,7 +33,9 @@ pub(crate) fn surface_to_model_items_with_seq(
             "user/message" => {
                 items.push((
                     *seq,
-                    ModelItem::user_text(content_text(&event.data["content"])),
+                    ModelItem::User {
+                        content: content_parts(&event.data["content"]),
+                    },
                 ));
             }
             "assistant/message" => {
@@ -131,6 +133,43 @@ fn content_text(blocks: &Value) -> String {
                 .join("")
         })
         .unwrap_or_default()
+}
+
+/// user/message 的 content 重建（M2）：text blocks → `ContentPart::Text`
+///（拼接语义不变），image blocks → `ContentPart::Image`（journal 存的
+/// 绝对引用原样透传——live 与回放构造出逐项相等的 items，T1 对拍
+/// 不需要任何特判）。未知 block 类型跳过（forward-compat）。
+fn content_parts(blocks: &Value) -> Vec<crate::model::ContentPart> {
+    let mut parts = Vec::new();
+    let Some(blocks) = blocks.as_array() else {
+        return parts;
+    };
+    for block in blocks {
+        match block.get("type").and_then(Value::as_str) {
+            Some("text") => {
+                if let Some(text) = block.get("text").and_then(Value::as_str) {
+                    parts.push(crate::model::ContentPart::Text(text.to_owned()));
+                }
+            }
+            Some("image") => {
+                let path = block.get("path").and_then(Value::as_str);
+                let media_type = block.get("mediaType").and_then(Value::as_str);
+                if let (Some(path), Some(media_type)) = (path, media_type) {
+                    parts.push(crate::model::ContentPart::Image {
+                        path: path.to_owned(),
+                        media_type: media_type.to_owned(),
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+    if parts.is_empty() {
+        // 防御：空 content 的 user/message 不该存在（admission 拒空），
+        // 保底一个空文本 part 保持 item 形状。
+        parts.push(crate::model::ContentPart::Text(String::new()));
+    }
+    parts
 }
 
 fn reasoning_text(blocks: &Value) -> Option<String> {

@@ -36,7 +36,9 @@ pub fn run_demo(
         Arc::new(DemoToolPlugin),
         Arc::new(ProviderRegistryPlugin),
         Arc::new(DemoProviderPlugin),
-        Arc::new(DefaultPermissionPlugin),
+        Arc::new(DefaultPermissionPlugin::new(
+            crate::permission::ModeSource::Classic,
+        )),
         Arc::new(PromptRegistryPlugin),
         Arc::new(DefaultPromptPlugin),
         Arc::new(ToolPipelinePlugin),
@@ -74,6 +76,7 @@ pub fn run_demo(
                 reason: "demo does not approve side effects".into(),
             }),
             events,
+            permission_mode: None,
         })
         .map_err(|failure| failure.error);
     let close = manager.close();

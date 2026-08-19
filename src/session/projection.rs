@@ -411,7 +411,9 @@ impl ProjectionUnit for TranscriptUnit {
                 self.entries.push(TranscriptEntry {
                     seq: event.seq,
                     kind: "user".into(),
-                    text: content_text(&event.data["content"]),
+                    // 图片 part 不进 transcript 文本（字节与 base64 都
+                    // 不适合），以占位计数标注——转录可见"这条消息带了图"。
+                    text: transcript_user_text(&event.data["content"]),
                     is_error: false,
                     shadowed: None,
                 });
@@ -610,6 +612,42 @@ pub(crate) fn fallback_title(content: &str) -> String {
         .find(|line| !line.is_empty())
         .unwrap_or("");
     first_line.chars().take(60).collect()
+}
+
+/// 用户标题清洗（N4，/rename 提交前）：取首个非空行、剥控制字符（含
+/// ANSI/OSC 引导符）、压缩空白、上限 60 字符（与 fallback_title 对齐）。
+/// 清洗后为空即调用方拒绝。对照 DSH normalize（maxTitleBytes 80）。
+pub(crate) fn sanitize_user_title(raw: &str) -> String {
+    let mut cleaned = String::with_capacity(raw.len());
+    let mut pending_space = false;
+    let mut seen_any = false;
+    for character in raw.chars() {
+        if character == '\n' || character == '\r' {
+            // 首行语义：已见内容则到此为止。
+            if seen_any {
+                break;
+            }
+            continue;
+        }
+        // 空白先于控制字符判断：'\t' 两者皆是，标题里它是空白（折叠）
+        // 而不是待剥除的控制码。
+        if character.is_whitespace() {
+            if seen_any {
+                pending_space = true;
+            }
+            continue;
+        }
+        if character.is_control() {
+            continue;
+        }
+        if pending_space {
+            cleaned.push(' ');
+            pending_space = false;
+        }
+        cleaned.push(character);
+        seen_any = true;
+    }
+    cleaned.chars().take(60).collect()
 }
 
 struct TodoUnit {
@@ -875,10 +913,61 @@ fn content_text(blocks: &Value) -> String {
     }
 }
 
+/// transcript 的用户行文本（M2）：文本 blocks 拼接 + 每个 image block
+/// 追加一个占位标记（文件名可读性优先于完整路径；字节与 base64 都
+/// 不属于转录）。
+fn transcript_user_text(blocks: &Value) -> String {
+    let mut text = content_text(blocks);
+    if let Some(blocks) = blocks.as_array() {
+        for block in blocks
+            .iter()
+            .filter(|block| block.get("type").and_then(Value::as_str) == Some("image"))
+        {
+            let name = block
+                .get("path")
+                .and_then(Value::as_str)
+                .and_then(|path| {
+                    std::path::Path::new(path)
+                        .file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                })
+                .unwrap_or_else(|| "image".into());
+            if !text.is_empty() {
+                text.push(' ');
+            }
+            text.push_str(&format!("📷[{name}]"));
+        }
+    }
+    text
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::session::event::{SurfaceOp, TurnEndReason, payloads};
+
+    /// N4（/rename 清洗）：首个非空行、剥控制字符（含 ESC）、压空白、
+    /// 60 字符上限；清洗后为空即调用方拒绝。期望值从规格推导。
+    #[test]
+    fn user_title_sanitizes_to_the_first_clean_line() {
+        assert_eq!(
+            sanitize_user_title("  Renamed\tby hand\nsecond line "),
+            "Renamed by hand"
+        );
+        // 行内空白压缩为单空格，不丢字母。
+        assert_eq!(sanitize_user_title("a  \t b"), "a b");
+        // 控制字符（ANSI ESC 序列的引导符）剥除——序列载荷字母留下；
+        // 标题里出现它们本身就是异常输入。
+        assert_eq!(sanitize_user_title("\u{1b}[31mred"), "[31mred");
+        // 纯空白/控制字符 → 空（调用方 Invalid）。
+        assert_eq!(sanitize_user_title("   \n\t "), "");
+        assert_eq!(sanitize_user_title("\u{7}\u{1b}"), "");
+        // 首行之前的空行不算内容，取其后的首个非空行。
+        assert_eq!(sanitize_user_title("\n\nreal title\nlater"), "real title");
+        // 上限与 fallback_title 对齐（60 字符，字符边界截断）。
+        assert_eq!(sanitize_user_title(&"x".repeat(80)), "x".repeat(60));
+        assert_eq!(sanitize_user_title(&"中".repeat(80)).chars().count(), 60);
+    }
 
     fn surface_events() -> Vec<SessionEvent> {
         vec![

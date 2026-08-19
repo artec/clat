@@ -328,10 +328,31 @@ fn estimate_tokens_str(text: &str) -> usize {
 }
 
 fn estimate_item(item: &ModelItem) -> usize {
-    serde_json::to_string(item)
-        .map(|text| estimate_tokens_str(&text))
-        .unwrap_or(64)
-        + 16
+    // 图片按视觉 tile 估算（M5）——JSON 序列化只会数到路径字符串
+    //（~20 token），把一张上千 token 的图当一行文本，预算触发必然
+    // 滞后。文本按 part 直接估算（旧实现的 JSON 序列化同理）。
+    let mut tokens = 16usize;
+    match item {
+        ModelItem::User { content } | ModelItem::Assistant { content, .. } => {
+            for part in content {
+                match part {
+                    crate::model::ContentPart::Text(text) => {
+                        tokens += estimate_tokens_str(text);
+                    }
+                    crate::model::ContentPart::Image { path, .. } => {
+                        tokens += crate::media::estimate_image_tokens(std::path::Path::new(path))
+                            as usize;
+                    }
+                }
+            }
+        }
+        _ => {
+            tokens += serde_json::to_string(item)
+                .map(|text| estimate_tokens_str(&text))
+                .unwrap_or(64);
+        }
+    }
+    tokens
 }
 
 fn estimate_tool_definition(definition: &crate::tool::ToolDefinition) -> usize {
@@ -503,6 +524,10 @@ fn content_text(content: &[crate::model::ContentPart]) -> String {
         .iter()
         .map(|part| match part {
             crate::model::ContentPart::Text(text) => text.as_str(),
+            // 压缩摘要请求不重发图片：区域被摘要替换时图片随原文一起
+            // 离开上下文（M6 回收语义）；渲染为占位注记让摘要保留
+            // "这里曾有一张图"的事实。
+            crate::model::ContentPart::Image { .. } => "[image]",
         })
         .collect()
 }
@@ -564,6 +589,46 @@ mod tests {
         let items = vec![assistant("only an answer")];
         let nodes = nodes_from(&items);
         assert!(choose_cut(&nodes, None, "", &[], &ModelConfig::default()).is_none());
+    }
+
+    /// M5：图片按视觉 tile 计入预算——JSON 序列化只会数到路径串
+    ///（~20 token），一张 1024×768 的图必须按 4 tile + 常数计。pre-fix
+    /// （纯 JSON 估算）上本测试必红：图片消息与空消息的估算几乎相同。
+    #[test]
+    fn image_parts_count_as_vision_tiles_in_the_budget() {
+        let path = std::env::temp_dir().join(format!(
+            "clat-budget-{}.png",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut bytes = vec![
+            0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n', 0, 0, 0, 13, b'I', b'H', b'D', b'R',
+        ];
+        bytes.extend_from_slice(&1024u32.to_be_bytes());
+        bytes.extend_from_slice(&768u32.to_be_bytes());
+        bytes.extend_from_slice(&[8, 6, 0, 0, 0]);
+        std::fs::write(&path, bytes).unwrap();
+
+        let plain = ModelItem::user_text("hi");
+        let with_image = ModelItem::User {
+            content: vec![
+                crate::model::ContentPart::Text("hi".into()),
+                crate::model::ContentPart::Image {
+                    path: path.display().to_string(),
+                    media_type: "image/png".into(),
+                },
+            ],
+        };
+        let difference = estimate_item(&with_image) - estimate_item(&plain);
+        // 1024×768 → 2×2 tile = 4 → 100 + 4×350 = 1500（允许序列化噪声
+        // 的少量出入，锁量级）。
+        assert!(
+            (1400..=1600).contains(&difference),
+            "an image counts its vision tiles, got +{difference}"
+        );
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

@@ -6,6 +6,7 @@ pub mod exec;
 mod interaction;
 mod mcp;
 mod mcp_client;
+pub mod media;
 pub mod model;
 mod native_tools;
 mod permission;
@@ -30,6 +31,7 @@ mod tui_input;
 mod tui_logo;
 mod tui_markdown;
 mod tui_model;
+mod tui_permission;
 mod tui_sessions;
 mod tui_theme;
 mod tui_worker;
@@ -39,7 +41,8 @@ pub use application::{
     ApplicationError, ApplicationEvent, ApplicationRunDone, ApplicationRunFailure,
     ApplicationRunRequest, ApplicationRunResult, BootstrapApplication, CompactHandle,
     CompactReport, CompactionStatus, McpServerInfoDto, McpStatusDto, ProjectAuthorization,
-    ProjectSnapshot, RunHandle, SessionSnapshot, SteerOutcome, TrustedProjectApplication,
+    ProjectSnapshot, RenameOutcome, RunHandle, SessionSnapshot, SteerOutcome,
+    TrustedProjectApplication,
 };
 pub use control_storage::ModelProfileSummary;
 pub use event::{EventSink, ModelOutcome, RunEvent};
@@ -52,8 +55,9 @@ pub use model::{
     effective_thinking_level, endpoint_vendor, next_thinking_level, thinking_levels,
 };
 pub use permission::{
-    AllowAll, InteractivePermissionPolicy, PermissionApprover, PermissionDecision,
-    PermissionPolicy, PermissionRequest, SafeByDefault,
+    AllowAll, InteractivePermissionPolicy, ModePolicy, PermissionApprover, PermissionDecision,
+    PermissionMode, PermissionPolicy, PermissionRequest, SafeByDefault, escalation_targets,
+    mode_allows, mode_decision, mode_guidance,
 };
 pub use presets::{MODEL_PRESETS, ModelPreset, preset_by_id};
 pub use project::Project;

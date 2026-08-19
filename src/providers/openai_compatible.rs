@@ -253,7 +253,7 @@ fn map_messages(instructions: Option<&str>, items: &[ModelItem]) -> Result<Vec<V
                 flush(&mut messages, &mut pending);
                 messages.push(json!({
                     "role": "user",
-                    "content": content_text(content),
+                    "content": user_content(content)?,
                 }));
             }
             ModelItem::Assistant { content, reasoning } => {
@@ -311,9 +311,80 @@ fn content_text(content: &[ContentPart]) -> String {
         .iter()
         .map(|part| match part {
             ContentPart::Text(text) => text.as_str(),
+            ContentPart::Image { .. } => "",
         })
         .collect::<Vec<_>>()
         .join("")
+}
+
+/// user 消息的 content：纯文本保持字符串（向后兼容），含图片时升级
+/// 为 OpenAI chat 的多 part 数组——图片读文件转 base64 data URL
+///（`image_url`）。文件读失败的 part 降级为文本注记：一次会话里删
+/// 掉附件文件不该把整个 run 打死（M3 降级语义）。
+fn user_content(content: &[ContentPart]) -> Result<Value, ModelError> {
+    let has_image = content
+        .iter()
+        .any(|part| matches!(part, ContentPart::Image { .. }));
+    if !has_image {
+        return Ok(Value::String(content_text(content)));
+    }
+    let mut parts = Vec::new();
+    for part in content {
+        match part {
+            ContentPart::Text(text) => parts.push(json!({
+                "type": "text",
+                "text": text,
+            })),
+            ContentPart::Image { path, media_type } => match image_data_url_for(path, media_type) {
+                Some(url) => parts.push(json!({
+                    "type": "image_url",
+                    "image_url": { "url": url },
+                })),
+                None => parts.push(json!({
+                    "type": "text",
+                    "text": format!("[image unavailable: {path}]"),
+                })),
+            },
+        }
+    }
+    Ok(Value::Array(parts))
+}
+
+/// 读附件文件 → `data:<media>;base64,…`。任何失败（缺失/超大/读错）
+/// 返回 None，调用方降级。两个协议共用（chat 的 `image_url.url` 与
+/// Responses 的 `input_image.image_url`）。
+pub(crate) fn image_data_url_for(path: &str, media_type: &str) -> Option<String> {
+    let bytes = std::fs::read(path).ok()?;
+    if bytes.len() as u64 > crate::media::MAX_ATTACHMENT_BYTES * 2 {
+        // base64 膨胀 ~4/3：源头 4MB 上限 + 少量余量；超限视为异常。
+        return None;
+    }
+    Some(format!("data:{media_type};base64,{}", base64_bytes(&bytes)))
+}
+
+fn base64_bytes(bytes: &[u8]) -> String {
+    // 标准 base64（无换行）——OpenAI data URL 约定。
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = chunk.get(1).map_or(0, |b| *b as u32);
+        let b2 = chunk.get(2).map_or(0, |b| *b as u32);
+        let triple = (b0 << 16) | (b1 << 8) | b2;
+        out.push(ALPHABET[(triple >> 18) as usize & 0x3F] as char);
+        out.push(ALPHABET[(triple >> 12) as usize & 0x3F] as char);
+        out.push(if chunk.len() > 1 {
+            ALPHABET[(triple >> 6) as usize & 0x3F] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            ALPHABET[triple as usize & 0x3F] as char
+        } else {
+            '='
+        });
+    }
+    out
 }
 
 fn tool_output_text(result: &ToolResult) -> String {
@@ -617,6 +688,79 @@ mod tests {
     use std::net::TcpListener;
     use std::sync::mpsc;
     use std::thread;
+
+    fn temp_attachment(tag: &str, bytes: &[u8], extension: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "clat-img-{tag}-{}.{extension}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&path, bytes).unwrap();
+        path
+    }
+
+    /// M3：手写 base64 的已知向量（无第三方依赖的代价——正确性必须
+    /// 由 RFC 4648 向量锁死）。
+    #[test]
+    fn base64_matches_known_vectors() {
+        assert_eq!(base64_bytes(b"Man"), "TWFu");
+        assert_eq!(base64_bytes(b"Ma"), "TWE=");
+        assert_eq!(base64_bytes(b"M"), "TQ==");
+        assert_eq!(base64_bytes(b"hello world"), "aGVsbG8gd29ybGQ=");
+        assert_eq!(base64_bytes(b""), "");
+    }
+
+    /// M3：图片消息的 chat 序列化——纯文本保持字符串（向后兼容），
+    /// 含图升级为 image_url 数组；文件缺失降级为文本注记而不是打死
+    /// 整个请求。
+    #[test]
+    fn user_content_serializes_images_as_data_urls() {
+        // 纯文本：字符串（既有行为不变）。
+        assert_eq!(
+            user_content(&[ContentPart::Text("hi".into())]).unwrap(),
+            json!("hi")
+        );
+        // 带图：多 part 数组，图片是 base64 data URL。
+        let image = temp_attachment("chat", b"hello world", "png");
+        let content = user_content(&[
+            ContentPart::Text("look".into()),
+            ContentPart::Image {
+                path: image.display().to_string(),
+                media_type: "image/png".into(),
+            },
+        ])
+        .unwrap();
+        let parts = content.as_array().unwrap();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0], json!({"type": "text", "text": "look"}));
+        assert_eq!(
+            parts[1]["image_url"]["url"],
+            json!("data:image/png;base64,aGVsbG8gd29ybGQ=")
+        );
+        let _ = std::fs::remove_file(&image);
+
+        // 文件缺失：图片 part 降级为可读注记（run 不崩）。
+        let content = user_content(&[
+            ContentPart::Text("look".into()),
+            ContentPart::Image {
+                path: "/nonexistent/probe.png".into(),
+                media_type: "image/png".into(),
+            },
+        ])
+        .unwrap();
+        let parts = content.as_array().unwrap();
+        assert_eq!(parts[1]["type"], json!("text"));
+        assert!(
+            parts[1]["text"]
+                .as_str()
+                .unwrap()
+                .contains("image unavailable"),
+            "degradation is visible to the model: {}",
+            parts[1]["text"]
+        );
+    }
 
     #[test]
     fn parses_usage_with_openai_and_deepseek_cache_fields() {

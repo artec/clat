@@ -10,10 +10,11 @@ use crate::tui_worker::{
 };
 use crate::{
     ApplicationEvent, ApplicationRunRequest, BootstrapApplication, CompactHandle, CompactionStatus,
-    McpStatusDto, ModelConfig, ModelEvent, ModelVendor, PermissionDecision, PermissionRequest,
-    Project, ProjectAuthorization, ProviderCredentials, ProviderDescriptor, RunEvent, RunHandle,
-    SteerOutcome, ThinkingLevel, TrustedProjectApplication, Usage, apply_thinking_level,
-    effective_thinking_level, next_thinking_level, thinking_levels,
+    McpStatusDto, ModelConfig, ModelEvent, ModelVendor, PermissionDecision, PermissionMode,
+    PermissionRequest, Project, ProjectAuthorization, ProviderCredentials, ProviderDescriptor,
+    RenameOutcome, RunEvent, RunHandle, SteerOutcome, ThinkingLevel, TrustedProjectApplication,
+    Usage, apply_thinking_level, effective_thinking_level, escalation_targets, next_thinking_level,
+    thinking_levels,
 };
 use crossterm::event::{
     self, DisableBracketedPaste, DisableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
@@ -51,6 +52,104 @@ const SPINNER_STEP_TICKS: u64 = 2;
 /// 全部无关（2026-08-19 用户三次反馈的根因是 draw() 自增帧号）。
 fn animation_tick_for(elapsed: Duration) -> u64 {
     elapsed.as_millis() as u64 / SPINNER_FRAME.as_millis() as u64
+}
+
+/// 提醒铃（2026-08-19，AFK 场景：对话结束/需要批准时人可能不在屏
+/// 前）。run 结束（用户主动取消除外）、权限与 ask 弹框打开时响一声。
+///
+/// 三种模式：
+/// - `Terminal`（默认）：发终端铃 BEL（`\x07`）。**声音本身由终端模拟
+///   器决定**——应用只能触发，换音效去终端设置改（iTerm2/Warp 等支持
+///   自选铃声音效文件）；
+/// - `Off`（`CLAT_NO_BELL=1`）：静音；
+/// - `Command`（`CLAT_BELL_COMMAND="..."`）：任意 shell 命令（macOS
+///   `afplay ~/Sounds/ding.aiff`、Linux `paplay ding.ogg`），完全自定
+///   义。后台执行、stdio 全断开、失败静默——提醒是尽力而为，绝不影
+///   响主流程。
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum BellMode {
+    Terminal,
+    Off,
+    Command(String),
+}
+
+/// 环境变量 → 模式（纯函数，测试从这里推导）。
+fn bell_mode_from_env(no_bell: Option<String>, command: Option<String>) -> BellMode {
+    let silenced = no_bell
+        .map(|value| matches!(value.trim(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false);
+    if silenced {
+        return BellMode::Off;
+    }
+    match command {
+        Some(command) if !command.trim().is_empty() => BellMode::Command(command),
+        _ => BellMode::Terminal,
+    }
+}
+
+/// 响一声。BEL 直写 stdout：raw 模式只改输入侧，模拟器收到 BEL 按
+/// 自己的铃设置发声（或视觉闪铃）。命令模式 detached spawn（不 wait、
+/// 不接管 stdio）。
+fn ring_bell(mode: &BellMode) {
+    match mode {
+        BellMode::Off => {}
+        BellMode::Terminal => {
+            let _ = write!(stdout(), "\x07");
+            let _ = stdout().flush();
+        }
+        BellMode::Command(command) => {
+            // Child drop 是 detach 不是 reap：不 wait 的话每次响铃留一个
+            // 僵尸到进程退出（对抗审计 2026-08-19）。提醒命令都是短命
+            // 进程，一个专属收割线程足够。spawn 失败静默（提醒尽力而为）。
+            if let Ok(mut child) = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(command)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+            {
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                });
+            }
+        }
+    }
+}
+
+/// 粘贴的图片附件判定（M6，纯函数可测）：**整条**粘贴（trim 后）恰好
+/// 是一个存在的图片文件**绝对路径**时返回它（`~` 展开；Windows 盘符
+/// 路径同放行）。防误判优先：相对路径、含空白/换行、扩展名不认识、
+/// 文件不存在、超过 4MB 一律 None——宁可漏判当文本插入，不可把用户
+/// 的文字吞成附件。相对路径被排除是刻意的：存在性检查相对进程 cwd
+/// 解析，裸文件名（"logo.png"）碰巧同名就会被误判。
+fn pasted_image_path(text: &str) -> Option<std::path::PathBuf> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() || trimmed.chars().any(char::is_whitespace) {
+        return None;
+    }
+    if !trimmed.starts_with('/') && !trimmed.starts_with('~') && !trimmed.contains(":\\") {
+        return None; // 只认绝对路径 / ~ 前缀 / Windows 盘符
+    }
+    let candidate = std::path::PathBuf::from(if let Some(rest) = trimmed.strip_prefix('~') {
+        let home = std::env::var("HOME").ok()?;
+        if rest.is_empty() {
+            home
+        } else {
+            format!("{home}/{rest}")
+        }
+    } else {
+        trimmed.to_owned()
+    });
+    crate::media::media_type_for_path(&candidate)?;
+    let metadata = std::fs::metadata(&candidate).ok()?;
+    if !metadata.is_file() {
+        return None;
+    }
+    if metadata.len() > crate::media::MAX_ATTACHMENT_BYTES {
+        return None;
+    }
+    Some(candidate)
 }
 
 /// 当前 spinner 帧字形（阶段行专用）。
@@ -134,15 +233,27 @@ fn format_clock(duration: Duration) -> String {
         format!("{}m{:02}s", secs / 60, secs % 60)
     }
 }
-/// 呼吸周期（渲染 tick）：状态文字整词亮度 low↔high 起伏一次的时长
-/// （≈2.9s @80ms 唤醒）。2026-08-19 第二轮反馈：移动光带（探照灯）在
-/// 字间的视觉速度必然随标签长度变化，无论周期怎么取都顾此失彼——
-/// 改为整词统一呼吸，没有任何元素在移动，长度依赖从构造上消失。
-const SHIMMER_CYCLE_TICKS: f64 = 36.0;
+/// 探照灯单字符驻留（渲染 tick）：光带每 [`SWEEP_STEP_TICKS`] 个 tick
+/// 前进**一个字符**（2026-08-19 第五轮：驻留减半提速一倍——160ms 太
+/// 慢，人类体感拖沓）。锚点仍是单字符照亮时长，不锚定整圈周期：标签
+/// 长则整圈按比例长，视觉速度恒定。转圈不再与光带同步：spinner 保持
+/// 每 [`SPINNER_STEP_TICKS`]（=2）tick 一帧——即**每照亮 2 个字符转圈
+/// 换一帧**（8 帧一圈 = 16 字符 × 80ms = 1.28s），转速既不随标签长度
+/// 变，也不随探照灯提速变。旧两版各自的病根：整圈周期恒定 → 每字速
+/// 度随字数变（v0.6.1 的 bug）；整词呼吸 → 移动消失成霓虹。tick 墙钟
+/// 驱动（A-CLK），驻留与重绘频率无关。
+const SWEEP_STEP_TICKS: u64 = 1;
+/// 光带进出余量（字符）：出光后灯光完全离开尾字符、再从首字符进入，
+/// 换圈处没有亮度跳变；余量足以把高斯尾压到熄灭阈之下。
+const SWEEP_MARGIN_CHARS: u64 = 3;
+/// 光带柔和度（字符）。
+const SHIMMER_SIGMA: f64 = 1.2;
+/// 熄灭阈：高斯尾低于此值按 0 处理——"灯光过去后回原色"是精确的
+/// 基色，而不是差 1 个 RGB 值的残影。
+const SHIMMER_UNLIT_FLOOR: f64 = 0.03;
 
-/// 派生阶段状态行（phase-1 P1-5）：spinner + 呼吸阶段标签 + 双时钟
+/// 派生阶段状态行（phase-1 P1-5）：spinner + 探照灯阶段标签 + 双时钟
 /// `<phase> <phase-elapsed> · total <run-elapsed>`；Waiting 只报总计。
-/// 标签整词统一呼吸（品牌蓝 low↔high，B2 白名单例外）。
 fn phase_line(
     tick: u64,
     phase: Phase,
@@ -158,16 +269,31 @@ fn phase_line(
         Span::styled(" ", base),
     ];
 
-    // 整词呼吸：亮度 = (1 - cos(2πt/T)) / 2，t=0 最暗、半周期最亮。
-    // 单一 span、无逐字样式——与标签长度彻底无关。
-    let intensity =
-        ((tick as f64 / SHIMMER_CYCLE_TICKS) * std::f64::consts::TAU).cos() * -0.5 + 0.5;
-    let label_style = Style::default().fg(tui_theme::blend(
-        tui_theme::BRAND_SHIMMER_LOW,
-        tui_theme::BRAND_SHIMMER_HIGH,
-        intensity,
-    ));
-    spans.push(Span::styled(phase.label(), label_style));
+    // 探照灯：光带中心每 SWEEP_STEP_TICKS（1 tick）前进一个字符，
+    // 范围 [-margin, len+margin)。先照亮的字符在灯光走过后回基色；
+    // 高斯尾给出柔和的边缘。转圈独立节律（每 2 字符一帧，见常量注
+    // 释）。
+    let label = phase.label();
+    let len = label.chars().count() as u64;
+    let cycle = len + 2 * SWEEP_MARGIN_CHARS;
+    let center = ((tick / SWEEP_STEP_TICKS) % cycle) as f64 - SWEEP_MARGIN_CHARS as f64;
+    for (index, ch) in label.chars().enumerate() {
+        let distance = (index as f64 + 0.5 - center).abs();
+        let intensity = (-(distance * distance) / (2.0 * SHIMMER_SIGMA * SHIMMER_SIGMA)).exp();
+        let intensity = if intensity < SHIMMER_UNLIT_FLOOR {
+            0.0
+        } else {
+            intensity
+        };
+        spans.push(Span::styled(
+            ch.to_string(),
+            Style::default().fg(tui_theme::blend(
+                tui_theme::BRAND_SHIMMER_LOW,
+                tui_theme::BRAND_SHIMMER_HIGH,
+                intensity,
+            )),
+        ));
+    }
 
     if let Some(run_elapsed) = run_elapsed {
         let clocks = match (phase, phase_elapsed) {
@@ -625,6 +751,11 @@ struct PendingPermission {
     reviewed_through: usize,
     /// 只有参数最后一页实际进入过视口，才允许批准。
     reviewed_to_end: bool,
+    /// 升级选项（P5）：能让本次调用直接放行的更宽档位（宽度升序）。
+    /// 弹框打开时由 `escalation_targets(当前档, effect)` 算出；键位
+    /// `w`/`f` 按此集合生效——先 `set_permission_mode` 再回 Allow，
+    /// approver 契约零改动。
+    escalations: Vec<PermissionMode>,
 }
 
 /// ask-user 对话框状态：选项模式（`custom = None`，selection 游标含
@@ -658,6 +789,22 @@ impl InfoDialog {
     }
 }
 
+/// `/rename` 弹框：内嵌完整 `InputBuffer`（真实光标编辑，比 model
+/// editor 的追加式 `EditPopup` 强一档），预填当前标题。Enter 提交
+/// （空文本 flash 拒绝、不关框）、Esc 取消。门槛（2026-08-19 放宽）：
+/// 有活动会话即可——不再要求 LLM 已起名。
+struct RenameDialog {
+    buffer: InputBuffer,
+}
+
+impl RenameDialog {
+    fn new(prefill: &str) -> Self {
+        let mut buffer = InputBuffer::new(Vec::new());
+        buffer.insert_str(prefill);
+        Self { buffer }
+    }
+}
+
 struct App {
     project: Project,
     bootstrap: Option<BootstrapApplication>,
@@ -665,6 +812,10 @@ struct App {
     /// 当前会话 id；`None` 表示项目尚未受信（延迟初始化前不可对话）。
     /// 确权门保证所有用到它的路径只在 Some 时可达。
     session_id: Option<SessionId>,
+    /// 会话右标题（对话框 block 右上角，与左上角 Conversation 对称）：
+    /// effective 标题。快照路径（挂载/resume//new）+ `TitleUpdated` 事件
+    /// 两路维护，显示与 /resume 列表同源。
+    session_title: Option<String>,
     /// shutdown 时 Application close() 的错误（终端恢复后展示）。
     close_error: Option<String>,
     config: ModelConfig,
@@ -700,6 +851,13 @@ struct App {
     event_sender: Option<Sender<UiEvent>>,
     pending_permission: Option<PendingPermission>,
     pending_ask_user: Option<PendingAskUser>,
+    /// `/perm` 权限三档选择器（冷切换/降级入口；`/permission` 为别名）。
+    permission_picker: Option<crate::tui_permission::PermissionPicker>,
+    /// `/rename` 会话改名弹框（显式标题存在时才可打开，N4）。
+    rename_dialog: Option<RenameDialog>,
+    /// 待随下一条消息发送的图片附件（用户路径；提交时复制进会话附件
+    /// 目录，见 M4）。仅空闲态可附加；Esc 清空输入时一并清空。
+    attachments: Vec<std::path::PathBuf>,
     run_handle: Option<RunHandle>,
     /// `/compact` 进行中的句柄；Esc 取消。
     compact_handle: Option<CompactHandle>,
@@ -758,6 +916,8 @@ struct App {
     test_phase_elapsed: Option<Duration>,
     #[cfg(test)]
     test_run_elapsed: Option<Duration>,
+    /// 提醒铃模式（构造期从环境变量解析一次；见 [`BellMode`]）。
+    bell: BellMode,
 }
 
 impl App {
@@ -789,7 +949,12 @@ impl App {
             .expect("trusted path holds the bootstrap scope");
         let (loaded, loading) = mpsc::channel();
         thread::spawn(move || {
-            let _ = loaded.send(bootstrap.into_trusted().map_err(|error| error.to_string()));
+            let _ = loaded.send(
+                bootstrap
+                    .with_permission_modes()
+                    .into_trusted()
+                    .map_err(|error| error.to_string()),
+            );
         });
         app.loading = Some(loading);
         app.status = "loading conversation…".into();
@@ -816,6 +981,7 @@ impl App {
             bootstrap: Some(bootstrap),
             application: None,
             session_id: None,
+            session_title: None,
             close_error: None,
             config,
             credentials,
@@ -836,6 +1002,9 @@ impl App {
             event_sender: None,
             pending_permission: None,
             pending_ask_user: None,
+            permission_picker: None,
+            rename_dialog: None,
+            attachments: Vec::new(),
             run_handle: None,
             compact_handle: None,
             phases: PhaseTracker::default(),
@@ -864,6 +1033,10 @@ impl App {
             test_phase_elapsed: None,
             #[cfg(test)]
             test_run_elapsed: None,
+            bell: bell_mode_from_env(
+                env::var("CLAT_NO_BELL").ok(),
+                env::var("CLAT_BELL_COMMAND").ok(),
+            ),
         };
         Ok(app)
     }
@@ -877,7 +1050,7 @@ impl App {
             .bootstrap
             .take()
             .ok_or_else(|| "bootstrap scope is unavailable".to_owned())?;
-        let application = match bootstrap.into_trusted() {
+        let application = match bootstrap.with_permission_modes().into_trusted() {
             Ok(application) => application,
             Err(error) => {
                 self.bootstrap = Some(
@@ -960,6 +1133,7 @@ impl App {
             None => return Err("project application is unavailable".into()),
         };
         self.session_id = snapshot.session_id;
+        self.session_title = snapshot.session_title;
         // 转录一律从 journal 回放构造（G2/G8）：事件日志是唯一权威，
         // 前端不再维护独立的 TranscriptLine 派生视图。
         self.conversation =
@@ -1103,6 +1277,11 @@ impl App {
             .or_else(|| self.phases.phase_started.map(|since| since.elapsed()))
     }
 
+    /// 响一声提醒铃（触发点与模式见 [`BellMode`]）。
+    fn notify(&self) {
+        ring_bell(&self.bell);
+    }
+
     #[cfg(not(test))]
     fn phase_elapsed(&self) -> Option<Duration> {
         self.phases.phase_started.map(|since| since.elapsed())
@@ -1139,6 +1318,10 @@ impl App {
                     }
                 }
             },
+            // N2：自动命名/改名落盘成功——右标题即时更新，无需重拉快照。
+            UiEvent::Application(ApplicationEvent::TitleUpdated { title }) => {
+                self.session_title = Some(title);
+            }
         }
     }
 
@@ -1251,6 +1434,7 @@ impl App {
                     .ok_or_else(|| "bootstrap scope is unavailable".to_owned());
                 let trusted = bootstrap.and_then(|bootstrap| {
                     bootstrap
+                        .with_permission_modes()
                         .authorize_and_mount(ProjectAuthorization::grant())
                         .map_err(|error| error.to_string())
                 });
@@ -1303,16 +1487,32 @@ impl App {
         // A permission decision is pending: every key belongs to the dialog
         // until the user allows or denies it.
         if self.pending_permission.is_some() {
-            let requested_allow = matches!(
-                key.code,
-                KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y')
-            );
-            let deny = matches!(
-                key.code,
-                KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N')
-            );
+            // 决策键必须是"裸键"：raw 模式下 Ctrl+W / Alt+Y 等修饰组合也
+            // 以 `Char(..)` 形态到达——不挡住它们，Ctrl+W 就成了"切档并
+            // 放行"的快捷键（对抗审计 2026-08-19）。CLAT 的输入惯例里
+            // Shift/Ctrl/Alt+Enter 都是换行语义，同样不得触发 allow。
+            let plain = !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER);
+            let requested_allow = match key.code {
+                KeyCode::Enter => key.modifiers.is_empty(),
+                KeyCode::Char('y') | KeyCode::Char('Y') => plain,
+                _ => false,
+            };
+            let deny = match key.code {
+                KeyCode::Esc => true,
+                KeyCode::Char('n') | KeyCode::Char('N') => plain,
+                _ => false,
+            };
+            // 升级键（P5）：只对 offered 集合生效；与 allow 同受审阅门
+            //（未读完参数不允许任何放行类回答）；同样要求裸键。
+            let escalate_project_write =
+                plain && matches!(key.code, KeyCode::Char('w') | KeyCode::Char('W'));
+            let escalate_full_access =
+                plain && matches!(key.code, KeyCode::Char('f') | KeyCode::Char('F'));
             let mut blocked_allow = false;
             let mut allow = false;
+            let mut escalation: Option<PermissionMode> = None;
             if let Some(pending) = self.pending_permission.as_mut() {
                 let max_scroll = pending
                     .argument_line_count
@@ -1344,11 +1544,37 @@ impl App {
                     allow = pending.reviewed_to_end;
                     blocked_allow = !allow;
                 }
+                if escalate_project_write || escalate_full_access {
+                    if pending.reviewed_to_end {
+                        if escalate_project_write
+                            && pending.escalations.contains(&PermissionMode::ProjectWrite)
+                        {
+                            escalation = Some(PermissionMode::ProjectWrite);
+                        } else if escalate_full_access
+                            && pending.escalations.contains(&PermissionMode::FullAccess)
+                        {
+                            escalation = Some(PermissionMode::FullAccess);
+                        }
+                    } else {
+                        // 升级键与 allow 同门：未审完参数时提示而不是无声空转。
+                        blocked_allow = true;
+                    }
+                }
             }
-            if (allow || deny)
+            if (allow || deny || escalation.is_some())
                 && let Some(pending) = self.pending_permission.take()
             {
-                let decision = if allow {
+                // 升级 = 先切共享档位（下一次检查即生效）再放行本次调用。
+                // 持久化失败不拦放行（内存已切换），警告留在最终 flash 里
+                //——先 flash 会被下面的结果 flash 覆盖（对抗审计）。
+                let mut persist_warning = None;
+                if let Some(mode) = escalation
+                    && let Some(application) = &self.application
+                    && let Err(error) = application.set_permission_mode(mode)
+                {
+                    persist_warning = Some(error.to_string());
+                }
+                let decision = if allow || escalation.is_some() {
                     PermissionDecision::Allow
                 } else {
                     PermissionDecision::Deny {
@@ -1356,7 +1582,16 @@ impl App {
                     }
                 };
                 let _ = pending.decision_tx.send(decision);
-                if allow {
+                if let Some(mode) = escalation {
+                    match persist_warning {
+                        Some(error) => self.flash_status(format!(
+                            "permission mode: {mode} — call allowed (not saved: {error})"
+                        )),
+                        None => {
+                            self.flash_status(format!("permission mode: {mode} — call allowed"));
+                        }
+                    }
+                } else if allow {
                     self.flash_status("permission granted");
                 } else {
                     self.flash_status("permission denied — informing the model");
@@ -1404,6 +1639,26 @@ impl App {
             if refresh {
                 self.refresh_mcp_view();
             }
+            return;
+        }
+
+        // /perm 选择器：独占按键直到选择或取消。
+        if self.permission_picker.is_some() {
+            let current = self
+                .application
+                .as_ref()
+                .map(|application| application.permission_mode())
+                .unwrap_or_default();
+            if let Some(picker) = self.permission_picker.as_mut() {
+                let action = picker.handle_key(key, current);
+                self.apply_permission_picker_action(action);
+            }
+            return;
+        }
+
+        // /rename 弹框：独占按键（完整文本编辑 + Enter 提交 / Esc 取消）。
+        if self.rename_dialog.is_some() {
+            self.handle_rename_dialog_key(key);
             return;
         }
 
@@ -1495,7 +1750,9 @@ impl App {
                     handle.cancel();
                     self.flash_status("cancelling compaction…");
                 } else {
+                    // 空闲 Esc：清输入连同未发送的附件。
                     self.input.clear();
+                    self.attachments.clear();
                 }
             }
             KeyCode::Char(ch) => self.input.insert_char(ch),
@@ -1504,12 +1761,132 @@ impl App {
     }
 
     fn handle_paste(&mut self, text: &str) {
-        // 选择器、问答对话框与信息弹窗没有文本输入目标，忽略粘贴。
-        if self.picker.is_none() && self.pending_ask_user.is_none() && self.info_dialog.is_none() {
-            if let Some(editor) = &mut self.editor {
+        // 选择器、问答对话框、信息弹窗与权限选择器没有文本输入目标，
+        // 忽略粘贴；/rename 弹框有自己的编辑目标。
+        if self.picker.is_none()
+            && self.pending_ask_user.is_none()
+            && self.info_dialog.is_none()
+            && self.permission_picker.is_none()
+        {
+            if let Some(dialog) = &mut self.rename_dialog {
+                dialog.buffer.insert_str(text);
+            } else if let Some(editor) = &mut self.editor {
                 editor.handle_paste(text);
+            } else if !self.running
+                && let Some(image) = pasted_image_path(text)
+            {
+                // 拖图进终端 = 粘贴绝对路径：识别为附件而非文本。仅
+                // 空闲态——运行中的粘贴是 steering 文本（附件只能随
+                // 新消息走）。判定失败（混合文本/不存在/超大）回落为
+                // 普通文本插入。
+                self.attachments.push(image);
+                let count = self.attachments.len();
+                self.flash_status(format!(
+                    "image attached ({count}) — Enter sends it with your message · Esc drops it"
+                ));
             } else {
                 self.input.insert_str(text);
+            }
+        }
+    }
+
+    /// /perm 选择器的动作：应用 = 写共享 cell（下一次权限检查
+    /// 生效，P3）+ flash；取消只关框。Application 缺席（未确权）不可达
+    /// ——弹框只在 Some 时打开。
+    fn apply_permission_picker_action(
+        &mut self,
+        action: crate::tui_permission::PermissionPickerAction,
+    ) {
+        use crate::tui_permission::PermissionPickerAction;
+        match action {
+            PermissionPickerAction::Continue => {}
+            PermissionPickerAction::Cancel => {
+                self.permission_picker = None;
+                self.flash_status("permission mode unchanged");
+            }
+            PermissionPickerAction::Apply(mode) => {
+                self.permission_picker = None;
+                if let Some(application) = &self.application {
+                    // 持久化失败不回滚内存档位（本进程行为已生效），
+                    // 只提示。
+                    if let Err(error) = application.set_permission_mode(mode) {
+                        self.flash_status(format!("permission mode: {mode} (not saved: {error})"));
+                    } else {
+                        self.flash_status(format!("permission mode: {mode}"));
+                    }
+                }
+            }
+        }
+    }
+
+    /// /rename 弹框键位：完整单行编辑（InputBuffer），Enter 提交（空文
+    /// 本 flash 拒绝、不关框）、Esc 取消。提交走
+    /// `Application::rename_session`（Force + User 语义 + 清洗）。
+    fn handle_rename_dialog_key(&mut self, key: KeyEvent) {
+        enum Outcome {
+            Pending,
+            Commit(String),
+            Close,
+        }
+        let mut outcome = Outcome::Pending;
+        if let Some(dialog) = self.rename_dialog.as_mut() {
+            let buffer = &mut dialog.buffer;
+            match key.code {
+                KeyCode::Enter => {
+                    if key
+                        .modifiers
+                        .intersects(KeyModifiers::SHIFT | KeyModifiers::ALT)
+                    {
+                        buffer.insert_newline();
+                    } else {
+                        let text = buffer.text().trim().to_owned();
+                        if text.is_empty() {
+                            self.flash_status("name is empty");
+                        } else {
+                            outcome = Outcome::Commit(text);
+                        }
+                    }
+                }
+                KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    buffer.insert_newline();
+                }
+                KeyCode::Esc => outcome = Outcome::Close,
+                KeyCode::Backspace => buffer.backspace(),
+                KeyCode::Delete => buffer.delete(),
+                KeyCode::Left => buffer.left(),
+                KeyCode::Right => buffer.right(),
+                KeyCode::Home => buffer.home(),
+                KeyCode::End => buffer.end(),
+                KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    buffer.insert_char(ch);
+                }
+                _ => {}
+            }
+        }
+        match outcome {
+            Outcome::Pending => {}
+            Outcome::Close => self.rename_dialog = None,
+            Outcome::Commit(name) => {
+                match self
+                    .application
+                    .as_mut()
+                    .map(|application| application.rename_session(&name))
+                {
+                    Some(Ok(RenameOutcome::Renamed { title })) => {
+                        self.session_title = Some(title);
+                        self.rename_dialog = None;
+                        self.flash_status("conversation renamed");
+                    }
+                    Some(Ok(RenameOutcome::Invalid)) => self.flash_status("name is empty"),
+                    Some(Ok(RenameOutcome::NoSession)) => {
+                        self.rename_dialog = None;
+                        self.flash_status("no active conversation");
+                    }
+                    Some(Err(error)) => {
+                        self.flash_status(format!("rename failed: {error}"));
+                    }
+                    None => self.flash_status("project application is unavailable"),
+                }
             }
         }
     }
@@ -1882,6 +2259,7 @@ impl App {
             .switch_session(session_id.clone())
             .map_err(|error| error.to_string())?;
         self.session_id = Some(session_id);
+        self.session_title = snapshot.session_title;
         // 转录从回放重建（G2/G8）；输入历史随会话切换：恢复目标会话
         // 自己的历史（含内存中未持久化的导航状态一并重置）。
         self.conversation =
@@ -2040,9 +2418,17 @@ impl App {
     fn submit_input(&mut self) {
         let value = self.input.take();
         let value = value.trim().to_owned();
-        if value.is_empty() {
+        // 附件只随对话消息走：slash 命令不携带、也不清空（留待下一
+        // 条消息）；纯附件（空文本）允许提交。
+        let is_command = value.starts_with('/');
+        if value.is_empty() && (self.attachments.is_empty() || is_command) {
             return;
         }
+        let attachments = if is_command {
+            Vec::new()
+        } else {
+            std::mem::take(&mut self.attachments)
+        };
         // 输入历史是进程内的（↑/↓ 召回）；跨重启的回忆来自会话的
         // transcript 投影（recent_inputs），命令输入永不落盘。
         self.input.remember(value.clone());
@@ -2119,6 +2505,7 @@ impl App {
                     return;
                 }
                 self.session_id = None;
+                self.session_title = None;
                 self.conversation = crate::tui_conversation::ConversationModel::new();
                 self.conversation_scroll_from_bottom = 0;
                 self.input = InputBuffer::new(Vec::new());
@@ -2129,11 +2516,39 @@ impl App {
                 self.run_usage_acc = Usage::default();
                 self.flash_status("new conversation");
             }
+            // `/perm` 是主命令（短、好记）；`/permission` 保留为别名——
+            // 与 /new|/clear、/quit|/exit 同款双臂惯例。
+            "/perm" | "/permission" => {
+                // 冷切换/降级入口（权限三档）。升权到 Full Access 有
+                // 确认子态（P4）；运行中切档对下一次权限检查生效（P3）。
+                match self.application.as_ref() {
+                    Some(application) => {
+                        self.permission_picker =
+                            Some(crate::tui_permission::PermissionPicker::new(
+                                application.permission_mode(),
+                            ));
+                    }
+                    None => self.flash_status("project application is unavailable"),
+                }
+            }
+            "/rename" => {
+                // 门槛（2026-08-19 放宽）：有活动会话即可改，不再要求
+                // LLM 已起名——原门槛把"首轮自动命名失败/早于命名功能
+                // 的旧会话"永久挡在门外（用户实测几百轮的会话被拒），
+                // 而 CAS 本就保证改名压制迟到的自动命名。空会话 flash。
+                match self.session_id.as_ref() {
+                    Some(_) => {
+                        let prefill = self.session_title.clone().unwrap_or_default();
+                        self.rename_dialog = Some(RenameDialog::new(&prefill));
+                    }
+                    None => self.flash_status("no active conversation to rename"),
+                }
+            }
             "/quit" | "/exit" => self.should_quit = true,
             command if command.starts_with('/') => {
                 self.flash_status(format!("unknown command: {command}"));
             }
-            prompt => self.start_run(prompt.to_owned()),
+            prompt => self.start_run(prompt.to_owned(), attachments),
         }
     }
 
@@ -2162,11 +2577,13 @@ impl App {
                 self.steering_queued += 1;
                 self.flash_status("steering queued — applies at the next model step");
             }
-            _ => self.start_run(value),
+            // run 恰好收尾的竞争窗口回退为普通提交——steering 不携带
+            // 附件（M6：附件只能随空闲态的新消息走）。
+            _ => self.start_run(value, Vec::new()),
         }
     }
 
-    fn start_run(&mut self, prompt: String) {
+    fn start_run(&mut self, prompt: String, attachments: Vec<std::path::PathBuf>) {
         if !self.config.is_configured() {
             self.flash_status("model is not configured — run /model first");
             return;
@@ -2177,6 +2594,7 @@ impl App {
             .expect("event channel is installed by run()");
         let (completion, completed) = mpsc::channel();
         let request = ApplicationRunRequest {
+            attachments,
             asker: Some(Arc::new(ChannelUserAsker::new(sender.clone()))),
             prompt: prompt.clone(),
             approver: Arc::new(ChannelApprover::new(sender.clone())),
@@ -2225,6 +2643,13 @@ impl App {
                 decision_tx,
             } => {
                 self.phases.finish();
+                let escalations = self
+                    .application
+                    .as_ref()
+                    .map(|application| {
+                        escalation_targets(application.permission_mode(), request.effect)
+                    })
+                    .unwrap_or_default();
                 self.pending_permission = Some(PendingPermission {
                     request,
                     decision_tx,
@@ -2233,7 +2658,11 @@ impl App {
                     argument_line_count: 0,
                     reviewed_through: 0,
                     reviewed_to_end: false,
+                    escalations,
                 });
+                // AFK 提醒：run 正卡在等你批准——不响铃它可能静默卡到
+                // 天荒地老。
+                self.notify();
                 self.flash_status("permission required — review arguments, then allow or deny");
             }
             WorkerMessage::AskUserRequest {
@@ -2249,6 +2678,8 @@ impl App {
                     selection: 0,
                     custom,
                 });
+                // AFK 提醒：同权限框——run 在等你的回答。
+                self.notify();
                 self.flash_status("the model asks a question — answer or Esc to decline");
             }
             WorkerMessage::Done(result) => {
@@ -2347,6 +2778,9 @@ impl App {
         // 的 current 标记与后续写路径立即正确。
         if let Some(application) = &self.application {
             self.session_id = application.current_session_id();
+            // 会话右标题即时刷新：首条消息的 fallback 标题不产生事件
+            //（投影派生），run 结束是它出现的第一个时机。
+            self.session_title = application.session_title();
         }
         self.phases.finish();
         // run 刚消耗了额度：触发监控线程立即重新查询一次（计划外，
@@ -2373,6 +2807,9 @@ impl App {
                 } else {
                     self.conversation.push_turn_end("completed".into());
                     self.flash_status(format!("completed · {} model turns", done.turns));
+                    // AFK 提醒：对话结束响铃。用户主动取消不响——人就在
+                    // 键盘前（Esc 是他按的）。
+                    self.notify();
                 }
             }
             Err(failure) => {
@@ -2389,6 +2826,8 @@ impl App {
                     "run failed after {} model turns: {}",
                     failure.turns, failure.error
                 ));
+                // 失败也是"对话结束"——AFK 下同样需要知道。
+                self.notify();
             }
         }
         if self.steering_queued > 0 {
@@ -2450,7 +2889,9 @@ impl App {
             .saturating_sub(2)
             .saturating_sub(INPUT_MARKER_WIDTH as u16)
             .max(1) as usize;
-        let input_rows = (self.input.line_count(input_width) + 2).clamp(3, 10);
+        let input_rows =
+            (self.input.line_count(input_width) + 2 + usize::from(!self.attachments.is_empty()))
+                .clamp(3, 10);
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -2518,6 +2959,8 @@ impl App {
             || self.picker.is_some()
             || self.editor.is_some()
             || self.info_dialog.is_some()
+            || self.permission_picker.is_some()
+            || self.rename_dialog.is_some()
         {
             frame.render_widget(
                 Block::default().style(Style::default().add_modifier(Modifier::DIM)),
@@ -2552,10 +2995,11 @@ impl App {
                 let (row, column) = self.input.cursor_position(self.input_text_width());
                 let visible_rows = self.input_area.height.saturating_sub(2) as usize;
                 let row = row.min(visible_rows.saturating_sub(1));
-                // 光标跳过行首箭头前缀（`❯ ` / 两个空格）。
+                // 光标跳过行首箭头前缀（`❯ ` / 两个空格）与附件徽标行。
+                let attachment_offset = usize::from(!self.attachments.is_empty());
                 frame.set_cursor_position((
                     self.input_area.x + 1 + INPUT_MARKER_WIDTH as u16 + column as u16,
-                    self.input_area.y + 1 + row as u16,
+                    self.input_area.y + 1 + (row + attachment_offset) as u16,
                 ));
             }
         }
@@ -2571,6 +3015,17 @@ impl App {
                 InfoDialogKind::Help => self.draw_help_dialog(frame),
                 InfoDialogKind::Mcp => self.draw_mcp_dialog(frame),
             }
+        }
+        if let Some(picker) = &self.permission_picker {
+            let current = self
+                .application
+                .as_ref()
+                .map(|application| application.permission_mode())
+                .unwrap_or_default();
+            picker.draw(frame, area, current);
+        }
+        if self.rename_dialog.is_some() {
+            self.draw_rename_dialog(frame);
         }
     }
 
@@ -2826,7 +3281,19 @@ impl App {
         // 预算必须与 centered_rect 的实际钳制同源（popup_height_cap），
         // 否则分页页底会渲染在框外。
         let max_dialog_height = popup_height_cap(frame.area()).min(area.height.saturating_sub(2));
-        let reserved = lines.len() + 5; // 状态 + 空行 + 快捷键 + 边框
+        // 升级提示独立成行（宽度永不超框）：预留数随之 +1。
+        let escalation_hint = pending
+            .escalations
+            .iter()
+            .map(|mode| match mode {
+                PermissionMode::ProjectWrite => "w — Project Write",
+                PermissionMode::FullAccess => "f — Full Access",
+                PermissionMode::ReadOnly => "",
+            })
+            .filter(|hint| !hint.is_empty())
+            .collect::<Vec<_>>()
+            .join("      ·      ");
+        let reserved = lines.len() + 5 + usize::from(!escalation_hint.is_empty()); // 状态 + 空行 + 快捷键 + 边框
         let available_for_arguments = (max_dialog_height as usize).saturating_sub(reserved);
         if available_for_arguments == 0 || argument_width < 8 {
             pending.argument_page_size = 0;
@@ -2873,15 +3340,23 @@ impl App {
             tui_theme::style(tui_theme::Role::Bold),
         )));
         lines.push(Line::from(""));
-        let actions = if pending.reviewed_to_end {
-            "Enter / y — allow      ·      Esc / n — deny"
+        let mut actions = if pending.reviewed_to_end {
+            "Enter / y — allow      ·      Esc / n — deny".to_owned()
         } else {
-            "Review through the final line to enable Allow · Esc / n — deny"
+            "Review through the final line to enable Allow · Esc / n — deny".to_owned()
         };
-        lines.push(Line::from(Span::styled(
-            actions,
-            tui_theme::style(tui_theme::Role::Bold),
-        )));
+        // 升级提示（P5）：只列出本弹框 offered 的档位——切过去仍要问
+        // 的档位不出现（Execute@Read Only 不提示切 Project Write）。
+        // 独立成行，宽度永不超框（合并进动作行会在窄弹框里截断）。
+        if pending.reviewed_to_end && !escalation_hint.is_empty() {
+            actions = format!("{actions}\n{escalation_hint}");
+        }
+        for action in actions.split('\n') {
+            lines.push(Line::from(Span::styled(
+                action,
+                tui_theme::style(tui_theme::Role::Bold),
+            )));
+        }
 
         let height = (lines.len() as u16 + 2).min(max_dialog_height);
         let dialog = centered_rect(84, height.max(10), area);
@@ -2890,6 +3365,45 @@ impl App {
             Paragraph::new(lines).block(popup_block(" Permission ")),
             dialog,
         );
+    }
+
+    /// /rename 弹框：预填的 InputBuffer + 真实光标（与主输入框同一套
+    /// 换行/光标算法，坐标天然一致）。行由 `visual_rows` 预折——不用
+    /// Paragraph 的 wrap，保证光标列与显示列可换算。
+    fn draw_rename_dialog(&self, frame: &mut Frame) {
+        let Some(dialog) = &self.rename_dialog else {
+            return;
+        };
+        let area = frame.area();
+        let inner_width = popup_inner_width(72, area);
+        let mut lines: Vec<Line<'static>> = dialog
+            .buffer
+            .visual_rows(inner_width)
+            .into_iter()
+            .map(Line::from)
+            .collect();
+        lines.push(Line::from(""));
+        // 脚注键位说明用 Faint 灰——与 /help /mcp /perm 弹窗统一
+        //（2026-08-19 用户反馈：Bold 亮白与其他弹窗脚注不一致）。
+        lines.push(Line::from(Span::styled(
+            "Enter — rename      ·      Esc — cancel",
+            tui_theme::style(tui_theme::Role::Faint),
+        )));
+        let height = (lines.len() as u16 + 2).min(popup_height_cap(area));
+        let dialog_area = centered_rect(72, height.max(6), area);
+        clear_popup_with_guards(frame, dialog_area);
+        frame.render_widget(
+            Paragraph::new(lines).block(popup_block(" /rename ")),
+            dialog_area,
+        );
+        // popup_block：边框 1 列 + 水平 padding 1 列。
+        let (row, column) = dialog.buffer.cursor_position(inner_width);
+        let visible_rows = dialog_area.height.saturating_sub(2) as usize;
+        let row = row.min(visible_rows.saturating_sub(1));
+        frame.set_cursor_position((
+            dialog_area.x + 2 + column as u16,
+            dialog_area.y + 1 + row as u16,
+        ));
     }
 
     fn draw_header(&self, frame: &mut Frame, area: Rect) {
@@ -2937,7 +3451,30 @@ impl App {
     }
 
     fn draw_conversation(&mut self, frame: &mut Frame, area: Rect) {
-        let block = Block::default().title("Conversation").borders(Borders::ALL);
+        // 会话右标题（用户指定布局）：左上角 Conversation、右上角对称
+        // 放当前会话名（effective：LLM/用户标题，否则首条消息派生）。
+        // 超宽截断保头（标题语义在头部），留出左标题与边框的余量。
+        let mut block = Block::default().title("Conversation").borders(Borders::ALL);
+        if let Some(title) = self
+            .session_title
+            .as_deref()
+            .filter(|title| !title.is_empty())
+        {
+            let budget = area.width.saturating_sub(16) as usize;
+            let shown = if title.chars().count() > budget {
+                let kept: String = title.chars().take(budget.saturating_sub(1)).collect();
+                format!("{kept}…")
+            } else {
+                title.to_owned()
+            };
+            block = block.title(
+                Line::from(Span::styled(
+                    shown,
+                    tui_theme::style(tui_theme::Role::Faint),
+                ))
+                .right_aligned(),
+            );
+        }
         // 空会话：LOGO 欢迎页接管会话区（启动 / `/new` / `/clear` 后的
         // 起步画面）。0 行内容与画面一致——无滚动、无选区映射。
         if self.conversation.is_empty() {
@@ -3007,13 +3544,32 @@ impl App {
     }
 
     fn draw_input(&self, frame: &mut Frame, area: Rect) {
-        let title = if self.loading.is_some() {
-            "Loading conversation…"
-        } else if self.running {
+        // 标题只有两态：空闲 Message / 运行插话提示。loading 不进输入框
+        // 标题——头部状态与底部状态栏已在报 loading，第三处是画蛇添足
+        // （2026-08-19 用户反馈；输入禁用本身由 loading 门保证）。
+        let title = if self.running {
             "Running — Enter steers · Esc cancels"
         } else {
             "Message"
         };
+        // 权限档位名放右上角（用户指定布局，与左上角 Message 对称；
+        // DSH composer Access 徽标对应物）。Full Access 用警示黄——
+        // 它是"不再有任何弹窗"的档位，颜色是唯一的风险暗示。Application
+        // 缺席（未确权）时无档位可示。直接读 cell（单一数据源，无前端
+        // 镜像）。
+        let mut block = Block::default().title(title).borders(Borders::ALL);
+        if let Some(mode) = self
+            .application
+            .as_ref()
+            .map(|application| application.permission_mode())
+        {
+            let style = if mode == PermissionMode::FullAccess {
+                tui_theme::style(tui_theme::Role::Warning)
+            } else {
+                tui_theme::style(tui_theme::Role::Faint)
+            };
+            block = block.title(Line::from(mode.to_string()).style(style).right_aligned());
+        }
         // 输入框与聊天记录的用户消息同款排版：首行 `❯ ` 前缀，续行
         // 两个空格保持等宽左缩进，文本按扣除前缀后的宽度换行。与
         // 光标定位、鼠标选区映射共用同一换行算法，三者坐标一致。
@@ -3032,6 +3588,29 @@ impl App {
                 Line::from(vec![Span::raw(prefix), Span::raw(row)])
             })
             .collect();
+        // 附件徽标行（M6）：插在最前，占一个内容行（input_rows 与光标
+        // 行号都随之 +1）。超长截断保文件名尾部（文件名语义在后段）。
+        if !self.attachments.is_empty() {
+            let chips = self
+                .attachments
+                .iter()
+                .map(|path| {
+                    let name = path
+                        .file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| path.to_string_lossy().into_owned());
+                    format!("📷 {name}")
+                })
+                .collect::<Vec<_>>()
+                .join("  ");
+            lines.insert(
+                0,
+                Line::from(Span::styled(
+                    chips,
+                    tui_theme::style(tui_theme::Role::Faint),
+                )),
+            );
+        }
         if let Some((from, to)) = self
             .selection
             .filter(|selection| selection.kind == SelectionKind::Input && !selection.is_empty())
@@ -3055,11 +3634,7 @@ impl App {
                 *line = highlight_line(line, highlight_from, highlight_to);
             }
         }
-        frame.render_widget(
-            Paragraph::new(Text::from(lines))
-                .block(Block::default().title(title).borders(Borders::ALL)),
-            area,
-        );
+        frame.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
     }
 }
 
@@ -3402,6 +3977,11 @@ fn help_dialog_lines(width: usize) -> Vec<Line<'static>> {
                 ("/compact", "summarize earlier turns into a compact context"),
                 ("/resume", "pick a previous conversation to continue"),
                 ("/mcp", "inspect MCP servers, tools, and failures"),
+                (
+                    "/perm",
+                    "switch the permission mode (Read Only / Project Write / Full Access)",
+                ),
+                ("/rename", "rename the current conversation"),
                 ("/help", "this help"),
                 ("/quit", "exit"),
             ],
@@ -3494,7 +4074,7 @@ fn mcp_dialog_lines(view: &McpStatusDto, width: usize) -> Vec<Line<'static>> {
     lines
 }
 
-fn centered_rect(percent_x: u16, height: u16, area: Rect) -> Rect {
+pub(crate) fn centered_rect(percent_x: u16, height: u16, area: Rect) -> Rect {
     let height = height.min(popup_height_cap(area));
     let top = area.height.saturating_sub(height) / 2;
     let vertical = Rect::new(area.x, area.y + top, area.width, height.min(area.height));
@@ -3572,6 +4152,124 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::style::Color;
+
+    /// M6：粘贴的图片附件判定。防误判优先：整条 == 存在的图片路径才
+    /// 附加；混合文本、不存在、非图片扩展名、超 4MB 一律当文本。
+    #[test]
+    fn pasted_image_path_only_matches_whole_existing_image_paths() {
+        let dir = std::env::temp_dir().join(format!(
+            "clat-paste-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let image = dir.join("shot.png");
+        std::fs::write(&image, b"png").unwrap();
+
+        // 整条路径：命中。
+        assert_eq!(
+            pasted_image_path(&image.display().to_string()),
+            Some(image.clone())
+        );
+        // 前后空白：trim 后仍命中（终端粘贴常带尾换行）。
+        assert_eq!(
+            pasted_image_path(&format!("  {}\n", image.display())),
+            Some(image.clone())
+        );
+        // 混合文本：不误判（宁可当文本插入）。
+        assert_eq!(
+            pasted_image_path(&format!("look at {} please", image.display())),
+            None
+        );
+        // 相对路径：永远不当附件——前缀守卫在 fs 访问之前就拒绝，
+        // 与文件是否存在、cwd 在哪都无关（2026-08-19 收紧，pre-fix
+        // 上 cwd 下碰巧同名的裸文件名会被误判成附件）。
+        assert_eq!(pasted_image_path("logo.png"), None);
+        assert_eq!(pasted_image_path("docs/diagram.png"), None);
+
+        // 不存在 / 非图片扩展名：None。
+        assert_eq!(
+            pasted_image_path(&dir.join("missing.png").display().to_string()),
+            None
+        );
+        let text = dir.join("notes.txt");
+        std::fs::write(&text, b"txt").unwrap();
+        assert_eq!(pasted_image_path(&text.display().to_string()), None);
+
+        // 超过 4MB：None（入口封顶）。
+        let big = dir.join("big.png");
+        let sparse = std::fs::File::create(&big).unwrap();
+        sparse
+            .set_len(crate::media::MAX_ATTACHMENT_BYTES + 1)
+            .unwrap();
+        drop(sparse);
+        assert_eq!(pasted_image_path(&big.display().to_string()), None);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 提醒铃模式解析（规格推导）：默认终端铃；CLAT_NO_BELL 压过一切；
+    /// CLAT_BELL_COMMAND 非空即自定义命令；NO_BELL 的真值形态宽限
+    /// （1/true/yes/on，大小写与空白不敏感由 trim+小写集合决定——这里
+    /// 只锁小写形态，多余宽容不加）。
+    #[test]
+    fn bell_mode_resolves_from_env() {
+        assert_eq!(bell_mode_from_env(None, None), BellMode::Terminal);
+        assert_eq!(
+            bell_mode_from_env(Some("1".into()), None),
+            BellMode::Off,
+            "the silencer wins over everything"
+        );
+        assert_eq!(
+            bell_mode_from_env(Some("1".into()), Some("afplay x".into())),
+            BellMode::Off
+        );
+        assert_eq!(
+            bell_mode_from_env(Some("0".into()), None),
+            BellMode::Terminal
+        );
+        assert_eq!(
+            bell_mode_from_env(None, Some("afplay ~/ding.aiff".into())),
+            BellMode::Command("afplay ~/ding.aiff".into())
+        );
+        // 空白命令视为未设置，回落终端铃。
+        assert_eq!(
+            bell_mode_from_env(None, Some("   ".into())),
+            BellMode::Terminal
+        );
+    }
+
+    /// 自定义命令模式端到端：命令真的被执行（marker 文件出现），且
+    /// ring_bell 立即返回（detached，不等命令结束）。
+    #[test]
+    fn bell_command_mode_runs_the_command_detached() {
+        let marker = std::env::temp_dir().join(format!(
+            "clat-bell-{}.marker",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let command = format!("printf ok > {:?}", marker);
+        let started = std::time::Instant::now();
+        ring_bell(&BellMode::Command(command));
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "ring_bell returns without waiting for the command"
+        );
+        let mut appeared = false;
+        for _ in 0..200 {
+            if marker.exists() {
+                appeared = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(appeared, "the custom bell command actually ran");
+        let _ = std::fs::remove_file(&marker);
+    }
 
     #[test]
     fn permission_review_requires_a_contiguous_path_to_the_last_line() {
@@ -3944,7 +4642,7 @@ mod tests {
     }
 
     #[test]
-    fn phase_line_breathes_the_whole_label_at_a_fixed_period() {
+    fn phase_line_searchlight_sweeps_at_a_constant_per_character_dwell() {
         let at_start = phase_line(0, Phase::WaitingFirstToken, None, None, 0);
         // The spinner frame itself rotates and keeps the brand blue.
         assert_eq!(at_start.spans[0].content, SPINNER_FRAMES[0]);
@@ -3952,58 +4650,58 @@ mod tests {
             at_start.spans[0].style.fg,
             Some(tui_theme::BRAND_SHIMMER_LOW)
         );
+        // 标签是逐字 span（探照灯按字符打亮），拼接还原原文。
+        let joined: String = at_start.spans[2..2 + "Waiting first token".chars().count()]
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert_eq!(joined, "Waiting first token");
 
-        // 呼吸（2026-08-19 第二轮反馈）：标签是单一 span、整词统一亮
-        // 度起伏——没有任何元素在字间移动，视觉节律与标签长度彻底
-        // 无关（旧探照灯的移动速度必然随字数变化，无论周期怎么取）。
-        assert_eq!(at_start.spans[2].content, "Waiting first token");
-        let brightness = |line: &Line<'static>| match line.spans[2].style.fg {
-            Some(Color::Rgb(r, g, b)) => r as u32 + g as u32 + b as u32,
-            other => panic!("expected RGB label, got {other:?}"),
+        // 不变量（2026-08-19 第四轮设计 + 第五轮提速）：单字符驻留恒定。
+        // 光带每 SWEEP_STEP_TICKS（1 tick）前进恰一个字符；整圈 =
+        // (字数 + 双侧余量) 步回到同态，长标签整圈长是设计使然。
+        // pre-fix 两版各自必红：整圈周期恒定版（v0.6.1）每字速度随字数
+        // 变；整词呼吸版没有任何字符差异。
+        let styles = |tick: u64, phase: Phase| -> Vec<Option<Color>> {
+            phase_line(tick, phase, None, None, 0)
+                .spans
+                .into_iter()
+                .skip(2)
+                .map(|span| span.style.fg)
+                .collect()
         };
-        // 周期起点最暗（恰为品牌蓝低端）。
-        assert_eq!(
-            at_start.spans[2].style.fg,
-            Some(tui_theme::BRAND_SHIMMER_LOW),
-            "the breathing cycle starts at the darkest point"
-        );
-        // 半周期最亮：接近浅端。
-        let mid = phase_line(
-            (SHIMMER_CYCLE_TICKS / 2.0) as u64,
-            Phase::Thinking,
-            None,
-            None,
-            0,
-        );
-        match mid.spans[2].style.fg {
-            Some(Color::Rgb(r, g, b)) => {
-                assert!(
-                    r > 190 && g > 210 && b > 240,
-                    "brightest at half period: {r},{g},{b}"
-                );
-            }
-            other => panic!("expected RGB, got {other:?}"),
-        }
-        assert!(
-            brightness(&mid) > brightness(&at_start),
-            "the label breathes low → high over half a period"
-        );
+        let short_len = Phase::Thinking.label().chars().count() as u64;
+        let long_len = Phase::WaitingFirstToken.label().chars().count() as u64;
+        let full_circle = |len: u64| SWEEP_STEP_TICKS * (len + 2 * SWEEP_MARGIN_CHARS);
 
-        // 节律不变量：spinner 每 SPINNER_STEP_TICKS 个 tick 走一帧；
-        // 会话区太阳帧同规则；整周期回到同一亮度。
-        assert_eq!(spinner_frame(4), spinner_frame(5));
-        assert_ne!(spinner_frame(4), spinner_frame(6));
+        // 光带每个 tick 都在移动（驻留 1 tick，提速一倍）。
+        assert_ne!(
+            styles(0, Phase::Thinking),
+            styles(SWEEP_STEP_TICKS, Phase::Thinking),
+            "the beam advances one character per dwell"
+        );
+        // 整圈回到同态（短/长标签各自的圈长，互不相同——圈随字数伸缩）。
+        assert_eq!(
+            styles(0, Phase::Thinking),
+            styles(full_circle(short_len), Phase::Thinking),
+            "short label completes its sweep in (len + margins) steps"
+        );
+        assert_eq!(
+            styles(0, Phase::WaitingFirstToken),
+            styles(full_circle(long_len), Phase::WaitingFirstToken),
+            "long label completes its own sweep at its own length"
+        );
+        assert_ne!(full_circle(short_len), full_circle(long_len));
+
+        // 转圈独立节律（第五轮）：探照灯每 tick 一字符，转圈每
+        // SPINNER_STEP_TICKS（2）tick 一帧——即每 2 个字符换一帧，
+        // 转速不随探照灯提速或标签长度变化（8 帧一圈 = 16 字符）。
+        assert_eq!(spinner_frame(0), spinner_frame(1));
+        assert_ne!(spinner_frame(0), spinner_frame(2));
         assert_eq!(marker_frame(0), MARKER_FRAMES[0]);
         assert_eq!(marker_frame(2), MARKER_FRAMES[1]);
-        let cycle = SHIMMER_CYCLE_TICKS as u64;
-        let after = phase_line(7 + cycle, Phase::WaitingFirstToken, None, None, 0);
-        assert_eq!(
-            after.spans[2].style.fg,
-            phase_line(7, Phase::WaitingFirstToken, None, None, 0).spans[2]
-                .style
-                .fg,
-            "a full cycle returns the breathing to the same brightness"
-        );
+        // 会话区太阳帧与转圈同节律（每 2 tick 一帧）。
+        assert_eq!(marker_frame(1), MARKER_FRAMES[0]);
 
         // The elapsed clock is appended when known.
         let with_clock = phase_line(
@@ -4026,6 +4724,40 @@ mod tests {
         );
         let last = with_steering.spans.last().expect("badge span");
         assert_eq!(last.content, " · steering·2");
+    }
+
+    /// 探照灯的"过去后回原色"（用户对效果的描述）：首字符在灯光到达
+    /// 前是基色，被照亮时亮于基色，灯光走过后**精确**回到基色（熄灭阈
+    /// 兜底，无 RGB 残影）。整词呼吸版（霓虹）上"只有首字符亮"断言必红。
+    #[test]
+    fn phase_line_searchlight_char_lights_then_returns_to_base() {
+        let base = Some(tui_theme::BRAND_SHIMMER_LOW);
+        let char_fg = |tick: u64, index: usize| {
+            phase_line(tick, Phase::Thinking, None, None, 0).spans[2 + index]
+                .style
+                .fg
+        };
+        // 起始（center = -margin）：灯光尚未进入，全基色。
+        assert_eq!(char_fg(0, 0), base, "dark before the beam enters");
+
+        // center = 0（step = margin）：首字符正被打亮——亮于基色，且
+        // 邻字符也各不相同（高斯边缘，非全词同亮）。
+        let lit_tick = SWEEP_STEP_TICKS * SWEEP_MARGIN_CHARS;
+        assert_ne!(char_fg(lit_tick, 0), base, "lit while the beam is on it");
+        assert_ne!(
+            char_fg(lit_tick, 0),
+            char_fg(lit_tick, 2),
+            "the beam is a gradient, not a whole-label flash"
+        );
+
+        // 灯光走远（center ≥ len + margin - 0.5 的余量）：首字符回基色。
+        let passed_tick = SWEEP_STEP_TICKS
+            * (Phase::Thinking.label().chars().count() as u64 + SWEEP_MARGIN_CHARS);
+        assert_eq!(
+            char_fg(passed_tick, 0),
+            base,
+            "returns to the exact base color after the beam passes"
+        );
     }
 
     #[test]

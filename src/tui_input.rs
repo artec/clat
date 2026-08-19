@@ -32,6 +32,11 @@ impl InputBuffer {
         value
     }
 
+    /// 只读视图（弹框预填/提交校验用；不改变光标与历史状态）。
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
     pub fn remember(&mut self, value: String) {
         if value.trim().is_empty() {
             return;

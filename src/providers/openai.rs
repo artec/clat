@@ -203,7 +203,7 @@ fn map_input_items(items: &[ModelItem]) -> Result<Vec<Value>, ModelError> {
         match item {
             ModelItem::User { content } => input.push(json!({
                 "role": "user",
-                "content": content_text(content),
+                "content": user_content(content)?,
             })),
             ModelItem::Assistant { content, .. } => input.push(json!({
                 "role": "assistant",
@@ -236,9 +236,44 @@ fn content_text(content: &[ContentPart]) -> String {
         .iter()
         .map(|part| match part {
             ContentPart::Text(text) => text.as_str(),
+            ContentPart::Image { .. } => "",
         })
         .collect::<Vec<_>>()
         .join("")
+}
+
+/// user content（Responses 协议）：纯文本保持字符串；含图片时升级为
+/// 多 part 数组——`input_text` + `input_image`（data URL）。读文件
+/// 失败的图片降级为文本注记（M3，与 chat 协议同语义）。
+fn user_content(content: &[ContentPart]) -> Result<Value, ModelError> {
+    let has_image = content
+        .iter()
+        .any(|part| matches!(part, ContentPart::Image { .. }));
+    if !has_image {
+        return Ok(Value::String(content_text(content)));
+    }
+    let mut parts = Vec::new();
+    for part in content {
+        match part {
+            ContentPart::Text(text) => parts.push(json!({
+                "type": "input_text",
+                "text": text,
+            })),
+            ContentPart::Image { path, media_type } => {
+                match super::openai_compatible::image_data_url_for(path, media_type) {
+                    Some(url) => parts.push(json!({
+                        "type": "input_image",
+                        "image_url": url,
+                    })),
+                    None => parts.push(json!({
+                        "type": "input_text",
+                        "text": format!("[image unavailable: {path}]"),
+                    })),
+                }
+            }
+        }
+    }
+    Ok(Value::Array(parts))
 }
 
 fn tool_output_text(result: &ToolResult) -> String {
@@ -614,6 +649,41 @@ mod tests {
         assert_eq!(body["tools"][0]["strict"], true);
         assert_eq!(body["tools"][0]["parameters"]["type"], "object");
         assert_eq!(body["parallel_tool_calls"], true);
+    }
+
+    /// M3：图片消息的 Responses 序列化——`input_image` data URL；纯
+    /// 文本消息保持字符串（既有请求形状不变）。
+    #[test]
+    fn user_content_serializes_images_for_responses() {
+        let path = std::env::temp_dir().join(format!(
+            "clat-img-resp-{}.png",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&path, b"hello world").unwrap();
+        let content = user_content(&[
+            ContentPart::Text("look".into()),
+            ContentPart::Image {
+                path: path.display().to_string(),
+                media_type: "image/png".into(),
+            },
+        ])
+        .unwrap();
+        let parts = content.as_array().unwrap();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0], json!({"type": "input_text", "text": "look"}));
+        assert_eq!(
+            parts[1],
+            json!({"type": "input_image", "image_url": "data:image/png;base64,aGVsbG8gd29ybGQ="})
+        );
+        let _ = std::fs::remove_file(&path);
+        // 纯文本仍是字符串。
+        assert_eq!(
+            user_content(&[ContentPart::Text("hi".into())]).unwrap(),
+            json!("hi")
+        );
     }
 
     #[test]

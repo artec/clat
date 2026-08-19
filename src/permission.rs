@@ -154,6 +154,180 @@ impl PermissionPolicy for SafeByDefault {
     }
 }
 
+/// 用户可切换的权限档位（DSH permission-presets 的 CLAT 形态）。
+///
+/// 档位只移动 [`PermissionDecision::Ask`] 的边界：`Pure` / `Read` /
+/// `SessionWrite` 永远放行，`FullAccess` 全放行，差别在副作用类工具
+/// 是否需要逐次审批（见 [`mode_decision`] 决策表）。没有任何档位在
+/// 表格层产生 `Deny`——拒绝始终来自人（approver），不是档位语义。
+///
+/// 档位是共享运行时 cell（[`ModeSource::Shared`]）：切换在下一次权限
+/// 检查生效，在途的 one-shot 审批不受影响。进程内持久（跨 run、跨
+/// 会话切换）；重启回落到默认档 `ProjectWrite`——跨重启持久化需要
+/// 控制面设置表 + 迁移协议，另批实施。
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum PermissionMode {
+    /// 一切副作用工具逐次审批（决策等价于 [`SafeByDefault`] 列）。
+    ReadOnly,
+    /// 项目内文件写自动放行（写工具本就受 cap-std 项目根约束）；
+    /// 命令执行、网络、外部进程与破坏性操作仍逐次审批。默认档。
+    #[default]
+    ProjectWrite,
+    /// 全放行（DSH approval=never 对应物）；不再弹任何权限框。
+    FullAccess,
+}
+
+impl std::fmt::Display for PermissionMode {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            PermissionMode::ReadOnly => "Read Only",
+            PermissionMode::ProjectWrite => "Project Write",
+            PermissionMode::FullAccess => "Full Access",
+        })
+    }
+}
+
+impl PermissionMode {
+    /// 持久化标识（kebab id，控制面 `permission_modes.json` 用）——
+    /// 与 Display（用户可读、带空格）分离：落盘形态稳定，不随 UI 文案
+    /// 演进。
+    pub fn persistence_id(&self) -> &'static str {
+        match self {
+            PermissionMode::ReadOnly => "read-only",
+            PermissionMode::ProjectWrite => "project-write",
+            PermissionMode::FullAccess => "full-access",
+        }
+    }
+
+    /// 解析持久化标识；未知值（手改/降级安装）返回 None，调用方回落
+    /// 默认档。
+    pub fn from_persistence_id(id: &str) -> Option<Self> {
+        match id.trim() {
+            "read-only" => Some(PermissionMode::ReadOnly),
+            "project-write" => Some(PermissionMode::ProjectWrite),
+            "full-access" => Some(PermissionMode::FullAccess),
+            _ => None,
+        }
+    }
+}
+
+/// 档位 × effect 决策表（不变量 P1）。
+pub fn mode_decision(mode: PermissionMode, tool: &ToolDefinition) -> PermissionDecision {
+    if mode_allows(mode, tool.effect) {
+        return PermissionDecision::Allow;
+    }
+    let reason = match mode {
+        PermissionMode::ReadOnly if tool.effect == ToolEffect::Write => format!(
+            "tool `{}` writes files — file edits are gated under Read Only mode",
+            tool.name
+        ),
+        PermissionMode::ReadOnly => format!(
+            "tool `{}` ({}) is gated under Read Only mode",
+            tool.name, tool.effect
+        ),
+        PermissionMode::ProjectWrite => format!(
+            "tool `{}` ({}) is gated under Project Write mode — commands, network, and destructive tools still need approval",
+            tool.name, tool.effect
+        ),
+        PermissionMode::FullAccess => {
+            unreachable!("full access allows every effect (see mode_allows)")
+        }
+    };
+    PermissionDecision::Ask { reason }
+}
+
+/// 决策表的 Allow 格：唯一允许语义来源（`mode_decision` 与
+/// `escalation_targets` 共享，防两处表漂移）。
+pub fn mode_allows(mode: PermissionMode, effect: ToolEffect) -> bool {
+    match mode {
+        PermissionMode::FullAccess => true,
+        PermissionMode::ProjectWrite => matches!(
+            effect,
+            ToolEffect::Pure | ToolEffect::Read | ToolEffect::SessionWrite | ToolEffect::Write
+        ),
+        PermissionMode::ReadOnly => matches!(
+            effect,
+            ToolEffect::Pure | ToolEffect::Read | ToolEffect::SessionWrite
+        ),
+    }
+}
+
+/// 权限弹框的升级选项（不变量 P5）：列出比 `mode` 更宽、且能让本次
+/// `effect` 直接放行的档位（宽度升序）。切过去仍要询问的档位不出现
+/// ——那只是一次无效跳转（Execute@Read Only 不 offered Project
+/// Write）。已放行的组合没有升级可言，返回空。
+pub fn escalation_targets(mode: PermissionMode, effect: ToolEffect) -> Vec<PermissionMode> {
+    if mode_allows(mode, effect) {
+        return Vec::new();
+    }
+    let mut targets = Vec::new();
+    if mode == PermissionMode::ReadOnly && mode_allows(PermissionMode::ProjectWrite, effect) {
+        targets.push(PermissionMode::ProjectWrite);
+    }
+    targets.push(PermissionMode::FullAccess);
+    targets
+}
+
+/// 注入模型系统指令的档位说明（DSH renderPolicyContext 对应物）：
+/// 让模型在尝试前知道当前审批边界，而不是撞上拒绝/弹窗后才推断。
+pub fn mode_guidance(mode: PermissionMode) -> &'static str {
+    match mode {
+        PermissionMode::ReadOnly => {
+            "every side-effecting tool call (file writes, commands, network) requires user approval before it runs"
+        }
+        PermissionMode::ProjectWrite => {
+            "file edits inside the project run without approval; commands, network access, and destructive tools require user approval"
+        }
+        PermissionMode::FullAccess => "all tools run without approval prompts",
+    }
+}
+
+/// 权限策略工厂的档位来源（不变量 P7/P8）：
+///
+/// - [`ModeSource::Classic`]：委托 [`SafeByDefault`]，逐次询问——
+///   headless `clat exec` 的既有行为，决策与理由文本零变化。
+/// - [`ModeSource::Shared`]：委托 [`ModePolicy`]，读共享档位 cell——
+///   交互前端的档位系统。
+pub(crate) enum ModeSource {
+    Classic,
+    Shared(Arc<std::sync::RwLock<PermissionMode>>),
+}
+
+impl Clone for ModeSource {
+    fn clone(&self) -> Self {
+        match self {
+            ModeSource::Classic => ModeSource::Classic,
+            ModeSource::Shared(cell) => ModeSource::Shared(Arc::clone(cell)),
+        }
+    }
+}
+
+/// 共享档位的策略委托：每次 `check` 读 cell，切换即生效（P3）。
+pub struct ModePolicy {
+    mode: Arc<std::sync::RwLock<PermissionMode>>,
+}
+
+impl ModePolicy {
+    pub fn new(mode: Arc<std::sync::RwLock<PermissionMode>>) -> Self {
+        Self { mode }
+    }
+
+    fn mode(&self) -> PermissionMode {
+        *self.mode.read().expect("permission mode lock")
+    }
+}
+
+impl PermissionPolicy for ModePolicy {
+    fn check(
+        &self,
+        _project: &Project,
+        tool: &ToolDefinition,
+        _call: &ToolCall,
+    ) -> PermissionDecision {
+        mode_decision(self.mode(), tool)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct AllowAll;
 
@@ -307,5 +481,142 @@ mod tests {
             handle.join().expect("join"),
             PermissionDecision::Deny { .. }
         ));
+    }
+
+    /// 不变量 P1：模式 × effect 决策表。期望值从设计表逐格抄写，不从
+    /// 实现推导——表错了这里必须红。
+    #[test]
+    fn mode_decision_table_matches_the_spec() {
+        let expect = |mode: PermissionMode, effect: ToolEffect, allowed: bool| {
+            let decision = mode_decision(mode, &definition(effect));
+            if allowed {
+                assert_eq!(
+                    decision,
+                    PermissionDecision::Allow,
+                    "expected Allow for {effect} under {mode}"
+                );
+            } else {
+                match decision {
+                    PermissionDecision::Ask { reason } => {
+                        assert!(
+                            reason.contains(&mode.to_string()),
+                            "ask reason names the mode: {reason}"
+                        );
+                    }
+                    other => panic!("expected Ask for {effect} under {mode}, got {other:?}"),
+                }
+            }
+        };
+        use ToolEffect::{
+            Destructive, Execute, ExternalRead, Network, Pure, Read, SessionWrite, Write,
+        };
+        // 无副作用类：所有档位放行。
+        for effect in [Pure, Read, SessionWrite] {
+            for mode in [
+                PermissionMode::ReadOnly,
+                PermissionMode::ProjectWrite,
+                PermissionMode::FullAccess,
+            ] {
+                expect(mode, effect, true);
+            }
+        }
+        // 文件写：RO 问，PW/FA 放行。
+        expect(PermissionMode::ReadOnly, Write, false);
+        expect(PermissionMode::ProjectWrite, Write, true);
+        expect(PermissionMode::FullAccess, Write, true);
+        // 其余副作用类：RO/PW 问，FA 放行。
+        for effect in [Execute, Network, ExternalRead, Destructive] {
+            expect(PermissionMode::ReadOnly, effect, false);
+            expect(PermissionMode::ProjectWrite, effect, false);
+            expect(PermissionMode::FullAccess, effect, true);
+        }
+    }
+
+    /// 不变量 P5：升级选项 = 能让当前 effect 直接放行的更宽档位集合。
+    #[test]
+    fn escalation_targets_offer_only_modes_that_allow_this_call() {
+        use ToolEffect::{Execute, Read, Write};
+        // Write@RO：PW 已足够，FA 也行——两者都出现（宽度升序）。
+        assert_eq!(
+            escalation_targets(PermissionMode::ReadOnly, Write),
+            vec![PermissionMode::ProjectWrite, PermissionMode::FullAccess]
+        );
+        // Execute@RO：切 PW 仍要问，只有 FA 值得出现。
+        assert_eq!(
+            escalation_targets(PermissionMode::ReadOnly, Execute),
+            vec![PermissionMode::FullAccess]
+        );
+        // 门控类@PW：只剩 FA。
+        assert_eq!(
+            escalation_targets(PermissionMode::ProjectWrite, Execute),
+            vec![PermissionMode::FullAccess]
+        );
+        // 已放行：无升级可言。
+        assert!(escalation_targets(PermissionMode::FullAccess, Execute).is_empty());
+        assert!(escalation_targets(PermissionMode::ReadOnly, Read).is_empty());
+        assert!(escalation_targets(PermissionMode::ProjectWrite, Write).is_empty());
+    }
+
+    /// 不变量 P3：共享 cell 的切换在下一次 check 生效；档位语义由
+    /// cell 驱动而非构造时快照。
+    #[test]
+    fn mode_policy_reads_the_shared_cell_on_every_check() {
+        let cell = Arc::new(std::sync::RwLock::new(PermissionMode::ReadOnly));
+        let policy = ModePolicy::new(Arc::clone(&cell));
+        let project = Project::new(".");
+        let write = definition(ToolEffect::Write);
+
+        assert!(matches!(
+            policy.check(&project, &write, &call()),
+            PermissionDecision::Ask { .. }
+        ));
+        *cell.write().expect("mode lock") = PermissionMode::ProjectWrite;
+        assert_eq!(
+            policy.check(&project, &write, &call()),
+            PermissionDecision::Allow
+        );
+        // 降级同样即时：下一次 check 回到 Ask。
+        *cell.write().expect("mode lock") = PermissionMode::FullAccess;
+        assert_eq!(
+            policy.check(&project, &write, &call()),
+            PermissionDecision::Allow
+        );
+        *cell.write().expect("mode lock") = PermissionMode::ReadOnly;
+        assert!(matches!(
+            policy.check(&project, &write, &call()),
+            PermissionDecision::Ask { .. }
+        ));
+    }
+
+    /// 档位说明供系统指令注入：三档都有非空、互异的文案。
+    #[test]
+    fn mode_guidance_covers_every_mode() {
+        let texts = [
+            mode_guidance(PermissionMode::ReadOnly),
+            mode_guidance(PermissionMode::ProjectWrite),
+            mode_guidance(PermissionMode::FullAccess),
+        ];
+        for text in texts {
+            assert!(!text.is_empty());
+        }
+        assert!(texts[0] != texts[1] && texts[1] != texts[2] && texts[0] != texts[2]);
+    }
+
+    /// 持久化标识（控制面 JSON 落盘形态）：三档往返；未知值返回 None
+    ///（降级安装/手改不 panic，回落默认档）。
+    #[test]
+    fn persistence_ids_round_trip_and_reject_unknown_values() {
+        for mode in [
+            PermissionMode::ReadOnly,
+            PermissionMode::ProjectWrite,
+            PermissionMode::FullAccess,
+        ] {
+            assert_eq!(
+                PermissionMode::from_persistence_id(mode.persistence_id()),
+                Some(mode)
+            );
+        }
+        assert_eq!(PermissionMode::from_persistence_id("yolo"), None);
+        assert_eq!(PermissionMode::from_persistence_id(""), None);
     }
 }

@@ -310,6 +310,20 @@ fn require_content_array(
         if block.get("type").and_then(|value| value.as_str()).is_none() {
             return Err("content block lacks a type".into());
         }
+        // image part 的引用不变量（2026-08-19）：path 与 mediaType 都是
+        // 非空字符串——缺引用的图片 part 会在回放侧静默变成空气。
+        if block.get("type").and_then(|value| value.as_str()) == Some("image")
+            && (block
+                .get("path")
+                .and_then(|value| value.as_str())
+                .is_none_or(str::is_empty)
+                || block
+                    .get("mediaType")
+                    .and_then(|value| value.as_str())
+                    .is_none_or(str::is_empty))
+        {
+            return Err("image content block needs non-empty path and mediaType".into());
+        }
     }
     Ok(content)
 }
@@ -339,6 +353,61 @@ mod tests {
                 payloads::turn_end(1, &crate::session::event::TurnEndReason::Completed),
             ),
         ]
+    }
+
+    /// M2：image content block 的引用不变量——path 与 mediaType 缺一
+    ///（或为空）即拒绝；合法 image part 与既有 user/message 一起通过。
+    #[test]
+    fn image_content_blocks_require_path_and_media_type() {
+        let mut events = known_turn();
+        let good = SessionEvent::new(
+            "user/message",
+            3,
+            4,
+            payloads::user_message_with_images(
+                "look",
+                &[("/ attachments/x.png".into(), "image/png".into())],
+            ),
+        )
+        .append(Vec::new());
+        events.push(good);
+        assert_eq!(admit_events(&events), Ok(()));
+
+        // 缺 path / 空 mediaType：拒绝。
+        let bad = SessionEvent::new(
+            "user/message",
+            3,
+            4,
+            json!({
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "look"},
+                    {"type": "image", "mediaType": "image/png"},
+                ],
+                "source": {"kind": "user"},
+            }),
+        )
+        .append(Vec::new());
+        let mut events = known_turn();
+        events.push(bad);
+        assert!(admit_events(&events).is_err());
+
+        let bad = SessionEvent::new(
+            "user/message",
+            3,
+            4,
+            json!({
+                "role": "user",
+                "content": [
+                    {"type": "image", "path": "/a.png", "mediaType": ""},
+                ],
+                "source": {"kind": "user"},
+            }),
+        )
+        .append(Vec::new());
+        let mut events = known_turn();
+        events.push(bad);
+        assert!(admit_events(&events).is_err());
     }
 
     #[test]

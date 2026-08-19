@@ -76,11 +76,20 @@ pub enum ApplicationEvent {
     MonitorUpdated(Option<String>),
     /// 自动压缩的结果提示；绝不携带 RunEvent 语义（协议冻结）。
     CompactionUpdated(CompactionStatus),
+    /// 会话标题变化（自动命名/用户改名落盘成功后广播一次）。前端据此
+    /// 刷新标题显示，无需重新拉快照。
+    TitleUpdated {
+        title: String,
+    },
 }
 
 #[derive(Clone, Debug)]
 pub struct ProjectSnapshot {
     pub session_id: Option<SessionId>,
+    /// 会话右标题（effective：显式标题事件，否则首条用户消息派生的
+    /// fallback；全新空会话为 None）。快照携带 + `TitleUpdated` 事件
+    /// 增量更新，两路同源（title 投影）。
+    pub session_title: Option<String>,
     pub transcript: Vec<TranscriptLine>,
     /// Structured replay of the active session's journal (transcript
     /// rebuild input for frontends; `transcript` above is the legacy
@@ -140,6 +149,8 @@ impl From<&McpStatus> for McpStatusDto {
 #[derive(Clone, Debug)]
 pub struct SessionSnapshot {
     pub id: SessionId,
+    /// 见 `ProjectSnapshot::session_title`（同源：title 投影）。
+    pub session_title: Option<String>,
     pub transcript: Vec<TranscriptLine>,
     /// Structured replay of this session's journal (see `ProjectSnapshot::
     /// replay`).
@@ -169,6 +180,10 @@ impl ProjectAuthorization {
 pub struct BootstrapApplication {
     project: Project,
     storage_root: PathBuf,
+    /// 交互前端（TUI）置位：挂载后权限策略读共享档位 cell（权限三
+    /// 档）。headless exec 不置位——委托保持 SafeByDefault 逐次询问，
+    /// 行为零变化（P7）。
+    permission_modes: bool,
 }
 
 impl BootstrapApplication {
@@ -195,7 +210,14 @@ impl BootstrapApplication {
         Ok(Self {
             project,
             storage_root,
+            permission_modes: false,
         })
+    }
+
+    /// Builder：启用权限三档（交互前端专用，见结构体字段说明）。
+    pub fn with_permission_modes(mut self) -> Self {
+        self.permission_modes = true;
+        self
     }
 
     pub fn project(&self) -> &Project {
@@ -223,7 +245,12 @@ impl BootstrapApplication {
         if !self.is_trusted()? {
             return Err(ApplicationError::new("project is not trusted"));
         }
-        TrustedProjectApplication::mount(self.project, self.storage_root, false)
+        TrustedProjectApplication::mount(
+            self.project,
+            self.storage_root,
+            false,
+            self.permission_modes,
+        )
     }
 
     /// Trust + mount in one shot (the only path that persists new trust):
@@ -233,7 +260,12 @@ impl BootstrapApplication {
         authorization: ProjectAuthorization,
     ) -> Result<TrustedProjectApplication, ApplicationError> {
         let _ = authorization;
-        TrustedProjectApplication::mount(self.project, self.storage_root, true)
+        TrustedProjectApplication::mount(
+            self.project,
+            self.storage_root,
+            true,
+            self.permission_modes,
+        )
     }
 
     #[cfg(test)]
@@ -249,6 +281,7 @@ impl BootstrapApplication {
             self.storage_root,
             false,
             Some(vec![provider]),
+            self.permission_modes,
         )
     }
 
@@ -262,6 +295,7 @@ impl BootstrapApplication {
             self.storage_root,
             true,
             Some(vec![provider]),
+            self.permission_modes,
         )
     }
 }
@@ -325,6 +359,13 @@ pub struct TrustedProjectApplication {
     startup_diagnostic: Option<String>,
     active_run: Option<RunHandle>,
     active_compaction: Option<CompactHandle>,
+    /// 权限档位共享 cell（P3）：`permission_mode()`/`set_permission_mode`
+    /// 的存储；ModeSource::Shared 的策略委托逐检查读取。Classic 模式
+    /// （exec）下 cell 存在但无策略读它——写它无效果。
+    permission_mode: Arc<std::sync::RwLock<crate::permission::PermissionMode>>,
+    /// 档位系统是否对本 Application 生效（TUI true / exec false）：
+    /// 决定系统指令是否注入档位说明。
+    permission_modes_enabled: bool,
     /// ask-user 前端插槽：与 `ask_user` 工具共享，每次 run 启动时按
     /// 请求装入（前端 Some / headless None）。
     asker_slot: Arc<crate::interaction::AskUserSlot>,
@@ -341,8 +382,9 @@ impl TrustedProjectApplication {
         project: Project,
         storage_root: PathBuf,
         authorize: bool,
+        permission_modes: bool,
     ) -> Result<Self, ApplicationError> {
-        Self::mount_with_providers(project, storage_root, authorize, None)
+        Self::mount_with_providers(project, storage_root, authorize, None, permission_modes)
     }
 
     fn mount_with_providers(
@@ -350,6 +392,7 @@ impl TrustedProjectApplication {
         storage_root: PathBuf,
         authorize: bool,
         provider_plugins: Option<Vec<Arc<dyn Plugin>>>,
+        permission_modes: bool,
     ) -> Result<Self, ApplicationError> {
         // 1. Storage-root lease (kernel flock; blocks cooperating CLAT
         //    processes, auto-released on crash). Fresh roots are leased
@@ -434,6 +477,24 @@ impl TrustedProjectApplication {
         // ask-user 插槽：Application 持有克隆，每次 run 启动装入请求的
         // 前端实现。
         let asker_slot = crate::interaction::AskUserSlot::shared();
+        // 权限档位 cell（P3）：挂载期创建、进程内常驻；工厂按
+        // `permission_modes` 决定委托是否读它。交互前端从控制面按项目
+        // 载入持久档位（P2：`/perm` 的选择跨重启生效、每项目独立）；
+        // 无记录/损坏回落默认档 ProjectWrite。Classic（exec）不载入
+        // 也不持久化——档位系统只属于交互前端。
+        let initial_permission_mode = if permission_modes {
+            control
+                .load_permission_mode(project.root())
+                .unwrap_or_default()
+        } else {
+            crate::permission::PermissionMode::default()
+        };
+        let permission_mode = Arc::new(std::sync::RwLock::new(initial_permission_mode));
+        let permission_source = if permission_modes {
+            crate::permission::ModeSource::Shared(Arc::clone(&permission_mode))
+        } else {
+            crate::permission::ModeSource::Classic
+        };
         let mut catalog: Vec<Arc<dyn Plugin>> = vec![
             Arc::new(ProjectControlStoragePlugin::new(Arc::clone(&control))),
             Arc::new(SessionPersistencePlugin::new(Arc::clone(&session_service))),
@@ -457,7 +518,9 @@ impl TrustedProjectApplication {
                 storage_root.clone(),
                 glm_mcp_pack_from_control(&control),
             )) as Arc<dyn Plugin>,
-            Arc::new(crate::plugins::DefaultPermissionPlugin),
+            Arc::new(crate::plugins::DefaultPermissionPlugin::new(
+                permission_source,
+            )),
             Arc::new(crate::plugins::PromptRegistryPlugin),
             Arc::new(crate::plugins::DefaultPromptPlugin),
             Arc::new(crate::plugins::ProjectInstructionsPlugin::new(
@@ -540,6 +603,8 @@ impl TrustedProjectApplication {
             startup_diagnostic: None,
             active_run: None,
             active_compaction: None,
+            permission_mode,
+            permission_modes_enabled: permission_modes,
             asker_slot,
             lease,
             #[cfg(test)]
@@ -551,6 +616,7 @@ impl TrustedProjectApplication {
             application.title_worker = Some(TitleWorker::spawn(
                 Arc::clone(titler),
                 Arc::clone(&application.sessions),
+                Arc::clone(&application.subscribers),
             )?);
         }
         Ok(application)
@@ -737,6 +803,26 @@ impl TrustedProjectApplication {
         self.startup_diagnostic.as_deref()
     }
 
+    /// 当前权限档位（TUI 指示器/弹框用）。Classic 模式（exec）下返回
+    /// 值无行为意义——策略不读 cell。
+    pub fn permission_mode(&self) -> crate::permission::PermissionMode {
+        *self.permission_mode.read().expect("permission mode lock")
+    }
+
+    /// 切换权限档位：下一次权限检查生效（P3）；按项目持久化到控制面
+    ///（`permission_modes.json`，storage root 内、项目 key 隔离），重启
+    /// /新进程从持久值启动。持久化失败返回 Err——内存 cell 已更新（本
+    /// 进程行为即时生效），调用方提示即可，不回滚。
+    pub fn set_permission_mode(
+        &self,
+        mode: crate::permission::PermissionMode,
+    ) -> Result<(), ApplicationError> {
+        *self.permission_mode.write().expect("permission mode lock") = mode;
+        self.control
+            .save_permission_mode(self.project.root(), mode)
+            .map_err(|error| ApplicationError::new(error.to_string()))
+    }
+
     pub fn snapshot(&mut self) -> Result<ProjectSnapshot, ApplicationError> {
         let (config, credentials) = self.model_state()?;
         self.monitor.configure(config.clone(), credentials.clone());
@@ -767,6 +853,7 @@ impl TrustedProjectApplication {
         };
         Ok(ProjectSnapshot {
             session_id,
+            session_title: self.effective_session_title(),
             transcript,
             replay,
             input_history,
@@ -781,6 +868,15 @@ impl TrustedProjectApplication {
 
     pub fn current_session_id(&self) -> Option<SessionId> {
         self.sessions.active_id()
+    }
+
+    /// 当前会话的 effective 标题（title 投影：显式标题事件，否则首条
+    /// 用户消息派生）。`ProjectSnapshot::session_title` 的即时版——
+    /// fallback 标题是投影派生、不产生事件，前端在 run 结束等时机
+    /// 主动拉取（对抗审计 2026-08-19：此前只有快照/事件两路，新会话
+    /// 的 fallback 右标题直到 LLM 命名前不可见）。
+    pub fn session_title(&self) -> Option<String> {
+        self.effective_session_title()
     }
 
     /// 当前 MCP 状态快照（前端 `/mcp` 视图的数据源）。挂载完成前返回
@@ -908,6 +1004,7 @@ impl TrustedProjectApplication {
                 .map_err(session_error)?;
             return Ok(SessionSnapshot {
                 id,
+                session_title: self.effective_session_title(),
                 transcript: self.sessions.transcript_lines().map_err(session_error)?,
                 replay,
                 session_usage: usage.session,
@@ -948,12 +1045,26 @@ impl TrustedProjectApplication {
         let usage = view.usage;
         Ok(SessionSnapshot {
             id,
+            session_title: self.effective_session_title(),
             transcript: view.transcript,
             replay: view.replay,
             session_usage: usage.session,
             last_request_usage: usage.last_request,
             input_history,
         })
+    }
+
+    /// Effective 会话标题（title 投影：显式标题事件，否则首条用户消息
+    /// 派生；无会话/空会话 None）。`session_title` 快照字段与
+    /// `ApplicationEvent::TitleUpdated` 的唯一数据源。
+    fn effective_session_title(&self) -> Option<String> {
+        self.sessions.title_state().0
+    }
+
+    /// `/rename` 门槛查询（N4）：当前会话是否有显式标题事件（LLM 已
+    /// 命名，或此前已改名）。无活动会话同样 false。
+    pub fn session_has_explicit_title(&self) -> bool {
+        self.sessions.title_state().1.is_some()
     }
 
     pub fn model_state(&self) -> Result<(ModelConfig, ProviderCredentials), ApplicationError> {
@@ -1062,7 +1173,11 @@ impl TrustedProjectApplication {
     /// Session(id) with a live writer, then atomically append
     /// `turn/start` + `user/message` and flush — the model is only called
     /// after all three CAS/append steps committed.
-    fn prepare_run(&mut self, prompt: &str) -> Result<PreparedRun, ApplicationError> {
+    fn prepare_run(
+        &mut self,
+        prompt: &str,
+        attachments: &[std::path::PathBuf],
+    ) -> Result<PreparedRun, ApplicationError> {
         match self.selection.clone() {
             WorkspaceSelection::Fresh => {
                 // `new_session` no longer self-quiesces (the /new flow CASes
@@ -1083,7 +1198,7 @@ impl TrustedProjectApplication {
                     WorkspaceSelection::Fresh
                 };
                 self.cas_selection(normalized)?;
-                return self.prepare_run(prompt);
+                return self.prepare_run(prompt, attachments);
             }
             WorkspaceSelection::Session(id) => {
                 if self.sessions.active_id().as_ref() != Some(&id) {
@@ -1111,9 +1226,20 @@ impl TrustedProjectApplication {
         }
         let turn = self.sessions.active_turns().map_err(session_error)? + 1;
         let journal = self.sessions.journal().map_err(session_error)?;
+        // 附件导入（M4）：会话目录已物化，先复制、后落盘——journal 拿到
+        // 的是会话附件目录内的绝对引用。校验失败（不存在/类型/超大）
+        // 发生在任何 journal 写入之前，本轮不留任何痕迹。
+        let images = self
+            .sessions
+            .import_attachments(attachments)
+            .map_err(session_error)?;
         let first_batch = [
             NewSessionEvent::new("turn/start", payloads::turn_start(turn)),
-            NewSessionEvent::new("user/message", payloads::user_message(prompt)).append(Vec::new()),
+            NewSessionEvent::new(
+                "user/message",
+                payloads::user_message_with_images(prompt, &images),
+            )
+            .append(Vec::new()),
         ];
         journal
             .append_atomic(&first_batch)
@@ -1142,7 +1268,6 @@ impl TrustedProjectApplication {
         Ok(PreparedRun {
             session_id: id,
             turn,
-            first_run: turn == 1,
             history,
             journal,
         })
@@ -1180,6 +1305,7 @@ impl TrustedProjectApplication {
             ));
         }
         let ApplicationRunRequest {
+            attachments,
             prompt,
             approver,
             asker,
@@ -1237,6 +1363,11 @@ impl TrustedProjectApplication {
         let subscribers = Arc::clone(&self.subscribers);
         let worker_prompt = prompt.clone();
         let steering_for_worker = steering.clone();
+        // 档位快照（run 起点）：仅进系统指令说明。决策读共享 cell，
+        // 运行中切档即时生效（P3）。
+        let permission_mode_snapshot = self
+            .permission_modes_enabled
+            .then(|| self.permission_mode());
         // 门控通道（A-03 不变量）：worker 先就位并阻塞等待；持久化预备
         // 在 spawn 之后才发生——mount/spawn 失败不可能留下一条已落盘、
         // 却永远得不到回答的 user 消息；预备失败则撤掉发送端，worker
@@ -1263,7 +1394,6 @@ impl TrustedProjectApplication {
                 let PreparedRun {
                     session_id,
                     turn,
-                    first_run,
                     mut history,
                     journal,
                 } = prepared;
@@ -1323,6 +1453,7 @@ impl TrustedProjectApplication {
                 let approver: Arc<dyn PermissionApprover> = Arc::new(journaling_approver);
                 let panic_text_slot = Arc::clone(&captured_text);
                 let prompt_for_request = worker_prompt.clone();
+                let permission_mode_for_request = permission_mode_snapshot;
                 let execution = catch_unwind(AssertUnwindSafe(|| {
                     agent.execute(AgentRequest {
                         config,
@@ -1333,6 +1464,7 @@ impl TrustedProjectApplication {
                         steering: steering_for_worker,
                         approver,
                         events: recorder_sink,
+                        permission_mode: permission_mode_for_request,
                     })
                 }));
                 let (outcome, panic_text) = match execution {
@@ -1440,19 +1572,21 @@ impl TrustedProjectApplication {
                         Err(failure)
                     }
                 };
-                // CB1-04：自动命名移出 run worker——独立线程执行。仅首
-                // 轮、成功未取消的 run 触发一次，失败不重试。
-                if first_run
+                // CB1-04：自动命名移出 run worker——独立线程执行。成功未
+                // 取消的 run 之后，若会话**仍无显式标题**（首轮命名失败、
+                // 或早于命名功能的旧会话）就再排一次——每次成功的 run 都
+                // 是自愈机会，标题落盘（provider 或用户）后自然停止
+                //（2026-08-19 用户实测：几百轮的会话因首轮一次性触发失败
+                // 而永远无名，`/rename` 又被门槛拦住）。CAS 保证与用户
+                // 改名的竞争安全。
+                let (_, title_seq) = sessions.title_state();
+                if title_seq.is_none()
                     && let Ok(done) = &result
                     && !done.cancelled
                     && titler.is_some()
                     && let Some(sender) = &title_sender
                 {
-                    let (_, title_seq) = sessions.title_state();
-                    let expectation = match title_seq {
-                        Some(seq) => SetTitleExpectation::Exact(seq),
-                        None => SetTitleExpectation::NoTitle,
-                    };
+                    let expectation = SetTitleExpectation::NoTitle;
                     // 有界队列满时直接放弃；绝不让 run completion 等标题。
                     // job 绑定会话（F-A）：迟到的标题绝不能写进切换后的
                     // 新会话。
@@ -1473,7 +1607,7 @@ impl TrustedProjectApplication {
 
         // 预备（CAS + 首批耐久批）发生在 worker 就位之后：失败时撤掉
         // 发送端并 join，持久层不留任何本轮痕迹。
-        let prepared = match self.prepare_run(&prompt) {
+        let prepared = match self.prepare_run(&prompt, &attachments) {
             Ok(prepared) => prepared,
             Err(error) => {
                 drop(start_sender);
@@ -1518,6 +1652,45 @@ impl TrustedProjectApplication {
         }
         handle.steering.push(text);
         SteerOutcome::Queued
+    }
+
+    /// 用户改名（`/rename`）：`SetTitleExpectation::Force` +
+    /// `TitleSource::User`（catalog §2.2——用户改名不引用 provider）。
+    ///
+    /// 门槛（N4，2026-08-19 放宽）：有活动会话即可改——不再要求 LLM
+    /// 已起名。原门槛把"首轮一次性自动命名失败/早于该功能的旧会话"
+    /// 永久挡在门外（用户实测几百轮的会话被拒）；CAS 本就保证改名
+    /// 压制迟到的自动命名（N5），门槛没有额外保护价值。清洗后为空
+    /// 拒绝（`Invalid`）。成功后广播 `TitleUpdated`。
+    pub fn rename_session(&mut self, raw: &str) -> Result<RenameOutcome, ApplicationError> {
+        let Some(session_id) = self.sessions.active_id() else {
+            return Ok(RenameOutcome::NoSession);
+        };
+        let title = crate::session::projection::sanitize_user_title(raw);
+        if title.is_empty() {
+            return Ok(RenameOutcome::Invalid);
+        }
+        let applied = self
+            .sessions
+            .set_title(
+                &session_id,
+                SetTitleExpectation::Force,
+                &title,
+                crate::session::use_cases::TitleSource::User,
+            )
+            .map_err(session_error)?;
+        if applied {
+            broadcast_to(
+                &self.subscribers,
+                ApplicationEvent::TitleUpdated {
+                    title: title.clone(),
+                },
+            );
+            Ok(RenameOutcome::Renamed { title })
+        } else {
+            // set_title 的会话守卫（活动 id 漂移）——与 NoSession 同义。
+            Ok(RenameOutcome::NoSession)
+        }
     }
 
     /// 手动 `/compact`：异步 worker 内执行（含网络摘要），立即返回可取
@@ -1803,8 +1976,8 @@ fn run_auto_compaction(
     }
 }
 
-/// 一次性自动命名任务（仅 first_run；CAS 防覆盖并发手工改名）。绑定
-/// 产生它的会话：期望值与会话不可分（F-A）。
+/// 自动命名任务（仅排给仍无显式标题的会话；CAS 防覆盖并发手工改名）。
+/// 绑定产生它的会话：期望值与会话不可分（F-A）。
 struct AutotitleJob {
     session_id: SessionId,
     config: ModelConfig,
@@ -1822,6 +1995,7 @@ impl TitleWorker {
     fn spawn(
         titler: Arc<dyn SessionTitler>,
         sessions: Arc<SessionService>,
+        subscribers: Arc<Mutex<Vec<mpsc::Sender<ApplicationEvent>>>>,
     ) -> Result<Self, ApplicationError> {
         let (sender, receiver) = mpsc::sync_channel::<AutotitleJob>(1);
         let cancel = CancelToken::new();
@@ -1834,11 +2008,9 @@ impl TitleWorker {
                         Ok(job) => maybe_autotitle(
                             titler.as_ref(),
                             sessions.as_ref(),
-                            &job.session_id,
-                            &job.config,
-                            &job.credentials,
-                            &job.expectation,
+                            &job,
                             &worker_cancel,
+                            &subscribers,
                         ),
                         Err(mpsc::RecvTimeoutError::Timeout) => {}
                         Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -1911,18 +2083,29 @@ pub(crate) fn join_with_grace(
 
 /// INV-F 一次性自动命名：期望值是 enqueue 时捕获的 title 状态（CAS），
 /// 请求期间的手工改名会让迟到的模型标题失败（CB1-04）。任何失败静默。
+/// 落盘成功后广播 `TitleUpdated`（N2）——前端据此刷新标题显示。
 fn maybe_autotitle(
     titler: &dyn SessionTitler,
     sessions: &SessionService,
-    session_id: &SessionId,
-    config: &ModelConfig,
-    credentials: &ProviderCredentials,
-    expectation: &SetTitleExpectation,
+    job: &AutotitleJob,
     cancel: &CancelToken,
+    subscribers: &Arc<Mutex<Vec<mpsc::Sender<ApplicationEvent>>>>,
 ) {
+    let AutotitleJob {
+        session_id,
+        config,
+        credentials,
+        expectation,
+    } = job;
     // F-A：会话已切换 → 生成与写入都针对错误会话，直接放弃（连模型
     // 调用也省下）。set_title 侧的会话守卫是第二道门。
     if sessions.active_id().as_ref() != Some(session_id) {
+        return;
+    }
+    // 双发竞争（两次 run 各排一任务，任务 1 已落盘）：排队到执行之间
+    // 标题可能已存在——早退省下一次注定被 CAS 拒绝的 LLM 调用（对抗
+    // 审计 2026-08-19）。
+    if sessions.title_state().1.is_some() {
         return;
     }
     let Some(first_user) = sessions.first_user_text() else {
@@ -1938,7 +2121,7 @@ fn maybe_autotitle(
     if !title.is_empty() && title != derived {
         // provider 派生标题的 source 引用生成它的 provider/model
         // （catalog §2.2，审计 P1-14）。
-        let _ = sessions.set_title(
+        let applied = sessions.set_title(
             session_id,
             expectation.clone(),
             &title,
@@ -1947,6 +2130,9 @@ fn maybe_autotitle(
                 model: &config.model,
             },
         );
+        if matches!(applied, Ok(true)) {
+            broadcast_to(subscribers, ApplicationEvent::TitleUpdated { title });
+        }
     }
 }
 
@@ -1995,6 +2181,9 @@ impl Drop for TrustedProjectApplication {
 
 pub struct ApplicationRunRequest {
     pub prompt: String,
+    /// 随本次消息附加的本地图片（用户绝对路径）。prepare 阶段复制进
+    /// 会话附件目录、以绝对引用落 journal（M4）；空 = 纯文本消息。
+    pub attachments: Vec<std::path::PathBuf>,
     pub approver: Arc<dyn PermissionApprover>,
     /// 本次 run 的 ask-user 前端实现；`None`（headless）时 `ask_user`
     /// 工具返回结构化错误。TUI 的实现是无状态的通道包装，随请求安装。
@@ -2006,8 +2195,6 @@ pub struct ApplicationRunRequest {
 struct PreparedRun {
     session_id: SessionId,
     turn: u64,
-    /// 本轮是否是该会话的第一轮（CB1-04：一次性自动命名的门）。
-    first_run: bool,
     history: Vec<crate::model::ModelItem>,
     journal: Arc<dyn RunJournal>,
 }
@@ -2034,6 +2221,17 @@ pub struct ApplicationRunFailure {
 pub enum SteerOutcome {
     Queued,
     NotRunning,
+}
+
+/// `/rename` 的语义结果（内部 I/O 失败走 `Err`）。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RenameOutcome {
+    /// 已落盘（session/title + flush + checkpoint），TitleUpdated 已广播。
+    Renamed { title: String },
+    /// 无活动会话（或 set_title 会话守卫拦下）。
+    NoSession,
+    /// 清洗后为空（空白/纯控制字符）。
+    Invalid,
 }
 
 #[derive(Clone)]
@@ -2226,9 +2424,18 @@ mod tests {
         application: &mut TrustedProjectApplication,
         prompt: &str,
     ) -> Result<ApplicationRunDone, ApplicationRunFailure> {
+        run_with_attachments(application, prompt, Vec::new())
+    }
+
+    fn run_with_attachments(
+        application: &mut TrustedProjectApplication,
+        prompt: &str,
+        attachments: Vec<std::path::PathBuf>,
+    ) -> Result<ApplicationRunDone, ApplicationRunFailure> {
         let (completion, receiver) = mpsc::channel();
         let handle = application
             .start_run(ApplicationRunRequest {
+                attachments,
                 asker: None,
                 prompt: prompt.into(),
                 approver: allow_all_approver(),
@@ -2693,6 +2900,7 @@ mod tests {
         let (completion, receiver) = mpsc::channel();
         let handle = application
             .start_run(ApplicationRunRequest {
+                attachments: Vec::new(),
                 asker: None,
                 prompt: prompt.into(),
                 approver,
@@ -2738,6 +2946,464 @@ mod tests {
         );
     }
 
+    /// 权限三档挂载（TUI 路径）：`with_permission_modes` 后策略读共享
+    /// cell。与 exec 用的 `mount`（Classic）相对。`mode` 在挂载后显式
+    /// 设置（顺带持久化）——需要"读持久值"语义的测试走
+    /// `mount_modes_from_storage`。
+    fn mount_with_permission_modes(
+        project: &Project,
+        storage_root: &std::path::Path,
+        behavior: TestBehavior,
+        mode: crate::permission::PermissionMode,
+    ) -> TrustedProjectApplication {
+        let application = mount_modes_from_storage(project, storage_root, behavior);
+        application.set_permission_mode(mode).expect("persist mode");
+        application
+    }
+
+    /// 同上但不显式设置档位——模拟新进程启动：cell 只从控制面持久值
+    /// 初始化（P2 的读路径）。
+    fn mount_modes_from_storage(
+        project: &Project,
+        storage_root: &std::path::Path,
+        behavior: TestBehavior,
+    ) -> TrustedProjectApplication {
+        let bootstrap =
+            BootstrapApplication::open(project.clone(), storage_root.to_path_buf()).unwrap();
+        bootstrap
+            .with_permission_modes()
+            .authorize_and_mount_with_provider(Arc::new(TestProviderPlugin { behavior }))
+            .unwrap()
+    }
+
+    fn run_with_approver(
+        application: &mut TrustedProjectApplication,
+        prompt: &str,
+        approver: Arc<dyn PermissionApprover>,
+    ) -> Result<ApplicationRunDone, ApplicationRunFailure> {
+        let (completion, receiver) = mpsc::channel();
+        let handle = application
+            .start_run(ApplicationRunRequest {
+                attachments: Vec::new(),
+                asker: None,
+                prompt: prompt.into(),
+                approver,
+                events: Box::new(SharedEvents(Arc::new(Mutex::new(Vec::new())))),
+                completion,
+            })
+            .unwrap();
+        handle.join().unwrap();
+        receiver.recv().unwrap()
+    }
+
+    /// 不变量 P2/P3：默认档 Project Write；`set_permission_mode` 的切换
+    /// 对下一次 run 的权限检查即时生效——Write 工具在 PW/FA 下零询问
+    /// 自动放行，在 RO 下回到逐次询问。pre-fix（无档位系统）上
+    /// approver 在三档下都会被询问，PW/FA 断言必红。
+    #[test]
+    fn permission_modes_gate_write_tools_by_mode() {
+        use crate::permission::PermissionMode;
+        let (storage_root, project_root) = roots("permission-modes");
+        std::fs::create_dir_all(&project_root).unwrap();
+        let project = Project::new(&project_root);
+        let mut application = {
+            let bootstrap =
+                BootstrapApplication::open(project.clone(), storage_root.clone()).unwrap();
+            let application = bootstrap
+                .with_permission_modes()
+                .authorize_and_mount_with_provider(Arc::new(TestProviderPlugin {
+                    behavior: TestBehavior::WriteFile,
+                }))
+                .unwrap();
+            assert_eq!(
+                application.permission_mode(),
+                PermissionMode::ProjectWrite,
+                "the mode system boots at the default mode"
+            );
+            application
+        };
+        configure_test_model(&application);
+
+        // Project Write：文件写自动放行，approver 零调用，工具照常执行。
+        let project_write_counter = Arc::new(AtomicUsize::new(0));
+        let done = run_with_approver(
+            &mut application,
+            "please write the file",
+            Arc::new(CountingApprover(Arc::clone(&project_write_counter))),
+        )
+        .expect("project-write run completes");
+        assert_eq!(done.output, "write attempted");
+        assert_eq!(
+            project_write_counter.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "Project Write auto-allows file writes"
+        );
+
+        // ReadOnly：同一会话同一工具回到询问。
+        application
+            .set_permission_mode(PermissionMode::ReadOnly)
+            .expect("persist mode");
+        let read_only_counter = Arc::new(AtomicUsize::new(0));
+        let done = run_with_approver(
+            &mut application,
+            "write it again",
+            Arc::new(CountingApprover(Arc::clone(&read_only_counter))),
+        )
+        .expect("read-only run completes");
+        assert_eq!(done.output, "write attempted");
+        assert_eq!(
+            read_only_counter.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "Read Only asks before every file write"
+        );
+
+        // FullAccess：零询问。
+        application
+            .set_permission_mode(PermissionMode::FullAccess)
+            .expect("persist mode");
+        let full_counter = Arc::new(AtomicUsize::new(0));
+        let done = run_with_approver(
+            &mut application,
+            "and again",
+            Arc::new(CountingApprover(Arc::clone(&full_counter))),
+        )
+        .expect("full-access run completes");
+        assert_eq!(done.output, "write attempted");
+        assert_eq!(
+            full_counter.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "Full Access never asks"
+        );
+
+        application.close().unwrap();
+        std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
+    }
+
+    /// 不变量 P2（持久化，2026-08-19 用户要求：档位随项目绑定、跨重启
+    /// 生效）：set → close → 重新 mount，档位从控制面恢复；另一个项目
+    /// 的 root 同 storage 下独立（各自默认/各自持久值）。pre-fix（无
+    /// 持久化）上重挂载读到默认档，断言必红。
+    #[test]
+    fn permission_mode_persists_per_project_across_restarts() {
+        use crate::permission::PermissionMode;
+        let (storage_root, project_root) = roots("perm-persist");
+        std::fs::create_dir_all(&project_root).unwrap();
+        let project = Project::new(&project_root);
+
+        // 第一次进程：切 Full Access 后退出。
+        {
+            let application = mount_with_permission_modes(
+                &project,
+                &storage_root,
+                TestBehavior::Success,
+                PermissionMode::ProjectWrite,
+            );
+            application
+                .set_permission_mode(PermissionMode::FullAccess)
+                .expect("persist full access");
+            application.close().unwrap();
+        }
+        // 第二次进程（同一项目）：档位从持久值恢复（不显式设置）。
+        {
+            let application =
+                mount_modes_from_storage(&project, &storage_root, TestBehavior::Success);
+            assert_eq!(
+                application.permission_mode(),
+                PermissionMode::FullAccess,
+                "the persisted mode survives a restart"
+            );
+            application.close().unwrap();
+        }
+        // 同一 storage 下的另一个项目：无记录 → 默认档（项目隔离）。
+        {
+            let (_other_root, other_project_root) = roots("perm-persist-other");
+            std::fs::create_dir_all(&other_project_root).unwrap();
+            let application = mount_modes_from_storage(
+                &Project::new(&other_project_root),
+                &storage_root,
+                TestBehavior::Success,
+            );
+            assert_eq!(
+                application.permission_mode(),
+                PermissionMode::ProjectWrite,
+                "another project starts at the default, untouched by its neighbor"
+            );
+            application.close().unwrap();
+            std::fs::remove_dir_all(other_project_root.parent().unwrap()).ok();
+        }
+        std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
+    }
+
+    /// 不变量 P6：档位驱动的决策（RO 询问路径）live 流与 journal 回放
+    /// 对拍相等——档位只改变决策来源，不改 journal 形状。
+    #[test]
+    fn mode_driven_decisions_replay_identically() {
+        use crate::permission::PermissionMode;
+        let (storage_root, project_root) = roots("mode-parity");
+        std::fs::create_dir_all(&project_root).unwrap();
+        let project = Project::new(&project_root);
+        let mut application = mount_with_permission_modes(
+            &project,
+            &storage_root,
+            TestBehavior::WriteFile,
+            PermissionMode::ReadOnly,
+        );
+        configure_test_model(&application);
+
+        let live = Arc::new(Mutex::new(Vec::new()));
+        let (completion, receiver) = mpsc::channel();
+        let handle = application
+            .start_run(ApplicationRunRequest {
+                attachments: Vec::new(),
+                asker: None,
+                prompt: "please write the file".into(),
+                approver: allow_all_approver(),
+                events: Box::new(SharedEvents(std::sync::Arc::clone(&live))),
+                completion,
+            })
+            .unwrap();
+        handle.join().unwrap();
+        let _ = receiver.recv().unwrap();
+        application.close().unwrap();
+
+        let live_events = live.lock().unwrap().clone();
+        assert_conversation_parity(&live_events, &load_events(&storage_root));
+        std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
+    }
+
+    /// N2/N3/N4/N6（/rename 门面 + 标题管线）：
+    /// - 拒绝路径（NoSession / 清洗空 Invalid）零 journal 写入；
+    /// - **门槛已放宽（2026-08-19）**：改名不再要求 LLM 已起名——run
+    ///   建会话后立刻可改（首轮自动命名失败/旧会话自愈路径），CAS
+    ///   保证改名压制迟到的自动命名；
+    /// - 改名以 `Force + User` 落 journal（source.kind=user，N3）并广播
+    ///   `TitleUpdated`（N2）；
+    /// - resume 快照带回存储标题（N6）；
+    /// - N5 的 CAS 机制由 use_cases `title_cas_rejects_stale_and_
+    ///   accepts_force` 锁定：迟到的自动命名对 NoTitle/Exact 必败。
+    ///
+    /// 自动命名与本次改名的先后存在竞争（title worker 异步）：无论谁
+    /// 先落盘，journal 的**最后一条** session/title 必须是用户标题。
+    #[test]
+    fn rename_facade_gates_journals_and_broadcasts() {
+        let (storage_root, project_root) = roots("rename-facade");
+        std::fs::create_dir_all(&project_root).unwrap();
+        let project = Project::new(&project_root);
+        let mut application = mount(&project, &storage_root, TestBehavior::Success);
+        configure_test_model(&application);
+        let (event_tx, event_rx) = mpsc::channel();
+        application.subscribe(event_tx);
+
+        // fresh 状态无活动会话：NoSession，且不触及清洗。
+        assert!(matches!(
+            application.rename_session("whatever").unwrap(),
+            RenameOutcome::NoSession
+        ));
+
+        // run 建会话。不等自动命名（title worker 异步、与本测试存在
+        // 竞争）——放宽后的门槛下，无显式标题也必须能立刻改名；若自动
+        // 命名恰好先落盘，Force 语义照样覆盖它。
+        let done = run(&mut application, "please fix the login bug").expect("run");
+        assert_eq!(done.output, "done");
+        assert_eq!(
+            application
+                .rename_session("  Renamed\tby hand\nsecond line ")
+                .unwrap(),
+            RenameOutcome::Renamed {
+                title: "Renamed by hand".into()
+            },
+            "rename works before any automatic title lands (self-heal path)"
+        );
+        // 广播必然携带用户标题；先到的自动命名广播（"done"，若有）是
+        // 噪音，跳过。
+        let next_user_title_event = |receiver: &mpsc::Receiver<ApplicationEvent>| {
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while std::time::Instant::now() < deadline {
+                match receiver.recv_timeout(Duration::from_millis(200)) {
+                    Ok(ApplicationEvent::TitleUpdated { title }) if title == "Renamed by hand" => {
+                        return ApplicationEvent::TitleUpdated { title };
+                    }
+                    Ok(
+                        ApplicationEvent::MonitorUpdated(_)
+                        | ApplicationEvent::CompactionUpdated(_)
+                        | ApplicationEvent::TitleUpdated { .. },
+                    ) => {}
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(mpsc::RecvTimeoutError::Disconnected) => {
+                        panic!("application event channel closed")
+                    }
+                }
+            }
+            panic!("no TitleUpdated for the rename within 5s");
+        };
+        assert_eq!(
+            next_user_title_event(&event_rx),
+            ApplicationEvent::TitleUpdated {
+                title: "Renamed by hand".into()
+            }
+        );
+
+        // 清洗后为空：Invalid，零 journal 写入。
+        assert!(matches!(
+            application.rename_session(" \n\t ").unwrap(),
+            RenameOutcome::Invalid
+        ));
+
+        // 竞争沉淀：给 title worker 一点时间排空可能的迟到任务（用户
+        // 标题已落盘，NoTitle 期望必然失败——静默 no-op）。
+        for _ in 0..50 {
+            if application.session_has_explicit_title() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        // N3：journal 形状——1 或 2 条 session/title（改名必然在；自动
+        // 命名在与谁先），最后一条是用户标题；Invalid 拒绝零写入。
+        let events = load_events(&storage_root);
+        let title_events: Vec<&crate::session::event::SessionEvent> = events
+            .iter()
+            .filter(|event| event.event_type == "session/title")
+            .collect();
+        assert!(
+            !title_events.is_empty() && title_events.len() <= 2,
+            "rename (and optionally the raced autotitle), refusals wrote nothing"
+        );
+        let manual = title_events.last().expect("at least the rename event");
+        assert_eq!(
+            manual
+                .data
+                .pointer("/source/kind")
+                .and_then(serde_json::Value::as_str),
+            Some("user")
+        );
+        assert_eq!(
+            manual.data.get("title").and_then(serde_json::Value::as_str),
+            Some("Renamed by hand")
+        );
+
+        // N6：新会话无标题；resume 原会话，快照带回存储标题。
+        application.new_session().unwrap();
+        assert_eq!(application.snapshot().unwrap().session_title, None);
+        let summaries = application.list_sessions().unwrap();
+        let target = summaries
+            .iter()
+            .find(|summary| summary.title.as_deref() == Some("Renamed by hand"))
+            .expect("the renamed session summary");
+        let resumed = application.switch_session(target.id.clone()).unwrap();
+        assert_eq!(resumed.session_title.as_deref(), Some("Renamed by hand"));
+        assert_eq!(
+            application.snapshot().unwrap().session_title.as_deref(),
+            Some("Renamed by hand")
+        );
+
+        application.close().unwrap();
+        std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
+    }
+
+    /// M2/M4（图片附件管线）：带附件的 run——
+    /// - journal 的 user/message content = 文本 part + image part（引用
+    ///   指向会话 attachments/ 目录内的副本，字节永不进日志）；
+    /// - 副本文件真实存在且内容与原件一致（原件此后可删，会话自包含）；
+    /// - 切走再切回（冷恢复重放整条日志）无错——admission/fold/投影
+    ///   全链路接受 image part。
+    #[test]
+    fn image_attachments_journal_references_and_survive_resume() {
+        let (storage_root, project_root) = roots("image-attach");
+        std::fs::create_dir_all(&project_root).unwrap();
+        let project = Project::new(&project_root);
+        let mut application = mount(&project, &storage_root, TestBehavior::Success);
+        configure_test_model(&application);
+
+        // 原件：一个带合法 PNG 头的小文件（journal 不读字节，头只为
+        // 让 token 估算走真实尺寸路径）。
+        let source = std::env::temp_dir().join(format!(
+            "clat-source-{}.png",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut bytes = vec![
+            0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n', 0, 0, 0, 13, b'I', b'H', b'D', b'R',
+        ];
+        bytes.extend_from_slice(&1024u32.to_be_bytes());
+        bytes.extend_from_slice(&768u32.to_be_bytes());
+        bytes.extend_from_slice(&[8, 6, 0, 0, 0]);
+        bytes.extend_from_slice(b"trailing-pixels");
+        std::fs::write(&source, &bytes).unwrap();
+
+        let done = run_with_attachments(&mut application, "look at this", vec![source.clone()])
+            .expect("run completes");
+        assert_eq!(done.output, "done");
+
+        // journal 形状：文本 part + image part；引用指向副本且副本
+        // 内容与原件一致。
+        let events = load_events(&storage_root);
+        let user_event = events
+            .iter()
+            .find(|event| event.event_type == "user/message")
+            .expect("user message");
+        let content = user_event.data["content"].as_array().unwrap();
+        assert_eq!(content.len(), 2);
+        assert_eq!(content[0]["type"], json!("text"));
+        assert_eq!(content[0]["text"], json!("look at this"));
+        assert_eq!(content[1]["type"], json!("image"));
+        assert_eq!(content[1]["mediaType"], json!("image/png"));
+        let referenced = content[1]["path"].as_str().unwrap();
+        assert!(
+            referenced.contains("attachments"),
+            "the reference points into the session attachments dir: {referenced}"
+        );
+        assert_eq!(
+            std::fs::read(referenced).unwrap(),
+            bytes,
+            "the attachment copy is byte-identical"
+        );
+
+        // 原件删除后 resume：重放整条日志（含 image part）无错——
+        // 会话自包含。
+        std::fs::remove_file(&source).unwrap();
+        let summary = application.list_sessions().unwrap();
+        let target = summary.first().expect("session").id.clone();
+        application.new_session().unwrap();
+        let resumed = application.switch_session(target).unwrap();
+        assert!(
+            !resumed.replay.is_empty(),
+            "the replay of the resumed session carries its events (incl. the image part)"
+        );
+        application.close().unwrap();
+        std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
+    }
+
+    /// M4：附件校验在 journal 写入**之前**整体失败——坏附件（不存在的
+    /// 文件）不产生任何事件，会话保持干净。
+    #[test]
+    fn invalid_attachments_fail_before_any_journal_write() {
+        let (storage_root, project_root) = roots("image-invalid");
+        std::fs::create_dir_all(&project_root).unwrap();
+        let project = Project::new(&project_root);
+        let mut application = mount(&project, &storage_root, TestBehavior::Success);
+        configure_test_model(&application);
+
+        let result = application.start_run(ApplicationRunRequest {
+            attachments: vec![std::path::PathBuf::from("/nonexistent/probe.png")],
+            asker: None,
+            prompt: "look".into(),
+            approver: allow_all_approver(),
+            events: Box::new(SharedEvents(Arc::new(Mutex::new(Vec::new())))),
+            completion: mpsc::channel().0,
+        });
+        assert!(result.is_err(), "the run refuses to start");
+        // 校验先于会话使用：无日志头的会话不进列表——零 journal 痕迹。
+        assert!(
+            application.list_sessions().unwrap().is_empty(),
+            "no journal trace of the refused run"
+        );
+        application.close().unwrap();
+        std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
+    }
+
     /// S3/S5：运行中插话端到端。steer() 在第一次模型调用进行中入队；
     /// run 因 pending steering 延长；第二个请求携带 steering 用户项；
     /// journal 落 mid-turn user/message；live 流与 journal 回放对拍相等。
@@ -2758,6 +3424,7 @@ mod tests {
         let (completion, receiver) = mpsc::channel();
         let handle = application
             .start_run(ApplicationRunRequest {
+                attachments: Vec::new(),
                 asker: None,
                 prompt: "start work".into(),
                 approver: allow_all_approver(),
@@ -2833,6 +3500,7 @@ mod tests {
         let (completion, receiver) = mpsc::channel();
         let handle = application
             .start_run(ApplicationRunRequest {
+                attachments: Vec::new(),
                 asker: None,
                 prompt: "start work".into(),
                 approver: allow_all_approver(),
@@ -2900,6 +3568,7 @@ mod tests {
         let (completion, receiver) = mpsc::channel();
         let handle = application
             .start_run(ApplicationRunRequest {
+                attachments: Vec::new(),
                 prompt: "pick a channel".into(),
                 approver: allow_all_approver(),
                 asker: Some(Arc::clone(&asker) as Arc<dyn crate::interaction::UserAsker>),
@@ -2978,6 +3647,7 @@ mod tests {
         let (completion, receiver) = mpsc::channel();
         let handle = application
             .start_run(ApplicationRunRequest {
+                attachments: Vec::new(),
                 prompt: "pick a channel".into(),
                 approver: allow_all_approver(),
                 asker: None,
@@ -3041,6 +3711,7 @@ mod tests {
         let (completion, receiver) = mpsc::channel();
         let handle = application
             .start_run(ApplicationRunRequest {
+                attachments: Vec::new(),
                 asker: None,
                 prompt: "work far past the old 32-turn cap".into(),
                 approver: allow_all_approver(),
@@ -3348,6 +4019,7 @@ mod tests {
         let (completion, receiver) = mpsc::channel();
         let handle = application
             .start_run(ApplicationRunRequest {
+                attachments: Vec::new(),
                 asker: None,
                 prompt: "cancel me".into(),
                 approver: allow_all_approver(),
@@ -3549,6 +4221,7 @@ mod tests {
         application.fail_next_run_spawn_for_test();
         let (completion, _receiver) = mpsc::channel();
         let error = match application.start_run(ApplicationRunRequest {
+            attachments: Vec::new(),
             asker: None,
             prompt: "doomed run".into(),
             approver: allow_all_approver(),
@@ -3800,6 +4473,7 @@ mod tests {
         let (completion, _receiver) = mpsc::channel();
         let error = application
             .start_run(ApplicationRunRequest {
+                attachments: Vec::new(),
                 asker: None,
                 prompt: "never persisted".into(),
                 approver: allow_all_approver(),
@@ -3832,6 +4506,7 @@ mod tests {
         let (completion, receiver) = mpsc::channel();
         let handle = application
             .start_run(ApplicationRunRequest {
+                attachments: Vec::new(),
                 asker: None,
                 prompt: "track the work".into(),
                 approver: Arc::new(CountingApprover(Arc::clone(&calls))),

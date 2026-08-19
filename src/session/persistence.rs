@@ -220,7 +220,14 @@ pub(crate) struct JsonlBackend {
     /// 测试仪表：stream_events（全量流式读的唯一入口）被调用的次数。
     /// 用于断言启动路径不再重复全量回放（性能回归测试）。
     #[cfg(test)]
-    stream_probe: std::sync::atomic::AtomicUsize,
+    pub(crate) stream_probe: std::sync::atomic::AtomicUsize,
+}
+
+impl JsonlBackend {
+    /// 会话根的物理路径（附件导入落子目录用，M4）。
+    pub(crate) fn root_path(&self) -> &std::path::Path {
+        &self.root
+    }
 }
 
 impl JsonlBackend {

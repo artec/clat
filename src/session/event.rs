@@ -247,10 +247,26 @@ pub(crate) mod payloads {
     }
 
     pub(crate) fn user_message(text: &str) -> Value {
+        user_message_with_images(text, &[])
+    }
+
+    /// 带本地图片附件的用户消息（2026-08-19）：content = 文本 part +
+    /// image parts。image part 只存**引用**（附件绝对路径 + MIME）——
+    /// 字节永不进 journal；路径指向附加时复制进会话附件目录的副本
+    ///（自包含、不受原件清理影响）。
+    pub(crate) fn user_message_with_images(text: &str, images: &[(String, String)]) -> Value {
+        let mut content = vec![json!({ "type": "text", "text": text })];
+        for (path, media_type) in images {
+            content.push(json!({
+                "type": "image",
+                "path": path,
+                "mediaType": media_type,
+            }));
+        }
         json!({
             "id": uuid::Uuid::new_v4().to_string(),
             "role": "user",
-            "content": [{ "type": "text", "text": text }],
+            "content": content,
             "source": { "kind": "user" },
         })
     }

@@ -1,6 +1,7 @@
 use super::services::{PERMISSION_SERVICE, PERMISSION_SERVICE_ID, PermissionPolicyFactory};
 use crate::permission::{
-    InteractivePermissionPolicy, PermissionApprover, PermissionPolicy, SafeByDefault,
+    InteractivePermissionPolicy, ModePolicy, ModeSource, PermissionApprover, PermissionPolicy,
+    SafeByDefault,
 };
 use crate::plugin::{
     Plugin, PluginContext, PluginDescriptor, PluginError, PluginId, ScopeKind, ServiceId,
@@ -17,7 +18,17 @@ const DESCRIPTOR: PluginDescriptor = PluginDescriptor {
     optional: &[],
 };
 
-pub(crate) struct DefaultPermissionPlugin;
+pub(crate) struct DefaultPermissionPlugin {
+    source: ModeSource,
+}
+
+impl DefaultPermissionPlugin {
+    /// `source` 决定 run 拿到的委托：Classic 逐次询问（exec，行为零
+    /// 变化），Shared 读共享档位 cell（交互前端的权限三档）。
+    pub(crate) fn new(source: ModeSource) -> Self {
+        Self { source }
+    }
+}
 
 impl Plugin for DefaultPermissionPlugin {
     fn descriptor(&self) -> &'static PluginDescriptor {
@@ -25,20 +36,30 @@ impl Plugin for DefaultPermissionPlugin {
     }
 
     fn mount(&self, context: &mut PluginContext<'_>) -> Result<(), PluginError> {
-        let factory: Arc<dyn PermissionPolicyFactory> = Arc::new(DefaultPermissionFactory);
+        let factory: Arc<dyn PermissionPolicyFactory> = Arc::new(DefaultPermissionFactory {
+            source: self.source.clone(),
+        });
         context
             .provide(PERMISSION_SERVICE, factory)
             .map_err(|error| PluginError::new(error.to_string()))
     }
 }
 
-struct DefaultPermissionFactory;
+struct DefaultPermissionFactory {
+    source: ModeSource,
+}
 
 impl PermissionPolicyFactory for DefaultPermissionFactory {
     fn create(&self, approver: Arc<dyn PermissionApprover>) -> Box<dyn PermissionPolicy> {
-        Box::new(InteractivePermissionPolicy::with_approver(
-            SafeByDefault,
-            approver,
-        ))
+        match &self.source {
+            ModeSource::Classic => Box::new(InteractivePermissionPolicy::with_approver(
+                SafeByDefault,
+                approver,
+            )),
+            ModeSource::Shared(cell) => Box::new(InteractivePermissionPolicy::with_approver(
+                ModePolicy::new(Arc::clone(cell)),
+                approver,
+            )),
+        }
     }
 }

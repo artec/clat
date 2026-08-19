@@ -74,6 +74,15 @@ impl CancelToken {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ContentPart {
     Text(String),
+    /// 用户附加的本地图片。`path` 是**会话附件目录内的绝对路径**
+    ///（附加时复制，journal 落同一引用——回放零换算）；`media_type`
+    /// 如 "image/png"。图片字节只存在于该文件：不进 journal、不进
+    /// 事件流；请求序列化时才读文件转 base64 data URL，上下文计量
+    /// 按视觉 tile 估算（`crate::media`）。
+    Image {
+        path: String,
+        media_type: String,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

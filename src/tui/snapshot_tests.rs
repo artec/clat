@@ -25,6 +25,16 @@ use std::time::Duration;
 use unicode_width::UnicodeWidthStr;
 
 /// 场景注册表：`snapshot_files_form_a_closed_set` 据此校验目录无孤儿文件。
+///
+/// 2026-08-19 批量刷新（24 个既有场景）：输入框 block 右上角新增权限
+/// 档位名（默认档 `Project Write`，与左上角 Message 对称）——本批引入
+/// 权限三档后的全局可见变化；help-dialog 额外因 /permission、/rename
+/// 两行命令条目而变化。新增场景：permission-picker /
+/// permission-confirm-full / permission-dialog-escalate / session-title /
+/// rename-dialog / rename-not-named。
+/// 2026-08-19 同日二次刷新：权限命令更名 `/permission` → `/perm`
+///（长名保留为别名）——permission-picker / permission-confirm-full 的
+/// 弹框标题与 help-dialog 的命令行随之变化。
 const SCENARIOS: &[&str] = &[
     "idle-transcript-80",
     "idle-transcript-40",
@@ -52,6 +62,13 @@ const SCENARIOS: &[&str] = &[
     "ask-dialog-custom",
     "help-dialog",
     "mcp-dialog",
+    "permission-picker",
+    "permission-confirm-full",
+    "permission-dialog-escalate",
+    "session-title",
+    "rename-dialog",
+    "rename-not-named",
+    "attachment-chip",
 ];
 
 fn snapshot_dir() -> PathBuf {
@@ -628,6 +645,9 @@ fn copying_a_selection_uses_the_rendered_wrap_width() {
 /// 启动加载画面（2026-08-19 用户反馈：大会话启动不该等在黑窗口）：
 /// TUI 先行上屏——LOGO 欢迎页 + loading 状态 + 输入禁用。不 poll
 /// 接收端，状态确定性停在加载态（交接只发生在 poll 时）。
+/// 刷新 2026-08-19（同日第四轮反馈）：输入框标题不再报 loading——
+/// 头部状态与底部状态栏两处已足够，第三处画蛇添足；标题保持
+/// `Message`（loading 期间输入禁用由 loading 门保证，不靠标题）。
 #[test]
 fn startup_loading_snapshot_and_handover() {
     let (storage_root, project_root) = roots("snap-loading");
@@ -1271,6 +1291,350 @@ fn fake_mcp_view() -> crate::McpStatusDto {
     }
 }
 
+/// `/perm` 选择器：三档列表 + 当前档标记 + 输入框右标题的模式名。
+/// `/permission` 长名是同义别名（同臂断言）。确认子态见
+/// `permission_confirm_full_snapshot`。
+#[test]
+fn permission_picker_snapshot() {
+    let mut harness = Harness::trusted("snap-perm-picker", 80, 24);
+    harness.type_text("/perm");
+    harness.key(KeyCode::Enter);
+    assert!(
+        harness.app.permission_picker.is_some(),
+        "the /perm command opens the picker"
+    );
+    // 模态门控：字母进不了输入框。
+    harness.type_text("x");
+    assert!(!harness.app.input.visual_rows(60).join("").contains('x'));
+    harness.snapshot("permission-picker");
+    harness.key(KeyCode::Esc);
+    assert!(harness.app.permission_picker.is_none(), "Esc closes it");
+    // 长名别名同样打开。
+    harness.type_text("/permission");
+    harness.key(KeyCode::Enter);
+    assert!(
+        harness.app.permission_picker.is_some(),
+        "the long alias /permission opens the same picker"
+    );
+}
+
+/// 选 Full Access 的确认子态（P4）：风险文案 + 二次 Enter。
+#[test]
+fn permission_confirm_full_snapshot() {
+    let mut harness = Harness::trusted("snap-perm-full", 80, 24);
+    harness.type_text("/perm");
+    harness.key(KeyCode::Enter);
+    harness.key(KeyCode::Down);
+    harness.key(KeyCode::Down);
+    harness.key(KeyCode::Enter);
+    assert!(
+        harness.app.permission_picker.is_some(),
+        "the first Enter only arms the confirmation, not an apply"
+    );
+    harness.snapshot("permission-confirm-full");
+    harness.key(KeyCode::Enter);
+    assert!(
+        harness.app.permission_picker.is_none(),
+        "the second Enter applies Full Access"
+    );
+    assert_eq!(
+        harness
+            .app
+            .application
+            .as_ref()
+            .map(|application| application.permission_mode()),
+        Some(crate::PermissionMode::FullAccess)
+    );
+}
+
+/// Read Only 下的权限弹框（P5）：Write 类调用 offered `w`（切 Project
+/// Write）与 `f`（切 Full Access）两个升级键。审阅到尾后动作行显示
+/// 两个升级提示。
+#[test]
+fn permission_dialog_escalate_snapshot() {
+    let mut harness = Harness::trusted("snap-perm-escalate", 80, 24);
+    harness
+        .app
+        .application
+        .as_ref()
+        .expect("application")
+        .set_permission_mode(crate::PermissionMode::ReadOnly)
+        .expect("persist mode");
+    let (decision_tx, _decision_rx) = mpsc::channel();
+    harness.event(UiEvent::Worker(WorkerMessage::PermissionRequest {
+        request: PermissionRequest {
+            tool: "write_file".into(),
+            effect: ToolEffect::Write,
+            reason: "writes a file".into(),
+            arguments: json!({
+                "path": "src/lib.rs",
+                "content": "fn main() {}\n"
+            }),
+            call_id: "call-snap-esc".into(),
+        },
+        decision_tx,
+    }));
+    // 审阅到最后一行解锁动作行（Write 预览很短，几次 Down 即到底）。
+    for _ in 0..6 {
+        harness.key(KeyCode::Down);
+    }
+    harness.snapshot("permission-dialog-escalate");
+}
+
+/// 升级键的端到端行为（P5）：RO 下审阅完按 `w` = 档位已切 + 本次调用
+/// 收到 Allow。pre-fix（无升级键）上 'w' 不产生任何效果，断言必红。
+#[test]
+fn permission_dialog_escalation_key_switches_mode_and_allows() {
+    let mut harness = Harness::trusted("perm-escalate-key", 80, 24);
+    harness
+        .app
+        .application
+        .as_ref()
+        .expect("application")
+        .set_permission_mode(crate::PermissionMode::ReadOnly)
+        .expect("persist mode");
+    let (decision_tx, decision_rx) = mpsc::channel();
+    harness.event(UiEvent::Worker(WorkerMessage::PermissionRequest {
+        request: PermissionRequest {
+            tool: "write_file".into(),
+            effect: ToolEffect::Write,
+            reason: "writes a file".into(),
+            arguments: json!({"path": "src/lib.rs", "content": "fn main() {}\n"}),
+            call_id: "call-esc-key".into(),
+        },
+        decision_tx,
+    }));
+    // 审阅到尾（reviewed_to_end 在绘制期计算，先画一帧）再按升级键。
+    for _ in 0..6 {
+        harness.key(KeyCode::Down);
+    }
+    harness.project();
+    assert!(
+        harness
+            .app
+            .pending_permission
+            .as_ref()
+            .is_some_and(|pending| pending.reviewed_to_end),
+        "the review gate is open after scrolling through"
+    );
+    harness.key(KeyCode::Char('w'));
+    assert!(
+        harness.app.pending_permission.is_none(),
+        "the escalation key resolves the dialog"
+    );
+    assert_eq!(
+        decision_rx.recv().expect("decision"),
+        crate::PermissionDecision::Allow,
+        "escalating answers the pending call with Allow"
+    );
+    assert_eq!(
+        harness
+            .app
+            .application
+            .as_ref()
+            .expect("application")
+            .permission_mode(),
+        crate::PermissionMode::ProjectWrite,
+        "the mode cell switched before the call was allowed"
+    );
+}
+
+/// 对抗审计（2026-08-19）：权限弹框的决策键必须是裸键。raw 模式下
+/// Ctrl+W / Ctrl+Y / Alt+N 以 `Char(..)` + 修饰位到达——不挡住它们，
+/// Ctrl+W 就成了"切档并放行"。pre-fix（无修饰守卫）上本测试必红：
+/// 对话框被 Ctrl+W 解决且档位被切换。
+#[test]
+fn permission_dialog_decision_keys_require_plain_modifiers() {
+    let mut harness = Harness::trusted("perm-plain-keys", 80, 24);
+    harness
+        .app
+        .application
+        .as_ref()
+        .expect("application")
+        .set_permission_mode(crate::PermissionMode::ReadOnly)
+        .expect("persist mode");
+    let (decision_tx, decision_rx) = mpsc::channel();
+    harness.event(UiEvent::Worker(WorkerMessage::PermissionRequest {
+        request: PermissionRequest {
+            tool: "write_file".into(),
+            effect: ToolEffect::Write,
+            reason: "writes a file".into(),
+            arguments: json!({"path": "src/lib.rs", "content": "fn main() {}\n"}),
+            call_id: "call-plain-keys".into(),
+        },
+        decision_tx,
+    }));
+    // 审阅到尾解锁动作行。
+    for _ in 0..6 {
+        harness.key(KeyCode::Down);
+    }
+    harness.project();
+    // Ctrl+W：不切档、不解决对话框、无决策。
+    harness.event(UiEvent::Terminal(Event::Key(KeyEvent::new(
+        KeyCode::Char('w'),
+        KeyModifiers::CONTROL,
+    ))));
+    assert!(
+        harness.app.pending_permission.is_some(),
+        "Ctrl+W must not escalate"
+    );
+    assert!(decision_rx.try_recv().is_err(), "Ctrl+W sends no decision");
+    assert_eq!(
+        harness
+            .app
+            .application
+            .as_ref()
+            .expect("application")
+            .permission_mode(),
+        crate::PermissionMode::ReadOnly,
+        "Ctrl+W must not switch the mode"
+    );
+    // Ctrl+Y（修饰版 allow）与 Alt+N（修饰版 deny）同样无效。
+    harness.event(UiEvent::Terminal(Event::Key(KeyEvent::new(
+        KeyCode::Char('y'),
+        KeyModifiers::CONTROL,
+    ))));
+    assert!(
+        harness.app.pending_permission.is_some(),
+        "Ctrl+Y must not allow"
+    );
+    harness.event(UiEvent::Terminal(Event::Key(KeyEvent::new(
+        KeyCode::Char('n'),
+        KeyModifiers::ALT,
+    ))));
+    assert!(
+        harness.app.pending_permission.is_some(),
+        "Alt+N must not deny"
+    );
+    // 对照组：裸 'w' 照常工作。
+    harness.key(KeyCode::Char('w'));
+    assert!(
+        harness.app.pending_permission.is_none(),
+        "the plain key still works"
+    );
+    assert_eq!(
+        decision_rx.recv().expect("decision"),
+        crate::PermissionDecision::Allow
+    );
+}
+
+/// 对抗审计（2026-08-19）：选择器的 Enter/Esc 只认裸键。CLAT 开着
+/// keyboard-enhancement，Shift+Enter 独立到达——主输入里它是换行肌肉
+/// 记忆，在选择器里不得套用选择（更不得进入 FA 确认）。判定探针：
+/// 若 Shift+Enter 错误地进入了确认子态，随后的裸 Esc 只会退出确认、
+/// 选择器仍开着；正确行为下 Esc 直接关掉选择器。
+#[test]
+fn permission_picker_enter_requires_a_plain_key() {
+    let mut harness = Harness::trusted("perm-picker-plain", 80, 24);
+    harness.type_text("/perm");
+    harness.key(KeyCode::Enter);
+    assert!(harness.app.permission_picker.is_some());
+    // 选中 Full Access 行（第三行）。
+    harness.key(KeyCode::Down);
+    harness.key(KeyCode::Down);
+    // Shift+Enter：不进确认子态、不套用。
+    harness.event(UiEvent::Terminal(Event::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::SHIFT,
+    ))));
+    assert!(
+        harness.app.permission_picker.is_some(),
+        "Shift+Enter does not apply the selection"
+    );
+    assert_eq!(
+        harness
+            .app
+            .application
+            .as_ref()
+            .expect("application")
+            .permission_mode(),
+        crate::PermissionMode::ProjectWrite,
+        "Shift+Enter changed nothing"
+    );
+    // 探针：若 Shift+Enter 已错误进入确认子态，Esc 只退确认、选择器
+    // 仍开；正确行为下 Esc 关掉整个选择器。
+    harness.key(KeyCode::Esc);
+    assert!(
+        harness.app.permission_picker.is_none(),
+        "Shift+Enter must not have armed the Full Access confirm state"
+    );
+    // 重开：裸 Enter 才进入 FA 确认子态，再按一次生效（P4）。
+    harness.type_text("/perm");
+    harness.key(KeyCode::Enter);
+    harness.key(KeyCode::Down);
+    harness.key(KeyCode::Down);
+    harness.key(KeyCode::Enter);
+    harness.key(KeyCode::Enter);
+    assert!(
+        harness.app.permission_picker.is_none(),
+        "plain Enter twice confirms Full Access"
+    );
+    assert_eq!(
+        harness
+            .app
+            .application
+            .as_ref()
+            .expect("application")
+            .permission_mode(),
+        crate::PermissionMode::FullAccess
+    );
+}
+
+/// 会话右标题（N1/N2）：TitleUpdated 事件到达 → 对话框 block 右上角
+/// 显示标题，左上角 Conversation 保持。
+#[test]
+fn session_title_snapshot() {
+    let mut harness = Harness::trusted("snap-session-title", 80, 24);
+    harness.event(UiEvent::Application(
+        crate::ApplicationEvent::TitleUpdated {
+            title: "Fix the Safari login crash".to_owned(),
+        },
+    ));
+    harness.snapshot("session-title");
+    assert_eq!(
+        harness.app.session_title.as_deref(),
+        Some("Fix the Safari login crash"),
+        "the title event updates the display state without a snapshot pull"
+    );
+}
+
+/// /rename 弹框（渲染快照）：预填当前标题 + 真实光标 + 页脚键位。
+/// 门槛与提交行为在 tui.rs 内联测试覆盖；这里直接置入弹框状态锁定
+/// 排版（与 fake_mcp_view 同款手法）。
+#[test]
+fn rename_dialog_snapshot() {
+    let mut harness = Harness::trusted("snap-rename", 80, 24);
+    harness.app.session_title = Some("Fix the Safari login crash".to_owned());
+    harness.app.rename_dialog = Some(super::RenameDialog::new("Fix the Safari login crash"));
+    harness.project();
+    // 模态门控：字母进不了主输入框（进了弹框的编辑器）。
+    harness.type_text("X");
+    assert!(!harness.app.input.visual_rows(60).join("").contains('X'));
+    assert!(
+        harness
+            .app
+            .rename_dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.buffer.text().ends_with('X')),
+        "typing edits the rename buffer"
+    );
+    harness.snapshot("rename-dialog");
+}
+
+/// /rename 门槛拒绝（N4）：模型尚未命名（无显式标题事件）时 flash 提示，
+/// 不开弹框。
+#[test]
+fn rename_not_named_snapshot() {
+    let mut harness = Harness::trusted("snap-rename-gate", 80, 24);
+    harness.type_text("/rename");
+    harness.key(KeyCode::Enter);
+    assert!(
+        harness.app.rename_dialog.is_none(),
+        "the gate refuses to open the dialog before the model names the session"
+    );
+    harness.snapshot("rename-not-named");
+}
+
 #[test]
 fn ask_dialog_custom_snapshot() {
     // 自定义输入模式：`c` 进入、键入 canary、下划线标示输入位。
@@ -1408,5 +1772,32 @@ fn finishing_a_drag_copies_the_selection_immediately() {
     assert!(
         harness.app.selection.is_some(),
         "the highlight stays for the Ctrl+C retry path"
+    );
+}
+
+/// 图片附件徽标（M6）：拖图进终端 = 粘贴整条绝对路径 → 输入框顶部
+/// 出现附件行（📷 文件名），不进文本；Esc 连同输入一起清空。
+#[test]
+fn attachment_chip_snapshot() {
+    let mut harness = Harness::trusted("snap-attach", 80, 24);
+    let image = harness.project_root.join("probe-shot.png");
+    std::fs::write(&image, b"png").unwrap();
+    harness.event(UiEvent::Terminal(Event::Paste(image.display().to_string())));
+    assert_eq!(
+        harness.app.attachments.len(),
+        1,
+        "the pasted path became an attachment"
+    );
+    assert!(
+        harness.app.input.visual_rows(60).join("").is_empty(),
+        "the path itself never lands in the text buffer"
+    );
+    harness.type_text("what is in this picture");
+    harness.snapshot("attachment-chip");
+    // Esc 清空输入连同附件。
+    harness.key(KeyCode::Esc);
+    assert!(
+        harness.app.attachments.is_empty(),
+        "Esc drops the attachment"
     );
 }

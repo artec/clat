@@ -985,6 +985,7 @@ mod tests {
         };
         let handle = application
             .start_run(crate::ApplicationRunRequest {
+                attachments: Vec::new(),
                 asker: None,
                 prompt: prompt.into(),
                 approver,

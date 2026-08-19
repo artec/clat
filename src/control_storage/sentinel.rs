@@ -617,13 +617,13 @@ fn publish_no_overwrite(temp: &Path, target: &Path) -> Result<(), String> {
     }
 }
 
-fn sync_file(path: &Path) -> Result<(), String> {
+pub(crate) fn sync_file(path: &Path) -> Result<(), String> {
     std::fs::File::open(path)
         .and_then(|file| file.sync_all())
         .map_err(|error| error.to_string())
 }
 
-fn sync_dir(path: &Path) -> Result<(), String> {
+pub(crate) fn sync_dir(path: &Path) -> Result<(), String> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt as _;
