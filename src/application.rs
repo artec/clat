@@ -36,6 +36,7 @@ use crate::session::use_cases::{
 use crate::{CancelToken, Project};
 use serde_json::{Value, json};
 use std::fmt;
+use std::io::Write as _;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -288,7 +289,10 @@ pub struct TrustedProjectApplication {
     /// 可选服务：最小 Catalog（无 SessionTitlePlugin）下为 None。
     titler: Option<Arc<dyn SessionTitler>>,
     /// 单 worker + 容量 1 的旁路标题队列。enqueue 永不阻塞 run，Scope
-    /// close 取消并 join 唯一线程，不存在 detached title 任务。
+    /// close 取消并 join 唯一线程——运行期不存在 detached title 任务。
+    /// 例外（2026-08-19 退出延迟修复）：进程退出路径上 join 有
+    /// EXIT_JOIN_GRACE 上限，超时放弃（见 `join_with_grace`）——放弃
+    /// 等价于一次失败的自动命名（INV-F 静默语义），线程随进程回收。
     title_worker: Option<TitleWorker>,
     /// 挂载期 resume 已全量回放出的结构化回放（一次性暂存）：随后第
     /// 一次 `snapshot()` 直接复用，不再从 0 重放日志——大会话在 debug
@@ -1852,10 +1856,56 @@ impl TitleWorker {
     fn shutdown(&mut self) -> Result<(), ApplicationError> {
         self.cancel.cancel();
         if let Some(join) = self.join.take() {
-            join.join()
-                .map_err(|_| ApplicationError::new("title worker panicked"))?;
+            // 进程退出语义（2026-08-19，对照 DSH 的 AbortSignal 处置）：
+            // 取消后至多等 EXIT_JOIN_GRACE。在途标题请求的 HTTP 阻塞
+            // 阶段不被合作式取消打断（`CancelAwareReader` 只在 read
+            // 返回之间检查标志），无界 join 会把退出拖到请求超时——
+            // 实测可达数十秒（"exit 有时很慢"的根因之一）。放弃等价
+            // 于一次失败的自动命名（INV-F 静默语义），线程随进程退出
+            // 回收；运行期路径不经过这里，"无 detached 任务"的运行期
+            // 不变量不变。
+            join_with_grace(join, EXIT_JOIN_GRACE, "title worker")
+                .map_err(ApplicationError::new)?;
         }
         Ok(())
+    }
+}
+
+/// 进程退出时后台线程的有界等待上限。
+const EXIT_JOIN_GRACE: Duration = Duration::from_secs(2);
+
+/// 取消后至多等待 `grace`；超时则放弃该线程（stderr 留一条记录），
+/// 返回 Ok——放弃是退出路径的正当结果，不是失败。快速退出的线程
+/// 正常 join，panic 映射为错误字符串（保持旧 shutdown 的语义）。
+pub(crate) fn join_with_grace(
+    handle: std::thread::JoinHandle<()>,
+    grace: Duration,
+    who: &str,
+) -> Result<(), String> {
+    let (done, signal) = mpsc::channel::<Result<(), String>>();
+    let watcher = std::thread::Builder::new()
+        .name("clat-exit-join".into())
+        .spawn(move || {
+            let outcome = handle.join().map_err(|_| "worker panicked".to_owned());
+            let _ = done.send(outcome);
+        })
+        .map_err(|error| format!("spawn exit-join watcher: {error}"))?;
+    match signal.recv_timeout(grace) {
+        Ok(outcome) => {
+            // 快路径：watcher send 后立刻结束，join 它只是回收。
+            let _ = watcher.join();
+            outcome
+        }
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            // 放弃：watcher 与目标线程一起留给进程退出回收。
+            let _ = writeln!(
+                std::io::stderr(),
+                "clat: {who} still busy at exit; abandoning after {grace:?}"
+            );
+            Ok(())
+        }
+        // watcher 在 send 前消失才会走到这里（防御性）：视为已完成。
+        Err(mpsc::RecvTimeoutError::Disconnected) => Ok(()),
     }
 }
 
@@ -2116,6 +2166,45 @@ mod tests {
         roots,
     };
     use std::sync::atomic::AtomicUsize;
+
+    #[test]
+    fn trusted_application_is_send() {
+        // 回归锁（Windows CI v0.6.3 编译失败）：TUI 异步加载把整个挂载
+        // 结果从加载线程搬进主线程，要求 TrustedProjectApplication:
+        // Send。Unix 租约字段（Vec<File>）天然满足；Windows 的 HANDLE
+        // 原始指针不是——root_lease 里以安全论证补了 unsafe impl Send。
+        // 此断言在任何平台的编译期锁死该契约：pre-fix 的 Windows 构建
+        // 在这里编译失败（即该 bug 的"先红"）。
+        fn assert_send<T: Send>() {}
+        assert_send::<TrustedProjectApplication>();
+    }
+
+    /// 不变量（2026-08-19 退出延迟）：`join_with_grace` 对卡住的线程
+    /// 在 `grace` 内返回 Ok（放弃而非挂起调用方），对正常退出的线程
+    /// 保持 join 语义（含 panic 映射）。pre-fix 的 shutdown 是无界
+    /// join——在途 HTTP 阶段不可中断时退出被拖到请求超时。
+    #[test]
+    fn join_with_grace_bounds_stuck_workers_and_joins_fast_ones() {
+        // 快路径：立即退出的线程被正常 join。
+        let fast = std::thread::spawn(|| ());
+        join_with_grace(fast, Duration::from_millis(500), "fast").expect("fast join");
+
+        // panic 路径：映射为错误字符串。
+        let panicked = std::thread::spawn(|| panic!("boom"));
+        assert!(join_with_grace(panicked, Duration::from_millis(500), "panic").is_err());
+
+        // 卡住路径：10s 沉睡的线程在 200ms 宽限内被放弃，调用方不挂。
+        let stuck = std::thread::spawn(|| {
+            std::thread::sleep(Duration::from_secs(10));
+        });
+        let started = std::time::Instant::now();
+        join_with_grace(stuck, Duration::from_millis(200), "stuck").expect("abandon is Ok");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the caller must not wait for the stuck worker, took {:?}",
+            started.elapsed()
+        );
+    }
 
     fn allow_all_approver() -> Arc<dyn PermissionApprover> {
         Arc::new(|_request: crate::PermissionRequest| crate::PermissionDecision::Allow)

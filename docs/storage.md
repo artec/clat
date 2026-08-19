@@ -22,12 +22,18 @@ synthetic `tool/result` / `step/end` / `turn/end` events on recovery.
 
 Reads never reconstruct state from raw events on the hot path: each
 session folds into projections (surface, transcript, title, todo, stats,
-compaction), checkpointed beside the log and restored incrementally.
-Committed batches fold directly from the append path (no per-flush
-re-read of the whole log); listing reads only the bounded first
-frame/line of each log, whatever the body size. Checkpoint files have an
+compaction). Committed batches fold directly from the append path (no
+per-flush re-read of the whole log); listing reads only the bounded first
+frame/line of each log, whatever the body size, plus the bounded
+checkpoint rows for titles/stats. Checkpoint files have an
 8 MiB final-size cap; oversized derived units are omitted and rebuilt
-from the authoritative log. The model context is
+from the authoritative log. Cold resume is single-pass (invariant R-1,
+2026-08-19): the recovery scan's one physical stream feeds projection
+folding, the transcript replay, and usage stats together — the resume
+path itself never reads checkpoints, because the surface/transcript
+units are deliberately unbounded and would force the checkpoint floor
+back to zero anyway; only the `/resume` listing consumes checkpoint
+rows. The model context is
 derived from the *surface* projection (compaction replaces shadowed
 ranges); the human-visible transcript is deliberately not shadowed, so
 history stays readable after compaction. Reading a log is fail-closed:

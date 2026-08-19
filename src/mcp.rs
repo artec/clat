@@ -33,7 +33,8 @@ pub const MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
 
 /// Notification 没有调用方提供的 deadline，仍需给写入设置硬上限。
-const NOTIFY_TIMEOUT: Duration = Duration::from_secs(10);
+/// `mcp_client` 的挂起回归测试引用它推导壁钟上限（名义 3 倍）。
+pub(crate) const NOTIFY_TIMEOUT: Duration = Duration::from_secs(10);
 /// HTTP 传输的连接建立上限（逐请求实际截止由调用的 timeout 决定）。
 const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(25);

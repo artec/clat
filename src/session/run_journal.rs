@@ -116,11 +116,26 @@ impl SessionCoordinator {
         key: SessionKey,
         header: SessionHeader,
     ) -> Result<Arc<Self>, SessionError> {
+        Self::start_unseeded_with_visitor(backend, key, header, &mut |_| Ok(()))
+            .map(|(coordinator, _)| coordinator)
+    }
+
+    /// [`Self::start_unseeded`] 的单遍变体（R-1）：prepare 的物理扫描
+    /// 同时把每个事件交给 `visitor`（冷 resume 在同一次扫描里折叠投
+    /// 影、构建回放、累计 usage）。返回的 `visitor_applied` 为 false 时
+    /// 走过撕裂修复路径，visitor 输出不可信、调用方必须重读。
+    /// `NotFound`（全新会话）下 visitor 一事件未见，视为已应用。
+    pub(crate) fn start_unseeded_with_visitor(
+        backend: Arc<JsonlBackend>,
+        key: SessionKey,
+        header: SessionHeader,
+        visitor: &mut dyn FnMut(&SessionEvent) -> Result<(), String>,
+    ) -> Result<(Arc<Self>, bool), SessionError> {
         // Resume an existing log, or keep the freshly created lazy handle
         // (materialization happens on the first durable batch).
-        let handle = match backend.prepare(&key) {
-            Ok(handle) => handle,
-            Err(SessionError::NotFound(_)) => backend.create(key.clone(), header)?,
+        let (handle, visitor_applied) = match backend.prepare_with_visitor(&key, visitor) {
+            Ok((handle, applied)) => (handle, applied),
+            Err(SessionError::NotFound(_)) => (backend.create(key.clone(), header)?, true),
             Err(error) => return Err(error),
         };
         let needs_seed_marker = handle.needs_seed_marker;
@@ -144,7 +159,7 @@ impl SessionCoordinator {
             writer,
             needs_seed_marker: std::sync::atomic::AtomicBool::new(needs_seed_marker),
         });
-        Ok(coordinator)
+        Ok((coordinator, visitor_applied))
     }
 
     /// Publish the one resume seed only after the workspace selection CAS

@@ -26,6 +26,25 @@ pub(crate) struct StorageRootLease {
     identity: PathBuf,
 }
 
+/// `Send`（仅 Windows 需要显式声明；Unix 持有 `Vec<File>` 天然 Send）。
+///
+/// # Safety
+///
+/// 租约随 `TrustedProjectApplication` 跨线程移动（TUI 异步加载把挂载
+/// 结果从加载线程搬进主线程，Windows CI 0.6.3 的编译失败即缺此断言）。
+/// 成立依据：
+///
+/// - HANDLE 是内核对象的不透明引用，句柄值可在任意线程使用；
+/// - 租约在进程内恰好单持：`acquire` 返回唯一所有权，字段私有、从不
+///   共享引用，跨线程移动就是所有权移交，Drop 仍恰好执行一次；
+/// - Windows 互斥体有线程亲和（ReleaseMutex 须由完成等待的线程调用）：
+///   跨线程 Drop 时它以 ERROR_NOT_OWNER 失败——返回值本不检查——随后
+///   CloseHandle 关闭本进程最后句柄，命名对象销毁；并发等待者观察到
+///   WAIT_ABANDONED，`acquire_windows` 已按获取成功处理，与持有者崩溃
+///   的内核行为一致（本模块的设计目标正是 crash-safe 释放）。
+#[cfg(windows)]
+unsafe impl Send for StorageRootLease {}
+
 #[cfg(windows)]
 impl Drop for StorageRootLease {
     fn drop(&mut self) {

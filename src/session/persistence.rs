@@ -713,6 +713,23 @@ impl JsonlBackend {
     /// refuses while poisoned — an indeterminate commit means the cursor
     /// cannot be trusted until `load(repair)` has run.
     pub(crate) fn prepare(&self, key: &SessionKey) -> Result<PreparedSession, SessionError> {
+        self.prepare_with_visitor(key, &mut |_| Ok(()))
+            .map(|(prepared, _)| prepared)
+    }
+
+    /// [`Self::prepare`] 的单遍变体（R-1）：balanced 流式路径上的每个
+    /// 完整事件先交给 `visitor`——冷 resume 用同一次物理扫描完成投影
+    /// 折叠、转录回放与 usage 统计，不再为每个消费者各自重读日志。
+    ///
+    /// 返回的 `visitor_applied` 只有在流式扫描干净结束时为 `true`；
+    /// 尾帧撕裂落入兼容修复读法时为 `false`——visitor 已消费的部分
+    /// 输出可能越过修复截断点，调用方必须丢弃并从修复后的日志重读
+    /// 一遍（崩溃路径，罕见）。
+    pub(crate) fn prepare_with_visitor(
+        &self,
+        key: &SessionKey,
+        visitor: &mut dyn FnMut(&SessionEvent) -> Result<(), String>,
+    ) -> Result<(PreparedSession, bool), SessionError> {
         if self.poisoned.lock().expect("poisoned").contains(key) {
             return Err(SessionError::Conflict(format!(
                 "session \"{}\" is poisoned after an indeterminate commit; load(repair) first",
@@ -723,8 +740,12 @@ impl JsonlBackend {
         // torn final frame/line falls back to the compatibility repair reader,
         // whose extra allocation is limited to the exceptional crash-repair
         // path rather than every cold resume.
-        match self.stream_events(key, 0, &mut |_| Ok(())) {
-            Ok(scan) => return self.prepare_from_stream(key, scan),
+        match self.stream_events(key, 0, visitor) {
+            Ok(scan) => {
+                return self
+                    .prepare_from_stream(key, scan)
+                    .map(|prepared| (prepared, true));
+            }
             Err(SessionError::Io(_)) => {}
             Err(error) => return Err(error),
         }
@@ -751,16 +772,19 @@ impl JsonlBackend {
                 },
             );
         }
-        Ok(PreparedSession {
-            path: read.path.clone(),
-            dir: Some(std::sync::Arc::clone(&read.dir)),
-            header: read.header,
-            next_seq: read.events.len() as u64,
-            materialized: true,
-            revision: read.revision,
-            needs_seed_marker,
-            key: key.clone(),
-        })
+        Ok((
+            PreparedSession {
+                path: read.path.clone(),
+                dir: Some(std::sync::Arc::clone(&read.dir)),
+                header: read.header,
+                next_seq: read.events.len() as u64,
+                materialized: true,
+                revision: read.revision,
+                needs_seed_marker,
+                key: key.clone(),
+            },
+            false,
+        ))
     }
 
     fn prepare_from_stream(

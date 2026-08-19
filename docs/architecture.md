@@ -138,6 +138,8 @@ built yet:
 | Automatic session titles | done — first successful run, bounded background worker, CAS against manual rename |
 | Typed provider retry | done — fresh model attempts, Retry-After, event-safe retry, internal deadlines |
 | Unbounded agent loop (DSH parity) | done — the run loop has **no turn budget** (2026-08-19; DSH's `kick()` is `while (await turn())`, and Claude Code / opencode are the same): it ends only on completion/refusal, user abort, or failure. Context pressure belongs to pruning/compaction, cost to the visible usage + user cancel. The earlier fixed-32-turn interruption and its bounded `[auto-continue]` patch were emergency measures and are removed |
+| Single-pass cold resume (R-1) | done — arming a session streams the journal **exactly once**: the recovery scan feeds projection folding, the transcript replay, and usage stats in the same physical read (`prepare_with_visitor` → `ResumeSink`); a torn-tail crash repair re-reads once after discarding the partial visitor output. The resume path no longer reads checkpoints (surface/transcript are deliberately unbounded, so the checkpoint floor is always zero anyway); the `/resume` listing remains their reader. Debug-build reopen of a 400-turn journal dropped ~53% (329ms → 154ms), and the saving scales with log size |
+| Bounded process exit | done — cooperative cancel cannot interrupt a blocked socket read, so every exit-path join is bounded (`join_with_grace`, 2s): the title worker and the quota monitor are abandoned with a stderr notice when stuck, which is semantically a failed title / a dropped refresh. The auto-title request itself now derives a deadline-carrying child `CancelToken`, so its connect / header / stream phases are capped at 15s instead of the raw socket timeouts (30s/60s). Run and compaction workers stay strict joins (they journal) |
 | Headless CLI (`clat exec`) | done — one-shot runs with stdout-only assistant output; dual-input prompt (instruction + piped context, 8 MiB budget); TTY permission prompts with stale-input discard, deny-on-pipe default, `--yes` bypass; `--continue` / `--session` resume; graceful Ctrl-C everywhere (including pending-run and permission-wait windows); broken-pipe cancels the run and fails the exit; closed by the 2026-08-17 headless audit (HL-01…09) |
 | Subagents, image input, multi-agent orchestration | deferred by constitution |
 
@@ -280,7 +282,10 @@ cancels/joins the active run before project teardown.
 
 The provider quota monitor is a Project plugin. Its stop/wake channel, bounded
 provider requests, five-minute refresh policy, and thread join belong to core;
-the TUI only renders `ApplicationEvent::MonitorUpdated`.
+the TUI only renders `ApplicationEvent::MonitorUpdated`. At process exit the
+join is bounded (`join_with_grace`, 2s): a monitor stuck in an in-flight quota
+fetch is abandoned with a stderr notice instead of holding the exit until the
+HTTP timeout — the Rust/ureq equivalent of DSH's `AbortSignal` disposal.
 
 ## Adding a built-in extension
 

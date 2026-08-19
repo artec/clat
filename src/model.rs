@@ -19,6 +19,9 @@ pub struct CancelToken {
     /// 内部短任务可附带绝对 deadline。普通 Run 为 None；provider 用剩余
     /// 时间配置请求级 HTTP global/header timeout，使 deadline 覆盖 send。
     deadline: Option<Instant>,
+    /// 派生 token（[`Self::child_with_deadline`]）观察的父标志：父取消
+    /// 等价于子取消。普通 token 为 None。
+    parent: Option<Arc<AtomicBool>>,
 }
 
 impl CancelToken {
@@ -26,10 +29,24 @@ impl CancelToken {
         Self::default()
     }
 
+    /// 派生一个带绝对 deadline 的子 token：父取消或 deadline 到期都
+    /// 视为取消。用途（自动标题）：worker 的取消令牌本身无 deadline，
+    /// 单次请求的 connect/响应头阶段不会被合作式轮询打断——派生后
+    /// provider 的 `remaining()` 有值，请求级 timeout 全阶段有界。
+    /// `remaining()` 只报 deadline 剩余（父 token 没有 deadline 可报）。
+    pub(crate) fn child_with_deadline(&self, deadline: Instant) -> CancelToken {
+        CancelToken {
+            cancelled: Arc::new(AtomicBool::new(false)),
+            deadline: Some(deadline),
+            parent: Some(Arc::clone(&self.cancelled)),
+        }
+    }
+
     pub(crate) fn with_deadline(deadline: Instant) -> Self {
         Self {
             cancelled: Arc::new(AtomicBool::new(false)),
             deadline: Some(deadline),
+            parent: None,
         }
     }
 
@@ -39,6 +56,10 @@ impl CancelToken {
 
     pub fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::Relaxed)
+            || self
+                .parent
+                .as_ref()
+                .is_some_and(|parent| parent.load(Ordering::Relaxed))
             || self
                 .deadline
                 .is_some_and(|deadline| Instant::now() >= deadline)
@@ -765,6 +786,34 @@ pub trait Model {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// 不变量（2026-08-19 退出延迟）：`child_with_deadline` 聚合父取消
+    /// 与 deadline——父取消即时传播（退出/Esc 不被 deadline 挡住），
+    /// deadline 到期独立生效，两者皆无时 token 干净。
+    #[test]
+    fn child_deadline_token_inherits_parent_cancellation() {
+        let parent = CancelToken::new();
+        let child = parent.child_with_deadline(Instant::now() + Duration::from_secs(15));
+        assert!(!child.is_cancelled(), "fresh child of a live parent");
+        assert!(
+            child
+                .remaining()
+                .is_some_and(|remaining| remaining <= Duration::from_secs(15)),
+            "remaining comes from the deadline"
+        );
+
+        parent.cancel();
+        assert!(
+            child.is_cancelled(),
+            "parent cancellation propagates instantly to the child"
+        );
+
+        let strict = CancelToken::new().child_with_deadline(Instant::now());
+        assert!(
+            strict.is_cancelled(),
+            "an expired deadline cancels on its own"
+        );
+    }
 
     #[test]
     fn provider_credentials_preserve_the_legacy_json_array_contract() {

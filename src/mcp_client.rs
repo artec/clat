@@ -1165,8 +1165,12 @@ for line in sys.stdin:
             outcome.is_err(),
             "a silent server must fail the connect, got ok in {elapsed:?}"
         );
+        // 上限取名义超时的 3 倍：本测试防的是"无限挂起"回归（预修复
+        // 代码永远不返回），硬贴 2 倍余量在整套测试并行负载下会假红
+        //（实测 macOS debug 全套跑时 20s 被吃穿）；3 倍仍远低于服务
+        // 线程的 60s 睡眠，区分度不变。
         assert!(
-            elapsed < Duration::from_secs(20),
+            elapsed < 3 * crate::mcp::NOTIFY_TIMEOUT,
             "notify must be bounded by NOTIFY_TIMEOUT, took {elapsed:?}"
         );
         // 服务线程在挂起连接上睡眠 60s 后还会阻塞在 accept：测试不

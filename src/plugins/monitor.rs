@@ -71,9 +71,13 @@ impl CoreMonitor {
             .map_err(|_| DisposeError::new("monitor join lock poisoned"))?
             .take()
         {
-            handle
-                .join()
-                .map_err(|_| DisposeError::new("provider monitor thread panicked"))?;
+            // 进程退出语义（2026-08-19，对照 DSH 的 disposed 中止）：
+            // Stop 排在在途额度拉取之后才被看到，而那次 HTTP 以
+            // MONITOR_HTTP_TIMEOUT（15s）为界——无界 join 会把退出拖
+            // 到拉取结束（"exit 有时很慢"的根因之一）。至多等 2s 后
+            // 放弃，线程随进程退出回收。
+            crate::application::join_with_grace(handle, Duration::from_secs(2), "provider monitor")
+                .map_err(DisposeError::new)?;
         }
         Ok(())
     }

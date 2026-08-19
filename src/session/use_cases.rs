@@ -13,7 +13,7 @@ use crate::session::header::SessionHeader;
 use crate::session::id::SessionId;
 use crate::session::key::{ProjectKey, SessionKey};
 use crate::session::persistence::{JsonlBackend, JsonlCompression, SessionError};
-use crate::session::projection::{CheckpointIdentity, ProjectionRegistry, RestoreError};
+use crate::session::projection::{CheckpointIdentity, ProjectionRegistry};
 use crate::session::replay::{ReplayAdapter, ReplayEvent};
 use crate::session::root_dir::SessionRootDir;
 use crate::session::run_journal::{RunJournal, SessionCoordinator};
@@ -127,6 +127,45 @@ pub(crate) struct ArmedSession {
     view: SessionView,
 }
 
+/// 单遍 resume 的汇聚点（R-1）：一次物理扫描同时喂三个消费者——
+/// 前端转录回放、usage 统计，以及（由调用方持有并传入的）投影注册
+/// 表。`pushed` 是已喂入的事件数；arm 期间的尾部追平从它继续，
+/// 依赖 `events[i].seq == i` 的日志不变量。
+struct ResumeSink {
+    adapter: ReplayAdapter,
+    replay: Vec<ReplayEvent>,
+    usage: UsageStats,
+    pushed: u64,
+}
+
+impl ResumeSink {
+    fn new() -> Self {
+        Self {
+            adapter: ReplayAdapter::new(),
+            replay: Vec::new(),
+            usage: UsageStats::default(),
+            pushed: 0,
+        }
+    }
+
+    fn push(
+        &mut self,
+        event: &SessionEvent,
+        registry: &mut ProjectionRegistry,
+    ) -> Result<(), String> {
+        registry.fold_one(event)?;
+        self.adapter.push(event, &mut self.replay);
+        if event.event_type == "assistant/message"
+            && let Some(report) = usage_from_event(event)
+        {
+            self.usage.session.add_assign(&report);
+            self.usage.last_request = Some(report);
+        }
+        self.pushed += 1;
+        Ok(())
+    }
+}
+
 pub(crate) struct SessionService {
     backend: Arc<JsonlBackend>,
     checkpoints: CheckpointStore,
@@ -213,51 +252,65 @@ impl SessionService {
 
     /// Arm a staged target before workspace CAS, but do not enqueue its
     /// resume seed or publish it as active. `prepare` performs pending
-    /// recovery here; catch-up folding incorporates exactly those durable
-    /// repair events. Any failure closes the just-created writer.
+    /// recovery here; single-pass (R-1): the recovery scan's events feed
+    /// projection folding, the structured replay, and usage stats in the
+    /// same physical read — only the torn-tail crash path re-reads once
+    /// after repair. Any failure closes the just-created writer.
     pub(crate) fn arm_session(&self, staged: StagedSession) -> Result<ArmedSession, SessionError> {
         let StagedSession { key, header } = staged;
-        let coordinator = SessionCoordinator::start_unseeded(
+        let arm_header = SessionHeader::new(key.id.clone(), key.project.header_cwd.clone(), 0);
+        let mut registry = ProjectionRegistry::clat();
+        let mut sink = ResumeSink::new();
+        let (coordinator, visitor_applied) = SessionCoordinator::start_unseeded_with_visitor(
             Arc::clone(&self.backend),
             key.clone(),
-            SessionHeader::new(key.id.clone(), key.project.header_cwd.clone(), 0),
+            arm_header,
+            &mut |event| sink.push(event, &mut registry),
         )?;
-        let (registry, generation) =
-            match self.cold_restore(&key, &header, coordinator.committed_seq()) {
-                Ok(restored) => restored,
-                Err(error) => {
-                    let _ = coordinator.close();
-                    return Err(error);
-                }
-            };
+        if !visitor_applied {
+            // 撕裂尾部在 prepare 内修复：visitor 的部分输出跨过了截断
+            // 点，不可信——丢弃后从修复好的日志重读一遍（崩溃路径，
+            // R-1 允许这一遍）。
+            let mut repaired_registry = ProjectionRegistry::clat();
+            let mut repaired = ResumeSink::new();
+            if let Err(error) = self.backend.visit_from(&key, 0, &mut |event| {
+                repaired.push(event, &mut repaired_registry)
+            }) {
+                let _ = coordinator.close();
+                return Err(error);
+            }
+            registry = repaired_registry;
+            sink = repaired;
+        }
         let projections = Arc::new(Mutex::new(registry));
         let active = ActiveSession {
             key: key.clone(),
             journal: Mutex::new(None),
             coordinator: Arc::clone(&coordinator),
             projections: Arc::clone(&projections),
-            generation: AtomicU64::new(generation),
+            generation: AtomicU64::new(0),
         };
-        // Fold what arming committed behind the staged projections (repair
-        // closers, the end-seed marker): without this, stats like the turn
-        // count lag until the next flush and the next turn number could
-        // collide with the interrupted turn's. A failure here must close
-        // the just-armed writer before propagating (dropping an armed
-        // coordinator detaches its thread).
-        if let Err(error) = fold_if_behind(&active, &self.backend) {
-            let _ = coordinator.close();
-            return Err(error);
-        }
-        // Structured replay for the frontend transcript rebuild. Read after
-        // the catch-up fold so recovery repair events are included; the log
-        // is the authority, so the result never depends on checkpoints.
-        let (replay, usage) = match self.replay_with_usage(&key) {
-            Ok(pair) => pair,
-            Err(error) => {
+        // Catch up what arming committed behind the single pass (torn-tail
+        // repair closers): the same channel keeps feeding projections, the
+        // replay, and usage — a bounded tail read, never a full re-stream.
+        // A failure here must close the just-armed writer before
+        // propagating (dropping an armed coordinator detaches its thread).
+        let floor = sink.pushed;
+        if coordinator
+            .committed_seq()
+            .is_some_and(|committed| floor <= committed)
+        {
+            let mut guard = projections.lock().expect("projections");
+            let tail = self
+                .backend
+                .visit_from(&key, floor, &mut |event| sink.push(event, &mut guard));
+            drop(guard);
+            if let Err(error) = tail {
                 let _ = coordinator.close();
                 return Err(error);
             }
-        };
+        }
+        let ResumeSink { replay, usage, .. } = sink;
         let mut view =
             match self.view_from(&header, &projections.lock().expect("projections"), replay) {
                 Ok(view) => view,
@@ -288,54 +341,15 @@ impl SessionService {
         let ArmedSession { active, view } = armed;
         active.coordinator.enqueue_seed_marker_if_needed();
         // The seed marker must be durable before `Application::open`
-        // returns: the mount-time snapshot() re-streams the log via
-        // `replay_active`, and a marker still inside the 200ms write-behind
-        // window aborts startup with "changed while streaming" (real-world
-        // regression: restart after a long session failed once, the retry
-        // succeeded only because the marker had landed by then). Best
-        // effort on purpose: a failed flush keeps the batch on the normal
-        // retry lane, and install must stay infallible.
+        // returns: mount 的第一次 snapshot 走 mounted_replay 暂存、不
+        // 再重流日志，但后续任何全量读者（下一次 snapshot、下一次冷
+        // resume 的 prepare 扫描）都会看到磁盘——marker 还在 200ms
+        // 写后窗口里时，"open 已返回但日志缺 marker"对它们就是种族。
+        // Best effort on purpose: a failed flush keeps the batch on the
+        // normal retry lane, and install must stay infallible.
         let _ = active.coordinator.flush();
         *self.active.lock().expect("active") = Some(active);
         view
-    }
-
-    /// Cold-read ladder: checkpoint → stable admitted tail → restore;
-    /// `Outlived` or a foreign witness re-folds from seq 0. Staging is
-    /// deliberately read-only: a failed workspace CAS may drop the staged
-    /// value without leaving a refreshed checkpoint behind.
-    fn cold_restore(
-        &self,
-        key: &SessionKey,
-        header: &SessionHeader,
-        committed_seq: Option<u64>,
-    ) -> Result<(ProjectionRegistry, u64), SessionError> {
-        let identity = CheckpointIdentity::of(header);
-        let mut registry = ProjectionRegistry::clat();
-        let record = self.checkpoints.load(key);
-        let restored = record
-            .filter(|record| record.identity_matches(&identity))
-            .and_then(|record| {
-                let floor = record.restore_floor(&registry)?;
-                let end_seq = committed_seq.unwrap_or(0);
-                match registry.restore_rows(&record, floor, end_seq) {
-                    Ok(()) => Some((record, floor)),
-                    Err(RestoreError::Outlived(_)) => None,
-                    Err(RestoreError::Malformed(_)) => None,
-                }
-            });
-        match restored {
-            Some((record, floor)) => {
-                self.backend
-                    .visit_from(key, floor, &mut |event| registry.fold_one(event))?;
-                Ok((registry, record.generation))
-            }
-            None => {
-                self.backend
-                    .visit_from(key, 0, &mut |event| registry.fold_one(event))?;
-                Ok((registry, 0))
-            }
-        }
     }
 
     /// Headers + cached projections for the `/resume` picker; never decodes
@@ -1046,6 +1060,190 @@ mod tests {
             .map_err(SessionError::Corruption)?;
         journal.flush().map_err(SessionError::Corruption)?;
         Ok(())
+    }
+
+    /// 启动加载的分阶段计时（诊断用，`--ignored` 运行）。模拟一个真实
+    /// 长会话的日志形状：多轮 ×（用户消息 + 助手回复 + 带内容的工具
+    /// 调用/结果），然后分别计时 resume 流水线的三个完整日志遍：
+    /// 恢复扫描（prepare）、checkpoint 之后的投影折叠（visit_from）、
+    /// 前端转录重建（replay_with_usage）。数字用于指导"合并遍数"类
+    /// 优化；事件体量刻意接近 dogfood 会话（工具结果数 KB）。
+    #[test]
+    #[ignore = "diagnostic timing bench, run with --nocapture"]
+    fn large_journal_resume_phase_timing() {
+        let (service, root) = service("resume-timing");
+        let summary = service.new_session(&project()).expect("session");
+        let key = SessionKey {
+            id: summary.id.clone(),
+            project: project(),
+        };
+        let tool_content = "x".repeat(4 * 1024);
+        let turns = 400u64;
+        for turn in 0..turns {
+            let journal = service.journal().expect("journal");
+            let usage = crate::model::Usage {
+                input_tokens: 32000,
+                output_tokens: 900,
+                cached_input_tokens: Some(24000),
+                reasoning_tokens: None,
+            };
+            let step = turn + 1;
+            journal
+                .append_atomic(&[
+                    crate::session::run_journal::NewSessionEvent::new(
+                        "turn/start",
+                        payloads::turn_start(step),
+                    ),
+                    crate::session::run_journal::NewSessionEvent::new(
+                        "user/message",
+                        payloads::user_message(&format!("turn {turn}: please inspect and fix")),
+                    )
+                    .append(Vec::new()),
+                    crate::session::run_journal::NewSessionEvent::new(
+                        "assistant/message",
+                        payloads::assistant_message(
+                            step,
+                            step,
+                            vec![payloads::text_block(&format!(
+                                "turn {turn} plan:\n- read the module\n- patch\n- verify"
+                            ))],
+                            "deepseek",
+                            "deepseek-v4-pro",
+                            Some(&usage),
+                        ),
+                    )
+                    .append(Vec::new()),
+                    crate::session::run_journal::NewSessionEvent::new(
+                        "tool/call",
+                        payloads::tool_call(
+                            step,
+                            step,
+                            &format!("call-{turn}"),
+                            "read_file",
+                            &serde_json::json!({ "path": "src/lib.rs" }),
+                        ),
+                    ),
+                    crate::session::run_journal::NewSessionEvent::new(
+                        "tool/result",
+                        payloads::tool_result(
+                            step,
+                            step,
+                            &format!("call-{turn}"),
+                            payloads::tool_result_content(&serde_json::json!(tool_content)),
+                            false,
+                        ),
+                    )
+                    .append(Vec::new()),
+                    crate::session::run_journal::NewSessionEvent::new(
+                        "turn/end",
+                        payloads::turn_end(step, &crate::session::event::TurnEndReason::Completed),
+                    ),
+                ])
+                .expect("append turn");
+        }
+        // 刷新一次写出全部待写批次，并让 checkpoint 站在日志末尾——
+        // 计时的是"最近一次干净关闭后重开"的冷启动路径。
+        service
+            .journal()
+            .expect("journal")
+            .flush()
+            .expect("flush pending batches");
+        {
+            let guard = service.active.lock().expect("active");
+            let active = guard.as_ref().expect("armed");
+            checkpoint_active(active, &service.checkpoints).expect("checkpoint");
+        }
+        let log_size = dir_size(&root);
+        eprintln!(
+            "journal: {turns} turns, {} bytes ({:.1} MiB)",
+            log_size,
+            log_size as f64 / 1024.0 / 1024.0
+        );
+
+        let time = |label: &str, f: &mut dyn FnMut()| {
+            let start = std::time::Instant::now();
+            f();
+            eprintln!("{label}: {:?}", start.elapsed());
+        };
+
+        // 阶段 1：prepare 的全量恢复扫描（start_unseeded 内部路径）。
+        time("prepare scan (full pass)", &mut || {
+            service.backend.prepare(&key).expect("prepare");
+        });
+        // 阶段 2：checkpoint 命中时的投影折叠（floor 之后应近零）。
+        time("projection fold from checkpoint", &mut || {
+            service
+                .backend
+                .visit_from(&key, 0, &mut |_| Ok(()))
+                .expect("visit");
+        });
+        // 阶段 3：前端转录重建（replay，永远从 seq 0）。
+        time("replay_with_usage (full pass)", &mut || {
+            let (replay, usage) = service.replay_with_usage(&key).expect("replay");
+            assert!(!replay.is_empty());
+            assert!(usage.session.input_tokens > 0);
+        });
+        // 整体：一次真实 resume（= 单遍流读 + 协调器开销）。
+        time("full resume()", &mut || {
+            service.resume(&key).expect("resume");
+        });
+        // 泄漏纪律同上：quiesce 后再清理临时目录。
+        service.quiesce_active().expect("quiesce");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// 递归累加目录字节数（诊断用：报告日志体量）。
+    fn dir_size(root: &std::path::Path) -> u64 {
+        let mut total = 0;
+        if let Ok(entries) = std::fs::read_dir(root) {
+            for entry in entries.flatten() {
+                let Ok(file_type) = entry.file_type() else {
+                    continue;
+                };
+                if file_type.is_dir() {
+                    total += dir_size(&entry.path());
+                } else if let Ok(metadata) = entry.metadata() {
+                    total += metadata.len();
+                }
+            }
+        }
+        total
+    }
+
+    /// 不变量 R-1（2026-08-19 启动性能，DSH 对照）：干净日志的冷
+    /// resume 对日志恰好发起**一次**物理流读——prepare 的恢复扫描
+    /// 同时完成投影折叠、转录回放与 usage 统计。torn-tail 崩溃修复
+    /// 路径另行允许丢弃重读。pre-fix 为 3 遍（prepare 扫描 + 投影
+    /// 折叠 + replay），日志体量线性放大后即用户可感的启动延迟。
+    #[test]
+    fn cold_resume_streams_the_log_exactly_once() {
+        let (service, root) = service("single-pass");
+        let summary = service.new_session(&project()).expect("session");
+        let key = SessionKey {
+            id: summary.id.clone(),
+            project: project(),
+        };
+        for i in 0..3 {
+            run_turn(&service, &format!("turn {i}")).expect("turn");
+        }
+        service.journal().expect("journal").flush().expect("flush");
+        let before = service.stream_probe();
+        let view = service.resume(&key).expect("cold resume");
+        let streams = service.stream_probe() - before;
+        assert_eq!(
+            streams, 1,
+            "a clean cold resume must stream the log exactly once (got {streams})"
+        );
+        assert!(
+            !view.replay.is_empty(),
+            "the replay was built in that one pass"
+        );
+        // resume() 安装了活动会话：不 quiesce 就结束会泄漏一个 writer
+        // 线程，并行套件里抬高的全局计数会把相邻的线程回收测试顶红
+        //（a_hundred_session_switches 实测）。下面的计时诊断同因，也
+        // 必须在清理前 quiesce。
+        service.quiesce_active().expect("quiesce");
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]

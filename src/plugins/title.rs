@@ -95,12 +95,18 @@ impl SessionTitler for DefaultSessionTitler {
             output_limit: Some(TITLE_OUTPUT_LIMIT),
             ..ModelOptions::default()
         };
+        // 请求令牌派生自 worker 的取消令牌并带上 TITLE_DEADLINE：
+        // retry 的 total_deadline 只约束尝试间隔，管不住单次 send 的
+        // connect（30s）/等响应头（60s）阶段——那些阶段不轮询取消标
+        // 志，只有 `remaining()` 的请求级 timeout 能有界化（2026-08-19
+        // 退出延迟诊断）。父取消仍即时生效（Esc/退出）。
+        let request_cancel = cancel.child_with_deadline(std::time::Instant::now() + TITLE_DEADLINE);
         let request = ModelRequest {
             instructions: Some(TITLE_INSTRUCTIONS),
             items: &items,
             tools: &tools,
             options: &options,
-            cancel,
+            cancel: &request_cancel,
         };
         let mut sink = Vec::new();
         let response = model.stream(request, &mut sink).ok()?;
@@ -225,6 +231,10 @@ mod tests {
     }
 
     fn titler_with(factory: CannedFactory) -> Arc<dyn SessionTitler> {
+        titler_with_factory(factory)
+    }
+
+    fn titler_with_factory(factory: impl ModelFactory + 'static) -> Arc<dyn SessionTitler> {
         let mut manager = PluginManager::root(ScopeKind::TrustedProject);
         manager
             .mount_all(vec![
@@ -257,6 +267,77 @@ mod tests {
             )
             .expect("title");
         assert_eq!(title, "Fix the login bu");
+    }
+
+    /// 不变量（2026-08-19 退出延迟）：自动标题请求必须携带 deadline
+    /// ——`remaining()` 有值时 provider 会把它配置成请求级 HTTP
+    /// timeout，connect（30s）与等响应头（60s）阶段才有界；worker 的
+    /// 取消令牌本身无 deadline，pre-fix 此处为 None，退出撞上在途标
+    /// 题请求可被拖住数十秒。
+    #[test]
+    fn title_request_carries_a_deadline_so_http_phases_are_bounded() {
+        use std::sync::Mutex;
+        let seen: Arc<Mutex<Option<Duration>>> = Arc::new(Mutex::new(None));
+
+        struct DeadlineProbingFactory(Arc<Mutex<Option<Duration>>>);
+        impl ModelFactory for DeadlineProbingFactory {
+            fn protocol(&self) -> ModelProtocol {
+                ModelProtocol::OpenAiCompatible
+            }
+            fn describe(
+                &self,
+                _credentials: &ProviderCredentials,
+            ) -> crate::model::ProviderDescriptor {
+                unimplemented!("not needed for title tests")
+            }
+            fn build(
+                &self,
+                _config: &ModelConfig,
+                _credentials: &ProviderCredentials,
+            ) -> Result<Box<dyn Model>, ModelError> {
+                Ok(Box::new(DeadlineProbingModel(Arc::clone(&self.0))))
+            }
+        }
+
+        struct DeadlineProbingModel(Arc<Mutex<Option<Duration>>>);
+        impl Model for DeadlineProbingModel {
+            fn provider(&self) -> &str {
+                "title-fake"
+            }
+            fn model_id(&self) -> &str {
+                "title-fake"
+            }
+            fn stream(
+                &mut self,
+                request: ModelRequest<'_>,
+                _events: &mut dyn ModelEventSink,
+            ) -> Result<ModelResponse, ModelError> {
+                *self.0.lock().expect("seen") = request.cancel.remaining();
+                Ok(ModelResponse {
+                    text: String::new(),
+                    tool_calls: Vec::new(),
+                    finish_reason: FinishReason::Completed,
+                    usage: None,
+                    provider_response_id: None,
+                    provider_state: Vec::new(),
+                    reasoning: None,
+                })
+            }
+        }
+
+        let titler = titler_with_factory(DeadlineProbingFactory(Arc::clone(&seen)));
+        let config = ModelConfig::default();
+        let credentials = ProviderCredentials::for_protocol(config.protocol);
+        let _ = titler.generate_title(&config, &credentials, "hello", &CancelToken::new());
+        let remaining = *seen.lock().expect("seen");
+        assert!(
+            remaining.is_some(),
+            "the title request must carry a deadline (pre-fix: the worker token has none)"
+        );
+        assert!(
+            remaining.expect("checked Some") <= Duration::from_secs(15),
+            "the deadline must be TITLE_DEADLINE, got {remaining:?}"
+        );
     }
 
     struct FailingFactory;

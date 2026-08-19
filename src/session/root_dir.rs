@@ -110,11 +110,13 @@ pub(crate) fn sync_dir(dir: &Dir) -> io::Result<()> {
     dir.open(".")?.sync_all()
 }
 
-fn set_private_dir(dir: &Dir) -> io::Result<()> {
+fn set_private_dir(_dir: &Dir) -> io::Result<()> {
+    // 0700 权限位是 Unix 概念；Windows 构建下参数不使用（下划线前缀
+    // 抑制该平台的 unused 警告）。
     #[cfg(unix)]
     {
         use cap_std::fs::{Permissions, PermissionsExt as _};
-        dir.set_permissions(".", Permissions::from_mode(0o700))?;
+        _dir.set_permissions(".", Permissions::from_mode(0o700))?;
     }
     Ok(())
 }
