@@ -11,7 +11,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Clear, Paragraph, Wrap};
+use ratatui::widgets::{Paragraph, Wrap};
 
 pub(crate) enum ResumeAction {
     Continue,
@@ -88,7 +88,7 @@ impl SessionPicker {
     }
 
     pub fn draw(&self, frame: &mut Frame, area: Rect) {
-        frame.render_widget(Clear, area);
+        crate::tui::clear_popup_with_guards(frame, area);
         let mut lines = Vec::new();
         if self.sessions.is_empty() {
             lines.push(Line::from("no previous conversations in this project"));

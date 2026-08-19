@@ -51,7 +51,6 @@ pub(crate) struct Run<'a> {
     project: &'a Project,
     instructions: Option<String>,
     model_options: ModelOptions,
-    max_turns: usize,
     cancel: CancelToken,
     steering: SteeringQueue,
     tool_pipeline: Option<&'a ToolExecutionPipeline>,
@@ -71,7 +70,6 @@ impl<'a> Run<'a> {
             project,
             instructions: None,
             model_options: ModelOptions::default(),
-            max_turns: 32,
             cancel: CancelToken::new(),
             steering: SteeringQueue::new(),
             tool_pipeline: None,
@@ -133,7 +131,16 @@ impl<'a> Run<'a> {
             prompt,
         });
 
-        for turn in 1..=self.max_turns {
+        // 无轮次预算（DSH 范式，2026-08-19）：agent 循环只被四类终态
+        // 结束——模型完成/拒绝、用户取消、模型错误、非法早停。成熟
+        // 工具（DSH / Claude Code / opencode）均无轮次上限；成本由
+        // 用户实时可见的 usage 与 Esc 取消控制，上下文压力由
+        // pruning/compaction 吸收。此前 32 轮硬中断 + 有界续跑只是
+        // 应急方案，已移除。计数在循环顶递增：steering 扩展走
+        // `continue` 也必须推进轮号（与旧 `for turn in 1..=` 同语义）。
+        let mut turn = 0usize;
+        loop {
+            turn += 1;
             if self.cancel.is_cancelled() {
                 return Ok(cancelled(events, turn, &total_usage, String::new(), items));
             }
@@ -385,14 +392,6 @@ impl<'a> Run<'a> {
                 events.emit(RunEvent::ToolFinished { result });
             }
         }
-
-        Err(fail(
-            events,
-            format!("run exceeded the maximum of {} model turns", self.max_turns),
-            self.max_turns,
-            total_usage,
-            items,
-        ))
     }
 }
 

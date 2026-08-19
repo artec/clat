@@ -217,6 +217,10 @@ pub(crate) struct JsonlBackend {
     /// untrustworthy, so writes refuse until a cold `load(repair)` re-arms
     /// them from the durable log (plan §9.3).
     poisoned: Mutex<std::collections::HashSet<SessionKey>>,
+    /// 测试仪表：stream_events（全量流式读的唯一入口）被调用的次数。
+    /// 用于断言启动路径不再重复全量回放（性能回归测试）。
+    #[cfg(test)]
+    stream_probe: std::sync::atomic::AtomicUsize,
 }
 
 impl JsonlBackend {
@@ -244,7 +248,15 @@ impl JsonlBackend {
             states: Mutex::new(HashMap::new()),
             faults: Mutex::new(FaultHooks::default()),
             poisoned: Mutex::new(std::collections::HashSet::new()),
+            #[cfg(test)]
+            stream_probe: std::sync::atomic::AtomicUsize::new(0),
         }
+    }
+
+    /// 测试仪表：全量流式读的累计次数（见字段注释）。
+    #[cfg(test)]
+    pub(crate) fn stream_probe(&self) -> usize {
+        self.stream_probe.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     #[cfg(test)]
@@ -830,6 +842,9 @@ impl JsonlBackend {
         from_seq: u64,
         visitor: &mut dyn FnMut(&SessionEvent) -> Result<(), String>,
     ) -> Result<StreamRead, SessionError> {
+        #[cfg(test)]
+        self.stream_probe
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         validate_key_witness(key)?;
         let dir = std::sync::Arc::new(self.root_dir.open_session(key).map_err(io)?);
         let name = compat::log_file_name(self.compression);

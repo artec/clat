@@ -276,6 +276,12 @@ pub struct TrustedProjectApplication {
     /// 单 worker + 容量 1 的旁路标题队列。enqueue 永不阻塞 run，Scope
     /// close 取消并 join 唯一线程，不存在 detached title 任务。
     title_worker: Option<TitleWorker>,
+    /// 挂载期 resume 已全量回放出的结构化回放（一次性暂存）：随后第
+    /// 一次 `snapshot()` 直接复用，不再从 0 重放日志——大会话在 debug
+    /// 构建下省掉一整遍 zstd 解码加解析（启动性能）。会话 id 配对防
+    /// 错拿；take 后即失效，后续 snapshot 走正常全量流（freshness 语
+    /// 义不变）。
+    mounted_replay: Option<(SessionId, Vec<crate::session::replay::ReplayEvent>)>,
     subscribers: Arc<Mutex<Vec<mpsc::Sender<ApplicationEvent>>>>,
     /// The workspace selection mirror (control DB is authoritative).
     selection: WorkspaceSelection,
@@ -501,6 +507,7 @@ impl TrustedProjectApplication {
             todo: todo_service,
             titler,
             title_worker: None,
+            mounted_replay: None,
             subscribers: Arc::new(Mutex::new(Vec::new())),
             selection: WorkspaceSelection::Fresh,
             workspace_revision: 0,
@@ -575,6 +582,11 @@ impl TrustedProjectApplication {
                         self.fresh_session_open = true;
                         self.emitted_request_header = self.sessions.last_request_header();
                         self.restore_todo_from(&view);
+                        // arm 阶段已经付过一遍全量回放的成本，把结果
+                        // 递给第一次 snapshot()（同 switch_session 复用
+                        // view.replay 的先例）。
+                        let SessionView { replay, .. } = view;
+                        self.mounted_replay = Some((id, replay));
                     }
                     Err(error) => {
                         // 缺失/损坏：不修控制行，逻辑回退 Fresh；诊断经
@@ -700,14 +712,20 @@ impl TrustedProjectApplication {
         self.startup_diagnostic.as_deref()
     }
 
-    pub fn snapshot(&self) -> Result<ProjectSnapshot, ApplicationError> {
+    pub fn snapshot(&mut self) -> Result<ProjectSnapshot, ApplicationError> {
         let (config, credentials) = self.model_state()?;
         self.monitor.configure(config.clone(), credentials.clone());
         let (transcript, replay, input_history, session_id) = match self.sessions.active_id() {
             Some(id) => {
                 let inputs = self.sessions.recent_inputs(500).map_err(session_error)?;
                 let transcript = self.sessions.transcript_lines().map_err(session_error)?;
-                let replay = self.sessions.replay_active().map_err(session_error)?;
+                // 挂载期暂存的回放一次性复用（会话 id 配对）：省掉紧随
+                // mount 的又一整遍全量流式回放。任何后续 snapshot 都走
+                // 正常全量流，freshness 语义不变。
+                let replay = match self.mounted_replay.take() {
+                    Some((stash_id, replay)) if stash_id == id => replay,
+                    _ => self.sessions.replay_active().map_err(session_error)?,
+                };
                 (transcript, replay, inputs, Some(id))
             }
             None => (Vec::new(), Vec::new(), Vec::new(), None),
@@ -2835,6 +2853,118 @@ mod tests {
             message.contains("no interactive frontend"),
             "structured headless error: {message}"
         );
+        std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
+    }
+
+    /// 回归（设计变更 2026-08-19，DSH 范式）：agent 循环无轮次预算。
+    /// 此前 32 轮硬中断（"run exceeded the maximum of 32 model
+    /// turns"）与随后的有界自动续跑（[auto-continue] 注记）都是应急
+    /// 方案，已一并移除——DSH 的 kick() 即 `while (await turn())`，
+    /// 终态只有完成/错误/用户取消；上下文压力归 pruning/compaction
+    /// 管，轮数不是边界。ToolLoop(40)：40 次工具往返 + 1 次完成 =
+    /// 41 轮，远超旧 32 轮上限。预变更代码上本测试失败（run 中断或
+    /// journal 出现续跑注记）。
+    #[test]
+    fn long_tool_loops_run_uninterrupted_without_a_turn_budget() {
+        let (storage_root, project_root) = roots("unbounded-loop");
+        std::fs::create_dir_all(&project_root).unwrap();
+        let project = Project::new(&project_root);
+        let mut application = mount(
+            &project,
+            &storage_root,
+            TestBehavior::ToolLoop {
+                calls: 40,
+                seen: Arc::new(AtomicUsize::new(0)),
+            },
+        );
+        configure_test_model(&application);
+
+        let live = Arc::new(Mutex::new(Vec::new()));
+        let (completion, receiver) = mpsc::channel();
+        let handle = application
+            .start_run(ApplicationRunRequest {
+                asker: None,
+                prompt: "work far past the old 32-turn cap".into(),
+                approver: allow_all_approver(),
+                events: Box::new(SharedEvents(Arc::clone(&live))),
+                completion,
+            })
+            .unwrap();
+        handle.join().unwrap();
+        let done = receiver.recv().unwrap().unwrap();
+
+        assert_eq!(done.output, "loop complete");
+        // 41 次模型调用 = 40 次工具往返（各计 1/1）+ 1 次完成（计
+        // 2/3）：单次 run 内完整累计，无分段。
+        assert_eq!(
+            done.turns, 41,
+            "the loop crosses the old 32-turn cap in one run"
+        );
+        assert_eq!(done.usage.input_tokens, 42);
+        assert_eq!(done.usage.output_tokens, 43);
+        application.close().unwrap();
+
+        let events = load_events(&storage_root);
+        assert_conversation_parity(&live.lock().unwrap(), &events);
+        let count = |kind: &str| {
+            events
+                .iter()
+                .filter(|event| event.event_type == kind)
+                .count()
+        };
+        assert_eq!(count("tool/call"), 40);
+        assert_eq!(count("tool/result"), 40);
+        assert_eq!(count("turn/start"), 1);
+        assert_eq!(count("turn/end"), 1);
+        // 无续跑注记：journal 里不得出现任何合成 [auto-continue] 消息
+        //（旧应急方案的存在痕迹）。
+        assert!(
+            !events.iter().any(|event| {
+                event.event_type == "user/message"
+                    && event.data["content"][0]["text"]
+                        .as_str()
+                        .is_some_and(|text| text.contains("[auto-continue]"))
+            }),
+            "no synthetic continuation note may appear in the journal"
+        );
+        std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
+    }
+
+    /// 启动性能回归：挂载路径 resume 时已经全量流式回放过一次日志
+    /// （arm_session），但 `snapshot()` 又从 0 重放一遍——大会话（MB 级
+    /// zstd）+ debug 构建下即用户实测的"启动好几秒才见 TUI"。
+    /// 不变量：mount 产出的 replay 必须被随后的 snapshot() 复用（同
+    /// `switch_session` 复用 view 的既有先例），不得再触发全量流。
+    /// 验证：stream_events（全量流唯一入口）的测试计数器在 snapshot()
+    /// 前后必须相等。预修复代码上本测试失败（计数 +1）。
+    /// 注：不能用"移走会话目录"来断绝盘读——SessionRootDir 持有打开
+    /// 的目录 fd，路径 rename 对已挂载进程不可见（capability-held 设计）。
+    #[test]
+    fn mount_time_snapshot_reuses_the_resume_replay_without_restreaming() {
+        let (storage_root, project_root) = roots("startup-replay");
+        std::fs::create_dir_all(&project_root).unwrap();
+        let project = Project::new(&project_root);
+        let mut application = mount(&project, &storage_root, TestBehavior::Success);
+        configure_test_model(&application);
+        run(&mut application, "hello clat").unwrap();
+        application.close().unwrap();
+
+        let expected = crate::session::replay::ReplayAdapter::fold(&load_events(&storage_root));
+        assert!(!expected.is_empty());
+
+        let mut application = mount(&project, &storage_root, TestBehavior::Success);
+        let streams_before = application.sessions.stream_probe();
+        let snapshot = application.snapshot().expect("mount-time snapshot");
+        let streams_after = application.sessions.stream_probe();
+        assert_eq!(
+            snapshot.replay, expected,
+            "mount-time snapshot must carry the resume replay"
+        );
+        assert_eq!(
+            streams_before, streams_after,
+            "snapshot() right after mount must not re-stream the log"
+        );
+        application.close().unwrap();
         std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
     }
 

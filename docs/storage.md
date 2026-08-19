@@ -102,19 +102,32 @@ three-state (NotCommitted / Committed / Unknown); a first-batch publish
 that cannot prove its directory sync returns Unknown, and an append whose
 file identity drifted from the prepared handle (external writer) returns
 Unknown — both poison the session until a cold repair reopens it.
+In-run steering journals as plain mid-turn `user/message` rows,
+durable before the model request that consumes them.
 
 Session switching is two-phase: the target is first staged read-only
 (admission + cold restore), then armed but kept unpublished while pending
 torn-tail recovery, projection catch-up, and view construction finish.
 Only after those fallible operations succeed is the workspace pointer
 CASed; the old session then quiesces and the in-memory target swap releases
-the withheld resume seed without another fallible storage step. A missing,
+the withheld resume seed without another fallible storage step — install
+first performs a best-effort flush so the seed is durable before it
+returns (a read barrier: a mount-time full-log stream must not mistake
+our own seed for a foreign writer; a failed flush stays on the normal
+retry lane and install remains infallible). A missing,
 corrupt, or unsupported target fails before the pointer moves. A lost CAS
 race leaves the old session untouched and closes the unpublished writer;
 an idempotent repair already completed while arming may remain, but no
 resume seed or selection change is published. Detaching a session flushes, checkpoints, and
 **joins** its writer thread — session switching does not leak threads
 even when writes keep failing.
+
+Full-log streams (replay) assume quiescent callers, which same-process
+late writers can violate; the stream's stat→read→stat mismatch is
+retried up to three times with locally rebuilt state before the error
+surfaces (mirroring `read_stable`), and the mount-time `snapshot()`
+reuses the replay produced while arming instead of streaming the log a
+second time.
 
 ## Layering
 

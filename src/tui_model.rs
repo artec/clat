@@ -5,7 +5,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Padding, Paragraph, Wrap};
+use ratatui::widgets::{Paragraph, Wrap};
 use serde_json::Value;
 use unicode_width::UnicodeWidthChar;
 
@@ -206,7 +206,7 @@ impl ModelEditor {
     }
 
     pub fn draw(&self, frame: &mut Frame, area: Rect) {
-        frame.render_widget(Clear, area);
+        crate::tui::clear_popup_with_guards(frame, area);
         let rows = self.rows();
         let mut lines = Vec::with_capacity(rows.len() + 2);
         for (index, (label, value)) in rows.into_iter().enumerate() {
@@ -460,7 +460,7 @@ impl ModelEditor {
         // 边框 2 列 + 弹窗内边距 2×POPUP_TEXT_PADDING 列后才是文本宽度。
         let inner = width.saturating_sub(2 + 2 * crate::tui::POPUP_TEXT_PADDING) as usize;
         let popup_area = centered_rect_abs(area, width, 5);
-        frame.render_widget(Clear, popup_area);
+        crate::tui::clear_popup_with_guards(frame, popup_area);
         let (shown, shown_width) = tail_window(&popup.buffer, inner);
         let lines = vec![
             Line::from(shown),
@@ -471,12 +471,10 @@ impl ModelEditor {
             )),
         ];
         frame.render_widget(
-            Paragraph::new(lines).block(
-                Block::default()
-                    .title(format!(" {} ", self.edit_target_label(popup.target)))
-                    .borders(Borders::ALL)
-                    .padding(Padding::horizontal(crate::tui::POPUP_TEXT_PADDING)),
-            ),
+            Paragraph::new(lines).block(crate::tui::popup_block(&format!(
+                " {} ",
+                self.edit_target_label(popup.target)
+            ))),
             popup_area,
         );
         // 光标跳过边框 1 列 + 内边距 POPUP_TEXT_PADDING 列。
@@ -790,7 +788,7 @@ impl ModelPicker {
     }
 
     pub fn draw(&self, frame: &mut Frame, area: Rect) {
-        frame.render_widget(Clear, area);
+        crate::tui::clear_popup_with_guards(frame, area);
         let mut lines = Vec::new();
         for (index, row) in self.rows().iter().enumerate() {
             let (label, hint, current) = self.row_display(row);

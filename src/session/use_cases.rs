@@ -259,6 +259,15 @@ impl SessionService {
     pub(crate) fn install_armed(&self, armed: ArmedSession) -> SessionView {
         let ArmedSession { active, view } = armed;
         active.coordinator.enqueue_seed_marker_if_needed();
+        // The seed marker must be durable before `Application::open`
+        // returns: the mount-time snapshot() re-streams the log via
+        // `replay_active`, and a marker still inside the 200ms write-behind
+        // window aborts startup with "changed while streaming" (real-world
+        // regression: restart after a long session failed once, the retry
+        // succeeded only because the marker had landed by then). Best
+        // effort on purpose: a failed flush keeps the batch on the normal
+        // retry lane, and install must stay infallible.
+        let _ = active.coordinator.flush();
         *self.active.lock().expect("active") = Some(active);
         view
     }
@@ -379,6 +388,12 @@ impl SessionService {
     /// normalization, plan §13.1).
     pub(crate) fn has_log(&self, key: &SessionKey) -> bool {
         self.backend.has_log(key)
+    }
+
+    /// 测试仪表：透传 backend 的全量流计数（性能回归测试用）。
+    #[cfg(test)]
+    pub(crate) fn stream_probe(&self) -> usize {
+        self.backend.stream_probe()
     }
 
     /// The active session id, if any.
@@ -553,17 +568,31 @@ impl SessionService {
     /// bounded to the output items plus one record (audit F4: the earlier
     /// `read_from` version materialized the whole decoded log); incremental
     /// reads are a future scale layer.
+    ///
+    /// The "callers run at quiescent points" assumption does not hold for
+    /// same-process late writers (a pending write-behind batch, a straggler
+    /// title event), so an Io failure — the stat→stream→stat mismatch of
+    /// `stream_events` — is retried with locally rebuilt state instead of
+    /// failing the caller (mirrors `read_stable`). A truly external writer
+    /// exhausts the budget and the error still surfaces.
     pub(crate) fn replay(&self, key: &SessionKey) -> Result<Vec<ReplayEvent>, SessionError> {
         if !self.has_log(key) {
             return Ok(Vec::new());
         }
-        let mut adapter = ReplayAdapter::new();
-        let mut out = Vec::new();
-        self.backend.visit_from(key, 0, &mut |event| {
-            adapter.push(event, &mut out);
-            Ok(())
-        })?;
-        Ok(out)
+        let mut last = None;
+        for _ in 0..3 {
+            let mut adapter = ReplayAdapter::new();
+            let mut out = Vec::new();
+            match self.backend.visit_from(key, 0, &mut |event| {
+                adapter.push(event, &mut out);
+                Ok(())
+            }) {
+                Ok(_) => return Ok(out),
+                Err(SessionError::Io(message)) => last = Some(SessionError::Io(message)),
+                Err(error) => return Err(error),
+            }
+        }
+        Err(last.expect("at least one attempt ran"))
     }
 
     /// Structured replay of the active session, if any. Callers run at
@@ -1007,6 +1036,42 @@ mod tests {
         let second = service.checkpoints.load(&key).expect("second checkpoint");
         assert!(second.generation > first.generation);
         service.quiesce_active().expect("close");
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    /// 回归（真实事故）：重启后第一次启动以 "changed while streaming" 失败，
+    /// 第二次成功——install_armed 把 resume seed 留在 write-behind 车道里，
+    /// 而挂载期 snapshot() 的全量流式读把它的落盘当成了外部写入者。
+    /// 不变量：install 返回时 seed 必须已经持久化（读屏障，见
+    /// [`SessionCoordinator::flush`]）。修复前该测试失败：marker 最长
+    /// 200ms 后落盘，而这里的磁盘读取发生在微秒级。
+    #[test]
+    fn installed_resume_seed_is_durable_before_install_returns() {
+        let (service, root) = service("seed-durable");
+        let project = project();
+        let summary = service.new_session(&project).expect("new");
+        run_turn(&service, "hello").expect("turn");
+        let key = SessionKey {
+            project: project.clone(),
+            id: summary.id.clone(),
+        };
+        // 退役现有 writer；日志末事件是 turn/end 而非 end-seed，
+        // 下一次 prepare 因此需要 seed marker。
+        service.quiesce_active().expect("quiesce");
+
+        let staged = service.stage_resume(&key).expect("stage");
+        let armed = service.arm_session(staged).expect("arm");
+        let _view = service.install_armed(armed);
+
+        // 用独立 backend 观察磁盘真值（绕过本进程任何内存状态）。
+        let observer = JsonlBackend::new(root.clone(), JsonlCompression::Zstd, false);
+        let events = observer.load(&key, false).expect("durable read").events;
+        assert_eq!(
+            events.last().expect("session has events").event_type,
+            "session/end-seed",
+            "install_armed must make the resume seed durable before returning"
+        );
+        service.quiesce_active().expect("cleanup");
         std::fs::remove_dir_all(root).expect("cleanup");
     }
 

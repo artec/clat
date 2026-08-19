@@ -8,6 +8,7 @@
 //! `CLAT_REFRESH_SNAPSHOTS=1 cargo test`，每次刷新必须逐一说明原因。
 
 use super::App;
+use super::{conversation_wrap_width, slice_by_columns};
 use crate::test_support::{TestBehavior, TestProviderPlugin, roots};
 use crate::tui_conversation::{CardState, ConversationModel, ToolCardVisibility};
 use crate::tui_worker::{UiEvent, WorkerMessage};
@@ -21,6 +22,7 @@ use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Duration;
+use unicode_width::UnicodeWidthStr;
 
 /// 场景注册表：`snapshot_files_form_a_closed_set` 据此校验目录无孤儿文件。
 const SCENARIOS: &[&str] = &[
@@ -408,7 +410,101 @@ fn conversation_with_messages_snapshot() {
     conversation.push_user("thanks".into());
     harness.app.conversation = conversation;
     harness.app.conversation_scroll_from_bottom = 0;
+    // 刷新 2026-08-19：会话折行宽度 -1（滚动条列专属，宽字符不再铺
+    // 进滚动条列）——长行换行点前移一列。
     harness.snapshot("conversation-with-messages");
+}
+
+/// 回归（真实事故，用户实测确认规律）：行尾为宽字符（CJK/emoji，占
+/// 2 列）的行会遮挡滚动条，纯 ASCII 行不受影响。机制：文本按完整
+/// inner 宽度折行时，行尾宽字符的字形铺进滚动条列；ratatui 的 diff
+/// 会跳过宽字符右侧单元格的更新（to_skip），滚动条符号被字形覆盖且
+/// 不再补发。不变量：会话文本换行宽度必须比 inner 少一列（滚动条
+/// 专属列），任何宽字符字形都不得延伸进滚动条列——等价于"滚动条列
+/// 左侧一格不得起始双宽字形"。修复前本测试失败。
+#[test]
+fn wide_glyphs_never_bleed_into_the_scrollbar_column() {
+    let mut harness = Harness::trusted("snap-cjk-scrollbar", 80, 24);
+    let mut conversation = ConversationModel::new();
+    conversation.push_user("cjk wrap probe".into());
+    // 助手文本按完整 inner 宽度折行（用户块因 `width - 4` 折行 + 尾部
+    // 填充天然碰不到边缘列）。200 个全角字符必然产生恰好铺满 78 列
+    // 的行——行尾宽字符起始于第 77 列，字形铺进第 78 列（滚动条列）。
+    conversation.push_assistant_for_test(&"试".repeat(200));
+    harness.app.conversation = conversation;
+    harness.app.conversation_scroll_from_bottom = 0;
+    harness.project();
+    let area = harness.app.conversation_area;
+    let buffer = harness.terminal.backend().buffer();
+    // block.inner 的最右列是滚动条（VerticalRight）；其左一格若起始
+    // 双宽字形，字形必然占据滚动条列。
+    let scrollbar_column = area.x + area.width - 2;
+    for y in area.y..area.y + area.height {
+        let cell = &buffer[(scrollbar_column - 1, y)];
+        let symbol = cell.symbol();
+        assert!(
+            UnicodeWidthStr::width(symbol) < 2,
+            "wide glyph {symbol:?} at column {} row {y} bleeds into scrollbar column {scrollbar_column}",
+            scrollbar_column - 1,
+        );
+    }
+}
+
+/// 回归（用户实测：非英文字符只破坏弹窗最左边的边线，内部不受影
+/// 响）：跨在弹窗左边框起点上的宽字符（其起点格在 Clear 范围之外）
+/// 会让 ratatui diff 的 to_skip 吞掉边框列的更新——上一帧字形铺进
+/// 边框列，本帧 │ 不再补发。右边框因起点格在 Clear 范围内天然安全，
+/// 故以右边框为基准推导弹窗行跨度，在跨度内断言左边框完好。修复前
+/// 本测试失败。
+#[test]
+fn popup_left_border_survives_wide_glyphs_from_the_layer_below() {
+    let mut harness = Harness::trusted("snap-cjk-popup", 80, 24);
+    let mut conversation = ConversationModel::new();
+    // 前导短消息把宽字符行推进弹窗跨度中央（弹窗高度随参数变化，
+    // 固定几何会随内容漂移；跨中放置对任意高度稳定）。
+    for seed in ["one", "two", "three"] {
+        conversation.push_user(seed.into());
+        conversation.push_assistant_for_test("ok");
+    }
+    // "❯ " 标记 2 列 + 全角字符连排：起点必然覆盖第 5 列（弹窗左边框
+    // 6 的左邻），字形铺进边框列。20 个全角共 40 列，不触发换行。
+    conversation.push_user("测".repeat(20));
+    harness.app.conversation = conversation;
+    harness.app.conversation_scroll_from_bottom = 0;
+    harness.project(); // 第 1 帧：无弹窗，底层宽字符已上屏
+    let (decision_tx, _decision_rx) = mpsc::channel();
+    harness.event(UiEvent::Worker(WorkerMessage::PermissionRequest {
+        request: PermissionRequest {
+            tool: "write_file".into(),
+            effect: ToolEffect::Write,
+            reason: "writes a file".into(),
+            arguments: json!({"path": "src/lib.rs", "content": "fn main() {}\n"}),
+            call_id: "call-cjk-1".into(),
+        },
+        decision_tx,
+    }));
+    harness.project(); // 第 2 帧：弹窗出现，边框更新必须穿透 diff
+    let buffer = harness.terminal.backend().buffer();
+    // 80 列终端、84% 弹窗（快照几何）：左边框 6，右边框 73。
+    let (left, right) = (6u16, 73u16);
+    // 从右边框（本 bug 不影响的一侧）推导弹窗行跨度。
+    let span: Vec<u16> = (0..24u16)
+        .filter(|&y| matches!(buffer[(right, y)].symbol(), "│" | "┐" | "┘"))
+        .collect();
+    assert!(!span.is_empty(), "dialog right border not found");
+    for y in span {
+        let guard = buffer[(left - 1, y)].symbol();
+        assert!(
+            UnicodeWidthStr::width(guard) < 2,
+            "wide glyph {guard:?} at column {} row {y} straddles the popup border column",
+            left - 1,
+        );
+        let left_border = buffer[(left, y)].symbol();
+        assert!(
+            matches!(left_border, "│" | "┌" | "└"),
+            "left border at row {y} was eaten by a wide glyph: {left_border:?}"
+        );
+    }
 }
 
 #[test]
@@ -422,11 +518,64 @@ fn selection_highlight_snapshot() {
     harness.project();
     let area = harness.app.conversation_area;
     harness.drag_select(area.x + 2, area.y + 1, area.x + 14, area.y + 1);
+    // 刷新 2026-08-19：会话折行宽度 -1（同 conversation-with-messages）。
     harness.snapshot("selection-highlight");
+}
+
+/// 回归（2026-08-19 审计）：滚动条列预留把渲染折行宽度改为
+/// inner-1（conversation_wrap_width），但选区复制仍按 inner 取行——
+/// 复制跨行长文本时，各行来自错误的折行点，拷出内容与显示错位。
+/// 不变量：选区拷贝的每一行必须等于同一宽度（渲染的唯一来源）下的
+/// row_plain_text。预修复代码上本测试失败（折行点差一列）。
+#[test]
+fn copying_a_selection_uses_the_rendered_wrap_width() {
+    let mut harness = Harness::trusted("snap-copy-wrap", 80, 24);
+    let mut conversation = ConversationModel::new();
+    conversation.push_user("copy probe".into());
+    // 循环字母表的长文本：任何折行宽度下都必然跨多行，且各行内容
+    // 各不相同（同质文本会掩盖错位）。
+    let text: String = (0..200)
+        .map(|index| char::from(b'a' + (index % 26) as u8))
+        .collect();
+    conversation.push_assistant_for_test(&text);
+    harness.app.conversation = conversation;
+    harness.app.conversation_scroll_from_bottom = 0;
+    harness.project();
+    let area = harness.app.conversation_area;
+    let width = conversation_wrap_width(area);
+    let assistant_rows = 200usize.div_ceil(width);
+    // 内容行 0 是用户块、1 是分隔空行，助手行从 2 起；拖满列宽选中
+    // 全部助手行（指针落在最后一列 = 行尾）。
+    let first_row = 2usize;
+    let last_row = first_row + assistant_rows - 1;
+    harness.drag_select(
+        area.x + 1,
+        area.y + 1 + first_row as u16,
+        area.x + 1 + width as u16,
+        area.y + 1 + last_row as u16,
+    );
+    let copied = harness.app.selection_text().expect("selection text");
+    let expected: Vec<String> = (first_row..=last_row)
+        .map(|row| {
+            let plain =
+                harness
+                    .app
+                    .conversation
+                    .row_plain_text(row, width, ToolCardVisibility::Collapsed);
+            slice_by_columns(&plain, 0, width)
+        })
+        .collect();
+    assert_eq!(
+        copied,
+        expected.join("\n"),
+        "copied rows must match the rendered wrap width"
+    );
 }
 
 #[test]
 fn trust_dialog_snapshot() {
+    // 刷新 2026-08-19：弹窗规范统一——黄边框/标题 + 上下垂直边距
+    //（确权对话框是安全决策，与权限弹窗同款警示样式）。
     let mut harness = Harness::untrusted("snap-trust");
     harness.snapshot("trust-dialog");
 }
@@ -435,6 +584,12 @@ fn trust_dialog_snapshot() {
 fn permission_dialog_snapshot() {
     // 刷新 2026-08-19：底层空会话改画欢迎页，弹窗左缘露出的
     // "No me…" 前缀随之消失。
+    // 刷新 2026-08-19：权限弹窗加 Warning 黄边框/标题 + 全屏 DIM
+    // 压暗层——异步弹窗此前与背景同亮度，被用户当成背景忽略。
+    // 刷新 2026-08-19：弹窗 Clear 左右各扩一列垫边（宽字符不再跨在
+    // 边框起点上吃掉左边线）。
+    // 刷新 2026-08-19：弹窗规范统一——黄框下沉到通用 popup_block，
+    // 垫边扩展到上下（四边间距，垂直边距 POPUP_V_MARGIN）。
     let mut harness = Harness::trusted("snap-permission", 80, 24);
     let (decision_tx, _decision_rx) = mpsc::channel();
     harness.event(UiEvent::Worker(WorkerMessage::PermissionRequest {
@@ -456,6 +611,10 @@ fn permission_dialog_snapshot() {
 #[test]
 fn permission_dialog_reviewed_snapshot() {
     // 刷新 2026-08-19：同 permission-dialog——空会话底层换欢迎页。
+    // 刷新 2026-08-19：同 permission-dialog——Warning 边框 + 全屏
+    // DIM 压暗层。
+    // 刷新 2026-08-19：同 permission-dialog——Clear 垫边。
+    // 刷新 2026-08-19：弹窗规范统一（黄框下沉 + 四边垫边）。
     let mut harness = Harness::trusted("snap-permission-reviewed", 80, 24);
     let (decision_tx, _decision_rx) = mpsc::channel();
     harness.event(UiEvent::Worker(WorkerMessage::PermissionRequest {
@@ -477,6 +636,60 @@ fn permission_dialog_reviewed_snapshot() {
         harness.key(KeyCode::Down);
     }
     harness.snapshot("permission-dialog-reviewed");
+}
+
+/// 回归（垂直边距引入后的分页错位）：分页预算按 `area.height - 2`
+/// 计算，而 centered_rect 的垂直边距钳制实际只给 `area.height - 4`
+/// ——弹窗比预算矮 2 行，页底两行渲染在框外，End 也翻不到底（用户
+/// 实测：加上下边距前分页正确，加了就翻不到底）。不变量：分页预算
+/// 必须与弹窗实际可用高度一致——End 跳到底后，最后一条参数行必须
+/// 出现在屏幕上。预修复代码上本测试失败（末行被裁出框外）。
+#[test]
+fn permission_dialog_scrolling_reaches_the_last_argument_line() {
+    let mut harness = Harness::trusted("snap-perm-scroll", 80, 24);
+    let (decision_tx, _decision_rx) = mpsc::channel();
+    // 27 行参数（write 预览头 1 行 + 内容 26 行）撑爆 24 行终端的
+    // 弹窗预算，触发分页与钳制的交界。
+    let mut content = String::new();
+    for i in 0..25 {
+        content.push_str(&format!("filler-{i:02}\n"));
+    }
+    content.push_str("LAST-LINE-XYZ\n");
+    harness.event(UiEvent::Worker(WorkerMessage::PermissionRequest {
+        request: PermissionRequest {
+            tool: "write_file".into(),
+            effect: ToolEffect::Write,
+            reason: "writes a file".into(),
+            arguments: json!({"path": "src/lib.rs", "content": content}),
+            call_id: "call-scroll-1".into(),
+        },
+        decision_tx,
+    }));
+    // 先绘一帧让分页预算落地（argument_page_size/line_count 在绘制期
+    // 计算），再连续下翻——审阅解锁按"逐帧连续进入视口"累计（真实
+    // TUI 每个按键后必绘一帧），因此每个 Down 之间插入绘制。
+    harness.project();
+    for _ in 0..40 {
+        harness.key(KeyCode::Down);
+        harness.project();
+    }
+    let buffer = harness.terminal.backend().buffer();
+    let mut screen = String::new();
+    for y in 0..24u16 {
+        for x in 0..80u16 {
+            screen.push_str(buffer[(x, y)].symbol());
+        }
+    }
+    assert!(
+        screen.contains("LAST-LINE-XYZ"),
+        "paging to the bottom must bring the final argument line into view"
+    );
+    // 操作行（Enter/Esc）在段尾：预算错位时被裁出框外——翻到底也
+    // 看不到批准键，即用户报告的"翻不到底"。
+    assert!(
+        screen.contains("Enter / y — allow"),
+        "paging to the bottom must expose the actions footer inside the dialog"
+    );
 }
 
 #[test]
@@ -552,10 +765,51 @@ fn executing_tools_phase_snapshot() {
 #[test]
 fn model_picker_snapshot() {
     // 刷新 2026-08-19：空会话底层改画 LOGO 欢迎页（选择器后方）。
+    // 刷新 2026-08-19：弹窗规范统一——黄边框 + 全屏 DIM 压暗（选择器
+    // 此前无压暗，与背景同亮度）+ Clear 垫边。
+    // 刷新 2026-08-19：宽度 94% → 84%，与其余弹窗统一（94% 在宽终端
+    // 上每边仅 3% 边距，用户观感为贴墙）。
     let mut harness = Harness::trusted("snap-model-picker", 80, 24);
     harness.type_text("/model");
     harness.key(KeyCode::Enter);
     harness.snapshot("model-picker");
+}
+
+/// 弹窗规范不变量：/model 选择器在任何终端宽度下都不得贴屏幕左右
+/// 墙（每边至少 2 列）。起因：选择器/编辑器是仅有的 94% 宽弹窗，
+/// 宽终端上每边仅留 3%，视觉上与贴墙无异（用户实测报告"撞墙"），
+/// 与其余 84% 弹窗的观感不一致。弹窗角标按"Yellow 色 ┌/┐"识别
+/// （底层会话面板边框无前景色，不会误判）。
+#[test]
+fn model_picker_never_touches_screen_edges() {
+    for width in [80u16, 120, 200] {
+        let mut harness = Harness::trusted("snap-picker-edges", width, 24);
+        harness.type_text("/model");
+        harness.key(KeyCode::Enter);
+        harness.project();
+        let buffer = harness.terminal.backend().buffer();
+        let mut left = None;
+        let mut right = None;
+        for y in 0..24u16 {
+            for x in 0..width {
+                let cell = &buffer[(x, y)];
+                let is_corner = matches!(cell.symbol(), "┌" | "┐")
+                    && matches!(cell.style().fg, Some(ratatui::style::Color::Yellow));
+                if is_corner {
+                    left = Some(left.map_or(x, |l: u16| l.min(x)));
+                    right = Some(right.map_or(x, |r: u16| r.max(x)));
+                }
+            }
+        }
+        let (left, right) = (
+            left.expect("picker top-left corner"),
+            right.expect("picker top-right corner"),
+        );
+        assert!(
+            left >= 2 && width - right >= 3,
+            "picker touches the screen edges at width {width}: left={left}, right={right}"
+        );
+    }
 }
 
 /// 工具卡三态（B5）：同一张已落定的 write_file 卡，内容行数超过折叠
@@ -588,6 +842,7 @@ fn card_harness(tag: &str, visibility: ToolCardVisibility) -> Harness {
 #[test]
 fn tool_card_collapsed_snapshot() {
     card_harness("snap-card-collapsed", ToolCardVisibility::Collapsed)
+        // 刷新 2026-08-19：会话折行宽度 -1（滚动条列专属）。
         .snapshot("tool-card-collapsed");
 }
 
@@ -598,6 +853,7 @@ fn tool_card_expanded_snapshot() {
 
 #[test]
 fn tool_card_hidden_snapshot() {
+    // 刷新 2026-08-19：会话折行宽度 -1（同 tool-card-collapsed）。
     card_harness("snap-card-hidden", ToolCardVisibility::Hidden).snapshot("tool-card-hidden");
 }
 
@@ -619,6 +875,7 @@ fn tool_card_denied_snapshot() {
     );
     conversation.push_assistant_for_test("I could not write the file.");
     harness.app.conversation = conversation;
+    // 刷新 2026-08-19：会话折行宽度 -1（同 tool-card-collapsed）。
     harness.snapshot("tool-card-denied");
 }
 
@@ -630,6 +887,7 @@ fn turn_end_notice_snapshot() {
     conversation.push_assistant_for_test("write attempted");
     conversation.push_turn_end("completed".into());
     harness.app.conversation = conversation;
+    // 刷新 2026-08-19：会话折行宽度 -1（同 tool-card-collapsed）。
     harness.snapshot("turn-end-notice");
 }
 
@@ -642,6 +900,7 @@ fn markdown_table_snapshot() {
         "Here is the breakdown:\n\n| file | lines | state |\n| --- | :---: | ---: |\n| a.rs | 12 | ok |\n| b.rs | 345 | **failing** |\n| c.md | 7 | ok |",
     );
     harness.app.conversation = conversation;
+    // 刷新 2026-08-19：会话折行宽度 -1（同 tool-card-collapsed）。
     harness.snapshot("markdown-table");
 }
 
@@ -657,6 +916,8 @@ fn markdown_cjk_wrap_snapshot() {
         "### 会话与持久化（挺有特色的部分）\n\n- 会话是 DSH 兼容的 append-only 日志：每段对话一个 zstd 分帧 JSONL 文件，在 ~/.clat/sessions/ 下；先写后做（第一条用户消息在调模型之前已落盘），中途崩溃恢复到上一个完整批次\n- 投影 checkpoint 放在日志旁边，重开很快；SQLite 只存控制面状态（模型、profile、信任、当前会话指针）\n- CLAT 日志和 DSH 工具互相可读——docs/research/ 里一堆 dsh-* 映射文档表明这个项目是从 DSH 迁移/对标演化来的",
     );
     harness.app.conversation = conversation;
+    // 刷新 2026-08-19：会话折行宽度 -1（CJK 换行点整体前移一列，
+    // 滚动条列自此不受宽字符字形铺入）。
     harness.snapshot("markdown-cjk-wrap");
 }
 
@@ -707,6 +968,7 @@ fn steered_transcript_snapshot() {
             delta: "checkpoint 放在日志旁边，重开很快。".into(),
         },
     });
+    // 刷新 2026-08-19：会话折行宽度 -1（同 tool-card-collapsed）。
     harness.snapshot("steered-transcript");
 }
 
@@ -732,6 +994,11 @@ fn ask_dialog_options_snapshot() {
     // 选项模式：游标落在 beta（按过一次 ↓），选中行高亮、描述 dim、
     // 末尾自定义入口、脚注键位。刷新 2026-08-19：底层空会话改画
     // LOGO 欢迎页（弹窗覆盖其上）。
+    // 刷新 2026-08-19：ask 弹窗与权限弹窗同享全屏 DIM 压暗层（同为
+    // 异步模态，同因可被忽略）。
+    // 刷新 2026-08-19：弹窗 Clear 垫边（同 permission-dialog）。
+    // 刷新 2026-08-19：弹窗规范统一——黄边框 + 四边垫边（同
+    // permission-dialog）。
     let mut harness = Harness::trusted("snap-ask-options", 80, 24);
     let (answer_tx, _answer_rx) = mpsc::channel();
     harness.event(UiEvent::Worker(WorkerMessage::AskUserRequest {
@@ -749,6 +1016,9 @@ fn ask_dialog_options_snapshot() {
 fn ask_dialog_custom_snapshot() {
     // 自定义输入模式：`c` 进入、键入 canary、下划线标示输入位。
     // 刷新 2026-08-19：底层空会话改画 LOGO 欢迎页。
+    // 刷新 2026-08-19：全屏 DIM 压暗层（同 ask-dialog-options）。
+    // 刷新 2026-08-19：弹窗 Clear 垫边（同 permission-dialog）。
+    // 刷新 2026-08-19：弹窗规范统一（黄边框 + 四边垫边）。
     let mut harness = Harness::trusted("snap-ask-custom", 80, 24);
     let (answer_tx, _answer_rx) = mpsc::channel();
     harness.event(UiEvent::Worker(WorkerMessage::AskUserRequest {

@@ -7,17 +7,17 @@ scroll 0
 003| <blank>
 004| <blank>
 005| <blank>
-006|       ┌ Trust ───────────────────────────────────────────────────────────┐
-007|       │ Trust this project?                                              │  ⟦8..26 BOLD⟧
-008|       │                                                                  │
-009|       │ CLAT reads and modifies files, and runs tools inside:            │
-010|       │   /home/dev/example-project                                      │
-011|       │                                                                  │
-012|       │ Trusting is remembered per directory. Review the project (e.g. i │
-013|       │ README and configs) before granting an agent access to it.       │
-014|       │                                                                  │
-015|       │ Enter / y — trust this project      ·      Esc / n — exit CLAT   │  ⟦8..69 BOLD⟧
-016|       └──────────────────────────────────────────────────────────────────┘
+006|       ┌ Trust ───────────────────────────────────────────────────────────┐  ⟦6..6 fg=Yellow · 7..13 fg=Yellow+BOLD · 14..73 fg=Yellow⟧
+007|       │ Trust this project?                                              │  ⟦6..6 fg=Yellow · 8..26 BOLD · 73..73 fg=Yellow⟧
+008|       │                                                                  │  ⟦6..6 fg=Yellow · 73..73 fg=Yellow⟧
+009|       │ CLAT reads and modifies files, and runs tools inside:            │  ⟦6..6 fg=Yellow · 73..73 fg=Yellow⟧
+010|       │   /home/dev/example-project                                      │  ⟦6..6 fg=Yellow · 73..73 fg=Yellow⟧
+011|       │                                                                  │  ⟦6..6 fg=Yellow · 73..73 fg=Yellow⟧
+012|       │ Trusting is remembered per directory. Review the project (e.g. i │  ⟦6..6 fg=Yellow · 73..73 fg=Yellow⟧
+013|       │ README and configs) before granting an agent access to it.       │  ⟦6..6 fg=Yellow · 73..73 fg=Yellow⟧
+014|       │                                                                  │  ⟦6..6 fg=Yellow · 73..73 fg=Yellow⟧
+015|       │ Enter / y — trust this project      ·      Esc / n — exit CLAT   │  ⟦6..6 fg=Yellow · 8..69 BOLD · 73..73 fg=Yellow⟧
+016|       └──────────────────────────────────────────────────────────────────┘  ⟦6..73 fg=Yellow⟧
 017| <blank>
 018| <blank>
 019| <blank>

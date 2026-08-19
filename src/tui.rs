@@ -271,6 +271,16 @@ fn content_rect(area: Rect) -> Rect {
     )
 }
 
+/// 会话文本的折行宽度：inner（边框内 `width - 2`）再为右侧滚动条列
+/// 预留 1 列——行尾宽字符（CJK/emoji 占 2 列）的字形不得铺进滚动条
+/// 列（ratatui diff 的 `to_skip` 会吞掉被字形覆盖的滚动条符号补发，
+/// 用户实测：纯 ASCII 行不遮挡，被遮挡的行必含非英文字符）。渲染与
+/// 选区复制必须共用本函数——复制旁路宽度会让拷出的行与显示的折行
+/// 错位（2026-08-19 审计发现的回归）。
+fn conversation_wrap_width(area: Rect) -> usize {
+    area.width.saturating_sub(3).max(1) as usize
+}
+
 /// 屏幕坐标 → 内容坐标。指针必须落在内容区内，否则返回 None。
 fn content_pos(area: Rect, x: u16, y: u16) -> Option<SelectionPos> {
     let inner = content_rect(area);
@@ -781,7 +791,7 @@ impl App {
 
     /// 从已挂载的 application 读取项目快照并重置前端状态。
     fn adopt_snapshot(&mut self) -> Result<(), String> {
-        let snapshot = match self.application.as_ref().map(|app| app.snapshot()) {
+        let snapshot = match self.application.as_mut().map(|app| app.snapshot()) {
             Some(Ok(snapshot)) => snapshot,
             Some(Err(error)) => return Err(error.to_string()),
             None => return Err("project application is unavailable".into()),
@@ -1521,7 +1531,9 @@ impl App {
         let mut pieces = Vec::new();
         match selection.kind {
             SelectionKind::Conversation => {
-                let width = self.conversation_area.width.saturating_sub(2).max(1) as usize;
+                // 复制的折行宽度必须与渲染同源：长行在错误宽度下重取
+                // 行文本，拷出的内容与显示错位。
+                let width = conversation_wrap_width(self.conversation_area);
                 let total = self.conversation_total_lines(width);
                 let last = to.row.min(total.saturating_sub(1));
                 for row in from.row..=last {
@@ -2232,19 +2244,40 @@ impl App {
             frame.render_widget(Paragraph::new(suffix).right_aligned(), columns[1]);
         }
 
+        // 统一模态压暗层（弹窗规范 2026-08-19）：所有弹窗——异步的
+        // 权限/ask 与同步的选择器/编辑器——绘制前全屏叠加 DIM，只降
+        // 亮度、不清内容；弹窗保持全亮。起因是真实事故：权限框与背景
+        // 同亮度被当成背景忽略。不支持 faint 的终端优雅退化为仅剩
+        // 边框色对比。压暗必须先于下方弹窗链绘制。
+        if self.pending_ask_user.is_some()
+            || self.pending_permission.is_some()
+            || self.session_picker.is_some()
+            || self.picker.is_some()
+            || self.editor.is_some()
+        {
+            frame.render_widget(
+                Block::default().style(Style::default().add_modifier(Modifier::DIM)),
+                frame.area(),
+            );
+        }
+
         if let Some(picker) = &self.session_picker {
-            let height = (picker.row_count() as u16 + 4).min(area.height.saturating_sub(2));
+            let height = (picker.row_count() as u16 + 4).min(popup_height_cap(area));
             let picker_area = centered_rect(84, height.max(6), area);
             self.editor_area = Some(picker_area);
             picker.draw(frame, picker_area);
         } else if let Some(picker) = &self.picker {
-            let height = (picker.row_count() as u16 + 4).min(area.height.saturating_sub(2));
-            let picker_area = centered_rect(94, height.max(8), area);
+            let height = (picker.row_count() as u16 + 4).min(popup_height_cap(area));
+            // 84%：与其余弹窗统一（弹窗规范 2026-08-19）。94% 在宽终端
+            // 上每边仅留 3%，视觉上与贴墙无异（用户实测报告撞墙）。
+            let picker_area = centered_rect(84, height.max(8), area);
             self.editor_area = Some(picker_area);
             picker.draw(frame, picker_area);
         } else if let Some(editor) = &self.editor {
-            let height = (editor.row_count() as u16 + 4).min(area.height.saturating_sub(2));
-            let editor_area = centered_rect(94, height.max(8), area);
+            let height = (editor.row_count() as u16 + 4).min(popup_height_cap(area));
+            // 84%：同上——选择器与编辑器是仅有的两个 94% 弹窗，统一后
+            // 全部弹窗同宽族、同最小边距（POPUP_H_MARGIN 钳制兜底）。
+            let editor_area = centered_rect(84, height.max(8), area);
             self.editor_area = Some(editor_area);
             editor.draw(frame, editor_area);
         } else {
@@ -2278,7 +2311,7 @@ impl App {
             return;
         };
         let area = frame.area();
-        let dialog = centered_rect(72, 12.min(area.height.saturating_sub(2)), area);
+        let dialog = centered_rect(72, 12.min(popup_height_cap(area)), area);
         let inner_width = dialog.width.saturating_sub(2 + 2 * POPUP_TEXT_PADDING) as usize;
 
         let mut lines: Vec<Line<'static>> = Vec::new();
@@ -2363,7 +2396,7 @@ impl App {
         } else {
             spans.extend(lines);
         }
-        frame.render_widget(Clear, dialog);
+        clear_popup_with_guards(frame, dialog);
         frame.render_widget(
             Paragraph::new(spans).block(popup_block(" Question ")),
             dialog,
@@ -2422,7 +2455,9 @@ impl App {
         };
         // 对话框最高占屏（减边距）。参数可滚动，且只有最后一页
         // 确实进入视口后才开放批准键，避免隐藏字段未审阅即放行。
-        let max_dialog_height = area.height.saturating_sub(2);
+        // 预算必须与 centered_rect 的实际钳制同源（popup_height_cap），
+        // 否则分页页底会渲染在框外。
+        let max_dialog_height = popup_height_cap(frame.area()).min(area.height.saturating_sub(2));
         let reserved = lines.len() + 5; // 状态 + 空行 + 快捷键 + 边框
         let available_for_arguments = (max_dialog_height as usize).saturating_sub(reserved);
         if available_for_arguments == 0 || argument_width < 8 {
@@ -2438,7 +2473,7 @@ impl App {
             ];
             let height = (compact.len() as u16 + 2).min(max_dialog_height);
             let dialog = centered_rect(84, height, area);
-            frame.render_widget(Clear, dialog);
+            clear_popup_with_guards(frame, dialog);
             frame.render_widget(
                 Paragraph::new(compact).block(popup_block(" Permission ")),
                 dialog,
@@ -2482,7 +2517,7 @@ impl App {
 
         let height = (lines.len() as u16 + 2).min(max_dialog_height);
         let dialog = centered_rect(84, height.max(10), area);
-        frame.render_widget(Clear, dialog);
+        clear_popup_with_guards(frame, dialog);
         frame.render_widget(
             Paragraph::new(lines).block(popup_block(" Permission ")),
             dialog,
@@ -2538,7 +2573,9 @@ impl App {
             draw_welcome(frame, block.inner(area));
             return;
         }
-        let inner_width = area.width.saturating_sub(2).max(1) as usize;
+        // 折行宽度比 inner 少一列：滚动条列专属（见
+        // conversation_wrap_width），宽字符字形不再铺进滚动条列。
+        let inner_width = conversation_wrap_width(area);
         let total = self.conversation_total_lines(inner_width);
         let visible = area.height.saturating_sub(2) as usize;
         let max_start = total.saturating_sub(visible);
@@ -2826,6 +2863,14 @@ pub(crate) fn wrap_text(text: &str, width: usize) -> Vec<String> {
 /// 并保持居中，而不是牺牲边距。
 pub(crate) const POPUP_H_MARGIN: u16 = 4;
 
+/// 弹窗上下不贴屏幕上下沿的最少行数（与 `POPUP_H_MARGIN` 对称的垂直
+/// 边距；弹窗规范 2026-08-19：四边间距）。终端高度放不下时不硬挤
+/// 没——按旧钳制退化（见 `centered_rect`）。
+pub(crate) const POPUP_V_MARGIN: u16 = 2;
+
+/// 垂直边距钳制生效所需的最低弹窗高度：更矮的终端保留旧行为。
+const MIN_POPUP_HEIGHT: u16 = 6;
+
 /// 钳制生效所需的最低对话框宽度：更窄的终端连"边距 + 可用宽度"
 /// 都放不下，保留百分比行为，不把对话框挤没。
 const MIN_POPUP_WIDTH: u16 = 16;
@@ -2834,13 +2879,46 @@ const MIN_POPUP_WIDTH: u16 = 16;
 /// 手工换行/截断的宽度计算必须同步扣除 `2 × POPUP_TEXT_PADDING`。
 pub(crate) const POPUP_TEXT_PADDING: u16 = 1;
 
-/// 弹出窗统一的边框块：全边框 + 标题 + 1 列水平内边距。标题原样
-/// 使用，调用方自带前后空格（如 `" Permission "`）。
+/// 弹出窗统一的边框块：全边框 + 标题 + 1 列水平内边距 + Warning 黄
+/// 边框/标题（弹窗规范 2026-08-19：所有弹窗同一样式——黄边框、背景
+/// 压暗、四边间距；黄 = 需要注意/决策的模态语义，与主题 Role::Warning
+/// 一致）。标题原样使用，调用方自带前后空格（如 `" Permission "`）。
 pub(crate) fn popup_block(title: &str) -> Block<'_> {
+    let warning = tui_theme::style(tui_theme::Role::Warning);
     Block::default()
         .borders(Borders::ALL)
         .title(title)
+        .title_style(warning.add_modifier(Modifier::BOLD))
+        .border_style(warning)
         .padding(Padding::horizontal(POPUP_TEXT_PADDING))
+}
+
+/// 弹窗清屏垫边（wide-glyph guard）：Clear 范围左右各扩一列（钳制在
+/// 终端区域内）。跨在弹窗左边框起点上的宽字符（CJK/emoji 占 2 列，
+/// 起点格在 Clear 范围之外）会让 ratatui diff 的 `to_skip` 吞掉边框
+/// 列的更新——上一帧的字形铺进边框列，本帧 │ 不再补发，左边线被吃
+/// 掉（用户实测：仅左边线受损，弹窗内部不受影响；右侧因起点格在
+/// Clear 范围内天然安全，扩列是对称保险）。起点格被一并清掉后，
+/// diff 正常发出边框更新。
+pub(crate) fn clear_popup_with_guards(frame: &mut Frame, rect: Rect) {
+    let area = frame.area();
+    let left = rect.x.saturating_sub(1).max(area.x);
+    let right = rect.right().saturating_add(1).min(area.right());
+    let top = rect.y.saturating_sub(1).max(area.y);
+    let bottom = rect.bottom().saturating_add(1).min(area.bottom());
+    if right <= left || bottom <= top {
+        frame.render_widget(Clear, rect);
+        return;
+    }
+    frame.render_widget(
+        Clear,
+        Rect {
+            x: left,
+            width: right - left,
+            y: top,
+            height: bottom - top,
+        },
+    );
 }
 
 /// 空会话欢迎页：LOGO + 版本行 + 起步提示，双向居中于会话区内框。
@@ -2881,7 +2959,24 @@ fn draw_welcome(frame: &mut Frame, inner: Rect) {
     );
 }
 
+/// 弹窗在给定终端内的最大可用高度（垂直边距感知）：放得下边距时为
+/// `area.height - 2×POPUP_V_MARGIN`，终端过矮时退化为整屏高。这是
+/// 弹窗高度的唯一预算来源——`centered_rect` 的钳制与所有弹窗内容方
+/// 的分页/行数预算必须共用同一函数，否则预算与实际渲染高度错位
+/// （真实回归：权限弹窗分页按 `area.height - 2` 旧预算计算，而
+/// centered_rect 钳到 `area.height - 4`——End 翻到底时页底两行渲染
+/// 在框外，永远看不到最后两行）。
+pub(crate) fn popup_height_cap(area: Rect) -> u16 {
+    let bounded = area.height.saturating_sub(2 * POPUP_V_MARGIN);
+    if bounded >= MIN_POPUP_HEIGHT {
+        bounded.min(area.height)
+    } else {
+        area.height
+    }
+}
+
 fn centered_rect(percent_x: u16, height: u16, area: Rect) -> Rect {
+    let height = height.min(popup_height_cap(area));
     let top = area.height.saturating_sub(height) / 2;
     let vertical = Rect::new(area.x, area.y + top, area.width, height.min(area.height));
     let horizontal = Layout::default()
@@ -2943,9 +3038,9 @@ fn render_trust_dialog(frame: &mut Frame, area: Rect, root: &Path) {
         tui_theme::style(tui_theme::Role::Bold),
     )));
 
-    let height = (lines.len() as u16 + 2).min(area.height.saturating_sub(2));
+    let height = (lines.len() as u16 + 2).min(popup_height_cap(area));
     let dialog = centered_rect(84, height.max(10), area);
-    frame.render_widget(Clear, dialog);
+    clear_popup_with_guards(frame, dialog);
     frame.render_widget(Paragraph::new(lines).block(popup_block(" Trust ")), dialog);
 }
 
@@ -3421,6 +3516,27 @@ mod tests {
         assert_eq!(scrollbar_position(40, 80, 100), 49);
         // Nothing to scroll: stays at the top.
         assert_eq!(scrollbar_position(0, 0, 5), 0);
+    }
+
+    #[test]
+    fn popup_height_cap_reserves_vertical_margins() {
+        // 弹窗高度预算的唯一来源：放得下边距时减 2×POPUP_V_MARGIN，
+        // 过矮终端（减后低于 MIN_POPUP_HEIGHT）退化为整屏高，不硬挤
+        // 没。分页预算与 centered_rect 的钳制必须同源，否则页底渲染
+        // 在框外（见 permission_dialog_scrolling_reaches_the_last_argument_line）。
+        let area = |height| Rect::new(0, 0, 80, height);
+        assert_eq!(popup_height_cap(area(24)), 20);
+        assert_eq!(
+            popup_height_cap(area(10)),
+            6,
+            "bounded=6 exactly meets MIN_POPUP_HEIGHT"
+        );
+        assert_eq!(
+            popup_height_cap(area(9)),
+            9,
+            "bounded=5 keeps the legacy full-height behavior"
+        );
+        assert_eq!(popup_height_cap(area(0)), 0);
     }
 
     #[test]

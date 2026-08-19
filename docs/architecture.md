@@ -137,13 +137,13 @@ built yet:
 | Per-session agent todo state | done — `SessionWrite`, append-only snapshots, dynamic model context |
 | Automatic session titles | done — first successful run, bounded background worker, CAS against manual rename |
 | Typed provider retry | done — fresh model attempts, Retry-After, event-safe retry, internal deadlines |
-| Turn budget configurability | not built — fixed 32 turns, exceeding it fails the run |
+| Unbounded agent loop (DSH parity) | done — the run loop has **no turn budget** (2026-08-19; DSH's `kick()` is `while (await turn())`, and Claude Code / opencode are the same): it ends only on completion/refusal, user abort, or failure. Context pressure belongs to pruning/compaction, cost to the visible usage + user cancel. The earlier fixed-32-turn interruption and its bounded `[auto-continue]` patch were emergency measures and are removed |
 | Headless CLI (`clat exec`) | done — one-shot runs with stdout-only assistant output; dual-input prompt (instruction + piped context, 8 MiB budget); TTY permission prompts with stale-input discard, deny-on-pipe default, `--yes` bypass; `--continue` / `--session` resume; graceful Ctrl-C everywhere (including pending-run and permission-wait windows); broken-pipe cancels the run and fails the exit; closed by the 2026-08-17 headless audit (HL-01…09) |
 | Subagents, image input, multi-agent orchestration | deferred by constitution |
 
 The next growth step is driven by real dogfood need; candidates include a
-structured `--json` event stream for `clat exec` (consumed by editors and CI)
-and turn-budget configurability. The Application API remains frontend-neutral:
+structured `--json` event stream for `clat exec` (consumed by editors and CI).
+The Application API remains frontend-neutral:
 every frontend — TUI, `exec`, a future desktop or IDE client — supplies only
 an `EventSink`, a `PermissionApprover`, and a completion channel.
 

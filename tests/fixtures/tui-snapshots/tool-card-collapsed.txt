@@ -5,7 +5,7 @@ scroll 0
 001| │ CLAT v<VERSION>  ready  ·  not configured — /model                               │  ⟦2..5 BOLD⟧
 002| └──────────────────────────────────────────────────────────────────────────────┘
 003| ┌Conversation──────────────────────────────────────────────────────────────────┐
-004| │❯ please write the file                                                      ▲│  ⟦1..2 fg=Yellow+bg=Rgb(48, 50, 60)+BOLD · 3..77 fg=Rgb(233, 234, 239)+bg=Rgb(48, 50, 60) · 78..78 fg=DarkGray+bg=Rgb(48, 50, 60)⟧
+004| │❯ please write the file                                                      ▲│  ⟦1..2 fg=Yellow+bg=Rgb(48, 50, 60)+BOLD · 3..77 fg=Rgb(233, 234, 239)+bg=Rgb(48, 50, 60) · 78..78 fg=DarkGray⟧
 005| │                                                                             ┃│  ⟦78..78 fg=Cyan⟧
 006| │● Tool / write_file                                                          ┃│  ⟦1..19 fg=Green · 78..78 fg=Cyan⟧
 007| │  write src/lib.rs (147 bytes)                                               ┃│  ⟦1..30 BOLD · 78..78 fg=Cyan⟧

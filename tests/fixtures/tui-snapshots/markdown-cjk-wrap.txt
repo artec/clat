@@ -5,17 +5,17 @@ scroll 0
 001| │ CLAT v<VERSION>  ready  ·  not configured — /model                               │  ⟦2..5 BOLD⟧
 002| └──────────────────────────────────────────────────────────────────────────────┘
 003| ┌Conversation──────────────────────────────────────────────────────────────────┐
-004| │❯ 介 绍 一 下 会 话 与 持 久 化                                                        ▲│  ⟦1..2 fg=Yellow+bg=Rgb(48, 50, 60)+BOLD · 3..3 fg=Rgb(233, 234, 239)+bg=Rgb(48, 50, 60) · 5..5 fg=Rgb(233, 234, 239)+bg=Rgb(48, 50, 60) · 7..7 fg=Rgb(233, 234, 239)+bg=Rgb(48, 50, 60) · 9..9 fg=Rgb(233, 234, 239)+bg=Rgb(48, 50, 60) · 11..11 fg=Rgb(233, 234, 239)+bg=Rgb(48, 50, 60) · 13..13 fg=Rgb(233, 234, 239)+bg=Rgb(48, 50, 60) · 15..15 fg=Rgb(233, 234, 239)+bg=Rgb(48, 50, 60) · 17..17 fg=Rgb(233, 234, 239)+bg=Rgb(48, 50, 60) · 19..19 fg=Rgb(233, 234, 239)+bg=Rgb(48, 50, 60) · 21..21 fg=Rgb(233, 234, 239)+bg=Rgb(48, 50, 60) · 23..77 fg=Rgb(233, 234, 239)+bg=Rgb(48, 50, 60) · 78..78 fg=DarkGray+bg=Rgb(48, 50, 60)⟧
+004| │❯ 介 绍 一 下 会 话 与 持 久 化                                                        ▲│  ⟦1..2 fg=Yellow+bg=Rgb(48, 50, 60)+BOLD · 3..3 fg=Rgb(233, 234, 239)+bg=Rgb(48, 50, 60) · 5..5 fg=Rgb(233, 234, 239)+bg=Rgb(48, 50, 60) · 7..7 fg=Rgb(233, 234, 239)+bg=Rgb(48, 50, 60) · 9..9 fg=Rgb(233, 234, 239)+bg=Rgb(48, 50, 60) · 11..11 fg=Rgb(233, 234, 239)+bg=Rgb(48, 50, 60) · 13..13 fg=Rgb(233, 234, 239)+bg=Rgb(48, 50, 60) · 15..15 fg=Rgb(233, 234, 239)+bg=Rgb(48, 50, 60) · 17..17 fg=Rgb(233, 234, 239)+bg=Rgb(48, 50, 60) · 19..19 fg=Rgb(233, 234, 239)+bg=Rgb(48, 50, 60) · 21..21 fg=Rgb(233, 234, 239)+bg=Rgb(48, 50, 60) · 23..77 fg=Rgb(233, 234, 239)+bg=Rgb(48, 50, 60) · 78..78 fg=DarkGray⟧
 005| │                                                                             ┃│  ⟦78..78 fg=Cyan⟧
 006| │⏺ 会 话 与 持 久 化 （ 挺 有 特 色 的 部 分 ）                                              ┃│  ⟦1..2 fg=Gray · 3..3 fg=Cyan+BOLD · 5..5 fg=Cyan+BOLD · 7..7 fg=Cyan+BOLD · 9..9 fg=Cyan+BOLD · 11..11 fg=Cyan+BOLD · 13..13 fg=Cyan+BOLD · 15..15 fg=Cyan+BOLD · 17..17 fg=Cyan+BOLD · 19..19 fg=Cyan+BOLD · 21..21 fg=Cyan+BOLD · 23..23 fg=Cyan+BOLD · 25..25 fg=Cyan+BOLD · 27..27 fg=Cyan+BOLD · 29..29 fg=Cyan+BOLD · 31..31 fg=Cyan+BOLD · 78..78 fg=Cyan⟧
 007| │                                                                             ┃│  ⟦78..78 fg=Cyan⟧
 008| │  • 会 话 是  DSH 兼 容 的  append-only 日 志 ： 每 段 对 话 一 个  zstd 分 帧  JSONL 文 件 ， 在 ┃│  ⟦3..4 fg=Cyan · 78..78 fg=Cyan⟧
-009| │    ~/.clat/sessions/ 下 ； 先 写 后 做 （ 第 一 条 用 户 消 息 在 调 模 型 之 前 已 落 盘 ） ， 中 途 崩 │
-010| │    溃 恢 复 到 上 一 个 完 整 批 次                                                    ┃│  ⟦78..78 fg=Cyan⟧
+009| │    ~/.clat/sessions/ 下 ； 先 写 后 做 （ 第 一 条 用 户 消 息 在 调 模 型 之 前 已 落 盘 ） ， 中 途  ┃│  ⟦78..78 fg=Cyan⟧
+010| │    崩 溃 恢 复 到 上 一 个 完 整 批 次                                                  ┃│  ⟦78..78 fg=Cyan⟧
 011| │  • 投 影  checkpoint 放 在 日 志 旁 边 ， 重 开 很 快 ； SQLite 只 存 控 制 面 状 态 （ 模 型 、     ┃│  ⟦3..4 fg=Cyan · 78..78 fg=Cyan⟧
 012| │    profile、 信 任 、 当 前 会 话 指 针 ）                                             ┃│  ⟦78..78 fg=Cyan⟧
-013| │  • CLAT 日 志 和  DSH 工 具 互 相 可 读 ——docs/research/ 里 一 堆  dsh-* 映 射 文 档 表 明 这 个 │  ⟦3..4 fg=Cyan⟧
-014| │    项 目 是 从  DSH 迁 移 /对 标 演 化 来 的                                            ││  ⟦78..78 fg=DarkGray⟧
+013| │  • CLAT 日 志 和  DSH 工 具 互 相 可 读 ——docs/research/ 里 一 堆  dsh-* 映 射 文 档 表 明 这  ││  ⟦3..4 fg=Cyan · 78..78 fg=DarkGray⟧
+014| │    个 项 目 是 从  DSH 迁 移 /对 标 演 化 来 的                                          ││  ⟦78..78 fg=DarkGray⟧
 015| │                                                                             ││  ⟦78..78 fg=DarkGray⟧
 016| │                                                                             ││  ⟦78..78 fg=DarkGray⟧
 017| │                                                                             ││  ⟦78..78 fg=DarkGray⟧

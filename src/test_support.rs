@@ -87,6 +87,15 @@ pub(crate) enum TestBehavior {
     /// 放行（否则按取消退出），第二次调用观测 steering 用户项是否已
     /// 并入 items。
     Steer(Arc<SteerGate>),
+    /// 连续 `calls` 次模型调用都请求 list_files（Read 效果，免审批），
+    /// 之后的调用输出文本完成：驱动长工具循环场景（无轮次预算回归）。
+    /// 计数经 `seen` 跨模型构建共享——RetryModel 每次请求都经工厂重建
+    /// 模型，实例内状态不可靠；标题旁路请求直接返回短文本，不消耗
+    /// 计数。工具往返各计 usage (1,1)，完成调用经 response() 计 (2,3)。
+    ToolLoop {
+        calls: usize,
+        seen: Arc<std::sync::atomic::AtomicUsize>,
+    },
     /// 第一轮调用 ask_user 工具（Pure 效果，免审批），拿到答案后第二
     /// 轮完成：端到端验证 ask-user 端口（asker 由 run 请求安装）。
     AskUser(Arc<ScriptedAsker>),
@@ -299,6 +308,40 @@ impl Model for TestModel {
                     delta: "first answer".into(),
                 });
                 Ok(response("first answer", FinishReason::Completed))
+            }
+            TestBehavior::ToolLoop { calls, seen } => {
+                let is_title = request
+                    .instructions
+                    .is_some_and(|text| text.contains("Generate a concise title"));
+                if is_title {
+                    return Ok(response("loop title", FinishReason::Completed));
+                }
+                let n = seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                if n > *calls {
+                    events.emit(ModelEvent::TextDelta {
+                        delta: "loop complete".into(),
+                    });
+                    return Ok(response("loop complete", FinishReason::Completed));
+                }
+                Ok(ModelResponse {
+                    text: String::new(),
+                    tool_calls: vec![ToolCall {
+                        id: format!("call-loop-{n}"),
+                        name: "list_files".into(),
+                        arguments: json!({ "path": "." }),
+                    }],
+                    finish_reason: FinishReason::ToolCalls,
+                    // 每次工具往返计 (1,1)：让续跑段的 usage 累计可断言
+                    //（完成调用经 response() 计 (2,3)）。
+                    usage: Some(Usage {
+                        input_tokens: 1,
+                        output_tokens: 1,
+                        ..Usage::default()
+                    }),
+                    provider_response_id: None,
+                    provider_state: Vec::new(),
+                    reasoning: None,
+                })
             }
             TestBehavior::AskUser(_) => {
                 let has_ask_result = request.items.iter().any(|item| {

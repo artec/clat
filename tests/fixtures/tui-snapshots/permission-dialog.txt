@@ -1,27 +1,27 @@
 size 80x24
 cursor 3,21
 scroll 0
-000| ┌──────────────────────────────────────────────────────────────────────────────┐
-001| │ CLAT v<VERSION>  ready  ·  not configured — /model                               │  ⟦2..5 BOLD⟧
-002| └──────────────────────────────────────────────────────────────────────────────┘
-003| ┌Conversation──────────────────────────────────────────────────────────────────┐
-004| │     ┌ Permission ──────────────────────────────────────────────────────┐     │
-005| │     │ Permission required                                              │     │  ⟦8..26 BOLD⟧
-006| │     │                                                                  │     │
-007| │     │ tool:      write_file                                            │     │
-008| │     │ effect:    writes files                                          │     │
-009| │     │ reason:    writes a file                                         │     │
-010| │     │ fields:    content, path                                         │     │
-011| │     │   write src/lib.rs (37 bytes)                                    │     │  ⟦8..36 BOLD⟧
-012| │     │   fn main() {                                                    │     │
-013| │     │       println!("hello");                                         │     │
-014| │     │   }                                                              │     │
-015| │     │                                                                  │     │
-016| │     │ arguments lines 1–5 of 5 · ↑/↓ PgUp/PgDn Home/End                │     │  ⟦8..56 BOLD⟧
-017| │     │                                                                  │     │
-018| │     │ Enter / y — allow      ·      Esc / n — deny                     │     │  ⟦8..51 BOLD⟧
-019| └─────└──────────────────────────────────────────────────────────────────┘─────┘
-020| ┌Message───────────────────────────────────────────────────────────────────────┐
-021| │❯                                                                             │
-022| └──────────────────────────────────────────────────────────────────────────────┘
-023|  permission required — review arguments, then allow or deny
+000| ┌──────────────────────────────────────────────────────────────────────────────┐  ⟦0..79 DIM⟧
+001| │ CLAT v<VERSION>  ready  ·  not configured — /model                               │  ⟦0..1 DIM · 2..5 BOLD+DIM · 6..79 DIM⟧
+002| └──────────────────────────────────────────────────────────────────────────────┘  ⟦0..79 DIM⟧
+003| ┌Conv                                                                      ────┐  ⟦0..4 DIM · 75..79 DIM⟧
+004| │     ┌ Permission ──────────────────────────────────────────────────────┐     │  ⟦0..4 DIM · 6..6 fg=Yellow · 7..18 fg=Yellow+BOLD · 19..73 fg=Yellow · 75..79 DIM⟧
+005| │     │ Permission required                                              │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 8..26 BOLD · 73..73 fg=Yellow · 75..79 DIM⟧
+006| │     │                                                                  │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+007| │     │ tool:      write_file                                            │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+008| │     │ effect:    writes files                                          │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+009| │     │ reason:    writes a file                                         │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+010| │     │ fields:    content, path                                         │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+011| │     │   write src/lib.rs (37 bytes)                                    │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 8..36 BOLD · 73..73 fg=Yellow · 75..79 DIM⟧
+012| │     │   fn main() {                                                    │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+013| │     │       println!("hello");                                         │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+014| │     │   }                                                              │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+015| │     │                                                                  │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+016| │     │ arguments lines 1–5 of 5 · ↑/↓ PgUp/PgDn Home/End                │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 8..56 BOLD · 73..73 fg=Yellow · 75..79 DIM⟧
+017| │     │                                                                  │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+018| │     │ Enter / y — allow      ·      Esc / n — deny                     │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 8..51 BOLD · 73..73 fg=Yellow · 75..79 DIM⟧
+019| └──── └──────────────────────────────────────────────────────────────────┘ ────┘  ⟦0..4 DIM · 6..73 fg=Yellow · 75..79 DIM⟧
+020| ┌Mess                                                                      ────┐  ⟦0..4 DIM · 75..79 DIM⟧
+021| │❯                                                                             │  ⟦0..79 DIM⟧
+022| └──────────────────────────────────────────────────────────────────────────────┘  ⟦0..79 DIM⟧
+023|  permission required — review arguments, then allow or deny  ⟦0..58 DIM · 59..79 PAD:21 DIM⟧

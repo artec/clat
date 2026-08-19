@@ -208,7 +208,12 @@ impl SessionCoordinator {
         Ok(range)
     }
 
-    fn flush(&self) -> Result<(), String> {
+    /// Drain the write-behind lane without retiring the writer (contrast
+    /// [`Self::close`]): a read barrier so a same-process full-log stream
+    /// (`replay` callers) cannot observe our own pending batch as a foreign
+    /// mid-stream change. A failure keeps the batch queued for the normal
+    /// retry lane (write-behind semantics).
+    pub(crate) fn flush(&self) -> Result<(), String> {
         self.writer.flush()?;
         let core = self.inner.lock().expect("coordinator lock");
         if let Some(fatal) = &core.fatal {

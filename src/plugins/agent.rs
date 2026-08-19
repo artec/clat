@@ -132,6 +132,8 @@ impl AgentRuntime for DefaultAgentRuntime {
     fn execute(&self, mut request: AgentRequest) -> Result<crate::RunOutput, AgentFailure> {
         // 每次尝试经工厂构造新 Model；瞬态失败（传输/429/5xx）由
         // RetryModel 按策略重试，取消降格为正常 Cancelled 响应。
+        // 循环本身无轮次预算（DSH 范式）：只被完成/取消/错误终结，
+        // 上下文压力由 pruning/compaction 吸收。
         let providers = Arc::clone(&self.providers);
         let config = request.config.clone();
         let credentials = request.credentials.clone();

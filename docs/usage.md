@@ -20,7 +20,7 @@ project directory.
 
 | Key | Action |
 |---|---|
-| `Enter` | submit |
+| `Enter` | submit; while a run is active, submit steering — the message joins the run at the next step boundary (`steering·N` in the status line until claimed) |
 | `Shift+Enter`, `Alt+Enter`, `Ctrl+J` | insert a line break |
 | `←` / `→`, `Home`, `End` | move the cursor |
 | `Backspace` / `Delete` | edit |
@@ -28,15 +28,17 @@ project directory.
 | `PageUp` / `PageDown` | scroll the conversation |
 | `Shift+Tab` | cycle the thinking level (`Low → High → Max`) |
 | mouse wheel | scroll the conversation (2 rows per notch) |
-| drag with the mouse | highlight text (in the conversation or the input box); click positions the input cursor |
-| `Cmd+C` / `Ctrl+Shift+C` | copy the current selection (CLAT sends OSC 52; iTerm2/WezTerm/kitty/VS Code honor it) |
+| drag with the mouse | select text and copy it on release (OSC 52); a click positions the input cursor |
+| `Cmd+C` / `Ctrl+Shift+C` | copy the current selection again (CLAT sends OSC 52; iTerm2/WezTerm/kitty/VS Code honor it) |
 | `Cmd+X` / `Ctrl+Shift+X` | cut the input-box selection |
 | `Esc` | cancel a running request (partial text is kept); otherwise clear the input |
-| `Ctrl+C` | quit |
+| `Ctrl+C` | re-copy the current selection if one exists; otherwise quit |
 
-Selecting alone never touches the clipboard — copying is always an
-explicit keystroke. When CLAT's mouse capture is on, hold `Shift` while
-dragging to use the terminal's own text selection instead.
+Releasing a drag copies the selection immediately and overwrites the
+system clipboard; `Ctrl+C` re-copies it (or quits when nothing is
+selected — most terminals intercept `Cmd+C` while mouse reporting is
+on, so `Ctrl+C` is the reliable retry path). Hold `Shift` while
+dragging to use the terminal's own selection instead.
 
 While a permission dialog is open, `Esc` denies the pending tool call
 instead of cancelling the run.
@@ -214,6 +216,13 @@ this safe:
 `run_command` output is capped (32 KiB per stream) but the command
 itself is never killed by the cap; timeouts and `Esc` terminate the
 whole process tree, not just the shell.
+
+Long tasks are never cut off by a turn count. The agent loop has no
+turn budget (the same design as DeepSeek Harness, Claude Code, and
+opencode): a run ends only when the model finishes, you cancel it, or
+something fails. Watch the status line for token/context usage, press
+`Esc` to stop at any point, and let `/compact` (or the automatic
+context budget) absorb context pressure.
 
 ## MCP tools
 

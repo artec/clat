@@ -1047,7 +1047,7 @@ mod tests {
     ) -> (crate::SessionId, String) {
         let bootstrap =
             BootstrapApplication::open(project.clone(), storage_root.to_path_buf()).unwrap();
-        let application = bootstrap
+        let mut application = bootstrap
             .into_trusted_with_provider(Arc::new(TestProviderPlugin {
                 behavior: TestBehavior::Success,
             }))
@@ -1439,7 +1439,7 @@ mod tests {
             "{outcome:?}"
         );
         let bootstrap = BootstrapApplication::open(project.clone(), storage_root.clone()).unwrap();
-        let application = bootstrap
+        let mut application = bootstrap
             .into_trusted_with_provider(Arc::new(TestProviderPlugin {
                 behavior: TestBehavior::Success,
             }))
@@ -1689,7 +1689,7 @@ mod tests {
         {
             let bootstrap =
                 BootstrapApplication::open(project.clone(), storage_root.clone()).unwrap();
-            let application = bootstrap
+            let mut application = bootstrap
                 .into_trusted_with_provider(Arc::new(TestProviderPlugin {
                     behavior: TestBehavior::Success,
                 }))
@@ -1704,7 +1704,7 @@ mod tests {
         let (io, _) = ExecIo::capture(b"");
         exec(&project, &storage_root, TestBehavior::Success, options, io);
         let bootstrap = BootstrapApplication::open(project.clone(), storage_root.clone()).unwrap();
-        let application = bootstrap
+        let mut application = bootstrap
             .into_trusted_with_provider(Arc::new(TestProviderPlugin {
                 behavior: TestBehavior::Success,
             }))
@@ -1723,7 +1723,7 @@ mod tests {
             io,
         );
         let bootstrap = BootstrapApplication::open(project, storage_root.clone()).unwrap();
-        let application = bootstrap
+        let mut application = bootstrap
             .into_trusted_with_provider(Arc::new(TestProviderPlugin {
                 behavior: TestBehavior::Success,
             }))
@@ -1786,7 +1786,7 @@ mod tests {
         );
         // 续接后最后一条 user 消息是第二轮的。
         let bootstrap = BootstrapApplication::open(project.clone(), storage_root.clone()).unwrap();
-        let application = bootstrap
+        let mut application = bootstrap
             .into_trusted_with_provider(Arc::new(TestProviderPlugin {
                 behavior: TestBehavior::Success,
             }))

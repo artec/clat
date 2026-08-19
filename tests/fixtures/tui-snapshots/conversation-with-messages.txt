@@ -5,14 +5,14 @@ scroll 0
 001| │ CLAT v<VERSION>  ready  ·  not configured — /model                               │  ⟦2..5 BOLD⟧
 002| └──────────────────────────────────────────────────────────────────────────────┘
 003| ┌Conversation──────────────────────────────────────────────────────────────────┐
-004| │❯ please fix the login crash on Safari                                       ▲│  ⟦1..2 fg=Yellow+bg=Rgb(48, 50, 60)+BOLD · 3..77 fg=Rgb(233, 234, 239)+bg=Rgb(48, 50, 60) · 78..78 fg=DarkGray+bg=Rgb(48, 50, 60)⟧
+004| │❯ please fix the login crash on Safari                                       ▲│  ⟦1..2 fg=Yellow+bg=Rgb(48, 50, 60)+BOLD · 3..77 fg=Rgb(233, 234, 239)+bg=Rgb(48, 50, 60) · 78..78 fg=DarkGray⟧
 005| │                                                                             ┃│  ⟦78..78 fg=Cyan⟧
 006| │⏺ I'll inspect the relevant files first.                                     ┃│  ⟦1..2 fg=Gray · 78..78 fg=Cyan⟧
 007| │                                                                             ┃│  ⟦78..78 fg=Cyan⟧
 008| │  • src/login.rs holds the bug                                               ┃│  ⟦3..4 fg=Cyan · 5..16 fg=Rgb(185, 214, 232)+bg=Rgb(36, 39, 46) · 78..78 fg=Cyan⟧
 009| │  • patched in two places                                                    ┃│  ⟦3..4 fg=Cyan · 16..18 BOLD · 78..78 fg=Cyan⟧
 010| │                                                                             ┃│  ⟦78..78 fg=Cyan⟧
-011| │❯ thanks                                                                     ┃│  ⟦1..2 fg=Yellow+bg=Rgb(48, 50, 60)+BOLD · 3..77 fg=Rgb(233, 234, 239)+bg=Rgb(48, 50, 60) · 78..78 fg=Cyan+bg=Rgb(48, 50, 60)⟧
+011| │❯ thanks                                                                     ┃│  ⟦1..2 fg=Yellow+bg=Rgb(48, 50, 60)+BOLD · 3..77 fg=Rgb(233, 234, 239)+bg=Rgb(48, 50, 60) · 78..78 fg=Cyan⟧
 012| │                                                                             ┃│  ⟦78..78 fg=Cyan⟧
 013| │                                                                             ││  ⟦78..78 fg=DarkGray⟧
 014| │                                                                             ││  ⟦78..78 fg=DarkGray⟧
