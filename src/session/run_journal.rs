@@ -263,6 +263,19 @@ impl SessionCoordinator {
     }
 }
 
+impl Drop for SessionCoordinator {
+    fn drop(&mut self) {
+        // 安全网（2026-08-19 CI 失败）：显式 close 之外的最后一个
+        // `Arc` 落下时也必须退役 writer——JoinHandle 的 drop 是分离
+        // 而非 join，worker 会在 condvar 上永生（真实事故：一个测试
+        // 忘了 quiesce，泄漏的 writer 把并行套件里任何
+        // `wait_for_writer_baseline` 的 30s 窗口顶红，慢速 CI 上必现）。
+        // close 幂等（显式路径先走，这里只兜底）；flush 尽力而为，
+        // 失败无处上报，静默。
+        let _ = self.close();
+    }
+}
+
 fn write_batch(
     backend: &JsonlBackend,
     core: &Mutex<CoordinatorCore>,

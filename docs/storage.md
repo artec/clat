@@ -131,7 +131,11 @@ race leaves the old session untouched and closes the unpublished writer;
 an idempotent repair already completed while arming may remain, but no
 resume seed or selection change is published. Detaching a session flushes, checkpoints, and
 **joins** its writer thread — session switching does not leak threads
-even when writes keep failing.
+even when writes keep failing. Dropping a coordinator without an explicit
+close is a safety-net retirement, not a detach: the last `Arc` falling
+runs a best-effort close, so a forgotten quiesce can never leave an
+immortal writer thread (a leaked writer held every parallel
+`wait_for_writer_baseline` check red on slow CI, 2026-08-19).
 
 Full-log streams (replay) assume quiescent callers, which same-process
 late writers can violate; the stream's stat→read→stat mismatch is

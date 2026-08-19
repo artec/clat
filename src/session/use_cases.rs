@@ -1504,6 +1504,29 @@ mod tests {
         );
     }
 
+    /// 不变量（2026-08-19 CI 失败根因）：忘记显式 quiesce/close 而
+    /// drop 的活动会话也必须退役 writer——JoinHandle 的 drop 是分离，
+    /// worker 在 condvar 上永生；泄漏的 writer 把并行套件里任何
+    /// `wait_for_writer_baseline` 的窗口顶红（慢速 CI 必现）。
+    /// `SessionCoordinator` 的 Drop 安全网保证这一点。pre-fix：本测试
+    /// 在 30s 等待后 panic。
+    #[test]
+    fn dropping_the_active_session_retires_its_writer() {
+        let (service, root) = service("drop-retires");
+        let baseline = crate::session::write_behind::live_writers_for_test();
+        let summary = service.new_session(&project()).expect("new");
+        run_turn(&service, "leave the writer holding a pending batch").expect("run");
+        assert!(
+            crate::session::write_behind::live_writers_for_test() > baseline,
+            "the active session spawned a writer"
+        );
+        let _ = summary;
+        // 故意不 quiesce：drop 路径自己必须收拾线程（并尽力 flush）。
+        drop(service);
+        wait_for_writer_baseline(baseline);
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
     #[test]
     fn quiesce_fold_error_still_joins_the_writer() {
         let (service, root) = service("error-close");
