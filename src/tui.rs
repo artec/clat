@@ -2629,7 +2629,7 @@ impl App {
             tui_theme::style(tui_theme::Role::Faint),
         )));
         clear_popup_with_guards(frame, dialog);
-        frame.render_widget(Paragraph::new(body).block(popup_block(" Help ")), dialog);
+        frame.render_widget(Paragraph::new(body).block(popup_block(" /help ")), dialog);
     }
 
     /// /mcp 状态弹窗：连接概览 + 每服务器一行（名称 · 传输 · 协议 ·
@@ -2668,7 +2668,7 @@ impl App {
             tui_theme::style(tui_theme::Role::Faint),
         )));
         clear_popup_with_guards(frame, dialog);
-        frame.render_widget(Paragraph::new(body).block(popup_block(" MCP ")), dialog);
+        frame.render_widget(Paragraph::new(body).block(popup_block(" /mcp ")), dialog);
     }
 
     /// ask-user 对话框：问题原文（按实际宽度换行）+ 选项列表（选择行

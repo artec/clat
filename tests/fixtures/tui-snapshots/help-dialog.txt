@@ -3,7 +3,7 @@ cursor 3,21
 scroll 0
 000| ┌──────────────────────────────────────────────────────────────────────────────┐  ⟦0..79 DIM⟧
 001| │ CLA                                                                          │  ⟦0..1 DIM · 2..4 BOLD+DIM · 75..79 DIM⟧
-002| └──── ┌ Help ────────────────────────────────────────────────────────────┐ ────┘  ⟦0..4 DIM · 6..6 fg=Yellow · 7..12 fg=Yellow+BOLD · 13..73 fg=Yellow · 75..79 DIM⟧
+002| └──── ┌ /help ───────────────────────────────────────────────────────────┐ ────┘  ⟦0..4 DIM · 6..6 fg=Yellow · 7..13 fg=Yellow+BOLD · 14..73 fg=Yellow · 75..79 DIM⟧
 003| ┌Conv │   /model — configure the active model/provider                   │ ────┐  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
 004| │     │   /new, /clear — start a new conversation                        │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
 005| │     │   /compact — summarize earlier turns into a compact context      │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧

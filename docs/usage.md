@@ -63,8 +63,10 @@ instead of cancelling the run.
   a context-window field: once set, history that exceeds the window is
   compacted automatically at the start of the next run (compaction inherits
   the previous summary, so earlier facts survive repeated compactions).
-  Without a context window, automatic compaction stays off and only
-  `/compact` triggers it
+  Presets seed this field with the model's official context window, so
+  automatic compaction works out of the box — it triggers when the
+  estimated context passes 80% of the window and compacts back below it;
+  a value you enter yourself always wins over the preset seed
 - `/resume` — pick a previous conversation of this project and continue
   it; the list shows title and message count, with the current
   conversation marked. Entering a conversation (even read-only) makes

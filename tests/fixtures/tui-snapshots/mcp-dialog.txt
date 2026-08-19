@@ -7,7 +7,7 @@ scroll 0
 003| ┌Conversation──────────────────────────────────────────────────────────────────┐  ⟦0..79 DIM⟧
 004| │                                                                              │  ⟦0..79 DIM⟧
 005| │                                                                              │  ⟦0..4 DIM · 75..79 DIM⟧
-006| │     ┌ MCP ─────────────────────────────────────────────────────────────┐     │  ⟦0..4 DIM · 6..6 fg=Yellow · 7..11 fg=Yellow+BOLD · 12..73 fg=Yellow · 75..79 DIM⟧
+006| │     ┌ /mcp ────────────────────────────────────────────────────────────┐     │  ⟦0..4 DIM · 6..6 fg=Yellow · 7..12 fg=Yellow+BOLD · 13..73 fg=Yellow · 75..79 DIM⟧
 007| │     │ MCP servers: 2/3 connected                                       │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 8..33 BOLD · 73..73 fg=Yellow · 75..79 DIM⟧
 008| │     │                                                                  │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
 009| │     │ ● glm-web-search  http · 2025-06-18 · v1.9.0 · 1 tool            │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 24..60 DIM · 73..73 fg=Yellow · 75..79 DIM⟧

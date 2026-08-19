@@ -90,6 +90,8 @@ impl HistoryCompactor for DefaultHistoryCompactor {
             .config
             .max_context_tokens
             .map(|tokens| tokens as usize);
+        // 触发与压缩目标同用一个阈值（DSH thresholdRatio 语义）。
+        let threshold = pressure_threshold(budget);
         let instructions = if request.instructions.is_empty() {
             self.prompts.instructions()
         } else {
@@ -103,7 +105,7 @@ impl HistoryCompactor for DefaultHistoryCompactor {
         let items: Vec<&ModelItem> = request.nodes.iter().map(|node| &node.item).collect();
         // Surface 已经过往 replace：前缀若是上一版摘要，它本身就是输入
         // 的一部分（级联摘要不遗忘早期对话），无需独立 marker。
-        let over_budget = budget.is_some_and(|limit| {
+        let over_budget = threshold.is_some_and(|limit| {
             view_budget_tokens(&items, &instructions, &tool_definitions, request.config) > limit
         });
         if !request.force && !over_budget {
@@ -111,7 +113,7 @@ impl HistoryCompactor for DefaultHistoryCompactor {
         }
         let Some(cut) = choose_cut(
             request.nodes,
-            budget,
+            threshold,
             &instructions,
             &tool_definitions,
             request.config,
@@ -355,6 +357,15 @@ fn view_budget_tokens(
     items + estimate_tokens_str(instructions) + tools + output_reserve + MARGIN_TOKENS
 }
 
+/// 触发阈值（DSH `thresholdRatio` 默认 0.8，2026-08-19）：估算超过
+/// 窗口的 80% 即压缩、也压回 80% 以下——20% 余量吸收"两次检查之间"
+/// 的单步膨胀（巨量工具结果一次就能吃满贴窗触发的余量），压缩后
+/// 落在阈值之下，不会在窗口边缘反复抖动重压。触发与 `choose_cut`
+/// 的目标同源，保证收敛性同判据。
+fn pressure_threshold(budget: Option<usize>) -> Option<usize> {
+    budget.map(|limit| limit * 4 / 5)
+}
+
 /// 以 User 起始处为轮次边界切分（User, Assistant(toolcalls), ToolResult…
 /// 的序列保证不拆散 call/result 配对，INV-C3）。
 fn split_turns(items: &[ModelItem]) -> Vec<&[ModelItem]> {
@@ -579,5 +590,17 @@ mod tests {
         )
         .unwrap_or(roomy);
         assert!(tight >= 2, "a cut must at least leave the last turn");
+    }
+
+    /// DSH thresholdRatio（0.8）：阈值 = 预算的 80%，触发与压缩目标同
+    /// 源。pre-fix（阈值 = 全额预算）上：贴窗触发没有余量，两次检查
+    /// 之间的单步膨胀直接撞厂商上限。
+    #[test]
+    fn pressure_threshold_leaves_headroom_below_the_window() {
+        assert_eq!(pressure_threshold(None), None);
+        assert_eq!(pressure_threshold(Some(1_000_000)), Some(800_000));
+        assert_eq!(pressure_threshold(Some(10)), Some(8));
+        // 向下取整不越界。
+        assert_eq!(pressure_threshold(Some(0)), Some(0));
     }
 }

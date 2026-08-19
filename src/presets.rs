@@ -24,8 +24,10 @@ pub struct ModelPreset {
     /// Official maximum output length in tokens.
     pub output_limit: u32,
     /// Official context window in tokens（状态栏 `Context: 120k/1M` 的
-    /// 分母；与自动压缩预算 `max_context_tokens` 是两回事）。逐模型
-    /// 维护、逐模型核验来源（见模块文档），新增预设不得默认沿用 1M。
+    /// 分母）。逐模型维护、逐模型核验来源（见模块文档），新增预设不得
+    /// 默认沿用 1M。2026-08-19 起它同时是自动压缩预算的种入值：
+    /// `apply` 以已知值碰撞语义写进 `max_context_tokens`（用户手填
+    /// 优先），预置用户开箱即有自动压缩（DSH thresholdRatio 语义）。
     pub context_window: u32,
     /// Official default reasoning effort, applied as `reasoning_effort`.
     pub reasoning_effort: Option<&'static str>,
@@ -291,6 +293,13 @@ impl ModelPreset {
     /// 见字段注释）合并进 `extra_headers` 的同名键——其余自定义头
     /// 原样保留，用户覆盖后以用户为准。
     pub fn apply(&self, config: &mut ModelConfig) {
+        // 换预设前先记下旧预设的窗口：预算种入需要识别"当前值是不是
+        // 我们种的"（旧预设的窗口也算，换预设时跟随新窗口）。
+        let previous_preset_window = config
+            .preset
+            .as_deref()
+            .and_then(preset_by_id)
+            .map(|preset| preset.context_window);
         config.preset = Some(self.id.to_owned());
         config.protocol = self.protocol;
         config.model = self.model.to_owned();
@@ -300,6 +309,21 @@ impl ModelPreset {
         config.temperature = None;
         config.parallel_tool_calls = true;
         config.extra_body = self.extra_body();
+        // 自动压缩预算（DSH thresholdRatio 语义的预算来源，2026-08-19）：
+        // 预设窗口默认种入 `max_context_tokens`，预置用户拎包入住即有
+        // 自动压缩。种入语义与 User-Agent 相同的已知值碰撞：
+        // - 空 → 种入本预设窗口；
+        // - 等于本预设或旧预设的窗口（我们种的）→ 更新为本预设窗口；
+        // - 其它值（用户手填）→ 永不覆盖。
+        let seeded_by_us =
+            |value: u32| value == self.context_window || Some(value) == previous_preset_window;
+        match config.max_context_tokens {
+            None => config.max_context_tokens = Some(self.context_window),
+            Some(current) if seeded_by_us(current) => {
+                config.max_context_tokens = Some(self.context_window);
+            }
+            Some(_) => {}
+        }
         // UA 是预设管理的键，但用户的自定义值优先（对抗审计 2026-08-19
         // 修复：`model_state()` 每次加载都执行 apply，无条件覆写会把用户
         // 在 Extra Headers 里的自定义 UA 静默冲掉；换预设离开 Kimi 时，
@@ -506,6 +530,39 @@ mod tests {
             config.extra_headers["User-Agent"].as_str(),
             Some("my-agent/1.0"),
             "a custom UA is never removed by a preset"
+        );
+    }
+
+    /// 预算种入（2026-08-19，DSH thresholdRatio 的预算来源）：预设窗口
+    /// 默认种入 `max_context_tokens`，预置用户开箱即有自动压缩；用户
+    /// 手填值永不覆盖；等于已知种入值的残留跟随预设更新。pre-fix
+    /// （预算只来自手填字段、默认 None）上：fresh 断言失败——自动压
+    /// 缩对预置用户永不触发。
+    #[test]
+    fn apply_seeds_the_auto_compaction_budget_and_respects_user_values() {
+        let glm = preset_by_id("glm-5.3").expect("glm");
+        let window = glm.context_window;
+
+        // 全新配置：种入官方窗口。
+        let mut config = ModelConfig::default();
+        glm.apply(&mut config);
+        assert_eq!(
+            config.max_context_tokens,
+            Some(window),
+            "a fresh preset config carries the compaction budget out of the box"
+        );
+
+        // 重启/重复 apply：种入值幂等存活。
+        glm.apply(&mut config);
+        assert_eq!(config.max_context_tokens, Some(window));
+
+        // 用户手填（编辑器高级区 Context Window）：永不覆盖。
+        config.max_context_tokens = Some(65_536);
+        glm.apply(&mut config);
+        assert_eq!(
+            config.max_context_tokens,
+            Some(65_536),
+            "a user-entered budget is never clobbered by the preset"
         );
     }
 

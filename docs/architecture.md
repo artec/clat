@@ -133,7 +133,7 @@ built yet:
 | Command execution with process-tree ownership, timeout, output budget | done |
 | Permission review for every side-effecting call | done |
 | Project instruction injection (`AGENTS.md`, then `CLAUDE.md`) | done — capability-bound read in Trusted Project Scope |
-| Context management | done — tool-result pruning, append-only compaction markers, manual `/compact`, optional automatic budget |
+| Context management | done — tool-result pruning, append-only compaction markers, manual `/compact`, automatic compaction on by default: presets seed the budget from the model's official context window (a user-entered value always wins), and the DSH `thresholdRatio` semantics apply — trigger and compact target are both 80% of the window, leaving headroom for single-step growth between checks (2026-08-19; before, the budget came only from a manually filled field and triggered at 100%, so out-of-the-box setups never compacted) |
 | Per-session agent todo state | done — `SessionWrite`, append-only snapshots, dynamic model context |
 | Automatic session titles | done — first successful run, bounded background worker, CAS against manual rename |
 | Typed provider retry | done — fresh model attempts, Retry-After, event-safe retry, internal deadlines |
