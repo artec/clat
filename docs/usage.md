@@ -31,7 +31,7 @@ session is ready the conversation appears and input unlocks.
 
 | Key | Action |
 |---|---|
-| `Enter` | submit; while a run is active, submit steering — the message joins the run at the next step boundary (`steering·N` in the status line until claimed) |
+| `Enter` | submit; while a run is active, submit steering — the message joins the run at the next step boundary and appears immediately as a dim `· queued` block at the end of the conversation (the `steering·N` badge counts the same queue) |
 | `Shift+Enter`, `Alt+Enter`, `Ctrl+J` | insert a line break |
 | `←` / `→`, `Home`, `End` | move the cursor |
 | `Backspace` / `Delete` | edit |
@@ -42,7 +42,7 @@ session is ready the conversation appears and input unlocks.
 | drag with the mouse | select text and copy it on release (OSC 52); a click positions the input cursor |
 | `Cmd+C` / `Ctrl+Shift+C` | copy the current selection again (CLAT sends OSC 52; iTerm2/WezTerm/kitty/VS Code honor it) |
 | `Cmd+X` / `Ctrl+Shift+X` | cut the input-box selection |
-| `Esc` | cancel a running request (partial text is kept); otherwise clear the input |
+| `Esc` | stack semantics while a run is active: recall the most recent queued steering back into the input (edit and re-submit, the run keeps going); when nothing is queued, cancel the running request (partial text is kept). Otherwise clear the input |
 | `Ctrl+C` | re-copy the current selection if one exists; otherwise quit |
 
 Releasing a drag copies the selection immediately and overwrites the
@@ -97,11 +97,12 @@ instead of cancelling the run.
 - `/help` — open the help dialog (commands and keys; `↑`/`↓`,
   `PgUp`/`PgDn` scroll, `Esc` closes). Like every popup it is sized to its
   content and keeps margins on all four sides
-- `/mcp` — inspect MCP servers: connection overview, per-server transport,
-  negotiated protocol and server versions, registered tool counts, and
-  mount failures (including the server's stderr tail, which is what npx
-  errors show up in). `↑`/`↓`/`PgUp`/`PgDn` scroll, `r` re-reads the
-  status, `Esc` closes
+- `/mcp` — inspect MCP servers: connection overview (including a
+  `connecting` count while servers are still starting up in the background),
+  per-server transport, negotiated protocol and server versions, registered
+  tool counts, and mount failures (including the server's stderr tail, which
+  is what npx errors show up in). `↑`/`↓`/`PgUp`/`PgDn` scroll, `r` re-reads
+  the status, `Esc` closes
 - `/quit` or `/exit` — leave CLAT
 
 Sessions get their title from your first message; after a successful run
@@ -141,15 +142,21 @@ this never triggers.
 
 When a run finishes (successfully or with an error — but not when you
 cancel it yourself) or a permission / ask dialog opens and waits for
-you, CLAT rings the **terminal bell** so you can look away while it
-works. Whether that makes a sound — and which sound — is your terminal
-emulator's bell setting: most terminals (iTerm2, Kitty, WezTerm, …) let
-you pick any sound file for it, or switch to a visual bell.
+you, CLAT plays a **system notification sound** (2026-08-21, replacing
+the terminal bell — which most terminals render too quietly to notice):
+macOS plays `Funk.aiff` through the built-in `afplay` with a slight
+volume boost, Linux tries `paplay` / `aplay` on the freedesktop or ALSA
+sample sounds, Windows uses PowerShell's `SoundPlayer` with a system
+notification wav. No audio library is linked for this — it is always a
+detached system player. When the player or sound file is missing (a
+minimal Linux, say), CLAT falls back to the terminal bell (`\x07`), and
+what that sounds like is your terminal emulator's bell setting.
 
-If you want CLAT itself to control the sound, set `CLAT_BELL_COMMAND`
-to any shell command — it runs detached when a notification fires
-(macOS: `afplay ~/Sounds/ding.aiff`; Linux: `paplay /usr/share/sounds/…`).
-`CLAT_NO_BELL=1` silences notifications entirely.
+For full control set `CLAT_BELL_COMMAND` to any shell command — it runs
+detached when a notification fires (macOS:
+`afplay -v 3 /System/Library/Sounds/Submarine.aiff`; Linux:
+`paplay /usr/share/sounds/…`). `CLAT_NO_BELL=1` silences notifications
+entirely.
 
 ## Markdown rendering
 
@@ -200,6 +207,13 @@ Conventions:
   instead of pretending the truncated output succeeded.
 - **Exit codes**: `0` success, `1` failure, `2` usage error, `130`
   interrupted by Ctrl-C.
+- **Commands**: `--command /xxx` runs one slash command through the same
+  core registry as the TUI instead of a model run — no prompt argument, no
+  stdin read. Query commands print their result on stdout
+  (`--continue --command /compact` joins the compaction and reports on
+  stderr; `--command /help` lists the catalog); commands whose continuation
+  is an interactive picker (`/model`, `/resume`, `/perm`) exit `2` with a
+  clear note.
 - **Prompt** comes from the argument list, from stdin when piped, or from
   both: with a piped stdin the positional argument is the instruction and
   the piped input is attached as labelled context

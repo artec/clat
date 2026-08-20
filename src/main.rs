@@ -63,6 +63,7 @@ fn print_help() {
     println!("Exec options:");
     println!("  --continue       Continue the project's most recent session");
     println!("  --session <id>   Continue a specific session");
+    println!("  --command <cmd>  Run one /command headlessly (e.g. --command /compact)");
     println!("  --trust          Trust the current project without the TUI prompt");
     println!("  --yes            Approve every side-effecting tool call (dangerous)");
     println!("  --quiet          Suppress stderr status output (assistant text only)");

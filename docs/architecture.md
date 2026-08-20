@@ -30,7 +30,7 @@ There are three scope-specific explicit catalogs:
 | Scope | Lifetime | Built-in responsibilities |
 |---|---|---|
 | Bootstrap | Application open → trust decision | no plugin scope at all — a zero-write control-plane preflight (`sentinel` classification, read-only trust lookup) |
-| Trusted Project | trust accepted → project close | control-plane `ConfigStore`, DSH session persistence (`SessionService`), Tool/Provider/Prompt registries, native tools, MCP adapter, permission and Agent services, monitor, project instructions, tool-result pruning, compaction, per-session todo, session-title services |
+| Trusted Project | trust accepted → project close | control-plane `ConfigStore`, DSH session persistence (`SessionService`), Tool/Provider/Prompt/**Command** registries, native tools, MCP adapter, permission and Agent services, monitor, project instructions, tool-result pruning, compaction, per-session todo, session-title services |
 | Run | one active run | `CancelToken` and injected `PermissionApprover`; worker ownership stays in Application |
 
 The batch-1 capability plugins (`ProjectInstructionsPlugin`,
@@ -53,9 +53,15 @@ ordered, panic-isolated, and refuses to close a parent with active children.
 
 Services have typed `ServiceKey<T>` values. Collection extension points use
 domain registries instead of competing service providers: Provider factories,
-Tools, Prompt fragments, Tool middleware, and post observers each carry an
-unforgeable plugin owner and a revocable lease. Registries freeze before a run,
-but existing leases can still revoke contributions during teardown.
+Tools, Prompt fragments, Tool middleware, post observers, and slash Commands
+each carry an unforgeable plugin owner and a revocable lease. Registries
+freeze before a run, but existing leases can still revoke contributions
+during teardown. The `core.commands` registry owns command semantics
+(`dispatch_command` on the facade is the only frontend entry): handlers are
+frontend-neutral (`&mut TrustedProjectApplication` + parsed args → a
+`CommandOutcome` intent+data DTO) and never forward to the model; the help
+table and `clat exec --command` derive from the same catalog
+(`docs/todo/commands-core.md`).
 
 The kernel, domain DTOs/contracts, and frontend ports are deliberately **not**
 plugins. `Project`, `ModelItem`, `RunEvent`, `EventSink`, `PermissionApprover`,
@@ -75,12 +81,15 @@ Three frontends exist today, all talking to the same Application facade:
   supplies an `EventSink` that streams assistant text to stdout and status
   to stderr, a permission approver (terminal prompt via a request-scoped
   input port, deny-on-pipe by default, `--yes` to allow all), and a
-  completion channel. Interrupt routing (`ExecCancel`) is injected by the
-  process boundary in `main.rs`, so the library entry is repeatable
-  in-process and never installs global signal handlers. A stdout write
-  failure (broken pipe) cancels the active run instead of pretending
-  success; stdin is read with an explicit byte budget and combined with
-  the positional instruction into one prompt.
+  completion channel. `--command /xxx` runs one `core.commands` registry
+  command through the same facade dispatch as the TUI (query results on
+  stdout, interactive-only selections are usage errors) instead of a model
+  run. Interrupt routing (`ExecCancel`) is injected by the process boundary
+  in `main.rs`, so the library entry is repeatable in-process and never
+  installs global signal handlers. A stdout write failure (broken pipe)
+  cancels the active run instead of pretending success; stdin is read with
+  an explicit byte budget and combined with the positional instruction into
+  one prompt.
 
 Every frontend is presentation and input handling only; run lifecycle,
 persistence, and permission semantics stay in core. A future desktop or
@@ -261,12 +270,22 @@ can write the control plane before the session-root preflight passed.
 
 ## MCP adapter
 
-The built-in `McpAdapterPlugin` mounts only in Trusted Project Scope. A
-`StdioSession` hosts each subprocess and `McpTool` contributes remote tools to
-the shared Tool Registry through leases. Teardown first revokes those tools,
-then explicitly closes stdin, bounds the child grace period, kills/reaps if
-needed, and joins both I/O threads. See [MCP integration](mcp.md) for the
-protocol posture, naming rules, and resource limits.
+The built-in `McpAdapterPlugin` mounts only in Trusted Project Scope. Mount
+does **no** network or subprocess I/O (docs/todo/mcp-async-startup.md): it
+registers the config and spawns a background `clat-mcp-startup` worker that
+connects each server (`StdioSession` subprocess or HTTP) and contributes its
+`McpTool`s to the shared Tool Registry through leases as they become ready —
+startup latency never blocks the TUI or `clat exec`. The tool registry
+freezes at the first `start_run` (matching the documented "freeze before a
+run" semantics), and `start_run` first waits — bounded at 20s — for MCP
+startup to settle, so a run always sees the complete tool set unless a
+server is slow enough to exceed the cap (then it lands on the next run and
+`/mcp` shows the server as connecting). Teardown cancels the worker, joins
+it with the exit grace bound, then runs the worker's registered cleanups in
+order: revoke tools first, then explicitly close stdin, bound the child
+grace period, kill/reap if needed, and join both I/O threads. See
+[MCP integration](mcp.md) for the protocol posture, naming rules, and
+resource limits.
 
 ## TUI event loop
 

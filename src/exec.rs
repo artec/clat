@@ -21,9 +21,9 @@
 //! （main.rs）经 [`ExecCancel`] 注入；库形态可重复调用。
 
 use crate::{
-    ApplicationEvent, ApplicationRunRequest, BootstrapApplication, CompactionStatus, EventSink,
-    ModelEvent, PermissionApprover, PermissionDecision, PermissionRequest, Project, RunEvent,
-    RunHandle, TrustedProjectApplication, Usage,
+    ApplicationEvent, ApplicationRunRequest, BootstrapApplication, CommandOutcome,
+    CompactionStatus, EventSink, ModelEvent, PermissionApprover, PermissionDecision,
+    PermissionRequest, Project, RunEvent, RunHandle, TrustedProjectApplication, Usage,
 };
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -42,6 +42,10 @@ pub struct ExecArgs {
     /// 位置参数：对本次运行的指令。`None` 且 stdin 为管道时，整个
     /// stdin 作为 prompt；与管道 stdin 同时存在时二者按 INV-6 合并。
     pub prompt: Option<String>,
+    /// `--command /xxx`：headless 运行一条 `core.commands` 注册表命令
+    /// （与 TUI 同一 dispatch 路径），不跑模型、不读 stdin。与位置
+    /// 参数互斥。
+    pub command: Option<String>,
     pub continue_session: bool,
     pub session: Option<String>,
     pub yes: bool,
@@ -72,6 +76,15 @@ where
             "--yes" => parsed.yes = true,
             "--trust" => parsed.trust = true,
             "--quiet" => parsed.quiet = true,
+            "--command" => {
+                let value = iter
+                    .next()
+                    .ok_or_else(|| "--command requires a /command".to_string())?;
+                if !value.starts_with('/') || value.trim().is_empty() {
+                    return Err(format!("invalid command: {value} (expected a /command)"));
+                }
+                parsed.command = Some(value);
+            }
             "--session" => {
                 let value = iter
                     .next()
@@ -97,6 +110,9 @@ where
     }
     if parsed.continue_session && parsed.session.is_some() {
         return Err("--continue and --session are mutually exclusive".into());
+    }
+    if parsed.command.is_some() && parsed.prompt.is_some() {
+        return Err("--command cannot be combined with a prompt".into());
     }
     Ok(parsed)
 }
@@ -477,6 +493,13 @@ where
         return close_application(application, ExecOutcome::Failure(error));
     }
 
+    // `--command`：core.commands 注册表的 headless 形态（与 TUI 同一
+    // dispatch 路径，INV-C2）。不跑模型、不读 stdin；命令各自的失败
+    // （如未配置模型时的 /compact）由 dispatch 以结构化错误返回。
+    if let Some(command) = args.command.clone() {
+        return run_headless_command(application, &command, &args, &io, &io_state);
+    }
+
     let (config, _credentials) = match application.model_state() {
         Ok(state) => state,
         Err(error) => {
@@ -635,6 +658,155 @@ where
         forwarder.join();
     }
     closed_outcome
+}
+
+/// `--command` 的 headless 渲染：outcome → 文本 + 退出码。查询类结果
+/// （/help、/mcp）是本次调用的**产品**，写 stdout（该路径没有模型文本
+/// 流，不存在 INV-3 的混流问题）；状态类走 stderr。交互类命令在
+/// headless 没有对应呈现，按用法错误拒绝（脚本可判定）。压缩经
+/// `join_report` 等待结果（压缩 worker 有总 deadline 与尝试上限，join
+/// 有界）。
+fn run_headless_command(
+    mut application: TrustedProjectApplication,
+    command: &str,
+    args: &ExecArgs,
+    io: &ExecIo,
+    io_state: &SharedIoState,
+) -> ExecOutcome {
+    // 与 run 路径同一可见性通道：CompactionUpdated 的 stderr 通知。
+    let mut forwarder = None;
+    if !args.quiet {
+        let (events_tx, events_rx) = mpsc::channel::<ApplicationEvent>();
+        application.subscribe(events_tx);
+        forwarder = Some(ApplicationEventForwarder::spawn(
+            events_rx,
+            Arc::clone(&io.error),
+            Arc::clone(io_state),
+        ));
+    }
+    let outcome = match application.dispatch_command(command) {
+        Ok(CommandOutcome::StartCompaction(handle)) => match handle.join_report() {
+            // 外层 Err = join 失败（worker 崩溃）；内层 Err = 压缩自身的
+            // 失败报告。
+            Ok(Ok(report)) => {
+                if !args.quiet {
+                    write_status(
+                        &io.error,
+                        io_state,
+                        format_args!("● {}\n", report.status_text()),
+                    );
+                }
+                ExecOutcome::Success {
+                    output: String::new(),
+                    turns: 0,
+                    usage: Usage::default(),
+                }
+            }
+            Ok(Err(message)) => ExecOutcome::Failure(message),
+            Err(error) => ExecOutcome::Failure(error.to_string()),
+        },
+        Ok(CommandOutcome::ShowHelp { commands }) => {
+            let mut text = String::new();
+            for info in &commands {
+                let mut names = format!("/{}", info.name);
+                for alias in &info.aliases {
+                    names.push_str(&format!(", /{alias}"));
+                }
+                text.push_str(&format!("{names} — {}\n", info.description));
+            }
+            let write = stream_write(&io.output, format_args!("{text}"))
+                .and_then(|()| stream_flush(&io.output));
+            if let Err(error) = write {
+                io_state.note("stdout", error);
+            }
+            ExecOutcome::Success {
+                output: text,
+                turns: 0,
+                usage: Usage::default(),
+            }
+        }
+        Ok(CommandOutcome::ShowMcpStatus(status)) => {
+            let connecting = if status.connecting > 0 {
+                format!(" · {} connecting", status.connecting)
+            } else {
+                String::new()
+            };
+            let mut text = format!(
+                "mcp: {}/{} connected{connecting}\n",
+                status.connected, status.configured
+            );
+            for server in &status.servers {
+                text.push_str(&format!(
+                    "● {}  {} · {} · {} tools\n",
+                    server.name, server.transport, server.protocol_version, server.tools
+                ));
+            }
+            for failure in &status.failures {
+                text.push_str(&format!("! {failure}\n"));
+            }
+            let write = stream_write(&io.output, format_args!("{text}"))
+                .and_then(|()| stream_flush(&io.output));
+            if let Err(error) = write {
+                io_state.note("stdout", error);
+            }
+            ExecOutcome::Success {
+                output: text,
+                turns: 0,
+                usage: Usage::default(),
+            }
+        }
+        Ok(CommandOutcome::Status(message)) => {
+            if !args.quiet {
+                write_status(&io.error, io_state, format_args!("{message}\n"));
+            }
+            ExecOutcome::Success {
+                output: String::new(),
+                turns: 0,
+                usage: Usage::default(),
+            }
+        }
+        Ok(CommandOutcome::SessionReset) => {
+            if !args.quiet {
+                write_status(&io.error, io_state, format_args!("new conversation\n"));
+            }
+            ExecOutcome::Success {
+                output: String::new(),
+                turns: 0,
+                usage: Usage::default(),
+            }
+        }
+        // headless 无应用生命周期概念：/quit 等价无操作（正常退出）。
+        Ok(CommandOutcome::QuitRequested) => ExecOutcome::Success {
+            output: String::new(),
+            turns: 0,
+            usage: Usage::default(),
+        },
+        Ok(
+            CommandOutcome::StartModelSelection
+            | CommandOutcome::StartSessionSelection { .. }
+            | CommandOutcome::StartPermissionModeSelection { .. }
+            | CommandOutcome::StartTitleEdit { .. },
+        ) => ExecOutcome::UsageError(format!(
+            "{command} requires an interactive frontend — run `clat` and use it there"
+        )),
+        Err(error) => ExecOutcome::Failure(error.to_string()),
+    };
+    // HL-04 同款：stdout 写失败不得伪装成功。
+    let outcome = match (io_state.take_first_error(), outcome) {
+        (Some(error), ExecOutcome::Success { .. } | ExecOutcome::Cancelled { .. }) => {
+            ExecOutcome::Failure(error)
+        }
+        (Some(error), ExecOutcome::Failure(message)) => {
+            ExecOutcome::Failure(format!("{message}; {error}"))
+        }
+        (Some(_), outcome @ ExecOutcome::UsageError(_)) => outcome,
+        (None, outcome) => outcome,
+    };
+    let closed = close_application(application, outcome);
+    if let Some(forwarder) = forwarder.as_mut() {
+        forwarder.join();
+    }
+    closed
 }
 
 /// 观察每个退出路径上的 application.close()（审计 P2-01）：早退不再吞掉
@@ -1109,6 +1281,94 @@ mod tests {
             parse_exec_args(["--".into(), "a".into(), "b".into()]).is_err(),
             "second positional after -- must still be a usage error"
         );
+    }
+
+    // ---- --command（core.commands 注册表的 headless 形态）----
+
+    #[test]
+    fn parse_accepts_command_flag_and_rejects_misuse() {
+        let parsed = parse_exec_args([
+            "--continue".to_string(),
+            "--command".to_string(),
+            "/compact".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(parsed.command.as_deref(), Some("/compact"));
+        assert!(parsed.continue_session);
+        assert_eq!(parsed.prompt, None);
+        // 值必须以 `/` 起头。
+        assert!(parse_exec_args(["--command".into(), "compact".into()]).is_err());
+        // 缺值。
+        assert!(parse_exec_args(["--command".into()]).is_err());
+        // 与位置参数互斥。
+        assert!(parse_exec_args(["--command".into(), "/quit".into(), "prompt".into()]).is_err());
+    }
+
+    /// /help 的 stdout 是本次调用的产品（无模型流，不违反 INV-3 的
+    /// 混流关切）；目录来自 core.commands 注册表。
+    #[test]
+    fn command_help_lists_registry_catalog_on_stdout() {
+        let (storage_root, project_root, project) = setup("exec-command-help");
+        prepare_storage(&project, &storage_root, TestBehavior::Success);
+        let mut options = args(None);
+        options.command = Some("/help".into());
+        let (io, captured) = ExecIo::capture(&[]);
+        let outcome = exec(&project, &storage_root, TestBehavior::Success, options, io);
+        match outcome {
+            ExecOutcome::Success { output, turns, .. } => {
+                assert_eq!(turns, 0);
+                assert!(
+                    output.contains("/model — configure the active model/provider"),
+                    "{output}"
+                );
+                assert_eq!(captured.output_string(), output);
+            }
+            other => panic!("expected success, got {other:?}"),
+        }
+        fs::remove_dir_all(storage_root).ok();
+        fs::remove_dir_all(project_root).ok();
+    }
+
+    /// 失败路径：默认会话策略是新会话（懒物化、无活动 id），/compact
+    /// 必须以 core 的结构化错误干净失败（不 panic、不落任何日志）。
+    #[test]
+    fn command_compact_on_empty_session_fails_cleanly() {
+        let (storage_root, project_root, project) = setup("exec-command-compact-empty");
+        prepare_storage(&project, &storage_root, TestBehavior::Success);
+        let mut options = args(None);
+        options.command = Some("/compact".into());
+        let (io, _captured) = ExecIo::capture(&[]);
+        let outcome = exec(&project, &storage_root, TestBehavior::Success, options, io);
+        match outcome {
+            ExecOutcome::Failure(message) => {
+                assert!(message.contains("no conversation to compact"), "{message}");
+            }
+            other => panic!("expected failure, got {other:?}"),
+        }
+        fs::remove_dir_all(storage_root).ok();
+        fs::remove_dir_all(project_root).ok();
+    }
+
+    /// 交互类命令在 headless 无呈现：UsageError（退出码 2，脚本可判定）。
+    ///（/rename 不在此列：它先过会话门控，空会话以 `Failed` 干净失败。）
+    #[test]
+    fn command_interactive_selections_are_usage_errors_headless() {
+        let (storage_root, project_root, project) = setup("exec-command-interactive");
+        prepare_storage(&project, &storage_root, TestBehavior::Success);
+        for command in ["/model", "/resume", "/perm"] {
+            let mut options = args(None);
+            options.command = Some(command.into());
+            let (io, _captured) = ExecIo::capture(&[]);
+            let outcome = exec(&project, &storage_root, TestBehavior::Success, options, io);
+            match outcome {
+                ExecOutcome::UsageError(message) => {
+                    assert!(message.contains("interactive"), "{command}: {message}");
+                }
+                other => panic!("{command}: expected usage error, got {other:?}"),
+            }
+        }
+        fs::remove_dir_all(storage_root).ok();
+        fs::remove_dir_all(project_root).ok();
     }
 
     // ---- 中断决策（HL-03：pending 而非硬退；中断永不吞掉）----

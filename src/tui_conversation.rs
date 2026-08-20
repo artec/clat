@@ -19,6 +19,7 @@ use crate::tui_markdown::render_markdown;
 use crate::tui_theme;
 use ratatui::text::{Line, Span};
 use serde_json::Value;
+use std::collections::VecDeque;
 use unicode_width::UnicodeWidthStr;
 
 /// 工具卡状态：`Pending`（○ 模型已发起）→ `Settled`（● 已有结果）或
@@ -110,6 +111,18 @@ impl ToolCardVisibility {
 #[derive(Default)]
 pub(crate) struct ConversationModel {
     items: Vec<(ConversationItem, ItemCache)>,
+    /// 未 claim 的 steering 回显尾部区（纯视图状态，INV-SV1）：FIFO 与
+    /// core 队列同序，渲染在全部 items 之后（流式 assistant 仍是最后
+    /// 一个 item，续写不被打断，INV-SV6）。claim → `confirm`（front 出
+    /// 区、在 claim 时点的尾部落为正式用户项）；ESC 召回 → `recall`
+    /// （back 出区回编辑框）；run 结束/取消 → `discard` 清区。
+    pending_steering: VecDeque<String>,
+    pending_lines: Vec<Vec<Line<'static>>>,
+    pending_width: Option<usize>,
+    /// pending 区内容代数（push/recall/discard 递增）——条数相同的
+    /// 换血也必须重建缓存。
+    pending_generation: u64,
+    pending_rendered_generation: u64,
     /// 流式 assistant 是否可续写（下一个用户/卡片/压缩项关闭它）。
     assistant_open: bool,
     /// 流式 assistant 项前缀的当前活动帧（None=落定 ⏺）：由前端每帧
@@ -142,6 +155,44 @@ impl ConversationModel {
 
     pub(crate) fn push_turn_end(&mut self, text: String) {
         self.push_item(ConversationItem::TurnEnd { text });
+    }
+
+    // ---- steering 回显尾部区（docs/todo/steering-visibility-recall.md）----
+
+    /// steer 入队回显：FIFO 尾部（与 core 队列同序）。
+    pub(crate) fn push_pending_steering(&mut self, text: String) {
+        self.pending_steering.push_back(text);
+        self.pending_generation += 1;
+    }
+
+    /// `SteeringApplied` 的 claim 升级（INV-SV2）：front 出区 + 在当前
+    /// 尾部落为正式用户项（事件文本是权威）——升级后的 items 序 ==
+    /// journal 顺序 == 回放顺序。区为空（测试直灌事件等）时直接
+    /// `push_user`，向后兼容。
+    pub(crate) fn confirm_pending_steering(&mut self, text: String) {
+        self.pending_steering.pop_front();
+        self.pending_generation += 1;
+        self.push_user(text);
+    }
+
+    /// ESC 召回（INV-SV4）：back 出区，文本退回调用方（编辑框）。
+    pub(crate) fn recall_pending_steering(&mut self) -> Option<String> {
+        let text = self.pending_steering.pop_back()?;
+        self.pending_generation += 1;
+        Some(text)
+    }
+
+    /// run 结束/取消：清区并返回条数（INV-SV5，丢弃提示的计数来源）。
+    pub(crate) fn discard_pending_steering(&mut self) -> usize {
+        let count = self.pending_steering.len();
+        self.pending_steering.clear();
+        self.pending_generation += 1;
+        count
+    }
+
+    /// pending 条数（徽标的单一事实源，INV-SV1）。
+    pub(crate) fn pending_steering_count(&self) -> usize {
+        self.pending_steering.len()
     }
 
     /// 测试便利：压入一条已落定的 assistant（占位 provider/model）。
@@ -281,8 +332,9 @@ impl ConversationModel {
             }
             RunEvent::SteeringApplied { text } => {
                 // 与 replay 侧的 UserMessage 同一位点：claim 发生在上一步
-                // assistant/工具卡之后、下一步模型请求之前。
-                self.push_user(text.clone());
+                // assistant/工具卡之后、下一步模型请求之前。pending 回显
+                // 升级为正式用户项（INV-SV2）。
+                self.confirm_pending_steering(text.clone());
             }
             _ => {}
         }
@@ -371,6 +423,19 @@ impl ConversationModel {
                 cache.dirty = false;
             }
         }
+        // pending 区缓存：内容代数或宽度变化才重建（与 items 的 G3 纪律
+        // 同构；变更只来自用户动作与 claim，低频）。
+        if self.pending_rendered_generation != self.pending_generation
+            || self.pending_width != Some(width)
+        {
+            self.pending_lines = self
+                .pending_steering
+                .iter()
+                .map(|text| render_pending_steering(text, width))
+                .collect();
+            self.pending_width = Some(width);
+            self.pending_rendered_generation = self.pending_generation;
+        }
     }
 
     /// 流式 assistant 项的开放下标（assistant_open ⇒ 末项为 assistant）。
@@ -403,17 +468,18 @@ impl ConversationModel {
         }
     }
 
-    /// 空会话（无 items）：draw 以 LOGO 欢迎页接管会话区。
+    /// 空会话（无 items 且无 pending）：draw 以 LOGO 欢迎页接管会话区。
     pub(crate) fn is_empty(&self) -> bool {
-        self.items.is_empty()
+        self.items.is_empty() && self.pending_steering.is_empty()
     }
 
     /// 内容总行数（空会话为 0——空态由欢迎页渲染，不占内容行）。
     pub(crate) fn total_lines(&self, visibility: ToolCardVisibility) -> usize {
-        if self.items.is_empty() {
+        if self.is_empty() {
             return 0;
         }
-        self.items
+        let items = self
+            .items
             .iter()
             .map(|(item, cache)| {
                 let rows = match item {
@@ -422,7 +488,14 @@ impl ConversationModel {
                 };
                 rows + usize::from(rows > 0)
             })
-            .sum()
+            .sum::<usize>();
+        // pending 回显区：与 items 同构（行数 + 条目间分隔行）。
+        let pending = self
+            .pending_lines
+            .iter()
+            .map(|lines| lines.len() + usize::from(!lines.is_empty()))
+            .sum::<usize>();
+        items + pending
     }
 
     /// 取视口行——消息行零拷贝借用，卡片行按 visibility 物化（折叠态
@@ -435,7 +508,7 @@ impl ConversationModel {
         visibility: ToolCardVisibility,
     ) -> Vec<Line<'static>> {
         self.ensure_rendered(width);
-        if self.items.is_empty() {
+        if self.is_empty() {
             return Vec::new();
         }
         let mut out = Vec::with_capacity(count.min(64));
@@ -453,6 +526,28 @@ impl ConversationModel {
                 row += 1;
             }
             if rows.as_slice().is_empty() {
+                continue;
+            }
+            if row >= end {
+                break 'items;
+            }
+            if row >= start {
+                out.push(Line::from(""));
+            }
+            row += 1;
+        }
+        // pending 回显区续接在 items 之后（尾部，INV-SV1/SV6）。
+        'pending: for lines in &self.pending_lines {
+            for line in lines {
+                if row >= end {
+                    break 'pending;
+                }
+                if row >= start {
+                    out.push(line.clone());
+                }
+                row += 1;
+            }
+            if lines.is_empty() {
                 continue;
             }
             if row >= end {
@@ -474,7 +569,7 @@ impl ConversationModel {
         visibility: ToolCardVisibility,
     ) -> String {
         self.ensure_rendered(width);
-        if self.items.is_empty() {
+        if self.is_empty() {
             return String::new();
         }
         let mut current = 0usize;
@@ -494,6 +589,27 @@ impl ConversationModel {
                 current += 1;
             }
             if rows.as_slice().is_empty() {
+                continue;
+            }
+            if current == row {
+                return String::new();
+            }
+            current += 1;
+        }
+        // pending 回显区同样可复制（用户自己的文本）。
+        for lines in &self.pending_lines {
+            for line in lines {
+                if current == row {
+                    let text: String = line
+                        .spans
+                        .iter()
+                        .map(|span| span.content.as_ref())
+                        .collect();
+                    return text.trim_end().to_owned();
+                }
+                current += 1;
+            }
+            if lines.is_empty() {
                 continue;
             }
             if current == row {
@@ -664,6 +780,39 @@ fn card_display_lines(cache: &ItemCache, visibility: ToolCardVisibility) -> Vec<
 /// 用户 2026-08-19 反馈恢复）。行尾填充是**纯视觉**：复制出口
 /// [`ConversationModel::row_plain_text`] 统一裁尾，复制文本保持干净（G4
 /// 守在出口而非行内容）。
+/// pending steering 回显块：与用户块同构但整体 dim、尾行追加 queued
+/// 标记——它是"已入队、下一模型步生效"的视图状态（INV-SV1），claim
+/// 后由 `confirm_pending_steering` 升级为正式用户块。
+fn render_pending_steering(text: &str, width: usize) -> Vec<Line<'static>> {
+    let style = tui_theme::style(tui_theme::Role::Dim);
+    let marker = tui_theme::style(tui_theme::Role::Faint);
+    let text_width = width.saturating_sub(2).max(1);
+    let wrapped = wrap_text(text, text_width.saturating_sub(2).max(1));
+    let last = wrapped.len().saturating_sub(1);
+    wrapped
+        .into_iter()
+        .enumerate()
+        .map(|(index, line)| {
+            let (prefix, prefix_style) = if index == 0 {
+                ("❯ ", marker)
+            } else {
+                ("  ", style)
+            };
+            let queued = if index == last { " · queued" } else { "" };
+            let used = UnicodeWidthStr::width(prefix)
+                + UnicodeWidthStr::width(line.as_str())
+                + UnicodeWidthStr::width(queued);
+            let padding = " ".repeat(width.saturating_sub(used));
+            Line::from(vec![
+                Span::styled(prefix.to_owned(), prefix_style),
+                Span::styled(line, style),
+                Span::styled(queued.to_owned(), marker),
+                Span::styled(padding, style),
+            ])
+        })
+        .collect()
+}
+
 fn render_user_block(text: &str, width: usize) -> Vec<Line<'static>> {
     let style = tui_theme::style(tui_theme::Role::UserBlock);
     let marker = tui_theme::style(tui_theme::Role::UserMarker);
@@ -784,6 +933,122 @@ mod tests {
         // 宽度变化使缓存失效但不崩溃。
         let wide = model.visible_lines(0, 50, 80, ToolCardVisibility::Collapsed);
         assert!(!wide.is_empty());
+    }
+
+    /// pending steering 区生命周期（docs/todo/steering-visibility-recall.md
+    /// INV-SV1/SV2/SV4/SV5）：入队即刻可见（dim + queued 标记，位于
+    /// 流式 assistant 之后）；claim 升级 front、落为正式用户项；召回
+    /// LIFO；区为空时直灌事件向后兼容；run 结束清区。
+    #[test]
+    fn pending_steering_zone_lifecycle() {
+        let plain = |model: &mut ConversationModel| {
+            model
+                .visible_lines(0, 40, 60, ToolCardVisibility::Collapsed)
+                .iter()
+                .map(|line| {
+                    line.spans
+                        .iter()
+                        .map(|span| span.content.as_ref())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let mut model = ConversationModel::new();
+        model.push_user("start".into());
+        model.apply_run_event(&RunEvent::ModelRequested {
+            turn: 1,
+            provider: "p".into(),
+            model: "m".into(),
+        });
+        model.apply_run_event(&RunEvent::ModelStream {
+            turn: 1,
+            event: ModelEvent::TextDelta {
+                delta: "working".into(),
+            },
+        });
+
+        // 入队即刻可见（INV-SV1），徽标计数派生自同一区。
+        model.push_pending_steering("first".into());
+        model.push_pending_steering("second".into());
+        assert_eq!(model.pending_steering_count(), 2);
+        let joined = plain(&mut model);
+        assert!(joined.contains("❯ first · queued"), "{joined:?}");
+        assert!(joined.contains("❯ second · queued"), "{joined:?}");
+
+        // LIFO 召回（INV-SV4 区侧半边）。
+        assert_eq!(model.recall_pending_steering(), Some("second".to_owned()));
+        assert_eq!(model.pending_steering_count(), 1);
+        let joined = plain(&mut model);
+        assert!(
+            !joined.contains("second"),
+            "the recalled echo disappears: {joined:?}"
+        );
+
+        // claim 升级（INV-SV2）：front 出区、落为正式用户项——无 queued
+        // 标记，且位置在 assistant 之后（journal/回放同序）。
+        model.apply_run_event(&RunEvent::SteeringApplied {
+            text: "first".into(),
+        });
+        assert_eq!(model.pending_steering_count(), 0);
+        let joined = plain(&mut model);
+        assert!(
+            joined.contains("❯ first") && !joined.contains("queued"),
+            "the confirmed message renders as a regular user block: {joined:?}"
+        );
+
+        // 区为空时直灌事件（向后兼容：不 panic，直接 push_user）。
+        model.apply_run_event(&RunEvent::SteeringApplied {
+            text: "direct".into(),
+        });
+        assert!(plain(&mut model).contains("❯ direct"));
+
+        // 丢弃（INV-SV5）。
+        model.push_pending_steering("gone".into());
+        assert_eq!(model.discard_pending_steering(), 1);
+        assert_eq!(model.pending_steering_count(), 0);
+        assert!(!plain(&mut model).contains("gone"));
+    }
+
+    /// INV-SV6：pending 区不进 items——流式 assistant 仍是最后一个
+    /// item 且继续续写。
+    #[test]
+    fn pending_steering_does_not_break_streaming_appends() {
+        let mut model = ConversationModel::new();
+        model.apply_run_event(&RunEvent::ModelRequested {
+            turn: 1,
+            provider: "p".into(),
+            model: "m".into(),
+        });
+        model.apply_run_event(&RunEvent::ModelStream {
+            turn: 1,
+            event: ModelEvent::TextDelta {
+                delta: "working".into(),
+            },
+        });
+        model.push_pending_steering("queued".into());
+        model.apply_run_event(&RunEvent::ModelStream {
+            turn: 1,
+            event: ModelEvent::TextDelta {
+                delta: " more".into(),
+            },
+        });
+        let joined = model
+            .visible_lines(0, 40, 60, ToolCardVisibility::Collapsed)
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            joined.contains("working more"),
+            "the open assistant still appends after the pending zone: {joined:?}"
+        );
+        assert!(joined.contains("❯ queued · queued"), "{joined:?}");
     }
 
     /// G4 双面不变式：复制出口无行尾空白；用户块渲染满宽（视觉长条，

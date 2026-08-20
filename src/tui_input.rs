@@ -66,6 +66,19 @@ impl InputBuffer {
         self.cursor += value.len();
     }
 
+    /// 召回的插话回填（ESC 栈式召回多次使用）：先发的想法靠前——
+    /// 新召回的整行插到现有内容**之前**、换行分隔。召回顺序是 LIFO
+    ///（steer3 先回），prepend 语义使多次召回后按发送顺序排列
+    /// （steer1\nsteer2\nsteer3）；用户在召回后新敲的字自然排在最后。
+    pub fn prepend_recalled_line(&mut self, text: &str) {
+        let existing = self.take();
+        if existing.is_empty() {
+            self.insert_str(text);
+        } else {
+            self.insert_str(&format!("{text}\n{existing}"));
+        }
+    }
+
     pub fn backspace(&mut self) {
         self.leave_history();
         if self.cursor == 0 {
@@ -309,6 +322,27 @@ mod tests {
         assert_eq!(&input.text, "two");
         input.history_next();
         assert_eq!(&input.text, "draft");
+    }
+
+    /// ESC 栈式召回的回填序（2026-08-21 dogfood 修复）：召回是 LIFO
+    ///（steer3 先回），回填按**发送顺序**排列且换行分隔——修复前是
+    /// 追加在光标后且无分隔（"steer3steer2steer1" 一行）。用户在召回
+    /// 后新敲的字排在最后（最新）。
+    #[test]
+    fn recalled_steering_lines_stack_in_send_order() {
+        let mut input = InputBuffer::default();
+        input.prepend_recalled_line("steer3");
+        input.prepend_recalled_line("steer2");
+        input.prepend_recalled_line("steer1");
+        assert_eq!(&input.text, "steer1\nsteer2\nsteer3");
+        // 召回后继续敲字：新内容在最后，不插队。
+        input.end();
+        input.insert_str(" plus more");
+        assert_eq!(&input.text, "steer1\nsteer2\nsteer3 plus more");
+        // 空输入的首次召回：原样填入、无多余换行。
+        let mut fresh = InputBuffer::default();
+        fresh.prepend_recalled_line("only");
+        assert_eq!(&fresh.text, "only");
     }
 
     #[test]

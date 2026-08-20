@@ -10,17 +10,20 @@ All contributors and coding agents working in this repository should preserve th
 4. **MCP Native** — MCP is a first-class protocol for external capabilities, while native core tools may remain direct Rust implementations.
 5. **Project Aware** — CLAT should understand the repository and working context it operates in.
 6. **Permission First** — Side-effecting operations must pass through an explicit permission model.
-7. **Dogfood Driven** — CLAT is developed against real work first, beginning with the ECAR repository and CLAT itself.
-8. **Generalize, Never Special-case** — Product requirements may originate from ECAR, but CLAT core must contain reusable abstractions rather than ECAR-specific behavior.
+7. **Dogfood Driven** — CLAT is developed against real work first, dogfooding CLAT itself daily; requirements may originate from any dogfood project.
+8. **Generalize, Never Special-case** — Product requirements may originate from any dogfood project, but CLAT core must contain reusable abstractions rather than caller-specific behavior.
 
-## Initial engineering constraints
+## Engineering constraints
 
 - Rust is the implementation language for the core runtime and CLI.
 - Keep dependencies minimal and justified.
 - Prefer standard, interoperable formats and protocols over project-specific equivalents.
+- **DSH is the reference implementation** for interoperable surfaces (session journal, event vocabulary, permission gating). Follow it unless there is a recorded reason not to; every deliberate deviation lands in a `docs/research/` mapping doc (see `dsh-permission-gating.md` for the pattern).
 - Keep the Agent Runtime, Model Provider, Tool, Permission, Context, Session, Project, and Event concepts separable.
 - Favor observable event-driven execution so future CLI, TUI, IDE, desktop, or remote clients can consume the same runtime events.
-- Do not add multi-agent complexity before the single-agent runtime is useful for real development work.
+- The single-agent runtime is the daily-driver baseline. Multi-agent features are now admissible, but only when driven by a concrete dogfood need and compared against DSH's subagent design — no speculative orchestration.
+- A new durable-event producer must pass four gates together: catalog known-type, admission payload validation, projection fold (with checkpoint/restore), and live/replay parity.
+- Agents never commit or push autonomously; commits are human-approved.
 
 ## Layering rules (hard boundaries)
 
@@ -62,6 +65,9 @@ day.
    is a protocol change — say so explicitly in the commit message.
 4. New background threads or channels? They must belong to one layer:
    runtime workers belong to core, render/input plumbing to the UI.
+5. Did user-visible behavior change? Update the matching docs in the same
+   change (usage / permissions / README / architecture, plus
+   `docs/research/` mappings for cross-project decisions).
 
 Current boundary note: the DeepSeek/GLM monitor and run workers live in core
 plugins/Application. `UiEvent` in `tui_worker.rs` is frontend-local channel
@@ -87,6 +93,15 @@ rules exist to break that pattern.
   bug.
 - Every bug fix ships with a test that **fails on the pre-fix code**.
   If such a test cannot be written, the bug is not understood yet.
+- A test can be red pre-fix yet still fail to discriminate: each
+  assertion that claims to lock a fix must go red when **that specific**
+  fix is deleted. Spot-check this during review — the `/new`-reset leg
+  of the permission-mode test once passed for the wrong reason until an
+  audit caught it.
+- Permission, path-fence, and persistence changes get an adversarial
+  self-review before handoff: attack the new code as an outsider
+  (failure paths, concurrency, cross-session leaks, leftover
+  artifacts), fix what it finds, and report what was checked.
 - Stateful features are verified by walking real user operation
   sequences through the code path by path (resume → exit → reopen),
   not only by the test suite. fmt / clippy / cargo test green is

@@ -39,6 +39,18 @@ impl SteeringQueue {
             .and_then(|mut pending| pending.pop_front())
     }
 
+    /// 召回最后一条未 claim 的消息（LIFO；投递是 FIFO `pop`）。与
+    /// worker 在模型请求边界的 drain 在同一把锁上竞争：claim 先到则
+    /// 该消息已生效、不可召回（返回更晚的或 None）——召回永远不可能
+    /// 撤回已被 claim 的消息（docs/todo/steering-visibility-recall.md
+    /// INV-SV3）。
+    pub(crate) fn recall_last(&self) -> Option<String> {
+        self.pending
+            .lock()
+            .ok()
+            .and_then(|mut pending| pending.pop_back())
+    }
+
     pub(crate) fn is_empty(&self) -> bool {
         self.pending.lock().is_ok_and(|pending| pending.is_empty())
     }

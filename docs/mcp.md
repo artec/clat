@@ -30,6 +30,15 @@ The built-in MCP Adapter plugin reads it only after project trust succeeds.
 Server subprocesses belong to that Trusted Project Scope and are shared across
 runs in the project; closing the project tears them down.
 
+**Startup is non-blocking (2026-08-21)**: connecting servers and listing
+their tools happens on a background worker — CLAT becomes ready immediately,
+and `clat exec` doesn't pay MCP latency either. A run that starts before
+MCP finishes connecting waits for it (bounded at 20s) so the model always
+sees the complete tool set; a server slow enough to exceed the cap lands on
+the next run instead. `/mcp` shows the three states — `connecting` in the
+overview line while servers are still starting, then connected servers with
+their protocol/version/tool counts, plus isolated failures.
+
 A server subprocess's **stderr never reaches your terminal** (2026-08-20):
 it is drained into a bounded tail buffer (last 20 lines) and appended to
 the server's failure message when a connection or `tools/list` fails —
@@ -65,8 +74,9 @@ disable it). The pack is evaluated at mount: switching the model vendor
 takes effect on the next CLAT start.
 
 Connection state is exposed through Application DTOs (`configured`,
-`connected`, per-server protocol/version, and isolated failures). Frontends do
-not receive `McpServer`, `StdioSession`, or the Tool Registry.
+`connected`, `connecting`, per-server protocol/version, and isolated
+failures). Frontends do not receive `McpServer`, `StdioSession`, or the
+Tool Registry.
 
 ## Protocol support
 

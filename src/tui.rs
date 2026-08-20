@@ -9,12 +9,12 @@ use crate::tui_worker::{
     ChannelApprover, ChannelEventSink, ChannelUserAsker, UiEvent, WorkerMessage,
 };
 use crate::{
-    ApplicationEvent, ApplicationRunRequest, BootstrapApplication, CompactHandle, CompactionStatus,
-    McpStatusDto, ModelConfig, ModelEvent, ModelVendor, PermissionDecision, PermissionMode,
-    PermissionRequest, Project, ProjectAuthorization, ProviderCredentials, ProviderDescriptor,
-    RenameOutcome, RunEvent, RunHandle, SteerOutcome, ThinkingLevel, TrustedProjectApplication,
-    Usage, apply_thinking_level, effective_thinking_level, escalation_targets, next_thinking_level,
-    thinking_levels,
+    ApplicationEvent, ApplicationRunRequest, BootstrapApplication, CommandError, CommandInfo,
+    CommandOutcome, CompactHandle, CompactionStatus, McpStatusDto, ModelConfig, ModelEvent,
+    ModelVendor, PermissionDecision, PermissionMode, PermissionRequest, Project,
+    ProjectAuthorization, ProviderCredentials, ProviderDescriptor, RenameOutcome, RunEvent,
+    RunHandle, SteerOutcome, ThinkingLevel, TrustedProjectApplication, Usage, apply_thinking_level,
+    effective_thinking_level, escalation_targets, next_thinking_level, thinking_levels,
 };
 use crossterm::event::{
     self, DisableBracketedPaste, DisableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
@@ -57,10 +57,14 @@ fn animation_tick_for(elapsed: Duration) -> u64 {
 /// 提醒铃（2026-08-19，AFK 场景：对话结束/需要批准时人可能不在屏
 /// 前）。run 结束（用户主动取消除外）、权限与 ask 弹框打开时响一声。
 ///
-/// 三种模式：
-/// - `Terminal`（默认）：发终端铃 BEL（`\x07`）。**声音本身由终端模拟
-///   器决定**——应用只能触发，换音效去终端设置改（iTerm2/Warp 等支持
-///   自选铃声音效文件）；
+/// 四种模式：
+/// - `Sound`（默认，2026-08-21）：系统播放器放一段系统提示音——macOS
+///   `afplay` 放 `Funk.aiff`（`-v 2.0` 略放大），Linux 依次试
+///   `paplay`/`aplay`，Windows 走 PowerShell SoundPlayer。零音频依赖
+///   （cpal 在 Linux 要 ALSA 头文件，会破坏"Rust 工具链是唯一要求"）；
+///   播放器或声音文件不存在时**回落 BEL**；
+/// - `Terminal`（BEL `\x07`）：声音由终端模拟器决定——应用只能触发，
+///   换音效去终端设置改（iTerm2/Warp 等支持自选铃声音效文件）；
 /// - `Off`（`CLAT_NO_BELL=1`）：静音；
 /// - `Command`（`CLAT_BELL_COMMAND="..."`）：任意 shell 命令（macOS
 ///   `afplay ~/Sounds/ding.aiff`、Linux `paplay ding.ogg`），完全自定
@@ -68,12 +72,12 @@ fn animation_tick_for(elapsed: Duration) -> u64 {
 ///   响主流程。
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum BellMode {
-    Terminal,
+    Sound,
     Off,
     Command(String),
 }
 
-/// 环境变量 → 模式（纯函数，测试从这里推导）。
+/// 环境变量 → 模式（纯函数，测试从这里推导）。默认 `Sound`。
 fn bell_mode_from_env(no_bell: Option<String>, command: Option<String>) -> BellMode {
     let silenced = no_bell
         .map(|value| matches!(value.trim(), "1" | "true" | "yes" | "on"))
@@ -83,37 +87,97 @@ fn bell_mode_from_env(no_bell: Option<String>, command: Option<String>) -> BellM
     }
     match command {
         Some(command) if !command.trim().is_empty() => BellMode::Command(command),
-        _ => BellMode::Terminal,
+        _ => BellMode::Sound,
+    }
+}
+
+/// 平台默认提示音（路线 A：系统播放器 + 系统自带声音，零新依赖）。
+/// 返回 `(程序, 参数)`；播放器对应的声音文件不存在（或平台未适配）
+/// 时返回 `None`——调用方回落 BEL。提示是尽力而为。
+fn system_sound_command() -> Option<(std::path::PathBuf, Vec<String>)> {
+    let exists = |path: &str| std::path::Path::new(path).exists();
+    #[cfg(target_os = "macos")]
+    {
+        // Funk：比 iTerm 默认 Boop 长且低沉；`-v 2.0` 略放大（>1.0 是
+        // 放大区间，截断失真由用户经 CLAT_BELL_COMMAND 自调）。
+        let sound = "/System/Library/Sounds/Funk.aiff";
+        if !exists(sound) {
+            return None;
+        }
+        Some((
+            std::path::PathBuf::from("afplay"),
+            vec!["-v".into(), "2.0".into(), sound.into()],
+        ))
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // freedktop 主题音优先（paplay）；ALSA 样例 wav 兜底（aplay）。
+        let ogg = "/usr/share/sounds/freedesktop/stereo/complete.oga";
+        if exists(ogg) {
+            return Some((std::path::PathBuf::from("paplay"), vec![ogg.into()]));
+        }
+        let wav = "/usr/share/sounds/alsa/Front_Center.wav";
+        if exists(wav) {
+            return Some((std::path::PathBuf::from("aplay"), vec![wav.into()]));
+        }
+        None
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let wav = "C:\\Windows\\Media\\Windows Notify System Generic.wav";
+        if !exists(wav) {
+            return None;
+        }
+        Some((
+            std::path::PathBuf::from("powershell"),
+            vec![
+                "-NoProfile".into(),
+                "-Command".into(),
+                format!("(New-Object System.Media.SoundPlayer '{wav}').PlaySync()"),
+            ],
+        ))
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        None
     }
 }
 
 /// 响一声。BEL 直写 stdout：raw 模式只改输入侧，模拟器收到 BEL 按
-/// 自己的铃设置发声（或视觉闪铃）。命令模式 detached spawn（不 wait、
-/// 不接管 stdio）。
+/// 自己的铃设置发声（或视觉闪铃）。声音/命令模式 detached spawn
+/// （不 wait、不接管 stdio）。
 fn ring_bell(mode: &BellMode) {
     match mode {
         BellMode::Off => {}
-        BellMode::Terminal => {
-            let _ = write!(stdout(), "\x07");
-            let _ = stdout().flush();
-        }
         BellMode::Command(command) => {
-            // Child drop 是 detach 不是 reap：不 wait 的话每次响铃留一个
-            // 僵尸到进程退出（对抗审计 2026-08-19）。提醒命令都是短命
-            // 进程，一个专属收割线程足够。spawn 失败静默（提醒尽力而为）。
-            if let Ok(mut child) = std::process::Command::new("sh")
-                .arg("-c")
-                .arg(command)
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn()
-            {
-                std::thread::spawn(move || {
-                    let _ = child.wait();
-                });
-            }
+            spawn_detached_and_reap("sh", vec!["-c".to_owned(), command.clone()]);
         }
+        BellMode::Sound => match system_sound_command() {
+            Some((program, args)) => spawn_detached_and_reap(&program.display().to_string(), args),
+            // 播放器/声音不可用：回落终端铃（用户侧仍可换终端音效）。
+            None => {
+                let _ = write!(stdout(), "\x07");
+                let _ = stdout().flush();
+            }
+        },
+    }
+}
+
+/// detached spawn + 专属收割线程。Child drop 是 detach 不是 reap：不
+/// wait 的话每次响铃留一个僵尸到进程退出（对抗审计 2026-08-19）。提
+/// 醒命令都是短命进程，一个收割线程足够。spawn 失败静默（提醒尽力
+/// 而为）。
+fn spawn_detached_and_reap(program: &str, args: Vec<String>) {
+    if let Ok(mut child) = std::process::Command::new(program)
+        .args(&args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
     }
 }
 
@@ -840,10 +904,6 @@ struct App {
     /// /resume 会话选择器；打开期间独占按键与鼠标。
     session_picker: Option<SessionPicker>,
     running: bool,
-    /// 已入队、尚未被 claim 的 steering 条数（advisory 实时状态：不进
-    /// 会话日志，resume 后从零开始——DSH TUI 同款）。SteeringApplied
-    /// 回流减一；run 结束清零并提示丢弃。
-    steering_queued: usize,
     /// 统一事件通道：输入线程、余额监控、worker 的消息都汇到这里。
     /// `None` 表示尚未启动（run() 建立通道后填充）。
     events: Option<Receiver<UiEvent>>,
@@ -891,6 +951,9 @@ struct App {
     info_page: usize,
     /// /mcp 打开时缓存的 MCP 状态（DTO）；弹窗内 `r` 向 Application 重取。
     mcp_view: Option<McpStatusDto>,
+    /// /help 打开时缓存的命令目录（`ShowHelp` 载荷，INV-C4）：帮助表
+    /// 行从它派生，新增命令不改前端。
+    help_commands: Vec<CommandInfo>,
     /// 余额/额度当前值：核心 Monitor 插件经 ApplicationEvent 写回，状态栏读取。
     balance: Option<String>,
     /// 本会话累计 token 用量，用于状态栏缓存命中百分比。journal 还原
@@ -997,7 +1060,6 @@ impl App {
             picker: None,
             session_picker: None,
             running: false,
-            steering_queued: 0,
             events: None,
             event_sender: None,
             pending_permission: None,
@@ -1021,6 +1083,7 @@ impl App {
             info_scroll_max: 0,
             info_page: 1,
             mcp_view: None,
+            help_commands: Vec::new(),
             balance: None,
             session_usage: Usage::default(),
             last_turn_usage: None,
@@ -1147,7 +1210,12 @@ impl App {
         self.session_usage = snapshot.session_usage;
         self.last_turn_usage = snapshot.last_request_usage;
         if snapshot.mcp.configured != 0 {
-            if snapshot.mcp.failures.is_empty() {
+            if snapshot.mcp.connecting > 0 {
+                self.flash_status(format!(
+                    "mcp: {} server(s) connected · {} connecting",
+                    snapshot.mcp.connected, snapshot.mcp.connecting
+                ));
+            } else if snapshot.mcp.failures.is_empty() {
                 self.flash_status(format!(
                     "mcp: {} server(s) connected",
                     snapshot.mcp.connected
@@ -1735,9 +1803,30 @@ impl App {
             KeyCode::BackTab => self.cycle_thinking_level(),
             KeyCode::Esc => {
                 if self.running {
-                    if let Some(handle) = &self.run_handle {
-                        handle.cancel();
-                        self.flash_status("cancelling…");
+                    // 栈式 ESC（INV-SV4）：先撤最近的用户动作——有未
+                    // claim 的插话先召回（文本退回编辑框，可改可重发，
+                    // run 不受影响）；队列空了才轮到取消 run。已被
+                    // claim 的消息 core 侧返回 None，自然落到取消路径。
+                    let recalled = self
+                        .application
+                        .as_ref()
+                        .and_then(|application| application.recall_pending_steering());
+                    match recalled {
+                        Some(text) => {
+                            // core 召回成功 ⇒ pending 区必含对应回显
+                            //（入队与回显同路径）；区侧同步弹出最后一条。
+                            // 回填按发送顺序排列、换行分隔（多次召回时
+                            // 先发的想法靠前——见 prepend_recalled_line）。
+                            self.conversation.recall_pending_steering();
+                            self.input.prepend_recalled_line(&text);
+                            self.flash_status("steering recalled — edit it, Enter requeues");
+                        }
+                        None => {
+                            if let Some(handle) = &self.run_handle {
+                                handle.cancel();
+                                self.flash_status("cancelling…");
+                            }
+                        }
                     }
                 } else if let Some(handle) = self
                     .compact_handle
@@ -2435,128 +2524,83 @@ impl App {
         // transcript 投影（recent_inputs），命令输入永不落盘。
         self.input.remember(value.clone());
 
-        match value.as_str() {
-            "/model" => {
+        // 命令语义全部在 core 注册表（INV-C1）：这里只剩「分发 → 渲染」。
+        // 附件剥离/输入历史等输入路由留在前端。
+        if is_command {
+            let outcome = match self.application.as_mut() {
+                Some(application) => application.dispatch_command(&value),
+                None => Err(CommandError::Failed {
+                    message: "project application is unavailable".to_owned(),
+                }),
+            };
+            match outcome {
+                Ok(outcome) => self.render_command_outcome(outcome),
+                Err(error) => self.flash_status(error.to_string()),
+            }
+        } else {
+            self.start_run(value.clone(), attachments);
+        }
+    }
+
+    /// 命令 outcome 的终端呈现：各 `Start*` 开对应弹窗（数据来自
+    /// outcome，不再自查门面）、`SessionReset` 清视图状态、错误已在上
+    /// 游 flash。纯渲染，无命令语义。
+    fn render_command_outcome(&mut self, outcome: CommandOutcome) {
+        match outcome {
+            CommandOutcome::Status(message) => self.flash_status(message),
+            CommandOutcome::ShowHelp { commands } => {
+                self.help_commands = commands;
+                self.info_dialog = Some(InfoDialog::new(InfoDialogKind::Help));
+            }
+            CommandOutcome::ShowMcpStatus(view) => {
+                self.mcp_view = Some(view);
+                self.info_dialog = Some(InfoDialog::new(InfoDialogKind::Mcp));
+            }
+            CommandOutcome::StartModelSelection => {
                 // Claude Code 风格：先选厂商（一级），再选该厂商的模型
                 // （二级）；Custom 入口仍进入完整编辑器。
                 self.editor = None;
                 self.picker = Some(ModelPicker::new(&self.config));
                 self.flash_status("select a model");
             }
-            "/help" => {
-                // 帮助改弹窗（2026-08-19）：原先是状态栏一行长文本，
-                // 已长到与右侧遥测段重叠。
-                self.info_dialog = Some(InfoDialog::new(InfoDialogKind::Help));
+            CommandOutcome::StartSessionSelection { sessions } => {
+                let current = self.session_id.clone();
+                self.session_picker = Some(SessionPicker::new(sessions, current));
             }
-            "/mcp" => {
-                // MCP 状态弹窗：数据来自挂载期的 McpStatus（Application
-                // DTO），弹窗内 `r` 重取。前端不接触会话/注册表本体。
-                match self.application.as_ref() {
-                    Some(application) => {
-                        self.mcp_view = Some(application.mcp_status());
-                        self.info_dialog = Some(InfoDialog::new(InfoDialogKind::Mcp));
-                    }
-                    None => self.flash_status("project application is unavailable"),
-                }
+            CommandOutcome::StartPermissionModeSelection { current } => {
+                self.permission_picker =
+                    Some(crate::tui_permission::PermissionPicker::new(current));
             }
-            "/compact" => {
-                // 异步：立即返回 handle，状态经 CompactionUpdated 事件回流
-                // （启动时 "compacting…"，完成/失败时结果文本）；Esc 取消。
-                match self.application.as_mut() {
-                    Some(application) => match application.compact_session() {
-                        Ok(handle) => {
-                            self.compact_handle = Some(handle);
-                        }
-                        Err(error) => {
-                            self.flash_status(format!("compaction unavailable: {error}"));
-                        }
-                    },
-                    None => self.flash_status("project application is unavailable"),
-                }
+            CommandOutcome::StartTitleEdit { prefill } => {
+                self.rename_dialog = Some(RenameDialog::new(&prefill));
             }
-            "/resume" => match self
-                .application
-                .as_ref()
-                .ok_or_else(|| "project application is unavailable".to_owned())
-                .and_then(|application| {
-                    application
-                        .list_sessions()
-                        .map_err(|error| error.to_string())
-                }) {
-                Ok(sessions) => {
-                    let current = self.session_id.clone();
-                    self.session_picker = Some(SessionPicker::new(sessions, current));
-                }
-                Err(error) => self.flash_status(format!("failed to list conversations: {error}")),
-            },
-            "/new" | "/clear" => {
-                // 纯内存切换：session_id 置 None，首条内容写入时才
-                // 落盘建会话（/new 十次不产生任何库行）。活动 Run/
-                // 压缩期间拒绝（INV-T3）。
-                let switched = match &mut self.application {
-                    Some(application) => match application.new_session() {
-                        Ok(()) => true,
-                        Err(error) => {
-                            self.flash_status(format!("{error}"));
-                            false
-                        }
-                    },
-                    None => true,
-                };
-                if !switched {
-                    return;
-                }
+            CommandOutcome::StartCompaction(handle) => {
+                // 状态经 CompactionUpdated 事件回流（启动时 "compacting…"，
+                // 完成/失败时结果文本）；Esc 取消。
+                self.compact_handle = Some(handle);
+            }
+            CommandOutcome::SessionReset => {
+                // /new 成功后的前端视图清空：用量指标归属会话（TUI-L04），
+                // 新会话从零累计。
                 self.session_id = None;
                 self.session_title = None;
                 self.conversation = crate::tui_conversation::ConversationModel::new();
                 self.conversation_scroll_from_bottom = 0;
                 self.input = InputBuffer::new(Vec::new());
-                // 用量指标归属会话（TUI-L04）：新会话从零累计。
                 self.session_usage = Usage::default();
                 self.last_turn_usage = None;
                 self.run_usage_base = None;
                 self.run_usage_acc = Usage::default();
                 self.flash_status("new conversation");
             }
-            // `/perm` 是主命令（短、好记）；`/permission` 保留为别名——
-            // 与 /new|/clear、/quit|/exit 同款双臂惯例。
-            "/perm" | "/permission" => {
-                // 冷切换/降级入口（权限三档）。升权到 Full Access 有
-                // 确认子态（P4）；运行中切档对下一次权限检查生效（P3）。
-                match self.application.as_ref() {
-                    Some(application) => {
-                        self.permission_picker =
-                            Some(crate::tui_permission::PermissionPicker::new(
-                                application.permission_mode(),
-                            ));
-                    }
-                    None => self.flash_status("project application is unavailable"),
-                }
-            }
-            "/rename" => {
-                // 门槛（2026-08-19 放宽）：有活动会话即可改，不再要求
-                // LLM 已起名——原门槛把"首轮自动命名失败/早于命名功能
-                // 的旧会话"永久挡在门外（用户实测几百轮的会话被拒），
-                // 而 CAS 本就保证改名压制迟到的自动命名。空会话 flash。
-                match self.session_id.as_ref() {
-                    Some(_) => {
-                        let prefill = self.session_title.clone().unwrap_or_default();
-                        self.rename_dialog = Some(RenameDialog::new(&prefill));
-                    }
-                    None => self.flash_status("no active conversation to rename"),
-                }
-            }
-            "/quit" | "/exit" => self.should_quit = true,
-            command if command.starts_with('/') => {
-                self.flash_status(format!("unknown command: {command}"));
-            }
-            prompt => self.start_run(prompt.to_owned(), attachments),
+            CommandOutcome::QuitRequested => self.should_quit = true,
         }
     }
 
     /// 运行中提交 = 插话（DSH `steer()`）：消息入队，在下一次模型请求
-    /// 边界并入；转录在 `SteeringApplied` 回流时才出现该消息，徽标计数
-    /// 提示排队中。run 恰好收尾的竞争窗口（NotRunning）回退为普通提交。
+    /// 边界并入；入队即刻在转录尾部出现 dim 的 pending 回显（INV-SV1），
+    /// claim 时由 `SteeringApplied` 升级为正式用户块。run 恰好收尾的
+    /// 竞争窗口（NotRunning）回退为普通提交。
     fn steer_input(&mut self) {
         let value = self.input.take();
         let value = value.trim().to_owned();
@@ -2576,7 +2620,7 @@ impl App {
             .map(|application| application.steer(value.clone()));
         match outcome {
             Some(SteerOutcome::Queued) => {
-                self.steering_queued += 1;
+                self.conversation.push_pending_steering(value);
                 self.flash_status("steering queued — applies at the next model step");
             }
             // run 恰好收尾的竞争窗口回退为普通提交——steering 不携带
@@ -2763,9 +2807,9 @@ impl App {
                 }
             }
             RunEvent::SteeringApplied { .. } => {
-                // 转录用户块由会话模型负责（apply_run_event 已推入）；
-                // 这里只回收排队徽标。
-                self.steering_queued = self.steering_queued.saturating_sub(1);
+                // 转录用户块与 pending 区升级都由会话模型负责
+                //（apply_run_event 已处理）；徽标计数派生自 pending 区，
+                // 无独立状态可回收。
             }
             _ => {}
         }
@@ -2832,13 +2876,12 @@ impl App {
                 self.notify();
             }
         }
-        if self.steering_queued > 0 {
+        let discarded = self.conversation.discard_pending_steering();
+        if discarded > 0 {
             // 未经 claim 的插话不落盘（S4）；显式告知而不是静默吞掉。
             self.flash_status(format!(
-                "{} steering discarded — run ended before it applied",
-                self.steering_queued
+                "{discarded} steering discarded — run ended before it applied"
             ));
-            self.steering_queued = 0;
         }
         self.conversation_scroll_from_bottom = 0;
     }
@@ -2928,7 +2971,7 @@ impl App {
                 phase,
                 self.phase_elapsed(),
                 self.run_elapsed(),
-                self.steering_queued,
+                self.conversation.pending_steering_count(),
             )
         } else {
             Line::from(self.status.as_str())
@@ -3058,10 +3101,11 @@ impl App {
     fn draw_help_dialog(&mut self, frame: &mut Frame) {
         let area = frame.area();
         let inner_width = popup_inner_width(84, area);
-        let lines = help_dialog_lines(inner_width);
+        let commands = self.help_commands.clone();
+        let lines = help_dialog_lines(inner_width, &commands);
         let dialog = centered_rect(84, content_dialog_height(lines.len(), area), area);
-        // 可视行数：内框（去边框）减脚注一行。
-        let visible = (dialog.height.saturating_sub(2 + 1)) as usize;
+        // 可视行数：内框（去边框）减空行与脚注各一行。
+        let visible = (dialog.height.saturating_sub(2 + 2)) as usize;
         let max_scroll = lines.len().saturating_sub(visible);
         self.info_scroll_max = max_scroll;
         self.info_page = visible.max(1);
@@ -3081,6 +3125,9 @@ impl App {
         } else {
             " Esc close "
         };
+        // 空行钉在脚注上方（2026-08-21 统一：与其余弹窗的内容/脚注节奏
+        // 一致），不占滚动内容窗口。
+        body.push(Line::from(""));
         body.push(Line::from(Span::styled(
             footer.trim(),
             tui_theme::style(tui_theme::Role::Faint),
@@ -3100,7 +3147,7 @@ impl App {
         let view = self.mcp_view.clone().unwrap_or_default();
         let lines = mcp_dialog_lines(&view, inner_width);
         let dialog = centered_rect(84, content_dialog_height(lines.len(), area), area);
-        let visible = (dialog.height.saturating_sub(2 + 1)) as usize;
+        let visible = (dialog.height.saturating_sub(2 + 2)) as usize;
         let max_scroll = lines.len().saturating_sub(visible);
         self.info_scroll_max = max_scroll;
         self.info_page = visible.max(1);
@@ -3120,6 +3167,8 @@ impl App {
         } else {
             " r refresh · Esc close "
         };
+        // 空行钉在脚注上方（2026-08-21 统一，同 /help）。
+        body.push(Line::from(""));
         body.push(Line::from(Span::styled(
             footer.trim(),
             tui_theme::style(tui_theme::Role::Faint),
@@ -3550,7 +3599,7 @@ impl App {
         // 标题——头部状态与底部状态栏已在报 loading，第三处是画蛇添足
         // （2026-08-19 用户反馈；输入禁用本身由 loading 门保证）。
         let title = if self.running {
-            "Running — Enter steers · Esc cancels"
+            "Running — Enter steers · Esc recalls queued, then cancels"
         } else {
             "Message"
         };
@@ -3957,72 +4006,77 @@ pub(crate) fn popup_inner_width(percent_x: u16, area: Rect) -> usize {
     popup_width(percent_x, area).saturating_sub(2 + 2 * POPUP_TEXT_PADDING) as usize
 }
 
-/// 内容驱动弹窗高度：内容行数 + 边框 2 行 + 脚注 1 行，钳在
+/// 内容驱动弹窗高度：内容行数 + 边框 2 行 + 空行 1 行 + 脚注 1 行，钳在
 /// [`popup_height_cap`] 预算内。短内容得到小框（上下留出真实边距），
 /// 长内容恰好贴满预算继续滚动（2026-08-19 第三轮反馈：/help 恒取满额
-/// 高度，内容再少也是整屏框、边距形同虚设）。
+/// 高度，内容再少也是整屏框、边距形同虚设）。空行（2026-08-21 统一）
+/// 与其余弹窗的"内容 → 空行 → 脚注"节奏一致，固定钉在脚注上方、
+/// 不随内容滚动。
 pub(crate) fn content_dialog_height(content_lines: usize, area: Rect) -> u16 {
     (content_lines as u16)
-        .saturating_add(3)
+        .saturating_add(4)
         .min(popup_height_cap(area))
 }
 
 /// /help 弹窗内容：命令与键位两节，逐条 `命令 — 说明`，按弹窗内宽
-/// 折行（wrap_text）。节标题 Bold，条目默认色。
-fn help_dialog_lines(width: usize) -> Vec<Line<'static>> {
-    let sections: &[(&str, &[(&str, &str)])] = &[
+/// 折行（wrap_text）。节标题 Bold，条目默认色。命令节从 `core.commands`
+/// 目录派生（INV-C4：`ShowHelp` 载荷），键位节保持前端本地——键位是
+/// 终端前端的概念。
+fn help_dialog_lines(width: usize, commands: &[CommandInfo]) -> Vec<Line<'static>> {
+    let keys: &[(&str, &str)] = &[
+        ("Enter", "submit; while a run is active, submit steering"),
+        ("Shift+Enter, Alt+Enter, Ctrl+J", "insert a line break"),
         (
-            "Commands",
-            &[
-                ("/model", "configure the active model/provider"),
-                ("/new, /clear", "start a new conversation"),
-                ("/compact", "summarize earlier turns into a compact context"),
-                ("/resume", "pick a previous conversation to continue"),
-                ("/mcp", "inspect MCP servers, tools, and failures"),
-                (
-                    "/perm",
-                    "switch the permission mode (Read Only / Project Write / Full Access)",
-                ),
-                ("/rename", "rename the current conversation"),
-                ("/help", "this help"),
-                ("/quit", "exit"),
-            ],
+            "Up / Down",
+            "recall input history (or scroll the conversation)",
         ),
-        (
-            "Keys",
-            &[
-                ("Enter", "submit; while a run is active, submit steering"),
-                ("Shift+Enter, Alt+Enter, Ctrl+J", "insert a line break"),
-                (
-                    "Up / Down",
-                    "recall input history (or scroll the conversation)",
-                ),
-                ("PgUp / PgDn, mouse wheel", "scroll the conversation"),
-                ("Shift+Tab", "cycle the thinking level"),
-                ("Ctrl+O", "cycle tool cards (collapsed / expanded / hidden)"),
-                ("drag", "select text and copy it on release"),
-                ("Ctrl+C", "re-copy the selection; otherwise quit"),
-                ("Shift+drag", "the terminal's own selection, then Cmd+C"),
-                ("Esc", "cancel the running request; otherwise clear input"),
-            ],
-        ),
+        ("PgUp / PgDn, mouse wheel", "scroll the conversation"),
+        ("Shift+Tab", "cycle the thinking level"),
+        ("Ctrl+O", "cycle tool cards (collapsed / expanded / hidden)"),
+        ("drag", "select text and copy it on release"),
+        ("Ctrl+C", "re-copy the selection; otherwise quit"),
+        ("Shift+drag", "the terminal's own selection, then Cmd+C"),
+        ("Esc", "cancel the running request; otherwise clear input"),
     ];
     let mut lines = Vec::new();
-    for (title, entries) in sections {
+    for (title, entry_lines) in [
+        ("Commands", command_help_entries(commands)),
+        (
+            "Keys",
+            keys.iter()
+                .map(|(name, description)| format!("  {name} — {description}"))
+                .collect::<Vec<_>>(),
+        ),
+    ] {
         if !lines.is_empty() {
             lines.push(Line::from(""));
         }
         lines.push(Line::from(Span::styled(
-            *title,
+            title,
             tui_theme::style(tui_theme::Role::Bold),
         )));
-        for (name, description) in *entries {
-            for wrapped in wrap_text(&format!("  {name} — {description}"), width) {
+        for entry in entry_lines {
+            for wrapped in wrap_text(&entry, width) {
                 lines.push(Line::from(wrapped));
             }
         }
     }
     lines
+}
+
+/// 命令节的折行前条目：`  /name, /alias — description`（主名+别名全部
+/// 展示——目录派生后别名不再藏在分发器里）。
+fn command_help_entries(commands: &[CommandInfo]) -> Vec<String> {
+    commands
+        .iter()
+        .map(|info| {
+            let mut names = format!("/{}", info.name);
+            for alias in &info.aliases {
+                names.push_str(&format!(", /{alias}"));
+            }
+            format!("  {names} — {}", info.description)
+        })
+        .collect()
 }
 
 /// /mcp 弹窗内容行。结构：概览行（`connected/configured`）→ 空行 →
@@ -4031,11 +4085,21 @@ fn help_dialog_lines(width: usize) -> Vec<Line<'static>> {
 /// `Failures` 节（失败消息按内宽折行，dim——含挂载失败时的 stderr
 /// 尾部，是排查的主要正文）。
 fn mcp_dialog_lines(view: &McpStatusDto, width: usize) -> Vec<Line<'static>> {
-    let mut lines = vec![Line::from(vec![Span::styled(
+    // connecting（后台启动中的 server）非零时追加以 "· N connecting"
+    // 段——启动落定前 /mcp 是三态视图（INV-M4）。
+    let overview = if view.connecting > 0 {
+        format!(
+            "MCP servers: {}/{} connected · {} connecting",
+            view.connected, view.configured, view.connecting
+        )
+    } else {
         format!(
             "MCP servers: {}/{} connected",
             view.connected, view.configured
-        ),
+        )
+    };
+    let mut lines = vec![Line::from(vec![Span::styled(
+        overview,
         tui_theme::style(tui_theme::Role::Bold),
     )])];
     if !view.servers.is_empty() {
@@ -4212,13 +4276,14 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 提醒铃模式解析（规格推导）：默认终端铃；CLAT_NO_BELL 压过一切；
-    /// CLAT_BELL_COMMAND 非空即自定义命令；NO_BELL 的真值形态宽限
-    /// （1/true/yes/on，大小写与空白不敏感由 trim+小写集合决定——这里
-    /// 只锁小写形态，多余宽容不加）。
+    /// 提醒铃模式解析（规格推导）：默认系统声音（2026-08-21 起，替换
+    /// BEL——BEL 在多数终端上不足以起到提醒作用）；CLAT_NO_BELL 压过
+    /// 一切；CLAT_BELL_COMMAND 非空即自定义命令；NO_BELL 的真值形态
+    /// 宽限（1/true/yes/on，大小写与空白不敏感由 trim+小写集合决定
+    /// ——这里只锁小写形态，多余宽容不加）。
     #[test]
     fn bell_mode_resolves_from_env() {
-        assert_eq!(bell_mode_from_env(None, None), BellMode::Terminal);
+        assert_eq!(bell_mode_from_env(None, None), BellMode::Sound);
         assert_eq!(
             bell_mode_from_env(Some("1".into()), None),
             BellMode::Off,
@@ -4228,18 +4293,32 @@ mod tests {
             bell_mode_from_env(Some("1".into()), Some("afplay x".into())),
             BellMode::Off
         );
-        assert_eq!(
-            bell_mode_from_env(Some("0".into()), None),
-            BellMode::Terminal
-        );
+        assert_eq!(bell_mode_from_env(Some("0".into()), None), BellMode::Sound);
         assert_eq!(
             bell_mode_from_env(None, Some("afplay ~/ding.aiff".into())),
             BellMode::Command("afplay ~/ding.aiff".into())
         );
-        // 空白命令视为未设置，回落终端铃。
+        // 空白命令视为未设置，回落系统声音。
         assert_eq!(
             bell_mode_from_env(None, Some("   ".into())),
-            BellMode::Terminal
+            BellMode::Sound
+        );
+    }
+
+    /// 平台默认声音的形状（macOS：afplay 放 Funk.aiff，`-v 2.0` 略放
+    /// 大；声音文件存在才返回 Some——不存在时回落 BEL）。
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn system_sound_uses_funk_with_modest_volume_boost() {
+        let (program, args) = system_sound_command().expect("macOS ships afplay and Funk.aiff");
+        assert_eq!(program, std::path::PathBuf::from("afplay"));
+        assert_eq!(
+            args,
+            vec![
+                "-v".to_owned(),
+                "2.0".to_owned(),
+                "/System/Library/Sounds/Funk.aiff".to_owned()
+            ]
         );
     }
 
@@ -4800,9 +4879,10 @@ mod tests {
         // 不恒取满额高度——短内容必须留出上下真实边距，长内容恰好
         // 钳满预算（继续靠滚动读完）。
         let area = Rect::new(0, 0, 80, 24);
-        // 短内容：高度 = 行数 + 边框 2 + 脚注 1，居中后上下各 ≥ 边距。
+        // 短内容：高度 = 行数 + 边框 2 + 空行 1 + 脚注 1，居中后上下
+        // 各 ≥ 边距（2026-08-21 起脚注上方有统一的空行分隔）。
         let height = content_dialog_height(5, area);
-        assert_eq!(height, 8, "5 content lines + border + footer");
+        assert_eq!(height, 9, "5 content lines + border + blank + footer");
         let dialog = centered_rect(84, height, area);
         assert!(
             dialog.y >= POPUP_V_MARGIN && dialog.bottom() + POPUP_V_MARGIN <= area.bottom(),
@@ -4814,7 +4894,7 @@ mod tests {
         let capped = content_dialog_height(10_000, area);
         assert_eq!(capped, popup_height_cap(area));
         // 0 行内容也给得出最小可用框（不塌缩成负数/零）。
-        assert_eq!(content_dialog_height(0, area), 3);
+        assert_eq!(content_dialog_height(0, area), 4);
     }
 
     #[test]

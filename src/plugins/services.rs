@@ -23,6 +23,7 @@ pub(crate) const TOOL_PIPELINE_SERVICE_ID: ServiceId = ServiceId::new("core.tool
 pub(crate) const RUN_SCOPE_SERVICE_ID: ServiceId = ServiceId::new("core.run_scope");
 pub(crate) const MCP_STATUS_SERVICE_ID: ServiceId = ServiceId::new("core.mcp_status");
 pub(crate) const COMPACTION_SERVICE_ID: ServiceId = ServiceId::new("core.compaction");
+pub(crate) const COMMAND_SERVICE_ID: ServiceId = ServiceId::new("core.commands");
 
 pub(crate) const SESSION_SERVICE: ServiceKey<crate::session::use_cases::SessionService> =
     ServiceKey::new(SESSION_SERVICE_ID);
@@ -43,6 +44,8 @@ pub(crate) const RUN_SCOPE_SERVICE: ServiceKey<RunScopeResources> =
 pub(crate) const MCP_STATUS_SERVICE: ServiceKey<McpStatus> = ServiceKey::new(MCP_STATUS_SERVICE_ID);
 pub(crate) const COMPACTION_SERVICE: ServiceKey<dyn HistoryCompactor> =
     ServiceKey::new(COMPACTION_SERVICE_ID);
+pub(crate) const COMMAND_SERVICE: ServiceKey<crate::command::CommandRegistry> =
+    ServiceKey::new(COMMAND_SERVICE_ID);
 pub(crate) const TODO_SERVICE_ID: ServiceId = ServiceId::new("core.todo");
 pub(crate) const TODO_SERVICE: ServiceKey<TodoService> = ServiceKey::new(TODO_SERVICE_ID);
 
@@ -572,12 +575,143 @@ pub(crate) struct RunScopeResources {
     pub approver: Arc<dyn PermissionApprover>,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+/// MCP 启动状态（`core.mcp_status`）：mount 期登记 configured，后台
+/// startup worker 逐 server 落定（docs/todo/mcp-async-startup.md）。
+/// 动态部分锁内可变；`start_run` 经 `wait_until_settled` 有界等待后
+/// 再冻结工具注册表——run 见到的永远是完整工具集（INV-M2/M3）。
+/// worker 的取消位归插件侧的 startup state，不在此重复。
 pub(crate) struct McpStatus {
+    inner: std::sync::Mutex<McpStatusInner>,
+    settled: std::sync::Condvar,
+}
+
+struct McpStatusInner {
+    configured: usize,
+    connected: usize,
+    /// 连接失败的 server 数（connecting 推导用；工具注册失败不算——
+    /// server 本身已连上）。
+    failed_servers: usize,
+    failures: Vec<String>,
+    servers: Vec<McpServerStatus>,
+    settled: bool,
+}
+
+/// `/mcp` 与 DTO 的只读快照（connecting 是推导值）。
+pub(crate) struct McpStatusSnapshot {
     pub configured: usize,
     pub connected: usize,
+    pub connecting: usize,
     pub failures: Vec<String>,
     pub servers: Vec<McpServerStatus>,
+}
+
+impl McpStatus {
+    pub(crate) fn new(configured: usize) -> Self {
+        Self {
+            inner: std::sync::Mutex::new(McpStatusInner {
+                configured,
+                connected: 0,
+                failed_servers: 0,
+                failures: Vec::new(),
+                servers: Vec::new(),
+                // 无配置即落定：不依赖 worker 的兜底 mark_settled，
+                // `start_run` 的等待对空 MCP 是零成本且零窗口。
+                settled: configured == 0,
+            }),
+            settled: std::sync::Condvar::new(),
+        }
+    }
+
+    /// 全部 server 落定（成功/失败皆计）；无配置时 mount 后立即为真。
+    #[cfg(test)]
+    pub(crate) fn is_settled(&self) -> bool {
+        self.inner.lock().map(|inner| inner.settled).unwrap_or(true)
+    }
+
+    /// 有界等待落定。返回 false = 超时（调用方以现状冻结，INV-M3 的
+    /// 例外通道）；锁中毒视为已落定（fail-open，不阻塞 run）。
+    pub(crate) fn wait_until_settled(&self, timeout: std::time::Duration) -> bool {
+        let Ok(mut inner) = self.inner.lock() else {
+            return true;
+        };
+        let deadline = std::time::Instant::now() + timeout;
+        while !inner.settled {
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            let (guard, result) = self
+                .settled
+                .wait_timeout(inner, deadline - now)
+                .expect("mcp status lock");
+            inner = guard;
+            if result.timed_out() && !inner.settled {
+                return false;
+            }
+        }
+        true
+    }
+
+    pub(crate) fn record_connected(&self, server: McpServerStatus) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.connected += 1;
+            inner.servers.push(server);
+        }
+        self.notify_settled_if_complete();
+    }
+
+    /// server 级失败（连接/握手/列工具失败）：计入 connecting 推导。
+    pub(crate) fn record_failed_server(&self, message: String) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.failed_servers += 1;
+            inner.failures.push(message);
+        }
+        self.notify_settled_if_complete();
+    }
+
+    /// 非 server 级失败（如工具注册失败）：不影响 connecting 推导。
+    pub(crate) fn record_failure(&self, message: String) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.failures.push(message);
+        }
+    }
+
+    pub(crate) fn mark_settled(&self) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.settled = true;
+            self.settled.notify_all();
+        }
+    }
+
+    fn notify_settled_if_complete(&self) {
+        if let Ok(mut inner) = self.inner.lock()
+            && inner.connected + inner.failed_servers >= inner.configured
+        {
+            inner.settled = true;
+            self.settled.notify_all();
+        }
+    }
+
+    pub(crate) fn snapshot(&self) -> McpStatusSnapshot {
+        self.inner
+            .lock()
+            .map(|inner| McpStatusSnapshot {
+                connecting: inner
+                    .configured
+                    .saturating_sub(inner.connected + inner.failed_servers),
+                configured: inner.configured,
+                connected: inner.connected,
+                failures: inner.failures.clone(),
+                servers: inner.servers.clone(),
+            })
+            .unwrap_or_else(|_| McpStatusSnapshot {
+                configured: 0,
+                connected: 0,
+                connecting: 0,
+                failures: Vec::new(),
+                servers: Vec::new(),
+            })
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -637,4 +771,63 @@ pub(crate) struct CompactionOutcome {
 pub(crate) trait HistoryCompactor: Send + Sync {
     /// 按预算决定是否新增压缩并产出摘要文本（`force` 时尽力压缩）。
     fn compact(&self, request: CompactionRequest<'_>) -> CompactionOutcome;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// INV-M4：connecting 推导 = configured − connected − failed_servers；
+    /// 工具注册失败不参与推导；落定后 connecting 归零、等待立即返回。
+    #[test]
+    fn mcp_status_tracks_connecting_and_settlement() {
+        let status = McpStatus::new(3);
+        let snapshot = status.snapshot();
+        assert_eq!(snapshot.configured, 3);
+        assert_eq!(snapshot.connecting, 3);
+        assert!(!status.is_settled());
+
+        status.record_connected(McpServerStatus {
+            name: "a".into(),
+            server_version: "1".into(),
+            protocol_version: "2026-07-28".into(),
+            tools: 2,
+            transport: "stdio".into(),
+        });
+        assert_eq!(status.snapshot().connecting, 2);
+
+        // 非 server 级失败（如工具注册失败）：记入 failures，不影响
+        // connecting 推导。
+        status.record_failure("mcp `a` tool `x`: frozen".into());
+        assert_eq!(status.snapshot().connecting, 2);
+        assert_eq!(status.snapshot().failures.len(), 1);
+
+        status.record_failed_server("mcp `b`: boom".into());
+        assert_eq!(status.snapshot().connecting, 1);
+        assert!(!status.is_settled(), "still one server in flight");
+
+        // 等待超时通道（INV-M3 的例外）：未落定时有界返回 false。
+        assert!(!status.wait_until_settled(std::time::Duration::from_millis(20)));
+
+        // 最后一个落定：connected+failed == configured ⇒ settled。
+        status.record_connected(McpServerStatus {
+            name: "c".into(),
+            server_version: "1".into(),
+            protocol_version: "2026-07-28".into(),
+            tools: 0,
+            transport: "http".into(),
+        });
+        assert_eq!(status.snapshot().connecting, 0);
+        assert_eq!(status.snapshot().connected, 2);
+        assert!(status.is_settled());
+        assert!(status.wait_until_settled(std::time::Duration::from_millis(20)));
+    }
+
+    /// 无配置：mount 后立即 settled（空 MCP 的启动等待是零成本）。
+    #[test]
+    fn mcp_status_with_no_config_settles_immediately() {
+        let status = McpStatus::new(0);
+        assert!(status.wait_until_settled(std::time::Duration::from_millis(20)));
+        assert_eq!(status.snapshot().connecting, 0);
+    }
 }

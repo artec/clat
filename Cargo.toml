@@ -1,6 +1,6 @@
 [package]
 name = "clat"
-version = "0.7.1"
+version = "0.7.2"
 edition = "2024"
 description = "A fast, local-first, open-source command-line agent runtime"
 license-file = "LICENSE"
@@ -50,3 +50,13 @@ libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading"] }
+
+# Release 构建优化（2026-08-21）：thin LTO + 单 codegen unit 跨 crate
+# 内联（会话回放的 zstd 解码 / JSON 解析与 markdown 渲染受益），strip
+# 掉符号（bundled SQLite + rustls 的调试符号使裸二进制显著变小）。
+# 刻意不用 panic = "abort"：catch_unwind 是承重的（插件拆解的 panic
+# 隔离），见 AGENTS.md 分层规则与 plugin/effect.rs。
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

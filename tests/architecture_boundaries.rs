@@ -143,3 +143,58 @@ fn terminal_frontend_has_no_core_assembly_or_persistence_entrypoints() {
         }
     }
 }
+
+/// Slash command semantics live in the `core.commands` registry
+/// (docs/todo/commands-core.md, INV-C1): frontends reach commands only
+/// through `TrustedProjectApplication::dispatch_command` and render the
+/// outcome. The production prefix of the terminal frontend files must not
+/// contain command-name match arms (the dispatch shape `"/model" =>` or
+/// `"/new" |`). Merely *mentioning* a command in a dialog title or status
+/// text (e.g. " /model " or "run /model first") is a presentation reference
+/// and stays legal — adding a command must not touch any frontend.
+#[test]
+fn terminal_frontend_does_not_own_slash_command_dispatch() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let frontends = rust_sources(root)
+        .into_iter()
+        .filter(|path| is_frontend(path))
+        .collect::<Vec<_>>();
+    assert!(
+        frontends.len() >= 6,
+        "architecture guard failed to discover the complete terminal frontend"
+    );
+    let commands = [
+        "model",
+        "help",
+        "mcp",
+        "compact",
+        "resume",
+        "new",
+        "clear",
+        "perm",
+        "permission",
+        "rename",
+        "quit",
+        "exit",
+    ];
+    let mut checked = 0;
+    for path in frontends {
+        let source = fs::read_to_string(&path).expect("read frontend source");
+        let production = source.split("\n#[cfg(test)]").next().unwrap_or("");
+        let relative = relative(root, &path).display();
+        checked += 1;
+        for name in commands {
+            for dispatch_shape in [format!("\"/{name}\" =>"), format!("\"/{name}\" |")] {
+                assert!(
+                    !production.contains(&dispatch_shape),
+                    "{relative} production code must not dispatch `/{name}` itself — \
+                     route it through TrustedProjectApplication::dispatch_command"
+                );
+            }
+        }
+    }
+    assert!(
+        checked > 0,
+        "architecture guard discovered no frontend sources"
+    );
+}

@@ -14,11 +14,11 @@ use crate::model::{ModelConfig, ProviderCredentials, ProviderDescriptor, Usage};
 use crate::permission::PermissionApprover;
 use crate::plugin::{Plugin, PluginManager, ScopeKind};
 use crate::plugins::services::{
-    AGENT_SERVICE, AgentRequest, COMPACTION_SERVICE, CONFIG_SERVICE, CompactionNode,
-    CompactionOutcome, CompactionRequest, ConfigStore, HistoryCompactor, MCP_STATUS_SERVICE,
-    MONITOR_SERVICE, McpStatus, MonitorService, PROMPT_SERVICE, PROVIDER_SERVICE, ProviderRegistry,
-    RUN_SCOPE_SERVICE, SESSION_SERVICE, SESSION_TITLE_SERVICE, SessionTitler, StoreError,
-    TODO_SERVICE, TOOL_PIPELINE_SERVICE, TOOL_SERVICE, TodoService,
+    AGENT_SERVICE, AgentRequest, COMMAND_SERVICE, COMPACTION_SERVICE, CONFIG_SERVICE,
+    CompactionNode, CompactionOutcome, CompactionRequest, ConfigStore, HistoryCompactor,
+    MCP_STATUS_SERVICE, MONITOR_SERVICE, McpStatus, MonitorService, PROMPT_SERVICE,
+    PROVIDER_SERVICE, ProviderRegistry, RUN_SCOPE_SERVICE, SESSION_SERVICE, SESSION_TITLE_SERVICE,
+    SessionTitler, StoreError, TODO_SERVICE, TOOL_PIPELINE_SERVICE, TOOL_SERVICE, TodoService,
 };
 use crate::plugins::{ProjectControlStoragePlugin, SessionPersistencePlugin, run_catalog};
 use crate::presets::preset_by_id;
@@ -110,6 +110,9 @@ pub struct ProjectSnapshot {
 pub struct McpStatusDto {
     pub configured: usize,
     pub connected: usize,
+    /// 仍在后台连接中的 server 数（`configured − connected − failed`；
+    /// 启动落定后为 0——docs/todo/mcp-async-startup.md INV-M4）。
+    pub connecting: usize,
     pub failures: Vec<String>,
     pub servers: Vec<McpServerInfoDto>,
 }
@@ -127,11 +130,13 @@ pub struct McpServerInfoDto {
 
 impl From<&McpStatus> for McpStatusDto {
     fn from(status: &McpStatus) -> Self {
+        let snapshot = status.snapshot();
         Self {
-            configured: status.configured,
-            connected: status.connected,
-            failures: status.failures.clone(),
-            servers: status
+            configured: snapshot.configured,
+            connected: snapshot.connected,
+            connecting: snapshot.connecting,
+            failures: snapshot.failures,
+            servers: snapshot
                 .servers
                 .iter()
                 .map(|server| McpServerInfoDto {
@@ -313,6 +318,9 @@ pub struct TrustedProjectApplication {
     /// Frozen prompt registry: `request/header.system` reads the resolved
     /// instructions (audit P1-14).
     prompts: Arc<crate::plugins::services::PromptRegistry>,
+    /// Frozen command registry（`core.commands`）：斜杠命令的唯一语义
+    /// 源，前端经 `dispatch_command` 触达（INV-C1）。
+    commands: Arc<crate::command::CommandRegistry>,
     agent: Arc<dyn crate::plugins::services::AgentRuntime>,
     mcp_status: Arc<McpStatus>,
     monitor: Arc<dyn MonitorService>,
@@ -527,6 +535,8 @@ impl TrustedProjectApplication {
             )),
             Arc::new(crate::plugins::PromptRegistryPlugin),
             Arc::new(crate::plugins::DefaultPromptPlugin),
+            Arc::new(crate::plugins::CommandsPlugin),
+            Arc::new(crate::plugins::BuiltinCommandsPlugin),
             Arc::new(crate::plugins::ProjectInstructionsPlugin::new(
                 project.clone(),
             )),
@@ -542,11 +552,13 @@ impl TrustedProjectApplication {
         project_manager
             .mount_all(catalog)
             .map_err(|error| ApplicationError::new(error.to_string()))?;
+        // 工具注册表**不在此冻结**：MCP 后台 worker 挂载后仍在注册工
+        // 具，冻结点后移到首次 `start_run`（先有界等待 MCP 落定，见
+        // `start_run_with_catalog`——architecture.md 的 "Registries
+        // freeze before a run" 语义，docs/todo/mcp-async-startup.md）。
+        // providers/prompts/commands 的贡献在挂载期完成，照旧冻结。
         let tools = project_manager
             .require(TOOL_SERVICE)
-            .map_err(|error| ApplicationError::new(error.to_string()))?;
-        tools
-            .freeze()
             .map_err(|error| ApplicationError::new(error.to_string()))?;
         let providers = project_manager
             .require(PROVIDER_SERVICE)
@@ -558,6 +570,12 @@ impl TrustedProjectApplication {
             .require(PROMPT_SERVICE)
             .map_err(|error| ApplicationError::new(error.to_string()))?;
         prompts.freeze();
+        // 命令注册表与工具/厂商/提示词同点冻结：贡献只发生在挂载期，
+        // 冻结后挡注册不挡撤销（INV-C3）。
+        let commands = project_manager
+            .require(COMMAND_SERVICE)
+            .map_err(|error| ApplicationError::new(error.to_string()))?;
+        commands.freeze();
         project_manager
             .require(TOOL_PIPELINE_SERVICE)
             .map_err(|error| ApplicationError::new(error.to_string()))?
@@ -591,6 +609,7 @@ impl TrustedProjectApplication {
             providers,
             tools,
             prompts,
+            commands,
             agent,
             mcp_status,
             monitor,
@@ -1350,12 +1369,21 @@ impl TrustedProjectApplication {
         if let Some(previous) = self.active_compaction.take() {
             previous.join()?;
         }
+        // 模型配置检查在前：无模型时立即失败，不为 MCP 白等。
         let (config, credentials) = self.model_state()?;
         if !config.is_configured() {
             return Err(ApplicationError::new(
                 "model is not configured; configure a model and endpoint first",
             ));
         }
+        // MCP 后台启动落定（有界等待）后再冻结工具注册表（INV-M2/M3）：
+        // 任何 run 看到的都是完整工具集——除非等待超时（此时以现状冻结，
+        // 状态面板可见未落定 server，下一次 run 可见）。无 MCP 配置时
+        // 立即返回，零等待成本。
+        let _settled = self.mcp_status.wait_until_settled(MCP_STARTUP_RUN_WAIT);
+        self.tools
+            .freeze()
+            .map_err(|error| ApplicationError::new(error.to_string()))?;
         let ApplicationRunRequest {
             attachments,
             prompt,
@@ -1706,6 +1734,18 @@ impl TrustedProjectApplication {
         SteerOutcome::Queued
     }
 
+    /// 召回最后一条未 claim 的插话（ESC 栈式语义的第一优先级）：
+    /// 文本退回调用方（前端放回编辑框，可改可重发）。无活动 run、run
+    /// 已结束、或消息已被 claim（进入 journal、不可撤回）时返回
+    /// `None`——此时前端的 ESC 应回落到取消 run。召回不触碰 journal。
+    pub fn recall_pending_steering(&self) -> Option<String> {
+        let handle = self.active_run.as_ref()?;
+        if handle.is_finished() {
+            return None;
+        }
+        handle.steering.recall_last()
+    }
+
     /// 用户改名（`/rename`）：`SetTitleExpectation::Force` +
     /// `TitleSource::User`（catalog §2.2——用户改名不引用 provider）。
     ///
@@ -1743,6 +1783,34 @@ impl TrustedProjectApplication {
             // set_title 的会话守卫（活动 id 漂移）——与 NoSession 同义。
             Ok(RenameOutcome::NoSession)
         }
+    }
+
+    /// 分发一条斜杠命令（INV-C1：前端触达命令的唯一路径）。解析 →
+    /// 查注册表 → 参数裁决（INV-C6）→ 处理器；outcome 由调用方渲染。
+    /// dispatch 全程不构造 run/model 请求（INV-C5）、不生产 `command/*`
+    /// 日志事件（INV-C7——持久效果由处理器调用的门面方法既有词表承载）。
+    pub fn dispatch_command(
+        &mut self,
+        input: &str,
+    ) -> Result<crate::command::CommandOutcome, crate::command::CommandError> {
+        let (name, args) = crate::command::parse_command_input(input)?;
+        // 条目是 owned 快照（handler 为 Arc 拷贝），查表的可变借用在此
+        // 结束，处理器才能拿 `&mut self`。
+        let entry =
+            self.commands
+                .lookup(&name)
+                .ok_or_else(|| crate::command::CommandError::NotFound {
+                    input: input.to_owned(),
+                })?;
+        if !args.is_empty() && !entry.takes_args {
+            return Err(crate::command::CommandError::TakesNoArguments { name: entry.name });
+        }
+        entry.handler.run(self, args)
+    }
+
+    /// 命令目录（INV-C4：帮助表与未知命令提示的唯一事实源）。
+    pub fn command_catalog(&self) -> Vec<crate::command::CommandInfo> {
+        self.commands.catalog()
     }
 
     /// 手动 `/compact`：异步 worker 内执行（含网络摘要），立即返回可取
@@ -2096,7 +2164,12 @@ impl TitleWorker {
 }
 
 /// 进程退出时后台线程的有界等待上限。
-const EXIT_JOIN_GRACE: Duration = Duration::from_secs(2);
+pub(crate) const EXIT_JOIN_GRACE: Duration = Duration::from_secs(2);
+
+/// `start_run` 对 MCP 后台启动的有界等待上限（INV-M3 的例外通道）：
+/// 覆盖 npx 冷启动 + 握手（10s 超时）的现实组合；超时后以现状冻结，
+/// 迟到的 server 由状态面板报告、下一次 run 可见。
+const MCP_STARTUP_RUN_WAIT: Duration = Duration::from_secs(20);
 
 /// 取消后至多等待 `grace`；超时则放弃该线程（stderr 留一条记录），
 /// 返回 Ok——放弃是退出路径的正当结果，不是失败。快速退出的线程
@@ -2370,7 +2443,7 @@ pub struct CompactReport {
 }
 
 impl CompactReport {
-    fn status_text(&self) -> String {
+    pub(crate) fn status_text(&self) -> String {
         let base = format!("compacted: shadowed {} events", self.shadowed_count);
         match &self.degraded {
             Some(reason) => format!("{base} (degraded: {reason})"),
@@ -3799,6 +3872,77 @@ mod tests {
 
         let live_events = live.lock().unwrap().clone();
         assert_conversation_parity(&live_events, &events);
+        std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
+    }
+
+    /// 召回（2026-08-21，INV-SV3）：未 claim 的插话可 LIFO 召回且不留
+    /// 任何 journal 痕迹；召回不取消 run（剩余消息照常 claim 并延长
+    /// run）；run 结束后无可召回。
+    #[test]
+    fn steering_recall_is_lifo_silent_and_never_cancels() {
+        let (storage_root, project_root) = roots("steer-recall");
+        std::fs::create_dir_all(&project_root).unwrap();
+        let project = Project::new(&project_root);
+        let gate = Arc::new(crate::test_support::SteerGate::default());
+        let mut application = mount(
+            &project,
+            &storage_root,
+            TestBehavior::Steer(Arc::clone(&gate)),
+        );
+        configure_test_model(&application);
+
+        let (completion, receiver) = mpsc::channel();
+        let handle = application
+            .start_run(ApplicationRunRequest {
+                attachments: Vec::new(),
+                asker: None,
+                prompt: "start work".into(),
+                approver: allow_all_approver(),
+                events: Box::new(SharedEvents(Arc::new(Mutex::new(Vec::new())))),
+                completion,
+            })
+            .unwrap();
+
+        gate.wait_entered();
+        // 空队列召回 → None（前端 ESC 此时回落到取消语义）。
+        assert_eq!(application.recall_pending_steering(), None);
+        assert_eq!(application.steer("kept message"), SteerOutcome::Queued);
+        assert_eq!(application.steer("recalled message"), SteerOutcome::Queued);
+        // LIFO：召回最后一条。
+        assert_eq!(
+            application.recall_pending_steering(),
+            Some("recalled message".to_owned())
+        );
+        // 召回不取消 run：放行后 run 继续，claim 的是剩余那条。
+        gate.release();
+        handle.join().unwrap();
+        let done = receiver.recv().unwrap().unwrap();
+        assert!(!done.cancelled, "recall must not cancel the run");
+        assert_eq!(done.turns, 2, "the kept steering still extends the run");
+        // run 结束后无可召回。
+        assert_eq!(application.recall_pending_steering(), None);
+        application.close().unwrap();
+
+        // journal：kept 落盘（mid-turn user/message）；recalled 零痕迹。
+        let events = load_events(&storage_root);
+        let texts: Vec<String> = events
+            .iter()
+            .filter(|event| event.event_type == "user/message")
+            .map(|event| {
+                event.data["content"][0]["text"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned()
+            })
+            .collect();
+        assert!(
+            texts.iter().any(|text| text == "kept message"),
+            "the kept steering is journaled: {texts:?}"
+        );
+        assert!(
+            !texts.iter().any(|text| text == "recalled message"),
+            "a recalled steering message must leave no durable trace: {texts:?}"
+        );
         std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
     }
 

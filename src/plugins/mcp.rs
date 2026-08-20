@@ -4,12 +4,15 @@ use super::services::{
 };
 use crate::mcp_client::{McpServer, McpTool, load_mcp_config, merge_vendor_pack};
 use crate::plugin::{
-    DisposeError, Plugin, PluginContext, PluginDescriptor, PluginError, PluginId, ScopeKind,
+    Plugin, PluginContext, PluginDescriptor, PluginError, PluginId, PluginOwner, ScopeKind,
     ServiceId,
 };
 use crate::{Tool, ToolRegistry};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 const ID: PluginId = PluginId::new("builtin.mcp_adapter");
 const PROVIDES: &[ServiceId] = &[MCP_STATUS_SERVICE_ID];
@@ -42,6 +45,39 @@ impl McpAdapterPlugin {
     }
 }
 
+/// worker 与 close 协作的共享状态：取消位 + 清理闭包列表。worker 在
+/// server 间检查取消；清理按 push 序执行（**每 server 先工具 lease 后
+/// 进程关闭**——线性 drain 等价旧 LIFO teardown 语义：工具先撤、进程
+/// 后关）。
+struct McpStartupState {
+    cancelled: AtomicBool,
+    cleanups: Mutex<Vec<Box<dyn FnOnce() + Send>>>,
+}
+
+impl McpStartupState {
+    fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+
+    fn push_cleanup(&self, cleanup: Box<dyn FnOnce() + Send>) {
+        if let Ok(mut cleanups) = self.cleanups.lock() {
+            cleanups.push(cleanup);
+        }
+    }
+
+    fn run_cleanups(&self) {
+        if let Ok(mut cleanups) = self.cleanups.lock() {
+            for cleanup in cleanups.drain(..) {
+                cleanup();
+            }
+        }
+    }
+}
+
 impl Plugin for McpAdapterPlugin {
     fn descriptor(&self) -> &'static PluginDescriptor {
         &DESCRIPTOR
@@ -51,97 +87,134 @@ impl Plugin for McpAdapterPlugin {
         let registry = context
             .require(TOOL_SERVICE)
             .map_err(|error| PluginError::new(error.to_string()))?;
+        // 本地配置读取保留 fail-fast（无网络/子进程 I/O，INV-M1）；
+        // 连接与握手全部挪进后台 worker——mount 即返回，ready 不再被
+        // MCP 阻塞（docs/todo/mcp-async-startup.md）。
         let mut config = load_mcp_config(&self.storage_root).map_err(PluginError::new)?;
         merge_vendor_pack(&mut config, &self.vendor_pack);
-        let mut status = McpStatus {
-            configured: config.len(),
-            ..McpStatus::default()
+        let status = Arc::new(McpStatus::new(config.len()));
+        let state = Arc::new(McpStartupState {
+            cancelled: AtomicBool::new(false),
+            cleanups: Mutex::new(Vec::new()),
+        });
+        let owner = context.owner();
+        let worker = {
+            let status = Arc::clone(&status);
+            let registry = Arc::clone(&registry);
+            let state = Arc::clone(&state);
+            let storage_root = self.storage_root.clone();
+            std::thread::Builder::new()
+                .name("clat-mcp-startup".into())
+                .spawn(move || run_startup(config, &storage_root, registry, owner, status, state))
+                .map_err(|error| PluginError::new(format!("spawn mcp startup worker: {error}")))?
         };
-
-        for (name, server_config) in &config {
-            let valid = server_config.is_http() || !server_config.command.trim().is_empty();
-            if !valid {
-                status
-                    .failures
-                    .push(format!("mcp `{name}`: empty command and no url"));
-                continue;
-            }
-            let server = match McpServer::connect(name, server_config, &self.storage_root) {
-                Ok(server) => server,
-                Err(error) => {
-                    status.failures.push(format!("mcp `{name}`: {error}"));
-                    continue;
-                }
-            };
-            let infos = match server.list_tools() {
-                Ok(infos) => infos,
-                Err(error) => {
-                    // 失败消息带上服务器 stderr 尾部——npx/npm 的报错
-                    // 就在这里，用户不需要去终端日志里翻（stderr 也不
-                    // 再直通终端，见 StdioSession::spawn）。
-                    status.failures.push(format!(
-                        "mcp `{name}`: {error}{}",
-                        crate::mcp_client::format_stderr_tail_public(&server.stderr_tail())
-                    ));
-                    let _ = server.shutdown();
-                    continue;
-                }
-            };
-            let transport = if server_config.is_http() {
-                "http"
-            } else {
-                "stdio"
-            };
-            let server = Arc::new(server);
-            let shutdown_server = Arc::clone(&server);
-            // Registered before leases so LIFO teardown revokes tools first.
-            context.defer(move || {
-                Arc::try_unwrap(shutdown_server)
-                    .map_err(|_| DisposeError::new("MCP server still has active owners"))?
-                    .shutdown()
-                    .map_err(|error| DisposeError::new(error.to_string()))
-            });
-            let mut tools = 0usize;
-            for info in infos {
-                let remote_name = info.name.clone();
-                let tool: Arc<dyn Tool> = Arc::new(McpTool::new(&server, info));
-                if let Err(error) = register_tool(context, &registry, tool) {
-                    status
-                        .failures
-                        .push(format!("mcp `{name}` tool `{remote_name}`: {error}"));
-                } else {
-                    tools += 1;
-                }
-            }
-            status.servers.push(McpServerStatus {
-                name: name.clone(),
-                server_version: server.server_version().to_owned(),
-                protocol_version: server.negotiated_version().to_owned(),
-                tools,
-                transport: transport.to_owned(),
-            });
-            status.connected += 1;
-        }
         context
-            .provide(MCP_STATUS_SERVICE, Arc::new(status))
-            .map_err(|error| PluginError::new(error.to_string()))
+            .provide(MCP_STATUS_SERVICE, status)
+            .map_err(|error| PluginError::new(error.to_string()))?;
+        // 单一 defer：cancel → 有界 join → 依序执行 worker 登记的清理。
+        // 卡住的握手不拖关闭（对齐 monitor/title 的 EXIT_JOIN_GRACE 纪
+        // 律，INV-M5）；被放弃的 worker 由进程退出回收。
+        let join_state = Arc::clone(&state);
+        context.defer(move || {
+            join_state.cancel();
+            let _ = crate::application::join_with_grace(
+                worker,
+                crate::application::EXIT_JOIN_GRACE,
+                "mcp startup worker",
+            );
+            join_state.run_cleanups();
+            Ok(())
+        });
+        Ok(())
     }
 }
 
-fn register_tool(
-    context: &mut PluginContext<'_>,
-    registry: &Arc<ToolRegistry>,
-    tool: Arc<dyn Tool>,
-) -> Result<(), String> {
-    let lease = registry
-        .register(context.owner(), tool)
-        .map_err(|error| error.to_string())?;
-    context.defer(move || {
-        lease
-            .revoke()
-            .map_err(|error| DisposeError::new(error.to_string()))
-    });
-    Ok(())
+/// 后台逐 server 启动：connect（spawn/HTTP + initialize 握手）→
+/// `list_tools` → 注册工具。每步的既有超时（握手 10s / discover 3s /
+/// list 30s）使串行总时长有界；失败记入状态（含 stderr 尾部），不影
+/// 响其余 server。全部落定（或取消）后 mark_settled——`start_run` 的
+/// 有界等待以此为准（INV-M2/M3）。
+fn run_startup(
+    config: BTreeMap<String, crate::mcp_client::McpServerConfig>,
+    storage_root: &std::path::Path,
+    registry: Arc<ToolRegistry>,
+    owner: PluginOwner,
+    status: Arc<McpStatus>,
+    state: Arc<McpStartupState>,
+) {
+    for (name, server_config) in &config {
+        if state.is_cancelled() {
+            break;
+        }
+        let valid = server_config.is_http() || !server_config.command.trim().is_empty();
+        if !valid {
+            status.record_failed_server(format!("mcp `{name}`: empty command and no url"));
+            continue;
+        }
+        let server = match McpServer::connect(name, server_config, storage_root) {
+            Ok(server) => server,
+            Err(error) => {
+                status.record_failed_server(format!("mcp `{name}`: {error}"));
+                continue;
+            }
+        };
+        let infos = match server.list_tools() {
+            Ok(infos) => infos,
+            Err(error) => {
+                // 失败消息带上服务器 stderr 尾部——npx/npm 的报错就
+                // 在这里，用户不需要去终端日志里翻（stderr 也不再直
+                // 通终端，见 StdioSession::spawn）。
+                status.record_failed_server(format!(
+                    "mcp `{name}`: {error}{}",
+                    crate::mcp_client::format_stderr_tail_public(&server.stderr_tail())
+                ));
+                let _ = server.shutdown();
+                continue;
+            }
+        };
+        let transport = if server_config.is_http() {
+            "http"
+        } else {
+            "stdio"
+        };
+        let server = Arc::new(server);
+        let mut tools = 0usize;
+        for info in infos {
+            let remote_name = info.name.clone();
+            let tool: Arc<dyn Tool> = Arc::new(McpTool::new(&server, info));
+            match registry.register(owner, tool) {
+                Ok(lease) => {
+                    // 清理序（每 server）：先工具 lease、后进程关闭。
+                    state.push_cleanup(Box::new(move || {
+                        let _ = lease.revoke();
+                    }));
+                    tools += 1;
+                }
+                Err(error) => {
+                    // server 已连上：连接级失败之外的登记（不参与
+                    // connecting 推导）。
+                    status.record_failure(format!("mcp `{name}` tool `{remote_name}`: {error}"));
+                }
+            }
+        }
+        let shutdown_server = Arc::clone(&server);
+        state.push_cleanup(Box::new(move || {
+            // worker 正常收尾后此处独占；仍被放弃的 worker 持有时放弃
+            // 显式关闭（进程退出回收），不算失败。
+            if let Ok(server) = Arc::try_unwrap(shutdown_server) {
+                let _ = server.shutdown();
+            }
+        }));
+        status.record_connected(McpServerStatus {
+            name: name.clone(),
+            server_version: server.server_version().to_owned(),
+            protocol_version: server.negotiated_version().to_owned(),
+            tools,
+            transport: transport.to_owned(),
+        });
+    }
+    // 兜底：取消/异常路径下也置 settled（等待者不被挂起）。
+    status.mark_settled();
 }
 
 #[cfg(test)]
@@ -150,7 +223,34 @@ mod tests {
     use crate::plugin::{Plugin, PluginManager};
     use crate::plugins::ToolRegistryPlugin;
     use std::fs;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+    /// INV-M1（空配置）：mount 即 settled、connecting 0——无 server 时
+    /// 启动等待是零成本的；close 干净回收。
+    #[test]
+    fn mount_with_no_servers_settles_immediately() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("clat-mcp-empty-{unique}"));
+        fs::create_dir_all(&root).expect("root");
+
+        let catalog: Vec<Arc<dyn Plugin>> = vec![
+            Arc::new(ToolRegistryPlugin),
+            Arc::new(McpAdapterPlugin::new(root.clone(), Vec::new())),
+        ];
+        let mut manager = PluginManager::root(ScopeKind::TrustedProject);
+        manager.mount_all(catalog).expect("mount plugins");
+        let status = manager.require(MCP_STATUS_SERVICE).expect("status service");
+        assert!(status.is_settled(), "no servers ⇒ settled at mount");
+        assert!(status.wait_until_settled(Duration::from_millis(50)));
+        let snapshot = status.snapshot();
+        assert_eq!(snapshot.configured, 0);
+        assert_eq!(snapshot.connecting, 0);
+        manager.close().expect("close project scope");
+        fs::remove_dir_all(root).expect("remove root");
+    }
 
     #[test]
     #[ignore = "spawns a python3 subprocess; run explicitly with --ignored"]
@@ -162,8 +262,11 @@ mod tests {
         let root = std::env::temp_dir().join(format!("clat-mcp-plugin-{unique}"));
         fs::create_dir_all(&root).expect("root");
         let marker = root.join("server-closed");
+        // 门控文件：discover 前阻塞等待它出现——mount 返回时 server 必然
+        // 仍在 connecting（INV-M1 断言无竞态）。
+        let gate = root.join("startup-gate");
         let script = r#"
-import json, sys
+import json, sys, os, time
 def send(obj):
     sys.stdout.write(json.dumps(obj) + "\n")
     sys.stdout.flush()
@@ -173,6 +276,8 @@ for line in sys.stdin:
         continue
     method = msg.get("method", "")
     if method == "server/discover":
+        while not os.path.exists(sys.argv[2]):
+            time.sleep(0.01)
         send({"jsonrpc": "2.0", "id": msg["id"], "result": {
             "resultType": "complete",
             "supportedVersions": ["2026-07-28"],
@@ -193,7 +298,7 @@ with open(sys.argv[1], "w", encoding="utf-8") as output:
         let config = serde_json::json!({
             "fixture": {
                 "command": "python3",
-                "args": ["-u", "-c", script, marker.to_string_lossy()]
+                "args": ["-u", "-c", script, marker.to_string_lossy(), gate.to_string_lossy()]
             }
         });
         fs::write(
@@ -207,8 +312,27 @@ with open(sys.argv[1], "w", encoding="utf-8") as output:
             Arc::new(McpAdapterPlugin::new(root.clone(), Vec::new())),
         ];
         let mut manager = PluginManager::root(ScopeKind::TrustedProject);
+        // INV-M1：mount 在握手完成前即返回（connecting 态、无工具）。
+        let mounted = Instant::now();
         manager.mount_all(catalog).expect("mount plugins");
+        assert!(
+            mounted.elapsed() < Duration::from_secs(2),
+            "mount must not wait for the MCP handshake"
+        );
         let registry = manager.require(TOOL_SERVICE).expect("tool registry");
+        let status = manager.require(MCP_STATUS_SERVICE).expect("status service");
+        assert!(!status.is_settled(), "startup worker still connecting");
+        assert_eq!(status.snapshot().connecting, 1);
+
+        // INV-M2/M3：等待落定后工具已注册（run 在此之后才会冻结）。
+        fs::write(&gate, b"go").expect("open the startup gate");
+        assert!(
+            status.wait_until_settled(Duration::from_secs(30)),
+            "startup settles"
+        );
+        let snapshot = status.snapshot();
+        assert_eq!(snapshot.connected, 1);
+        assert_eq!(snapshot.connecting, 0);
         assert_eq!(
             registry
                 .definitions()

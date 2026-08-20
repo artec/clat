@@ -66,7 +66,7 @@ generalize those needs into reusable open-source capabilities.
 
 - Terminal UI with markdown rendering, scrolling, and text
   selection/copy
-- A bell (or a custom command via `CLAT_BELL_COMMAND`) notifies you when
+- A notification sound (or a custom command via `CLAT_BELL_COMMAND`) notifies you when
   a run finishes or needs your approval
 - `clat exec` for headless one-shot runs in scripts and CI, with the
   same permission model

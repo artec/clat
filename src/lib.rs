@@ -1,4 +1,5 @@
 pub mod application;
+mod command;
 pub(crate) mod control_storage;
 pub mod demo;
 pub mod event;
@@ -44,6 +45,7 @@ pub use application::{
     ProjectSnapshot, RenameOutcome, RunHandle, SessionSnapshot, SteerOutcome,
     TrustedProjectApplication,
 };
+pub use command::{CommandError, CommandInfo, CommandOutcome};
 pub use control_storage::ModelProfileSummary;
 pub use event::{EventSink, ModelOutcome, RunEvent};
 pub use interaction::{AskAnswer, AskOption, AskQuestion, UserAsker};

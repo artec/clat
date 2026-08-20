@@ -57,6 +57,7 @@ const SCENARIOS: &[&str] = &[
     "markdown-table",
     "markdown-cjk-wrap",
     "steer-badge",
+    "steer-pending-recall",
     "steered-transcript",
     "ask-dialog-options",
     "ask-dialog-custom",
@@ -1078,7 +1079,8 @@ fn steering_badge_snapshot() {
     // 盲文 spinner 重复）+ 标签整词呼吸。
 
     // 运行中排队插话：状态行 phase 之后挂 `steering·N` 徽标，输入框
-    // 标题提示 Enter 插话 / Esc 取消。
+    // 标题提示 Enter 插话 / Esc 取消；插话即刻以 dim pending 块出现在
+    // 转录尾部（2026-08-21 可视化）。
     let mut harness = Harness::trusted("snap-steer-badge", 80, 24);
     harness.run_event(RunEvent::ModelRequested {
         turn: 1,
@@ -1092,10 +1094,55 @@ fn steering_badge_snapshot() {
         },
     });
     harness.app.running = true;
-    harness.app.steering_queued = 2;
+    harness
+        .app
+        .conversation
+        .push_pending_steering("等一下，先别跑测试".into());
+    harness
+        .app
+        .conversation
+        .push_pending_steering("改跑 clippy".into());
     harness.app.test_phase_elapsed = Some(Duration::from_secs(3));
     harness.app.test_run_elapsed = Some(Duration::from_secs(5));
     harness.snapshot("steer-badge");
+}
+
+/// pending 插话可见 + ESC 栈式召回（2026-08-21）：插话以 dim 块 +
+/// `· queued` 标记出现在转录尾部（流式 assistant 之后）；连按两次 ESC
+/// 逐条召回（LIFO），回填按**发送顺序**换行排列（先发的想法靠前，
+/// 见 `prepend_recalled_line`）——快照里输入框带回两行文本、徽标归零。
+#[test]
+fn steer_pending_and_recall_snapshot() {
+    let mut harness = Harness::trusted("snap-steer-pending", 80, 24);
+    harness.run_event(RunEvent::ModelRequested {
+        turn: 1,
+        provider: "application-test".into(),
+        model: "deterministic".into(),
+    });
+    harness.run_event(RunEvent::ModelStream {
+        turn: 1,
+        event: crate::model::ModelEvent::TextDelta {
+            delta: "working".into(),
+        },
+    });
+    harness.app.running = true;
+    harness
+        .app
+        .conversation
+        .push_pending_steering("等一下，先别跑测试".into());
+    harness
+        .app
+        .conversation
+        .push_pending_steering("改跑 clippy 再跑测试".into());
+    // 两次 ESC 栈式召回（core 侧召回语义由 application 测试钉住；快照
+    // 钉呈现——区侧弹出 + prepend 回填与生产 ESC 分支同一段代码）。
+    if let Some(text) = harness.app.conversation.recall_pending_steering() {
+        harness.app.input.prepend_recalled_line(&text);
+    }
+    if let Some(text) = harness.app.conversation.recall_pending_steering() {
+        harness.app.input.prepend_recalled_line(&text);
+    }
+    harness.snapshot("steer-pending-recall");
 }
 
 #[test]
@@ -1269,6 +1316,7 @@ fn fake_mcp_view() -> crate::McpStatusDto {
     crate::McpStatusDto {
         configured: 3,
         connected: 2,
+        connecting: 0,
         failures: vec![
             "mcp `broken-server`: MCP negotiation failed: modern discover: timed out; legacy initialize: timed out | npx ERR! code E404 | last lines of stderr kept here".to_owned(),
         ],

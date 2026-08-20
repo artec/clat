@@ -1,4 +1,5 @@
 mod agent;
+mod commands;
 mod compaction;
 mod instructions;
 mod mcp;
@@ -18,6 +19,7 @@ mod tools;
 mod tests;
 
 pub(crate) use agent::{DefaultAgentPlugin, ToolPipelinePlugin};
+pub(crate) use commands::{BuiltinCommandsPlugin, CommandsPlugin};
 pub(crate) use compaction::CompactionPlugin;
 pub(crate) use instructions::ProjectInstructionsPlugin;
 pub(crate) use mcp::McpAdapterPlugin;
