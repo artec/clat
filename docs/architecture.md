@@ -287,6 +287,38 @@ grace period, kill/reap if needed, and join both I/O threads. See
 [MCP integration](mcp.md) for the protocol posture, naming rules, and
 resource limits.
 
+### Server-initiated requests and the plugin host bridge
+
+Servers may send their own requests while a tool call is in flight —
+sampling (borrowing the host's model) and elicitation (asking the user),
+both delivered 2026-08-21 (docs/todo/mcp-sampling-elicitation.md). The
+layering is deliberate:
+
+- `mcp.rs` / `mcp_client.rs` own the **transport**: incoming frames are
+  classified as response / server request / notification (a request is
+  `method` + `id` — fixing an old misclassification that could route a
+  server request into a pending-response slot), requests are handed to a
+  per-connection dispatcher thread (the reader never blocks), and
+  responses are written back through the session. `ping` is answered
+  inline; unknown methods get `-32601`; handler panics are contained as
+  `-32603`.
+- `plugin_host.rs` owns the **semantics** and is transport-agnostic: the
+  `PluginHostBridge` carries a per-run context (model config, approver,
+  asker, cancel token, usage cell) installed at `start_run` and cleared
+  by the worker at run end. Sampling passes the permission gate
+  (fail-closed on deny/unavailable) and its usage is folded into the
+  current step's `assistant/message` usage at `ModelResponded` — one
+  journal landing point, so live and replayed session stats stay equal
+  with zero event-vocabulary changes. Elicitation reuses the `UserAsker`
+  port (same dialog as `ask_user`, one field at a time in v1). While a
+  server request is pending, the in-flight `tools/call` deadline extends
+  in bounded steps; `Esc` still cancels immediately.
+
+This split is load-bearing for the plugin bridge (docs/research/
+dsh-plugin-bridge.md): a future WASM/WIT plugin runtime will be a third
+transport calling the same bridge — one external contract, no second
+plugin API.
+
 ## TUI event loop
 
 The TUI is a thin frontend. It owns terminal input, rendering, dialog state,

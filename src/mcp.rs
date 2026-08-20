@@ -86,10 +86,49 @@ pub fn notification_frame(method: &str, params: Value) -> String {
     line
 }
 
-/// 解析一行收到的消息，返回 (id, result/error)。notification 与无法
-/// 解析的行返回 None。
-pub fn parse_response(line: &str) -> Option<(u64, Result<Value, String>)> {
-    let value: Value = serde_json::from_str(line.trim()).ok()?;
+/// 一条收到帧的归类：对我方请求的响应、服务端发起的请求、或忽略
+/// （notification/坏行）。
+///
+/// 请求判定优先于响应（2026-08-21 修复）：JSON-RPC 里 `method`+`id`
+/// 是请求、`id`+`result`/`error` 是响应；旧实现不区分 `method`，服务
+/// 端请求会被误当响应路由（id 撞上在途 pending 时错配成 Null 结果，
+/// 否则被当坏行丢弃）——sampling/elicitation 的分发前提。
+#[derive(Debug)]
+pub enum IncomingFrame {
+    Response {
+        id: u64,
+        outcome: Result<Value, String>,
+    },
+    ServerRequest {
+        id: Value,
+        method: String,
+        params: Value,
+    },
+    Ignored,
+}
+
+pub fn parse_incoming(line: &str) -> IncomingFrame {
+    let Ok(value) = serde_json::from_str::<Value>(line.trim()) else {
+        return IncomingFrame::Ignored;
+    };
+    if let Some(method) = value.get("method").and_then(Value::as_str) {
+        return match value.get("id") {
+            // 服务端请求的 id 按规范可为字符串，响应须原样回显。
+            Some(id) => IncomingFrame::ServerRequest {
+                id: id.clone(),
+                method: method.to_owned(),
+                params: value.get("params").cloned().unwrap_or(Value::Null),
+            },
+            None => IncomingFrame::Ignored,
+        };
+    }
+    match parse_response_value(&value) {
+        Some((id, outcome)) => IncomingFrame::Response { id, outcome },
+        None => IncomingFrame::Ignored,
+    }
+}
+
+fn parse_response_value(value: &Value) -> Option<(u64, Result<Value, String>)> {
     let id = value.get("id")?.as_u64()?;
     if let Some(error) = value.get("error") {
         let message = error
@@ -100,6 +139,59 @@ pub fn parse_response(line: &str) -> Option<(u64, Result<Value, String>)> {
         return Some((id, Err(format!("MCP error {code}: {message}"))));
     }
     Some((id, Ok(value.get("result").cloned().unwrap_or(Value::Null))))
+}
+
+/// 解析一行收到的消息，返回 (id, result/error)。notification、服务端
+/// 请求与无法解析的行返回 None。（生产路径走 [`parse_incoming`]；
+/// 保留给规格推导测试。）
+#[cfg(test)]
+pub fn parse_response(line: &str) -> Option<(u64, Result<Value, String>)> {
+    match parse_incoming(line) {
+        IncomingFrame::Response { id, outcome } => Some((id, outcome)),
+        _ => None,
+    }
+}
+
+/// 服务端发起的请求（sampling/elicitation 等）：reader 线程只投递到
+/// [`ServerRequestSink`]，处理在上层 dispatcher 线程完成，响应经
+/// [`response_frame`] 写回。
+pub struct ServerRequest {
+    pub id: Value,
+    pub method: String,
+    pub params: Value,
+}
+
+/// reader → dispatcher 的投递通道（有界：洪泛即丢弃并记诊断，绝不
+/// 反压 reader）。
+pub type ServerRequestSink = mpsc::SyncSender<ServerRequest>;
+
+/// 尽力投递一个服务端请求；返回是否送达（无处理端或队列满 = false）。
+pub(crate) fn try_deliver_server_request(
+    sink: &Mutex<Option<ServerRequestSink>>,
+    request: ServerRequest,
+) -> bool {
+    match sink.lock() {
+        Ok(guard) => match guard.as_ref() {
+            Some(sink) => sink.try_send(request).is_ok(),
+            None => false,
+        },
+        Err(_) => false,
+    }
+}
+
+/// 服务端请求的响应帧（result 或 error；id 原样回显）。
+pub fn response_frame(id: &Value, outcome: &Result<Value, (i64, String)>) -> String {
+    let body = match outcome {
+        Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+        Err((code, message)) => json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "error": { "code": code, "message": message },
+        }),
+    };
+    let mut line = serde_json::to_string(&body).unwrap_or_else(|_| "{\"jsonrpc\":\"2.0\"}".into());
+    line.push('\n');
+    line
 }
 
 /// 读取一行（到 `\n`），累计字节超过 `cap` 报错。基于 `fill_buf`
@@ -138,11 +230,18 @@ fn read_capped_line(reader: &mut impl BufRead, cap: usize) -> std::io::Result<Op
 /// 在途请求表：id → 响应回传通道。
 type PendingMap = HashMap<u64, std::sync::mpsc::Sender<Result<Value, String>>>;
 
-struct WriterRequest {
-    frame: String,
-    result: mpsc::Sender<Result<(), String>>,
+/// writer 队列条目。`pub(crate)`：mcp_client 的 dispatcher 经
+/// [`StdioSession::writer_sender`] 写回服务端请求的响应帧。
+pub(crate) struct WriterRequest {
+    pub(crate) frame: String,
+    pub(crate) result: mpsc::Sender<Result<(), String>>,
 }
 
+/// 服务端请求在途时的 tools/call 截止延展参数（INV-S7）：elicitation
+/// 等人、sampling 等模型的时间不计入基础超时；步长与次数上限防服务
+/// 器借永挂请求拖死调用（60s × 10 = 至多 +10 分钟）。
+const DEADLINE_EXTENSION_STEP: Duration = Duration::from_secs(60);
+const MAX_DEADLINE_EXTENSIONS: usize = 10;
 /// 诊断尾缓冲的容量（行）。服务器 stderr 与 reader 异常都进这里，
 /// 挂载失败时并入错误消息——既不往终端泼日志（会把 TUI 顶出可视区，
 /// 2026-08-20 用户实测报告），也不彻底丢掉排障信息。
@@ -175,6 +274,9 @@ pub struct StdioSession {
     stderr_handle: Option<JoinHandle<()>>,
     /// 每个在途请求的响应回传通道，按 id 注册，由 reader 线程消费。
     pending: Arc<Mutex<PendingMap>>,
+    /// 服务端发起请求的投递通道（reader → 上层 dispatcher）；None 或
+    /// 队列满时请求被丢弃并记诊断——reader 绝不为服务端请求阻塞。
+    server_requests: Arc<Mutex<Option<ServerRequestSink>>>,
     /// 服务器 stderr 与会话异常的有界尾缓冲（诊断用，见
     /// [`push_diagnostic`]）。
     stderr_tail: Arc<Mutex<VecDeque<String>>>,
@@ -223,57 +325,69 @@ impl StdioSession {
 
         let pending: Arc<Mutex<PendingMap>> = Arc::new(Mutex::new(HashMap::new()));
         let reader_pending = Arc::clone(&pending);
+        let server_requests: Arc<Mutex<Option<ServerRequestSink>>> = Arc::new(Mutex::new(None));
+        let reader_requests = Arc::clone(&server_requests);
         let stderr_tail: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
         let reader_tail = Arc::clone(&stderr_tail);
-        let reader_handle =
-            match std::thread::Builder::new()
-                .name("mcp-reader".into())
-                .spawn(move || {
-                    let mut reader = BufReader::new(stdout);
-                    loop {
-                        let line = match read_capped_line(&mut reader, MAX_FRAME_BYTES) {
-                            Ok(Some(line)) => line,
-                            Ok(None) => break,
-                            Err(error) => {
-                                push_diagnostic(&reader_tail, format!("reader stopping: {error}"));
-                                break;
-                            }
-                        };
-                        let Some((id, outcome)) = parse_response(&line) else {
-                            continue; // notification 或坏行
-                        };
-                        let slot = reader_pending
-                            .lock()
-                            .ok()
-                            .and_then(|mut map| map.remove(&id));
-                        match slot {
-                            Some(sender) => {
-                                let _ = sender.send(outcome);
-                            }
-                            // 未知 id：超时后被放弃的请求的迟到响应，
-                            // 或服务端违反协议。记录但不中断会话——
-                            // 进诊断缓冲而非 eprintln（TUI 运行期任何
-                            // 终端打印都会毁屏，2026-08-20）。
-                            None => push_diagnostic(
-                                &reader_tail,
-                                format!("response for unknown id {id} dropped"),
-                            ),
+        let reader_handle = match std::thread::Builder::new().name("mcp-reader".into()).spawn(
+            move || {
+                let mut reader = BufReader::new(stdout);
+                loop {
+                    let line = match read_capped_line(&mut reader, MAX_FRAME_BYTES) {
+                        Ok(Some(line)) => line,
+                        Ok(None) => break,
+                        Err(error) => {
+                            push_diagnostic(&reader_tail, format!("reader stopping: {error}"));
+                            break;
                         }
-                    }
-                    // 流结束：叫醒所有在途调用方，绝不留人挂死。
-                    if let Ok(mut map) = reader_pending.lock() {
-                        for (_, sender) in map.drain() {
-                            let _ = sender.send(Err("MCP server closed the connection".into()));
+                    };
+                    match parse_incoming(&line) {
+                        IncomingFrame::Response { id, outcome } => {
+                            let slot = reader_pending
+                                .lock()
+                                .ok()
+                                .and_then(|mut map| map.remove(&id));
+                            match slot {
+                                Some(sender) => {
+                                    let _ = sender.send(outcome);
+                                }
+                                // 未知 id：超时后被放弃的请求的迟到响应，
+                                // 或服务端违反协议。记录但不中断会话——
+                                // 进诊断缓冲而非 eprintln（TUI 运行期任何
+                                // 终端打印都会毁屏，2026-08-20）。
+                                None => push_diagnostic(
+                                    &reader_tail,
+                                    format!("response for unknown id {id} dropped"),
+                                ),
+                            }
                         }
+                        IncomingFrame::ServerRequest { id, method, params } => {
+                            let request = ServerRequest { id, method, params };
+                            if !try_deliver_server_request(&reader_requests, request) {
+                                push_diagnostic(
+                                    &reader_tail,
+                                    "server request dropped: no handler installed or queue full",
+                                );
+                            }
+                        }
+                        IncomingFrame::Ignored => {}
                     }
-                }) {
-                Ok(handle) => handle,
-                Err(error) => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(McpError::new(format!("spawn MCP reader thread: {error}")));
                 }
-            };
+                // 流结束：叫醒所有在途调用方，绝不留人挂死。
+                if let Ok(mut map) = reader_pending.lock() {
+                    for (_, sender) in map.drain() {
+                        let _ = sender.send(Err("MCP server closed the connection".into()));
+                    }
+                }
+            },
+        ) {
+            Ok(handle) => handle,
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(McpError::new(format!("spawn MCP reader thread: {error}")));
+            }
+        };
 
         // stderr 排水线程：持续读并截留到尾缓冲。管道不排会被子进程
         // 写满阻塞（cap 沿用帧上限）；EOF/异常时自然结束，shutdown
@@ -349,9 +463,32 @@ impl StdioSession {
             reader_handle: Some(reader_handle),
             stderr_handle: Some(stderr_handle),
             pending,
+            server_requests,
             stderr_tail,
             next_id: AtomicU64::new(1),
         })
+    }
+
+    /// 安装服务端请求的投递通道（mcp_client 的 dispatcher 在 connect
+    /// 期调用）；probe/无处理端会话不安装，请求被安全丢弃。
+    pub fn install_server_requests(&self, sink: ServerRequestSink) {
+        if let Ok(mut slot) = self.server_requests.lock() {
+            *slot = Some(sink);
+        }
+    }
+
+    /// 摘除投递通道：通道断开，dispatcher 的 `recv` 返回 Disconnected
+    /// 而退出（shutdown 序：先关 sink 再有界 join dispatcher）。
+    pub(crate) fn close_server_requests(&self) {
+        if let Ok(mut slot) = self.server_requests.lock() {
+            *slot = None;
+        }
+    }
+
+    /// writer 队列发送端的克隆（dispatcher 写回服务端请求的响应）。
+    /// 队列容量 1：调用方须容忍短暂阻塞（writer 持续排空兜底）。
+    pub(crate) fn writer_sender(&self) -> Option<mpsc::SyncSender<WriterRequest>> {
+        self.writer.clone()
     }
 
     /// 诊断尾缓冲快照（服务器 stderr + 会话异常，最近 [`STDERR_TAIL_LINES`]
@@ -418,7 +555,7 @@ impl StdioSession {
     /// 发送请求并在 `timeout` 内等待同 id 响应。超时即失败并注销
     /// pending 槽位（迟到的响应由 reader 丢弃）。
     pub fn call(&self, method: &str, params: Value, timeout: Duration) -> Result<Value, McpError> {
-        self.call_inner(method, params, timeout, None)
+        self.call_inner(method, params, timeout, None, None)
     }
 
     /// 发送一个可取消请求。取消令牌触发后，调用在一个短轮询周期内
@@ -431,7 +568,21 @@ impl StdioSession {
         timeout: Duration,
         cancel: &CancelToken,
     ) -> Result<Value, McpError> {
-        self.call_inner(method, params, timeout, Some(cancel))
+        self.call_inner(method, params, timeout, Some(cancel), None)
+    }
+
+    /// 可延展的调用：截止到达时若 `extend` 返回 true（有服务端请求
+    /// 在途——elicitation 等人、sampling 等模型），按步延展截止
+    /// （INV-S7）；取消令牌仍即时生效。
+    pub fn call_extensible(
+        &self,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+        cancel: &CancelToken,
+        extend: Option<std::sync::Arc<dyn Fn() -> bool + Send + Sync>>,
+    ) -> Result<Value, McpError> {
+        self.call_inner(method, params, timeout, Some(cancel), extend)
     }
 
     fn call_inner(
@@ -440,11 +591,13 @@ impl StdioSession {
         params: Value,
         timeout: Duration,
         cancel: Option<&CancelToken>,
+        extend: Option<std::sync::Arc<dyn Fn() -> bool + Send + Sync>>,
     ) -> Result<Value, McpError> {
         if cancel.is_some_and(CancelToken::is_cancelled) {
             return Err(McpError::new(format!("MCP request `{method}` cancelled")));
         }
-        let deadline = Instant::now() + timeout;
+        let mut deadline = Instant::now() + timeout;
+        let mut extensions = 0usize;
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let frame = request_frame(method, params, id);
         let (sender, receiver) = mpsc::channel();
@@ -467,17 +620,26 @@ impl StdioSession {
             if cancel.is_some_and(CancelToken::is_cancelled) {
                 break Err(mpsc::RecvTimeoutError::Timeout);
             }
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                break Err(mpsc::RecvTimeoutError::Timeout);
+            if Instant::now() >= deadline {
+                // 截止已到：有服务端请求在途时按步延展；无延展或到
+                // 上限才真正超时（INV-S7）。
+                let extendable = extensions < MAX_DEADLINE_EXTENSIONS
+                    && extend.as_ref().is_some_and(|probe| probe());
+                if extendable {
+                    extensions += 1;
+                    deadline = Instant::now() + DEADLINE_EXTENSION_STEP;
+                } else {
+                    break Err(mpsc::RecvTimeoutError::Timeout);
+                }
             }
+            let remaining = deadline.saturating_duration_since(Instant::now());
             let wait = if cancel.is_some() {
                 remaining.min(CANCEL_POLL_INTERVAL)
             } else {
                 remaining
             };
             match receiver.recv_timeout(wait) {
-                Err(mpsc::RecvTimeoutError::Timeout) if Instant::now() < deadline => continue,
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
                 outcome => break outcome,
             }
         };
@@ -585,6 +747,15 @@ impl Drop for StdioSession {
     }
 }
 
+/// HTTP 会话的响应端点零件（服务端请求的回写通道，mcp_client 的
+/// Responder 组装用）。
+pub(crate) struct HttpResponderParts {
+    pub(crate) agent: ureq::Agent,
+    pub(crate) url: String,
+    pub(crate) headers: Vec<(String, String)>,
+    pub(crate) session_id: Arc<Mutex<Option<String>>>,
+}
+
 /// Streamable HTTP 会话（MCP 远程传输，2026-08-19 为 GLM Coding Plan
 /// 专属 MCP 接入）：每次调用向端点 POST 一条 JSON-RPC，响应体是单个
 /// JSON 对象或 SSE 流（逐 `data:` 行，每行一条 JSON-RPC 消息）；
@@ -596,8 +767,12 @@ pub struct HttpSession {
     agent: ureq::Agent,
     url: String,
     headers: Vec<(String, String)>,
-    session_id: Mutex<Option<String>>,
+    /// 会话 id 共享给响应端点（Arc）：dispatcher 回写响应时与主会话
+    /// 看到同一个握手后分配的值。
+    session_id: Arc<Mutex<Option<String>>>,
     next_id: AtomicU64,
+    /// 服务端请求投递通道（POST 响应流中析出的请求 → dispatcher）。
+    server_requests: Arc<Mutex<Option<ServerRequestSink>>>,
 }
 
 impl HttpSession {
@@ -619,9 +794,34 @@ impl HttpSession {
             agent,
             url: url.trim().to_owned(),
             headers: headers.to_vec(),
-            session_id: Mutex::new(None),
+            session_id: Arc::new(Mutex::new(None)),
             next_id: AtomicU64::new(1),
+            server_requests: Arc::new(Mutex::new(None)),
         })
+    }
+
+    /// 安装服务端请求投递通道（与 stdio 侧对称）。
+    pub fn install_server_requests(&self, sink: ServerRequestSink) {
+        if let Ok(mut slot) = self.server_requests.lock() {
+            *slot = Some(sink);
+        }
+    }
+
+    pub(crate) fn close_server_requests(&self) {
+        if let Ok(mut slot) = self.server_requests.lock() {
+            *slot = None;
+        }
+    }
+
+    /// 响应端点零件（mcp_client 的 Responder）：独立 POST 回写服务端
+    /// 请求的响应；session_id 与主会话共享。
+    pub(crate) fn responder_parts(&self) -> HttpResponderParts {
+        HttpResponderParts {
+            agent: self.agent.clone(),
+            url: self.url.clone(),
+            headers: self.headers.clone(),
+            session_id: Arc::clone(&self.session_id),
+        }
     }
 
     /// 发送一条 notification（无 id、不期待响应）：POST 一条无 id
@@ -724,10 +924,23 @@ impl HttpSession {
             vec![body.as_str()]
         };
         for message in messages {
-            if let Some((response_id, outcome)) = parse_response(message)
-                && response_id == id
-            {
-                return outcome.map_err(McpError::new);
+            match parse_incoming(message) {
+                IncomingFrame::Response {
+                    id: response_id,
+                    outcome,
+                } if response_id == id => return outcome.map_err(McpError::new),
+                // POST 响应流里夹带的服务端请求（sampling/elicitation）：
+                // 投递给 dispatcher；HTTP 无独立 reader 线程，这是唯一
+                // 的到达路径（v1 不支持服务器自发 GET 流推送）。
+                IncomingFrame::ServerRequest { id, method, params } => {
+                    // POST 响应流里夹带的服务端请求（sampling/elicitation）
+                    // 投递给 dispatcher；HTTP 无独立 reader 线程，这是唯一
+                    // 到达路径（v1 不支持服务器自发 GET 流推送）。投递失败
+                    // 静默丢弃（HTTP 侧无诊断尾缓冲），由服务器侧超时兜底。
+                    let request = ServerRequest { id, method, params };
+                    let _ = try_deliver_server_request(&self.server_requests, request);
+                }
+                _ => {}
             }
         }
         Err(McpError::new(format!(
@@ -819,6 +1032,77 @@ mod tests {
         assert!(parse_response(r#"{"jsonrpc":"2.0","method":"progress"}"#).is_none());
         assert!(parse_response("not json").is_none());
         assert!(parse_response("").is_none());
+    }
+
+    /// 帧分类（2026-08-21 修复的规格）：`method`+`id` 是服务端请求——
+    /// pre-fix 实现把这类帧当响应解析（id 撞上在途 pending 时错配成
+    /// Null 结果），本测试在旧代码上红。
+    #[test]
+    fn incoming_frames_classify_requests_responses_and_notifications() {
+        let response = r#"{"jsonrpc":"2.0","id":7,"result":{"ok":true}}"#;
+        match parse_incoming(response) {
+            IncomingFrame::Response { id, outcome } => {
+                assert_eq!(id, 7);
+                assert_eq!(outcome.unwrap()["ok"], serde_json::json!(true));
+            }
+            other => panic!("expected a response frame, got {other:?}"),
+        }
+
+        // 服务端请求：数字 id 与字符串 id 都合法，method/params 原样。
+        let request = r#"{"jsonrpc":"2.0","id":5,"method":"sampling/createMessage","params":{"maxTokens":16}}"#;
+        match parse_incoming(request) {
+            IncomingFrame::ServerRequest { id, method, params } => {
+                assert_eq!(id, serde_json::json!(5));
+                assert_eq!(method, "sampling/createMessage");
+                assert_eq!(params["maxTokens"], serde_json::json!(16));
+            }
+            other => panic!("expected a server request, got {other:?}"),
+        }
+        let string_id =
+            r#"{"jsonrpc":"2.0","id":"req-1","method":"elicitation/create","params":{}}"#;
+        match parse_incoming(string_id) {
+            IncomingFrame::ServerRequest { id, method, .. } => {
+                assert_eq!(id, serde_json::json!("req-1"));
+                assert_eq!(method, "elicitation/create");
+            }
+            other => panic!("expected a server request, got {other:?}"),
+        }
+
+        // notification（method 无 id）与坏行被忽略。
+        assert!(matches!(
+            parse_incoming(r#"{"jsonrpc":"2.0","method":"notifications/progress"}"#),
+            IncomingFrame::Ignored
+        ));
+        assert!(matches!(parse_incoming("garbage"), IncomingFrame::Ignored));
+
+        // 关键回归：请求帧绝不能被 parse_response 当作响应。
+        assert!(parse_response(request).is_none());
+    }
+
+    /// 响应帧构造：result 与 error 两种形态都是单行 JSON-RPC，id 原样
+    /// 回显（含字符串 id）。
+    #[test]
+    fn response_frames_are_single_line_and_echo_the_id() {
+        let ok = response_frame(
+            &serde_json::json!(9),
+            &Ok(serde_json::json!({"done": true})),
+        );
+        assert!(ok.ends_with('\n'));
+        assert_eq!(ok.matches('\n').count(), 1);
+        let value: Value = serde_json::from_str(ok.trim()).unwrap();
+        assert_eq!(value["jsonrpc"], "2.0");
+        assert_eq!(value["id"], 9);
+        assert_eq!(value["result"]["done"], true);
+        assert!(value.get("error").is_none());
+
+        let error = response_frame(
+            &serde_json::json!("req-1"),
+            &Err((-32601, "method not found".to_owned())),
+        );
+        let value: Value = serde_json::from_str(error.trim()).unwrap();
+        assert_eq!(value["id"], "req-1");
+        assert_eq!(value["error"]["code"], -32601);
+        assert_eq!(value["error"]["message"], "method not found");
     }
 
     /// stderr 截留（2026-08-20 修复回归）：子进程的 stderr 必须被
@@ -923,6 +1207,64 @@ time.sleep(300)
         );
         assert!(outcome.is_err());
         assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    /// INV-S7（等人不死）：服务端请求在途时（oracle = true），调用
+    /// 截止按步延展——基础超时 300ms 挡不住 1.2s 才到的响应；oracle
+    /// = false 时同一延迟必须如约超时。pre-fix（无延展）第一段红。
+    #[test]
+    #[ignore = "spawns a python3 subprocess; run explicitly with --ignored"]
+    fn pending_server_requests_extend_the_call_deadline() {
+        let script = r#"
+import json, sys, time
+def send(obj):
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
+for line in sys.stdin:
+    msg = json.loads(line)
+    if "id" not in msg:
+        continue
+    if msg.get("method") == "tools/call":
+        time.sleep(1.2)
+        send({"jsonrpc": "2.0", "id": msg["id"],
+              "result": {"content": [{"type": "text", "text": "done"}]}})
+    else:
+        send({"jsonrpc": "2.0", "id": msg["id"],
+              "error": {"code": -32601, "message": "no"}})
+"#;
+        let session = StdioSession::spawn(
+            "python3",
+            &["-c".to_owned(), script.to_owned()],
+            &[],
+            std::path::Path::new("/tmp"),
+        )
+        .expect("spawn");
+        let cancel = CancelToken::new();
+
+        let extend = Arc::new(|| true) as Arc<dyn Fn() -> bool + Send + Sync>;
+        let outcome = session.call_extensible(
+            "tools/call",
+            json!({"name": "slow"}),
+            Duration::from_millis(300),
+            &cancel,
+            Some(extend),
+        );
+        assert_eq!(
+            outcome.expect("extended call succeeds").get("content"),
+            Some(&json!([{"type": "text", "text": "done"}])),
+            "a pending server request must push the deadline forward"
+        );
+
+        let idle = Arc::new(|| false) as Arc<dyn Fn() -> bool + Send + Sync>;
+        let outcome = session.call_extensible(
+            "tools/call",
+            json!({"name": "slow"}),
+            Duration::from_millis(300),
+            &cancel,
+            Some(idle),
+        );
+        let error = outcome.expect_err("unextended call must time out");
+        assert!(error.to_string().contains("timed out"), "{error}");
     }
 
     /// 取消令牌必须打断正在等待的 MCP 调用，并尽力把标准 cancellation

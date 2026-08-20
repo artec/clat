@@ -8,7 +8,10 @@
 //! 远端 annotations 仅用于细分权限提示，永远不会把 MCP 工具降级成
 //! 可自动放行的本地只读能力。
 
-use crate::mcp::{McpError, StdioSession};
+use crate::application::{EXIT_JOIN_GRACE, join_with_grace};
+use crate::mcp::{
+    McpError, ServerRequest, ServerRequestSink, StdioSession, WriterRequest, response_frame,
+};
 use crate::model::CancelToken;
 use crate::project::Project;
 use crate::tool::{Tool, ToolDefinition, ToolEffect, ToolError};
@@ -16,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// CLAT legacy 握手首选版本。
@@ -45,6 +49,107 @@ const MAX_LIST_PAGES: usize = 32;
 const MAX_TOOLS: usize = 512;
 /// 单次 tools/call 拼接文本的字节上限。
 const MAX_RESULT_BYTES: usize = 1024 * 1024;
+/// 服务端请求投递通道容量（reader → dispatcher）：洪泛即丢弃并记
+/// 诊断，绝不反压 reader（INV-S3）。
+const SERVER_REQUEST_QUEUE: usize = 16;
+
+/// 宿主对"服务端发起请求"（sampling/elicitation）的处理端口。传输
+/// 层只负责投递与响应回写；语义（权限门、usage 记账、用户问答）由
+/// 实现持有（见 `plugin_host.rs`——传输无关，将来 WASM/WIT 复用）。
+pub trait McpServerRequestHandler: Send + Sync {
+    /// 处理一个服务端请求：返回结果值，或 JSON-RPC 错误（code, message）。
+    fn handle(&self, method: &str, params: Value) -> Result<Value, (i64, String)>;
+    /// 在途请求数（>0 时 tools/call 截止延展，INV-S7）。
+    fn pending_requests(&self) -> usize {
+        0
+    }
+}
+
+/// dispatcher 回写服务端请求响应的端点：stdio 复用会话 writer 队列，
+/// HTTP 独立 POST。放 `Arc<Mutex<Option<…>>>` 里与 shutdown 共享：
+/// 关停时先摘除（None），dispatcher 的收尾响应不再占用 writer，
+/// session.shutdown 的 writer join 不会被在途响应卡住。
+enum Responder {
+    Stdio {
+        writer: std::sync::mpsc::SyncSender<WriterRequest>,
+    },
+    Http {
+        agent: ureq::Agent,
+        url: String,
+        headers: Vec<(String, String)>,
+        session_id: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    },
+}
+
+impl Responder {
+    /// 尽力回写一条响应。stdio 侧的有界队列阻塞由 writer 持续排空
+    /// 兜底（stdin 已死则通道断开、立即失败）；HTTP 侧失败静默——
+    /// 服务器侧超时兜底。
+    fn respond(&self, id: &Value, outcome: &Result<Value, (i64, String)>) {
+        let frame = response_frame(id, outcome);
+        match self {
+            Self::Stdio { writer } => {
+                let (result, _ignored) = std::sync::mpsc::channel();
+                let _ = writer.send(WriterRequest { frame, result });
+            }
+            Self::Http {
+                agent,
+                url,
+                headers,
+                session_id,
+            } => {
+                let mut request = agent
+                    .post(url)
+                    .header("Content-Type", "application/json")
+                    .header("Accept", "application/json, text/event-stream");
+                for (name, value) in headers {
+                    request = request.header(name.as_str(), value.as_str());
+                }
+                if let Some(session_id) = session_id.lock().ok().and_then(|guard| guard.clone()) {
+                    request = request.header("Mcp-Session-Id", session_id.as_str());
+                }
+                let request = request
+                    .config()
+                    .timeout_global(Some(crate::mcp::NOTIFY_TIMEOUT))
+                    .build();
+                let _ = request.send(frame.trim_end());
+            }
+        }
+    }
+}
+
+fn respond_via(
+    responder: &Arc<std::sync::Mutex<Option<Responder>>>,
+    id: &Value,
+    outcome: &Result<Value, (i64, String)>,
+) {
+    if let Ok(guard) = responder.lock()
+        && let Some(responder) = guard.as_ref()
+    {
+        responder.respond(id, outcome);
+    }
+}
+
+/// dispatcher 线程的持有柄：shutdown 序（responder 摘除 → sink 关闭 →
+/// 有界 join）的执行者。
+struct DispatcherGuard {
+    responder: Arc<std::sync::Mutex<Option<Responder>>>,
+    join: Option<std::thread::JoinHandle<()>>,
+}
+
+impl DispatcherGuard {
+    fn stop(&mut self, session: &Session) {
+        if let Ok(mut guard) = self.responder.lock() {
+            *guard = None;
+        }
+        session.close_server_requests();
+        if let Some(join) = self.join.take() {
+            // 有界放弃：卡在等人/等模型上的 dispatcher 由通道断开兜底
+            // 退出，不阻塞会话关停。
+            let _ = join_with_grace(join, EXIT_JOIN_GRACE, "MCP dispatcher");
+        }
+    }
+}
 
 /// `~/.clat/mcp.json` 中一个 server 的配置。两种传输二选一：
 /// - **stdio**（默认）：`command`/`args`/`env` 启动本地子进程；
@@ -85,6 +190,10 @@ pub struct McpServer {
     /// 握手协商出的协议版本（服务器回显或其支持的最新版）。
     negotiated_version: String,
     era: ProtocolEra,
+    /// 服务端请求处理端（sampling/elicitation）；None = 本连接不受理。
+    handler: Option<Arc<dyn McpServerRequestHandler>>,
+    /// 服务端请求 dispatcher 线程（有 handler 才存在）。
+    dispatcher: Option<DispatcherGuard>,
 }
 
 /// 建会话所需的传输参数（connect 期克隆两次：探测 + 正式，避免探测
@@ -147,6 +256,56 @@ impl Session {
                     return Err(McpError::new(format!("MCP request `{method}` cancelled")));
                 }
                 session.call(method, params, timeout)
+            }
+        }
+    }
+
+    /// 可延展调用（INV-S7）：stdio 走 call_extensible；HTTP 的单次
+    /// POST 无法中途延展截止，回落普通调用（v1 已知限制，stdio 是
+    /// sampling/elicitation 的参照路径）。
+    fn call_cancellable_extensible(
+        &self,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+        cancel: &CancelToken,
+        extend: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
+    ) -> Result<Value, McpError> {
+        match self {
+            Self::Stdio(session) => {
+                session.call_extensible(method, params, timeout, cancel, extend)
+            }
+            Self::Http(_) => self.call_cancellable(method, params, timeout, cancel),
+        }
+    }
+
+    fn install_server_requests(&self, sink: ServerRequestSink) {
+        match self {
+            Self::Stdio(session) => session.install_server_requests(sink),
+            Self::Http(session) => session.install_server_requests(sink),
+        }
+    }
+
+    fn close_server_requests(&self) {
+        match self {
+            Self::Stdio(session) => session.close_server_requests(),
+            Self::Http(session) => session.close_server_requests(),
+        }
+    }
+
+    fn responder(&self) -> Option<Responder> {
+        match self {
+            Self::Stdio(session) => session
+                .writer_sender()
+                .map(|writer| Responder::Stdio { writer }),
+            Self::Http(session) => {
+                let parts = session.responder_parts();
+                Some(Responder::Http {
+                    agent: parts.agent,
+                    url: parts.url,
+                    headers: parts.headers,
+                    session_id: parts.session_id,
+                })
             }
         }
     }
@@ -213,7 +372,14 @@ impl McpServer {
     /// 用一次性会话探测 modern `server/discover`；失败后丢弃探测会话
     /// 并用全新会话执行 legacy initialize，避免探测帧污染旧服务器
     /// 状态机（stdio 侧的既有先例；HTTP 会话无状态，同样流程无害）。
-    pub fn connect(name: &str, config: &McpServerConfig, cwd: &Path) -> Result<Self, McpError> {
+    /// `server_requests` 存在时为最终会话装上服务端请求 dispatcher
+    /// （sampling/elicitation；probe 会话永不受理）。
+    pub fn connect(
+        name: &str,
+        config: &McpServerConfig,
+        cwd: &Path,
+        server_requests: Option<Arc<dyn McpServerRequestHandler>>,
+    ) -> Result<Self, McpError> {
         let transport = if config.is_http() {
             Transport::Http {
                 url: config.url.clone().unwrap_or_default(),
@@ -235,14 +401,16 @@ impl McpServer {
             }
         };
         let probe = transport.new_session(cwd)?;
-        match Self::discover(&probe) {
-            Ok(server_version) => Ok(Self {
+        let mut server = match Self::discover(&probe) {
+            Ok(server_version) => Self {
                 name: name.to_owned(),
                 session: probe,
                 server_version,
                 negotiated_version: MODERN_PROTOCOL_VERSION.to_owned(),
                 era: ProtocolEra::Modern,
-            }),
+                handler: None,
+                dispatcher: None,
+            },
             Err(modern_error) => {
                 let _ = shutdown_session(probe);
                 let session = transport.new_session(cwd)?;
@@ -260,14 +428,90 @@ impl McpServer {
                         )));
                     }
                 };
-                Ok(Self {
+                Self {
                     name: name.to_owned(),
                     session,
                     server_version,
                     negotiated_version,
                     era: ProtocolEra::Legacy,
-                })
+                    handler: None,
+                    dispatcher: None,
+                }
             }
+        };
+        if let Some(handler) = server_requests {
+            server.start_dispatcher(handler)?;
+        }
+        Ok(server)
+    }
+
+    /// 服务端请求 dispatcher：reader/HTTP 响应流只投递（INV-S3），
+    /// 本线程串行处理并回写响应。`ping` 直接回空结果；未知方法回
+    /// -32601（INV-S4）；handler panic 隔离为 -32603；elicitation 按
+    /// 协商版本门控（< 2025-06-18 回 -32601）。
+    fn start_dispatcher(
+        &mut self,
+        handler: Arc<dyn McpServerRequestHandler>,
+    ) -> Result<(), McpError> {
+        let (sink, receiver) = std::sync::mpsc::sync_channel::<ServerRequest>(SERVER_REQUEST_QUEUE);
+        self.session.install_server_requests(sink);
+        let responder = Arc::new(std::sync::Mutex::new(self.session.responder()));
+        let elicitation_supported = self.elicitation_supported();
+        let handler_for_thread = Arc::clone(&handler);
+        let responder_for_thread = Arc::clone(&responder);
+        let join = match std::thread::Builder::new()
+            .name("mcp-dispatch".into())
+            .spawn(move || {
+                while let Ok(request) = receiver.recv() {
+                    if request.method == "ping" {
+                        respond_via(&responder_for_thread, &request.id, &Ok(json!({})));
+                        continue;
+                    }
+                    if request.method == "elicitation/create" && !elicitation_supported {
+                        respond_via(
+                            &responder_for_thread,
+                            &request.id,
+                            &Err((
+                                -32601,
+                                "elicitation requires protocol version >= 2025-06-18".to_owned(),
+                            )),
+                        );
+                        continue;
+                    }
+                    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        handler_for_thread.handle(&request.method, request.params.clone())
+                    }))
+                    .unwrap_or_else(|_| {
+                        Err((
+                            -32603,
+                            "CLAT host handler panicked while handling a server request".to_owned(),
+                        ))
+                    });
+                    respond_via(&responder_for_thread, &request.id, &outcome);
+                }
+            }) {
+            Ok(join) => join,
+            Err(error) => {
+                self.session.close_server_requests();
+                return Err(McpError::new(format!(
+                    "spawn MCP dispatcher thread: {error}"
+                )));
+            }
+        };
+        self.handler = Some(handler);
+        self.dispatcher = Some(DispatcherGuard {
+            responder,
+            join: Some(join),
+        });
+        Ok(())
+    }
+
+    /// elicitation 的协议版本门槛（该方法 2025-06-18 引入；版本串是
+    /// YYYY-MM-DD，字典序即时间序；modern 恒支持）。
+    fn elicitation_supported(&self) -> bool {
+        match self.era {
+            ProtocolEra::Modern => true,
+            ProtocolEra::Legacy => self.negotiated_version.as_str() >= "2025-06-18",
         }
     }
 
@@ -308,7 +552,7 @@ impl McpServer {
             "initialize",
             json!({
                 "protocolVersion": PROTOCOL_VERSION,
-                "capabilities": {},
+                "capabilities": client_capabilities(),
                 "clientInfo": {
                     "name": "clat",
                     "version": env!("CARGO_PKG_VERSION"),
@@ -352,7 +596,14 @@ impl McpServer {
         &self.negotiated_version
     }
 
-    pub fn shutdown(self) -> Result<(), McpError> {
+    pub fn shutdown(mut self) -> Result<(), McpError> {
+        // dispatcher 先于会话关停（序：摘响应端 → 关投递通道 → 有界
+        // join → 优雅关会话）——保证 session.shutdown 的 writer join
+        // 不被在途响应卡住，dispatcher 不悬空。
+        if let Some(mut dispatcher) = self.dispatcher.take() {
+            dispatcher.stop(&self.session);
+        }
+        self.handler = None;
         shutdown_session(self.session)
     }
 
@@ -422,17 +673,26 @@ impl McpServer {
     }
 
     /// 调用远端工具，返回 content 块拼接的文本（CLAT 的输出模型）。
+    /// 工具执行期间服务器发起 sampling/elicitation 时，调用截止按
+    /// 在途请求数延展（INV-S7：等人/等模型的时间不计入基础超时）。
     fn call_tool(
         &self,
         name: &str,
         arguments: &Value,
         cancel: &CancelToken,
     ) -> Result<Value, McpError> {
-        let result = self.call(
+        let extend: Option<Arc<dyn Fn() -> bool + Send + Sync>> =
+            self.handler.as_ref().map(|handler| {
+                let handler = Arc::clone(handler);
+                Arc::new(move || handler.pending_requests() > 0)
+                    as Arc<dyn Fn() -> bool + Send + Sync>
+            });
+        let result = self.call_with_extension(
             "tools/call",
             json!({"name": name, "arguments": arguments}),
             CALL_TIMEOUT,
-            Some(cancel),
+            cancel,
+            extend,
         )?;
         let is_error = result
             .get("isError")
@@ -495,6 +755,38 @@ impl McpServer {
         }
         Ok(result)
     }
+
+    /// [`Self::call`] 的可延展形态（tools/call 专用，INV-S7）。
+    fn call_with_extension(
+        &self,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+        cancel: &CancelToken,
+        extend: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
+    ) -> Result<Value, McpError> {
+        let params = match self.era {
+            ProtocolEra::Legacy => params,
+            ProtocolEra::Modern => modern_params(params),
+        };
+        let result = self
+            .session
+            .call_cancellable_extensible(method, params, timeout, cancel, extend)?;
+        if self.era == ProtocolEra::Modern {
+            validate_modern_result(&result, method)?;
+        }
+        Ok(result)
+    }
+}
+
+/// initialize 握手中向服务器声明的客户端能力：sampling（借宿主做
+/// 模型调用）与 elicitation（向用户提问）。二者均由宿主桥
+/// （plugin_host.rs）受理——不声明则服务器永不发起。
+fn client_capabilities() -> Value {
+    json!({
+        "sampling": {},
+        "elicitation": {},
+    })
 }
 
 fn modern_params(mut params: Value) -> Value {
@@ -505,7 +797,7 @@ fn modern_params(mut params: Value) -> Value {
         "_meta".into(),
         json!({
             "io.modelcontextprotocol/protocolVersion": MODERN_PROTOCOL_VERSION,
-            "io.modelcontextprotocol/clientCapabilities": {},
+            "io.modelcontextprotocol/clientCapabilities": client_capabilities(),
             "io.modelcontextprotocol/clientInfo": {
                 "name": "clat",
                 "version": env!("CARGO_PKG_VERSION"),
@@ -883,7 +1175,8 @@ for line in sys.stdin:
             args: vec!["-c".into(), script.into()],
             ..Default::default()
         };
-        let server = McpServer::connect("echo", &config, Path::new("/tmp")).expect("handshake");
+        let server =
+            McpServer::connect("echo", &config, Path::new("/tmp"), None).expect("handshake");
         assert_eq!(server.server_version(), "1.0");
         // 版本协商：服务器只支持旧版时返回其版本，客户端接受并继续。
         assert_eq!(server.negotiated_version(), "2025-06-18");
@@ -896,6 +1189,180 @@ for line in sys.stdin:
             .call_tool("echo", &json!({"text": "hello"}), &CancelToken::new())
             .expect("call");
         assert_eq!(output, json!("echo: hello"));
+    }
+
+    /// 端到端（INV-S3/S4 + 能力声明 + INV-S1）：tools/call 期间服务端
+    /// 发起 elicitation/sampling/ping/未知方法——reader 投递、dispatcher
+    /// 处理并回写响应，服务器拿到结果继续工具调用。第二个用例用真实
+    /// 的空 PluginHostBridge（未安装 run 上下文）验证 no-active-run 的
+    /// fail-closed 错误码。
+    #[test]
+    #[ignore = "spawns a python3 subprocess; run explicitly with --ignored"]
+    fn end_to_end_server_requests_flow_through_the_dispatcher() {
+        let script = r#"
+import json, sys
+def send(obj):
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
+next_server_id = 9000
+caps_ok = False
+while True:
+    line = sys.stdin.readline()
+    if not line:
+        break
+    msg = json.loads(line)
+    if "id" not in msg:
+        continue
+    method = msg.get("method", "")
+    if method == "initialize":
+        caps = msg.get("params", {}).get("capabilities", {})
+        caps_ok = "sampling" in caps and "elicitation" in caps
+        send({"jsonrpc": "2.0", "id": msg["id"], "result": {
+            "protocolVersion": "2025-11-25",
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": "fixture", "version": "1.0"}}})
+    elif method == "tools/list":
+        send({"jsonrpc": "2.0", "id": msg["id"], "result": {"tools": [
+            {"name": "ask", "description": "asks the user",
+             "inputSchema": {"type": "object"}}]}})
+    elif method == "tools/call":
+        name = msg["params"].get("name", "")
+        if name == "ask":
+            next_server_id += 1
+            send({"jsonrpc": "2.0", "id": next_server_id,
+                  "method": "elicitation/create",
+                  "params": {"message": "pick",
+                             "requestedSchema": {"type": "object",
+                                 "properties": {"flavor": {"type": "string"}},
+                                 "required": ["flavor"]}}})
+            reply = json.loads(sys.stdin.readline())
+            flavor = reply.get("result", {}).get("content", {}).get("flavor", "?")
+            send({"jsonrpc": "2.0", "id": msg["id"], "result": {
+                "content": [{"type": "text", "text": "flavor=" + flavor}]}})
+        elif name == "sample":
+            next_server_id += 1
+            send({"jsonrpc": "2.0", "id": next_server_id,
+                  "method": "sampling/createMessage",
+                  "params": {"messages": [{"role": "user",
+                              "content": {"type": "text", "text": "hi"}}],
+                             "maxTokens": 16}})
+            reply = json.loads(sys.stdin.readline())
+            text = reply.get("result", {}).get("content", {}).get("text", "?")
+            model = reply.get("result", {}).get("model", "?")
+            send({"jsonrpc": "2.0", "id": msg["id"], "result": {
+                "content": [{"type": "text", "text": text + "@" + model}]}})
+        elif name == "pingseq":
+            next_server_id += 1
+            send({"jsonrpc": "2.0", "id": next_server_id, "method": "ping"})
+            ping_reply = json.loads(sys.stdin.readline())
+            next_server_id += 1
+            send({"jsonrpc": "2.0", "id": next_server_id,
+                  "method": "clat/unknown", "params": {}})
+            unknown_reply = json.loads(sys.stdin.readline())
+            ok = ping_reply.get("result") == {} and \
+                unknown_reply.get("error", {}).get("code") == -32601
+            send({"jsonrpc": "2.0", "id": msg["id"], "result": {
+                "content": [{"type": "text", "text": "ok" if ok else "bad"}]}})
+        elif name == "norun":
+            next_server_id += 1
+            send({"jsonrpc": "2.0", "id": next_server_id,
+                  "method": "elicitation/create",
+                  "params": {"message": "m",
+                             "requestedSchema": {"type": "object",
+                                 "properties": {"a": {"type": "string"}},
+                                 "required": ["a"]}}})
+            reply = json.loads(sys.stdin.readline())
+            code = reply.get("error", {}).get("code")
+            send({"jsonrpc": "2.0", "id": msg["id"], "result": {
+                "content": [{"type": "text", "text": "code=%s" % code}]}})
+        elif name == "caps":
+            send({"jsonrpc": "2.0", "id": msg["id"], "result": {
+                "content": [{"type": "text", "text": "caps_ok=%d" % caps_ok}]}})
+        else:
+            send({"jsonrpc": "2.0", "id": msg["id"], "result": {
+                "content": [{"type": "text", "text": "?"}]}})
+    else:
+        send({"jsonrpc": "2.0", "id": msg["id"], "result": {}})
+"#;
+        let config = McpServerConfig {
+            command: "python3".into(),
+            args: vec!["-c".into(), script.into()],
+            ..Default::default()
+        };
+
+        // 受理端：elicitation 回固定答案、sampling 回固定文本。
+        struct EchoHandler;
+        impl McpServerRequestHandler for EchoHandler {
+            fn handle(&self, method: &str, _params: Value) -> Result<Value, (i64, String)> {
+                match method {
+                    "sampling/createMessage" => Ok(json!({
+                        "role": "assistant",
+                        "content": {"type": "text", "text": "sampled!"},
+                        "model": "fake-model",
+                        "stopReason": "endTurn",
+                    })),
+                    "elicitation/create" => Ok(json!({
+                        "action": "accept",
+                        "content": {"flavor": "vanilla"},
+                    })),
+                    other => Err((-32601, format!("CLAT does not implement `{other}`"))),
+                }
+            }
+        }
+        let server = McpServer::connect(
+            "fixture",
+            &config,
+            Path::new("/tmp"),
+            Some(Arc::new(EchoHandler)),
+        )
+        .expect("connect");
+        let cancel = CancelToken::new();
+
+        // 能力声明（initialize 帧内 sampling + elicitation）。
+        assert_eq!(
+            server.call_tool("caps", &json!({}), &cancel).expect("caps"),
+            json!("caps_ok=1")
+        );
+        // elicitation：服务器拿到 accept+content 并继续工具调用。
+        assert_eq!(
+            server.call_tool("ask", &json!({}), &cancel).expect("ask"),
+            json!("flavor=vanilla")
+        );
+        // sampling：服务器拿到文本结果与模型名。
+        assert_eq!(
+            server
+                .call_tool("sample", &json!({}), &cancel)
+                .expect("sample"),
+            json!("sampled!@fake-model")
+        );
+        // ping → {}；未知方法 → -32601（INV-S4）。
+        assert_eq!(
+            server
+                .call_tool("pingseq", &json!({}), &cancel)
+                .expect("pingseq"),
+            json!("ok")
+        );
+        server.shutdown().expect("shutdown");
+
+        // INV-S1（无免费通道）：真实空桥（无 run 上下文）→ -32000。
+        let empty_host = crate::plugin_host::McpHostHandler::new(
+            crate::plugin_host::PluginHostBridge::shared(),
+            "fixture",
+        );
+        let server = McpServer::connect(
+            "fixture",
+            &config,
+            Path::new("/tmp"),
+            Some(Arc::new(empty_host)),
+        )
+        .expect("connect");
+        assert_eq!(
+            server
+                .call_tool("norun", &json!({}), &cancel)
+                .expect("norun"),
+            json!("code=-32000")
+        );
+        server.shutdown().expect("shutdown");
     }
 
     /// 严格 modern 链路：discover → tools/list → tools/call；所有请求
@@ -952,7 +1419,7 @@ for line in sys.stdin:
             args: vec!["-c".into(), script.into()],
             ..Default::default()
         };
-        let server = McpServer::connect("v2", &config, Path::new("/tmp")).expect("modern");
+        let server = McpServer::connect("v2", &config, Path::new("/tmp"), None).expect("modern");
         assert_eq!(server.negotiated_version(), MODERN_PROTOCOL_VERSION);
         assert_eq!(server.server_version(), "2.0");
         let tools = server.list_tools().expect("tools");
@@ -1092,7 +1559,7 @@ for line in sys.stdin:
             ..McpServerConfig::default()
         };
         let server_session =
-            McpServer::connect("glm-search", &config, Path::new(".")).expect("connect");
+            McpServer::connect("glm-search", &config, Path::new("."), None).expect("connect");
         assert_eq!(server_session.negotiated_version(), "2025-06-18");
         let tools = server_session.list_tools().expect("list tools over sse");
         assert_eq!(tools.len(), 1);
@@ -1158,7 +1625,7 @@ for line in sys.stdin:
             ..McpServerConfig::default()
         };
         let started = std::time::Instant::now();
-        let outcome = McpServer::connect("hung", &config, Path::new("."));
+        let outcome = McpServer::connect("hung", &config, Path::new("."), None);
         let elapsed = started.elapsed();
         // 握手成功、通知被挂起：connect 必须以错误返回且有界。
         assert!(

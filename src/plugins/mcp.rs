@@ -2,11 +2,14 @@ use super::services::{
     MCP_STATUS_SERVICE, MCP_STATUS_SERVICE_ID, McpServerStatus, McpStatus, TOOL_SERVICE,
     TOOL_SERVICE_ID,
 };
-use crate::mcp_client::{McpServer, McpTool, load_mcp_config, merge_vendor_pack};
+use crate::mcp_client::{
+    McpServer, McpServerRequestHandler, McpTool, load_mcp_config, merge_vendor_pack,
+};
 use crate::plugin::{
     Plugin, PluginContext, PluginDescriptor, PluginError, PluginId, PluginOwner, ScopeKind,
     ServiceId,
 };
+use crate::plugin_host::{McpHostHandler, PluginHostBridge};
 use crate::{Tool, ToolRegistry};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -31,16 +34,22 @@ pub(crate) struct McpAdapterPlugin {
     /// 在挂载期按激活厂商与凭据算好传入；密钥只在内存，用户
     /// `mcp.json` 同名条目优先（见 `merge_vendor_pack`）。
     vendor_pack: Vec<(String, crate::mcp_client::McpServerConfig)>,
+    /// 宿主桥（sampling/elicitation 的传输无关实现）：connect 时按
+    /// server 包成 McpHostHandler 注入——服务端请求在 dispatcher 线程
+    /// 经桥过权限门/记账/问答（docs/todo/mcp-sampling-elicitation.md）。
+    host: Arc<PluginHostBridge>,
 }
 
 impl McpAdapterPlugin {
     pub(crate) fn new(
         storage_root: PathBuf,
         vendor_pack: Vec<(String, crate::mcp_client::McpServerConfig)>,
+        host: Arc<PluginHostBridge>,
     ) -> Self {
         Self {
             storage_root,
             vendor_pack,
+            host,
         }
     }
 }
@@ -102,10 +111,13 @@ impl Plugin for McpAdapterPlugin {
             let status = Arc::clone(&status);
             let registry = Arc::clone(&registry);
             let state = Arc::clone(&state);
+            let host = Arc::clone(&self.host);
             let storage_root = self.storage_root.clone();
             std::thread::Builder::new()
                 .name("clat-mcp-startup".into())
-                .spawn(move || run_startup(config, &storage_root, registry, owner, status, state))
+                .spawn(move || {
+                    run_startup(config, &storage_root, registry, owner, status, state, host)
+                })
                 .map_err(|error| PluginError::new(format!("spawn mcp startup worker: {error}")))?
         };
         context
@@ -141,6 +153,7 @@ fn run_startup(
     owner: PluginOwner,
     status: Arc<McpStatus>,
     state: Arc<McpStartupState>,
+    host: Arc<PluginHostBridge>,
 ) {
     for (name, server_config) in &config {
         if state.is_cancelled() {
@@ -151,7 +164,10 @@ fn run_startup(
             status.record_failed_server(format!("mcp `{name}`: empty command and no url"));
             continue;
         }
-        let server = match McpServer::connect(name, server_config, storage_root) {
+        // 每 server 一个 McpHostHandler：服务端请求带 server 名过桥。
+        let server_requests: Option<Arc<dyn McpServerRequestHandler>> =
+            Some(Arc::new(McpHostHandler::new(Arc::clone(&host), name)));
+        let server = match McpServer::connect(name, server_config, storage_root, server_requests) {
             Ok(server) => server,
             Err(error) => {
                 status.record_failed_server(format!("mcp `{name}`: {error}"));
@@ -238,7 +254,11 @@ mod tests {
 
         let catalog: Vec<Arc<dyn Plugin>> = vec![
             Arc::new(ToolRegistryPlugin),
-            Arc::new(McpAdapterPlugin::new(root.clone(), Vec::new())),
+            Arc::new(McpAdapterPlugin::new(
+                root.clone(),
+                Vec::new(),
+                crate::plugin_host::PluginHostBridge::shared(),
+            )),
         ];
         let mut manager = PluginManager::root(ScopeKind::TrustedProject);
         manager.mount_all(catalog).expect("mount plugins");
@@ -309,7 +329,11 @@ with open(sys.argv[1], "w", encoding="utf-8") as output:
 
         let catalog: Vec<Arc<dyn Plugin>> = vec![
             Arc::new(ToolRegistryPlugin),
-            Arc::new(McpAdapterPlugin::new(root.clone(), Vec::new())),
+            Arc::new(McpAdapterPlugin::new(
+                root.clone(),
+                Vec::new(),
+                crate::plugin_host::PluginHostBridge::shared(),
+            )),
         ];
         let mut manager = PluginManager::root(ScopeKind::TrustedProject);
         // INV-M1：mount 在握手完成前即返回（connecting 态、无工具）。

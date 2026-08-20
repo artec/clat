@@ -353,6 +353,25 @@ in the `mcp: N server(s) connected` startup note as `glm-search` /
 `glm-reader` / `glm-zread` / `glm-vision`. Define a same-named entry in
 `~/.clat/mcp.json` to replace or disable any of them.
 
+While a remote tool is running, the server may talk back to CLAT
+(2026-08-21):
+
+- **A model-call request** (MCP sampling) opens the permission dialog
+  naming the server, its token budget, and a message preview. Approve,
+  and CLAT runs the configured model on the server's behalf — the
+  tokens are counted in the run's usage like any other model call.
+  Deny, and the server's tool fails with a clear error. These requests
+  are never auto-approved outside Full Access mode.
+- **A question to you** (MCP elicitation) opens the same dialog
+  `ask_user` uses, one field at a time — booleans as yes/no, choice
+  lists as options, free text otherwise. `Esc` cancels the form;
+  declining answers the server with "declined". In headless `clat exec`
+  there is no one to ask: the server receives an error instead.
+
+Your answer time on such a question never kills the tool call — its
+timeout extends while the question is on screen. Requests outside an
+active run (an idle connection asking for model calls) are refused.
+
 ## Storage layout
 
 Session facts live in append-only DSH-compatible JSONL logs (zstd-framed)

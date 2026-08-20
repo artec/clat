@@ -12,6 +12,7 @@ pub mod model;
 mod native_tools;
 mod permission;
 mod plugin;
+mod plugin_host;
 mod plugins;
 pub mod presets;
 pub mod project;

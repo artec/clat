@@ -321,6 +321,10 @@ pub struct TrustedProjectApplication {
     /// Frozen command registry（`core.commands`）：斜杠命令的唯一语义
     /// 源，前端经 `dispatch_command` 触达（INV-C1）。
     commands: Arc<crate::command::CommandRegistry>,
+    /// 插件宿主桥（sampling/elicitation 的传输无关层）：MCP 服务器发
+    /// 起的服务端请求经此过权限门、记账与问答；上下文按 run 安装
+    /// （INV-S1，镜像 asker_slot 姿势）。
+    plugin_host: Arc<crate::plugin_host::PluginHostBridge>,
     agent: Arc<dyn crate::plugins::services::AgentRuntime>,
     mcp_status: Arc<McpStatus>,
     monitor: Arc<dyn MonitorService>,
@@ -485,6 +489,9 @@ impl TrustedProjectApplication {
         // ask-user 插槽：Application 持有克隆，每次 run 启动装入请求的
         // 前端实现。
         let asker_slot = crate::interaction::AskUserSlot::shared();
+        // 插件宿主桥：MCP（与将来的 WASM）插件 sampling/elicitation
+        // 的宿主侧（权限门/记账/问答），上下文按 run 安装。
+        let plugin_host = crate::plugin_host::PluginHostBridge::shared();
         // 权限档位 cell（P3）：挂载期创建、进程内常驻；工厂按
         // `permission_modes` 决定委托是否读它。档位是**会话属性**
         // （DSH `sandbox/mode` journal 事件，latest-wins）：mount 恢复
@@ -529,6 +536,7 @@ impl TrustedProjectApplication {
             Arc::new(crate::plugins::McpAdapterPlugin::new(
                 storage_root.clone(),
                 glm_mcp_pack_from_control(&control),
+                Arc::clone(&plugin_host),
             )) as Arc<dyn Plugin>,
             Arc::new(crate::plugins::DefaultPermissionPlugin::new(
                 permission_source,
@@ -629,6 +637,7 @@ impl TrustedProjectApplication {
             permission_mode,
             permission_modes_enabled: permission_modes,
             asker_slot,
+            plugin_host,
             lease,
             #[cfg(test)]
             fail_next_run_spawn: false,
@@ -1393,7 +1402,9 @@ impl TrustedProjectApplication {
             completion,
         } = request;
         // ask-user 前端按本次请求安装（None 清除旧实现——headless 与
-        // 交互前端交替使用同一 Application 时正确降级）。
+        // 交互前端交替使用同一 Application 时正确降级）。插件宿主桥
+        // 的 elicitation 与它共享同一前端实现。
+        let asker_for_host = asker.clone();
         self.asker_slot.install(asker);
         // 标题生成需要 config/credentials，而它们随后被 move 进
         // AgentRequest；提前克隆。request/header 在 spawn 前从真实的
@@ -1418,6 +1429,26 @@ impl TrustedProjectApplication {
             .require(RUN_SCOPE_SERVICE)
             .map_err(|error| ApplicationError::new(error.to_string()))?;
         let cancel = resources.cancel.clone();
+        // 宿主桥按本次 run 安装（INV-S1）：sampling 的权限门/记账与
+        // elicitation 的问答拿到的都是本 run 的模型配置、审批人与前
+        // 端；worker 收尾 clear（跨 run 不泄漏旧 approver）。记账单元
+        // 与 recorder 共享（INV-S6：journal 落账点在 ModelResponded）。
+        let sampling_usage = Arc::new(Mutex::new(Usage::default()));
+        self.plugin_host
+            .install(crate::plugin_host::RunHostContext {
+                providers: Arc::clone(&self.providers),
+                model_config: config.clone(),
+                credentials: credentials.clone(),
+                approver: Arc::clone(&approver),
+                // 档位 cell 仅 Shared（TUI）模式传入：FA 档 sampling 免
+                // 弹框；Classic（exec）的审批语义由 ExecApprover 表达。
+                permission_mode: self
+                    .permission_modes_enabled
+                    .then(|| Arc::clone(&self.permission_mode)),
+                asker: asker_for_host,
+                cancel: cancel.clone(),
+                usage_cell: Arc::clone(&sampling_usage),
+            });
         let busy = Arc::new(AtomicBool::new(true));
         let join_slot = Arc::new(Mutex::new(None));
         // In-run steering: the same queue is shared by the frontend
@@ -1443,6 +1474,8 @@ impl TrustedProjectApplication {
         let subscribers = Arc::clone(&self.subscribers);
         let worker_prompt = prompt.clone();
         let steering_for_worker = steering.clone();
+        let plugin_host_worker = Arc::clone(&self.plugin_host);
+        let sampling_usage_worker = Arc::clone(&sampling_usage);
         // 档位快照（run 起点）：仅进系统指令说明。决策读共享 cell，
         // 运行中切档即时生效（P3）。
         let permission_mode_snapshot = self
@@ -1465,8 +1498,10 @@ impl TrustedProjectApplication {
                 let prepared = match start_receiver.recv() {
                     Ok(prepared) => prepared,
                     Err(_) => {
-                        // 发送端被撤（预备失败）：无状态可清理，直接退出。
+                        // 发送端被撤（预备失败）：持久层无状态可清理，但
+                        // 宿主桥上下文是 run 启动路径上装的——卸掉。
                         let _ = run_scope.close();
+                        plugin_host_worker.clear();
                         busy.store(false, Ordering::Release);
                         return;
                     }
@@ -1514,7 +1549,7 @@ impl TrustedProjectApplication {
                     inner: events,
                     text: Arc::clone(&captured_text),
                 });
-                let (recorder_core, journaling_approver) = SessionRecorder::with_approver(
+                let (mut recorder_core, journaling_approver) = SessionRecorder::with_approver(
                     Arc::clone(&journal),
                     Arc::clone(&approver),
                     request_header,
@@ -1523,6 +1558,9 @@ impl TrustedProjectApplication {
                     turn,
                     header_reason,
                 );
+                // INV-S6：recorder 在 ModelResponded 落账点归并 sampling
+                // usage（journal 侧唯一记账点）。
+                recorder_core.attach_aux_usage(Arc::clone(&sampling_usage_worker));
                 let recorder = Arc::new(Mutex::new(recorder_core));
                 if let Ok(mut core) = recorder.lock() {
                     core.attach_sink(ui_events);
@@ -1652,6 +1690,24 @@ impl TrustedProjectApplication {
                         Err(failure)
                     }
                 };
+                // 宿主桥卸载（INV-S1：跨 run 不泄漏）+ sampling 余量归
+                // 并（INV-S6）：journal 已在 ModelResponded 处归并，这里
+                // 只补取消/失败路径的尾巴；桥先 clear 再取余量，杜绝迟
+                // 到加账。
+                plugin_host_worker.clear();
+                let sampled = sampling_usage_worker
+                    .lock()
+                    .map(|mut cell| std::mem::take(&mut *cell))
+                    .unwrap_or_default();
+                let result = result
+                    .map(|mut done| {
+                        done.usage.add_assign(&sampled);
+                        done
+                    })
+                    .map_err(|mut failure| {
+                        failure.usage.add_assign(&sampled);
+                        failure
+                    });
                 // CB1-04：自动命名移出 run worker——独立线程执行。成功未
                 // 取消的 run 之后，若会话**仍无显式标题**（首轮命名失败、
                 // 或早于命名功能的旧会话）就再排一次——每次成功的 run 都

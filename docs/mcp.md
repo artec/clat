@@ -113,6 +113,46 @@ unsupported-feature error instead of being mistaken for completed output.
   hints: no remote tool can become the auto-allowed native `Read` effect.
   Missing annotations use the protocol's conservative defaults.
 
+## Server-initiated requests: sampling & elicitation (2026-08-21)
+
+While CLAT is executing a remote tool, the server may send its own
+requests back — the two CLAT serves are **sampling** and
+**elicitation**. They run through a transport-agnostic host bridge
+(`src/plugin_host.rs`) that owns the permission gate, usage accounting,
+and user questions; stdio is the reference transport (HTTP serves
+requests found inside POST response streams).
+
+- **sampling** (`sampling/createMessage`) — the server asks CLAT to run
+  the configured model on its behalf. Every call passes the **permission
+  gate** first: you see an approval dialog naming the server, the token
+  budget (clamped to 8192 output tokens), and a message preview —
+  deny/unavailable fail closed. Approved calls run on the session's
+  model (`modelPreferences`/`includeContext` are deliberately ignored —
+  the latter never sends conversation context to a server). Their token
+  usage is accounted: it lands in the current step's
+  `assistant/message` usage (so live and replayed session stats stay
+  equal) and in the run totals.
+- **elicitation** (`elicitation/create`, protocol ≥ 2025-06-18) — the
+  server asks **you** a form. CLAT asks the fields one at a time through
+  the same dialog the `ask_user` tool uses (first question carries the
+  form's message): booleans become yes/no, enums become option lists,
+  strings/numbers are free input (numbers re-ask up to twice on a bad
+  parse). Esc cancels the whole form; declining answers `declined`.
+  Headless `clat exec` has no frontend: the server receives a clean
+  error. v1 supports the primitive field subset (string / number /
+  boolean / enum, ≤16 fields); multi-select, `mode:"url"`, and nested
+  schemas are rejected with explicit errors.
+
+Only requests arriving during an active run are served; anything else
+gets an error ("no active run") — an idle connection is not a standing
+model-call channel. Unknown server requests (other than `ping`, which
+is answered with `{}`) get `-32601`; a panicking handler is contained
+as `-32603`.
+
+While such a request is in flight, the pending `tools/call` deadline
+extends (60 s steps, capped at +10 min) — your thinking time on an
+elicitation never kills the tool call. `Esc` still cancels immediately.
+
 ## Security posture
 
 MCP servers are **global capabilities, not project content**:
@@ -137,8 +177,10 @@ Resource limits protect against misbehaving or malicious servers:
 | `tools/list` page timeout | 30 s, at most 32 pages |
 | tools per server | 512 |
 | pagination cursors | repeated cursor aborts |
-| `tools/call` timeout | 120 s |
+| `tools/call` timeout | 120 s (+60 s/step while a server request is pending, ≤ +10 min) |
 | tool result size | 1 MiB |
+| server request queue | 16 (flood drops with diagnostics) |
+| sampling output | ≤ 8192 tokens; ≤ 32 messages; text content only |
 
 The transport uses a single reader thread that routes responses by request id
 (out-of-order and concurrent responses are handled) and a bounded writer

@@ -238,6 +238,11 @@ pub(crate) struct SessionRecorder {
     /// The step's final token usage (stream-end `ModelEvent::Usage`), landed
     /// on the assistant/message payload (DSH `usage` field). Reset per step.
     stream_usage: Option<crate::model::Usage>,
+    /// 插件 sampling 的记账单元（INV-S6）：`ModelResponded` 落账时归并
+    /// 进本条 assistant/message 的 usage——journal 侧的唯一记账点；取
+    /// 消/失败路径的余量由 run worker 补进终态总量。None = 本 run 无
+    /// 桥接（零字节影响）。
+    aux_usage: Option<Arc<Mutex<crate::model::Usage>>>,
     /// Provider opaque state to persist on this step's assistant message
     /// (`source.replayState`), carried by `ModelResponded`.
     replay_state: Option<Value>,
@@ -276,6 +281,7 @@ impl SessionRecorder {
             step_open: false,
             message_emitted: false,
             stream_usage: None,
+            aux_usage: None,
             next_block_index: 0,
             text: String::new(),
             reasoning: String::new(),
@@ -291,6 +297,12 @@ impl SessionRecorder {
     /// The journaling approver sharing this run's call bookkeeping.
     pub(crate) fn approver(&self, inner: Arc<dyn PermissionApprover>) -> JournalingApprover {
         JournalingApprover::new(inner, Arc::clone(&self.journal), Arc::clone(&self.shared))
+    }
+
+    /// 挂接插件 sampling 记账单元（run worker 构造 recorder 后立即调
+    /// 用；单元由 start_run 创建，宿主桥与 recorder 共享）。
+    pub(crate) fn attach_aux_usage(&mut self, cell: Arc<Mutex<crate::model::Usage>>) {
+        self.aux_usage = Some(cell);
     }
 
     /// Build the recorder and its journaling approver in one step: the
@@ -549,13 +561,17 @@ impl SessionRecorder {
             ));
         }
         let sources = std::mem::take(&mut self.chunk_seqs);
+        // INV-S6：sampling usage 在 assistant/message 落账点归并（DSH
+        // 字节形状不变——只是 usage 数值含桥接调用的 token）。空单元
+        // 不落 usage，保持零桥接 run 的 journal 字节与从前一致。
+        let usage = merged_usage(self.stream_usage.take(), self.take_aux_usage());
         let mut payload = payloads::assistant_message(
             turn,
             step,
             content,
             &self.provider,
             &self.model,
-            self.stream_usage.take().as_ref(),
+            usage.as_ref(),
         );
         if let Some(replay) = self.replay_state.take() {
             payload = payloads::with_replay_state(payload, &replay);
@@ -567,6 +583,36 @@ impl SessionRecorder {
     fn state(&self) -> (u64, u64) {
         let shared = self.shared.lock().expect("recorder lock");
         (shared.turn, shared.step)
+    }
+
+    /// 取空 sampling 记账单元；全零（本步无桥接调用）返回 None，避免
+    /// 给无 usage 的消息落一个全零 usage 对象。
+    fn take_aux_usage(&mut self) -> Option<crate::model::Usage> {
+        let cell = self.aux_usage.as_ref()?;
+        let drained = cell
+            .lock()
+            .ok()
+            .map(|mut guard| std::mem::take(&mut *guard))?;
+        if drained == crate::model::Usage::default() {
+            None
+        } else {
+            Some(drained)
+        }
+    }
+}
+
+/// 流末 usage + sampling 归并：任一侧缺失时保留另一侧。
+fn merged_usage(
+    streamed: Option<crate::model::Usage>,
+    aux: Option<crate::model::Usage>,
+) -> Option<crate::model::Usage> {
+    match (streamed, aux) {
+        (None, None) => None,
+        (Some(usage), None) | (None, Some(usage)) => Some(usage),
+        (Some(mut total), Some(aux)) => {
+            total.add_assign(&aux);
+            Some(total)
+        }
     }
 }
 
@@ -1034,6 +1080,96 @@ mod tests {
         assert!(
             messages[1].get("usage").is_none(),
             "an unreported step must not inherit the previous step's usage"
+        );
+    }
+
+    /// INV-S6（sampling 记账，2026-08-21）：桥接 usage 经 aux cell 在
+    /// assistant/message 落账点归并进当步 usage——journal 侧的唯一记
+    /// 账点，live/replay 平价靠它；落账即清空 cell（余量归 run worker
+    /// 的终态补充路径）。空单元不落 usage 对象：零桥接 run 的 journal
+    /// 字节与从前一致。
+    #[test]
+    fn aux_sampling_usage_merges_into_the_step_message_and_empty_cells_write_nothing() {
+        let (mut recorder, journal, _seen) = recorder();
+        let cell = Arc::new(Mutex::new(crate::model::Usage::default()));
+        recorder.attach_aux_usage(Arc::clone(&cell));
+
+        let step = |recorder: &mut SessionRecorder, delta: &str| {
+            recorder.emit(RunEvent::ModelRequested {
+                turn: 1,
+                provider: "p".into(),
+                model: "m".into(),
+            });
+            recorder.emit(RunEvent::ModelStream {
+                turn: 1,
+                event: ModelEvent::TextDelta {
+                    delta: delta.into(),
+                },
+            });
+        };
+        let responded = |recorder: &mut SessionRecorder| {
+            recorder.emit(RunEvent::ModelResponded {
+                turn: 1,
+                outcome: crate::event::ModelOutcome {
+                    has_text: true,
+                    tool_calls: 0,
+                },
+                finish_reason: crate::model::FinishReason::Completed,
+                provider_replay: None,
+            });
+        };
+
+        // 第一步：模型 usage 10/2 + 桥接 usage 3/1 → 落 13/3。
+        step(&mut recorder, "a");
+        recorder.emit(RunEvent::ModelStream {
+            turn: 1,
+            event: ModelEvent::Usage(crate::model::Usage {
+                input_tokens: 10,
+                output_tokens: 2,
+                ..crate::model::Usage::default()
+            }),
+        });
+        cell.lock().unwrap().add_assign(&crate::model::Usage {
+            input_tokens: 3,
+            output_tokens: 1,
+            ..crate::model::Usage::default()
+        });
+        responded(&mut recorder);
+
+        // 第二步：模型不上报 usage，但桥接有 5/0 → 仍落 usage 5/0
+        //（取消余量走 worker 路径，这里是常规归并）。
+        step(&mut recorder, "b");
+        cell.lock().unwrap().add_assign(&crate::model::Usage {
+            input_tokens: 5,
+            ..crate::model::Usage::default()
+        });
+        responded(&mut recorder);
+
+        // 第三步：模型不上报、桥接为零 → 无 usage 字段（字节不变）。
+        step(&mut recorder, "c");
+        responded(&mut recorder);
+        assert!(recorder.finish(TurnEndReason::Completed).is_none());
+
+        let events = journal.events();
+        let messages: Vec<&serde_json::Value> = events
+            .iter()
+            .filter(|(kind, _)| kind == "assistant/message")
+            .map(|(_, payload)| payload)
+            .collect();
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[0]["usage"]["inputTokens"], 13);
+        assert_eq!(messages[0]["usage"]["outputTokens"], 3);
+        assert_eq!(messages[1]["usage"]["inputTokens"], 5);
+        assert_eq!(messages[1]["usage"]["outputTokens"], 0);
+        assert!(
+            messages[2].get("usage").is_none(),
+            "an empty aux cell must not materialize a zero usage object"
+        );
+        // 落账清空 cell：worker 的终态余量补充只看取消/失败尾巴。
+        assert_eq!(
+            *cell.lock().unwrap(),
+            crate::model::Usage::default(),
+            "landed usage must drain the cell"
         );
     }
 
