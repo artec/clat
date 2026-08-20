@@ -37,6 +37,7 @@ impl ProjectionRegistry {
                 Box::new(SurfaceUnit::default()),
                 Box::new(TranscriptUnit::default()),
                 Box::new(TitleUnit::default()),
+                Box::new(PermissionModeUnit::default()),
                 Box::new(TodoUnit::default()),
                 Box::new(StatsUnit::default()),
                 Box::new(CompactionUnit::default()),
@@ -614,6 +615,65 @@ pub(crate) fn fallback_title(content: &str) -> String {
     first_line.chars().take(60).collect()
 }
 
+/// 权限档位投影（DSH `sandbox/mode` 的 latest-wins fold，形态对齐
+/// TitleUnit）。值存 journal 词汇（DSH 三词），解析推迟到访问层。
+/// 未知值容忍（不变量 PS5）：未来的 DSH 词汇不推翻上一已知档——
+/// 收窄易、放宽难，解析失败的档位宁可保持原样也不落回更宽默认。
+struct PermissionModeUnit {
+    mode: Option<String>,
+    event_seq: Option<u64>,
+    as_of: i64,
+}
+
+impl Default for PermissionModeUnit {
+    fn default() -> Self {
+        Self {
+            mode: None,
+            event_seq: None,
+            as_of: -1,
+        }
+    }
+}
+
+impl ProjectionUnit for PermissionModeUnit {
+    fn key(&self) -> &'static str {
+        "permission-mode"
+    }
+    fn state_version(&self) -> u64 {
+        1
+    }
+    fn as_of(&self) -> i64 {
+        self.as_of
+    }
+    fn fold(&mut self, event: &SessionEvent) -> Result<(), String> {
+        if event.event_type.as_str() == "sandbox/mode"
+            && let Some(value) = event.data.get("mode").and_then(Value::as_str)
+            && crate::permission::PermissionMode::from_journal_value(value).is_some()
+        {
+            self.mode = Some(value.to_owned());
+            self.event_seq = Some(event.seq);
+        }
+        self.as_of = event.seq as i64;
+        Ok(())
+    }
+    fn snapshot(&self) -> Value {
+        json!({
+            "mode": self.mode,
+            "eventSeq": self.event_seq,
+        })
+    }
+    fn restore(&mut self, row: &CheckpointRow) -> Result<(), String> {
+        self.mode = row
+            .val
+            .get("mode")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        self.event_seq = row.val.get("eventSeq").and_then(Value::as_u64);
+        self.as_of = row.seq;
+        Ok(())
+    }
+}
+
 /// 用户标题清洗（N4，/rename 提交前）：取首个非空行、剥控制字符（含
 /// ANSI/OSC 引导符）、压缩空白、上限 60 字符（与 fallback_title 对齐）。
 /// 清洗后为空即调用方拒绝。对照 DSH normalize（maxTitleBytes 80）。
@@ -945,6 +1005,55 @@ fn transcript_user_text(blocks: &Value) -> String {
 mod tests {
     use super::*;
     use crate::session::event::{SurfaceOp, TurnEndReason, payloads};
+
+    /// 不变量 PS5（fold 容忍）：`sandbox/mode` latest-wins——后续事件
+    /// 覆盖前值；未知词汇（未来 DSH 值/损坏）不推翻上一已知档（收窄
+    /// 易、放宽难）；DSH 词汇解析；snapshot/restore 往返。期望值从
+    /// 设计推导，不从实现抄写。
+    #[test]
+    fn permission_mode_unit_folds_latest_wins_and_tolerates_unknown_values() {
+        let mut unit = PermissionModeUnit::default();
+        let event = |seq: u64, mode: &str| {
+            SessionEvent::new("sandbox/mode", seq, 1, json!({ "mode": mode }))
+        };
+        unit.fold(&event(0, "workspace-write")).unwrap();
+        assert_eq!(unit.mode.as_deref(), Some("workspace-write"));
+        // 覆写：latest-wins。
+        unit.fold(&event(1, "read-only")).unwrap();
+        assert_eq!(unit.mode.as_deref(), Some("read-only"));
+        // 未知词汇：保持上一已知档，eventSeq 不动。
+        unit.fold(&event(2, "yolo-mode")).unwrap();
+        assert_eq!(unit.mode.as_deref(), Some("read-only"));
+        // 非 sandbox/mode 事件：不碰状态，只推进 as_of。
+        unit.fold(&SessionEvent::new(
+            "turn/start",
+            3,
+            2,
+            payloads::turn_start(1),
+        ))
+        .unwrap();
+        assert_eq!(unit.mode.as_deref(), Some("read-only"));
+        // CLAT 旧词汇（v0.7.0 曾用）不接受——词汇表就是 DSH 三词。
+        unit.fold(&event(4, "full-access")).unwrap();
+        assert_eq!(unit.mode.as_deref(), Some("read-only"));
+        // snapshot/restore 往返（checkpoint 行形状）。
+        let mut next = PermissionModeUnit::default();
+        next.fold(&event(0, "danger-full-access")).unwrap();
+        let row = CheckpointRow {
+            ver: next.state_version(),
+            seq: next.as_of(),
+            val: next.snapshot(),
+        };
+        let mut restored = PermissionModeUnit::default();
+        restored.restore(&row).unwrap();
+        assert_eq!(restored.mode.as_deref(), Some("danger-full-access"));
+        assert!(
+            crate::permission::PermissionMode::from_journal_value(
+                restored.mode.as_deref().unwrap()
+            )
+            .is_some()
+        );
+    }
 
     /// N4（/rename 清洗）：首个非空行、剥控制字符（含 ESC）、压空白、
     /// 60 字符上限；清洗后为空即调用方拒绝。期望值从规格推导。

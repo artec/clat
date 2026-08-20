@@ -33,13 +33,13 @@ impl Tool for ListFilesTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "list_files".into(),
-            description: "List files and directories inside the current project. Paths are project-relative. Use this to understand repository structure before reading individual files.".into(),
+            description: "List files and directories. Paths are project-relative; absolute directory paths (anywhere on disk) are also accepted. Use this to understand directory structure before reading individual files.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Project-relative directory path. Defaults to '.'"
+                        "description": "Project-relative or absolute directory path. Defaults to '.'"
                     },
                     "max_depth": {
                         "type": "integer",
@@ -114,13 +114,13 @@ impl Tool for ReadFileTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "read_file".into(),
-            description: "Read UTF-8 text from a project file with line numbers. Paths are project-relative and cannot escape the project root.".into(),
+            description: "Read UTF-8 text from a file with line numbers. Paths are project-relative; absolute paths (anywhere on disk) are also accepted — reads are never confined to the project root.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Project-relative file path"
+                        "description": "Project-relative or absolute file path"
                     },
                     "start_line": {
                         "type": "integer",
@@ -217,7 +217,7 @@ impl Tool for SearchTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "search".into(),
-            description: "Search UTF-8 project files for a literal text query and return matching paths, line numbers, and lines. Common generated and dependency directories are skipped.".into(),
+            description: "Search UTF-8 files for a literal text query and return matching paths, line numbers, and lines. Common generated and dependency directories are skipped. Paths are project-relative; absolute paths (anywhere on disk) are also accepted.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -227,7 +227,7 @@ impl Tool for SearchTool {
                     },
                     "path": {
                         "type": "string",
-                        "description": "Project-relative file or directory to search. Defaults to '.'"
+                        "description": "Project-relative or absolute file/directory to search. Defaults to '.'"
                     },
                     "case_sensitive": {
                         "type": "boolean",
@@ -335,10 +335,14 @@ impl Tool for SearchTool {
     }
 }
 
-pub(crate) fn native_write_tools() -> Vec<std::sync::Arc<dyn Tool>> {
+pub(crate) fn native_write_tools(
+    scope: crate::permission::WriteScopeSource,
+) -> Vec<std::sync::Arc<dyn Tool>> {
     vec![
-        std::sync::Arc::new(WriteFileTool),
-        std::sync::Arc::new(EditFileTool),
+        std::sync::Arc::new(WriteFileTool {
+            scope: scope.clone(),
+        }),
+        std::sync::Arc::new(EditFileTool { scope }),
         std::sync::Arc::new(RunCommandTool),
     ]
 }
@@ -348,20 +352,24 @@ const DEFAULT_COMMAND_TIMEOUT_SECS: u64 = 120;
 const MAX_COMMAND_TIMEOUT_SECS: u64 = 600;
 const MAX_COMMAND_OUTPUT_BYTES: usize = 32 * 1024;
 
-#[derive(Clone, Copy, Debug, Default)]
-pub struct WriteFileTool;
+/// 写工具携带写入围栏来源（SR2）：每次 invoke 解析当前档位——FA 开放
+/// 绝对路径，RO/PW（与 exec）保持项目根相对路径。
+#[derive(Clone, Default)]
+pub struct WriteFileTool {
+    scope: crate::permission::WriteScopeSource,
+}
 
 impl Tool for WriteFileTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "write_file".into(),
-            description: "Create or overwrite a project file with UTF-8 text. Paths are project-relative, cannot escape the project root, and parent directories are created as needed. Prefer edit_file for small changes to existing files.".into(),
+            description: "Create or overwrite a file with UTF-8 text. Paths are project-relative (parent directories are created as needed); absolute paths outside the project are only writable under Full Access mode. Prefer edit_file for small changes to existing files.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Project-relative file path"
+                        "description": "Project-relative file path (absolute only under Full Access mode)"
                     },
                     "content": {
                         "type": "string",
@@ -391,9 +399,10 @@ impl Tool for WriteFileTool {
             )));
         }
         // W-INV1：父目录创建、临时文件与 rename 全部绑定到同一个
-        // 项目根 capability，路径竞态不能把 I/O 引到根外。
+        // 目标根 capability（项目根，或 FA 绝对路径的目标父目录），
+        // 路径竞态不能把后续 I/O 引到目标根之外。
         let target = project
-            .writable_target(requested, true)
+            .writable_target(requested, true, self.scope.resolve())
             .map_err(|error| tool_io_error("write_file", requested, error))?;
         let existed = target
             .atomic_write(content, None)
@@ -406,20 +415,23 @@ impl Tool for WriteFileTool {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default)]
-pub struct EditFileTool;
+/// 写工具携带写入围栏来源（SR2），同 [`WriteFileTool::default()`]。
+#[derive(Clone, Default)]
+pub struct EditFileTool {
+    scope: crate::permission::WriteScopeSource,
+}
 
 impl Tool for EditFileTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "edit_file".into(),
-            description: "Replace an exact, unique text snippet in a project file. old_str must match the file byte-for-byte and appear exactly once; include surrounding lines to disambiguate. Paths are project-relative and cannot escape the project root.".into(),
+            description: "Replace an exact, unique text snippet in a file. old_str must match the file byte-for-byte and appear exactly once; include surrounding lines to disambiguate. Paths are project-relative; absolute paths outside the project are only editable under Full Access mode.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Project-relative file path (must exist)"
+                        "description": "Project-relative file path (must exist; absolute only under Full Access mode)"
                     },
                     "old_str": {
                         "type": "string",
@@ -459,7 +471,7 @@ impl Tool for EditFileTool {
         // W-INV3：先验证后行动——文件读取与匹配检查全部通过之前，
         // 不触碰目标文件。
         let target = project
-            .writable_target(requested, false)
+            .writable_target(requested, false, self.scope.resolve())
             .map_err(|error| tool_io_error("edit_file", requested, error))?;
         if !target
             .is_file()
@@ -853,17 +865,16 @@ fn is_searchable_file(path: &Path) -> Result<bool, ToolError> {
     Ok(metadata.is_file() && metadata.len() <= MAX_SEARCH_FILE_BYTES)
 }
 
+/// 展示路径：项目内用相对路径；项目外（SR1 绝对读口）用绝对路径——
+/// 读不再被围在项目根内，展示也不再把整个工具调用报错。
 fn display_project_path(project: &Project, path: &Path) -> Result<String, ToolError> {
     let root = project
         .resolve_existing(".")
         .map_err(|error| ToolError::new(format!("cannot resolve project root: {error}")))?;
-    let relative = path
-        .strip_prefix(&root)
-        .map_err(|_| ToolError::new("path escaped project root"))?;
-    if relative.as_os_str().is_empty() {
-        Ok(".".into())
-    } else {
-        Ok(relative.to_string_lossy().replace('\\', "/"))
+    match path.strip_prefix(&root) {
+        Ok(relative) if relative.as_os_str().is_empty() => Ok(".".into()),
+        Ok(relative) => Ok(relative.to_string_lossy().replace('\\', "/")),
+        Err(_) => Ok(path.to_string_lossy().replace('\\', "/")),
     }
 }
 
@@ -1100,13 +1111,170 @@ mod tests {
     }
 
     /// W-INV2/W-INV1：写文件新建、覆盖、父目录物化，均在项目内；
+    /// SR1（读自由，对齐 DSH「every mode permits reading」）：三读工具
+    /// 接受任意绝对路径（全档位一致，含项目外与 symlink 解析）；项目
+    /// 相对路径的旧纪律不变（`..` 仍拒）。pre-fix 上绝对路径在
+    /// `resolve_existing` 被拒，绝对读断言必红。
+    #[test]
+    fn read_tools_accept_absolute_paths_beyond_the_project_root() {
+        let (root, project) = fixture();
+        let outside_dir = root.parent().expect("parent").join("clat-sr1-outside");
+        let _ = fs::remove_dir_all(&outside_dir);
+        fs::create_dir_all(&outside_dir).expect("outside dir");
+        let outside_file = outside_dir.join("notes.txt");
+        fs::write(&outside_file, "outside content\nsecond line\n").expect("file");
+        let absolute = outside_file.to_str().expect("utf8 path").to_owned();
+
+        // read_file：绝对路径 + 行号内容。
+        let output = ReadFileTool
+            .invoke(
+                &json!({"path": absolute, "max_bytes": 65536}),
+                &project,
+                &CancelToken::new(),
+            )
+            .expect("absolute read");
+        assert!(
+            output["content"]
+                .as_str()
+                .unwrap()
+                .contains("outside content")
+        );
+
+        // list_files：绝对目录。
+        let output = ListFilesTool
+            .invoke(
+                &json!({"path": outside_dir.to_str().expect("utf8 path")}),
+                &project,
+                &CancelToken::new(),
+            )
+            .expect("absolute list");
+        assert!(
+            output["entries"]
+                .as_array()
+                .expect("entries")
+                .iter()
+                .any(|entry| entry["path"].as_str().unwrap().contains("notes.txt"))
+        );
+
+        // search：绝对目录内检索；项目外匹配以绝对路径展示。
+        let output = SearchTool
+            .invoke(
+                &json!({"query": "outside", "path": outside_dir.to_str().expect("utf8 path")}),
+                &project,
+                &CancelToken::new(),
+            )
+            .expect("absolute search");
+        let matches = output["matches"].as_array().expect("matches");
+        assert_eq!(matches.len(), 1);
+        assert!(
+            Path::new(matches[0]["path"].as_str().unwrap()).is_absolute(),
+            "outside matches display as absolute paths"
+        );
+
+        // 相对路径纪律不变：`..` 穿越/根外仍拒。
+        ReadFileTool
+            .invoke(
+                &json!({"path": "../escape.txt"}),
+                &project,
+                &CancelToken::new(),
+            )
+            .expect_err("relative traversal stays rejected");
+
+        fs::remove_dir_all(&outside_dir).ok();
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    /// SR2/SR3（写分档）：默认围栏（PW，也是 exec 的固定档）拒绝绝对
+    /// 路径且错误点名档位；FA（共享 cell）开放绝对写并保持原子纪律
+    ///（无临时残留）；同一 cell 热降档后下一次写重新被围。pre-fix 上
+    /// 绝对路径一律被拒（无 FA 分支），FA 断言必红。
+    #[test]
+    fn write_scope_gates_absolute_paths_by_mode() {
+        use crate::permission::PermissionMode;
+        let (root, project) = fixture();
+        let outside_dir = root.parent().expect("parent").join("clat-sr2-outside");
+        let _ = fs::remove_dir_all(&outside_dir);
+        fs::create_dir_all(&outside_dir).expect("outside dir");
+        let target = outside_dir.join("out.md");
+        let absolute = target.to_str().expect("utf8 path").to_owned();
+
+        // 默认围栏：绝对路径拒绝，错误指向 Full Access。
+        let error = WriteFileTool::default()
+            .invoke(
+                &json!({"path": absolute, "content": "no\n"}),
+                &project,
+                &CancelToken::new(),
+            )
+            .expect_err("the default fence rejects absolute paths");
+        assert!(
+            error.to_string().contains("Full Access"),
+            "the error names the mode: {error}"
+        );
+        assert!(!target.exists());
+
+        // FA（共享 cell）：绝对写成功 + 原子纪律（无 .clat-tmp 残留）。
+        let cell = std::sync::Arc::new(std::sync::RwLock::new(PermissionMode::FullAccess));
+        let writer = WriteFileTool {
+            scope: crate::permission::WriteScopeSource::Shared(std::sync::Arc::clone(&cell)),
+        };
+        writer
+            .invoke(
+                &json!({"path": absolute, "content": "fa\n"}),
+                &project,
+                &CancelToken::new(),
+            )
+            .expect("full access writes outside the project");
+        assert_eq!(fs::read_to_string(&target).unwrap(), "fa\n");
+        let leftovers: Vec<_> = fs::read_dir(&outside_dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with(".clat-tmp"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "atomic discipline holds outside the project"
+        );
+
+        // 同一 cell 热降档 PW：下一次写重新被围，内容不动。
+        *cell.write().expect("mode lock") = PermissionMode::ProjectWrite;
+        writer
+            .invoke(
+                &json!({"path": absolute, "content": "again\n"}),
+                &project,
+                &CancelToken::new(),
+            )
+            .expect_err("downgrade re-fences absolute paths");
+        assert_eq!(
+            fs::read_to_string(&target).unwrap(),
+            "fa\n",
+            "content untouched by the rejected write"
+        );
+
+        // edit_file 走同一围栏：FA 下编辑绝对路径成功。
+        *cell.write().expect("mode lock") = PermissionMode::FullAccess;
+        let editor = EditFileTool {
+            scope: crate::permission::WriteScopeSource::Shared(cell),
+        };
+        editor
+            .invoke(
+                &json!({"path": absolute, "old_str": "fa", "new_str": "full access"}),
+                &project,
+                &CancelToken::new(),
+            )
+            .expect("full access edits outside the project");
+        assert_eq!(fs::read_to_string(&target).unwrap(), "full access\n");
+
+        fs::remove_dir_all(&outside_dir).ok();
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
     /// 失败路径（穿越）不产生任何文件。
     #[test]
     fn write_file_creates_overwrites_and_never_escapes() {
         let (root, project) = fixture();
 
         // 新建（父目录不存在 → 物化）。
-        let output = WriteFileTool
+        let output = WriteFileTool::default()
             .invoke(
                 &json!({"path": "docs/new/note.md", "content": "first\n"}),
                 &project,
@@ -1120,7 +1288,7 @@ mod tests {
         );
 
         // 覆盖。
-        let output = WriteFileTool
+        let output = WriteFileTool::default()
             .invoke(
                 &json!({"path": "docs/new/note.md", "content": "second\n"}),
                 &project,
@@ -1136,7 +1304,7 @@ mod tests {
         // 穿越：拒绝，且根外无新文件、无临时文件残留。
         let outside = root.parent().expect("parent").join("clat-write-escape.txt");
         let _ = fs::remove_file(&outside);
-        WriteFileTool
+        WriteFileTool::default()
             .invoke(
                 &json!({"path": "../clat-write-escape.txt", "content": "pwn"}),
                 &project,
@@ -1156,7 +1324,7 @@ mod tests {
 
         // 超限：拒绝，目标文件保持旧内容。
         let oversized = "x".repeat(MAX_WRITE_BYTES + 1);
-        let error = WriteFileTool
+        let error = WriteFileTool::default()
             .invoke(
                 &json!({"path": "docs/new/note.md", "content": oversized}),
                 &project,
@@ -1180,7 +1348,7 @@ mod tests {
         let path = json!("code.txt");
 
         // 多处匹配：拒绝 + 文件不变。
-        let error = EditFileTool
+        let error = EditFileTool::default()
             .invoke(
                 &json!({"path": path, "old_str": "alpha", "new_str": "gamma"}),
                 &project,
@@ -1194,7 +1362,7 @@ mod tests {
         );
 
         // 无匹配：拒绝 + 文件不变。
-        EditFileTool
+        EditFileTool::default()
             .invoke(
                 &json!({"path": path, "old_str": "delta", "new_str": "gamma"}),
                 &project,
@@ -1207,7 +1375,7 @@ mod tests {
         );
 
         // old == new：拒绝。
-        EditFileTool
+        EditFileTool::default()
             .invoke(
                 &json!({"path": path, "old_str": "beta", "new_str": "beta"}),
                 &project,
@@ -1216,7 +1384,7 @@ mod tests {
             .expect_err("must reject no-op");
 
         // 唯一匹配：应用。
-        EditFileTool
+        EditFileTool::default()
             .invoke(
                 &json!({"path": path, "old_str": "beta", "new_str": "beta2"}),
                 &project,
@@ -1405,7 +1573,7 @@ mod tests {
         fs::write(&script, "#!/bin/sh\nold\n").expect("script");
         fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).expect("mode");
 
-        WriteFileTool
+        WriteFileTool::default()
             .invoke(
                 &json!({"path": "script.sh", "content": "#!/bin/sh\nnew\n"}),
                 &project,
@@ -1419,7 +1587,7 @@ mod tests {
             "write_file keeps the exec bit (NWE-05)"
         );
 
-        EditFileTool
+        EditFileTool::default()
             .invoke(
                 &json!({"path": "script.sh", "old_str": "new", "new_str": "edited"}),
                 &project,
@@ -1430,7 +1598,7 @@ mod tests {
         assert_eq!(mode & 0o777, 0o755, "edit_file keeps the exec bit (NWE-05)");
 
         // 新建文件不受影响（umask 语义）。
-        WriteFileTool
+        WriteFileTool::default()
             .invoke(
                 &json!({"path": "fresh.txt", "content": "x"}),
                 &project,
@@ -1454,7 +1622,11 @@ mod tests {
         let file = root.join("concurrent.txt");
         fs::write(&file, "original\n").expect("file");
         let target = project
-            .writable_target("concurrent.txt", false)
+            .writable_target(
+                "concurrent.txt",
+                false,
+                crate::permission::WriteScope::ProjectRoot,
+            )
             .expect("target");
 
         // "并行修改者"在读取快照之后改了文件。
@@ -1487,8 +1659,8 @@ mod tests {
         use crate::tool::ToolCall;
         let project = Project::new("/tmp/clat-nowhere");
         for definition in [
-            WriteFileTool.definition(),
-            EditFileTool.definition(),
+            WriteFileTool::default().definition(),
+            EditFileTool::default().definition(),
             RunCommandTool.definition(),
         ] {
             let call = ToolCall {
@@ -1595,7 +1767,9 @@ mod tests {
     fn native_tool_definition_order_is_stable() {
         let definitions = native_read_tools()
             .into_iter()
-            .chain(native_write_tools())
+            .chain(native_write_tools(
+                crate::permission::WriteScopeSource::default(),
+            ))
             .chain(native_interaction_tools(
                 crate::interaction::AskUserSlot::shared(),
             ))

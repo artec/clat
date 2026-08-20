@@ -56,8 +56,8 @@ pub use model::{
 };
 pub use permission::{
     AllowAll, InteractivePermissionPolicy, ModePolicy, PermissionApprover, PermissionDecision,
-    PermissionMode, PermissionPolicy, PermissionRequest, SafeByDefault, escalation_targets,
-    mode_allows, mode_decision, mode_guidance,
+    PermissionMode, PermissionPolicy, PermissionRequest, SafeByDefault, WriteScope,
+    escalation_targets, mode_allows, mode_decision, mode_guidance, mode_write_scope,
 };
 pub use presets::{MODEL_PRESETS, ModelPreset, preset_by_id};
 pub use project::Project;

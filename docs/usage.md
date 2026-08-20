@@ -76,15 +76,20 @@ instead of cancelling the run.
   conversation marked. Entering a conversation (even read-only) makes
   it the startup conversation for the next launch
 - `/perm` — switch the permission mode: **Read Only** (every side effect
-  asks), **Project Write** (default — file edits run without prompts;
-  commands, network, and destructive tools still ask), or **Full Access**
-  (no prompts at all; needs a confirm step). The active mode is shown at
-  the top right of the input box. Switching takes effect at the next
-  permission check and is **remembered per project** — restart (or a new
-  session) picks up where you left off. The permission dialog itself also
-  offers escalation keys (`w` / `f`) for exactly the wider modes that
-  would let the pending call run — see `docs/permissions.md`. The long
-  form `/permission` is an alias
+  asks), **Project Write** (default — file edits, reads, and
+  network/search tools run without prompts; commands and destructive
+  tools still ask), or **Full Access** (no prompts at all; needs a
+  confirm step, and unlocks absolute-path writes). The active mode is
+  shown at the top right of the input box. Switching takes effect at
+  the next permission check and **travels with the conversation**: it
+  is journaled into the session (`sandbox/mode` events, DSH
+  vocabulary), so restarting — which auto-resumes the startup
+  conversation — picks up where you left off, while `/new` starts at
+  the default and resuming a different conversation restores *its*
+  mode. The permission dialog itself also offers escalation keys
+  (`w` / `f`) for exactly the wider modes that would let the pending
+  call run — see `docs/permissions.md`. The long form `/permission`
+  is an alias
 - `/rename` — rename the current conversation (available as soon as the
   conversation exists; a late automatic title never overwrites a manual
   name). The conversation title shows at the top right of the
@@ -318,8 +323,10 @@ context budget) absorb context pressure.
 Tools exposed by configured MCP servers (`~/.clat/mcp.json`) appear with
 an `mcp_{server}_{tool}` name. Servers can be local subprocesses
 (`command`/`args`/`env`) or remote Streamable HTTP endpoints
-(`url` + `headers`). Their untrusted annotations refine the
-permission label, but every call still opens a permission dialog. MCP
+(`url` + `headers`). Their untrusted annotations refine the permission
+classification: read-only annotated tools ask under Read Only but run
+freely under Project Write, while destructive ones (the default when a
+server omits annotations) always ask outside Full Access. MCP
 servers are global: their subprocesses run with `~/.clat` as the working
 directory, never inside the project. Pressing `Esc` during a call also
 propagates cancellation to the MCP request.

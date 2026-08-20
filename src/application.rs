@@ -478,17 +478,13 @@ impl TrustedProjectApplication {
         // 前端实现。
         let asker_slot = crate::interaction::AskUserSlot::shared();
         // 权限档位 cell（P3）：挂载期创建、进程内常驻；工厂按
-        // `permission_modes` 决定委托是否读它。交互前端从控制面按项目
-        // 载入持久档位（P2：`/perm` 的选择跨重启生效、每项目独立）；
-        // 无记录/损坏回落默认档 ProjectWrite。Classic（exec）不载入
-        // 也不持久化——档位系统只属于交互前端。
-        let initial_permission_mode = if permission_modes {
-            control
-                .load_permission_mode(project.root())
-                .unwrap_or_default()
-        } else {
-            crate::permission::PermissionMode::default()
-        };
+        // `permission_modes` 决定委托是否读它。档位是**会话属性**
+        // （DSH `sandbox/mode` journal 事件，latest-wins）：mount 恢复
+        // 工作区会话后按该会话自己的 fold 对齐 cell（见
+        // `reseed_permission_mode_from_session`），未记录过的会话回落
+        // 编译期默认 ProjectWrite。Classic（exec）不参与档位系统——
+        // 其会话日志不含 `sandbox/mode` 事件（PS4）。
+        let initial_permission_mode = crate::permission::PermissionMode::default();
         let permission_mode = Arc::new(std::sync::RwLock::new(initial_permission_mode));
         let permission_source = if permission_modes {
             crate::permission::ModeSource::Shared(Arc::clone(&permission_mode))
@@ -500,7 +496,15 @@ impl TrustedProjectApplication {
             Arc::new(SessionPersistencePlugin::new(Arc::clone(&session_service))),
             Arc::new(crate::plugins::ToolRegistryPlugin),
             Arc::new(crate::plugins::NativeReadToolsPlugin),
-            Arc::new(crate::plugins::NativeWriteToolsPlugin),
+            Arc::new(crate::plugins::NativeWriteToolsPlugin {
+                // 写入围栏来源与权限策略读同一个 cell（SR2）：切 FA 的
+                // 下一次写即开放绝对路径；exec（Classic）恒项目根。
+                scope: if permission_modes {
+                    crate::permission::WriteScopeSource::Shared(Arc::clone(&permission_mode))
+                } else {
+                    crate::permission::WriteScopeSource::ProjectRoot
+                },
+            }),
             Arc::new(crate::plugins::NativeInteractionToolsPlugin {
                 slot: Arc::clone(&asker_slot),
             }),
@@ -612,6 +616,9 @@ impl TrustedProjectApplication {
         };
         // 5. Workspace selection: normalize Materializing, attach Session.
         application.load_workspace_selection()?;
+        // 会话边界（mount 恢复）之后对齐档位 cell：恢复的会话用自己的
+        // fold，Fresh 回落默认——绝不携带上一个进程的任何档位。
+        application.reseed_permission_mode_from_session();
         if let Some(titler) = &application.titler {
             application.title_worker = Some(TitleWorker::spawn(
                 Arc::clone(titler),
@@ -809,18 +816,36 @@ impl TrustedProjectApplication {
         *self.permission_mode.read().expect("permission mode lock")
     }
 
-    /// 切换权限档位：下一次权限检查生效（P3）；按项目持久化到控制面
-    ///（`permission_modes.json`，storage root 内、项目 key 隔离），重启
-    /// /新进程从持久值启动。持久化失败返回 Err——内存 cell 已更新（本
-    /// 进程行为即时生效），调用方提示即可，不回滚。
+    /// 切换权限档位：下一次权限检查生效（P3）。档位是会话属性——活跃
+    /// 会话存在时向其 journal 追加 `sandbox/mode` 事件（append + flush +
+    /// checkpoint，DSH setSandboxMode 对应物），resume/重启随日志恢复；
+    /// 同值切换零事件；无活跃会话（首条消息前）只改内存 cell，该值在
+    /// `prepare_run` 物化时落为出生档（PS7）。journal 失败返回 Err——
+    /// 内存 cell 已更新（本进程行为即时生效），不回滚。
     pub fn set_permission_mode(
         &self,
         mode: crate::permission::PermissionMode,
     ) -> Result<(), ApplicationError> {
         *self.permission_mode.write().expect("permission mode lock") = mode;
-        self.control
-            .save_permission_mode(self.project.root(), mode)
-            .map_err(|error| ApplicationError::new(error.to_string()))
+        if !self.permission_modes_enabled {
+            return Ok(());
+        }
+        match self.sessions.record_permission_mode(mode) {
+            Ok(_) => Ok(()),
+            Err(error) => Err(session_error(error)),
+        }
+    }
+
+    /// 把档位 cell 对齐到活跃会话自己的 journal fold；无活跃会话或该
+    /// 会话从未记录过档位（遗留会话）回落编译期默认（PS1/PS3）。只在
+    /// 会话边界调用：mount 恢复、/resume 切换安装之后。同会话快速路径
+    /// 不调——journal 写失败的内存档位不在此被静默回滚。
+    fn reseed_permission_mode_from_session(&self) {
+        if !self.permission_modes_enabled {
+            return;
+        }
+        let mode = self.sessions.permission_mode_state().unwrap_or_default();
+        *self.permission_mode.write().expect("permission mode lock") = mode;
     }
 
     pub fn snapshot(&mut self) -> Result<ProjectSnapshot, ApplicationError> {
@@ -965,6 +990,12 @@ impl TrustedProjectApplication {
         let quiesce = self.sessions.quiesce_active().map_err(session_error);
         self.fresh_session_open = true;
         self.emitted_request_header = None;
+        // 新会话从默认档起步：上一个会话的档位绝不跨 /new 携带（PS1
+        // 的进程内变体）；物化前 /perm 的选择仍是出生档（PS7）。
+        if self.permission_modes_enabled {
+            *self.permission_mode.write().expect("permission mode lock") =
+                crate::permission::PermissionMode::default();
+        }
         if let Some(todo_service) = &self.todo {
             todo_service.restore(None, &[]);
         }
@@ -1036,6 +1067,9 @@ impl TrustedProjectApplication {
         // and memory do not diverge.
         let quiesce = self.sessions.quiesce_active().map_err(session_error);
         let view = self.sessions.install_armed(armed);
+        // 会话边界：新安装的会话带自己的档位（fold ?? 默认）——上一个
+        // 会话的档位绝不跨 resume 携带（PS1，即用户报告的泄漏 bug）。
+        self.reseed_permission_mode_from_session();
         self.fresh_session_open = true;
         // Dedupe authority: whatever the log already holds.
         self.emitted_request_header = self.sessions.last_request_header();
@@ -1178,6 +1212,7 @@ impl TrustedProjectApplication {
         prompt: &str,
         attachments: &[std::path::PathBuf],
     ) -> Result<PreparedRun, ApplicationError> {
+        let mut materialized = false;
         match self.selection.clone() {
             WorkspaceSelection::Fresh => {
                 // `new_session` no longer self-quiesces (the /new flow CASes
@@ -1188,6 +1223,7 @@ impl TrustedProjectApplication {
                     .new_session(&self.project_key())
                     .map_err(session_error)?;
                 self.cas_selection(WorkspaceSelection::Materializing(summary.id.clone()))?;
+                materialized = true;
             }
             WorkspaceSelection::Materializing(id) => {
                 // Normalized at mount; if it reappears here the row moved.
@@ -1208,6 +1244,8 @@ impl TrustedProjectApplication {
                     self.sessions
                         .resume(&self.session_key(&id))
                         .map_err(session_error)?;
+                    // 换了活跃会话：档位 cell 对齐到它自己的 fold（PS1）。
+                    self.reseed_permission_mode_from_session();
                     self.fresh_session_open = true;
                     self.emitted_request_header = self.sessions.last_request_header();
                 }
@@ -1233,14 +1271,28 @@ impl TrustedProjectApplication {
             .sessions
             .import_attachments(attachments)
             .map_err(session_error)?;
-        let first_batch = [
-            NewSessionEvent::new("turn/start", payloads::turn_start(turn)),
+        // 首个耐久批：出生档（仅新物化的会话）→ turn/start →
+        // user/message。DSH pinInitialPermission 在会话创建期 pin 档位，
+        // 对应物即出生事件排在首个 turn 之前（PS2）——回放从第一条
+        // 事件起就有确定的档位。Classic（exec）不落此事件（PS4）。
+        let mut first_batch = Vec::new();
+        if materialized && self.permission_modes_enabled {
+            first_batch.push(NewSessionEvent::new(
+                "sandbox/mode",
+                payloads::sandbox_mode(&self.permission_mode()),
+            ));
+        }
+        first_batch.push(NewSessionEvent::new(
+            "turn/start",
+            payloads::turn_start(turn),
+        ));
+        first_batch.push(
             NewSessionEvent::new(
                 "user/message",
                 payloads::user_message_with_images(prompt, &images),
             )
             .append(Vec::new()),
-        ];
+        );
         journal
             .append_atomic(&first_batch)
             .map_err(|error| ApplicationError::new(format!("session append failed: {error}")))?;
@@ -2465,6 +2517,30 @@ mod tests {
         backend.load(&key, false).unwrap().events
     }
 
+    /// Load the durable events of one specific session by id.
+    fn load_events_for(
+        storage_root: &std::path::Path,
+        id: &crate::session::id::SessionId,
+    ) -> Vec<crate::session::event::SessionEvent> {
+        let backend = crate::session::persistence::JsonlBackend::new(
+            storage_root.join("sessions"),
+            crate::session::persistence::JsonlCompression::Zstd,
+            false,
+        );
+        let headers = backend.list_headers().unwrap();
+        let header = headers
+            .iter()
+            .find(|header| &header.id == id)
+            .expect("session header");
+        let key = SessionKey {
+            project: ProjectKey::from_cwd(
+                &header.cwd.clone().expect("header carries the project cwd"),
+            ),
+            id: header.id.clone(),
+        };
+        backend.load(&key, false).unwrap().events
+    }
+
     #[test]
     fn authorize_and_mount_initializes_fresh_storage_and_rejects_old_state() {
         let (storage_root, project_root) = roots("cutover-init");
@@ -2948,8 +3024,8 @@ mod tests {
 
     /// 权限三档挂载（TUI 路径）：`with_permission_modes` 后策略读共享
     /// cell。与 exec 用的 `mount`（Classic）相对。`mode` 在挂载后显式
-    /// 设置（顺带持久化）——需要"读持久值"语义的测试走
-    /// `mount_modes_from_storage`。
+    /// 设置——此时通常无活跃会话（PS7：只改 cell，物化时落为出生档）；
+    /// 活跃会话存在时则向其 journal 追加切换事件。
     fn mount_with_permission_modes(
         project: &Project,
         storage_root: &std::path::Path,
@@ -2957,12 +3033,12 @@ mod tests {
         mode: crate::permission::PermissionMode,
     ) -> TrustedProjectApplication {
         let application = mount_modes_from_storage(project, storage_root, behavior);
-        application.set_permission_mode(mode).expect("persist mode");
+        application.set_permission_mode(mode).expect("set mode");
         application
     }
 
-    /// 同上但不显式设置档位——模拟新进程启动：cell 只从控制面持久值
-    /// 初始化（P2 的读路径）。
+    /// 同上但不显式设置档位——模拟新进程启动：cell 从 workspace 自动
+    /// 恢复的会话自己的 fold 初始化（无活跃会话/遗留会话 → 默认档）。
     fn mount_modes_from_storage(
         project: &Project,
         storage_root: &std::path::Path,
@@ -3079,58 +3155,303 @@ mod tests {
         std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
     }
 
-    /// 不变量 P2（持久化，2026-08-19 用户要求：档位随项目绑定、跨重启
-    /// 生效）：set → close → 重新 mount，档位从控制面恢复；另一个项目
-    /// 的 root 同 storage 下独立（各自默认/各自持久值）。pre-fix（无
-    /// 持久化）上重挂载读到默认档，断言必红。
+    /// 不变量 PS1（会话独立，2026-08-19 用户报告的泄漏 bug）：档位是
+    /// 会话属性，绝不跨会话携带。会话 A 设 Full Access 后：(a) /new
+    /// 回到默认档；(b) 重启（workspace 自动恢复 A）仍恢复 Full Access；
+    /// (c) resume 到档位系统之前创建的遗留会话 B → 默认档（PS3）。
+    /// pre-fix（全局 cell 无 reseed）上 (a)/(c) 断言必红。
     #[test]
-    fn permission_mode_persists_per_project_across_restarts() {
+    fn permission_mode_travels_with_the_session_not_the_process() {
         use crate::permission::PermissionMode;
-        let (storage_root, project_root) = roots("perm-persist");
+        let (storage_root, project_root) = roots("perm-session");
         std::fs::create_dir_all(&project_root).unwrap();
         let project = Project::new(&project_root);
 
-        // 第一次进程：切 Full Access 后退出。
-        {
-            let application = mount_with_permission_modes(
-                &project,
-                &storage_root,
-                TestBehavior::Success,
+        // 遗留会话 B：Classic 挂载（exec 路径）创建——journal 无任何
+        // `sandbox/mode` 事件（PS4 的写侧）。
+        let legacy_id = {
+            let mut application = mount(&project, &storage_root, TestBehavior::Success);
+            configure_test_model(&application);
+            run(&mut application, "legacy session").expect("legacy run");
+            let id = application.snapshot().unwrap().session_id.expect("session");
+            application.close().unwrap();
+            id
+        };
+
+        // 会话 A：档位系统挂载，出生 FA（物化前设置）。
+        let full_access_id = {
+            let mut application =
+                mount_modes_from_storage(&project, &storage_root, TestBehavior::Success);
+            configure_test_model(&application);
+            // 当前活跃会话是遗留的 B（workspace 恢复）——先 /new 再设档。
+            application.new_session().unwrap();
+            assert_eq!(
+                application.permission_mode(),
                 PermissionMode::ProjectWrite,
+                "/new resets to the default (in-process leak variant)"
             );
             application
                 .set_permission_mode(PermissionMode::FullAccess)
-                .expect("persist full access");
+                .expect("set full access");
+            run(&mut application, "full access session").expect("run");
+            let id = application.snapshot().unwrap().session_id.expect("session");
+            // A 活跃且为 FA 时 /new：档位不跨会话携带（判别性场景——
+            // 没有 reset 代码时这里读到 FA，必红）。
+            application.new_session().unwrap();
+            assert_eq!(
+                application.permission_mode(),
+                PermissionMode::ProjectWrite,
+                "/new while Full Access is active restarts at the default"
+            );
+            // 回到 A，workspace 指针钉住它（供重启场景恢复 FA）。
+            application.switch_session(id.clone()).unwrap();
+            assert_eq!(
+                application.permission_mode(),
+                PermissionMode::FullAccess,
+                "switching back to A restores its own mode before close"
+            );
             application.close().unwrap();
-        }
-        // 第二次进程（同一项目）：档位从持久值恢复（不显式设置）。
+            id
+        };
+
+        // 重启：workspace 自动恢复 A → 档位随日志回来（替代旧的项目级
+        // 持久化诉求）。
         {
-            let application =
+            let mut application =
                 mount_modes_from_storage(&project, &storage_root, TestBehavior::Success);
             assert_eq!(
                 application.permission_mode(),
                 PermissionMode::FullAccess,
-                "the persisted mode survives a restart"
+                "restarting resumes the same session and its own mode"
             );
-            application.close().unwrap();
-        }
-        // 同一 storage 下的另一个项目：无记录 → 默认档（项目隔离）。
-        {
-            let (_other_root, other_project_root) = roots("perm-persist-other");
-            std::fs::create_dir_all(&other_project_root).unwrap();
-            let application = mount_modes_from_storage(
-                &Project::new(&other_project_root),
-                &storage_root,
-                TestBehavior::Success,
-            );
+            // 用户报告的确切序列：resume 到另一个会话 B。
+            application.switch_session(legacy_id.clone()).unwrap();
             assert_eq!(
                 application.permission_mode(),
                 PermissionMode::ProjectWrite,
-                "another project starts at the default, untouched by its neighbor"
+                "a legacy session (no mode events) falls back to the default"
+            );
+            // 再切回 A：档位跟着各自的日志走。
+            application.switch_session(full_access_id.clone()).unwrap();
+            assert_eq!(
+                application.permission_mode(),
+                PermissionMode::FullAccess,
+                "switching back restores A's own mode"
             );
             application.close().unwrap();
-            std::fs::remove_dir_all(other_project_root.parent().unwrap()).ok();
         }
+
+        // journal 侧：A 有出生事件，B 一个都没有（PS4）。
+        let a_events = load_events_for(&storage_root, &full_access_id);
+        assert_eq!(a_events[0].event_type, "sandbox/mode");
+        assert_eq!(
+            a_events[0].data.get("mode").and_then(|v| v.as_str()),
+            Some("danger-full-access")
+        );
+        let b_events = load_events_for(&storage_root, &legacy_id);
+        assert!(
+            !b_events
+                .iter()
+                .any(|event| event.event_type == "sandbox/mode"),
+            "classic (exec-style) sessions never journal mode events"
+        );
+        std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
+    }
+
+    /// 不变量 PS2（journal 形状）：出生档是会话首条事件（先于
+    /// turn/start，同批原子落盘）；会话中切换追加事件（DSH 词汇）；
+    /// 同值重复切换零事件。
+    #[test]
+    fn permission_mode_birth_and_switch_journal_shape() {
+        use crate::permission::PermissionMode;
+        let (storage_root, project_root) = roots("perm-journal");
+        std::fs::create_dir_all(&project_root).unwrap();
+        let project = Project::new(&project_root);
+        let mut application =
+            mount_modes_from_storage(&project, &storage_root, TestBehavior::Success);
+        configure_test_model(&application);
+
+        // 物化前设 RO：成为出生档。
+        application
+            .set_permission_mode(PermissionMode::ReadOnly)
+            .expect("set read only");
+        run(&mut application, "first").expect("run");
+        let events = load_events(&storage_root);
+        assert_eq!(events[0].event_type, "sandbox/mode");
+        assert_eq!(
+            events[0].data.get("mode").and_then(|value| value.as_str()),
+            Some("read-only"),
+            "journal values use the DSH vocabulary"
+        );
+        assert_eq!(
+            events[1].event_type, "turn/start",
+            "the birth mode precedes the first turn"
+        );
+
+        // 会话中切换 FA：追加一条；同值再切：零事件。
+        application
+            .set_permission_mode(PermissionMode::FullAccess)
+            .expect("switch to full access");
+        application
+            .set_permission_mode(PermissionMode::FullAccess)
+            .expect("same-value switch is a no-op");
+        let events = load_events(&storage_root);
+        let mode_events: Vec<_> = events
+            .iter()
+            .filter(|event| event.event_type == "sandbox/mode")
+            .collect();
+        assert_eq!(mode_events.len(), 2, "birth + one switch, nothing more");
+        assert_eq!(
+            mode_events[1]
+                .data
+                .get("mode")
+                .and_then(|value| value.as_str()),
+            Some("danger-full-access")
+        );
+        application.close().unwrap();
+        std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
+    }
+
+    /// 不变量 PS7（无会话切换）：会话物化前 `/perm` 只改内存 cell——
+    /// 零 journal 写、零会话目录；该值随后成为出生档。
+    #[test]
+    fn sessionless_mode_switch_journals_nothing() {
+        use crate::permission::PermissionMode;
+        let (storage_root, project_root) = roots("perm-sessionless");
+        std::fs::create_dir_all(&project_root).unwrap();
+        let project = Project::new(&project_root);
+        let mut application =
+            mount_modes_from_storage(&project, &storage_root, TestBehavior::Success);
+        configure_test_model(&application);
+
+        application
+            .set_permission_mode(PermissionMode::FullAccess)
+            .expect("set full access");
+        assert!(
+            application.list_sessions().unwrap().is_empty(),
+            "a sessionless switch writes nothing durable"
+        );
+        run(&mut application, "materialize").expect("run");
+        let events = load_events(&storage_root);
+        assert_eq!(events[0].event_type, "sandbox/mode");
+        assert_eq!(
+            events[0].data.get("mode").and_then(|value| value.as_str()),
+            Some("danger-full-access"),
+            "the pre-materialization choice becomes the birth mode"
+        );
+        application.close().unwrap();
+        std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
+    }
+
+    /// 不变量 PS6（文件退役）：v0.7.0 的项目级 `permission_modes.json`
+    /// 已无人读取——遗留该文件不影响重新 mount。pre-fix 上 mount 从文件
+    /// 载入 FullAccess，断言必红。
+    #[test]
+    fn stale_permission_modes_file_is_ignored() {
+        use crate::permission::PermissionMode;
+        let (storage_root, project_root) = roots("perm-stale-file");
+        std::fs::create_dir_all(&project_root).unwrap();
+        let project = Project::new(&project_root);
+
+        // 先挂载一次建立 Ready 存储根，再落下 v0.7.0 的遗留文件
+        //（classify 只看 config.json + clat.db，容忍额外根文件）。
+        {
+            let application =
+                mount_modes_from_storage(&project, &storage_root, TestBehavior::Success);
+            application.close().unwrap();
+        }
+        std::fs::write(
+            storage_root.join("permission_modes.json"),
+            format!(
+                "{{\"version\":1,\"modes\":{{\"{}\":\"full-access\"}}}}",
+                crate::control_storage::sentinel::project_key(&project_root),
+            ),
+        )
+        .unwrap();
+
+        let application = mount_modes_from_storage(&project, &storage_root, TestBehavior::Success);
+        assert_eq!(
+            application.permission_mode(),
+            PermissionMode::ProjectWrite,
+            "the retired project-level file no longer feeds the mode cell"
+        );
+        application.close().unwrap();
+        std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
+    }
+
+    /// 不变量 PS5（回放对拍）：出生事件 + 会话中切换都进 journal，
+    /// live 流与回放的对拍不受影响——档位事件不产生会话事实，且
+    /// ReplayAdapter 的 fold 容忍它们。
+    #[test]
+    fn mode_switches_replay_identically() {
+        use crate::permission::PermissionMode;
+        let (storage_root, project_root) = roots("perm-parity");
+        std::fs::create_dir_all(&project_root).unwrap();
+        let project = Project::new(&project_root);
+        let mut application =
+            mount_modes_from_storage(&project, &storage_root, TestBehavior::WriteFile);
+        configure_test_model(&application);
+        application
+            .set_permission_mode(PermissionMode::ReadOnly)
+            .expect("birth mode read-only");
+
+        let live = Arc::new(Mutex::new(Vec::new()));
+        let run_with_events = |application: &mut TrustedProjectApplication,
+                               live: Arc<Mutex<Vec<crate::RunEvent>>>,
+                               prompt: &str,
+                               approver: Arc<dyn PermissionApprover>|
+         -> Result<ApplicationRunDone, ApplicationRunFailure> {
+            let (completion, receiver) = mpsc::channel();
+            let handle = application
+                .start_run(ApplicationRunRequest {
+                    attachments: Vec::new(),
+                    asker: None,
+                    prompt: prompt.into(),
+                    approver,
+                    events: Box::new(SharedEvents(live)),
+                    completion,
+                })
+                .unwrap();
+            handle.join().unwrap();
+            receiver.recv().unwrap()
+        };
+
+        // Run 1（RO）：询问一次后放行。
+        let asked = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&asked);
+        run_with_events(
+            &mut application,
+            Arc::clone(&live),
+            "please write the file",
+            Arc::new(move |_request: crate::PermissionRequest| {
+                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                crate::PermissionDecision::Allow
+            }),
+        )
+        .expect("read-only run");
+        assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        // 会话中切换 FA（journal 一条切换事件），Run 2 零询问。
+        application
+            .set_permission_mode(PermissionMode::FullAccess)
+            .expect("mid-session switch");
+        let asked_again = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&asked_again);
+        run_with_events(
+            &mut application,
+            Arc::clone(&live),
+            "write it again",
+            Arc::new(move |_request: crate::PermissionRequest| {
+                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                crate::PermissionDecision::Allow
+            }),
+        )
+        .expect("full-access run");
+        assert_eq!(asked_again.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+        application.close().unwrap();
+        let live_events = live.lock().unwrap().clone();
+        assert_conversation_parity(&live_events, &load_events(&storage_root));
         std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
     }
 

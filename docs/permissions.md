@@ -4,8 +4,8 @@ Every side-effecting operation must pass through the permission model.
 
 ## Permission modes (interactive)
 
-The TUI exposes three user-switchable modes (DSH permission-presets adapted
-to CLAT's tool-effect vocabulary). The active mode is shown at the **top
+The TUI exposes three user-switchable modes (DSH `sandbox/mode` adapted to
+CLAT's tool-effect vocabulary). The active mode is shown at the **top
 right of the input box**, symmetric with `Message` at the top left;
 `Full Access` renders in warning yellow as its only risk cue.
 
@@ -13,21 +13,39 @@ right of the input box**, symmetric with `Message` at the top left;
 |---|---|---|---|
 | `Pure`, `Read`, `SessionWrite` | allow | allow | allow |
 | `Write` | approval | **allow** | allow |
-| `Execute`, `Network`, `ExternalRead`, `Destructive` | approval | approval | allow |
+| `Network`, `ExternalRead` | approval | **allow** | allow |
+| `Execute`, `Destructive` | approval | approval | allow |
 
-- The `Write` row is the point of `Project Write`: file edits (already
-  capability-confined to the project root by cap-std) stop prompting;
-  commands, network, and destructive tools still ask. `Read Only`
-  differs from `Project Write` only in that file edits ask again.
+- The project-write story is one sentence: **file edits, reads, and
+  network/search tools run free; commands and destructive tools still
+  ask** — exactly the two operation classes CLAT cannot contain (it has
+  no OS-level sandbox; see the deviations in
+  `docs/research/dsh-permission-gating.md`). `Read Only` re-adds the
+  prompt on every side effect; its decisions are identical to the
+  headless `SafeByDefault` column.
+- `Network` / `ExternalRead` auto-allow under `Project Write` follows
+  DSH: network access is explicitly outside its sandbox vocabulary and
+  MCP tools are ungated there. The only remaining ask surfaces for MCP
+  under `Project Write` are destructive-annotated tools.
 - No mode produces a table-level deny — a refusal always comes from a
   human (approver), never from the mode itself.
 - Switching takes effect at the **next permission check**; an in-flight
-  approval is unaffected. The mode is **persisted per project** in
-  `<storage root>/permission_modes.json` (a plain control-plane JSON
-  file, kept out of the version-locked `clat.db` schema) and reloaded on
-  startup — each project remembers its own mode. A missing or corrupted
-  file degrades to the default (`Project Write`); a failed save never
-  rolls back the in-process switch (it works until exit, with a notice).
+  approval is unaffected.
+
+**The mode is a session property** (DSH `sandbox/mode` journal events,
+latest-wins): every switch appends a `sandbox/mode` event
+(`{"mode": "read-only" | "workspace-write" | "danger-full-access"}` —
+the DSH vocabulary, so CLAT and DSH session logs stay interchangeable)
+to the active session's journal; a session records its birth mode as
+its very first event. Resuming a session restores **its own** mode;
+`/new` starts at the default (`Project Write`); sessions created before
+the mode system existed (no mode events) fall back to the default — a
+mode never leaks across sessions. Restarting restores the mode because
+the workspace auto-resumes the pinned session and its journal. A failed
+journal write never rolls back the in-process switch (it works until
+exit, with a notice). `clat exec` sessions never journal mode events.
+v0.7.0's per-project `permission_modes.json` is retired — the leftover
+file is no longer read and can be deleted by hand.
 
 Two switch paths:
 
@@ -39,14 +57,14 @@ Two switch paths:
 2. **Escalation keys in the permission dialog** — when a dialog is
    open, the action line additionally offers exactly the wider modes
    that would let **this specific call** run: `w` (switch to Project
-   Write) for a `Write`-effect call under `Read Only`, and `f`
-   (Full Access) for any gated call. Switching there still requires
-   the full argument review (same gate as `Enter`/`y`), then switches
-   the mode and allows the pending call in one action. The approver
-   contract is unchanged — the frontend sets the shared mode cell and
-   answers `Allow`. Modes that would still ask for this call are never
-   offered (e.g. `Execute` under `Read Only` does not offer
-   `Project Write`).
+   Write) for a `Write`, `Network`, or `ExternalRead` call under
+   `Read Only`, and `f` (Full Access) for any gated call. Switching
+   there still requires the full argument review (same gate as
+   `Enter`/`y`), then switches the mode and allows the pending call in
+   one action. The approver contract is unchanged — the frontend sets
+   the shared mode cell and answers `Allow`. Modes that would still ask
+   for this call are never offered (e.g. `Execute` under `Read Only`
+   does not offer `Project Write`).
 
 The active mode is also injected as a one-line note into the system
 instructions at run start (the model knows the approval boundary
@@ -127,14 +145,33 @@ A denial is returned to the model as a structured tool error
 instead of the run aborting. The tool itself never executes — the
 permission check happens before invocation.
 
+## Sandbox scope (reads free, writes fenced)
+
+The permission table decides *whether* a call asks; the path fence
+decides *where* I/O may land. Two layers, aligned with DSH's scope:
+
+- **Reads are never confined** (`read_file`, `list_files`, `search`
+  accept absolute paths anywhere on disk, in every mode — DSH: "every
+  mode permits reading"). Project-relative paths keep their stricter
+  in-process discipline (no `..` traversal, symlink-aware handle
+  resolution).
+- **Writes are fenced by `WriteScope`**, resolved from the same shared
+  mode cell the permission check reads: under `Read Only` /
+  `Project Write` (and always for `clat exec`) only project-root
+  relative paths are writable — absolute paths fail with a clear
+  "only writable under Full Access" error; under `Full Access`,
+  absolute paths anywhere are writable, and the atomic-write
+  discipline (temp file + rename bound to the target parent's opened
+  directory handle) is preserved unchanged.
+
 ## Native write and execute tools
 
 The side-effecting native tools and their guarantees:
 
 | Tool | Effect | Guarantees |
 |---|---|---|
-| `write_file` | `Write` | project-relative only; parent creation, reads, temporary-file creation, and rename are all capability-relative to opened project directory handles, so symlink or directory-replacement races cannot redirect I/O outside the project; final symlink targets are rejected; atomic temp-file+rename — a failed write never leaves partial content; existing file permissions (mode bits) are preserved; content capped at 1 MiB |
-| `edit_file` | `Write` | exact unique match required (zero or multiple matches error out, file untouched); a parent-directory lock serializes cooperating CLAT writers, and the commit re-verifies the read snapshot inside the same lock before rename — a competing CLAT modification surfaces as a conflict error instead of a silent overwrite |
+| `write_file` | `Write` | project-relative by default, absolute paths only under Full Access (see Sandbox scope); parent creation, reads, temporary-file creation, and rename are all capability-relative to opened directory handles (the project root, or the canonicalized target parent under Full Access), so symlink or directory-replacement races cannot redirect I/O outside the intended root; final symlink targets are rejected; atomic temp-file+rename — a failed write never leaves partial content; existing file permissions (mode bits) are preserved; content capped at 1 MiB |
+| `edit_file` | `Write` | same fence as `write_file`; exact unique match required (zero or multiple matches error out, file untouched); a parent-directory lock serializes cooperating CLAT writers, and the commit re-verifies the read snapshot inside the same lock before rename — a competing CLAT modification surfaces as a conflict error instead of a silent overwrite |
 | `run_command` | `Execute` | runs only in the canonical project root; always terminates (exit, bounded timeout, or `Esc` cancellation); Unix uses a dedicated process group and sends TERM followed by an unconditional group KILL after the grace period, even if the leader shell already exited; Windows uses a Job Object so termination covers `cmd.exe` and descendants; stdout/stderr each capped at 32 KiB **without changing command semantics** — output past the cap is drained and discarded, never closing the pipe on the command |
 
 Write and execute tools are registered only for trusted projects (the
@@ -161,6 +198,12 @@ classifier delegate. Which delegate depends on the bootstrap mode:
   `Arc<RwLock<PermissionMode>>` cell on every check (mode switches are
   effective immediately, `escalation_targets(mode, effect)` is the single
   source for which escalation keys a dialog offers).
+
+The write tools' path fence resolves from the same cell through
+`WriteScopeSource` (`mode_write_scope`: Full Access → `Unrestricted`,
+otherwise `ProjectRoot`; exec is pinned to `ProjectRoot`) — the
+permission check and the path fence read the mode at the same call
+boundary.
 
 The TUI implementation is only a dialog adapter over a channel. Tests,
 future headless clients, and desktop clients can inject their own approver
@@ -209,7 +252,11 @@ during reverse teardown.
 ## MCP tools
 
 Remote MCP tool annotations are used only to improve the permission
-description (`ExternalRead`, `Network`, `Write`, or `Destructive`). They
-are untrusted server hints and never produce the auto-allowed native
-`Read` classification. Every MCP call therefore asks, with the full
-argument review described above.
+classification (`ExternalRead`, `Network`, `Write`, or `Destructive`).
+They are untrusted server hints and never produce the auto-allowed
+native `Read` classification. Under `Read Only` every MCP call asks,
+with the full argument review described above; under `Project Write`,
+readOnly-annotated tools (`ExternalRead` / `Network`) run without
+prompting (DSH: MCP is ungated), while destructive-annotated tools —
+including servers that omit annotations, which default to destructive —
+still ask.

@@ -223,6 +223,12 @@ fn validate_payload(event: &SessionEvent) -> Result<(), String> {
             require_str(&event.data, "title")?;
             Ok(())
         }
+        // DSH 形状（`{ mode }`）。结构校验只要求字符串存在：词汇合法性
+        // 由 fold 层容忍处理（未知值保持上一已知档，见 PermissionModeUnit）。
+        "sandbox/mode" => {
+            require_str(&event.data, "mode")?;
+            Ok(())
+        }
         "approval/asked" | "approval/decided" => {
             require_str(&event.data, "id")?;
             if event.event_type == "approval/decided"

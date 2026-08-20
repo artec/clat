@@ -1585,7 +1585,7 @@ impl App {
                 if let Some(mode) = escalation {
                     match persist_warning {
                         Some(error) => self.flash_status(format!(
-                            "permission mode: {mode} — call allowed (not saved: {error})"
+                            "permission mode: {mode} — call allowed (not saved to this session: {error})"
                         )),
                         None => {
                             self.flash_status(format!("permission mode: {mode} — call allowed"));
@@ -1807,10 +1807,12 @@ impl App {
             PermissionPickerAction::Apply(mode) => {
                 self.permission_picker = None;
                 if let Some(application) = &self.application {
-                    // 持久化失败不回滚内存档位（本进程行为已生效），
-                    // 只提示。
+                    // journal 写失败不回滚内存档位（本进程行为已生效），
+                    // 只提示；同值切换零事件。
                     if let Err(error) = application.set_permission_mode(mode) {
-                        self.flash_status(format!("permission mode: {mode} (not saved: {error})"));
+                        self.flash_status(format!(
+                            "permission mode: {mode} (not saved to this session: {error})"
+                        ));
                     } else {
                         self.flash_status(format!("permission mode: {mode}"));
                     }

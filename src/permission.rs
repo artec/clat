@@ -154,23 +154,26 @@ impl PermissionPolicy for SafeByDefault {
     }
 }
 
-/// 用户可切换的权限档位（DSH permission-presets 的 CLAT 形态）。
+/// 用户可切换的权限档位（DSH sandbox/mode 的 CLAT 形态）。
 ///
 /// 档位只移动 [`PermissionDecision::Ask`] 的边界：`Pure` / `Read` /
 /// `SessionWrite` 永远放行，`FullAccess` 全放行，差别在副作用类工具
 /// 是否需要逐次审批（见 [`mode_decision`] 决策表）。没有任何档位在
 /// 表格层产生 `Deny`——拒绝始终来自人（approver），不是档位语义。
 ///
-/// 档位是共享运行时 cell（[`ModeSource::Shared`]）：切换在下一次权限
-/// 检查生效，在途的 one-shot 审批不受影响。进程内持久（跨 run、跨
-/// 会话切换）；重启回落到默认档 `ProjectWrite`——跨重启持久化需要
-/// 控制面设置表 + 迁移协议，另批实施。
+/// 档位是**会话属性**：以 `sandbox/mode` journal 事件（DSH 词汇，
+/// latest-wins）随会话持久化，resume/重启随日志恢复；进程内的共享
+/// cell（[`ModeSource::Shared`]）只是活跃会话档位的镜像——切换在下
+/// 一次权限检查生效，会话边界（mount 恢复 / resume / /new）按目标
+/// 会话自己的 fold 重新对齐。从未记录过档位的遗留会话回落编译期默认
+/// `ProjectWrite`（恰同 DSH shipped 默认 workspace-write）。
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum PermissionMode {
     /// 一切副作用工具逐次审批（决策等价于 [`SafeByDefault`] 列）。
     ReadOnly,
-    /// 项目内文件写自动放行（写工具本就受 cap-std 项目根约束）；
-    /// 命令执行、网络、外部进程与破坏性操作仍逐次审批。默认档。
+    /// 项目内文件写、任意路径读与网络/外部读工具自动放行（写工具本就
+    /// 受 cap-std 项目根约束，读与网络对齐 DSH 的「不门控」面）；
+    /// 命令执行与破坏性操作仍逐次审批。默认档。
     #[default]
     ProjectWrite,
     /// 全放行（DSH approval=never 对应物）；不再弹任何权限框。
@@ -188,24 +191,25 @@ impl std::fmt::Display for PermissionMode {
 }
 
 impl PermissionMode {
-    /// 持久化标识（kebab id，控制面 `permission_modes.json` 用）——
-    /// 与 Display（用户可读、带空格）分离：落盘形态稳定，不随 UI 文案
-    /// 演进。
-    pub fn persistence_id(&self) -> &'static str {
+    /// journal 事件 `sandbox/mode` 的 payload 值——**DSH 词汇**
+    /// （`read-only` / `workspace-write` / `danger-full-access`，
+    /// DSH `sandbox/src/index.ts:29`），与 Display（用户可读、带空格）
+    /// 分离：CLAT 与 DSH 的会话日志按此互读，不随 CLAT UI 文案演进。
+    pub fn journal_value(&self) -> &'static str {
         match self {
             PermissionMode::ReadOnly => "read-only",
-            PermissionMode::ProjectWrite => "project-write",
-            PermissionMode::FullAccess => "full-access",
+            PermissionMode::ProjectWrite => "workspace-write",
+            PermissionMode::FullAccess => "danger-full-access",
         }
     }
 
-    /// 解析持久化标识；未知值（手改/降级安装）返回 None，调用方回落
-    /// 默认档。
-    pub fn from_persistence_id(id: &str) -> Option<Self> {
-        match id.trim() {
+    /// 解析 journal 值；未知值（未来 DSH 词汇/手改）返回 None，调用方
+    /// 自行决定回落（fold 层保持上一已知档，装载层回落默认档）。
+    pub fn from_journal_value(value: &str) -> Option<Self> {
+        match value.trim() {
             "read-only" => Some(PermissionMode::ReadOnly),
-            "project-write" => Some(PermissionMode::ProjectWrite),
-            "full-access" => Some(PermissionMode::FullAccess),
+            "workspace-write" => Some(PermissionMode::ProjectWrite),
+            "danger-full-access" => Some(PermissionMode::FullAccess),
             _ => None,
         }
     }
@@ -226,7 +230,7 @@ pub fn mode_decision(mode: PermissionMode, tool: &ToolDefinition) -> PermissionD
             tool.name, tool.effect
         ),
         PermissionMode::ProjectWrite => format!(
-            "tool `{}` ({}) is gated under Project Write mode — commands, network, and destructive tools still need approval",
+            "tool `{}` ({}) is gated under Project Write mode — commands and destructive tools still need approval",
             tool.name, tool.effect
         ),
         PermissionMode::FullAccess => {
@@ -241,9 +245,18 @@ pub fn mode_decision(mode: PermissionMode, tool: &ToolDefinition) -> PermissionD
 pub fn mode_allows(mode: PermissionMode, effect: ToolEffect) -> bool {
     match mode {
         PermissionMode::FullAccess => true,
+        // PW = 「文件与读自由；命令与破坏性操作逐次审」：Network /
+        // ExternalRead（DSH 词汇表外/其 MCP 完全不设防）随读面一起
+        // 放行；Execute / Destructive 是 CLAT 无内核沙箱时仅剩的两类
+        // 无法 containment 的操作，保留逐次审（对齐 DSH 的承重偏差）。
         PermissionMode::ProjectWrite => matches!(
             effect,
-            ToolEffect::Pure | ToolEffect::Read | ToolEffect::SessionWrite | ToolEffect::Write
+            ToolEffect::Pure
+                | ToolEffect::Read
+                | ToolEffect::SessionWrite
+                | ToolEffect::Write
+                | ToolEffect::Network
+                | ToolEffect::ExternalRead
         ),
         PermissionMode::ReadOnly => matches!(
             effect,
@@ -276,9 +289,50 @@ pub fn mode_guidance(mode: PermissionMode) -> &'static str {
             "every side-effecting tool call (file writes, commands, network) requires user approval before it runs"
         }
         PermissionMode::ProjectWrite => {
-            "file edits inside the project run without approval; commands, network access, and destructive tools require user approval"
+            "file edits, file reads (anywhere on disk), and network/search tools run without approval; commands and destructive tools require user approval"
         }
         PermissionMode::FullAccess => "all tools run without approval prompts",
+    }
+}
+
+/// 写入路径围栏的档（不变量 SR2）：路径层与权限层读取同一 cell 的
+/// 时刻快照——权限检查 Allow 不等于路径围栏开放。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WriteScope {
+    /// 仅项目根相对路径（RO/PW 的围栏；exec 恒为此档）。
+    ProjectRoot,
+    /// 任意绝对路径（Full Access 的围栏开放，DSH danger-full-access
+    /// 的「不设防」对应物；原子写纪律不随围栏放开）。
+    Unrestricted,
+}
+
+/// 档位 → 写入围栏（SR2）：FA 开放绝对写；RO/PW 保持项目根。RO 下
+/// 人工放行的单次写仍限项目根——对齐 DSH read-only 的升级阶梯
+/// （只升到 workspace-write，不因一次审批放开全盘）。
+pub fn mode_write_scope(mode: PermissionMode) -> WriteScope {
+    match mode {
+        PermissionMode::FullAccess => WriteScope::Unrestricted,
+        PermissionMode::ReadOnly | PermissionMode::ProjectWrite => WriteScope::ProjectRoot,
+    }
+}
+
+/// 写工具的围栏来源（与 [`ModeSource`] 对称）：TUI 传共享 cell（与
+/// 权限检查读同一时刻的档位）；exec 传固定 [`WriteScope::ProjectRoot`]。
+#[derive(Clone, Default)]
+pub(crate) enum WriteScopeSource {
+    #[default]
+    ProjectRoot,
+    Shared(Arc<std::sync::RwLock<PermissionMode>>),
+}
+
+impl WriteScopeSource {
+    pub(crate) fn resolve(&self) -> WriteScope {
+        match self {
+            WriteScopeSource::ProjectRoot => WriteScope::ProjectRoot,
+            WriteScopeSource::Shared(cell) => {
+                mode_write_scope(*cell.read().expect("permission mode lock"))
+            }
+        }
     }
 }
 
@@ -524,8 +578,15 @@ mod tests {
         expect(PermissionMode::ReadOnly, Write, false);
         expect(PermissionMode::ProjectWrite, Write, true);
         expect(PermissionMode::FullAccess, Write, true);
-        // 其余副作用类：RO/PW 问，FA 放行。
-        for effect in [Execute, Network, ExternalRead, Destructive] {
+        // 网络与外部读（DSH 词汇表外/MCP 不设防）：RO 问，PW/FA 放行。
+        for effect in [Network, ExternalRead] {
+            expect(PermissionMode::ReadOnly, effect, false);
+            expect(PermissionMode::ProjectWrite, effect, true);
+            expect(PermissionMode::FullAccess, effect, true);
+        }
+        // 命令与破坏性操作（无内核沙箱时的逐次审保留面）：RO/PW 问，
+        // FA 放行。
+        for effect in [Execute, Destructive] {
             expect(PermissionMode::ReadOnly, effect, false);
             expect(PermissionMode::ProjectWrite, effect, false);
             expect(PermissionMode::FullAccess, effect, true);
@@ -535,7 +596,7 @@ mod tests {
     /// 不变量 P5：升级选项 = 能让当前 effect 直接放行的更宽档位集合。
     #[test]
     fn escalation_targets_offer_only_modes_that_allow_this_call() {
-        use ToolEffect::{Execute, Read, Write};
+        use ToolEffect::{Execute, Network, Read, Write};
         // Write@RO：PW 已足够，FA 也行——两者都出现（宽度升序）。
         assert_eq!(
             escalation_targets(PermissionMode::ReadOnly, Write),
@@ -545,6 +606,11 @@ mod tests {
         assert_eq!(
             escalation_targets(PermissionMode::ReadOnly, Execute),
             vec![PermissionMode::FullAccess]
+        );
+        // Network@RO：PW 即可放行（DSH 网络不门控），两档都出现。
+        assert_eq!(
+            escalation_targets(PermissionMode::ReadOnly, Network),
+            vec![PermissionMode::ProjectWrite, PermissionMode::FullAccess]
         );
         // 门控类@PW：只剩 FA。
         assert_eq!(
@@ -602,21 +668,22 @@ mod tests {
         assert!(texts[0] != texts[1] && texts[1] != texts[2] && texts[0] != texts[2]);
     }
 
-    /// 持久化标识（控制面 JSON 落盘形态）：三档往返；未知值返回 None
-    ///（降级安装/手改不 panic，回落默认档）。
+    /// journal 值（`sandbox/mode` payload，DSH 词汇）：三档往返；未知值
+    /// 返回 None（未来 DSH 词汇/手改不 panic，fold 保持上一已知档）。
     #[test]
-    fn persistence_ids_round_trip_and_reject_unknown_values() {
-        for mode in [
-            PermissionMode::ReadOnly,
-            PermissionMode::ProjectWrite,
-            PermissionMode::FullAccess,
-        ] {
+    fn journal_values_round_trip_and_reject_unknown_values() {
+        use PermissionMode::{FullAccess, ProjectWrite, ReadOnly};
+        assert_eq!(ReadOnly.journal_value(), "read-only");
+        assert_eq!(ProjectWrite.journal_value(), "workspace-write");
+        assert_eq!(FullAccess.journal_value(), "danger-full-access");
+        for mode in [ReadOnly, ProjectWrite, FullAccess] {
             assert_eq!(
-                PermissionMode::from_persistence_id(mode.persistence_id()),
+                PermissionMode::from_journal_value(mode.journal_value()),
                 Some(mode)
             );
         }
-        assert_eq!(PermissionMode::from_persistence_id("yolo"), None);
-        assert_eq!(PermissionMode::from_persistence_id(""), None);
+        assert_eq!(PermissionMode::from_journal_value("full-access"), None);
+        assert_eq!(PermissionMode::from_journal_value("yolo"), None);
+        assert_eq!(PermissionMode::from_journal_value(""), None);
     }
 }

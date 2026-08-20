@@ -69,7 +69,11 @@ impl Plugin for NativeReadToolsPlugin {
     }
 }
 
-pub(crate) struct NativeWriteToolsPlugin;
+/// 写工具族携带写入围栏来源（SR2）：TUI 传共享档位 cell（FA 开放绝对
+/// 写），exec 传固定 ProjectRoot。
+pub(crate) struct NativeWriteToolsPlugin {
+    pub(crate) scope: crate::permission::WriteScopeSource,
+}
 
 impl Plugin for NativeWriteToolsPlugin {
     fn descriptor(&self) -> &'static PluginDescriptor {
@@ -77,7 +81,7 @@ impl Plugin for NativeWriteToolsPlugin {
     }
 
     fn mount(&self, context: &mut PluginContext<'_>) -> Result<(), PluginError> {
-        contribute_tools(context, native_write_tools())
+        contribute_tools(context, native_write_tools(self.scope.clone()))
     }
 }
 

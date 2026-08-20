@@ -43,13 +43,16 @@ generalize those needs into reusable open-source capabilities.
 **Safety**
 
 - Three switchable permission modes — **Read Only**, **Project Write**
-  (default: file edits run, commands still ask), **Full Access** —
-  switched via `/perm` or escalated right from a permission prompt;
-  remembered per project
+  (default: file edits, reads, and network tools run, commands and
+  destructive tools still ask), **Full Access** (also unlocks
+  absolute-path writes) — switched via `/perm` or escalated right from
+  a permission prompt; the mode travels with the conversation
+  (journaled as DSH-compatible `sandbox/mode` events)
 - Every side-effecting action still passes interactive review with full
   argument inspection in the lower modes — in the TUI and in headless
   runs alike
-- Read-only tools run freely
+- Read-only tools run freely, including absolute paths outside the
+  project
 
 **Sessions**
 

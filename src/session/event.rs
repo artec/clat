@@ -495,6 +495,13 @@ pub(crate) mod payloads {
         json!({})
     }
 
+    /// DSH `sandbox/mode` 事件 payload（catalog §对照
+    /// `sandbox-policy/src/session-mode.ts`）：值用 DSH 词汇，CLAT 会话
+    /// 日志与 DSH 按此互读。
+    pub(crate) fn sandbox_mode(mode: &crate::permission::PermissionMode) -> Value {
+        json!({ "mode": mode.journal_value() })
+    }
+
     pub(crate) fn approval_asked(
         id: &str,
         tool_name: &str,

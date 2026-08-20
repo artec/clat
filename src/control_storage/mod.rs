@@ -11,9 +11,8 @@ pub(crate) mod sentinel;
 pub(crate) mod workspace_state;
 
 use crate::model::{ModelConfig, ProviderCredentials};
-use crate::permission::PermissionMode;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ModelProfileSummary {
@@ -40,9 +39,6 @@ pub(crate) fn control_error(message: impl Into<String>) -> ControlError {
 /// through the Fresh commit protocol, which returns one).
 pub(crate) struct ControlStorage {
     connection: std::sync::Mutex<Connection>,
-    /// Canonical storage root（权限档位文件的落点，见
-    /// `save_permission_mode`）。
-    root: PathBuf,
 }
 
 impl ControlStorage {
@@ -75,7 +71,6 @@ impl ControlStorage {
             .map_err(|error| control_error(error.to_string()))?;
         Ok(Self {
             connection: std::sync::Mutex::new(connection),
-            root,
         })
     }
 
@@ -280,76 +275,6 @@ impl ControlStorage {
         Ok(())
     }
 
-    // ----- permission modes (per-project, root-level JSON file) -----
-
-    /// 档位文件的存储根内路径：`<root>/permission_modes.json`。控制面
-    /// DB 的 schema 被 sentinel 逐对象 DDL 精确校验且 `CONTROL_VERSION`
-    /// 锁死——加表需要完整迁移协议；档位是纯设置数据，根级 JSON 文件
-    /// 与 mcp.json 同类（classify 只看 config.json + clat.db，容忍
-    /// 额外根文件）。写入方唯一：storage-root lease 保证单进程。
-    fn permission_modes_path(&self) -> PathBuf {
-        self.root.join("permission_modes.json")
-    }
-
-    /// 读取项目的持久化权限档位；无记录/文件缺失/未知值/JSON 损坏均
-    /// 返回 None（调用方回落默认档）——损坏不致命，宁可回默认也不拒
-    /// 绝启动。
-    pub(crate) fn load_permission_mode(&self, project_root: &Path) -> Option<PermissionMode> {
-        let raw = std::fs::read_to_string(self.permission_modes_path()).ok()?;
-        let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
-        value
-            .get("modes")?
-            .get(sentinel::project_key(project_root))?
-            .as_str()
-            .and_then(PermissionMode::from_persistence_id)
-    }
-
-    /// 写入项目的权限档位（读-改-写整文件）：temp + fsync + rename +
-    /// 目录 fsync，0600。读到的损坏内容被丢弃（等价回默认后重写）。
-    pub(crate) fn save_permission_mode(
-        &self,
-        project_root: &Path,
-        mode: PermissionMode,
-    ) -> Result<(), ControlError> {
-        let path = self.permission_modes_path();
-        let mut modes = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
-            .and_then(|value| value.get("modes").cloned())
-            .and_then(|modes| modes.as_object().cloned())
-            .unwrap_or_default();
-        modes.insert(
-            sentinel::project_key(project_root),
-            serde_json::Value::String(mode.persistence_id().to_owned()),
-        );
-        let content = serde_json::to_string(&serde_json::json!({
-            "version": 1,
-            "modes": modes,
-        }))
-        .map_err(json_error)?;
-        let temp = self
-            .root
-            .join(format!(".permission_modes.{}.tmp", std::process::id()));
-        let write = || -> Result<(), ControlError> {
-            std::fs::write(&temp, content.as_bytes()).map_err(io_error)?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt as _;
-                std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o600))
-                    .map_err(io_error)?;
-            }
-            sentinel::sync_file(&temp).map_err(control_error)?;
-            std::fs::rename(&temp, &path).map_err(io_error)?;
-            sentinel::sync_dir(&self.root).map_err(control_error)?;
-            Ok(())
-        };
-        let result = write();
-        if result.is_err() {
-            let _ = std::fs::remove_file(&temp);
-        }
-        result
-    }
-
     // ----- workspace selection (plan §13.1) -----
 
     pub(crate) fn workspace(
@@ -395,10 +320,6 @@ fn json_error(error: serde_json::Error) -> ControlError {
     control_error(format!("control-plane JSON error: {error}"))
 }
 
-fn io_error(error: std::io::Error) -> ControlError {
-    control_error(format!("control-plane I/O error: {error}"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -437,81 +358,6 @@ mod tests {
 
         let workspace = storage.workspace(Path::new("/tmp/p1")).expect("workspace");
         assert_eq!(workspace.revision, 0);
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    /// 不变量 P2（权限档位持久化）：按项目隔离读写往返；未记录的项目
-    /// 返回 None（调用方回落默认档）；文件是根级 JSON，不触碰被
-    /// DDL 校验锁死的 clat.db schema。
-    #[test]
-    fn permission_mode_round_trips_per_project() {
-        use crate::permission::PermissionMode;
-        let root = temp_root("perm-modes");
-        sentinel::initialize(&root, None).expect("initialize");
-        let alpha = Path::new("/tmp/perm-alpha");
-        let beta = Path::new("/tmp/perm-beta");
-
-        {
-            let storage = ControlStorage::open_ready(&root).expect("open ready");
-            assert_eq!(storage.load_permission_mode(alpha), None);
-            storage
-                .save_permission_mode(alpha, PermissionMode::FullAccess)
-                .expect("save alpha");
-            storage
-                .save_permission_mode(beta, PermissionMode::ReadOnly)
-                .expect("save beta");
-        }
-        // 新连接（模拟重启）读回：各项目各自的档位；未记录项目 None。
-        let storage = ControlStorage::open_ready(&root).expect("reopen");
-        assert_eq!(
-            storage.load_permission_mode(alpha),
-            Some(PermissionMode::FullAccess)
-        );
-        assert_eq!(
-            storage.load_permission_mode(beta),
-            Some(PermissionMode::ReadOnly)
-        );
-        assert_eq!(storage.load_permission_mode(Path::new("/tmp/other")), None);
-        // 覆盖写（读-改-写不丢别项目）。
-        storage
-            .save_permission_mode(alpha, PermissionMode::ProjectWrite)
-            .expect("overwrite alpha");
-        let storage = ControlStorage::open_ready(&root).expect("reopen");
-        assert_eq!(
-            storage.load_permission_mode(alpha),
-            Some(PermissionMode::ProjectWrite)
-        );
-        assert_eq!(
-            storage.load_permission_mode(beta),
-            Some(PermissionMode::ReadOnly),
-            "rewriting one project never drops another"
-        );
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    /// 损坏的档位文件（手改/半写崩溃）不致命：读侧返回 None（回落默
-    /// 认档），下一次保存把它整个重写为合法内容。
-    #[test]
-    fn corrupted_permission_mode_file_degrades_to_default_and_self_heals() {
-        use crate::permission::PermissionMode;
-        let root = temp_root("perm-corrupt");
-        sentinel::initialize(&root, None).expect("initialize");
-        std::fs::write(root.join("permission_modes.json"), "{ not json").unwrap();
-        let storage = ControlStorage::open_ready(&root).expect("open ready");
-        assert_eq!(
-            storage.load_permission_mode(Path::new("/tmp/x")),
-            None,
-            "corrupt content reads as unset"
-        );
-        storage
-            .save_permission_mode(Path::new("/tmp/x"), PermissionMode::FullAccess)
-            .expect("save over corrupt file");
-        let storage = ControlStorage::open_ready(&root).expect("reopen");
-        assert_eq!(
-            storage.load_permission_mode(Path::new("/tmp/x")),
-            Some(PermissionMode::FullAccess),
-            "the next save rewrites the file into valid JSON"
-        );
         std::fs::remove_dir_all(root).unwrap();
     }
 }

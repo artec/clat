@@ -29,11 +29,19 @@ impl Project {
     }
 
     pub fn resolve_existing(&self, relative: impl AsRef<Path>) -> io::Result<PathBuf> {
-        let relative = relative.as_ref();
-        validate_relative_path(relative)?;
+        let requested = relative.as_ref();
+        // SR1（读自由，对齐 DSH「every mode permits reading」）：绝对路径
+        // 是显式的越项目读口——canonicalize 解析 symlink/`..`，存在即
+        // 可读，全档位一致。保护水平与 DSH 的进程内读相同（检查后直读，
+        // 接受同等的目录项竞态窗口）；项目相对路径仍走下方句柄纪律。
+        if requested.is_absolute() {
+            return requested.canonicalize();
+        }
+
+        validate_relative_path(requested)?;
 
         let root = self.root.canonicalize()?;
-        let candidate = root.join(relative).canonicalize()?;
+        let candidate = root.join(requested).canonicalize()?;
 
         if candidate.starts_with(&root) {
             Ok(candidate)
@@ -45,26 +53,58 @@ impl Project {
         }
     }
 
-    /// 打开一个受项目根目录句柄约束的写入目标。
+    /// 打开一个受写入围栏约束的写入目标。
     ///
-    /// `cap_std::fs::Dir` 在 Unix 使用 *at/目录句柄语义，在 Windows
-    /// 使用等价的 capability 路径解析。父目录创建、读取、临时文件
-    /// 和最终 rename 都相对同一个已打开句柄执行：仓库中的符号链接
+    /// `scope == ProjectRoot`（一切档位的默认；exec 恒为）：目标必须是
+    /// 项目根相对路径，`cap_std::fs::Dir` 在 Unix 使用 *at/目录句柄语义，
+    /// 在 Windows 使用等价的 capability 路径解析。父目录创建、读取、
+    /// 临时文件和最终 rename 都相对同一个已打开句柄：仓库中的符号链接
     /// 或并行目录替换不能把后续 I/O 重新解释到项目根之外。
+    ///
+    /// `scope == Unrestricted`（Full Access，SR2）：接受任意绝对路径。
+    /// W-INV1 原子纪律泛化——canonicalize 目标父目录后打开 ambient 句
+    /// 柄，temp+rename 仍绑定到该父目录的同一句柄；相对路径语义不变
+    /// （仍按项目根解析）。RO/PW 下的绝对路径在这里被拒——错误明确
+    /// 指向 "only writable under Full Access mode"。
     pub(crate) fn writable_target(
         &self,
         relative: impl AsRef<Path>,
         create_parents: bool,
+        scope: crate::permission::WriteScope,
     ) -> io::Result<WritableTarget> {
-        let relative = relative.as_ref();
-        validate_relative_path(relative)?;
+        let requested = relative.as_ref();
+        if requested.is_absolute() {
+            if !matches!(scope, crate::permission::WriteScope::Unrestricted) {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "absolute paths are only writable under Full Access mode",
+                ));
+            }
+            let file_name = requested.file_name().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::PermissionDenied, "path has no file name")
+            })?;
+            let parent = requested.parent().unwrap_or_else(|| Path::new("/"));
+            // 已存在/创建失败都不在此报错——真正不可用由下一行的
+            // canonicalize 以原始错误暴露。
+            if create_parents {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let parent = parent.canonicalize()?;
+            let parent_dir = Dir::open_ambient_dir(&parent, ambient_authority())?;
+            return Ok(WritableTarget {
+                parent: parent_dir,
+                file_name: file_name.to_os_string(),
+            });
+        }
+
+        validate_relative_path(requested)?;
 
         let root = self.root.canonicalize()?;
-        let file_name = relative.file_name().ok_or_else(|| {
+        let file_name = requested.file_name().ok_or_else(|| {
             io::Error::new(io::ErrorKind::PermissionDenied, "path has no file name")
         })?;
         let root_dir = Dir::open_ambient_dir(&root, ambient_authority())?;
-        let parent = relative.parent().unwrap_or_else(|| Path::new(""));
+        let parent = requested.parent().unwrap_or_else(|| Path::new(""));
         if create_parents && !parent.as_os_str().is_empty() {
             root_dir.create_dir_all(parent)?;
         }
@@ -341,7 +381,11 @@ mod tests {
 
         // 新建路径（文件不存在）：合法，父目录和文件都只在根内物化。
         let target = project
-            .writable_target("src/new/module.rs", true)
+            .writable_target(
+                "src/new/module.rs",
+                true,
+                crate::permission::WriteScope::ProjectRoot,
+            )
             .expect("open write target");
         assert!(!target.atomic_write("hello", None).expect("write file"));
         assert_eq!(
@@ -351,7 +395,11 @@ mod tests {
 
         // `..` 穿越：拒绝。
         let error = project
-            .writable_target("../escape.txt", true)
+            .writable_target(
+                "../escape.txt",
+                true,
+                crate::permission::WriteScope::ProjectRoot,
+            )
             .expect_err("must reject traversal");
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
 
@@ -368,7 +416,13 @@ mod tests {
             fs::create_dir_all(&outside).expect("outside dir");
             std::os::unix::fs::symlink(&outside, root.join("link")).expect("symlink");
             assert!(
-                project.writable_target("link/pwned.txt", true).is_err(),
+                project
+                    .writable_target(
+                        "link/pwned.txt",
+                        true,
+                        crate::permission::WriteScope::ProjectRoot
+                    )
+                    .is_err(),
                 "must reject symlinked parent"
             );
             // 不变量核查：项目外没有任何新路径被物化。
@@ -379,7 +433,11 @@ mod tests {
             // 第一个组件（link）就被拦截，嵌套目录零物化。
             assert!(
                 project
-                    .writable_target("link/created/nested/deep.txt", true)
+                    .writable_target(
+                        "link/created/nested/deep.txt",
+                        true,
+                        crate::permission::WriteScope::ProjectRoot
+                    )
                     .is_err(),
                 "must reject before creating anything"
             );
@@ -392,7 +450,15 @@ mod tests {
             // 悬空链接：同样必须失败（错误类型不限），不得跟随。
             let dangling = root.join("dangling");
             std::os::unix::fs::symlink("/nonexistent-clat-escape", &dangling).expect("symlink");
-            assert!(project.writable_target("dangling/x.txt", true).is_err());
+            assert!(
+                project
+                    .writable_target(
+                        "dangling/x.txt",
+                        true,
+                        crate::permission::WriteScope::ProjectRoot
+                    )
+                    .is_err()
+            );
             let _ = std::fs::remove_file(&dangling);
             let _ = fs::remove_dir(&outside);
         }
@@ -407,7 +473,11 @@ mod tests {
             fs::write(&outside_file, "before").expect("target");
             std::os::unix::fs::symlink(&outside_file, root.join("alias.txt")).expect("symlink");
             let target = project
-                .writable_target("alias.txt", true)
+                .writable_target(
+                    "alias.txt",
+                    true,
+                    crate::permission::WriteScope::ProjectRoot,
+                )
                 .expect("open parent capability");
             let error = target
                 .atomic_write("after", None)
@@ -435,7 +505,11 @@ mod tests {
         fs::create_dir_all(&outside).expect("outside dir");
         let project = Project::new(&root);
         let target = project
-            .writable_target("work/result.txt", false)
+            .writable_target(
+                "work/result.txt",
+                false,
+                crate::permission::WriteScope::ProjectRoot,
+            )
             .expect("open target");
 
         fs::rename(root.join("work"), root.join("detached-work")).expect("replace parent");
@@ -465,10 +539,18 @@ mod tests {
         fs::write(root.join("note.txt"), "original").expect("seed file");
         let project = Project::new(&root);
         let first = project
-            .writable_target("note.txt", false)
+            .writable_target(
+                "note.txt",
+                false,
+                crate::permission::WriteScope::ProjectRoot,
+            )
             .expect("first target");
         let second = project
-            .writable_target("note.txt", false)
+            .writable_target(
+                "note.txt",
+                false,
+                crate::permission::WriteScope::ProjectRoot,
+            )
             .expect("second target");
         let barrier = Arc::new(Barrier::new(3));
 

@@ -7,6 +7,7 @@
 //! facade owns everything session-log-shaped.
 
 use crate::model::ModelItem;
+use crate::permission::PermissionMode;
 use crate::session::checkpoint::CheckpointStore;
 use crate::session::event::{SessionEvent, now_ms, payloads};
 use crate::session::header::SessionHeader;
@@ -557,6 +558,62 @@ impl SessionService {
                 .map(str::to_owned),
             state.get("eventSeq").and_then(Value::as_u64),
         )
+    }
+
+    /// 活跃会话的已落档档位（`sandbox/mode` latest-wins fold）。None =
+    /// 该会话从未记录过（档位系统之前的遗留会话，或无活跃会话）——
+    /// 调用方回落编译期默认，绝不继承其他会话的档位（PS1/PS3）。
+    pub(crate) fn permission_mode_state(&self) -> Option<PermissionMode> {
+        let guard = self.active.lock().expect("active");
+        let active = guard.as_ref()?;
+        let projections = active.projections.lock().expect("projections");
+        let state = projections
+            .state_snapshot("permission-mode")
+            .unwrap_or_default();
+        state
+            .get("mode")
+            .and_then(Value::as_str)
+            .and_then(PermissionMode::from_journal_value)
+    }
+
+    /// 向活跃会话追加一条 `sandbox/mode` 事件（DSH setSandboxMode 形状：
+    /// append + flush + checkpoint，latest-wins，无 CAS——档位切换只有
+    /// UI 同步路径一个写者）。同值切换零事件（DSH apply() no-op 语义）。
+    /// 无活跃会话返回 Ok(false)：不落任何 journal——内存 cell 继续作为
+    /// 未物化会话的出生档（PS7）。
+    pub(crate) fn record_permission_mode(
+        &self,
+        mode: PermissionMode,
+    ) -> Result<bool, SessionError> {
+        let guard = self.active.lock().expect("active");
+        let Some(active) = guard.as_ref() else {
+            return Ok(false);
+        };
+        {
+            let projections = active.projections.lock().expect("projections");
+            let state = projections
+                .state_snapshot("permission-mode")
+                .unwrap_or_default();
+            let current = state.get("mode").and_then(Value::as_str);
+            if current == Some(mode.journal_value()) {
+                return Ok(true);
+            }
+        }
+        let event = crate::session::run_journal::NewSessionEvent::new(
+            "sandbox/mode",
+            payloads::sandbox_mode(&mode),
+        );
+        // The shared session journal (same instance as every producer).
+        let mut journal_slot = active.journal.lock().expect("session journal");
+        if journal_slot.is_none() {
+            *journal_slot = Some(journal_with_projection_fold(active, &self.backend));
+        }
+        let journal = Arc::clone(journal_slot.as_ref().expect("just initialized"));
+        drop(journal_slot);
+        journal.append(event).map_err(SessionError::Corruption)?;
+        journal.flush().map_err(SessionError::Corruption)?;
+        checkpoint_active(active, &self.checkpoints)?;
+        Ok(true)
     }
 
     /// The first user message text of the active session (transcript

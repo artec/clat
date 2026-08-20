@@ -20,7 +20,7 @@ pub(crate) fn mode_description(mode: PermissionMode) -> &'static str {
     match mode {
         PermissionMode::ReadOnly => "every side effect asks before it runs",
         PermissionMode::ProjectWrite => {
-            "file edits run; commands, network, and destructive tools ask"
+            "file edits, reads, and network tools run; commands and destructive tools ask"
         }
         PermissionMode::FullAccess => "no approval prompts at all",
     }
