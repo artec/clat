@@ -38,6 +38,9 @@ generalize those needs into reusable open-source capabilities.
 - In-process WebAssembly plugins from `~/.clat/plugins.json` — single
   `.wasm` file, zero-grant sandbox, same tool/sampling/elicitation
   contract as MCP (see [docs/wasm.md](docs/wasm.md))
+- DeepSeek Harness (DSH) plugin authors can serve existing TS leaf
+  plugins to CLAT over MCP with a ~10-line bin via
+  `@artec/clat-dsh-adapter` (see [docs/dsh-plugins.md](docs/dsh-plugins.md))
 - GLM Coding Plan users get the four official GLM MCP servers configured
   automatically
 - `/mcp` shows every server's connection state, registered tools, and

@@ -1,0 +1,47 @@
+{
+  "name": "@artec/clat-dsh-adapter",
+  "version": "0.1.0",
+  "description": "Serve a DeepSeek Harness (DSH) leaf plugin as an MCP stdio server for CLAT and any MCP host",
+  "type": "module",
+  "license": "MIT",
+  "author": "Artec",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/artec/clat.git",
+    "directory": "sdk/dsh-adapter"
+  },
+  "bugs": "https://github.com/artec/clat/issues",
+  "homepage": "https://github.com/artec/clat/tree/main/sdk/dsh-adapter",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test dist/test/*.test.js"
+  },
+  "keywords": [
+    "clat",
+    "dsh",
+    "deepseek-harness",
+    "mcp",
+    "adapter"
+  ],
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0"
+  }
+}

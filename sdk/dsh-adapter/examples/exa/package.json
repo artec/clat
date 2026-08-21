@@ -1,0 +1,19 @@
+{
+  "name": "@artec/clat-dsh-adapter-exa-acceptance",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "serve": "node bin.mjs",
+    "test": "node --test test.mjs"
+  },
+  "dependencies": {
+    "@artec/clat-dsh-adapter": "file:../..",
+    "@deepseek-ai/cordis": "4.0.1",
+    "@deepseek-ai/dsh-environment": "file:./stubs/dsh-environment",
+    "@deepseek-ai/dsh-web": "0.0.1-rc.1",
+    "@deepseek-ai/dsh-web-search-exa": "0.0.1-rc.1",
+    "@deepseek-ai/dsh-llm": "0.0.1-rc.1",
+    "@deepseek-ai/dsh-timeout": "0.0.1-rc.1"
+  }
+}

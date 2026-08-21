@@ -1,6 +1,10 @@
 # Rust build output
 /target/
 
+# Node（sdk/dsh-adapter 作者侧适配器：依赖与构建产物不入库）
+node_modules/
+sdk/dsh-adapter/dist/
+
 # macOS
 .DS_Store
 

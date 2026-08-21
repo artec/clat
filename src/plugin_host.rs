@@ -1415,4 +1415,154 @@ mod tests {
         let error = handler.handle("roots/list", json!({})).unwrap_err();
         assert_eq!(error.0, -32601);
     }
+
+    /// 插件桥 Phase 3 e2e（INV-D7）：`@artec/clat-dsh-adapter` 的 demo 插件作为
+    /// 真实 MCP stdio server 被 CLAT 客户端挂载——echo 纯路径、
+    /// sample_roundtrip 过本桥的权限门 + 假模型 + usage 记账、
+    /// ask_roundtrip 过顺序单问（含 enumValues 选择与 multiSelect 降级）。
+    /// 需 node ≥22.19 与已构建的适配器，`cargo test -- --ignored` 显式跑。
+    #[test]
+    #[ignore = "spawns the node dsh-adapter demo; run explicitly with --ignored"]
+    fn dsh_adapter_demo_end_to_end_over_mcp() {
+        use crate::mcp_client::{McpServer, McpServerConfig};
+        use std::path::Path;
+
+        let bin = Path::new(env!("CARGO_MANIFEST_DIR")).join("sdk/dsh-adapter/tools/demo-bin.mjs");
+        assert!(
+            bin.exists(),
+            "missing {} — build the adapter first: cd sdk/dsh-adapter && npm install && npm run build",
+            bin.display()
+        );
+        let config = McpServerConfig {
+            command: "node".into(),
+            args: vec![bin.display().to_string()],
+            ..Default::default()
+        };
+
+        // ask_roundtrip 的三字段按序作答：单选（Choice）→ multiSelect 降级
+        // 文本 → 自由文本。
+        let asker: Arc<dyn UserAsker> = Arc::new(ScriptedAsker {
+            answers: Mutex::new(
+                vec![
+                    AskAnswer::Selected("pistachio".into()),
+                    AskAnswer::Custom("sprinkles, fudge, extra".into()),
+                    AskAnswer::Custom("no sugar".into()),
+                ]
+                .into(),
+            ),
+        });
+        let approver = Arc::new(ScriptedApprover {
+            decisions: Mutex::new(Vec::new()),
+            verdict: PermissionDecision::Allow,
+        });
+        let (bridge, usage_cell) = installed_bridge(
+            providers_with(CannedFactory {
+                text: "bonjour",
+                usage: Some(Usage {
+                    input_tokens: 10,
+                    output_tokens: 3,
+                    ..Usage::default()
+                }),
+            }),
+            approver,
+            Some(asker),
+        );
+        let server = McpServer::connect(
+            "demo",
+            &config,
+            Path::new("/tmp"),
+            Some(Arc::new(McpHostHandler::new(bridge, "demo"))),
+        )
+        .expect("connect to the dsh-adapter demo");
+
+        let tools = server.list_tools().expect("tools");
+        let names: Vec<&str> = tools.iter().map(|tool| tool.name.as_str()).collect();
+        for expected in ["echo", "sample_roundtrip", "ask_roundtrip"] {
+            assert!(names.contains(&expected), "tools: {names:?}");
+        }
+
+        let cancel = CancelToken::new();
+        let echo = server
+            .call_tool_for_test("echo", &json!({"text": "hi", "times": 2}), &cancel)
+            .expect("echo");
+        assert!(echo.as_str().unwrap_or_default().contains(r#""lines""#));
+
+        // sampling 全链：适配器 → sampling/createMessage → 权限门（Allow）→
+        // 假模型 → usage 记账（INV-S6）。
+        let sampled = server
+            .call_tool_for_test(
+                "sample_roundtrip",
+                &json!({"prompt": "translate hi"}),
+                &cancel,
+            )
+            .expect("sample_roundtrip");
+        assert!(sampled.as_str().unwrap_or_default().contains("bonjour"));
+        let usage = usage_cell.lock().expect("usage cell");
+        assert_eq!(usage.input_tokens, 10, "sampling must account usage");
+        assert_eq!(usage.output_tokens, 3);
+        drop(usage);
+
+        // elicitation 全链：顺序单问（Choice + 两个文本）→ 结构化应答回填。
+        let asked = server
+            .call_tool_for_test("ask_roundtrip", &json!({}), &cancel)
+            .expect("ask_roundtrip");
+        let answer = asked.as_str().unwrap_or_default();
+        assert!(answer.contains("pistachio"), "answer: {answer}");
+        assert!(answer.contains("sprinkles"), "answer: {answer}");
+        assert!(answer.contains("fudge"), "answer: {answer}");
+        assert!(answer.contains("no sugar"), "answer: {answer}");
+
+        server.shutdown().expect("shutdown reaps the node process");
+    }
+
+    /// 插件桥 Phase 3b e2e：npm 真实发布物 `dsh-web-search-exa@0.0.1-rc.1`
+    /// 原样挂载（examples/exa），CLAT 客户端断言内置 `web_search` 出现、
+    /// annotations 正确（ro+ow），无 API key 时 WEB_PROVIDER_UNAVAILABLE
+    /// 以 isError 返回（免网络）。需 examples/exa 已 `npm install`。
+    #[test]
+    #[ignore = "spawns node with the real exa plugin; run explicitly with --ignored"]
+    fn dsh_adapter_real_web_search_exa_end_to_end() {
+        use crate::mcp_client::{McpServer, McpServerConfig};
+        use std::path::Path;
+
+        let bin =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("sdk/dsh-adapter/examples/exa/bin.mjs");
+        assert!(
+            bin.exists(),
+            "missing {} — build it first: cd sdk/dsh-adapter/examples/exa && npm install --legacy-peer-deps \
+             (after building the adapter: cd sdk/dsh-adapter && npm install && npm run build)",
+            bin.display()
+        );
+        let config = McpServerConfig {
+            command: "node".into(),
+            args: vec![bin.display().to_string()],
+            ..Default::default()
+        };
+        let server = McpServer::connect("web-search-exa", &config, Path::new("/tmp"), None)
+            .expect("connect");
+
+        let tools = server.list_tools().expect("tools");
+        assert_eq!(tools.len(), 1, "only the built-in web_search is exposed");
+        assert_eq!(tools[0].name, "web_search");
+        // effect_from_annotations：readOnly+openWorld → Network。
+        assert_eq!(
+            crate::mcp_client::effect_from_annotations_for_test(tools[0].annotations),
+            crate::tool::ToolEffect::Network
+        );
+
+        // isError 结果在 CLAT 侧映射为 Err（消息携带适配器原样的
+        // WEB_PROVIDER_UNAVAILABLE）。
+        let error = server
+            .call_tool_for_test(
+                "web_search",
+                &json!({"queries": ["clat"]}),
+                &crate::model::CancelToken::new(),
+            )
+            .expect_err("no API key must fail the call");
+        assert!(
+            error.to_string().contains("WEB_PROVIDER_UNAVAILABLE"),
+            "seam error must surface verbatim: {error}"
+        );
+        server.shutdown().expect("shutdown reaps the node process");
+    }
 }

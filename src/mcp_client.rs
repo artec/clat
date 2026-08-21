@@ -777,6 +777,27 @@ impl McpServer {
         }
         Ok(result)
     }
+
+    /// 测试专用：跨模块测试直接调用 tools/call（插件桥 Phase 3 的
+    /// dsh-adapter e2e 在 plugin_host 测试区复用桥的假件）。
+    #[cfg(test)]
+    pub(crate) fn call_tool_for_test(
+        &self,
+        name: &str,
+        arguments: &Value,
+        cancel: &CancelToken,
+    ) -> Result<Value, McpError> {
+        self.call_tool(name, arguments, cancel)
+    }
+}
+
+/// 测试专用：跨模块测试核对 annotations → ToolEffect 推导
+/// （插件桥 Phase 3b e2e 断言内置 web_search 落在 Network 档）。
+#[cfg(test)]
+pub(crate) fn effect_from_annotations_for_test(
+    annotations: crate::mcp_client::McpToolAnnotations,
+) -> ToolEffect {
+    effect_from_annotations(annotations)
 }
 
 /// initialize 握手中向服务器声明的客户端能力：sampling（借宿主做
