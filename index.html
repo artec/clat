@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>CLAT — command-line agent</title>
-  <meta name="description" content="CLAT：本地优先的命令行 AI 编程助手。Rust 单二进制，DeepSeek / GLM / Qwen / Kimi 开箱即用。">
+  <meta name="description" content="CLAT：稳如磐石的 Agent 底座。本地优先，Rust 单二进制，DeepSeek / GLM / Qwen / Kimi 开箱即用，支持 WASM 插件与 MCP 扩展。">
   <link rel="icon" type="image/png" href="logo.png">
   <link rel="apple-touch-icon" href="logo.png">
   <style>
@@ -105,7 +105,7 @@
     }
     .release-pill:hover { border-color: var(--accent); text-decoration: none; }
 
-    /* 数据带：真实数字四栏 */
+    /* 数据带：真实数字，当前三栏 */
     .stats {
       display: grid;
       grid-template-columns: repeat(3, 1fr);
@@ -157,7 +157,7 @@
       font-size: 0.84rem;
     }
 
-    /* feature grid：编号两列网格，第 9 项跨满整行 */
+    /* feature grid：编号两列网格，奇数个卡片时末项跨满整行 */
     .feature-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
     .feature-cell {
       background: var(--card);
@@ -341,8 +341,8 @@
     <header class="hero">
       <img class="big" src="logo.png" alt="CLAT logo">
       <h1>CLAT</h1>
-      <div><a class="release-pill" href="https://github.com/artec/clat/releases/latest" data-release>v0.7.1 — 最新版本</a></div>
-      <p class="tagline">命令行里的 AI 编程助手 · 本地优先 · Rust 单二进制</p>
+      <div><a class="release-pill" href="https://github.com/artec/clat/releases/latest" data-release>v0.8.0 — 最新版本</a></div>
+      <p class="tagline">稳如磐石的 Agent 底座 · 本地优先 · Rust 单二进制</p>
       <div class="term">
         <div class="row"><span class="p">❯</span><span>clat</span></div>
         <div class="row"><span class="dim"># 在当前项目目录启动交互式 TUI</span></div>
@@ -439,6 +439,11 @@
           <h3>自更新</h3>
           <p><code>clat upgrade</code> 从 GitHub Releases 拉取当前平台的最新二进制并原子替换自身，一条命令升级。</p>
         </div>
+        <div class="feature-cell">
+          <p class="feature-label">10 — 插件</p>
+          <h3>WASM 插件</h3>
+          <p>与 DSH 插件生态互通：社区现成的能力拿来即用，你写的插件两边通用。稳定的 Rust 底座配上开放的插件生态，把 CLAT 组合成你需要的 Agent 系统。</p>
+        </div>
       </div>
     </section>
 
@@ -489,7 +494,7 @@
       <div class="footer-grid">
         <div>
           <div>CLAT · command-line agent</div>
-          <p class="footer-tagline">cl + at = 命令行里的 AI 编程助手。<br>本地优先，Rust 单二进制。</p>
+          <p class="footer-tagline">cl + at = 稳如磐石的 Agent 底座。<br>本地优先，Rust 单二进制。</p>
         </div>
         <div>
           <p class="col-title">项目</p>
@@ -502,7 +507,7 @@
         <div>
           <p class="col-title">文档</p>
           <div class="links">
-            <a href="https://github.com/artec/clat/blob/main/README.md">README</a>
+            <a href="https://github.com/artec/clat/blob/main/docs/wasm.md">插件</a>
             <a href="https://github.com/artec/clat/blob/main/docs/architecture.md">架构</a>
             <a href="https://github.com/artec/clat/blob/main/docs/usage.md">使用</a>
           </div>
