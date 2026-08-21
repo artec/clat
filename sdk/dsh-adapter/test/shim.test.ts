@@ -151,6 +151,68 @@ test('disposeAll: later registrations fail closed', async () => {
   })
 })
 
+test('W1-06: one failing cleanup never truncates the teardown', async () => {
+  // 三个 effect（LIFO 应为 C → B → A），B 的 cleanup 抛错，C 的数组里
+  // 第二个函数抛错。pre-fix 红：disposeAll 在 C 的首错处 reject，
+  // cleanup-b/cleanup-a 与 #tools.clear() 全部被跳过，且 #disposed 已
+  // 置 true——剩余清理永久没有重试机会。
+  const order: string[] = []
+  const shim = new Shim(fakeHost(), 'p')
+  const ctx = shim.buildContext()
+  ctx.effect(function* () {
+    order.push('setup-a')
+    yield () => order.push('cleanup-a')
+  })
+  ctx.effect(function* () {
+    order.push('setup-b')
+    yield () => {
+      order.push('cleanup-b')
+      throw new Error('b explodes')
+    }
+  })
+  ctx.effect(function* () {
+    order.push('setup-c')
+    yield [
+      () => order.push('cleanup-c1'),
+      () => {
+        throw new Error('c2 explodes')
+      },
+      () => order.push('cleanup-c3'),
+    ]
+  })
+  ctx.tools.register(echoTool())
+
+  await assert.rejects(
+    () => shim.disposeAll(),
+    (error: unknown) => {
+      // C（数组内 1 失败 → 单错原样抛）与 B（1 失败）→ disposeAll 聚
+      // 合为 CLEANUP_FAILED。
+      return error instanceof AdapterError && error.code === 'CLEANUP_FAILED'
+    },
+  )
+  assert.deepEqual(order, [
+    'setup-a',
+    'setup-b',
+    'setup-c',
+    'cleanup-c1',
+    'cleanup-c3',
+    'cleanup-b',
+    'cleanup-a',
+  ], 'every cleanup step runs LIFO despite failures')
+  assert.equal(shim.listTools().length, 0, 'tools must be cleared even when cleanups fail')
+  // 幂等：第二次 dispose 无新副作用、不再抛错。
+  await shim.disposeAll()
+  assert.deepEqual(order, [
+    'setup-a',
+    'setup-b',
+    'setup-c',
+    'cleanup-c1',
+    'cleanup-c3',
+    'cleanup-b',
+    'cleanup-a',
+  ])
+})
+
 test('INV-D1: llm.stream maps to one sampling call and the dsh chunk protocol', async () => {
   const host = fakeHost({ samplingResult: { content: { type: 'text', text: 'bonjour' }, stopReason: 'endTurn' } })
   const shim = new Shim(host, 'p')

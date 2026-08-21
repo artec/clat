@@ -2,8 +2,10 @@
 //! （外部插件向用户提问）的**传输无关**实现（docs/todo/
 //! mcp-sampling-elicitation.md，插件桥 Phase 1）。
 //!
-//! 分层契约：权限门（INV-S2）、usage 记账（INV-S6）、用户问答都在本
-//! 层；wire 协议（MCP JSON）翻译由 [`McpHostHandler`] 完成，传输
+//! 分层契约：权限门（INV-S2；W1-02：审批参数 = 完整出站正文）、
+//! per-run 花费预算（W1-03：事前预留 + 事后对账，独立于权限档位）、
+//! usage 记账（INV-S6）、用户问答都在本层；wire 协议（MCP JSON）翻译
+//! 由 [`McpHostHandler`] 完成（在途计数 per-handler，W1-05），传输
 //! （stdio/HTTP）归 mcp/mcp_client。将来 WASM/WIT 插件（桥 Phase 2）
 //! 以 WIT 镜像同一语义面直接调用本桥——一个对外契约、多种传输，
 //! 不造第二套插件 API（研究档案 dsh-plugin-bridge.md §6-3）。
@@ -35,6 +37,18 @@ const SAMPLING_MAX_OUTPUT: u64 = 8192;
 const SAMPLING_DEADLINE: Duration = Duration::from_secs(120);
 /// sampling 请求消息条数上限。
 const MAX_SAMPLING_MESSAGES: usize = 32;
+/// sampling 出站正文（systemPrompt + 全部 message 文本）总字符上限
+/// （W1-02）：审批参数携带完整原文，此上限替代"摘要式隐藏"成为
+/// 防洪水的边界——超限整单拒绝，fail-closed。
+const SAMPLING_MAX_TOTAL_CHARS: usize = 256 * 1024;
+/// per-run sampling 请求数预算（W1-03）：嵌套模型调用（WASM fuel、
+/// adapter 无计量）与主循环无轮次预算之间没有可推导关系，这里给
+/// 一个独立于权限档位的硬闸门。64 次/run 对合法插件用例宽裕，对
+/// 失控循环有界。
+const SAMPLING_MAX_REQUESTS_PER_RUN: u32 = 64;
+/// per-run sampling token 预算（W1-03）：预留 = input 估算 + 请求的
+/// max output；10^6 量级约一次满配长会话的嵌套调用量。
+const SAMPLING_TOKEN_BUDGET_PER_RUN: u64 = 1_000_000;
 /// elicitation 表单字段数 / 单字段枚举项上限。
 const MAX_ELICIT_FIELDS: usize = 16;
 const MAX_ELICIT_OPTIONS: usize = 16;
@@ -145,6 +159,10 @@ pub enum PluginHostError {
     Model(String),
     InvalidAnswer(String),
     Cancelled,
+    /// per-run 花费预算耗尽（W1-03）：fail-closed，消息带限额与用量。
+    BudgetExhausted(String),
+    /// 出站正文超过总字符上限（W1-02 的防洪边界）。
+    PayloadTooLarge(String),
 }
 
 impl PluginHostError {
@@ -172,6 +190,13 @@ impl PluginHostError {
             ),
             Self::InvalidAnswer(message) => (-32602, format!("invalid answer: {message}")),
             Self::Cancelled => (SERVER_ERROR, "cancelled".into()),
+            Self::BudgetExhausted(message) => (
+                SERVER_ERROR,
+                format!("sampling budget exhausted: {message}"),
+            ),
+            Self::PayloadTooLarge(message) => {
+                (-32602, format!("sampling request too large: {message}"))
+            }
         }
     }
 }
@@ -185,7 +210,8 @@ impl std::fmt::Display for PluginHostError {
 }
 
 /// 一次 run 的宿主上下文：模型配置/凭据、审批人、问答前端、取消令
-/// 牌与 sampling 记账单元。`start_run` 装入，worker 收尾卸载。
+/// 牌、sampling 记账单元与花费预算。`start_run` 装入，worker 收尾
+/// 卸载。
 pub(crate) struct RunHostContext {
     pub(crate) providers: Arc<ProviderRegistry>,
     pub(crate) model_config: ModelConfig,
@@ -198,16 +224,88 @@ pub(crate) struct RunHostContext {
     pub(crate) asker: Option<Arc<dyn UserAsker>>,
     pub(crate) cancel: CancelToken,
     pub(crate) usage_cell: Arc<Mutex<Usage>>,
+    /// per-run sampling 花费预算（W1-03）：与 usage_cell 分工——后者是
+    /// 事后记账（journal 归账），前者是事前闸门（fail-closed）。
+    pub(crate) budget: Arc<Mutex<SamplingBudget>>,
 }
 
-/// 宿主桥本体：per-run 上下文槽 + 在途请求计数（INV-S7 的延展信号）。
+/// per-run sampling 预算（W1-03）：请求数 + token 双上限，独立于权限
+/// 档位（Full Access ≠ 无限额度）。发起前 reserve（保守预留），成功
+/// 且 provider 回 usage 时按实际值对账；不回 usage 或调用失败时预留
+/// 保留（服务端可能已计费，账本不得低于真实花费）。超限 fail-closed，
+/// 结构化错误返回插件，agent 有机会改走普通路径。预算随 run 上下文
+/// 生灭，跨 WASM/MCP/DSH 三种传输共用同一份。
+pub(crate) struct SamplingBudget {
+    requests_used: u32,
+    tokens_used: u64,
+    requests_cap: u32,
+    tokens_cap: u64,
+}
+
+impl SamplingBudget {
+    pub(crate) fn per_run() -> Self {
+        Self {
+            requests_used: 0,
+            tokens_used: 0,
+            requests_cap: SAMPLING_MAX_REQUESTS_PER_RUN,
+            tokens_cap: SAMPLING_TOKEN_BUDGET_PER_RUN,
+        }
+    }
+
+    /// 事前预留一次调用：请求数 +1、token 增加预留份额（input 估算
+    /// 加请求的 max output）。任一维度超限即拒（fail-closed），错误
+    /// 消息自带限额与重置语义。
+    fn reserve(&mut self, reservation: u64) -> Result<(), PluginHostError> {
+        let requests_next = self.requests_used.saturating_add(1);
+        let tokens_next = self.tokens_used.saturating_add(reservation);
+        if requests_next > self.requests_cap || tokens_next > self.tokens_cap {
+            return Err(PluginHostError::BudgetExhausted(format!(
+                "this run allows at most {} sampling requests / {} tokens of plugin \
+                 sampling (used so far: {} / {}); the budget resets on the next run",
+                self.requests_cap, self.tokens_cap, self.requests_used, self.tokens_used
+            )));
+        }
+        self.requests_used = requests_next;
+        self.tokens_used = tokens_next;
+        Ok(())
+    }
+
+    /// 成功后对账：预留份额替换为实际 usage（实际可能高于预留——
+    /// 真实账本优先）。`actual_total` 为 input+output 之和。
+    fn reconcile(&mut self, reserved: u64, actual_total: u64) {
+        self.tokens_used = self
+            .tokens_used
+            .saturating_sub(reserved)
+            .saturating_add(actual_total);
+    }
+}
+
+/// input token 保守估算：全部出站文本（systemPrompt + messages）按
+/// ~4 字符/token 折算，向上取整。宁可高估（提前触闸）不低估。
+fn estimate_input_tokens(request: &SamplingRequest) -> u64 {
+    let chars: usize = request
+        .system_prompt
+        .as_ref()
+        .map(|prompt| prompt.chars().count())
+        .unwrap_or(0)
+        + request
+            .messages
+            .iter()
+            .map(|message| message.text.chars().count())
+            .sum::<usize>();
+    chars.div_ceil(4) as u64
+}
+
+/// 宿主桥本体：per-run 上下文槽。sampling/elicitation 的在途计数不
+/// 在这里（W1-05）：那是每条 MCP 连接的超时延展信号，归
+/// [`McpHostHandler`] 各自持有；WASM 直调桥，不参与任何 MCP 截止。
 pub struct PluginHostBridge {
     context: RwLock<Option<RunHostContext>>,
-    pending: AtomicUsize,
     sampling_seq: AtomicU64,
 }
 
-/// 在途请求守卫：dispatcher 处理期间计数 >0，tools/call 截止随之延展。
+/// 单连接在途服务端请求守卫：dispatcher 处理期间计数 >0，该连接的
+/// tools/call 截止随之延展（INV-S7；W1-05 起为 per-handler 计数）。
 struct PendingGuard<'a>(&'a AtomicUsize);
 
 impl<'a> PendingGuard<'a> {
@@ -227,7 +325,6 @@ impl PluginHostBridge {
     pub fn shared() -> Arc<Self> {
         Arc::new(Self {
             context: RwLock::new(None),
-            pending: AtomicUsize::new(0),
             sampling_seq: AtomicU64::new(0),
         })
     }
@@ -246,11 +343,6 @@ impl PluginHostBridge {
         }
     }
 
-    /// 在途 sampling/elicitation 请求数。
-    pub fn pending_requests(&self) -> usize {
-        self.pending.load(Ordering::Acquire)
-    }
-
     fn context(&self) -> Option<RunHostContext> {
         // RunHostContext 不可 Clone（含非 Clone 端口），此处按字段取
         // Arc 克隆重建一份快照——install 与 clear 之间语义等价。
@@ -264,25 +356,50 @@ impl PluginHostBridge {
             asker: context.asker.clone(),
             cancel: context.cancel.clone(),
             usage_cell: Arc::clone(&context.usage_cell),
+            budget: Arc::clone(&context.budget),
         })
     }
 
-    /// sampling（INV-S2）：权限门 → 单次模型调用 → usage 记入 cell。
-    /// 在 dispatcher 线程上执行（阻塞等人/等模型是合法的）。
+    /// sampling（INV-S2 + W1-02/03）：出站尺寸闸 → 预算预留 → 权限门
+    /// （审批参数 = 完整出站正文）→ 单次模型调用 → usage 记账 + 预算
+    /// 对账。在 dispatcher 线程上执行（阻塞等人/等模型是合法的）。
     pub fn sample(
         &self,
         source: PluginSource,
         request: SamplingRequest,
     ) -> Result<SamplingOutcome, PluginHostError> {
-        let _pending = PendingGuard::new(&self.pending);
         let context = self.context().ok_or(PluginHostError::NoActiveRun)?;
         if context.cancel.is_cancelled() {
             return Err(PluginHostError::Cancelled);
         }
+        // 尺寸闸（W1-02）：审批要展示完整正文，先挡住不可审阅的洪水。
+        let total_chars: usize = request
+            .system_prompt
+            .as_ref()
+            .map(|prompt| prompt.chars().count())
+            .unwrap_or(0)
+            + request
+                .messages
+                .iter()
+                .map(|message| message.text.chars().count())
+                .sum::<usize>();
+        if total_chars > SAMPLING_MAX_TOTAL_CHARS {
+            return Err(PluginHostError::PayloadTooLarge(format!(
+                "systemPrompt plus messages total {} chars; the limit is {}",
+                total_chars, SAMPLING_MAX_TOTAL_CHARS
+            )));
+        }
+        // 预算预留（W1-03）：先于权限门——注定被拒的调用不值得用户审
+        // 批；失败/取消/无 usage 时预留保留（保守账本）。
+        let max_output = request.max_tokens.min(SAMPLING_MAX_OUTPUT);
+        let reservation = estimate_input_tokens(&request).saturating_add(max_output);
+        if let Ok(mut budget) = context.budget.lock() {
+            budget.reserve(reservation)?;
+        }
         // 权限门：合成 Execute 类请求（烧钱 + 数据出站）。FullAccess 档
         // 免弹框（对齐 ModePolicy 的 FA 语义——桥不经策略层，直接读档
-        // 位 cell）；其余档位逐次问。Unavailable 视为拒绝（fail-closed）；
-        // approver 回 Ask 视为未化解 → 拒绝。
+        // 位 cell）——但免弹框不免预算。Unavailable 视为拒绝
+        // （fail-closed）；approver 回 Ask 视为未化解 → 拒绝。
         let full_access = context
             .permission_mode
             .as_ref()
@@ -335,7 +452,7 @@ impl PluginHostBridge {
             .collect();
         let tools: [ToolDefinition; 0] = [];
         let options = ModelOptions {
-            output_limit: Some(request.max_tokens.min(SAMPLING_MAX_OUTPUT) as u32),
+            output_limit: Some(max_output as u32),
             temperature: request.temperature,
             ..ModelOptions::default()
         };
@@ -356,10 +473,14 @@ impl PluginHostBridge {
         if response.finish_reason == FinishReason::Cancelled {
             return Err(PluginHostError::Cancelled);
         }
-        if let Some(usage) = &response.usage
-            && let Ok(mut cell) = context.usage_cell.lock()
-        {
-            cell.add_assign(usage);
+        if let Some(usage) = &response.usage {
+            if let Ok(mut cell) = context.usage_cell.lock() {
+                cell.add_assign(usage);
+            }
+            // 预算对账：实际 usage 替换预留份额（W1-03）。
+            if let Ok(mut budget) = context.budget.lock() {
+                budget.reconcile(reservation, usage.input_tokens + usage.output_tokens);
+            }
         }
         Ok(SamplingOutcome {
             text: response.text,
@@ -369,17 +490,16 @@ impl PluginHostBridge {
     }
 
     /// sampling 的权限请求（工具名仅用于弹框展示与日志关联）。
+    /// W1-02：`arguments` 必须是**实际送入模型的权威出站正文**——
+    /// 完整 systemPrompt、有序 messages（role + 全文）、maxTokens、
+    /// temperature。绝不在桥内做不可恢复的截断：`systemPrompt`、
+    /// 第二条及以后的消息、首条消息 160 字之后的内容都是真实危险
+    /// 参数；TUI 对长参数有分页 + 强制审阅到末页的能力。
     fn sampling_permission_request(
         &self,
         source: &PluginSource,
         request: &SamplingRequest,
     ) -> PermissionRequest {
-        let preview: String = request
-            .messages
-            .iter()
-            .find(|message| matches!(message.role, SamplingRole::User))
-            .map(|message| message.text.chars().take(160).collect())
-            .unwrap_or_default();
         PermissionRequest {
             tool: format!("{}:sampling", source.label()),
             effect: ToolEffect::Execute,
@@ -393,8 +513,19 @@ impl PluginHostBridge {
             arguments: json!({
                 "source": source.label(),
                 "maxTokens": request.max_tokens.min(SAMPLING_MAX_OUTPUT),
-                "messages": request.messages.len(),
-                "preview": preview,
+                "temperature": request.temperature,
+                "systemPrompt": request.system_prompt,
+                "messages": request
+                    .messages
+                    .iter()
+                    .map(|message| json!({
+                        "role": match message.role {
+                            SamplingRole::User => "user",
+                            SamplingRole::Assistant => "assistant",
+                        },
+                        "text": message.text,
+                    }))
+                    .collect::<Vec<_>>(),
             }),
             call_id: format!(
                 "sampling-{}",
@@ -406,7 +537,6 @@ impl PluginHostBridge {
     /// elicitation：逐字段顺序单问（v1 交互，维护者拍板），拼回
     /// content 对象。取消/拒绝映射 MCP 的 cancel/declined。
     pub fn elicit(&self, form: ElicitForm) -> Result<ElicitOutcome, PluginHostError> {
-        let _pending = PendingGuard::new(&self.pending);
         let context = self.context().ok_or(PluginHostError::NoActiveRun)?;
         let asker = context
             .asker
@@ -581,10 +711,14 @@ fn stop_reason_name(reason: &FinishReason) -> &'static str {
 // ---------------------------------------------------------------------------
 
 /// 把宿主桥适配为 MCP 服务端请求处理器（每 server 一个，插件桥
-/// Phase 1 的唯一使用方；stdio/HTTP 传输经 mcp_client 注入）。
+/// Phase 1 的唯一使用方；stdio/HTTP 传输经 mcp_client 注入）。在途
+/// 计数 per-handler（W1-05）：只有**本连接**正在处理的 sampling/
+/// elicitation 才延长**本连接**的 tools/call 截止——共享桥的其他
+/// server 与 WASM 直调不串扰（per-server failure isolation）。
 pub struct McpHostHandler {
     bridge: Arc<PluginHostBridge>,
     server: String,
+    pending: AtomicUsize,
 }
 
 impl McpHostHandler {
@@ -592,12 +726,14 @@ impl McpHostHandler {
         Self {
             bridge,
             server: server.to_owned(),
+            pending: AtomicUsize::new(0),
         }
     }
 }
 
 impl McpServerRequestHandler for McpHostHandler {
     fn handle(&self, method: &str, params: Value) -> Result<Value, (i64, String)> {
+        let _pending = PendingGuard::new(&self.pending);
         match method {
             "sampling/createMessage" => {
                 let request = parse_sampling_params(&params)?;
@@ -634,7 +770,7 @@ impl McpServerRequestHandler for McpHostHandler {
     }
 
     fn pending_requests(&self) -> usize {
-        self.bridge.pending_requests()
+        self.pending.load(Ordering::Acquire)
     }
 }
 
@@ -909,7 +1045,7 @@ mod tests {
         }
     }
 
-    fn providers_with(factory: CannedFactory) -> Arc<ProviderRegistry> {
+    fn providers_with(factory: impl ModelFactory + 'static) -> Arc<ProviderRegistry> {
         let mut manager = PluginManager::root(ScopeKind::TrustedProject);
         manager
             .mount_all(vec![Arc::new(ProviderRegistryPlugin)])
@@ -940,6 +1076,22 @@ mod tests {
         asker: Option<Arc<dyn UserAsker>>,
         permission_mode: Option<crate::permission::PermissionMode>,
     ) -> (Arc<PluginHostBridge>, Arc<Mutex<Usage>>) {
+        installed_bridge_with(
+            providers,
+            approver,
+            asker,
+            permission_mode,
+            SamplingBudget::per_run(),
+        )
+    }
+
+    fn installed_bridge_with(
+        providers: Arc<ProviderRegistry>,
+        approver: Arc<dyn PermissionApprover>,
+        asker: Option<Arc<dyn UserAsker>>,
+        permission_mode: Option<crate::permission::PermissionMode>,
+        budget: SamplingBudget,
+    ) -> (Arc<PluginHostBridge>, Arc<Mutex<Usage>>) {
         let bridge = PluginHostBridge::shared();
         let usage_cell = Arc::new(Mutex::new(Usage::default()));
         let config = ModelConfig {
@@ -955,6 +1107,7 @@ mod tests {
             asker,
             cancel: CancelToken::new(),
             usage_cell: Arc::clone(&usage_cell),
+            budget: Arc::new(Mutex::new(budget)),
         });
         (bridge, usage_cell)
     }
@@ -1076,6 +1229,307 @@ mod tests {
             "Full Access must not consult the approver for sampling"
         );
         assert_eq!(cell.lock().expect("usage cell").input_tokens, 7);
+    }
+
+    /// 构建计数工厂：断言"预算拒绝先于 provider 工厂调用"的假件。
+    struct CountingFactory {
+        text: &'static str,
+        usage: Option<Usage>,
+        builds: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl ModelFactory for CountingFactory {
+        fn protocol(&self) -> ModelProtocol {
+            ModelProtocol::OpenAiCompatible
+        }
+
+        fn describe(&self, _credentials: &ProviderCredentials) -> crate::model::ProviderDescriptor {
+            unimplemented!("not needed for plugin_host tests")
+        }
+
+        fn build(
+            &self,
+            _config: &ModelConfig,
+            _credentials: &ProviderCredentials,
+        ) -> Result<Box<dyn Model>, ModelError> {
+            self.builds.fetch_add(1, Ordering::SeqCst);
+            Ok(Box::new(CannedModel {
+                text: self.text,
+                usage: self.usage.clone(),
+            }))
+        }
+    }
+
+    // ---- W1-02：审批参数 = 权威出站正文 ----
+
+    /// 四个哨兵（systemPrompt、第二条 user、assistant、首条 160 字
+    /// 之后）必须全部出现在 approver 拿到的 arguments 里——审批框展示
+    /// 的是将真实送出模型的内容，不是摘要。
+    #[test]
+    fn sampling_approval_arguments_expose_the_full_outbound_payload() {
+        let approver = Arc::new(ScriptedApprover {
+            decisions: Mutex::new(Vec::new()),
+            verdict: PermissionDecision::Allow,
+        });
+        let (bridge, _cell) = installed_bridge(
+            providers_with(CannedFactory {
+                text: "ok",
+                usage: None,
+            }),
+            approver.clone(),
+            None,
+        );
+        let request = SamplingRequest {
+            system_prompt: Some("SECRET-SYSTEM-PROMPT".into()),
+            messages: vec![
+                SamplingMessage {
+                    role: SamplingRole::User,
+                    text: format!("benign {}SECRET-BEYOND-160", "x".repeat(200)),
+                },
+                SamplingMessage {
+                    role: SamplingRole::Assistant,
+                    text: "SECRET-ASSISTANT".into(),
+                },
+                SamplingMessage {
+                    role: SamplingRole::User,
+                    text: "SECRET-SECOND-USER".into(),
+                },
+            ],
+            max_tokens: 512,
+            stop_sequences: Vec::new(),
+            temperature: Some(0.3),
+        };
+        bridge
+            .sample(PluginSource::Wasm("probe".into()), request)
+            .expect("sample");
+        let seen = approver.decisions.lock().expect("decisions");
+        let arguments = &seen.last().expect("one approval request").arguments;
+        assert_eq!(
+            arguments["systemPrompt"], "SECRET-SYSTEM-PROMPT",
+            "systemPrompt is the most direct hiding channel and must be reviewable"
+        );
+        assert_eq!(arguments["messages"][0]["role"], "user");
+        assert!(
+            arguments["messages"][0]["text"]
+                .as_str()
+                .expect("full text")
+                .contains("SECRET-BEYOND-160"),
+            "content past char 160 of the first message must survive for review"
+        );
+        assert_eq!(arguments["messages"][1]["role"], "assistant");
+        assert_eq!(arguments["messages"][1]["text"], "SECRET-ASSISTANT");
+        assert_eq!(arguments["messages"][2]["text"], "SECRET-SECOND-USER");
+        assert_eq!(arguments["temperature"], 0.3);
+        assert_eq!(arguments["maxTokens"], 512);
+    }
+
+    /// 防洪边界（W1-02）：超总字符上限的请求整单拒绝，不进权限门、
+    /// 不碰 provider 工厂。
+    #[test]
+    fn oversized_sampling_payload_is_rejected_without_a_model_call() {
+        let builds = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let approver = Arc::new(ScriptedApprover {
+            decisions: Mutex::new(Vec::new()),
+            verdict: PermissionDecision::Allow,
+        });
+        let (bridge, _cell) = installed_bridge(
+            providers_with(CountingFactory {
+                text: "never",
+                usage: None,
+                builds: Arc::clone(&builds),
+            }),
+            approver.clone(),
+            None,
+        );
+        let mut request = sampling_request();
+        request.messages[0].text = "x".repeat(SAMPLING_MAX_TOTAL_CHARS + 1);
+        let error = bridge
+            .sample(PluginSource::Mcp("srv".into()), request)
+            .unwrap_err();
+        assert!(matches!(error, PluginHostError::PayloadTooLarge(_)));
+        assert_eq!(
+            builds.load(Ordering::SeqCst),
+            0,
+            "the provider factory must not be reached"
+        );
+        assert!(
+            approver.decisions.lock().expect("decisions").is_empty(),
+            "no approval dialog for a doomed request"
+        );
+    }
+
+    // ---- W1-03：per-run sampling 预算 ----
+
+    fn tight_budget(tokens_cap: u64) -> SamplingBudget {
+        SamplingBudget {
+            requests_used: 0,
+            tokens_used: 0,
+            requests_cap: 64,
+            tokens_cap,
+        }
+    }
+
+    #[test]
+    fn sampling_budget_reserve_and_reconcile_math() {
+        let mut budget = SamplingBudget {
+            requests_used: 0,
+            tokens_used: 0,
+            requests_cap: 2,
+            tokens_cap: 30,
+        };
+        assert!(budget.reserve(20).is_ok());
+        assert!(budget.reserve(11).is_err(), "token cap fails closed");
+        budget.reconcile(20, 5);
+        assert!(
+            budget.reserve(11).is_ok(),
+            "reconcile swaps the reservation for actual usage (5 + 11 <= 30)"
+        );
+        assert!(
+            budget.reserve(1).is_err(),
+            "the request cap binds independently of tokens"
+        );
+        let mut budget = SamplingBudget {
+            requests_used: 0,
+            tokens_used: 0,
+            requests_cap: 1,
+            tokens_cap: u64::MAX,
+        };
+        assert!(
+            budget.reserve(u64::MAX).is_ok(),
+            "reserve saturates at the cap"
+        );
+    }
+
+    #[test]
+    fn input_token_estimate_covers_system_prompt_and_rounds_up() {
+        // sampling_request：system "be brief"(9) + "translate hi to french"(22)
+        // = 31 chars → ceil(31/4) = 8。
+        let mut request = sampling_request();
+        assert_eq!(estimate_input_tokens(&request), 8);
+        request.system_prompt = None;
+        assert_eq!(estimate_input_tokens(&request), 6);
+    }
+
+    /// 预算先于权限门、先于 provider 工厂：fail-closed 且结构化。
+    #[test]
+    fn sampling_budget_fails_closed_before_the_model_call() {
+        let builds = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let approver = Arc::new(ScriptedApprover {
+            decisions: Mutex::new(Vec::new()),
+            verdict: PermissionDecision::Allow,
+        });
+        let (bridge, cell) = installed_bridge_with(
+            providers_with(CountingFactory {
+                text: "never",
+                usage: None,
+                builds: Arc::clone(&builds),
+            }),
+            approver.clone(),
+            None,
+            None,
+            tight_budget(0),
+        );
+        let error = bridge
+            .sample(PluginSource::Mcp("srv".into()), sampling_request())
+            .unwrap_err();
+        assert!(matches!(error, PluginHostError::BudgetExhausted(_)));
+        assert!(
+            error.to_string().contains("resets on the next run"),
+            "structured failure the plugin/agent can act on: {error}"
+        );
+        assert_eq!(builds.load(Ordering::SeqCst), 0);
+        assert!(
+            approver.decisions.lock().expect("decisions").is_empty(),
+            "a doomed request must not cost the user an approval dialog"
+        );
+        assert_eq!(cell.lock().expect("usage cell").input_tokens, 0);
+    }
+
+    /// Full Access 免弹框，不免预算（W1-03：权限档位 ≠ 财务额度）。
+    #[test]
+    fn full_access_sampling_still_consumes_budget() {
+        let builds = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let approver = Arc::new(ScriptedApprover {
+            decisions: Mutex::new(Vec::new()),
+            verdict: PermissionDecision::Deny {
+                reason: "must not be consulted under Full Access".into(),
+            },
+        });
+        let (bridge, _cell) = installed_bridge_with(
+            providers_with(CountingFactory {
+                text: "never",
+                usage: None,
+                builds: Arc::clone(&builds),
+            }),
+            approver.clone(),
+            None,
+            Some(crate::permission::PermissionMode::FullAccess),
+            tight_budget(0),
+        );
+        let error = bridge
+            .sample(PluginSource::Mcp("srv".into()), sampling_request())
+            .unwrap_err();
+        assert!(matches!(error, PluginHostError::BudgetExhausted(_)));
+        assert_eq!(
+            builds.load(Ordering::SeqCst),
+            0,
+            "Full Access must not unlock an unlimited spend path"
+        );
+        assert!(approver.decisions.lock().expect("decisions").is_empty());
+    }
+
+    /// provider 不回 usage → 预留保留（保守账本）：同预算的第二次
+    /// sampling 被拒；回 usage → 按实际对账，第二次放行。
+    #[test]
+    fn sampling_budget_reconciles_only_when_usage_is_reported() {
+        // 预留 = estimate(31/4→8) + max_tokens 64 = 72；对账后实际 13。
+        let reservation = estimate_input_tokens(&sampling_request()) + 64;
+        let cap = reservation + 28; // 100：预留保留则第二次超限，对账后放行
+        let usage = Some(Usage {
+            input_tokens: 10,
+            output_tokens: 3,
+            ..Usage::default()
+        });
+
+        // 无 usage：预留保留 → 第二次拒绝。
+        let (bridge, _cell) = installed_bridge_with(
+            providers_with(CannedFactory {
+                text: "ok",
+                usage: None,
+            }),
+            Arc::new(ScriptedApprover {
+                decisions: Mutex::new(Vec::new()),
+                verdict: PermissionDecision::Allow,
+            }),
+            None,
+            None,
+            tight_budget(cap),
+        );
+        bridge
+            .sample(PluginSource::Mcp("srv".into()), sampling_request())
+            .expect("first call within budget");
+        assert!(matches!(
+            bridge.sample(PluginSource::Mcp("srv".into()), sampling_request()),
+            Err(PluginHostError::BudgetExhausted(_))
+        ));
+
+        // 有 usage：对账释放差额 → 第二次放行。
+        let (bridge, _cell) = installed_bridge_with(
+            providers_with(CannedFactory { text: "ok", usage }),
+            Arc::new(ScriptedApprover {
+                decisions: Mutex::new(Vec::new()),
+                verdict: PermissionDecision::Allow,
+            }),
+            None,
+            None,
+            tight_budget(cap),
+        );
+        bridge
+            .sample(PluginSource::Mcp("srv".into()), sampling_request())
+            .expect("first call within budget");
+        bridge
+            .sample(PluginSource::Mcp("srv".into()), sampling_request())
+            .expect("reconciled usage frees the difference for the next call");
     }
 
     #[test]
@@ -1284,6 +1738,7 @@ mod tests {
             })),
             cancel,
             usage_cell: Arc::new(Mutex::new(Usage::default())),
+            budget: Arc::new(Mutex::new(SamplingBudget::per_run())),
         });
         assert!(matches!(
             bridge.elicit(form()),
@@ -1414,6 +1869,81 @@ mod tests {
         // 未知方法 → -32601（INV-S4 的处理器侧；ping 在 dispatcher）。
         let error = handler.handle("roots/list", json!({})).unwrap_err();
         assert_eq!(error.0, -32601);
+    }
+
+    /// 卡在权限门内的 approver：entered 置位后阻塞到 release。
+    struct GateApprover {
+        entered: Arc<std::sync::atomic::AtomicBool>,
+        release: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl PermissionApprover for GateApprover {
+        fn decide(&self, _request: PermissionRequest) -> PermissionDecision {
+            self.entered.store(true, Ordering::Release);
+            let deadline = Instant::now() + Duration::from_secs(30);
+            while !self.release.load(Ordering::Acquire) {
+                assert!(Instant::now() < deadline, "approver never released");
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            PermissionDecision::Allow
+        }
+    }
+
+    /// W1-05：在途计数 per-handler。server A 的 sampling 进行中，共用
+    /// 同一座桥的 server B 的 `pending_requests()` 必须仍为 0——A 的
+    /// 等待不得延长 B 的 tools/call 截止。pre-fix 红：B 读到的是桥级
+    /// 全局计数 1。
+    #[test]
+    fn pending_counts_are_per_server_not_shared_through_the_bridge() {
+        let entered = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let release = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (bridge, _cell) = installed_bridge(
+            providers_with(CannedFactory {
+                text: "answer",
+                usage: None,
+            }),
+            Arc::new(GateApprover {
+                entered: Arc::clone(&entered),
+                release: Arc::clone(&release),
+            }),
+            None,
+        );
+        let a = Arc::new(McpHostHandler::new(Arc::clone(&bridge), "a"));
+        let b = McpHostHandler::new(Arc::clone(&bridge), "b");
+        let dispatcher = {
+            let a = Arc::clone(&a);
+            std::thread::spawn(move || {
+                a.handle(
+                    "sampling/createMessage",
+                    json!({
+                        "messages": [
+                            { "role": "user", "content": { "type": "text", "text": "q" } },
+                        ],
+                        "maxTokens": 16,
+                    }),
+                )
+                .is_ok()
+            })
+        };
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !entered.load(Ordering::Acquire) {
+            assert!(Instant::now() < deadline, "handler never entered the gate");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(
+            a.pending_requests(),
+            1,
+            "the in-flight call counts on its own handler"
+        );
+        assert_eq!(
+            b.pending_requests(),
+            0,
+            "an unrelated server sharing the bridge must not inherit A's pending count"
+        );
+        release.store(true, Ordering::Release);
+        assert!(dispatcher.join().expect("dispatcher thread"));
+        assert_eq!(a.pending_requests(), 0);
+        assert_eq!(b.pending_requests(), 0);
     }
 
     /// 插件桥 Phase 3 e2e（INV-D7）：`@artec/clat-dsh-adapter` 的 demo 插件作为

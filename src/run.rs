@@ -20,9 +20,40 @@ use std::sync::{Arc, Mutex};
 /// pending steering extends a run that would otherwise complete, because
 /// the model still owes the user a response. Messages that were never
 /// claimed (cancel, race at the end) leave no durable trace.
+///
+/// 终态封口（W1-04，2026-08-22）：`sealed` 与 deque 同锁。"队列是否仍
+/// 接受新消息"与"终态空队列判定"必须在同一临界区内完成——否则
+/// check-then-act 窗口里，worker 已决定结束而 `busy` 尚未落 false，前端
+/// 还能入队一条永远不会被 claim 的消息。封口后 `try_push` 返回
+/// [`PushOutcome::Sealed`]（调用方回退普通提交）；未 claim 的消息仍可
+/// `recall_last` 退还编辑框。
 #[derive(Clone, Default)]
 pub(crate) struct SteeringQueue {
-    pending: Arc<Mutex<VecDeque<String>>>,
+    pending: Arc<Mutex<SteeringState>>,
+}
+
+#[derive(Default)]
+struct SteeringState {
+    queue: VecDeque<String>,
+    sealed: bool,
+}
+
+/// `try_push` 的结果：入队成功，或队列已封口（run 已判定终态）。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PushOutcome {
+    Accepted,
+    Sealed,
+}
+
+/// Run 执行期封口兜底：正常返回、错误返回和 panic unwind 都会 Drop。
+/// terminal 分支仍应在发终态事件前主动 seal；本 guard 专门覆盖任何
+/// 意外 unwind/未来新增 early-exit，保证队列生命周期不会漏出口。
+struct SteeringSealGuard(SteeringQueue);
+
+impl Drop for SteeringSealGuard {
+    fn drop(&mut self) {
+        self.0.seal();
+    }
 }
 
 impl SteeringQueue {
@@ -30,9 +61,14 @@ impl SteeringQueue {
         Self::default()
     }
 
-    pub(crate) fn push(&self, text: impl Into<String>) {
-        if let Ok(mut pending) = self.pending.lock() {
-            pending.push_back(text.into());
+    /// 前端入队：open 时入队并返回 `Accepted`；sealed 时绝不接受。
+    pub(crate) fn try_push(&self, text: impl Into<String>) -> PushOutcome {
+        match self.pending.lock() {
+            Ok(mut state) if !state.sealed => {
+                state.queue.push_back(text.into());
+                PushOutcome::Accepted
+            }
+            _ => PushOutcome::Sealed,
         }
     }
 
@@ -40,23 +76,44 @@ impl SteeringQueue {
         self.pending
             .lock()
             .ok()
-            .and_then(|mut pending| pending.pop_front())
+            .and_then(|mut state| state.queue.pop_front())
     }
 
     /// 召回最后一条未 claim 的消息（LIFO；投递是 FIFO `pop`）。与
     /// worker 在模型请求边界的 drain 在同一把锁上竞争：claim 先到则
     /// 该消息已生效、不可召回（返回更晚的或 None）——召回永远不可能
     /// 撤回已被 claim 的消息（docs/todo/steering-visibility-recall.md
-    /// INV-SV3）。
+    /// INV-SV3）。封口不影响召回：终态后未 claim 的消息正应退还前端。
     pub(crate) fn recall_last(&self) -> Option<String> {
         self.pending
             .lock()
             .ok()
-            .and_then(|mut pending| pending.pop_back())
+            .and_then(|mut state| state.queue.pop_back())
     }
 
-    pub(crate) fn is_empty(&self) -> bool {
-        self.pending.lock().is_ok_and(|pending| pending.is_empty())
+    /// 终态判定（原子，W1-04）：已封口，或"队列空 → 当场封口"都放行
+    /// 终态；仅"open 且非空"返回 false（还有消息待 claim，run 继续）。
+    pub(crate) fn seal_if_empty(&self) -> bool {
+        let Ok(mut state) = self.pending.lock() else {
+            return true;
+        };
+        if state.sealed || state.queue.is_empty() {
+            state.sealed = true;
+            return true;
+        }
+        false
+    }
+
+    /// 无条件封口（fail/cancelled 等一切退出路径的兜底）：此后
+    /// `try_push` 一律 `Sealed`。
+    pub(crate) fn seal(&self) {
+        if let Ok(mut state) = self.pending.lock() {
+            state.sealed = true;
+        }
+    }
+
+    pub(crate) fn is_sealed(&self) -> bool {
+        self.pending.lock().is_ok_and(|state| state.sealed)
     }
 }
 
@@ -135,6 +192,19 @@ impl<'a> Run<'a> {
 
     pub(crate) fn execute_with_items(
         &mut self,
+        items: Vec<ModelItem>,
+        prompt: impl Into<String>,
+        events: &mut dyn EventSink,
+    ) -> Result<RunOutput, RunError> {
+        // W1-04：RAII 兜底覆盖所有出口，包含 panic unwind。正常终态仍
+        // 在发 RunCompleted/RunFailed/RunCancelled 前主动封口；guard
+        // 防的是未来 early-return 或下层 panic 绕过那些显式路径。
+        let _seal_guard = SteeringSealGuard(self.steering.clone());
+        self.drive(items, prompt, events)
+    }
+
+    fn drive(
+        &mut self,
         mut items: Vec<ModelItem>,
         prompt: impl Into<String>,
         events: &mut dyn EventSink,
@@ -158,7 +228,14 @@ impl<'a> Run<'a> {
         loop {
             turn += 1;
             if self.cancel.is_cancelled() {
-                return Ok(cancelled(events, turn, &total_usage, String::new(), items));
+                return Ok(cancelled(
+                    events,
+                    &self.steering,
+                    turn,
+                    &total_usage,
+                    String::new(),
+                    items,
+                ));
             }
 
             // Claim queued steering at the next-step boundary (DSH
@@ -198,6 +275,7 @@ impl<'a> Run<'a> {
                     }
                     return Err(fail(
                         events,
+                        &self.steering,
                         format!("model error: {error}"),
                         turn,
                         total_usage,
@@ -245,13 +323,16 @@ impl<'a> Run<'a> {
                         // Pending steering extends the run: the model still
                         // owes the user a response to the queued message(s).
                         // A cancel flag wins at the next loop-top check,
-                        // before the queue is drained.
-                        if !self.steering.is_empty() {
+                        // before the queue is drained. 终态空队列判定与
+                        // 入队同一把锁（W1-04）：seal 赢则此后 steer 回
+                        // Sealed；push 赢则这里必须继续跑。
+                        if !self.steering.seal_if_empty() {
                             continue;
                         }
                         if response.text.is_empty() {
                             return Err(fail(
                                 events,
+                                &self.steering,
                                 "model completed without text or tool calls",
                                 turn,
                                 total_usage,
@@ -274,11 +355,19 @@ impl<'a> Run<'a> {
                         // The model stream stopped early because of the
                         // shared cancellation token. Keep the partial text
                         // and report a cancelled run instead of an error.
-                        return Ok(cancelled(events, turn, &total_usage, response.text, items));
+                        return Ok(cancelled(
+                            events,
+                            &self.steering,
+                            turn,
+                            &total_usage,
+                            response.text,
+                            items,
+                        ));
                     }
                     reason => {
                         return Err(fail(
                             events,
+                            &self.steering,
                             format!("model stopped before completion: {reason:?}"),
                             turn,
                             total_usage,
@@ -292,6 +381,7 @@ impl<'a> Run<'a> {
                 if self.cancel.is_cancelled() {
                     return Ok(cancelled(
                         events,
+                        &self.steering,
                         turn,
                         &total_usage,
                         response.text.clone(),
@@ -304,6 +394,7 @@ impl<'a> Run<'a> {
                 let Some(tool) = self.tools.get(&call.name) else {
                     return Err(fail(
                         events,
+                        &self.steering,
                         format!("unknown tool `{}`", call.name),
                         turn,
                         total_usage,
@@ -323,6 +414,7 @@ impl<'a> Run<'a> {
                     PermissionDecision::Ask { reason } => {
                         return Err(fail(
                             events,
+                            &self.steering,
                             format!(
                                 "permission required for tool `{}`: {reason}",
                                 definition.name
@@ -379,6 +471,7 @@ impl<'a> Run<'a> {
                 if self.cancel.is_cancelled() {
                     return Ok(cancelled(
                         events,
+                        &self.steering,
                         turn,
                         &total_usage,
                         response.text.clone(),
@@ -445,11 +538,15 @@ impl ModelEventSink for RunModelEventForwarder<'_> {
 
 fn fail(
     events: &mut dyn EventSink,
+    steering: &SteeringQueue,
     message: impl Into<String>,
     turns: usize,
     usage: Usage,
     items: Vec<ModelItem>,
 ) -> RunError {
+    // W1-04：终态事件对前端可见以前就封口。否则前端在 RunFailed
+    // 的处理窗口里仍可能成功入队一条永远不会被 claim 的消息。
+    steering.seal();
     let message = message.into();
     events.emit(RunEvent::RunFailed {
         message: message.clone(),
@@ -462,11 +559,15 @@ fn fail(
 /// kept and reported through the `RunCancelled` event.
 fn cancelled(
     events: &mut dyn EventSink,
+    steering: &SteeringQueue,
     turns: usize,
     usage: &Usage,
     text: String,
     items: Vec<ModelItem>,
 ) -> RunOutput {
+    // W1-04：与失败路径同理，RunCancelled 一旦对前端可见，队列必须
+    // 已经封口；迟到输入只能回退普通提交，不能成为孤儿 steering。
+    steering.seal();
     events.emit(RunEvent::RunCancelled {
         turns,
         usage: usage.clone(),
@@ -811,7 +912,11 @@ mod tests {
             if self.calls == 1 {
                 // 模拟前端在第一个请求进行中 steer()：此刻 turn-1 顶部的
                 // drain 已过，消息只能被下一轮 claim。
-                self.steering.push("also run the tests");
+                assert_eq!(
+                    self.steering.try_push("also run the tests"),
+                    PushOutcome::Accepted,
+                    "the queue is open while the run is executing"
+                );
                 events.emit(ModelEvent::TextDelta {
                     delta: "first answer".into(),
                 });
@@ -941,7 +1046,11 @@ mod tests {
             _events: &mut dyn ModelEventSink,
         ) -> Result<ModelResponse, ModelError> {
             request.cancel.cancel();
-            self.steering.push("too late");
+            assert_eq!(
+                self.steering.try_push("too late"),
+                PushOutcome::Accepted,
+                "cancel sets the flag but does not seal the queue"
+            );
             Ok(ModelResponse {
                 text: "answer".into(),
                 tool_calls: vec![],
@@ -954,6 +1063,27 @@ mod tests {
         }
     }
 
+    /// 终态事件探针（W1-04）：在事件回调发生的同一时刻尝试迟到入队。
+    /// 若封口晚于 RunCancelled/RunFailed，这里会得到 Accepted，精确复现
+    /// "终态已对前端可见、却仍接收孤儿 steering" 的窗口。
+    struct TerminalSealSink {
+        events: Vec<RunEvent>,
+        steering: SteeringQueue,
+        terminal_push: Option<PushOutcome>,
+    }
+
+    impl EventSink for TerminalSealSink {
+        fn emit(&mut self, event: RunEvent) {
+            if matches!(
+                event,
+                RunEvent::RunCancelled { .. } | RunEvent::RunFailed { .. }
+            ) {
+                self.terminal_push = Some(self.steering.try_push("after terminal event"));
+            }
+            self.events.push(event);
+        }
+    }
+
     #[test]
     fn cancelled_run_discards_pending_steering() {
         let project = Project::new(".");
@@ -961,24 +1091,107 @@ mod tests {
         let mut model = CancelsMidAnswerModel {
             steering: steering.clone(),
         };
-        let mut events = Vec::new();
+        let mut events = TerminalSealSink {
+            events: Vec::new(),
+            steering: steering.clone(),
+            terminal_push: None,
+        };
 
         let _output = Run::new(&mut model, &ToolRegistry::new(), &AllowAll, &project)
             .with_steering(steering.clone())
             .execute("start", &mut events)
             .expect("cancelled run is a normal outcome");
 
+        assert_eq!(
+            events.terminal_push,
+            Some(PushOutcome::Sealed),
+            "RunCancelled must only be emitted after steering has been sealed"
+        );
         assert!(
-            matches!(events.last(), Some(RunEvent::RunCancelled { .. })),
+            matches!(events.events.last(), Some(RunEvent::RunCancelled { .. })),
             "cancel must win over the steering extension"
         );
         assert!(
             !events
+                .events
                 .iter()
                 .any(|event| matches!(event, RunEvent::SteeringApplied { .. })),
             "unclaimed steering must not be applied"
         );
-        assert!(!steering.is_empty(), "queue left untouched");
+        // 消息未被 claim（可召回），且队列已封口：run 结束后迟到的
+        // steer 必须得到 Sealed 而不是 Accepted（W1-04）。
+        assert_eq!(steering.recall_last().as_deref(), Some("too late"));
+        assert!(steering.is_sealed(), "a finished run must seal its queue");
+    }
+
+    /// panic 路径假模型：用于证明 unwind 也会封口 steering。
+    struct PanicsDuringStreamModel;
+
+    impl Model for PanicsDuringStreamModel {
+        fn provider(&self) -> &str {
+            "test"
+        }
+
+        fn model_id(&self) -> &str {
+            "panic"
+        }
+
+        fn stream(
+            &mut self,
+            _request: ModelRequest<'_>,
+            _events: &mut dyn ModelEventSink,
+        ) -> Result<ModelResponse, ModelError> {
+            panic!("intentional model panic")
+        }
+    }
+
+    /// W1-04：Application 会 catch_unwind agent panic，因此 Run 自己必须
+    /// 在 unwind 途中封口。没有 RAII guard 时，execute_with_items 尾部的
+    /// seal 根本执行不到，收尾窗口仍会接受孤儿 steering。
+    #[test]
+    fn steering_is_sealed_when_the_run_unwinds() {
+        let project = Project::new(".");
+        let steering = SteeringQueue::new();
+        let mut model = PanicsDuringStreamModel;
+        let mut events = Vec::new();
+        let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = Run::new(&mut model, &ToolRegistry::new(), &AllowAll, &project)
+                .with_steering(steering.clone())
+                .execute("panic", &mut events);
+        }));
+        assert!(unwind.is_err(), "the fake model must panic");
+        assert_eq!(
+            steering.try_push("late"),
+            PushOutcome::Sealed,
+            "panic unwind must seal steering before Application cleanup"
+        );
+    }
+
+    #[test]
+    fn steering_queue_seals_atomically_against_push() {
+        let queue = SteeringQueue::new();
+        assert_eq!(queue.try_push("a"), PushOutcome::Accepted);
+        // 非空 → 终态判定放行失败（消息待 claim）。
+        assert!(
+            !queue.seal_if_empty(),
+            "pending messages must extend the run"
+        );
+        assert_eq!(queue.try_push("b"), PushOutcome::Accepted);
+        assert_eq!(queue.pop().as_deref(), Some("a"));
+        assert_eq!(queue.pop().as_deref(), Some("b"));
+        // 空 → 当场封口放行终态。
+        assert!(queue.seal_if_empty());
+        assert_eq!(
+            queue.try_push("late"),
+            PushOutcome::Sealed,
+            "a sealed queue must never accept new steering"
+        );
+        // 无条件封口同样拒绝后续入队，但不影响召回已入队消息。
+        let queue = SteeringQueue::new();
+        assert_eq!(queue.try_push("kept"), PushOutcome::Accepted);
+        queue.seal();
+        assert_eq!(queue.try_push("late"), PushOutcome::Sealed);
+        assert_eq!(queue.recall_last().as_deref(), Some("kept"));
     }
 
     #[test]
@@ -1152,9 +1365,15 @@ mod tests {
         let tools = ToolRegistry::new();
         register_test_tool(&tools, EchoTool);
         let mut model = FailsAfterToolModel { calls: 0 };
-        let mut events = Vec::new();
+        let steering = SteeringQueue::new();
+        let mut events = TerminalSealSink {
+            events: Vec::new(),
+            steering: steering.clone(),
+            terminal_push: None,
+        };
 
         let error = Run::new(&mut model, &tools, &AllowAll, &project)
+            .with_steering(steering)
             .execute("persist the failed run", &mut events)
             .expect_err("second provider turn fails");
 
@@ -1174,7 +1393,15 @@ mod tests {
             ModelItem::Assistant { content, .. }
                 if matches!(content.as_slice(), [ContentPart::Text(text)] if text == "partial before disconnect")
         )));
-        assert!(matches!(events.last(), Some(RunEvent::RunFailed { .. })));
+        assert_eq!(
+            events.terminal_push,
+            Some(PushOutcome::Sealed),
+            "RunFailed must only be emitted after steering has been sealed"
+        );
+        assert!(matches!(
+            events.events.last(),
+            Some(RunEvent::RunFailed { .. })
+        ));
     }
 
     struct FailingReadTool;

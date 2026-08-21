@@ -94,7 +94,7 @@ DSH 工具没有静态 effect 字段；不声明时宿主按最保守档处理
 | `ctx.llm.stream(…)` | MCP `sampling/createMessage`——宿主会话模型 + 宿主权限门 + usage 记账 |
 | `ctx.userQuestions.ask(…)` | MCP `elicitation/create`——整批问题一个表单，逐字段问 |
 | `ctx.web.registerSearchProvider(…)` | 内置 `web_search` 工具（dsh-tool-web 语义：多问合并、URL 去重、上限 8 条） |
-| `ctx.get` / `ctx.effect` / `ctx.logger` | 进程内实现（`launchEnvironmentOf` 回退 `process.env`；清理器 LIFO；日志走 stderr） |
+| `ctx.get` / `ctx.effect` / `ctx.logger` | 进程内实现（`launchEnvironmentOf` 回退 `process.env`；清理器 LIFO，单个清理器抛错不会截断其余清理；日志走 stderr） |
 
 两级策略（语义对齐 DSH 宿主）：
 

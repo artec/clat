@@ -11,10 +11,13 @@
 //! 空）、无环境变量、stdio 关闭、sockets 无地址授权。组件的授权面
 //! 只有 world 声明的 sampling/elicitation（全部过桥）；Phase 2b 的能
 //! 力授予就是往 WasiCtx 里按权限档位加 preopen。
-//! 有界执行（INV-W3，2d 起为 fuel 计量）：燃料只在 wasm 实际执行时
-//! 消耗——host 调用阻塞等人（elicitation/sampling）不烧预算；每次工
-//! 具调用重置预算（校准 ≈120s 纯执行），超耗 trap 为工具错误；内存
-//! 经 StoreLimits 上限 256MB。
+//! 有界执行（INV-W3，2d 起为 fuel 计量 + W1-01 取消中断）：燃料只在
+//! wasm 实际执行时消耗——host 调用阻塞等人（elicitation/sampling）不
+//! 烧预算；每次工具调用重置预算（校准 ≈120s 纯执行），超耗 trap 为
+//! 工具错误；内存经 StoreLimits 上限 256MB。取消令牌经 epoch 中断
+//! 成为**执行期**能力（W1-01）：调用期间轮询 `CancelToken`，置位即
+//! `engine.increment_epoch()`，组件在下一个执行点 trap——Esc 不必等
+//! 燃料耗尽。epoch 刻度不经时间流逝推进，"等待不烧预算"不变量保持。
 
 use super::services::{
     MCP_STATUS_SERVICE, MCP_STATUS_SERVICE_ID, McpServerStatus, TOOL_SERVICE, TOOL_SERVICE_ID,
@@ -383,10 +386,13 @@ impl WasmInstance {
             .as_mut()
             .ok_or_else(|| ToolError::new("wasm plugin is shutting down"))?;
         // INV-W3：每次调用重置燃料预算（host 等待不消耗——等人不
-        // 再烧预算，2d 修复）。
+        // 再烧预算，2d 修复）。W1-01：epoch deadline = 当前刻度 + 1——
+        // 只有取消观察者推进刻度才会 trap；store 创建时的远置 deadline
+        //（见 build_slot）在此收紧到执行期语义。
         slot.store
             .set_fuel(self.fuel)
             .map_err(|error| ToolError::new(format!("set fuel: {error}")))?;
+        slot.store.set_epoch_deadline(1);
         Ok(call(slot))
     }
 }
@@ -432,6 +438,9 @@ fn build_slot(
     store
         .set_fuel(instance.fuel)
         .map_err(|error| ToolError::new(format!("set fuel: {error}")))?;
+    // epoch 中断开启后 deadline 缺省为 0（立即 trap）：store 创建期先
+    // 远置，进 invoke 时再收紧到 +1（W1-01）。
+    store.set_epoch_deadline(u64::MAX / 2);
     let component_instance = Plugin::instantiate(&mut store, &instance.component, &instance.linker)
         .map_err(|error| {
             ToolError::new(format!(
@@ -444,6 +453,52 @@ fn build_slot(
         store,
         instance: component_instance,
     })
+}
+
+/// 取消观察者（W1-01）：invoke 期间短轮询取消令牌，置位即推进
+/// engine epoch——本 store 的 deadline（当前刻度 + 1）使组件在下一个
+/// 执行点 trap。轮询而非回调：`CancelToken` 是纯原子标志。组件阻塞
+/// 在 host 调用（等人/等模型）时不执行指令、不吃 epoch trap——
+/// "等待不烧预算"不变量保持；取消后从 host 调用返回的第一个执行点
+/// 即中断。同一 run 的取消令牌是共享的，跨实例的刻度推进语义一致
+/// （工具调用在 run 内串行，实际不并发）。
+struct CancelWatcher {
+    done: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl CancelWatcher {
+    fn start(engine: &Engine, cancel: &CancelToken) -> Self {
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let watcher_done = std::sync::Arc::clone(&done);
+        let engine = engine.clone();
+        let cancel = cancel.clone();
+        let handle = std::thread::Builder::new()
+            .name("clat-wasm-cancel".into())
+            .spawn(move || {
+                while !watcher_done.load(std::sync::atomic::Ordering::Acquire) {
+                    if cancel.is_cancelled() {
+                        engine.increment_epoch();
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+            })
+            .expect("spawn wasm cancel watcher");
+        Self {
+            done,
+            handle: Some(handle),
+        }
+    }
+}
+
+impl Drop for CancelWatcher {
+    fn drop(&mut self) {
+        self.done.store(true, std::sync::atomic::Ordering::Release);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
 }
 
 /// 一个 wasm 组件工具（`wasm_{plugin}_{tool}`）。
@@ -462,26 +517,37 @@ impl Tool for WasmTool {
         &self,
         arguments: &Value,
         _project: &Project,
-        _cancel: &CancelToken,
+        cancel: &CancelToken,
     ) -> Result<Value, ToolError> {
+        if cancel.is_cancelled() {
+            return Err(ToolError::new(
+                "wasm tool skipped: the run was already cancelled",
+            ));
+        }
         let arguments = serde_json::to_string(arguments)
             .map_err(|error| ToolError::new(format!("serialize wasm tool arguments: {error}")))?;
         let remote_name = self.remote_name.clone();
         let plugin = self.instance.name.clone();
+        // W1-01：取消令牌是执行期能力——观察者在组件执行期间推进
+        // epoch，spin 类组件在毫秒级 trap，不必等燃料耗尽。
+        let watcher = CancelWatcher::start(&self.instance.engine, cancel);
         // INV-W3：超时/超限以 trap 返回，映射为工具错误（run 不死）。
-        self.instance
-            .with_slot(|slot| {
-                slot.instance.clat_plugin_tools().call_call(
-                    &mut slot.store,
-                    &remote_name,
-                    &arguments,
-                )
-            })?
-            .map_err(move |error| ToolError::new(format!("wasm plugin `{plugin}` failed: {error}")))
-            .and_then(|outcome| match outcome {
-                Ok(text) => Ok(serde_json::from_str(&text).unwrap_or(Value::String(text))),
-                Err(message) => Err(ToolError::new(message)),
-            })
+        let call = self.instance.with_slot(|slot| {
+            slot.instance
+                .clat_plugin_tools()
+                .call_call(&mut slot.store, &remote_name, &arguments)
+        });
+        drop(watcher);
+        match call? {
+            Err(error) => Err(ToolError::new(if cancel.is_cancelled() {
+                // epoch trap 或取消后的首个失败都归因为中断。
+                format!("wasm plugin `{plugin}` interrupted: run was cancelled ({error})")
+            } else {
+                format!("wasm plugin `{plugin}` failed: {error}")
+            })),
+            Ok(Ok(text)) => Ok(serde_json::from_str(&text).unwrap_or(Value::String(text))),
+            Ok(Err(message)) => Err(ToolError::new(message)),
+        }
     }
 }
 
@@ -542,9 +608,11 @@ impl PluginTrait for WasmAdapterPlugin {
             return Ok(());
         }
 
-        // 引擎（INV-W3：fuel 计量——无 ticker 线程，host 等待不烧预算）。
+        // 引擎（INV-W3：fuel 计量——无 ticker 线程，host 等待不烧预算；
+        // W1-01：epoch 中断——取消观察者推进刻度，执行期 trap）。
         let mut engine_config = wasmtime::Config::new();
         engine_config.consume_fuel(true);
+        engine_config.epoch_interruption(true);
         let engine = Engine::new(&engine_config)
             .map_err(|error| PluginError::new(format!("wasmtime engine: {error}")))?;
 
@@ -724,6 +792,7 @@ fn compile_plugin(
     store
         .set_fuel(LIST_FUEL)
         .map_err(|error| format!("set fuel: {error}"))?;
+    store.set_epoch_deadline(u64::MAX / 2);
     let instance =
         Plugin::instantiate(&mut store, &component, linker).map_err(|error| error.to_string())?;
     let definitions = instance
@@ -1198,6 +1267,7 @@ mod tests {
             })),
             cancel: CancelToken::new(),
             usage_cell: std::sync::Arc::new(Mutex::new(ModelUsage::default())),
+            budget: std::sync::Arc::new(Mutex::new(crate::plugin_host::SamplingBudget::per_run())),
         });
 
         let project = crate::project::Project::new(&root);
@@ -1564,6 +1634,7 @@ mod tests {
             })),
             cancel: CancelToken::new(),
             usage_cell: std::sync::Arc::clone(&usage_cell),
+            budget: std::sync::Arc::new(Mutex::new(crate::plugin_host::SamplingBudget::per_run())),
         });
 
         let project = crate::project::Project::new(&root);
@@ -1650,6 +1721,54 @@ mod tests {
         );
         // 具体文案随 wasmtime 版本变化（v48 是 wasm backtrace 形
         // 态）；不变量是"及时被打断成工具错误"，不锁实现文案。
+
+        manager.close().expect("close");
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(mcp_root);
+    }
+
+    /// W1-01：取消令牌是执行期能力。全额燃料（纯执行 ≈百秒量级）下，
+    /// spin 组件开始执行后触发同一个 `CancelToken`，invoke 必须在秒级
+    /// 返回"被中断"的工具错误——而不是等燃料耗尽。pre-fix 红：`_cancel`
+    /// 被忽略，本测试要跑满燃料预算（分钟级）且报 fuel trap 文案。
+    #[test]
+    #[ignore = "loads the wasm fixture; run explicitly with --ignored"]
+    fn spinning_component_is_interrupted_by_the_run_cancel_token() {
+        let root = unique_root("cancel");
+        let mcp_root = unique_root("cancel-mcp");
+        let bridge = crate::plugin_host::PluginHostBridge::shared();
+        let mut manager = mount_probe(&root, &mcp_root, bridge, CALL_FUEL);
+        let registry = manager.require(TOOL_SERVICE).expect("registry");
+        let cancel = CancelToken::new();
+        let worker_cancel = cancel.clone();
+        let worker_root = root.clone();
+
+        let started = std::time::Instant::now();
+        let invoke = std::thread::spawn(move || {
+            registry
+                .get("wasm_probe_spin")
+                .expect("spin tool")
+                .invoke(
+                    &serde_json::json!({}),
+                    &crate::project::Project::new(&worker_root),
+                    &worker_cancel,
+                )
+                .expect_err("a cancelled spin must fail, not return")
+                .to_string()
+        });
+        // 等组件确实进入执行（略宽于挂载 + 实例化），再 Esc。
+        std::thread::sleep(Duration::from_millis(500));
+        cancel.cancel();
+        let message = invoke.join().expect("invoke thread");
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "cancellation must interrupt promptly (fuel alone would burn for ~a minute): {:?}",
+            started.elapsed()
+        );
+        assert!(
+            message.contains("interrupted"),
+            "the error must attribute the trap to cancellation: {message}"
+        );
 
         manager.close().expect("close");
         let _ = std::fs::remove_dir_all(root);

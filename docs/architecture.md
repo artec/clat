@@ -178,6 +178,7 @@ built yet:
 | Automatic session titles | done — retried after every successful run while the session has no explicit title (self-heals sessions whose one-shot first-run attempt failed — user-reported on a several-hundred-turn session), bounded background worker, CAS against manual rename; `TitleUpdated` application events refresh the TUI's conversation top-right title without a snapshot pull, `/rename` writes `session/title` with `source.kind=user` (gated on an existing explicit title, sanitized to the first clean line ≤60 chars) |
 | Typed provider retry | done — fresh model attempts, Retry-After, event-safe retry, internal deadlines |
 | Unbounded agent loop (DSH parity) | done — the run loop has **no turn budget** (2026-08-19; DSH's `kick()` is `while (await turn())`, and Claude Code / opencode are the same): it ends only on completion/refusal, user abort, or failure. Context pressure belongs to pruning/compaction, cost to the visible usage + user cancel. The earlier fixed-32-turn interruption and its bounded `[auto-continue]` patch were emergency measures and are removed |
+| In-run steering | done — `steer()` queues a message that joins the conversation at the next model-request boundary (never interrupts the in-flight request); a terminal response with pending steering extends the run. The queue is **sealed atomically with the terminal decision** (2026-08-22, adversarial-audit fix): `RunCompleted`/`RunFailed`/`RunCancelled` become visible to the frontend only after the seal (fail/cancel seal before emitting; a RAII guard covers panic unwind), so a late steer returns `NotRunning` and the frontend falls back to a normal submission instead of queueing a message nobody will claim. Unclaimed messages are LIFO-recallable (`Esc`) and leave no durable trace |
 | Single-pass cold resume (R-1) | done — arming a session streams the journal **exactly once**: the recovery scan feeds projection folding, the transcript replay, and usage stats in the same physical read (`prepare_with_visitor` → `ResumeSink`); a torn-tail crash repair re-reads once after discarding the partial visitor output. The resume path no longer reads checkpoints (surface/transcript are deliberately unbounded, so the checkpoint floor is always zero anyway); the `/resume` listing remains their reader. Debug-build reopen of a 400-turn journal dropped ~53% (329ms → 154ms), and the saving scales with log size |
 | Bounded process exit | done — cooperative cancel cannot interrupt a blocked socket read, so every exit-path join is bounded (`join_with_grace`, 2s): the title worker and the quota monitor are abandoned with a stderr notice when stuck, which is semantically a failed title / a dropped refresh. The auto-title request itself now derives a deadline-carrying child `CancelToken`, so its connect / header / stream phases are capped at 15s instead of the raw socket timeouts (30s/60s). Run and compaction workers stay strict joins (they journal) |
 | Headless CLI (`clat exec`) | done — one-shot runs with stdout-only assistant output; dual-input prompt (instruction + piped context, 8 MiB budget); TTY permission prompts with stale-input discard, deny-on-pipe default, `--yes` bypass; `--continue` / `--session` resume; graceful Ctrl-C everywhere (including pending-run and permission-wait windows); broken-pipe cancels the run and fails the exit; closed by the 2026-08-17 headless audit (HL-01…09) |
@@ -334,15 +335,23 @@ layering is deliberate:
   `-32603`.
 - `plugin_host.rs` owns the **semantics** and is transport-agnostic: the
   `PluginHostBridge` carries a per-run context (model config, approver,
-  asker, cancel token, usage cell) installed at `start_run` and cleared
-  by the worker at run end. Sampling passes the permission gate
-  (fail-closed on deny/unavailable) and its usage is folded into the
+  asker, cancel token, usage cell, sampling budget) installed at
+  `start_run` and cleared by the worker at run end. Sampling passes
+  three gates before the model call — a payload cap, a per-run spend
+  budget (request count is the hard cap; the token figure is an
+  approximate reservation guard, reconciled with actual usage), and the
+  permission gate whose arguments are the **full outbound payload**
+  (systemPrompt + every message, untruncated — what you approve is what
+  leaves). Fail-closed on deny/unavailable. Usage is folded into the
   current step's `assistant/message` usage at `ModelResponded` — one
   journal landing point, so live and replayed session stats stay equal
-  with zero event-vocabulary changes. Elicitation reuses the `UserAsker`
-  port (same dialog as `ask_user`, one field at a time in v1). While a
-  server request is pending, the in-flight `tools/call` deadline extends
-  in bounded steps; `Esc` still cancels immediately.
+  with zero event-vocabulary changes. Elicitation reuses the
+  `UserAsker` port (same dialog as `ask_user`, one field at a time in
+  v1). While a server request is pending **on that connection**, the
+  in-flight `tools/call` deadline extends in bounded steps (the pending
+  count is per server — one server's or a WASM plugin's wait never
+  extends an unrelated server's deadline); `Esc` still cancels
+  immediately.
 
 This split is load-bearing for the plugin bridge (docs/research/
 dsh-plugin-bridge.md): the WASM/WIT plugin runtime (Phase 2a,

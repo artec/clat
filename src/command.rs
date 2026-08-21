@@ -139,6 +139,15 @@ pub(crate) fn parse_command_input(input: &str) -> Result<(String, &str), Command
     Ok((name.to_owned(), rest))
 }
 
+/// 注册名与 parser 同源的 token 校验（W1-07）：非空、无空白/控制字
+/// 符、不带前导 `/`——parser 在首个空白处切分并剥 `/`，违反任何一条
+/// 的名字都是"帮助可见、派发不可达"的死条目。
+fn valid_command_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with('/')
+        && !name.chars().any(|ch| ch.is_whitespace() || ch.is_control())
+}
+
 /// 一条命令的注册规格。`names` 首元素是主名（帮助/目录展示用），
 /// 其余为别名；`takes_args` 声明命令是否接受参数（v1 内建全部 false）。
 pub(crate) struct CommandSpec {
@@ -180,7 +189,10 @@ impl fmt::Display for CommandRegistryError {
                 "duplicate command `{name}` (existing owner {existing_owner}, \
                  attempted owner {attempted_owner})"
             ),
-            Self::Invalid => formatter.write_str("command spec must name at least one command"),
+            Self::Invalid => formatter.write_str(
+                "command names must be non-empty dispatchable tokens: no whitespace or control \
+                 characters, no leading `/`, no duplicates within a spec",
+            ),
             Self::Poisoned => formatter.write_str("command registry lock poisoned"),
         }
     }
@@ -243,7 +255,16 @@ impl CommandRegistry {
         if self.frozen.load(std::sync::atomic::Ordering::Acquire) {
             return Err(CommandRegistryError::Frozen);
         }
-        if spec.names.is_empty() || spec.names.iter().any(|name| name.is_empty()) {
+        // 名字必须是 parser 可派发的 token（W1-07）：含空白/控制字符或
+        // 带前导 `/` 的名字在帮助里可见、却永远 lookup 不到；同一 spec
+        // 内的重名此前也漏网（Duplicate 只对比已存在 entries）。
+        let mut seen = std::collections::HashSet::new();
+        if spec.names.is_empty()
+            || spec
+                .names
+                .iter()
+                .any(|name| !valid_command_name(name) || !seen.insert(name.as_str()))
+        {
             return Err(CommandRegistryError::Invalid);
         }
         let owner = owner.id();
@@ -302,5 +323,100 @@ impl CommandLease {
             .map_err(|_| CommandRegistryError::Poisoned)?
             .retain(|(contribution, _, _)| *contribution != self.contribution);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plugin::PluginId;
+
+    struct NoopHandler;
+
+    impl CommandHandler for NoopHandler {
+        fn run(
+            &self,
+            _application: &mut TrustedProjectApplication,
+            _args: &str,
+        ) -> Result<CommandOutcome, CommandError> {
+            Ok(CommandOutcome::Status("noop".into()))
+        }
+    }
+
+    fn spec(names: &[&str]) -> CommandSpec {
+        CommandSpec {
+            names: names.iter().map(|name| (*name).to_owned()).collect(),
+            description: "test".into(),
+            takes_args: false,
+            handler: Arc::new(NoopHandler),
+        }
+    }
+
+    fn register(names: &[&str]) -> Result<(), CommandRegistryError> {
+        let registry = Arc::new(CommandRegistry::new());
+        registry
+            .register(
+                crate::plugin::PluginOwner::for_test(PluginId::new("test.commands")),
+                spec(names),
+            )
+            .map(|_| ())
+    }
+
+    #[test]
+    fn valid_names_register_normally() {
+        assert!(register(&["help", "h"]).is_ok());
+    }
+
+    /// W1-07：parser 永远无法派发的名字必须注册即拒——含空白的名字
+    /// 会在帮助里展示 `/foo bar`，但用户输入后 parser 查的是 `foo`。
+    #[test]
+    fn parser_unreachable_names_are_rejected() {
+        for names in [
+            vec!["foo bar"],
+            vec!["foo\tbar"],
+            vec!["/foo"],
+            vec!["foo\u{7}"],
+            vec!["ok", "bad name"],
+            vec![""],
+        ] {
+            assert_eq!(
+                register(&names),
+                Err(CommandRegistryError::Invalid),
+                "names {names:?} must be rejected at registration"
+            );
+        }
+    }
+
+    /// 同一 spec 内的重复别名（跨 spec 的 Duplicate 检查此前覆盖不到）。
+    #[test]
+    fn duplicate_aliases_within_one_spec_are_rejected() {
+        assert_eq!(
+            register(&["foo", "foo"]),
+            Err(CommandRegistryError::Invalid)
+        );
+    }
+
+    /// 跨 spec 重名仍是 Duplicate（带双方 owner），不是 Invalid。
+    #[test]
+    fn cross_spec_duplicates_still_report_the_owner() {
+        let registry = Arc::new(CommandRegistry::new());
+        let owner = crate::plugin::PluginOwner::for_test(PluginId::new("test.commands"));
+        registry.register(owner, spec(&["foo"])).expect("first");
+        assert!(matches!(
+            registry.register(owner, spec(&["foo"])),
+            Err(CommandRegistryError::Duplicate { .. })
+        ));
+    }
+
+    /// 名字校验与 parser 同源：被接受的名字一定能被 parse 到。
+    #[test]
+    fn accepted_names_are_parser_reachable() {
+        assert_eq!(
+            parse_command_input("/help me"),
+            Ok(("help".to_owned(), "me"))
+        );
+        // 校验拒绝的 `foo bar` 形态：parser 只会切出 `foo`。
+        let (name, rest) = parse_command_input("/foo bar").expect("parse");
+        assert_eq!((name.as_str(), rest), ("foo", "bar"));
     }
 }

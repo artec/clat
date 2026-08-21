@@ -160,12 +160,22 @@ impl TrustedProjectApplication {
         request: ApplicationRunRequest,
         run_plugins: Vec<Arc<dyn Plugin>>,
     ) -> Result<RunHandle, ApplicationError> {
-        if self
+        if let Some(previous) = self
             .active_run
             .as_ref()
-            .is_some_and(|handle| !handle.is_finished())
+            .filter(|handle| !handle.is_finished())
         {
-            return Err(ApplicationError::new("another run is already active"));
+            // W1-04：队列已封口 = run 已判定终态、只剩收尾（steer
+            // 回退普通提交正是落在这个窗口）。有界等待收尾完成后
+            // 允许立即开新 run；未到终态的活动 run 仍然拒绝。
+            if !previous.steering.is_sealed() {
+                return Err(ApplicationError::new("another run is already active"));
+            }
+            if !wait_for_sealed_wrapup(previous) {
+                return Err(ApplicationError::new(
+                    "the previous run is still finishing; submit again in a moment",
+                ));
+            }
         }
         if let Some(previous) = self.active_run.take() {
             previous.join()?;
@@ -235,7 +245,10 @@ impl TrustedProjectApplication {
         // elicitation 的问答拿到的都是本 run 的模型配置、审批人与前
         // 端；worker 收尾 clear（跨 run 不泄漏旧 approver）。记账单元
         // 与 recorder 共享（INV-S6：journal 落账点在 ModelResponded）。
+        // sampling 预算（W1-03）同样 per-run：独立于权限档位的花费闸
+        // 门，跨 WASM/MCP/DSH 三种传输共用，run 结束即随上下文丢弃。
         let sampling_usage = Arc::new(Mutex::new(Usage::default()));
+        let sampling_budget = Arc::new(Mutex::new(crate::plugin_host::SamplingBudget::per_run()));
         self.plugin_host
             .install(crate::plugin_host::RunHostContext {
                 providers: Arc::clone(&self.providers),
@@ -250,6 +263,7 @@ impl TrustedProjectApplication {
                 asker: asker_for_host,
                 cancel: cancel.clone(),
                 usage_cell: Arc::clone(&sampling_usage),
+                budget: sampling_budget,
             });
         let busy = Arc::new(AtomicBool::new(true));
         let join_slot = Arc::new(Mutex::new(None));
@@ -579,8 +593,9 @@ impl TrustedProjectApplication {
     }
 
     /// 运行中插话（DSH `steer()`）：消息进入活动 run 的队列，在下一次
-    /// 模型请求边界并入对话（不打断在途请求）。run 不在执行时返回
-    /// `NotRunning`，调用方回退为普通提交。未被 claim 的消息不落盘。
+    /// 模型请求边界并入对话（不打断在途请求）。run 不在执行、或已到
+    /// 终态（队列封口，W1-04）时返回 `NotRunning`，调用方回退为普通
+    /// 提交。未被 claim 的消息不落盘。
     pub fn steer(&self, text: impl Into<String>) -> SteerOutcome {
         let Some(handle) = &self.active_run else {
             return SteerOutcome::NotRunning;
@@ -588,8 +603,12 @@ impl TrustedProjectApplication {
         if handle.is_finished() {
             return SteerOutcome::NotRunning;
         }
-        handle.steering.push(text);
-        SteerOutcome::Queued
+        // 入队与终态封口同一把锁（W1-04）：Sealed 意味着 run 已判定
+        // 结束、消息永远无人 claim——绝不能当 Queued 返回。
+        match handle.steering.try_push(text) {
+            crate::run::PushOutcome::Accepted => SteerOutcome::Queued,
+            crate::run::PushOutcome::Sealed => SteerOutcome::NotRunning,
+        }
     }
 
     /// 召回最后一条未 claim 的插话（ESC 栈式语义的第一优先级）：
@@ -695,6 +714,23 @@ impl RunHandle {
 struct CapturingEventSink {
     inner: Box<dyn EventSink + Send>,
     text: Arc<Mutex<String>>,
+}
+
+/// 已封口 run 收尾的有界等待上限（W1-04 回退路径）：正常收尾是
+/// journal flush + run-scope teardown，毫秒级；超时说明收尾本身卡住，
+/// 宁可让用户重按一次 Enter 也不阻塞 UI 或放弃线程。
+const SEALED_RUN_WRAPUP_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// 轮询等待一个已封口 run 的 `busy` 落定；超时返回 false。
+fn wait_for_sealed_wrapup(previous: &RunHandle) -> bool {
+    let deadline = std::time::Instant::now() + SEALED_RUN_WRAPUP_WAIT;
+    while !previous.is_finished() {
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    true
 }
 
 impl EventSink for CapturingEventSink {

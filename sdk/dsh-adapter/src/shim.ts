@@ -490,8 +490,26 @@ export class Shim {
     const first = iterator.next()
     const cleanup = normalizeCleanup(first.value)
     const entry = () => {
-      void iterator.return?.(undefined)
-      for (const fn of cleanup) fn()
+      // 每步隔离（W1-06）：单个 cleanup 抛错不得截断同一 effect 的
+      // 其余拆解步骤；全部尝试完再聚合上报。
+      const errors: unknown[] = []
+      try {
+        void iterator.return?.(undefined)
+      } catch (error) {
+        errors.push(error)
+      }
+      for (const fn of cleanup) {
+        try {
+          fn()
+        } catch (error) {
+          errors.push(error)
+        }
+      }
+      if (errors.length > 0) {
+        this.#host.log(`effect cleanup failed (${errors.length} step(s)):`)
+        for (const error of errors) this.#host.log(' ', error)
+        throw errors.length === 1 ? errors[0] : new AdapterError('CLEANUP_FAILED', `${errors.length} cleanup steps failed`)
+      }
     }
     this.#cleanups.push(entry)
     return async () => {
@@ -517,16 +535,28 @@ export class Shim {
     }
   }
 
-  /** LIFO dispose (INV-D4): stdin EOF / shutdown path. */
+  /** LIFO dispose (INV-D4): stdin EOF / shutdown path. 每步隔离（W1-06）：
+   * 单个 cleanup 抛错不得截断其余逆序拆解，也不得跳过 tools/web 清空；
+   * 全部尝试完后聚合报错一次，幂等性不变。 */
   async disposeAll(): Promise<void> {
     if (this.#disposed) return
     this.#disposed = true
+    const errors: unknown[] = []
     while (this.#cleanups.length > 0) {
       const cleanup = this.#cleanups.pop()
-      if (cleanup !== undefined) await cleanup()
+      if (cleanup === undefined) continue
+      try {
+        await cleanup()
+      } catch (error) {
+        errors.push(error)
+      }
     }
     this.#tools.clear()
     this.#web.dispose()
+    if (errors.length === 1) throw errors[0]
+    if (errors.length > 1) {
+      throw new AdapterError('CLEANUP_FAILED', `${errors.length} effect cleanups failed during dispose`)
+    }
   }
 
   #assertLive(): void {

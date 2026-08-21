@@ -343,8 +343,9 @@ impl App {
 
     /// 运行中提交 = 插话（DSH `steer()`）：消息入队，在下一次模型请求
     /// 边界并入；入队即刻在转录尾部出现 dim 的 pending 回显（INV-SV1），
-    /// claim 时由 `SteeringApplied` 升级为正式用户块。run 恰好收尾的
-    /// 竞争窗口（NotRunning）回退为普通提交。
+    /// claim 时由 `SteeringApplied` 升级为正式用户块。run 已判定终态
+    /// （NotRunning，W1-04 封口语义）时回退普通提交；回退提交若撞上
+    /// 收尾窗口失败，文本退还编辑框——绝不丢用户输入。
     pub(super) fn steer_input(&mut self) {
         let value = self.input.take();
         let value = value.trim().to_owned();
@@ -367,16 +368,24 @@ impl App {
                 self.conversation.push_pending_steering(value);
                 self.flash_status("steering queued — applies at the next model step");
             }
-            // run 恰好收尾的竞争窗口回退为普通提交——steering 不携带
-            // 附件（M6：附件只能随空闲态的新消息走）。
-            _ => self.start_run(value, Vec::new()),
+            // 回退普通提交——steering 不携带附件（M6：附件只能随空闲
+            // 态的新消息走）。提交失败（前一个 run 收尾尚未完成）时把
+            // 文本退回编辑框，用户重按 Enter 即可。
+            _ => {
+                let fallback = value.clone();
+                if !self.start_run(value, Vec::new()) {
+                    self.input.insert_str(&fallback);
+                }
+            }
         }
     }
 
-    fn start_run(&mut self, prompt: String, attachments: Vec<std::path::PathBuf>) {
+    /// 启动一次 run；返回是否成功（失败已 flash 原因——steer 回退
+    /// 路径据此把文本退还编辑框）。
+    fn start_run(&mut self, prompt: String, attachments: Vec<std::path::PathBuf>) -> bool {
         if !self.config.is_configured() {
             self.flash_status("model is not configured — run /model first");
-            return;
+            return false;
         }
         let sender = self
             .event_sender
@@ -403,7 +412,7 @@ impl App {
             Ok(handle) => handle,
             Err(error) => {
                 self.flash_status(format!("failed to start run: {error}"));
-                return;
+                return false;
             }
         };
         self.conversation.push_user(prompt);
@@ -425,5 +434,6 @@ impl App {
                 let _ = sender.send(UiEvent::Worker(WorkerMessage::Done(result)));
             }
         });
+        true
     }
 }

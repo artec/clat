@@ -42,12 +42,12 @@ CLAT 用户侧的配置（`~/.clat/mcp.json`）：
 | DSH 侧 | 适配器翻译成 | 说明 |
 |---|---|---|
 | `ctx.tools.register(defineTool(...))` | MCP `tools/list` + `tools/call` | 接受 `defineTool()` 的产物（其 `parameters` 已是编译后的 JSON Schema，`output.render` 产出模型可见内容）；手工构造的未编译 DSL 会被拒绝并引导 |
-| `ctx.llm.stream(options)` | MCP `sampling/createMessage` | 宿主会话模型 + 宿主权限门 + usage 记账；`provider`/`model` 被忽略（stderr 记录）；结果适配回 dsh-llm 的 chunk 协议（BlockAssembler 等聚合器可直接消费） |
+| `ctx.llm.stream(options)` | MCP `sampling/createMessage` | 宿主会话模型 + 宿主权限门（审批参数为完整出站正文）+ per-run 花费预算（64 次/run 硬上限，跨传输共享）+ usage 记账；`provider`/`model` 被忽略（stderr 记录）；结果适配回 dsh-llm 的 chunk 协议（BlockAssembler 等聚合器可直接消费） |
 | `ctx.userQuestions.ask({...})` | MCP `elicitation/create` | 整批问题翻成一个表单，宿主逐字段问；单选 options → 选择字段（无损）；`multiSelect` 降级为逗号分隔文本（见"已知收窄"） |
 | `ctx.web.registerSearchProvider(...)` | 内置 `web_search` 工具 | seam 语义 1:1（执行期选源、maxResults 截断、round-robin 多问合并去重）；工具镜像 dsh-tool-web 的 queries 参数与 sources 输出，标注 readOnly+openWorld |
 | `ctx.web.registerFetchProvider(...)` | （登记，v0 无工具面） | 注册被接受，但适配器 v0 不暴露 `web_fetch` 工具（stderr 提示） |
 | `ctx.get(key)` | 恒 undefined | `launchEnvironmentOf(ctx)` 库内自动回退 `process.env`——API key 走环境变量的插件无需改动 |
-| `ctx.effect(gen)` / `ctx.logger` | 进程内实现 | 清理器 LIFO；日志全部走 stderr |
+| `ctx.effect(gen)` / `ctx.logger` | 进程内实现 | 清理器 LIFO，单个清理器抛错不截断其余清理（隔离 + 聚合上报）；日志全部走 stderr |
 | 插件导出 `Config` | serveClat 启动时校验 | 可调用则先验 `config`，抛错即拒绝启动 |
 
 **拒绝与降级面**（两类，语义对齐 DSH 宿主，2026-08-21 社区插件实测定稿）：

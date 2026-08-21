@@ -1,6 +1,8 @@
 use super::trusted::glm_mcp_pack_from_control;
 use super::*;
+use crate::RunEvent;
 use crate::control_storage::workspace_state::CasOutcome;
+use crate::event::EventSink;
 use crate::model::ModelConfig;
 use crate::permission::PermissionApprover;
 use crate::presets::preset_by_id;
@@ -1382,6 +1384,87 @@ fn steered_run_replays_identically() {
 
     let live_events = live.lock().unwrap().clone();
     assert_conversation_parity(&live_events, &events);
+    std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
+}
+
+/// W1-04 红测门闩：recorder 在 `finish()` 收尾期才把终态事件转发给
+/// UI sink——在 RunCompleted 的 emit 内阻塞，把 worker 精确卡在
+/// "终态已判定、busy 仍为 true"的竞争窗口里。
+struct TerminalGateSink {
+    events: Arc<Mutex<Vec<RunEvent>>>,
+    release: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl EventSink for TerminalGateSink {
+    fn emit(&mut self, event: RunEvent) {
+        let terminal = matches!(event, RunEvent::RunCompleted { .. });
+        self.events.lock().unwrap().push(event);
+        if terminal {
+            // 有界等待：测试线程若在 release 前失败/panic，worker 也能
+            // 自行脱困，不挂死测试进程。
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !self.release.load(std::sync::atomic::Ordering::Acquire) {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "terminal gate was never released"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        }
+    }
+}
+
+/// W1-04：终态判定与 steering 入队必须原子。模型已给出最终回答、
+/// run 收尾（busy=false）尚未完成时，steer() 绝不能返回 Queued——
+/// 那条消息永远不会被 claim，只能被丢弃。要么消息入队并延长 run，
+/// 要么 NotRunning 回退普通提交。pre-fix 本测试红：窗口内 steer
+/// 返回 Queued，消息成为孤儿。
+#[test]
+fn steer_at_the_terminal_boundary_never_queues_an_orphan_message() {
+    let (storage_root, project_root) = roots("steer-terminal-race");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let project = Project::new(&project_root);
+    let mut application = mount(&project, &storage_root, TestBehavior::Success);
+    configure_test_model(&application);
+
+    let shared = Arc::new(Mutex::new(Vec::new()));
+    let release = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (completion, receiver) = mpsc::channel();
+    let handle = application
+        .start_run(ApplicationRunRequest {
+            attachments: Vec::new(),
+            asker: None,
+            prompt: "quick question".into(),
+            approver: allow_all_approver(),
+            events: Box::new(TerminalGateSink {
+                events: Arc::clone(&shared),
+                release: Arc::clone(&release),
+            }),
+            completion,
+        })
+        .unwrap();
+
+    // 等 RunCompleted 到达：此刻 worker 卡在收尾期的终态转发内，
+    // busy 仍为 true——正是审计构造的窗口。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !shared
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|event| matches!(event, RunEvent::RunCompleted { .. }))
+    {
+        assert!(std::time::Instant::now() < deadline, "run never completed");
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert_eq!(
+        application.steer("important addendum"),
+        SteerOutcome::NotRunning,
+        "a run past its terminal decision must not accept steering"
+    );
+    release.store(true, std::sync::atomic::Ordering::Release);
+    handle.join().unwrap();
+    receiver.recv().unwrap().unwrap();
+    application.close().unwrap();
     std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
 }
 

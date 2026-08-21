@@ -95,7 +95,7 @@ Declare the truth about your own tools:
 | `ctx.llm.stream(…)` | MCP `sampling/createMessage` — host session model, host permission gate, usage accounted |
 | `ctx.userQuestions.ask(…)` | MCP `elicitation/create` — one form, fields asked sequentially |
 | `ctx.web.registerSearchProvider(…)` | built-in `web_search` tool (dsh-tool-web semantics: multi-query merge, URL dedup, max 8 results) |
-| `ctx.get` / `ctx.effect` / `ctx.logger` | in-process (`launchEnvironmentOf` falls back to `process.env`; cleanup runs LIFO; logs go to stderr) |
+| `ctx.get` / `ctx.effect` / `ctx.logger` | in-process (`launchEnvironmentOf` falls back to `process.env`; cleanup runs LIFO, a throwing cleanup never truncates the remaining teardown; logs go to stderr) |
 
 Two-tier policy (matching DSH host semantics):
 

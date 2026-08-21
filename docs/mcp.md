@@ -124,14 +124,30 @@ requests found inside POST response streams).
 
 - **sampling** (`sampling/createMessage`) — the server asks CLAT to run
   the configured model on its behalf. Every call passes the **permission
-  gate** first: you see an approval dialog naming the server, the token
-  budget (clamped to 8192 output tokens), and a message preview —
-  deny/unavailable fail closed. Approved calls run on the session's
-  model (`modelPreferences`/`includeContext` are deliberately ignored —
-  the latter never sends conversation context to a server). Their token
-  usage is accounted: it lands in the current step's
-  `assistant/message` usage (so live and replayed session stats stay
-  equal) and in the run totals.
+  gate** first: the approval dialog's arguments are the **full outbound
+  payload** — the complete `systemPrompt`, every message (role + full
+  text), maxTokens, and temperature — not a truncated preview, so what
+  you review is exactly what leaves for the provider (the total outbound
+  text is capped at 262,144 **characters** — a character cap, not bytes;
+  larger requests are rejected outright). Deny/unavailable fail closed.
+  Approved calls run on the session's model (`modelPreferences`/
+  `includeContext` are deliberately ignored — the latter never sends
+  conversation context to a server). Their token usage is accounted: it
+  lands in the current step's `assistant/message` usage (so live and
+  replayed session stats stay equal) and in the run totals.
+- **sampling spend budget (per run)** — plugin sampling also passes a
+  **budget gate** that is independent of the permission mode: at most
+  **64 requests per run** across every transport (MCP, WASM, DSH
+  adapter), plus a **1,000,000-token spend guard**. A reservation
+  (input estimate at ~4 characters/token + the requested max output) is
+  taken **before** the model call and fails closed when exceeded; it is
+  reconciled against the actual usage when the provider reports one
+  (otherwise the reservation stands). The token figure is an
+  **approximate guard, not a precise ceiling** — the heuristic can
+  underestimate CJK or code — so the strict bounds are the 64-request
+  hard cap and the 8,192-token per-request output clamp. Full Access
+  skips the approval dialog, not the budget. The budget resets on the
+  next run.
 - **elicitation** (`elicitation/create`, protocol ≥ 2025-06-18) — the
   server asks **you** a form. CLAT asks the fields one at a time through
   the same dialog the `ask_user` tool uses (first question carries the
@@ -149,9 +165,12 @@ model-call channel. Unknown server requests (other than `ping`, which
 is answered with `{}`) get `-32601`; a panicking handler is contained
 as `-32603`.
 
-While such a request is in flight, the pending `tools/call` deadline
-extends (60 s steps, capped at +10 min) — your thinking time on an
-elicitation never kills the tool call. `Esc` still cancels immediately.
+While a request **on that same connection** is in flight, the pending
+`tools/call` deadline extends (60 s steps, capped at +10 min) — your
+thinking time on an elicitation never kills the tool call. The pending
+count is per server: one server's (or a WASM plugin's) in-flight request
+never extends an unrelated server's deadline. `Esc` still cancels
+immediately.
 
 ## Security posture
 
@@ -177,10 +196,12 @@ Resource limits protect against misbehaving or malicious servers:
 | `tools/list` page timeout | 30 s, at most 32 pages |
 | tools per server | 512 |
 | pagination cursors | repeated cursor aborts |
-| `tools/call` timeout | 120 s (+60 s/step while a server request is pending, ≤ +10 min) |
+| `tools/call` timeout | 120 s (+60 s/step while a server request is pending **on that connection**, ≤ +10 min) |
 | tool result size | 1 MiB |
 | server request queue | 16 (flood drops with diagnostics) |
 | sampling output | ≤ 8192 tokens; ≤ 32 messages; text content only |
+| sampling outbound text | ≤ 262,144 characters, systemPrompt + messages (character cap, not bytes) |
+| sampling budget | 64 requests per run (hard) + 1,000,000-token spend guard (approximate; see above) |
 
 The transport uses a single reader thread that routes responses by request id
 (out-of-order and concurrent responses are handled) and a bounded writer

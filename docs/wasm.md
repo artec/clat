@@ -27,7 +27,10 @@ server, minus the process and the protocol plumbing.
   while the component itself executes — waiting on a user dialog or a
   model call costs nothing) and memory-capped (256 MB); a spinning or
   leaking plugin fails as a tool error, never kills the run or the
-  host.
+  host. The run's **cancel token is an execution-time capability**: an
+  epoch interruption traps the component within milliseconds of `Esc`,
+  so a spinning plugin cannot outlast your cancel until its fuel runs
+  out (host waits still cost neither fuel nor interruption).
 
 ## Configuration
 

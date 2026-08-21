@@ -31,7 +31,7 @@ session is ready the conversation appears and input unlocks.
 
 | Key | Action |
 |---|---|
-| `Enter` | submit; while a run is active, submit steering — the message joins the run at the next step boundary and appears immediately as a dim `· queued` block at the end of the conversation (the `steering·N` badge counts the same queue) |
+| `Enter` | submit; while a run is active, submit steering — the message joins the run at the next step boundary and appears immediately as a dim `· queued` block at the end of the conversation (the `steering·N` badge counts the same queue). If the run has just reached its end, the message is submitted as a new run instead — a submitted message is never silently dropped |
 | `Shift+Enter`, `Alt+Enter`, `Ctrl+J` | insert a line break |
 | `←` / `→`, `Home`, `End` | move the cursor |
 | `Backspace` / `Delete` | edit |
