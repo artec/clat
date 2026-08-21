@@ -30,7 +30,7 @@ There are three scope-specific explicit catalogs:
 | Scope | Lifetime | Built-in responsibilities |
 |---|---|---|
 | Bootstrap | Application open → trust decision | no plugin scope at all — a zero-write control-plane preflight (`sentinel` classification, read-only trust lookup) |
-| Trusted Project | trust accepted → project close | control-plane `ConfigStore`, DSH session persistence (`SessionService`), Tool/Provider/Prompt/**Command** registries, native tools, MCP adapter, permission and Agent services, monitor, project instructions, tool-result pruning, compaction, per-session todo, session-title services |
+| Trusted Project | trust accepted → project close | control-plane `ConfigStore`, DSH session persistence (`SessionService`), Tool/Provider/Prompt/**Command** registries, native tools, MCP adapter, **WASM plugin adapter** (Phase 2a), permission and Agent services, monitor, project instructions, tool-result pruning, compaction, per-session todo, session-title services |
 | Run | one active run | `CancelToken` and injected `PermissionApprover`; worker ownership stays in Application |
 
 The batch-1 capability plugins (`ProjectInstructionsPlugin`,
@@ -315,9 +315,23 @@ layering is deliberate:
   in bounded steps; `Esc` still cancels immediately.
 
 This split is load-bearing for the plugin bridge (docs/research/
-dsh-plugin-bridge.md): a future WASM/WIT plugin runtime will be a third
-transport calling the same bridge — one external contract, no second
-plugin API.
+dsh-plugin-bridge.md): the WASM/WIT plugin runtime (Phase 2a,
+`src/plugins/wasm.rs`) is exactly that third transport — components
+compiled against `wit/plugin.wit` (world `clat:plugin@0.1.0`, a
+transliteration of the MCP leaf semantics) import the same bridge
+methods. The adapter loads components from `~/.clat/plugins.json`
+synchronously at mount, registers their tools through the same lease
+discipline (`wasm_{plugin}_{tool}`), reports into the same `/mcp`
+status panel, and enforces zero-grant sandboxing (a `WasiCtx` with no
+preopens/env/stdio/sockets — capability absence is the boundary),
+fuel-bounded execution (fuel burns only while the component executes —
+host-call waits are free, unlike a wall-clock deadline), and a 256 MB
+memory cap. Phase 2b adds capability grants: preopened directories are
+re-evaluated from the permission mode on every tool call (project root
+read-only always; read-write for write-capable plugins under Project
+Write; configured extra dirs under Full Access), rebuilding the
+instance whenever the mode changes. See [WASM plugins](wasm.md) and
+docs/todo/wasm-plugin-runtime.md.
 
 ## TUI event loop
 

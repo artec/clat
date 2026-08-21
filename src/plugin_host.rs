@@ -43,6 +43,36 @@ const NUMBER_RETRIES: usize = 2;
 /// 可选枚举/布尔字段在选项尾部追加的跳过项标签。
 const SKIP_LABEL: &str = "(skip)";
 
+/// sampling/elicitation 的发起方：MCP 服务器或 WASM 插件（权限弹框
+/// 的工具标签、理由措辞与关联都用它——桥本身传输无关）。
+#[derive(Clone, Debug)]
+pub enum PluginSource {
+    Mcp(String),
+    Wasm(String),
+}
+
+impl PluginSource {
+    fn label(&self) -> String {
+        match self {
+            Self::Mcp(name) => format!("mcp:{name}"),
+            Self::Wasm(name) => format!("wasm:{name}"),
+        }
+    }
+
+    fn kind_word(&self) -> &'static str {
+        match self {
+            Self::Mcp(_) => "MCP server",
+            Self::Wasm(_) => "WASM plugin",
+        }
+    }
+
+    fn name(&self) -> &str {
+        match self {
+            Self::Mcp(name) | Self::Wasm(name) => name,
+        }
+    }
+}
+
 /// sampling 的一条消息（v1 仅文本）。
 #[derive(Debug)]
 pub struct SamplingMessage {
@@ -118,7 +148,7 @@ pub enum PluginHostError {
 }
 
 impl PluginHostError {
-    fn json_rpc(self) -> (i64, String) {
+    fn json_rpc(&self) -> (i64, String) {
         // -32601/-32602/-32603 是 JSON-RPC 标准码；宿主状态类失败用
         // 服务器自定义区 -32000，消息自带可读原因。
         const SERVER_ERROR: i64 = -32000;
@@ -143,6 +173,14 @@ impl PluginHostError {
             Self::InvalidAnswer(message) => (-32602, format!("invalid answer: {message}")),
             Self::Cancelled => (SERVER_ERROR, "cancelled".into()),
         }
+    }
+}
+
+impl std::fmt::Display for PluginHostError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // 复用 JSON-RPC 映射的消息文案（wasm 宿主等非 MCP 调用方也拿
+        // 到同一份可读原因）。
+        formatter.write_str(&self.json_rpc().1)
     }
 }
 
@@ -233,7 +271,7 @@ impl PluginHostBridge {
     /// 在 dispatcher 线程上执行（阻塞等人/等模型是合法的）。
     pub fn sample(
         &self,
-        server: &str,
+        source: PluginSource,
         request: SamplingRequest,
     ) -> Result<SamplingOutcome, PluginHostError> {
         let _pending = PendingGuard::new(&self.pending);
@@ -253,7 +291,7 @@ impl PluginHostBridge {
         if !full_access {
             let decision = context
                 .approver
-                .decide(self.sampling_permission_request(server, &request));
+                .decide(self.sampling_permission_request(&source, &request));
             match decision {
                 PermissionDecision::Allow => {}
                 PermissionDecision::Ask { .. } => {
@@ -333,7 +371,7 @@ impl PluginHostBridge {
     /// sampling 的权限请求（工具名仅用于弹框展示与日志关联）。
     fn sampling_permission_request(
         &self,
-        server: &str,
+        source: &PluginSource,
         request: &SamplingRequest,
     ) -> PermissionRequest {
         let preview: String = request
@@ -343,15 +381,17 @@ impl PluginHostBridge {
             .map(|message| message.text.chars().take(160).collect())
             .unwrap_or_default();
         PermissionRequest {
-            tool: format!("mcp:{server}:sampling"),
+            tool: format!("{}:sampling", source.label()),
             effect: ToolEffect::Execute,
             reason: format!(
-                "MCP server `{server}` asks CLAT to run the configured model \
+                "{} `{}` asks CLAT to run the configured model \
                  (up to {} output tokens) and return the result",
+                source.kind_word(),
+                source.name(),
                 request.max_tokens.min(SAMPLING_MAX_OUTPUT)
             ),
             arguments: json!({
-                "server": server,
+                "source": source.label(),
                 "maxTokens": request.max_tokens.min(SAMPLING_MAX_OUTPUT),
                 "messages": request.messages.len(),
                 "preview": preview,
@@ -562,7 +602,7 @@ impl McpServerRequestHandler for McpHostHandler {
             "sampling/createMessage" => {
                 let request = parse_sampling_params(&params)?;
                 self.bridge
-                    .sample(&self.server, request)
+                    .sample(PluginSource::Mcp(self.server.clone()), request)
                     .map(|outcome| {
                         json!({
                             "role": "assistant",
@@ -571,7 +611,7 @@ impl McpServerRequestHandler for McpHostHandler {
                             "stopReason": outcome.stop_reason,
                         })
                     })
-                    .map_err(PluginHostError::json_rpc)
+                    .map_err(|error| error.json_rpc())
             }
             "elicitation/create" => {
                 let form = parse_elicitation_params(&params)?;
@@ -584,7 +624,7 @@ impl McpServerRequestHandler for McpHostHandler {
                         ElicitOutcome::Declined => json!({ "action": "declined" }),
                         ElicitOutcome::Cancelled => json!({ "action": "cancel" }),
                     })
-                    .map_err(PluginHostError::json_rpc)
+                    .map_err(|error| error.json_rpc())
             }
             other => Err((
                 -32601,
@@ -937,7 +977,9 @@ mod tests {
     #[test]
     fn sampling_and_elicitation_without_a_run_fail_closed() {
         let bridge = PluginHostBridge::shared();
-        let error = bridge.sample("srv", sampling_request()).unwrap_err();
+        let error = bridge
+            .sample(PluginSource::Mcp("srv".into()), sampling_request())
+            .unwrap_err();
         assert!(matches!(error, PluginHostError::NoActiveRun));
         let error = bridge
             .elicit(ElicitForm {
@@ -964,7 +1006,7 @@ mod tests {
         );
         bridge.clear();
         assert!(matches!(
-            bridge.sample("srv", sampling_request()),
+            bridge.sample(PluginSource::Mcp("srv".into()), sampling_request()),
             Err(PluginHostError::NoActiveRun)
         ));
     }
@@ -989,7 +1031,9 @@ mod tests {
             approver.clone(),
             None,
         );
-        let outcome = bridge.sample("srv", sampling_request()).expect("sample");
+        let outcome = bridge
+            .sample(PluginSource::Mcp("srv".into()), sampling_request())
+            .expect("sample");
         assert_eq!(outcome.text, "bonjour");
         let seen = approver.decisions.lock().expect("decisions");
         let request = seen.last().expect("one approval request");
@@ -1023,7 +1067,9 @@ mod tests {
             None,
             Some(crate::permission::PermissionMode::FullAccess),
         );
-        let outcome = bridge.sample("srv", sampling_request()).expect("sample");
+        let outcome = bridge
+            .sample(PluginSource::Mcp("srv".into()), sampling_request())
+            .expect("sample");
         assert_eq!(outcome.text, "fa");
         assert!(
             approver.decisions.lock().expect("decisions").is_empty(),
@@ -1057,7 +1103,9 @@ mod tests {
                 approver,
                 None,
             );
-            let error = bridge.sample("srv", sampling_request()).unwrap_err();
+            let error = bridge
+                .sample(PluginSource::Mcp("srv".into()), sampling_request())
+                .unwrap_err();
             assert!(matches!(error, PluginHostError::PermissionDenied(_)));
             let usage = cell.lock().expect("usage cell");
             assert_eq!(

@@ -1,0 +1,20 @@
+[package]
+name = "clat-read-plugin"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Phase 2b 试点：原生读工具的 WASM 移植（read_file / list_dir，effect
+# Read）+ write_file（effect Write——授予矩阵的验证车：RO 档写必须被
+# preopen 权限拒绝）。文件访问经宿主 preopen 的 `project` guest 路径
+# （Phase 2b 能力授予，docs/todo/wasm-plugin-runtime.md §5.2）。
+# 构建：cargo build -p clat-read-plugin --target wasm32-wasip2 --release，
+# 产物进 tests/fixtures/wasm/read.wasm。
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.43"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

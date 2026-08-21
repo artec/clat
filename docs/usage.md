@@ -372,6 +372,37 @@ Your answer time on such a question never kills the tool call — its
 timeout extends while the question is on screen. Requests outside an
 active run (an idle connection asking for model calls) are refused.
 
+## WASM plugins
+
+`~/.clat/plugins.json` adds in-process WebAssembly plugins (2026-08-21,
+Phase 2a) — single-file, no Node, sandboxed with zero granted
+capabilities:
+
+```json
+{
+  "digest": { "path": "~/.clat/plugins/digest.wasm" },
+  "greeter": {
+    "path": "~/.clat/plugins/greeter.wasm",
+    "config": { "greeting": "Hola", "upper": true }
+  }
+}
+```
+
+An entry's `config` object is the plugin's own settings — the plugin
+reads it through the SDK's `plugin_config()` helper (an unconfigured
+plugin that expects config fails loudly).
+
+Their tools appear as `wasm_{plugin}_{tool}` (the pilot `digest` plugin
+provides sha256 / base64, and the `read` plugin ports the native read
+tools — see `plugins/` in the repository), and the plugins show up in
+`/mcp` with transport `wasm`. A plugin may ask for model calls or user
+questions through the same dialogs MCP servers use. File access follows
+the permission mode: reads of the project root always work, writes only
+under Project Write / Full Access (extra directories listed in
+`plugins.json` under `dirs` open up under Full Access only); switching
+`/perm` applies to the very next tool call. See
+[WASM plugins](wasm.md) for the authoring side.
+
 ## Storage layout
 
 Session facts live in append-only DSH-compatible JSONL logs (zstd-framed)

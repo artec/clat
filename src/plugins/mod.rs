@@ -14,6 +14,7 @@ mod storage;
 mod title;
 mod todo;
 mod tools;
+mod wasm;
 
 #[cfg(test)]
 mod tests;
@@ -37,6 +38,7 @@ pub(crate) use todo::TodoPlugin;
 pub(crate) use tools::{
     NativeInteractionToolsPlugin, NativeReadToolsPlugin, NativeWriteToolsPlugin, ToolRegistryPlugin,
 };
+pub(crate) use wasm::WasmAdapterPlugin;
 
 use crate::plugin::Plugin;
 use crate::{CancelToken, PermissionApprover};

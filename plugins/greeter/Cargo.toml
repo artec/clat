@@ -1,0 +1,23 @@
+[package]
+name = "clat-greeter-plugin"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Phase 2c 作者模板（最小心火箭）+ config 端到端样例：只依赖 SDK，
+# 经 `clat:plugin/config` 读自己的配置。构建：
+# cargo build -p clat-greeter-plugin --target wasm32-wasip2 --release，
+# 产物进 tests/fixtures/wasm/greeter.wasm。
+#
+# plugins.json 示例：
+# { "greeter": { "path": "…/greeter.wasm",
+#                "config": { "greeting": "Hola", "upper": true } } }
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+clat-plugin = { path = "../../sdk/clat-plugin" }
+wit-bindgen = "0.43"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

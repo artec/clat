@@ -53,6 +53,21 @@ impl<'a> PluginContext<'a> {
         self.registry.require(key)
     }
 
+    /// 可选服务获取：descriptor `optional` 声明的服务缺席时返回
+    /// None（不构成挂载失败）；未声明依赖与类型不匹配仍是错误。
+    pub fn try_require<T: ?Sized + Send + Sync + 'static>(
+        &self,
+        key: ServiceKey<T>,
+    ) -> Result<Option<Arc<T>>, ServiceError> {
+        if !self.dependencies.contains(&key.id()) {
+            return Err(ServiceError::UndeclaredDependency {
+                plugin: self.owner,
+                service: key.id(),
+            });
+        }
+        self.registry.try_require(key)
+    }
+
     pub fn provide<T: ?Sized + Send + Sync + 'static>(
         &mut self,
         key: ServiceKey<T>,

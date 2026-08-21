@@ -1,0 +1,20 @@
+[package]
+name = "clat-digest-plugin"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# dogfood 试点（Phase 2a 起，2c 迁移到 SDK）：纯计算组件——sha256
+# 摘要与 base64 编解码。构建：
+# cargo build -p clat-digest-plugin --target wasm32-wasip2 --release，
+# 产物进 tests/fixtures/wasm/digest.wasm。
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+clat-plugin = { path = "../../sdk/clat-plugin" }
+wit-bindgen = "0.43"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"

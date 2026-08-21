@@ -538,6 +538,16 @@ impl TrustedProjectApplication {
                 glm_mcp_pack_from_control(&control),
                 Arc::clone(&plugin_host),
             )) as Arc<dyn Plugin>,
+            Arc::new(crate::plugins::WasmAdapterPlugin::new(
+                storage_root.clone(),
+                Arc::clone(&plugin_host),
+                project.root().to_owned(),
+                if permission_modes {
+                    Some(Arc::clone(&permission_mode))
+                } else {
+                    None
+                },
+            )) as Arc<dyn Plugin>,
             Arc::new(crate::plugins::DefaultPermissionPlugin::new(
                 permission_source,
             )),

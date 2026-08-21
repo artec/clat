@@ -5,6 +5,18 @@ edition = "2024"
 description = "A fast, local-first, open-source command-line agent runtime"
 license-file = "LICENSE"
 
+# 插件桥 Phase 2（docs/todo/wasm-plugin-runtime.md）：试点插件是
+# workspace 成员（构建它们需要 `rustup target add wasm32-wasip2`，
+# 构建 clat 本体不需要）。根包隐式属于本 workspace。
+[workspace]
+members = [
+    "plugins/digest",
+    "plugins/greeter",
+    "plugins/probe",
+    "plugins/read",
+    "sdk/clat-plugin",
+]
+
 [[bin]]
 name = "clat"
 path = "src/main.rs"
@@ -43,6 +55,18 @@ url = "2"
 zstd = "0.13"
 # SessionId / message ids are UUIDs, matching DSH's crypto.randomUUID().
 uuid = { version = "1", features = ["v4"] }
+# WASM 组件插件运行时（插件桥 Phase 2a）。最小特性集（尺寸闸门实测
+# +8.69MB→15.56MB，docs/research/dsh-plugin-bridge.md §3）：cranelift
+# JIT + component-model（WIT）+ 运行时 + wat（测试用文本组件）。
+# 刻意不带 async/pooling/cache 等默认特性——按需再加。
+wasmtime = { version = "48", default-features = false, features = [
+    "cranelift",
+    "component-model",
+    "runtime",
+    "std",
+    "wat",
+] }
+wasmtime-wasi = "48.0.0"
 
 # flock-based storage-root lease (Unix); a build-only C dependency at most.
 [target.'cfg(unix)'.dependencies]

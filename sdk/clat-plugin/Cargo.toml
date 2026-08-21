@@ -1,0 +1,15 @@
+[package]
+name = "clat-plugin"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "CLAT WASM plugin SDK: DSL over wit-bindgen + pinned dependencies"
+
+# Phase 2c（docs/todo/wasm-plugin-runtime.md §5.2.2）：插件作者的人机
+# 工学层。依赖在此单点钉靶（INV-K3）——宿主 world 或 bindgen 升级时
+# 只改这里，插件无须各自追版本。
+
+[dependencies]
+wit-bindgen = "0.43"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

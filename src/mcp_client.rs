@@ -887,12 +887,18 @@ fn sanitize_segment(segment: &str) -> String {
 /// 两段都清洗；总长超过 64 截断为 56 + 稳定短哈希，保证唯一性靠
 /// 注册表去重。空段返回 None（工具被跳过）。
 pub fn qualify_tool_name(server: &str, tool: &str) -> Option<String> {
-    let server = sanitize_segment(server);
-    let tool = sanitize_segment(tool);
-    if server.is_empty() || tool.is_empty() {
+    qualify_prefixed_tool_name("mcp", server, tool)
+}
+
+/// [`qualify_tool_name`] 的前缀泛化（wasm 插件共用同一清洗/截断/去重
+/// 纪律，INV-W2）：`{prefix}_{a}_{b}`。
+pub fn qualify_prefixed_tool_name(prefix: &str, a: &str, b: &str) -> Option<String> {
+    let a = sanitize_segment(a);
+    let b = sanitize_segment(b);
+    if a.is_empty() || b.is_empty() {
         return None;
     }
-    let qualified = format!("mcp_{server}_{tool}");
+    let qualified = format!("{prefix}_{a}_{b}");
     if qualified.len() <= 64 {
         return Some(qualified);
     }

@@ -1,0 +1,129 @@
+// clat 插件契约 v0.1.0（插件桥 Phase 2a，docs/todo/wasm-plugin-runtime.md）
+//
+// 本 world 逐字镜像 MCP 的叶子语义面：tools 是组件对宿主的导出
+// （= MCP 的 tools/list + tools/call），sampling/elicitation 是宿主
+// 向组件提供的导入（= MCP 的 sampling/createMessage 与
+// elicitation/create）。语义（权限门、usage 记账、顺序单问）全部在
+// 宿主桥 src/plugin_host.rs——一个对外契约、三种传输
+// （stdio / HTTP / WIT），不造第二套插件 API。
+//
+// 沙箱缺省：v1 组件无 WASI（无文件系统/网络/环境变量/时钟）——
+// 不 import sampling/elicitation 的组件是纯函数（INV-W1）。
+// 能力授予（预开放目录等）是 Phase 2b，届时以新版本号扩展。
+
+package clat:plugin@0.1.0;
+
+/// 组件导出：工具贡献与调用。effect 自报在本 world 内是诚实的——
+/// 无 WASI 的组件自称 pure 就真的只能计算。
+interface tools {
+    enum effect {
+        pure,
+        read,
+        write,
+        execute,
+        network,
+        external-read,
+        destructive,
+        session-write,
+    }
+
+    record definition {
+        name: string,
+        description: string,
+        /// JSON Schema（object）的 JSON 字符串——与 MCP `inputSchema`
+        /// 同一契约。
+        input-schema: string,
+        effect: effect,
+    }
+
+    /// 组件的工具贡献；加载时调用一次。
+    list-tools: func() -> list<definition>;
+
+    /// 调用一个工具。`arguments` 是按声明的 schema 校验过的 JSON
+    /// 字符串；成功值是给模型看的 JSON 字符串，失败值是工具错误。
+    call: func(name: string, arguments: string) -> result<string, string>;
+}
+
+/// 宿主导入：借宿主做模型调用（镜像 MCP sampling/createMessage）。
+/// 过权限门、计入会话 usage——不是免费通道。
+interface sampling {
+    enum role {
+        user,
+        assistant,
+    }
+
+    record message {
+        role: role,
+        text: string,
+    }
+
+    record request {
+        system-prompt: option<string>,
+        messages: list<message>,
+        max-tokens: u64,
+        temperature: option<f64>,
+    }
+
+    record outcome {
+        text: string,
+        model: string,
+        stop-reason: string,
+    }
+
+    create-message: func(request: request) -> result<outcome, string>;
+}
+
+/// 宿主导入：向用户提问（镜像 MCP elicitation/create）。v1 逐字段
+/// 顺序单问；headless 宿主返回错误。
+interface elicitation {
+    enum field-kind {
+        text,
+        number,
+        boolean,
+        choice,
+    }
+
+    record field {
+        name: string,
+        title: option<string>,
+        description: option<string>,
+        kind: field-kind,
+        /// `kind` 为 `choice` 时的选项标签（其余 kind 忽略）。
+        options: list<string>,
+        required: bool,
+    }
+
+    record form {
+        message: string,
+        fields: list<field>,
+    }
+
+    variant value {
+        text(string),
+        number(f64),
+        boolean(bool),
+    }
+
+    variant outcome {
+        accepted(list<tuple<string, value>>),
+        declined,
+        cancelled,
+    }
+
+    elicit: func(form: form) -> result<outcome, string>;
+}
+
+/// 宿主导入：插件自己的配置（Phase 2c）。宿主从 `plugins.json` 的
+/// `config` 字段序列化为 JSON 字符串传入——组件只能读到自己的配置，
+/// 宿主环境变量与其余插件不可达；未配置时返回错误。不 import 本接
+/// 口的老组件照常实例化（import 是宿主提供的上限）。
+interface config {
+    get: func() -> result<string, string>;
+}
+
+world plugin {
+    export tools;
+    import sampling;
+    import elicitation;
+    import config;
+}

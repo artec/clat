@@ -1,0 +1,19 @@
+[package]
+name = "clat-probe-plugin"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# 测试件（插件桥 Phase 2a）：导入宿主的 sampling/elicitation 并回显
+# 往返结果——锁 INV-W4（桥语义等价）的端到端；另带一个死循环工具
+# 锁 INV-W3（epoch 有界执行）。构建：
+# cargo build -p clat-probe-plugin --target wasm32-wasip2 --release，
+# 产物进 tests/fixtures/wasm/probe.wasm。
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.43"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

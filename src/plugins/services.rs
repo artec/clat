@@ -683,6 +683,19 @@ impl McpStatus {
         }
     }
 
+    /// 追加外部能力计数（wasm 插件与 MCP server 同一状态面板，
+    /// INV-W6）。wasm 同步挂载期、登记任何插件状态前调用；只扩大
+    /// 分母，随后的 record_connected/record_failed_server 照常把
+    /// settled 推到完成。
+    pub(crate) fn extend_configured(&self, extra: usize) {
+        if extra == 0 {
+            return;
+        }
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.configured += extra;
+        }
+    }
+
     fn notify_settled_if_complete(&self) {
         if let Ok(mut inner) = self.inner.lock()
             && inner.connected + inner.failed_servers >= inner.configured

@@ -144,6 +144,19 @@ impl ServiceRegistry {
             .require(key)
     }
 
+    /// 可选获取：服务缺席返回 None（类型不匹配仍为错误——那是装配
+    /// bug，不是缺席）。供 descriptor `optional` 声明的服务使用。
+    pub(crate) fn try_require<T: ?Sized + Send + Sync + 'static>(
+        &self,
+        key: ServiceKey<T>,
+    ) -> Result<Option<Arc<T>>, ServiceError> {
+        match self.require(key) {
+            Ok(service) => Ok(Some(service)),
+            Err(ServiceError::Missing(_)) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
     pub(crate) fn owner_of(&self, id: ServiceId) -> Result<Option<PluginId>, ServiceError> {
         if let Some(entry) = self
             .local

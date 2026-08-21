@@ -35,6 +35,9 @@ generalize those needs into reusable open-source capabilities.
 
 - Built-in file, search, and command tools; MCP servers from
   `~/.clat/mcp.json` over stdio or HTTP
+- In-process WebAssembly plugins from `~/.clat/plugins.json` — single
+  `.wasm` file, zero-grant sandbox, same tool/sampling/elicitation
+  contract as MCP (see [docs/wasm.md](docs/wasm.md))
 - GLM Coding Plan users get the four official GLM MCP servers configured
   automatically
 - `/mcp` shows every server's connection state, registered tools, and
@@ -133,6 +136,8 @@ clat demo     # deterministic model → tool → model loop, no remote model nee
   interactive approvals with mandatory argument review
 - [MCP integration](docs/mcp.md) — `~/.clat/mcp.json`, protocol
   support, tool mapping, resource limits
+- [WASM plugins](docs/wasm.md) — `~/.clat/plugins.json`, the
+  `clat:plugin` WIT contract, authoring guide
 - [Providers](docs/providers.md) — provider adapters and
   vendor-specific behavior (reasoning, caching, quotas)
 - [Persistent state](docs/storage.md) — `~/.clat` layout, session
