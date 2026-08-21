@@ -1,5 +1,7 @@
 # CLAT
 
+English | [中文](README.zh.md)
+
 **cl + at = command-line agent**
 
 [Homepage](https://cl.at.cn)
@@ -14,66 +16,54 @@ generalize those needs into reusable open-source capabilities.
 **Agent workflow**
 
 - Inspects the repository, edits files, and runs commands to verify its
-  own work
-- No turn limits — a run continues as long as the task needs it, and
-  long conversations compact automatically without losing the original
-  history
-- Asks you questions when a decision is yours to make, and accepts
-  steering messages while a run is active
-- Attach local images by dragging them into the terminal — they are
-  stored with the session and sent to vision models
-- Keeps a per-session todo list
+  own work — no turn limits, and long conversations compact
+  automatically without losing the original history
+- Asks you questions when a decision is yours to make, accepts steering
+  messages while a run is active, and keeps a per-session todo list
+- Attach local images by dragging them into the terminal; vision presets
+  read them natively
 
 **Models**
 
-- Presets for DeepSeek, GLM, Qwen, and Kimi — pick one in `/model`,
-  paste an API key, and start; any OpenAI-compatible endpoint works too
+- Official presets for DeepSeek, GLM, Qwen, and Kimi — pick one in
+  `/model`, paste an API key, and start; any OpenAI-compatible endpoint
+  works too
 - Thinking levels, live usage/cache/context telemetry, and provider
-  balance or quota display in the status bar
+  balance or quota in the status bar
 
-**Tools & MCP**
+**Tools & extensions**
 
-- Built-in file, search, and command tools; MCP servers from
-  `~/.clat/mcp.json` over stdio or HTTP
-- In-process WebAssembly plugins from `~/.clat/plugins.json` — single
-  `.wasm` file, zero-grant sandbox, same tool/sampling/elicitation
-  contract as MCP (see [docs/wasm.md](docs/wasm.md))
-- DeepSeek Harness (DSH) plugin authors can serve existing TS leaf
-  plugins to CLAT over MCP with a ~10-line bin via
-  `@artec/clat-dsh-adapter` (see [docs/dsh-plugins.md](docs/dsh-plugins.md))
+- Built-in file, search, and command tools
+- MCP servers from `~/.clat/mcp.json` over stdio or HTTP; `/mcp` shows
+  every server's state and tools
+- Sandboxed in-process WebAssembly plugins — a single `.wasm` file, no
+  Node required
+- DSH (DeepSeek Harness) plugin authors can serve existing TS plugins
+  over MCP with a ~10-line bin — no CLAT-specific fork of their code
 - GLM Coding Plan users get the four official GLM MCP servers configured
   automatically
-- `/mcp` shows every server's connection state, registered tools, and
-  failures
 
 **Safety**
 
 - Three switchable permission modes — **Read Only**, **Project Write**
-  (default: file edits, reads, and network tools run, commands and
-  destructive tools still ask), **Full Access** (also unlocks
-  absolute-path writes) — switched via `/perm` or escalated right from
-  a permission prompt; the mode travels with the conversation
-  (journaled as DSH-compatible `sandbox/mode` events)
-- Every side-effecting action still passes interactive review with full
-  argument inspection in the lower modes — in the TUI and in headless
-  runs alike
-- Read-only tools run freely, including absolute paths outside the
-  project
+  (default), **Full Access** — via `/perm`, or escalated right from a
+  permission prompt
+- Every side-effecting action passes interactive review with full
+  argument inspection — in the TUI and in headless runs alike
 
 **Sessions**
 
 - Conversations persist locally and survive crashes; `/resume` reopens
-  any previous conversation of the project
-- The model titles each conversation automatically; `/rename` edits the
-  title, shown at the top of the conversation
+  any previous conversation, the model titles each one, `/rename` edits
+  it
+- Session journals use the DSH-compatible format — readable by DeepSeek
+  Harness tooling and vice versa
 - All state lives under `~/.clat`
 
 **Interfaces**
 
-- Terminal UI with markdown rendering, scrolling, and text
-  selection/copy
-- A notification sound (or a custom command via `CLAT_BELL_COMMAND`) notifies you when
-  a run finishes or needs your approval
+- Terminal UI with markdown rendering, scrolling, text selection, and a
+  notification sound when a run finishes or needs your approval
 - `clat exec` for headless one-shot runs in scripts and CI, with the
   same permission model
 - `clat demo` for a deterministic offline walkthrough of the agent loop
@@ -105,17 +95,14 @@ irm https://raw.githubusercontent.com/artec/clat/main/install.ps1 | iex
 
 The scripts detect the operating system and architecture, prefer a
 prebuilt binary from GitHub Releases, and fall back to building from
-source when no release is available yet (they will offer to install the
-Rust toolchain if it is missing). First installation needs no extra
-verification tool: the scripts download over HTTPS and require a matching
-SHA-256 manifest. Once installed, `clat upgrade` authenticates future release
-manifests with the public key embedded in the binary.
-
-Prebuilt binaries cover macOS (arm64, x86_64), Windows (x86_64, arm64),
-and Linux (x86_64, aarch64; glibc 2.39+ — Ubuntu 24.04 generation and
-newer). Older Linux distributions are outside the prebuilt baseline; build
-from source instead — the tree bundles SQLite and uses rustls, so a Rust
-toolchain is the only requirement.
+source when no release is available yet (offering to install the Rust
+toolchain if it is missing). Prebuilt binaries cover macOS (arm64,
+x86_64), Windows (x86_64, arm64), and Linux (x86_64, aarch64; glibc
+2.39+ — older distributions build from source; a Rust toolchain is the
+only requirement). First installs verify a SHA-256 manifest; once
+installed, `clat upgrade` additionally authenticates release manifests
+with the Minisign public key embedded in the binary. Details:
+[release signing](docs/releasing.md).
 
 ## Quick start
 
@@ -129,24 +116,34 @@ clat demo     # deterministic model → tool → model loop, no remote model nee
 
 ## Documentation
 
-- [Architecture](docs/architecture.md) — core abstractions, agent loop,
-  trust gate, native read tools
-- [Using the TUI](docs/usage.md) — panels, keys, commands, markdown,
-  scrolling, status line
-- [Model editor](docs/model-editor.md) — provider presets (DeepSeek,
-  GLM, Qwen, Kimi) and advanced fields
-- [Permissions](docs/permissions.md) — safe-by-default policy,
-  interactive approvals with mandatory argument review
+**Using CLAT**
+
+- [Using the TUI](docs/usage.md) — panels, keys, slash commands, image
+  attachments, notifications, thinking levels, and headless `clat exec`
+- [Model editor](docs/model-editor.md) — `/model` presets (DeepSeek,
+  GLM, Qwen, Kimi) and advanced endpoint fields
+- [Permissions](docs/permissions.md) — the three permission modes,
+  interactive approval with argument review, sandbox path fences
+
+**Extending CLAT**
+
 - [MCP integration](docs/mcp.md) — `~/.clat/mcp.json`, protocol
-  support, tool mapping, resource limits
+  support, server-initiated sampling & elicitation, resource limits
 - [WASM plugins](docs/wasm.md) — `~/.clat/plugins.json`, the
-  `clat:plugin` WIT contract, authoring guide
-- [Providers](docs/providers.md) — provider adapters and
-  vendor-specific behavior (reasoning, caching, quotas)
-- [Persistent state](docs/storage.md) — `~/.clat` layout, session
-  journal, crash recovery, integrity guarantees
+  `clat:plugin` WIT contract, and the Rust authoring SDK
+- [DSH plugin porting](docs/dsh-plugins.md) — serve existing DeepSeek
+  Harness TS plugins to CLAT over MCP with `@artec/clat-dsh-adapter`
+
+**Internals**
+
+- [Architecture](docs/architecture.md) — core/frontend layering, the
+  agent loop, the plugin host bridge, trust gate, native tools
+- [Providers](docs/providers.md) — protocol adapters, built-in presets,
+  vendor-specific behavior, retry and deadlines
+- [Persistent state](docs/storage.md) — `~/.clat` layout, the
+  DSH-compatible session journal, crash recovery
 - [Release signing](docs/releasing.md) — Minisign trust root, offline
-  signing, draft publishing, and key rotation
+  signing, platform baseline
 - [Live-model validation](docs/live-validation.md) — the two gates
   before the first dogfood run
 
@@ -188,9 +185,17 @@ Install the current checkout into Cargo's binary directory:
 cargo install --path . --debug --force
 ```
 
+Repository layout beyond the cargo workspace members: `sdk/clat-plugin`
+is the WASM authoring SDK, `sdk/dsh-adapter` is the npm adapter package
+(not a cargo member), `plugins/` holds the WASM pilot plugins, and
+`wit/` defines the plugin contract.
+
 Live model validation is intentionally not part of the normal test suite
 because it requires a user-supplied provider credential and may incur
-provider charges.
+provider charges — see [live-model validation](docs/live-validation.md).
+
+Contributors and coding agents should also read
+[AGENTS.md](AGENTS.md), the project constitution.
 
 ## License
 

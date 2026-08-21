@@ -38,6 +38,7 @@
     "dsh",
     "deepseek-harness",
     "mcp",
+    "model-context-protocol",
     "adapter"
   ],
   "devDependencies": {

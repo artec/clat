@@ -3,9 +3,11 @@
 ## Core and static plugin composition
 
 CLAT has a UI-independent Application facade over a small, Rust-native static
-plugin kernel. Plugin implementations are compiled into the single `clat`
-binary; explicit catalogs select and order them at runtime. CLAT does not load
-Rust dynamic libraries, WASM, JavaScript, or automatically discovered code.
+plugin kernel. Core plugin implementations are compiled into the single `clat`
+binary; explicit catalogs select and order them at runtime. The only code
+loaded beyond the binary is WebAssembly components explicitly listed in
+`~/.clat/plugins.json` (see [WASM plugins](wasm.md)); CLAT never loads Rust
+dynamic libraries, JavaScript, or automatically discovered code.
 
 ```text
 TUI / demo / exec (headless CLI) / future desktop or IDE client
@@ -241,9 +243,9 @@ concurrent directory replacement cannot retarget later I/O outside the root.
 Common generated and dependency directories such as `.git`, `node_modules`,
 `target`, `dist`, and `build` are skipped by default. Side-effecting
 tools pass through the permission model on every call — see
-[permissions](permissions.md) and the audit trail under
-[docs/audit](audit/) for the adversarial review these guarantees went
-through.
+[permissions](permissions.md). The adversarial reviews behind these
+guarantees are recorded under `docs/audit/` (a local-only directory in
+development workspaces).
 
 ## Project trust
 
@@ -332,6 +334,12 @@ read-only always; read-write for write-capable plugins under Project
 Write; configured extra dirs under Full Access), rebuilding the
 instance whenever the mode changes. See [WASM plugins](wasm.md) and
 docs/todo/wasm-plugin-runtime.md.
+
+On the author side, the same bridge semantics serve DSH (DeepSeek
+Harness) TS plugins: the `@artec/clat-dsh-adapter` npm package mounts an
+unmodified plugin in the author's Node process and exposes it as an MCP
+stdio server — a fourth consumer of the identical leaf contract rather
+than a new transport. See [DSH plugin porting](dsh-plugins.md).
 
 ## TUI event loop
 

@@ -25,6 +25,24 @@ All contributors and coding agents working in this repository should preserve th
 - A new durable-event producer must pass four gates together: catalog known-type, admission payload validation, projection fold (with checkpoint/restore), and live/replay parity.
 - Agents never commit or push autonomously; commits are human-approved.
 
+## Documentation map
+
+- **Committed docs** (`docs/`, public): `usage.md` (TUI + headless
+  `clat exec`), `model-editor.md`, `permissions.md`, `mcp.md`,
+  `wasm.md` (plugin authoring), `dsh-plugins.md` (DSH adapter porting
+  guide), `architecture.md`, `providers.md`, `storage.md`,
+  `releasing.md`, `live-validation.md`. They are indexed by
+  `README.md` / `README.zh.md` (English/Chinese mirrors — update both
+  indexes together); `sdk/dsh-adapter` carries its own npm-facing
+  README pair.
+- **Local-only docs** (gitignored; present in development workspaces —
+  never hyperlink them from committed docs or README, plain-text
+  references are acceptable): `docs/research/` (decision archives and
+  DSH mapping docs), `docs/todo/` (implementation plans with
+  invariants), `docs/audit/` (adversarial reviews), `docs/tui/`.
+- Technical depth belongs in the matching doc above; the READMEs stay
+  summaries and indexes, with the two language versions in sync.
+
 ## Layering rules (hard boundaries)
 
 The codebase is deliberately split into a UI-independent core and thin
