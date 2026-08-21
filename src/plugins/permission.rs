@@ -1,3 +1,6 @@
+//! Permission policy plugin: interactive mode policy or headless
+//! `SafeByDefault`.
+
 use super::services::{PERMISSION_SERVICE, PERMISSION_SERVICE_ID, PermissionPolicyFactory};
 use crate::permission::{
     InteractivePermissionPolicy, ModePolicy, ModeSource, PermissionApprover, PermissionPolicy,

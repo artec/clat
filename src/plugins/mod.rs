@@ -1,3 +1,7 @@
+//! Built-in plugins assembled by the explicit catalogs: tools, providers,
+//! MCP/WASM adapters, permissions, prompts, commands, compaction, todo,
+//! titles, monitor — capabilities are plugins over the `plugin/` kernel.
+
 mod agent;
 mod commands;
 mod compaction;

@@ -1,3 +1,5 @@
+//! Tool registry plugin + native tool mount points.
+
 use super::services::{TOOL_SERVICE, TOOL_SERVICE_ID};
 use crate::native_tools::{native_interaction_tools, native_read_tools, native_write_tools};
 use crate::plugin::{

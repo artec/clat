@@ -1,3 +1,6 @@
+//! `Project`: the trusted project root with capability-relative
+//! filesystem handles (path resolution and traversal defense).
+
 use cap_std::ambient_authority;
 use cap_std::fs::{Dir, OpenOptions};
 use std::env;

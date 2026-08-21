@@ -1,3 +1,7 @@
+//! Tool abstraction: the `Tool` trait, definitions, effect
+//! classification, and the registry + execution pipeline the run loop
+//! consumes.
+
 use crate::model::CancelToken;
 use crate::plugin::{PluginId, PluginOwner};
 use crate::project::Project;

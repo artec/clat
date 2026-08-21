@@ -10,8 +10,8 @@
 use super::App;
 use super::{conversation_wrap_width, slice_by_columns};
 use crate::test_support::{TestBehavior, TestProviderPlugin, roots};
-use crate::tui_conversation::{CardState, ConversationModel, ToolCardVisibility};
-use crate::tui_worker::{UiEvent, WorkerMessage};
+use crate::tui::conversation::{CardState, ConversationModel, ToolCardVisibility};
+use crate::tui::worker::{UiEvent, WorkerMessage};
 use crate::{BootstrapApplication, ModelEvent, PermissionRequest, Project, RunEvent, ToolEffect};
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,

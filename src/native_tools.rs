@@ -1,3 +1,7 @@
+//! Built-in native tools: project-scoped `list_files`/`read_file`/
+//! `search` plus trusted-project `write_file`/`edit_file`/`run_command`/
+//! `ask_user`.
+
 use crate::CancelToken;
 use crate::project::Project;
 use crate::tool::{Tool, ToolDefinition, ToolEffect, ToolError};

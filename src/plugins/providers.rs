@@ -1,3 +1,5 @@
+//! Provider registry plugin: mounts the built-in provider adapters.
+
 use super::services::{PROVIDER_SERVICE, PROVIDER_SERVICE_ID, ProviderRegistry};
 use crate::model::{
     ModelConfig, ModelFactory, ModelProtocol, ProviderCredentials, ProviderDescriptor,

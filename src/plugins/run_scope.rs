@@ -1,3 +1,5 @@
+//! Run-scope plugin: per-run cancel token + approver injection.
+
 use super::services::{RUN_SCOPE_SERVICE, RUN_SCOPE_SERVICE_ID, RunScopeResources};
 use crate::plugin::{
     Plugin, PluginContext, PluginDescriptor, PluginError, PluginId, ScopeKind, ServiceId,

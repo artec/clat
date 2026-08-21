@@ -6,7 +6,6 @@ pub mod event;
 pub mod exec;
 mod interaction;
 mod mcp;
-mod mcp_client;
 pub mod media;
 pub mod model;
 mod native_tools;
@@ -28,15 +27,6 @@ pub(crate) mod session;
 pub(crate) mod test_support;
 mod tool;
 pub mod tui;
-mod tui_conversation;
-mod tui_input;
-mod tui_logo;
-mod tui_markdown;
-mod tui_model;
-mod tui_permission;
-mod tui_sessions;
-mod tui_theme;
-mod tui_worker;
 pub mod upgrade;
 
 pub use application::{

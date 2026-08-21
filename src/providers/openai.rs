@@ -1,3 +1,6 @@
+//! OpenAI Responses protocol adapter (SSE streaming; reasoning items
+//! preserved through `provider_state`).
+
 use super::{CancelAwareReader, STREAM_BODY_POLL_TIMEOUT, is_stream_poll_timeout};
 use crate::model::{
     CancelToken, ContentPart, FinishReason, Model, ModelError, ModelEvent, ModelEventSink,

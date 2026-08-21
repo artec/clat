@@ -7,7 +7,7 @@
 //! 默认口径（非 CJK）为窄体 1 列，与 ratatui 渲染一致，测试锁定每行
 //! 等宽。
 
-use crate::tui_theme::{self, Role};
+use crate::tui::theme::{self, Role};
 use ratatui::text::{Line, Span};
 use std::io::{self, IsTerminal, Write};
 
@@ -25,21 +25,16 @@ const LOGO_LINES: [&str; 6] = [
 pub(crate) fn welcome_lines() -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = LOGO_LINES
         .iter()
-        .map(|text| {
-            Line::from(Span::styled(
-                (*text).to_owned(),
-                tui_theme::style(Role::Logo),
-            ))
-        })
+        .map(|text| Line::from(Span::styled((*text).to_owned(), theme::style(Role::Logo))))
         .collect();
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         format!("v{} · cmd-line agent runtime", env!("CARGO_PKG_VERSION")),
-        tui_theme::style(Role::Dim),
+        theme::style(Role::Dim),
     )));
     lines.push(Line::from(Span::styled(
         "type a message to begin · /help for keys",
-        tui_theme::style(Role::Faint),
+        theme::style(Role::Faint),
     )));
     lines
 }

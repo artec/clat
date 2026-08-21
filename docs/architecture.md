@@ -1,5 +1,33 @@
 # Architecture
 
+## Source map
+
+Every top-level name is one constitution concept; the layout is meant to
+be read without opening the files.
+
+| Path | Role |
+|---|---|
+| `main.rs` / `lib.rs` | binary composition root / module tree + stable root re-exports |
+| `application.rs` + `application/` | UI-independent Application facade: `bootstrap` (zero-write preflight), `trusted` (mounted project), `run_lifecycle`, `compaction`, `title`, `threads`, DTOs |
+| `run.rs` | the agent loop (model → tool → model) |
+| `model.rs` | model abstraction: config, streaming events, usage, cancel |
+| `providers/` | provider adapters (OpenAI Responses, OpenAI-compatible) |
+| `tool.rs` / `native_tools.rs` | tool abstraction / built-in file, search, command, ask tools |
+| `permission.rs` | permission modes, policies, approver port, write fence |
+| `event.rs` | `RunEvent` vocabulary + `EventSink` (the client protocol) |
+| `interaction.rs` / `media.rs` | ask-user port / image attachment helpers |
+| `project.rs` / `presets.rs` | trusted project root / built-in model presets |
+| `plugin/` | plugin kernel: catalogs, scopes, typed services |
+| `plugins/` | built-in plugins (incl. `mcp.rs` + `wasm.rs` adapter plugins) |
+| `plugin_host.rs` | host bridge for external leaf plugins (sampling / elicitation) |
+| `mcp.rs` + `mcp/` | MCP protocol stack: `transport` (framing) + `client` (session, handshake, tool adapter) |
+| `session/` | DSH-compatible session journal stack |
+| `control_storage/` | control plane (`clat.db`, sentinel, workspace state) |
+| `command.rs` | slash-command domain (`core.commands`) |
+| `tui.rs` + `tui/` | terminal frontend (entry `run()`, `App`, keys/actions/render/dialogs/widgets) |
+| `exec.rs` / `demo.rs` | headless one-shot / deterministic offline frontends |
+| `upgrade.rs` / `test_support.rs` | self-update / shared test fixtures |
+
 ## Core and static plugin composition
 
 CLAT has a UI-independent Application facade over a small, Rust-native static
@@ -296,7 +324,7 @@ sampling (borrowing the host's model) and elicitation (asking the user),
 both delivered 2026-08-21 (docs/todo/mcp-sampling-elicitation.md). The
 layering is deliberate:
 
-- `mcp.rs` / `mcp_client.rs` own the **transport**: incoming frames are
+- `mcp/transport.rs` / `mcp/client.rs` own the **transport**: incoming frames are
   classified as response / server request / notification (a request is
   `method` + `id` — fixing an old misclassification that could route a
   server request into a pending-response slot), requests are handed to a

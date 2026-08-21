@@ -1,8 +1,11 @@
+//! MCP adapter plugin: mounts configured MCP servers (stdio/HTTP) after
+//! trust and contributes their tools through revocable leases.
+
 use super::services::{
     MCP_STATUS_SERVICE, MCP_STATUS_SERVICE_ID, McpServerStatus, McpStatus, TOOL_SERVICE,
     TOOL_SERVICE_ID,
 };
-use crate::mcp_client::{
+use crate::mcp::client::{
     McpServer, McpServerRequestHandler, McpTool, load_mcp_config, merge_vendor_pack,
 };
 use crate::plugin::{
@@ -33,7 +36,7 @@ pub(crate) struct McpAdapterPlugin {
     /// 厂商专属 MCP 包（如 GLM Coding Plan 的四件套），由 application
     /// 在挂载期按激活厂商与凭据算好传入；密钥只在内存，用户
     /// `mcp.json` 同名条目优先（见 `merge_vendor_pack`）。
-    vendor_pack: Vec<(String, crate::mcp_client::McpServerConfig)>,
+    vendor_pack: Vec<(String, crate::mcp::client::McpServerConfig)>,
     /// 宿主桥（sampling/elicitation 的传输无关实现）：connect 时按
     /// server 包成 McpHostHandler 注入——服务端请求在 dispatcher 线程
     /// 经桥过权限门/记账/问答（docs/todo/mcp-sampling-elicitation.md）。
@@ -43,7 +46,7 @@ pub(crate) struct McpAdapterPlugin {
 impl McpAdapterPlugin {
     pub(crate) fn new(
         storage_root: PathBuf,
-        vendor_pack: Vec<(String, crate::mcp_client::McpServerConfig)>,
+        vendor_pack: Vec<(String, crate::mcp::client::McpServerConfig)>,
         host: Arc<PluginHostBridge>,
     ) -> Self {
         Self {
@@ -147,7 +150,7 @@ impl Plugin for McpAdapterPlugin {
 /// 响其余 server。全部落定（或取消）后 mark_settled——`start_run` 的
 /// 有界等待以此为准（INV-M2/M3）。
 fn run_startup(
-    config: BTreeMap<String, crate::mcp_client::McpServerConfig>,
+    config: BTreeMap<String, crate::mcp::client::McpServerConfig>,
     storage_root: &std::path::Path,
     registry: Arc<ToolRegistry>,
     owner: PluginOwner,
@@ -182,7 +185,7 @@ fn run_startup(
                 // 通终端，见 StdioSession::spawn）。
                 status.record_failed_server(format!(
                     "mcp `{name}`: {error}{}",
-                    crate::mcp_client::format_stderr_tail_public(&server.stderr_tail())
+                    crate::mcp::client::format_stderr_tail_public(&server.stderr_tail())
                 ));
                 let _ = server.shutdown();
                 continue;

@@ -211,7 +211,7 @@ impl ModelEditor {
         let mut lines = Vec::with_capacity(rows.len() + 2);
         for (index, (label, value)) in rows.into_iter().enumerate() {
             let style = if index == self.selected {
-                crate::tui_theme::style(crate::tui_theme::Role::Selected)
+                crate::tui::theme::style(crate::tui::theme::Role::Selected)
             } else {
                 Style::default()
             };
@@ -793,7 +793,7 @@ impl ModelPicker {
         for (index, row) in self.rows().iter().enumerate() {
             let (label, hint, current) = self.row_display(row);
             let style = if index == self.selected {
-                crate::tui_theme::style(crate::tui_theme::Role::Selected)
+                crate::tui::theme::style(crate::tui::theme::Role::Selected)
             } else {
                 Style::default()
             };

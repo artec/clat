@@ -1,3 +1,7 @@
+//! Permission model: the three interactive modes (`PermissionMode`), the
+//! `SafeByDefault` headless delegate, the approver port, and the write
+//! path fence (`WriteScope`).
+
 use crate::project::Project;
 use crate::tool::{ToolCall, ToolDefinition, ToolEffect};
 use serde_json::Value;

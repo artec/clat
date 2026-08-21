@@ -8,10 +8,10 @@
 //! 远端 annotations 仅用于细分权限提示，永远不会把 MCP 工具降级成
 //! 可自动放行的本地只读能力。
 
-use crate::application::{EXIT_JOIN_GRACE, join_with_grace};
-use crate::mcp::{
+use super::transport::{
     McpError, ServerRequest, ServerRequestSink, StdioSession, WriterRequest, response_frame,
 };
+use crate::application::{EXIT_JOIN_GRACE, join_with_grace};
 use crate::model::CancelToken;
 use crate::project::Project;
 use crate::tool::{Tool, ToolDefinition, ToolEffect, ToolError};
@@ -110,7 +110,7 @@ impl Responder {
                 }
                 let request = request
                     .config()
-                    .timeout_global(Some(crate::mcp::NOTIFY_TIMEOUT))
+                    .timeout_global(Some(crate::mcp::transport::NOTIFY_TIMEOUT))
                     .build();
                 let _ = request.send(frame.trim_end());
             }
@@ -212,7 +212,7 @@ enum Transport {
 
 enum Session {
     Stdio(StdioSession),
-    Http(crate::mcp::HttpSession),
+    Http(super::transport::HttpSession),
 }
 
 impl Session {
@@ -338,9 +338,9 @@ impl Transport {
             Self::Stdio { command, args, env } => Ok(Session::Stdio(StdioSession::spawn(
                 command, args, env, cwd,
             )?)),
-            Self::Http { url, headers } => Ok(Session::Http(crate::mcp::HttpSession::connect(
-                url, headers,
-            )?)),
+            Self::Http { url, headers } => Ok(Session::Http(
+                super::transport::HttpSession::connect(url, headers)?,
+            )),
         }
     }
 }
@@ -795,7 +795,7 @@ impl McpServer {
 /// （插件桥 Phase 3b e2e 断言内置 web_search 落在 Network 档）。
 #[cfg(test)]
 pub(crate) fn effect_from_annotations_for_test(
-    annotations: crate::mcp_client::McpToolAnnotations,
+    annotations: crate::mcp::client::McpToolAnnotations,
 ) -> ToolEffect {
     effect_from_annotations(annotations)
 }
@@ -1664,7 +1664,7 @@ for line in sys.stdin:
         // （50s）仍远低于 60s——曾用 20s/30s 上限，全套并行负载下两
         // 次假红（壁钟断言在满载 runner 上会被拉伸 2-3 倍）。
         assert!(
-            elapsed < crate::mcp::NOTIFY_TIMEOUT + Duration::from_secs(40),
+            elapsed < crate::mcp::transport::NOTIFY_TIMEOUT + Duration::from_secs(40),
             "notify must be bounded by NOTIFY_TIMEOUT, took {elapsed:?}"
         );
         // 服务线程在挂起连接上睡眠 60s 后还会阻塞在 accept：测试不

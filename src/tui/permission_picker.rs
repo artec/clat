@@ -9,7 +9,7 @@
 //! 已处于 FA 时再选 FA 无确认（无变化）。
 
 use crate::permission::PermissionMode;
-use crate::tui_theme;
+use crate::tui::theme;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
@@ -114,7 +114,7 @@ impl PermissionPicker {
             let mut lines = vec![
                 Line::from(Span::styled(
                     "Enable Full Access?",
-                    tui_theme::style(tui_theme::Role::Bold),
+                    theme::style(theme::Role::Bold),
                 )),
                 Line::from(""),
             ];
@@ -134,7 +134,7 @@ impl PermissionPicker {
             // 统一（2026-08-19 用户反馈：Bold 亮白与其他弹窗不一致）。
             lines.push(Line::from(Span::styled(
                 "Enter — enable Full Access      ·      Esc — back",
-                tui_theme::style(tui_theme::Role::Faint),
+                theme::style(theme::Role::Faint),
             )));
             lines
         } else {
@@ -149,10 +149,7 @@ impl PermissionPicker {
                 );
                 let row = truncate_head(&row, width);
                 let line = if index == self.selected {
-                    Line::from(Span::styled(
-                        row,
-                        tui_theme::style(tui_theme::Role::Selected),
-                    ))
+                    Line::from(Span::styled(row, theme::style(theme::Role::Selected)))
                 } else {
                     Line::from(row)
                 };
@@ -162,7 +159,7 @@ impl PermissionPicker {
             // 脚注键位说明用 Faint 灰（同上，弹窗脚注样式统一）。
             lines.push(Line::from(Span::styled(
                 "↑/↓ select · Enter apply · Esc cancel",
-                tui_theme::style(tui_theme::Role::Faint),
+                theme::style(theme::Role::Faint),
             )));
             lines
         };
@@ -177,7 +174,7 @@ impl PermissionPicker {
 }
 
 /// 头部截断（含省略号）：标题/行内容超宽时保留开头（标题语义在头部，
-/// 与 tui_model::tail_window 的尾部保留互补）。
+/// 与 model_editor::tail_window 的尾部保留互补）。
 fn truncate_head(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
         return text.to_owned();

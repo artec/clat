@@ -89,9 +89,9 @@ fn frontend_styles_come_from_the_theme_module() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     for name in [
         "src/tui.rs",
-        "src/tui_markdown.rs",
-        "src/tui_model.rs",
-        "src/tui_sessions.rs",
+        "src/tui/markdown.rs",
+        "src/tui/model_editor.rs",
+        "src/tui/session_picker.rs",
     ] {
         let source = fs::read_to_string(root.join(name)).expect("read frontend source");
         let production = source.split("\n#[cfg(test)]").next().unwrap_or("");
@@ -128,7 +128,7 @@ fn terminal_frontend_has_no_core_assembly_or_persistence_entrypoints() {
             "Storage::",
             "ProviderRuntime",
             "ToolRegistry",
-            "mcp_client",
+            "mcp::client",
             "Run::new",
             "register_native_",
             "register_mcp_",

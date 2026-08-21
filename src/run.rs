@@ -1,3 +1,7 @@
+//! The agent loop: one `Run` drives model → tool → model until the task
+//! completes, fails, or is cancelled; every step streams through
+//! `EventSink`.
+
 use crate::event::{EventSink, ModelOutcome, RunEvent};
 use crate::model::{
     CancelToken, FinishReason, Model, ModelEvent, ModelEventSink, ModelItem, ModelOptions,

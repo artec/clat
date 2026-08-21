@@ -1,7 +1,7 @@
 //! 样式角色表（phase-1 P0-2）：前端全部视觉样式的单一事实来源。
 //!
 //! 组件不直接构造 `Color`/`Style`——除本文件外，`tui.rs` /
-//! `tui_markdown.rs` / `tui_model.rs` / `tui_sessions.rs` 不出现
+//! `markdown.rs` / `model_editor.rs` / `session_picker.rs` 不出现
 //! `Color::`（`tests/architecture_boundaries.rs` 的门禁强制）。一义一
 //! 角色；语义重叠的角色（`Dim` vs `Faint`、`Selected` 的双重用途）按
 //! 现状保留并在各自条目注明统一/分离的后续计划。

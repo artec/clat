@@ -19,7 +19,7 @@
 use super::services::{
     MCP_STATUS_SERVICE, MCP_STATUS_SERVICE_ID, McpServerStatus, TOOL_SERVICE, TOOL_SERVICE_ID,
 };
-use crate::mcp_client::qualify_prefixed_tool_name;
+use crate::mcp::client::qualify_prefixed_tool_name;
 use crate::model::CancelToken;
 use crate::plugin::{
     Plugin as PluginTrait, PluginContext, PluginDescriptor, PluginError, PluginId, ScopeKind,

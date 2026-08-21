@@ -1,3 +1,6 @@
+//! Provider balance/quota monitor plugin: bounded background refresh +
+//! `ApplicationEvent` broadcasts.
+
 use super::services::{MONITOR_SERVICE, MONITOR_SERVICE_ID, MonitorService};
 use crate::application::ApplicationEvent;
 use crate::model::{ModelConfig, ProviderCredentials};

@@ -1,3 +1,5 @@
+//! Default agent runtime plugin (the run worker) + tool pipeline plugin.
+
 use super::services::{
     AGENT_SERVICE, AGENT_SERVICE_ID, AgentFailure, AgentRequest, AgentRuntime, PERMISSION_SERVICE,
     PERMISSION_SERVICE_ID, PROMPT_SERVICE, PROMPT_SERVICE_ID, PROVIDER_SERVICE,

@@ -1,3 +1,6 @@
+//! Domain service traits + service keys shared between plugins and the
+//! Application facade.
+
 use crate::model::{ModelConfig, ModelItem, ProviderCredentials, ProviderDescriptor, Usage};
 use crate::permission::{PermissionApprover, PermissionPolicy};
 use crate::plugin::{ServiceId, ServiceKey};

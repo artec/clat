@@ -1,3 +1,7 @@
+//! Model abstraction: provider-neutral configuration, streaming events,
+//! usage accounting, and cancellation. Vendors are adapters behind these
+//! types (see `providers/`).
+
 use crate::tool::{ToolCall, ToolDefinition, ToolResult};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

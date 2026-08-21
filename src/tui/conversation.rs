@@ -13,10 +13,10 @@ use crate::RunEvent;
 use crate::ToolCall;
 use crate::model::ModelEvent;
 use crate::session::replay::{ReplayEvent, ReplayTurnEnd};
+use crate::tui::markdown::render_markdown;
+use crate::tui::theme;
 use crate::tui::tool_argument_lines;
 use crate::tui::wrap_text;
-use crate::tui_markdown::render_markdown;
-use crate::tui_theme;
 use ratatui::text::{Line, Span};
 use serde_json::Value;
 use std::collections::VecDeque;
@@ -667,7 +667,7 @@ fn render_item(
         // run 终态通知（G7）：dim 单行，每个停止都解释自己。
         ConversationItem::TurnEnd { text } => vec![Line::from(Span::styled(
             format!("· {text}"),
-            tui_theme::style(tui_theme::Role::Dim),
+            theme::style(theme::Role::Dim),
         ))],
     }
 }
@@ -697,17 +697,17 @@ fn render_tool_card(
     width: usize,
 ) -> Vec<Line<'static>> {
     let (glyph, role) = match state {
-        CardState::Pending => ("○", tui_theme::Role::Warning),
+        CardState::Pending => ("○", theme::Role::Warning),
         CardState::Settled {
             is_error: false, ..
-        } => ("●", tui_theme::Role::Success),
+        } => ("●", theme::Role::Success),
         CardState::Settled { is_error: true, .. } | CardState::Denied { .. } => {
-            ("✗", tui_theme::Role::Error)
+            ("✗", theme::Role::Error)
         }
     };
     let mut lines = vec![Line::from(Span::styled(
         format!("{glyph} Tool / {tool}"),
-        tui_theme::style(role),
+        theme::style(role),
     ))];
     if let Some(argument_lines) = tool_argument_lines(tool, arguments, width) {
         lines.extend(argument_lines);
@@ -715,7 +715,7 @@ fn render_tool_card(
         // 未知工具：参数 JSON 兜底（dim）。
         lines.push(Line::from(Span::styled(
             serde_json::to_string_pretty(arguments).unwrap_or_default(),
-            tui_theme::style(tui_theme::Role::Dim),
+            theme::style(theme::Role::Dim),
         )));
     }
     match state {
@@ -723,19 +723,19 @@ fn render_tool_card(
         CardState::Settled { output, is_error } => {
             let mark = if *is_error { "✗" } else { "✓" };
             let role = if *is_error {
-                tui_theme::Role::Error
+                theme::Role::Error
             } else {
-                tui_theme::Role::Success
+                theme::Role::Success
             };
             lines.push(Line::from(Span::styled(
                 format!("{mark} {}", value_display_text(output)),
-                tui_theme::style(role),
+                theme::style(role),
             )));
         }
         CardState::Denied { reason } => {
             lines.push(Line::from(Span::styled(
                 format!("✗ permission denied — {reason}"),
-                tui_theme::style(tui_theme::Role::Error),
+                theme::style(theme::Role::Error),
             )));
         }
     }
@@ -768,7 +768,7 @@ fn card_display_lines(cache: &ItemCache, visibility: ToolCardVisibility) -> Vec<
                     "  … +{} lines (Ctrl+O to expand)",
                     cache.lines.len() - budget
                 ),
-                tui_theme::style(tui_theme::Role::Dim),
+                theme::style(theme::Role::Dim),
             )));
             out.extend(cache.lines[cache.lines.len() - tail..].to_vec());
             out
@@ -784,8 +784,8 @@ fn card_display_lines(cache: &ItemCache, visibility: ToolCardVisibility) -> Vec<
 /// 标记——它是"已入队、下一模型步生效"的视图状态（INV-SV1），claim
 /// 后由 `confirm_pending_steering` 升级为正式用户块。
 fn render_pending_steering(text: &str, width: usize) -> Vec<Line<'static>> {
-    let style = tui_theme::style(tui_theme::Role::Dim);
-    let marker = tui_theme::style(tui_theme::Role::Faint);
+    let style = theme::style(theme::Role::Dim);
+    let marker = theme::style(theme::Role::Faint);
     let text_width = width.saturating_sub(2).max(1);
     let wrapped = wrap_text(text, text_width.saturating_sub(2).max(1));
     let last = wrapped.len().saturating_sub(1);
@@ -814,8 +814,8 @@ fn render_pending_steering(text: &str, width: usize) -> Vec<Line<'static>> {
 }
 
 fn render_user_block(text: &str, width: usize) -> Vec<Line<'static>> {
-    let style = tui_theme::style(tui_theme::Role::UserBlock);
-    let marker = tui_theme::style(tui_theme::Role::UserMarker);
+    let style = theme::style(theme::Role::UserBlock);
+    let marker = theme::style(theme::Role::UserMarker);
     let text_width = width.saturating_sub(2).max(1);
     wrap_text(text, text_width.saturating_sub(2).max(1))
         .into_iter()
@@ -849,9 +849,9 @@ fn render_assistant(
     let marker = match stream_marker {
         Some(frame) => Span::styled(
             format!("{frame} "),
-            tui_theme::style(tui_theme::Role::AssistantMarker),
+            theme::style(theme::Role::AssistantMarker),
         ),
-        None => Span::styled("⏺ ", tui_theme::style(tui_theme::Role::AssistantMarker)),
+        None => Span::styled("⏺ ", theme::style(theme::Role::AssistantMarker)),
     };
     let text_width = width.saturating_sub(2).max(1);
     render_markdown(text, text_width)

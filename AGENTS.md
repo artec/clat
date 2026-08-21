@@ -52,7 +52,7 @@ day.
 
 - **The core never depends on the frontend.** Modules under `run`,
   `model`, `providers`, `tool`, `native_tools`, `permission`, `project`,
-  `storage`, `mcp`, `mcp_client`, `presets`, and `event` must not
+  `storage`, `mcp`, `presets`, and `event` must not
   reference `tui*` modules, ratatui, or crossterm. Dependencies flow
   one way: `tui*` → core, never the reverse.
 - **No business logic in UI modules.** Anything in `tui.rs` /
@@ -88,7 +88,7 @@ day.
    `docs/research/` mappings for cross-project decisions).
 
 Current boundary note: the DeepSeek/GLM monitor and run workers live in core
-plugins/Application. `UiEvent` in `tui_worker.rs` is frontend-local channel
+plugins/Application. `UiEvent` in `tui/worker.rs` is frontend-local channel
 multiplexing only; core lifecycle and persistence must not move back into it.
 
 ## State discipline (invariants before code, tests from invariants)

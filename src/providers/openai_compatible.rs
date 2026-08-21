@@ -1,3 +1,6 @@
+//! OpenAI-compatible chat-completions adapter (DeepSeek / GLM / Qwen /
+//! Kimi / custom endpoints).
+
 use super::{CancelAwareReader, STREAM_BODY_POLL_TIMEOUT, is_stream_poll_timeout};
 use crate::ModelConfig;
 use crate::model::{

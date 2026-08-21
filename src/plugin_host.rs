@@ -13,7 +13,7 @@
 //! 跨 run 不泄漏旧 approver/asker）。
 
 use crate::interaction::{AskAnswer, AskOption, AskQuestion, UserAsker};
-use crate::mcp_client::McpServerRequestHandler;
+use crate::mcp::client::McpServerRequestHandler;
 use crate::model::{
     CancelToken, FinishReason, ModelConfig, ModelItem, ModelOptions, ModelRequest,
     ProviderCredentials, Usage,
@@ -1424,7 +1424,7 @@ mod tests {
     #[test]
     #[ignore = "spawns the node dsh-adapter demo; run explicitly with --ignored"]
     fn dsh_adapter_demo_end_to_end_over_mcp() {
-        use crate::mcp_client::{McpServer, McpServerConfig};
+        use crate::mcp::client::{McpServer, McpServerConfig};
         use std::path::Path;
 
         let bin = Path::new(env!("CARGO_MANIFEST_DIR")).join("sdk/dsh-adapter/tools/demo-bin.mjs");
@@ -1522,7 +1522,7 @@ mod tests {
     #[test]
     #[ignore = "spawns node with the real exa plugin; run explicitly with --ignored"]
     fn dsh_adapter_real_web_search_exa_end_to_end() {
-        use crate::mcp_client::{McpServer, McpServerConfig};
+        use crate::mcp::client::{McpServer, McpServerConfig};
         use std::path::Path;
 
         let bin =
@@ -1546,7 +1546,7 @@ mod tests {
         assert_eq!(tools[0].name, "web_search");
         // effect_from_annotations：readOnly+openWorld → Network。
         assert_eq!(
-            crate::mcp_client::effect_from_annotations_for_test(tools[0].annotations),
+            crate::mcp::client::effect_from_annotations_for_test(tools[0].annotations),
             crate::tool::ToolEffect::Network
         );
 

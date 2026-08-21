@@ -1,3 +1,7 @@
+//! Plugin kernel: explicit catalogs mount plugins into Bootstrap /
+//! Trusted Project / Run scopes with typed services, ordered dependency
+//! planning, rollback on failure, and reverse teardown.
+
 mod context;
 mod effect;
 mod id;

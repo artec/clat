@@ -1,3 +1,5 @@
+//! Prompt registry + default system prompt plugin.
+
 use super::services::{PROMPT_SERVICE, PROMPT_SERVICE_ID, PromptRegistry};
 use crate::plugin::{
     DisposeError, Plugin, PluginContext, PluginDescriptor, PluginError, PluginId, ScopeKind,

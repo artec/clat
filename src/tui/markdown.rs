@@ -11,7 +11,7 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::tui_theme;
+use crate::tui::theme;
 
 pub(crate) fn render_markdown(text: &str, width: usize) -> Vec<Line<'static>> {
     let width = width.max(1);
@@ -200,7 +200,7 @@ fn render_table(rows: &[String], width: usize) -> Option<Vec<Line<'static>>> {
                     spans.push(Span::raw(" ".repeat(left_pad)));
                 }
                 if is_header {
-                    spans.push(Span::styled(text, tui_theme::style(tui_theme::Role::Bold)));
+                    spans.push(Span::styled(text, theme::style(theme::Role::Bold)));
                 } else if truncated {
                     spans.push(Span::raw(text));
                 } else {
@@ -233,7 +233,7 @@ fn render_table(rows: &[String], width: usize) -> Option<Vec<Line<'static>>> {
     };
     out.push(Line::from(Span::styled(
         separator,
-        tui_theme::style(tui_theme::Role::Faint),
+        theme::style(theme::Role::Faint),
     )));
     for (plain_row, raw_row) in body_plain.iter().zip(&body) {
         out.push(row_line(plain_row, raw_row, false));
@@ -246,7 +246,7 @@ fn render_table(rows: &[String], width: usize) -> Option<Vec<Line<'static>>> {
 /// block. Lines longer than the width are left to the widget to clip
 /// (code is never re-wrapped).
 fn flush_code_block(lines: &mut Vec<Line<'static>>, code: &[String], width: usize) {
-    let style = tui_theme::style(tui_theme::Role::Code);
+    let style = theme::style(theme::Role::Code);
     for line in code {
         let used = UnicodeWidthStr::width(line.as_str());
         let padding = " ".repeat(width.saturating_sub(used));
@@ -280,7 +280,7 @@ fn render_block_line(raw: &str, width: usize, lines: &mut Vec<Line<'static>>) {
         let rule = "─".repeat(width);
         lines.push(Line::from(Span::styled(
             rule,
-            tui_theme::style(tui_theme::Role::Faint),
+            theme::style(theme::Role::Faint),
         )));
         return;
     }
@@ -305,8 +305,8 @@ fn strip_ordered_prefix(text: &str) -> Option<&str> {
 
 fn push_heading(lines: &mut Vec<Line<'static>>, text: &str, width: usize, level: u8) {
     let style = match level {
-        1 => tui_theme::style(tui_theme::Role::HeadingPrimary),
-        _ => tui_theme::style(tui_theme::Role::Heading),
+        1 => theme::style(theme::Role::HeadingPrimary),
+        _ => theme::style(theme::Role::Heading),
     };
     let segments: Vec<(String, Style)> = parse_inline(text)
         .into_iter()
@@ -316,8 +316,8 @@ fn push_heading(lines: &mut Vec<Line<'static>>, text: &str, width: usize, level:
 }
 
 fn push_blockquote(lines: &mut Vec<Line<'static>>, text: &str, width: usize) {
-    let style = tui_theme::style(tui_theme::Role::QuoteText);
-    let bar = Span::styled("▎ ", tui_theme::style(tui_theme::Role::QuoteBar));
+    let style = theme::style(theme::Role::QuoteText);
+    let bar = Span::styled("▎ ", theme::style(theme::Role::QuoteBar));
     let segments: Vec<(String, Style)> = parse_inline(text)
         .into_iter()
         .map(|(text, _)| (text, style))
@@ -330,7 +330,7 @@ fn push_blockquote(lines: &mut Vec<Line<'static>>, text: &str, width: usize) {
 }
 
 fn push_list_item(lines: &mut Vec<Line<'static>>, text: &str, width: usize) {
-    let bullet = Span::styled("• ", tui_theme::style(tui_theme::Role::ListBullet));
+    let bullet = Span::styled("• ", theme::style(theme::Role::ListBullet));
     let indent = Span::raw("  ");
     let segments = parse_inline(text);
     for (i, line) in wrap_styled(segments, width.saturating_sub(2))
@@ -356,10 +356,10 @@ fn push_list_item(lines: &mut Vec<Line<'static>>, text: &str, width: usize) {
 /// of the message.
 fn parse_inline(text: &str) -> Vec<(String, Style)> {
     let base = Style::default();
-    let bold = tui_theme::style(tui_theme::Role::Bold);
-    let italic = tui_theme::style(tui_theme::Role::Italic);
-    let code = tui_theme::style(tui_theme::Role::Code);
-    let link = tui_theme::style(tui_theme::Role::Link);
+    let bold = theme::style(theme::Role::Bold);
+    let italic = theme::style(theme::Role::Italic);
+    let code = theme::style(theme::Role::Code);
+    let link = theme::style(theme::Role::Link);
 
     let mut segments: Vec<(String, Style)> = Vec::new();
     let mut plain = String::new();
@@ -628,9 +628,7 @@ mod tests {
     use ratatui::style::Modifier;
 
     fn code_bg() -> ratatui::style::Color {
-        tui_theme::style(tui_theme::Role::Code)
-            .bg
-            .unwrap_or_default()
+        theme::style(theme::Role::Code).bg.unwrap_or_default()
     }
 
     fn styles_of(line: &Line<'static>) -> Vec<Style> {
@@ -645,11 +643,7 @@ mod tests {
         assert_eq!(span.content, "fn main() {}        ");
         assert_eq!(
             span.style.bg,
-            Some(
-                tui_theme::style(tui_theme::Role::Code)
-                    .bg
-                    .unwrap_or_default()
-            )
+            Some(theme::style(theme::Role::Code).bg.unwrap_or_default())
         );
     }
 

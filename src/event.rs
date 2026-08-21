@@ -1,3 +1,7 @@
+//! Core event vocabulary: `RunEvent` + `EventSink` — the stable protocol
+//! every frontend (TUI, exec, future clients) consumes. Treat its shape
+//! as an interface.
+
 use crate::model::{FinishReason, ModelEvent, Usage};
 use crate::permission::PermissionDecision;
 use crate::tool::{ToolCall, ToolResult};

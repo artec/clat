@@ -1,3 +1,7 @@
+//! Provider adapters: OpenAI Responses and OpenAI-compatible streaming
+//! implementations of the `Model` trait — vendor specifics live here,
+//! never in the core.
+
 pub mod openai;
 pub mod openai_compatible;
 
