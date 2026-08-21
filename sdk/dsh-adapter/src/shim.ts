@@ -59,7 +59,7 @@ const MAX_OPTIONS = 16
 const DEFAULT_MAX_TOKENS = 4096
 
 /** Services the shim provides (inject-checkable subset first four). */
-const SERVICE_KEYS = ['tools', 'llm', 'userQuestions', 'web', 'get', 'effect', 'logger'] as const
+const SERVICE_KEYS = ['tools', 'llm', 'userQuestions', 'web', 'get', 'effect', 'logger', 'inject'] as const
 const INJECTABLE_KEYS = ['tools', 'llm', 'userQuestions', 'web'] as const
 
 /** One registered question's field mapping for answer reconstruction. */
@@ -97,6 +97,27 @@ export class Shim {
     return INJECTABLE_KEYS
   }
 
+  /**
+   * Cordis `ctx.inject(deps, callback)` under host semantics: the callback
+   * runs only when every requested service is mounted. The adapter mounts
+   * no injectable host services, so the callback is skipped and noted on
+   * stderr — plugins written against the documented "not mounted → the
+   * wiring never runs, the plugin keeps working" contract (e.g. optional
+   * settings sections via dsh-settings) degrade gracefully instead of
+   * dying at startup. A static `inject` export remains a hard requirement
+   * (checked in serveClat), so plugins that *declare* a spine dependency
+   * are still rejected up front.
+   */
+  #inject(deps: string | string[], callback: (ctx: unknown) => unknown): void {
+    const names = Array.isArray(deps) ? deps : [deps]
+    this.#host.log(
+      `ctx.inject([${names.join(', ')}]) requested services this adapter does not mount; ` +
+        `the wiring is skipped (host "not mounted" semantics) — declare what you need via the ` +
+        `plugin's static inject export if it is required`,
+    )
+    void callback
+  }
+
   /** The ctx object `apply()` receives (Proxy: whitelist + INV-D3 rejects). */
   buildContext(): DshContext {
     const services: DshContext = {
@@ -116,6 +137,8 @@ export class Shim {
       get: () => undefined,
       effect: (setup, label) => this.#effect(setup, label),
       logger: this.#logger(),
+      inject: (deps: string | string[], callback: (ctx: unknown) => unknown) =>
+        this.#inject(deps, callback),
     }
     return new Proxy(services, {
       get(target, property, receiver) {

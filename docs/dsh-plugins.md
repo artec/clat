@@ -50,12 +50,18 @@ CLAT 用户侧的配置（`~/.clat/mcp.json`）：
 | `ctx.effect(gen)` / `ctx.logger` | 进程内实现 | 清理器 LIFO；日志全部走 stderr |
 | 插件导出 `Config` | serveClat 启动时校验 | 可调用则先验 `config`，抛错即拒绝启动 |
 
-**拒绝面（启动即报错，不假装支持）**：`inject` 或运行期访问下列
-ctx 服务会得到带支持清单的错误——`fs`、`shell`、`sessions`、
-`agents`、`subagents`、`settings`、`commands`、`systemPrompt`、
-以及一切脊柱/UI 服务；**类插件**（`extends Service`）同样被拒。
-改写方向：把能力收敛为 `ctx.tools.register` 的叶子工具，或直接使用
-CLAT 的内建工具。
+**拒绝与降级面**（两类，语义对齐 DSH 宿主，2026-08-21 社区插件实测定稿）：
+
+- **静态 `inject` 声明**（`export const inject = ['sessions', …]`）与运行期
+  **直接访问** `ctx.fs` / `ctx.shell` / `ctx.sessions` 等脊柱服务 → 启动即
+  报错（带支持清单与改写指引），不假装支持。改写方向：把能力收敛为
+  `ctx.tools.register` 的叶子工具，或直接使用 CLAT 的内建工具。
+- **运行期 `ctx.inject(deps, callback)`**（可选服务接线，如 dsh-settings
+  的设置面板、`systemPrompt` 贡献）→ 按 DSH 宿主的"未挂载"契约处理：
+  回调跳过、stderr 记一条注记，插件照常工作——这正是无 UI 宿主的 DSH
+  环境会发生的降级。纯 UI 插件（如 dsh-smooth-stream）因此以"连接成功
+  但 0 工具"收场，stderr 注记说明原因。**类插件**（`extends Service`）
+  仍被拒。
 
 ## 三、兼容矩阵（先给自己定位，再动手）
 
@@ -124,7 +130,18 @@ mcp.json 的 `command` 直接指向该二进制。分发物自带运行时，宿
   全链 e2e（`src/plugin_host.rs` 门控测试）。
 - 联网冒烟：`serveClat` 的 `config` 传入真实 key 后，在 CLAT 里
   直接调用你的工具即可（tools 面板 `/mcp` 可见 `transport: stdio`）。
-- **npm 现状提示**：`@deepseek-ai/dsh-web-search-exa@0.0.1-rc.1` 的
-  peer `@deepseek-ai/dsh-environment` 未曾发布（后改名
-  `dsh-launch-environment`），独立安装需按 `examples/exa/` 的方式
-  stub 该死引用——这是 DSH 侧发布物的问题，与适配器无关。
+- **npm 现状提示（2026-08-21 社区插件实测）**：DSH 侧发布物的 peer
+  声明普遍不齐，独立安装大概率要手工补。两类问题：
+  1. **死引用**：`@deepseek-ai/dsh-environment` 从未发布（后改名
+     `dsh-launch-environment`）——官方与社区插件的 peerDependencies
+     都还挂着它，需按 `examples/exa/` 的方式本地 stub；
+  2. **漏声明**：`dsh-tools` / `dsh-llm` / `dsh-session` / `dsh-scope` /
+     `dsh-timeout` / `dsh-settings` / `dsh-credentials` / `cordis`
+     常被运行期 import 却不在依赖表里，`--legacy-peer-deps` 安装后
+     逐个补装即可（实测 dsh-free-search 补了 7 个）。
+  个别插件（如 dsh-memento）依赖**尚未发布**的新版导出（如
+  `KNOWN_SESSION_EVENT_TYPES`），npm 上目前装不起来——只能等上游。
+  这是 DSH 生态的发布物问题，与适配器无关。
+- **实测背书**：官方 `dsh-web-search-deepseek`（带 key）与社区
+  `dsh-free-search`（免 key）均已通过"bin → mcp.json → CLAT 真实模型
+  调用"全链验证；`dsh-smooth-stream` 验证了 UI 面的优雅降级路径。

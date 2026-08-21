@@ -96,10 +96,16 @@ DSH 工具没有静态 effect 字段；不声明时宿主按最保守档处理
 | `ctx.web.registerSearchProvider(…)` | 内置 `web_search` 工具（dsh-tool-web 语义：多问合并、URL 去重、上限 8 条） |
 | `ctx.get` / `ctx.effect` / `ctx.logger` | 进程内实现（`launchEnvironmentOf` 回退 `process.env`；清理器 LIFO；日志走 stderr） |
 
-启动即明确报错的面：`inject` 声明或运行期访问脊柱服务（`fs`、
-`shell`、`sessions`、`agents`、`subagents`、`settings`、`commands`、
-`systemPrompt`、各 UI 服务），以及类插件（`extends Service`）。那些
-seam 属于宿主自身的工程——请把能力收敛为叶子工具。
+两级策略（语义对齐 DSH 宿主）：
+
+- **启动即明确报错**：静态 `inject` 导出声明脊柱服务（`fs`、`shell`、
+  `sessions`、`agents`、`subagents`、`settings`、`commands`、
+  `systemPrompt`、各 UI 服务），或运行期直接访问 `ctx.<脊柱>`。那些
+  seam 属于宿主自身的工程——请把能力收敛为叶子工具。类插件
+  （`extends Service`）同样被拒。
+- **优雅降级**：运行期 `ctx.inject(deps, callback)` 的可选服务接线
+  （如 dsh-settings 设置面板）按宿主"未挂载"契约处理——回调跳过、
+  stderr 记一条注记，插件照常工作，与无 UI 的 DSH 宿主行为一致。
 
 ## 已知收窄（v0）
 

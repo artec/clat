@@ -97,11 +97,18 @@ Declare the truth about your own tools:
 | `ctx.web.registerSearchProvider(…)` | built-in `web_search` tool (dsh-tool-web semantics: multi-query merge, URL dedup, max 8 results) |
 | `ctx.get` / `ctx.effect` / `ctx.logger` | in-process (`launchEnvironmentOf` falls back to `process.env`; cleanup runs LIFO; logs go to stderr) |
 
-Rejected at startup with a clear error: `inject` or runtime access to
-spine services (`fs`, `shell`, `sessions`, `agents`, `subagents`,
-`settings`, `commands`, `systemPrompt`, UI services) and class plugins
-(`extends Service`). Those seams are the host's own engineering —
-restructure the capability as leaf tools.
+Two-tier policy (matching DSH host semantics):
+
+- **Rejected at startup with a clear error**: a static `inject` export
+  declaring spine services (`fs`, `shell`, `sessions`, `agents`,
+  `subagents`, `settings`, `commands`, `systemPrompt`, UI services), or
+  runtime direct access to `ctx.<spine>`. Those seams are the host's own
+  engineering — restructure the capability as leaf tools. Class plugins
+  (`extends Service`) are rejected too.
+- **Graceful degradation**: runtime `ctx.inject(deps, callback)` wiring for
+  optional services (e.g. dsh-settings panels) follows the host
+  "not mounted" contract — the callback is skipped with a stderr note and
+  the plugin keeps working, exactly as in a UI-less DSH host.
 
 ## Known narrowings (v0)
 

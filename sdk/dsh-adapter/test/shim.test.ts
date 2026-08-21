@@ -91,6 +91,36 @@ test('INV-D3: unsupported ctx services fail loudly; get/then pass through', () =
   })
 })
 
+test('ctx.inject follows host "not mounted" semantics: callback skipped, noted, plugin survives', () => {
+  // 回归锁（2026-08-21，dsh-free-search 实测）：dsh-settings 的
+  // installSettingsSection 契约是"settings 服务未挂载 → 注册不生效、
+  // 插件照常工作"。适配器此前不提供 ctx.inject，属性访问即抛，
+  // 优雅降级路径无从执行——按契约改为跳过回调 + stderr 记录。
+  const notes: string[] = []
+  const host = fakeHost()
+  const originalLog = host.log
+  host.log = (...args: unknown[]) => {
+    notes.push(args.map(String).join(' '))
+    originalLog(...args)
+  }
+  const shim = new Shim(host, 'p')
+  const ctx = shim.buildContext()
+  let ran = false
+  ctx.inject(['settings'], () => {
+    ran = true
+  })
+  assert.equal(ran, false, '未挂载服务的回调不得执行')
+  assert.equal(notes.length, 1)
+  assert.match(notes[0]!, /settings/)
+  assert.match(notes[0]!, /skipped/)
+  // 单依赖（非数组）形式同样适用
+  ctx.inject('settings', () => {
+    ran = true
+  })
+  assert.equal(ran, false)
+  assert.equal(notes.length, 2)
+})
+
 test('effect: setup immediate, cleanups LIFO, per-effect disposer removes', async () => {
   const order: string[] = []
   const shim = new Shim(fakeHost(), 'p')

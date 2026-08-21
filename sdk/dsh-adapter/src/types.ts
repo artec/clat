@@ -141,6 +141,13 @@ export interface DshContext {
   get(key: string): unknown
   effect(setup: () => Generator<unknown, unknown, unknown>, label?: string): () => Promise<void>
   logger: LoggerLike
+  /**
+   * Cordis service injection under host semantics: the callback runs only
+   * when every requested service is mounted. The adapter mounts no
+   * injectable host services, so callbacks are skipped with a stderr note
+   * (the documented "not mounted → wiring never runs" contract).
+   */
+  inject(deps: string | string[], callback: (ctx: unknown) => unknown): void
 }
 
 /** A DSH plugin object as the author exports it. */
