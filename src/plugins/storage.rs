@@ -77,6 +77,26 @@ impl ConfigStore for ControlCapabilities {
             .set_active_profile(name)
             .map_err(|error| StoreError::new(error.to_string()))
     }
+
+    fn upsert_vendor_key(
+        &self,
+        vendor: &str,
+        credentials: &ProviderCredentials,
+    ) -> Result<(), StoreError> {
+        self.storage
+            .upsert_vendor_key(vendor, credentials)
+            .map_err(|error| StoreError::new(error.to_string()))
+    }
+
+    fn load_vendor_key(
+        &self,
+        vendor: &str,
+        protocol: crate::model::ModelProtocol,
+    ) -> Result<Option<ProviderCredentials>, StoreError> {
+        self.storage
+            .load_vendor_key(vendor, protocol)
+            .map_err(|error| StoreError::new(error.to_string()))
+    }
 }
 
 const PROJECT_CONTROL_ID: PluginId = PluginId::new("builtin.project_control_storage");

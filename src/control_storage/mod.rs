@@ -10,9 +10,20 @@
 pub(crate) mod sentinel;
 pub(crate) mod workspace_state;
 
-use crate::model::{ModelConfig, ProviderCredentials};
+use crate::model::{ModelConfig, ModelProtocol, ProviderCredentials};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use std::path::Path;
+
+/// 厂商 key 记忆库的保留行前缀（INV-VK1..3）。
+const VENDOR_SLOT_PREFIX: &str = "vendor:";
+
+fn vendor_slot_name(vendor: &str) -> String {
+    format!("{VENDOR_SLOT_PREFIX}{vendor}")
+}
+
+fn is_vendor_slot(name: &str) -> bool {
+    name.starts_with(VENDOR_SLOT_PREFIX)
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ModelProfileSummary {
@@ -132,6 +143,11 @@ impl ControlStorage {
         if name.is_empty() {
             return Err(control_error("profile name must not be empty"));
         }
+        if is_vendor_slot(name) {
+            // INV-VK3：`vendor:` 前缀是保留命名空间（厂商 key 记忆库），
+            // 用户档不得伪装。
+            return Err(control_error("profile name prefix `vendor:` is reserved"));
+        }
         let config_json = serde_json::to_string(config).map_err(json_error)?;
         let runtime_json = serde_json::to_string(&runtime.to_json()).map_err(json_error)?;
         let timestamp = now_unix();
@@ -186,12 +202,19 @@ impl ControlStorage {
             .map_err(sql_error)?;
         let mut profiles = Vec::new();
         for row in rows {
-            profiles.push(row.map_err(sql_error)?);
+            let profile = row.map_err(sql_error)?;
+            // INV-VK3：厂商 key 记忆库对用户档列表不可见。
+            if !is_vendor_slot(&profile.name) {
+                profiles.push(profile);
+            }
         }
         Ok(profiles)
     }
 
     pub(crate) fn delete_profile(&self, name: &str) -> Result<(), ControlError> {
+        if is_vendor_slot(name.trim()) {
+            return Err(control_error("profile name prefix `vendor:` is reserved"));
+        }
         self.conn()
             .execute(
                 "DELETE FROM model_profiles WHERE name = ?1",
@@ -202,6 +225,56 @@ impl ControlStorage {
             self.set_active_profile(None)?;
         }
         Ok(())
+    }
+
+    // ----- 厂商 key 记忆库（INV-VK1..3，复用 model_profiles 表的
+    // `vendor:<Vendor>` 保留行——控制面 schema 版本锁定、无迁移路径，
+    // 不为记忆库新增表）-----
+
+    /// 记住某厂商的 API key（`save_model_state` 顺带调用；key 非空才
+    /// upsert——空 key 不抹掉已记忆的值）。
+    pub(crate) fn upsert_vendor_key(
+        &self,
+        vendor: &str,
+        runtime: &ProviderCredentials,
+    ) -> Result<(), ControlError> {
+        let runtime_json = serde_json::to_string(&runtime.to_json()).map_err(json_error)?;
+        self.conn()
+            .execute(
+                "INSERT INTO model_profiles(name, config_json, runtime_json, created_at, updated_at)
+                 VALUES(?1, ?1, ?2, ?3, ?3)
+                 ON CONFLICT(name) DO UPDATE SET
+                     runtime_json = excluded.runtime_json,
+                     updated_at = excluded.updated_at",
+                params![vendor_slot_name(vendor), runtime_json, now_unix()],
+            )
+            .map_err(sql_error)?;
+        Ok(())
+    }
+
+    /// 取回某厂商记住的 API key（按目标协议解码）。
+    pub(crate) fn load_vendor_key(
+        &self,
+        vendor: &str,
+        protocol: ModelProtocol,
+    ) -> Result<Option<ProviderCredentials>, ControlError> {
+        let runtime_json = self
+            .conn()
+            .query_row(
+                "SELECT runtime_json FROM model_profiles WHERE name = ?1",
+                params![vendor_slot_name(vendor)],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(sql_error)?;
+        let Some(runtime_json) = runtime_json else {
+            return Ok(None);
+        };
+        let runtime_value = serde_json::from_str(&runtime_json).map_err(json_error)?;
+        Ok(Some(ProviderCredentials::from_json(
+            protocol,
+            &runtime_value,
+        )))
     }
 
     pub(crate) fn active_profile(&self) -> Result<Option<String>, ControlError> {

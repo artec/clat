@@ -1097,9 +1097,12 @@ mod tests {
         let credentials = ProviderCredentials::for_protocol(config.protocol);
         let mut editor = ModelEditor::new_with_descriptors(&config, credentials, Vec::new());
         select(&mut editor, RowKind::Preset);
-        // 从 pro 起步，一步右移到 GLM。
+        // 从 pro 起步，一步右移到 Flash Vision (Exp)。
         editor.handle_key(key(KeyCode::Right));
-        assert_eq!(editor.preset.map(|preset| preset.id), Some("glm-5.3"));
+        assert_eq!(
+            editor.preset.map(|preset| preset.id),
+            Some("deepseek-v4-flash-vision-exp")
+        );
         let (built, _) = editor.build().unwrap();
         assert_eq!(built.thinking_level, None);
     }
@@ -1265,12 +1268,17 @@ mod tests {
         assert_eq!(config.extra_body["reasoning_effort"], "high");
         assert_eq!(config.extra_body["thinking"]["type"], "enabled");
 
-        // Next step lands on Pro, then GLM, then Qwen, then Kimi, then
-        // back to Custom.
+        // Next step lands on Pro, then Flash Vision (Exp), then GLM, then
+        // Qwen, then Kimi, then back to Custom.
         editor.handle_key(key(KeyCode::Right));
         assert_eq!(
             editor.preset.map(|preset| preset.id),
             Some("deepseek-v4-pro")
+        );
+        editor.handle_key(key(KeyCode::Right));
+        assert_eq!(
+            editor.preset.map(|preset| preset.id),
+            Some("deepseek-v4-flash-vision-exp")
         );
         editor.handle_key(key(KeyCode::Right));
         assert_eq!(editor.preset.map(|preset| preset.id), Some("glm-5.3"));
@@ -1342,12 +1350,12 @@ mod tests {
         // 一级：四个厂商 + Custom。
         assert_eq!(picker.row_count(), 5);
 
-        // Enter 进入 DeepSeek 二级。
+        // Enter 进入 DeepSeek 二级（Flash / Pro / Flash Vision (Exp)）。
         assert!(matches!(
             picker.handle_key(picker_key(KeyCode::Enter)),
             PickerAction::Continue
         ));
-        assert_eq!(picker.row_count(), 2);
+        assert_eq!(picker.row_count(), 3);
 
         // 确认第一个模型。
         let action = picker.handle_key(picker_key(KeyCode::Enter));

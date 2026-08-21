@@ -921,6 +921,8 @@ fn model_picker_snapshot() {
     // 上每边仅 3% 边距，用户观感为贴墙）。
     // 刷新 2026-08-19：新增 Qwen Token Plan / Kimi Coding Plan 两个
     // 厂商（一级 4 厂商 + Custom）。
+    // 刷新 2026-08-21：DeepSeek 二级新增第三款 deepseek-v4-flash-vision-exp
+    //（官方 2026-08 上架的实验性多模态模型，参数见 presets.rs）。
     let mut harness = Harness::trusted("snap-model-picker", 80, 24);
     harness.type_text("/model");
     harness.key(KeyCode::Enter);

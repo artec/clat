@@ -98,6 +98,9 @@ pub struct ProjectSnapshot {
     pub input_history: Vec<String>,
     /// Journal-derived session usage aggregate (status-bar Cache ratio).
     pub session_usage: crate::model::Usage,
+    /// Journal-derived per-route usage buckets (INV-C1：Cache 段按当前
+    /// 模型路由取桶，键见 [`crate::model::model_route_key`]）。
+    pub usage_routes: std::collections::BTreeMap<String, crate::model::Usage>,
     /// Journal-derived most recent request usage (status-bar Context).
     pub last_request_usage: Option<crate::model::Usage>,
     pub config: ModelConfig,
@@ -163,6 +166,7 @@ pub struct SessionSnapshot {
     /// Journal-derived usage stats of the target session (see
     /// `ProjectSnapshot::session_usage`).
     pub session_usage: crate::model::Usage,
+    pub usage_routes: std::collections::BTreeMap<String, crate::model::Usage>,
     pub last_request_usage: Option<crate::model::Usage>,
     pub input_history: Vec<String>,
 }
@@ -921,6 +925,7 @@ impl TrustedProjectApplication {
             replay,
             input_history,
             session_usage: usage.session,
+            usage_routes: usage.routes,
             last_request_usage: usage.last_request,
             provider_descriptors: self.providers.descriptors(&credentials),
             config,
@@ -1077,6 +1082,7 @@ impl TrustedProjectApplication {
                 transcript: self.sessions.transcript_lines().map_err(session_error)?,
                 replay,
                 session_usage: usage.session,
+                usage_routes: usage.routes,
                 last_request_usage: usage.last_request,
                 input_history: self.sessions.recent_inputs(500).map_err(session_error)?,
             });
@@ -1121,6 +1127,7 @@ impl TrustedProjectApplication {
             transcript: view.transcript,
             replay: view.replay,
             session_usage: usage.session,
+            usage_routes: usage.routes,
             last_request_usage: usage.last_request,
             input_history,
         })
@@ -1174,8 +1181,30 @@ impl TrustedProjectApplication {
         self.config
             .save_model_state(config, credentials)
             .map_err(store_error)?;
+        // INV-VK1：输入即记忆——已知厂商且 key 非空时顺带写入厂商 key
+        // 记忆库（空 key 不抹掉已记忆值）；`Other` 端点不入库（自定义
+        // 端点互不相干，绝不互相串 key）。失败不回滚主状态：记忆库是
+        // 增益，主保存已成功。
+        if let Some(vendor) = crate::model::endpoint_vendor(&config.endpoint).storage_key()
+            && credentials
+                .value(0)
+                .is_some_and(|value| !value.trim().is_empty())
+        {
+            let _ = self.config.upsert_vendor_key(vendor, credentials);
+        }
         self.monitor.configure(config.clone(), credentials.clone());
         Ok(())
+    }
+
+    /// 厂商 key 记忆库查询（INV-VK2）：切换模型时按目标端点的厂商回填
+    /// 已记住的 key；`Other` 端点恒 None。
+    pub fn vendor_key(
+        &self,
+        protocol: crate::model::ModelProtocol,
+        endpoint: &str,
+    ) -> Option<ProviderCredentials> {
+        let vendor = crate::model::endpoint_vendor(endpoint).storage_key()?;
+        self.config.load_vendor_key(vendor, protocol).ok().flatten()
     }
 
     pub fn provider_descriptors(
@@ -4324,6 +4353,105 @@ mod tests {
         let empty = crate::model::ProviderCredentials::for_protocol(config.protocol);
         application.save_model_state(&config, &empty).expect("save");
         assert!(glm_mcp_pack_from_control(&application.control).is_empty());
+
+        application.close().unwrap();
+        std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
+    }
+
+    /// INV-VK1/VK2（厂商 key 记忆库，2026-08-21 用户报告：GLM↔DeepSeek
+    /// 来回切换反复被要求输入 key——单槽凭证切走即丢）：
+    /// `save_model_state` 输入即记忆；切换按目标端点厂商回填；空 key
+    /// 不抹记忆；`Other` 端点不入库；`vendor:` 保留行对用户档不可见。
+    #[test]
+    fn vendor_keys_survive_model_switches() {
+        let (storage_root, project_root) = roots("vendor-keys");
+        std::fs::create_dir_all(&project_root).unwrap();
+        let project = Project::new(&project_root);
+        let application = mount(&project, &storage_root, TestBehavior::Success);
+
+        // GLM 带 key 保存 → 记忆。
+        let mut glm_config = ModelConfig {
+            preset: Some("glm-5.3".into()),
+            ..ModelConfig::default()
+        };
+        preset_by_id("glm-5.3")
+            .expect("preset")
+            .apply(&mut glm_config);
+        let mut glm_credentials =
+            crate::model::ProviderCredentials::for_protocol(glm_config.protocol);
+        glm_credentials.set_value(0, "glm-coding-key".into());
+        application
+            .save_model_state(&glm_config, &glm_credentials)
+            .expect("save glm");
+
+        // 切到 DeepSeek：单槽被覆盖（旧行为），但 GLM 的 key 已进记忆库。
+        let mut ds_config = ModelConfig {
+            preset: Some("deepseek-v4-flash".into()),
+            ..ModelConfig::default()
+        };
+        preset_by_id("deepseek-v4-flash")
+            .expect("preset")
+            .apply(&mut ds_config);
+        let mut ds_credentials =
+            crate::model::ProviderCredentials::for_protocol(ds_config.protocol);
+        ds_credentials.set_value(0, "deepseek-key".into());
+        application
+            .save_model_state(&ds_config, &ds_credentials)
+            .expect("save deepseek");
+
+        // 切回 GLM：厂商记忆回填旧 key（修复前无此路径，测试即红）。
+        let restored_glm = application
+            .vendor_key(glm_config.protocol, &glm_config.endpoint)
+            .expect("glm key remembered across the switch");
+        assert_eq!(restored_glm.value(0), Some("glm-coding-key"));
+        let restored_ds = application
+            .vendor_key(ds_config.protocol, &ds_config.endpoint)
+            .expect("deepseek key remembered");
+        assert_eq!(restored_ds.value(0), Some("deepseek-key"));
+
+        // 空 key 保存不抹记忆（清空不是换 key）。
+        let empty = crate::model::ProviderCredentials::for_protocol(glm_config.protocol);
+        application
+            .save_model_state(&glm_config, &empty)
+            .expect("save empty");
+        assert_eq!(
+            application
+                .vendor_key(glm_config.protocol, &glm_config.endpoint)
+                .expect("glm key survives an empty save")
+                .value(0),
+            Some("glm-coding-key")
+        );
+
+        // Other 端点不入库、不回填（自定义端点互不相干）。
+        let mut custom = glm_config.clone();
+        custom.preset = None;
+        custom.endpoint = "https://my-proxy.example/v1".into();
+        assert!(
+            application
+                .vendor_key(custom.protocol, &custom.endpoint)
+                .is_none()
+        );
+        application
+            .save_model_state(&custom, &glm_credentials)
+            .expect("save custom");
+        assert!(
+            application
+                .vendor_key(custom.protocol, &custom.endpoint)
+                .is_none()
+        );
+
+        // vendor: 保留行对用户档列表不可见；用户档不得占用该前缀。
+        let profiles = application.list_model_profiles().expect("list");
+        assert!(
+            profiles
+                .iter()
+                .all(|profile| !profile.name.starts_with("vendor:"))
+        );
+        assert!(
+            application
+                .save_model_profile("vendor:Fake", &glm_config, &glm_credentials)
+                .is_err()
+        );
 
         application.close().unwrap();
         std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();

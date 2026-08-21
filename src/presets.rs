@@ -61,10 +61,14 @@ const KIMI_WHITELIST_UA: &str = "claude-cli/2.1.161";
 /// Official DeepSeek parameters as documented at
 /// <https://api-docs.deepseek.com> (Models & Pricing, 2026-08):
 ///
-/// - model ids `deepseek-v4-flash` (DeepSeek-V4-Flash-0731) and
-///   `deepseek-v4-pro` (DeepSeek-V4-Pro-0813)
+/// - model ids `deepseek-v4-flash` (DeepSeek-V4-Flash-0731),
+///   `deepseek-v4-pro` (DeepSeek-V4-Pro-0813), and
+///   `deepseek-v4-flash-vision-exp` (DeepSeek-V4-Flash-Vision-Exp,
+///   实验性多模态视觉理解模型，2026-08-21 上架；图片按尺寸折算为
+///   token 计费，工具调用/JSON 输出/Anthropic API 均支持，价格与
+///   Flash 同档；并发上限 2500)
 /// - OpenAI-compatible base URL `https://api.deepseek.com`
-/// - 1M context, 384K maximum output（两个模型规格完全相同；最大输出
+/// - 1M context, 384K maximum output（三个模型规格完全相同；最大输出
 ///   是 GLM 5.3 的 3 倍）
 /// - thinking mode on by default, switched via `{"thinking":
 ///   {"type": "enabled"}}` (per the official thinking-mode guide, agent
@@ -167,6 +171,23 @@ pub const MODEL_PRESETS: &[ModelPreset] = &[
         vendor: "DeepSeek",
         protocol: ModelProtocol::OpenAiCompatible,
         model: "deepseek-v4-pro",
+        endpoint: "https://api.deepseek.com",
+        request_path: "/chat/completions",
+        output_limit: 384 * 1024,
+        context_window: 1_000_000,
+        reasoning_effort: Some("high"),
+        preserve_thinking: false,
+        thinking_object: true,
+        include_usage: true,
+        user_agent: None,
+    },
+    ModelPreset {
+        id: "deepseek-v4-flash-vision-exp",
+        name: "DeepSeek V4.0 Flash Vision (Exp)",
+        description: "Experimental multimodal DeepSeek V4 Flash — reads image input",
+        vendor: "DeepSeek",
+        protocol: ModelProtocol::OpenAiCompatible,
+        model: "deepseek-v4-flash-vision-exp",
         endpoint: "https://api.deepseek.com",
         request_path: "/chat/completions",
         output_limit: 384 * 1024,
@@ -623,9 +644,22 @@ mod tests {
                 "Kimi Coding Plan"
             ]
         );
-        assert_eq!(presets_by_vendor("DeepSeek").len(), 2);
+        assert_eq!(presets_by_vendor("DeepSeek").len(), 3);
         assert_eq!(presets_by_vendor("GLM Coding Plan").len(), 1);
         assert_eq!(presets_by_vendor("Qwen Token Plan")[0].id, "qwen3.8-max");
         assert_eq!(presets_by_vendor("Kimi Coding Plan")[0].id, "kimi-k3");
+    }
+
+    /// Vision-Exp 预设：核验过的官方参数落位（1M/384K），model id 与
+    /// 端点同族其余两条共享 DeepSeek 通道。
+    #[test]
+    fn deepseek_vision_preset_matches_official_parameters() {
+        let preset = preset_by_id("deepseek-v4-flash-vision-exp").expect("preset exists");
+        assert_eq!(preset.model, "deepseek-v4-flash-vision-exp");
+        assert_eq!(preset.endpoint, "https://api.deepseek.com");
+        assert_eq!(preset.context_window, 1_000_000);
+        assert_eq!(preset.output_limit, 384 * 1024);
+        assert_eq!(preset.reasoning_effort, Some("high"));
+        assert_eq!(preset.vendor, "DeepSeek");
     }
 }

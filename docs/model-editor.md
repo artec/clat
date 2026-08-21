@@ -16,13 +16,19 @@ the Preset row cycles through Custom → the built-ins → Custom:
 |---|---|---|
 | DeepSeek V4.0 Flash | `deepseek-v4-flash` (V4-Flash-0731) | `https://api.deepseek.com` |
 | DeepSeek V4.0 Pro | `deepseek-v4-pro` (V4-Pro-0813) | `https://api.deepseek.com` |
+| DeepSeek V4.0 Flash Vision (Exp) | `deepseek-v4-flash-vision-exp` | `https://api.deepseek.com` |
 | GLM 5.3 | `glm-5.3` | `https://open.bigmodel.cn/api/coding/paas/v4` |
+| Qwen3.8 Max | `qwen3.8-max` | `https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1` |
+| Kimi K3 | `kimi-k3` | `https://api.kimi.com/coding/v1` |
 
-All three use the official OpenAI-compatible API with a 1M context
-window. The DeepSeek presets set a 384K output limit and
+The DeepSeek presets share the official OpenAI-compatible API with a 1M
+context window and a 384K output limit, and set
 `reasoning_effort: high` (thinking mode ignores `temperature`, so
-presets leave it unset); the GLM 5.3 preset targets the dedicated
-Coding Plan endpoint with a 128K output limit, preserved thinking
+presets leave it unset). **Flash Vision (Exp)** is the experimental
+multimodal entry — the first preset that reads image input, which pairs
+with CLAT's image attachments (images are billed as tokens by their
+dimensions). The GLM 5.3 preset targets the dedicated Coding Plan
+endpoint with a 128K output limit, preserved thinking
 (`clear_thinking: false`), and `reasoning_effort: high` as well.
 GLM 5.3 cannot disable thinking (the API rejects `disabled`), while
 DeepSeek's non-thinking mode stays available through the raw extra

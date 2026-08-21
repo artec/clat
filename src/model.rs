@@ -180,6 +180,15 @@ impl fmt::Display for ModelProtocol {
     }
 }
 
+/// 模型路由键：与 journal `assistant/message` 的 `source {provider,
+/// model}` 同一口径（provider 由 agent 运行时传 `protocol.to_string()`）。
+/// 状态栏 Cache 口径按它分桶（INV-C1：按路由累计、切换不混合不清零）；
+/// journal 折叠、运行事件活账（RunEvent::ModelRequested）、当前配置
+/// 显示三端共用，防键漂移。
+pub(crate) fn model_route_key(protocol: &str, model: &str) -> String {
+    format!("{protocol}/{model}")
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ModelConfig {
     /// Identifier of the built-in preset this configuration came from, if any.
@@ -307,6 +316,21 @@ pub enum ModelVendor {
     Kimi,
     Qwen,
     Other,
+}
+
+impl ModelVendor {
+    /// 厂商 key 记忆库的存储键（INV-VK1：每个已知厂商一把持久 key，
+    /// "同 vendor 共享一个 API key 槽位"的兑现）。`Other` 返回 None——
+    /// 自定义端点互不相干，绝不互相串 key。
+    pub fn storage_key(self) -> Option<&'static str> {
+        match self {
+            Self::DeepSeek => Some("DeepSeek"),
+            Self::Glm => Some("Glm"),
+            Self::Kimi => Some("Kimi"),
+            Self::Qwen => Some("Qwen"),
+            Self::Other => None,
+        }
+    }
 }
 
 pub fn endpoint_vendor(endpoint: &str) -> ModelVendor {

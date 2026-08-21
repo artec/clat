@@ -30,6 +30,7 @@ use ratatui::widgets::{
     Wrap,
 };
 use ratatui::{DefaultTerminal, Frame};
+use std::collections::BTreeMap;
 use std::env;
 use std::io::{self, Write, stdout};
 use std::path::{Path, PathBuf};
@@ -605,11 +606,29 @@ fn copy_to_clipboard(text: &str) -> bool {
 /// - GLM Coding Plan：`Token: 87% · Cache: 99.99% · Context: 120k/1M`
 ///   （Token 段是 5 小时窗口剩余额度）
 ///
+/// INV-C1（2026-08-21，用户报告切模型 Cache 残留）：Cache 口径按模型
+/// 路由分桶——`route_usage` 是**当前配置路由**的桶，切换模型后不与
+/// 其它模型的累计混合；桶缺席（该路由还没跑过）显示 `--%`。来回切换
+/// 不清零：服务端缓存跨往返存活，各路由的口径也跨往返保留。
+///
 /// 思考档位不在这里——它属于标题栏（`compose_header_rest`）。
+/// INV-C1：取"当前配置路由"的用量桶；键与 journal `source {provider,
+/// model}` 同口径（provider = `protocol.to_string()`，agent 运行时
+/// 同源传参），三端（折叠/活账/显示）共用防漂移。
+fn current_route_usage<'a>(
+    routes: &'a BTreeMap<String, Usage>,
+    config: &ModelConfig,
+) -> Option<&'a Usage> {
+    routes.get(&crate::model::model_route_key(
+        &config.protocol.to_string(),
+        &config.model,
+    ))
+}
+
 fn status_suffix_segments(
     config: &ModelConfig,
     balance: &Option<String>,
-    session_usage: &Usage,
+    route_usage: Option<&Usage>,
     last_turn_usage: Option<&Usage>,
 ) -> Vec<String> {
     let mut parts = Vec::new();
@@ -625,9 +644,11 @@ fn status_suffix_segments(
             parts.push(format!("Token: {balance}"));
         }
     }
-    // Cache 段对 DeepSeek/GLM 常驻：无数据时显示 `--%`（新会话尚未
-    // 首跑、或适配器未上报），三段布局自启动起稳定。
-    let cache = cache_hit_percent(session_usage).unwrap_or_else(|| "--%".into());
+    // Cache 段对 DeepSeek/GLM 常驻：无数据时显示 `--%`（该路由尚未跑
+    // 过、或适配器未上报），三段布局自启动起稳定。
+    let cache = route_usage
+        .and_then(cache_hit_percent)
+        .unwrap_or_else(|| "--%".into());
     parts.push(format!("Cache: {cache}"));
     // Context 当前值 ≈ 最近一次模型请求的 input+output（下一次请求
     // 的近似起点）；分母是预设的官方上下文窗口，自定义端点未知则
@@ -959,6 +980,17 @@ struct App {
     /// 本会话累计 token 用量，用于状态栏缓存命中百分比。journal 还原
     /// （挂载/切换）+ 运行中流式实时累计 + run 结束以结果权威覆盖。
     session_usage: Usage,
+    /// INV-C1（Cache 按路由分桶）：每条模型路由（`model_route_key`，
+    /// journal `source {provider, model}` 同口径）保留自己的累计——
+    /// 切换模型不混合、不清零（服务端缓存跨往返存活，口径也必须存活）。
+    /// 状态栏 Cache 段取"当前配置路由"的桶；没用过的路由显示 `--%`。
+    usage_routes: BTreeMap<String, Usage>,
+    /// 本次 run 开始时的路由桶快照：与 run_usage_base 同律——流式实时
+    /// 重建、run 结束以 RunOutput 权威覆盖（只动本次 run 的路由桶）。
+    run_routes_base: Option<BTreeMap<String, Usage>>,
+    /// 本次 run 实际运行的模型路由（ModelRequested 事件指定，早于任何
+    /// usage；run 中途切配置不影响入账归属）。
+    run_route: Option<String>,
     /// 最近一次模型请求的用量（INV-F：随会话切换/新建重置），用于
     /// 状态栏 `Context: 120k/1M` 的当前值近似。
     last_turn_usage: Option<Usage>,
@@ -1086,6 +1118,9 @@ impl App {
             help_commands: Vec::new(),
             balance: None,
             session_usage: Usage::default(),
+            usage_routes: BTreeMap::new(),
+            run_routes_base: None,
+            run_route: None,
             last_turn_usage: None,
             run_usage_base: None,
             run_usage_acc: Usage::default(),
@@ -1206,8 +1241,11 @@ impl App {
         self.credentials = snapshot.credentials;
         self.provider_descriptors = snapshot.provider_descriptors;
         // journal 用量统计（DSH assistant/message.usage）：状态栏的
-        // Cache/Context 启动即有值，不必等首次 run 上报。
+        // Cache/Context 启动即有值，不必等首次 run 上报。路由桶随
+        // journal 折叠还原（INV-C1/C2 平价：重开会话后切换回来的
+        // 模型仍能看到自己的历史口径）。
         self.session_usage = snapshot.session_usage;
+        self.usage_routes = snapshot.usage_routes;
         self.last_turn_usage = snapshot.last_request_usage;
         if snapshot.mcp.configured != 0 {
             if snapshot.mcp.connecting > 0 {
@@ -2358,8 +2396,10 @@ impl App {
         self.input = InputBuffer::new(snapshot.input_history);
         self.conversation_scroll_from_bottom = 0;
         // 用量指标归属会话（TUI-L04）：恢复目标会话的 journal 统计
-        // （与挂载路径同源），Cache/Context 切换即有值。
+        // （与挂载路径同源），Cache/Context 切换即有值；路由桶同源
+        // 还原（INV-C1）。
         self.session_usage = snapshot.session_usage;
+        self.usage_routes = snapshot.usage_routes;
         self.last_turn_usage = snapshot.last_request_usage;
         Ok(())
     }
@@ -2447,6 +2487,43 @@ impl App {
                             self.refresh_balance_now();
                             self.picker = None;
                             self.flash_status(format!("model switched to {}", preset.name));
+                        }
+                        Err(error) => self.flash_status(format!("failed to save model: {error}")),
+                    }
+                } else if let Some(restored) = self
+                    .application
+                    .as_ref()
+                    .and_then(|application| {
+                        application.vendor_key(preset.protocol, preset.endpoint)
+                    })
+                    .filter(|credentials| {
+                        credentials
+                            .value(0)
+                            .is_some_and(|value| !value.trim().is_empty())
+                    })
+                {
+                    // INV-VK2（厂商 key 记忆库）：该厂商的 key 之前输入
+                    // 过已被记忆（save_model_state 输入即记忆）——直接
+                    // 回填落位，不再弹编辑器要 key（修复：切走再切回
+                    // 反复要 key）。
+                    match self
+                        .application
+                        .as_ref()
+                        .ok_or_else(|| "project application is unavailable".to_owned())
+                        .and_then(|application| {
+                            application
+                                .save_model_state(&config, &restored)
+                                .map_err(|error| error.to_string())
+                        }) {
+                        Ok(()) => {
+                            self.config = config;
+                            self.credentials = restored;
+                            self.refresh_balance_now();
+                            self.picker = None;
+                            self.flash_status(format!(
+                                "model switched to {} (saved key restored)",
+                                preset.name
+                            ));
                         }
                         Err(error) => self.flash_status(format!("failed to save model: {error}")),
                     }
@@ -2581,15 +2658,18 @@ impl App {
             }
             CommandOutcome::SessionReset => {
                 // /new 成功后的前端视图清空：用量指标归属会话（TUI-L04），
-                // 新会话从零累计。
+                // 新会话从零累计；路由桶同清（INV-C1 随会话归属）。
                 self.session_id = None;
                 self.session_title = None;
                 self.conversation = crate::tui_conversation::ConversationModel::new();
                 self.conversation_scroll_from_bottom = 0;
                 self.input = InputBuffer::new(Vec::new());
                 self.session_usage = Usage::default();
+                self.usage_routes.clear();
                 self.last_turn_usage = None;
                 self.run_usage_base = None;
+                self.run_routes_base = None;
+                self.run_route = None;
                 self.run_usage_acc = Usage::default();
                 self.flash_status("new conversation");
             }
@@ -2669,6 +2749,9 @@ impl App {
         // 实时用量基线：流式 Usage 在其上累加，结束以 RunOutput 权威替换。
         self.run_usage_base = Some(self.session_usage.clone());
         self.run_usage_acc = Usage::default();
+        // 路由桶基线同律（INV-C1）：run 期间只动本次 run 的路由桶。
+        self.run_routes_base = Some(self.usage_routes.clone());
+        self.run_route = None;
         self.flash_status("starting model…");
 
         // Completion is already post-persistence and post-scope-cleanup; this
@@ -2759,6 +2842,9 @@ impl App {
                 provider,
                 model,
             } => {
+                // 本次 run 的入账路由（journal source 同口径，INV-C1）：
+                // 以实际运行的 provider/model 为准，run 中途切配置不串桶。
+                self.run_route = Some(crate::model::model_route_key(&provider, &model));
                 self.flash_status(format!("{provider}/{model} · turn {turn}"));
             }
             RunEvent::ModelStream {
@@ -2791,6 +2877,17 @@ impl App {
                     let mut live = base;
                     live.add_assign(&self.run_usage_acc);
                     self.session_usage = live;
+                }
+                // 路由桶同基线重建：本次 run 的累计全部记入本次 run 的
+                // 路由（run 单路由；ModelRequested 先于任何 usage 到达）。
+                if let Some(routes) = self.run_routes_base.clone() {
+                    self.usage_routes = routes;
+                    if let Some(route) = self.run_route.clone() {
+                        self.usage_routes
+                            .entry(route)
+                            .or_default()
+                            .add_assign(&self.run_usage_acc);
+                    }
                 }
             }
             RunEvent::ToolRequested { call } => {
@@ -2843,6 +2940,27 @@ impl App {
                     }
                     None => self.session_usage.add_assign(&done.usage),
                 }
+                // 路由桶权威覆盖（INV-C1：只动本次 run 的桶）。
+                let run_route = self.run_route.take();
+                match self.run_routes_base.take() {
+                    Some(routes) => {
+                        self.usage_routes = routes;
+                        if let Some(route) = run_route {
+                            self.usage_routes
+                                .entry(route)
+                                .or_default()
+                                .add_assign(&done.usage);
+                        }
+                    }
+                    None => {
+                        if let Some(route) = run_route {
+                            self.usage_routes
+                                .entry(route)
+                                .or_default()
+                                .add_assign(&done.usage);
+                        }
+                    }
+                }
                 // 非流式 provider 兜底：本轮无任何 delta 时以最终输出
                 // 回填 assistant（与 journal 的 settled 文本对拍一致）。
                 self.conversation.settle_streamed_output(&done.output);
@@ -2865,6 +2983,28 @@ impl App {
                         self.session_usage.add_assign(&failure.usage);
                     }
                     None => self.session_usage.add_assign(&failure.usage),
+                }
+                // 失败 run 的已产生用量同样入本次 run 的桶（usage 为零时
+                // 无感知）。
+                let run_route = self.run_route.take();
+                match self.run_routes_base.take() {
+                    Some(routes) => {
+                        self.usage_routes = routes;
+                        if let Some(route) = run_route {
+                            self.usage_routes
+                                .entry(route)
+                                .or_default()
+                                .add_assign(&failure.usage);
+                        }
+                    }
+                    None => {
+                        if let Some(route) = run_route {
+                            self.usage_routes
+                                .entry(route)
+                                .or_default()
+                                .add_assign(&failure.usage);
+                        }
+                    }
                 }
                 self.conversation
                     .push_turn_end(format!("error: {}", failure.error));
@@ -2960,7 +3100,9 @@ impl App {
         let segments = status_suffix_segments(
             &self.config,
             &self.balance,
-            &self.session_usage,
+            // INV-C1：Cache 口径取当前模型路由的桶。桶缺席 = 该路由尚无
+            // 数据（刚切来的模型），`--%` 是诚实值。
+            current_route_usage(&self.usage_routes, &self.config),
             self.last_turn_usage.as_ref(),
         );
         let budget = (bar.width.saturating_sub(MIN_STATUS_LEFT + 2)) as usize;
@@ -5069,14 +5211,13 @@ mod tests {
         fn full_suffix(
             config: &ModelConfig,
             balance: &Option<String>,
-            session_usage: &Usage,
+            route_usage: Option<&Usage>,
             last_turn_usage: Option<&Usage>,
         ) -> String {
-            status_suffix_segments(config, balance, session_usage, last_turn_usage).join(" · ")
+            status_suffix_segments(config, balance, route_usage, last_turn_usage).join(" · ")
         }
 
         let balance = Some("110.00".to_owned());
-        let no_data = Usage::default();
         let cached = Usage {
             input_tokens: 1000,
             cached_input_tokens: Some(870),
@@ -5095,23 +5236,23 @@ mod tests {
 
         // 三段齐全（DeepSeek）。
         assert_eq!(
-            full_suffix(&config, &balance, &cached, Some(&turn)),
+            full_suffix(&config, &balance, Some(&cached), Some(&turn)),
             "Wallet: ￥110.00 · Cache: 87.00% · Context: 120k/1M"
         );
-        // 无任何数据（全新会话）：Cache/Context 常驻兜底（--% 与 0），
-        // 三段布局自启动起稳定（2026-08-19 用户反馈）。
+        // 无任何数据（全新会话/当前路由无桶）：Cache/Context 常驻兜底
+        // （--% 与 0），三段布局自启动起稳定（2026-08-19 用户反馈）。
         assert_eq!(
-            full_suffix(&config, &None, &no_data, None),
+            full_suffix(&config, &None, None, None),
             "Cache: --% · Context: 0/1M"
         );
         // 余额未就绪：Cache/Context 照常显示（不再整条消失）。
         assert_eq!(
-            full_suffix(&config, &None, &cached, Some(&turn)),
+            full_suffix(&config, &None, Some(&cached), Some(&turn)),
             "Cache: 87.00% · Context: 120k/1M"
         );
         // 尚无上下文样本：Context 按 0 计，段落仍在。
         assert_eq!(
-            full_suffix(&config, &balance, &cached, None),
+            full_suffix(&config, &balance, Some(&cached), None),
             "Wallet: ￥110.00 · Cache: 87.00% · Context: 0/1M"
         );
         // 缓存命中为零（服务端上报零命中）：真实的 0.00%，不是未知。
@@ -5121,7 +5262,7 @@ mod tests {
             ..Usage::default()
         };
         assert_eq!(
-            full_suffix(&config, &balance, &zero_cache, Some(&turn)),
+            full_suffix(&config, &balance, Some(&zero_cache), Some(&turn)),
             "Wallet: ￥110.00 · Cache: 0.00% · Context: 120k/1M"
         );
 
@@ -5130,13 +5271,13 @@ mod tests {
         config.endpoint = "https://open.bigmodel.cn/api/coding/paas/v4".into();
         let quota = Some("87%".to_owned());
         assert_eq!(
-            full_suffix(&config, &quota, &cached, Some(&turn)),
+            full_suffix(&config, &quota, Some(&cached), Some(&turn)),
             "Token: 87% · Cache: 87.00% · Context: 120k/1M"
         );
         // 海外 z.ai 端点同样生效。
         config.endpoint = "https://api.z.ai/api/coding/paas/v4".into();
         assert_eq!(
-            full_suffix(&config, &quota, &cached, Some(&turn)),
+            full_suffix(&config, &quota, Some(&cached), Some(&turn)),
             "Token: 87% · Cache: 87.00% · Context: 120k/1M"
         );
 
@@ -5144,13 +5285,57 @@ mod tests {
         config.preset = None;
         config.endpoint = "https://api.deepseek.com".into();
         assert_eq!(
-            full_suffix(&config, &balance, &cached, Some(&turn)),
+            full_suffix(&config, &balance, Some(&cached), Some(&turn)),
             "Wallet: ￥110.00 · Cache: 87.00%"
         );
 
         // 非 DeepSeek/GLM 端点：无后缀。
         config.endpoint = "https://api.openai.com/v1".into();
-        assert_eq!(full_suffix(&config, &balance, &cached, Some(&turn)), "");
+        assert_eq!(
+            full_suffix(&config, &balance, Some(&cached), Some(&turn)),
+            ""
+        );
+    }
+
+    /// INV-C1：Cache 按路由分桶显示——只有当前配置路由的桶上屏；切到
+    /// 没跑过的路由显示 `--%`；切回来数字仍在（来回切换不清零，服务端
+    /// 缓存跨往返存活，口径也跨往返保留）。修复前：单一会话累计让
+    /// GLM→DeepSeek 切换后 Cache 残留旧模型的命中率（用户报告）。
+    #[test]
+    fn cache_scopes_to_the_current_model_route() {
+        let mut routes = BTreeMap::new();
+        routes.insert(
+            crate::model::model_route_key("OpenAI Compatible", "glm-5.3"),
+            Usage {
+                input_tokens: 1000,
+                cached_input_tokens: Some(870),
+                ..Usage::default()
+            },
+        );
+        let glm = ModelConfig {
+            model: "glm-5.3".into(),
+            ..ModelConfig::default()
+        };
+        let deepseek = ModelConfig {
+            model: "deepseek-v4-flash".into(),
+            ..ModelConfig::default()
+        };
+        // 当前 = GLM：自己的 87%。
+        assert_eq!(
+            cache_hit_percent(current_route_usage(&routes, &glm).expect("glm bucket")),
+            Some("87.00%".to_owned())
+        );
+        // 切到没跑过的 DeepSeek：无桶 → `--%`（诚实值，不借 GLM 的数）。
+        assert!(current_route_usage(&routes, &deepseek).is_none());
+        assert_eq!(
+            cache_hit_percent(current_route_usage(&routes, &deepseek).unwrap_or(&Usage::default())),
+            None
+        );
+        // 切回 GLM：数字仍在。
+        assert_eq!(
+            cache_hit_percent(current_route_usage(&routes, &glm).expect("glm bucket")),
+            Some("87.00%".to_owned())
+        );
     }
 
     #[test]

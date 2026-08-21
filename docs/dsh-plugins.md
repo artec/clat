@@ -95,11 +95,14 @@ DSH 工具没有静态 effect 字段；不声明时 CLAT 按最保守档（Destr
    （MCP sampling 不带 tool-calling）；`provider`/`model` 恒用宿主
    会话模型；`maxTokens` 缺省 4096；`stopSequences` 忠实发送但部分
    宿主（含 CLAT v1）忽略。
-6. **取消不转发**：宿主发 `notifications/cancelled` 仅记录；工具的
+6. **sampling 仅文本**：`ctx.llm.stream` 的消息里出现图片等非文本
+   内容块会直接报错（`NON_TEXT_CONTENT`）——多模态采样暂不在桥上；
+   工具调用参数里的图片附件是 JSON 透传，不受影响。
+7. **取消不转发**：宿主发 `notifications/cancelled` 仅记录；工具的
    `exec.signal` v0 不会触发（宿主侧以调用截止兜底）。
-7. **`exec.deferContext()` / `exec.concludeTurn()`**：stderr 警告 +
+8. **`exec.deferContext()` / `exec.concludeTurn()`**：stderr 警告 +
    no-op（MCP 没有 agent-loop 上下文渡口）。
-8. **数量上限**：一次 ask ≤16 问、每问 ≤16 选项（宿主 elicitation
+9. **数量上限**：一次 ask ≤16 问、每问 ≤16 选项（宿主 elicitation
    上限）；错误码 `TOO_MANY_QUESTIONS`/`TOO_MANY_OPTIONS`。
 
 ## 六、用户侧免 Node：编译型分发

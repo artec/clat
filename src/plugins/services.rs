@@ -312,6 +312,17 @@ pub(crate) trait ConfigStore: Send + Sync {
     fn delete_profile(&self, name: &str) -> Result<(), StoreError>;
     fn active_profile(&self) -> Result<Option<String>, StoreError>;
     fn set_active_profile(&self, name: Option<&str>) -> Result<(), StoreError>;
+    /// 厂商 key 记忆库（INV-VK1）：记住/取回某厂商的 API key。
+    fn upsert_vendor_key(
+        &self,
+        vendor: &str,
+        credentials: &ProviderCredentials,
+    ) -> Result<(), StoreError>;
+    fn load_vendor_key(
+        &self,
+        vendor: &str,
+        protocol: crate::model::ModelProtocol,
+    ) -> Result<Option<ProviderCredentials>, StoreError>;
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -59,12 +59,48 @@ pub struct SessionView {
 }
 
 /// Usage stats folded from one journal pass: the session aggregate (cache
-/// ratio numerator/denominator) and the most recent report (the current
-/// context watermark).
+/// ratio numerator/denominator), the most recent report (the current
+/// context watermark), and per-route aggregates (INV-C1: the status-bar
+/// cache ratio is scoped to the current model route — switching models
+/// neither mixes nor clears buckets; provider-side caches survive detours,
+/// so the accounting must too).
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct UsageStats {
     pub session: crate::model::Usage,
     pub last_request: Option<crate::model::Usage>,
+    /// 按 `model_route_key`（journal source 的 provider/model）分桶的
+    /// 累计；显示端取"当前配置路由"的桶。
+    pub routes: std::collections::BTreeMap<String, crate::model::Usage>,
+}
+
+impl UsageStats {
+    /// 单条事件入账（两处折叠共用，保证 live/replay 平价，INV-C2）。
+    fn record(&mut self, event: &SessionEvent) {
+        if event.event_type != "assistant/message" {
+            return;
+        }
+        let Some(report) = usage_from_event(event) else {
+            return;
+        };
+        self.session.add_assign(&report);
+        if let Some(key) = route_key_of_event(event) {
+            self.routes.entry(key).or_default().add_assign(&report);
+        }
+        self.last_request = Some(report);
+    }
+}
+
+/// journal `assistant/message.message.source {kind: model, provider,
+/// model}` → 路由键；无 source 或非模型来源（旧日志/异常形状）不入桶
+/// （session 口径仍计，Cache 显示按 `--%` 兜底）。
+fn route_key_of_event(event: &SessionEvent) -> Option<String> {
+    let source = event.data.get("message")?.get("source")?;
+    if source.get("kind").and_then(serde_json::Value::as_str) != Some("model") {
+        return None;
+    }
+    let provider = source.get("provider")?.as_str()?;
+    let model = source.get("model")?.as_str()?;
+    Some(crate::model::model_route_key(provider, model))
 }
 
 /// Extract a usage report from an `assistant/message` event's DSH-shaped
@@ -156,12 +192,7 @@ impl ResumeSink {
     ) -> Result<(), String> {
         registry.fold_one(event)?;
         self.adapter.push(event, &mut self.replay);
-        if event.event_type == "assistant/message"
-            && let Some(report) = usage_from_event(event)
-        {
-            self.usage.session.add_assign(&report);
-            self.usage.last_request = Some(report);
-        }
+        self.usage.record(event);
         self.pushed += 1;
         Ok(())
     }
@@ -764,12 +795,7 @@ impl SessionService {
             let mut usage = UsageStats::default();
             match self.backend.visit_from(key, 0, &mut |event| {
                 adapter.push(event, &mut out);
-                if event.event_type == "assistant/message"
-                    && let Some(report) = usage_from_event(event)
-                {
-                    usage.session.add_assign(&report);
-                    usage.last_request = Some(report);
-                }
+                usage.record(event);
                 Ok(())
             }) {
                 Ok(_) => return Ok((out, usage)),
@@ -2299,6 +2325,86 @@ mod tests {
             "a failed stage must not install anything"
         );
         wait_for_writer_baseline(baseline);
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    /// INV-C1/C2：usage 折叠按 journal `source {provider, model}` 路由
+    /// 分桶——Cache 口径归属当前模型路由（切换不混合不清零），session
+    /// 口径仍是全会话累计（TUI-L04 不变），last_request 取最近一次。
+    /// 修复前该测试无处安放：UsageStats 没有路由桶，跨模型的缓存命中
+    /// 会混进同一个百分比（用户报告：GLM→DeepSeek 切换后 Cache 残留）。
+    #[test]
+    fn usage_fold_buckets_by_model_route() {
+        let (service, root) = service("usage-routes");
+        let summary = service.new_session(&project()).expect("session");
+        let key = SessionKey {
+            id: summary.id.clone(),
+            project: project(),
+        };
+        let glm_usage = crate::model::Usage {
+            input_tokens: 1000,
+            cached_input_tokens: Some(800),
+            ..crate::model::Usage::default()
+        };
+        let ds_usage = crate::model::Usage {
+            input_tokens: 200,
+            cached_input_tokens: Some(0),
+            ..crate::model::Usage::default()
+        };
+        let journal = service.journal().expect("journal");
+        journal
+            .append_atomic(&[
+                crate::session::run_journal::NewSessionEvent::new(
+                    "assistant/message",
+                    payloads::assistant_message(
+                        1,
+                        1,
+                        vec![payloads::text_block("glm answer")],
+                        "OpenAI Compatible",
+                        "glm-5.3",
+                        Some(&glm_usage),
+                    ),
+                )
+                .append(Vec::new()),
+                crate::session::run_journal::NewSessionEvent::new(
+                    "assistant/message",
+                    payloads::assistant_message(
+                        2,
+                        2,
+                        vec![payloads::text_block("deepseek answer")],
+                        "OpenAI Compatible",
+                        "deepseek-v4-flash",
+                        Some(&ds_usage),
+                    ),
+                )
+                .append(Vec::new()),
+            ])
+            .expect("append");
+        journal.flush().expect("flush");
+
+        let (_replay, usage) = service.replay_with_usage(&key).expect("replay");
+        let glm = usage
+            .routes
+            .get("OpenAI Compatible/glm-5.3")
+            .expect("glm bucket survives the switch");
+        assert_eq!(glm.input_tokens, 1000);
+        assert_eq!(glm.cached_input_tokens, Some(800));
+        let ds = usage
+            .routes
+            .get("OpenAI Compatible/deepseek-v4-flash")
+            .expect("deepseek bucket");
+        assert_eq!(ds.input_tokens, 200);
+        assert_eq!(ds.cached_input_tokens, Some(0));
+        // session 口径跨路由累计；最近一次是 deepseek。
+        assert_eq!(usage.session.input_tokens, 1200);
+        assert_eq!(usage.session.cached_input_tokens, Some(800));
+        assert_eq!(
+            usage
+                .last_request
+                .as_ref()
+                .and_then(|u| u.cached_input_tokens),
+            Some(0)
+        );
         std::fs::remove_dir_all(root).expect("cleanup");
     }
 }
