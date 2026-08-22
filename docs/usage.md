@@ -337,7 +337,11 @@ What the loop does have is a **spend guardrail**: each run tracks its
 configuration — raise, lower, or disable with `0` via `/model` →
 Spend Budget). Crossing 50% and 90% journals a durable warning event;
 crossing the cap stops the run with an error that names the used and
-cap numbers and how to raise them. A new run restarts the count.
+cap numbers and how to raise them. A new run restarts the count. The
+meter is provider-independent: every model request first reserves a
+conservative estimate (input estimate + output limit) and the
+provider-reported usage, when available, reconciles it — so endpoints
+that omit usage in their responses are still bounded by the guardrail.
 
 ## MCP tools
 

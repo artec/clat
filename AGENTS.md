@@ -1,6 +1,6 @@
 # CLAT Project Constitution
 
-CLAT is a fast, local-first, open-source command-line agent runtime.
+CLAT is a rock-solid agent foundation: fast, local-first, open-source, one binary.
 
 All contributors and coding agents working in this repository should preserve these principles unless a deliberate project decision changes them.
 

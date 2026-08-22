@@ -2405,7 +2405,9 @@ mod tests {
     /// 真实 MCP stdio server 被 CLAT 客户端挂载——echo 纯路径、
     /// sample_roundtrip 过本桥的权限门 + 假模型 + usage 记账、
     /// ask_roundtrip 过顺序单问（含 enumValues 选择与 multiSelect 降级）。
-    /// 需 node ≥22.19 与已构建的适配器，`cargo test -- --ignored` 显式跑。
+    /// 需 node ≥22.19 与已构建的适配器（`dist/` 是 gitignore 的构建产物，
+    /// 缺失时 skip 而非误报——CI 的门控腿先构建 adapter，见 ci.yml），
+    /// `cargo test -- --ignored` 显式跑。
     #[test]
     #[ignore = "spawns the node dsh-adapter demo; run explicitly with --ignored"]
     fn dsh_adapter_demo_end_to_end_over_mcp() {
@@ -2418,6 +2420,18 @@ mod tests {
             "missing {} — build the adapter first: cd sdk/dsh-adapter && npm install && npm run build",
             bin.display()
         );
+        // 启动器已提交、真正的运行时依赖是构建产物：新鲜克隆/未构建时
+        // skip（守卫必须查 import 的目标，而不是启动器本身——否则 node
+        // 起来后才在 ERR_MODULE_NOT_FOUND 上炸出误报）。
+        let dist = Path::new(env!("CARGO_MANIFEST_DIR")).join("sdk/dsh-adapter/dist/src/demo.js");
+        if !dist.exists() {
+            eprintln!(
+                "skipped: adapter not built ({}); build with: \
+                 cd sdk/dsh-adapter && npm install && npm run build",
+                dist.display()
+            );
+            return;
+        }
         let config = McpServerConfig {
             command: "node".into(),
             args: vec![bin.display().to_string()],
@@ -2503,7 +2517,8 @@ mod tests {
     /// 插件桥 Phase 3b e2e：npm 真实发布物 `dsh-web-search-exa@0.0.1-rc.1`
     /// 原样挂载（examples/exa），CLAT 客户端断言内置 `web_search` 出现、
     /// annotations 正确（ro+ow），无 API key 时 WEB_PROVIDER_UNAVAILABLE
-    /// 以 isError 返回（免网络）。需 examples/exa 已 `npm install`。
+    /// 以 isError 返回（免网络）。需 examples/exa 已 `npm install`（缺失时
+    /// skip——真实发布物验收是本地显式跑的门面，CI 不装这一步）。
     #[test]
     #[ignore = "spawns node with the real exa plugin; run explicitly with --ignored"]
     fn dsh_adapter_real_web_search_exa_end_to_end() {
@@ -2518,6 +2533,34 @@ mod tests {
              (after building the adapter: cd sdk/dsh-adapter && npm install && npm run build)",
             bin.display()
         );
+        // 真实前置 = examples/exa 的 file: 安装（node_modules 里的 adapter
+        // dist 一并就位）；未安装时 skip 而非 ERR_MODULE_NOT_FOUND 误报。
+        let installed = Path::new(env!("CARGO_MANIFEST_DIR")).join(
+            "sdk/dsh-adapter/examples/exa/node_modules/@artec/clat-dsh-adapter/dist/src/index.js",
+        );
+        if !installed.exists() {
+            eprintln!(
+                "skipped: examples/exa not installed ({}); install with: \
+                 cd sdk/dsh-adapter && npm install && npm run build && \
+                 cd examples/exa && npm install --legacy-peer-deps",
+                installed.display()
+            );
+            return;
+        }
+        // 本测试断言「无 key → 默认解析路径 → WEB_PROVIDER_UNAVAILABLE」。
+        // 子进程继承父环境（stdio 全继承，D1 披露），而 adapter 的
+        // web_search 会读运维旋钮 DSH_WEB_SEARCH_PROVIDER：ambient 设置
+        // 会改写错误形状（CONFIGURED_MISSING/UNAVAILABLE），断言以误导
+        // 性文案失败（2026-08-22 实测）。旋钮语义属 adapter 单测面；
+        // 这里对被 ambient 覆盖的环境 skip。
+        if std::env::var_os("DSH_WEB_SEARCH_PROVIDER").is_some() {
+            eprintln!(
+                "skipped: DSH_WEB_SEARCH_PROVIDER is set in the environment; \
+                 this acceptance pins the default provider resolution \
+                 (unset it to run)"
+            );
+            return;
+        }
         let config = McpServerConfig {
             command: "node".into(),
             args: vec![bin.display().to_string()],

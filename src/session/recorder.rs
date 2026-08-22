@@ -219,7 +219,13 @@ impl PermissionApprover for JournalingApprover {
 /// publishes the withheld terminal event.
 pub(crate) struct SessionRecorder {
     journal: Arc<dyn RunJournal>,
-    inner: Box<dyn EventSink + Send>,
+    /// FP-09（架构层）：待转发给 frontend sink 的 RunEvent 队列——
+    /// sink 不再在 recorder 临界区内执行（`inner` 字段已移除），
+    /// 调用方（RecorderHandle）锁外转发。
+    forwarded: Vec<RunEvent>,
+    /// finish 扣住的终态事件（journal 健康性裁决后发布）——同样由
+    /// 调用方锁外转发。
+    published: Vec<RunEvent>,
     shared: Arc<Mutex<SharedCore>>,
     provider: String,
     model: String,
@@ -263,7 +269,6 @@ impl SessionRecorder {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         journal: Arc<dyn RunJournal>,
-        inner: Box<dyn EventSink + Send>,
         request_header: RequestHeaderData,
         provider: &str,
         model: &str,
@@ -272,7 +277,8 @@ impl SessionRecorder {
     ) -> Self {
         Self {
             journal,
-            inner,
+            forwarded: Vec::new(),
+            published: Vec::new(),
             shared: Arc::new(Mutex::new(SharedCore {
                 turn,
                 // First step is 0 (catalog §3); open_step assigns and
@@ -328,7 +334,6 @@ impl SessionRecorder {
     ) -> (Self, JournalingApprover) {
         let recorder = Self::new(
             journal,
-            Box::new(NoopSink),
             request_header,
             provider,
             model,
@@ -339,21 +344,18 @@ impl SessionRecorder {
         (recorder, approver)
     }
 
-    /// Attach the UI sink after construction (see `with_approver`).
-    pub(crate) fn attach_sink(&mut self, inner: Box<dyn EventSink + Send>) {
-        self.inner = inner;
-    }
-
-    /// Close the step (if open), close the turn, flush, and publish the
-    /// withheld terminal RunEvent. Returns the journal error, if any — the
-    /// caller merges it into the run result.
+    /// Close the step (if open), close the turn, flush, and prepare the
+    /// withheld terminal RunEvent for publication. Returns the journal
+    /// error (merged into the run result by the caller) plus the RunEvents
+    /// to publish to the frontend — FP-09: publication happens outside the
+    /// recorder lock in the caller.
     ///
     /// Audit P1-09: a successful terminal (completed/cancelled) may only
     /// reach the frontend after the closing `turn/end` is durable. When
     /// the final flush fails, the withheld success is replaced by a
     /// `RunFailed` carrying the journal error so the event stream and the
     /// completion channel agree.
-    pub(crate) fn finish(&mut self, reason: TurnEndReason) -> Option<String> {
+    pub(crate) fn finish(&mut self, reason: TurnEndReason) -> (Option<String>, Vec<RunEvent>) {
         // B2（DSH 0.1.1-rc.1 对齐）：aborted 终态的部分产出前缀定稿为
         // `interrupted: true` 的 assistant/message（恢复合成收尾不经过
         // 本路径，语义不变）。
@@ -384,11 +386,14 @@ impl SessionRecorder {
             } else {
                 format!("{base}; session journal failed: {error}")
             };
-            self.inner.emit(RunEvent::RunFailed { message });
+            self.published.push(RunEvent::RunFailed { message });
         } else if let Some(terminal) = self.terminal.take() {
-            self.inner.emit(terminal);
+            self.published.push(terminal);
         }
-        self.journal_error.clone()
+        (
+            self.journal_error.clone(),
+            std::mem::take(&mut self.published),
+        )
     }
 
     /// Emit `step/end` for the open step, keeping any partial assistant
@@ -587,7 +592,11 @@ impl SessionRecorder {
         // INV-S6：sampling usage 在 assistant/message 落账点归并（DSH
         // 字节形状不变——只是 usage 数值含桥接调用的 token）。空单元
         // 不落 usage，保持零桥接 run 的 journal 字节与从前一致。
-        let usage = merged_usage(self.stream_usage.take(), self.take_aux_usage());
+        // FP-01：主循环与 aux 分开记账——主循环走预留对账（usage 到达
+        // → reconcile 替换预留；无 usage → 预留兑现），aux 照旧 charge。
+        let main_usage = self.stream_usage.take();
+        let aux_usage = self.take_aux_usage();
+        let usage = merged_usage(main_usage.clone(), aux_usage.clone());
         let mut payload = payloads::assistant_message(
             turn,
             step,
@@ -606,11 +615,24 @@ impl SessionRecorder {
         }
         let event = NewSessionEvent::new("assistant/message", payload).append(sources);
         self.append_quietly(event);
-        // B1：usage 落账即累计护栏口径（input+output；缓存命中已在
+        // B1/FP-01：落账即累计护栏口径（input+output；缓存命中已在
         // input 内，不重复计），跨 50%/90% 各发一次持久化预警。
-        if let Some(usage) = &usage {
-            let spent = usage.input_tokens + usage.output_tokens;
-            for event in self.budget.crossing_events(spent) {
+        let main_spent = match main_usage {
+            Some(usage) => Some(usage.input_tokens + usage.output_tokens),
+            None => {
+                // 无主循环 usage：预留兑现（若 run.rs 未预留则无操作——
+                // recorder 直驱的测试路径等同旧 charge 语义）。
+                if let Some(ledger) = &self.budget.ledger {
+                    ledger.commit_pending();
+                }
+                None
+            }
+        };
+        let aux_spent = aux_usage
+            .map(|usage| usage.input_tokens + usage.output_tokens)
+            .unwrap_or(0);
+        if main_spent.is_some() || aux_spent > 0 {
+            for event in self.budget.crossing_events(main_spent, aux_spent) {
                 self.append_quietly(event);
             }
         }
@@ -660,12 +682,18 @@ struct RunBudgetEvents {
 
 impl RunBudgetEvents {
     /// 跨阈值检查：返回本步需要新发的预警事件（50% 文案预告重置语义）。
-    fn crossing_events(&mut self, step_spent: u64) -> Vec<NewSessionEvent> {
+    /// FP-01：主循环 usage 走对账（`Some(actual)` → reconcile 替换预留；
+    /// `None` → 调用方已 commit_pending，这里不重复）；aux 照旧 charge。
+    fn crossing_events(&mut self, main_spent: Option<u64>, aux_spent: u64) -> Vec<NewSessionEvent> {
         let Some(ledger) = &self.ledger else {
             return Vec::new();
         };
-        // 充值走账本（唯一仪表，含插件采样归并的 INV-S6 口径）。
-        ledger.charge(step_spent);
+        if let Some(actual) = main_spent {
+            ledger.reconcile(actual);
+        }
+        if aux_spent > 0 {
+            ledger.charge(aux_spent);
+        }
         let Some(cap) = ledger.cap else {
             return Vec::new();
         };
@@ -720,15 +748,21 @@ fn merged_usage(
     }
 }
 
-/// Placeholder sink until `attach_sink`; never emits anywhere.
-struct NoopSink;
+impl SessionRecorder {
+    /// FP-09：journal 变换 + 返回待转发事件（终态扣到 `finish`）。
+    /// 兼容面：`EventSink::emit` 调它并丢弃返回——recorder 直驱的
+    /// 测试不变；需要断言转发面的测试用本方法/`take_forwarded`。
+    pub(crate) fn emit_and_forward(&mut self, event: RunEvent) -> Vec<RunEvent> {
+        self.record(event);
+        std::mem::take(&mut self.forwarded)
+    }
 
-impl EventSink for NoopSink {
-    fn emit(&mut self, _event: RunEvent) {}
-}
+    /// 取走累积的待转发事件（`EventSink::emit` 兼容路径累积于此）。
+    pub(crate) fn take_forwarded(&mut self) -> Vec<RunEvent> {
+        std::mem::take(&mut self.forwarded)
+    }
 
-impl EventSink for SessionRecorder {
-    fn emit(&mut self, event: RunEvent) {
+    fn record(&mut self, event: RunEvent) {
         match &event {
             // turn/start + user/message are the application's first durable
             // atomic batch, already written before the run started.
@@ -745,6 +779,12 @@ impl EventSink for SessionRecorder {
                         delay_ms,
                         failure,
                     } => {
+                        // FP-01：失败 attempt 已烧掉的保守成本兑现（预留
+                        // 保留给同请求的下一次 attempt，最终成功 attempt
+                        // 由 ModelResponded 的 reconcile 替换）。
+                        if let Some(ledger) = &self.budget.ledger {
+                            ledger.commit_retry_attempt();
+                        }
                         // llm/retry (catalog §2.3): a retryable failure with
                         // its backoff, durable before the wait.
                         let (turn, step) = self.state();
@@ -849,7 +889,10 @@ impl EventSink for SessionRecorder {
                         let call = shared.get(call_id).cloned();
                         (already, call, shared.turn, shared.step)
                     }
-                    Err(_) => return self.inner.emit(event),
+                    Err(_) => {
+                        self.forwarded.push(event);
+                        return;
+                    }
                 };
                 if !already {
                     let arguments = call
@@ -907,7 +950,13 @@ impl EventSink for SessionRecorder {
                 return;
             }
         }
-        self.inner.emit(event);
+        self.forwarded.push(event);
+    }
+}
+
+impl EventSink for SessionRecorder {
+    fn emit(&mut self, event: RunEvent) {
+        self.emit_and_forward(event);
     }
 }
 
@@ -1008,12 +1057,12 @@ mod tests {
         Arc<StdMutex<Vec<RunEvent>>>,
     ) {
         let journal = RecordingJournal::new();
+        // FP-09 起 recorder 不再持有 frontend sink；seen 仅保持 helper
+        // 签名兼容（恒空）。需要断言转发面的测试改用
+        // emit_and_forward / finish 的返回值。
         let seen = Arc::new(StdMutex::new(Vec::new()));
-        let sink_seen = Arc::clone(&seen);
-        let sink: Box<dyn EventSink + Send> = Box::new(SinkSink { seen: sink_seen });
         let recorder = SessionRecorder::new(
             Arc::clone(&journal) as Arc<dyn RunJournal>,
-            sink,
             header_data(),
             "prov",
             "mdl",
@@ -1021,16 +1070,6 @@ mod tests {
             Some("initial"),
         );
         (recorder, journal, seen)
-    }
-
-    struct SinkSink {
-        seen: Arc<StdMutex<Vec<RunEvent>>>,
-    }
-
-    impl EventSink for SinkSink {
-        fn emit(&mut self, event: RunEvent) {
-            self.seen.lock().unwrap().push(event);
-        }
     }
 
     /// S2：steering claim 落 mid-turn `user/message`——surface Append、
@@ -1082,7 +1121,7 @@ mod tests {
             finish_reason: crate::model::FinishReason::Completed,
             provider_replay: None,
         });
-        assert!(recorder.finish(TurnEndReason::Completed).is_none());
+        assert!(recorder.finish(TurnEndReason::Completed).0.is_none());
 
         let events = journal.events();
         let types: Vec<&str> = events.iter().map(|(kind, _)| kind.as_str()).collect();
@@ -1167,7 +1206,7 @@ mod tests {
             finish_reason: crate::model::FinishReason::Completed,
             provider_replay: None,
         });
-        assert!(recorder.finish(TurnEndReason::Completed).is_none());
+        assert!(recorder.finish(TurnEndReason::Completed).0.is_none());
 
         let events = journal.events();
         let messages: Vec<&serde_json::Value> = events
@@ -1252,7 +1291,7 @@ mod tests {
         // 第三步：模型不上报、桥接为零 → 无 usage 字段（字节不变）。
         step(&mut recorder, "c");
         responded(&mut recorder);
-        assert!(recorder.finish(TurnEndReason::Completed).is_none());
+        assert!(recorder.finish(TurnEndReason::Completed).0.is_none());
 
         let events = journal.events();
         let messages: Vec<&serde_json::Value> = events
@@ -1279,7 +1318,7 @@ mod tests {
 
     #[test]
     fn text_turn_produces_dsh_event_sequence() {
-        let (mut recorder, journal, seen) = recorder();
+        let (mut recorder, journal, _seen) = recorder();
         recorder.emit(RunEvent::ModelRequested {
             turn: 1,
             provider: "p".into(),
@@ -1307,7 +1346,7 @@ mod tests {
             turns: 1,
             usage: Default::default(),
         });
-        let error = recorder.finish(TurnEndReason::Completed);
+        let (error, published) = recorder.finish(TurnEndReason::Completed);
         assert!(error.is_none());
 
         let types: Vec<String> = journal.events().into_iter().map(|(kind, _)| kind).collect();
@@ -1340,7 +1379,7 @@ mod tests {
         assert_eq!(message["message"]["source"]["kind"], "model");
         assert_eq!(message["step"], json!(0));
         // The terminal event reached the UI only after the flush in finish.
-        let seen = seen.lock().unwrap();
+        let seen = &published;
         assert!(
             seen.iter()
                 .any(|event| matches!(event, RunEvent::RunCompleted { .. }))
@@ -1381,12 +1420,8 @@ mod tests {
     #[test]
     fn terminal_flush_failure_publishes_only_run_failed() {
         let journal = RecordingJournal::with_failing_flush(1);
-        let seen = Arc::new(StdMutex::new(Vec::new()));
-        let sink_seen = Arc::clone(&seen);
-        let sink: Box<dyn EventSink + Send> = Box::new(SinkSink { seen: sink_seen });
         let mut recorder = SessionRecorder::new(
             Arc::clone(&journal) as Arc<dyn RunJournal>,
-            sink,
             header_data(),
             "prov",
             "mdl",
@@ -1403,11 +1438,13 @@ mod tests {
             turns: 1,
             usage: Default::default(),
         });
-        let error = recorder.finish(TurnEndReason::Completed).expect("error");
+        let (error, published) = recorder.finish(TurnEndReason::Completed);
+        let error = error.expect("error");
         assert!(error.contains("injected flush failure"));
         // 修复前：UI 事件流收到 RunCompleted，而 completion 通道携带失败
-        // ——两个公开通道互相矛盾（审计 P1-09 的失败序列）。
-        let seen = seen.lock().unwrap();
+        // ——两个公开通道互相矛盾（审计 P1-09 的失败序列）。FP-09 起
+        // 断言面 = finish 返回的待发布终态（锁外转发由调用方执行）。
+        let seen = &published;
         assert!(
             !seen
                 .iter()
@@ -1426,12 +1463,8 @@ mod tests {
     #[test]
     fn mid_run_append_failure_publishes_only_run_failed_even_if_final_flush_succeeds() {
         let journal = RecordingJournal::with_failing_appends();
-        let seen = Arc::new(StdMutex::new(Vec::new()));
-        let sink_seen = Arc::clone(&seen);
-        let sink: Box<dyn EventSink + Send> = Box::new(SinkSink { seen: sink_seen });
         let mut recorder = SessionRecorder::new(
             Arc::clone(&journal) as Arc<dyn RunJournal>,
-            sink,
             header_data(),
             "prov",
             "mdl",
@@ -1451,16 +1484,16 @@ mod tests {
         // 修复前：只检查最终 flush——中途 append 已失败而最终 flush 成功
         // 时仍发布 RunCompleted，completion 通道却报告失败（复审第二轮
         // 发现的半修复）。
-        let error = recorder.finish(TurnEndReason::Completed).expect("error");
+        let (error, published) = recorder.finish(TurnEndReason::Completed);
+        let error = error.expect("error");
         assert!(error.contains("injected append failure"));
-        let seen = seen.lock().unwrap();
         assert!(
-            !seen
+            !published
                 .iter()
                 .any(|event| matches!(event, RunEvent::RunCompleted { .. })),
             "no success terminal may survive a mid-run journal failure"
         );
-        assert!(seen.iter().any(|event| matches!(
+        assert!(published.iter().any(|event| matches!(
             event,
             RunEvent::RunFailed { message } if message.contains("session journal failed")
         )));
@@ -1764,6 +1797,104 @@ mod tests {
         let probe = NewSessionEvent::new("clat/budget", serde_json::json!({})).log_only();
         assert_eq!(probe.ignorable, Some(true));
         assert_eq!(budget_events[1].1["usedTokens"], serde_json::json!(1000));
+    }
+
+    /// FP-01：retry 的每次 attempt 都计入同一 run 预算——两次
+    /// RetryScheduled 各兑现一次预留，最终成功 attempt 的实际 usage
+    /// 替换（而非叠加）预留。总账 = 2×预留 + 实际。
+    #[test]
+    fn budget_counts_failed_retry_attempts_and_reconciles_the_last() {
+        let (mut recorder, _journal, _seen) = recorder();
+        let ledger = std::sync::Arc::new(crate::model::RunSpendLedger::new(None));
+        recorder.set_run_ledger(std::sync::Arc::clone(&ledger));
+        // run.rs 的请求前预留（FP-01）。
+        ledger.reserve(100);
+
+        recorder.emit(RunEvent::ModelRequested {
+            turn: 1,
+            provider: "p".into(),
+            model: "m".into(),
+        });
+        for _ in 0..2 {
+            recorder.emit(RunEvent::ModelStream {
+                turn: 1,
+                event: ModelEvent::RetryScheduled {
+                    retry: 1,
+                    max_retries: 3,
+                    delay_ms: 1,
+                    failure: crate::model::RetryFailure {
+                        message: "transport glitch".into(),
+                        code: "E".into(),
+                        status: None,
+                        provider_retry_after_ms: None,
+                    },
+                },
+            });
+        }
+        recorder.emit(RunEvent::ModelStream {
+            turn: 1,
+            event: ModelEvent::Usage(crate::model::Usage {
+                input_tokens: 7,
+                output_tokens: 3,
+                ..crate::model::Usage::default()
+            }),
+        });
+        recorder.emit(RunEvent::ModelResponded {
+            turn: 1,
+            outcome: crate::event::ModelOutcome {
+                has_text: true,
+                tool_calls: 0,
+            },
+            finish_reason: crate::model::FinishReason::Completed,
+            provider_replay: None,
+        });
+        assert_eq!(
+            ledger.committed(),
+            2 * 100 + 10,
+            "two failed attempts keep their reservations; the final attempt is reconciled to actual"
+        );
+        assert_eq!(ledger.used(), ledger.committed(), "no pending remains");
+    }
+
+    /// FP-01（不双算钉子）：usage 到达时对账以实际值**替换**预留——
+    /// 落账后的账本恰好等于实际 usage，不含预留残差（若实现错误地把
+    /// 实际值叠加在预留上，本测试红）。
+    #[test]
+    fn budget_reconcile_replaces_the_reservation_no_double_count() {
+        let (mut recorder, _journal, _seen) = recorder();
+        let ledger = std::sync::Arc::new(crate::model::RunSpendLedger::new(None));
+        recorder.set_run_ledger(std::sync::Arc::clone(&ledger));
+        // run.rs 的请求前预留（保守值远大于实际 usage）。
+        ledger.reserve(4100);
+
+        recorder.emit(RunEvent::ModelRequested {
+            turn: 1,
+            provider: "p".into(),
+            model: "m".into(),
+        });
+        recorder.emit(RunEvent::ModelStream {
+            turn: 1,
+            event: ModelEvent::Usage(crate::model::Usage {
+                input_tokens: 5,
+                output_tokens: 1,
+                ..crate::model::Usage::default()
+            }),
+        });
+        recorder.emit(RunEvent::ModelResponded {
+            turn: 1,
+            outcome: crate::event::ModelOutcome {
+                has_text: true,
+                tool_calls: 0,
+            },
+            finish_reason: crate::model::FinishReason::Completed,
+            provider_replay: None,
+        });
+        assert_eq!(
+            ledger.committed(),
+            6,
+            "actual usage replaces the reservation"
+        );
+        assert_eq!(ledger.used(), 6, "no pending residue remains");
     }
 
     /// B2（DSH 0.1.1-rc.1 对齐）：流中被取消的轮次把已产出的部分前缀

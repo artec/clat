@@ -4,7 +4,15 @@ CLAT release archives are authenticated with Minisign. Each platform asset
 has a one-entry `<asset>.sha256` manifest and a
 `<asset>.sha256.minisig` signature. `clat upgrade` embeds
 [`release/minisign.pub`](../release/minisign.pub) and fails closed when the
-manifest, signature, asset name, or digest is missing or invalid. The
+manifest, signature, asset name, digest, or release-tag binding is
+missing or invalid. The signature's trusted comment (a signature-covered
+field the publish script fills with `CLAT $TAG release checksum manifests`)
+must match the release's tag, so replaying a genuinely-signed historical
+asset under a newer tag — a signed rollback — is refused before install.
+Replacement itself is stage-and-swap: the verified binary is first staged
+into the install directory and only then swapped in, with a forced
+rollback to the previous binary if a Windows two-step swap fails midway
+(a failed swap never leaves the installation without an executable). The
 first-install shell and PowerShell scripts intentionally remain dependency-free:
 they use HTTPS plus a mandatory SHA-256 manifest and do not require Minisign.
 

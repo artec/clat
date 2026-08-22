@@ -261,23 +261,38 @@ impl<'a> Run<'a> {
             }
 
             // B1 花费护栏（每轮模型请求前比对；steering 延长的同一 run
-            // 继续累计）。无预留制：主循环单请求上界有界（output_limit）。
-            if let Some(ledger) = &self.spend_ledger
-                && ledger.exceeds_cap()
-            {
-                let used = ledger.used();
-                let cap = ledger.cap.expect("exceeds_cap implies a cap");
-                return Err(fail(
-                    events,
-                    &self.steering,
-                    format!(
-                        "run token budget exceeded: used {used} / cap {cap} tokens \
-                         (input+output; raise or disable via /model — a new run restarts the count)"
-                    ),
-                    turn,
-                    total_usage,
-                    items,
-                ));
+            // 继续累计）。FP-01（预留制）：检查通过后先预留保守用量
+            //（input 估算 + output_limit）——provider 自报 usage 不再是
+            // 唯一计量来源；usage 到达由 recorder 对账替换（不双算），
+            // 无 usage/失败/取消时预留兑现（上游可能已计费）。主循环
+            // 计费是累计制（每轮 input≈全上下文重新计费），预留+对账与
+            // 真实账单天然同构。
+            if let Some(ledger) = &self.spend_ledger {
+                if ledger.exceeds_cap() {
+                    let used = ledger.used();
+                    let cap = ledger.cap.expect("exceeds_cap implies a cap");
+                    return Err(fail(
+                        events,
+                        &self.steering,
+                        format!(
+                            "run token budget exceeded: used {used} / cap {cap} tokens \
+                             (input+output; raise or disable via /model — a new run restarts the count)"
+                        ),
+                        turn,
+                        total_usage,
+                        items,
+                    ));
+                }
+                let definitions = self.tools.definitions();
+                let output_limit = u64::from(self.model_options.output_limit.unwrap_or(4096));
+                ledger.reserve(
+                    crate::model::estimate_request_tokens(
+                        self.instructions.as_deref(),
+                        &items,
+                        &definitions,
+                    )
+                    .saturating_add(output_limit),
+                );
             }
 
             events.emit(RunEvent::ModelRequested {
@@ -2001,8 +2016,10 @@ mod tests {
     }
 
     /// B1：`Some(0)` = 显式关闭（effective 层），None = 缺省 10M。
+    ///（FP-12 改名：原 `…_default_off_and_explicit` 名实不符——缺省
+    /// 是开启 10M，显式 0 才是关闭。）
     #[test]
-    fn budget_config_semantics_default_off_and_explicit() {
+    fn budget_config_semantics_default_on_and_explicit_off() {
         use crate::model::{ModelConfig, RUN_TOKEN_BUDGET_DEFAULT};
         let config = ModelConfig::default();
         assert_eq!(
@@ -2034,5 +2051,96 @@ mod tests {
             .execute("use the echo tool", &mut events)
             .expect("no budget ⇒ the scripted loop completes");
         assert_eq!(output.turns, 2);
+    }
+
+    /// FP-01（前置红，2026-08-22 审计）：provider 完全不报 usage 的
+    /// 无界 tool-call 循环也必须被护栏拦住——预留制生效后，首个请求
+    /// 的保守预留（input 估算 + output_limit）在下一轮检查点越顶，
+    /// 循环在有限请求数内终止。pre-fix：charge 只在 `Some(usage)` 分
+    /// 发生 → 账本永远为 0 → 循环跑完不报错。
+    #[test]
+    fn budget_without_provider_usage_still_stops_the_loop() {
+        struct NoUsageToolLoopModel {
+            calls: std::cell::Cell<usize>,
+        }
+        impl Model for NoUsageToolLoopModel {
+            fn provider(&self) -> &str {
+                "test"
+            }
+            fn model_id(&self) -> &str {
+                "no-usage-loop"
+            }
+            fn stream(
+                &mut self,
+                _request: ModelRequest<'_>,
+                events: &mut dyn ModelEventSink,
+            ) -> Result<ModelResponse, ModelError> {
+                self.calls.set(self.calls.get() + 1);
+                // 判别力防线：若护栏回归失效，这里让循环在第 50 次请求
+                // 后自然终止——测试以 expect_err 干净红，而不是挂死。
+                if self.calls.get() > 50 {
+                    events.emit(ModelEvent::TextDelta {
+                        delta: "loop escaped the guard".into(),
+                    });
+                    events.emit(ModelEvent::ResponseCompleted {
+                        finish_reason: FinishReason::Completed,
+                    });
+                    return Ok(ModelResponse {
+                        text: "loop escaped the guard".into(),
+                        tool_calls: vec![],
+                        finish_reason: FinishReason::Completed,
+                        usage: None,
+                        provider_response_id: None,
+                        provider_state: vec![],
+                        reasoning: None,
+                    });
+                }
+                let call = ToolCall {
+                    id: "call-1".into(),
+                    name: "echo".into(),
+                    arguments: json!({"text": "hello"}),
+                };
+                events.emit(ModelEvent::ToolCallCompleted { call: call.clone() });
+                events.emit(ModelEvent::ResponseCompleted {
+                    finish_reason: FinishReason::ToolCalls,
+                });
+                Ok(ModelResponse {
+                    text: String::new(),
+                    tool_calls: vec![call],
+                    finish_reason: FinishReason::ToolCalls,
+                    usage: None,
+                    provider_response_id: None,
+                    provider_state: vec![],
+                    reasoning: None,
+                })
+            }
+        }
+
+        let project = Project::new(".");
+        let tools = ToolRegistry::new();
+        register_test_tool(&tools, EchoTool);
+        let mut model = NoUsageToolLoopModel {
+            calls: std::cell::Cell::new(0),
+        };
+        let mut events = Vec::new();
+        let ledger = std::sync::Arc::new(crate::model::RunSpendLedger::new(Some(50)));
+        let error = Run::new(&mut model, &tools, &AllowAll, &project)
+            .with_spend_ledger(Some(std::sync::Arc::clone(&ledger)))
+            .execute("use the echo tool", &mut events)
+            .expect_err("no-usage providers must not bypass the guard");
+        assert!(
+            error
+                .message
+                .to_string()
+                .contains("run token budget exceeded"),
+            "teaching error: {}",
+            error.message
+        );
+        assert!(
+            model.calls.get() <= 2,
+            "the loop must stop within a couple of requests, got {}",
+            model.calls.get()
+        );
+        assert!(ledger.used() > 0, "the reservation must have landed");
     }
 }

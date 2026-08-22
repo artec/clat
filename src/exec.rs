@@ -251,6 +251,9 @@ pub struct ExecIo {
     output: SharedWriter,
     error: SharedWriter,
     interactive_stdin: bool,
+    /// FP-10：stdout 是否为 TTY——TTY 显示路径对模型 delta 做控制
+    /// 字符可见转义（OSC/CSI 注入失效）；管道路径保持字节保真契约。
+    stdout_is_terminal: bool,
     permission_input: Option<Arc<dyn ExecPermissionInput>>,
 }
 
@@ -266,8 +269,16 @@ impl ExecIo {
             output: Arc::new(Mutex::new(output)),
             error: Arc::new(Mutex::new(error)),
             interactive_stdin,
+            stdout_is_terminal: false,
             permission_input: None,
         }
+    }
+
+    /// FP-10：标记 stdout 为 TTY（main 以 `io::stdout().is_terminal()`
+    /// 注入；测试用内存缓冲默认管道语义）。
+    pub fn with_stdout_terminal(mut self, is_terminal: bool) -> Self {
+        self.stdout_is_terminal = is_terminal;
+        self
     }
 
     /// 注入交互式权限输入端口。生产 CLI 使用 main.rs 的终端事件实现；
@@ -552,6 +563,7 @@ where
         output: Arc::clone(&io.output),
         error: Arc::clone(&io.error),
         quiet: args.quiet,
+        stdout_is_terminal: io.stdout_is_terminal,
         io_state: Arc::clone(&io_state),
         cancel: cancel.clone(),
     };
@@ -952,6 +964,23 @@ impl ExecIoState {
     }
 }
 
+/// FP-10：TTY 显示路径的控制字符可见转义。保留 \n/\t/\r 与全部可
+/// 打印/多字节字符；其余 C0 与 DEL 转为 `\xNN` 字面形式——转义掉
+/// ESC 引入符即废掉整个 OSC/CSI 序列（其余字节只是无害文本）。
+fn sanitize_tty_text(delta: &str) -> String {
+    let mut out = String::with_capacity(delta.len());
+    for character in delta.chars() {
+        match character {
+            '\n' | '\t' | '\r' => out.push(character),
+            c if (c as u32) < 0x20 || c as u32 == 0x7f => {
+                out.push_str(&format!("\\x{:02x}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 fn stream_write(writer: &SharedWriter, args: std::fmt::Arguments<'_>) -> std::io::Result<()> {
     writer.lock().expect("exec writer").write_fmt(args)
 }
@@ -1090,6 +1119,7 @@ struct ExecEventSink {
     output: SharedWriter,
     error: SharedWriter,
     quiet: bool,
+    stdout_is_terminal: bool,
     io_state: SharedIoState,
     cancel: ExecCancel,
 }
@@ -1105,7 +1135,15 @@ impl EventSink for ExecEventSink {
                 event: ModelEvent::RefusalDelta { delta },
                 ..
             } => {
-                let result = stream_write(&self.output, format_args!("{delta}"))
+                // FP-10（双契约）：TTY 显示路径对 C0/DEL 做可见转义——
+                // 远端诱导的 OSC 52（剪贴板改写）/OSC 8/CSI 序列失去
+                // 效力；管道路径字节原样（assistant-text 契约不破）。
+                let text = if self.stdout_is_terminal {
+                    sanitize_tty_text(&delta)
+                } else {
+                    delta
+                };
+                let result = stream_write(&self.output, format_args!("{text}"))
                     .and_then(|()| stream_flush(&self.output));
                 if let Err(error) = result {
                     self.io_state.note("stdout", error);
@@ -1446,6 +1484,69 @@ mod tests {
     }
 
     // ---- stderr 不可被终端转义注入（依赖 serde_json 转义，钉住不变量）----
+
+    /// FP-10（双契约）：同一条 delta 含 OSC 52（剪贴板改写序列）——
+    /// TTY 旗标开 → 输出无裸 ESC、含可见转义；管道（默认）→ 字节
+    /// 完全一致。删除 sanitize 调用 → TTY 腿红（判别力）。
+    #[test]
+    fn tty_deltas_escape_control_sequences_pipes_stay_verbatim() {
+        let hostile = "before\u{1b}]52;c;aGVsbG8=\u{07}after\n";
+        assert_eq!(
+            sanitize_tty_text(hostile),
+            "before\\x1b]52;c;aGVsbG8=\\x07after\n",
+            "the escape introducer is defused visibly"
+        );
+        assert_eq!(sanitize_tty_text("plain text\ttab\n"), "plain text\ttab\n");
+        assert_eq!(sanitize_tty_text("中文保持不变"), "中文保持不变");
+
+        // sink 级双契约：同 delta 两种旗标。
+        fn sink_with(flag: bool) -> (ExecEventSink, CapturedOutput) {
+            let output = Arc::new(Mutex::new(Vec::new()));
+            let error = Arc::new(Mutex::new(Vec::new()));
+            let sink = ExecEventSink {
+                output: Arc::new(Mutex::new(
+                    Box::new(CapturedWriter(Arc::clone(&output))) as Box<dyn Write + Send>
+                )),
+                error: Arc::new(Mutex::new(
+                    Box::new(CapturedWriter(Arc::clone(&error))) as Box<dyn Write + Send>
+                )),
+                quiet: false,
+                stdout_is_terminal: flag,
+                io_state: Arc::new(ExecIoState::default()),
+                cancel: ExecCancel::new(),
+            };
+            (sink, CapturedOutput { output, error })
+        }
+        let (mut tty_sink, tty_captured) = sink_with(true);
+        tty_sink.emit(RunEvent::ModelStream {
+            turn: 1,
+            event: ModelEvent::TextDelta {
+                delta: hostile.into(),
+            },
+        });
+        let tty_out = tty_captured.output_string();
+        assert!(
+            !tty_out.contains('\u{1b}'),
+            "no raw ESC reaches the TTY: {tty_out:?}"
+        );
+        assert!(
+            tty_out.contains("\\x1b"),
+            "visible escape present: {tty_out:?}"
+        );
+
+        let (mut pipe_sink, pipe_captured) = sink_with(false);
+        pipe_sink.emit(RunEvent::ModelStream {
+            turn: 1,
+            event: ModelEvent::TextDelta {
+                delta: hostile.into(),
+            },
+        });
+        assert_eq!(
+            pipe_captured.output_string(),
+            hostile,
+            "pipe output stays byte-faithful"
+        );
+    }
 
     #[test]
     fn permission_arguments_render_escaped_so_ansi_cannot_reach_the_terminal() {

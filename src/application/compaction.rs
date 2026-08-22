@@ -136,14 +136,36 @@ impl TrustedProjectApplication {
 
 /// Lock-backed handle so the recorder can be driven as an `EventSink`
 /// while the worker keeps access for the final `finish()`.
+///
+/// FP-09（架构层）：frontend sink **不在 recorder 锁内执行**——journal
+/// 变换（锁内）完成后取走待转发事件、释放 recorder 锁，再驱动 sink
+///（锁外，独立 mutex）。frontend panic 从此无法毒化 recorder：核心
+/// persistence 与 frontend 故障域隔离（桌面端/第二客户端路线的地基）。
+/// 顺序不变量保持：事件按到达顺序先记账再转发（handle 单线程串行）。
 pub(super) struct RecorderHandle {
     pub(super) recorder: Arc<Mutex<SessionRecorder>>,
+    pub(super) sink: Arc<Mutex<Box<dyn EventSink + Send>>>,
 }
 
 impl EventSink for RecorderHandle {
     fn emit(&mut self, event: RunEvent) {
-        if let Ok(mut recorder) = self.recorder.lock() {
-            recorder.emit(event);
+        // 毒锁恢复（防御）：journal 变换必须继续。
+        let forwarded = {
+            let mut recorder = self
+                .recorder
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            recorder.emit_and_forward(event)
+        };
+        if forwarded.is_empty() {
+            return;
+        }
+        let mut sink = self
+            .sink
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for event in forwarded {
+            sink.emit(event);
         }
     }
 }

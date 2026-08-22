@@ -201,8 +201,12 @@ pub fn response_frame(id: &Value, outcome: &Result<Value, (i64, String)>) -> Str
 }
 
 /// 读取一行（到 `\n`），累计字节超过 `cap` 报错。基于 `fill_buf`
-/// 实现，不在内存里无限累积无换行的输入。
-fn read_capped_line(reader: &mut impl BufRead, cap: usize) -> std::io::Result<Option<String>> {
+/// 实现，不在内存里无限累积无换行的输入。`pub(crate)`：providers 的
+/// SSE 消费用同一资源纪律（FP-02）。
+pub(crate) fn read_capped_line(
+    reader: &mut impl BufRead,
+    cap: usize,
+) -> std::io::Result<Option<String>> {
     let mut line = Vec::new();
     loop {
         let available = reader.fill_buf()?;

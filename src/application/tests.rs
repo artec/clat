@@ -106,6 +106,75 @@ fn run_with_attachments(
     receiver.recv().unwrap()
 }
 
+/// FP-09（前置红，2026-08-22 审计）：frontend sink 在非终态事件上
+/// panic——panic 穿过 recorder mutex 内的 `inner.emit` → 锁中毒 →
+/// 收尾 `finish()` 被 `if let Ok` 静默跳过 → journal 缺 closing
+/// turn/end（durable terminal closure 丢失、事件继续静默丢弃）。
+/// 修复不变量：frontend 故障不得把核心 persistence 变成不可收尾
+/// 状态——catch_unwind 收尾后 journal 仍有 turn/end（error reason），
+/// run 返回显式失败。
+#[test]
+fn sink_panic_does_not_swallow_the_terminal_closure() {
+    struct PanicOnDeltaSink;
+    impl crate::EventSink for PanicOnDeltaSink {
+        fn emit(&mut self, event: crate::RunEvent) {
+            if matches!(
+                event,
+                crate::RunEvent::ModelStream {
+                    event: crate::model::ModelEvent::TextDelta { .. },
+                    ..
+                }
+            ) {
+                panic!("frontend sink exploded (FP-09 fixture)");
+            }
+        }
+    }
+
+    let (storage_root, project_root) = roots("fp09-sink-panic");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let project = Project::new(&project_root);
+    let mut application = mount(&project, &storage_root, TestBehavior::Success);
+    configure_test_model(&application);
+
+    let (completion, receiver) = mpsc::channel();
+    let handle = application
+        .start_run(ApplicationRunRequest {
+            attachments: Vec::new(),
+            asker: None,
+            prompt: "say something".into(),
+            approver: allow_all_approver(),
+            events: Box::new(PanicOnDeltaSink),
+            completion,
+        })
+        .unwrap();
+    handle.join().unwrap();
+    let failure = receiver
+        .recv()
+        .unwrap()
+        .expect_err("a panicking sink must fail the run explicitly");
+    assert!(
+        failure.error.contains("partial output"),
+        "the run-worker panic path formats the failure (message + partial): {}",
+        failure.error
+    );
+    assert!(
+        failure.error.contains("frontend sink exploded"),
+        "the sink panic payload surfaces verbatim: {}",
+        failure.error
+    );
+    application.close().unwrap();
+
+    let events = load_events(&storage_root);
+    let types: Vec<&str> = events
+        .iter()
+        .map(|event| event.event_type.as_str())
+        .collect();
+    assert!(
+        types.contains(&"turn/end"),
+        "the journal must still carry the closing turn/end: {types:?}"
+    );
+}
+
 /// Load the durable events of the storage root's only session.
 fn load_events(storage_root: &std::path::Path) -> Vec<crate::session::event::SessionEvent> {
     let backend = crate::session::persistence::JsonlBackend::new(

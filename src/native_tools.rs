@@ -8,7 +8,7 @@ use crate::tool::{Tool, ToolDefinition, ToolEffect, ToolError};
 use command_group::CommandGroup;
 use serde_json::{Value, json};
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
 const DEFAULT_LIST_DEPTH: usize = 2;
@@ -184,9 +184,24 @@ impl Tool for ReadFileTool {
         let mut last_line = start_line.saturating_sub(1);
         let mut truncated = false;
 
-        for (index, line) in BufReader::new(file).lines().enumerate() {
+        // FP-06（2026-08-22 审计）：有界行读取——超长单行不再先整行
+        // 物化（1GiB 无换行文件在 max_bytes=1KiB 时旧实现会先分配
+        // 1GiB）。单行超过 max_bytes 即触发截断（该行本身就不可能被
+        // 保留）；输出格式与 BufReader::lines 版逐字节一致。
+        let mut reader = BufReader::new(file);
+        let mut index = 0usize;
+        loop {
             check_cancelled(cancel)?;
+            let line = match crate::mcp::transport::read_capped_line(&mut reader, max_bytes) {
+                Ok(Some(line)) => line,
+                Ok(None) => break,
+                Err(_) => {
+                    truncated = true;
+                    break;
+                }
+            };
             let line_number = index + 1;
+            index += 1;
             if line_number < start_line {
                 continue;
             }
@@ -194,7 +209,7 @@ impl Tool for ReadFileTool {
                 break;
             }
 
-            let line = line.map_err(|error| tool_io_error("read_file", requested, error))?;
+            let line = line.trim_end_matches(['\r', '\n']);
             let formatted = format!("{line_number} | {line}\n");
             if content.len() + formatted.len() > max_bytes {
                 truncated = true;
@@ -275,10 +290,16 @@ impl Tool for SearchTool {
             .map_err(|error| tool_io_error("search", requested, error))?;
 
         let mut files = Vec::new();
-        collect_search_files(&root, &mut files, DEFAULT_SEARCH_FILES, cancel)?;
+        let mut truncated = false;
+        collect_search_files(
+            &root,
+            &mut files,
+            DEFAULT_SEARCH_FILES,
+            &mut truncated,
+            cancel,
+        )?;
         let mut matches = Vec::new();
         let mut files_searched = 0usize;
-        let mut truncated = false;
         let normalized_query = (!case_sensitive).then(|| query.to_lowercase());
 
         for path in files {
@@ -291,13 +312,21 @@ impl Tool for SearchTool {
                 continue;
             }
 
-            let bytes = fs::read(&path).map_err(|error| {
-                ToolError::new(format!(
-                    "search: failed to read `{}`: {error}",
-                    path.display()
-                ))
-            })?;
-            if bytes.contains(&0) {
+            // FP-06：实读走 take(cap+1)——stat 与 read 之间文件增长
+            // （TOCTOU）时按"不可搜索"跳过，而不是把超帽字节读进来。
+            let mut bytes = Vec::new();
+            fs::File::open(&path)
+                .and_then(|file| {
+                    use std::io::Read as _;
+                    file.take(MAX_SEARCH_FILE_BYTES + 1).read_to_end(&mut bytes)
+                })
+                .map_err(|error| {
+                    ToolError::new(format!(
+                        "search: failed to read `{}`: {error}",
+                        path.display()
+                    ))
+                })?;
+            if bytes.len() > MAX_SEARCH_FILE_BYTES as usize || bytes.contains(&0) {
                 continue;
             }
             let Ok(text) = std::str::from_utf8(&bytes) else {
@@ -596,10 +625,22 @@ impl Tool for RunCommandTool {
         let stderr_handle = spawn_output_reader(child.inner().stderr.take());
 
         // C-INV2：退出 / 超时 / 取消，三者必有其一；后两者终止整个
-        // 进程组（TERM → 短宽限 → KILL）。
+        // 进程组（TERM → 短宽限 → KILL）。FP-03（2026-08-22 审计）：
+        // leader shell 正常先退出后，后台后代仍可继承持有 stdout/stderr
+        // 管道——reader 不 EOF、join 无界、取消/超时监控随 leader 一起
+        // 停止（`sleep 30 &` 类日常命令即可永久挂死工具且 Esc 失效）。
+        // 修复：leader 退出后进入**有界 drain 宽限**（前台命令的写端都
+        // 先于 leader 退出，读者通常即刻 EOF）；宽限内继续观察取消；
+        // 宽限耗尽仍未 EOF → 判定有后代持管道 → 终止整组（管道随组
+        // 关闭，join 有界），以 leader 的真实退出码收尾——这不是命令
+        // 超时（leader 已按期完成），timed_out 保持 false，输出可能被
+        // 置 truncated。
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_seconds);
+        const DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
         let mut timed_out = false;
-        let status = loop {
+        let mut status: Option<std::process::ExitStatus> = None;
+        let mut leader_done_at: Option<std::time::Instant> = None;
+        loop {
             if cancel.is_cancelled() {
                 terminate_process_tree(&mut child);
                 let _ = child.wait();
@@ -607,24 +648,45 @@ impl Tool for RunCommandTool {
                 let _ = stderr_handle.join();
                 return Err(ToolError::new("run_command: cancelled"));
             }
-            match child.try_wait() {
-                Ok(Some(status)) => break Some(status),
-                Ok(None) => {}
-                Err(error) => {
-                    terminate_process_tree(&mut child);
-                    let _ = child.wait();
-                    let _ = stdout_handle.join();
-                    let _ = stderr_handle.join();
-                    return Err(ToolError::new(format!("run_command: wait failed: {error}")));
+            if leader_done_at.is_none() {
+                match child.try_wait() {
+                    Ok(leader_status @ Some(_)) => {
+                        status = leader_status;
+                        leader_done_at = Some(std::time::Instant::now());
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        terminate_process_tree(&mut child);
+                        let _ = child.wait();
+                        let _ = stdout_handle.join();
+                        let _ = stderr_handle.join();
+                        return Err(ToolError::new(format!("run_command: wait failed: {error}")));
+                    }
                 }
+            } else if stdout_handle.is_finished() && stderr_handle.is_finished() {
+                // leader 已退出且读者都到 EOF（前台命令的常态）——正常
+                // 收尾，join 即返。
+                break;
             }
-            if std::time::Instant::now() >= deadline {
+            // 全局超时只对「leader 仍存活」有意义（leader 已按期完成时
+            // 杀的是残留后代，不是命令超时）。
+            if leader_done_at.is_none() && std::time::Instant::now() >= deadline {
                 timed_out = true;
                 terminate_process_tree(&mut child);
-                break child.wait().ok();
+                status = child.wait().ok();
+                break;
+            }
+            // FP-03：leader 已死 + drain 宽限耗尽 + 管道仍被后代持有
+            // → 整组终止，夺回 join 的有界性。
+            if leader_done_at
+                .is_some_and(|done_at| done_at + DRAIN_GRACE <= std::time::Instant::now())
+            {
+                terminate_process_tree(&mut child);
+                let _ = child.wait();
+                break;
             }
             std::thread::sleep(std::time::Duration::from_millis(25));
-        };
+        }
 
         let (stdout, stdout_truncated) = stdout_handle
             .join()
@@ -749,8 +811,11 @@ fn walk_directory(
         return Ok(());
     }
 
-    let mut entries = sorted_entries(directory)?;
-    for entry in entries.drain(..) {
+    let (entries, dir_overflow) = sorted_entries(directory)?;
+    if dir_overflow {
+        *truncated = true;
+    }
+    for entry in entries {
         if output.len() >= limits.entries {
             *truncated = true;
             return Ok(());
@@ -791,6 +856,7 @@ fn collect_search_files(
     path: &Path,
     output: &mut Vec<PathBuf>,
     max_files: usize,
+    truncated: &mut bool,
     cancel: &CancelToken,
 ) -> Result<(), ToolError> {
     check_cancelled(cancel)?;
@@ -805,7 +871,11 @@ fn collect_search_files(
         return Ok(());
     }
 
-    for entry in sorted_entries(path)? {
+    let (entries, dir_overflow) = sorted_entries(path)?;
+    if dir_overflow {
+        *truncated = true;
+    }
+    for entry in entries {
         if output.len() >= max_files {
             break;
         }
@@ -817,7 +887,7 @@ fn collect_search_files(
             if is_ignored_directory(&name.to_string_lossy()) {
                 continue;
             }
-            collect_search_files(&entry.path(), output, max_files, cancel)?;
+            collect_search_files(&entry.path(), output, max_files, truncated, cancel)?;
         } else if file_type.is_file() {
             output.push(entry.path());
         }
@@ -833,13 +903,30 @@ fn check_cancelled(cancel: &CancelToken) -> Result<(), ToolError> {
     }
 }
 
-fn sorted_entries(path: &Path) -> Result<Vec<fs::DirEntry>, ToolError> {
-    let mut entries = fs::read_dir(path)
-        .map_err(|error| ToolError::new(format!("failed to read `{}`: {error}", path.display())))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| ToolError::new(format!("failed to read directory entry: {error}")))?;
+/// FP-06：单目录读取帽——巨型目录不再无界 collect + sort 全量 entry
+///（百万 entry 会先吃满内存再谈 max_entries）。超帽即截断（仅保留
+/// 前 `MAX_DIR_ENTRIES` 项并排序），溢出信号由调用方并入 `truncated`。
+/// 帽值远大于 list 的 max_entries 上限（2000），正常目录零影响。
+const MAX_DIR_ENTRIES: usize = 10_000;
+
+fn sorted_entries(path: &Path) -> Result<(Vec<fs::DirEntry>, bool), ToolError> {
+    let directory = fs::read_dir(path)
+        .map_err(|error| ToolError::new(format!("failed to read `{}`: {error}", path.display())))?;
+    let mut entries = Vec::new();
+    let mut overflow = false;
+    for entry in directory {
+        if entries.len() >= MAX_DIR_ENTRIES {
+            overflow = true;
+            break;
+        }
+        entries.push(
+            entry.map_err(|error| {
+                ToolError::new(format!("failed to read directory entry: {error}"))
+            })?,
+        );
+    }
     entries.sort_by_key(|entry| entry.file_name());
-    Ok(entries)
+    Ok((entries, overflow))
 }
 
 fn is_ignored_directory(name: &str) -> bool {
@@ -1119,6 +1206,60 @@ mod tests {
     /// 接受任意绝对路径（全档位一致，含项目外与 symlink 解析）；项目
     /// 相对路径的旧纪律不变（`..` 仍拒）。pre-fix 上绝对路径在
     /// `resolve_existing` 被拒，绝对读断言必红。
+    /// FP-06：超长单行（8MiB 无换行）在 max_bytes=1KiB 下——截断、
+    /// 输出有界、不物化整行。判别力说明：输出与旧实现等价（截断标志
+    /// 两版都为 true），边界在**内存**而非输出——有界形状由 mcp 的
+    /// read_capped_line 测试族钉住，此处钉行为契约（truncated + 有界
+    /// content + 正常文件零变化——后者由 reads_line_ranges 钉住）。
+    #[test]
+    fn read_file_bounded_against_a_giant_single_line() {
+        let (root, project) = fixture();
+        let giant = root.join("giant-single-line.txt");
+        let mut line = String::with_capacity(8 * 1024 * 1024);
+        std::iter::repeat_n(b'x', 8 * 1024 * 1024).for_each(|byte| line.push(byte as char));
+        fs::write(&giant, &line).expect("giant");
+        let output = ReadFileTool
+            .invoke(
+                &json!({"path": "giant-single-line.txt", "max_bytes": 1024}),
+                &project,
+                &CancelToken::new(),
+            )
+            .expect("bounded read");
+        assert_eq!(output["truncated"], true);
+        let content = output["content"].as_str().expect("content");
+        assert!(
+            content.len() <= 1024,
+            "content stays within the budget: {}",
+            content.len()
+        );
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    /// FP-06：目录帽——sorted_entries 对超帽目录只收 MAX_DIR_ENTRIES
+    /// 项并报告溢出（判别面在助手返回的 overflow 位：旧实现无界
+    /// collect，输出层面等价，边界在内存——结构性判别）。
+    #[test]
+    fn directory_entry_collection_is_capped() {
+        let root = fixture().0;
+        let dir = root.join("huge-dir");
+        fs::create_dir_all(&dir).expect("dir");
+        for index in 0..(MAX_DIR_ENTRIES + 100) {
+            fs::write(dir.join(format!("f{index:05}")), b"").expect("file");
+        }
+        let (entries, overflow) = sorted_entries(&dir).expect("sorted");
+        assert!(overflow, "directories past the cap report overflow");
+        assert_eq!(
+            entries.len(),
+            MAX_DIR_ENTRIES,
+            "only cap-many entries are ever collected"
+        );
+        // 正常目录零影响：无溢出、全量排序。
+        let (small, overflow) = sorted_entries(&root).expect("root");
+        assert!(!overflow);
+        assert!(small.len() < MAX_DIR_ENTRIES);
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
     #[test]
     fn read_tools_accept_absolute_paths_beyond_the_project_root() {
         let (root, project) = fixture();
@@ -1477,6 +1618,111 @@ mod tests {
             !marker.exists(),
             "TERM-ignoring descendants must receive the final group KILL"
         );
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    /// FP-03（2026-08-22 审计，前置红）：leader shell 正常先退出、后台
+    /// 后代继承持有 stdout/stderr 管道——旧实现在 leader 退出即停全部
+    /// 监控、无界 join reader，`sleep 30 &` 这类日常命令即可把工具挂
+    /// 死整整 30s。修复后：leader 退出 + 1s drain 宽限耗尽 → 整组终止
+    /// → 有限返回，且 timed_out=false（leader 已按期完成）。
+    /// 看门狗（线程 + recv_timeout）让红阶段干净失败而非挂死测试器。
+    #[test]
+    #[cfg(unix)]
+    fn run_command_bounded_when_background_descendants_hold_the_pipes() {
+        let (root, project) = fixture();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let handle = {
+            let project = project.clone();
+            std::thread::spawn(move || {
+                let result = RunCommandTool.invoke(
+                    &json!({"command": "sleep 30 & exit 0", "timeout_seconds": 30}),
+                    &project,
+                    &CancelToken::new(),
+                );
+                let _ = tx.send(result);
+            })
+        };
+        let output = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the tool must return within the watchdog window")
+            .expect("leader exited 0; only lingering pipes were reclaimed");
+        assert_eq!(output["exit_code"], 0, "the leader completed on time");
+        assert_eq!(
+            output["timed_out"], false,
+            "leader completion is not a timeout"
+        );
+        handle.join().expect("worker");
+        // 后台 sleep 已被整组终止：等过它的存活期，不得有 marker。
+        let marker = root.join("lingering-marker");
+        let _ = RunCommandTool.invoke(
+            &json!({
+                "command": "(sleep 3; printf x > lingering-marker) & exit 0",
+                "timeout_seconds": 30
+            }),
+            &project,
+            &CancelToken::new(),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        assert!(
+            !marker.exists(),
+            "pipe-holding descendants must be group-terminated after the drain grace"
+        );
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    /// FP-03（前置红）：同一状态（leader 已死、后代持管道）下，Esc 取
+    /// 消必须仍然有效——旧实现的取消监控随 leader 退出一起停了。
+    #[test]
+    #[cfg(unix)]
+    fn run_command_cancel_still_works_after_leader_exits() {
+        let (root, project) = fixture();
+        let cancel = CancelToken::new();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let handle = {
+            let project = project.clone();
+            let cancel = cancel.clone();
+            std::thread::spawn(move || {
+                let result = RunCommandTool.invoke(
+                    &json!({"command": "sleep 30 & exit 0", "timeout_seconds": 30}),
+                    &project,
+                    &cancel,
+                );
+                let _ = tx.send(result);
+            })
+        };
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        cancel.cancel();
+        let error = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("cancel must be honoured even after the leader exited")
+            .expect_err("cancelled runs return an error");
+        assert!(error.to_string().contains("cancelled"), "error: {error}");
+        handle.join().expect("worker");
+        // 取消同样整组终止后代。
+        let marker = root.join("cancel-marker");
+        let cancel2 = CancelToken::new();
+        let cancel2_for_worker = cancel2.clone();
+        let (tx2, rx2) = std::sync::mpsc::channel();
+        let project2 = project.clone();
+        std::thread::spawn(move || {
+            let result = RunCommandTool.invoke(
+                &json!({
+                    "command": "(sleep 3; printf x > cancel-marker) & exit 0",
+                    "timeout_seconds": 30
+                }),
+                &project2,
+                &cancel2_for_worker,
+            );
+            let _ = tx2.send(result);
+        });
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        cancel2.cancel();
+        rx2.recv_timeout(std::time::Duration::from_secs(5))
+            .expect("second leg bounded")
+            .expect_err("cancelled");
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        assert!(!marker.exists(), "cancelled groups must not leave writers");
         fs::remove_dir_all(root).expect("cleanup");
     }
 

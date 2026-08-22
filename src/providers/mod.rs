@@ -21,6 +21,39 @@ pub use openai_compatible::OpenAiCompatibleModel;
 const MONITOR_HTTP_TIMEOUT: Duration = Duration::from_secs(15);
 pub(super) const STREAM_BODY_POLL_TIMEOUT: Duration = Duration::from_millis(250);
 
+/// FP-02（2026-08-22 审计）：SSE 单行/单事件字节帽——无换行洪水不能
+/// 先于检查进入内存（`output_limit`/timeout 只约束守规端点，自定义
+/// compatible endpoint 是一等能力，对端不可当可信内存调度器）。
+pub(crate) const MAX_SSE_LINE_BYTES: usize = 1024 * 1024;
+/// FP-02：错误响应体读取帽（诊断价值优先——截断保留 + 尾标）。
+pub(crate) const MAX_ERROR_BODY_BYTES: usize = 64 * 1024;
+
+/// FP-02：错误响应体的有界读取——读满 cap 即止并标注截断。
+pub(crate) fn read_error_body_capped(body: impl Read, cap: usize) -> String {
+    let mut bytes = Vec::new();
+    let _ = body.take(cap as u64).read_to_end(&mut bytes);
+    if bytes.len() >= cap {
+        format!("{}…[truncated]", String::from_utf8_lossy(&bytes))
+    } else {
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+}
+
+/// FP-02：monitor 成功响应体的有界读取——超限视为无额度（fail-soft
+/// None，与解析失败同路）。时间上限（15s 超时）不是字节上限：高速
+/// body 足以在超时内耗尽内存。
+pub(super) fn read_monitor_body_capped(body: impl Read) -> Option<String> {
+    const MONITOR_BODY_CAP: usize = 1024 * 1024;
+    let mut text = String::new();
+    body.take(MONITOR_BODY_CAP as u64 + 1)
+        .read_to_string(&mut text)
+        .ok()?;
+    if text.len() > MONITOR_BODY_CAP {
+        return None;
+    }
+    Some(text)
+}
+
 pub(super) struct CancelAwareReader<'a, R> {
     inner: R,
     cancel: &'a CancelToken,
@@ -89,7 +122,8 @@ fn fetch_deepseek_balance_with_timeout(
     if !response.status().is_success() {
         return None;
     }
-    let body = response.body_mut().read_to_string().ok()?;
+    // FP-02：有界读取——超限按无额度处理（fail-soft）。
+    let body = read_monitor_body_capped(response.body_mut().as_reader())?;
     let value: serde_json::Value = serde_json::from_str(&body).ok()?;
     value
         .get("balance_infos")?
@@ -128,7 +162,8 @@ fn fetch_glm_quota_with_timeout(
     if !response.status().is_success() {
         return None;
     }
-    let body = response.body_mut().read_to_string().ok()?;
+    // FP-02：有界读取——超限按无额度处理（fail-soft）。
+    let body = read_monitor_body_capped(response.body_mut().as_reader())?;
     let value: serde_json::Value = serde_json::from_str(&body).ok()?;
     parse_glm_quota(&value)
 }
@@ -200,7 +235,8 @@ fn fetch_kimi_quota_with_timeout(
     if !response.status().is_success() {
         return None;
     }
-    let body = response.body_mut().read_to_string().ok()?;
+    // FP-02：有界读取——超限按无额度处理（fail-soft）。
+    let body = read_monitor_body_capped(response.body_mut().as_reader())?;
     let value: serde_json::Value = serde_json::from_str(&body).ok()?;
     parse_kimi_quota(&value)
 }
@@ -832,6 +868,33 @@ impl Model for ImageDegradeModel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// FP-02：错误体/monitor 体的有界读取——无限源只读帽量字节即止
+    ///（错误体截断保留 + 尾标；monitor 超限 → 无额度 None）。pre-fix
+    /// 的 read_to_string 对无限源是先读满内存——有界形状即判别面。
+    #[test]
+    fn error_and_monitor_body_reads_are_bounded() {
+        struct InfiniteBody;
+        impl Read for InfiniteBody {
+            fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+                buffer.fill(b'e');
+                Ok(buffer.len())
+            }
+        }
+        let error_body = read_error_body_capped(InfiniteBody, MAX_ERROR_BODY_BYTES);
+        assert!(
+            error_body.len() <= MAX_ERROR_BODY_BYTES + "[truncated]".len() + 3,
+            "error body stays capped: {}",
+            error_body.len()
+        );
+        assert!(error_body.ends_with("[truncated]"));
+        assert!(
+            read_monitor_body_capped(InfiniteBody).is_none(),
+            "oversized monitor bodies mean no quota"
+        );
+        let small = read_error_body_capped("bad request".as_bytes(), MAX_ERROR_BODY_BYTES);
+        assert_eq!(small, "bad request", "small bodies pass through verbatim");
+    }
 
     /// 图片降级（2026-08-19，用户实测的 400 触发）不变量：
     /// - D1 命中"拒收图片内容"特征的 400 → 图片 part 换成路径注记重试

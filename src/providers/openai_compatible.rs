@@ -154,10 +154,12 @@ impl OpenAiCompatibleModel {
         let status = response.status();
         let kind = super::error_kind_from_status(status.as_u16());
         let hint = super::retry_hint_from_headers(response.headers());
-        let text = response
-            .body_mut()
-            .read_to_string()
-            .unwrap_or_else(|_| "<failed to read response body>".into());
+        // FP-02：错误体有界读取（截断保留 + 尾标）——异常端点的巨型
+        // 错误体不能在诊断消息成形前灌满内存。
+        let text = super::read_error_body_capped(
+            response.body_mut().as_reader(),
+            super::MAX_ERROR_BODY_BYTES,
+        );
         let mut error = ModelError::with_kind(
             kind,
             format!(
@@ -194,6 +196,8 @@ impl Model for OpenAiCompatibleModel {
             BufReader::new(CancelAwareReader::new(body.into_reader(), cancel)),
             events,
             cancel,
+            // FP-02：聚合帽与 output_limit 联动 + 绝对硬顶。
+            crate::model::aggregate_response_budget(request.options.output_limit),
         )
     }
 }
@@ -449,13 +453,19 @@ struct Accumulator {
     finish_reason: Option<FinishReason>,
 }
 
+/// FP-02：消费 SSE 流。三层字节帽（2026-08-22 审计）——①单行
+/// （`read_capped_line`，fill_buf 型，无换行洪水不先入内存）；②单
+/// 事件聚合（`data:` 行合并上限）；③整响应累计（text/reasoning/
+/// tool 参数，与 output_limit 联动的 `byte_budget`）。超限 → 结构化
+/// `ModelError`，绝不以无界扩容换继续。
 fn consume_sse<R: BufRead>(
     mut reader: R,
     events: &mut dyn ModelEventSink,
     cancel: &CancelToken,
+    byte_budget: usize,
 ) -> Result<ModelResponse, ModelError> {
-    let mut line = String::new();
     let mut data_lines = Vec::new();
+    let mut event_bytes = 0usize;
     let mut accumulator = Accumulator::default();
 
     loop {
@@ -463,40 +473,58 @@ fn consume_sse<R: BufRead>(
             accumulator.finish_reason = Some(FinishReason::Cancelled);
             break;
         }
-        let bytes = match reader.read_line(&mut line) {
-            Ok(bytes) => bytes,
-            Err(error) if is_stream_poll_timeout(&error) => {
-                continue;
-            }
-            Err(error) => {
-                return Err(ModelError::transport(format!(
-                    "failed to read compatible stream: {error}"
-                )));
-            }
-        };
-        if bytes == 0 {
-            if cancel.is_cancelled() {
-                accumulator.finish_reason = Some(FinishReason::Cancelled);
-                break;
-            }
-            if !data_lines.is_empty() {
-                dispatch(&data_lines.join("\n"), &mut accumulator, events)?;
-            }
-            break;
-        }
+        let line =
+            match crate::mcp::transport::read_capped_line(&mut reader, super::MAX_SSE_LINE_BYTES) {
+                Ok(Some(line)) => line,
+                Ok(None) => {
+                    if cancel.is_cancelled() {
+                        accumulator.finish_reason = Some(FinishReason::Cancelled);
+                        break;
+                    }
+                    if !data_lines.is_empty() {
+                        dispatch(
+                            &data_lines.join("\n"),
+                            &mut accumulator,
+                            events,
+                            byte_budget,
+                        )?;
+                    }
+                    break;
+                }
+                Err(error) if is_stream_poll_timeout(&error) => {
+                    continue;
+                }
+                Err(error) => {
+                    return Err(ModelError::transport(format!(
+                        "failed to read compatible stream: {error}"
+                    )));
+                }
+            };
         let trimmed = line.trim_end_matches(['\r', '\n']);
         if trimmed.is_empty() {
             if !data_lines.is_empty() {
-                dispatch(&data_lines.join("\n"), &mut accumulator, events)?;
+                dispatch(
+                    &data_lines.join("\n"),
+                    &mut accumulator,
+                    events,
+                    byte_budget,
+                )?;
                 data_lines.clear();
+                event_bytes = 0;
             }
-            line.clear();
             continue;
         }
         if let Some(data) = trimmed.strip_prefix("data:") {
-            data_lines.push(data.trim_start().to_owned());
+            let data = data.trim_start();
+            event_bytes = event_bytes.saturating_add(data.len());
+            if event_bytes > super::MAX_SSE_LINE_BYTES {
+                return Err(ModelError::decode(format!(
+                    "SSE event exceeds the {}-byte limit",
+                    super::MAX_SSE_LINE_BYTES
+                )));
+            }
+            data_lines.push(data.to_owned());
         }
-        line.clear();
     }
     finish(accumulator, events)
 }
@@ -505,6 +533,7 @@ fn dispatch(
     data: &str,
     accumulator: &mut Accumulator,
     events: &mut dyn ModelEventSink,
+    byte_budget: usize,
 ) -> Result<(), ModelError> {
     if data == "[DONE]" {
         return Ok(());
@@ -580,6 +609,22 @@ fn dispatch(
 
     if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
         accumulator.finish_reason = Some(map_finish_reason(reason));
+    }
+
+    // FP-02（③层）：整响应累计帽——text + reasoning + tool 名称与参数。
+    // 与 output_limit 联动的宽松倍率 + 绝对硬顶，合法长回复不误杀。
+    let consumed = accumulator.text.len()
+        + accumulator.reasoning.len()
+        + accumulator
+            .tool_calls
+            .values()
+            .map(|builder| builder.name.len() + builder.arguments.len())
+            .sum::<usize>();
+    if consumed > byte_budget {
+        return Err(ModelError::decode(format!(
+            "response exceeded the {byte_budget}-byte aggregate budget \
+             (linked to output_limit); the endpoint may be flooding"
+        )));
     }
     Ok(())
 }
@@ -919,6 +964,7 @@ mod tests {
             BufReader::new(stream.as_bytes()),
             &mut events,
             &CancelToken::new(),
+            usize::MAX,
         )
         .unwrap();
         assert_eq!(response.text, "hi");
@@ -940,6 +986,7 @@ mod tests {
             BufReader::new(stream.as_bytes()),
             &mut events,
             &CancelToken::new(),
+            usize::MAX,
         )
         .unwrap();
 
@@ -949,6 +996,101 @@ mod tests {
             event,
             ModelEvent::ReasoningDelta { delta } if delta == "step one "
         )));
+    }
+
+    /// FP-02（①层，前置红）：无换行的巨型 SSE 行必须在字节帽内失败。
+    /// pre-fix（read_line 全量读）的错误是 JSON 解析失败（先整行入
+    /// 内存）——文案断言「byte limit」在 pre-fix 下红。
+    #[test]
+    fn sse_flood_line_fails_within_the_byte_cap() {
+        let flood: Vec<u8> = std::iter::repeat_n(b'x', 8 * 1024 * 1024).collect();
+        let mut source = Vec::with_capacity(flood.len() + 16);
+        source.extend_from_slice(b"data: ");
+        source.extend_from_slice(&flood);
+        source.extend_from_slice(b"\n\n");
+        let error = consume_sse(
+            BufReader::new(std::io::Cursor::new(source)),
+            &mut Vec::new(),
+            &CancelToken::new(),
+            usize::MAX,
+        )
+        .expect_err("a flood line must fail, not accumulate");
+        assert!(
+            error.to_string().contains("byte limit"),
+            "structured cap error (pre-fix this is a JSON parse error): {error}"
+        );
+    }
+
+    /// FP-02（③层，前置红）：多条合法小 delta 累计超过聚合帽 → 有界
+    /// decode 失败。pre-fix 无聚合帽 → 全量累积成功（红）。
+    #[test]
+    fn sse_aggregate_budget_stops_delta_floods() {
+        // output_limit=Some(1) → 预算 = max(64B, 1MiB floor) = 1MiB；
+        // 每条 delta 贡献 ~1KiB 文本，2000 条 ≈ 2MiB > 帽。
+        let delta = "x".repeat(1024);
+        let mut stream = String::new();
+        for _ in 0..2000 {
+            let event = serde_json::json!({
+                "choices": [{"delta": {"content": &delta}}]
+            });
+            stream.push_str(&format!("data: {event}\n\n"));
+        }
+        stream.push_str("data: [DONE]\n\n");
+        let error = consume_sse(
+            BufReader::new(stream.as_bytes()),
+            &mut Vec::new(),
+            &CancelToken::new(),
+            crate::model::aggregate_response_budget(Some(1)),
+        )
+        .expect_err("aggregate floods must fail within the budget");
+        assert!(
+            error.to_string().contains("aggregate budget"),
+            "structured aggregate error: {error}"
+        );
+        // 正常体量的流在同一预算下零行为变化。
+        let small = concat!(
+            "data: {\"id\":\"chat-1\",\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let response = consume_sse(
+            BufReader::new(small.as_bytes()),
+            &mut Vec::new(),
+            &CancelToken::new(),
+            crate::model::aggregate_response_budget(Some(1)),
+        )
+        .expect("normal responses stay untouched");
+        assert_eq!(response.text, "hi");
+    }
+
+    /// FP-02：聚合帽公式——与 output_limit 联动 + floor/ceiling 夹取，
+    /// None（不限）取绝对硬顶。
+    #[test]
+    fn aggregate_budget_formula_links_to_output_limit() {
+        assert_eq!(
+            crate::model::aggregate_response_budget(Some(1)),
+            1024 * 1024,
+            "floor"
+        );
+        assert_eq!(
+            crate::model::aggregate_response_budget(Some(4096)),
+            1024 * 1024,
+            "small limits ride the floor"
+        );
+        assert_eq!(
+            crate::model::aggregate_response_budget(Some(100_000)),
+            100_000 * 64,
+            "linked within the clamp"
+        );
+        assert_eq!(
+            crate::model::aggregate_response_budget(Some(u32::MAX)),
+            64 * 1024 * 1024,
+            "ceiling"
+        );
+        assert_eq!(
+            crate::model::aggregate_response_budget(None),
+            64 * 1024 * 1024,
+            "unlimited output takes the hard ceiling"
+        );
     }
 
     #[test]
@@ -1168,17 +1310,22 @@ mod tests {
             self.inner.fill_buf()
         }
 
+        // FP-02 起 consume_sse 走 fill_buf/consume 型有界行读取
+        //（read_capped_line），不再经过 read_line——计数挂到「被消费的
+        // 换行」上，触发点与旧的逐行计数等价。
         fn consume(&mut self, amount: usize) {
-            self.inner.consume(amount);
-        }
-
-        fn read_line(&mut self, buf: &mut String) -> std::io::Result<usize> {
-            let read = self.inner.read_line(buf)?;
-            self.lines_until_cancel -= 1;
-            if self.lines_until_cancel == 0 {
-                self.token.cancel();
+            if let Ok(buffer) = self.inner.fill_buf() {
+                let visible = amount.min(buffer.len());
+                for byte in &buffer[..visible] {
+                    if *byte == b'\n' {
+                        self.lines_until_cancel = self.lines_until_cancel.saturating_sub(1);
+                        if self.lines_until_cancel == 0 {
+                            self.token.cancel();
+                        }
+                    }
+                }
             }
-            Ok(read)
+            self.inner.consume(amount);
         }
     }
 
@@ -1197,7 +1344,7 @@ mod tests {
 
         // The half-received `{"pa` tool arguments would fail JSON parsing if
         // the cancelled stream tried to complete the call.
-        let response = consume_sse(reader, &mut events, &token).expect("response");
+        let response = consume_sse(reader, &mut events, &token, usize::MAX).expect("response");
 
         assert_eq!(response.text, "checking");
         assert!(response.tool_calls.is_empty());

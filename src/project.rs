@@ -377,6 +377,9 @@ mod tests {
     }
 
     /// W-INV1：写入解析绝不指向项目根之外。
+    ///（F-W1：`std::os::unix::fs::symlink` 只在 Unix 编译——Windows
+    /// CI 腿因此曾会编译失败。）
+    #[cfg(unix)]
     #[test]
     fn writable_paths_stay_inside_the_project() {
         let root = temp_dir();

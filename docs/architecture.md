@@ -126,8 +126,12 @@ persistence, and permission semantics stay in core. A future desktop or
 IDE client reuses the facade the same way, supplying its own approver and
 event presentation.
 
-`Run` still owns the streaming model → tool → model algorithm, capped at a
-configurable number of turns. Every observable step (`ModelRequested`,
+`Run` still owns the streaming model → tool → model algorithm. The loop is
+unbounded (no turn budget — see the table below) and carries a per-run
+token **spend budget** instead (10M input+output tokens by default, per
+model, `0` disables; every request first reserves a conservative estimate
+and provider-reported usage reconciles it, so the guard holds even when an
+endpoint omits usage). Every observable step (`ModelRequested`,
 `ModelStream`, `ToolRequested`, `ToolFinished`, `PermissionChecked`,
 `RunCompleted`, …) is emitted through `EventSink`. Application-level facts such
 as quota refreshes use `ApplicationEvent`; plugin hooks never enter the
@@ -177,7 +181,7 @@ built yet:
 | Per-session agent todo state | done — `SessionWrite`, append-only snapshots, dynamic model context |
 | Automatic session titles | done — retried after every successful run while the session has no explicit title (self-heals sessions whose one-shot first-run attempt failed — user-reported on a several-hundred-turn session), bounded background worker, CAS against manual rename; `TitleUpdated` application events refresh the TUI's conversation top-right title without a snapshot pull, `/rename` writes `session/title` with `source.kind=user` (gated on an existing explicit title, sanitized to the first clean line ≤60 chars) |
 | Typed provider retry | done — fresh model attempts, Retry-After, event-safe retry, internal deadlines |
-| Unbounded agent loop (DSH parity) | done — the run loop has **no turn budget** (2026-08-19; DSH's `kick()` is `while (await turn())`, and Claude Code / opencode are the same): it ends only on completion/refusal, user abort, or failure. Context pressure belongs to pruning/compaction, cost to the visible usage + user cancel. The earlier fixed-32-turn interruption and its bounded `[auto-continue]` patch were emergency measures and are removed |
+| Unbounded agent loop (DSH parity) | done — the run loop has **no turn budget** (2026-08-19; DSH's `kick()` is `while (await turn())`, and Claude Code / opencode are the same): it ends only on completion/refusal, user abort, or failure — or the **run token spend budget** (a separate concept from turn caps: 10M input+output tokens/run by default, reservation-based so it does not depend on provider-reported usage; `0` disables via `/model`). Context pressure belongs to pruning/compaction. The earlier fixed-32-turn interruption and its bounded `[auto-continue]` patch were emergency measures and are removed |
 | In-run steering | done — `steer()` queues a message that joins the conversation at the next model-request boundary (never interrupts the in-flight request); a terminal response with pending steering extends the run. The queue is **sealed atomically with the terminal decision** (2026-08-22, adversarial-audit fix): `RunCompleted`/`RunFailed`/`RunCancelled` become visible to the frontend only after the seal (fail/cancel seal before emitting; a RAII guard covers panic unwind), so a late steer returns `NotRunning` and the frontend falls back to a normal submission instead of queueing a message nobody will claim. Unclaimed messages are LIFO-recallable (`Esc`) and leave no durable trace |
 | Single-pass cold resume (R-1) | done — arming a session streams the journal **exactly once**: the recovery scan feeds projection folding, the transcript replay, and usage stats in the same physical read (`prepare_with_visitor` → `ResumeSink`); a torn-tail crash repair re-reads once after discarding the partial visitor output. The resume path no longer reads checkpoints (surface/transcript are deliberately unbounded, so the checkpoint floor is always zero anyway); the `/resume` listing remains their reader. Debug-build reopen of a 400-turn journal dropped ~53% (329ms → 154ms), and the saving scales with log size |
 | Bounded process exit | done — cooperative cancel cannot interrupt a blocked socket read, so every exit-path join is bounded (`join_with_grace`, 2s): the title worker and the quota monitor are abandoned with a stderr notice when stuck, which is semantically a failed title / a dropped refresh. The auto-title request itself now derives a deadline-carrying child `CancelToken`, so its connect / header / stream phases are capped at 15s instead of the raw socket timeouts (30s/60s). Run and compaction workers stay strict joins (they journal) |

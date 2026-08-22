@@ -140,22 +140,29 @@ pub(crate) fn scan_raw(buffer: &[u8]) -> Result<LogScan, String> {
 /// torn final frame's salvageable prefix appended, and the torn-frame byte
 /// offset reported for truncation repair.
 pub(crate) fn decode_zstd_log(file: &[u8]) -> Result<(Vec<u8>, Option<usize>), String> {
+    // FP-08：与 persistence read_events 同款的解压层预算。
+    const FRAME_DECODED_CAP: usize = 64 * 1024 * 1024;
     let scan = crate::session::zstd_frames::scan_frames(file, usize::MAX)
         .map_err(|error| format!("corrupt Zstandard session log: {error}"))?;
     let mut plaintext = Vec::new();
     for (index, range) in scan.frames.iter().enumerate() {
         let frame = &file[range.start..range.end];
-        let frame_plain = crate::session::zstd_frames::decompress_frame(frame).map_err(|_| {
-            if index + 1 == scan.frames.len() {
-                // A complete-looking final frame that fails checksum is
-                // corruption unless the structural scan can split it; the
-                // salvage path below never runs for structurally complete
-                // frames, matching DSH's stance (compat doc §10).
-                "corrupt Zstandard session log: final frame failed to decode"
-            } else {
-                "corrupt Zstandard session log: non-final frame failed to decode"
-            }
-        })?;
+        let frame_plain =
+            crate::session::zstd_frames::decompress_frame_capped(frame, FRAME_DECODED_CAP)
+                .map_err(|error| {
+                    if error.to_string().contains("budget") {
+                        return error.to_string();
+                    }
+                    if index + 1 == scan.frames.len() {
+                        // A complete-looking final frame that fails checksum is
+                        // corruption unless the structural scan can split it; the
+                        // salvage path below never runs for structurally complete
+                        // frames, matching DSH's stance (compat doc §10).
+                        "corrupt Zstandard session log: final frame failed to decode".to_owned()
+                    } else {
+                        "corrupt Zstandard session log: non-final frame failed to decode".to_owned()
+                    }
+                })?;
         if index == 0 {
             assert_exactly_one_header_line(&frame_plain)?;
         }
@@ -165,6 +172,7 @@ pub(crate) fn decode_zstd_log(file: &[u8]) -> Result<(Vec<u8>, Option<usize>), S
     if let Some(start) = torn_start {
         plaintext.extend_from_slice(&crate::session::zstd_frames::decompress_prefix(
             &file[start..],
+            FRAME_DECODED_CAP,
         ));
     }
     Ok((plaintext, torn_start))

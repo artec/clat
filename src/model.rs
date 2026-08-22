@@ -234,12 +234,30 @@ pub struct ModelConfig {
 /// 几十美元量级；dogfood 校准见 docs/todo/open-worklist.md B1）。
 pub const RUN_TOKEN_BUDGET_DEFAULT: u64 = 10_000_000;
 
-/// B1 花费护栏的共享账本（审计 F-1 修复）：**唯一仪表**。recorder 在
-/// assistant/message 落账点按 INV-S6 口径（主循环 usage + 插件采样
-/// 归并）充值；run.rs 的每请求检查点与 50%/90% 预警都读它——预警
-/// 数字与硬停终止文案**同源**，重采样 run 不再出现两仪表矛盾。
+/// B1 花费护栏的共享账本：**唯一仪表**。recorder 在 assistant/message
+/// 落账点按 INV-S6 口径（主循环 usage + 插件采样归并）记账；run.rs
+/// 的每请求检查点与 50%/90% 预警都读它——预警数字与硬停终止文案
+/// 同源，重采样 run 不再出现两仪表矛盾。
+///
+/// FP-01（2026-08-22 审计）：计量来源升级为**预留-对账**双记账（对齐
+/// sampling bridge 的 W1-03 模型）——provider 自报 usage 不再是唯一
+/// 计量来源。主循环计费是累计制（每轮 input≈全上下文重新计费），
+/// 「每请求预留 input 估算 + output_limit、usage 到达后以实际值替换
+/// 预留」与真实账单天然同构，不双算：
+/// - run.rs 在每次模型请求前 [`Self::reserve`]（保守估算）；
+/// - provider 回 usage → [`Self::reconcile`]（实际替换预留）；
+/// - usage=None / 请求失败 / 取消 → [`Self::commit_pending`]（预留
+///   兑现为已耗——上游可能已经计费，不得按 0 释放）；
+/// - retry 的每次 attempt 经 [`Self::commit_retry_attempt`] 计入
+///   （失败 attempt 已烧掉的 input 兑现，预留保留给同请求的下一次
+///   attempt；最终成功 attempt 由 reconcile 替换）；
+/// - [`Self::charge`] 保留给无预留路径（插件采样 aux 归并）。
+///
+/// 主循环串行（至多一条在途预留）；账本变更全部发生在 run worker
+/// 线程，原子量只为跨线程读取（检查点/预警/测试）。
 pub struct RunSpendLedger {
-    used: std::sync::atomic::AtomicU64,
+    used: std::sync::atomic::AtomicI64,
+    pending: std::sync::atomic::AtomicU64,
     /// 护栏硬顶；None = 关闭（预警也不发）。
     pub cap: Option<u64>,
 }
@@ -247,25 +265,126 @@ pub struct RunSpendLedger {
 impl RunSpendLedger {
     pub fn new(cap: Option<u64>) -> Self {
         Self {
-            used: std::sync::atomic::AtomicU64::new(0),
+            used: std::sync::atomic::AtomicI64::new(0),
+            pending: std::sync::atomic::AtomicU64::new(0),
             cap,
         }
     }
 
-    /// 落账充值（input+output 口径，由 recorder 单点调用）。
-    pub fn charge(&self, tokens: u64) {
-        self.used
-            .fetch_add(tokens, std::sync::atomic::Ordering::Relaxed);
+    /// FP-01：请求前预留（保守 = input 估算 + output_limit）。主循环
+    /// 串行，覆盖式存储——被覆盖的旧值若未对账，其保守成本已由
+    /// 消耗视图（`used + pending`）承担过，不丢失。
+    pub fn reserve(&self, tokens: u64) {
+        self.pending
+            .store(tokens, std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// FP-01：usage 到达——实际值替换预留（先清后加，**不双算**）；
+    /// 无在途预留时（如 recorder 直驱事件）等同 [`Self::charge`]。
+    pub fn reconcile(&self, actual_tokens: u64) {
+        self.pending.store(0, std::sync::atomic::Ordering::Relaxed);
+        self.used
+            .fetch_add(actual_tokens as i64, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// FP-01：请求完成但无 usage（或失败/取消收尾）——预留兑现为已耗
+    /// （上游可能已计费），兑现后清空（该请求结束）。
+    pub fn commit_pending(&self) {
+        let pending = self.pending.swap(0, std::sync::atomic::Ordering::Relaxed);
+        if pending > 0 {
+            self.used
+                .fetch_add(pending as i64, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// FP-01：一次 retry attempt 失败——该 attempt 已烧掉的保守成本
+    /// 兑现为已耗，**预留保留**给同请求的下一次 attempt（同一请求
+    /// 会再次计费全量 input）。
+    pub fn commit_retry_attempt(&self) {
+        let pending = self.pending.load(std::sync::atomic::Ordering::Relaxed);
+        if pending > 0 {
+            self.used
+                .fetch_add(pending as i64, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// 落账充值（input+output 口径，aux 插件采样归并路径）。
+    pub fn charge(&self, tokens: u64) {
+        self.used
+            .fetch_add(tokens as i64, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// 消耗视图：已耗 + 在途预留——未对账预留视同已耗（上游可能已
+    /// 计费）；检查点、预警与教学文案都用它。
     pub fn used(&self) -> u64 {
-        self.used.load(std::sync::atomic::Ordering::Relaxed)
+        (self.used.load(std::sync::atomic::Ordering::Relaxed)
+            + self.pending.load(std::sync::atomic::Ordering::Relaxed) as i64)
+            .max(0) as u64
+    }
+
+    /// 已确认落账值（不含在途预留）——诊断/测试用。
+    pub fn committed(&self) -> u64 {
+        self.used.load(std::sync::atomic::Ordering::Relaxed).max(0) as u64
     }
 
     /// 硬停判据：已启用且累计越过硬顶。
     pub fn exceeds_cap(&self) -> bool {
         self.cap.is_some_and(|cap| self.used() >= cap)
     }
+}
+
+/// 保守 token 估算（INV-C8 同规：ASCII ~4 chars/token，非 ASCII
+/// ≥1 token/char，每串 +8 常数）。
+fn estimate_tokens_conservative(text: &str) -> usize {
+    let ascii = text.chars().filter(char::is_ascii).count();
+    let other = text.chars().count() - ascii;
+    ascii / 4 + other + 8
+}
+
+/// FP-01 预留制的请求估算（非 tokenizer，宁可高估）：instructions +
+/// 对话 items + 工具定义全部计入——兼容端点每轮请求都会真实计费
+/// 这些 input（累计制账单的同构面）。
+pub fn estimate_request_tokens(
+    instructions: Option<&str>,
+    items: &[ModelItem],
+    tools: &[crate::tool::ToolDefinition],
+) -> u64 {
+    let mut tokens = 0usize;
+    if let Some(text) = instructions {
+        tokens += estimate_tokens_conservative(text);
+    }
+    for item in items {
+        tokens += match item {
+            ModelItem::User { content } | ModelItem::Assistant { content, .. } => {
+                let mut item_tokens = 16usize;
+                for part in content {
+                    match part {
+                        ContentPart::Text(text) => {
+                            item_tokens += estimate_tokens_conservative(text);
+                        }
+                        ContentPart::Image { path, .. } => {
+                            item_tokens +=
+                                crate::media::estimate_image_tokens(std::path::Path::new(path))
+                                    as usize;
+                        }
+                    }
+                }
+                item_tokens
+            }
+            other => serde_json::to_string(other)
+                .map(|text| estimate_tokens_conservative(&text))
+                .unwrap_or(64),
+        };
+    }
+    for definition in tools {
+        let schema = serde_json::to_string(&definition.input_schema)
+            .map(|text| estimate_tokens_conservative(&text))
+            .unwrap_or(256);
+        tokens += estimate_tokens_conservative(&definition.name)
+            + estimate_tokens_conservative(&definition.description)
+            + schema;
+    }
+    tokens as u64
 }
 
 impl Default for ModelConfig {
@@ -287,6 +406,22 @@ impl Default for ModelConfig {
             run_token_budget: None,
             thinking_level: None,
         }
+    }
+}
+
+/// FP-02：单次模型响应的累计字节预算（text/reasoning/tool 参数等
+/// 的聚合帽）。`output_limit` 是发给守规 provider 的请求参数，不能
+/// 当内存安全边界——预算与它**联动**（64 字节/token 的宽松倍率）并
+/// 夹在 [1MiB, 64MiB]：floor 容纳元数据与短回复，ceiling 是主机侧
+/// 绝对硬顶；`None`（不限）取硬顶。合法长回复不会被误杀，恶意/异常
+/// 端点的无限 delta 洪水有界失败。
+pub fn aggregate_response_budget(output_limit: Option<u32>) -> usize {
+    const FLOOR_BYTES: usize = 1024 * 1024;
+    const CEILING_BYTES: usize = 64 * 1024 * 1024;
+    const BYTES_PER_TOKEN: usize = 64;
+    match output_limit {
+        Some(limit) => (limit as usize * BYTES_PER_TOKEN).clamp(FLOOR_BYTES, CEILING_BYTES),
+        None => CEILING_BYTES,
     }
 }
 

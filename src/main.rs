@@ -127,6 +127,8 @@ where
     if interactive_stdin {
         exec_io = exec_io.with_permission_input(Arc::new(TerminalPermissionInput));
     }
+    // FP-10：TTY 双契约——stdout 是终端时模型 delta 过可见转义。
+    exec_io = exec_io.with_stdout_terminal(io::stdout().is_terminal());
     match clat::exec::run_exec_with_cancel(parsed, exec_io, &cancel) {
         ExecOutcome::Success { .. } => ExitCode::SUCCESS,
         ExecOutcome::Cancelled { .. } => ExitCode::from(130),

@@ -11,10 +11,11 @@ pub(crate) mod catalog;
 pub(crate) mod checkpoint;
 pub(crate) mod chunk_packing;
 pub(crate) mod compat;
+#[cfg(test)]
+mod dsh_golden;
 pub(crate) mod event;
 pub(crate) mod header;
 pub(crate) mod id;
-#[cfg(test)]
 mod interop;
 pub(crate) mod jsonl;
 pub(crate) mod key;

@@ -15,10 +15,55 @@ pub(crate) fn compress_frame(plain: &[u8]) -> std::io::Result<Vec<u8>> {
     encoder.finish().map_err(std::io::Error::other)
 }
 
-/// Decompress one complete frame (verifies the checksum).
-pub(crate) fn decompress_frame(frame: &[u8]) -> std::io::Result<Vec<u8>> {
-    zstd::bulk::decompress(frame, expected_content_size(frame)?)
-        .or_else(|_| fallback_decompress(frame))
+/// FP-08（2026-08-22 审计）：repair/兼容路径的 decoded-byte 预算。
+/// 单帧解压帽——帧头自报的内容尺寸不可信（压缩炸弹谎报小尺寸让
+/// bulk 路径先巨量分配），bulk 仅在自报尺寸 ≤ 帽时使用，且结果再验
+/// 帽；超帽走流式并**在帽处失败**（错误文案带 "budget"，调用方凭它
+/// 区分预算违约与普通损坏）。record admission 不得成为第一道内存闸。
+pub(crate) fn decompress_frame_capped(
+    frame: &[u8],
+    decoded_cap: usize,
+) -> std::io::Result<Vec<u8>> {
+    let budget_error = || {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("zstd frame decodes past the {decoded_cap}-byte budget"),
+        )
+    };
+    let expected = expected_content_size(frame)?;
+    if expected <= decoded_cap
+        && let Ok(plain) = zstd::bulk::decompress(frame, expected)
+    {
+        return if plain.len() <= decoded_cap {
+            Ok(plain)
+        } else {
+            Err(budget_error())
+        };
+    }
+    stream_decode_capped(frame, decoded_cap)
+}
+
+fn stream_decode_capped(frame: &[u8], decoded_cap: usize) -> std::io::Result<Vec<u8>> {
+    let mut decoder = zstd::stream::read::Decoder::new(frame)?.single_frame();
+    let mut out = Vec::new();
+    let mut buffer = [0u8; 64 * 1024];
+    let mut total = 0usize;
+    loop {
+        match decoder.read(&mut buffer) {
+            Ok(0) => return Ok(out),
+            Ok(read) => {
+                total += read;
+                if total > decoded_cap {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("zstd frame decodes past the {decoded_cap}-byte budget"),
+                    ));
+                }
+                out.extend_from_slice(&buffer[..read]);
+            }
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 fn expected_content_size(frame: &[u8]) -> std::io::Result<usize> {
@@ -46,13 +91,6 @@ fn expected_content_size(frame: &[u8]) -> std::io::Result<usize> {
     Ok(size.max(1 << 16))
 }
 
-fn fallback_decompress(frame: &[u8]) -> std::io::Result<Vec<u8>> {
-    let mut decoder = zstd::stream::read::Decoder::new(frame)?.single_frame();
-    let mut out = Vec::new();
-    decoder.read_to_end(&mut out)?;
-    Ok(out)
-}
-
 /// Decompress all frames of a buffer in order.
 pub(crate) fn decompress_all(bytes: &[u8]) -> std::io::Result<Vec<u8>> {
     let mut decoder = zstd::stream::read::Decoder::new(bytes)?;
@@ -63,17 +101,26 @@ pub(crate) fn decompress_all(bytes: &[u8]) -> std::io::Result<Vec<u8>> {
 
 /// Salvage the decodable plaintext prefix of a structurally torn frame
 /// (recovery keeps complete records inside a torn final frame).
-pub(crate) fn decompress_prefix(torn_frame: &[u8]) -> Vec<u8> {
+/// FP-08：salvage 同样受 decoded 帽约束——超帽即停在帽处（保留的是
+/// 预算内的有效前缀，记录可照常恢复），而不是无界扩容。
+pub(crate) fn decompress_prefix(torn_frame: &[u8], decoded_cap: usize) -> Vec<u8> {
     let mut decoder = match zstd::stream::read::Decoder::new(torn_frame) {
         Ok(decoder) => decoder.single_frame(),
         Err(_) => return Vec::new(),
     };
     let mut salvaged = Vec::new();
     let mut buffer = [0u8; 64 * 1024];
+    let mut total = 0usize;
     loop {
         match decoder.read(&mut buffer) {
             Ok(0) => break,
-            Ok(read) => salvaged.extend_from_slice(&buffer[..read]),
+            Ok(read) => {
+                total += read;
+                if total > decoded_cap {
+                    break;
+                }
+                salvaged.extend_from_slice(&buffer[..read]);
+            }
             Err(_) => break,
         }
     }
@@ -215,7 +262,10 @@ mod tests {
         assert_eq!(scan.frames[1].start, first.len());
         assert_eq!(scan.frames[1].end, file.len());
 
-        assert_eq!(decompress_frame(&first).expect("decompress"), b"line-one\n");
+        assert_eq!(
+            decompress_frame_capped(&first, usize::MAX).expect("decompress"),
+            b"line-one\n"
+        );
         assert_eq!(
             decompress_all(&file).expect("decompress all"),
             b"line-one\nline-two\nline-three\n"
@@ -256,7 +306,42 @@ mod tests {
         let content = scan.frames[0].clone();
         // Flip a byte in the middle of the compressed payload.
         tampered[(content.start + content.end) / 2] ^= 0x01;
-        assert!(decompress_frame(&tampered).is_err());
+        assert!(decompress_frame_capped(&tampered, usize::MAX).is_err());
+    }
+
+    /// FP-08（前置红）：压缩炸弹——高压缩比无换行 payload 必须在
+    /// decoded 帽处失败。pre-fix：bulk/streaming 都先无界扩容成功
+    ///（Ok(200MB)），expect_err 红；错误文案带 "budget" 与 record-cap
+    /// 文案可区分。prefix salvage 同理在帽处截断。
+    #[test]
+    fn bomb_frame_fails_at_the_decoded_budget() {
+        let plain = vec![b'x'; 200 * 1024 * 1024];
+        let frame = compress_frame(&plain).expect("compress");
+        assert!(
+            frame.len() < plain.len() / 100,
+            "fixture must be a real bomb (compressed {})",
+            frame.len()
+        );
+        let error = decompress_frame_capped(&frame, 64 * 1024 * 1024)
+            .expect_err("the decode must stop at the budget");
+        assert!(
+            error.to_string().contains("budget"),
+            "budget error must be distinguishable: {error}"
+        );
+        // 正常帧零影响。
+        let small = compress_frame(b"line\n").expect("small");
+        assert_eq!(
+            decompress_frame_capped(&small, 64 * 1024 * 1024).expect("small ok"),
+            b"line\n"
+        );
+        // salvage 帽：torn 炸弹的前缀恢复停在帽处。
+        let torn = &frame[..frame.len() / 2];
+        let salvaged = decompress_prefix(torn, 1024 * 1024);
+        assert!(
+            salvaged.len() <= 1024 * 1024,
+            "salvage stays within its budget: {}",
+            salvaged.len()
+        );
     }
 
     #[test]
@@ -265,7 +350,7 @@ mod tests {
         let frame = compress_frame(&plain).expect("compress");
         // Cut mid-frame: salvage should return a prefix of the plaintext.
         let torn = &frame[..frame.len() * 2 / 3];
-        let salvaged = decompress_prefix(torn);
+        let salvaged = decompress_prefix(torn, usize::MAX);
         assert!(salvaged.len() <= plain.len());
         assert_eq!(&salvaged[..], &plain[..salvaged.len()]);
     }

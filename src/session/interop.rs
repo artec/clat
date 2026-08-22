@@ -33,8 +33,9 @@ mod tests {
         assert_eq!(scan.frames[0].len(), expected_header_frame.len());
         assert_eq!(scan.frames[1].len(), expected_body_frame.len());
 
-        let header_plain = zstd_frames::decompress_frame(&log[scan.frames[0].clone()])
-            .expect("decode node header frame");
+        let header_plain =
+            zstd_frames::decompress_frame_capped(&log[scan.frames[0].clone()], usize::MAX)
+                .expect("decode node header frame");
         let golden_header = fixture("header-line.txt").expect("fixture");
         assert_eq!(header_plain, golden_header, "checksum-verified decode");
 
@@ -52,8 +53,9 @@ mod tests {
             Some("/Users/deng/Documents/GitHub/clat")
         );
 
-        let body_plain = zstd_frames::decompress_frame(&log[scan.frames[1].clone()])
-            .expect("decode node body frame");
+        let body_plain =
+            zstd_frames::decompress_frame_capped(&log[scan.frames[1].clone()], usize::MAX)
+                .expect("decode node body frame");
         let lines: Vec<&str> = std::str::from_utf8(&body_plain)
             .expect("utf8")
             .trim_end_matches('\n')
@@ -103,7 +105,7 @@ mod tests {
         let scan = zstd_frames::scan_frames(&frame, 1).expect("scan");
         assert_eq!(scan.frames.len(), 1);
         assert_eq!(
-            zstd_frames::decompress_frame(&frame).expect("decode"),
+            zstd_frames::decompress_frame_capped(&frame, usize::MAX).expect("decode"),
             plain
         );
         if std::path::Path::new(FIXTURES).is_dir() {
@@ -124,8 +126,9 @@ mod tests {
             return;
         };
         let scan = zstd_frames::scan_frames(&log, usize::MAX).expect("scan node frames");
-        let body_plain = zstd_frames::decompress_frame(&log[scan.frames[1].clone()])
-            .expect("decode node body frame");
+        let body_plain =
+            zstd_frames::decompress_frame_capped(&log[scan.frames[1].clone()], usize::MAX)
+                .expect("decode node body frame");
         let lines: Vec<&str> = std::str::from_utf8(&body_plain)
             .expect("utf8")
             .trim_end_matches('\n')

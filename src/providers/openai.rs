@@ -155,10 +155,11 @@ impl OpenAiModel {
         let status = response.status();
         let kind = super::error_kind_from_status(status.as_u16());
         let hint = super::retry_hint_from_headers(response.headers());
-        let body = response
-            .body_mut()
-            .read_to_string()
-            .unwrap_or_else(|_| "<failed to read response body>".into());
+        // FP-02：错误体有界读取（截断保留 + 尾标）。
+        let body = super::read_error_body_capped(
+            response.body_mut().as_reader(),
+            super::MAX_ERROR_BODY_BYTES,
+        );
         let mut error = ModelError::with_kind(
             kind,
             format!(
@@ -195,6 +196,8 @@ impl Model for OpenAiModel {
             BufReader::new(CancelAwareReader::new(body.into_reader(), cancel)),
             events,
             cancel,
+            // FP-02：聚合帽与 output_limit 联动 + 绝对硬顶。
+            crate::model::aggregate_response_budget(request.options.output_limit),
         )
     }
 }
@@ -286,13 +289,17 @@ fn tool_output_text(result: &ToolResult) -> String {
     }
 }
 
+/// FP-02：消费 SSE 流（三层字节帽与 openai_compatible 同型——单行
+/// `read_capped_line`、单事件聚合帽、与 output_limit 联动的整响应
+/// 累计帽；超限结构化失败，不无界扩容）。
 fn consume_sse<R: BufRead>(
     mut reader: R,
     events: &mut dyn ModelEventSink,
     cancel: &CancelToken,
+    byte_budget: usize,
 ) -> Result<ModelResponse, ModelError> {
-    let mut line = String::new();
     let mut data_lines = Vec::new();
+    let mut event_bytes = 0usize;
     let mut accumulator = OpenAiAccumulator::default();
 
     loop {
@@ -304,46 +311,63 @@ fn consume_sse<R: BufRead>(
             break;
         }
 
-        let bytes = match reader.read_line(&mut line) {
-            Ok(bytes) => bytes,
-            Err(error) if is_stream_poll_timeout(&error) => {
-                continue;
-            }
-            Err(error) => {
-                return Err(ModelError::transport(format!(
-                    "failed to read OpenAI stream: {error}"
-                )));
-            }
-        };
-
-        if bytes == 0 {
-            if cancel.is_cancelled() {
-                accumulator.finish_reason = Some(FinishReason::Cancelled);
-                events.emit(ModelEvent::ResponseCompleted {
-                    finish_reason: FinishReason::Cancelled,
-                });
-                break;
-            }
-            if !data_lines.is_empty() {
-                dispatch_sse_data(&data_lines.join("\n"), &mut accumulator, events)?;
-            }
-            break;
-        }
+        let line =
+            match crate::mcp::transport::read_capped_line(&mut reader, super::MAX_SSE_LINE_BYTES) {
+                Ok(Some(line)) => line,
+                Ok(None) => {
+                    if cancel.is_cancelled() {
+                        accumulator.finish_reason = Some(FinishReason::Cancelled);
+                        events.emit(ModelEvent::ResponseCompleted {
+                            finish_reason: FinishReason::Cancelled,
+                        });
+                        break;
+                    }
+                    if !data_lines.is_empty() {
+                        dispatch_sse_data(
+                            &data_lines.join("\n"),
+                            &mut accumulator,
+                            events,
+                            byte_budget,
+                        )?;
+                    }
+                    break;
+                }
+                Err(error) if is_stream_poll_timeout(&error) => {
+                    continue;
+                }
+                Err(error) => {
+                    return Err(ModelError::transport(format!(
+                        "failed to read OpenAI stream: {error}"
+                    )));
+                }
+            };
 
         let trimmed = line.trim_end_matches(['\r', '\n']);
         if trimmed.is_empty() {
             if !data_lines.is_empty() {
-                dispatch_sse_data(&data_lines.join("\n"), &mut accumulator, events)?;
+                dispatch_sse_data(
+                    &data_lines.join("\n"),
+                    &mut accumulator,
+                    events,
+                    byte_budget,
+                )?;
                 data_lines.clear();
+                event_bytes = 0;
             }
-            line.clear();
             continue;
         }
 
         if let Some(data) = trimmed.strip_prefix("data:") {
-            data_lines.push(data.trim_start().to_owned());
+            let data = data.trim_start();
+            event_bytes = event_bytes.saturating_add(data.len());
+            if event_bytes > super::MAX_SSE_LINE_BYTES {
+                return Err(ModelError::decode(format!(
+                    "SSE event exceeds the {}-byte limit",
+                    super::MAX_SSE_LINE_BYTES
+                )));
+            }
+            data_lines.push(data.to_owned());
         }
-        line.clear();
     }
 
     accumulator.finish()
@@ -392,6 +416,7 @@ fn dispatch_sse_data(
     data: &str,
     accumulator: &mut OpenAiAccumulator,
     events: &mut dyn ModelEventSink,
+    byte_budget: usize,
 ) -> Result<(), ModelError> {
     if data == "[DONE]" {
         return Ok(());
@@ -545,6 +570,26 @@ fn dispatch_sse_data(
         }),
     }
 
+    // FP-02（③层）：整响应累计帽——text + refusal + tool 参数 JSON +
+    // reasoning provider state。
+    let consumed = accumulator.text.len()
+        + accumulator.refusal.len()
+        + accumulator
+            .tool_calls
+            .iter()
+            .map(|call| call.name.len() + call.arguments.to_string().len())
+            .sum::<usize>()
+        + accumulator
+            .provider_state
+            .iter()
+            .map(|state| state.data.to_string().len())
+            .sum::<usize>();
+    if consumed > byte_budget {
+        return Err(ModelError::decode(format!(
+            "response exceeded the {byte_budget}-byte aggregate budget \
+             (linked to output_limit); the endpoint may be flooding"
+        )));
+    }
     Ok(())
 }
 
@@ -728,6 +773,7 @@ mod tests {
             Cursor::new(stream.as_bytes()),
             &mut events,
             &CancelToken::new(),
+            usize::MAX,
         )
         .expect("response");
 
@@ -927,17 +973,22 @@ mod tests {
             self.inner.fill_buf()
         }
 
+        // FP-02 起 consume_sse 走 fill_buf/consume 型有界行读取
+        //（read_capped_line），不再经过 read_line——计数挂到「被消费的
+        // 换行」上，触发点与旧的逐行计数等价。
         fn consume(&mut self, amount: usize) {
-            self.inner.consume(amount);
-        }
-
-        fn read_line(&mut self, buf: &mut String) -> std::io::Result<usize> {
-            let read = self.inner.read_line(buf)?;
-            self.lines_until_cancel -= 1;
-            if self.lines_until_cancel == 0 {
-                self.token.cancel();
+            if let Ok(buffer) = self.inner.fill_buf() {
+                let visible = amount.min(buffer.len());
+                for byte in &buffer[..visible] {
+                    if *byte == b'\n' {
+                        self.lines_until_cancel = self.lines_until_cancel.saturating_sub(1);
+                        if self.lines_until_cancel == 0 {
+                            self.token.cancel();
+                        }
+                    }
+                }
             }
-            Ok(read)
+            self.inner.consume(amount);
         }
     }
 
@@ -957,7 +1008,7 @@ mod tests {
         };
         let mut events = Vec::new();
 
-        let response = consume_sse(reader, &mut events, &token).expect("response");
+        let response = consume_sse(reader, &mut events, &token, usize::MAX).expect("response");
 
         assert_eq!(response.provider_response_id.as_deref(), Some("resp_c"));
         assert_eq!(response.text, "partial ");

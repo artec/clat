@@ -944,22 +944,49 @@ impl JsonlBackend {
         let (bytes, revision) = read_stable(&dir, compat::log_file_name(self.compression), &path)?;
         let (events, stable_events, truncate_to, header) = match self.compression {
             JsonlCompression::Zstd => {
+                // FP-08（2026-08-22 审计）：repair 全读路径的解压层预算
+                //——record admission 不得成为第一道内存闸。三层：压缩
+                // 体积帽（read_to_end 前拒收异常巨型日志）、单帧 decoded
+                // 帽、总 decoded 帽（压缩体积 ×8 的宽松倍率夹在
+                // [256MiB, 2GiB]——真实 zstd 文本比 ~3-5x，倍率只防炸弹
+                // 不伤合法大日志）。
+                const MAX_REPAIR_COMPRESSED_BYTES: usize = 1024 * 1024 * 1024;
+                const REPAIR_FRAME_DECODED_CAP: usize = 64 * 1024 * 1024;
+                const TOTAL_DECODED_FLOOR: usize = 256 * 1024 * 1024;
+                const TOTAL_DECODED_CEILING: usize = 2 * 1024 * 1024 * 1024;
+                if bytes.len() > MAX_REPAIR_COMPRESSED_BYTES {
+                    return Err(SessionError::Corruption(format!(
+                        "session log exceeds {MAX_REPAIR_COMPRESSED_BYTES} compressed bytes"
+                    )));
+                }
+                let total_decoded_cap = (bytes.len().saturating_mul(8))
+                    .clamp(TOTAL_DECODED_FLOOR, TOTAL_DECODED_CEILING);
                 let scan = crate::session::zstd_frames::scan_frames(&bytes, usize::MAX)
                     .map_err(|error| SessionError::Corruption(error.to_string()))?;
                 let mut complete_plain = Vec::new();
                 for (index, range) in scan.frames.iter().enumerate() {
                     let frame = &bytes[range.start..range.end];
-                    let plain =
-                        crate::session::zstd_frames::decompress_frame(frame).map_err(|_| {
-                            SessionError::Corruption(if index + 1 == scan.frames.len() {
-                                "final frame failed to decode".into()
-                            } else {
-                                "non-final frame failed to decode".into()
-                            })
-                        })?;
+                    let plain = crate::session::zstd_frames::decompress_frame_capped(
+                        frame,
+                        REPAIR_FRAME_DECODED_CAP,
+                    )
+                    .map_err(|error| {
+                        if error.to_string().contains("budget") {
+                            SessionError::Corruption(error.to_string())
+                        } else if index + 1 == scan.frames.len() {
+                            SessionError::Corruption("final frame failed to decode".into())
+                        } else {
+                            SessionError::Corruption("non-final frame failed to decode".into())
+                        }
+                    })?;
                     if index == 0 {
                         jsonl::assert_exactly_one_header_line(&plain)
                             .map_err(SessionError::Corruption)?;
+                    }
+                    if complete_plain.len() + plain.len() > total_decoded_cap {
+                        return Err(SessionError::Corruption(format!(
+                            "repair decode exceeds the {total_decoded_cap}-byte total budget"
+                        )));
                     }
                     complete_plain.extend_from_slice(&plain);
                 }
@@ -976,6 +1003,7 @@ impl JsonlBackend {
                 if let Some(start) = scan.torn_start {
                     full_plain.extend_from_slice(&crate::session::zstd_frames::decompress_prefix(
                         &bytes[start..],
+                        REPAIR_FRAME_DECODED_CAP,
                     ));
                 }
                 let full_scan = jsonl::scan_raw(&full_plain).map_err(map_scan_error)?;
@@ -1545,8 +1573,9 @@ fn header_line_from_reader(
                 let scan = crate::session::zstd_frames::scan_frames(&buffer, 1)
                     .map_err(|error| SessionError::Corruption(error.to_string()))?;
                 if let Some(range) = scan.frames.first() {
-                    let plain = crate::session::zstd_frames::decompress_frame(
+                    let plain = crate::session::zstd_frames::decompress_frame_capped(
                         &buffer[range.start..range.end],
+                        64 * 1024 * 1024,
                     )
                     .map_err(|error| SessionError::Corruption(error.to_string()))?;
                     let text = String::from_utf8_lossy(&plain);

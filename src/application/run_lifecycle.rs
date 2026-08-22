@@ -384,11 +384,14 @@ impl TrustedProjectApplication {
                 ));
                 recorder_core.set_run_ledger(Arc::clone(&spend_ledger));
                 let recorder = Arc::new(Mutex::new(recorder_core));
-                if let Ok(mut core) = recorder.lock() {
-                    core.attach_sink(ui_events);
-                }
+                // FP-09（架构层）：frontend sink 移出 recorder——
+                // RecorderHandle 在 recorder 锁**外**转发事件；终态在
+                // finish 后由 worker 经同一 sink 发布（journal 已闭合，
+                // frontend 故障不再能毒化持久化临界区）。
+                let ui_sink = Arc::new(Mutex::new(ui_events));
                 let recorder_sink: Box<dyn EventSink + Send> = Box::new(RecorderHandle {
                     recorder: Arc::clone(&recorder),
+                    sink: Arc::clone(&ui_sink),
                 });
                 let approver: Arc<dyn PermissionApprover> = Arc::new(journaling_approver);
                 let panic_text_slot = Arc::clone(&captured_text);
@@ -435,11 +438,29 @@ impl TrustedProjectApplication {
                         error: json!({ "message": "run worker panicked" }),
                     },
                 };
-                let mut journal_error = None;
-                if let Ok(mut recorder) = recorder.lock() {
-                    journal_error = recorder
-                        .finish(reason)
-                        .map(|error| format!("session journal failed: {error}"));
+                // FP-09：毒锁恢复（防御）+ finish 返回待发布终态。
+                // recorder 锁在 finish 后立即释放——终态转发在锁外执行：
+                // frontend 故障（panic）不能反噬已闭合的 journal 与 run
+                // 结果上报（P1-09 顺序不变量：journal 闭合先于发布）。
+                let (finish_error, published) = {
+                    let mut recorder = recorder
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    recorder.finish(reason)
+                };
+                let journal_error =
+                    finish_error.map(|error| format!("session journal failed: {error}"));
+                for event in published {
+                    let mut sink = ui_sink
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let forwarded =
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sink.emit(event)));
+                    if forwarded.is_err() {
+                        eprintln!(
+                            "clat: warning: frontend event sink panicked while publishing the terminal event"
+                        );
+                    }
                 }
                 let _ = sessions.sync_active();
                 if let Some(todo_service) = &todo_service {

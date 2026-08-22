@@ -30,8 +30,43 @@ jobs:
       - name: Test
         run: cargo test
 
-      # 门控测试（python3 假 server / wasm fixture）：默认 `cargo test`
-      # 看不见 #[ignore] 面——A2 的两个判别测试只在ignored腿设防
-      # （2026-08-22 审计提醒）。ubuntu runner 自带 python3。
+      # 门控测试（python3 假 server / wasm fixture / dsh-adapter e2e）：
+      # 默认 `cargo test` 看不见 #[ignore] 面——A2 的两个判别测试只在
+      # ignored 腿设防（2026-08-22 审计提醒）。ubuntu runner 自带
+      # python3。demo e2e 需要构建产物 dist/（gitignore）——先装依赖并
+      # 构建（examples/exa 的真实发布物验收不在 CI 装，测试内对缺失
+      # 构建态自动 skip）。
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build dsh-adapter for the gated e2e
+        run: cd sdk/dsh-adapter && npm ci && npm run build
+
+      # Adapter 自身测试面（A3 取消传播等判别测试所在）：worklist 交付
+      # 纪律一直要求 npm test 绿，但此前只在本地区域验证——node 环境
+      # 与依赖已就位，补进 CI 防线。
+      - name: Adapter tests
+        run: cd sdk/dsh-adapter && npm test
+
       - name: Gated tests
         run: cargo test --lib -- --ignored
+
+  # F-W1（2026-08-22 复核派工）：Windows 测试腿——收口所有
+  # `#[cfg(windows)]` 代码与测试的历史性 CI 零覆盖，并完成 FP-05
+  # （替换原子性）偏差裁定的实机验证：`upgrade::` 的 stage/swap/
+  # 回滚测试在真 Windows 文件系统语义（rename-no-replace、运行中
+  # exe 占用）下常跑。门控腿（python3 假 server / node e2e）不在
+  # Windows 跑——那些 fixture 依赖 POSIX shell 形态。
+  windows:
+    name: Test (windows-latest)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2.9.2
+
+      - name: Test
+        run: cargo test --lib
