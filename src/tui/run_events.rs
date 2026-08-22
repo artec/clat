@@ -49,8 +49,8 @@ impl App {
                 self.notify();
                 self.flash_status("the model asks a question — answer or Esc to decline");
             }
-            WorkerMessage::Done(result) => {
-                self.finish_run(result);
+            WorkerMessage::Done { epoch, result } => {
+                self.finish_run(epoch, result);
             }
         }
     }
@@ -150,7 +150,16 @@ impl App {
         }
     }
 
-    fn finish_run(&mut self, result: crate::ApplicationRunResult) {
+    fn finish_run(&mut self, epoch: u64, result: crate::ApplicationRunResult) {
+        // W1-13：纪元失配 = 上一 run 的陈旧完成（新 run 已启动）。此时
+        // 一切 `self` 上的收尾动作（take/join 新 run 的句柄、running 置
+        // 假、用量基线对账、阶段收尾）都属于**新** run——一律不做。上一
+        // run 的持久化在 completion 发出前已完成，转录已由事件流实时
+        // 呈现；放弃的只有"权威用量覆盖"（TUI 本地近似值保留），代价
+        // 远小于冻结 UI/串档。
+        if epoch != self.run_epoch {
+            return;
+        }
         self.running = false;
         if let Some(handle) = self.run_handle.take() {
             let _ = handle.join();

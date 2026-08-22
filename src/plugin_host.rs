@@ -391,10 +391,19 @@ impl PluginHostBridge {
         }
         // 预算预留（W1-03）：先于权限门——注定被拒的调用不值得用户审
         // 批；失败/取消/无 usage 时预留保留（保守账本）。
+        // W1-09：闸门毒锁 fail-closed——预算是闸门而非事后记账（下方
+        // usage 记账的 fail-soft 不适用此处），锁中毒（持锁 panic 的
+        // 残余）必须拒绝采样，不能静默免检放行。
         let max_output = request.max_tokens.min(SAMPLING_MAX_OUTPUT);
         let reservation = estimate_input_tokens(&request).saturating_add(max_output);
-        if let Ok(mut budget) = context.budget.lock() {
-            budget.reserve(reservation)?;
+        match context.budget.lock() {
+            Ok(mut budget) => budget.reserve(reservation)?,
+            Err(_) => {
+                return Err(PluginHostError::BudgetExhausted(
+                    "the budget lock is poisoned; refusing to sample (resets on the next run)"
+                        .into(),
+                ));
+            }
         }
         // 权限门：合成 Execute 类请求（烧钱 + 数据出站）。FullAccess 档
         // 免弹框（对齐 ModePolicy 的 FA 语义——桥不经策略层，直接读档
@@ -1476,6 +1485,66 @@ mod tests {
             "Full Access must not unlock an unlimited spend path"
         );
         assert!(approver.decisions.lock().expect("decisions").is_empty());
+    }
+
+    /// W1-09：预算闸门对毒锁 fail-closed——持锁 panic 的残余（中毒
+    /// mutex）必须拒绝采样，而不是静默跳过预留让模型调用免检进闸。
+    #[test]
+    fn sampling_budget_lock_poisoning_fails_closed() {
+        let builds = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let approver = Arc::new(ScriptedApprover {
+            decisions: Mutex::new(Vec::new()),
+            verdict: PermissionDecision::Allow,
+        });
+        let budget = Arc::new(Mutex::new(SamplingBudget::per_run()));
+        // 持锁 panic 一次，毒化 mutex（catch_unwind 收住 panic 本身）。
+        let previous_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let poison_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = budget.lock().expect("lock before poisoning");
+            panic!("poison the sampling budget lock");
+        }));
+        std::panic::set_hook(previous_hook);
+        assert!(poison_result.is_err(), "the poisoning panic must be caught");
+
+        let bridge = PluginHostBridge::shared();
+        let usage_cell = Arc::new(Mutex::new(Usage::default()));
+        bridge.install(RunHostContext {
+            providers: providers_with(CountingFactory {
+                text: "never",
+                usage: None,
+                builds: Arc::clone(&builds),
+            }),
+            model_config: ModelConfig {
+                model: "fake-model".into(),
+                ..ModelConfig::default()
+            },
+            credentials: ProviderCredentials::for_protocol(ModelProtocol::OpenAiCompatible),
+            approver,
+            permission_mode: None,
+            asker: None,
+            cancel: CancelToken::new(),
+            usage_cell: Arc::clone(&usage_cell),
+            budget: Arc::clone(&budget),
+        });
+
+        let error = bridge
+            .sample(PluginSource::Mcp("srv".into()), sampling_request())
+            .unwrap_err();
+        assert!(
+            matches!(error, PluginHostError::BudgetExhausted(_)),
+            "a poisoned budget lock must refuse sampling, got: {error}"
+        );
+        assert!(
+            error.to_string().contains("poisoned"),
+            "the failure must name the cause: {error}"
+        );
+        assert_eq!(
+            builds.load(Ordering::SeqCst),
+            0,
+            "no model call may happen past a poisoned gate"
+        );
+        assert_eq!(usage_cell.lock().expect("usage cell").input_tokens, 0);
     }
 
     /// provider 不回 usage → 预留保留（保守账本）：同预算的第二次

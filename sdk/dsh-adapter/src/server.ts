@@ -279,6 +279,20 @@ export class McpStdioServer {
           const outcome = await this.#handler().callTool(name, args, String(id))
           const result: Record<string, unknown> = { content: outcome.content }
           if (outcome.structuredContent !== undefined) result.structuredContent = outcome.structuredContent
+          // W1-12：序列化闸——非可序列化载荷（BigInt/循环引用等）在此
+          // 降为结构化 tool error（模型可读、可改走 text 渲染），而不是
+          // 深入写链后炸掉整个 stdio 服务。
+          try {
+            JSON.stringify(result)
+          } catch (error) {
+            return {
+              isError: true,
+              content: [{
+                type: 'text',
+                text: `RESULT_NOT_SERIALIZABLE: tool "${name}" returned a value JSON cannot serialize (${errorMessage(error)}); convert it in the tool body or output.render`,
+              }],
+            }
+          }
           return result
         } catch (error) {
           return { isError: true, content: [{ type: 'text', text: errorMessage(error) }] }
@@ -320,9 +334,25 @@ export class McpStdioServer {
     if (this.#closed) return
     this.#writeChain = this.#writeChain.then(() => {
       if (this.#closed) return
+      const text = this.#frameText(payload)
+      if (text === undefined) return
       return new Promise<void>(resolve => {
-        this.#output.write(`${JSON.stringify(payload)}\n`, () => resolve())
+        this.#output.write(`${text}\n`, () => resolve())
       })
     })
+  }
+
+  /** W1-12：帧文本永不抛——载荷不可序列化时降级为该请求 id 的内部
+   * 错误帧（无法定位 id 的通知类载荷则丢弃并记日志）。写链不再被
+   * 一次坏载荷永久毒化（毒化 = 服务失声 + unhandledRejection 杀进程）。 */
+  #frameText(payload: unknown): string | undefined {
+    try {
+      return JSON.stringify(payload)
+    } catch (error) {
+      this.#log('response payload is not JSON serializable:', errorMessage(error))
+      const id = (payload as { id?: number | string } | null)?.id
+      if (typeof id !== 'number' && typeof id !== 'string') return undefined
+      return `{"jsonrpc":"2.0","id":${JSON.stringify(id)},"error":{"code":-32603,"message":"internal error: response payload is not JSON serializable"}}`
+    }
   }
 }

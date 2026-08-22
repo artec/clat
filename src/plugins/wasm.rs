@@ -40,8 +40,12 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
-use wasmtime::component::{Linker, ResourceTable};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
+use std::time::{Duration, Instant};
+use wasmtime::component::{HasData, Linker, Resource, ResourceTable};
 use wasmtime::{Engine, Store, StoreLimits, StoreLimitsBuilder};
+use wasmtime_wasi::p2::bindings::clocks::monotonic_clock;
+use wasmtime_wasi::p2::{DynPollable, Pollable};
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
 wasmtime::component::bindgen!({
@@ -71,6 +75,17 @@ const CALL_FUEL: u64 = 100_000_000_000;
 const LIST_FUEL: u64 = 1_000_000_000;
 /// 单组件线性内存上限。
 const MEMORY_LIMIT: usize = 256 * 1024 * 1024;
+/// W1-10：时钟等待的宿主侧切片上限——两次取消/预算检查点之间的最长
+/// 间隔。组件的 `subscribe-duration`/`subscribe-instant` 等待以不超过
+/// 此值的切片睡眠，取消令牌在片间可达（wasmtime 官方立场：epoch/fuel
+/// 无法唤醒阻塞在 wasi:io/poll 睡眠里的宿主调用，见
+/// wasmtime-48 `config.rs` "Interaction with blocking host calls"）。
+const CLOCK_SLICE: Duration = Duration::from_millis(250);
+/// W1-10：单次 invoke 的累计纯时钟等待预算（对齐 MCP `tools/call` 的
+/// 120s 壁钟纪律）。超预算后的时钟订阅立即"就绪"——组件重新进入执行
+/// 点，后续要么继续订阅（忙转，燃料迅速耗尽 trap）要么干活（烧燃料），
+/// 所有既有防线（fuel/epoch）恢复可达。
+const CALL_CLOCK_BUDGET: Duration = Duration::from_secs(120);
 /// `/mcp` 面板显示的协议标签。
 const WIT_PROTOCOL: &str = "clat-wit/0.1.0";
 /// 单插件工具数上限（对齐 MCP 的 512 纪律——防御恶意/失控组件）。
@@ -119,6 +134,68 @@ fn resolve_component_path(root: &std::path::Path, raw: &str) -> PathBuf {
     }
 }
 
+/// W1-10：一次 invoke 内共享的时钟等待状态（`PluginState.clock` 持有，
+/// 每次 invoke 重置）。等待累计跨全部订阅求和——预算是调用级纪律，
+/// 不是单次订阅纪律（恶意组件不能用"N 个小睡眠"绕过）。
+#[derive(Clone, Default)]
+struct ClockShared {
+    cancel: Option<CancelToken>,
+    waited_ns: Arc<AtomicU64>,
+    exhausted: Arc<AtomicBool>,
+}
+
+impl ClockShared {
+    fn begin_invoke(cancel: &CancelToken) -> Self {
+        Self {
+            cancel: Some(cancel.clone()),
+            waited_ns: Arc::new(AtomicU64::new(0)),
+            exhausted: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    fn budget_ns(&self) -> u64 {
+        CALL_CLOCK_BUDGET.as_nanos() as u64
+    }
+
+    /// 本订阅是否应立即返回（视为就绪）：已取消或调用级预算耗尽。
+    fn should_stop_waiting(&self) -> bool {
+        if self.cancel.as_ref().is_some_and(CancelToken::is_cancelled) {
+            return true;
+        }
+        self.waited_ns.load(AtomicOrdering::Relaxed) >= self.budget_ns()
+    }
+}
+
+/// 一个有界的时钟订阅（W1-10）。与 wasmtime-wasi 默认实现的关键差异：
+/// 默认对无法表示的远期时长（u64::MAX 纳秒级）落 `Deadline::Never` —
+/// `pending().await` 永久阻塞宿主线程，取消/燃料/epoch 全部失效；本实现
+/// 片式睡眠，片间检查取消与调用级预算，等待总时长语义不变（合法睡眠
+/// 不提前就绪）。
+struct ClockWait {
+    remaining_ns: u64,
+    shared: ClockShared,
+}
+
+#[async_trait::async_trait]
+impl Pollable for ClockWait {
+    async fn ready(&mut self) {
+        loop {
+            if self.remaining_ns == 0 || self.shared.should_stop_waiting() {
+                if self.shared.waited_ns.load(AtomicOrdering::Relaxed) >= self.shared.budget_ns() {
+                    self.shared.exhausted.store(true, AtomicOrdering::Release);
+                }
+                return;
+            }
+            let slice = self.remaining_ns.min(CLOCK_SLICE.as_nanos() as u64);
+            std::thread::sleep(Duration::from_nanos(slice));
+            self.remaining_ns -= slice;
+            self.shared
+                .waited_ns
+                .fetch_add(slice, AtomicOrdering::Relaxed);
+        }
+    }
+}
+
 /// 每组件的宿主状态：桥引用、发起方标签、零授权 WASI 上下文与资
 /// 源限额（store data）。
 struct PluginState {
@@ -132,6 +209,9 @@ struct PluginState {
     /// 本插件的配置 JSON（Phase 2c，INV-K2：只有自己的，未配置为
     /// None → config::get 报错而非静默空串）。
     config: Option<String>,
+    /// W1-10：时钟等待状态（每次 invoke 重置；列工具的临时实例用
+    /// 默认值——其燃料本就秒级，且不接取消令牌）。
+    clock: ClockShared,
 }
 
 impl WasiView for PluginState {
@@ -141,6 +221,162 @@ impl WasiView for PluginState {
             table: &mut self.table,
         }
     }
+}
+
+/// 单调时钟的任意纪元（WASI 语义：纳秒、起点任意、只保证单调）。
+static MONOTONIC_EPOCH: std::sync::LazyLock<Instant> = std::sync::LazyLock::new(Instant::now);
+
+impl PluginState {
+    /// 建立一个有界时钟订阅（W1-10）。
+    fn subscribe_clock_wait(
+        &mut self,
+        duration_ns: u64,
+    ) -> wasmtime::Result<Resource<DynPollable>> {
+        // 预算已耗尽：立即就绪（组件回到执行点，忙转由燃料收尾）。
+        let wait = ClockWait {
+            remaining_ns: duration_ns,
+            shared: self.clock.clone(),
+        };
+        let resource = self.table.push(wait)?;
+        wasmtime_wasi::p2::subscribe(&mut self.table, resource)
+    }
+}
+
+/// W1-10：替换 wasmtime-wasi 默认 `monotonic-clock` 宿主——默认实现对
+/// 无法表示的远期时长落 `Deadline::Never`（永久阻塞，见
+/// wasmtime-wasi-48 `p2/host/clocks.rs`），取消/燃料/epoch 全部失效；
+/// 本实现对每个订阅走 [`ClockWait`] 的片式有界等待。
+impl monotonic_clock::Host for PluginState {
+    fn now(&mut self) -> wasmtime::Result<monotonic_clock::Instant> {
+        Ok(MONOTONIC_EPOCH.elapsed().as_nanos() as u64)
+    }
+
+    fn resolution(&mut self) -> wasmtime::Result<monotonic_clock::Instant> {
+        Ok(1)
+    }
+
+    fn subscribe_instant(
+        &mut self,
+        when: monotonic_clock::Instant,
+    ) -> wasmtime::Result<Resource<DynPollable>> {
+        let remaining = when.saturating_sub(self.now()?);
+        self.subscribe_clock_wait(remaining)
+    }
+
+    fn subscribe_duration(
+        &mut self,
+        duration: monotonic_clock::Duration,
+    ) -> wasmtime::Result<Resource<DynPollable>> {
+        self.subscribe_clock_wait(duration)
+    }
+}
+
+/// 组装 WASI linker（W1-10）：逐接口镜像 wasmtime-wasi
+/// `p2::add_to_linker_sync` 的内部组合，唯独把 `clocks/monotonic-clock`
+/// 的宿主从默认 `WasiClocks` 换成本文件的 [`PluginState`] 有界实现。
+/// wasmtime-wasi 升级时须对照其 `p2/mod.rs` 的
+/// `add_to_linker_with_options_sync` / `add_sync_wasi_io` 复核本清单
+/// （guard 测试：现有 wat 组件测试全量走本组装，接口缺失会在实例化
+/// 处立即报错）。
+fn add_wasi_to_linker_bounded_clocks(linker: &mut Linker<PluginState>) -> wasmtime::Result<()> {
+    use wasmtime_wasi::cli::{WasiCli, WasiCliView};
+    use wasmtime_wasi::clocks::{WasiClocks, WasiClocksView};
+    use wasmtime_wasi::filesystem::{WasiFilesystem, WasiFilesystemView};
+    use wasmtime_wasi::p2::bindings::{cli, clocks, filesystem, random, sockets, sync};
+    use wasmtime_wasi::random::{WasiRandom, WasiRandomView};
+    use wasmtime_wasi::sockets::{WasiSockets, WasiSocketsView};
+
+    struct IoTable;
+    impl HasData for IoTable {
+        type Data<'a> = &'a mut ResourceTable;
+    }
+
+    let l = linker;
+    // wasi:io（错误/poll/流）——同步变体，Host 直接实现在 ResourceTable。
+    wasmtime_wasi_io::bindings::wasi::io::error::add_to_linker::<PluginState, IoTable>(l, |t| {
+        t.ctx().table
+    })?;
+    sync::io::poll::add_to_linker::<PluginState, IoTable>(l, |t| t.ctx().table)?;
+    sync::io::streams::add_to_linker::<PluginState, IoTable>(l, |t| t.ctx().table)?;
+    // 时钟：wall 用默认实现，monotonic 换有界实现（本文件 W1-10）。
+    clocks::wall_clock::add_to_linker::<PluginState, WasiClocks>(
+        l,
+        <PluginState as WasiClocksView>::clocks,
+    )?;
+    clocks::monotonic_clock::add_to_linker::<PluginState, wasmtime::component::HasSelf<PluginState>>(
+        l,
+        |t| t,
+    )?;
+    // 文件系统（preopens + 同步 types）。
+    filesystem::preopens::add_to_linker::<PluginState, WasiFilesystem>(
+        l,
+        <PluginState as WasiFilesystemView>::filesystem,
+    )?;
+    sync::filesystem::types::add_to_linker::<PluginState, WasiFilesystem>(
+        l,
+        <PluginState as WasiFilesystemView>::filesystem,
+    )?;
+    // 随机。
+    random::random::add_to_linker::<PluginState, WasiRandom>(l, |t| t.random())?;
+    random::insecure::add_to_linker::<PluginState, WasiRandom>(l, |t| t.random())?;
+    random::insecure_seed::add_to_linker::<PluginState, WasiRandom>(l, |t| t.random())?;
+    // cli 十件套。
+    cli::exit::add_to_linker::<PluginState, WasiCli>(l, <PluginState as WasiCliView>::cli)?;
+    cli::environment::add_to_linker::<PluginState, WasiCli>(l, <PluginState as WasiCliView>::cli)?;
+    cli::stdin::add_to_linker::<PluginState, WasiCli>(l, <PluginState as WasiCliView>::cli)?;
+    cli::stdout::add_to_linker::<PluginState, WasiCli>(l, <PluginState as WasiCliView>::cli)?;
+    cli::stderr::add_to_linker::<PluginState, WasiCli>(l, <PluginState as WasiCliView>::cli)?;
+    cli::terminal_input::add_to_linker::<PluginState, WasiCli>(
+        l,
+        <PluginState as WasiCliView>::cli,
+    )?;
+    cli::terminal_output::add_to_linker::<PluginState, WasiCli>(
+        l,
+        <PluginState as WasiCliView>::cli,
+    )?;
+    cli::terminal_stdin::add_to_linker::<PluginState, WasiCli>(
+        l,
+        <PluginState as WasiCliView>::cli,
+    )?;
+    cli::terminal_stdout::add_to_linker::<PluginState, WasiCli>(
+        l,
+        <PluginState as WasiCliView>::cli,
+    )?;
+    cli::terminal_stderr::add_to_linker::<PluginState, WasiCli>(
+        l,
+        <PluginState as WasiCliView>::cli,
+    )?;
+    // sockets（同步变体 + 非 IO 的四个配套接口）。
+    sync::sockets::tcp::add_to_linker::<PluginState, WasiSockets>(
+        l,
+        <PluginState as WasiSocketsView>::sockets,
+    )?;
+    sync::sockets::udp::add_to_linker::<PluginState, WasiSockets>(
+        l,
+        <PluginState as WasiSocketsView>::sockets,
+    )?;
+    sync::sockets::udp_create_socket::add_to_linker::<PluginState, WasiSockets>(
+        l,
+        <PluginState as WasiSocketsView>::sockets,
+    )?;
+    sockets::tcp_create_socket::add_to_linker::<PluginState, WasiSockets>(
+        l,
+        <PluginState as WasiSocketsView>::sockets,
+    )?;
+    sockets::instance_network::add_to_linker::<PluginState, WasiSockets>(
+        l,
+        <PluginState as WasiSocketsView>::sockets,
+    )?;
+    sockets::network::add_to_linker::<PluginState, WasiSockets>(
+        l,
+        &Default::default(),
+        <PluginState as WasiSocketsView>::sockets,
+    )?;
+    sockets::ip_name_lookup::add_to_linker::<PluginState, WasiSockets>(
+        l,
+        <PluginState as WasiSocketsView>::sockets,
+    )?;
+    Ok(())
 }
 
 impl clat::plugin::sampling::Host for PluginState {
@@ -369,7 +605,11 @@ struct WasmInstance {
 impl WasmInstance {
     /// 在当前档位下的实例上执行闭包；档位变更（或首调）时先重建
     ///（INV-G1：授予面 = 当次调用时的档位；INV-G3：重建即失效）。
-    fn with_slot<R>(&self, call: impl FnOnce(&mut InstanceSlot) -> R) -> Result<R, ToolError> {
+    fn with_slot<R>(
+        &self,
+        cancel: &CancelToken,
+        call: impl FnOnce(&mut InstanceSlot) -> R,
+    ) -> Result<R, ToolError> {
         let mode_now = self.grants.current_mode();
         let mut guard = self
             .slot
@@ -388,11 +628,13 @@ impl WasmInstance {
         // INV-W3：每次调用重置燃料预算（host 等待不消耗——等人不
         // 再烧预算，2d 修复）。W1-01：epoch deadline = 当前刻度 + 1——
         // 只有取消观察者推进刻度才会 trap；store 创建时的远置 deadline
-        //（见 build_slot）在此收紧到执行期语义。
+        //（见 build_slot）在此收紧到执行期语义。W1-10：时钟等待状态
+        // 同步重置（取消令牌 + 调用级累计预算归零）。
         slot.store
             .set_fuel(self.fuel)
             .map_err(|error| ToolError::new(format!("set fuel: {error}")))?;
         slot.store.set_epoch_deadline(1);
+        slot.store.data_mut().clock = ClockShared::begin_invoke(cancel);
         Ok(call(slot))
     }
 }
@@ -432,6 +674,7 @@ fn build_slot(
             wasi: builder.build(),
             table: ResourceTable::new(),
             config: instance.config.clone(),
+            clock: ClockShared::default(),
         },
     );
     store.limiter(|state| &mut state.limits);
@@ -532,7 +775,7 @@ impl Tool for WasmTool {
         // epoch，spin 类组件在毫秒级 trap，不必等燃料耗尽。
         let watcher = CancelWatcher::start(&self.instance.engine, cancel);
         // INV-W3：超时/超限以 trap 返回，映射为工具错误（run 不死）。
-        let call = self.instance.with_slot(|slot| {
+        let call = self.instance.with_slot(cancel, |slot| {
             slot.instance
                 .clat_plugin_tools()
                 .call_call(&mut slot.store, &remote_name, &arguments)
@@ -618,8 +861,9 @@ impl PluginTrait for WasmAdapterPlugin {
 
         let mut linker: Linker<PluginState> = Linker::new(&engine);
         // WASI 接口（能力边界在 WasiCtx：preopen 授予按档位求值，
-        // INV-G1/G2）。
-        wasmtime_wasi::p2::add_to_linker_sync(&mut linker)
+        // INV-G1/G2）。W1-10：monotonic-clock 换有界实现（默认实现对
+        // 远期时长永久阻塞宿主线程，取消/燃料不可达）。
+        add_wasi_to_linker_bounded_clocks(&mut linker)
             .map_err(|error| PluginError::new(format!("wasi linker: {error}")))?;
         // v48 绑定约定：D = HasSelf<PluginState>（Data<'a> = &'a mut
         // PluginState，Host 经 &mut 转发到 PluginState 的实现）。
@@ -786,6 +1030,7 @@ fn compile_plugin(
             wasi: WasiCtxBuilder::new().build(),
             table: ResourceTable::new(),
             config: None,
+            clock: ClockShared::default(),
         },
     );
     store.limiter(|state| &mut state.limits);
@@ -1773,5 +2018,95 @@ mod tests {
         manager.close().expect("close");
         let _ = std::fs::remove_dir_all(root);
         let _ = std::fs::remove_dir_all(mcp_root);
+    }
+
+    // ---- W1-10：有界时钟订阅（monotonic-clock 宿主直达） ----
+
+    /// 测试用 PluginState（不挂组件，宿主函数可直接调用）。
+    fn clock_state(cancel: &CancelToken) -> PluginState {
+        PluginState {
+            bridge: crate::plugin_host::PluginHostBridge::shared(),
+            source: PluginSource::Wasm("clock-test".into()),
+            limits: StoreLimitsBuilder::new().memory_size(MEMORY_LIMIT).build(),
+            wasi: WasiCtxBuilder::new().build(),
+            table: ResourceTable::new(),
+            config: None,
+            clock: ClockShared::begin_invoke(cancel),
+        }
+    }
+
+    /// 经同步 poll 宿主驱动一个订阅的就绪（同步 `wasi:io/poll` 的
+    /// Host 直接实现在 ResourceTable 上）。
+    /// 返回就绪列表长度（wasi 0.3 语义：poll 返回就绪 pollable 的
+    /// 下标列表；单订阅就绪即 `[0]`）。
+    fn poll_ready(state: &mut PluginState, pollable: Resource<DynPollable>) -> usize {
+        use wasmtime_wasi::p2::bindings::sync::io::poll::Host as _;
+        ResourceTable::poll(&mut state.table, vec![pollable])
+            .expect("poll")
+            .len()
+    }
+
+    /// W1-10 判别：`u64::MAX` 时长（wasmtime-wasi 默认实现落
+    /// `Deadline::Never` 永久阻塞）的订阅在取消令牌置位后必须秒级
+    /// 返回控制——epoch/燃料防线因此恢复可达。若回归到默认实现，
+    /// 本测试会挂死在 poll 上（默认 `pending().await` 不可中断），
+    /// 即为红。
+    #[test]
+    fn never_tier_clock_wait_is_interruptible_by_the_cancel_token() {
+        let cancel = CancelToken::new();
+        let mut state = clock_state(&cancel);
+        let pollable =
+            monotonic_clock::Host::subscribe_duration(&mut state, u64::MAX).expect("subscribe");
+        cancel.cancel();
+        let started = Instant::now();
+        let ready = poll_ready(&mut state, pollable);
+        assert_eq!(ready, 1, "the cancelled sleep reports ready");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "cancel must reach the wait within a bounded interval: {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// 调用级预算耗尽后的新订阅立即就绪（组件回到执行点，忙转由
+    /// 燃料收尾）——恶意组件不能用"N 个小睡眠"或单个超长睡眠拖垮
+    /// 调用。
+    #[test]
+    fn clock_wait_budget_exhaustion_makes_new_subscriptions_ready_at_once() {
+        let cancel = CancelToken::new();
+        let mut state = clock_state(&cancel);
+        state
+            .clock
+            .waited_ns
+            .store(u64::MAX, AtomicOrdering::Relaxed);
+        let pollable =
+            monotonic_clock::Host::subscribe_duration(&mut state, u64::MAX).expect("subscribe");
+        let started = Instant::now();
+        let ready = poll_ready(&mut state, pollable);
+        assert_eq!(ready, 1);
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "an exhausted budget must not wait: {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// 合法短睡眠的时长语义保持：不提前（切片只中断不缩短——
+    /// ready 内部循环补满剩余时长）、不明显拖后。
+    #[test]
+    fn short_clock_waits_keep_their_duration_semantics() {
+        let cancel = CancelToken::new();
+        let mut state = clock_state(&cancel);
+        // 600ms：跨两个 250ms 切片，验证片间续等。
+        let pollable =
+            monotonic_clock::Host::subscribe_duration(&mut state, 600_000_000).expect("subscribe");
+        let started = Instant::now();
+        let ready = poll_ready(&mut state, pollable);
+        let elapsed = started.elapsed();
+        assert_eq!(ready, 1);
+        assert!(
+            elapsed >= Duration::from_millis(500) && elapsed < Duration::from_secs(5),
+            "a legal sleep keeps its duration (got {elapsed:?})"
+        );
     }
 }

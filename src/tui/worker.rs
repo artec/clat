@@ -25,7 +25,13 @@ pub(crate) enum WorkerMessage {
         question: AskQuestion,
         answer_tx: Sender<AskAnswer>,
     },
-    Done(ApplicationRunResult),
+    /// W1-13：完成消息携带 run 纪元（TUI 本地单调计数）。收尾窗口里
+    /// 陈旧的上一 run 完成会晚于新 run 启动送达——无身份时 finish_run
+    /// 会 take/join **新** run 的句柄（UI 冻结至新 run 结束、产出错档）。
+    Done {
+        epoch: u64,
+        result: ApplicationRunResult,
+    },
 }
 
 pub(crate) struct ChannelEventSink(pub(crate) Sender<UiEvent>);

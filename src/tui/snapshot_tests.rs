@@ -580,17 +580,57 @@ fn session_usage_accumulates_live_during_a_run() {
         Some(50)
     );
     // 结束权威覆盖：基线 + RunOutput 全量（流式近似被替换，不重复计）。
-    harness.event(UiEvent::Worker(WorkerMessage::Done(Ok(
-        crate::ApplicationRunDone {
+    harness.event(UiEvent::Worker(WorkerMessage::Done {
+        epoch: harness.app.run_epoch,
+        result: Ok(crate::ApplicationRunDone {
             output: "done".into(),
             turns: 2,
             usage: usage(200, Some(170)),
             cancelled: false,
-        },
-    ))));
+        }),
+    }));
     assert_eq!(harness.app.session_usage.input_tokens, 200);
     assert_eq!(harness.app.session_usage.cached_input_tokens, Some(170));
     assert!(!harness.app.running, "the run finished");
+}
+
+/// W1-13：收尾窗口竞态——run1 封口（busy=false、completion 在途）时用户
+/// 走 W1-04 回退路径启动 run2，run1 的完成消息随后送达。不变量：陈旧
+/// 完成（纪元失配）不得触碰**新** run 的任何收尾状态——不 take/join 新
+/// 句柄、不置 running=false、不做用量对账。若删除纪元守卫回到无身份
+/// Done，本测试在新句柄为 None 的构造下即以 `running` 误置 false 而红
+/// （真实场景则表现为 join 新 run 冻结 UI + 产出按新 run 记账）。
+#[test]
+fn stale_run_completion_does_not_finalize_the_newer_run() {
+    let mut harness = Harness::trusted("snap-stale-done", 80, 24);
+    // 构造：run2 已启动（纪元 2、running），其句柄此处以 None 代位——
+    // 判别只依赖收尾对 self 状态的触碰，不依赖句柄本身。
+    harness.app.run_epoch = 2;
+    harness.app.running = true;
+    harness.app.run_usage_base = Some(harness.app.session_usage.clone());
+    harness.event(UiEvent::Worker(WorkerMessage::Done {
+        epoch: 1,
+        result: Ok(crate::ApplicationRunDone {
+            output: "run-1 output".into(),
+            turns: 1,
+            usage: crate::model::Usage {
+                input_tokens: 999,
+                output_tokens: 1,
+                cached_input_tokens: None,
+                reasoning_tokens: None,
+            },
+            cancelled: false,
+        }),
+    }));
+    assert!(harness.app.running, "the newer run stays active");
+    assert!(
+        harness.app.run_usage_base.is_some(),
+        "the newer run's accounting baseline is untouched"
+    );
+    assert_eq!(
+        harness.app.run_epoch, 2,
+        "no state transition happens for the stale completion"
+    );
 }
 
 /// 回归（2026-08-19 审计）：滚动条列预留把渲染折行宽度改为

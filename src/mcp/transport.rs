@@ -37,6 +37,9 @@ const SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
 pub(crate) const NOTIFY_TIMEOUT: Duration = Duration::from_secs(10);
 /// HTTP 传输的连接建立上限（逐请求实际截止由调用的 timeout 决定）。
 const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// 非成功响应的"错误页"正文读取上限：只用于诊断消息，不值得为它
+/// 缓冲更大的体。
+const HTTP_ERROR_BODY_BYTES: usize = 16 * 1024;
 const CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
 /// stdio 会话错误。
@@ -248,6 +251,22 @@ const MAX_DEADLINE_EXTENSIONS: usize = 10;
 const STDERR_TAIL_LINES: usize = 20;
 /// 单行诊断的字节上限：npx 进度条等长行截断，防止单行撑爆缓冲。
 const STDERR_TAIL_LINE_BYTES: usize = 512;
+
+/// 有界读取 HTTP 响应体（W1-11）：先 `take(cap + 1)` 再读——缓冲上限
+/// 在读取前生效，恶意端点无法用数 GB 的"响应体"在长度检查之前把内存
+/// 灌满；超限即协议违约错误。删除 `.take()`（回到先读后查的形状）会让
+/// `http_body_read_is_bounded_against_an_infinite_source` 挂起/OOM 而红。
+fn read_body_capped(body: &mut impl std::io::Read, cap: usize) -> Result<String, std::io::Error> {
+    use std::io::Read as _;
+    let mut text = String::new();
+    body.take(cap as u64 + 1).read_to_string(&mut text)?;
+    if text.len() > cap {
+        return Err(std::io::Error::other(format!(
+            "response body exceeds {cap} bytes"
+        )));
+    }
+    Ok(text)
+}
 
 fn push_diagnostic(tail: &Arc<Mutex<VecDeque<String>>>, line: impl Into<String>) {
     let mut line = line.into();
@@ -885,7 +904,10 @@ impl HttpSession {
             .map_err(|error| McpError::new(format!("MCP http request `{method}`: {error}")))?;
         if !response.status().is_success() {
             let status = response.status();
-            let text = response.body_mut().read_to_string().unwrap_or_default();
+            // W1-11：错误路径同样有界——恶意端点的"错误页"也能灌内存。
+            let text =
+                read_body_capped(&mut response.body_mut().as_reader(), HTTP_ERROR_BODY_BYTES)
+                    .unwrap_or_default();
             return Err(McpError::new(format!(
                 "MCP http request `{method}` returned {status}: {}",
                 text.trim()
@@ -909,9 +931,7 @@ impl HttpSession {
             .and_then(|value| value.to_str().ok())
             .unwrap_or_default()
             .to_ascii_lowercase();
-        let body = response
-            .body_mut()
-            .read_to_string()
+        let body = read_body_capped(&mut response.body_mut().as_reader(), MAX_FRAME_BYTES)
             .map_err(|error| McpError::new(format!("MCP http body `{method}`: {error}")))?;
         if body.len() > MAX_FRAME_BYTES {
             return Err(McpError::new(format!(
@@ -962,6 +982,43 @@ pub fn parse_sse_messages(body: &str) -> Vec<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// W1-11：HTTP 响应体读取必须有界——无限数据源下 `read_body_capped`
+    /// 必须终止并报超限（先 `take` 后读）。若有人删掉 `.take()` 回到
+    /// "无界读入再查长度"的旧形状，本测试会因试图缓冲无限输入而
+    /// 挂起/OOM，即为红。
+    #[test]
+    fn http_body_read_is_bounded_against_an_infinite_source() {
+        struct InfiniteBody;
+        impl std::io::Read for InfiniteBody {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                buf.fill(b'a');
+                Ok(buf.len())
+            }
+        }
+        let result = read_body_capped(&mut InfiniteBody, MAX_FRAME_BYTES);
+        let error = result.expect_err("an infinite body must be rejected, not buffered");
+        assert!(
+            error.to_string().contains("exceeds"),
+            "the failure must name the bound: {error}"
+        );
+    }
+
+    /// 有界读取的正常路径：cap 内的正文原样返回。
+    #[test]
+    fn http_body_read_returns_bodies_within_the_cap() {
+        let body = "{\"jsonrpc\":\"2.0\",\"id\":1}";
+        let read = read_body_capped(&mut std::io::Cursor::new(body.as_bytes()), MAX_FRAME_BYTES)
+            .expect("small body reads fine");
+        assert_eq!(read, body);
+        // cap 恰好等于体长：不视为超限。
+        let exact = read_body_capped(&mut std::io::Cursor::new(body.as_bytes()), body.len())
+            .expect("exact-cap body is within the bound");
+        assert_eq!(exact, body);
+        // cap + 1 边界：超一个字节即拒。
+        let over = read_body_capped(&mut std::io::Cursor::new(body.as_bytes()), body.len() - 1);
+        assert!(over.is_err(), "one byte past the cap must be rejected");
+    }
 
     /// 诊断缓冲：超长行按字节截断、容量满后环形淘汰最旧行。
     #[test]

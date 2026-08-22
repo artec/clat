@@ -415,6 +415,9 @@ impl App {
                 return false;
             }
         };
+        // W1-13：纪元先于任何收尾可见性落地——完成消息将携带它。
+        self.run_epoch += 1;
+        let epoch = self.run_epoch;
         self.conversation.push_user(prompt);
         self.conversation_scroll_from_bottom = 0;
         self.run_handle = Some(handle);
@@ -431,7 +434,7 @@ impl App {
         // tiny frontend bridge only multiplexes it into the terminal channel.
         thread::spawn(move || {
             if let Ok(result) = completed.recv() {
-                let _ = sender.send(UiEvent::Worker(WorkerMessage::Done(result)));
+                let _ = sender.send(UiEvent::Worker(WorkerMessage::Done { epoch, result }));
             }
         });
         true

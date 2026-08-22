@@ -403,3 +403,51 @@ test('apply failure rejects serveClat and disposes', async () => {
   await new Promise(resolve => setImmediate(resolve))
   assert.deepEqual(cleaned, ['cleanup'])
 })
+
+// W1-12：非可序列化工具结果（BigInt/循环引用）不得毒化写链——必须
+// 返回结构化 tool error（isError），且 stdio 服务保持应答（不永久失声）。
+test('non-serializable tool results fail as tool errors without muting the server', async () => {
+  const client = new Client()
+  const bigintPlugin: DshPluginLike = {
+    name: 'bigint',
+    apply(ctx: DshContext) {
+      ctx.tools.register({
+        name: 'bigint_out',
+        description: 'Returns a BigInt in structuredContent.',
+        parameters: { type: 'object', properties: {} },
+        output: { render: () => [{ type: 'text', text: 'rendered' }] },
+        execute: async () => ({ size: 10n }),
+      })
+      ctx.tools.register({
+        name: 'circular_out',
+        description: 'Returns a circular reference in structuredContent.',
+        parameters: { type: 'object', properties: {} },
+        output: { render: () => [{ type: 'text', text: 'rendered' }] },
+        execute: async () => {
+          const value: Record<string, unknown> = {}
+          value['self'] = value
+          return value
+        },
+      })
+    },
+  }
+  const adapter = await start(client, bigintPlugin)
+  try {
+    await client.initialize()
+    // BigInt 载荷：期待 isError 工具结果（模型可读），而非永不应答。
+    const bigint = await client.call('tools/call', { name: 'bigint_out', arguments: {} })
+    const bigintResult = bigint.result as { isError?: boolean } | undefined
+    assert.equal(bigintResult?.isError, true, 'BigInt result must surface as a tool error')
+    assert.match(textOf(bigint.result), /serializ/i)
+    // 循环引用载荷：同款失败。
+    const circular = await client.call('tools/call', { name: 'circular_out', arguments: {} })
+    const circularResult = circular.result as { isError?: boolean } | undefined
+    assert.equal(circularResult?.isError, true, 'circular result must surface as a tool error')
+    // 服务未失声：后续 ping 仍应答（写链未死）。
+    const ping = await client.call('ping')
+    assert.equal(ping.error, undefined)
+    assert.deepEqual(ping.result, {})
+  } finally {
+    await adapter.dispose()
+  }
+})

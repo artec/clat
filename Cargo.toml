@@ -55,6 +55,9 @@ url = "2"
 zstd = "0.13"
 # SessionId / message ids are UUIDs, matching DSH's crypto.randomUUID().
 uuid = { version = "1", features = ["v4"] }
+# W1-10：实现 wasmtime-wasi-io 的 `Pollable` trait（用 async-trait
+# 作者的脱糖形状；已在依赖树内，随 wasmtime-wasi 传递）。
+async-trait = "0.1"
 # WASM 组件插件运行时（插件桥 Phase 2a）。最小特性集（尺寸闸门实测
 # +8.69MB→15.56MB，docs/research/dsh-plugin-bridge.md §3）：cranelift
 # JIT + component-model（WIT）+ 运行时 + wat（测试用文本组件）。
@@ -67,6 +70,11 @@ wasmtime = { version = "48", default-features = false, features = [
     "wat",
 ] }
 wasmtime-wasi = "48.0.0"
+# W1-10：组装"有界时钟"的 WASI linker 需要逐接口注册（镜像
+# wasmtime-wasi p2 的内部组合、但把 monotonic-clock 宿主换成有界实现），
+# 其中 wasi:io/error 的绑定只由这个伴生 crate 导出（同版本对、
+# wasmtime-wasi 未转出）。已在依赖树内，非新增传递依赖。
+wasmtime-wasi-io = "48.0.0"
 
 # flock-based storage-root lease (Unix); a build-only C dependency at most.
 [target.'cfg(unix)'.dependencies]

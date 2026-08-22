@@ -253,6 +253,7 @@ dependencies = [
 name = "clat"
 version = "0.8.1"
 dependencies = [
+ "async-trait",
  "cap-primitives",
  "cap-std",
  "command-group",
@@ -271,6 +272,7 @@ dependencies = [
  "uuid",
  "wasmtime",
  "wasmtime-wasi",
+ "wasmtime-wasi-io",
  "windows-sys 0.61.2",
  "zstd",
 ]

@@ -214,6 +214,9 @@ struct App {
     /// 目录，见 M4）。仅空闲态可附加；Esc 清空输入时一并清空。
     attachments: Vec<std::path::PathBuf>,
     run_handle: Option<RunHandle>,
+    /// 当前 run 的本地纪元（W1-13）：start_run 成功即自增；完成消息
+    /// 携带启动时的纪元，失配 = 上一 run 的陈旧完成，收尾动作跳过。
+    run_epoch: u64,
     /// `/compact` 进行中的句柄；Esc 取消。
     compact_handle: Option<CompactHandle>,
     phases: PhaseTracker,
@@ -374,6 +377,7 @@ impl App {
             rename_dialog: None,
             attachments: Vec::new(),
             run_handle: None,
+            run_epoch: 0,
             compact_handle: None,
             phases: PhaseTracker::default(),
             animation_epoch: Instant::now(),

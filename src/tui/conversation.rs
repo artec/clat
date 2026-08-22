@@ -165,12 +165,20 @@ impl ConversationModel {
         self.pending_generation += 1;
     }
 
-    /// `SteeringApplied` 的 claim 升级（INV-SV2）：front 出区 + 在当前
-    /// 尾部落为正式用户项（事件文本是权威）——升级后的 items 序 ==
-    /// journal 顺序 == 回放顺序。区为空（测试直灌事件等）时直接
-    /// `push_user`，向后兼容。
+    /// `SteeringApplied` 的 claim 升级（INV-SV2）：按事件文本出区、在
+    /// 当前尾部落为正式用户项（事件文本是权威）——升级后的 items 序 ==
+    /// journal 顺序 == 回放顺序。W1-29：确认**按文本匹配**出区——陈旧
+    /// 事件（上一 run 收尾窗口送达，`RunEvent` 不携带 run 身份）失配时
+    /// 不弹本 run 的队首，降级为普通用户项追加；区为空（测试直灌事件
+    /// 等）同样 `push_user`，向后兼容。
     pub(crate) fn confirm_pending_steering(&mut self, text: String) {
-        self.pending_steering.pop_front();
+        if let Some(position) = self
+            .pending_steering
+            .iter()
+            .position(|pending| pending == &text)
+        {
+            self.pending_steering.remove(position);
+        }
         self.pending_generation += 1;
         self.push_user(text);
     }
@@ -1008,6 +1016,44 @@ mod tests {
         assert_eq!(model.discard_pending_steering(), 1);
         assert_eq!(model.pending_steering_count(), 0);
         assert!(!plain(&mut model).contains("gone"));
+    }
+
+    /// W1-29/W1-13：陈旧的 `SteeringApplied`（上一 run 收尾窗口送达，
+    /// 事件不携带 run 身份）不得弹掉**本** run 的队首 pending——确认按
+    /// 文本匹配出区，失配时降级为普通用户项追加，队列不动。pre-fix 红：
+    /// 无条件 `pop_front` 会把 "second" 弹掉。
+    #[test]
+    fn stale_steering_applied_does_not_pop_the_newer_runs_pending_queue() {
+        let plain = |model: &mut ConversationModel| {
+            model
+                .visible_lines(0, 40, 60, ToolCardVisibility::Collapsed)
+                .iter()
+                .map(|line| {
+                    line.spans
+                        .iter()
+                        .map(|span| span.content.as_ref())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let mut model = ConversationModel::default();
+        model.push_pending_steering("second".into());
+        model.confirm_pending_steering("first".into());
+        assert_eq!(
+            model.pending_steering_count(),
+            1,
+            "a mismatched confirmation must leave the queue untouched"
+        );
+        let joined = plain(&mut model);
+        assert!(
+            joined.contains("❯ second · queued"),
+            "the pending echo survives the stale event: {joined:?}"
+        );
+        assert!(
+            joined.contains("❯ first") && !joined.contains("first · queued"),
+            "the stale text still lands as a regular user item (journal 顺序权威): {joined:?}"
+        );
     }
 
     /// INV-SV6：pending 区不进 items——流式 assistant 仍是最后一个
