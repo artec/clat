@@ -3003,7 +3003,13 @@ fn pending_commit_with_an_invalid_session_root_publishes_no_config() {
         ),
         Err(error) => error,
     };
-    assert!(error.to_string().contains("symlink"), "{error}");
+    // 两种攻击形态（unix symlink 逃逸 / Windows NotADirectory bucket）
+    // 都必须被 preflight 拒绝——断言认形态族，不锁具体文案。
+    let message = error.to_string();
+    assert!(
+        message.contains("symlink") || message.contains("not a directory"),
+        "{error}"
+    );
     assert!(
         !storage_root.join("config.json").exists(),
         "PendingCommit repair must not publish config over an invalid session root"
