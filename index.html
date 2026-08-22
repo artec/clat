@@ -183,6 +183,11 @@
     th { color: var(--muted); font-weight: 500; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.08em; }
     td code { font-size: 0.85rem; }
 
+    /* positioning table：窄屏横向滚动；首列为行标签 */
+    .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .positioning td:first-child { white-space: nowrap; color: var(--muted); }
+    .positioning th:not(:first-child) { text-align: center; }
+
     /* install code blocks: full-width, wrap long commands, copy button */
     section#install .term {
       display: flex;
@@ -299,9 +304,9 @@
               <!-- 1. C (固定基准) -->
               <text class="char" x="0" y="0">C</text>
 
-              <!-- 2. md- -->
+              <!-- 2. md-（横杠按字符级 tspan dx 左移 1 单位微调字距） -->
               <g class="collapsible fold-1">
-                <text class="char" x="28" y="0">md-</text>
+                <text class="char" x="28" y="0">md<tspan dx="-2">-</tspan></text>
               </g>
 
               <!-- 3. L (保持在 102px) -->
@@ -388,6 +393,27 @@
           <p>进入新目录先过信任门；权限分只读、项目写入、完全访问三档可切换，默认档位下写文件、执行命令逐次询问，路径不出项目根。</p>
         </div>
       </div>
+    </section>
+
+    <section id="positioning">
+      <p class="kicker">Positioning</p>
+      <h2>同一容器血统，三条路线</h2>
+      <p class="lede">Spring、DeepSeek Harness 与 CLAT 共享同一个「组装式容器」的器官——把系统拆成可声明、可组合的部件（这一思想可上溯到 IoC 与 OSGi 运动）——却服务不同的用户、走向不同的方向。下表帮第一次接触 CLAT 的你快速定位。</p>
+      <div class="table-scroll">
+        <table class="positioning">
+          <thead>
+            <tr><th></th><th>Spring</th><th>DSH</th><th>CLAT</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>定位</td><td>企业级 Java 应用框架</td><td>「一切皆插件」的 Agent 运行时</td><td>稳如磐石的 Agent 底座</td></tr>
+            <tr><td>用户</td><td>构建应用的程序员</td><td>驱动 agent 的开发者与模型自身</td><td>追求本地优先、单二进制、可审计的用户</td></tr>
+            <tr><td>容器哲学</td><td>让程序员忘记容器的存在</td><td>让运行时随时可改写</td><td>让用户能够审计容器</td></tr>
+            <tr><td>组合时机</td><td>编译期 / 部署期</td><td>运行期</td><td>编译期（静态清单），扩展经 MCP 外移</td></tr>
+            <tr><td>扩展方式</td><td>jar + 接口</td><td>进程内 TypeScript 插件</td><td>MCP 协议 + 门控 WASM</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="lede"><strong>Spring 让程序员忘记容器，DeepSeek Harness 让模型改写容器，CLAT 让用户审计容器。</strong>如果你想要的是一个稳、小、看得见的 Agent 底座——那就是这里。</p>
     </section>
 
     <section id="features">
