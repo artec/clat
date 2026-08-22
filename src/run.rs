@@ -127,6 +127,10 @@ pub(crate) struct Run<'a> {
     cancel: CancelToken,
     steering: SteeringQueue,
     tool_pipeline: Option<&'a ToolExecutionPipeline>,
+    /// B1 花费护栏（F-1：与 recorder 预警同一账本——含插件采样归并，
+    /// 预警数字与终止文案同源）。每轮模型请求前读；越顶以三要素错误
+    /// 终止（教学式文案）。
+    spend_ledger: Option<std::sync::Arc<crate::model::RunSpendLedger>>,
 }
 
 impl<'a> Run<'a> {
@@ -146,6 +150,7 @@ impl<'a> Run<'a> {
             cancel: CancelToken::new(),
             steering: SteeringQueue::new(),
             tool_pipeline: None,
+            spend_ledger: None,
         }
     }
 
@@ -172,6 +177,14 @@ impl<'a> Run<'a> {
     /// request borrows `items`.
     pub(crate) fn with_steering(mut self, steering: SteeringQueue) -> Self {
         self.steering = steering;
+        self
+    }
+
+    pub(crate) fn with_spend_ledger(
+        mut self,
+        ledger: Option<std::sync::Arc<crate::model::RunSpendLedger>>,
+    ) -> Self {
+        self.spend_ledger = ledger;
         self
     }
 
@@ -245,6 +258,26 @@ impl<'a> Run<'a> {
             while let Some(text) = self.steering.pop() {
                 events.emit(RunEvent::SteeringApplied { text: text.clone() });
                 items.push(ModelItem::user_text(text));
+            }
+
+            // B1 花费护栏（每轮模型请求前比对；steering 延长的同一 run
+            // 继续累计）。无预留制：主循环单请求上界有界（output_limit）。
+            if let Some(ledger) = &self.spend_ledger
+                && ledger.exceeds_cap()
+            {
+                let used = ledger.used();
+                let cap = ledger.cap.expect("exceeds_cap implies a cap");
+                return Err(fail(
+                    events,
+                    &self.steering,
+                    format!(
+                        "run token budget exceeded: used {used} / cap {cap} tokens \
+                         (input+output; raise or disable via /model — a new run restarts the count)"
+                    ),
+                    turn,
+                    total_usage,
+                    items,
+                ));
             }
 
             events.emit(RunEvent::ModelRequested {
@@ -1921,5 +1954,85 @@ mod tests {
                 {"id": "reasoning-2"}
             ]))
         );
+    }
+
+    /// B1 花费护栏：小额预算下，第一轮 usage 超顶 → 第二轮请求前的
+    /// 检查点以三要素错误终止（已耗/上限/raise via /model）。
+    #[test]
+    fn run_token_budget_stops_the_loop_with_a_teaching_error() {
+        let project = Project::new(".");
+        let tools = ToolRegistry::new();
+        register_test_tool(&tools, EchoTool);
+        let mut model = ScriptedModel { calls: 0 };
+        let mut events = Vec::new();
+
+        // F-1 后检查点读共享账本：预充值到顶（模拟 recorder 已落账的
+        // 花费——含采样归并的 INV-S6 口径）→ 首个请求前即触发。
+        let ledger = std::sync::Arc::new(crate::model::RunSpendLedger::new(Some(6)));
+        ledger.charge(6);
+        let error = Run::new(&mut model, &tools, &AllowAll, &project)
+            .with_spend_ledger(Some(std::sync::Arc::clone(&ledger)))
+            .execute("use the echo tool", &mut events)
+            .expect_err("the budget must stop the run");
+        let message = error.message.to_string();
+        assert!(
+            message.contains("used"),
+            "three-part message (used): {message}"
+        );
+        assert!(
+            message.contains("cap 6"),
+            "three-part message (cap): {message}"
+        );
+        assert!(
+            message.contains("/model"),
+            "three-part message (raise via /model): {message}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, RunEvent::RunFailed { .. }))
+        );
+        // 已完成轮的产出保留在 error 状态里（fail 的既有契约）。
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, RunEvent::RunFailed { .. }))
+        );
+    }
+
+    /// B1：`Some(0)` = 显式关闭（effective 层），None = 缺省 10M。
+    #[test]
+    fn budget_config_semantics_default_off_and_explicit() {
+        use crate::model::{ModelConfig, RUN_TOKEN_BUDGET_DEFAULT};
+        let config = ModelConfig::default();
+        assert_eq!(
+            config.effective_run_token_budget(),
+            Some(RUN_TOKEN_BUDGET_DEFAULT)
+        );
+        let off = ModelConfig {
+            run_token_budget: Some(0),
+            ..ModelConfig::default()
+        };
+        assert_eq!(off.effective_run_token_budget(), None);
+        let tight = ModelConfig {
+            run_token_budget: Some(1234),
+            ..ModelConfig::default()
+        };
+        assert_eq!(tight.effective_run_token_budget(), Some(1234));
+    }
+
+    /// B1：预算关闭（None）时同剧本不设限跑完。
+    #[test]
+    fn disabled_budget_lets_the_scripted_loop_complete() {
+        let project = Project::new(".");
+        let tools = ToolRegistry::new();
+        register_test_tool(&tools, EchoTool);
+        let mut model = ScriptedModel { calls: 0 };
+        let mut events = Vec::new();
+        let output = Run::new(&mut model, &tools, &AllowAll, &project)
+            .with_spend_ledger(None)
+            .execute("use the echo tool", &mut events)
+            .expect("no budget ⇒ the scripted loop completes");
+        assert_eq!(output.turns, 2);
     }
 }

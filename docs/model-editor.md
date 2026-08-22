@@ -66,6 +66,13 @@ The `[ Advanced ]` row reveals fields for custom setups only when needed:
 - Max Output Tokens
 - Context Window — the auto-compact budget in tokens; once set, history
   beyond it is compacted automatically at the start of the next run
+- Spend Budget — the per-run token guardrail (`input+output`; cache hits
+  count inside input, never twice). Empty = the 10M default; `0` disables
+  it (not recommended). When a run crosses 50% and 90% of the budget a
+  durable warning event is journaled (`clat/budget`); crossing the cap
+  stops the run with a three-part error (used / cap / raise via /model).
+  The budget is per model configuration, so an expensive model can carry
+  a tighter cap than a cheap one
 - Temperature
 - Parallel Tool Calls
 

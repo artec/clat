@@ -670,8 +670,11 @@ fn parse_usage(value: &Value) -> Option<Usage> {
     })
 }
 
+/// 从错误响应体提取人话消息；B6（INV-K1）：出函数即已脱敏——提取
+/// 结果与失败回退的裸 body 都过 [`crate::redact::redact_secrets`]，
+/// 下游（RunFailed 文案、journal `turn/end`）不再见密钥形状文本。
 fn extract_error_message(body: &str) -> String {
-    serde_json::from_str::<Value>(body)
+    let message = serde_json::from_str::<Value>(body)
         .ok()
         .and_then(|value| {
             value
@@ -680,7 +683,8 @@ fn extract_error_message(body: &str) -> String {
                 .or_else(|| value.get("message").and_then(Value::as_str))
                 .map(str::to_owned)
         })
-        .unwrap_or_else(|| body.trim().to_owned())
+        .unwrap_or_else(|| body.trim().to_owned());
+    crate::redact::redact_secrets(&message)
 }
 
 #[cfg(test)]
@@ -691,6 +695,21 @@ mod tests {
     use std::net::TcpListener;
     use std::sync::mpsc;
     use std::thread;
+
+    /// B6（INV-K1）：错误体提取结果进入任何显示/持久化面前脱敏
+    ///（openai.rs 的同名测试互为镜像；这里覆盖 message 回退与裸 body）。
+    #[test]
+    fn error_messages_are_redacted_before_leaving_the_provider() {
+        let via_message =
+            extract_error_message(r#"{"message":"invalid key sk-or-v1-0123456789abcd"}"#);
+        assert!(
+            !via_message.contains("sk-or-v1-0123456789abcd"),
+            "echoed key must be redacted: {via_message}"
+        );
+        let fallback =
+            extract_error_message("plain failure: Authorization: Bearer deadbeefcafe1234");
+        assert_eq!(fallback, "plain failure: Authorization: Bearer [REDACTED]");
+    }
 
     fn temp_attachment(tag: &str, bytes: &[u8], extension: &str) -> std::path::PathBuf {
         let path = std::env::temp_dir().join(format!(
@@ -786,6 +805,33 @@ mod tests {
         .unwrap();
         assert_eq!(deepseek_style.input_tokens, 1000);
         assert_eq!(deepseek_style.cached_input_tokens, Some(700));
+
+        // B1 花费护栏口径归一化断言：input 必须已含缓存命中（三家字段
+        // 形态都不得出现 cached > input——那意味着预算重复计数或字段
+        // 口径漂移）。
+        for shape in [
+            json!({
+                "prompt_tokens": 1000,
+                "completion_tokens": 200,
+                "prompt_tokens_details": {"cached_tokens": 800}
+            }),
+            json!({
+                "prompt_tokens": 1000,
+                "completion_tokens": 200,
+                "prompt_cache_hit_tokens": 1000
+            }),
+            json!({
+                "prompt_tokens": 500,
+                "completion_tokens": 10,
+                "cached_tokens": 500
+            }),
+        ] {
+            let usage = parse_usage(&shape).expect("shape parses");
+            assert!(
+                usage.cached_input_tokens.unwrap_or(0) <= usage.input_tokens,
+                "cached must be a subset of input for the budget math: {shape}"
+            );
+        }
 
         // OpenAI 风格优先于 DeepSeek 原生字段
         let both = parse_usage(&json!({

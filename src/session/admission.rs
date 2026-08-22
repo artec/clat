@@ -487,6 +487,34 @@ mod tests {
         assert_eq!(admit_events(&events), Ok(()));
     }
 
+    /// B3（W2 re-pin / D2）：DSH 0.1.1-rc.1 新增的 4 个 `team/*` 是已知
+    /// **必需**类型——不补录则 CLAT 拒读 DSH 新会话日志。pre-fix 红：
+    /// RequiredUnknown。补录后准入放行、replay 跳过不重建。
+    #[test]
+    fn dsh_team_events_are_admitted_and_skipped() {
+        for event_type in [
+            "team/member",
+            "team/task",
+            "team/message/queued",
+            "team/message/delivered",
+        ] {
+            let event = SessionEvent::new(
+                event_type,
+                0,
+                1,
+                json!({
+                    "version": 1,
+                    "teamId": "t-1",
+                    "member": { "id": "m-1" },
+                }),
+            );
+            assert!(
+                admit_events(&[event]).is_ok(),
+                "{event_type} must be a known type"
+            );
+        }
+    }
+
     #[test]
     fn unknown_required_event_is_rejected_and_ignorable_unknown_passes() {
         let required = SessionEvent::new("future/required", 0, 1, json!({}));
@@ -552,6 +580,6 @@ mod tests {
     /// The catalog constants stay honest against the dispatch above.
     #[test]
     fn known_catalog_is_consistent() {
-        assert_eq!(crate::session::catalog::KNOWN_EVENT_TYPES.len(), 44);
+        assert_eq!(crate::session::catalog::KNOWN_EVENT_TYPES.len(), 49);
     }
 }

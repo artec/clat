@@ -140,6 +140,7 @@ export async function serveClat(plugin: PluginInput, options: ServeClatOptions =
   shim = new Shim(
     {
       sampling: params => server.sampling(params),
+      beginCall: callId => server.beginCall(callId),
       elicitation: params => server.elicitation(params),
       get capabilities() {
         return server.clientCapabilities

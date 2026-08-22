@@ -332,6 +332,13 @@ something fails. Watch the status line for token/context usage, press
 `Esc` to stop at any point, and let `/compact` (or the automatic
 context budget) absorb context pressure.
 
+What the loop does have is a **spend guardrail**: each run tracks its
+`input+output` tokens against a budget (10M by default, per model
+configuration — raise, lower, or disable with `0` via `/model` →
+Spend Budget). Crossing 50% and 90% journals a durable warning event;
+crossing the cap stops the run with an error that names the used and
+cap numbers and how to raise them. A new run restarts the count.
+
 ## MCP tools
 
 Tools exposed by configured MCP servers (`~/.clat/mcp.json`) appear with

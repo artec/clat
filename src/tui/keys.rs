@@ -55,6 +55,12 @@ impl App {
                     }
                 }
             },
+            // A4-1（W1-21）：MCP/WASM 启动失败一次性响亮提示（详情 /mcp）。
+            UiEvent::Application(ApplicationEvent::McpStartupNotice { failures }) => {
+                self.flash_status(format!(
+                    "mcp: {failures} tool/server registration issue(s) — /mcp for detail"
+                ));
+            }
             // N2：自动命名/改名落盘成功——右标题即时更新，无需重拉快照。
             UiEvent::Application(ApplicationEvent::TitleUpdated { title }) => {
                 self.session_title = Some(title);

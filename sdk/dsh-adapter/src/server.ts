@@ -14,7 +14,13 @@ import type { ContentBlockLike, ToolDefinitionLike, ToolHint } from './types.js'
 /** What the server needs from the shim to answer host requests. */
 export interface ServerHandler {
   listTools(): ToolDefinitionLike[]
-  callTool(name: string, arguments_: unknown, callId: string): Promise<{ content: ContentBlockLike[]; structuredContent: unknown }>
+  callTool(name: string, arguments_: unknown, callId: string): Promise<{ content: ContentBlockLike[]; structuredContent: unknown 
+  /** W1-18（A3）：在途 tools/call 开始——返回该调用的取消信号（宿主
+   * notifications/cancelled / shutdown 会触发 abort）。可选：旧宿主
+   * 实现不提供时取消传播退化为 v0 行为。
+   */
+  beginCall?(callId: string): AbortSignal
+}>
   dispose(): Promise<void>
 }
 
@@ -84,6 +90,12 @@ export class McpStdioServer {
   readonly #output: Writable
   readonly #log: (...args: unknown[]) => void
   readonly #pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>()
+
+  /** W1-18（A3）：在途 tools/call 的取消控制器（key = String(request id)）。 */
+  readonly #calls = new Map<string, AbortController>()
+  /** F-3（审计）：先于登记到达的取消（目标调用还在串行链里排队）——
+   * 登记时对账消化，取消不丢失。 */
+  readonly #lateCancels = new Set<string>()
   #nextId = 1
   #initialized = false
   #closed = false
@@ -117,6 +129,13 @@ export class McpStdioServer {
       // such a response must not deadlock behind itself in the chain.
       if (this.#isResponse(parsed)) {
         this.#onResponse(parsed.id as number, parsed.result, parsed.error)
+        return
+      }
+      // W1-18（A3）：notifications/cancelled 是控制信号——绕过串行链
+      // 立即生效。串行链此刻正被在途的 tools/call 占着（那正是要被取
+      // 消的调用），排队等于永不转发。
+      if (parsed.method === 'notifications/cancelled') {
+        this.#onNotification(parsed.method, parsed.params)
         return
       }
       // Requests/notifications run serialized in arrival order: initialize
@@ -171,6 +190,9 @@ export class McpStdioServer {
   }
 
   async #shutdown(): Promise<void> {
+    // W1-18（A3）：关闭即取消——在途工具的外部副作用尽快停。
+    for (const controller of this.#calls.values()) controller.abort()
+    this.#calls.clear()
     this.#rl?.close()
     const failure = new JsonRpcError(JSONRPC_INTERNAL, 'the adapter is shutting down')
     for (const [, entry] of this.#pending) entry.reject(failure)
@@ -196,6 +218,9 @@ export class McpStdioServer {
     try {
       frame = JSON.parse(trimmed)
     } catch {
+      // W1-26（A4-6）：半行/垃圾行有 stderr 诊断（长度 + 前缀）——静默
+      // 吞帧的 EOF 场景可排查。
+      this.#log(`unparseable line (${line.length} chars): ${line.slice(0, 80)}${line.length > 80 ? '…' : ''}`)
       this.#write({ jsonrpc: '2.0', id: null, error: { code: JSONRPC_PARSE_ERROR, message: 'parse error' } })
       return undefined
     }
@@ -224,7 +249,18 @@ export class McpStdioServer {
   #onNotification(method: string, params: unknown): void {
     if (method === 'notifications/cancelled') {
       const id = (params as { requestId?: unknown } | undefined)?.requestId
-      this.#log(`note: received notifications/cancelled for ${String(id)} — cancellation is not forwarded in v0`)
+      const controller = this.#calls.get(String(id))
+      if (controller !== undefined) {
+        // W1-18（A3）：取消传播——在途 tools/call 的 exec.signal 触发
+        // abort，插件的 execute / sampling 等待随 race 以错误收束。
+        controller.abort()
+        this.#log(`note: cancelled in-flight tools/call ${String(id)}`)
+      } else {
+        // F-3：目标调用可能仍在串行链里排队（登记未发生）——记晚到
+        // 取消，登记时对账。
+        this.#lateCancels.add(String(id))
+        this.#log(`note: notifications/cancelled for ${String(id)} arrived before its call registered — deferred`)
+      }
       return
     }
     this.#log(`note: ignoring notification ${method}`)
@@ -275,6 +311,13 @@ export class McpStdioServer {
           throw new JsonRpcError(JSONRPC_INVALID_PARAMS, 'tools/call: name must be a non-empty string')
         }
         const args = record?.arguments ?? {}
+        // W1-18（A3）：调用登记进取消映射，finally 撤销（正常完成不
+        // abort）。F-3：先到的取消在此对账——登记即消化。
+        const controller = new AbortController()
+        this.#calls.set(String(id), controller)
+        if (this.#lateCancels.delete(String(id))) {
+          controller.abort()
+        }
         try {
           const outcome = await this.#handler().callTool(name, args, String(id))
           const result: Record<string, unknown> = { content: outcome.content }
@@ -296,6 +339,8 @@ export class McpStdioServer {
           return result
         } catch (error) {
           return { isError: true, content: [{ type: 'text', text: errorMessage(error) }] }
+        } finally {
+          this.#calls.delete(String(id))
         }
       }
       default:
@@ -304,18 +349,31 @@ export class McpStdioServer {
   }
 
   #onResponse(id: number | string, result: unknown, error: unknown): void {
-    const entry = typeof id === 'number' ? this.#pending.get(id) : undefined
+    // W1-26（A4-6）：宿主以字符串回显数字 id（"101"）是合法 JSON-RPC —
+    // 归一化匹配，不让 promise 悬挂。
+    const key = typeof id === 'number' ? id : Number(id)
+    const entry = Number.isFinite(key) ? this.#pending.get(key) : undefined
     if (entry === undefined) {
       this.#log(`note: response for unknown request id ${String(id)}`)
       return
     }
-    this.#pending.delete(id as number)
+    this.#pending.delete(key)
     const shape = error as JsonRpcErrorShape | undefined
     if (shape !== null && typeof shape === 'object' && typeof shape.code === 'number') {
       entry.reject(new JsonRpcError(shape.code, shape.message ?? 'request failed'))
       return
     }
     entry.resolve(result)
+  }
+
+  /** W1-18（A3）：取（或建）一次 tools/call 的取消信号。 */
+  beginCall(callId: string): AbortSignal {
+    let controller = this.#calls.get(callId)
+    if (controller === undefined) {
+      controller = new AbortController()
+      this.#calls.set(callId, controller)
+    }
+    return controller.signal
   }
 
   #toolDescriptor(tool: ToolDefinitionLike): Record<string, unknown> {

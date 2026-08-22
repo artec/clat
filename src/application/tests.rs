@@ -55,7 +55,16 @@ fn join_with_grace_bounds_stuck_workers_and_joins_fast_ones() {
 }
 
 fn allow_all_approver() -> Arc<dyn PermissionApprover> {
-    Arc::new(|_request: crate::PermissionRequest| crate::PermissionDecision::Allow)
+    Arc::new(allow_all)
+}
+
+/// 具名 allow-all 审批人（闭包对带引用参数的 trait blanket impl 有
+/// HRTB 推断限制，A1 起 decide 携带 `&CancelToken`）。
+fn allow_all(
+    _request: crate::PermissionRequest,
+    _cancel: &crate::model::CancelToken,
+) -> crate::PermissionDecision {
+    crate::PermissionDecision::Allow
 }
 
 fn mount(
@@ -497,11 +506,7 @@ fn canon_replay(items: &[crate::session::replay::ReplayEvent]) -> Vec<Canon> {
 }
 
 fn assert_replay_parity(behavior: TestBehavior, prompt: &str) {
-    assert_replay_parity_with_approver(
-        behavior,
-        prompt,
-        Arc::new(|_request: crate::PermissionRequest| crate::PermissionDecision::Allow),
-    );
+    assert_replay_parity_with_approver(behavior, prompt, Arc::new(allow_all));
 }
 
 /// 对拍断言（共享）：权限事实按多重集比较——replay 侧必须全部在
@@ -604,8 +609,10 @@ fn replay_matches_the_live_stream_for_a_denied_tool_run() {
         TestBehavior::WriteFile,
         "please write the file",
         Arc::new(
-            |_request: crate::PermissionRequest| crate::PermissionDecision::Deny {
-                reason: "not allowed".into(),
+            |_request: crate::PermissionRequest, _cancel: &crate::model::CancelToken| {
+                crate::PermissionDecision::Deny {
+                    reason: "not allowed".into(),
+                }
             },
         ),
     );
@@ -1008,10 +1015,12 @@ fn mode_switches_replay_identically() {
         &mut application,
         Arc::clone(&live),
         "please write the file",
-        Arc::new(move |_request: crate::PermissionRequest| {
-            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            crate::PermissionDecision::Allow
-        }),
+        Arc::new(
+            move |_request: crate::PermissionRequest, _cancel: &crate::model::CancelToken| {
+                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                crate::PermissionDecision::Allow
+            },
+        ),
     )
     .expect("read-only run");
     assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1);
@@ -1026,10 +1035,12 @@ fn mode_switches_replay_identically() {
         &mut application,
         Arc::clone(&live),
         "write it again",
-        Arc::new(move |_request: crate::PermissionRequest| {
-            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            crate::PermissionDecision::Allow
-        }),
+        Arc::new(
+            move |_request: crate::PermissionRequest, _cancel: &crate::model::CancelToken| {
+                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                crate::PermissionDecision::Allow
+            },
+        ),
     )
     .expect("full-access run");
     assert_eq!(asked_again.load(std::sync::atomic::Ordering::SeqCst), 0);
@@ -1132,7 +1143,8 @@ fn rename_facade_gates_journals_and_broadcasts() {
                 Ok(
                     ApplicationEvent::MonitorUpdated(_)
                     | ApplicationEvent::CompactionUpdated(_)
-                    | ApplicationEvent::TitleUpdated { .. },
+                    | ApplicationEvent::TitleUpdated { .. }
+                    | ApplicationEvent::McpStartupNotice { .. },
                 ) => {}
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => {

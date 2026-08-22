@@ -80,6 +80,11 @@ pub enum ApplicationEvent {
     TitleUpdated {
         title: String,
     },
+    /// A4-1（W1-21）：MCP/WASM 启动落定时的失败一次性响亮通知
+    ///（详情在 /mcp 面板）。绝不携带 RunEvent 语义（协议冻结）。
+    McpStartupNotice {
+        failures: usize,
+    },
 }
 
 pub struct TrustedProjectApplication {

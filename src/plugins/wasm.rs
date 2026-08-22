@@ -22,6 +22,7 @@
 use super::services::{
     MCP_STATUS_SERVICE, MCP_STATUS_SERVICE_ID, McpServerStatus, TOOL_SERVICE, TOOL_SERVICE_ID,
 };
+use super::wasm_grants;
 use crate::mcp::client::qualify_prefixed_tool_name;
 use crate::model::CancelToken;
 use crate::plugin::{
@@ -86,6 +87,8 @@ const CLOCK_SLICE: Duration = Duration::from_millis(250);
 /// 点，后续要么继续订阅（忙转，燃料迅速耗尽 trap）要么干活（烧燃料），
 /// 所有既有防线（fuel/epoch）恢复可达。
 const CALL_CLOCK_BUDGET: Duration = Duration::from_secs(120);
+/// A4-3（W1-20）：组件文件大小上限——加载前判定，不进编译器。
+pub(crate) const MAX_COMPONENT_BYTES: u64 = 32 * 1024 * 1024;
 /// `/mcp` 面板显示的协议标签。
 const WIT_PROTOCOL: &str = "clat-wit/0.1.0";
 /// 单插件工具数上限（对齐 MCP 的 512 纪律——防御恶意/失控组件）。
@@ -105,6 +108,10 @@ pub struct WasmPluginConfig {
     /// 为字符串经 `clat:plugin/config` 导入供组件读取。
     #[serde(default)]
     pub config: Option<serde_json::Value>,
+    /// 组件文件 sha256 钉扎（A4-3/W1-20，可选）：hex（大小写不敏感）。
+    /// 供应链静默替换面：配置了即校验，失配拒载。
+    #[serde(default)]
+    pub sha256: Option<String>,
 }
 
 pub type WasmPluginMap = BTreeMap<String, WasmPluginConfig>;
@@ -518,23 +525,50 @@ impl GrantPolicy {
             .map(|guard| *guard)
     }
 
+    /// B5：当前档位下「若过写授予门」将获 RW 的宿主目录集（空 =
+    /// 无需写授予：RO 档 / Classic / 组件无 fs_cap）。审批请求与记录
+    /// 比对都用它——审批面 = 实际授予面（INV-W1）。
+    fn write_dirs(&self, mode: Option<crate::permission::PermissionMode>) -> Vec<PathBuf> {
+        use crate::permission::PermissionMode;
+        if !self.fs_cap {
+            return Vec::new();
+        }
+        match mode {
+            Some(PermissionMode::ProjectWrite) => vec![self.project_root.clone()],
+            Some(PermissionMode::FullAccess) => {
+                let mut dirs = vec![self.project_root.clone()];
+                dirs.extend(self.extra_dirs.iter().cloned());
+                dirs
+            }
+            _ => Vec::new(),
+        }
+    }
+
     /// 求值当前授予集（INV-G1：授予 = min(档位, 插件能力上限)）。
-    fn grants(&self) -> Vec<Grant> {
+    /// B5 起 `write_allowed` 是写授予门的裁决（INV-W2：无记录/被拒 =
+    /// 物理只读 preopen）；mode 由调用方快照传入，与门裁决同源——
+    /// 门问的是这个档位的目录集，建 slot 授予的必须是同一份。
+    fn grants(
+        &self,
+        mode: Option<crate::permission::PermissionMode>,
+        write_allowed: bool,
+    ) -> Vec<Grant> {
         use crate::permission::PermissionMode;
         let mut grants = vec![Grant {
             host: self.project_root.clone(),
             guest: "project".to_owned(),
             read_write: false,
         }];
-        let rw_project = self.fs_cap
+        let rw_project = write_allowed
+            && self.fs_cap
             && matches!(
-                self.current_mode(),
+                mode,
                 Some(PermissionMode::ProjectWrite) | Some(PermissionMode::FullAccess)
             );
         if rw_project {
             grants[0].read_write = true;
         }
-        if self.fs_cap && self.current_mode() == Some(PermissionMode::FullAccess) {
+        if write_allowed && self.fs_cap && mode == Some(PermissionMode::FullAccess) {
             let mut used = std::collections::HashSet::from(["project".to_owned()]);
             for (index, host) in self.extra_dirs.iter().enumerate() {
                 let guest = guest_path_for(host, index, &mut used);
@@ -578,15 +612,18 @@ fn guest_path_for(
     fallback
 }
 
-/// 实例化产物：store + 类型化实例 + 建立时的档位快照（重建键）。
+/// 实例化产物：store + 类型化实例 + 建立时的档位与写授予快照（重建键）。
 struct InstanceSlot {
     mode_key: Option<crate::permission::PermissionMode>,
+    /// B5：建立时写授予门的裁决（INV-W2）——与档位一起构成重建键：
+    /// 跨 run 的「记录生效/本 run 被拒」状态变化正确触发重建。
+    write_key: bool,
     store: Store<PluginState>,
     instance: Plugin,
 }
 
-/// 组件的共享单元：编译产物 + linker + 授予策略；实例按"档位变更即
-/// 重建"缓存（INV-G3：重建即失效——组件内存态不跨档位保留）。
+/// 组件的共享单元：编译产物 + linker + 授予策略；实例按"档位或写授予
+/// 变更即重建"缓存（INV-G3：重建即失效——组件内存态不跨档位保留）。
 /// teardown 置 None（在途调用自然失败），调用按需加锁。
 struct WasmInstance {
     name: String,
@@ -599,28 +636,139 @@ struct WasmInstance {
     config: Option<String>,
     /// 单次调用燃料预算（INV-W3；测试用小额验证打断）。
     fuel: u64,
+    /// B5：组件 sha256——写授予记录三要素之一。
+    digest: String,
+    /// B5：写授予记录文件路径（storage_root/plugin-grants.json）。
+    grants_path: PathBuf,
+    /// B5：本插件写授予的 per-run 裁决缓存（桥纪元, denied）——同 run
+    /// 内被拒后不再重问（INV-W3）；新 run（新纪元）重新问。
+    write_state: Mutex<Option<(u64, bool)>>,
     slot: Mutex<Option<InstanceSlot>>,
 }
 
 impl WasmInstance {
-    /// 在当前档位下的实例上执行闭包；档位变更（或首调）时先重建
-    ///（INV-G1：授予面 = 当次调用时的档位；INV-G3：重建即失效）。
+    /// B5（INV-W2/W3/W5/W6）：解析本插件在快照档位下能否获得写授予。
+    /// 可能阻塞等人审批（持 slot 锁串行化同插件调用，无并发重问）；
+    /// 返回 false 时本 slot 一律物理只读。
+    fn resolve_write_grant(
+        &self,
+        mode: Option<crate::permission::PermissionMode>,
+        cancel: &CancelToken,
+    ) -> bool {
+        let requested = self.grants.write_dirs(mode);
+        if requested.is_empty() {
+            return false;
+        }
+        // 有效记录（INV-W1：请求 ⊆ 记录并集）→ 静默授予。
+        let mut records = wasm_grants::load_grants(&self.grants_path);
+        if wasm_grants::covers(&records, &self.name, &self.digest, &requested) {
+            return true;
+        }
+        // INV-W6：无活动 run（boot/mount 期、run 间隙、headless 无桥）
+        // → 无审批面 → fail-closed（INV-W2）。
+        let Some((epoch, context)) = self.host.context() else {
+            return false;
+        };
+        // INV-W3：同 run 已裁决 → 不再问（被拒的 run 内不重复打扰）。
+        if let Ok(state) = self.write_state.lock()
+            && let Some((cached_epoch, denied)) = *state
+            && cached_epoch == epoch
+        {
+            return !denied;
+        }
+        // INV-W5：审批走当前 run 的 approver + 取消令牌；请求列出全部
+        // 将获 RW 的目录与组件摘要。弹窗中途升档（w/f）会改变目录集，
+        // Allow 后复算——一致才落记录，变了以新集合重问（记录绑定实际
+        // 授予面）。
+        let mut asked = requested;
+        let digest_head = &self.digest[..self.digest.len().min(8)];
+        let decision = loop {
+            let request = crate::permission::PermissionRequest {
+                tool: format!("wasm:{}", self.name),
+                effect: crate::tool::ToolEffect::Write,
+                reason: format!(
+                    "wasm plugin `{}` requests filesystem WRITE access to {} \
+                     directories (component sha256 {digest_head}…); approving \
+                     persists a grant bound to this component and these directories",
+                    self.name,
+                    asked.len(),
+                ),
+                arguments: serde_json::json!({
+                    "plugin": self.name,
+                    "component_sha256": self.digest,
+                    "write_dirs": asked
+                        .iter()
+                        .map(|dir| dir.display().to_string())
+                        .collect::<Vec<String>>(),
+                }),
+                call_id: String::new(),
+            };
+            match context.approver.decide(request, &context.cancel) {
+                crate::permission::PermissionDecision::Allow => {
+                    let now = self.grants.write_dirs(self.grants.current_mode());
+                    if now == asked || now.is_empty() {
+                        break crate::permission::PermissionDecision::Allow;
+                    }
+                    asked = now;
+                }
+                other => break other,
+            }
+        };
+        let allowed = matches!(decision, crate::permission::PermissionDecision::Allow);
+        if let Ok(mut state) = self.write_state.lock() {
+            *state = Some((epoch, !allowed));
+        }
+        if allowed {
+            // INV-W4：落记录失败不致命（本 run 仍放行，下次重问）。
+            wasm_grants::upsert(&mut records, &self.name, &self.digest, &asked);
+            if let Err(error) = wasm_grants::save_grants(&self.grants_path, &records) {
+                eprintln!(
+                    "clat: warning: cannot persist the wasm write grant for `{}` \
+                     (you will be asked again): {error}",
+                    self.name
+                );
+            }
+        } else if !cancel.is_cancelled() {
+            let reason = match decision {
+                crate::permission::PermissionDecision::Deny { reason }
+                | crate::permission::PermissionDecision::Ask { reason }
+                | crate::permission::PermissionDecision::Unavailable { reason } => reason,
+                crate::permission::PermissionDecision::Allow => String::new(),
+            };
+            eprintln!(
+                "clat: warning: wasm plugin `{}` write access not granted{reason_note}; \
+                 its writes will fail read-only for this run",
+                self.name,
+                reason_note = if reason.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({reason})")
+                },
+            );
+        }
+        allowed
+    }
+
+    /// 在当前档位下的实例上执行闭包；档位或写授予变更（或首调）时先
+    /// 重建（INV-G1：授予面 = 当次调用时的档位；INV-G3：重建即失效）。
     fn with_slot<R>(
         &self,
         cancel: &CancelToken,
         call: impl FnOnce(&mut InstanceSlot) -> R,
     ) -> Result<R, ToolError> {
         let mode_now = self.grants.current_mode();
+        // B5：写授予门在 slot 锁内解析（同插件并发调用自然串行）。
         let mut guard = self
             .slot
             .lock()
             .map_err(|_| ToolError::new("wasm plugin state poisoned"))?;
+        let write_allowed = self.resolve_write_grant(mode_now, cancel);
         let rebuild = guard
             .as_ref()
-            .map(|slot| slot.mode_key != mode_now)
+            .map(|slot| slot.mode_key != mode_now || slot.write_key != write_allowed)
             .unwrap_or(true);
         if rebuild {
-            *guard = Some(build_slot(self, mode_now)?);
+            *guard = Some(build_slot(self, mode_now, write_allowed)?);
         }
         let slot = guard
             .as_mut()
@@ -639,13 +787,15 @@ impl WasmInstance {
     }
 }
 
-/// 按当前授予集构建实例（preopen → store → instantiate）。
+/// 按当前授予集构建实例（preopen → store → instantiate）。B5 起 RW
+/// 授予以写授予门裁决为准（INV-W2：无记录/被拒 = 物理只读 preopen）。
 fn build_slot(
     instance: &WasmInstance,
     mode_key: Option<crate::permission::PermissionMode>,
+    write_allowed: bool,
 ) -> Result<InstanceSlot, ToolError> {
     let mut builder = WasiCtxBuilder::new();
-    for grant in instance.grants.grants() {
+    for grant in instance.grants.grants(mode_key, write_allowed) {
         builder
             .preopened_dir(
                 &grant.host,
@@ -693,6 +843,7 @@ fn build_slot(
         })?;
     Ok(InstanceSlot {
         mode_key,
+        write_key: write_allowed,
         store,
         instance: component_instance,
     })
@@ -889,6 +1040,10 @@ impl PluginTrait for WasmAdapterPlugin {
         for (name, plugin_config) in &config {
             match compile_plugin(&engine, &linker, &self.storage_root, name, plugin_config) {
                 Ok(compiled) => {
+                    // A4-2：元数据消毒诊断上状态面板（不拖垮整个插件）。
+                    for diagnostic in &compiled.diagnostics {
+                        record_failure(diagnostic.clone());
+                    }
                     let mut tools = 0usize;
                     let fs_cap = compiled.definitions.iter().any(|definition| {
                         matches!(
@@ -910,6 +1065,9 @@ impl PluginTrait for WasmAdapterPlugin {
                         },
                         config: compiled.config,
                         fuel: self.fuel,
+                        digest: compiled.digest,
+                        grants_path: wasm_grants::grants_path(&self.storage_root),
+                        write_state: Mutex::new(None),
                         slot: Mutex::new(None),
                     });
                     for definition in compiled.definitions {
@@ -984,8 +1142,37 @@ struct CompiledPlugin {
     component: wasmtime::component::Component,
     definitions: Vec<ToolDefinition>,
     extra_dirs: Vec<PathBuf>,
+    /// A4-2：元数据消毒诊断（mount 记入状态面板）。
+    diagnostics: Vec<String>,
     /// 本插件的配置 JSON 字符串（Phase 2c）。
     config: Option<String>,
+    /// B5：组件 sha256（小写 hex）——写授予记录三要素之一，无条件
+    /// 计算（A4-3 钉扎校验复用同一摘要，不再只配 pin 才算）。
+    digest: String,
+}
+
+/// WIT 工具声明到宿主 ToolDefinition 字段的最小投影（A4-2 消毒的
+/// 输入面——具体 bindgen 类型随 wasmtime 版本变，投影保持稳定）。
+trait WitToolDef {
+    fn wit_name(&self) -> String;
+    fn wit_description(&self) -> String;
+    fn wit_input_schema(&self) -> String;
+    fn wit_effect(&self) -> crate::tool::ToolEffect;
+}
+
+impl WitToolDef for exports::clat::plugin::tools::Definition {
+    fn wit_name(&self) -> String {
+        self.name.clone()
+    }
+    fn wit_description(&self) -> String {
+        self.description.clone()
+    }
+    fn wit_input_schema(&self) -> String {
+        self.input_schema.clone()
+    }
+    fn wit_effect(&self) -> ToolEffect {
+        tool_effect(self.effect)
+    }
 }
 
 /// 编译组件并用零授权临时实例列出其工具（列工具不需要 fs；正式实例
@@ -1005,7 +1192,36 @@ fn compile_plugin(
             plugin_config.path
         ));
     }
-    let component = wasmtime::component::Component::from_file(engine, &path)
+    // A4-3：大小闸先于读取/编译——启动同步路径不被大文件拖住。
+    let size = std::fs::metadata(&path)
+        .map_err(|error| format!("stat {}: {error}", path.display()))?
+        .len();
+    if size > MAX_COMPONENT_BYTES {
+        return Err(format!(
+            "component {} is {} bytes; the cap is {MAX_COMPONENT_BYTES} (32 MiB)",
+            path.display(),
+            size
+        ));
+    }
+    let bytes =
+        std::fs::read(&path).map_err(|error| format!("read {}: {error}", path.display()))?;
+    // B5：无条件计算组件 digest（写授予记录绑定它）；A4-3 钉扎比对
+    // 同一摘要（配了 pin 才校验，语义不变）。
+    use sha2::Digest as _;
+    let digest = sha2::Sha256::digest(&bytes);
+    let digest_hex = digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    if let Some(expected) = &plugin_config.sha256
+        && !digest_hex.eq_ignore_ascii_case(expected.trim().trim_start_matches("sha256:"))
+    {
+        return Err(format!(
+            "component {} sha256 mismatch: pinned {expected}, actual {digest_hex}",
+            path.display()
+        ));
+    }
+    let component = wasmtime::component::Component::from_binary(engine, &bytes)
         .map_err(|error| format!("compile {}: {error}", path.display()))?;
     // 额外授予目录（Phase 2b）：展开 + 前置校验（缺失/非目录即拒）。
     let mut extra_dirs = Vec::new();
@@ -1047,31 +1263,75 @@ fn compile_plugin(
     if definitions.len() > MAX_PLUGIN_TOOLS {
         return Err(format!("plugin exposes more than {MAX_PLUGIN_TOOLS} tools"));
     }
-    let parsed = definitions
-        .into_iter()
-        .map(|definition| ToolDefinition {
-            // 组件内名（mount 端限定为 wasm_{plugin}_{tool}）。
-            name: definition.name,
-            description: format!("[wasm:{name}] {}", definition.description),
-            input_schema: serde_json::from_str(&definition.input_schema)
-                .unwrap_or(serde_json::json!({"type": "object"})),
-            effect: tool_effect(definition.effect),
-            strict: false,
-        })
-        .collect::<Vec<_>>();
+    let (parsed, diagnostics) = sanitize_definitions(name, definitions);
     Ok(CompiledPlugin {
         component,
         definitions: parsed,
         extra_dirs,
+        diagnostics,
         config: plugin_config
             .config
             .as_ref()
             .and_then(|value| serde_json::to_string(value).ok()),
+        digest: digest_hex,
     })
+}
+
+/// A4-2（W1-19）：组件工具元数据消毒——description 超长截断（模型可
+/// 见面防注入洪水）；input_schema 解析失败**拒注册**（fail-loud，此前
+/// 静默降级 `{"type":"object"}` 让模型以无约束参数调用）。返回
+/// (放行的定义, 诊断)——诊断由 mount 记入 /mcp 状态面板。
+fn sanitize_definitions<T>(plugin: &str, definitions: Vec<T>) -> (Vec<ToolDefinition>, Vec<String>)
+where
+    T: WitToolDef,
+{
+    let mut parsed = Vec::new();
+    let mut diagnostics = Vec::new();
+    for definition in definitions {
+        let tool = definition.wit_name();
+        let mut description = format!("[wasm:{plugin}] {}", definition.wit_description());
+        if description.chars().count() > crate::tool::MAX_TOOL_DESCRIPTION_CHARS {
+            let kept: String = description
+                .chars()
+                .take(crate::tool::MAX_TOOL_DESCRIPTION_CHARS)
+                .collect();
+            description = format!("{kept}… [truncated by host]");
+            diagnostics.push(format!(
+                "wasm `{plugin}` tool `{tool}`: description exceeded \
+                 {} chars and was truncated",
+                crate::tool::MAX_TOOL_DESCRIPTION_CHARS
+            ));
+        }
+        match serde_json::from_str(&definition.wit_input_schema()) {
+            Ok(input_schema) => parsed.push(ToolDefinition {
+                // 组件内名（mount 端限定为 wasm_{plugin}_{tool}）。
+                name: definition.wit_name(),
+                description,
+                input_schema,
+                effect: definition.wit_effect(),
+                strict: false,
+            }),
+            Err(error) => diagnostics.push(format!(
+                "wasm `{plugin}` tool `{tool}`: input_schema is not valid JSON \
+                 ({error}); the tool was not registered"
+            )),
+        }
+    }
+    (parsed, diagnostics)
 }
 
 #[cfg(test)]
 mod tests {
+    /// A1：decide 携带 `&CancelToken` 后的具名 allow-all（闭包有 HRTB
+    /// 推断限制）。
+    fn allow_all_approver(
+        _request: crate::permission::PermissionRequest,
+        _cancel: &crate::model::CancelToken,
+    ) -> PermissionDecision {
+        PermissionDecision::Allow
+    }
+
+    use super::super::wasm_grants;
     use super::*;
     use std::time::Duration;
 
@@ -1123,7 +1383,7 @@ mod tests {
     use crate::plugin::{PluginId, PluginManager, PluginOwner, ScopeKind};
     use crate::plugins::{McpAdapterPlugin, ProviderRegistryPlugin, ToolRegistryPlugin};
 
-    /// INV-G1 纯函数：授予 = min(档位, 插件能力上限)。
+    /// INV-G1 纯函数：授予 = min(档位, 插件能力上限, 写授予门裁决)。
     #[test]
     fn grant_matrix_maps_mode_and_capability() {
         use crate::permission::PermissionMode;
@@ -1134,20 +1394,29 @@ mod tests {
             fs_cap,
             extra_dirs: extra,
         };
+        let mode = |expected: PermissionMode| {
+            *cell.write().expect("mode") = expected;
+            Some(expected)
+        };
 
         // Read Only：恒 RO（即使插件声明了写工具）。
-        let grants = policy(true, Vec::new()).grants();
+        let grants = policy(true, Vec::new()).grants(Some(PermissionMode::ReadOnly), true);
         assert_eq!(grants.len(), 1);
         assert_eq!(grants[0].guest, "project");
         assert!(!grants[0].read_write);
 
         // Project Write：有 fs 上限 → RW；纯读插件 → RO。
-        *cell.write().expect("mode") = PermissionMode::ProjectWrite;
-        assert!(policy(true, Vec::new()).grants()[0].read_write);
-        assert!(!policy(false, Vec::new()).grants()[0].read_write);
+        mode(PermissionMode::ProjectWrite);
+        assert!(
+            policy(true, Vec::new()).grants(Some(PermissionMode::ProjectWrite), true)[0].read_write
+        );
+        assert!(
+            !policy(false, Vec::new()).grants(Some(PermissionMode::ProjectWrite), true)[0]
+                .read_write
+        );
 
         // Full Access：项目根 RW + 额外目录 RW（guest = 清洗目录名）。
-        *cell.write().expect("mode") = PermissionMode::FullAccess;
+        mode(PermissionMode::FullAccess);
         let grants = policy(
             true,
             vec![
@@ -1155,7 +1424,7 @@ mod tests {
                 PathBuf::from("/x/project"),
             ],
         )
-        .grants();
+        .grants(Some(PermissionMode::FullAccess), true);
         assert_eq!(grants.len(), 3);
         assert!(grants.iter().all(|grant| grant.read_write));
         assert_eq!(grants[1].guest, "Data-1");
@@ -1164,9 +1433,60 @@ mod tests {
             "collision with `project` falls back"
         );
         // 纯读插件在 FA 也不得 RW/额外目录。
-        let grants = policy(false, vec![PathBuf::from("/extra")]).grants();
+        let grants = policy(false, vec![PathBuf::from("/extra")])
+            .grants(Some(PermissionMode::FullAccess), true);
         assert_eq!(grants.len(), 1);
         assert!(!grants[0].read_write);
+
+        // B5（INV-W2）：写授予门未过（无记录且未获批/被拒）→ 即使档位
+        // 与 fs_cap 都满足，一切 preopen 物理只读。
+        mode(PermissionMode::ProjectWrite);
+        let grants = policy(true, Vec::new()).grants(Some(PermissionMode::ProjectWrite), false);
+        assert_eq!(grants.len(), 1);
+        assert!(!grants[0].read_write);
+        mode(PermissionMode::FullAccess);
+        let grants = policy(true, vec![PathBuf::from("/extra")])
+            .grants(Some(PermissionMode::FullAccess), false);
+        assert_eq!(
+            grants.len(),
+            1,
+            "extras are part of the write grant; without it only the project root mounts, read-only"
+        );
+        assert!(!grants[0].read_write);
+
+        // B5：write_dirs = 审批面（档位 × fs_cap 求值，与 grants 的 RW
+        // 分支同源）。RO/Classic/纯读 → 空；PW → [根]；FA → [根+extras]。
+        mode(PermissionMode::ReadOnly);
+        assert!(
+            policy(true, vec![PathBuf::from("/extra")])
+                .write_dirs(Some(PermissionMode::ReadOnly))
+                .is_empty()
+        );
+        assert!(
+            policy(false, vec![PathBuf::from("/extra")])
+                .write_dirs(Some(PermissionMode::ProjectWrite))
+                .is_empty()
+        );
+        assert_eq!(
+            policy(true, Vec::new()).write_dirs(Some(PermissionMode::ProjectWrite)),
+            vec![PathBuf::from("/proj")]
+        );
+        mode(PermissionMode::FullAccess);
+        assert_eq!(
+            policy(true, vec![PathBuf::from("/extra")])
+                .write_dirs(Some(PermissionMode::FullAccess)),
+            vec![PathBuf::from("/proj"), PathBuf::from("/extra")]
+        );
+        assert!(
+            GrantPolicy {
+                mode: None,
+                project_root: PathBuf::from("/proj"),
+                fs_cap: true,
+                extra_dirs: vec![PathBuf::from("/extra")],
+            }
+            .write_dirs(None)
+            .is_empty()
+        );
 
         // Classic（exec，无档位 cell）：恒 RO。
         let grants = GrantPolicy {
@@ -1175,7 +1495,7 @@ mod tests {
             fs_cap: true,
             extra_dirs: vec![PathBuf::from("/extra")],
         }
-        .grants();
+        .grants(None, true);
         assert_eq!(grants.len(), 1);
         assert!(!grants[0].read_write);
     }
@@ -1201,6 +1521,7 @@ mod tests {
                 path: fixture("read.wasm").display().to_string(),
                 dirs: vec![extra.display().to_string()],
                 config: None,
+                sha256: None,
             },
         )]);
         std::fs::write(
@@ -1208,6 +1529,18 @@ mod tests {
             serde_json::to_vec(&map).expect("serialize"),
         )
         .expect("config");
+        // B5：本测试不装桥上下文（无审批面）→ 写授予门 fail-closed。
+        // 成功腿预置一份覆盖 FA 全集（根 + extra）的授权记录：RO 腿
+        // 依旧失败（记录永不越过档位），PW/FA 腿静默 RW——本测试聚焦
+        // 档位 × 物理授予，审批语义由下方 write_grants_* 四条钉住。
+        let mut records = Vec::new();
+        wasm_grants::upsert(
+            &mut records,
+            "read",
+            &fixture_sha256("read.wasm"),
+            &[project.clone(), extra.clone()],
+        );
+        wasm_grants::save_grants(&wasm_grants::grants_path(&root), &records).expect("seed grants");
 
         let mode = std::sync::Arc::new(std::sync::RwLock::new(PermissionMode::ReadOnly));
         let mcp_root = unique_root("fs-mcp");
@@ -1310,6 +1643,398 @@ mod tests {
         let _ = std::fs::remove_dir_all(mcp_root);
     }
 
+    // ---- B5：写授予审批化（INV-W1..W6；验收①—④判别测试）。
+
+    /// 组件 fixture 的 sha256（与 compile_plugin 的无条件摘要同一算法）。
+    fn fixture_sha256(name: &str) -> String {
+        use sha2::Digest as _;
+        let bytes = std::fs::read(fixture(name)).expect("fixture bytes");
+        sha2::Sha256::digest(&bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    }
+
+    /// 记录所见审批请求、按固定脚本裁决的 approver（B5 判别测试）。
+    struct ScriptedGrantApprover {
+        seen: Mutex<Vec<crate::permission::PermissionRequest>>,
+        verdict: PermissionDecision,
+    }
+
+    impl ScriptedGrantApprover {
+        fn with_verdict(verdict: PermissionDecision) -> std::sync::Arc<Self> {
+            std::sync::Arc::new(Self {
+                seen: Mutex::new(Vec::new()),
+                verdict,
+            })
+        }
+
+        fn seen_count(&self) -> usize {
+            self.seen.lock().expect("seen log").len()
+        }
+    }
+
+    impl PermissionApprover for ScriptedGrantApprover {
+        fn decide(
+            &self,
+            request: crate::permission::PermissionRequest,
+            _cancel: &CancelToken,
+        ) -> PermissionDecision {
+            self.seen.lock().expect("seen log").push(request);
+            self.verdict.clone()
+        }
+    }
+
+    /// 挂载 read 插件（带档位 cell）；桥由调用方自持——不装上下文
+    /// 即无审批面（INV-W6 的 fail-closed 腿）。
+    fn mount_read_plugin(
+        root: &std::path::Path,
+        mcp_root: &std::path::Path,
+        project: &std::path::Path,
+        mode: crate::permission::PermissionMode,
+        bridge: std::sync::Arc<crate::plugin_host::PluginHostBridge>,
+    ) -> (
+        PluginManager,
+        std::sync::Arc<std::sync::RwLock<crate::permission::PermissionMode>>,
+    ) {
+        write_config(
+            root,
+            &[("read", fixture("read.wasm").display().to_string())],
+        );
+        let cell = std::sync::Arc::new(std::sync::RwLock::new(mode));
+        let catalog: Vec<std::sync::Arc<dyn PluginTrait>> = vec![
+            std::sync::Arc::new(ToolRegistryPlugin),
+            std::sync::Arc::new(McpAdapterPlugin::new(
+                mcp_root.to_owned(),
+                Vec::new(),
+                crate::plugin_host::PluginHostBridge::shared(),
+            )),
+            std::sync::Arc::new(WasmAdapterPlugin::new(
+                root.to_owned(),
+                bridge,
+                project.to_owned(),
+                Some(std::sync::Arc::clone(&cell)),
+            )),
+        ];
+        let mut manager = PluginManager::root(ScopeKind::TrustedProject);
+        manager.mount_all(catalog).expect("mount");
+        (manager, cell)
+    }
+
+    /// 装一个带指定 approver 的桥上下文（等价 start_run 的 install；
+    /// 每次 install 分配新纪元）。
+    fn install_grant_context(
+        bridge: &crate::plugin_host::PluginHostBridge,
+        approver: std::sync::Arc<dyn PermissionApprover>,
+    ) {
+        bridge.install(crate::plugin_host::RunHostContext {
+            providers: fake_providers(),
+            model_config: ModelConfig {
+                model: "fake-model".into(),
+                ..Default::default()
+            },
+            credentials: ProviderCredentials::for_protocol(ModelProtocol::OpenAiCompatible),
+            approver,
+            permission_mode: None,
+            asker: None,
+            cancel: CancelToken::new(),
+            usage_cell: std::sync::Arc::new(Mutex::new(ModelUsage::default())),
+            budget: std::sync::Arc::new(Mutex::new(crate::plugin_host::SamplingBudget::per_run())),
+        });
+    }
+
+    /// 验收①（INV-W1/W3）：首调弹一次审批（参数列出目录集与组件
+    /// 摘要）→ Allow 落记录；新 run（新纪元）同 hash 静默授予。
+    /// pre-fix 判别力：无写授予门——0 次审批、无记录文件、写静默成功
+    ///（见实施补记的门删除复验）。
+    #[test]
+    #[ignore = "loads the wasm fixture; run explicitly with --ignored"]
+    fn write_grants_ask_once_then_persist_silence_for_the_same_hash() {
+        use crate::permission::PermissionMode;
+        let root = unique_root("grant-ask");
+        let project = unique_root("grant-ask-project");
+        let mcp_root = unique_root("grant-ask-mcp");
+        let bridge = crate::plugin_host::PluginHostBridge::shared();
+        let (mut manager, _cell) = mount_read_plugin(
+            &root,
+            &mcp_root,
+            &project,
+            PermissionMode::ProjectWrite,
+            std::sync::Arc::clone(&bridge),
+        );
+        let registry = manager.require(TOOL_SERVICE).expect("registry");
+        let project_view = crate::project::Project::new(&project);
+        let cancel = CancelToken::new();
+        let approver = ScriptedGrantApprover::with_verdict(PermissionDecision::Allow);
+        install_grant_context(&bridge, approver.clone());
+
+        // 首调：恰好一问，审批面 = 实际授予面（目录集 + 组件摘要）。
+        registry
+            .get("wasm_read_write_file")
+            .expect("tool")
+            .invoke(
+                &serde_json::json!({"path": "out.txt", "content": "granted"}),
+                &project_view,
+                &cancel,
+            )
+            .expect("write after an explicit grant");
+        {
+            let seen = approver.seen.lock().expect("seen log");
+            assert_eq!(seen.len(), 1, "exactly one approval per plugin per run");
+            assert_eq!(seen[0].tool, "wasm:read");
+            assert_eq!(seen[0].effect, crate::tool::ToolEffect::Write);
+            assert_eq!(
+                seen[0].arguments["component_sha256"],
+                fixture_sha256("read.wasm")
+            );
+            assert_eq!(
+                seen[0].arguments["write_dirs"],
+                serde_json::json!([project.display().to_string()])
+            );
+        }
+        assert_eq!(
+            std::fs::read_to_string(project.join("out.txt")).expect("written"),
+            "granted"
+        );
+
+        // 记录落盘（三要素齐全）。
+        let records = wasm_grants::load_grants(&wasm_grants::grants_path(&root));
+        assert!(wasm_grants::covers(
+            &records,
+            "read",
+            &fixture_sha256("read.wasm"),
+            std::slice::from_ref(&project)
+        ));
+
+        // 新 run（新纪元）：有效记录 → 0 问、写照常。
+        bridge.clear();
+        let silent_approver = ScriptedGrantApprover::with_verdict(PermissionDecision::Allow);
+        install_grant_context(&bridge, silent_approver.clone());
+        registry
+            .get("wasm_read_write_file")
+            .expect("tool")
+            .invoke(
+                &serde_json::json!({"path": "out2.txt", "content": "silent"}),
+                &project_view,
+                &cancel,
+            )
+            .expect("write with a valid record stays silent");
+        assert_eq!(
+            silent_approver.seen_count(),
+            0,
+            "a valid record must not re-ask"
+        );
+
+        manager.close().expect("close");
+        bridge.clear();
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(project);
+        let _ = std::fs::remove_dir_all(mcp_root);
+    }
+
+    /// 验收②（INV-W1）：组件 hash 失配的记录不覆盖 → 重问。
+    /// pre-fix 判别力：无门——0 问且写静默成功。
+    #[test]
+    #[ignore = "loads the wasm fixture; run explicitly with --ignored"]
+    fn write_grants_reask_when_the_component_hash_changes() {
+        use crate::permission::PermissionMode;
+        let root = unique_root("grant-stale");
+        let project = unique_root("grant-stale-project");
+        let mcp_root = unique_root("grant-stale-mcp");
+        // 预置 hash 不符的记录（目录集是对的也不行——三要素缺一不可）。
+        let mut records = Vec::new();
+        wasm_grants::upsert(
+            &mut records,
+            "read",
+            &"f".repeat(64),
+            std::slice::from_ref(&project),
+        );
+        wasm_grants::save_grants(&wasm_grants::grants_path(&root), &records)
+            .expect("seed stale record");
+
+        let bridge = crate::plugin_host::PluginHostBridge::shared();
+        let (mut manager, _cell) = mount_read_plugin(
+            &root,
+            &mcp_root,
+            &project,
+            PermissionMode::ProjectWrite,
+            std::sync::Arc::clone(&bridge),
+        );
+        let registry = manager.require(TOOL_SERVICE).expect("registry");
+        let approver = ScriptedGrantApprover::with_verdict(PermissionDecision::Allow);
+        install_grant_context(&bridge, approver.clone());
+        registry
+            .get("wasm_read_write_file")
+            .expect("tool")
+            .invoke(
+                &serde_json::json!({"path": "out.txt", "content": "re-asked"}),
+                &crate::project::Project::new(&project),
+                &CancelToken::new(),
+            )
+            .expect("write after re-asking");
+        assert_eq!(
+            approver.seen_count(),
+            1,
+            "a stale-hash record must not silently cover"
+        );
+
+        manager.close().expect("close");
+        bridge.clear();
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(project);
+        let _ = std::fs::remove_dir_all(mcp_root);
+    }
+
+    /// 验收③（INV-W2/W3）：Deny → 本 run 物理只读（写工具失败、磁盘
+    /// 无文件）、不落记录、同 run 不再问；下一 run（新纪元）重问。
+    #[test]
+    #[ignore = "loads the wasm fixture; run explicitly with --ignored"]
+    fn write_grants_denial_downgrades_to_read_only_for_the_run() {
+        use crate::permission::PermissionMode;
+        let root = unique_root("grant-deny");
+        let project = unique_root("grant-deny-project");
+        let mcp_root = unique_root("grant-deny-mcp");
+        let bridge = crate::plugin_host::PluginHostBridge::shared();
+        let (mut manager, _cell) = mount_read_plugin(
+            &root,
+            &mcp_root,
+            &project,
+            PermissionMode::ProjectWrite,
+            std::sync::Arc::clone(&bridge),
+        );
+        let registry = manager.require(TOOL_SERVICE).expect("registry");
+        let project_view = crate::project::Project::new(&project);
+        let cancel = CancelToken::new();
+        let approver = ScriptedGrantApprover::with_verdict(PermissionDecision::Deny {
+            reason: "not today".into(),
+        });
+        install_grant_context(&bridge, approver.clone());
+
+        // 拒绝 → 物理只读：写失败、磁盘无文件。
+        let _error = registry
+            .get("wasm_read_write_file")
+            .expect("tool")
+            .invoke(
+                &serde_json::json!({"path": "out.txt", "content": "denied"}),
+                &project_view,
+                &cancel,
+            )
+            .expect_err("denied write grant must fail physically");
+        assert!(
+            !project.join("out.txt").exists(),
+            "no file may escape a read-only grant"
+        );
+        assert_eq!(approver.seen_count(), 1);
+
+        // 同 run 二次调用：不重复问，依旧只读。
+        let _error = registry
+            .get("wasm_read_write_file")
+            .expect("tool")
+            .invoke(
+                &serde_json::json!({"path": "out.txt", "content": "still denied"}),
+                &project_view,
+                &cancel,
+            )
+            .expect_err("denial sticks for the run");
+        assert_eq!(approver.seen_count(), 1, "no re-ask within the same run");
+
+        // 不落记录。
+        let records = wasm_grants::load_grants(&wasm_grants::grants_path(&root));
+        assert!(!wasm_grants::covers(
+            &records,
+            "read",
+            &fixture_sha256("read.wasm"),
+            std::slice::from_ref(&project)
+        ));
+
+        // 下一 run（新纪元）重问（per-run 拒绝语义）。
+        bridge.clear();
+        let approver2 = ScriptedGrantApprover::with_verdict(PermissionDecision::Deny {
+            reason: "still no".into(),
+        });
+        install_grant_context(&bridge, approver2.clone());
+        let _error = registry
+            .get("wasm_read_write_file")
+            .expect("tool")
+            .invoke(
+                &serde_json::json!({"path": "out.txt", "content": "denied again"}),
+                &project_view,
+                &cancel,
+            )
+            .expect_err("denied again");
+        assert_eq!(approver2.seen_count(), 1, "a new run must re-ask");
+
+        manager.close().expect("close");
+        bridge.clear();
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(project);
+        let _ = std::fs::remove_dir_all(mcp_root);
+    }
+
+    /// 验收④（INV-W2/W6）：无活动 run（headless 无桥上下文）→
+    /// fail-closed 只读；Unavailable（exec 非交互先例）同样拒写——
+    /// 两腿都不落记录、不 panic。
+    #[test]
+    #[ignore = "loads the wasm fixture; run explicitly with --ignored"]
+    fn write_grants_fail_closed_without_an_interactive_run() {
+        use crate::permission::PermissionMode;
+        let root = unique_root("grant-headless");
+        let project = unique_root("grant-headless-project");
+        let mcp_root = unique_root("grant-headless-mcp");
+        let bridge = crate::plugin_host::PluginHostBridge::shared();
+        let (mut manager, _cell) = mount_read_plugin(
+            &root,
+            &mcp_root,
+            &project,
+            PermissionMode::ProjectWrite,
+            std::sync::Arc::clone(&bridge),
+        );
+        let registry = manager.require(TOOL_SERVICE).expect("registry");
+        let project_view = crate::project::Project::new(&project);
+        let cancel = CancelToken::new();
+
+        // 腿一：无桥上下文（boot/mount 期、run 间隙）——无审批面即无
+        // 写授予。
+        let _error = registry
+            .get("wasm_read_write_file")
+            .expect("tool")
+            .invoke(
+                &serde_json::json!({"path": "out.txt", "content": "headless"}),
+                &project_view,
+                &cancel,
+            )
+            .expect_err("no active run means no write grant");
+        assert!(!project.join("out.txt").exists());
+
+        // 腿二：Unavailable（exec NonInteractive 形态）——有审批面但
+        // fail-closed。
+        let approver = ScriptedGrantApprover::with_verdict(PermissionDecision::Unavailable {
+            reason: "non-interactive run denied `wasm:read`".into(),
+        });
+        install_grant_context(&bridge, approver.clone());
+        let _error = registry
+            .get("wasm_read_write_file")
+            .expect("tool")
+            .invoke(
+                &serde_json::json!({"path": "out.txt", "content": "unavailable"}),
+                &project_view,
+                &cancel,
+            )
+            .expect_err("unavailable approval means no write grant");
+        assert!(!project.join("out.txt").exists());
+        assert_eq!(approver.seen_count(), 1);
+
+        // 两腿都不落记录。
+        let records = wasm_grants::load_grants(&wasm_grants::grants_path(&root));
+        assert!(records.is_empty());
+
+        manager.close().expect("close");
+        bridge.clear();
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(project);
+        let _ = std::fs::remove_dir_all(mcp_root);
+    }
+
     /// INV-K2/K4 门控：greeter 经 SDK DSL 声明，config 从 plugins.json
     /// 流入组件；未配置时报错而非静默空值。
     #[test]
@@ -1326,6 +2051,7 @@ mod tests {
                     path: fixture("greeter.wasm").display().to_string(),
                     dirs: Vec::new(),
                     config,
+                    sha256: None,
                 },
             )]);
             std::fs::write(
@@ -1503,9 +2229,8 @@ mod tests {
             credentials: crate::model::ProviderCredentials::for_protocol(
                 crate::model::ModelProtocol::OpenAiCompatible,
             ),
-            approver: std::sync::Arc::new(|_request: crate::permission::PermissionRequest| {
-                PermissionDecision::Allow
-            }) as std::sync::Arc<dyn PermissionApprover>,
+            approver: std::sync::Arc::new(allow_all_approver)
+                as std::sync::Arc<dyn PermissionApprover>,
             permission_mode: None,
             asker: Some(std::sync::Arc::new(SlowAsker {
                 asked: Mutex::new(0),
@@ -1552,16 +2277,27 @@ mod tests {
     }
 
     fn write_config(root: &std::path::Path, entries: &[(&str, String)]) {
+        write_config_json(
+            root,
+            &entries
+                .iter()
+                .map(|(name, path)| {
+                    (
+                        (*name).to_owned(),
+                        serde_json::json!({ "path": path.clone() }),
+                    )
+                })
+                .collect::<Vec<_>>(),
+        );
+    }
+
+    fn write_config_json(root: &std::path::Path, entries: &[(String, serde_json::Value)]) {
         let map: BTreeMap<String, WasmPluginConfig> = entries
             .iter()
-            .map(|(name, path)| {
+            .map(|(name, value)| {
                 (
                     (*name).to_owned(),
-                    WasmPluginConfig {
-                        path: path.clone(),
-                        dirs: Vec::new(),
-                        config: None,
-                    },
+                    serde_json::from_value(value.clone()).expect("config shape"),
                 )
             })
             .collect();
@@ -1864,9 +2600,8 @@ mod tests {
             providers,
             model_config: config,
             credentials: ProviderCredentials::for_protocol(ModelProtocol::OpenAiCompatible),
-            approver: std::sync::Arc::new(|_request: crate::permission::PermissionRequest| {
-                PermissionDecision::Allow
-            }) as std::sync::Arc<dyn PermissionApprover>,
+            approver: std::sync::Arc::new(allow_all_approver)
+                as std::sync::Arc<dyn PermissionApprover>,
             permission_mode: None,
             asker: Some(std::sync::Arc::new(ScriptedAsker {
                 answers: Mutex::new(
@@ -2107,6 +2842,187 @@ mod tests {
         assert!(
             elapsed >= Duration::from_millis(500) && elapsed < Duration::from_secs(5),
             "a legal sleep keeps its duration (got {elapsed:?})"
+        );
+    }
+
+    /// A4-3（W1-20）：组件文件大小闸——超 32MiB 拒载（加载前判定，
+    /// 不进编译器）。pre-fix 红：垃圾大文件走到 compile 错误（不同文案）。
+    #[test]
+    fn oversized_components_are_refused_before_compilation() {
+        let root = unique_root("oversize");
+        let big = root.join("big.wasm");
+        let mut blob = vec![0u8; 33 * 1024 * 1024];
+        blob[..9].copy_from_slice(b"garbage!!");
+        std::fs::write(&big, &blob).expect("write big garbage");
+        write_config(&root, &[("big", big.display().to_string())]);
+        let mcp_root = unique_root("oversize-mcp");
+        let catalog: Vec<std::sync::Arc<dyn PluginTrait>> = vec![
+            std::sync::Arc::new(ToolRegistryPlugin),
+            std::sync::Arc::new(McpAdapterPlugin::new(
+                mcp_root.clone(),
+                Vec::new(),
+                crate::plugin_host::PluginHostBridge::shared(),
+            )),
+            std::sync::Arc::new(WasmAdapterPlugin::new(
+                root.clone(),
+                crate::plugin_host::PluginHostBridge::shared(),
+                root.clone(),
+                None,
+            )),
+        ];
+        let mut manager = PluginManager::root(ScopeKind::TrustedProject);
+        manager.mount_all(catalog).expect("mount");
+        let status = manager.require(MCP_STATUS_SERVICE).expect("status");
+        let snapshot = status.snapshot();
+        assert!(
+            snapshot
+                .failures
+                .iter()
+                .any(|message| message.contains("32 MiB")),
+            "the size cap must refuse the load: {snapshot:?}"
+        );
+        manager.close().expect("close");
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(mcp_root);
+    }
+
+    /// A4-3：sha256 钉扎——失配拒载，匹配放行。
+    #[test]
+    fn sha256_pins_are_verified_at_load() {
+        use sha2::Digest as _;
+        let root = unique_root("pinning");
+        let component = fixture("digest.wasm");
+        let digest_hex = {
+            let bytes = std::fs::read(&component).expect("fixture");
+            let digest = sha2::Sha256::digest(&bytes);
+            digest
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        };
+        // 失配：错误钉扎拒载（好组件也不放行）。
+        write_config_json(
+            &root,
+            &[(
+                "digest".to_owned(),
+                serde_json::json!({
+                    "path": component.display().to_string(),
+                    "sha256": "deadbeef".to_owned(),
+                }),
+            )],
+        );
+        let mcp_root = unique_root("pinning-mcp");
+        let mount_and_status = || {
+            let catalog: Vec<std::sync::Arc<dyn PluginTrait>> = vec![
+                std::sync::Arc::new(ToolRegistryPlugin),
+                std::sync::Arc::new(McpAdapterPlugin::new(
+                    mcp_root.clone(),
+                    Vec::new(),
+                    crate::plugin_host::PluginHostBridge::shared(),
+                )),
+                std::sync::Arc::new(WasmAdapterPlugin::new(
+                    root.clone(),
+                    crate::plugin_host::PluginHostBridge::shared(),
+                    root.clone(),
+                    None,
+                )),
+            ];
+            let mut manager = PluginManager::root(ScopeKind::TrustedProject);
+            manager.mount_all(catalog).expect("mount");
+            let status = manager.require(MCP_STATUS_SERVICE).expect("status");
+            (manager, status)
+        };
+        let (mut manager, status) = mount_and_status();
+        let snapshot = status.snapshot();
+        assert!(
+            snapshot
+                .failures
+                .iter()
+                .any(|message| message.contains("sha256")),
+            "a mismatched pin must refuse the load: {snapshot:?}"
+        );
+        assert_eq!(snapshot.connected, 0);
+        manager.close().expect("close");
+
+        // 匹配：正确钉扎放行。
+        write_config_json(
+            &root,
+            &[(
+                "digest".to_owned(),
+                serde_json::json!({
+                    "path": component.display().to_string(),
+                    "sha256": digest_hex,
+                }),
+            )],
+        );
+        let (mut manager, status) = mount_and_status();
+        let snapshot = status.snapshot();
+        assert_eq!(
+            snapshot.connected, 1,
+            "a matching pin must load the plugin: {snapshot:?}"
+        );
+        manager.close().expect("close");
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(mcp_root);
+    }
+
+    /// A4-2（W1-19）：元数据消毒——超长 description 截断并记诊断；
+    /// 非法 input_schema 拒注册（不再静默降级为空 schema）。
+    #[test]
+    fn tool_metadata_is_sanitized_with_diagnostics() {
+        use exports::clat::plugin::tools::{Definition, Effect};
+        let long_description: String = "x".repeat(5000);
+        let definitions = vec![
+            Definition {
+                name: "ok".into(),
+                description: "fine".into(),
+                input_schema: r#"{"type":"object"}"#.into(),
+                effect: Effect::Pure,
+            },
+            Definition {
+                name: "verbose".into(),
+                description: long_description,
+                input_schema: r#"{"type":"object"}"#.into(),
+                effect: Effect::Pure,
+            },
+            Definition {
+                name: "badschema".into(),
+                description: "schema is broken".into(),
+                input_schema: "{not json".into(),
+                effect: Effect::Pure,
+            },
+        ];
+        let (parsed, diagnostics) = sanitize_definitions("test", definitions);
+        assert_eq!(parsed.len(), 2, "only the valid-schema tools register");
+        assert!(
+            parsed.iter().any(|definition| definition.name == "ok"
+                && definition.description.contains("[wasm:test] fine")),
+            "the healthy tool passes through: {parsed:?}"
+        );
+        let verbose = parsed
+            .iter()
+            .find(|definition| definition.name == "verbose")
+            .expect("verbose still registers (truncated, not dropped)");
+        assert!(
+            verbose.description.chars().count() < 4200,
+            "the description is truncated: {}",
+            verbose.description.chars().count()
+        );
+        assert!(verbose.description.contains("[truncated by host]"));
+        assert_eq!(
+            diagnostics.len(),
+            2,
+            "one diagnostic per violation: {diagnostics:?}"
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|message| message.contains("verbose") && message.contains("truncated"))
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|message| message.contains("badschema") && message.contains("not registered"))
         );
     }
 }

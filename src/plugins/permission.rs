@@ -53,14 +53,20 @@ struct DefaultPermissionFactory {
 }
 
 impl PermissionPolicyFactory for DefaultPermissionFactory {
-    fn create(&self, approver: Arc<dyn PermissionApprover>) -> Box<dyn PermissionPolicy> {
+    fn create(
+        &self,
+        approver: Arc<dyn PermissionApprover>,
+        cancel: &crate::CancelToken,
+    ) -> Box<dyn PermissionPolicy> {
         match &self.source {
             ModeSource::Classic => Box::new(InteractivePermissionPolicy::with_approver(
                 SafeByDefault,
+                cancel.clone(),
                 approver,
             )),
             ModeSource::Shared(cell) => Box::new(InteractivePermissionPolicy::with_approver(
                 ModePolicy::new(Arc::clone(cell)),
+                cancel.clone(),
                 approver,
             )),
         }

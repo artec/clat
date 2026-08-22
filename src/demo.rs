@@ -67,14 +67,13 @@ pub fn run_demo(
     let output = agent
         .execute(AgentRequest {
             credentials: ProviderCredentials::for_protocol(config.protocol),
+            spend_ledger: None,
             config,
             history_items: vec![ModelItem::user_text(prompt.clone())],
             prompt,
             cancel: CancelToken::new(),
             steering: crate::run::SteeringQueue::new(),
-            approver: Arc::new(|_| PermissionDecision::Deny {
-                reason: "demo does not approve side effects".into(),
-            }),
+            approver: Arc::new(demo_approver),
             events,
             permission_mode: None,
         })
@@ -256,6 +255,17 @@ impl Model for DemoModel {
             provider_state: vec![],
             reasoning: None,
         })
+    }
+}
+
+/// demo 的审批人：一切副作用拒绝（具名 fn——闭包对带引用参数的 trait
+/// blanket impl 有 HRTB 推断限制）。
+fn demo_approver(
+    _request: crate::permission::PermissionRequest,
+    _cancel: &CancelToken,
+) -> PermissionDecision {
+    PermissionDecision::Deny {
+        reason: "demo does not approve side effects".into(),
     }
 }
 

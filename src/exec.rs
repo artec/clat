@@ -986,7 +986,18 @@ struct ExecApprover {
 }
 
 impl PermissionApprover for ExecApprover {
-    fn decide(&self, request: PermissionRequest) -> PermissionDecision {
+    fn decide(
+        &self,
+        request: PermissionRequest,
+        cancel: &crate::model::CancelToken,
+    ) -> PermissionDecision {
+        // W1-17/A1：run 已取消（如断管触发的取消）时不进入交互等待，
+        // 直接以中断语义拒绝。
+        if cancel.is_cancelled() {
+            return PermissionDecision::Deny {
+                reason: "interrupted by run cancellation".into(),
+            };
+        }
         match self.mode {
             PermissionMode::AllowAll => PermissionDecision::Allow,
             PermissionMode::NonInteractive => PermissionDecision::Unavailable {
@@ -1912,13 +1923,16 @@ mod tests {
         // 模拟第一次 Ctrl-C（run 句柄尚未就位 → pending，标志已置位）。
         let _ = cancel.on_interrupt();
         let started = Instant::now();
-        let decision = approver.decide(PermissionRequest {
-            tool: "write_file".into(),
-            effect: ToolEffect::Write,
-            reason: "test".into(),
-            arguments: serde_json::json!({}),
-            call_id: "call-1".into(),
-        });
+        let decision = approver.decide(
+            PermissionRequest {
+                tool: "write_file".into(),
+                effect: ToolEffect::Write,
+                reason: "test".into(),
+                arguments: serde_json::json!({}),
+                call_id: "call-1".into(),
+            },
+            &crate::model::CancelToken::new(),
+        );
         assert!(
             matches!(&decision, PermissionDecision::Deny { reason } if reason.contains("interrupted")),
             "unexpected decision: {decision:?}"

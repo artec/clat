@@ -246,7 +246,11 @@ mod tests {
                 attachments: Vec::new(),
                 asker: None,
                 prompt: prompt.into(),
-                approver: Arc::new(|_request: PermissionRequest| PermissionDecision::Allow),
+                approver: Arc::new(
+                    |_request: PermissionRequest, _cancel: &crate::model::CancelToken| {
+                        PermissionDecision::Allow
+                    },
+                ),
                 events: Box::new(SharedEvents(Arc::new(Mutex::new(Vec::new())))),
                 completion,
             })
@@ -524,5 +528,72 @@ mod tests {
         assert!(registry.catalog().iter().any(|info| info.name == "extra"));
         manager.close().unwrap();
         assert!(registry.lookup("extra").is_none());
+    }
+
+    /// A4-4（W1-28）：扩展命令 handler 的 panic 不得带崩调用线程/毒化
+    /// 核心锁——dispatch 的 catch_unwind 把它降为 `CommandError::Failed`。
+    /// pre-fix 红：panic 穿透 dispatch（外层 catch_unwind 收到 payload）。
+    struct PanickingCommandPlugin;
+    const PANIC_DESCRIPTOR: PluginDescriptor = PluginDescriptor {
+        id: PluginId::new("test.panicking_command"),
+        scope: crate::plugin::ScopeKind::TrustedProject,
+        provides: &[],
+        requires: &[COMMAND_SERVICE_ID],
+        optional: &[],
+    };
+    fn run_boom(
+        _application: &mut TrustedProjectApplication,
+    ) -> Result<CommandOutcome, CommandError> {
+        panic!("boom handler");
+    }
+    impl Plugin for PanickingCommandPlugin {
+        fn descriptor(&self) -> &'static PluginDescriptor {
+            &PANIC_DESCRIPTOR
+        }
+        fn mount(&self, context: &mut PluginContext<'_>) -> Result<(), PluginError> {
+            let registry = context
+                .require(COMMAND_SERVICE)
+                .map_err(|error| PluginError::new(error.to_string()))?;
+            let lease = registry
+                .register(context.owner(), spec(&["boom"], "boom", run_boom))
+                .map_err(|error| PluginError::new(error.to_string()))?;
+            context.defer(move || {
+                lease
+                    .revoke()
+                    .map_err(|error| DisposeError::new(error.to_string()))
+            });
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_panicking_command_handler_is_contained_as_a_failed_command() {
+        let (storage_root, project_root) = roots("commands-panic");
+        std::fs::create_dir_all(&project_root).unwrap();
+        let project = Project::new(&project_root);
+        let bootstrap = BootstrapApplication::open(project, storage_root.clone()).unwrap();
+        let mut application = bootstrap
+            .authorize_and_mount_with_provider(Arc::new(PanickingCommandPlugin))
+            .unwrap();
+        let previous_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            application.dispatch_command("/boom")
+        }));
+        std::panic::set_hook(previous_hook);
+        let dispatched = outcome.expect("dispatch must contain the handler panic");
+        match dispatched {
+            Err(CommandError::Failed { message }) => {
+                assert!(message.contains("panicked"), "names the cause: {message}")
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
+        // dispatch 之后应用仍可用（锁未毒化）：正常命令照常工作。
+        assert!(matches!(
+            application.dispatch_command("/help"),
+            Ok(CommandOutcome::ShowHelp { .. })
+        ));
+        application.close().unwrap();
+        cleanup(&storage_root);
     }
 }

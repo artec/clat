@@ -148,7 +148,7 @@ impl AgentRuntime for DefaultAgentRuntime {
         // 400 时自动把图片换成路径注记重试——zai-mcp-server 等视觉
         // 工具收本地路径，非视觉主模型也能借工具看图。
         let mut model = crate::providers::image_degrade_model(model);
-        let permissions = self.permissions.create(request.approver);
+        let permissions = self.permissions.create(request.approver, &request.cancel);
         let options = ModelOptions {
             output_limit: request.config.output_limit,
             temperature: request.config.temperature,
@@ -173,6 +173,7 @@ impl AgentRuntime for DefaultAgentRuntime {
             &self.project,
         )
         .with_model_options(options)
+        .with_spend_ledger(request.spend_ledger.clone())
         .with_cancel_token(request.cancel)
         .with_steering(request.steering)
         .with_tool_pipeline(&self.pipeline)

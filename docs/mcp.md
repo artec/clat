@@ -172,6 +172,34 @@ count is per server: one server's (or a WASM plugin's) in-flight request
 never extends an unrelated server's deadline. `Esc` still cancels
 immediately.
 
+## Known trade-offs (W1-30 disclosure)
+
+These are deliberate current behaviors, not bugs; they will be revisited
+as separate decisions:
+
+- **stdio server subprocesses inherit your full environment.** A local
+  MCP server you configure in `mcp.json` runs with every environment
+  variable your terminal has — including API keys of other vendors that
+  happen to be exported. Configure servers you do not trust with a
+  minimal environment (launch CLAT from a clean shell, or wrap the
+  command in `env -i`).
+- **`mcp.json` is plaintext on disk.** Remote-server entries commonly
+  carry `Authorization: Bearer …` headers; the file is never written by
+  CLAT itself, but anything you put there is unencrypted at rest
+  (`~/.clat/mcp.json`). Prefer OS-level disk protection for secrets.
+- **The GLM vision pack runs `npx @z_ai/mcp-server@latest`**, pulling the
+  latest package from npm on every start — a supply-chain surface you do
+  not pin. To lock it, define an override entry in `mcp.json` with a
+  pinned version, e.g. `"glm-vision": { "command": "npx", "args":
+  ["-y", "@z_ai/mcp-server@<pinned-version>"], "env": { … } }`.
+
+One mitigation note on the first two items: the stderr tail a server
+leaves in failure messages is redacted for key-shaped content
+(`Bearer …`, `sk-…`, `…api_key=…`) before it reaches the `/mcp` panel,
+status flashes, or logs — a server that crashes while printing its own
+environment does not persist your keys into CLAT's surfaces. The
+subprocess still *saw* them; redaction is cleanup, not isolation.
+
 ## Security posture
 
 MCP servers are **global capabilities, not project content**:

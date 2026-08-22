@@ -6,6 +6,9 @@ mod context;
 mod effect;
 mod id;
 mod manager;
+
+/// panic 载荷的统一文案化（mount/run worker/dispatch 三处隔离共用）。
+pub(crate) use manager::panic_message;
 mod service;
 
 pub(crate) use context::PluginContext;

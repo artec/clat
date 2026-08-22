@@ -296,6 +296,19 @@ impl TrustedProjectApplication {
                 Arc::clone(&application.subscribers),
             )?);
         }
+        // A4-1（W1-21）：MCP/WASM 启动失败的一次性响亮通知——把状态
+        // 面板里的静默 failures 升级为用户可感知的 ApplicationEvent。
+        if let Some(manager) = &application.project_manager
+            && let Ok(status) = manager.require(MCP_STATUS_SERVICE)
+        {
+            let subscribers = Arc::clone(&application.subscribers);
+            status.set_notice_sink(Arc::new(move |failures| {
+                broadcast_to(
+                    &subscribers,
+                    ApplicationEvent::McpStartupNotice { failures },
+                );
+            }));
+        }
         Ok(application)
     }
 
@@ -953,7 +966,24 @@ impl TrustedProjectApplication {
         if !args.is_empty() && !entry.takes_args {
             return Err(crate::command::CommandError::TakesNoArguments { name: entry.name });
         }
-        entry.handler.run(self, args)
+        // A4-4（W1-28）：扩展 handler 的 panic 被隔离为 Failed——对齐
+        // run worker / 插件 mount 的 catch_unwind 先例，TUI 线程不崩、
+        // 核心锁不毒化（`&mut self` 经 AssertUnwindSafe 借出，panic 后
+        // 不再触碰 self）。
+        let handler = entry.handler.clone();
+        let args = args.to_owned();
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            handler.run(self, &args)
+        })) {
+            Ok(result) => result,
+            Err(payload) => Err(crate::command::CommandError::Failed {
+                message: format!(
+                    "command `/{}` handler panicked: {}",
+                    name,
+                    crate::plugin::panic_message(payload)
+                ),
+            }),
+        }
     }
 
     /// 命令目录（INV-C4：帮助表与未知命令提示的唯一事实源）。

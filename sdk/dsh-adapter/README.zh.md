@@ -113,7 +113,8 @@ DSH 工具没有静态 effect 字段；不声明时宿主按最保守档处理
 - `apply()` 必须在宿主握手超时内结算（CLAT 为 10 秒）
 - `multiSelect` 问题降级为逗号分隔文本
 - `ctx.llm.stream({ tools })` 直接报错（MCP sampling 不带工具调用）；消息仅文本（图片块报 `NON_TEXT_CONTENT`）
-- 取消不转发到 `exec.signal`；宿主以调用截止兜底
+- `ctx.llm.stream({ stop })`（`stopSequences`）被解析但宿主采样桥忽略（每 run 一次 stderr 提示）
+- 宿主取消（`notifications/cancelled` / shutdown）触发 `exec.signal` 并中止在途 sampling/elicitation
 - 一次 ask：≤16 问、每问 ≤16 选项
 
 完整移植指南——兼容矩阵（纯算法 / 外部适配器 / 脊柱 / UI / 内容资产）、

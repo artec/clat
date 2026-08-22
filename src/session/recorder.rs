@@ -125,7 +125,11 @@ fn approval_outcome(decision: &PermissionDecision) -> &'static str {
 }
 
 impl PermissionApprover for JournalingApprover {
-    fn decide(&self, request: PermissionRequest) -> PermissionDecision {
+    fn decide(
+        &self,
+        request: PermissionRequest,
+        cancel: &crate::model::CancelToken,
+    ) -> PermissionDecision {
         let (turn, step, call) = {
             let shared = self.shared.lock().expect("recorder lock");
             (
@@ -156,7 +160,7 @@ impl PermissionApprover for JournalingApprover {
         }
         let request_call_id = request.call_id.clone();
         let request_tool = request.tool.clone();
-        let decision = self.inner.decide(request);
+        let decision = self.inner.decide(request, cancel);
         let outcome = approval_outcome(&decision);
         let mut group = vec![
             NewSessionEvent::new(
@@ -251,6 +255,8 @@ pub(crate) struct SessionRecorder {
     pending_retry_id: Option<String>,
     terminal: Option<RunEvent>,
     journal_error: Option<String>,
+    /// B1 花费护栏的预警状态（50%/90% 各恰好一次；hard-stop 在 run.rs）。
+    budget: RunBudgetEvents,
 }
 
 impl SessionRecorder {
@@ -291,6 +297,7 @@ impl SessionRecorder {
             pending_retry_id: None,
             terminal: None,
             journal_error: None,
+            budget: RunBudgetEvents::default(),
         }
     }
 
@@ -347,7 +354,11 @@ impl SessionRecorder {
     /// `RunFailed` carrying the journal error so the event stream and the
     /// completion channel agree.
     pub(crate) fn finish(&mut self, reason: TurnEndReason) -> Option<String> {
-        self.close_open_step();
+        // B2（DSH 0.1.1-rc.1 对齐）：aborted 终态的部分产出前缀定稿为
+        // `interrupted: true` 的 assistant/message（恢复合成收尾不经过
+        // 本路径，语义不变）。
+        let interrupted = matches!(reason, TurnEndReason::Aborted { .. });
+        self.close_open_step_interrupted(interrupted);
         let turn = self.shared.lock().map(|shared| shared.turn).unwrap_or(0);
         self.append_quietly(NewSessionEvent::new(
             "turn/end",
@@ -385,11 +396,17 @@ impl SessionRecorder {
     /// partial text the UI already showed (the same guarantee `finish`
     /// gives the whole turn).
     fn close_open_step(&mut self) {
+        self.close_open_step_interrupted(false);
+    }
+
+    /// [`Self::close_open_step`] 的参数化核：`interrupted` 仅在取消
+    /// 终态的部分产出定稿上为真（settled 路径恒假）。
+    fn close_open_step_interrupted(&mut self, interrupted: bool) {
         if !self.step_open {
             return;
         }
         if !self.message_emitted && self.has_partial_message() {
-            self.assistant_message();
+            self.assistant_message_interrupted(interrupted);
         }
         let (turn, step) = self.state();
         self.append_quietly(NewSessionEvent::new(
@@ -542,6 +559,12 @@ impl SessionRecorder {
 
     /// Compose and append the `assistant/message` for the open step.
     fn assistant_message(&mut self) {
+        self.assistant_message_interrupted(false);
+    }
+
+    /// [`Self::assistant_message`] 的参数化核（B2）：部分产出定稿时
+    /// 由取消路径传入 `interrupted: true`。
+    fn assistant_message_interrupted(&mut self, interrupted: bool) {
         let (turn, step) = {
             let shared = self.shared.lock().expect("recorder lock");
             (shared.turn, shared.step)
@@ -576,8 +599,30 @@ impl SessionRecorder {
         if let Some(replay) = self.replay_state.take() {
             payload = payloads::with_replay_state(payload, &replay);
         }
+        if interrupted {
+            // B2：可选信封级字段（DSH types.ts:277），跨工具读取时取消
+            // 前缀可辨。settled 路径永不写入（B2 反向腿测试钉住）。
+            payload["interrupted"] = serde_json::json!(true);
+        }
         let event = NewSessionEvent::new("assistant/message", payload).append(sources);
         self.append_quietly(event);
+        // B1：usage 落账即累计护栏口径（input+output；缓存命中已在
+        // input 内，不重复计），跨 50%/90% 各发一次持久化预警。
+        if let Some(usage) = &usage {
+            let spent = usage.input_tokens + usage.output_tokens;
+            for event in self.budget.crossing_events(spent) {
+                self.append_quietly(event);
+            }
+        }
+    }
+
+    /// B1：装入花费护栏（run_lifecycle 于 run 组装时调用）。
+    pub(crate) fn set_run_ledger(&mut self, ledger: std::sync::Arc<crate::model::RunSpendLedger>) {
+        self.budget = RunBudgetEvents {
+            ledger: Some(ledger),
+            warned_half: false,
+            warned_most: false,
+        };
     }
 
     fn state(&self) -> (u64, u64) {
@@ -598,6 +643,65 @@ impl SessionRecorder {
         } else {
             Some(drained)
         }
+    }
+}
+
+/// B1 花费护栏的预警状态：cap 与已发标志。事件名 `clat/budget`，
+/// 信封 `ignorable: true`（DSH 读取器按规跳过——CLAT 自产词表外的
+/// 唯一事件类型，四道门见 catalog/admission/replay 注记）。
+#[derive(Default)]
+struct RunBudgetEvents {
+    /// F-1（审计）：累计与硬顶都在共享账本（run.rs 检查点同源——
+    /// 预警数字与硬停文案唯一仪表）；这里只留一次性预警的已发标志。
+    ledger: Option<std::sync::Arc<crate::model::RunSpendLedger>>,
+    warned_half: bool,
+    warned_most: bool,
+}
+
+impl RunBudgetEvents {
+    /// 跨阈值检查：返回本步需要新发的预警事件（50% 文案预告重置语义）。
+    fn crossing_events(&mut self, step_spent: u64) -> Vec<NewSessionEvent> {
+        let Some(ledger) = &self.ledger else {
+            return Vec::new();
+        };
+        // 充值走账本（唯一仪表，含插件采样归并的 INV-S6 口径）。
+        ledger.charge(step_spent);
+        let Some(cap) = ledger.cap else {
+            return Vec::new();
+        };
+        let used = ledger.used();
+        let mut events = Vec::new();
+        if !self.warned_half && used >= cap / 2 {
+            self.warned_half = true;
+            events.push(
+                NewSessionEvent::new(
+                    "clat/budget",
+                    serde_json::json!({
+                        "kind": "warn",
+                        "level": 50,
+                        "usedTokens": used,
+                        "capTokens": cap,
+                    }),
+                )
+                .log_only(),
+            );
+        }
+        if !self.warned_most && used >= cap * 9 / 10 {
+            self.warned_most = true;
+            events.push(
+                NewSessionEvent::new(
+                    "clat/budget",
+                    serde_json::json!({
+                        "kind": "warn",
+                        "level": 90,
+                        "usedTokens": used,
+                        "capTokens": cap,
+                    }),
+                )
+                .log_only(),
+            );
+        }
+        events
     }
 }
 
@@ -1463,17 +1567,22 @@ mod tests {
                 arguments: json!({"path": "y"}),
             },
         });
-        let approver = recorder.approver(Arc::new(|request: PermissionRequest| {
-            assert_eq!(request.call_id, "call-9");
-            PermissionDecision::Allow
-        }));
-        let decision = approver.decide(PermissionRequest {
-            tool: "write_file".into(),
-            effect: crate::tool::ToolEffect::Write,
-            reason: "side effects".into(),
-            arguments: json!({"path": "y"}),
-            call_id: "call-9".into(),
-        });
+        let approver = recorder.approver(Arc::new(
+            |request: PermissionRequest, _cancel: &crate::model::CancelToken| {
+                assert_eq!(request.call_id, "call-9");
+                PermissionDecision::Allow
+            },
+        ));
+        let decision = approver.decide(
+            PermissionRequest {
+                tool: "write_file".into(),
+                effect: crate::tool::ToolEffect::Write,
+                reason: "side effects".into(),
+                arguments: json!({"path": "y"}),
+                call_id: "call-9".into(),
+            },
+            &crate::model::CancelToken::new(),
+        );
         assert!(matches!(decision, PermissionDecision::Allow));
         let events = journal.events();
         let types: Vec<&str> = events.iter().map(|(kind, _)| kind.as_str()).collect();
@@ -1498,17 +1607,21 @@ mod tests {
                 arguments: json!({"path": "z"}),
             },
         });
-        let approver =
-            recorder.approver(Arc::new(|_: PermissionRequest| PermissionDecision::Deny {
+        let approver = recorder.approver(Arc::new(
+            |_: PermissionRequest, _cancel: &crate::model::CancelToken| PermissionDecision::Deny {
                 reason: "no".into(),
-            }));
-        let decision = approver.decide(PermissionRequest {
-            tool: "write_file".into(),
-            effect: crate::tool::ToolEffect::Write,
-            reason: "side effects".into(),
-            arguments: json!({}),
-            call_id: "call-d".into(),
-        });
+            },
+        ));
+        let decision = approver.decide(
+            PermissionRequest {
+                tool: "write_file".into(),
+                effect: crate::tool::ToolEffect::Write,
+                reason: "side effects".into(),
+                arguments: json!({}),
+                call_id: "call-d".into(),
+            },
+            &crate::model::CancelToken::new(),
+        );
         assert!(matches!(decision, PermissionDecision::Deny { .. }));
         let events = journal.events();
         let types: Vec<&str> = events.iter().map(|(kind, _)| kind.as_str()).collect();
@@ -1531,18 +1644,23 @@ mod tests {
                 arguments: json!({}),
             },
         });
-        let approver = recorder.approver(Arc::new(|_: PermissionRequest| {
-            PermissionDecision::Unavailable {
-                reason: "non-interactive".into(),
-            }
-        }));
-        let decision = approver.decide(PermissionRequest {
-            tool: "write_file".into(),
-            effect: crate::tool::ToolEffect::Write,
-            reason: "side effects".into(),
-            arguments: json!({}),
-            call_id: "call-u".into(),
-        });
+        let approver = recorder.approver(Arc::new(
+            |_: PermissionRequest, _cancel: &crate::model::CancelToken| {
+                PermissionDecision::Unavailable {
+                    reason: "non-interactive".into(),
+                }
+            },
+        ));
+        let decision = approver.decide(
+            PermissionRequest {
+                tool: "write_file".into(),
+                effect: crate::tool::ToolEffect::Write,
+                reason: "side effects".into(),
+                arguments: json!({}),
+                call_id: "call-u".into(),
+            },
+            &crate::model::CancelToken::new(),
+        );
         assert!(matches!(decision, PermissionDecision::Unavailable { .. }));
         let events = journal.events();
         // 修复前：统一写 rejected（审计 P1-14 的失败序列）。
@@ -1588,5 +1706,219 @@ mod tests {
             .find(|(kind, _)| kind == "tool/result")
             .unwrap();
         assert_eq!(result.1["message"]["content"][0]["isError"], json!(true));
+    }
+
+    /// B1：50%/90% 预警各恰好一次、`clat/budget` 信封 ignorable、跨步
+    /// 累计不重复发。判别：删除 crossing_events 调用即无事件而红。
+    #[test]
+    fn budget_warnings_fire_once_per_threshold_and_are_ignorable() {
+        let (mut recorder, journal, _seen) = recorder();
+        recorder.set_run_ledger(std::sync::Arc::new(crate::model::RunSpendLedger::new(
+            Some(1000),
+        )));
+        let respond_with_usage = |input: u64, output: u64, recorder: &mut SessionRecorder| {
+            recorder.emit(RunEvent::ModelRequested {
+                turn: 1,
+                provider: "p".into(),
+                model: "m".into(),
+            });
+            recorder.emit(RunEvent::ModelStream {
+                turn: 1,
+                event: ModelEvent::Usage(crate::model::Usage {
+                    input_tokens: input,
+                    output_tokens: output,
+                    ..crate::model::Usage::default()
+                }),
+            });
+            recorder.emit(RunEvent::ModelResponded {
+                turn: 1,
+                outcome: crate::event::ModelOutcome {
+                    has_text: true,
+                    tool_calls: 0,
+                },
+                finish_reason: crate::model::FinishReason::Completed,
+                provider_replay: None,
+            });
+        };
+        // 步 1：600/1000 = 60% → 只发 50% 预警。
+        respond_with_usage(500, 100, &mut recorder);
+        // 步 2：再 400 → 100% → 只发 90% 预警。
+        respond_with_usage(350, 50, &mut recorder);
+        // 步 3：继续超额 → 无新事件（各阈值恰好一次）。
+        respond_with_usage(200, 100, &mut recorder);
+        let _ = recorder.finish(TurnEndReason::Completed);
+
+        let budget_events: Vec<_> = journal
+            .events()
+            .iter()
+            .filter(|(event_type, _)| event_type == "clat/budget")
+            .cloned()
+            .collect();
+        assert_eq!(budget_events.len(), 2, "exactly one warn per threshold");
+        assert_eq!(budget_events[0].1["level"], serde_json::json!(50));
+        assert_eq!(budget_events[1].1["level"], serde_json::json!(90));
+        for (_, data) in &budget_events {
+            assert_eq!(data["kind"], serde_json::json!("warn"));
+        }
+        // ignorable 信封由 RecordingJournal 不记录——单独钉住构造形状。
+        let probe = NewSessionEvent::new("clat/budget", serde_json::json!({})).log_only();
+        assert_eq!(probe.ignorable, Some(true));
+        assert_eq!(budget_events[1].1["usedTokens"], serde_json::json!(1000));
+    }
+
+    /// B2（DSH 0.1.1-rc.1 对齐）：流中被取消的轮次把已产出的部分前缀
+    /// 定稿为带 `interrupted: true` 的 assistant/message（未派发 tool
+    /// calls 不出现）；正常完成路径永不携带。pre-fix 红：无该字段。
+    #[test]
+    fn cancelled_stream_prefix_finalizes_with_interrupted_flag() {
+        let (mut recorder, journal, _seen) = recorder();
+        recorder.emit(RunEvent::RunStarted {
+            project: "/proj".into(),
+            prompt: "hi".into(),
+        });
+        recorder.emit(RunEvent::ModelRequested {
+            turn: 1,
+            provider: "p".into(),
+            model: "m".into(),
+        });
+        recorder.emit(RunEvent::ModelStream {
+            turn: 1,
+            event: ModelEvent::TextDelta {
+                delta: "partial answer".into(),
+            },
+        });
+        // 无 ModelResponded：流中被取消。
+        let _ = recorder.finish(TurnEndReason::Aborted {
+            reason: crate::session::event::TurnEndCancelCause::User,
+        });
+        let events = journal.events();
+        let partial = events
+            .iter()
+            .find(|(event_type, _)| event_type == "assistant/message")
+            .expect("the partial prefix finalizes as an assistant/message");
+        assert_eq!(
+            partial.1.get("interrupted"),
+            Some(&serde_json::json!(true)),
+            "the cancelled prefix carries interrupted: true"
+        );
+        assert_eq!(
+            partial.1["message"]["content"][0]["text"],
+            serde_json::json!("partial answer")
+        );
+        let turn_end = events
+            .iter()
+            .find(|(event_type, _)| event_type == "turn/end")
+            .expect("turn/end");
+        assert_eq!(turn_end.1["reason"]["kind"], serde_json::json!("aborted"));
+    }
+
+    /// B2 反向腿：正常完成的 assistant/message 永不携带 interrupted。
+    #[test]
+    fn completed_messages_never_carry_the_interrupted_flag() {
+        let (mut recorder, journal, _seen) = recorder();
+        recorder.emit(RunEvent::ModelRequested {
+            turn: 1,
+            provider: "p".into(),
+            model: "m".into(),
+        });
+        recorder.emit(RunEvent::ModelStream {
+            turn: 1,
+            event: ModelEvent::TextDelta {
+                delta: "done".into(),
+            },
+        });
+        recorder.emit(RunEvent::ModelResponded {
+            turn: 1,
+            outcome: crate::event::ModelOutcome {
+                has_text: true,
+                tool_calls: 0,
+            },
+            finish_reason: crate::model::FinishReason::Completed,
+            provider_replay: None,
+        });
+        let _ = recorder.finish(TurnEndReason::Completed);
+        let events = journal.events();
+        let settled = events
+            .iter()
+            .find(|(event_type, _)| event_type == "assistant/message")
+            .expect("settled message");
+        assert!(
+            settled.1.get("interrupted").is_none(),
+            "completed messages never carry interrupted"
+        );
+    }
+
+    /// F-1（审计）：插件采样（aux cell）与主循环 usage 落进**同一账本**
+    /// ——预警含采样、硬停读同一实例，两仪表不再各说各话。判别：拆开
+    /// 两个账本（回旧实现）即本测试的 used 断言红。
+    #[test]
+    fn sampling_usage_lands_in_the_same_ledger_as_the_hard_stop() {
+        let (mut recorder, _journal, _seen) = recorder();
+        let ledger = std::sync::Arc::new(crate::model::RunSpendLedger::new(Some(1000)));
+        recorder.set_run_ledger(std::sync::Arc::clone(&ledger));
+        // 桥侧采样烧掉 300（aux cell，INV-S6 落账点归并）。
+        let aux = Arc::new(StdMutex::new(crate::model::Usage {
+            input_tokens: 280,
+            output_tokens: 20,
+            ..crate::model::Usage::default()
+        }));
+        recorder.attach_aux_usage(Arc::clone(&aux));
+        // 主循环本步 500 + 100。
+        recorder.emit(RunEvent::ModelRequested {
+            turn: 1,
+            provider: "p".into(),
+            model: "m".into(),
+        });
+        recorder.emit(RunEvent::ModelStream {
+            turn: 1,
+            event: ModelEvent::Usage(crate::model::Usage {
+                input_tokens: 500,
+                output_tokens: 100,
+                ..crate::model::Usage::default()
+            }),
+        });
+        recorder.emit(RunEvent::ModelResponded {
+            turn: 1,
+            outcome: crate::event::ModelOutcome {
+                has_text: true,
+                tool_calls: 0,
+            },
+            finish_reason: crate::model::FinishReason::Completed,
+            provider_replay: None,
+        });
+        assert_eq!(
+            ledger.used(),
+            900,
+            "stream (600) + sampling aux (300) land in the shared ledger"
+        );
+        assert!(!ledger.exceeds_cap());
+        // 再落一步 200 → 1100 ≥ 1000：硬停判据与 90% 预警同一数字。
+        recorder.emit(RunEvent::ModelRequested {
+            turn: 2,
+            provider: "p".into(),
+            model: "m".into(),
+        });
+        recorder.emit(RunEvent::ModelStream {
+            turn: 2,
+            event: ModelEvent::Usage(crate::model::Usage {
+                input_tokens: 200,
+                output_tokens: 0,
+                ..crate::model::Usage::default()
+            }),
+        });
+        recorder.emit(RunEvent::ModelResponded {
+            turn: 2,
+            outcome: crate::event::ModelOutcome {
+                has_text: true,
+                tool_calls: 0,
+            },
+            finish_reason: crate::model::FinishReason::Completed,
+            provider_replay: None,
+        });
+        assert_eq!(ledger.used(), 1100);
+        assert!(
+            ledger.exceeds_cap(),
+            "a sampling-heavy run crosses the same cap the hard stop reads"
+        );
     }
 }

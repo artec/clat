@@ -1287,12 +1287,18 @@ mod tests {
         let (completion, receiver) = std::sync::mpsc::channel();
         let approver: Arc<dyn crate::PermissionApprover> = if deny {
             Arc::new(
-                |_request: crate::PermissionRequest| crate::PermissionDecision::Deny {
-                    reason: "not allowed".into(),
+                |_request: crate::PermissionRequest, _cancel: &crate::model::CancelToken| {
+                    crate::PermissionDecision::Deny {
+                        reason: "not allowed".into(),
+                    }
                 },
             )
         } else {
-            Arc::new(|_request: crate::PermissionRequest| crate::PermissionDecision::Allow)
+            Arc::new(
+                |_request: crate::PermissionRequest, _cancel: &crate::model::CancelToken| {
+                    crate::PermissionDecision::Allow
+                },
+            )
         };
         let handle = application
             .start_run(crate::ApplicationRunRequest {

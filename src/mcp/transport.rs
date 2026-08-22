@@ -29,6 +29,9 @@ use std::time::{Duration, Instant};
 /// 单帧（一行 JSON-RPC）的最大字节数。超限即协议违约。
 pub const MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
 
+/// A4-7（W1-27）：单帧写入截止——子进程停读 stdin 时管道写无限阻
+/// 塞，协调线程按此截止放弃并断开通道（dispatcher 解锁）。
+const WRITE_DEADLINE: Duration = Duration::from_secs(10);
 /// Drop 时等待子进程优雅退出的宽限期，之后强杀。
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
 
@@ -453,12 +456,76 @@ impl StdioSession {
             match std::thread::Builder::new()
                 .name("mcp-writer".into())
                 .spawn(move || {
-                    let mut stdin = stdin;
+                    let mut stdin_slot = Some(stdin);
+                    // A4-7（W1-27）：写路径有两级——本协调线程把帧交给
+                    // 一个懒起的阻塞执行线程，等待结果有截止（10s）。
+                    // 子进程停读 stdin 时 write_all 会无限阻塞管道写；
+                    // 截止后协调线程退出 → 通道断开 → dispatcher 的
+                    // `send` 即时出错恢复（至多遗弃一个执行线程，进程
+                    // 退出回收）。
+                    let mut executor: Option<(
+                        mpsc::SyncSender<String>,
+                        mpsc::Receiver<std::io::Result<()>>,
+                    )> = None;
                     while let Ok(request) = writer_rx.recv() {
-                        let outcome = stdin
-                            .write_all(request.frame.as_bytes())
-                            .and_then(|_| stdin.flush())
-                            .map_err(|error| format!("write to MCP server: {error}"));
+                        if executor.is_none() {
+                            let (frame_tx, frame_rx) = mpsc::sync_channel::<String>(1);
+                            let (done_tx, done_rx) = mpsc::channel::<std::io::Result<()>>();
+                            let executor_stdin = stdin_slot.take();
+                            let spawned = std::thread::Builder::new()
+                                .name("mcp-writer-exec".into())
+                                .spawn(move || {
+                                    let mut stdin = match executor_stdin {
+                                        Some(stdin) => stdin,
+                                        None => return,
+                                    };
+                                    while let Ok(frame) = frame_rx.recv() {
+                                        let outcome = stdin
+                                            .write_all(frame.as_bytes())
+                                            .and_then(|_| stdin.flush());
+                                        if done_tx.send(outcome).is_err() {
+                                            return;
+                                        }
+                                    }
+                                });
+                            match spawned {
+                                Ok(handle) => {
+                                    // 执行线程自管理；协调线程不 join 它
+                                    //（截止即遗弃，进程退出回收）。
+                                    std::mem::forget(handle);
+                                    executor = Some((frame_tx, done_rx));
+                                }
+                                Err(error) => {
+                                    let _ = request
+                                        .result
+                                        .send(Err(format!("spawn MCP writer executor: {error}")));
+                                    break;
+                                }
+                            }
+                        }
+                        let Some((frame_tx, done_rx)) = &executor else {
+                            unreachable!("executor is set above");
+                        };
+                        if frame_tx.send(request.frame.clone()).is_err() {
+                            let _ = request
+                                .result
+                                .send(Err("MCP writer executor stopped".into()));
+                            break;
+                        }
+                        let outcome = match done_rx.recv_timeout(WRITE_DEADLINE) {
+                            Ok(outcome) => {
+                                outcome.map_err(|error| format!("write to MCP server: {error}"))
+                            }
+                            Err(_) => {
+                                // 截止：执行线程判定卡死，遗弃并退出协调
+                                // 循环——调用方拿到明确错误而非悬挂。
+                                let _ = request.result.send(Err(format!(
+                                    "write to MCP server exceeded {WRITE_DEADLINE:?} \
+                                     (server stopped reading stdin?)"
+                                )));
+                                break;
+                            }
+                        };
                         let failed = outcome.is_err();
                         let _ = request.result.send(outcome);
                         if failed {

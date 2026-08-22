@@ -44,6 +44,9 @@ export interface ElicitationParams {
 export interface HostChannel {
   /** Send sampling/createMessage; resolves with the JSON-RPC result object. */
   sampling(params: SamplingParams): Promise<unknown>
+  /** W1-18（A3）：取当前 tools/call 的取消信号（宿主 cancelled/shutdown
+   * 触发 abort）。可选——旧宿主不提供时退化为 v0 的永不取消。 */
+  beginCall?(callId: string): AbortSignal
   /** Send elicitation/create; resolves with the JSON-RPC result object. */
   elicitation(params: ElicitationParams): Promise<unknown>
   /** Host capabilities seen at initialize. */
@@ -76,6 +79,9 @@ interface FieldPlan {
  */
 export class Shim {
   readonly #host: HostChannel
+  /** W1-18（A3）：当前在途 tools/call 的取消信号（#processChain 串行，
+   * 单槽安全）；execute/sampling/elicitation 的等待都随它 race。 */
+  #activeSignal: AbortSignal | undefined
   readonly #pluginName: string
   readonly #tools = new Map<string, ToolDefinitionLike>()
   readonly #web: WebSeam
@@ -208,11 +214,14 @@ export class Shim {
     if (tool === undefined) {
       throw new AdapterError('UNKNOWN_TOOL', `unknown tool: ${name}`)
     }
+    // W1-18（A3）：信号接宿主取消源（cancelled 通知 / shutdown）。
+    const signal = this.#host.beginCall?.(callId) ?? new AbortController().signal
+    this.#activeSignal = signal
     const exec: ToolRunContextLike = {
       callId,
       name: tool.name,
       arguments: args,
-      signal: new AbortController().signal,
+      signal,
       deferContext: () => {
         this.#host.log(`warn: ${name} called exec.deferContext(); the MCP bridge has no agent-loop context ferry — ignored`)
       },
@@ -220,7 +229,12 @@ export class Shim {
         this.#host.log(`warn: ${name} called exec.concludeTurn(); the MCP bridge has no agent loop — ignored`)
       },
     }
-    const value = await tool.execute(args, exec)
+    let value: unknown
+    try {
+      value = await raceAbort(Promise.resolve(tool.execute(args, exec)), signal, 'tool execute')
+    } finally {
+      this.#activeSignal = undefined
+    }
     const content = tool.output.render(args, value)
     if (!Array.isArray(content)) {
       throw new AdapterError('BAD_RENDER', `tool "${name}" output.render() returned a non-array`)
@@ -262,7 +276,11 @@ export class Shim {
         )
       }
       const params = this.#samplingParams(options)
-      const result = await this.#host.sampling(params)
+      const result = await raceAbort(
+        this.#host.sampling(params),
+        this.#activeSignal,
+        'sampling',
+      )
       return this.#parseSamplingResult(result)
     }
     return this.#chunkStream(run)
@@ -606,4 +624,44 @@ function normalizeCleanup(value: unknown): Array<() => unknown> {
     return value.filter(entry => typeof entry === 'function') as Array<() => unknown>
   }
   return []
+}
+
+/** W1-18（A3）：把一个宿主等待挂到取消信号上——signal abort 即以
+ * ABORTED 错误 settle（宿主不回包/超时后 promise 不再悬挂）。 */
+function raceAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined, what: string): Promise<T> {
+  if (signal === undefined) return promise
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new AdapterError('ABORTED', `${what} was aborted (host cancellation)`))
+    // 先挂内部 promise 的消化器再判早退：early-abort 立即拒绝外层的
+    // 同时，内部 promise 迟到的 settle/rejection 必须被消费——否则
+    // unhandledRejection 杀进程（F-3 测试实测暴露）。
+    let settled = false
+    promise.then(
+      value => {
+        if (!settled) {
+          settled = true
+          signal.removeEventListener('abort', onAbort)
+          resolve(value)
+        }
+      },
+      error => {
+        if (!settled) {
+          settled = true
+          signal.removeEventListener('abort', onAbort)
+          reject(error instanceof Error ? error : new Error(String(error)))
+        }
+      },
+    )
+    if (signal.aborted) {
+      settled = true
+      onAbort()
+      return
+    }
+    signal.addEventListener('abort', () => {
+      if (!settled) {
+        settled = true
+        onAbort()
+      }
+    }, { once: true })
+  })
 }

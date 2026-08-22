@@ -333,9 +333,22 @@ impl ReplayAdapter {
             }
             // Explicit skip list — see the module doc for the rationale of
             // each entry. Unknown ignorable events fall through the same way.
-            "assistant/chunk" | "step/start" | "step/end" | "request/header"
-            | "request/context" | "llm/retry-started" | "compaction/start" | "compaction/end"
-            | "session/title" | "todo/write" | "session/end-seed" => {}
+            "assistant/chunk"
+            | "step/start"
+            | "step/end"
+            | "request/header"
+            | "request/context"
+            | "llm/retry-started"
+            | "compaction/start"
+            | "compaction/end"
+            | "session/title"
+            | "todo/write"
+            | "session/end-seed"
+            | "team/member"
+            | "team/task"
+            | "team/message/queued"
+            | "team/message/delivered"
+            | "clat/budget" => {}
             _ => {}
         }
     }

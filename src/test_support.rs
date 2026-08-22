@@ -492,7 +492,11 @@ impl EventSink for SharedEvents {
 pub(crate) struct CountingApprover(pub(crate) Arc<std::sync::atomic::AtomicUsize>);
 
 impl PermissionApprover for CountingApprover {
-    fn decide(&self, _request: PermissionRequest) -> PermissionDecision {
+    fn decide(
+        &self,
+        _request: PermissionRequest,
+        _cancel: &crate::model::CancelToken,
+    ) -> PermissionDecision {
         self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         PermissionDecision::Allow
     }

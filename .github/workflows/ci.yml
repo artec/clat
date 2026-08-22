@@ -29,3 +29,9 @@ jobs:
 
       - name: Test
         run: cargo test
+
+      # 门控测试（python3 假 server / wasm fixture）：默认 `cargo test`
+      # 看不见 #[ignore] 面——A2 的两个判别测试只在ignored腿设防
+      # （2026-08-22 审计提醒）。ubuntu runner 自带 python3。
+      - name: Gated tests
+        run: cargo test --lib -- --ignored

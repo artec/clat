@@ -451,3 +451,180 @@ test('non-serializable tool results fail as tool errors without muting the serve
     await adapter.dispose()
   }
 })
+
+// W1-18（A3）：取消传播——notifications/cancelled 必须触发在途 tools/call
+// 的 exec.signal，插件 execute 以 ABORTED 错误收束（而非挂到 EOF）。
+test('notifications/cancelled aborts the in-flight tool signal and settles the call', async () => {
+  const gate = { resolve: (_: unknown) => {} } as { resolve: (v: unknown) => void }
+  const gatePromise = new Promise(resolve => { gate.resolve = resolve })
+  let observedSignal: AbortSignal | undefined
+  const cancelPlugin: DshPluginLike = {
+    name: 'cancel-me',
+    apply(ctx: DshContext) {
+      ctx.tools.register({
+        name: 'hang',
+        description: 'Hangs until the signal aborts.',
+        parameters: { type: 'object', properties: {} },
+        output: { render: () => [{ type: 'text', text: 'unreachable' }] },
+        execute: async (_args: unknown, exec: { signal: AbortSignal }) => {
+          observedSignal = exec.signal
+          await gatePromise
+          if (exec.signal.aborted) throw new Error('ABORTED: cancelled by host')
+          return { ok: true }
+        },
+      })
+    },
+  }
+  const client = new Client()
+  const adapter = await start(client, cancelPlugin)
+  try {
+    await client.initialize()
+    client.send({ jsonrpc: '2.0', id: 4242, method: 'tools/call', params: { name: 'hang', arguments: {} } })
+    const call = client.awaitResponse(4242)
+    await new Promise(resolve => setImmediate(resolve))
+    assert.ok(observedSignal, 'the tool observed its exec signal')
+    client.send({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: 4242 } })
+    await new Promise(resolve => setTimeout(resolve, 50))
+    assert.equal(observedSignal.aborted, true, 'the host cancel must abort the signal')
+    gate.resolve(undefined)
+    const frame = await call
+    const result = frame.result as { isError?: boolean } | undefined
+    assert.equal(result?.isError, true, 'the cancelled call settles as a tool error')
+    assert.match(textOf(frame.result), /ABORTED|abort/i)
+  } finally {
+    await adapter.dispose()
+  }
+})
+
+// W1-18（A3）：sampling 挂起期间 run 被取消——宿主不回包也要 settle：
+// promise 随 signal 以错误收束，工具调用不悬挂。
+test('a cancelled run settles a pending sampling promise with an error', async () => {
+  const client = new Client()
+  let releaseTool: ((v: unknown) => void) | undefined
+  const toolPromise = new Promise(resolve => { releaseTool = resolve })
+  const cancelPlugin: DshPluginLike = {
+    name: 'cancel-sample',
+    apply(ctx: DshContext) {
+      ctx.tools.register({
+        name: 'sample_then_hang',
+        description: 'Samples, then hangs until released.',
+        parameters: { type: 'object', properties: {} },
+        output: { render: () => [{ type: 'text', text: 'x' }] },
+        execute: async (_args: unknown, exec: { signal: AbortSignal; }) => {
+          try {
+            const stream = await ctx.llm.stream({ messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }] })
+            for await (const _chunk of stream) {
+              // drain
+            }
+            return { sampled: true }
+          } catch (error) {
+            if (exec.signal.aborted) throw new Error(`ABORTED: ${(error as Error).message}`)
+            throw error as Error
+          } finally {
+            releaseTool?.(undefined)
+          }
+        },
+      })
+    },
+  }
+  const adapter = await start(client, cancelPlugin)
+  try {
+    await client.initialize()
+    client.send({ jsonrpc: '2.0', id: 4243, method: 'tools/call', params: { name: 'sample_then_hang', arguments: {} } })
+    const call = client.awaitResponse(4243)
+    await client.serverRequest() // sampling 请求已发出——不回包
+    client.send({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: 4243 } })
+    const frame = await Promise.race([
+      call,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timed out: the call hung')), 1500)),
+    ])
+    const result = frame.result as { isError?: boolean } | undefined
+    assert.equal(result?.isError, true, 'the sampling hang must settle as an error after cancel')
+  } finally {
+    await adapter.dispose()
+  }
+})
+
+// W1-26（A4-6）：宿主以字符串回显请求 id（"101" 而非 101）时 promise
+// 仍须 settle——不得静默悬挂。
+test('string-echoed response ids still settle pending requests', async () => {
+  const client = new Client()
+  const adapter = await start(client, {
+    name: 'string-id',
+    apply(ctx: DshContext) {
+      ctx.tools.register({
+        name: 'sampler',
+        description: 'Triggers one sampling request.',
+        parameters: { type: 'object', properties: {} },
+        output: { render: (_args: unknown, value: unknown) => [{ type: 'text', text: JSON.stringify(value) }] },
+        execute: async () => {
+          const stream = await ctx.llm.stream({ messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }] })
+          const chunks: string[] = []
+          for await (const chunk of stream) {
+            if (chunk.type === 'text-delta') chunks.push(chunk.text)
+          }
+          return { text: chunks.join('') }
+        },
+      })
+    },
+  })
+  try {
+    await client.initialize()
+    const call = client.call('tools/call', { name: 'sampler', arguments: {} })
+    const request = await client.serverRequest()
+    // 宿主以字符串回显 id（JSON-RPC 允许）。
+    client.send({ jsonrpc: '2.0', id: String(request.id), result: { role: 'assistant', content: [{ type: 'text', text: 'pong' }], model: 'm', stopReason: 'endTurn' } })
+    const outcome = await Promise.race([
+      call,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timed out: string id did not settle')), 1500)),
+    ])
+    assert.equal(outcome.error, undefined, `unexpected error: ${JSON.stringify(outcome.error)}`)
+    assert.match(textOf(outcome.result), /pong/)
+  } finally {
+    await adapter.dispose()
+  }
+})
+
+// F-3（审计）：取消先于调用登记到达（目标调用仍在串行链排队）——
+// 登记时对账消化，取消不丢失：该调用立即被 abort。
+test('a cancel arriving before registration is reconciled when the call starts', async () => {
+  let observedSignal: AbortSignal | undefined
+  const started = { resolve: (_: unknown) => {} } as { resolve: (v: unknown) => void }
+  const startedPromise = new Promise(resolve => { started.resolve = resolve })
+  const cancelPlugin: DshPluginLike = {
+    name: 'late-cancel',
+    apply(ctx: DshContext) {
+      ctx.tools.register({
+        name: 'hang2',
+        description: 'Observes the signal.',
+        parameters: { type: 'object', properties: {} },
+        output: { render: () => [{ type: 'text', text: 'unreachable' }] },
+        execute: async (_args: unknown, exec: { signal: AbortSignal }) => {
+          observedSignal = exec.signal
+          started.resolve(undefined)
+          await new Promise(resolve => setTimeout(resolve, 50))
+          if (exec.signal.aborted) throw new Error('ABORTED: reconciled late cancel')
+          return { ok: true }
+        },
+      })
+    },
+  }
+  const client = new Client()
+  const adapter = await start(client, cancelPlugin)
+  try {
+    await client.initialize()
+    // 取消先到：此刻 5001 的 tools/call 还没发出/登记。
+    client.send({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: 5001 } })
+    // 然后目标调用才到达串行链头并登记——对账即 abort。
+    client.send({ jsonrpc: '2.0', id: 5001, method: 'tools/call', params: { name: 'hang2', arguments: {} } })
+    const frame = await client.awaitResponse(5001)
+    assert.ok(observedSignal, 'the tool observed its signal')
+    assert.equal(observedSignal.aborted, true, 'the deferred cancel aborts at registration')
+    const result = frame.result as { isError?: boolean } | undefined
+    assert.equal(result?.isError, true, 'the call settles as an error')
+    assert.match(textOf(frame.result), /ABORTED|abort/i)
+    await startedPromise
+  } finally {
+    await adapter.dispose()
+  }
+})

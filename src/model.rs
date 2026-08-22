@@ -220,6 +220,52 @@ pub struct ModelConfig {
     /// 回填后存活。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking_level: Option<ThinkingLevel>,
+    /// per-run token 花费护栏（B1，2026-08-22 定案）：口径
+    /// `input_tokens + output_tokens`（缓存命中计入 input、不重复计）。
+    /// `None` = 缺省 [`RUN_TOKEN_BUDGET_DEFAULT`]；`Some(0)` = 显式关闭
+    /// （文档标注不建议）；`Some(n)` = 上限 n。独立一等字段（同
+    /// `thinking_level` 的存活理由）；过顶 → run 以三要素错误终止，
+    /// 50%/90% 各一次持久化预警（`clat/budget`，ignorable 事件）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_token_budget: Option<u64>,
+}
+
+/// 花费护栏缺省硬顶（定案：10M——误报在 ~p99.9 之外，漏报封顶贵模型
+/// 几十美元量级；dogfood 校准见 docs/todo/open-worklist.md B1）。
+pub const RUN_TOKEN_BUDGET_DEFAULT: u64 = 10_000_000;
+
+/// B1 花费护栏的共享账本（审计 F-1 修复）：**唯一仪表**。recorder 在
+/// assistant/message 落账点按 INV-S6 口径（主循环 usage + 插件采样
+/// 归并）充值；run.rs 的每请求检查点与 50%/90% 预警都读它——预警
+/// 数字与硬停终止文案**同源**，重采样 run 不再出现两仪表矛盾。
+pub struct RunSpendLedger {
+    used: std::sync::atomic::AtomicU64,
+    /// 护栏硬顶；None = 关闭（预警也不发）。
+    pub cap: Option<u64>,
+}
+
+impl RunSpendLedger {
+    pub fn new(cap: Option<u64>) -> Self {
+        Self {
+            used: std::sync::atomic::AtomicU64::new(0),
+            cap,
+        }
+    }
+
+    /// 落账充值（input+output 口径，由 recorder 单点调用）。
+    pub fn charge(&self, tokens: u64) {
+        self.used
+            .fetch_add(tokens, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn used(&self) -> u64 {
+        self.used.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// 硬停判据：已启用且累计越过硬顶。
+    pub fn exceeds_cap(&self) -> bool {
+        self.cap.is_some_and(|cap| self.used() >= cap)
+    }
 }
 
 impl Default for ModelConfig {
@@ -238,12 +284,22 @@ impl Default for ModelConfig {
             temperature: None,
             parallel_tool_calls: true,
             max_context_tokens: None,
+            run_token_budget: None,
             thinking_level: None,
         }
     }
 }
 
 impl ModelConfig {
+    /// 生效的 per-run 花费护栏：`Some(0)` 显式关闭 → None。
+    pub fn effective_run_token_budget(&self) -> Option<u64> {
+        match self.run_token_budget {
+            Some(0) => None,
+            Some(cap) => Some(cap),
+            None => Some(RUN_TOKEN_BUDGET_DEFAULT),
+        }
+    }
+
     pub fn is_configured(&self) -> bool {
         !self.model.trim().is_empty() && !self.endpoint.trim().is_empty()
     }

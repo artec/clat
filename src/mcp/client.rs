@@ -38,6 +38,9 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 /// modern 探测必须短且可回退；legacy 服务可能不认识 discover。
 const DISCOVER_TIMEOUT: Duration = Duration::from_secs(3);
 /// tools/list 单页超时。
+/// W1-16（A2）：单个 server 的 tools/list **总时长帽**——此前逐页
+/// 30s×32 页最坏 16 分钟；帽内剩余时间作为每页超时，耗尽即协议违约。
+const LIST_TOTAL_BUDGET: Duration = Duration::from_secs(30);
 const LIST_TIMEOUT: Duration = Duration::from_secs(30);
 /// tools/call 超时。工具可能合法地运行较久（构建、批处理），
 /// 给足余量但必须有界。
@@ -320,7 +323,12 @@ fn format_stderr_tail(tail: &[String]) -> String {
     if tail.is_empty() {
         return String::new();
     }
-    let recent: Vec<&str> = tail.iter().rev().take(4).map(String::as_str).collect();
+    let recent: Vec<String> = tail
+        .iter()
+        .rev()
+        .take(4)
+        .map(|line| crate::redact::redact_secrets(line))
+        .collect();
     format!("; server stderr: {}", recent.join(" | "))
 }
 
@@ -608,17 +616,44 @@ impl McpServer {
     }
 
     /// 列出远端工具（含 cursor 分页），映射为 CLAT 工具定义。
-    /// 页数、工具数、cursor 循环均有界。
+    /// 页数、工具数、cursor 循环、**总时长**均有界。
     pub fn list_tools(&self) -> Result<Vec<McpToolInfo>, McpError> {
+        self.list_tools_with_budget(LIST_TOTAL_BUDGET)
+    }
+
+    /// [`Self::list_tools`] 的可注入预算变体（测试用小帽验证）。
+    fn list_tools_with_budget(&self, total_budget: Duration) -> Result<Vec<McpToolInfo>, McpError> {
+        let started = std::time::Instant::now();
         let mut tools = Vec::new();
         let mut seen_cursors: HashSet<String> = HashSet::new();
         let mut cursor: Option<String> = None;
         for _ in 0..MAX_LIST_PAGES {
+            // W1-16（A2）：总帽先于页超时——剩余时间即本页上限。
+            let remaining = total_budget.saturating_sub(started.elapsed());
+            if remaining.is_zero() {
+                return Err(McpError::new(format!(
+                    "server `{}` exceeded the {total_budget:?} tools/list budget \
+                     (slow or endless pagination)",
+                    self.name
+                )));
+            }
             let params = match &cursor {
                 Some(cursor) => json!({"cursor": cursor}),
                 None => json!({}),
             };
-            let result = self.call("tools/list", params, LIST_TIMEOUT, None)?;
+            let page_timeout = remaining.min(LIST_TIMEOUT);
+            // 页超时被总帽截断时，超时即总帽耗尽——归并为预算错误
+            // （文案可分辨，测试据此判别）。
+            let result = match self.call("tools/list", params, page_timeout, None) {
+                Err(error) if page_timeout < LIST_TIMEOUT => {
+                    return Err(McpError::new(format!(
+                        "server `{}` exceeded the {total_budget:?} tools/list budget \
+                         (slow or endless pagination): {error}",
+                        self.name
+                    )));
+                }
+                other => other?,
+            };
             if let Some(list) = result.get("tools").and_then(Value::as_array) {
                 for tool in list {
                     let name = tool
@@ -1054,6 +1089,32 @@ pub fn load_mcp_config(root: &Path) -> Result<McpConfig, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// B6（INV-K1）：stderr 尾部进入失败消息（→ /mcp 面板、exec
+    /// stdout、状态闪现）前按密钥形状脱敏；无密行零变化。
+    #[test]
+    fn stderr_tail_is_redacted_before_reaching_surfaces() {
+        let tail = vec![
+            "Z_AI_API_KEY=live-abcdef0123456789".to_owned(),
+            "server ready on port 9100".to_owned(),
+        ];
+        let formatted = format_stderr_tail_public(&tail);
+        assert!(
+            formatted.contains("Z_AI_API_KEY=[REDACTED]"),
+            "key must be redacted: {formatted}"
+        );
+        assert!(
+            !formatted.contains("live-abcdef0123456789"),
+            "the secret value must not survive: {formatted}"
+        );
+        assert!(
+            formatted.contains("server ready on port 9100"),
+            "benign lines pass through unchanged: {formatted}"
+        );
+        let bearer =
+            format_stderr_tail_public(&["Authorization: Bearer sk-abc123def456".to_owned()]);
+        assert_eq!(bearer, "; server stderr: Authorization: Bearer [REDACTED]");
+    }
 
     #[test]
     fn parses_mcp_config_documents() {
@@ -1612,10 +1673,32 @@ for line in sys.stdin:
                 };
                 let mut buffer = [0_u8; 8192];
                 let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-                let Ok(read) = stream.read(&mut buffer) else {
-                    break;
-                };
-                let text = String::from_utf8_lossy(&buffer[..read]).into_owned();
+                // B4（抖动定位）：单次 read 会与 TCP 分片竞态——headers
+                // 先到、body 未齐时 `notifications/initialized` 误走回显
+                // 路径，通知瞬间"成功"，connect 假绿。按 Content-Length
+                // 读完整再判定。
+                let mut text = String::new();
+                while let Ok(read) = stream.read(&mut buffer) {
+                    if read == 0 {
+                        break;
+                    }
+                    text.push_str(&String::from_utf8_lossy(&buffer[..read]));
+                    let Some(headers_end) = text.find("\r\n\r\n") else {
+                        continue;
+                    };
+                    let content_length = text[..headers_end]
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.trim()
+                                .eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())?
+                        })
+                        .unwrap_or(0);
+                    if text.len() >= headers_end + 4 + content_length {
+                        break;
+                    }
+                }
                 if text.contains("\"notifications/initialized\"") {
                     // 挂起：收下请求，永不响应。
                     std::thread::sleep(Duration::from_secs(60));
@@ -1755,6 +1838,55 @@ for line in sys.stdin:
         assert_eq!(
             config["glm-reader"].url.as_deref(),
             Some("https://open.bigmodel.cn/api/mcp/web_reader/mcp")
+        );
+    }
+
+    /// W1-16/A2：tools/list **总时长帽**——快页但无限分页（每页唯一
+    /// cursor）在小帽下必须以 budget 错误终止，而不是页页叠加。
+    /// pre-fix 红：无总帽时走满 32 页报 "exceeds 32 pagination pages"
+    /// （不同文案）。
+    #[test]
+    #[ignore = "spawns a python3 subprocess; run explicitly with --ignored"]
+    fn endless_pagination_hits_the_total_list_budget() {
+        let script = r#"
+import json, sys
+counter = 0
+def send(obj):
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
+for line in sys.stdin:
+    msg = json.loads(line)
+    if "id" not in msg:
+        continue
+    method = msg.get("method", "")
+    if method == "initialize":
+        send({"jsonrpc": "2.0", "id": msg["id"], "result": {
+            "protocolVersion": "2025-06-18",
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": "pager", "version": "1.0"}}})
+    elif method == "tools/list":
+        import time
+        time.sleep(0.03)
+        counter += 1
+        send({"jsonrpc": "2.0", "id": msg["id"], "result": {
+            "tools": [{"name": "t" + str(counter), "inputSchema": {"type": "object"}}],
+            "nextCursor": "page-" + str(counter)}})
+    else:
+        send({"jsonrpc": "2.0", "id": msg["id"], "result": {}})
+"#;
+        let config = McpServerConfig {
+            command: "python3".into(),
+            args: vec!["-u".into(), "-c".into(), script.into()],
+            ..Default::default()
+        };
+        let server = McpServer::connect("pager", &config, std::path::Path::new("/tmp"), None)
+            .expect("handshake");
+        let error = server
+            .list_tools_with_budget(std::time::Duration::from_millis(300))
+            .expect_err("the total budget must end endless pagination");
+        assert!(
+            error.to_string().contains("budget"),
+            "the failure must name the total budget: {error}"
         );
     }
 }

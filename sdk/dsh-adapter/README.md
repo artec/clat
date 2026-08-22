@@ -116,7 +116,8 @@ Two-tier policy (matching DSH host semantics):
 - `apply()` must settle within the host handshake timeout (10 s in CLAT)
 - `multiSelect` questions degrade to comma-separated text
 - `ctx.llm.stream({ tools })` is rejected (MCP sampling has no tool-calling); message content is text-only (image blocks error as `NON_TEXT_CONTENT`)
-- cancellation is not forwarded to `exec.signal`; the host bounds calls by deadline
+- `ctx.llm.stream({ stop })` (`stopSequences`) is parsed but ignored by the host sampling bridge (one stderr notice per run)
+- host cancellation (`notifications/cancelled` / shutdown) trips `exec.signal` and aborts in-flight sampling/elicitation promises
 - one ask form: ≤ 16 questions, ≤ 16 options per question
 
 Full porting guide — compatibility matrix (algorithm / external-adapter /

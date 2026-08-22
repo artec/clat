@@ -90,6 +90,10 @@ impl fmt::Display for ToolError {
 
 impl std::error::Error for ToolError {}
 
+/// 工具 description 字符上限（A4-2/N-6）：模型可见面统一消毒——
+/// 超长截断由各注册端执行并记诊断（wasm 与 MCP 同闸）。
+pub(crate) const MAX_TOOL_DESCRIPTION_CHARS: usize = 4096;
+
 pub trait Tool: Send + Sync {
     fn definition(&self) -> ToolDefinition;
 

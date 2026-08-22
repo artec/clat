@@ -19,6 +19,7 @@ mod title;
 mod todo;
 mod tools;
 mod wasm;
+mod wasm_grants;
 
 #[cfg(test)]
 mod tests;

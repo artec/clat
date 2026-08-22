@@ -260,3 +260,13 @@ readOnly-annotated tools (`ExternalRead` / `Network`) run without
 prompting (DSH: MCP is ungated), while destructive-annotated tools —
 including servers that omit annotations, which default to destructive —
 still ask.
+
+## WASM write grants
+
+Permission modes express how much you trust the *agent*; WASM
+components are third-party code, so their filesystem write access has a
+separate, explicit approval bound to the component hash and the exact
+directory set — a mode like Full Access no longer hands write access to
+globally installed components silently. Rejections downgrade that run
+to read-only; headless runs fail closed without a recorded grant. See
+`docs/wasm.md` › *Filesystem write grants*.

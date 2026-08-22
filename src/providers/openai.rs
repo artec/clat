@@ -592,8 +592,11 @@ fn is_reserved_request_key(key: &str) -> bool {
     )
 }
 
+/// 从错误响应体提取人话消息；B6（INV-K1）：出函数即已脱敏（同
+/// openai_compatible 的同名函数——提取结果与裸 body 回退都过
+/// [`crate::redact::redact_secrets`]）。
 fn extract_error_message(body: &str) -> String {
-    serde_json::from_str::<Value>(body)
+    let message = serde_json::from_str::<Value>(body)
         .ok()
         .and_then(|value| {
             value
@@ -601,7 +604,8 @@ fn extract_error_message(body: &str) -> String {
                 .and_then(Value::as_str)
                 .map(str::to_owned)
         })
-        .unwrap_or_else(|| body.to_owned())
+        .unwrap_or_else(|| body.to_owned());
+    crate::redact::redact_secrets(&message)
 }
 
 #[cfg(test)]
@@ -610,6 +614,25 @@ mod tests {
     use crate::model::{ModelOptions, ModelRequest};
     use crate::tool::{ToolDefinition, ToolEffect};
     use serde_json::json;
+
+    /// B6（INV-K1）：错误体提取结果进入任何显示/持久化面前脱敏——
+    /// provider 回显密钥的 401 形态与裸 body 回退都不得带出密钥。
+    ///（pre-fix 红：旧实现原样返回 message / body。）
+    #[test]
+    fn error_messages_are_redacted_before_leaving_the_provider() {
+        let extracted = extract_error_message(
+            r#"{"error":{"message":"Incorrect API key provided: sk-proj-0123456789abc."}}"#,
+        );
+        assert!(
+            !extracted.contains("sk-proj-0123456789abc"),
+            "echoed key must be redacted: {extracted}"
+        );
+        assert!(extracted.contains("[REDACTED]"));
+        let fallback = extract_error_message("Authorization failed for token=live-fedcba987654321");
+        assert_eq!(fallback, "Authorization failed for token=[REDACTED]");
+        let benign = extract_error_message(r#"{"error":{"message":"rate limited, retry later"}}"#);
+        assert_eq!(benign, "rate limited, retry later");
+    }
     use std::io::{BufRead, BufReader, Cursor, Read, Write};
     use std::net::TcpListener;
     use std::sync::mpsc;

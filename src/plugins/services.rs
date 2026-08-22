@@ -462,7 +462,13 @@ impl ProviderLease {
 }
 
 pub(crate) trait PermissionPolicyFactory: Send + Sync {
-    fn create(&self, approver: Arc<dyn PermissionApprover>) -> Box<dyn PermissionPolicy>;
+    /// W1-17/A1：`cancel` 是本次 run 的取消令牌——审批等待必须能被它
+    /// 解开（经 InteractivePermissionPolicy 传给 approver）。
+    fn create(
+        &self,
+        approver: Arc<dyn PermissionApprover>,
+        cancel: &CancelToken,
+    ) -> Box<dyn PermissionPolicy>;
 }
 
 pub(crate) struct PromptRegistry {
@@ -559,6 +565,8 @@ impl PromptLease {
 
 pub(crate) struct AgentRequest {
     pub config: ModelConfig,
+    /// B1/F-1：花费护栏共享账本（None = 无护栏——demo/测试）。
+    pub spend_ledger: Option<Arc<crate::model::RunSpendLedger>>,
     pub credentials: ProviderCredentials,
     pub history_items: Vec<ModelItem>,
     pub prompt: String,
@@ -594,9 +602,15 @@ pub(crate) struct RunScopeResources {
 /// 动态部分锁内可变；`start_run` 经 `wait_until_settled` 有界等待后
 /// 再冻结工具注册表——run 见到的永远是完整工具集（INV-M2/M3）。
 /// worker 的取消位归插件侧的 startup state，不在此重复。
+/// A4-1：settle 失败通知出口（Application 层装广播闭包）。
+type NoticeSink = std::sync::Arc<dyn Fn(usize) + Send + Sync>;
+
 pub(crate) struct McpStatus {
     inner: std::sync::Mutex<McpStatusInner>,
     settled: std::sync::Condvar,
+    /// A4-1（W1-21）：settle 时失败非空的**一次性**响亮通知出口
+    ///（Application 层装入广播闭包；测试/无宿主为 None——静默降级）。
+    notice_sink: std::sync::Mutex<Option<NoticeSink>>,
 }
 
 struct McpStatusInner {
@@ -608,9 +622,12 @@ struct McpStatusInner {
     failures: Vec<String>,
     servers: Vec<McpServerStatus>,
     settled: bool,
+    /// A4-1：响亮通知只发一次。
+    noticed: bool,
 }
 
 /// `/mcp` 与 DTO 的只读快照（connecting 是推导值）。
+#[derive(Debug)]
 pub(crate) struct McpStatusSnapshot {
     pub configured: usize,
     pub connected: usize,
@@ -631,8 +648,10 @@ impl McpStatus {
                 // 无配置即落定：不依赖 worker 的兜底 mark_settled，
                 // `start_run` 的等待对空 MCP 是零成本且零窗口。
                 settled: configured == 0,
+                noticed: false,
             }),
             settled: std::sync::Condvar::new(),
+            notice_sink: std::sync::Mutex::new(None),
         }
     }
 
@@ -715,7 +734,30 @@ impl McpStatus {
             && inner.connected + inner.failed_servers >= inner.configured
         {
             inner.settled = true;
+            // A4-1（W1-21）：撞名/注册失败从「/mcp 里静默躺着」升级为
+            // 一次响亮通知——用户可感知，模型侧不再静默缺能力。
+            if !inner.noticed && !inner.failures.is_empty() {
+                inner.noticed = true;
+                let count = inner.failures.len();
+                drop(inner);
+                if let Ok(sink) = self.notice_sink.lock()
+                    && let Some(sink) = sink.as_ref()
+                {
+                    sink(count);
+                }
+                // N-1（审计）：通知路径同样唤醒等待者——不依赖 worker
+                // 收尾的 mark_settled 兜底。
+                self.settled.notify_all();
+                return;
+            }
             self.settled.notify_all();
+        }
+    }
+
+    /// A4-1：装入响亮通知出口（Application 层接 ApplicationEvent 广播）。
+    pub(crate) fn set_notice_sink(&self, sink: std::sync::Arc<dyn Fn(usize) + Send + Sync>) {
+        if let Ok(mut slot) = self.notice_sink.lock() {
+            *slot = Some(sink);
         }
     }
 
@@ -856,5 +898,33 @@ mod tests {
         let status = McpStatus::new(0);
         assert!(status.wait_until_settled(std::time::Duration::from_millis(20)));
         assert_eq!(status.snapshot().connecting, 0);
+    }
+
+    /// A4-1（W1-21）：settle 时失败非空 → 一次性响亮通知；再 settle 不
+    /// 重发。判别：去掉 sink 调用即计数为 0 而红。
+    #[test]
+    fn startup_failures_fire_a_one_shot_notice() {
+        let status = McpStatus::new(1);
+        let fired = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = std::sync::Arc::clone(&fired);
+        status.set_notice_sink(std::sync::Arc::new(move |failures| {
+            // 两笔失败（工具撞名 + server 握手）都在通知里计数。
+            assert_eq!(failures, 2);
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }));
+        status.record_failure("mcp `srv` tool `x`: duplicate name".into());
+        status.record_failed_server("mcp `srv`: handshake failed".into());
+        assert_eq!(
+            fired.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the notice fires exactly once at settle"
+        );
+        // 再触发 settle 路径不重发。
+        status.record_failed_server("mcp `other`: late failure".into());
+        assert_eq!(
+            fired.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "one-shot"
+        );
     }
 }

@@ -53,7 +53,7 @@ impl ChannelApprover {
 }
 
 impl PermissionApprover for ChannelApprover {
-    fn decide(&self, request: PermissionRequest) -> PermissionDecision {
+    fn decide(&self, request: PermissionRequest, cancel: &CancelToken) -> PermissionDecision {
         let (decision_tx, decision_rx) = mpsc::channel();
         if self
             .sender
@@ -67,15 +67,27 @@ impl PermissionApprover for ChannelApprover {
                 reason: "permission UI is unavailable".into(),
             };
         }
-        // The receiver has no sender retained by the approver itself. If the
-        // UI exits and drops its pending dialog, recv disconnects and the run
-        // can unwind instead of blocking Application teardown forever.
-        decision_rx
-            .recv()
-            .ok()
-            .unwrap_or_else(|| PermissionDecision::Deny {
-                reason: "no permission decision available".into(),
-            })
+        // W1-17/A1：轮询而非裸阻塞（对齐 ChannelUserAsker 的 50ms 模式）
+        // ——run 取消（Esc 之外的取消源，如收尾/退出路径）必须能解开
+        // worker 线程，不许把审批等待挂到人答。取消语义 = Deny；断连
+        //（UI 丢弃对话框）同 Deny，run 可正常退栈。
+        loop {
+            match decision_rx.recv_timeout(Duration::from_millis(50)) {
+                Ok(decision) => return decision,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if cancel.is_cancelled() {
+                        return PermissionDecision::Deny {
+                            reason: "interrupted by run cancellation".into(),
+                        };
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return PermissionDecision::Deny {
+                        reason: "no permission decision available".into(),
+                    };
+                }
+            }
+        }
     }
 }
 
@@ -132,13 +144,16 @@ mod tests {
         let (sender, receiver) = mpsc::channel();
         let approver = ChannelApprover::new(sender);
         let worker = std::thread::spawn(move || {
-            approver.decide(PermissionRequest {
-                tool: "write_file".into(),
-                effect: ToolEffect::Write,
-                reason: "test".into(),
-                arguments: json!({}),
-                call_id: "call-1".into(),
-            })
+            approver.decide(
+                PermissionRequest {
+                    tool: "write_file".into(),
+                    effect: ToolEffect::Write,
+                    reason: "test".into(),
+                    arguments: json!({}),
+                    call_id: "call-1".into(),
+                },
+                &crate::model::CancelToken::new(),
+            )
         });
         match receiver.recv().expect("permission event") {
             UiEvent::Worker(WorkerMessage::PermissionRequest { decision_tx, .. }) => {
@@ -176,5 +191,43 @@ mod tests {
             worker.join().expect("asker thread"),
             AskAnswer::Declined
         ));
+    }
+
+    /// W1-17/A1：run 取消令牌必须能解开滞留的审批等待——无人应答的
+    /// 权限请求在令牌置位后 ≤ 有界间隔返回 Deny，而不是挂到人答。
+    /// 判别：去掉 50ms 轮询（回到裸 recv）即本测试挂死而红。
+    #[test]
+    fn a_cancelled_run_unblocks_the_pending_permission_wait() {
+        let (sender, _receiver) = mpsc::channel();
+        let approver = ChannelApprover::new(sender);
+        let cancel = CancelToken::new();
+        let wait_cancel = cancel.clone();
+        let worker_cancel = cancel.clone();
+        let worker = std::thread::spawn(move || {
+            approver.decide(
+                PermissionRequest {
+                    tool: "write_file".into(),
+                    effect: ToolEffect::Write,
+                    reason: "test".into(),
+                    arguments: serde_json::json!({}),
+                    call_id: "call-1".into(),
+                },
+                &worker_cancel,
+            )
+        });
+        // 模拟 run 收尾：请求在途时令牌置位（UI 侧不答复）。
+        std::thread::sleep(Duration::from_millis(100));
+        let started = std::time::Instant::now();
+        wait_cancel.cancel();
+        let decision = worker.join().expect("approver thread");
+        assert!(
+            matches!(&decision, PermissionDecision::Deny { reason } if reason.contains("cancel")),
+            "unexpected decision: {decision:?}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "cancel must unblock the wait within a bounded interval: {:?}",
+            started.elapsed()
+        );
     }
 }

@@ -377,6 +377,12 @@ impl TrustedProjectApplication {
                 // INV-S6：recorder 在 ModelResponded 落账点归并 sampling
                 // usage（journal 侧唯一记账点）。
                 recorder_core.attach_aux_usage(Arc::clone(&sampling_usage_worker));
+                // B1 + F-1（审计）：唯一花费仪表——recorder 落账充值
+                //（INV-S6 口径，含插件采样），run.rs 检查点读同一实例。
+                let spend_ledger = Arc::new(crate::model::RunSpendLedger::new(
+                    config.effective_run_token_budget(),
+                ));
+                recorder_core.set_run_ledger(Arc::clone(&spend_ledger));
                 let recorder = Arc::new(Mutex::new(recorder_core));
                 if let Ok(mut core) = recorder.lock() {
                     core.attach_sink(ui_events);
@@ -391,6 +397,7 @@ impl TrustedProjectApplication {
                 let execution = catch_unwind(AssertUnwindSafe(|| {
                     agent.execute(AgentRequest {
                         config,
+                        spend_ledger: Some(Arc::clone(&spend_ledger)),
                         credentials,
                         history_items: history,
                         prompt: prompt_for_request,

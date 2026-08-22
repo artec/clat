@@ -45,6 +45,8 @@ const SAMPLING_MAX_TOTAL_CHARS: usize = 256 * 1024;
 /// adapter 无计量）与主循环无轮次预算之间没有可推导关系，这里给
 /// 一个独立于权限档位的硬闸门。64 次/run 对合法插件用例宽裕，对
 /// 失控循环有界。
+/// per-run elicitation 弹框数上限（W1-14，对齐 sampling 请求数纪律）。
+const ELICIT_MAX_PER_RUN: u32 = 64;
 const SAMPLING_MAX_REQUESTS_PER_RUN: u32 = 64;
 /// per-run sampling token 预算（W1-03）：预留 = input 估算 + 请求的
 /// max output；10^6 量级约一次满配长会话的嵌套调用量。
@@ -52,6 +54,9 @@ const SAMPLING_TOKEN_BUDGET_PER_RUN: u64 = 1_000_000;
 /// elicitation 表单字段数 / 单字段枚举项上限。
 const MAX_ELICIT_FIELDS: usize = 16;
 const MAX_ELICIT_OPTIONS: usize = 16;
+/// W1-14（A1）：表单 message 文案长度上限——桥层闸（MCP 与 WIT 两条
+/// 路径统一生效），钓鱼洪水与超长注入面一并挡在弹框之前。
+const MAX_ELICIT_MESSAGE_CHARS: usize = 4096;
 /// 数字字段解析失败的重问次数上限。
 const NUMBER_RETRIES: usize = 2;
 /// 可选枚举/布尔字段在选项尾部追加的跳过项标签。
@@ -108,7 +113,8 @@ pub struct SamplingRequest {
     pub system_prompt: Option<String>,
     pub messages: Vec<SamplingMessage>,
     pub max_tokens: u64,
-    #[allow(dead_code)]
+    /// B7（C2）：接受但忽略——sample() 对非空值发一次/run 的 stderr
+    /// 诊断；解析层（MCP）填充，WASM WIT 无此字段。
     pub stop_sequences: Vec<String>,
     pub temperature: Option<f64>,
 }
@@ -240,6 +246,13 @@ pub(crate) struct SamplingBudget {
     tokens_used: u64,
     requests_cap: u32,
     tokens_cap: u64,
+    /// W1-14（A1）：per-run elicitation 计数预算——每次弹框 +1，恶意
+    /// 组件的无限弹窗钓鱼在触顶后被结构化拒绝（fail-closed）。
+    elicits_used: u32,
+    elicits_cap: u32,
+    /// B7（C2）：stop_sequences「接受但忽略」的一次/run 诊断标志
+    ///（先例：recorder 的 warned_half——置位即不再重复）。
+    stop_sequences_warned: bool,
 }
 
 impl SamplingBudget {
@@ -249,7 +262,34 @@ impl SamplingBudget {
             tokens_used: 0,
             requests_cap: SAMPLING_MAX_REQUESTS_PER_RUN,
             tokens_cap: SAMPLING_TOKEN_BUDGET_PER_RUN,
+            elicits_used: 0,
+            elicits_cap: ELICIT_MAX_PER_RUN,
+            stop_sequences_warned: false,
         }
+    }
+
+    /// B7（C2）：stop_sequences 诊断只发一次/run——首次调用返回 true
+    ///（由调用方落 stderr），此后恒 false。
+    fn warn_stop_sequences_once(&mut self) -> bool {
+        if self.stop_sequences_warned {
+            return false;
+        }
+        self.stop_sequences_warned = true;
+        true
+    }
+
+    /// 一次 elicitation 弹框的计数闸（W1-14）：超 per-run 上限即拒。
+    fn charge_elicit(&mut self) -> Result<(), PluginHostError> {
+        let next = self.elicits_used.saturating_add(1);
+        if next > self.elicits_cap {
+            return Err(PluginHostError::BudgetExhausted(format!(
+                "this run allows at most {} elicitation prompts (used so far: {}); \
+                 the budget resets on the next run",
+                self.elicits_cap, self.elicits_used
+            )));
+        }
+        self.elicits_used = next;
+        Ok(())
     }
 
     /// 事前预留一次调用：请求数 +1、token 增加预留份额（input 估算
@@ -300,7 +340,11 @@ fn estimate_input_tokens(request: &SamplingRequest) -> u64 {
 /// 在这里（W1-05）：那是每条 MCP 连接的超时延展信号，归
 /// [`McpHostHandler`] 各自持有；WASM 直调桥，不参与任何 MCP 截止。
 pub struct PluginHostBridge {
-    context: RwLock<Option<RunHostContext>>,
+    /// 槽位携带安装纪元（W1-17/A1）：install 自增全局计数并随上下文
+    /// 存入——在途 sample/elicit 凭快照纪元即可判别"我的 run 是否已
+    /// 结束"（clear 置 None 或新 run 已装入都表现为失配）。
+    context: RwLock<Option<(u64, RunHostContext)>>,
+    epoch: AtomicU64,
     sampling_seq: AtomicU64,
 }
 
@@ -325,14 +369,17 @@ impl PluginHostBridge {
     pub fn shared() -> Arc<Self> {
         Arc::new(Self {
             context: RwLock::new(None),
+            epoch: AtomicU64::new(0),
             sampling_seq: AtomicU64::new(0),
         })
     }
 
-    /// 装入本次 run 的上下文（`start_run` 主线程调用）。
+    /// 装入本次 run 的上下文（`start_run` 主线程调用）。安装纪元由
+    /// 桥自增分配（W1-17/A1）——在途调用凭它判别 run 更替。
     pub(crate) fn install(&self, context: RunHostContext) {
+        let epoch = self.epoch.fetch_add(1, Ordering::AcqRel) + 1;
         if let Ok(mut slot) = self.context.write() {
-            *slot = Some(context);
+            *slot = Some((epoch, context));
         }
     }
 
@@ -343,21 +390,41 @@ impl PluginHostBridge {
         }
     }
 
-    fn context(&self) -> Option<RunHostContext> {
+    /// 当前已装入上下文的纪元（未装入 = None）。
+    fn installed_epoch(&self) -> Option<u64> {
+        let guard = self.context.read().ok()?;
+        guard.as_ref().map(|(epoch, _)| *epoch)
+    }
+
+    /// 当前上下文快照（纪元 + 按字段 Arc 克隆重建）。B5 起 wasm 写
+    /// 授予门也用它取 approver/cancel——快照原子性由 context 锁保证。
+    pub(crate) fn context(&self) -> Option<(u64, RunHostContext)> {
         // RunHostContext 不可 Clone（含非 Clone 端口），此处按字段取
         // Arc 克隆重建一份快照——install 与 clear 之间语义等价。
         let guard = self.context.read().ok()?;
-        guard.as_ref().map(|context| RunHostContext {
-            providers: Arc::clone(&context.providers),
-            model_config: context.model_config.clone(),
-            credentials: context.credentials.clone(),
-            approver: Arc::clone(&context.approver),
-            permission_mode: context.permission_mode.clone(),
-            asker: context.asker.clone(),
-            cancel: context.cancel.clone(),
-            usage_cell: Arc::clone(&context.usage_cell),
-            budget: Arc::clone(&context.budget),
+        guard.as_ref().map(|(epoch, context)| {
+            (
+                *epoch,
+                RunHostContext {
+                    providers: Arc::clone(&context.providers),
+                    model_config: context.model_config.clone(),
+                    credentials: context.credentials.clone(),
+                    approver: Arc::clone(&context.approver),
+                    permission_mode: context.permission_mode.clone(),
+                    asker: context.asker.clone(),
+                    cancel: context.cancel.clone(),
+                    usage_cell: Arc::clone(&context.usage_cell),
+                    budget: Arc::clone(&context.budget),
+                },
+            )
         })
+    }
+
+    /// W1-17/A1（INV-S8 半边）：在途审批/采样所属的 run 是否仍然活着
+    /// ——取消令牌未触发且桥上仍是快照的纪元（clear 或新 run 装入都
+    /// 判死）。
+    fn context_is_current(&self, epoch: u64, cancel: &CancelToken) -> bool {
+        !cancel.is_cancelled() && self.installed_epoch() == Some(epoch)
     }
 
     /// sampling（INV-S2 + W1-02/03）：出站尺寸闸 → 预算预留 → 权限门
@@ -368,7 +435,7 @@ impl PluginHostBridge {
         source: PluginSource,
         request: SamplingRequest,
     ) -> Result<SamplingOutcome, PluginHostError> {
-        let context = self.context().ok_or(PluginHostError::NoActiveRun)?;
+        let (run_epoch, context) = self.context().ok_or(PluginHostError::NoActiveRun)?;
         if context.cancel.is_cancelled() {
             return Err(PluginHostError::Cancelled);
         }
@@ -388,6 +455,22 @@ impl PluginHostBridge {
                 "systemPrompt plus messages total {} chars; the limit is {}",
                 total_chars, SAMPLING_MAX_TOTAL_CHARS
             )));
+        }
+        // B7（C2 定案）：stop_sequences 接受但忽略——这里发一次/run 的
+        // stderr 诊断让插件作者可见（空值零噪音）。通线到 provider 是
+        // 「真插件触发之日」的首选解，本轮无病历不通线。
+        if !request.stop_sequences.is_empty() {
+            let warn = match context.budget.lock() {
+                Ok(mut budget) => budget.warn_stop_sequences_once(),
+                // 毒锁：跳过诊断即可——下方 reserve 闸对毒锁 fail-closed。
+                Err(_) => false,
+            };
+            if warn {
+                eprintln!(
+                    "clat: warning: plugin sampling stop_sequences are parsed but \
+                     ignored by the host sampling bridge (noted once per run)"
+                );
+            }
         }
         // 预算预留（W1-03）：先于权限门——注定被拒的调用不值得用户审
         // 批；失败/取消/无 usage 时预留保留（保守账本）。
@@ -415,11 +498,20 @@ impl PluginHostBridge {
             .and_then(|cell| cell.read().ok())
             .is_some_and(|mode| *mode == PermissionMode::FullAccess);
         if !full_access {
-            let decision = context
-                .approver
-                .decide(self.sampling_permission_request(&source, &request));
+            let decision = context.approver.decide(
+                self.sampling_permission_request(&source, &request),
+                &context.cancel,
+            );
             match decision {
-                PermissionDecision::Allow => {}
+                PermissionDecision::Allow => {
+                    // W1-17/A1（INV-S8）：审批是 run 作用域能力——人答完
+                    // 的瞬间 run 可能已终止（取消/收尾/新 run 接位）。放行
+                    // 后复查纪元与取消，失配即拒：run 结束后的 Allow 不再
+                    // 产生任何模型调用。
+                    if !self.context_is_current(run_epoch, &context.cancel) {
+                        return Err(PluginHostError::Cancelled);
+                    }
+                }
                 PermissionDecision::Ask { .. } => {
                     return Err(PluginHostError::PermissionDenied(
                         "approval was requested but not resolved".into(),
@@ -480,6 +572,12 @@ impl PluginHostBridge {
             .stream(model_request, &mut sink)
             .map_err(|error| PluginHostError::Model(error.to_string()))?;
         if response.finish_reason == FinishReason::Cancelled {
+            return Err(PluginHostError::Cancelled);
+        }
+        // W1-17/A1（INV-S8 后半）：provider 返回时 run 可能已收尾（worker
+        // 已 clear 并取走 usage cell 余量）——记账前复查，失配即以取消
+        // 收束，绝不把 usage 写进已清零/已易主的 cell（静默丢账）。
+        if !self.context_is_current(run_epoch, &context.cancel) {
             return Err(PluginHostError::Cancelled);
         }
         if let Some(usage) = &response.usage {
@@ -546,7 +644,46 @@ impl PluginHostBridge {
     /// elicitation：逐字段顺序单问（v1 交互，维护者拍板），拼回
     /// content 对象。取消/拒绝映射 MCP 的 cancel/declined。
     pub fn elicit(&self, form: ElicitForm) -> Result<ElicitOutcome, PluginHostError> {
-        let context = self.context().ok_or(PluginHostError::NoActiveRun)?;
+        let (run_epoch, context) = self.context().ok_or(PluginHostError::NoActiveRun)?;
+        // W1-14（A1）：尺寸闸住桥层——MCP 解析路径与 WASM WIT 直通路径
+        // 共用同一组上限（此前 WIT 直转 ElicitForm 全绕过）。
+        if form.message.chars().count() > MAX_ELICIT_MESSAGE_CHARS {
+            return Err(PluginHostError::PayloadTooLarge(format!(
+                "elicitation message is {} chars; the limit is {MAX_ELICIT_MESSAGE_CHARS}",
+                form.message.chars().count()
+            )));
+        }
+        if form.fields.len() > MAX_ELICIT_FIELDS {
+            return Err(PluginHostError::PayloadTooLarge(format!(
+                "elicitation form has {} fields; the limit is {MAX_ELICIT_FIELDS}",
+                form.fields.len()
+            )));
+        }
+        for field in &form.fields {
+            if let ElicitFieldKind::Choice(options) = &field.kind
+                && options.len() > MAX_ELICIT_OPTIONS
+            {
+                return Err(PluginHostError::PayloadTooLarge(format!(
+                    "field `{}` has {} options; the limit is {MAX_ELICIT_OPTIONS}",
+                    field.name,
+                    options.len()
+                )));
+            }
+        }
+        // W1-14（A1）：per-run 弹框计数预算（毒锁 fail-closed，同 W1-09
+        // 纪律——这是闸门不是记账）。
+        match context.budget.lock() {
+            Ok(mut budget) => budget.charge_elicit()?,
+            Err(_) => {
+                return Err(PluginHostError::BudgetExhausted(
+                    "the elicit budget lock is poisoned; refusing to prompt (resets on the next run)"
+                        .into(),
+                ));
+            }
+        }
+        if !self.context_is_current(run_epoch, &context.cancel) {
+            return Err(PluginHostError::Cancelled);
+        }
         let asker = context
             .asker
             .clone()
@@ -692,13 +829,19 @@ fn field_options(field: &ElicitField) -> (Vec<AskOption>, bool) {
     }
 }
 
-/// 数字解析：先整后浮，产物保持 JSON number 形态。
+/// 数字解析：先整后浮，产物保持 JSON number 形态。A4-5（W1-25）：
+/// 非有限值（NaN/±inf）拒绝——serde_json 会把非有限 f64 序列化成
+/// Null，跨 WIT/JSON 边都是类型违约。
 fn parse_number(text: &str) -> Option<Value> {
     let trimmed = text.trim();
     if let Ok(int) = trimmed.parse::<i64>() {
         return Some(json!(int));
     }
-    trimmed.parse::<f64>().ok().map(|number| json!(number))
+    trimmed
+        .parse::<f64>()
+        .ok()
+        .filter(|number| number.is_finite())
+        .map(|number| json!(number))
 }
 
 fn stop_reason_name(reason: &FinishReason) -> &'static str {
@@ -867,7 +1010,20 @@ fn parse_sampling_params(params: &Value) -> Result<SamplingRequest, (i64, String
             .map(str::to_owned),
         messages: parsed,
         max_tokens: max_tokens.min(SAMPLING_MAX_OUTPUT),
-        stop_sequences: Vec::new(),
+        // B7（C2）：解析进请求（宿主接受但忽略——sample() 发一次/run
+        // 的 stderr 诊断，作者可见）。非字符串成员宽松过滤，不拒整次
+        // 请求。WASM WIT 路径无此字段，永不触发。
+        stop_sequences: params
+            .get("stopSequences")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default(),
         temperature: params.get("temperature").and_then(Value::as_f64),
     })
 }
@@ -1031,7 +1187,7 @@ mod tests {
     }
 
     impl PermissionApprover for ScriptedApprover {
-        fn decide(&self, request: PermissionRequest) -> PermissionDecision {
+        fn decide(&self, request: PermissionRequest, _cancel: &CancelToken) -> PermissionDecision {
             if let Ok(mut seen) = self.decisions.lock() {
                 seen.push(request);
             }
@@ -1171,6 +1327,53 @@ mod tests {
             bridge.sample(PluginSource::Mcp("srv".into()), sampling_request()),
             Err(PluginHostError::NoActiveRun)
         ));
+    }
+
+    /// B7（C2 定案）：非空 stop_sequences → 一次/run 的诊断标志置位，
+    /// 同 run 第二次不再置；空值零触碰。判别面 = budget 标志（stderr
+    /// 输出为胶水）；pre-fix 判别力：标志字段不存在（前置编译不可达，
+    /// 按惯例文档化）+ 解析腿 `sampling_params_parse_stop_sequences`
+    /// 已前置红钉住解析缺口。
+    #[test]
+    fn stop_sequences_warning_fires_once_per_run() {
+        let bridge = PluginHostBridge::shared();
+        let usage_cell = Arc::new(Mutex::new(Usage::default()));
+        let budget = Arc::new(Mutex::new(SamplingBudget::per_run()));
+        bridge.install(RunHostContext {
+            providers: providers_with(CannedFactory {
+                text: "ok",
+                usage: None,
+            }),
+            model_config: ModelConfig {
+                model: "fake-model".into(),
+                ..ModelConfig::default()
+            },
+            credentials: ProviderCredentials::for_protocol(ModelProtocol::OpenAiCompatible),
+            approver: Arc::new(ScriptedApprover {
+                decisions: Mutex::new(Vec::new()),
+                verdict: PermissionDecision::Allow,
+            }),
+            permission_mode: None,
+            asker: None,
+            cancel: CancelToken::new(),
+            usage_cell: Arc::clone(&usage_cell),
+            budget: Arc::clone(&budget),
+        });
+        let mut request = sampling_request();
+        request.stop_sequences = vec!["\\n\\nUser:".into()];
+        bridge
+            .sample(PluginSource::Mcp("srv".into()), request)
+            .expect("sample");
+        assert!(
+            budget.lock().expect("budget").stop_sequences_warned,
+            "a non-empty stop_sequences list must set the once-per-run flag"
+        );
+        assert!(
+            !budget.lock().expect("budget").warn_stop_sequences_once(),
+            "the warning fires at most once per run"
+        );
+        // 空值零噪音：全新预算从未置位。
+        assert!(!SamplingBudget::per_run().stop_sequences_warned);
     }
 
     // ---- INV-S2：过门 + 记账 ----
@@ -1375,6 +1578,9 @@ mod tests {
             tokens_used: 0,
             requests_cap: 64,
             tokens_cap,
+            elicits_used: 0,
+            elicits_cap: ELICIT_MAX_PER_RUN,
+            stop_sequences_warned: false,
         }
     }
 
@@ -1385,6 +1591,9 @@ mod tests {
             tokens_used: 0,
             requests_cap: 2,
             tokens_cap: 30,
+            elicits_used: 0,
+            elicits_cap: ELICIT_MAX_PER_RUN,
+            stop_sequences_warned: false,
         };
         assert!(budget.reserve(20).is_ok());
         assert!(budget.reserve(11).is_err(), "token cap fails closed");
@@ -1402,6 +1611,9 @@ mod tests {
             tokens_used: 0,
             requests_cap: 1,
             tokens_cap: u64::MAX,
+            elicits_used: 0,
+            elicits_cap: ELICIT_MAX_PER_RUN,
+            stop_sequences_warned: false,
         };
         assert!(
             budget.reserve(u64::MAX).is_ok(),
@@ -1722,6 +1934,88 @@ mod tests {
         );
     }
 
+    /// W1-14（A1）：尺寸闸必须住在**桥层**——MCP JSON 解析路径的
+    /// 16 字段/16 选项上限对 WASM WIT 直通无效（wasm.rs 的 Host 直转
+    /// ElicitForm，不经过 parse_elicitation_params）。无 asker 时旧代码
+    /// 以 NoInteractiveFrontend 失败（闸不存在），本测试在修复前即红。
+    #[test]
+    fn elicitation_size_gates_live_in_the_bridge_not_the_mcp_parser() {
+        let bridge = PluginHostBridge::shared();
+        bridge.install(RunHostContext {
+            providers: providers_with(CannedFactory {
+                text: "never",
+                usage: None,
+            }),
+            model_config: ModelConfig {
+                model: "fake-model".into(),
+                ..ModelConfig::default()
+            },
+            credentials: ProviderCredentials::for_protocol(ModelProtocol::OpenAiCompatible),
+            approver: Arc::new(ScriptedApprover {
+                decisions: Mutex::new(Vec::new()),
+                verdict: PermissionDecision::Allow,
+            }),
+            permission_mode: None,
+            asker: Some(Arc::new(ScriptedAsker {
+                answers: Mutex::new(Vec::new().into()),
+            })),
+            cancel: CancelToken::new(),
+            usage_cell: Arc::new(Mutex::new(Usage::default())),
+            budget: Arc::new(Mutex::new(SamplingBudget::per_run())),
+        });
+        // 17 个字段（> MAX_ELICIT_FIELDS）：即便有 asker 也必须被拒，
+        // 而不是开始逐字段弹 17 个问题。
+        let too_many_fields = ElicitForm {
+            message: "form".into(),
+            fields: (0..17)
+                .map(|index| ElicitField {
+                    name: format!("f{index}"),
+                    title: None,
+                    description: None,
+                    kind: ElicitFieldKind::Text,
+                    required: true,
+                })
+                .collect(),
+        };
+        let error = bridge
+            .elicit(too_many_fields)
+            .expect_err("17 fields must be rejected at the bridge");
+        assert!(
+            error.to_string().contains("16"),
+            "the rejection must name the field limit: {error}"
+        );
+        // message 文案超长（> 4096 字符）：钓鱼洪水面。
+        let huge_message = ElicitForm {
+            message: "x".repeat(4097),
+            fields: Vec::new(),
+        };
+        let error = bridge
+            .elicit(huge_message)
+            .expect_err("an oversized message must be rejected at the bridge");
+        assert!(
+            error.to_string().contains("message"),
+            "the rejection must name the message cap: {error}"
+        );
+        // 单字段选项 > 16：同闸。
+        let too_many_options = ElicitForm {
+            message: "form".into(),
+            fields: vec![ElicitField {
+                name: "pick".into(),
+                title: None,
+                description: None,
+                kind: ElicitFieldKind::Choice((0..17).map(|i| format!("o{i}")).collect()),
+                required: true,
+            }],
+        };
+        let error = bridge
+            .elicit(too_many_options)
+            .expect_err("17 options must be rejected at the bridge");
+        assert!(
+            error.to_string().contains("16"),
+            "the rejection must name the option limit: {error}"
+        );
+    }
+
     #[test]
     fn elicitation_number_field_retries_then_fails_with_invalid_answer() {
         let asker: Arc<dyn UserAsker> = Arc::new(ScriptedAsker {
@@ -1757,6 +2051,51 @@ mod tests {
         .expect("form");
         let error = bridge.elicit(form).unwrap_err();
         assert!(matches!(error, PluginHostError::InvalidAnswer(_)));
+    }
+
+    /// A4-5（W1-25）：非有限数字（"NaN"/"inf"）不得作为数字答案通过
+    /// ——serde_json 会把非有限 f64 序列化成 Null（类型违约）。pre-fix
+    /// 红：parse_number 的 f64 分支放行 NaN → 值以 Null 落 content。
+    #[test]
+    fn elicitation_number_fields_reject_non_finite_answers() {
+        for bad in ["NaN", "inf", "-inf", "infinity"] {
+            let asker: Arc<dyn UserAsker> = Arc::new(ScriptedAsker {
+                answers: Mutex::new(
+                    vec![
+                        AskAnswer::Custom(bad.into()),
+                        AskAnswer::Custom(bad.into()),
+                        AskAnswer::Custom(bad.into()),
+                    ]
+                    .into(),
+                ),
+            });
+            let approver = Arc::new(ScriptedApprover {
+                decisions: Mutex::new(Vec::new()),
+                verdict: PermissionDecision::Allow,
+            });
+            let (bridge, _cell) = installed_bridge(
+                providers_with(CannedFactory {
+                    text: "ok",
+                    usage: None,
+                }),
+                approver,
+                Some(asker),
+            );
+            let form = parse_elicitation_params(&json!({
+                "message": "how many",
+                "requestedSchema": {
+                    "type": "object",
+                    "properties": { "count": { "type": "number" } },
+                    "required": ["count"],
+                },
+            }))
+            .expect("form");
+            let error = bridge.elicit(form).unwrap_err();
+            assert!(
+                matches!(error, PluginHostError::InvalidAnswer(_)),
+                "{bad} must never pass as a number: {error}"
+            );
+        }
     }
 
     #[test]
@@ -1809,9 +2148,11 @@ mod tests {
             usage_cell: Arc::new(Mutex::new(Usage::default())),
             budget: Arc::new(Mutex::new(SamplingBudget::per_run())),
         });
+        // A1/INV-S8：已取消的 run 在入口即以 Err(Cancelled) 收束——
+        // 连第一个问题都不弹（旧路径先弹框再靠 Declined 映射）。
         assert!(matches!(
             bridge.elicit(form()),
-            Ok(ElicitOutcome::Cancelled)
+            Err(PluginHostError::Cancelled)
         ));
     }
 
@@ -1845,6 +2186,51 @@ mod tests {
 
         let missing = json!({ "maxTokens": 10 });
         assert!(parse_sampling_params(&missing).is_err());
+    }
+
+    /// B7（C2 定案）：`stopSequences`（DSH shim 从 `options.stop` 映射
+    /// 而来）必须被解析进请求——宿主接受但忽略它，解析层不再丢弃
+    ///（丢弃会让桥层的"ignored"一次性诊断永不触发，作者不可见）。
+    /// pre-fix 红：旧实现硬编码 `stop_sequences: Vec::new()`。
+    #[test]
+    fn sampling_params_parse_stop_sequences() {
+        let params = json!({
+            "messages": [
+                { "role": "user", "content": { "type": "text", "text": "hi" } },
+            ],
+            "maxTokens": 64,
+            "stopSequences": ["\n\nUser:", "\n\nAssistant:"],
+        });
+        let request = parse_sampling_params(&params).expect("parse");
+        assert_eq!(request.stop_sequences, ["\n\nUser:", "\n\nAssistant:"]);
+
+        // 缺席 → 空；非字符串成员被宽松过滤（与 DSH 桥的宽松解析风格
+        // 一致，不因坏成员拒绝整次请求）。
+        let absent = json!({
+            "messages": [
+                { "role": "user", "content": { "type": "text", "text": "hi" } },
+            ],
+            "maxTokens": 64,
+        });
+        assert!(
+            parse_sampling_params(&absent)
+                .expect("parse")
+                .stop_sequences
+                .is_empty()
+        );
+        let tolerant = json!({
+            "messages": [
+                { "role": "user", "content": { "type": "text", "text": "hi" } },
+            ],
+            "maxTokens": 64,
+            "stopSequences": ["stop", 42, null],
+        });
+        assert_eq!(
+            parse_sampling_params(&tolerant)
+                .expect("parse")
+                .stop_sequences,
+            ["stop"]
+        );
     }
 
     #[test]
@@ -1947,7 +2333,7 @@ mod tests {
     }
 
     impl PermissionApprover for GateApprover {
-        fn decide(&self, _request: PermissionRequest) -> PermissionDecision {
+        fn decide(&self, _request: PermissionRequest, _cancel: &CancelToken) -> PermissionDecision {
             self.entered.store(true, Ordering::Release);
             let deadline = Instant::now() + Duration::from_secs(30);
             while !self.release.load(Ordering::Acquire) {
@@ -2163,5 +2549,120 @@ mod tests {
             "seam error must surface verbatim: {error}"
         );
         server.shutdown().expect("shutdown reaps the node process");
+    }
+    /// W1-17/A1（INV-S8）：run 在审批等待期间结束后（bridge clear），迟
+    /// 到的 Allow 不再产生任何模型调用——审批返回后复查纪元与取消。
+    /// 判别：删除复查（回到旧形状）即以"模型被调用"而红。
+    #[test]
+    fn allow_arriving_after_the_run_ends_makes_no_model_call() {
+        let builds = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        // 审批人：被咨询的瞬间结束当前 run（模拟收尾窗口），再 Allow。
+        struct EndRunThenAllow {
+            bridge: Arc<PluginHostBridge>,
+        }
+        impl PermissionApprover for EndRunThenAllow {
+            fn decide(
+                &self,
+                _request: PermissionRequest,
+                _cancel: &CancelToken,
+            ) -> PermissionDecision {
+                self.bridge.clear();
+                PermissionDecision::Allow
+            }
+        }
+        let bridge = PluginHostBridge::shared();
+        bridge.install(RunHostContext {
+            providers: providers_with(CountingFactory {
+                text: "never",
+                usage: None,
+                builds: Arc::clone(&builds),
+            }),
+            model_config: ModelConfig {
+                model: "fake-model".into(),
+                ..ModelConfig::default()
+            },
+            credentials: ProviderCredentials::for_protocol(ModelProtocol::OpenAiCompatible),
+            approver: Arc::new(EndRunThenAllow {
+                bridge: Arc::clone(&bridge),
+            }),
+            permission_mode: None,
+            asker: None,
+            cancel: CancelToken::new(),
+            usage_cell: Arc::new(Mutex::new(Usage::default())),
+            budget: Arc::new(Mutex::new(SamplingBudget::per_run())),
+        });
+        let error = bridge
+            .sample(PluginSource::Mcp("srv".into()), sampling_request())
+            .unwrap_err();
+        assert!(
+            matches!(error, PluginHostError::Cancelled),
+            "a stale Allow must refuse to sample, got: {error}"
+        );
+        assert_eq!(
+            builds.load(Ordering::SeqCst),
+            0,
+            "no model call may happen after the run ended"
+        );
+    }
+
+    /// W1-14/A1：per-run elicitation 计数预算——触顶后的弹框被结构化
+    /// 拒绝（fail-closed），恶意组件不能用无限表单钓鱼。
+    #[test]
+    fn elicitation_budget_rejects_prompts_past_the_run_cap() {
+        let asker: Arc<dyn UserAsker> = Arc::new(ScriptedAsker {
+            answers: Mutex::new(
+                vec![
+                    AskAnswer::Declined,
+                    AskAnswer::Declined,
+                    AskAnswer::Declined,
+                    AskAnswer::Declined,
+                    AskAnswer::Declined,
+                    AskAnswer::Declined,
+                    AskAnswer::Declined,
+                    AskAnswer::Declined,
+                ]
+                .into(),
+            ),
+        });
+        let approver = Arc::new(ScriptedApprover {
+            decisions: Mutex::new(Vec::new()),
+            verdict: PermissionDecision::Allow,
+        });
+        let small_cap = SamplingBudget {
+            requests_used: 0,
+            tokens_used: 0,
+            requests_cap: 64,
+            tokens_cap: u64::MAX,
+            elicits_used: 0,
+            elicits_cap: 2,
+            stop_sequences_warned: false,
+        };
+        let (bridge, _cell) = installed_bridge_with(
+            providers_with(CannedFactory {
+                text: "never",
+                usage: None,
+            }),
+            approver,
+            Some(asker),
+            None,
+            small_cap,
+        );
+        let form = || ElicitForm {
+            message: "m".into(),
+            fields: vec![ElicitField {
+                name: "a".into(),
+                title: None,
+                description: None,
+                kind: ElicitFieldKind::Text,
+                required: true,
+            }],
+        };
+        assert!(matches!(bridge.elicit(form()), Ok(ElicitOutcome::Declined)));
+        assert!(matches!(bridge.elicit(form()), Ok(ElicitOutcome::Declined)));
+        let error = bridge.elicit(form()).unwrap_err();
+        assert!(
+            matches!(error, PluginHostError::BudgetExhausted(_)),
+            "the third prompt must exhaust the elicit budget, got: {error}"
+        );
     }
 }

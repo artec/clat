@@ -30,6 +30,7 @@ enum RowKind {
     ExtraBody,
     OutputLimit,
     ContextWindow,
+    SpendBudget,
     Temperature,
     Parallel,
     Save,
@@ -48,6 +49,7 @@ enum EditTarget {
     ExtraBody,
     OutputLimit,
     ContextWindow,
+    SpendBudget,
     Temperature,
 }
 
@@ -70,6 +72,7 @@ pub(crate) struct ModelEditor {
     /// 编辑缓冲（字符串）；保存时解析为 Option<u32>。CB1-14：自动压缩
     /// 的配置入口。
     context_window: String,
+    spend_budget: String,
     /// INV-E：编辑器不提供思考档位行（Shift+Tab 是唯一 UI），但保存
     /// 必须原样带回用户已选档位；切换预设时归位 `None`（新模型跟随
     /// 预设默认）。
@@ -109,6 +112,10 @@ impl ModelEditor {
                 .unwrap_or_default(),
             context_window: config
                 .max_context_tokens
+                .map(|value| value.to_string())
+                .unwrap_or_default(),
+            spend_budget: config
+                .run_token_budget
                 .map(|value| value.to_string())
                 .unwrap_or_default(),
             thinking_level: config.thinking_level,
@@ -275,6 +282,10 @@ impl ModelEditor {
                 "Context Window (auto-compact)".into(),
                 self.context_window.clone(),
             ),
+            SpendBudget => (
+                "Spend Budget (tokens/run, 0=off)".into(),
+                self.spend_budget.clone(),
+            ),
             Temperature => ("Temperature".into(), self.temperature.clone()),
             Parallel => (
                 "Parallel Tool Calls".into(),
@@ -311,6 +322,7 @@ impl ModelEditor {
                 ExtraBody,
                 OutputLimit,
                 ContextWindow,
+                SpendBudget,
                 Temperature,
                 Parallel,
             ]);
@@ -389,6 +401,7 @@ impl ModelEditor {
                 self.preset = None;
             }
             EditTarget::ContextWindow => self.context_window = buffer,
+            EditTarget::SpendBudget => self.spend_budget = buffer,
             EditTarget::Temperature => {
                 self.temperature = buffer;
                 self.preset = None;
@@ -417,6 +430,7 @@ impl ModelEditor {
             RowKind::ExtraBody => Some(EditTarget::ExtraBody),
             RowKind::OutputLimit => Some(EditTarget::OutputLimit),
             RowKind::ContextWindow => Some(EditTarget::ContextWindow),
+            RowKind::SpendBudget => Some(EditTarget::SpendBudget),
             RowKind::Temperature => Some(EditTarget::Temperature),
             _ => None,
         }
@@ -434,6 +448,7 @@ impl ModelEditor {
             EditTarget::ExtraBody => self.extra_body.clone(),
             EditTarget::OutputLimit => self.output_limit.clone(),
             EditTarget::ContextWindow => self.context_window.clone(),
+            EditTarget::SpendBudget => self.spend_budget.clone(),
             EditTarget::Temperature => self.temperature.clone(),
         }
     }
@@ -449,6 +464,7 @@ impl ModelEditor {
             EditTarget::ExtraHeaders => "Extra Headers JSON",
             EditTarget::ExtraBody => "Extra Body JSON",
             EditTarget::OutputLimit => "Max Output Tokens",
+            EditTarget::SpendBudget => "Spend Budget (tokens/run, 0=off)",
             EditTarget::ContextWindow => "Context Window (tokens, empty = off)",
             EditTarget::Temperature => "Temperature",
         }
@@ -645,12 +661,14 @@ impl ModelEditor {
         if max_context_tokens.is_some_and(|tokens| tokens < 4_096) {
             return Err("Context Window must be at least 4096 tokens".into());
         }
+        let run_token_budget = parse_optional_u64(&self.spend_budget, "Spend Budget")?;
         let temperature = parse_optional_f64(&self.temperature, "Temperature")?;
         if temperature.is_some_and(|value| !value.is_finite() || value < 0.0) {
             return Err("Temperature must be a finite non-negative number".into());
         }
         Ok((
             ModelConfig {
+                run_token_budget,
                 preset: self.preset.map(|preset| preset.id.to_owned()),
                 protocol: self.protocol,
                 model: self.model.trim().into(),
@@ -918,6 +936,17 @@ fn parse_optional_u32(text: &str, label: &str) -> Result<Option<u32>, String> {
             .map(Some)
             .map_err(|_| format!("{label} must be an integer"))
     }
+}
+
+fn parse_optional_u64(text: &str, label: &str) -> Result<Option<u64>, String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    trimmed
+        .parse::<u64>()
+        .map(Some)
+        .map_err(|_| format!("{label} must be a non-negative integer"))
 }
 
 fn parse_optional_f64(text: &str, label: &str) -> Result<Option<f64>, String> {

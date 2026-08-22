@@ -43,16 +43,31 @@ pub struct PermissionRequest {
 
 /// UI-independent port implemented by TUI, desktop, headless clients, or
 /// tests. It answers requests; permission classification remains in core.
+/// 审批闭包的装箱形态（A1 起 decide 携带取消令牌）。
+pub type BoxedAskFn =
+    Box<dyn Fn(PermissionRequest, &crate::model::CancelToken) -> PermissionDecision + Send + Sync>;
+
 pub trait PermissionApprover: Send + Sync {
-    fn decide(&self, request: PermissionRequest) -> PermissionDecision;
+    /// W1-17/A1：`cancel` 是本次 run 的取消令牌——实现必须能在等待人
+    /// 答复期间响应它（对齐 `UserAsker::ask` 的形态）：run 取消后，滞留
+    /// 的审批等待有界返回（语义 = Deny），不许挂到人答。
+    fn decide(
+        &self,
+        request: PermissionRequest,
+        cancel: &crate::model::CancelToken,
+    ) -> PermissionDecision;
 }
 
 impl<F> PermissionApprover for F
 where
-    F: Fn(PermissionRequest) -> PermissionDecision + Send + Sync,
+    F: Fn(PermissionRequest, &crate::model::CancelToken) -> PermissionDecision + Send + Sync,
 {
-    fn decide(&self, request: PermissionRequest) -> PermissionDecision {
-        self(request)
+    fn decide(
+        &self,
+        request: PermissionRequest,
+        cancel: &crate::model::CancelToken,
+    ) -> PermissionDecision {
+        self(request, cancel)
     }
 }
 
@@ -75,32 +90,42 @@ pub trait PermissionPolicy: Send + Sync {
 pub struct InteractivePermissionPolicy {
     delegate: Box<dyn PermissionPolicy>,
     approver: Arc<dyn PermissionApprover>,
+    /// 本次 run 的取消令牌（W1-17/A1）：随审批请求传给 approver——
+    /// run 取消后审批等待必须能被解开。
+    cancel: crate::model::CancelToken,
 }
 
 impl InteractivePermissionPolicy {
     pub fn new(
         delegate: impl PermissionPolicy + 'static,
-        ask: Box<dyn Fn(PermissionRequest) -> PermissionDecision + Send + Sync>,
+        cancel: crate::model::CancelToken,
+        ask: BoxedAskFn,
     ) -> Self {
-        Self::with_approver(delegate, Arc::new(BoxedApprover(ask)))
+        Self::with_approver(delegate, cancel, Arc::new(BoxedApprover(ask)))
     }
 
     pub fn with_approver(
         delegate: impl PermissionPolicy + 'static,
+        cancel: crate::model::CancelToken,
         approver: Arc<dyn PermissionApprover>,
     ) -> Self {
         Self {
             delegate: Box::new(delegate),
             approver,
+            cancel,
         }
     }
 }
 
-struct BoxedApprover(Box<dyn Fn(PermissionRequest) -> PermissionDecision + Send + Sync>);
+struct BoxedApprover(BoxedAskFn);
 
 impl PermissionApprover for BoxedApprover {
-    fn decide(&self, request: PermissionRequest) -> PermissionDecision {
-        (self.0)(request)
+    fn decide(
+        &self,
+        request: PermissionRequest,
+        cancel: &crate::model::CancelToken,
+    ) -> PermissionDecision {
+        (self.0)(request, cancel)
     }
 }
 
@@ -120,7 +145,7 @@ impl PermissionPolicy for InteractivePermissionPolicy {
                     arguments: call.arguments.clone(),
                     call_id: call.id.clone(),
                 };
-                match self.approver.decide(request) {
+                match self.approver.decide(request, &self.cancel) {
                     // The approver answers with a final decision only.
                     PermissionDecision::Ask { .. } => PermissionDecision::Deny {
                         reason: "approver returned an unresolved decision".into(),
@@ -472,11 +497,15 @@ mod tests {
         let (request_tx, request_rx) = mpsc::channel();
         let (decision_tx, decision_rx) = mpsc::channel();
         let decision_rx = Mutex::new(decision_rx);
-        let ask = move |request: PermissionRequest| {
+        let ask = move |request: PermissionRequest, _cancel: &crate::model::CancelToken| {
             request_tx.send(request).expect("request");
             decision_rx.lock().expect("lock").recv().expect("decision")
         };
-        let policy = InteractivePermissionPolicy::new(SafeByDefault, Box::new(ask));
+        let policy = InteractivePermissionPolicy::new(
+            SafeByDefault,
+            crate::model::CancelToken::new(),
+            Box::new(ask),
+        );
         let project = Project::new(".");
 
         // Read tools are auto-allowed by the delegate and never reach the approver.
@@ -493,11 +522,15 @@ mod tests {
         let (request_tx, request_rx) = mpsc::channel();
         let (decision_tx, decision_rx) = mpsc::channel();
         let decision_rx = Mutex::new(decision_rx);
-        let ask = move |request: PermissionRequest| {
+        let ask = move |request: PermissionRequest, _cancel: &crate::model::CancelToken| {
             request_tx.send(request).expect("request");
             decision_rx.lock().expect("lock").recv().expect("decision")
         };
-        let policy = InteractivePermissionPolicy::new(SafeByDefault, Box::new(ask));
+        let policy = InteractivePermissionPolicy::new(
+            SafeByDefault,
+            crate::model::CancelToken::new(),
+            Box::new(ask),
+        );
         let project = Project::new(".");
         let definition = definition(ToolEffect::Write);
         let call = call();
@@ -519,11 +552,15 @@ mod tests {
         let (request_tx, request_rx) = mpsc::channel();
         let (decision_tx, decision_rx) = mpsc::channel();
         let decision_rx = Mutex::new(decision_rx);
-        let ask = move |request: PermissionRequest| {
+        let ask = move |request: PermissionRequest, _cancel: &crate::model::CancelToken| {
             request_tx.send(request).expect("request");
             decision_rx.lock().expect("lock").recv().expect("decision")
         };
-        let policy = InteractivePermissionPolicy::new(SafeByDefault, Box::new(ask));
+        let policy = InteractivePermissionPolicy::new(
+            SafeByDefault,
+            crate::model::CancelToken::new(),
+            Box::new(ask),
+        );
         let project = Project::new(".");
         let definition = definition(ToolEffect::Execute);
         let call = call();

@@ -48,12 +48,39 @@ server, minus the process and the protocol plumbing.
 
 `path` accepts `~/…` (expanded against your home directory), relative
 paths (against `~/.clat`), or absolute paths. `dirs` lists extra
-directories granted read-write **only** under Full Access (and only to
-plugins that declare write-capable tools); in the guest they appear
-under their (sanitized) directory name — address them as
+directories that may be granted read-write **only** under Full Access
+(and only to plugins that declare write-capable tools — see
+[Filesystem write grants](#filesystem-write-grants)); in the guest they
+appear under their (sanitized) directory name — address them as
 `/<dirname>/…` while the project root is the default (`project/…`). Plugins appear in `/mcp`
 alongside MCP servers (transport `wasm`), and their tools are named
 `wasm_{plugin}_{tool}` (e.g. `wasm_digest_digest`).
+
+## Filesystem write grants
+
+Permission modes gate what the *agent* may do; a globally installed
+WASM component is *third-party code*, and trusting the agent is not
+trusting it. Write access therefore gets its own approval, bound to
+three things: **plugin name + component sha256 + the exact directory
+set**. Change any of them (rebuild the component, add a directory,
+switch to a mode that grants more directories) and you are asked again.
+
+- A plugin that declares write-capable tools gets read-write preopens
+  under Project Write / Full Access **only after** a one-time approval.
+  Until then — and after a rejection — its preopens are physically
+  read-only, so writes fail at the sandbox layer.
+- Approval happens the first time the plugin's tools are used in a run;
+  the request lists every directory that would become writable plus the
+  component hash. Approving persists a record in
+  `~/.clat/plugin-grants.json` (alongside `plugins.json`); later runs
+  with the same component and a subset of those directories stay
+  silent.
+- A rejection downgrades **that run** to read-only; the next run asks
+  again. Headless runs (`clat exec` without a terminal) never see a
+  prompt: with no recorded grant, writes fail closed.
+- Revoke by deleting the record (or the file) — the next run asks
+  again. A missing or corrupted grants file is treated as "no grants"
+  and never blocks startup.
 
 ## The contract (`wit/plugin.wit`)
 
