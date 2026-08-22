@@ -29,6 +29,10 @@ fn is_vendor_slot(name: &str) -> bool {
 pub struct ModelProfileSummary {
     pub name: String,
     pub updated_at: i64,
+    /// B9：列表展示摘要（config_json 里解出的两个字段；解析失败不
+    /// 拒列表——摘要为空即可）。
+    pub endpoint: String,
+    pub model: String,
 }
 
 #[derive(Debug)]
@@ -197,14 +201,35 @@ impl ControlStorage {
                 Ok(ModelProfileSummary {
                     name: row.get(0)?,
                     updated_at: row.get(1)?,
+                    endpoint: String::new(),
+                    model: String::new(),
                 })
             })
             .map_err(sql_error)?;
         let mut profiles = Vec::new();
         for row in rows {
-            let profile = row.map_err(sql_error)?;
+            let mut profile = row.map_err(sql_error)?;
             // INV-VK3：厂商 key 记忆库对用户档列表不可见。
             if !is_vendor_slot(&profile.name) {
+                // B9：摘要行从 config_json 解出（轻量两个字段，不整表
+                // 反序列化成 ModelConfig——坏行不拖垮列表）。
+                if let Ok(value) = connection.query_row(
+                    "SELECT config_json FROM model_profiles WHERE name = ?1",
+                    [&profile.name],
+                    |row| row.get::<_, String>(0),
+                ) && let Ok(config) = serde_json::from_str::<serde_json::Value>(&value)
+                {
+                    profile.endpoint = config
+                        .get("endpoint")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or_default()
+                        .to_owned();
+                    profile.model = config
+                        .get("model")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or_default()
+                        .to_owned();
+                }
                 profiles.push(profile);
             }
         }

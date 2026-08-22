@@ -618,9 +618,20 @@ fn publish_no_overwrite(temp: &Path, target: &Path) -> Result<(), String> {
 }
 
 pub(crate) fn sync_file(path: &Path) -> Result<(), String> {
-    std::fs::File::open(path)
-        .and_then(|file| file.sync_all())
-        .map_err(|error| error.to_string())
+    // Windows 的 FlushFileBuffers（`sync_all` 底层）要求句柄带写访问
+    //（GENERIC_WRITE，Win32 文档明文）；只读句柄直接 ERROR_ACCESS_
+    // DENIED（os error 5）。Windows CI 腿首跑 175 处失败的单点病根
+    // 之一：每次挂载的 Fresh 初始化/提交路径都经过这里。Unix 维持
+    // 只读打开——fsync 无写访问要求，且只读文件也要能同步。
+    #[cfg(unix)]
+    let result = std::fs::File::open(path).and_then(|file| file.sync_all());
+    #[cfg(not(unix))]
+    let result = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .and_then(|file| file.sync_all());
+    result.map_err(|error| error.to_string())
 }
 
 pub(crate) fn sync_dir(path: &Path) -> Result<(), String> {

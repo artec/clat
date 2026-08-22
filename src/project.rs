@@ -302,12 +302,15 @@ struct WriteGuard {
 #[cfg(windows)]
 impl WriteGuard {
     fn acquire(parent: &Dir) -> io::Result<Self> {
-        // cap-std opens the directory with a real directory handle; std's
-        // File::lock maps to LockFileEx on Windows.
-        let directory = parent.try_clone()?.into_std_file();
-        directory.lock()?;
+        // LockFileEx（std `File::lock` 的 Windows 后端）不能作用于目录
+        // 句柄——直接返回 ERROR_INVALID_PARAMETER（os error 87）。
+        // Windows CI 腿首跑 write_file/edit_file 全线失败的病根。
+        // 降级为无锁持有：目录句柄保留（capability 纪律不变），写串
+        // 行化交还给正确性边界本身——rename 的目录项原子替换 +
+        // edit_file 的 expected_previous 乐观并发检查（与存储根租约
+        // "best-effort 串行化，非正确性边界"的既有口径一致）。
         Ok(Self {
-            _directory: directory,
+            _directory: parent.try_clone()?.into_std_file(),
         })
     }
 }

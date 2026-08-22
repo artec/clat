@@ -309,7 +309,33 @@ impl TrustedProjectApplication {
                 );
             }));
         }
+        // B9 迁移腿（INV-M3 升级腿）：旧世界的唯一自定义持久化形态是
+        // 单槽 model_state——档案注册表出现前切走即丢。挂载时把
+        // `preset=None 且 endpoint 非空` 的存量态自动转为第一个档案；
+        // 预设态永不迁移；注册表非空时幂等跳过（用户删光档案后活动态
+        // 已被回退为出厂默认——endpoint 为空，同样不触发）。
+        application.ensure_custom_profile_migration()?;
         Ok(application)
+    }
+
+    /// B9：旧单槽自定义态 → 档案 #1（一次性迁移，见调用点注释）。
+    fn ensure_custom_profile_migration(&self) -> Result<(), ApplicationError> {
+        let profiles = self.list_model_profiles()?;
+        if !profiles.is_empty() {
+            return Ok(());
+        }
+        let Some((config, credentials)) = self.config.load_model_state().map_err(store_error)?
+        else {
+            return Ok(());
+        };
+        if config.preset.is_some() || config.endpoint.trim().is_empty() {
+            return Ok(());
+        }
+        self.save_model_profile("Custom", &config, &credentials)?;
+        // F-B9-1：迁移建档即接管活动指针——迁移档案就是当前活动态，
+        // Custom 列表的 ● 必须落在它身上（save_model_profile 不动
+        // 指针，显式设置）。
+        self.set_active_model_profile(Some("Custom"))
     }
 
     /// Read the workspace pointer and normalize it (plan §13.1):
@@ -837,6 +863,12 @@ impl TrustedProjectApplication {
             let _ = self.config.upsert_vendor_key(vendor, credentials);
         }
         self.monitor.configure(config.clone(), credentials.clone());
+        // F-B9-1（INV-M2 第四元素）：legacy 直写路径（预设切换/经典
+        // 编辑器保存/档位调整）装入的本就是非档案态——指针必须随之
+        // 清空，否则 ①Custom 列表 ● 标错，②删除「陈旧指针」档案误触
+        // was_active 回退、活预设被静默换掉。档案激活门面在
+        // save_model_state 之后显式 set Some(name)，顺序即语义。
+        self.set_active_model_profile(None)?;
         Ok(())
     }
 
@@ -884,6 +916,42 @@ impl TrustedProjectApplication {
 
     pub fn delete_model_profile(&self, name: &str) -> Result<(), ApplicationError> {
         self.config.delete_profile(name).map_err(store_error)
+    }
+
+    /// B9（INV-M2）：激活一个档案 = 原子换装 (config, credentials)——
+    /// 加载档案行、写入单槽活动态、指针指向档案。档案行自身不动
+    /// （INV-M3：切换永不销毁档案数据）。档案不存在 → Ok(None)。
+    pub fn activate_model_profile(
+        &self,
+        name: &str,
+    ) -> Result<Option<(ModelConfig, ProviderCredentials)>, ApplicationError> {
+        let Some((config, credentials)) = self.load_model_profile(name)? else {
+            return Ok(None);
+        };
+        self.save_model_state(&config, &credentials)?;
+        self.set_active_model_profile(Some(name))?;
+        Ok(Some((config, credentials)))
+    }
+
+    /// B9（INV-M3）：删除档案——删的是活动档案时活动指针回退：仍有
+    /// 档案 → 激活首个；一个不剩 → 活动态重置为出厂默认（与全新安装
+    /// 同态，绝不残留已删除档案的 config/key）。
+    pub fn delete_model_profile_with_fallback(&self, name: &str) -> Result<(), ApplicationError> {
+        let was_active = self.active_model_profile()? == Some(name.to_owned());
+        self.delete_model_profile(name)?;
+        if !was_active {
+            return Ok(());
+        }
+        let remaining = self.list_model_profiles()?;
+        if let Some(first) = remaining.first() {
+            self.activate_model_profile(&first.name)?;
+        } else {
+            let config = ModelConfig::default();
+            let credentials = ProviderCredentials::for_protocol(config.protocol);
+            self.save_model_state(&config, &credentials)?;
+            self.set_active_model_profile(None)?;
+        }
+        Ok(())
     }
 
     pub fn active_model_profile(&self) -> Result<Option<String>, ApplicationError> {

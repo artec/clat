@@ -1,4 +1,7 @@
 use super::*;
+use crate::tui::model_editor::{
+    EditorAction, ModelEditor, ModelPicker, PickerAction, ProfileSave, ProfileSummary,
+};
 
 impl App {
     /// 写入一条瞬时提示：显示 `STATUS_TTL` 后自动回落到常驻状态
@@ -103,6 +106,52 @@ impl App {
         }
     }
 
+    /// B9：控制面档案 → picker 摘要（含活动标记）。
+    fn model_profile_summaries(&self) -> Vec<ProfileSummary> {
+        let Some(application) = self.application.as_ref() else {
+            return Vec::new();
+        };
+        let Ok(active) = application.active_model_profile() else {
+            return Vec::new();
+        };
+        let Ok(profiles) = application.list_model_profiles() else {
+            return Vec::new();
+        };
+        profiles
+            .into_iter()
+            .map(|profile| ProfileSummary {
+                active: active.as_deref() == Some(profile.name.as_str()),
+                name: profile.name,
+                endpoint: profile.endpoint.clone(),
+                model: profile.model.clone(),
+            })
+            .collect()
+    }
+
+    /// B9：按名取档案 (config, credentials)。
+    fn load_model_profile(
+        &self,
+        name: &str,
+    ) -> Option<(crate::ModelConfig, crate::model::ProviderCredentials)> {
+        self.application
+            .as_ref()?
+            .load_model_profile(name)
+            .ok()
+            .flatten()
+    }
+
+    /// B9：删除回退后同步内存镜像（config/credentials/descriptors）。
+    fn sync_model_state_from_application(&mut self) {
+        let Some(application) = self.application.as_ref() else {
+            return;
+        };
+        if let Ok((config, credentials)) = application.model_state() {
+            self.config = config;
+            self.credentials = credentials;
+            self.provider_descriptors = application.provider_descriptors(&self.credentials);
+        }
+    }
+
     /// 处理二级选择器的动作。确认预设时：同端点且已存有密钥 → 直接
     /// 保存切换；跨厂商或缺密钥 → 转入编辑器补密钥（清空旧厂商密钥，
     /// 避免把一家厂商的 key 发给另一家）。
@@ -111,16 +160,69 @@ impl App {
             PickerAction::Continue => {}
             PickerAction::Cancel => {
                 self.picker = None;
+                self.picker_return = None;
                 self.flash_status("model selection cancelled");
             }
-            PickerAction::EditCustom => {
+            PickerAction::OpenProfileEditor { edit } => {
+                // INV-U1：进入编辑器前拍下导航态，取消时原位重建。
+                self.picker_return = self.picker.as_ref().map(ModelPicker::snapshot);
                 self.picker = None;
-                self.editor = Some(ModelEditor::new_with_descriptors(
-                    &self.config,
-                    self.credentials.clone(),
-                    self.provider_descriptors.clone(),
-                ));
-                self.flash_status("editing model configuration");
+                match edit {
+                    None => {
+                        // B9（INV-M4/M5）：空白保守模板——绝不携带当前
+                        // 配置冒充新档案（旧「身份谎言」入口已除）。
+                        self.editor = Some(ModelEditor::new_profile_template(
+                            self.provider_descriptors.clone(),
+                        ));
+                        self.flash_status("no custom models yet — create the first one");
+                    }
+                    Some(name) => match self.load_model_profile(&name) {
+                        Some((config, credentials)) => {
+                            self.editor = Some(ModelEditor::for_profile(
+                                &name,
+                                &config,
+                                credentials,
+                                self.provider_descriptors.clone(),
+                            ));
+                            self.flash_status(format!("editing profile {name}"));
+                        }
+                        None => self.flash_status(format!("profile {name} not found")),
+                    },
+                }
+            }
+            PickerAction::SwitchProfile(name) => {
+                let Some(application) = self.application.as_ref() else {
+                    return;
+                };
+                match application.activate_model_profile(&name) {
+                    Ok(Some((config, credentials))) => {
+                        self.config = config;
+                        self.credentials = credentials;
+                        self.provider_descriptors =
+                            application.provider_descriptors(&self.credentials);
+                        self.refresh_balance_now();
+                        self.picker = None;
+                        self.picker_return = None;
+                        self.flash_status(format!("switched to profile {name}"));
+                    }
+                    Ok(None) => self.flash_status(format!("profile {name} not found")),
+                    Err(error) => self.flash_status(format!("switch failed: {error}")),
+                }
+            }
+            PickerAction::DeleteProfile(name) => {
+                let Some(application) = self.application.as_ref() else {
+                    return;
+                };
+                match application.delete_model_profile_with_fallback(&name) {
+                    Ok(()) => {
+                        // 活动态可能已回退（首档案/出厂默认）——同步镜像。
+                        self.sync_model_state_from_application();
+                        self.picker = None;
+                        self.picker_return = None;
+                        self.flash_status(format!("profile {name} deleted"));
+                    }
+                    Err(error) => self.flash_status(format!("delete failed: {error}")),
+                }
             }
             PickerAction::SelectPreset(preset) => {
                 let mut config = self.config.clone();
@@ -149,6 +251,7 @@ impl App {
                             // 端点或密钥可能已变化，触发立即重新查询。
                             self.refresh_balance_now();
                             self.picker = None;
+                            self.picker_return = None;
                             self.flash_status(format!("model switched to {}", preset.name));
                         }
                         Err(error) => self.flash_status(format!("failed to save model: {error}")),
@@ -183,6 +286,7 @@ impl App {
                             self.credentials = restored;
                             self.refresh_balance_now();
                             self.picker = None;
+                            self.picker_return = None;
                             self.flash_status(format!(
                                 "model switched to {} (saved key restored)",
                                 preset.name
@@ -191,6 +295,9 @@ impl App {
                         Err(error) => self.flash_status(format!("failed to save model: {error}")),
                     }
                 } else {
+                    // INV-U1：转编辑器补密钥前拍下导航态（二级列表 + 光
+                    // 标行），取消时原位重建。
+                    self.picker_return = self.picker.as_ref().map(ModelPicker::snapshot);
                     self.picker = None;
                     let mut editor = ModelEditor::new_with_descriptors(
                         &config,
@@ -210,7 +317,61 @@ impl App {
             EditorAction::Continue => {}
             EditorAction::Cancel => {
                 self.editor = None;
-                self.flash_status("model configuration cancelled");
+                // INV-U1（原位返回）：从 picker 进入的编辑器取消后，
+                // 以快照原位重建 picker（层级 + 光标行），选择链路不
+                // 因一次取消整体消失；档案数据未变，摘要重查即新。
+                if let Some(snapshot) = self.picker_return.take() {
+                    let profiles = self.model_profile_summaries();
+                    let mut picker = ModelPicker::new(&self.config, profiles);
+                    picker.restore_snapshot(snapshot);
+                    self.picker = Some(picker);
+                } else {
+                    self.flash_status("model configuration cancelled");
+                }
+            }
+            EditorAction::SaveProfile(saved) => {
+                let ProfileSave {
+                    name,
+                    original_name,
+                    config,
+                    credentials,
+                } = *saved;
+                let Some(application) = self.application.as_ref() else {
+                    return;
+                };
+                // 改名 = 存新名 + 删旧名（INV-M3：旧档案数据不残留双份）。
+                let renamed = original_name
+                    .as_deref()
+                    .is_some_and(|original| original != name);
+                let saved = application.save_model_profile(&name, &config, &credentials);
+                let result = match saved {
+                    Err(error) => Err(error.to_string()),
+                    Ok(()) => {
+                        if renamed && let Some(original) = &original_name {
+                            let _ = application.delete_model_profile(original);
+                        }
+                        // 新建/编辑的档案即刻激活（原子换装）。
+                        application
+                            .activate_model_profile(&name)
+                            .map(|_| ())
+                            .map_err(|error| error.to_string())
+                    }
+                };
+                match result {
+                    Ok(()) => {
+                        self.config = config;
+                        self.credentials = credentials;
+                        self.provider_descriptors =
+                            application.provider_descriptors(&self.credentials);
+                        self.refresh_balance_now();
+                        self.editor = None;
+                        self.picker_return = None;
+                        self.flash_status(format!("profile {name} saved and activated"));
+                    }
+                    Err(error) => {
+                        self.flash_status(format!("failed to save profile: {error}"));
+                    }
+                }
             }
             EditorAction::Save(saved) => {
                 let (config, credentials) = *saved;
@@ -237,6 +398,7 @@ impl App {
                             self.config.protocol, self.config.model
                         ));
                         self.editor = None;
+                        self.picker_return = None;
                     }
                     Err(error) => {
                         self.flash_status(format!("failed to save model: {error}"));
@@ -298,9 +460,12 @@ impl App {
             }
             CommandOutcome::StartModelSelection => {
                 // Claude Code 风格：先选厂商（一级），再选该厂商的模型
-                // （二级）；Custom 入口仍进入完整编辑器。
+                //（二级）；Custom 入口经档案三态（B9：零档案直进新建
+                // 页、≥1 档案列表 + New…）。
                 self.editor = None;
-                self.picker = Some(ModelPicker::new(&self.config));
+                self.picker_return = None;
+                let profiles = self.model_profile_summaries();
+                self.picker = Some(ModelPicker::new(&self.config, profiles));
                 self.flash_status("select a model");
             }
             CommandOutcome::StartSessionSelection { sessions } => {

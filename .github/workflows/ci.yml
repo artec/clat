@@ -36,7 +36,7 @@ jobs:
       # python3。demo e2e 需要构建产物 dist/（gitignore）——先装依赖并
       # 构建（examples/exa 的真实发布物验收不在 CI 装，测试内对缺失
       # 构建态自动 skip）。
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
 

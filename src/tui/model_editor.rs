@@ -2,21 +2,33 @@ use crate::presets::{MODEL_PRESETS, ModelPreset, preset_by_id, preset_vendors, p
 use crate::{ModelConfig, ModelProtocol, ProviderCredentials, ProviderDescriptor, ThinkingLevel};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::Frame;
-use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
 use serde_json::Value;
-use unicode_width::UnicodeWidthChar;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 pub(crate) enum EditorAction {
     Continue,
     Save(Box<(ModelConfig, ProviderCredentials)>),
+    /// B9：档案模式保存——携档案名与原名（改名 = 存新删旧）。
+    SaveProfile(Box<ProfileSave>),
     Cancel,
+}
+
+/// B9 档案保存载荷（INV-M1/M3）。
+pub(crate) struct ProfileSave {
+    pub name: String,
+    /// 编辑既有档案时的原名；None = 新建。改名 = 存新名 + 删旧名。
+    pub original_name: Option<String>,
+    pub config: ModelConfig,
+    pub credentials: ProviderCredentials,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RowKind {
+    Name,
     Preset,
     Model,
     Endpoint,
@@ -31,6 +43,9 @@ enum RowKind {
     OutputLimit,
     ContextWindow,
     SpendBudget,
+    /// U2（INV-M6）：档案编辑器的思考档位枚举行（Low/High/Max/Off）。
+    /// 仅档案模式可见；预设态维持 Shift+Tab 一等字段路径（INV-E）。
+    Thinking,
     Temperature,
     Parallel,
     Save,
@@ -39,6 +54,7 @@ enum RowKind {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum EditTarget {
+    Name,
     Model,
     Endpoint,
     ApiKey,
@@ -57,6 +73,28 @@ struct EditPopup {
     target: EditTarget,
     buffer: String,
 }
+
+/// B9 档案编辑上下文：None = 现状预设编辑器（Preset 循环行保留）；
+/// Some = 自定义档案模板（INV-M5：无 Preset 行；INV-M4：数值参数以
+/// 枚举呈现，自由输入仅经 Custom… 位）。
+struct ProfileContext {
+    /// 编辑既有档案的原名；None = 新建（空白保守模板）。
+    original_name: Option<String>,
+    name: String,
+}
+
+/// 枚举档位（INV-M4）。usize::MAX = Custom… 位（自由数字输入）。
+/// 排序约定（用户反馈 2026-08-22）：数值从小到大；缺省位在序中不抢
+/// 首位；Off/Custom… 等特殊位殿后。
+const CONTEXT_CHOICES: [u32; 3] = [128 * 1024, 256 * 1024, 1024 * 1024];
+const OUTPUT_CHOICES: [u32; 3] = [8 * 1024, 32 * 1024, 128 * 1024];
+/// None = 系统缺省（B1 的 10M）；Some 值即 run_token_budget；
+/// Some(0) = off。
+const BUDGET_CHOICES: [Option<u64>; 4] = [Some(1_000_000), None, Some(50_000_000), Some(0)];
+/// 各枚举的缺省位（模板缺省，见 new_profile_template）。
+const OUTPUT_DEFAULT: usize = 1;
+const BUDGET_DEFAULT: usize = 1;
+const CHOICE_CUSTOM: usize = usize::MAX;
 
 pub(crate) struct ModelEditor {
     protocol: ModelProtocol,
@@ -81,6 +119,12 @@ pub(crate) struct ModelEditor {
     credentials: ProviderCredentials,
     provider_descriptors: Vec<ProviderDescriptor>,
     preset: Option<&'static ModelPreset>,
+    /// B9：Some = 档案模式（行集/枚举行/保存路径走档案分支）。
+    profile: Option<ProfileContext>,
+    /// 枚举档位下标（仅档案模式使用；CHOICE_CUSTOM = Custom…）。
+    context_choice: usize,
+    output_choice: usize,
+    budget_choice: usize,
     show_advanced: bool,
     selected: usize,
     editing: Option<EditPopup>,
@@ -123,6 +167,10 @@ impl ModelEditor {
             credentials,
             provider_descriptors,
             preset: config.preset.as_deref().and_then(preset_by_id),
+            profile: None,
+            context_choice: CHOICE_CUSTOM,
+            output_choice: CHOICE_CUSTOM,
+            budget_choice: 0,
             show_advanced: false,
             selected: 0,
             editing: None,
@@ -130,8 +178,87 @@ impl ModelEditor {
         }
     }
 
+    /// B9（INV-M4/M5）：新建档案的空白模板——除四个必填文本（Name/
+    /// Endpoint/Model/ApiKey 可空）外，每个数值参数都落在保守缺省的
+    /// 枚举位上，永不出现空的必填数值；无 Preset 循环行（覆写地雷
+    /// 不存在于档案编辑器）。
+    pub fn new_profile_template(provider_descriptors: Vec<ProviderDescriptor>) -> Self {
+        let mut editor = Self::new_with_descriptors(
+            &ModelConfig::default(),
+            ProviderCredentials::for_protocol(ModelProtocol::OpenAiCompatible),
+            provider_descriptors,
+        );
+        editor.profile = Some(ProfileContext {
+            original_name: None,
+            name: String::new(),
+        });
+        // 保守缺省：context 128K / output 32K / budget 系统缺省(10M)。
+        editor.context_choice = 0;
+        editor.output_choice = OUTPUT_DEFAULT;
+        editor.budget_choice = BUDGET_DEFAULT;
+        editor.context_window = String::new();
+        editor.output_limit = String::new();
+        editor.spend_budget = String::new();
+        // INV-M6：思考档位缺省 High——与四个内置预设全部 pin
+        // `reasoning_effort: high` 的口径对齐。
+        editor.thinking_level = Some(ThinkingLevel::High);
+        editor
+    }
+
+    /// B9：编辑既有档案——带入档案值（枚举位按值反查，非枚举值落
+    /// Custom… 位并预填数字）。
+    pub fn for_profile(
+        name: &str,
+        config: &ModelConfig,
+        credentials: ProviderCredentials,
+        provider_descriptors: Vec<ProviderDescriptor>,
+    ) -> Self {
+        let mut editor = Self::new_with_descriptors(config, credentials, provider_descriptors);
+        editor.profile = Some(ProfileContext {
+            original_name: Some(name.to_owned()),
+            name: name.to_owned(),
+        });
+        editor.context_choice = config
+            .max_context_tokens
+            .and_then(|tokens| CONTEXT_CHOICES.iter().position(|choice| *choice == tokens))
+            .unwrap_or(CHOICE_CUSTOM);
+        if editor.context_choice == CHOICE_CUSTOM {
+            editor.context_window = config
+                .max_context_tokens
+                .map(|tokens| tokens.to_string())
+                .unwrap_or_default();
+        }
+        editor.output_choice = config
+            .output_limit
+            .and_then(|tokens| OUTPUT_CHOICES.iter().position(|choice| *choice == tokens))
+            .unwrap_or(CHOICE_CUSTOM);
+        if editor.output_choice == CHOICE_CUSTOM {
+            editor.output_limit = config
+                .output_limit
+                .map(|tokens| tokens.to_string())
+                .unwrap_or_default();
+        }
+        editor.budget_choice = BUDGET_CHOICES
+            .iter()
+            .position(|choice| *choice == config.run_token_budget)
+            .unwrap_or(CHOICE_CUSTOM);
+        if editor.budget_choice == CHOICE_CUSTOM {
+            editor.spend_budget = config
+                .run_token_budget
+                .map(|budget| budget.to_string())
+                .unwrap_or_default();
+        }
+        editor
+    }
+
     pub fn row_count(&self) -> usize {
         self.visible_rows().len()
+    }
+
+    /// 测试探针：当前错误文案（校验失败提示）。
+    #[cfg(test)]
+    fn error_text(&self) -> String {
+        self.error.clone().unwrap_or_default()
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> EditorAction {
@@ -204,7 +331,9 @@ impl ModelEditor {
             return EditorAction::Continue;
         }
         let row = mouse.row.saturating_sub(area.y + 1) as usize;
-        if row >= self.row_count() {
+        // 同 picker：空行/钉底说明行/被裁剪行上的点击不可激活。
+        let visible_rows = area.height.saturating_sub(4) as usize;
+        if row >= self.row_count() || row >= visible_rows {
             return EditorAction::Continue;
         }
         self.editing = None;
@@ -214,29 +343,48 @@ impl ModelEditor {
 
     pub fn draw(&self, frame: &mut Frame, area: Rect) {
         crate::tui::clear_popup_with_guards(frame, area);
+        // 弹窗规范统一（2026-08-22 用户反馈）：说明行钉在弹框内底行、
+        // Faint 灰、与内容恰好隔一空行——与选择器及其余弹窗一致（此前
+        // 编辑器说明行无样式，亮白刺眼且与 picker 不一致）。
+        let block = crate::tui::popup_block(" /model ");
+        let inner = block.inner(area);
+        let [content_area, footer_area] =
+            Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(inner);
+        frame.render_widget(block, area);
+
         let rows = self.rows();
-        let mut lines = Vec::with_capacity(rows.len() + 2);
+        let mut lines = Vec::with_capacity(rows.len() + 1);
+        let row_width = content_area.width as usize;
         for (index, (label, value)) in rows.into_iter().enumerate() {
             let style = if index == self.selected {
                 crate::tui::theme::style(crate::tui::theme::Role::Selected)
             } else {
                 Style::default()
             };
-            lines.push(Line::from(vec![
-                Span::styled(format!("{label:<21}"), style),
-                Span::styled(value, style),
-            ]));
+            // 同 picker：单行截断，行数即内容高度。
+            let row_text = format!("{label:<21}{value}");
+            lines.push(Line::from(Span::styled(
+                truncate_to_width(&row_text, row_width),
+                style,
+            )));
         }
         lines.push(Line::from(""));
-        lines.push(Line::from(self.error.as_deref().unwrap_or(
-            "Enter or click to edit · ←/→ cycles the selected row · Ctrl+S saves · Esc cancels",
-        )));
         frame.render_widget(
-            Paragraph::new(lines)
-                .block(crate::tui::popup_block(" /model "))
-                .wrap(Wrap { trim: false }),
-            area,
+            Paragraph::new(lines).wrap(Wrap { trim: false }),
+            content_area,
         );
+
+        let footer = match &self.error {
+            Some(error) => Line::from(Span::styled(
+                error.clone(),
+                crate::tui::theme::style(crate::tui::theme::Role::Error),
+            )),
+            None => Line::from(Span::styled(
+                "↑↓ select · Enter edit · ←/→ cycle · Ctrl+S save · Esc cancel",
+                crate::tui::theme::style(crate::tui::theme::Role::Faint),
+            )),
+        };
+        frame.render_widget(Paragraph::new(footer), footer_area);
 
         if let Some(popup) = &self.editing {
             self.draw_edit_popup(frame, popup);
@@ -253,6 +401,16 @@ impl ModelEditor {
     fn row_label(&self, kind: RowKind) -> (String, String) {
         use RowKind::*;
         match kind {
+            Name => (
+                "Name".into(),
+                display_placeholder(
+                    &self
+                        .profile
+                        .as_ref()
+                        .map(|profile| profile.name.clone())
+                        .unwrap_or_default(),
+                ),
+            ),
             Preset => (
                 "Preset".into(),
                 format!(
@@ -277,15 +435,10 @@ impl ModelEditor {
             AuthPrefix => ("Auth Prefix".into(), display_spaces(&self.auth_prefix)),
             ExtraHeaders => ("Extra Headers JSON".into(), self.extra_headers.clone()),
             ExtraBody => ("Extra Body JSON".into(), self.extra_body.clone()),
-            OutputLimit => ("Max Output Tokens".into(), self.output_limit.clone()),
-            ContextWindow => (
-                "Context Window (auto-compact)".into(),
-                self.context_window.clone(),
-            ),
-            SpendBudget => (
-                "Spend Budget (tokens/run, 0=off)".into(),
-                self.spend_budget.clone(),
-            ),
+            OutputLimit => ("Max Output Tokens".into(), self.output_row_value()),
+            ContextWindow => ("Context Window".into(), self.context_row_value()),
+            SpendBudget => ("Spend Budget".into(), self.budget_row_value()),
+            Thinking => ("Thinking".into(), self.thinking_row_value()),
             Temperature => ("Temperature".into(), self.temperature.clone()),
             Parallel => (
                 "Parallel Tool Calls".into(),
@@ -300,6 +453,55 @@ impl ModelEditor {
         }
     }
 
+    /// B9 枚举行显示（INV-M4）：枚举位显示人话；Custom… 位显示
+    /// `custom: <n>`。预设编辑模式维持自由数字原样显示。
+    fn context_row_value(&self) -> String {
+        if self.profile.is_none() {
+            return self.context_window.clone();
+        }
+        match self.context_choice {
+            CHOICE_CUSTOM => format!("custom: {}  ←/→", custom_or(&self.context_window)),
+            index => format!("{}  ←/→", human_tokens(u64::from(CONTEXT_CHOICES[index]))),
+        }
+    }
+
+    fn output_row_value(&self) -> String {
+        if self.profile.is_none() {
+            return self.output_limit.clone();
+        }
+        match self.output_choice {
+            CHOICE_CUSTOM => format!("custom: {}  ←/→", custom_or(&self.output_limit)),
+            index => format!("{}  ←/→", human_tokens(u64::from(OUTPUT_CHOICES[index]))),
+        }
+    }
+
+    fn budget_row_value(&self) -> String {
+        if self.profile.is_none() {
+            return self.spend_budget.clone();
+        }
+        match self.budget_choice {
+            CHOICE_CUSTOM => format!("custom: {}  ←/→", custom_or(&self.spend_budget)),
+            index => match BUDGET_CHOICES[index] {
+                None => "default 10M  ←/→".into(),
+                Some(0) => "off  ←/→".into(),
+                Some(budget) => format!("{}  ←/→", human_tokens(budget)),
+            },
+        }
+    }
+
+    /// U2（INV-M6）：思考档位枚举显示——Off 位 = None = 不注入 =
+    /// 跟随厂商缺省。生效口径：四家域名端点由 `model_state()` 二次
+    /// 应用注入；Other 端点存而不发（严格网关保护，Extra Body 是
+    /// 那里的原始通道——见 model-editor.md）。
+    fn thinking_row_value(&self) -> String {
+        match self.thinking_level {
+            Some(ThinkingLevel::Low) => "low  ←/→".into(),
+            Some(ThinkingLevel::High) => "high  ←/→".into(),
+            Some(ThinkingLevel::Max) => "max  ←/→".into(),
+            None => "off (vendor default)  ←/→".into(),
+        }
+    }
+
     fn credential_label(&self, index: usize) -> String {
         self.provider_descriptors
             .iter()
@@ -311,6 +513,35 @@ impl ModelEditor {
 
     fn visible_rows(&self) -> Vec<RowKind> {
         use RowKind::*;
+        if self.profile.is_some() {
+            // INV-M5：档案编辑器无 Preset 循环行；INV-M4：三个数值
+            // 参数以枚举行出现在基本区；INV-M6：思考档位枚举行。
+            let mut rows = vec![
+                Name,
+                Model,
+                Endpoint,
+                ApiKey,
+                ContextWindow,
+                OutputLimit,
+                SpendBudget,
+                Thinking,
+                Advanced,
+            ];
+            if self.show_advanced {
+                rows.extend([
+                    Protocol,
+                    RequestPath,
+                    AuthHeader,
+                    AuthPrefix,
+                    ExtraHeaders,
+                    ExtraBody,
+                    Temperature,
+                    Parallel,
+                ]);
+            }
+            rows.extend([Save, Cancel]);
+            return rows;
+        }
         let mut rows = vec![Preset, Model, Endpoint, ApiKey, Advanced];
         if self.show_advanced {
             rows.extend([
@@ -365,17 +596,27 @@ impl ModelEditor {
 
     fn commit_edit(&mut self, target: EditTarget, buffer: String) {
         match target {
+            EditTarget::Name => {
+                if let Some(profile) = &mut self.profile {
+                    profile.name = buffer;
+                }
+            }
             EditTarget::Model => {
                 self.model = buffer;
                 self.preset = None;
                 // TUI-L01：手工改模型即离开原模型，隐藏档位字段不跨
-                // 模型携带。
-                self.thinking_level = None;
+                // 模型携带。档案模式豁免（INV-M6）：档位是可见枚举行
+                // 的用户选择，不随字段编辑静默清零。
+                if self.profile.is_none() {
+                    self.thinking_level = None;
+                }
             }
             EditTarget::Endpoint => {
                 self.endpoint = buffer;
                 self.preset = None;
-                self.thinking_level = None;
+                if self.profile.is_none() {
+                    self.thinking_level = None;
+                }
             }
             EditTarget::ApiKey => self.credentials.set_value(0, buffer),
             EditTarget::RequestPath => {
@@ -392,8 +633,9 @@ impl ModelEditor {
                 // 写回预设值。
                 self.preset = None;
                 // TUI-L01：Extra Body 是思考参数的原始事实源，手工提交
-                // 即废除隐藏档位字段——否则 model_state 的二次应用会在
-                // 下一次 run 静默否决用户刚保存的内容。
+                // 即废除档位——否则 model_state 的二次应用会在下一次
+                // run 静默否决用户刚保存的内容。档案模式同律（INV-M6）：
+                // 可见 Thinking 行翻到 off 是反馈而非静默丢失。
                 self.thinking_level = None;
             }
             EditTarget::OutputLimit => {
@@ -420,6 +662,7 @@ impl ModelEditor {
 
     fn edit_target_for(&self, kind: RowKind) -> Option<EditTarget> {
         match kind {
+            RowKind::Name if self.profile.is_some() => Some(EditTarget::Name),
             RowKind::Model => Some(EditTarget::Model),
             RowKind::Endpoint => Some(EditTarget::Endpoint),
             RowKind::ApiKey => Some(EditTarget::ApiKey),
@@ -438,6 +681,11 @@ impl ModelEditor {
 
     fn current_value(&self, target: EditTarget) -> String {
         match target {
+            EditTarget::Name => self
+                .profile
+                .as_ref()
+                .map(|profile| profile.name.clone())
+                .unwrap_or_default(),
             EditTarget::Model => self.model.clone(),
             EditTarget::Endpoint => self.endpoint.clone(),
             EditTarget::ApiKey => self.credentials.value(0).unwrap_or_default().to_owned(),
@@ -455,6 +703,7 @@ impl ModelEditor {
 
     fn edit_target_label(&self, target: EditTarget) -> &'static str {
         match target {
+            EditTarget::Name => "Profile Name",
             EditTarget::Model => "Model",
             EditTarget::Endpoint => "Endpoint",
             EditTarget::ApiKey => "API Key",
@@ -482,8 +731,8 @@ impl ModelEditor {
             Line::from(shown),
             Line::from(""),
             Line::from(Span::styled(
-                "Enter to confirm · Esc to cancel",
-                Style::default().add_modifier(Modifier::DIM),
+                "Enter confirm · Esc cancel",
+                crate::tui::theme::style(crate::tui::theme::Role::Faint),
             )),
         ];
         frame.render_widget(
@@ -501,6 +750,31 @@ impl ModelEditor {
     }
 
     fn enter_selected(&mut self) -> EditorAction {
+        // B9：档案模式的枚举行——Enter/←/→ 一律循环档位；Custom… 位
+        // 的自由数字输入由「直接打字」触发（handle_key 的字符/退格
+        // 分支打开数字弹窗，缓冲预填当前值），循环本身不开弹窗
+        //（INV-M4：自由数值输入仅经 Custom… 进入）。
+        if self.profile.is_some() {
+            match self.selected_row() {
+                RowKind::ContextWindow => {
+                    self.cycle_context_choice(1);
+                    return EditorAction::Continue;
+                }
+                RowKind::OutputLimit => {
+                    self.cycle_output_choice(1);
+                    return EditorAction::Continue;
+                }
+                RowKind::SpendBudget => {
+                    self.cycle_budget_choice(1);
+                    return EditorAction::Continue;
+                }
+                RowKind::Thinking => {
+                    self.cycle_thinking_choice(1);
+                    return EditorAction::Continue;
+                }
+                _ => {}
+            }
+        }
         match self.selected_row() {
             RowKind::Preset => {
                 self.cycle_preset(1);
@@ -551,6 +825,24 @@ impl ModelEditor {
     }
 
     fn shift_row(&mut self, direction: i8) {
+        if self.profile.is_some() {
+            match self.selected_row() {
+                RowKind::ContextWindow => self.cycle_context_choice(direction),
+                RowKind::OutputLimit => self.cycle_output_choice(direction),
+                RowKind::SpendBudget => self.cycle_budget_choice(direction),
+                RowKind::Thinking => self.cycle_thinking_choice(direction),
+                RowKind::Protocol => {
+                    let protocol = if direction > 0 {
+                        self.protocol.next()
+                    } else {
+                        self.protocol.previous()
+                    };
+                    self.set_protocol(protocol);
+                }
+                _ => {}
+            }
+            return;
+        }
         match self.selected_row() {
             RowKind::Preset => self.cycle_preset(direction),
             RowKind::Protocol => {
@@ -563,6 +855,77 @@ impl ModelEditor {
             }
             _ => {}
         }
+    }
+
+    /// B9：枚举档位循环（档案模式）。循环只换档位不开弹窗；停在
+    /// Custom… 位后直接打字才打开数字弹窗（缓冲预填当前值）。
+    fn cycle_context_choice(&mut self, direction: i8) {
+        let len = CONTEXT_CHOICES.len() + 1;
+        let current = if self.context_choice == CHOICE_CUSTOM {
+            len - 1
+        } else {
+            self.context_choice
+        };
+        let next = ((current as isize + direction as isize).rem_euclid(len as isize)) as usize;
+        self.context_choice = if next == len - 1 { CHOICE_CUSTOM } else { next };
+        if self.context_choice != CHOICE_CUSTOM {
+            self.context_window = CONTEXT_CHOICES[self.context_choice].to_string();
+            self.editing = None;
+        }
+        self.error = None;
+    }
+
+    fn cycle_output_choice(&mut self, direction: i8) {
+        let len = OUTPUT_CHOICES.len() + 1;
+        let current = if self.output_choice == CHOICE_CUSTOM {
+            len - 1
+        } else {
+            self.output_choice
+        };
+        let next = ((current as isize + direction as isize).rem_euclid(len as isize)) as usize;
+        self.output_choice = if next == len - 1 { CHOICE_CUSTOM } else { next };
+        if self.output_choice != CHOICE_CUSTOM {
+            self.output_limit = OUTPUT_CHOICES[self.output_choice].to_string();
+            self.editing = None;
+        }
+        self.error = None;
+    }
+
+    fn cycle_budget_choice(&mut self, direction: i8) {
+        let len = BUDGET_CHOICES.len() + 1;
+        let current = if self.budget_choice == CHOICE_CUSTOM {
+            len - 1
+        } else {
+            self.budget_choice
+        };
+        let next = ((current as isize + direction as isize).rem_euclid(len as isize)) as usize;
+        self.budget_choice = if next == len - 1 { CHOICE_CUSTOM } else { next };
+        if self.budget_choice != CHOICE_CUSTOM {
+            self.spend_budget = BUDGET_CHOICES[self.budget_choice]
+                .map(|budget| budget.to_string())
+                .unwrap_or_default();
+            self.editing = None;
+        }
+        self.error = None;
+    }
+
+    /// U2（INV-M6）：思考档位四档循环 Low → High → Max → Off → Low。
+    /// Off = None = 不注入 = 跟随厂商缺省。
+    fn cycle_thinking_choice(&mut self, direction: i8) {
+        let current = match self.thinking_level {
+            Some(ThinkingLevel::Low) => 0,
+            Some(ThinkingLevel::High) => 1,
+            Some(ThinkingLevel::Max) => 2,
+            None => 3,
+        };
+        let next = ((current as isize + direction as isize).rem_euclid(4)) as usize;
+        self.thinking_level = match next {
+            0 => Some(ThinkingLevel::Low),
+            1 => Some(ThinkingLevel::High),
+            2 => Some(ThinkingLevel::Max),
+            _ => None,
+        };
+        self.error = None;
     }
 
     /// Cycles through Custom → first preset → … → last preset → Custom.
@@ -614,7 +977,10 @@ impl ModelEditor {
         // A manually chosen protocol no longer matches the preset.
         self.preset = None;
         // TUI-L01：协议是预设控制字段，手工选择同样废除隐藏档位。
-        self.thinking_level = None;
+        // 档案模式豁免（INV-M6，同上）。
+        if self.profile.is_none() {
+            self.thinking_level = None;
+        }
         self.error = None;
     }
 
@@ -633,7 +999,18 @@ impl ModelEditor {
 
     fn save_action(&mut self) -> EditorAction {
         match self.build() {
-            Ok((config, runtime)) => EditorAction::Save(Box::new((config, runtime))),
+            Ok((config, runtime)) => {
+                if let Some(profile) = &self.profile {
+                    EditorAction::SaveProfile(Box::new(ProfileSave {
+                        name: profile.name.trim().to_owned(),
+                        original_name: profile.original_name.clone(),
+                        config,
+                        credentials: runtime,
+                    }))
+                } else {
+                    EditorAction::Save(Box::new((config, runtime)))
+                }
+            }
             Err(error) => {
                 self.error = Some(error);
                 EditorAction::Continue
@@ -642,6 +1019,14 @@ impl ModelEditor {
     }
 
     fn build(&self) -> Result<(ModelConfig, ProviderCredentials), String> {
+        if self.profile.is_some()
+            && self
+                .profile
+                .as_ref()
+                .is_some_and(|profile| profile.name.trim().is_empty())
+        {
+            return Err("Profile name is required".into());
+        }
         if self.model.trim().is_empty() {
             return Err("Model is required".into());
         }
@@ -653,15 +1038,44 @@ impl ModelEditor {
         }
         let extra_headers = parse_object(&self.extra_headers, "Extra Headers JSON")?;
         let extra_body = parse_object(&self.extra_body, "Extra Body JSON")?;
-        let output_limit = parse_optional_u32(&self.output_limit, "Max Output Tokens")?;
-        if output_limit == Some(0) {
-            return Err("Max Output Tokens must be greater than zero".into());
-        }
-        let max_context_tokens = parse_optional_u32(&self.context_window, "Context Window")?;
-        if max_context_tokens.is_some_and(|tokens| tokens < 4_096) {
-            return Err("Context Window must be at least 4096 tokens".into());
-        }
-        let run_token_budget = parse_optional_u64(&self.spend_budget, "Spend Budget")?;
+        // B9：档案模式按枚举位取值（Custom… 位才解析自由数字缓冲）。
+        let (output_limit, max_context_tokens, run_token_budget) = if self.profile.is_some() {
+            let output_limit = if self.output_choice == CHOICE_CUSTOM {
+                let parsed = parse_optional_u32(&self.output_limit, "Max Output Tokens")?;
+                if parsed.is_none() {
+                    return Err("Max Output Tokens: enter a number or pick a preset size".into());
+                }
+                parsed
+            } else {
+                Some(OUTPUT_CHOICES[self.output_choice])
+            };
+            let max_context_tokens = if self.context_choice == CHOICE_CUSTOM {
+                let parsed = parse_optional_u32(&self.context_window, "Context Window")?;
+                if parsed.is_none() {
+                    return Err("Context Window: enter a number or pick a preset size".into());
+                }
+                parsed
+            } else {
+                Some(CONTEXT_CHOICES[self.context_choice])
+            };
+            let run_token_budget = if self.budget_choice == CHOICE_CUSTOM {
+                parse_optional_u64(&self.spend_budget, "Spend Budget")?
+            } else {
+                BUDGET_CHOICES[self.budget_choice]
+            };
+            (output_limit, max_context_tokens, run_token_budget)
+        } else {
+            let output_limit = parse_optional_u32(&self.output_limit, "Max Output Tokens")?;
+            if output_limit == Some(0) {
+                return Err("Max Output Tokens must be greater than zero".into());
+            }
+            let max_context_tokens = parse_optional_u32(&self.context_window, "Context Window")?;
+            if max_context_tokens.is_some_and(|tokens| tokens < 4_096) {
+                return Err("Context Window must be at least 4096 tokens".into());
+            }
+            let run_token_budget = parse_optional_u64(&self.spend_budget, "Spend Budget")?;
+            (output_limit, max_context_tokens, run_token_budget)
+        };
         let temperature = parse_optional_f64(&self.temperature, "Temperature")?;
         if temperature.is_some_and(|value| !value.is_finite() || value < 0.0) {
             return Err("Temperature must be a finite non-negative number".into());
@@ -669,7 +1083,11 @@ impl ModelEditor {
         Ok((
             ModelConfig {
                 run_token_budget,
-                preset: self.preset.map(|preset| preset.id.to_owned()),
+                preset: if self.profile.is_some() {
+                    None
+                } else {
+                    self.preset.map(|preset| preset.id.to_owned())
+                },
                 protocol: self.protocol,
                 model: self.model.trim().into(),
                 endpoint: self.endpoint.trim().trim_end_matches('/').into(),
@@ -682,6 +1100,8 @@ impl ModelEditor {
                 temperature,
                 parallel_tool_calls: self.parallel_tool_calls,
                 max_context_tokens,
+                // INV-M6：档案携带思考档位（枚举行的持久事实源）；预设
+                // 态维持既有语义（隐藏一等字段，TUI-L01 纪律照旧）。
                 thinking_level: self.thinking_level,
             },
             self.credentials.clone(),
@@ -695,9 +1115,25 @@ pub(crate) enum PickerAction {
     Continue,
     /// 用户在二级列表确认了某个预设。
     SelectPreset(&'static ModelPreset),
-    /// 用户选择 Custom，打开完整编辑器。
-    EditCustom,
+    /// B9：Custom 入口三态派发（零档案 → 新建模板；列表内 `New…` →
+    /// 新建模板；`e` → 编辑既有档案）。
+    OpenProfileEditor {
+        /// None = 空白新建模板；Some = 编辑该档案。
+        edit: Option<String>,
+    },
+    /// B9：Enter 确认切换到该档案（切换并关闭）。
+    SwitchProfile(String),
+    /// B9：两步确认后删除该档案（actions 侧走回退门面）。
+    DeleteProfile(String),
     Cancel,
+}
+
+/// B9：档案列表条目（picker 注入的只读摘要）。
+pub(crate) struct ProfileSummary {
+    pub name: String,
+    pub endpoint: String,
+    pub model: String,
+    pub active: bool,
 }
 
 /// Claude Code 风格的二级 /model 选择器：
@@ -711,16 +1147,44 @@ pub(crate) struct ModelPicker {
     /// 当前展示的厂商；None 表示一级列表。
     vendor: Option<&'static str>,
     selected: usize,
+    /// INV-U1（原位返回）：进入下级（厂商二级/Custom 档案列表）时的
+    /// 一级行号——Esc 返回时光标原位恢复，不重置到首行。
+    home_row: usize,
     /// 当前配置来自的预设，用于在列表中标记 current。
     current_preset: Option<&'static ModelPreset>,
+    /// B9：自定义档案（来自控制面注册表）。
+    profiles: Vec<ProfileSummary>,
+    /// B9：是否正在展示 Custom 档案列表。
+    custom_list: bool,
+    /// B9：删除两步确认——首按 `d` 记住待删行；再按 `d` 确认，其余
+    /// 任意键取消（INV-M3：删除须显式确认）。
+    confirm_delete: Option<usize>,
+}
+
+/// B9 修复（INV-U1 原位返回，用户反馈 2026-08-22）：进入编辑器前对
+/// picker 导航态拍照；编辑器取消后按快照原位重建（层级 + 光标行），
+/// 选择链路不再整体消失。
+#[derive(Clone, Debug)]
+pub(crate) struct PickerSnapshot {
+    vendor: Option<&'static str>,
+    custom_list: bool,
+    selected: usize,
+    home_row: usize,
 }
 
 impl ModelPicker {
-    pub fn new(config: &ModelConfig) -> Self {
+    pub fn new(config: &ModelConfig, profiles: Vec<ProfileSummary>) -> Self {
+        let current_preset = config.preset.as_deref().and_then(preset_by_id);
+        let active = profiles.iter().find(|profile| profile.active);
+        let _ = active;
         Self {
             vendor: None,
             selected: 0,
-            current_preset: config.preset.as_deref().and_then(preset_by_id),
+            home_row: 0,
+            current_preset,
+            profiles,
+            custom_list: false,
+            confirm_delete: None,
         }
     }
 
@@ -728,7 +1192,42 @@ impl ModelPicker {
         self.rows().len()
     }
 
+    /// 测试探针：当前光标行（INV-U1 原位返回断言用）。
+    #[cfg(test)]
+    pub(crate) fn selected_index(&self) -> usize {
+        self.selected
+    }
+
+    /// INV-U1：导航态快照（进入编辑器前拍）。
+    pub(crate) fn snapshot(&self) -> PickerSnapshot {
+        PickerSnapshot {
+            vendor: self.vendor,
+            custom_list: self.custom_list,
+            selected: self.selected,
+            home_row: self.home_row,
+        }
+    }
+
+    /// INV-U1：按快照原位恢复（行数变化时钳制到末行）。
+    pub(crate) fn restore_snapshot(&mut self, snapshot: PickerSnapshot) {
+        self.vendor = snapshot.vendor;
+        self.custom_list = snapshot.custom_list;
+        self.home_row = snapshot.home_row;
+        self.selected = snapshot.selected.min(self.row_count().saturating_sub(1));
+        self.confirm_delete = None;
+    }
+
     fn rows(&self) -> Vec<PickerRow> {
+        if self.custom_list {
+            // B9 档案列表：档案行 + 底行 New…。
+            let mut rows: Vec<PickerRow> = self
+                .profiles
+                .iter()
+                .map(|profile| PickerRow::Profile(profile.name.clone()))
+                .collect();
+            rows.push(PickerRow::NewProfile);
+            return rows;
+        }
         match self.vendor {
             None => {
                 let mut rows: Vec<PickerRow> = preset_vendors()
@@ -746,11 +1245,14 @@ impl ModelPicker {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> PickerAction {
+        if self.custom_list {
+            return self.handle_custom_list_key(key);
+        }
         match key.code {
             KeyCode::Esc | KeyCode::Left if self.vendor.is_some() => {
-                // 二级返回一级。
+                // 二级返回一级（INV-U1：光标回到进入时的行）。
                 self.vendor = None;
-                self.selected = 0;
+                self.selected = self.home_row.min(self.row_count().saturating_sub(1));
                 PickerAction::Continue
             }
             KeyCode::Esc => PickerAction::Cancel,
@@ -786,30 +1288,132 @@ impl ModelPicker {
             return PickerAction::Continue;
         }
         let row = mouse.row.saturating_sub(area.y + 1) as usize;
-        if row >= self.row_count() {
+        // 可见内容行数 = 弹框高 - 双边框 - 空行 - 钉底说明行；空行/
+        // 说明行上的点击以及被裁剪的行不可激活。
+        let visible_rows = area.height.saturating_sub(4) as usize;
+        if row >= self.row_count() || row >= visible_rows {
             return PickerAction::Continue;
         }
         self.activate(row)
     }
 
     fn activate(&mut self, index: usize) -> PickerAction {
+        if self.custom_list {
+            return match self.rows().get(index) {
+                Some(PickerRow::Profile(name)) => PickerAction::SwitchProfile(name.clone()),
+                Some(PickerRow::NewProfile) => PickerAction::OpenProfileEditor { edit: None },
+                _ => PickerAction::Continue,
+            };
+        }
         match self.rows().get(index) {
             Some(PickerRow::Vendor(vendor)) => {
+                self.home_row = index;
                 self.vendor = Some(vendor);
                 self.selected = 0;
                 PickerAction::Continue
             }
             Some(PickerRow::Preset(preset)) => PickerAction::SelectPreset(preset),
-            Some(PickerRow::Custom) => PickerAction::EditCustom,
-            None => PickerAction::Continue,
+            Some(PickerRow::Custom) => {
+                // B9 三态：零档案 → 直接进新建页；≥1 → 档案列表。
+                if self.profiles.is_empty() {
+                    PickerAction::OpenProfileEditor { edit: None }
+                } else {
+                    self.home_row = index;
+                    self.custom_list = true;
+                    self.selected = 0;
+                    self.confirm_delete = None;
+                    PickerAction::Continue
+                }
+            }
+            _ => PickerAction::Continue,
+        }
+    }
+
+    /// B9：档案列表键位——Enter 切换并关闭、`e` 编辑、`d` 两步确认
+    /// 删除、New… 行 Enter 新建、Esc 回一级。任意非 `d` 键取消确认态。
+    fn handle_custom_list_key(&mut self, key: KeyEvent) -> PickerAction {
+        if let Some(pending) = self.confirm_delete {
+            if key.code == KeyCode::Char('d') {
+                self.confirm_delete = None;
+                let name = match self.rows().get(pending) {
+                    Some(PickerRow::Profile(name)) => name.clone(),
+                    _ => return PickerAction::Continue,
+                };
+                return PickerAction::DeleteProfile(name);
+            }
+            self.confirm_delete = None;
+            return PickerAction::Continue;
+        }
+        match key.code {
+            KeyCode::Esc | KeyCode::Left => {
+                // 回一级（INV-U1：光标回到进入时的 Custom 行）。
+                self.custom_list = false;
+                self.selected = self.home_row.min(self.row_count().saturating_sub(1));
+                PickerAction::Continue
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.selected = (self.selected + self.row_count() - 1) % self.row_count();
+                PickerAction::Continue
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.selected = (self.selected + 1) % self.row_count();
+                PickerAction::Continue
+            }
+            KeyCode::Enter | KeyCode::Right => self.activate(self.selected),
+            KeyCode::Char('e') => match self.rows().get(self.selected) {
+                Some(PickerRow::Profile(name)) => PickerAction::OpenProfileEditor {
+                    edit: Some(name.clone()),
+                },
+                _ => PickerAction::Continue,
+            },
+            KeyCode::Char('d') => match self.rows().get(self.selected) {
+                Some(PickerRow::Profile(_)) => {
+                    self.confirm_delete = Some(self.selected);
+                    PickerAction::Continue
+                }
+                _ => PickerAction::Continue,
+            },
+            KeyCode::Char(ch) if ch.is_ascii_digit() && ch != '0' => {
+                let index = (ch as usize - '1' as usize).min(8);
+                if index < self.row_count() {
+                    self.activate(index)
+                } else {
+                    PickerAction::Continue
+                }
+            }
+            _ => PickerAction::Continue,
         }
     }
 
     pub fn draw(&self, frame: &mut Frame, area: Rect) {
         crate::tui::clear_popup_with_guards(frame, area);
+        // 弹窗规范统一（2026-08-22 用户反馈）：键位说明行钉在弹框内底
+        // 行、Faint 灰、与内容恰好隔一空行——与 /resume /perm /help
+        // /mcp 一致；此前说明行随 Paragraph 内容浮动，小列表（max(8)
+        // 兜底撑高）悬空、各级观感不一。内容行超高时被裁剪，说明行
+        // 永不被挤出框外。
+        let title = if self.custom_list {
+            " /model · Custom ".to_owned()
+        } else {
+            match self.vendor {
+                None => " /model ".to_owned(),
+                Some(vendor) => format!(" /model · {vendor} "),
+            }
+        };
+        let block = crate::tui::popup_block(&title);
+        let inner = block.inner(area);
+        let [content_area, footer_area] =
+            Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(inner);
+        frame.render_widget(block, area);
+
         let mut lines = Vec::new();
+        let row_width = content_area.width as usize;
         for (index, row) in self.rows().iter().enumerate() {
-            let (label, hint, current) = self.row_display(row);
+            let (mut label, mut hint, current) = self.row_display(row);
+            if self.confirm_delete == Some(index) {
+                label = format!("delete {label}?");
+                hint = "d again to confirm · any other key cancels".into();
+            }
             let style = if index == self.selected {
                 crate::tui::theme::style(crate::tui::theme::Role::Selected)
             } else {
@@ -821,30 +1425,34 @@ impl ModelPicker {
             } else {
                 " ".into()
             };
-            lines.push(Line::from(vec![
-                Span::styled(format!("{number}  "), style),
-                Span::styled(format!("{label:<24}"), style),
-                Span::styled(format!("{hint}{marker}"), style),
-            ]));
+            // 列表行保持单行：超宽截尾加省略号（permission_picker 同款
+            // 纪律）——行数即内容高度，说明行与内容恒隔一空行。
+            let row_text = format!("{number}  {label:<24}{hint}{marker}");
+            lines.push(Line::from(Span::styled(
+                truncate_to_width(&row_text, row_width),
+                style,
+            )));
         }
         lines.push(Line::from(""));
-        let footer = match self.vendor {
-            None => "↑↓ select · Enter open · 1-9 quick pick · Esc close",
-            Some(_) => "↑↓ select · Enter confirm · Esc back",
-        };
-        lines.push(Line::from(Span::styled(
-            footer,
-            Style::default().add_modifier(Modifier::DIM),
-        )));
-        let title = match self.vendor {
-            None => " /model ".to_owned(),
-            Some(vendor) => format!(" /model · {vendor} "),
+        frame.render_widget(
+            Paragraph::new(lines).wrap(Wrap { trim: false }),
+            content_area,
+        );
+
+        let footer = if self.custom_list {
+            "↑↓ select · Enter switch · e edit · d delete · Esc back"
+        } else {
+            match self.vendor {
+                None => "↑↓ select · Enter open · 1-9 quick pick · Esc close",
+                Some(_) => "↑↓ select · Enter confirm · Esc back",
+            }
         };
         frame.render_widget(
-            Paragraph::new(lines)
-                .block(crate::tui::popup_block(&title))
-                .wrap(Wrap { trim: false }),
-            area,
+            Paragraph::new(Span::styled(
+                footer,
+                crate::tui::theme::style(crate::tui::theme::Role::Faint),
+            )),
+            footer_area,
         );
     }
 
@@ -863,11 +1471,28 @@ impl ModelPicker {
                 self.current_preset
                     .is_some_and(|current| current.id == preset.id),
             ),
-            PickerRow::Custom => (
-                "Custom".to_owned(),
-                "any OpenAI-compatible endpoint".to_owned(),
-                self.current_preset.is_none(),
-            ),
+            PickerRow::Custom => {
+                let count = self.profiles.len();
+                let hint = if count == 0 {
+                    "create your first custom model".to_owned()
+                } else {
+                    format!("{count} custom model{}", if count == 1 { "" } else { "s" })
+                };
+                ("Custom".to_owned(), hint, self.current_preset.is_none())
+            }
+            PickerRow::Profile(name) => {
+                let profile = self
+                    .profiles
+                    .iter()
+                    .find(|profile| &profile.name == name)
+                    .expect("picker rows mirror the profile list");
+                (
+                    name.clone(),
+                    format!("{} · {}", profile.endpoint, profile.model),
+                    profile.active,
+                )
+            }
+            PickerRow::NewProfile => ("New…".to_owned(), "blank template".to_owned(), false),
         }
     }
 }
@@ -876,6 +1501,10 @@ enum PickerRow {
     Vendor(&'static str),
     Preset(&'static ModelPreset),
     Custom,
+    /// B9：档案列表行（携带档案名）。
+    Profile(String),
+    /// B9：档案列表底行——新建。
+    NewProfile,
 }
 
 /// 行内编辑弹窗的目标宽度：上限 68 列，且任何终端下都为
@@ -906,6 +1535,47 @@ fn tail_window(text: &str, width: usize) -> (String, u16) {
         start = index;
     }
     (chars[start..].iter().collect(), used as u16)
+}
+
+/// 列表行超宽截断（含省略号，宽度按显示列计）：行数即内容高度的
+/// 前提——自动换行会让钉底说明行与内容之间的空行被吃掉
+///（2026-08-22 用户反馈的几何契约）。
+fn truncate_to_width(text: &str, max: usize) -> String {
+    if max == 0 || UnicodeWidthStr::width(text) <= max {
+        return text.to_owned();
+    }
+    let mut used = 0usize;
+    let mut out = String::new();
+    for ch in text.chars() {
+        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used + ch_width > max.saturating_sub(1) {
+            break;
+        }
+        out.push(ch);
+        used += ch_width;
+    }
+    out.push('…');
+    out
+}
+
+/// B9：token 数值的人话形态（1024 基，对齐预设口径）。
+fn human_tokens(tokens: u64) -> String {
+    match tokens {
+        value if value >= 1024 * 1024 && value % (1024 * 1024) == 0 => {
+            format!("{}M", value / (1024 * 1024))
+        }
+        value if value >= 1024 && value % 1024 == 0 => format!("{}K", value / 1024),
+        value => value.to_string(),
+    }
+}
+
+/// B9：Custom… 位的数字占位（空 = 提示输入数字）。
+fn custom_or(value: &str) -> String {
+    if value.trim().is_empty() {
+        "<enter a number>".into()
+    } else {
+        value.trim().to_owned()
+    }
 }
 
 fn display_placeholder(value: &str) -> String {
@@ -1366,7 +2036,16 @@ mod tests {
     }
 
     fn new_picker() -> ModelPicker {
-        ModelPicker::new(&ModelConfig::default())
+        ModelPicker::new(&ModelConfig::default(), Vec::new())
+    }
+
+    fn profile_summary(name: &str) -> ProfileSummary {
+        ProfileSummary {
+            name: name.to_owned(),
+            endpoint: "https://api.example.com/v1".into(),
+            model: "model-x".into(),
+            active: false,
+        }
     }
 
     fn picker_key(code: KeyCode) -> KeyEvent {
@@ -1414,6 +2093,102 @@ mod tests {
         ));
     }
 
+    /// U1（INV-U1 原位返回，用户反馈 2026-08-22）：从一级第 i 行进入
+    /// 二级厂商列表，Esc 返回一级时光标必须停在第 i 行（进入时的行），
+    /// 不重置到首行。删除 home_row 记忆（Esc 恢复 selected=0）→ 红。
+    #[test]
+    fn vendor_escape_restores_the_entered_row() {
+        let mut picker = new_picker();
+        for _ in 0..2 {
+            picker.handle_key(picker_key(KeyCode::Down));
+        }
+        picker.handle_key(picker_key(KeyCode::Enter)); // 进入第 3 行 Qwen
+        assert_eq!(picker.row_count(), 1);
+        assert!(matches!(
+            picker.handle_key(picker_key(KeyCode::Esc)),
+            PickerAction::Continue
+        ));
+        assert_eq!(picker.row_count(), 5, "Esc backtracks to level 1");
+        assert_eq!(picker.selected, 2, "Esc restores the row we entered from");
+    }
+
+    /// U1（INV-U1 原位返回）：Custom 档案列表 Esc 返回一级时，光标
+    /// 停在 Custom 行（进入档案列表前的位置）。删除 home_row → 红。
+    #[test]
+    fn custom_list_escape_restores_the_custom_row() {
+        let profiles = vec![profile_summary("work"), profile_summary("personal")];
+        let mut picker = ModelPicker::new(&ModelConfig::default(), profiles);
+        for _ in 0..4 {
+            picker.handle_key(picker_key(KeyCode::Down));
+        }
+        picker.handle_key(picker_key(KeyCode::Enter)); // Custom 行 → 档案列表
+        assert_eq!(picker.row_count(), 3);
+        assert!(matches!(
+            picker.handle_key(picker_key(KeyCode::Esc)),
+            PickerAction::Continue
+        ));
+        assert_eq!(picker.row_count(), 5, "Esc backtracks to level 1");
+        assert_eq!(picker.selected, 4, "Esc restores the Custom row");
+    }
+
+    /// U1（INV-U1 原位返回）：快照往返——从 Custom 档案列表进入编辑器
+    /// 后取消，重建的 picker 必须回到档案列表内原光标行（而非一级）。
+    /// 删除 restore_snapshot 恢复逻辑 → 红。
+    #[test]
+    fn snapshot_restore_roundtrips_level_and_cursor() {
+        let profiles = vec![profile_summary("work"), profile_summary("personal")];
+        let mut picker = ModelPicker::new(&ModelConfig::default(), profiles);
+        for _ in 0..4 {
+            picker.handle_key(picker_key(KeyCode::Down));
+        }
+        picker.handle_key(picker_key(KeyCode::Enter)); // Custom → 档案列表
+        picker.handle_key(picker_key(KeyCode::Down)); // 光标落第二个档案
+        let snapshot = picker.snapshot();
+
+        // App 侧重建路径：新实例 + 快照恢复（编辑器取消时同款）。
+        let mut restored = ModelPicker::new(
+            &ModelConfig::default(),
+            vec![profile_summary("work"), profile_summary("personal")],
+        );
+        restored.restore_snapshot(snapshot);
+        assert_eq!(restored.row_count(), 3, "back inside the custom list");
+        assert_eq!(
+            restored.selected_index(),
+            1,
+            "cursor back on the 2nd profile"
+        );
+    }
+
+    /// U3（排序约定，用户反馈 2026-08-22）：枚举档位从小到大——缺省位
+    /// 在序中不抢首位，Off 殿后。回退为「缺省优先」旧序（32K/8K/128K
+    /// 或 10M/1M/50M）→ 红。
+    #[test]
+    fn profile_enum_choices_are_sorted_small_to_large() {
+        assert!(
+            CONTEXT_CHOICES.windows(2).all(|pair| pair[0] < pair[1]),
+            "context choices ascend: {CONTEXT_CHOICES:?}"
+        );
+        assert!(
+            OUTPUT_CHOICES.windows(2).all(|pair| pair[0] < pair[1]),
+            "output choices ascend: {OUTPUT_CHOICES:?}"
+        );
+        let numeric: Vec<u64> = BUDGET_CHOICES
+            .iter()
+            .filter_map(|choice| choice.filter(|budget| *budget > 0))
+            .collect();
+        assert!(
+            numeric.windows(2).all(|pair| pair[0] < pair[1]),
+            "budget choices ascend: {numeric:?}"
+        );
+        // 特殊位殿后：off 是最后一个档；缺省位落 32K / 系统缺省。
+        assert_eq!(BUDGET_CHOICES.last(), Some(&Some(0)), "off trails");
+        assert_eq!(OUTPUT_CHOICES[OUTPUT_DEFAULT], 32 * 1024);
+        assert_eq!(BUDGET_CHOICES[BUDGET_DEFAULT], None);
+        let template = ModelEditor::new_profile_template(Vec::new());
+        assert_eq!(template.output_choice, OUTPUT_DEFAULT);
+        assert_eq!(template.budget_choice, BUDGET_DEFAULT);
+    }
+
     #[test]
     fn picker_digits_quick_select_models_and_custom() {
         let mut picker = new_picker();
@@ -1443,10 +2218,264 @@ mod tests {
         };
         assert_eq!(preset.id, "qwen3.8-max");
 
+        // B9：零档案时数字 5（Custom）直进新建页。
         let mut picker = new_picker();
         assert!(matches!(
             picker.handle_key(picker_key(KeyCode::Char('5'))),
-            PickerAction::EditCustom
+            PickerAction::OpenProfileEditor { edit: None }
+        ));
+    }
+
+    // ---- B9：档案模板与 picker 三态（验收①②⑤⑦⑧）。
+
+    /// 验收⑦（防雷回归）：档案编辑器没有 Preset 循环行——覆写地雷在
+    /// 自定义入口不存在（INV-M5）。删除档案模式分支（行集回落预设
+    /// 形态）→ 本测试红。
+    #[test]
+    fn profile_editor_has_no_preset_row() {
+        let editor = ModelEditor::new_profile_template(Vec::new());
+        let labels: Vec<String> = editor.rows().into_iter().map(|(label, _)| label).collect();
+        assert!(
+            !labels.iter().any(|label| label == "Preset"),
+            "the profile editor never shows the Preset cycle row: {labels:?}"
+        );
+        // Name/Model/Endpoint/ApiKey/Context/Output/Budget/Thinking/
+        // Advanced/Save/Cancel = 11 行（U2：+Thinking 枚举行）。
+        assert_eq!(editor.row_count(), 11);
+    }
+
+    /// 验收②（INV-M4）：只填四个必填文本即可保存——持久化值为保守
+    /// 缺省集（context 128K / output 32K / budget 系统缺省 10M /
+    /// request_path 与 auth 默认 / parallel on / protocol compatible）。
+    #[test]
+    fn profile_template_saves_with_only_required_fields_filled() {
+        let mut editor = ModelEditor::new_profile_template(Vec::new());
+        commit_popup_on(&mut editor, RowKind::Name, "work");
+        commit_popup_on(&mut editor, RowKind::Model, "my-model");
+        commit_popup_on(&mut editor, RowKind::Endpoint, "https://api.example.com/v1");
+        commit_popup_on(&mut editor, RowKind::ApiKey, "sk-work");
+        let EditorAction::SaveProfile(saved) =
+            editor.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL))
+        else {
+            panic!("profile save action");
+        };
+        let ProfileSave {
+            name,
+            original_name,
+            config,
+            credentials,
+        } = *saved;
+        assert_eq!(name, "work");
+        assert_eq!(original_name, None);
+        assert_eq!(config.preset, None);
+        assert_eq!(config.protocol, ModelProtocol::OpenAiCompatible);
+        assert_eq!(config.model, "my-model");
+        assert_eq!(config.endpoint, "https://api.example.com/v1");
+        assert_eq!(config.request_path, "/chat/completions");
+        assert_eq!(config.output_limit, Some(32 * 1024));
+        assert_eq!(config.max_context_tokens, Some(128 * 1024));
+        assert_eq!(config.run_token_budget, None, "default 10M = None");
+        assert!(config.parallel_tool_calls);
+        assert_eq!(credentials.value(0), Some("sk-work"));
+    }
+
+    /// 验收②延伸：必填缺失（Name 空）拒绝保存并提示。
+    #[test]
+    fn profile_template_requires_a_name() {
+        let mut editor = ModelEditor::new_profile_template(Vec::new());
+        commit_popup_on(&mut editor, RowKind::Model, "my-model");
+        commit_popup_on(&mut editor, RowKind::Endpoint, "https://api.example.com/v1");
+        let EditorAction::Continue =
+            editor.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL))
+        else {
+            panic!("missing name must not save");
+        };
+        assert!(editor.error_text().contains("Profile name is required"));
+    }
+
+    /// U2（INV-M6，负责人拍板 2026-08-22）：档案模板缺省思考档位
+    /// **High**——与四个内置预设全部 pin `reasoning_effort: high` 的
+    /// 口径对齐（此前档案强制 None，两套口径不一致）。删除模板缺省
+    /// 或 build() 的档位携带 → 红。
+    #[test]
+    fn profile_template_defaults_thinking_to_high() {
+        let mut editor = ModelEditor::new_profile_template(Vec::new());
+        assert_eq!(editor.thinking_level, Some(ThinkingLevel::High));
+        commit_popup_on(&mut editor, RowKind::Name, "work");
+        commit_popup_on(&mut editor, RowKind::Model, "my-model");
+        commit_popup_on(&mut editor, RowKind::Endpoint, "https://api.example.com/v1");
+        let EditorAction::SaveProfile(saved) =
+            editor.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL))
+        else {
+            panic!("profile save action");
+        };
+        assert_eq!(
+            saved.config.thinking_level,
+            Some(ThinkingLevel::High),
+            "the profile row carries the default thinking level"
+        );
+    }
+
+    /// U2（INV-M6）：档位随档案往返——带入 Max 保存仍 Max；循环到
+    /// off 保存为 None（= 不注入 = 跟随厂商缺省）。删除 build() 档案
+    /// 分支的 thinking_level 携带 → 红。
+    #[test]
+    fn profile_thinking_enum_roundtrip_off_and_max() {
+        // 真实档案形态（模板创建的保守缺省集）+ 思考档位 Max。
+        let config = ModelConfig {
+            model: "my-model".into(),
+            endpoint: "https://api.example.com/v1".into(),
+            max_context_tokens: Some(128 * 1024),
+            output_limit: Some(32 * 1024),
+            run_token_budget: None,
+            thinking_level: Some(ThinkingLevel::Max),
+            ..ModelConfig::default()
+        };
+        let mut editor = ModelEditor::for_profile(
+            "work",
+            &config,
+            ProviderCredentials::for_protocol(config.protocol),
+            Vec::new(),
+        );
+        let EditorAction::SaveProfile(saved) =
+            editor.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL))
+        else {
+            panic!("profile save action");
+        };
+        assert_eq!(saved.config.thinking_level, Some(ThinkingLevel::Max));
+
+        // Max 位 → 一步 = off（None）。循环序：Low → High → Max → Off。
+        select(&mut editor, RowKind::Thinking);
+        editor.handle_key(key(KeyCode::Right));
+        assert_eq!(editor.thinking_level, None);
+        let EditorAction::SaveProfile(saved) =
+            editor.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL))
+        else {
+            panic!("profile save action");
+        };
+        assert_eq!(saved.config.thinking_level, None);
+    }
+
+    /// U2（INV-M6 × TUI-L01 定向豁免）：档案模式下行可见——改
+    /// Endpoint 不再静默清档位；手工提交 Extra Body 仍清（raw 参数是
+    /// 事实源，行显示 off 是可见反馈）。删除豁免 → 红。
+    #[test]
+    fn profile_extra_body_edit_clears_thinking_but_endpoint_edit_keeps_it() {
+        let mut editor = ModelEditor::new_profile_template(Vec::new());
+        select(&mut editor, RowKind::Thinking);
+        editor.handle_key(key(KeyCode::Right)); // High → Max
+        assert_eq!(editor.thinking_level, Some(ThinkingLevel::Max));
+
+        commit_popup_on(&mut editor, RowKind::Endpoint, "https://api.example.com/v1");
+        assert_eq!(
+            editor.thinking_level,
+            Some(ThinkingLevel::Max),
+            "editing the endpoint keeps the visible Thinking row"
+        );
+
+        commit_popup_on(
+            &mut editor,
+            RowKind::ExtraBody,
+            "{\"reasoning_effort\": \"xhigh\"}",
+        );
+        assert_eq!(
+            editor.thinking_level, None,
+            "hand-written Extra Body wins; the visible row flips to off"
+        );
+    }
+
+    /// 验收①⑧：零档案 → Custom Enter 直进新建页；≥1 档案 → 档案
+    /// 列表（档案行 + New… 底行）。
+    #[test]
+    fn custom_entry_three_states() {
+        // 零档案：Enter 直进新建页。
+        let mut picker = ModelPicker::new(&ModelConfig::default(), Vec::new());
+        for _ in 0..4 {
+            picker.handle_key(picker_key(KeyCode::Down));
+        }
+        assert!(matches!(
+            picker.handle_key(picker_key(KeyCode::Enter)),
+            PickerAction::OpenProfileEditor { edit: None }
+        ));
+
+        // 一个档案：Custom 行 Enter → 列表（1 档案行 + New… = 2 行）。
+        let profiles = vec![profile_summary("work")];
+        let mut picker = ModelPicker::new(&ModelConfig::default(), profiles);
+        for _ in 0..4 {
+            picker.handle_key(picker_key(KeyCode::Down));
+        }
+        assert!(matches!(
+            picker.handle_key(picker_key(KeyCode::Enter)),
+            PickerAction::Continue
+        ));
+        assert_eq!(picker.row_count(), 2, "profile row + New…");
+
+        // Enter 档案行 = 切换；New… 行 = 新建模板。
+        assert!(matches!(
+            picker.handle_key(picker_key(KeyCode::Enter)),
+            PickerAction::SwitchProfile(name) if name == "work"
+        ));
+        let mut picker = ModelPicker::new(&ModelConfig::default(), vec![profile_summary("work")]);
+        for _ in 0..4 {
+            picker.handle_key(picker_key(KeyCode::Down));
+        }
+        picker.handle_key(picker_key(KeyCode::Enter));
+        picker.handle_key(picker_key(KeyCode::Down));
+        assert!(matches!(
+            picker.handle_key(picker_key(KeyCode::Enter)),
+            PickerAction::OpenProfileEditor { edit: None }
+        ));
+
+        // `e` = 编辑既有档案。
+        let mut picker = ModelPicker::new(&ModelConfig::default(), vec![profile_summary("work")]);
+        for _ in 0..4 {
+            picker.handle_key(picker_key(KeyCode::Down));
+        }
+        picker.handle_key(picker_key(KeyCode::Enter));
+        assert!(matches!(
+            picker.handle_key(picker_key(KeyCode::Char('e'))),
+            PickerAction::OpenProfileEditor { edit: Some(name) } if name == "work"
+        ));
+    }
+
+    /// 验收⑤（picker 腿）：删除两步确认——首按 d 只布防、再按 d 执行、
+    /// 其余键取消；New… 行不可删。
+    #[test]
+    fn profile_delete_requires_double_confirmation() {
+        let profiles = vec![profile_summary("work"), profile_summary("personal")];
+        let mut picker = ModelPicker::new(&ModelConfig::default(), profiles);
+        for _ in 0..4 {
+            picker.handle_key(picker_key(KeyCode::Down));
+        }
+        picker.handle_key(picker_key(KeyCode::Enter));
+
+        // 首按 d：布防，不执行。
+        assert!(matches!(
+            picker.handle_key(picker_key(KeyCode::Char('d'))),
+            PickerAction::Continue
+        ));
+        // 非 d 键取消布防（选择不移动——取消键被确认态吞掉）。
+        assert!(matches!(
+            picker.handle_key(picker_key(KeyCode::Down)),
+            PickerAction::Continue
+        ));
+        // 重新布防 → 第二次 d 执行删除当前行档案。
+        picker.handle_key(picker_key(KeyCode::Char('d')));
+        assert!(matches!(
+            picker.handle_key(picker_key(KeyCode::Char('d'))),
+            PickerAction::DeleteProfile(name) if name == "work"
+        ));
+
+        // New… 行按 d 无操作。
+        let mut picker = ModelPicker::new(&ModelConfig::default(), vec![profile_summary("work")]);
+        for _ in 0..4 {
+            picker.handle_key(picker_key(KeyCode::Down));
+        }
+        picker.handle_key(picker_key(KeyCode::Enter));
+        picker.handle_key(picker_key(KeyCode::Down));
+        assert!(matches!(
+            picker.handle_key(picker_key(KeyCode::Char('d'))),
+            PickerAction::Continue
         ));
     }
 

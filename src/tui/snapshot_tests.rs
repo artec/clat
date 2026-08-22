@@ -49,6 +49,7 @@ const SCENARIOS: &[&str] = &[
     "phase-responding",
     "phase-executing",
     "model-picker",
+    "model-picker-vendor",
     "tool-card-collapsed",
     "tool-card-expanded",
     "tool-card-hidden",
@@ -963,6 +964,8 @@ fn model_picker_snapshot() {
     // 厂商（一级 4 厂商 + Custom）。
     // 刷新 2026-08-21：DeepSeek 二级新增第三款 deepseek-v4-flash-vision-exp
     //（官方 2026-08 上架的实验性多模态模型，参数见 presets.rs）。
+    // 刷新 2026-08-22：键位说明行统一弹窗规范——Faint 灰（fg=DarkGray）
+    // + 钉在弹框内底行（此前 DIM 修饰符与其余弹窗不一致）。
     let mut harness = Harness::trusted("snap-model-picker", 80, 24);
     harness.type_text("/model");
     harness.key(KeyCode::Enter);
@@ -1004,6 +1007,56 @@ fn model_picker_never_touches_screen_edges() {
             "picker touches the screen edges at width {width}: left={left}, right={right}"
         );
     }
+}
+
+/// U1（INV-U1 原位返回，用户反馈 2026-08-22）：Custom 入口进入编辑器
+///（零档案直进新建页）后 Esc 取消，picker 必须以进入前的层级与光标
+/// 原位重建（Custom 行）——而不是整个选择链路消失。恢复逻辑删除
+///（Cancel 不重建 picker）→ 本测试红。
+#[test]
+fn model_editor_escape_returns_to_the_picker_in_place() {
+    let mut harness = Harness::trusted("snap-model-editor-back", 80, 24);
+    harness.type_text("/model");
+    harness.key(KeyCode::Enter);
+    for _ in 0..4 {
+        harness.key(KeyCode::Down);
+    }
+    harness.key(KeyCode::Enter); // Custom（零档案）→ 新建页
+    assert!(
+        harness.app.editor.is_some(),
+        "editor opens from the Custom entry"
+    );
+    assert!(harness.app.picker.is_none(), "picker yields to the editor");
+
+    harness.key(KeyCode::Esc); // 取消编辑 → 原位回到 picker 的 Custom 行
+    assert!(harness.app.editor.is_none());
+    let picker = harness
+        .app
+        .picker
+        .as_ref()
+        .expect("picker restored in place after editor cancel");
+    assert_eq!(
+        picker.selected_index(),
+        4,
+        "cursor returns to the Custom row we entered from"
+    );
+}
+
+/// U1（弹窗规范统一，用户反馈 2026-08-22）：二级厂商列表（单模型）
+/// 的键位说明行必须贴弹框底、Faint 灰（fg=DarkGray）、与内容恰好隔
+/// 一空行——此前高度公式 `.max(8)` 兜底把小列表撑高，说明行悬空、
+/// 各级弹框观感不一。快照钉住紧凑高度（1 行内容 + 空行 + 说明行 +
+/// 双边框 = 5 行）。
+#[test]
+fn model_picker_vendor_level_snapshot() {
+    let mut harness = Harness::trusted("snap-model-picker-vendor", 80, 24);
+    harness.type_text("/model");
+    harness.key(KeyCode::Enter);
+    for _ in 0..2 {
+        harness.key(KeyCode::Down);
+    }
+    harness.key(KeyCode::Enter); // 第 3 行 Qwen（单模型二级）
+    harness.snapshot("model-picker-vendor");
 }
 
 /// 工具卡三态（B5）：同一张已落定的 write_file 卡，内容行数超过折叠

@@ -1440,6 +1440,12 @@ mod tests {
         assert!(select_asset(&checksums_only).is_none());
 
         // 没有当前平台资产（只有别平台 + 源码包）时返回 None。
+        // Windows x86_64 上断言被 cfg 排除（该 vec 恰好是"当前平台资产
+        // 存在"的反例构造）——下划线名避免 unused 警告。
+        #[cfg_attr(
+            all(target_os = "windows", target_arch = "x86_64"),
+            allow(unused_variables)
+        )]
         let others = vec![
             ReleaseAsset {
                 name: "clat-v0.2.0-x86_64-pc-windows-msvc.zip".into(),

@@ -56,14 +56,17 @@ instead of cancelling the run.
 
 ## Commands
 
-- `/model` — configure the active model/provider
+- `/model` — configure the active model/provider (custom models are
+  named profiles; see [the model editor](model-editor.md))
 - `/new` — start a new persisted conversation (an empty conversation is
   dropped automatically when you leave it)
 - `/clear` — alias for `/new`
 - `/compact` — summarize this conversation's earlier turns into a compact
   marker to free context; runs in the background (Esc cancels) and the
   original history stays on disk
-- `/model` — configure the active model/provider. The advanced rows include
+- `/model` — configure the active model/provider. Custom models are
+  named profiles (each keeps its own API key; switching never loses
+  keys); see [the model editor](model-editor.md). The advanced rows include
   a context-window field: once set, history that exceeds the window is
   compacted automatically at the start of the next run (compaction inherits
   the previous summary, so earlier facts survive repeated compactions).

@@ -6,7 +6,7 @@ use crate::SessionId;
 use crate::presets::preset_by_id;
 use crate::tui::conversation::ToolCardVisibility;
 use crate::tui::input::InputBuffer;
-use crate::tui::model_editor::{EditorAction, ModelEditor, ModelPicker, PickerAction};
+use crate::tui::model_editor::{ModelEditor, ModelPicker, PickerSnapshot};
 use crate::tui::session_picker::{ResumeAction, SessionPicker};
 
 use crate::tui::worker::{
@@ -196,6 +196,9 @@ struct App {
     editor: Option<ModelEditor>,
     /// 二级模型选择器；与 editor 互斥，/model 命令打开。
     picker: Option<ModelPicker>,
+    /// INV-U1（原位返回）：进入编辑器前的 picker 导航态快照；编辑器
+    /// 取消后据此原位重建 picker，保存/切换/删除等完结路径清空。
+    picker_return: Option<PickerSnapshot>,
     /// /resume 会话选择器；打开期间独占按键与鼠标。
     session_picker: Option<SessionPicker>,
     running: bool,
@@ -367,6 +370,7 @@ impl App {
             status_until: None,
             editor: None,
             picker: None,
+            picker_return: None,
             session_picker: None,
             running: false,
             events: None,

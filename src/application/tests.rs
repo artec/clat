@@ -175,6 +175,352 @@ fn sink_panic_does_not_swallow_the_terminal_closure() {
     );
 }
 
+/// B9 验收③（根因杀测试）：双档案互切后两边 key/endpoint 均完好。
+/// 切换 = 激活原语（load → save_model_state → set_active），档案行
+/// 自身永不被切换改写——pre-fix 单槽世界里「切走即丢」的根因在此
+/// 断言面上消灭（判别力：激活原语不再从档案行 load credentials /
+/// 回写覆盖档案行 → 本测试红；pre-fix 无档案概念属编译级，文档化）。
+#[test]
+fn custom_profiles_keep_their_keys_across_switches() {
+    use crate::model::{ModelConfig, ProviderCredentials};
+
+    let (storage_root, project_root) = roots("b9-switch");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let project = Project::new(&project_root);
+    let application = mount(&project, &storage_root, TestBehavior::Success);
+
+    let profile = |endpoint: &str, model: &str, key: &str| {
+        let config = ModelConfig {
+            preset: None,
+            endpoint: endpoint.into(),
+            model: model.into(),
+            ..ModelConfig::default()
+        };
+        let mut credentials = ProviderCredentials::for_protocol(config.protocol);
+        credentials.set_value(0, key.to_owned());
+        (config, credentials)
+    };
+    let (config_a, credentials_a) =
+        profile("https://api.example.com/v1", "model-a", "sk-profile-a");
+    let (config_b, credentials_b) =
+        profile("https://other.example.org/v1", "model-b", "sk-profile-b");
+    application
+        .save_model_profile("work", &config_a, &credentials_a)
+        .unwrap();
+    application
+        .save_model_profile("personal", &config_b, &credentials_b)
+        .unwrap();
+
+    // A → B → A 往返：两边完好。
+    application.activate_model_profile("work").unwrap().unwrap();
+    application
+        .activate_model_profile("personal")
+        .unwrap()
+        .unwrap();
+    let (active_config, active_credentials) = application.model_state().unwrap();
+    assert_eq!(active_config.endpoint, "https://other.example.org/v1");
+    assert_eq!(active_credentials.value(0), Some("sk-profile-b"));
+    assert_eq!(
+        application.active_model_profile().unwrap().as_deref(),
+        Some("personal")
+    );
+
+    application.activate_model_profile("work").unwrap().unwrap();
+    let (active_config, active_credentials) = application.model_state().unwrap();
+    assert_eq!(active_config.endpoint, "https://api.example.com/v1");
+    assert_eq!(
+        active_credentials.value(0),
+        Some("sk-profile-a"),
+        "switching back restores the profile's own key (root cause killed)"
+    );
+
+    // 档案行自身未被切换改写（INV-M3）。
+    let (stored_a, stored_credentials_a) = application
+        .load_model_profile("work")
+        .unwrap()
+        .expect("profile persists");
+    assert_eq!(stored_a.endpoint, "https://api.example.com/v1");
+    assert_eq!(stored_credentials_a.value(0), Some("sk-profile-a"));
+    application.close().unwrap();
+}
+
+/// B9 验收④：预设→档案往返 key 不重填——档案 key 跟档案走
+/// （INV-M2），预设 key 走厂商记忆（INV-VK1/VK2 原样保留：Other
+/// 端点不入厂商库），两边各自完好、互不污染。
+#[test]
+fn preset_profile_roundtrip_never_refills_keys() {
+    use crate::model::{ModelConfig, ProviderCredentials};
+    use crate::presets::preset_by_id;
+
+    let (storage_root, project_root) = roots("b9-roundtrip");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let project = Project::new(&project_root);
+    let application = mount(&project, &storage_root, TestBehavior::Success);
+
+    // 档案：Other 端点 + 自有 key。
+    let profile_config = ModelConfig {
+        preset: None,
+        endpoint: "https://api.example.com/v1".into(),
+        model: "my-model".into(),
+        ..ModelConfig::default()
+    };
+    let mut profile_credentials = ProviderCredentials::for_protocol(profile_config.protocol);
+    profile_credentials.set_value(0, "sk-profile".to_owned());
+    application
+        .save_model_profile("work", &profile_config, &profile_credentials)
+        .unwrap();
+
+    // 预设：DeepSeek 端点 + key（写入厂商记忆库）。
+    let preset = preset_by_id("deepseek-v4-flash").expect("preset");
+    let mut preset_config = ModelConfig::default();
+    preset.apply(&mut preset_config);
+    let mut preset_credentials = ProviderCredentials::for_protocol(preset_config.protocol);
+    preset_credentials.set_value(0, "sk-deepseek".to_owned());
+    application
+        .save_model_state(&preset_config, &preset_credentials)
+        .unwrap();
+
+    // 切到档案：活动 key = 档案 key；预设 key 留在厂商记忆。
+    application.activate_model_profile("work").unwrap().unwrap();
+    let (_, active) = application.model_state().unwrap();
+    assert_eq!(active.value(0), Some("sk-profile"));
+    let remembered = application
+        .vendor_key(preset_config.protocol, &preset_config.endpoint)
+        .expect("vendor memory holds the preset key");
+    assert_eq!(remembered.value(0), Some("sk-deepseek"));
+
+    // 切回预设（模拟 picker 的厂商记忆回填分支）：key 免重填。
+    let restored = application
+        .vendor_key(preset_config.protocol, &preset_config.endpoint)
+        .unwrap();
+    application
+        .save_model_state(&preset_config, &restored)
+        .unwrap();
+    let (_, active) = application.model_state().unwrap();
+    assert_eq!(active.value(0), Some("sk-deepseek"));
+
+    // 再切回档案：档案 key 原样（INV-M2/M3）。
+    application.activate_model_profile("work").unwrap().unwrap();
+    let (_, active) = application.model_state().unwrap();
+    assert_eq!(
+        active.value(0),
+        Some("sk-profile"),
+        "the profile keeps its own key across the roundtrip"
+    );
+    // Other 端点从未进厂商库（INV-VK1）。
+    assert!(
+        application
+            .vendor_key(profile_config.protocol, &profile_config.endpoint)
+            .is_none()
+    );
+}
+
+/// B9 验收⑤（应用腿）：删除活动档案 → 活动指针回退（首个可用档案）；
+/// 删到最后一个 → 活动态重置为出厂默认（endpoint 空、无残留 key）。
+#[test]
+fn deleting_the_active_profile_falls_back_cleanly() {
+    use crate::model::{ModelConfig, ProviderCredentials};
+
+    let (storage_root, project_root) = roots("b9-delete");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let project = Project::new(&project_root);
+    let application = mount(&project, &storage_root, TestBehavior::Success);
+
+    let profile = |endpoint: &str, key: &str| {
+        let config = ModelConfig {
+            preset: None,
+            endpoint: endpoint.into(),
+            model: "m".into(),
+            ..ModelConfig::default()
+        };
+        let mut credentials = ProviderCredentials::for_protocol(config.protocol);
+        credentials.set_value(0, key.to_owned());
+        (config, credentials)
+    };
+    let (config_a, credentials_a) = profile("https://a.example.com/v1", "sk-a");
+    let (config_b, credentials_b) = profile("https://b.example.com/v1", "sk-b");
+    application
+        .save_model_profile("first", &config_a, &credentials_a)
+        .unwrap();
+    application
+        .save_model_profile("second", &config_b, &credentials_b)
+        .unwrap();
+    application
+        .activate_model_profile("first")
+        .unwrap()
+        .unwrap();
+
+    // 删活动档案 → 回退到首个可用（second）。
+    application
+        .delete_model_profile_with_fallback("first")
+        .unwrap();
+    assert_eq!(
+        application.active_model_profile().unwrap().as_deref(),
+        Some("second")
+    );
+    let (active_config, _) = application.model_state().unwrap();
+    assert_eq!(active_config.endpoint, "https://b.example.com/v1");
+
+    // 删最后一个 → 出厂默认（endpoint 空、无残留 key、指针空）。
+    application
+        .delete_model_profile_with_fallback("second")
+        .unwrap();
+    assert_eq!(application.active_model_profile().unwrap(), None);
+    let (active_config, active_credentials) = application.model_state().unwrap();
+    assert!(
+        active_config.endpoint.trim().is_empty(),
+        "factory default after the last profile is deleted"
+    );
+    assert!(
+        active_credentials
+            .value(0)
+            .is_none_or(|value| value.trim().is_empty()),
+        "no key residue from the deleted profile"
+    );
+    assert!(application.list_model_profiles().unwrap().is_empty());
+    application.close().unwrap();
+}
+
+/// B9 验收⑥（前置红）：旧单槽自定义态（preset=None 且 endpoint 非空）
+/// 在重挂载时自动转为第一个档案；预设态不迁移；幂等（二次挂载不重复
+/// 建档）。pre-fix：`list_model_profiles` 恒空（本测试只用既有 API 构造
+/// ——首个断言红）。
+#[test]
+fn legacy_single_slot_custom_state_migrates_to_first_profile() {
+    use crate::model::{ModelConfig, ProviderCredentials};
+
+    let (storage_root, project_root) = roots("b9-migrate");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let project = Project::new(&project_root);
+
+    let application = mount(&project, &storage_root, TestBehavior::Success);
+    // 旧世界唯一的自定义持久化形态：单槽 model_state 直写。
+    let custom = ModelConfig {
+        preset: None,
+        endpoint: "https://api.example.com/v1".into(),
+        model: "my-model".into(),
+        ..ModelConfig::default()
+    };
+    let mut credentials = ProviderCredentials::for_protocol(custom.protocol);
+    credentials.set_value(0, "sk-single-slot".to_owned());
+    application.save_model_state(&custom, &credentials).unwrap();
+    application.close().unwrap();
+
+    // 重挂载：迁移腿把单槽态转为档案 #1。
+    let application = mount(&project, &storage_root, TestBehavior::Success);
+    let profiles = application.list_model_profiles().unwrap();
+    assert!(
+        profiles.iter().any(|profile| profile.name == "Custom"),
+        "the legacy single-slot custom state becomes profile #1: {profiles:?}"
+    );
+    let (config, migrated) = application
+        .load_model_profile("Custom")
+        .unwrap()
+        .expect("profile loads");
+    assert_eq!(config.endpoint, "https://api.example.com/v1");
+    assert_eq!(config.model, "my-model");
+    assert_eq!(migrated.value(0), Some("sk-single-slot"));
+    // F-B9-1：迁移建档即接管活动指针——迁移档案真在活动，Custom 列表
+    // 的 ● 必须出现。pre-fix 红：迁移腿从不设指针。
+    assert_eq!(
+        application.active_model_profile().unwrap().as_deref(),
+        Some("Custom"),
+        "the migrated profile is the active one and carries the pointer"
+    );
+
+    // 幂等：再次重挂载不重复建档。
+    application.close().unwrap();
+    let application = mount(&project, &storage_root, TestBehavior::Success);
+    let profiles = application.list_model_profiles().unwrap();
+    assert_eq!(profiles.len(), 1, "migration is idempotent: {profiles:?}");
+    application.close().unwrap();
+
+    // 预设态不迁移（INV-M3 升级腿只吃自定义态）。
+    let (storage_root, project_root) = roots("b9-migrate-preset");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let project = Project::new(&project_root);
+    let application = mount(&project, &storage_root, TestBehavior::Success);
+    let preset = ModelConfig {
+        preset: Some("deepseek-v4-flash".into()),
+        ..ModelConfig::default()
+    };
+    application
+        .save_model_state(&preset, &ProviderCredentials::for_protocol(preset.protocol))
+        .unwrap();
+    application.close().unwrap();
+    let application = mount(&project, &storage_root, TestBehavior::Success);
+    assert!(
+        application.list_model_profiles().unwrap().is_empty(),
+        "preset states never migrate into profiles"
+    );
+    application.close().unwrap();
+}
+
+/// F-B9-1（复核必修 2026-08-22）：legacy 路径（预设切换/经典编辑器
+/// 保存）经 `save_model_state` 直写——收尾必须清 `active_profile` 指针
+///（INV-M2 第四元素：指针随换装走）。两条前置红腿：①激活档案 work →
+/// 切 DeepSeek 预设后指针仍 Some("work")（Custom 列表 ● 标错）；②删
+/// 这个「陈旧指针」档案误触 was_active 回退，**活预设被静默换成出厂
+/// 空态**（INV-M3 破坏——本测试第二断言红）。
+#[test]
+fn preset_switch_after_profile_activation_clears_the_active_pointer() {
+    use crate::model::{ModelConfig, ProviderCredentials};
+
+    let (storage_root, project_root) = roots("b9-pointer");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let project = Project::new(&project_root);
+    let application = mount(&project, &storage_root, TestBehavior::Success);
+
+    // 建档并激活 work。
+    let work = ModelConfig {
+        preset: None,
+        endpoint: "https://work.example.com/v1".into(),
+        model: "m".into(),
+        ..ModelConfig::default()
+    };
+    let credentials = ProviderCredentials::for_protocol(work.protocol);
+    application
+        .save_model_profile("work", &work, &credentials)
+        .unwrap();
+    application.activate_model_profile("work").unwrap().unwrap();
+    assert_eq!(
+        application.active_model_profile().unwrap().as_deref(),
+        Some("work")
+    );
+
+    // 切预设（actions SelectPreset 同端点路径同形态：preset.apply +
+    // save_model_state 直写）。
+    let mut preset_config = ModelConfig::default();
+    crate::presets::preset_by_id("deepseek-v4-flash")
+        .expect("preset exists")
+        .apply(&mut preset_config);
+    application
+        .save_model_state(&preset_config, &credentials)
+        .unwrap();
+    // 红腿①：指针随 legacy 换装清空。
+    assert_eq!(
+        application.active_model_profile().unwrap(),
+        None,
+        "a preset switch installs non-profile state; the pointer must clear"
+    );
+
+    // 红腿②：删除已非活动的 work 不得触碰活预设。
+    application
+        .delete_model_profile_with_fallback("work")
+        .unwrap();
+    let (active, _) = application.model_state().unwrap();
+    assert_eq!(
+        active.endpoint, preset_config.endpoint,
+        "the live preset survives deleting the stale-pointer profile"
+    );
+    assert_eq!(active.preset.as_deref(), Some("deepseek-v4-flash"));
+    assert!(
+        application.list_model_profiles().unwrap().is_empty(),
+        "the deleted profile is gone"
+    );
+    application.close().unwrap();
+}
+
 /// Load the durable events of the storage root's only session.
 fn load_events(storage_root: &std::path::Path) -> Vec<crate::session::event::SessionEvent> {
     let backend = crate::session::persistence::JsonlBackend::new(

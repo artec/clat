@@ -136,17 +136,23 @@ impl App {
             self.editor_area = Some(picker_area);
             picker.draw(frame, picker_area);
         } else if let Some(picker) = &self.picker {
+            // 高度=内容精确高度（行 + 空行 + 说明行 + 双边框）：不设
+            // max 兜底——此前 max(8) 把小列表（单模型二级/短档案列表）
+            // 人为撑高，钉底的说明行与内容之间出现多余空行、各级弹框
+            // 观感不一（2026-08-22 用户反馈）。超高列表由 draw 内部的
+            // 钉底布局裁剪内容行，说明行永不丢失。
             let height = (picker.row_count() as u16 + 4).min(popup_height_cap(area));
             // 84%：与其余弹窗统一（弹窗规范 2026-08-19）。94% 在宽终端
             // 上每边仅留 3%，视觉上与贴墙无异（用户实测报告撞墙）。
-            let picker_area = centered_rect(84, height.max(8), area);
+            let picker_area = centered_rect(84, height, area);
             self.editor_area = Some(picker_area);
             picker.draw(frame, picker_area);
         } else if let Some(editor) = &self.editor {
+            // 同上：内容精确高度（编辑器收起时也有 7 行，无需 min 兜底）。
             let height = (editor.row_count() as u16 + 4).min(popup_height_cap(area));
             // 84%：同上——选择器与编辑器是仅有的两个 94% 弹窗，统一后
             // 全部弹窗同宽族、同最小边距（POPUP_H_MARGIN 钳制兜底）。
-            let editor_area = centered_rect(84, height.max(8), area);
+            let editor_area = centered_rect(84, height, area);
             self.editor_area = Some(editor_area);
             editor.draw(frame, editor_area);
         } else {

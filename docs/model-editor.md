@@ -1,11 +1,51 @@
 # Model editor (`/model`)
 
-The model editor opens on a short form: **Preset**, **Model**,
-**Endpoint**, and **API Key** — the four things a normal user needs.
+`/model` opens a picker: the four built-in provider vendors plus
+**Custom**. Custom models are **named profiles** — each profile persists
+its own configuration *and* its own API key, so switching between
+profiles (or between a profile and a preset) never loses anything.
+
+- **No profiles yet**: selecting Custom goes straight to the new-profile
+  page (a blank template with safe defaults).
+- **One or more profiles**: Custom shows the profile list (name plus an
+  `endpoint · model` summary; the active profile is marked `●`). `Enter`
+  switches and closes, `e` edits, `d` deletes (press `d` twice to
+  confirm), and the `New…` row at the bottom starts a blank template.
+
+Going back a level (`Esc`) always restores the cursor to the row you
+entered from, and cancelling an editor opened from the picker returns
+to the picker in place — one `Esc` never collapses the whole selection
+chain.
+
+The profile editor never shows the Preset row (profiles are by
+definition custom), and every numeric parameter is a choice, not a blank
+box, listed small to large: **Context Window** (128K default / 256K /
+1M / Custom…), **Max Output** (8K / 32K default / 128K / Custom…), and
+**Spend Budget** (1M / default 10M / 50M / off / Custom…). `Enter` or
+`←`/`→` cycles; the `Custom…` position opens a numeric input. **Thinking** is a choice
+too (low / **high (default)** / max / off) and is stored with the
+profile, matching the built-in presets which all ship
+`reasoning_effort: high`; `off` sends nothing and follows the vendor
+default. The level is injected automatically when the endpoint is one
+of the four known vendor domains; on unknown endpoints it is stored but
+never injected (strict gateways reject unknown parameters) — write the
+vendor-native parameter into Extra Body there instead. Fill in **Name**,
+**Model**, **Endpoint** (an API key is optional — local gateways don't
+need one), save, and the profile becomes active immediately. Deleting
+the active profile falls back to the first remaining profile, or to
+factory defaults when none are left. Upgrades migrate an existing
+single-slot custom configuration into the first profile automatically.
+
+For preset configurations, the editor opens on a short form: **Preset**,
+**Model**, **Endpoint**, and **API Key** — the four things a normal user
+needs.
 
 Press `Enter` (or click, or just start typing) on any field to open a
 small input box — `Enter` confirms, `Esc` cancels. `Ctrl+S` or the
-`[ Save ]` row saves; `Esc` cancels the editor.
+`[ Save ]` row saves; `Esc` leaves the editor and returns to the picker
+position you came from (at the top level it closes the dialog). Every
+model dialog pins its key-hint bar to the bottom edge in the same dim
+gray, separated from the content by one blank line.
 
 ## Presets
 
