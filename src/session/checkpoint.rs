@@ -168,7 +168,7 @@ mod tests {
         // Dropping the cache is always safe.
         store.drop(&key);
         assert!(store.load(&key).is_none());
-        std::fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 
     #[cfg(unix)]
@@ -196,7 +196,7 @@ mod tests {
         assert!(!outside.join("swap").join("clat-checkpoint.json").exists());
 
         std::fs::remove_file(&bucket).expect("remove symlink");
-        std::fs::remove_dir_all(&outside).expect("cleanup outside");
-        std::fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&outside);
+        crate::test_support::cleanup_tree(&root);
     }
 }

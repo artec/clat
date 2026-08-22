@@ -2982,13 +2982,17 @@ fn pending_commit_with_an_invalid_session_root_publishes_no_config() {
         let _ = application;
     }
     std::fs::remove_file(storage_root.join("config.json")).unwrap();
-    // An invalid session root: a bucket that is a symlink pointing out.
+    // An invalid session root: a bucket that is a symlink pointing out
+    //（unix 逃逸攻击）；Windows 上 symlink 需要特权，以「bucket 不是
+    // 目录」的 NotADirectory 形态攻击同一不变量（preflight 两种都拒）。
     let sessions = storage_root.join("sessions");
     std::fs::create_dir_all(&sessions).unwrap();
     let outside = storage_root.parent().unwrap().join("outside-bucket");
     std::fs::create_dir_all(&outside).unwrap();
     #[cfg(unix)]
     std::os::unix::fs::symlink(&outside, sessions.join("--tmp-evil--")).unwrap();
+    #[cfg(windows)]
+    std::fs::write(sessions.join("--tmp-evil--"), b"not a directory").unwrap();
 
     let mounted = BootstrapApplication::open(project.clone(), storage_root.clone())
         .and_then(|bootstrap| bootstrap.authorize_and_mount(crate::ProjectAuthorization::grant()));

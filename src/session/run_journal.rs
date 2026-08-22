@@ -454,7 +454,7 @@ mod tests {
             vec!["turn/start", "user/message"]
         );
         coordinator.close().expect("close");
-        std::fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 
     #[test]
@@ -497,7 +497,7 @@ mod tests {
         }
         assert_eq!(loaded.events.last().unwrap().event_type, "turn/end");
         coordinator.close().expect("close");
-        std::fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 
     #[test]
@@ -540,7 +540,7 @@ mod tests {
         assert_eq!(closer.event_type, "turn/end");
         assert_eq!(closer.data["reason"]["kind"], "interrupted");
         let _ = coordinator.close();
-        std::fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 
     /// Side-effect durability barrier (plan §9.2): the approval request is
@@ -615,6 +615,6 @@ mod tests {
         // three-way recovery distinction holds through the journal too.
         assert!(loaded.events.last().unwrap().data["reason"]["kind"] == "interrupted");
         coordinator.close().expect("close");
-        std::fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 }

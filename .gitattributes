@@ -1,0 +1,9 @@
+# 字节精确的测试数据：任何平台的 checkout 都必须保持仓库内形态。
+# 起因（CI run 32582790210，2026-08-22）：windows runner 的
+# core.autocrlf 把快照 fixture 换成 CRLF，33 个快照测试全部以
+# 「内容全同、仅 \r\n」误报失败。二进制 golden 同理标记 -text，
+# 防止任何换行归一化碰它。
+tests/fixtures/tui-snapshots/** text eol=lf
+tests/fixtures/dsh-session/** -text
+tests/fixtures/release-manifest.sha256* -text
+tests/fixtures/wasm/** -text

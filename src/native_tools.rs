@@ -1150,7 +1150,7 @@ mod tests {
         assert!(serialized.contains("src/main.rs"));
         assert!(!serialized.contains("node_modules"));
 
-        fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 
     #[test]
@@ -1168,7 +1168,7 @@ mod tests {
         assert_eq!(output["end_line"], 2);
         assert_eq!(output["content"], "2 |     println!(\"hello\");\n");
 
-        fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 
     #[test]
@@ -1183,7 +1183,7 @@ mod tests {
         assert!(matches.iter().any(|item| item["path"] == "README.md"));
         assert!(matches.iter().any(|item| item["path"] == "src/main.rs"));
 
-        fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 
     #[test]
@@ -1198,7 +1198,7 @@ mod tests {
             .expect_err("must reject");
 
         assert!(error.to_string().contains("parent traversal"));
-        fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 
     /// W-INV2/W-INV1：写文件新建、覆盖、父目录物化，均在项目内；
@@ -1232,7 +1232,7 @@ mod tests {
             "content stays within the budget: {}",
             content.len()
         );
-        fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 
     /// FP-06：目录帽——sorted_entries 对超帽目录只收 MAX_DIR_ENTRIES
@@ -1257,7 +1257,7 @@ mod tests {
         let (small, overflow) = sorted_entries(&root).expect("root");
         assert!(!overflow);
         assert!(small.len() < MAX_DIR_ENTRIES);
-        fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 
     #[test]
@@ -1326,7 +1326,7 @@ mod tests {
             .expect_err("relative traversal stays rejected");
 
         fs::remove_dir_all(&outside_dir).ok();
-        fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 
     /// SR2/SR3（写分档）：默认围栏（PW，也是 exec 的固定档）拒绝绝对
@@ -1410,7 +1410,7 @@ mod tests {
         assert_eq!(fs::read_to_string(&target).unwrap(), "full access\n");
 
         fs::remove_dir_all(&outside_dir).ok();
-        fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 
     /// 失败路径（穿越）不产生任何文件。
@@ -1482,7 +1482,7 @@ mod tests {
             "second\n"
         );
 
-        fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 
     /// W-INV3：edit_file 拒绝歧义与不匹配，且失败时文件字节不变。
@@ -1541,7 +1541,7 @@ mod tests {
             "alpha\nbeta2\nalpha\n"
         );
 
-        fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 
     /// C-INV1：命令在 canonical 项目根执行。
@@ -1562,7 +1562,7 @@ mod tests {
             canonical.to_string_lossy()
         );
         assert_eq!(output["exit_code"], 0);
-        fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 
     /// C-INV2/NWE-02：超时终止整个进程组——后台/后代进程在工具
@@ -1591,7 +1591,7 @@ mod tests {
             !marker.exists(),
             "descendants must not outlive the tool call (NWE-02)"
         );
-        fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 
     /// NWE-02 回归：leader shell 收到 TERM 后可能先退出，而后代明确
@@ -1618,7 +1618,7 @@ mod tests {
             !marker.exists(),
             "TERM-ignoring descendants must receive the final group KILL"
         );
-        fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 
     /// FP-03（2026-08-22 审计，前置红）：leader shell 正常先退出、后台
@@ -1668,7 +1668,7 @@ mod tests {
             !marker.exists(),
             "pipe-holding descendants must be group-terminated after the drain grace"
         );
-        fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 
     /// FP-03（前置红）：同一状态（leader 已死、后代持管道）下，Esc 取
@@ -1723,7 +1723,7 @@ mod tests {
             .expect_err("cancelled");
         std::thread::sleep(std::time::Duration::from_millis(1500));
         assert!(!marker.exists(), "cancelled groups must not leave writers");
-        fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 
     /// C-INV2：超时必然终止（kill），且整体耗时贴近超时值而非命令
@@ -1750,7 +1750,7 @@ mod tests {
             "signal-terminated child reports its signal"
         );
         assert!(started.elapsed() < std::time::Duration::from_secs(5));
-        fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 
     /// C-INV2/NWE-02：取消同样终止整个进程组。
@@ -1777,7 +1777,7 @@ mod tests {
         assert!(started.elapsed() < std::time::Duration::from_secs(5));
         std::thread::sleep(std::time::Duration::from_millis(2500));
         assert!(!marker.exists(), "cancel must kill descendants too");
-        fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 
     /// C-INV2/NWE-03：超限输出**不得**改变命令语义——命令正常退出
@@ -1810,7 +1810,7 @@ mod tests {
             root.join("bounded-marker").exists(),
             "actions after the overflowed output must still run (NWE-03)"
         );
-        fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 
     /// NWE-05：覆盖保留既有文件的权限位（可执行脚本不丢执行位）。
@@ -1860,7 +1860,7 @@ mod tests {
             .permissions()
             .mode();
         assert_eq!(mode & 0o777, 0o644);
-        fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 
     /// NWE-06：编辑基于过期快照提交时必须冲突失败，不得静默覆盖
@@ -1899,7 +1899,7 @@ mod tests {
             .expect("commit");
         assert_eq!(fs::read_to_string(&file).unwrap(), "my-edit\n");
 
-        fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 
     /// P-INV1：写/执行工具必然落入 Ask——权限系统对新工具自动生效。

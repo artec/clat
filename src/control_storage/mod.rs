@@ -456,6 +456,6 @@ mod tests {
 
         let workspace = storage.workspace(Path::new("/tmp/p1")).expect("workspace");
         assert_eq!(workspace.revision, 0);
-        std::fs::remove_dir_all(root).unwrap();
+        crate::test_support::cleanup_tree(&root);
     }
 }

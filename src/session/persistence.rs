@@ -496,14 +496,13 @@ impl JsonlBackend {
             Ok(())
         })();
         if let Err(error) = write_result {
-            let rollback = (|| -> std::io::Result<()> {
-                file.set_len(before)?;
-                if hooks.fail_rollback_fsync {
-                    return Err(std::io::Error::other("injected rollback fsync failure"));
-                }
-                file.sync_all()?;
-                Ok(())
-            })();
+            let rollback = truncate_after_failed_append(
+                &file,
+                dir,
+                compat::log_file_name(self.compression),
+                before,
+                hooks.fail_rollback_fsync,
+            );
             return match rollback {
                 Ok(()) => {
                     // The rollback itself touched the file (set_len + fsync
@@ -1086,6 +1085,11 @@ impl JsonlBackend {
             let bytes = jsonl::append_batch_bytes(&batch, self.compression, self.pack_chunks)
                 .map_err(|error| SessionError::Io(error.to_string()))?;
             (|| -> std::io::Result<()> {
+                // Windows 无 append 定位（见 open_repair_no_follow），
+                // 显式定位到末尾——Unix 上 append 打开时该 seek 无害
+                //（O_APPEND 写忽略位置）。
+                use std::io::Seek as _;
+                file.seek(std::io::SeekFrom::End(0))?;
                 file.write_all(&bytes)?;
                 file.sync_all()
             })()
@@ -1288,6 +1292,49 @@ fn validate_key_witness(key: &SessionKey) -> Result<(), SessionError> {
     }
 }
 
+/// 失败批次后的回滚截断。Unix 直接在 append 句柄上 set_len（O_APPEND
+/// 不妨碍 ftruncate）；Windows 上 cap-std 的 append 句柄缺
+/// FILE_WRITE_DATA（同 open_repair_no_follow 的病根），
+/// SetEndOfFile 即 Access Denied——必须另开 read+write 截断句柄，
+/// 截断前以 revision 守卫防句柄间被外部替换（audit P1-04 同款纪律）。
+fn truncate_after_failed_append(
+    file: &std::fs::File,
+    dir: &Dir,
+    name: &str,
+    offset: u64,
+    fail_rollback_fsync: bool,
+) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        let _ = (dir, name);
+        file.set_len(offset)?;
+        if fail_rollback_fsync {
+            return Err(std::io::Error::other("injected rollback fsync failure"));
+        }
+        file.sync_all()
+    }
+    #[cfg(windows)]
+    {
+        let mut truncate = open_repair_no_follow(dir, name)?;
+        let expected = LogRevision::of_metadata(&file.metadata()?);
+        let current = LogRevision::of_metadata(&truncate.metadata()?);
+        if current != expected {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::ResourceBusy,
+                format!(
+                    "session log changed before rollback truncate: \
+                     revision drift {current:?} -> {expected:?}"
+                ),
+            ));
+        }
+        truncate.set_len(offset)?;
+        if fail_rollback_fsync {
+            return Err(std::io::Error::other("injected rollback fsync failure"));
+        }
+        truncate.sync_all()
+    }
+}
+
 fn open_append_no_follow(dir: &Dir, name: &str) -> std::io::Result<std::fs::File> {
     let mut options = cap_std::fs::OpenOptions::new();
     options.append(true);
@@ -1308,11 +1355,17 @@ fn open_append_no_follow(dir: &Dir, name: &str) -> std::io::Result<std::fs::File
 
 fn open_repair_no_follow(dir: &Dir, name: &str) -> std::io::Result<std::fs::File> {
     let mut options = cap_std::fs::OpenOptions::new();
-    options.read(true).write(true).append(true);
+    options.read(true).write(true);
+    // Unix 维持 O_APPEND（原语义不动）；Windows 下 cap-std 的 append
+    // 打开会剥掉 FILE_WRITE_DATA（cap-primitives get_access_mode 对
+    // append 一律 `FILE_GENERIC_WRITE & !FILE_WRITE_DATA`，write=true
+    // 也被通配臂吞掉）——修复路径的 set_len（SetEndOfFile）需要
+    // FILE_WRITE_DATA，否则 Access Denied（CI run 32582790210）。不带
+    // append 时以显式 seek(End) 定位（见 commit_repair）。
     #[cfg(unix)]
     {
         use cap_std::fs::OpenOptionsExt as _;
-        options.custom_flags(libc::O_NOFOLLOW);
+        options.append(true).custom_flags(libc::O_NOFOLLOW);
     }
     #[cfg(windows)]
     {
@@ -1732,7 +1785,7 @@ mod tests {
                 0o700
             );
         }
-        std::fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 
     #[test]
@@ -1747,7 +1800,7 @@ mod tests {
             backend.create(key.clone(), header(&key)),
             Err(SessionError::Conflict(_))
         ));
-        std::fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 
     #[test]
@@ -1775,7 +1828,7 @@ mod tests {
             4
         );
         assert_eq!(backend.list_snapshots().expect("list").len(), 2);
-        std::fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 
     #[test]
@@ -1818,7 +1871,7 @@ mod tests {
         for (index, event) in loaded.events.iter().enumerate() {
             assert_eq!(event.seq, index as u64);
         }
-        std::fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 
     #[test]
@@ -1860,7 +1913,7 @@ mod tests {
         let loaded = backend.load(&key, false).expect("load");
         assert_eq!(loaded.events.len(), 8);
         assert_eq!(loaded.events[7].seq, 7);
-        std::fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 
     #[test]
@@ -1911,7 +1964,7 @@ mod tests {
         let again = backend.load(&key, true).expect("second repair");
         assert_eq!(again.events, repaired.events);
         let _ = next;
-        std::fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 
     #[cfg(unix)]
@@ -1941,8 +1994,8 @@ mod tests {
         );
 
         std::fs::remove_file(&bucket).expect("remove symlink");
-        std::fs::remove_dir_all(&outside).expect("cleanup outside");
-        std::fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&outside);
+        crate::test_support::cleanup_tree(&root);
     }
 
     #[test]
@@ -1970,7 +2023,7 @@ mod tests {
             backend.list_headers(),
             Err(SessionError::LegacyLayout(_))
         ));
-        std::fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 
     #[test]
@@ -1990,7 +2043,7 @@ mod tests {
             backend.list_snapshots(),
             Err(SessionError::Corruption(message)) if message.contains("maps to bucket")
         ));
-        std::fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 
     #[test]
@@ -2006,7 +2059,7 @@ mod tests {
         assert_eq!(tail[0].seq, 2);
         let (_, empty) = backend.read_from(&key, 99).expect("beyond");
         assert!(empty.is_empty());
-        std::fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 
     #[test]
@@ -2025,7 +2078,7 @@ mod tests {
             backend.load(&key, false),
             Err(SessionError::Corruption(message)) if message.contains("unknown required")
         ));
-        std::fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 
     #[test]
@@ -2051,7 +2104,7 @@ mod tests {
                 .join("session.jsonl")
                 .is_file()
         );
-        std::fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 
     #[test]
@@ -2078,7 +2131,7 @@ mod tests {
             backend.load(&key, false),
             Err(SessionError::Corruption(message)) if message.contains("torn JSONL")
         ));
-        std::fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 
     #[test]
@@ -2109,7 +2162,7 @@ mod tests {
             backend.prepare(&key),
             Err(SessionError::Conflict(_))
         ));
-        std::fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 
     #[cfg(unix)]
@@ -2134,7 +2187,7 @@ mod tests {
             Err(AppendFailure::Unknown { .. })
         ));
         assert_eq!(std::fs::read(&outside).unwrap(), b"unchanged");
-        std::fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 
     #[cfg(unix)]
@@ -2170,7 +2223,7 @@ mod tests {
 
         assert!(backend.commit_repair(&mut read, &mut closers).is_err());
         assert_eq!(std::fs::read(&outside).unwrap(), b"unchanged");
-        std::fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 
     #[test]
@@ -2196,7 +2249,7 @@ mod tests {
         ));
         let repaired = backend.load(&key, true).expect("cold repair decides");
         assert_eq!(repaired.events.len(), 4);
-        std::fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 
     /// 计数字节读取器：证明 header 读取与正文大小无关（审计 P1-12）。

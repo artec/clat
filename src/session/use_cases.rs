@@ -1439,7 +1439,7 @@ mod tests {
         let second = service.checkpoints.load(&key).expect("second checkpoint");
         assert!(second.generation > first.generation);
         service.quiesce_active().expect("close");
-        std::fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 
     /// 回归（真实事故）：重启后第一次启动以 "changed while streaming" 失败，
@@ -1475,7 +1475,7 @@ mod tests {
             "install_armed must make the resume seed durable before returning"
         );
         service.quiesce_active().expect("cleanup");
-        std::fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 
     /// I4：回放是事件日志的纯折叠——删 checkpoint、走完整 resume 冷读
@@ -1532,7 +1532,7 @@ mod tests {
                 .is_empty(),
             "a session without a log replays empty"
         );
-        std::fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 
     /// I5：崩溃残留（open step + 无 result 的 tool/call）经恢复闭合器
@@ -1624,7 +1624,7 @@ mod tests {
             "the interrupted turn must explain its stop: {replay:?}"
         );
         service.discard_armed(armed).expect("discard");
-        std::fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 
     #[test]
@@ -1698,7 +1698,7 @@ mod tests {
             retired,
             "dropping the active session must retire its writer (still alive after 5s)"
         );
-        std::fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 
     #[test]
@@ -1728,7 +1728,7 @@ mod tests {
         std::fs::write(&log, b"corrupt").expect("corrupt after commit");
         assert!(service.quiesce_active().is_err());
         wait_for_writer_baseline(baseline);
-        std::fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 
     #[test]
@@ -1777,7 +1777,7 @@ mod tests {
                 || summaries[0].last_activity_ms == summaries[0].created_at_ms
         );
 
-        std::fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 
     #[test]
@@ -1832,7 +1832,7 @@ mod tests {
         let armed = service.arm_session(staged).expect("arm first");
         service.install_armed(armed);
         service.quiesce_active().expect("cleanup session");
-        std::fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 
     #[test]
@@ -1884,7 +1884,7 @@ mod tests {
 
         let summaries = service.list_sessions(&project).expect("list");
         assert_eq!(summaries[0].title.as_deref(), Some("forced"));
-        std::fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 
     /// 第四轮复审 F-A：迟到的自动命名 job 绑定原会话——切换后不得把
@@ -1955,7 +1955,7 @@ mod tests {
                 .any(|event| event.event_type == "session/title"),
             "the stale job never titled the first session either"
         );
-        std::fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 
     #[test]
@@ -1981,7 +1981,7 @@ mod tests {
         assert_eq!(without_cache.turns, with_cache.turns);
         assert_eq!(without_cache.title, with_cache.title);
         service.quiesce_active().expect("cleanup detach");
-        std::fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 
     #[test]
@@ -1996,7 +1996,7 @@ mod tests {
         let limited = service.recent_inputs(1).expect("limited");
         assert_eq!(limited, vec!["second question"]);
         service.quiesce_active().expect("detach");
-        std::fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 
     /// 并行测试会同时持有各自的 writer：断言用"回到基线"的轮询形式。
@@ -2044,7 +2044,7 @@ mod tests {
                 .any(|line| line.kind == "user" && line.text == "round 99")
         );
         service.quiesce_active().expect("cleanup");
-        std::fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 
     /// 复审第二轮：install 时 arm writer 会做 torn-tail 修复并追加合成
@@ -2276,7 +2276,7 @@ mod tests {
             "the next run's turn number must not collide with turn 2"
         );
         service.quiesce_active().expect("cleanup");
-        std::fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 
     #[test]
@@ -2325,7 +2325,7 @@ mod tests {
             "a failed stage must not install anything"
         );
         wait_for_writer_baseline(baseline);
-        std::fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 
     /// INV-C1/C2：usage 折叠按 journal `source {provider, model}` 路由
@@ -2405,6 +2405,6 @@ mod tests {
                 .and_then(|u| u.cached_input_tokens),
             Some(0)
         );
-        std::fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 }

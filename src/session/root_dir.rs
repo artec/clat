@@ -153,6 +153,6 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let dir = Dir::open_ambient_dir(&root, ambient_authority()).unwrap();
         sync_dir(&dir).expect("sync_dir must work on a freshly opened directory");
-        std::fs::remove_dir_all(&root).unwrap();
+        crate::test_support::cleanup_tree(&root);
     }
 }

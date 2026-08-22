@@ -296,22 +296,77 @@ impl WriteGuard {
 
 #[cfg(windows)]
 struct WriteGuard {
-    _directory: std::fs::File,
+    mutex: windows_sys::Win32::Foundation::HANDLE,
 }
+
+/// `Send`：句柄可跨线程使用；单持所有权随 guard 移动，Drop 恰好一次
+///（与 `session::root_lease::StorageRootLease` 同款论证）。
+#[cfg(windows)]
+unsafe impl Send for WriteGuard {}
 
 #[cfg(windows)]
 impl WriteGuard {
     fn acquire(parent: &Dir) -> io::Result<Self> {
-        // LockFileEx（std `File::lock` 的 Windows 后端）不能作用于目录
-        // 句柄——直接返回 ERROR_INVALID_PARAMETER（os error 87）。
-        // Windows CI 腿首跑 write_file/edit_file 全线失败的病根。
-        // 降级为无锁持有：目录句柄保留（capability 纪律不变），写串
-        // 行化交还给正确性边界本身——rename 的目录项原子替换 +
-        // edit_file 的 expected_previous 乐观并发检查（与存储根租约
-        // "best-effort 串行化，非正确性边界"的既有口径一致）。
-        Ok(Self {
-            _directory: parent.try_clone()?.into_std_file(),
-        })
+        // LockFileEx 不接受目录句柄（ERROR_INVALID_PARAMETER，F-W1-a
+        // 首跑病根三）。以目录句柄的内核身份（卷序列号 + 文件索引，
+        // GetFileInformationByHandle）命名一个互斥体——同目录的并发
+        // atomic_write 在进程内与跨进程都被串行化（与 Unix flock 目录
+        // 锁同语义）。known-divergence：命名互斥体线程可重入，同线程
+        // 嵌套写同目录不会自锁——CLAT 无此调用形态。
+        use sha2::Digest as _;
+        use std::os::windows::io::AsRawHandle as _;
+        use windows_sys::Win32::Foundation::{CloseHandle, WAIT_ABANDONED, WAIT_OBJECT_0};
+        use windows_sys::Win32::Storage::FileSystem::{
+            BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+        };
+        use windows_sys::Win32::System::Threading::{CreateMutexW, INFINITE, WaitForSingleObject};
+
+        let directory = parent.try_clone()?.into_std_file();
+        let mut information = unsafe { std::mem::zeroed::<BY_HANDLE_FILE_INFORMATION>() };
+        // SAFETY: directory 持有有效的目录句柄（FILE_FLAG_BACKUP_
+        // SEMANTICS 打开），information 是未初始化目标的合法指针。
+        if unsafe { GetFileInformationByHandle(directory.as_raw_handle(), &mut information) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let identity = format!(
+            "clat-write-guard-{:08x}-{:08x}{:08x}",
+            information.dwVolumeSerialNumber, information.nFileIndexHigh, information.nFileIndexLow
+        );
+        let name = format!(
+            "Local\\CLAT-{:x}",
+            sha2::Sha256::digest(identity.as_bytes())
+        );
+        let mut wide: Vec<u16> = name.encode_utf16().collect();
+        wide.push(0);
+        // SAFETY: null 安全属性 + NUL 结尾的 UTF-16 名；所有权由
+        // WaitForSingleObject 的获取语义建立。
+        let mutex = unsafe { CreateMutexW(std::ptr::null(), 0, wide.as_ptr()) };
+        if mutex.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: mutex 是 CreateMutexW 的活句柄。
+        let waited = unsafe { WaitForSingleObject(mutex, INFINITE) };
+        match waited {
+            WAIT_OBJECT_0 | WAIT_ABANDONED => Ok(Self { mutex }),
+            _ => {
+                unsafe { CloseHandle(mutex) };
+                Err(io::Error::last_os_error())
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for WriteGuard {
+    fn drop(&mut self) {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::ReleaseMutex;
+        // SAFETY: mutex 是本 guard 持有的活句柄；ReleaseMutex 失败仅
+        // 意味着跨线程 Drop（ERROR_NOT_OWNER），句柄关闭即释放最后引用。
+        unsafe {
+            ReleaseMutex(self.mutex);
+            CloseHandle(self.mutex);
+        }
     }
 }
 
@@ -363,7 +418,7 @@ mod tests {
         let resolved = project.resolve_existing("README.md").expect("resolve");
         assert!(resolved.starts_with(root.canonicalize().expect("root")));
 
-        fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 
     #[test]
@@ -376,7 +431,7 @@ mod tests {
             .expect_err("must reject");
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
 
-        fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 
     /// W-INV1：写入解析绝不指向项目根之外。
@@ -497,7 +552,7 @@ mod tests {
             let _ = fs::remove_file(outside_file);
         }
 
-        fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 
     /// NWE-05 回归：打开父目录句柄后，即使路径名被替换为指向项目外
@@ -534,8 +589,8 @@ mod tests {
         assert!(!outside.join("result.txt").exists());
 
         fs::remove_file(root.join("work")).expect("remove symlink");
-        fs::remove_dir_all(root).expect("cleanup root");
-        fs::remove_dir_all(outside).expect("cleanup outside");
+        crate::test_support::cleanup_tree(&root);
+        crate::test_support::cleanup_tree(&outside);
     }
 
     /// NWE-06 回归：两个 CLAT 写入者持有相同旧快照时，只允许一个
@@ -587,6 +642,6 @@ mod tests {
         let final_content = fs::read_to_string(root.join("note.txt")).expect("final content");
         assert!(matches!(final_content.as_str(), "first" | "second"));
 
-        fs::remove_dir_all(root).expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
     }
 }

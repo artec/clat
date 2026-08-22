@@ -501,3 +501,28 @@ impl PermissionApprover for CountingApprover {
         PermissionDecision::Allow
     }
 }
+
+/// 测试临时目录清理（F-W1-b，CI run 32582790210）：cap-std 在 Windows
+/// 打开目录时刻意不带 `FILE_SHARE_DELETE`（cap-primitives dir_options，
+/// 防目录在沙箱路径查找下被改名/删除）——任何仍存活的 Dir capability
+///（backend/service/lease 持有）都会让 `remove_dir_all` 报 os error 32。
+/// Unix 允许删除打开中的文件/目录，历史测试因此在句柄仍持有时清理。
+/// 语义：Unix 保持严格（清理失败即 panic，与原 `.expect("cleanup")`
+/// 一致）；Windows 先短暂重试（后台线程异步关句柄），仍失败则容忍
+/// 残留——清理是卫生不是验证，测试的有效断言此刻已全部通过，一次性
+/// CI runner 上的残留无害。
+pub(crate) fn cleanup_tree(root: &std::path::Path) {
+    for attempt in 0..5 {
+        match std::fs::remove_dir_all(root) {
+            Ok(()) => return,
+            Err(error) if attempt == 4 => {
+                if !cfg!(windows) {
+                    panic!("cleanup {}: {error}", root.display());
+                }
+                // Windows：句柄仍被存活对象持有——容忍残留（见上）。
+                return;
+            }
+            Err(_) => std::thread::sleep(std::time::Duration::from_millis(20u64 << attempt)),
+        }
+    }
+}

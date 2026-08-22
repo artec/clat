@@ -81,7 +81,7 @@ wasmtime-wasi-io = "48.0.0"
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading", "Win32_Storage_FileSystem"] }
 
 # Release 构建优化（2026-08-21）：thin LTO + 单 codegen unit 跨 crate
 # 内联（会话回放的 zstd 解码 / JSON 解析与 markdown 渲染受益），strip
