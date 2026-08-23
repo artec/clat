@@ -1,33 +1,15 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>CLAT — command-line agent</title>
-  <!-- 语言自动切换：简繁中文（zh-*）浏览器首次访问跳转到 /zh/，
-       其余语言留在本页（默认英文）。手动选择过（localStorage）不再覆盖。
-       file:// 本地打开时用相对路径（绝对 /zh/ 会指到文件系统根）。 -->
-  <script>
-    (function () {
-      try {
-        if (localStorage.getItem('clat-lang')) return;
-        var langs = (navigator.languages && navigator.languages.length)
-          ? navigator.languages : [navigator.language || ''];
-        for (var i = 0; i < langs.length; i++) {
-          if (/^zh/i.test(langs[i])) {
-            location.replace(location.protocol === 'file:' ? 'zh/index.html' : '/zh/');
-            return;
-          }
-        }
-      } catch (e) { /* 无 localStorage 则留在英文页 */ }
-    })();
-  </script>
-  <meta name="description" content="CLAT: a rock-solid agent foundation and the TUI client for DSH. A single Rust binary with DeepSeek / GLM / Qwen / Kimi presets out of the box, WASM plugins, and MCP extensions.">
+  <meta name="description" content="CLAT：稳如磐石的 Agent 底座，DSH 的 TUI 客户端。Rust 单文件，DeepSeek / GLM / Qwen / Kimi 开箱即用，支持 WASM 插件与 MCP 扩展。">
   <link rel="alternate" hreflang="en" href="https://cl.at.cn/">
   <link rel="alternate" hreflang="zh" href="https://cl.at.cn/zh/">
   <link rel="alternate" hreflang="x-default" href="https://cl.at.cn/">
-  <link rel="icon" type="image/png" href="logo.png">
-  <link rel="apple-touch-icon" href="logo.png">
+  <link rel="icon" type="image/png" href="../logo.png">
+  <link rel="apple-touch-icon" href="../logo.png">
   <style>
     :root {
       color-scheme: light dark;
@@ -288,7 +270,7 @@
   <div class="wrap">
     <nav>
       <div class="brand">
-        <img src="logo.png" alt="CLAT logo">
+        <img src="../logo.png" alt="CLAT logo">
         <span class="logo-slot">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 370 90" preserveAspectRatio="xMinYMid slice" role="img" aria-label="CLAT">
             <defs>
@@ -371,20 +353,20 @@
     </nav>
 
     <header class="hero">
-      <img class="big" src="logo.png" alt="CLAT logo">
+      <img class="big" src="../logo.png" alt="CLAT logo">
       <h1>CLAT</h1>
-      <div><a class="release-pill" href="https://github.com/artec/clat/releases/latest" data-release>v0.9.0 — Latest release</a></div>
-      <p class="tagline">A rock-solid agent foundation · The TUI client for DSH · A single Rust file</p>
+      <div><a class="release-pill" href="https://github.com/artec/clat/releases/latest" data-release>v0.9.0 — 最新版本</a></div>
+      <p class="tagline">稳如磐石的 Agent 底座 · DSH 的 TUI 客户端 · Rust 单文件</p>
       <div class="term">
         <div class="row"><span class="p">❯</span><span>clat</span></div>
-        <div class="row"><span class="dim"># start the interactive TUI in the current project</span></div>
+        <div class="row"><span class="dim"># 在当前项目目录启动交互式 TUI</span></div>
         <div class="row"><span class="p">❯</span><span>clat dsh</span></div>
-        <div class="row"><span class="dim"># turn the same TUI into a client for a local DSH host</span></div>
+        <div class="row"><span class="dim"># 把同一套 TUI 变成 DSH 宿主的终端客户端</span></div>
         <div class="row"><span class="p">❯</span><span>clat upgrade</span></div>
-        <div class="row"><span class="dim"># self-update to the latest GitHub release</span></div>
+        <div class="row"><span class="dim"># 自更新到最新 GitHub Release</span></div>
       </div>
       <div class="hero-links">
-        <a class="btn" href="#install">Install</a>
+        <a class="btn" href="#install">安装</a>
         <a class="btn" href="https://github.com/artec/clat">View on GitHub</a>
       </div>
       <!-- 数据带：数字须真实。下载体积 = macOS tar.gz 压缩包大小（各平台 6.7–8.3 MB），
@@ -392,157 +374,157 @@
       <div class="stats">
         <div class="stat">
           <div class="stat-number">6.7 MB</div>
-          <div class="stat-label">Download size: one binary, no Node / Python required</div>
+          <div class="stat-label">下载体积：单二进制，无需 Node / Python</div>
         </div>
         <div class="stat">
-          <div class="stat-number">6</div>
-          <div class="stat-label">Platforms: macOS / Linux / Windows</div>
+          <div class="stat-number">6 种</div>
+          <div class="stat-label">支持平台：macOS / Linux / Windows</div>
         </div>
         <div class="stat">
-          <div class="stat-number">4</div>
-          <div class="stat-label">Built-in presets: DeepSeek / GLM / Qwen / Kimi</div>
+          <div class="stat-number">4 个</div>
+          <div class="stat-label">预设厂商：DeepSeek / GLM / Qwen / Kimi</div>
         </div>
       </div>
     </header>
 
     <section id="why">
       <p class="kicker">Why CLAT</p>
-      <h2>Command line + tools + models</h2>
-      <p class="lede">CLAT brings the model into your terminal: reading code, editing files, and running commands all happen locally — every step visible, controllable, and auditable.</p>
+      <h2>命令行 + 工具 + 模型</h2>
+      <p class="lede">CLAT 把模型接入你的终端：读代码、改文件、跑命令都在本地完成，每一步操作可见、可控、可审计。</p>
       <div class="grid3">
         <div class="card">
-          <h3>Local first</h3>
-          <p>Sessions persist as append-only logs; settings, credentials, and trust decisions live in local JSON files under <code>~/.clat</code>. No cloud dependency — your data never leaves your machine.</p>
+          <h3>本地优先</h3>
+          <p>会话以 append-only 日志落盘，配置、密钥与信任状态存本地 JSON 文件（<code>~/.clat</code>）。没有云端依赖，数据不出你的机器。</p>
         </div>
         <div class="card">
-          <h3>One binary</h3>
-          <p>A single Rust executable with no runtime and nothing to install. Runs out of the box on six platforms across macOS, Linux, and Windows.</p>
+          <h3>单二进制</h3>
+          <p>Rust 编译的单文件可执行程序，无运行时、无依赖安装。macOS、Linux 与 Windows 六个平台开箱即用。</p>
         </div>
         <div class="card">
-          <h3>Safe by default</h3>
-          <p>Entering a new directory passes a trust gate first. Permissions switch between read-only, project-write, and full-access; at the default level every file write and command asks first, and paths stay inside the project root.</p>
+          <h3>安全默认</h3>
+          <p>进入新目录先过信任门；权限分只读、项目写入、完全访问三档可切换，默认档位下写文件、执行命令逐次询问，路径不出项目根。</p>
         </div>
       </div>
     </section>
 
     <section id="positioning">
       <p class="kicker">Positioning</p>
-      <h2>One container lineage, three routes</h2>
-      <p class="lede">Spring, DeepSeek Harness, and CLAT share the same "composable container" organ — systems assembled declaratively from swappable parts, an idea reaching back to IoC and OSGi — yet they serve different users and head in different directions. This table orients first-time visitors.</p>
+      <h2>同一容器血统，三条路线</h2>
+      <p class="lede">Spring、DeepSeek Harness 与 CLAT 共享同一个「组装式容器」的器官——把系统拆成可声明、可组合的部件（这一思想可上溯到 IoC 与 OSGi 运动）——却服务不同的用户、走向不同的方向。下表帮第一次接触 CLAT 的你快速定位。</p>
       <div class="table-scroll">
         <table class="positioning">
           <thead>
             <tr><th></th><th>Spring</th><th>DSH</th><th>CLAT</th></tr>
           </thead>
           <tbody>
-            <tr><td>Positioning</td><td>Enterprise Java application framework</td><td>An "everything is a plugin" agent runtime</td><td>A rock-solid agent foundation</td></tr>
-            <tr><td>Users</td><td>Programmers building applications</td><td>Developers driving agents, and the models themselves</td><td>Users who want local-first, single-binary, auditable tooling</td></tr>
-            <tr><td>Container philosophy</td><td>Let programmers forget the container</td><td>Let the runtime be rewritten at any time</td><td>Let the user audit the container</td></tr>
-            <tr><td>Composition time</td><td>Compile time / deploy time</td><td>Run time</td><td>Compile time (static manifest); extensions move out via MCP</td></tr>
-            <tr><td>Extension</td><td>jar + interfaces</td><td>In-process TypeScript plugins</td><td>MCP protocol + gated WASM</td></tr>
+            <tr><td>定位</td><td>企业级 Java 应用框架</td><td>「一切皆插件」的 Agent 运行时</td><td>稳如磐石的 Agent 底座</td></tr>
+            <tr><td>用户</td><td>构建应用的程序员</td><td>驱动 agent 的开发者与模型自身</td><td>追求本地优先、单二进制、可审计的用户</td></tr>
+            <tr><td>容器哲学</td><td>让程序员忘记容器的存在</td><td>让运行时随时可改写</td><td>让用户能够审计容器</td></tr>
+            <tr><td>组合时机</td><td>编译期 / 部署期</td><td>运行期</td><td>编译期（静态清单），扩展经 MCP 外移</td></tr>
+            <tr><td>扩展方式</td><td>jar + 接口</td><td>进程内 TypeScript 插件</td><td>MCP 协议 + 门控 WASM</td></tr>
           </tbody>
         </table>
       </div>
-      <p class="lede"><strong>Spring lets programmers forget the container, DeepSeek Harness lets the model rewrite it, and CLAT lets the user audit it.</strong> If what you want is a stable, small, see-through agent foundation — this is it.</p>
+      <p class="lede"><strong>Spring 让程序员忘记容器，DeepSeek Harness 让模型改写容器，CLAT 让用户审计容器。</strong>如果你想要的是一个稳、小、看得见的 Agent 底座——那就是这里。</p>
     </section>
 
     <section id="features">
       <p class="kicker">Features</p>
-      <h2>Built for real programming workflows</h2>
+      <h2>为真实编程工作流设计</h2>
       <div class="feature-grid">
         <div class="feature-cell">
-          <p class="feature-label">01 — Models</p>
-          <h3>Vendors out of the box</h3>
-          <p>DeepSeek, GLM, Qwen, and Kimi presets are built in, and any OpenAI-compatible endpoint works too. <code>/model</code> opens a two-level picker — vendor first, then model — with keys stored in per-vendor slots.</p>
+          <p class="feature-label">01 — 模型</p>
+          <h3>模型厂商开箱即用</h3>
+          <p>DeepSeek、GLM、Qwen、Kimi 官方预设内置，任意 OpenAI 兼容端点同样能用。<code>/model</code> 打开两级选择器：先选厂商，再选模型，密钥按厂商分槽保存。</p>
         </div>
         <div class="feature-cell">
-          <p class="feature-label">02 — Input</p>
-          <h3>Image attachments &amp; input recall</h3>
-          <p>Drag a local image into the terminal and it becomes a session attachment, sent along to vision models; input history is recalled with ↑/↓, isolated per project.</p>
+          <p class="feature-label">02 — 输入</p>
+          <h3>图片附件与输入召回</h3>
+          <p>把本地图片拖进终端即成为会话附件，随消息一起发送给视觉模型；输入历史支持 ↑/↓ 召回，按项目隔离。</p>
         </div>
         <div class="feature-cell">
-          <p class="feature-label">03 — Interaction</p>
-          <h3>Questions &amp; steering</h3>
-          <p>The model stops to ask when a decision is yours to make; while a run is active you can send steering messages that change its direction.</p>
+          <p class="feature-label">03 — 交互</p>
+          <h3>交互式询问与会话转向</h3>
+          <p>模型遇到该由你拍板的事会停下来提问；运行中也能随时插入转向消息，改变当前任务的方向。</p>
         </div>
         <div class="feature-cell">
-          <p class="feature-label">04 — Runtime</p>
-          <h3>Unlimited turns &amp; auto-compaction</h3>
-          <p>No turn limit — a run continues until the task is done. At 80% of the context window the conversation compacts automatically, with the original history fully preserved.</p>
+          <p class="feature-label">04 — 运行</p>
+          <h3>无限制轮次与自动压缩</h3>
+          <p>轮次没有上限，任务跑完为止；上下文用到八成自动压缩摘要，原始历史完整保留。</p>
         </div>
         <div class="feature-cell">
-          <p class="feature-label">05 — Permissions</p>
-          <h3>Three permission modes</h3>
-          <p>Read-only, project-write (default), and full-access, switchable any time via <code>/perm</code> or right from a permission prompt, remembered per project. In the lower two modes, file writes and commands still ask every time.</p>
+          <p class="feature-label">05 — 权限</p>
+          <h3>三档权限模式</h3>
+          <p>只读、项目写入（默认）、完全访问三档随时切换：<code>/perm</code> 或权限弹窗内一键换档、可临时提权，按项目记忆。低两档下写文件、跑命令仍逐次审批。</p>
         </div>
         <div class="feature-cell">
-          <p class="feature-label">06 — Integration</p>
-          <h3>MCP native</h3>
-          <p>MCP servers over stdio or Streamable HTTP; GLM Coding Plan mounts the four official GLM MCP servers automatically, and <code>/mcp</code> shows every connection and registered tool.</p>
+          <p class="feature-label">06 — 集成</p>
+          <h3>MCP 原生</h3>
+          <p>MCP 服务器支持 stdio 与 Streamable HTTP 远程传输；GLM Coding Plan 自动挂载官方四台 MCP 服务器，<code>/mcp</code> 查看连接状态与已注册工具。</p>
         </div>
         <div class="feature-cell">
-          <p class="feature-label">07 — Telemetry</p>
-          <h3>Live status bar</h3>
-          <p>DeepSeek balance, GLM 5-hour window quota, Kimi quota, KV-cache hit rate, context usage, and thinking level stay in the status bar; the numbers are rebuilt from the session log and survive restarts.</p>
+          <p class="feature-label">07 — 遥测</p>
+          <h3>状态栏实时反馈</h3>
+          <p>DeepSeek 余额、GLM 5 小时窗口额度、Kimi 额度、KV 缓存命中百分比、上下文占用与思考强度常驻底部；统计从会话日志还原，重启不归零。</p>
         </div>
         <div class="feature-cell">
-          <p class="feature-label">08 — Persistence</p>
-          <h3>Crash-safe sessions</h3>
-          <p>Every conversation is written to an append-only log, flushed before the model is called; after a crash it recovers to the last complete batch. Logs use the DSH-compatible format, readable by other compatible tools. The model titles each session — <code>/rename</code> to edit.</p>
+          <p class="feature-label">08 — 持久化</p>
+          <h3>崩溃安全的会话持久化</h3>
+          <p>完整对话写入 append-only 日志，先落盘再调用模型，崩溃后自动恢复到最近的完整批次；日志为 DSH 兼容格式，可被兼容工具直接读取。模型自动起标题，<code>/rename</code> 随时改。</p>
         </div>
         <div class="feature-cell">
-          <p class="feature-label">09 — Upgrades</p>
-          <h3>Self-update</h3>
-          <p><code>clat upgrade</code> pulls the latest binary for your platform from GitHub Releases and atomically replaces itself — one command.</p>
+          <p class="feature-label">09 — 升级</p>
+          <h3>自更新</h3>
+          <p><code>clat upgrade</code> 从 GitHub Releases 拉取当前平台的最新二进制并原子替换自身，一条命令升级。</p>
         </div>
         <div class="feature-cell">
-          <p class="feature-label">10 — Plugins</p>
-          <h3>WASM plugins</h3>
-          <p>Interoperable with the DSH plugin ecosystem: community plugins work as-is, and what you write runs on both. A stable Rust foundation plus an open plugin ecosystem — assemble CLAT into the agent system you need.</p>
+          <p class="feature-label">10 — 插件</p>
+          <h3>WASM 插件</h3>
+          <p>与 DSH 插件生态互通：社区现成的能力拿来即用，你写的插件两边通用。稳定的 Rust 底座配上开放的插件生态，把 CLAT 组合成你需要的 Agent 系统。</p>
         </div>
         <div class="feature-cell">
-          <p class="feature-label">11 — Ecosystem</p>
-          <h3>DSH host client</h3>
-          <p>One <code>clat dsh</code> connects to a local DSH host and the CLAT interface becomes its terminal: DSH sessions, questions, and approvals all happen in the same TUI, with automatic reconnection. It never writes to <code>~/.dsh</code> — everything goes through the official API.</p>
+          <p class="feature-label">11 — 生态</p>
+          <h3>DSH 宿主客户端</h3>
+          <p>一条 <code>clat dsh</code> 连上本地 DSH 宿主，CLAT 界面就成为它的终端：DSH 的会话、提问与审批都在同一套 TUI 里完成，断线自动重连；对 <code>~/.dsh</code> 只读不写，一切经官方 API 交互。</p>
         </div>
         <div class="feature-cell">
-          <p class="feature-label">12 — Frontends</p>
-          <h3>Web client &amp; local API</h3>
-          <p><code>clat serve</code> starts an HTTP+SSE service on your machine; open a browser and you get an installable web client (PWA). <code>clat exec --json</code> streams every run event as NDJSON for editors and pipelines.</p>
+          <p class="feature-label">12 — 前端</p>
+          <h3>Web 客户端与本地 API</h3>
+          <p><code>clat serve</code> 在本机启动一个 HTTP+SSE 服务，浏览器打开即是可安装的 Web 客户端（PWA）；<code>clat exec --json</code> 把全部运行事件以 NDJSON 输出，供编辑器与流水线消费。</p>
         </div>
       </div>
     </section>
 
     <section id="install">
       <p class="kicker">Get started</p>
-      <h2>Install</h2>
-      <p class="lede">The one-line scripts are recommended: they detect your platform, download the release binary, verify the Minisign signature and SHA-256, and put it into <code>~/.local/bin</code> (Windows: <code>%LOCALAPPDATA%\Programs\clat</code>). First-install verification needs <code>minisign</code> (macOS: <code>brew install minisign</code>); when no prebuilt binary exists the scripts fall back to building from source.</p>
+      <h2>安装</h2>
+      <p class="lede">推荐用一键脚本：自动识别平台、下载 Release 二进制、验证 Minisign 签名与 SHA-256 后放入 <code>~/.local/bin</code>（Windows 为 <code>%LOCALAPPDATA%\Programs\clat</code>）。预装校验需要 <code>minisign</code>（macOS：<code>brew install minisign</code>）；没有预编译产物时回退到源码构建。</p>
 
-      <h3>One-line scripts (recommended)</h3>
+      <h3>一键脚本（推荐）</h3>
       <div class="install-options">
         <div class="card install-card">
           <p class="install-title">macOS / Linux</p>
           <div class="term">
             <div class="row"><span class="p">❯</span><span class="cmd">curl -fsSL https://raw.githubusercontent.com/artec/clat/main/install.sh | sh</span></div>
-            <button class="copy" type="button" data-copy>Copy</button>
+            <button class="copy" type="button" data-copy>复制</button>
           </div>
-          <p class="term-caption">The script offers to add <code>~/.local/bin</code> to your PATH</p>
+          <p class="term-caption">脚本会提示把 <code>~/.local/bin</code> 加入 PATH</p>
         </div>
         <div class="card install-card">
           <p class="install-title">Windows PowerShell</p>
           <div class="term">
             <div class="row"><span class="p">❯</span><span class="cmd">irm https://raw.githubusercontent.com/artec/clat/main/install.ps1 | iex</span></div>
-            <button class="copy" type="button" data-copy>Copy</button>
+            <button class="copy" type="button" data-copy>复制</button>
           </div>
-          <p class="term-caption">Installs into <code>%LOCALAPPDATA%\Programs\clat</code></p>
+          <p class="term-caption">自动安装到 <code>%LOCALAPPDATA%\Programs\clat</code></p>
         </div>
       </div>
 
-      <h3>Manual download</h3>
-      <p class="lede">You can also grab the binary for your platform from the Releases page and drop it into your PATH. Installed users self-update with <a href="https://github.com/artec/clat/releases">clat upgrade</a>.</p>
+      <h3>手动下载</h3>
+      <p class="lede">也可以从 Releases 页面下载对应平台的二进制，放入 PATH 即可。已安装用户用 <a href="https://github.com/artec/clat/releases">clat upgrade</a> 自更新。</p>
       <table>
         <thead>
-          <tr><th>Platform</th><th>Asset</th><th>Architecture</th></tr>
+          <tr><th>平台</th><th>资产</th><th>架构</th></tr>
         </thead>
         <tbody>
           <tr><td>macOS</td><td><code>clat-v*-aarch64-apple-darwin.tar.gz</code></td><td>Apple Silicon</td></tr>
@@ -553,17 +535,17 @@
           <tr><td>Windows</td><td><code>clat-v*-aarch64-pc-windows-msvc.zip</code></td><td>ARM64</td></tr>
         </tbody>
       </table>
-      <p class="lede">Linux builds require glibc 2.39+ (Ubuntu 24.04 generation or newer); older distributions should build from source. After extracting, try <code>clat --help</code>, then run <code>clat</code> inside a project directory — the first run asks you to trust it. The scripts are the same: once installed, just run <code>clat</code>.</p>
+      <p class="lede">Linux 产物要求 glibc 2.39+（Ubuntu 24.04 同代及以上），更老的发行版请从源码构建。解压后先 <code>clat --help</code> 看一眼，进入项目目录运行 <code>clat</code>，首次会请求信任该目录。脚本安装同理，装完直接运行 <code>clat</code> 即可。</p>
     </section>
 
     <footer>
       <div class="footer-grid">
         <div>
           <div>CLAT · command-line agent</div>
-          <p class="footer-tagline">cl + at = a rock-solid agent foundation.<br>The TUI client for DSH. A single Rust file.</p>
+          <p class="footer-tagline">cl + at = 稳如磐石的 Agent 底座。<br>DSH 的 TUI 客户端，Rust 单文件。</p>
         </div>
         <div>
-          <p class="col-title">Project</p>
+          <p class="col-title">项目</p>
           <div class="links">
             <a href="https://github.com/artec/clat">GitHub</a>
             <a href="https://github.com/artec/clat/releases">Releases</a>
@@ -571,29 +553,29 @@
           </div>
         </div>
         <div>
-          <p class="col-title">Docs</p>
+          <p class="col-title">文档</p>
           <div class="links">
-            <a href="https://github.com/artec/clat/blob/main/docs/wasm.md">Plugins</a>
-            <a href="https://github.com/artec/clat/blob/main/docs/architecture.md">Architecture</a>
-            <a href="https://github.com/artec/clat/blob/main/docs/usage.md">Usage</a>
+            <a href="https://github.com/artec/clat/blob/main/docs/wasm.md">插件</a>
+            <a href="https://github.com/artec/clat/blob/main/docs/architecture.md">架构</a>
+            <a href="https://github.com/artec/clat/blob/main/docs/usage.md">使用</a>
           </div>
         </div>
       </div>
-      <div class="footer-bottom"><span>© <span data-year>2026</span> CLAT · MIT License</span><a href="zh/index.html" data-lang="zh">中文</a></div>
+      <div class="footer-bottom"><span>© <span data-year>2026</span> CLAT · MIT License</span><a href="../index.html" data-lang="en">English</a></div>
     </footer>
   </div>
     <script>
       // 安装命令一键复制：读兄弟节点里的命令文本，优先走现代剪贴板
       // API，HTTP 页面（GitHub Pages 均为 HTTPS）均可用；失败回退到
-      // 临时 textarea + execCommand。复制成功后按钮短暂显示“Copied”。
+      // 临时 textarea + execCommand。复制成功后按钮短暂显示“已复制”。
       document.querySelectorAll('button[data-copy]').forEach(function (button) {
         button.addEventListener('click', function () {
           var command = button.parentElement.querySelector('.cmd').textContent.trim();
           function done() {
-            button.textContent = 'Copied';
+            button.textContent = '已复制';
             button.classList.add('done');
             setTimeout(function () {
-              button.textContent = 'Copy';
+              button.textContent = '复制';
               button.classList.remove('done');
             }, 1600);
           }
@@ -622,12 +604,12 @@
           .then(function (response) { return response.ok ? response.json() : null; })
           .then(function (data) {
             if (data && data.tag_name) {
-              releasePill.textContent = data.tag_name + ' — Latest release';
+              releasePill.textContent = data.tag_name + ' — 最新版本';
             }
           })
           .catch(function () { /* 保持预置文案 */ });
       }
-      // 语言切换：记录手动选择，此后本页的自动跳转不再覆盖。
+      // 语言切换：记录手动选择，此后英文首页的自动跳转不再覆盖。
       document.querySelectorAll('a[data-lang]').forEach(function (a) {
         a.addEventListener('click', function () {
           try { localStorage.setItem('clat-lang', a.getAttribute('data-lang')); } catch (e) { /* 忽略 */ }
