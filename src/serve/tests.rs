@@ -1596,7 +1596,9 @@ fn serve_join_exit_reports_nonzero_for_synthetic_production_failures() {
 /// 有意义。若入口退回 `handle.join(); 0`，本腿直接红。
 #[test]
 fn production_serve_entry_uses_the_checked_join_exit_seam() {
-    let source = include_str!("../serve.rs");
+    // include_str! 按磁盘字节嵌入：Windows 的 CRLF 检出会让含 `\n` 的
+    // 查找串失配——先归一化行尾再扫描源码。
+    let source = include_str!("../serve.rs").replace("\r\n", "\n");
     let start = source
         .find("pub fn run_serve_with_shutdown")
         .expect("production entry exists");

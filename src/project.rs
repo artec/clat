@@ -539,7 +539,17 @@ mod tests {
         let error = target
             .read_to_string_limited(1024)
             .expect_err("final symlink is refused by open");
-        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        // O_NOFOLLOW 打开 symlink 的错误码是平台方言：Linux 报 ELOOP，
+        // macOS 报 EPERM（→ PermissionDenied）。两者都是「拒绝跟随」的
+        // 证明；判别腿是读取失败且 victim 内容原封不动。stable Rust 不能
+        // match 未稳定的 ErrorKind::FilesystemLoop（io_error_more），所以
+        // 用原始 errno 判别。
+        assert!(
+            error.raw_os_error() == Some(libc::ELOOP)
+                || error.raw_os_error() == Some(libc::EPERM)
+                || error.kind() == io::ErrorKind::PermissionDenied,
+            "unexpected error for no-follow refusal: {error}"
+        );
         assert_eq!(fs::read_to_string(&victim).unwrap(), "secret");
         crate::test_support::cleanup_tree(&root);
     }
