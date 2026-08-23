@@ -53,7 +53,7 @@ download one archive, its manifest, and signature from the same release. For
 example on macOS arm64:
 
 ```bash
-CLAT_TAG=v0.9.1
+CLAT_TAG=v0.9.2
 CLAT_TARGET=aarch64-apple-darwin
 CLAT_ASSET="clat-${CLAT_TAG}-${CLAT_TARGET}.tar.gz"
 CLAT_RELEASE_URL="https://github.com/artec/clat/releases/download/${CLAT_TAG}"
@@ -98,7 +98,7 @@ Substitute the release tag and target. The equivalent Windows PowerShell flow
 is executable as follows:
 
 ```powershell
-$ClatTag = 'v0.9.1'
+$ClatTag = 'v0.9.2'
 $ClatTarget = 'x86_64-pc-windows-msvc'
 $ClatAsset = "clat-$ClatTag-$ClatTarget.zip"
 $ClatReleaseUrl = "https://github.com/artec/clat/releases/download/$ClatTag"
