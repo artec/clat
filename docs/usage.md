@@ -345,6 +345,36 @@ permission model, session journal, and single-run semantics of the
 TUI and `clat exec`. Ctrl-C stops it gracefully (cancel active run,
 close the application, flush the journal).
 
+### Web client & PWA
+
+The URL `clat serve` prints opens a built-in web client (served from
+the same binary — no Node, no build step). It is a pure projection of
+the event stream: refresh or reconnect always rebuilds the view from
+the journal replay, session content is never stored in the browser,
+and model output is rendered text-only (no HTML). The client supports
+the full loop: streaming answers, tool cards, approval prompts
+(answer from any tab — see below), session list/new/switch/rename, and
+in-run steering (pressing Enter while a run is active queues a
+steering message).
+
+**Multi-client semantics** (several tabs on the same serve):
+observation is per-tab (each subscribes independently and sees the
+same events); approval is *first-answer-wins* — any tab holding the
+token may answer, the winner executes, later answers are told
+`not-pending`; cancellation is idempotent from any tab. Opening the
+page without a valid token shows a landing state where you can paste
+a `clat serve` URL.
+
+**PWA install**: the app declares a manifest and icons, so Chromium
+browsers offer installation (it launches like a native app at its own
+window). The per-run token travels inside the manifest/icon URLs, so
+installs are bound to the running serve process — a freshly restarted
+`clat serve` generates a new token and an installed app opens in the
+landing state until reconnected. There is deliberately no offline
+shell: without a running serve there is no data. e2e tests for the
+client live under `web/e2e` (Playwright, developer-side only — run
+`npm test` there; the shipped assets stay zero-build).
+
 ## Title bar and status line
 
 The title bar carries the model name followed by the current thinking

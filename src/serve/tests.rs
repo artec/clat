@@ -1044,6 +1044,202 @@ fn slow_subscriber_overflow_is_dropped_and_run_buffer_is_intact() {
     std::fs::remove_dir_all(project_root).ok();
 }
 
+// ---- web 资产 + PWA（验收⑤⑥⑦，PWA-4）----
+
+#[test]
+fn web_assets_serve_behind_the_token_gate() {
+    let (handle, storage_root, project_root) =
+        spawn_serve("serve-web-assets", TestBehavior::Success);
+
+    // 应用资产：200 + content-type（验收⑥：编译期嵌入）。
+    let (status, body) = get(handle.addr, &format!("/?t={TEST_TOKEN}"), &[]);
+    assert_eq!(status, 200, "{body:?}");
+    assert!(
+        get_response_content_type(handle.addr, &format!("/?t={TEST_TOKEN}")).contains("text/html")
+    );
+    for (path, kind) in [
+        ("/app.js", "application/javascript"),
+        ("/style.css", "text/css"),
+    ] {
+        let target = format!("{path}?t={TEST_TOKEN}");
+        let content_type = get_response_content_type(handle.addr, &target);
+        assert_eq!(
+            get(handle.addr, &target, &[]).0,
+            200,
+            "{path} must be served"
+        );
+        assert!(content_type.contains(kind), "{path}: {content_type}");
+    }
+
+    // manifest（验收⑤）：200 + JSON 结构 + {TOKEN} 占位符替换为已验证
+    // token——安装链路（浏览器自拉 manifest/图标，不能带 header）靠它
+    // 过闸，INV-S1 对资产原样生效。
+    let target = format!("/manifest.webmanifest?t={TEST_TOKEN}");
+    let (status, body) = get(handle.addr, &target, &[]);
+    assert_eq!(status, 200, "{body:?}");
+    let manifest: serde_json::Value = serde_json::from_str(&body).expect("manifest json");
+    assert_eq!(manifest["name"], "clat");
+    assert_eq!(manifest["display"], "standalone");
+    assert!(
+        manifest["start_url"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("t={TEST_TOKEN}"))
+    );
+    let icons = manifest["icons"].as_array().expect("icons");
+    assert_eq!(icons.len(), 2, "192 + 512");
+    for icon in icons {
+        let src = icon["src"].as_str().expect("src");
+        assert!(
+            src.contains(&format!("t={TEST_TOKEN}")),
+            "icon URL 携带已验证 token: {src}"
+        );
+    }
+    assert!(!body.contains("{TOKEN}"), "占位符不得泄漏");
+
+    // 图标：200 + image/png；错 token → 401（闸完整性）。
+    for icon in ["/icons/icon-192.png", "/icons/icon-512.png"] {
+        let target = format!("{icon}?t={TEST_TOKEN}");
+        assert_eq!(get(handle.addr, &target, &[]).0, 200, "{icon}");
+        assert!(get_response_content_type(handle.addr, &target).contains("image/png"));
+    }
+    let (status, _) = get(handle.addr, "/manifest.webmanifest?t=wrong", &[]);
+    assert_eq!(status, 401, "manifest 同样过 token 闸");
+    let (status, _) = get(handle.addr, "/icons/icon-192.png?t=wrong", &[]);
+    assert_eq!(status, 401, "图标同样过 token 闸");
+
+    cleanup(handle, &storage_root, &project_root);
+}
+
+fn get_response_content_type(addr: SocketAddr, target: &str) -> String {
+    let mut stream = connect(addr);
+    let request = format!("GET {target} HTTP/1.1\r\nHost: clat\r\nConnection: close\r\n\r\n");
+    stream.write_all(request.as_bytes()).expect("write");
+    let mut bytes = Vec::new();
+    stream.read_to_end(&mut bytes).expect("read");
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    text.lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.trim()
+                .eq_ignore_ascii_case("content-type")
+                .then(|| value.trim().to_owned())
+        })
+        .unwrap_or_default()
+}
+
+/// 验收⑦（INV-W2 边界）：`web/` 静态资产不得引用 serve 之外的任何
+/// 端点——前端只与自己的 serve 对话。
+#[test]
+fn web_assets_reference_no_external_endpoints() {
+    let web_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("web");
+    let mut offenders = Vec::new();
+    scan_web_for_urls(&web_root, &mut offenders);
+    assert!(
+        offenders.is_empty(),
+        "web 资产出现外部端点引用（INV-W2 违例）: {offenders:?}"
+    );
+}
+
+fn scan_web_for_urls(dir: &Path, offenders: &mut Vec<String>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            // e2e 工具链整体不是产品资产——INV-W2 扫的是会被
+            // include_bytes! 编进二进制的东西。
+            if path.file_name().is_some_and(|name| name == "e2e") {
+                continue;
+            }
+            scan_web_for_urls(&path, offenders);
+        } else if let Ok(text) = std::fs::read_to_string(&path) {
+            for line in text.lines() {
+                if line.contains("http://") || line.contains("https://") {
+                    offenders.push(format!("{}: {}", path.display(), line.trim()));
+                }
+            }
+        }
+    }
+}
+
+// ---- Playwright e2e 宿主（验收⑧基建；门控腿）--------------------
+//
+// 由 web/e2e/global-setup.js 以
+// `cargo test --lib -- --ignored serve_e2e_host --nocapture` 拉起：
+// 进程内 serve_with + TestProvider（真协议、真 socket、脚本模型——
+// 二进制零测试钩子），写 web/e2e/.serve-<key>.json 握手文件后驻留，
+// 直到 Playwright teardown 写 .stop-<key> 或 10 分钟超时。
+
+const E2E_HOST_TIMEOUT: Duration = Duration::from_secs(600);
+
+fn host_serve_for_playwright(key: &str, behavior: TestBehavior) {
+    // 武装开关：仅当 Playwright（web/e2e/global-setup.js）以
+    // CLAT_E2E_HOST=1 拉起时才起服驻留——CI 的 `-- --ignored` 门控面
+    // 不带此变量，本测试瞬过不驻留（否则 CI 会在此挂 10 分钟）。
+    if std::env::var("CLAT_E2E_HOST").ok().as_deref() != Some("1") {
+        eprintln!("serve_e2e_host[{key}]: not armed (set CLAT_E2E_HOST=1 via web/e2e)");
+        return;
+    }
+    let (storage_root, project_root, project) = setup(&format!("serve-e2e-{key}"));
+    prepare_storage(&project, &storage_root, behavior.clone());
+    let token = format!("e2e-{key}-{}", uuid::Uuid::new_v4().simple());
+    let handle = crate::serve::serve_with_with_queue(
+        project,
+        Some(storage_root.clone()),
+        ServeArgs {
+            port: 0,
+            token: Some(token.clone()),
+        },
+        |bootstrap| {
+            bootstrap.authorize_and_mount_with_provider(Arc::new(TestProviderPlugin { behavior }))
+        },
+        Arc::new(AtomicBool::new(false)),
+        super::state::SUBSCRIBER_QUEUE_FRAMES,
+    )
+    .expect("serve_with");
+
+    let e2e_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("web/e2e");
+    let info_path = e2e_dir.join(format!(".serve-{key}.json"));
+    let stop_path = e2e_dir.join(format!(".stop-{key}"));
+    std::fs::write(
+        &info_path,
+        serde_json::json!({
+            "origin": format!("http://{}", handle.addr),
+            "token": token,
+        })
+        .to_string(),
+    )
+    .expect("write e2e info");
+
+    let deadline = Instant::now() + E2E_HOST_TIMEOUT;
+    while !stop_path.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    let _ = std::fs::remove_file(&stop_path);
+    cleanup(handle, &storage_root, &project_root);
+    let _ = std::fs::remove_file(&info_path);
+}
+
+#[test]
+#[ignore = "Playwright e2e host (needs CLAT_E2E_HOST=1, set by web/e2e/global-setup.js)"]
+fn serve_e2e_host_run_command() {
+    host_serve_for_playwright("run-command", TestBehavior::RunCommand);
+}
+
+#[test]
+#[ignore = "Playwright e2e host (needs CLAT_E2E_HOST=1, set by web/e2e/global-setup.js)"]
+fn serve_e2e_host_long_stream() {
+    host_serve_for_playwright(
+        "long-stream",
+        TestBehavior::TimedDeltas {
+            count: 160,
+            interval_ms: 50,
+        },
+    );
+}
+
 // ---- 依赖零新增（验收 14，INV-S8）----
 
 #[test]

@@ -93,6 +93,13 @@ pub(crate) enum TestBehavior {
     HugeDeltas {
         count: usize,
     },
+    /// 每 `interval_ms` 发一个 16KiB TextDelta，共 `count` 个：秒级
+    /// 持续流（PWA-4 刷新重建腿——run 进行中 F5，视图恢复且流式
+    /// 继续不丢帧）；总字节数温和（journal 重放友好）。
+    TimedDeltas {
+        count: usize,
+        interval_ms: u64,
+    },
     /// steering 确定性门闩：第一次模型调用阻塞到测试线程 steer() 并
     /// 放行（否则按取消退出），第二次调用观测 steering 用户项是否已
     /// 并入 items。
@@ -438,6 +445,16 @@ impl Model for TestModel {
                     // 5ms 间隔：快消费者（毫秒级排空一帧）队列不积压，
                     // 慢消费者（零排空）必然溢出——两侧结果确定性分离。
                     std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                Ok(response("done", FinishReason::Completed))
+            }
+            TestBehavior::TimedDeltas { count, interval_ms } => {
+                let blob = "x".repeat(16 * 1024);
+                for _ in 0..*count {
+                    events.emit(ModelEvent::TextDelta {
+                        delta: blob.clone(),
+                    });
+                    std::thread::sleep(std::time::Duration::from_millis(*interval_ms));
                 }
                 Ok(response("done", FinishReason::Completed))
             }

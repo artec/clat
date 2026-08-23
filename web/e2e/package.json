@@ -1,0 +1,12 @@
+{
+  "name": "clat-web-e2e",
+  "private": true,
+  "description": "Playwright e2e for the clat web client. Test tooling only — the product assets in web/ stay zero-build (worklist PWA-4 acceptance ⑧).",
+  "scripts": {
+    "test": "playwright test",
+    "postinstall": "playwright install chromium"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.0"
+  }
+}

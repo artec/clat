@@ -69,7 +69,8 @@ capabilities.
   same permission model; `--json` streams every run event as versioned
   NDJSON for editors and pipelines
 - `clat serve` for a local HTTP+SSE API on 127.0.0.1 — token-gated,
-  event-streamed, the base for the upcoming browser client
+  event-streamed, with a built-in installable web client (PWA) served
+  from the same binary
 - `clat demo` for a deterministic offline walkthrough of the agent loop
 
 ## Principles

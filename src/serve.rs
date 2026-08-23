@@ -23,9 +23,9 @@ pub(crate) mod protocol;
 pub(crate) mod shapes;
 mod sse;
 mod state;
-mod static_page;
 #[cfg(test)]
 mod tests;
+mod web_assets;
 
 use crate::{BootstrapApplication, Project, TrustedProjectApplication};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -325,24 +325,21 @@ fn handle_connection(mut stream: TcpStream, shared: Arc<state::ServeShared>) {
 
     match request.method.as_str() {
         "GET" => match request.path.as_str() {
-            "/" => {
-                let _ = http::write_response(
-                    &mut stream,
-                    200,
-                    "text/html; charset=utf-8",
-                    static_page::WELCOME_HTML.as_bytes(),
-                );
-            }
             "/api/events" => sse::handle(&mut stream, &shared),
-            other => {
-                let _ = write_json(
-                    &mut stream,
-                    404,
-                    protocol::rpc_result_json(&Err(protocol::RpcError::not_found(format!(
-                        "no such path: {other}"
-                    )))),
-                );
-            }
+            path => match web_assets::asset(path, &shared.token) {
+                Some((bytes, content_type)) => {
+                    let _ = http::write_response(&mut stream, 200, content_type, &bytes);
+                }
+                None => {
+                    let _ = write_json(
+                        &mut stream,
+                        404,
+                        protocol::rpc_result_json(&Err(protocol::RpcError::not_found(format!(
+                            "no such path: {path}"
+                        )))),
+                    );
+                }
+            },
         },
         "POST" => match request.path.strip_prefix("/api/") {
             Some(method) if !method.is_empty() => {

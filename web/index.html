@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>clat</title>
+<link rel="stylesheet" href="/style.css?t={TOKEN}">
+<link rel="icon" href="/icons/icon-192.png?t={TOKEN}">
+<link rel="manifest" href="/manifest.webmanifest?t={TOKEN}">
+</head>
+<body>
+<div id="landing" class="landing hidden">
+  <div class="landing-card">
+    <div class="landing-logo"><img src="/icons/icon-192.png?t={TOKEN}" alt="clat"></div>
+    <h1>clat</h1>
+    <p>This is the clat web client. It needs a running <code>clat serve</code>.</p>
+    <p class="hint">Start it in your project directory — the URL it prints
+    (containing the per-run token) opens this app already connected.</p>
+    <form id="connect-form">
+      <input id="connect-url" type="text" placeholder="127.0.0.1:PORT/?t=TOKEN"
+             autocomplete="off" spellcheck="false" aria-label="clat serve URL">
+      <button type="submit">Connect</button>
+    </form>
+    <p id="connect-error" class="error" role="alert"></p>
+  </div>
+</div>
+
+<div id="app" class="app hidden">
+  <header class="topbar">
+    <span class="brand">clat</span>
+    <span id="session-title" class="session-title" title="click to rename"></span>
+    <span id="conn-status" class="conn-status" data-state="connecting">connecting…</span>
+  </header>
+  <div class="main">
+    <aside class="sidebar">
+      <button id="new-session" class="side-action">＋ New chat</button>
+      <ul id="session-list" class="session-list"></ul>
+    </aside>
+    <section class="conversation">
+      <div id="transcript" class="transcript" aria-live="polite"></div>
+      <div class="composer">
+        <textarea id="prompt" rows="2" placeholder="Send a message (Enter to submit, Shift+Enter for a newline)"></textarea>
+        <div class="composer-row">
+          <span id="run-state" class="run-state"></span>
+          <button id="send" class="primary">Send</button>
+          <button id="cancel" class="ghost hidden">Cancel run</button>
+        </div>
+      </div>
+    </section>
+  </div>
+</div>
+<script src="/app.js?t={TOKEN}"></script>
+</body>
+</html>
