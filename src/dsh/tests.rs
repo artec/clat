@@ -28,6 +28,8 @@ struct FakeHost {
     mux_script: Vec<String>,
     /// describe 应答（默认 DSH 形状；异形腿注入别的 JSON）。
     describe_value: Value,
+    /// session.list 应答注入（None = 默认两条目；B-5 判别腿用）。
+    sessions: Option<Value>,
     /// 升级完成后是否主动断开（断线腿）。
     close_after_push: bool,
 }
@@ -50,6 +52,15 @@ impl FakeHost {
     }
 
     fn spawn_full(describe_value: Value, mux_script: Vec<String>, close_after_push: bool) -> Self {
+        Self::spawn_all(describe_value, None, mux_script, close_after_push)
+    }
+
+    fn spawn_all(
+        describe_value: Value,
+        sessions: Option<Value>,
+        mux_script: Vec<String>,
+        close_after_push: bool,
+    ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
         let port = listener.local_addr().unwrap().port();
         let host = Self {
@@ -58,14 +69,26 @@ impl FakeHost {
             posts: Arc::new(Mutex::new(Vec::new())),
             mux_script,
             describe_value,
+            sessions,
             close_after_push,
         };
         let describe = host.describe_value.clone();
+        let sessions = host.sessions.clone();
         let responds = Arc::clone(&host.responds);
         let posts = Arc::clone(&host.posts);
         let script = host.mux_script.clone();
         let close_after = host.close_after_push;
-        std::thread::spawn(move || serve(listener, describe, responds, posts, script, close_after));
+        std::thread::spawn(move || {
+            serve(
+                listener,
+                describe,
+                sessions,
+                responds,
+                posts,
+                script,
+                close_after,
+            )
+        });
         host
     }
 
@@ -77,6 +100,7 @@ impl FakeHost {
 fn serve(
     listener: TcpListener,
     describe: Value,
+    sessions: Option<Value>,
     responds: Arc<Mutex<Vec<Value>>>,
     posts: Arc<Mutex<Vec<(String, String)>>>,
     mux_script: Vec<String>,
@@ -86,6 +110,7 @@ fn serve(
         let Ok(mut stream) = stream else { continue };
         let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
         let describe = describe.clone();
+        let sessions = sessions.clone();
         let responds = Arc::clone(&responds);
         let posts = Arc::clone(&posts);
         let script = mux_script.clone();
@@ -94,6 +119,7 @@ fn serve(
             if let Err(error) = handle(
                 &mut stream,
                 &describe,
+                &sessions,
                 &responds,
                 &posts,
                 &script,
@@ -108,6 +134,7 @@ fn serve(
 fn handle(
     stream: &mut TcpStream,
     describe: &Value,
+    sessions: &Option<Value>,
     responds: &Arc<Mutex<Vec<Value>>>,
     posts: &Arc<Mutex<Vec<(String, String)>>>,
     mux_script: &[String],
@@ -139,10 +166,12 @@ fn handle(
         .unwrap_or_else(|| "invalid-request".to_owned());
     let value = match (method.as_str(), path.as_str()) {
         ("POST", "/api/host.describe") => describe.clone(),
-        ("POST", "/api/session.list") => json!({"items": [
-            {"sessionId": "session-recent", "updatedAt": 2, "running": false, "blank": false},
-            {"sessionId": "session-old", "updatedAt": 1, "running": false, "blank": false},
-        ]}),
+        ("POST", "/api/session.list") => sessions.clone().unwrap_or_else(|| {
+            json!({"items": [
+                {"sessionId": "session-recent", "updatedAt": 2, "running": false, "blank": false, "cwd": "/w/recent"},
+                {"sessionId": "session-old", "updatedAt": 1, "running": false, "blank": false},
+            ]})
+        }),
         ("POST", "/api/session.prompt") | ("POST", "/api/session.cancel") => {
             json!({"accepted": true})
         }
@@ -602,4 +631,99 @@ fn create_adoption_sends_session_id_and_target_cwd_over_the_wire() {
         .expect("envelope payload");
     assert_eq!(payload["sessionId"], json!("session-target"));
     assert_eq!(payload["cwd"], json!("/w/target-workspace"));
+}
+
+/// B-5（2026-08-24 负责人 dogfood）判别：Restore 取**列表头**（宿主
+/// newest-first 序），不做 blank 跳过——web 切到新开的空会话后列表头
+/// 即它，clat dsh 应跟随（原「跳过 blank 落到旧的非空会话」即病历）。
+/// 顺带断言选中条目的 cwd 随行带回（B-4 显示源）。判别：恢复 blank
+/// 跳过即红（选中落到 session-old）。
+#[test]
+fn restore_picks_the_list_head_even_when_blank() {
+    let host = FakeHost::spawn_all(
+        json!({
+            "version": "0.1.1-rc.2", "cwd": "/Users/dev/project",
+            "provider": "deepseek", "model": "test-model",
+            "attachedSessions": 1, "home": "/Users/dev", "canOpenPath": true
+        }),
+        Some(json!({"items": [
+            {"sessionId": "session-blank-new", "updatedAt": 9, "running": false, "blank": true, "cwd": "/w/other"},
+            {"sessionId": "session-old", "updatedAt": 1, "running": false, "blank": false, "cwd": "/w/clat"},
+        ]})),
+        Vec::new(),
+        false,
+    );
+    let mut client = host.client();
+    let mut port = host.port;
+    let reply =
+        crate::dsh::backend::run_task(&DshTask::Restore { prefer: None }, &mut client, &mut port)
+            .expect("reply");
+    match reply {
+        TaskReply::Restored { session, cwd } => {
+            assert_eq!(
+                session.as_deref(),
+                Some("session-blank-new"),
+                "the list head wins even when blank (web parity)"
+            );
+            assert_eq!(cwd.as_deref(), Some("/w/other"));
+        }
+        other => panic!("expected Restored, got {other:?}"),
+    }
+}
+
+/// 拍板 A（2026-08-24 客户端自记）判别：Restore 优先恢复 `prefer`
+/// 指定的会话（仍在列表即命中，与列表序无关）；prefer 陈旧/缺席回落
+/// 列表头。判别：删掉 prefer 分支即红（命中腿落到列表头会话）。
+#[test]
+fn restore_prefers_the_remembered_session() {
+    let host = FakeHost::spawn_all(
+        json!({
+            "version": "0.1.1-rc.2", "cwd": "/Users/dev/project",
+            "provider": "deepseek", "model": "test-model",
+            "attachedSessions": 1, "home": "/Users/dev", "canOpenPath": true
+        }),
+        Some(json!({"items": [
+            {"sessionId": "session-clat-head", "updatedAt": 99, "running": false, "blank": false, "cwd": "/w/clat"},
+            {"sessionId": "session-aite", "updatedAt": 5, "running": false, "blank": false, "cwd": "/w/aite"},
+        ]})),
+        Vec::new(),
+        false,
+    );
+    let mut client = host.client();
+    let mut port = host.port;
+    // 命中腿：记忆指向列表尾部（更旧）的 AITE 会话——仍恢复它。
+    let reply = crate::dsh::backend::run_task(
+        &DshTask::Restore {
+            prefer: Some("session-aite".into()),
+        },
+        &mut client,
+        &mut port,
+    )
+    .expect("reply");
+    match reply {
+        TaskReply::Restored { session, cwd } => {
+            assert_eq!(session.as_deref(), Some("session-aite"));
+            assert_eq!(cwd.as_deref(), Some("/w/aite"));
+        }
+        other => panic!("expected Restored, got {other:?}"),
+    }
+    // 陈旧腿：记忆的会话已不在宿主列表 → 回落列表头。
+    let reply = crate::dsh::backend::run_task(
+        &DshTask::Restore {
+            prefer: Some("session-deleted".into()),
+        },
+        &mut client,
+        &mut port,
+    )
+    .expect("reply");
+    match reply {
+        TaskReply::Restored { session, .. } => {
+            assert_eq!(
+                session.as_deref(),
+                Some("session-clat-head"),
+                "a stale memory falls back to the list head"
+            );
+        }
+        other => panic!("expected Restored, got {other:?}"),
+    }
 }

@@ -239,6 +239,17 @@ pub(crate) struct DshState {
     /// `staged_events` 暂存，回执后统一补放——装载阶段由显式状态表达，
     /// 不再从「视图是否为空」反推。
     history_loading: bool,
+    /// 当前会话的 workspace（会话级真来源，2026-08-24 负责人对齐：
+    /// clat dsh 是宿主的终端客户端——和 3080 页面同位，显示的是会话
+    /// 所属项目目录，与 clat 的本地运行目录无关；本地目录只在本地
+    /// 模式有语义）。来源：Restore 回执带回的会话 cwd / 收养 Create
+    /// 的目标 workspace。缺席回落 describe.cwd——那是**宿主进程目录**
+    ///（host.ts:39），被我们 spawn 时恰为本地运行目录，仅作降级。
+    workspace: Option<String>,
+    /// 在途收养（/resume）：目标 (sessionId, workspace)——Created 回
+    /// 执按 id 匹配后 workspace 跟随；失败（session-conflict 等）停
+    /// 留原会话，workspace 不动。
+    pending_adoption: Option<(String, String)>,
     staged_events: Vec<SessionEvent>,
     /// 本进程 spawn 的宿主句柄（退出清理拍板 2026-08-23：Drop 时
     /// kill——探测直连的宿主从不在此）。
@@ -306,6 +317,8 @@ impl DshState {
             epoch: Arc::new(AtomicU64::new(0)),
             history_loading: false,
             staged_events: Vec::new(),
+            workspace: None,
+            pending_adoption: None,
             spawned_host: None,
         }
     }
@@ -444,13 +457,17 @@ impl DshState {
         Some(next)
     }
 
-    /// describe 的 cwd（标题栏第二行的宿主工作区；abbreviate 同 local）。
+    /// 当前显示根：会话 workspace 优先（会话级真来源），缺席回落
+    /// describe.cwd（宿主进程目录——诚实降级，标题栏第二行与状态栏
+    /// 同源；/new 亦从这里继承新会话的 workspace）。
     pub(crate) fn cwd(&self) -> String {
-        self.describe
-            .get("cwd")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_owned()
+        self.workspace.clone().unwrap_or_else(|| {
+            self.describe
+                .get("cwd")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned()
+        })
     }
 
     /// 断线重连的下次唤醒点（主循环 repaint deadline 融合；连接在途
@@ -683,7 +700,12 @@ impl App {
             let mut dsh = DshState::new(port, describe, task_tx, events_tx);
             dsh.adopt_spawned_host(child);
             self.default_status = abbreviate_home(std::path::Path::new(&dsh.cwd()));
-            dsh.send_task(DshTask::Restore);
+            // 拍板 A：优先恢复自己上次打开的会话（记忆缺席/已删回落
+            // 宿主列表头）。
+            let prefer = crate::control_storage::dsh_last_session::read_last_session_at(
+                &self.dsh_memory_path,
+            );
+            dsh.send_task(DshTask::Restore { prefer });
             self.dsh = Some(dsh);
             self.status = self.default_status.clone();
             self.status_until = None;
@@ -798,8 +820,14 @@ impl App {
 
     fn handle_dsh_reply(&mut self, reply: TaskReply) {
         match reply {
-            TaskReply::Restored { session } => match session {
+            TaskReply::Restored { session, cwd } => match session {
                 Some(session) => {
+                    // 恢复带回会话自己的 workspace——显示与 /new 继承
+                    // 都以它为准（describe.cwd 是宿主进程目录，此前被
+                    // 误当会话项目显示）。
+                    if let Some(cwd) = cwd {
+                        self.dsh_set_workspace(cwd);
+                    }
                     self.dsh_switch_session(session);
                 }
                 None => {
@@ -809,6 +837,17 @@ impl App {
             },
             TaskReply::History { session, events } => self.dsh_load_history(session, events),
             TaskReply::Created(session) => {
+                // 收养在途：按回执 id 匹配，workspace 跟随目标会话；
+                // 不匹配（/new 的新 id / 陈旧残留）清空不跟随。
+                let adoption = self
+                    .dsh
+                    .as_mut()
+                    .and_then(|dsh| dsh.pending_adoption.take());
+                if let Some((pending_id, cwd)) = adoption
+                    && pending_id == session
+                {
+                    self.dsh_set_workspace(cwd);
+                }
                 self.dsh_switch_session(session);
                 self.flash_status("session created");
             }
@@ -973,6 +1012,10 @@ impl App {
     /// 会话切换（§2.6 七步的 ③④⑤⑥⑦ 骨干；② 由调用方先发 Create
     /// 收养任务、Created 回执进入此处；①在途弹框关闭且不 respond）。
     fn dsh_switch_session(&mut self, session: String) {
+        // 拍板 A：切换即记住（下次启动优先回它；写失败 fail-soft，
+        // 下次回落列表头）。restore/收养//new 全部经此，单点写入。
+        let memory_path = self.dsh_memory_path.clone();
+        crate::control_storage::dsh_last_session::remember_last_session_at(&memory_path, &session);
         let Some(dsh) = self.dsh.as_mut() else {
             return;
         };
@@ -1201,6 +1244,8 @@ impl App {
         let Some(dsh) = self.dsh.as_mut() else {
             return;
         };
+        // turn 结束的铃（见 turn/end 拦截）——推迟到 dsh 借用结束后落。
+        let mut ring_bell = false;
         // INV-D8：未知非 ignorable 类型计数 + 可见提示，绝不静默。
         if event_vocabulary_violation(session_id, &event).is_some() {
             dsh.unknown_events += 1;
@@ -1225,6 +1270,20 @@ impl App {
             "turn/end" => {
                 self.running = false;
                 self.phases.finish();
+                // 铃（2026-08-24 负责人 dogfood：dsh 模式此前 turn 结束
+                // 不响——本地 run 结束响、dsh 只有审批/问答弹框响，后台
+                // 等待落空）。aborted = 用户主动取消，同本地语义不响；
+                // completed/error/max-tokens/blocked 都响（B-1 的焦点
+                // 三态在 notify 内统一裁决）。实际鸣响推迟到函数末尾
+                //（notify 需 &self，与 dsh 的借用互斥）。
+                let kind = event
+                    .data
+                    .get("reason")
+                    .and_then(|reason| reason.get("kind"))
+                    .and_then(Value::as_str);
+                if kind != Some("aborted") {
+                    ring_bell = true;
+                }
             }
             "sandbox/mode" => {
                 if let Some(mode) = event.data.get("mode").and_then(Value::as_str) {
@@ -1265,6 +1324,9 @@ impl App {
         }
         if event.event_type != "session/title" {
             dsh.transcript.apply(&mut self.conversation, &event);
+        }
+        if ring_bell {
+            self.notify();
         }
     }
 
@@ -1357,7 +1419,10 @@ impl App {
                 self.session_picker = Some(SessionPicker::new_dsh(rows, current));
             }
             _ => {
-                dsh.send_task(DshTask::Restore);
+                let prefer = crate::control_storage::dsh_last_session::read_last_session_at(
+                    &self.dsh_memory_path,
+                );
+                dsh.send_task(DshTask::Restore { prefer });
                 self.flash_status("listing sessions…");
             }
         }
@@ -1367,17 +1432,30 @@ impl App {
     /// `session.create { sessionId, cwd: 目标 workspace_path }`（web
     /// 客户端切换同款协议；ensureSession 校验 cwd 必须等于目标会话
     /// 记录的 cwd，api-proxy.ts:1587）。③-⑦由 Created 回执
-    /// （dsh_switch_session）落地；失败（session-conflict 等）→
-    /// Failed 回执 flash，停留原会话。
+    ///（dsh_switch_session）落地——workspace 经 pending_adoption 按
+    /// 回执 id 匹配跟随；失败（session-conflict 等）→ Failed 回执
+    /// flash，停留原会话、workspace 不动。
     pub(super) fn dsh_adopt_session(&mut self, row: crate::tui::session_picker::DshResumeRow) {
-        let Some(dsh) = self.dsh.as_ref() else {
+        let Some(dsh) = self.dsh.as_mut() else {
             return;
         };
+        dsh.pending_adoption = Some((row.session_id.clone(), row.workspace_path.clone()));
         dsh.send_task(DshTask::Create {
             session_id: Some(row.session_id),
             cwd: Some(row.workspace_path),
         });
         self.flash_status("switching session…");
+    }
+
+    /// 会话 workspace 落位（恢复带回 / 收养跟随）：常驻状态行改为
+    /// 会话项目目录——clat dsh 是宿主的终端客户端（2026-08-24 负责
+    /// 人对齐），与 clat 的本地运行目录无关；标题栏第二行读 cwd()
+    /// 自然跟随。
+    fn dsh_set_workspace(&mut self, cwd: String) {
+        if let Some(dsh) = self.dsh.as_mut() {
+            dsh.workspace = Some(cwd.clone());
+        }
+        self.default_status = abbreviate_home(std::path::Path::new(&cwd));
     }
 
     // ---- 输入提交（§2.3 分流落点：actions.rs 首行判 dsh 后转此） ----
@@ -1654,6 +1732,14 @@ mod tests {
         app.dsh = Some(state);
         app.dsh_connect = None;
         app.dsh_connect_rx = None;
+        // 记忆文件改道临时路径——测试不得触碰真实 ~/.clat。
+        app.dsh_memory_path = std::env::temp_dir().join(format!(
+            "clat-dsh-memo-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         (app, task_rx)
     }
 
@@ -2665,5 +2751,219 @@ mod tests {
                 ..
             }) if text == "look at this"
         ));
+    }
+
+    /// B-4（2026-08-24 负责人对齐：clat dsh 是宿主的终端客户端）判别：
+    /// 恢复带回会话自己的 workspace——状态栏/标题栏第二行显示会话
+    /// 项目目录，不再是 describe.cwd（宿主进程目录；被我们 spawn 时
+    /// 即本地运行目录）。缺席（未记录）诚实回落 describe.cwd。
+    #[test]
+    fn restored_session_carries_its_workspace_display() {
+        let (mut app, task_rx) = dsh_app();
+        event(
+            &mut app,
+            DshEvent::Reply(TaskReply::Restored {
+                session: Some("session-ws".into()),
+                cwd: Some("/w/target".into()),
+            }),
+        );
+        assert_eq!(
+            app.dsh.as_ref().unwrap().current_session(),
+            Some("session-ws")
+        );
+        assert_eq!(app.dsh.as_ref().unwrap().cwd(), "/w/target");
+        assert_eq!(
+            app.default_status, "/w/target",
+            "the persistent status line follows the session workspace"
+        );
+        // 切换会发出 History 任务（既有行为不变）。
+        assert!(matches!(
+            task_rx.try_recv(),
+            Ok(DshTask::History { session }) if session == "session-ws"
+        ));
+        // 缺席腿：cwd 未记录 → 回落 describe.cwd（诚实降级）。
+        let (mut app, _task_rx) = dsh_app();
+        event(
+            &mut app,
+            DshEvent::Reply(TaskReply::Restored {
+                session: Some("session-bare".into()),
+                cwd: None,
+            }),
+        );
+        assert_eq!(
+            app.dsh.as_ref().unwrap().cwd(),
+            "/home/dev/dsh-project",
+            "absent cwd falls back to describe.cwd (host process dir)"
+        );
+    }
+
+    /// B-4 判别：/resume 收养的 workspace 经 pending_adoption 按回执
+    /// id 匹配跟随；失败（session-conflict）与不匹配回执都不残留。
+    #[test]
+    fn adoption_follows_the_workspace_and_failures_do_not_leak() {
+        let (mut app, _task_rx) = dsh_app();
+        // 成功收养：workspace 跟随目标会话。
+        app.dsh_adopt_session(crate::tui::session_picker::DshResumeRow {
+            session_id: "session-x".into(),
+            workspace_title: "x".into(),
+            workspace_path: "/w/x".into(),
+            title: None,
+            activity_ms: 0,
+        });
+        event(
+            &mut app,
+            DshEvent::Reply(TaskReply::Created("session-x".into())),
+        );
+        assert_eq!(app.dsh.as_ref().unwrap().cwd(), "/w/x");
+
+        // 失败收养（session-conflict）：停留原会话，workspace 不动。
+        app.dsh_adopt_session(crate::tui::session_picker::DshResumeRow {
+            session_id: "session-y".into(),
+            workspace_title: "y".into(),
+            workspace_path: "/w/y".into(),
+            title: None,
+            activity_ms: 0,
+        });
+        event(
+            &mut app,
+            DshEvent::Reply(TaskReply::Failed("session-conflict".into())),
+        );
+        assert_eq!(
+            app.dsh.as_ref().unwrap().cwd(),
+            "/w/x",
+            "a failed adoption must not move the workspace"
+        );
+
+        // 不匹配回执（/new 的新 id 等）：pending 清空、不跟随。
+        app.dsh_adopt_session(crate::tui::session_picker::DshResumeRow {
+            session_id: "session-z".into(),
+            workspace_title: "z".into(),
+            workspace_path: "/w/z".into(),
+            title: None,
+            activity_ms: 0,
+        });
+        event(
+            &mut app,
+            DshEvent::Reply(TaskReply::Created("session-unrelated".into())),
+        );
+        assert_eq!(
+            app.dsh.as_ref().unwrap().cwd(),
+            "/w/x",
+            "a non-matching Created reply must not adopt the pending workspace"
+        );
+    }
+
+    /// B-4 功能腿：/new 继承**当前会话的 workspace**（此前继承
+    /// describe.cwd——宿主进程目录，恢复跨工作区会话后会在错误的
+    /// 目录创建新会话）。
+    #[test]
+    fn new_session_inherits_the_current_workspace() {
+        let (mut app, task_rx) = dsh_app();
+        event(
+            &mut app,
+            DshEvent::Reply(TaskReply::Restored {
+                session: Some("session-ws".into()),
+                cwd: Some("/w/target".into()),
+            }),
+        );
+        while task_rx.try_recv().is_ok() {}
+        app.submit_dsh("/new".into());
+        match task_rx.try_recv() {
+            Ok(DshTask::Create { session_id, cwd }) => {
+                assert_eq!(session_id, None);
+                assert_eq!(cwd.as_deref(), Some("/w/target"));
+            }
+            other => panic!("/new creates in the current workspace: {other:?}"),
+        }
+    }
+
+    /// B-5 铃判别（2026-08-24 负责人 dogfood：后台等待 turn 结束无铃）：
+    /// dsh turn 结束响铃（此前只有审批/问答弹框响）；aborted = 用户
+    /// 主动取消不响（同本地语义）。端到端 marker 腿——删掉 turn/end
+    /// 的 notify 即红（completed 的 marker 不出现）。
+    #[test]
+    fn dsh_turn_end_rings_the_bell_except_when_aborted() {
+        let marker = std::env::temp_dir().join(format!(
+            "clat-dsh-bell-{}.marker",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let (mut app, _task_rx) = dsh_app();
+        app.bell = BellMode::Command(format!("printf ok > {:?}", marker));
+        // 后台（B-1 三态：失焦必响）。
+        app.focused = Some(false);
+        // 用户取消：不响。
+        frame(
+            &mut app,
+            DshFrame::SessionEvent {
+                session_id: "session-test".into(),
+                event: session_event(
+                    "turn/end",
+                    1,
+                    json!({"turn": 1, "reason": {"kind": "aborted"}}),
+                ),
+            },
+        );
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(
+            !marker.exists(),
+            "an aborted (user-cancelled) turn must not ring"
+        );
+        // 自然结束：响。
+        frame(
+            &mut app,
+            DshFrame::SessionEvent {
+                session_id: "session-test".into(),
+                event: session_event(
+                    "turn/end",
+                    2,
+                    json!({"turn": 2, "reason": {"kind": "completed"}}),
+                ),
+            },
+        );
+        let mut appeared = false;
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            if marker.exists() {
+                appeared = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(appeared, "a completed turn rings while unfocused");
+        let _ = std::fs::remove_file(&marker);
+    }
+
+    /// 拍板 A（2026-08-24 客户端自记）判别：切换即写入「最后打开会话」
+    /// 记忆（restore/收养//new 全经 dsh_switch_session，单点写入；最后一
+    /// 次获胜）。删掉写入即红（文件缺席）。
+    #[test]
+    fn switching_sessions_remembers_the_last_open_session() {
+        let (mut app, _task_rx) = dsh_app();
+        let memo = app.dsh_memory_path.clone();
+        event(
+            &mut app,
+            DshEvent::Reply(TaskReply::Restored {
+                session: Some("session-aite".into()),
+                cwd: Some("/w/aite".into()),
+            }),
+        );
+        assert_eq!(
+            crate::control_storage::dsh_last_session::read_last_session_at(&memo),
+            Some("session-aite".to_owned()),
+            "a switch writes the client-side memory"
+        );
+        // 再切换 → 覆写（最后一次获胜）。
+        event(
+            &mut app,
+            DshEvent::Reply(TaskReply::Created("session-clat".into())),
+        );
+        assert_eq!(
+            crate::control_storage::dsh_last_session::read_last_session_at(&memo),
+            Some("session-clat".to_owned())
+        );
+        let _ = std::fs::remove_file(memo);
     }
 }

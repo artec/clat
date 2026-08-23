@@ -305,11 +305,23 @@ non-DSH squatter is not trusted; if the default port is taken the child
 retries with an OS-assigned port). No `dsh` executable and no `~/.dsh`
 means a clear "not installed" error. The header carries the mode mark —
 `CLAT ● dsh` (green dot while connected, red `○` while disconnected);
-the second line shows the host workspace instead of the local project.
-On connect the most recently active session is restored
-(`session.history`); typing sends (`session.prompt`), typing while a
+the second line and the status bar show the **open session's workspace** —
+like the browser page, `clat dsh` is just another client of the host, so
+where you ran the command from is irrelevant (the local directory only
+matters for plain local `clat`). If a session's workspace was never
+recorded, the host process directory is shown as a fallback.
+On connect `clat dsh` reopens **its own last-open session** (remembered
+in `~/.clat`, like the browser page's local memory); on first run — or
+if that session no longer exists — the head of the host's list is
+restored instead (newest first: the last session created or prompted,
+including a fresh blank one; the host itself keeps no "last opened"
+state, and merely viewing an old session elsewhere changes nothing —
+use `/resume` to pick explicitly) (`session.history`); typing sends
+(`session.prompt`), typing while a
 run is active steers (with the same pending-echo badge as local), `Esc`
-cancels (no steering recall — the host queue has no recall API).
+cancels (no steering recall — the host queue has no recall API). A
+turn that finishes while you are away rings the same focus-aware bell
+as local runs (a turn you cancel yourself does not).
 Approvals and questions raised by the host pop the **same dialogs** as
 local runs (the question dialog prefixes `(1/N)` when a host question
 set has several entries) and are answered through the API. A dropped

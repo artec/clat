@@ -345,6 +345,10 @@ struct App {
     dsh_connect: Option<(u16, Sender<DshEvent>)>,
     /// 连接期 DshEvent 通道接收端（`run` 起转发线程时消费）。
     dsh_connect_rx: Option<Receiver<DshEvent>>,
+    /// dsh 客户端的「最后打开会话」记忆文件（拍板 A，2026-08-24：
+    /// web localStorage 的 CLAT 同款；读写归 core 的
+    /// control_storage::dsh_last_session，测试注入临时路径）。
+    dsh_memory_path: PathBuf,
 }
 
 impl App {
@@ -473,6 +477,7 @@ impl App {
             dsh: None,
             dsh_connect: None,
             dsh_connect_rx: None,
+            dsh_memory_path: crate::control_storage::dsh_last_session::last_session_path(),
         };
         Ok(app)
     }
@@ -559,6 +564,7 @@ impl App {
             dsh: None,
             dsh_connect: Some((preferred_port, dsh_tx)),
             dsh_connect_rx: Some(dsh_rx),
+            dsh_memory_path: crate::control_storage::dsh_last_session::last_session_path(),
         })
     }
 

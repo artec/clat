@@ -117,6 +117,11 @@ pub struct ServeHandle {
     pub addr: SocketAddr,
     pub token: String,
     shutdown: Arc<AtomicBool>,
+    /// 显式应用 close 的结果（accept 线程写入，`join()` 后读取）：
+    /// `Some` = 归一成功、显式 close 已执行（Ok/Err 皆算）；
+    /// `None` = 归一失败走了降级路径（残留连接/worker 超宽限期），
+    /// 应用由 Drop 兜底关闭。
+    close_outcome: Arc<Mutex<Option<Result<(), String>>>>,
     join: JoinHandle<()>,
 }
 
@@ -126,13 +131,31 @@ impl ServeHandle {
         self.shutdown.store(true, Ordering::SeqCst);
     }
 
-    /// 阻塞到 serve 完整退出（连接有界 join、应用 close、worker join）。
-    pub fn join(self) {
-        let _ = self.join.join();
+    /// 阻塞到 serve 完整退出（连接/worker 有界 join、应用显式 close），
+    /// 返回显式 close 的结果（语义见 `close_outcome` 字段注释）。
+    pub fn join(self) -> Option<Result<(), String>> {
+        let Self {
+            join,
+            close_outcome,
+            ..
+        } = self;
+        let _ = join.join();
+        close_outcome
+            .lock()
+            .expect("serve close outcome lock")
+            .clone()
     }
 
     pub fn port(&self) -> u16 {
         self.addr.port()
+    }
+
+    /// 显式 close 的结果（`join()` 之后读取；语义见字段注释）。
+    pub fn close_outcome(&self) -> Option<Result<(), String>> {
+        self.close_outcome
+            .lock()
+            .expect("serve close outcome lock")
+            .clone()
     }
 }
 
@@ -187,16 +210,25 @@ where
 
     let accept_shared = Arc::clone(&shared);
     let accept_shutdown = Arc::clone(&shutdown);
+    let close_outcome = Arc::new(Mutex::new(None));
+    let accept_close_outcome = Arc::clone(&close_outcome);
     let join = std::thread::Builder::new()
         .name("clat-serve-accept".into())
         .spawn(move || {
-            accept_loop(listener, accept_shared, app, accept_shutdown);
+            accept_loop(
+                listener,
+                accept_shared,
+                app,
+                accept_shutdown,
+                accept_close_outcome,
+            );
         })
         .map_err(|error| format!("could not spawn accept loop: {error}"))?;
     Ok(ServeHandle {
         addr,
         token,
         shutdown,
+        close_outcome,
         join,
     })
 }
@@ -206,6 +238,7 @@ fn accept_loop(
     shared: Arc<state::ServeShared>,
     app: Arc<Mutex<TrustedProjectApplication>>,
     shutdown: Arc<AtomicBool>,
+    close_outcome: Arc<Mutex<Option<Result<(), String>>>>,
 ) {
     loop {
         if shutdown.load(Ordering::SeqCst) {
@@ -229,24 +262,34 @@ fn accept_loop(
         }
     }
 
-    // 关停序列（顺序有讲究：先停止接收新请求，再让在飞请求与泵收尾，
-    // 最后 close 应用——close 需要 Arc 归一，此刻无人再锁）。
+    // 关停序列（2026-08-23 修复：归一是有前提的，顺序错了 try_unwrap
+    // 结构性必败——close 沦为 Drop 兜底，错误被吞且每次关停误报
+    // "could not close application cleanly"）：
+    // ①停收新请求；②取消在飞 run、清订阅者；③有界 join 连接与
+    //   worker——notice 转发与 settler 各持 `Arc<ServeShared>`（内嵌
+    //   app 克隆），join 完才释放；④显式 drop 本线程的 shared。此刻
+    //   app 的 Arc 才真正归一，try_unwrap 成功、显式 close 执行且
+    //   错误可上报。残留连接/worker（超宽限期）会让归一失败——降级
+    //   打印，应用随后由 Drop 兜底关闭（进程即将退出，错误被吞）。
     shared.mark_shutting_down();
     shared.cancel_active_run();
     shared.clear_subscribers();
     shared.drain_connections();
+    shared.drain_workers();
+    drop(shared);
     match Arc::try_unwrap(app)
         .ok()
         .and_then(|mutex| mutex.into_inner().ok())
     {
         Some(application) => {
-            if let Err(error) = application.close() {
+            let outcome = application.close().map_err(|error| error.to_string());
+            if let Err(error) = &outcome {
                 eprintln!("clat: serve: application close failed: {error}");
             }
+            *close_outcome.lock().expect("serve close outcome lock") = Some(outcome);
         }
         None => eprintln!("clat: serve: could not close application cleanly"),
     }
-    shared.drain_workers();
 }
 
 /// 每连接处理：读请求 → 三闸 → 路由。任何错误路径都写一个 4xx/5xx

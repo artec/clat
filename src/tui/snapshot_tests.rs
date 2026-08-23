@@ -2013,6 +2013,14 @@ fn harness_dsh(tag: &str, width: u16, height: u16) -> Harness {
     app.dsh = Some(state);
     app.dsh_connect = None;
     app.dsh_connect_rx = None;
+    // 记忆文件改道临时路径——快照不得触碰真实 ~/.clat。
+    app.dsh_memory_path = std::env::temp_dir().join(format!(
+        "clat-dsh-memo-snap-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
     app.default_status = "<DSH-ROOT>".into();
     app.status = "<DSH-ROOT>".into();
     let mut harness = Harness {
@@ -2023,6 +2031,9 @@ fn harness_dsh(tag: &str, width: u16, height: u16) -> Harness {
     };
     harness.event(UiEvent::Dsh(DshEvent::Reply(TaskReply::Restored {
         session: Some(DSH_SNAP_SESSION.into()),
+        // 快照基线不携带会话 cwd：第二行保持 describe.cwd fixture
+        //（workspace 显示的判别在 dsh_events 单测）。
+        cwd: None,
     })));
     harness.event(UiEvent::Dsh(DshEvent::Reply(TaskReply::History {
         session: DSH_SNAP_SESSION.into(),

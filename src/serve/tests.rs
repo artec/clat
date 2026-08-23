@@ -1269,3 +1269,23 @@ fn cargo_dependencies_stay_minimal() {
         );
     }
 }
+
+/// 2026-08-23 关停修复判别：显式 close 路径必须真正执行——此前
+/// accept 线程在自身仍持有 `ServeShared`（内嵌 app 克隆）、notice
+/// 转发 worker 未 join 时就 `Arc::try_unwrap`，归一结构性必败，
+/// close 只能靠 Drop 兜底（错误被吞 + 每次关停误报 "could not
+/// close application cleanly"）。修复后 join 完成 = 显式 close 已
+/// 执行（判别：撤掉 drain_workers 提前 / drop(shared) 任一环即红
+/// ——outcome 停在 None）。
+#[test]
+fn shutdown_runs_the_explicit_application_close() {
+    let (handle, storage_root, project_root) =
+        spawn_serve("serve-close-explicit", TestBehavior::Success);
+    handle.shutdown();
+    let outcome = handle
+        .join()
+        .expect("the explicit close path must run (the app Arc reaches one)");
+    assert!(outcome.is_ok(), "close failed: {outcome:?}");
+    std::fs::remove_dir_all(storage_root).ok();
+    std::fs::remove_dir_all(project_root).ok();
+}

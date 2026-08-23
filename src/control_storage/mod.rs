@@ -6,6 +6,7 @@
 //! 单写者 = storage-root flock 租约（跨进程）+ 本类型互斥（进程内，
 //! §4.6 的读-改-写全程持锁——无 CAS 字段）。
 
+pub(crate) mod dsh_last_session;
 pub(crate) mod json_file;
 pub(crate) mod projcache;
 pub(crate) mod sentinel;

@@ -56,7 +56,11 @@ pub(crate) enum DshEvent {
 /// HTTP 任务（D-1 WorkerTask 十变体原样；`Create` 扩展收养参数）。
 #[derive(Debug)]
 pub(crate) enum DshTask {
-    Restore,
+    /// `prefer` = 客户端自记的最后打开会话（拍板 A，2026-08-24）：仍在
+    /// 宿主列表（仍存在）则优先恢复它；缺席/已删 → 列表头。
+    Restore {
+        prefer: Option<String>,
+    },
     Prompt {
         session: String,
         steer: bool,
@@ -109,6 +113,9 @@ pub(crate) enum DshTask {
 pub(crate) enum TaskReply {
     Restored {
         session: Option<String>,
+        /// 选中会话的 workspace（session.list 条目的 cwd passthrough；
+        /// None = 未记录/无会话，UI 回落 describe.cwd）。
+        cwd: Option<String>,
     },
     History {
         session: String,
@@ -343,24 +350,44 @@ pub(crate) fn run_task(
         };
     }
     match task {
-        DshTask::Restore => {
+        DshTask::Restore { prefer } => {
             let list = match client.call("session.list", json!({})) {
                 Ok(value) => value,
                 Err(error) => return Some(TaskReply::Failed(error.to_string())),
             };
-            let recent = list
-                .get("items")
-                .and_then(Value::as_array)
-                .and_then(|items| {
+            // 选择序（拍板 A，2026-08-24）：客户端自记的最后会话优先
+            //（命中 = 仍存在于宿主列表；web 端 localStorage 记忆的
+            // CLAT 同款）；缺席/已删回落**列表头**——列表本身已按
+            // updatedAt newest-first 排序（最近创建/提示过的会话），
+            // 不做 blank 跳过（原「跳过 blank」会在 web 切到新开的空
+            // 会话后落到旧的非空会话）。选中条目的 sessionId + cwd
+            // 一并带回（cwd 是会话 workspace 的 passthrough——客户端
+            // 显示用；缺席 = 未记录，调用方回落 describe.cwd）。
+            let items = list.get("items").and_then(Value::as_array);
+            let chosen = items.and_then(|items| {
+                prefer.as_deref().and_then(|id| {
                     items
                         .iter()
-                        .find(|item| item.get("blank").and_then(Value::as_bool) != Some(true))
-                        .or_else(|| items.first())
+                        .find(|item| item.get("sessionId").and_then(Value::as_str) == Some(id))
                 })
-                .and_then(|item| item.get("sessionId"))
-                .and_then(Value::as_str)
-                .map(str::to_owned);
-            Some(TaskReply::Restored { session: recent })
+            });
+            let restored = chosen
+                .or_else(|| items.and_then(|items| items.first()))
+                .map(|item| {
+                    (
+                        item.get("sessionId")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned),
+                        item.get("cwd").and_then(Value::as_str).map(str::to_owned),
+                    )
+                });
+            match restored {
+                Some((session, cwd)) => Some(TaskReply::Restored { session, cwd }),
+                None => Some(TaskReply::Restored {
+                    session: None,
+                    cwd: None,
+                }),
+            }
         }
         DshTask::Prompt {
             session,
@@ -575,7 +602,7 @@ mod tests {
         let mut client = DshClient::new(scratch_port());
         let mut port = 0;
         for task in [
-            DshTask::Restore,
+            DshTask::Restore { prefer: None },
             DshTask::History {
                 session: "s-1".into(),
             },
