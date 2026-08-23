@@ -128,6 +128,18 @@ impl Drop for Harness {
     }
 }
 
+// FIX-5/CA-08：测试记录 sink——单元/快照测试不写真实终端或系统
+// 剪贴板；R5-2 以此断言「编码正确 + 调用时机」。
+thread_local! {
+    static CLIPBOARD_BYTES: std::cell::RefCell<Vec<u8>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn recording_clipboard_sink(bytes: &[u8]) -> bool {
+    CLIPBOARD_BYTES.with(|cell| cell.borrow_mut().extend_from_slice(bytes));
+    true
+}
+
 fn harness(tag: &str, width: u16, height: u16, trusted: bool) -> Harness {
     let (storage_root, project_root) = roots(tag);
     std::fs::create_dir_all(&project_root).expect("project dir");
@@ -157,6 +169,9 @@ fn harness(tag: &str, width: u16, height: u16, trusted: bool) -> Harness {
     let mut app =
         App::open(Project::new(&project_for_app), Some(storage_root.clone())).expect("app opens");
     app.test_freeze_tick = true;
+    // FIX-5/CA-08：记录 sink——快照/单元测试不写真实终端或系统剪贴板
+    //（鼠标释放自动复制路径因此零副作用）。
+    app.clipboard_writer = recording_clipboard_sink;
     // 底部状态栏默认值是 storage root 绝对路径：同样的渲染期裁剪问题
     //（macOS 下 79 列处截断、Linux 下整条放得下）。以固定占位符替换
     // 显示值——"这一行渲染什么"的覆盖保留，环境依赖清零。
@@ -714,6 +729,24 @@ fn copying_a_selection_uses_the_rendered_wrap_width() {
         copied,
         expected.join("\n"),
         "copied rows must match the rendered wrap width"
+    );
+    // FIX-5/CA-08 / R5-2 判别：鼠标释放的自动复制经注入 sink——字节
+    // 形如 `\x1b]52;c;<base64>\x1b\\` 且载荷 == 选区文本（编码正确 +
+    // 调用时机一并钉住；真实 stdout 零控制序列）。判别（删修复即红）：
+    // 调用点还原直写 stdout → sink 恒空 → 红。
+    let recorded = CLIPBOARD_BYTES.with(|cell| std::mem::take(&mut *cell.borrow_mut()));
+    assert!(
+        !recorded.is_empty(),
+        "mouse-up must route the copy through the injected sink"
+    );
+    assert!(
+        recorded.starts_with(b"\x1b]52;c;") && recorded.ends_with(b"\x1b\\"),
+        "OSC 52 frame shape: {recorded:?}"
+    );
+    assert_eq!(
+        recorded,
+        crate::tui::selection::osc52_copy_bytes(&copied).expect("non-empty selection encodes"),
+        "the sink must receive exactly one OSC 52 frame carrying the selection text"
     );
 }
 
@@ -2006,8 +2039,9 @@ fn harness_dsh(tag: &str, width: u16, height: u16) -> Harness {
     let (storage_root, project_root) = roots(tag);
     let mut app = App::open_dsh(3080).expect("dsh app opens");
     app.test_freeze_tick = true;
+    app.clipboard_writer = recording_clipboard_sink;
     let (task_tx, _task_rx) = mpsc::channel::<DshTask>();
-    let (events_tx, _events_rx) = mpsc::channel::<DshEvent>();
+    let (events_tx, _events_rx) = crate::dsh::backend::event_channel();
     let mut state = DshState::new(3080, dsh_describe_fixture(), task_tx, events_tx);
     state.test_mark_ws_open();
     app.dsh = Some(state);
@@ -2071,6 +2105,7 @@ fn dsh_connecting_snapshot() {
     let (storage_root, project_root) = roots("snap-dsh-connecting");
     let mut app = App::open_dsh(3080).expect("dsh app opens");
     app.test_freeze_tick = true;
+    app.clipboard_writer = recording_clipboard_sink;
     assert!(app.dsh.is_none() && app.dsh_connect.is_some());
     let mut harness = Harness {
         app,

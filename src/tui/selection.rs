@@ -150,15 +150,18 @@ pub(super) fn base64_encode(data: &[u8]) -> String {
     out
 }
 
-/// 通过 OSC 52 把文本写入系统剪贴板。iTerm2 / WezTerm / kitty /
-/// VS Code 等终端支持；不支持的终端（如 macOS Terminal.app）会静默
-/// 忽略，用户仍可按住 Shift 用终端原生方式选择复制。
-pub(super) fn copy_to_clipboard(text: &str) -> bool {
+/// FIX-5/CA-08（2026-08-24 审计）：编码与写出口分离——纯编码可测；
+/// 写出口注入（生产 = stdout，测试 = 记录 sink——单元/快照测试零
+/// 真实终端副作用、零系统剪贴板触碰）。空文本无序列。
+pub(super) fn osc52_copy_bytes(text: &str) -> Option<Vec<u8>> {
     if text.is_empty() {
-        return false;
+        return None;
     }
+    Some(format!("\x1b]52;c;{}\x1b\\", base64_encode(text.as_bytes())).into_bytes())
+}
+
+/// 生产写出口：把已编码的 OSC 52 序列写到真实 stdout。
+pub(super) fn write_osc52_to_stdout(bytes: &[u8]) -> bool {
     let mut out = stdout();
-    write!(out, "\x1b]52;c;{}\x1b\\", base64_encode(text.as_bytes()))
-        .and_then(|_| out.flush())
-        .is_ok()
+    out.write_all(bytes).and_then(|_| out.flush()).is_ok()
 }

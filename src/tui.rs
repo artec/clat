@@ -51,9 +51,18 @@ use std::env;
 use std::io::{self, Write, stdout};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
 use std::thread;
 use std::time::{Duration, Instant};
+
+/// 统一 UI 事件面同样必须有背压：DSH 转发线程最终写入这里；若这里只
+/// 限前一级，转发线程仍会把大帧无限搬进无界队列。容量刻意与 DSH
+/// 两级队列一致，使背压能从 App 一直传播回 socket。
+const UI_EVENT_QUEUE_CAPACITY: usize = crate::dsh::backend::DSH_QUEUE_CAPACITY;
+
+fn ui_event_channel() -> (SyncSender<UiEvent>, Receiver<UiEvent>) {
+    mpsc::sync_channel(UI_EVENT_QUEUE_CAPACITY)
+}
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 mod actions;
@@ -243,7 +252,7 @@ struct App {
     /// `None` 表示尚未启动（run() 建立通道后填充）。
     events: Option<Receiver<UiEvent>>,
     /// 统一事件通道的发送端克隆：start_run 移交 worker，刷新触发用。
-    event_sender: Option<Sender<UiEvent>>,
+    event_sender: Option<SyncSender<UiEvent>>,
     pending_permission: Option<PendingPermission>,
     pending_ask_user: Option<PendingAskUser>,
     /// `/perm` 权限三档选择器（冷切换/降级入口；`/permission` 为别名）。
@@ -342,13 +351,17 @@ struct App {
     /// 连接期占位（D-2 §1.0：Some = 正在连接宿主，`dsh` 为 None）。
     /// 元组 = (preferred_port, DshEvent 通道发送端——连接线程、后续
     /// worker 与 WS 线程共用一条通道，App 侧一根转发线程汇入 UiEvent)。
-    dsh_connect: Option<(u16, Sender<DshEvent>)>,
+    dsh_connect: Option<(u16, SyncSender<DshEvent>)>,
     /// 连接期 DshEvent 通道接收端（`run` 起转发线程时消费）。
     dsh_connect_rx: Option<Receiver<DshEvent>>,
     /// dsh 客户端的「最后打开会话」记忆文件（拍板 A，2026-08-24：
     /// web localStorage 的 CLAT 同款；读写归 core 的
     /// control_storage::dsh_last_session，测试注入临时路径）。
     dsh_memory_path: PathBuf,
+    /// FIX-5/CA-08：剪贴板写出口（fn 指针注入）。生产 = OSC 52 写
+    /// stdout（生产行为零变化）；测试 = 记录 sink——单元/快照测试不
+    /// 写真实终端或系统剪贴板。接收**已编码**字节。
+    clipboard_writer: fn(&[u8]) -> bool,
 }
 
 impl App {
@@ -478,6 +491,7 @@ impl App {
             dsh_connect: None,
             dsh_connect_rx: None,
             dsh_memory_path: crate::control_storage::dsh_last_session::last_session_path(),
+            clipboard_writer: write_osc52_to_stdout,
         };
         Ok(app)
     }
@@ -490,7 +504,7 @@ impl App {
     fn open_dsh(preferred_port: u16) -> Result<Self, String> {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let project = Project::new(&cwd);
-        let (dsh_tx, dsh_rx) = mpsc::channel::<DshEvent>();
+        let (dsh_tx, dsh_rx) = crate::dsh::backend::event_channel();
         let status = "connecting to dsh…".to_owned();
         let config = ModelConfig::default();
         let credentials = ProviderCredentials::for_protocol(config.protocol);
@@ -565,6 +579,7 @@ impl App {
             dsh_connect: Some((preferred_port, dsh_tx)),
             dsh_connect_rx: Some(dsh_rx),
             dsh_memory_path: crate::control_storage::dsh_last_session::last_session_path(),
+            clipboard_writer: write_osc52_to_stdout,
         })
     }
 
@@ -711,7 +726,7 @@ impl App {
         // - 无消息时主循环挂起在 recv_timeout 上，唤醒时刻是"最近
         //   一次必须重绘的deadline"（状态栏 TTL 到期、思考动画换帧），
         //   空闲时一次唤醒都没有。
-        let (event_sender, events) = mpsc::channel::<UiEvent>();
+        let (event_sender, events) = ui_event_channel();
         self.event_sender = Some(event_sender.clone());
         self.events = Some(events);
 

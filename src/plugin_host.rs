@@ -586,7 +586,10 @@ impl PluginHostBridge {
             }
             // 预算对账：实际 usage 替换预留份额（W1-03）。
             if let Ok(mut budget) = context.budget.lock() {
-                budget.reconcile(reservation, usage.input_tokens + usage.output_tokens);
+                budget.reconcile(
+                    reservation,
+                    usage.input_tokens.saturating_add(usage.output_tokens),
+                );
             }
         }
         Ok(SamplingOutcome {

@@ -189,8 +189,11 @@ impl DefaultHistoryCompactor {
             let text = group.join("\n\n");
             let summary = run_summary_request(&mut model, &request.cancel, &text, chunk_budget)?;
             if let Some(usage) = &summary.1 {
-                total_usage.input_tokens += usage.input_tokens;
-                total_usage.output_tokens += usage.output_tokens;
+                total_usage.input_tokens =
+                    total_usage.input_tokens.saturating_add(usage.input_tokens);
+                total_usage.output_tokens = total_usage
+                    .output_tokens
+                    .saturating_add(usage.output_tokens);
             }
             summaries.push(summary.0);
         }
@@ -212,8 +215,11 @@ impl DefaultHistoryCompactor {
                 let (text, usage) =
                     run_summary_request(&mut model, &request.cancel, &merged, chunk_budget)?;
                 if let Some(usage) = usage {
-                    total_usage.input_tokens += usage.input_tokens;
-                    total_usage.output_tokens += usage.output_tokens;
+                    total_usage.input_tokens =
+                        total_usage.input_tokens.saturating_add(usage.input_tokens);
+                    total_usage.output_tokens = total_usage
+                        .output_tokens
+                        .saturating_add(usage.output_tokens);
                 }
                 reduced.push(text);
             }

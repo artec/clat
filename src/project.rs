@@ -189,9 +189,12 @@ impl WritableTarget {
         }
     }
 
-    pub(crate) fn read_to_string(&self) -> io::Result<String> {
-        self.reject_final_symlink()?;
-        self.parent.read_to_string(&self.file_name)
+    /// 从最终文件的 no-follow 句柄有界读取 UTF-8。元数据长度仅可作为
+    /// 快速提示，不能作为内存边界：文件可在 stat 与 read 之间增长。
+    /// 真正的闸门是这里最多取 cap+1 字节并立即拒绝超帽。
+    pub(crate) fn read_to_string_limited(&self, max_bytes: usize) -> io::Result<String> {
+        let file = self.open_regular_nofollow()?;
+        read_utf8_limited(file, max_bytes)
     }
 
     /// 原子写入并返回目标在提交前是否存在。
@@ -213,13 +216,17 @@ impl WritableTarget {
             Err(error) => return Err(error),
         };
         let existed = metadata.is_some();
-        if let Some(expected) = expected_previous
-            && self.parent.read(&self.file_name)?.as_slice() != expected.as_bytes()
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::ResourceBusy,
-                "file changed while editing — re-read and retry",
-            ));
+        if let Some(expected) = expected_previous {
+            // 快照复查只需知道「完全相等」；最多读 expected.len()+1。
+            // 即使非合作进程在初读后把文件扩成巨物，提交区也不会整体
+            // 物化它，且任何多/少/不同字节都按并发冲突处理。
+            let current = self.open_regular_nofollow()?;
+            if !reader_matches_expected(current, expected.as_bytes())? {
+                return Err(io::Error::new(
+                    io::ErrorKind::ResourceBusy,
+                    "file changed while editing — re-read and retry",
+                ));
+            }
         }
 
         let temp_name = self.create_temp_file_name();
@@ -262,6 +269,39 @@ impl WritableTarget {
         }
     }
 
+    /// 相对已经固定的父目录句柄，以 OS no-follow 标志打开最终文件；
+    /// 打开后的 metadata 再确认普通文件，消除 check-then-open 竞态。
+    fn open_regular_nofollow(&self) -> io::Result<cap_std::fs::File> {
+        let mut options = OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use cap_std::fs::OpenOptionsExt as _;
+            options.custom_flags(libc::O_NOFOLLOW);
+        }
+        #[cfg(windows)]
+        {
+            use cap_std::fs::OpenOptionsExt as _;
+            const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+            options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+        }
+        let file = self.parent.open_with(&self.file_name, &options)?;
+        let metadata = file.metadata()?;
+        if metadata.file_type().is_symlink() {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "write target must not be a symbolic link",
+            ));
+        }
+        if !metadata.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "write target is not a regular file",
+            ));
+        }
+        Ok(file)
+    }
+
     fn create_temp_file_name(&self) -> OsString {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -273,6 +313,31 @@ impl WritableTarget {
             std::process::id()
         ))
     }
+}
+
+fn read_utf8_limited(mut reader: impl Read, max_bytes: usize) -> io::Result<String> {
+    let mut bytes = Vec::new();
+    reader
+        .by_ref()
+        .take(max_bytes.saturating_add(1) as u64)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > max_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("file exceeds the {max_bytes}-byte file cap"),
+        ));
+    }
+    String::from_utf8(bytes)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.utf8_error()))
+}
+
+fn reader_matches_expected(mut reader: impl Read, expected: &[u8]) -> io::Result<bool> {
+    let mut current = Vec::new();
+    reader
+        .by_ref()
+        .take(expected.len().saturating_add(1) as u64)
+        .read_to_end(&mut current)?;
+    Ok(current == expected)
 }
 
 #[cfg(unix)]
@@ -396,6 +461,111 @@ fn validate_relative_path(path: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// RA-04 判别腿：生产读取与提交复查的底层 helper 对一个永不 EOF
+    /// 的来源也只请求 cap+1 / expected+1 字节。删掉 `take` 会继续读到
+    /// 人工 EOF 并越过计数断言。
+    #[test]
+    fn bounded_read_helpers_stop_at_cap_plus_one() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct CountedBytes {
+            reads: Arc<AtomicUsize>,
+            remaining: usize,
+        }
+        impl Read for CountedBytes {
+            fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+                if self.remaining == 0 {
+                    return Ok(0);
+                }
+                let count = buffer.len().min(self.remaining);
+                buffer[..count].fill(b'x');
+                self.remaining -= count;
+                self.reads.fetch_add(count, Ordering::SeqCst);
+                Ok(count)
+            }
+        }
+
+        let reads = Arc::new(AtomicUsize::new(0));
+        let error = read_utf8_limited(
+            CountedBytes {
+                reads: Arc::clone(&reads),
+                remaining: 1024 * 1024,
+            },
+            16,
+        )
+        .expect_err("the source exceeds the cap");
+        assert_eq!(reads.load(Ordering::SeqCst), 17);
+        assert!(error.to_string().contains("16-byte file cap"));
+
+        reads.store(0, Ordering::SeqCst);
+        assert!(
+            !reader_matches_expected(
+                CountedBytes {
+                    reads: Arc::clone(&reads),
+                    remaining: 1024 * 1024,
+                },
+                b"short",
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            reads.load(Ordering::SeqCst),
+            6,
+            "snapshot comparison reads only expected.len()+1"
+        );
+    }
+
+    /// RA-04：最终文件替换成 symlink 后，实际读取 open 必须 no-follow；
+    /// 检查时刻与打开时刻之间的目录项变化不能把读取导向 victim。
+    #[cfg(unix)]
+    #[test]
+    fn writable_target_reads_never_follow_the_final_symlink() {
+        let root = temp_dir();
+        let victim = root.join("victim.txt");
+        fs::write(&victim, "secret").unwrap();
+        let path = root.join("note.txt");
+        fs::write(&path, "safe").unwrap();
+        let target = Project::new(&root)
+            .writable_target(
+                "note.txt",
+                false,
+                crate::permission::WriteScope::ProjectRoot,
+            )
+            .unwrap();
+        fs::remove_file(&path).unwrap();
+        std::os::unix::fs::symlink(&victim, &path).unwrap();
+        let error = target
+            .read_to_string_limited(1024)
+            .expect_err("final symlink is refused by open");
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(fs::read_to_string(&victim).unwrap(), "secret");
+        crate::test_support::cleanup_tree(&root);
+    }
+
+    /// RA-04 提交阶段判别腿：初读后文件膨胀成大对象时，快照比较只读
+    /// 旧快照长度+1 并返回冲突；不得为判断不等而物化当前整文件。
+    #[test]
+    fn atomic_snapshot_check_rejects_a_grown_file() {
+        let root = temp_dir();
+        let path = root.join("note.txt");
+        fs::write(&path, "small").unwrap();
+        let target = Project::new(&root)
+            .writable_target(
+                "note.txt",
+                false,
+                crate::permission::WriteScope::ProjectRoot,
+            )
+            .unwrap();
+        fs::write(&path, vec![b'x'; 2 * 1024 * 1024]).unwrap();
+        let error = target
+            .atomic_write("mine", Some("small"))
+            .expect_err("the changed snapshot is rejected");
+        assert_eq!(error.kind(), io::ErrorKind::ResourceBusy);
+        assert_eq!(fs::metadata(&path).unwrap().len(), 2 * 1024 * 1024);
+        crate::test_support::cleanup_tree(&root);
+    }
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 

@@ -23,7 +23,7 @@ use crate::tui::conversation::ConversationModel;
 use serde_json::Value;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, TryRecvError};
+use std::sync::mpsc::{Receiver, SyncSender, TryRecvError};
 
 /// 断线自动重连间隔（§0-2 负责人拍板：断线即自动重连，刷新循环驱
 /// 动重试，状态栏同步显示重连中）。
@@ -61,7 +61,7 @@ impl DshUsageAcc {
     /// 格式；无缓存计数或分母 0 → None（段隐藏）。
     fn cache_percent(&self) -> Option<String> {
         let cached = self.cache_read?;
-        let total = self.input + cached;
+        let total = self.input.saturating_add(cached);
         if total == 0 {
             return None;
         }
@@ -70,7 +70,7 @@ impl DshUsageAcc {
 
     /// Context 分子 = input + cacheRead（下一次请求的近似起点）。
     fn context_current(&self) -> u64 {
-        self.input + self.cache_read.unwrap_or(0)
+        self.input.saturating_add(self.cache_read.unwrap_or(0))
     }
 }
 
@@ -228,7 +228,7 @@ pub(crate) struct DshState {
     pending_approval: Option<DshPendingApproval>,
     pending_question: Option<DshPendingQuestion>,
     tasks: Sender<DshTask>,
-    events: Sender<DshEvent>,
+    events: SyncSender<DshEvent>,
     /// 当前 WS 连接代际（审计 P2-2）：每次开新一对 downlink 自增；
     /// 旧代际泵的 Frame/LinkDown 一概作废（迟到断线不得把健康的新
     /// 连接再标成断线，重复流不得造成文本重复）。
@@ -251,19 +251,23 @@ pub(crate) struct DshState {
     /// 留原会话，workspace 不动。
     pending_adoption: Option<(String, String)>,
     staged_events: Vec<SessionEvent>,
-    /// 本进程 spawn 的宿主句柄（退出清理拍板 2026-08-23：Drop 时
-    /// kill——探测直连的宿主从不在此）。
-    spawned_host: Option<std::process::Child>,
+    /// 本进程 spawn 的宿主句柄（退出清理拍板 2026-08-23：Drop 时带走
+    /// ——探测直连的宿主从不在此）。FIX-3/CA-03：进程组句柄，Drop 经
+    /// connect::terminate_dsh_host 树级清理（unix 进程组 / Windows
+    /// Job Object）。
+    spawned_host: Option<crate::dsh::connect::OwnedDshHost>,
 }
 
 impl Drop for DshState {
     fn drop(&mut self) {
         // 退出清理：clat dsh 退出（含 panic unwind）时带走自己 spawn 的
-        // 宿主，不留孤儿。SIGKILL 直杀——DSH journal 逐事件落盘、
-        // 崩溃安全由宿主自身保证；kill 对已退出进程是无害的 Err。
-        if let Some(mut child) = self.spawned_host.take() {
-            let _ = child.kill();
-            let _ = child.wait();
+        // 宿主，不留孤儿——整棵进程树（FIX-3/CA-03：TERM 宽限 → 组
+        // KILL → 有界收割；超宽限如实上报，不无限阻塞）。DSH journal
+        // 逐事件落盘、崩溃安全由宿主自身保证。
+        if let Some(child) = self.spawned_host.take()
+            && let Err(warning) = child.terminate()
+        {
+            eprintln!("clat: dsh: {warning}");
         }
     }
 }
@@ -273,7 +277,7 @@ impl DshState {
         port: u16,
         describe: Value,
         tasks: Sender<DshTask>,
-        events: Sender<DshEvent>,
+        events: SyncSender<DshEvent>,
     ) -> Self {
         let model_ids = (
             describe
@@ -323,12 +327,13 @@ impl DshState {
         }
     }
 
-    /// 收下一次连接/重连的宿主句柄：旧的（本进程 spawn 的）带走，
-    /// 新的入座（None = 探测直连，不持有）。
-    fn adopt_spawned_host(&mut self, child: Option<std::process::Child>) {
-        if let Some(mut old) = self.spawned_host.take() {
-            let _ = old.kill();
-            let _ = old.wait();
+    /// 收下一次连接/重连的宿主句柄：旧的（本进程 spawn 的）**整树**
+    /// 带走，新的入座（None = 探测直连，不持有）。
+    fn adopt_spawned_host(&mut self, child: Option<crate::dsh::connect::OwnedDshHost>) {
+        if let Some(old) = self.spawned_host.take()
+            && let Err(warning) = old.terminate()
+        {
+            eprintln!("clat: dsh: {warning}");
         }
         self.spawned_host = child;
     }
@@ -688,7 +693,7 @@ impl App {
         &mut self,
         port: u16,
         describe: Value,
-        child: Option<std::process::Child>,
+        child: Option<crate::dsh::connect::OwnedDshHost>,
     ) {
         if self.dsh_connect.is_some() {
             // 初始连接落地：消费连接占位，构造 DshState、起 HTTP worker
@@ -825,8 +830,13 @@ impl App {
                     // 恢复带回会话自己的 workspace——显示与 /new 继承
                     // 都以它为准（describe.cwd 是宿主进程目录，此前被
                     // 误当会话项目显示）。
-                    if let Some(cwd) = cwd {
-                        self.dsh_set_workspace(cwd);
+                    // FIX-4/CA-04：workspace 是会话级状态，`Restored` 按
+                    // 回执**覆盖**——None 也是覆盖（清除 → 回落
+                    // describe.cwd）。不清除会让上一会话的 workspace
+                    // 遮住回落，并被随后的 /new 继承到错误目录。
+                    match cwd {
+                        Some(cwd) => self.dsh_set_workspace(cwd),
+                        None => self.dsh_clear_workspace(),
                     }
                     self.dsh_switch_session(session);
                 }
@@ -1458,6 +1468,18 @@ impl App {
         self.default_status = abbreviate_home(std::path::Path::new(&cwd));
     }
 
+    /// FIX-4/CA-04：清除会话级 workspace（`Restored` 无 cwd）——回落
+    /// describe.cwd（宿主进程目录，仅作降级显示与 /new 继承）。
+    fn dsh_clear_workspace(&mut self) {
+        let fallback = self.dsh.as_mut().map(|dsh| {
+            dsh.workspace = None;
+            dsh.cwd()
+        });
+        if let Some(fallback) = fallback {
+            self.default_status = abbreviate_home(std::path::Path::new(&fallback));
+        }
+    }
+
     // ---- 输入提交（§2.3 分流落点：actions.rs 首行判 dsh 后转此） ----
 
     pub(super) fn submit_dsh(&mut self, text: String) {
@@ -1724,8 +1746,9 @@ mod tests {
     fn dsh_app() -> (App, Receiver<DshTask>) {
         let mut app = App::open_dsh(3080).expect("dsh app opens");
         app.test_freeze_tick = true;
+        app.clipboard_writer = discard_clipboard_sink;
         let (task_tx, task_rx) = mpsc::channel::<DshTask>();
-        let (events_tx, _events_rx) = mpsc::channel::<DshEvent>();
+        let (events_tx, _events_rx) = backend::event_channel();
         let mut state = DshState::new(3080, describe_fixture(), task_tx, events_tx);
         state.test_mark_ws_open();
         state.current_session = Some("session-test".into());
@@ -1741,6 +1764,11 @@ mod tests {
                 .as_nanos()
         ));
         (app, task_rx)
+    }
+
+    /// FIX-5/CA-08：丢弃 sink——dsh 测试不写真实终端。
+    fn discard_clipboard_sink(_: &[u8]) -> bool {
+        true
     }
 
     fn describe_fixture() -> Value {
@@ -1976,12 +2004,13 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn sleeper() -> std::process::Child {
+    fn sleeper() -> command_group::GroupChild {
+        use command_group::CommandGroup as _;
         std::process::Command::new("sleep")
             .arg("30")
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
-            .spawn()
+            .group_spawn()
             .expect("sleep spawns")
     }
 
@@ -1996,7 +2025,10 @@ mod tests {
         let (mut app, _task_rx) = dsh_app();
         let host = sleeper();
         let host_pid = host.id();
-        app.dsh.as_mut().unwrap().adopt_spawned_host(Some(host));
+        app.dsh
+            .as_mut()
+            .unwrap()
+            .adopt_spawned_host(Some(crate::dsh::connect::OwnedDshHost::new(host)));
         assert!(alive(host_pid));
         drop(app);
         assert!(!alive(host_pid), "Drop must take the spawned host down");
@@ -2006,10 +2038,16 @@ mod tests {
         let (mut app, _task_rx) = dsh_app();
         let old_host = sleeper();
         let old_pid = old_host.id();
-        app.dsh.as_mut().unwrap().adopt_spawned_host(Some(old_host));
+        app.dsh
+            .as_mut()
+            .unwrap()
+            .adopt_spawned_host(Some(crate::dsh::connect::OwnedDshHost::new(old_host)));
         let new_host = sleeper();
         let new_pid = new_host.id();
-        app.dsh.as_mut().unwrap().adopt_spawned_host(Some(new_host));
+        app.dsh
+            .as_mut()
+            .unwrap()
+            .adopt_spawned_host(Some(crate::dsh::connect::OwnedDshHost::new(new_host)));
         assert!(!alive(old_pid), "replacement kills the old spawned host");
         assert!(alive(new_pid));
         drop(app);
@@ -2020,6 +2058,134 @@ mod tests {
         assert!(alive(witness_pid), "unrelated processes are never touched");
         let _ = witness.kill();
         let _ = witness.wait();
+    }
+
+    /// FIX-3/CA-03（2026-08-24 审计，pre-fix 红）：自启宿主的清理是
+    /// **树级**的——忽视 TERM 的后代必须随 leader 一起消失。走真实
+    /// 生产路径：ensure_online（spawn + 就绪行 + probe 指纹）→ 收养 →
+    /// Drop。pre-fix：普通 spawn + leader-only kill/wait → 后代存活
+    /// → 红。
+    #[cfg(unix)]
+    #[test]
+    fn spawned_host_cleanup_takes_the_whole_tree() {
+        use std::io::{Read as _, Write as _};
+
+        // 一次性 describe 服务：ensure_online 的 probe 指纹闸门所需。
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let describe_port = server.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let Ok((mut stream, _)) = server.accept() else {
+                return;
+            };
+            // 读走请求（头到 \r\n\r\n + content-length body）。
+            let mut buf = Vec::new();
+            let mut byte = [0u8; 1];
+            while stream.read(&mut byte).is_ok_and(|n| n > 0) {
+                buf.push(byte[0]);
+                if buf.ends_with(b"\r\n\r\n") {
+                    let head = String::from_utf8_lossy(&buf).into_owned();
+                    let length: usize = head
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.trim()
+                                .eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse().ok())?
+                        })
+                        .unwrap_or(0);
+                    let mut body = vec![0u8; length];
+                    if length > 0 {
+                        let _ = stream.read_exact(&mut body);
+                    }
+                    // 信封 rpcId 必须回显（client 校验）。
+                    let rpc_id = serde_json::from_slice::<serde_json::Value>(&body)
+                        .ok()
+                        .and_then(|value| value.get("rpcId").cloned())
+                        .unwrap_or(serde_json::json!("rpc-tree-test"));
+                    let describe = serde_json::json!({
+                        "version": "0.1.1-rc.2",
+                        "cwd": "/Users/dev/project",
+                        "attachedSessions": 1,
+                        "home": "/Users/dev",
+                    });
+                    let response = serde_json::json!({
+                        "type": "server-response",
+                        "rpcId": rpc_id,
+                        "result": {"ok": true, "value": describe},
+                    });
+                    let body = response.to_string();
+                    let head = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                         Content-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = stream.write_all(head.as_bytes());
+                    let _ = stream.write_all(body.as_bytes());
+                    break;
+                }
+            }
+        });
+
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let pidfile = std::env::temp_dir().join(format!("clat-dsh-tree-{stamp}.pid"));
+        let script = std::env::temp_dir().join(format!("clat-dsh-tree-{stamp}.sh"));
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\n(trap '' TERM; exec sleep 60) &\necho $! > \"{pidfile}\"\n\
+                 echo \"dsh web: http://127.0.0.1:{describe_port}\"\nsleep 60\n",
+                pidfile = pidfile.display(),
+                describe_port = describe_port,
+            ),
+        )
+        .unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        // preferred port：闲置 scratch（probe 失败 → 走 spawn 路径）。
+        let scratch = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            drop(listener);
+            port
+        };
+        let home = std::env::temp_dir();
+        let online =
+            crate::dsh::connect::ensure_online(scratch, script.to_str().unwrap(), Some(&home))
+                .expect("fake dsh connects");
+        let leader = online.child.as_ref().expect("we spawned it").id();
+
+        // 等后代 pid 落盘（trap '' TERM + exec sleep：忽视 TERM 的后代）。
+        let mut descendant = None;
+        for _ in 0..100 {
+            if let Ok(text) = std::fs::read_to_string(&pidfile)
+                && let Ok(pid) = text.trim().parse::<u32>()
+            {
+                descendant = Some(pid);
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let descendant = descendant.expect("descendant pid recorded");
+        assert!(alive(leader), "the leader is up");
+        assert!(alive(descendant), "the TERM-ignoring descendant is up");
+
+        // 收养 + Drop：树级清理必须带走整棵树。
+        let (mut app, _task_rx) = dsh_app();
+        app.dsh.as_mut().unwrap().adopt_spawned_host(online.child);
+        drop(app);
+        assert!(!alive(leader), "the leader must be gone");
+        assert!(
+            !alive(descendant),
+            "the TERM-ignoring descendant must not outlive the group cleanup"
+        );
+        std::fs::remove_file(&script).ok();
+        std::fs::remove_file(&pidfile).ok();
     }
 
     /// §2.4（preset 投影 → 输入框右上角档位词汇）：journal 值 → DSH
@@ -2274,7 +2440,10 @@ mod tests {
         let (mut app, _task_rx) = dsh_app();
         let host = sleeper();
         let pid = host.id();
-        app.dsh.as_mut().unwrap().adopt_spawned_host(Some(host));
+        app.dsh
+            .as_mut()
+            .unwrap()
+            .adopt_spawned_host(Some(crate::dsh::connect::OwnedDshHost::new(host)));
         assert!(alive(pid));
         // 探测直连的重连成功（child=None，downlink 开在死端口上失败
         // 无妨——断言只关心宿主生死）。
@@ -2428,8 +2597,9 @@ mod tests {
     fn failed_startup_replies_never_hang_the_stream_open() {
         let mut app = App::open_dsh(3080).expect("dsh app opens");
         app.test_freeze_tick = true;
+        app.clipboard_writer = discard_clipboard_sink;
         let (task_tx, _task_rx) = mpsc::channel::<DshTask>();
-        let (events_tx, _events_rx) = mpsc::channel::<DshEvent>();
+        let (events_tx, _events_rx) = backend::event_channel();
         // 不标记 ws_open：模拟启动链 Restore 失败、流尚未打开。
         let state = DshState::new(scratch_port(), describe_fixture(), task_tx, events_tx);
         app.dsh = Some(state);
@@ -2781,8 +2951,10 @@ mod tests {
             task_rx.try_recv(),
             Ok(DshTask::History { session }) if session == "session-ws"
         ));
-        // 缺席腿：cwd 未记录 → 回落 describe.cwd（诚实降级）。
-        let (mut app, _task_rx) = dsh_app();
+        // FIX-4/CA-04（2026-08-24 审计，pre-fix 红）：缺席腿改为**同一
+        // App** 序列——旧 workspace 必须被 None 覆盖（清除 → 回落
+        // describe.cwd），否则旧值遮住回落（pre-fix：残留 /w/target →
+        // 红），且 /new 不得在错误目录建会话。
         event(
             &mut app,
             DshEvent::Reply(TaskReply::Restored {
@@ -2793,8 +2965,21 @@ mod tests {
         assert_eq!(
             app.dsh.as_ref().unwrap().cwd(),
             "/home/dev/dsh-project",
-            "absent cwd falls back to describe.cwd (host process dir)"
+            "absent cwd must clear the stale workspace and fall back to describe.cwd"
         );
+        while task_rx.try_recv().is_ok() {}
+        app.submit_dsh("/new".into());
+        match task_rx.try_recv() {
+            Ok(DshTask::Create { session_id, cwd }) => {
+                assert_eq!(session_id, None);
+                assert_ne!(
+                    cwd.as_deref(),
+                    Some("/w/target"),
+                    "/new must not inherit the previous session's workspace"
+                );
+            }
+            other => panic!("cwd-less restore then /new: {other:?}"),
+        }
     }
 
     /// B-4 判别：/resume 收养的 workspace 经 pending_adoption 按回执

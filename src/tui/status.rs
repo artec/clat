@@ -292,7 +292,7 @@ pub(super) fn status_suffix_segments(
         .map(|preset| preset.context_window);
     if let Some(window) = window {
         let current = last_turn_usage
-            .map(|usage| usage.input_tokens + usage.output_tokens)
+            .map(|usage| usage.input_tokens.saturating_add(usage.output_tokens))
             .unwrap_or(0);
         parts.push(format!(
             "Context: {}/{}",

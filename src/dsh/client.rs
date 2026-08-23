@@ -7,7 +7,6 @@
 //! worker 线程上执行（UI 永不阻塞），默认 30s 超时（参考客户端同款）。
 
 use serde_json::{Value, json};
-use std::io::Read as _;
 use std::time::Duration;
 
 /// 一次 API 调用的失败（信封错误或载体错误，统一呈现）。
@@ -80,15 +79,16 @@ impl DshClient {
                 code: "transport".to_owned(),
                 message: error.to_string(),
             })?;
-        let mut text = String::new();
-        response
-            .into_body()
-            .into_reader()
-            .read_to_string(&mut text)
-            .map_err(|error| DshApiError {
-                code: "transport".to_owned(),
-                message: format!("cannot read the response body: {error}"),
-            })?;
+        // FIX-2/CA-02：body 有界读取（时间上限不是字节上限）。
+        let text = crate::dsh::budget::read_string_capped(
+            response.into_body().into_reader(),
+            crate::dsh::budget::HTTP_BODY_CAP,
+            "the response body",
+        )
+        .map_err(|message| DshApiError {
+            code: "transport".to_owned(),
+            message,
+        })?;
         let value: Value = serde_json::from_str(&text).map_err(|error| DshApiError {
             code: "protocol".to_owned(),
             message: format!("the response is not JSON: {error}"),
@@ -112,15 +112,16 @@ impl DshClient {
                 code: "transport".to_owned(),
                 message: error.to_string(),
             })?;
-        let mut text = String::new();
-        response
-            .into_body()
-            .into_reader()
-            .read_to_string(&mut text)
-            .map_err(|error| DshApiError {
-                code: "transport".to_owned(),
-                message: format!("cannot read the respond receipt: {error}"),
-            })?;
+        // FIX-2/CA-02：回执 body 同帽有界。
+        let text = crate::dsh::budget::read_string_capped(
+            response.into_body().into_reader(),
+            crate::dsh::budget::HTTP_BODY_CAP,
+            "the respond receipt",
+        )
+        .map_err(|message| DshApiError {
+            code: "transport".to_owned(),
+            message,
+        })?;
         let value: Value = serde_json::from_str(&text).map_err(|error| DshApiError {
             code: "protocol".to_owned(),
             message: format!("the respond receipt is not JSON: {error}"),

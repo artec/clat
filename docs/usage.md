@@ -414,7 +414,12 @@ block the agent) and simply reconnects. The built-in landing page at
 hand-written minimal subset, and the server shares the exact
 permission model, session journal, and single-run semantics of the
 TUI and `clat exec`. Ctrl-C stops it gracefully (cancel active run,
-close the application, flush the journal).
+close the application, flush the journal). The exit code is honest:
+`0` only when an explicit shutdown, a clean accept loop, and a
+successful application close all happened together — an unexpected
+accept-loop exit, a panicked accept thread, or a failed close
+exits non-zero with the root cause on stderr, so supervisors
+(systemd, launchd, scripts) can tell clean stops from dirty ones.
 
 ### Web client & PWA
 
@@ -536,6 +541,13 @@ this safe:
 `run_command` output is capped (32 KiB per stream) but the command
 itself is never killed by the cap; timeouts and `Esc` terminate the
 whole process tree, not just the shell.
+
+Write edits are bounded the same way: `write_file` content and
+`edit_file` targets and results are each capped at 1 MiB. `edit_file`
+reads the target through a bounded, no-follow handle (at most 1 MiB
+plus one byte — an oversized or swapped-for-a-symlink file is rejected
+without being materialized), and larger files must be split first
+(the error says so).
 
 Long tasks are never cut off by a turn count. The agent loop has no
 turn budget (the same design as DeepSeek Harness, Claude Code, and

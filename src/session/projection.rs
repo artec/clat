@@ -825,14 +825,19 @@ impl ProjectionUnit for StatsUnit {
             _ => {}
         }
         if let Some(usage) = event.data.get("usage") {
-            self.input_tokens += usage
-                .get("inputTokens")
-                .and_then(Value::as_u64)
-                .unwrap_or(0);
-            self.output_tokens += usage
-                .get("outputTokens")
-                .and_then(Value::as_u64)
-                .unwrap_or(0);
+            // FIX-1/CA-01：usage 累计全链 saturating（单调不减）。
+            self.input_tokens = self.input_tokens.saturating_add(
+                usage
+                    .get("inputTokens")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+            );
+            self.output_tokens = self.output_tokens.saturating_add(
+                usage
+                    .get("outputTokens")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+            );
         }
         self.as_of = event.seq as i64;
         Ok(())

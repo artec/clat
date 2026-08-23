@@ -8,6 +8,7 @@
 //! ReplayEvent 通路（INV-D6 / INV-U4 协议语义零改动）。
 
 pub(crate) mod backend;
+pub(crate) mod budget;
 pub(crate) mod client;
 pub(crate) mod connect;
 pub(crate) mod files;

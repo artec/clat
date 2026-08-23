@@ -427,8 +427,10 @@ impl Tool for WriteFileTool {
         let requested = required_string_arg(arguments, "path", "write_file")?;
         let content = required_string_arg(arguments, "content", "write_file")?;
         if content.len() > MAX_WRITE_BYTES {
+            // FIX-5/CA-06：不再指向 edit_file——它的结果与目标同受
+            // MAX_WRITE_BYTES 约束，指路只会把模型引向另一条失败路径。
             return Err(ToolError::new(format!(
-                "write_file: content exceeds {MAX_WRITE_BYTES} bytes — split the file or use edit_file"
+                "write_file: content exceeds {MAX_WRITE_BYTES} bytes — split the write into smaller pieces"
             )));
         }
         // W-INV1：父目录创建、临时文件与 rename 全部绑定到同一个
@@ -514,8 +516,10 @@ impl Tool for EditFileTool {
                 "edit_file: `{requested}` is not a file"
             )));
         }
+        // RA-04：边界必须落在实际 read 上。stat 只能快拒，不能防住
+        // stat 后文件增长；生产读取最多取 MAX_WRITE_BYTES+1，超帽即停。
         let content = target
-            .read_to_string()
+            .read_to_string_limited(MAX_WRITE_BYTES)
             .map_err(|error| tool_io_error("edit_file", requested, error))?;
         let occurrences = content.match_indices(old_str).count();
         match occurrences {
@@ -1482,6 +1486,62 @@ mod tests {
             "second\n"
         );
 
+        crate::test_support::cleanup_tree(&root);
+    }
+
+    /// RA-04：超帽目标由实际读取边界拒绝，错误必须诚实且目标不变。
+    /// cap+1 的分配上界由 project::bounded_read_helpers_stop_at_cap_plus_one
+    /// 直接钉住，不能再依赖可竞态的 metadata.len()。
+    #[test]
+    fn edit_file_rejects_an_oversized_target_before_reading_it() {
+        let (root, project) = fixture();
+        let path = root.join("big.txt");
+        fs::write(&path, "x".repeat(2 * 1024 * 1024)).expect("big file");
+        let error = EditFileTool::default()
+            .invoke(
+                &json!({"path": "big.txt", "old_str": "x", "new_str": "y"}),
+                &project,
+                &CancelToken::new(),
+            )
+            .expect_err("an over-cap target must be rejected without reading it");
+        let message = error.to_string();
+        assert!(
+            message.contains("exceeds") && message.contains("file cap"),
+            "the error must state the file cap honestly: {message}"
+        );
+        assert_eq!(
+            fs::read(&path).unwrap().len(),
+            2 * 1024 * 1024,
+            "the target bytes are untouched"
+        );
+        crate::test_support::cleanup_tree(&root);
+    }
+
+    /// FIX-5/CA-06（pre-fix 红）：write_file 超限文案不得把模型指向
+    /// 另一个同样不支持大结果的工具（edit_file 的结果与目标同受
+    /// MAX_WRITE_BYTES 约束）。
+    #[test]
+    fn write_file_over_limit_advice_does_not_point_to_edit_file() {
+        let (root, project) = fixture();
+        let error = WriteFileTool::default()
+            .invoke(
+                &json!({
+                    "path": "big.txt",
+                    "content": "x".repeat(MAX_WRITE_BYTES + 1)
+                }),
+                &project,
+                &CancelToken::new(),
+            )
+            .expect_err("over limit");
+        let message = error.to_string();
+        assert!(
+            !message.contains("edit_file"),
+            "advice must not point at a tool with the same cap: {message}"
+        );
+        assert!(
+            message.contains("split"),
+            "advice should say how to proceed: {message}"
+        );
         crate::test_support::cleanup_tree(&root);
     }
 

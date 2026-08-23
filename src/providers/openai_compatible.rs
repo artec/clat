@@ -700,18 +700,30 @@ fn parse_usage(value: &Value) -> Option<Usage> {
     // harness 的 mapUsage 同样按此优先级回退）、以及百炼新加坡地域
     // 部分模型暂用的顶层 `usage.cached_tokens`（Qwen 缓存文档明示的
     // 过渡形态）。注意 prompt_tokens 已包含缓存命中部分。
-    let cached_input_tokens = value
-        .pointer("/prompt_tokens_details/cached_tokens")
-        .and_then(Value::as_u64)
-        .or_else(|| value.get("prompt_cache_hit_tokens").and_then(Value::as_u64))
-        .or_else(|| value.get("cached_tokens").and_then(Value::as_u64));
-    Some(Usage {
-        input_tokens: value.get("prompt_tokens")?.as_u64()?,
-        output_tokens: value.get("completion_tokens")?.as_u64()?,
-        cached_input_tokens,
-        reasoning_tokens: value
-            .pointer("/completion_tokens_details/reasoning_tokens")
+    let cached_input_tokens = super::clamp_usage_field(
+        value
+            .pointer("/prompt_tokens_details/cached_tokens")
             .and_then(Value::as_u64),
+    )
+    .or_else(|| {
+        super::clamp_usage_field(value.get("prompt_cache_hit_tokens").and_then(Value::as_u64))
+    })
+    .or_else(|| super::clamp_usage_field(value.get("cached_tokens").and_then(Value::as_u64)));
+    Some(Usage {
+        input_tokens: value
+            .get("prompt_tokens")?
+            .as_u64()?
+            .min(super::MAX_USAGE_FIELD_TOKENS),
+        output_tokens: value
+            .get("completion_tokens")?
+            .as_u64()?
+            .min(super::MAX_USAGE_FIELD_TOKENS),
+        cached_input_tokens,
+        reasoning_tokens: super::clamp_usage_field(
+            value
+                .pointer("/completion_tokens_details/reasoning_tokens")
+                .and_then(Value::as_u64),
+        ),
     })
 }
 
@@ -906,6 +918,25 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(singapore.cached_input_tokens, Some(600));
+    }
+
+    /// FIX-1/CA-01（2026-08-24 审计，pre-fix 红）：对端自报 token 必须
+    /// 在 adapter admission 处夹取进 sane 域（1 << 40/字段）——
+    /// u64::MAX 原样透传会在预算账本/统计层变成不可信计数。
+    #[test]
+    fn parse_usage_clamps_hostile_fields_into_the_sane_domain() {
+        let usage = parse_usage(&json!({
+            "prompt_tokens": u64::MAX,
+            "completion_tokens": u64::MAX,
+            "prompt_tokens_details": {"cached_tokens": u64::MAX},
+            "completion_tokens_details": {"reasoning_tokens": u64::MAX}
+        }))
+        .expect("usage parses");
+        let sane = crate::providers::MAX_USAGE_FIELD_TOKENS;
+        assert_eq!(usage.input_tokens, sane);
+        assert_eq!(usage.output_tokens, sane);
+        assert_eq!(usage.cached_input_tokens, Some(sane));
+        assert_eq!(usage.reasoning_tokens, Some(sane));
     }
 
     #[test]

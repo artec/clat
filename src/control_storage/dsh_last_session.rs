@@ -6,7 +6,13 @@
 //! 日志）。装饰性记忆：读写皆 fail-soft——缺席/损坏回落 None，调用
 //! 方回落宿主列表头（最近被提问/创建的会话）。
 
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
+
+/// 记忆文件与会话 id 的单侧字节帽（FIX-4/CA-07）：会话 id 是单行
+/// opaque 标识，4 KiB 远超任何真实形状且不擅自假定 UUID/正则形状；
+/// 超帽 = 损坏/异常，读写双双 fail-soft。
+const SESSION_ID_CAP: usize = 4 * 1024;
 
 /// 记忆文件（`~/.clat/dsh-last-session`，单行会话 id；无 home → 空
 /// 路径，读写为 no-op）。
@@ -17,23 +23,65 @@ pub(crate) fn last_session_path() -> PathBuf {
         .unwrap_or_default()
 }
 
-/// 读回最后打开的会话 id（缺席/空/损坏 → None）。
+/// 读回最后打开的会话 id（缺席/空/损坏/超帽/symlink → None）。
+/// FIX-4/CA-07：symlink 拒绝（不跟随）+ 有界读取（cap+1 即止）。
 pub(crate) fn read_last_session_at(path: &Path) -> Option<String> {
-    std::fs::read_to_string(path)
-        .ok()
-        .map(|content| content.trim().to_owned())
-        .filter(|id| !id.is_empty())
+    let name = path.file_name()?;
+    let parent = path.parent()?;
+    let dir = cap_std::fs::Dir::open_ambient_dir(parent, cap_std::ambient_authority()).ok()?;
+    let mut options = cap_std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use cap_std::fs::OpenOptionsExt as _;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    #[cfg(windows)]
+    {
+        use cap_std::fs::OpenOptionsExt as _;
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    let file = dir.open_with(name, &options).ok()?;
+    let metadata = file.metadata().ok()?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return None;
+    }
+    let mut text = String::new();
+    file.take(SESSION_ID_CAP as u64 + 1)
+        .read_to_string(&mut text)
+        .ok()?;
+    if text.len() > SESSION_ID_CAP {
+        return None;
+    }
+    let trimmed = text.trim().to_owned();
+    (!trimmed.is_empty()).then_some(trimmed)
 }
 
 /// 记住最后打开的会话（fail-soft：写失败 = 下次启动回落列表头）。
+/// FIX-4/CA-07：写入复用 `control_storage::json_file::write_text_atomic`
+///（选型记档：不挂接 `ControlStorage`——dsh 模式不占项目 storage-root
+/// lease，而该原语本就独立可用），继承 0600 temp+fsync+rename+父目录
+/// fsync+前后双 symlink 拒绝的完整纪律；原子替换下并发读者只见旧
+/// 完整值或新完整值。任何失败（含路径围栏）只静默丢偏好，绝不动
+/// 被链接的外部目标。
 pub(crate) fn remember_last_session_at(path: &Path, session: &str) {
-    if path.as_os_str().is_empty() {
+    if path.as_os_str().is_empty() || session.len() > SESSION_ID_CAP {
         return;
     }
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return;
+    };
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    if std::fs::create_dir_all(parent).is_err() {
+        return;
     }
-    let _ = std::fs::write(path, session);
+    let Ok(dir) = cap_std::fs::Dir::open_ambient_dir(parent, cap_std::ambient_authority()) else {
+        return;
+    };
+    let _ = super::json_file::write_text_atomic(&dir, parent, name, session);
 }
 
 #[cfg(test)]
@@ -66,6 +114,100 @@ mod tests {
         // 空路径 no-op（无 home 的环境）。
         remember_last_session_at(Path::new(""), "x");
         assert_eq!(read_last_session_at(Path::new("")), None);
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// FIX-4/CA-07（2026-08-24 审计，pre-fix 红）：路径围栏——预置
+    /// symlink 指向 victim 时，remember 不得跟随 symlink 截断 victim
+    /// （pre-fix：`std::fs::write` 跟随 → victim 被截成会话 id → 红）；
+    /// 读取同样拒绝 symlink。
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_memory_file_never_touches_its_victim() {
+        let dir = std::env::temp_dir().join(format!(
+            "clat-dsh-memo-symlink-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let victim = dir.join("victim.txt");
+        std::fs::write(&victim, "PRECIOUS-BYTES").unwrap();
+        let memory = dir.join("dsh-last-session");
+        std::os::unix::fs::symlink(&victim, &memory).unwrap();
+
+        remember_last_session_at(&memory, "session-evil");
+        assert_eq!(
+            std::fs::read_to_string(&victim).unwrap(),
+            "PRECIOUS-BYTES",
+            "the write must never follow the symlink to the victim"
+        );
+        assert_eq!(
+            read_last_session_at(&memory),
+            None,
+            "the read must reject the symlink too"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// FIX-4/CA-07（pre-fix 红）：读取有界（4 KiB）——超帽记忆文件
+    /// 只读 cap+1 后回落 None，不整体物化。
+    #[test]
+    fn an_oversized_memory_file_reads_at_most_cap_plus_one() {
+        let path = temp_path("huge");
+        let oversized = "s".repeat(8 * 1024);
+        std::fs::write(&path, &oversized).unwrap();
+        assert_eq!(
+            read_last_session_at(&path),
+            None,
+            "an over-cap memory file is fail-soft None"
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// FIX-4/CA-07（pre-fix 红）：写入必须是 rename 原子替换——把旧
+    /// 记忆硬链接到旁路后覆写，硬链接内容必须保持**旧值**（原地写
+    /// 会穿透 inode，pre-fix：硬链接内容变新值 → 红）。并发读者由此
+    /// 只见旧完整值或新完整值，永不见撕裂/截断。
+    #[cfg(unix)]
+    #[test]
+    fn writes_replace_atomically_old_bytes_stay_intact_elsewhere() {
+        let dir = std::env::temp_dir().join(format!(
+            "clat-dsh-memo-hardlink-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let memory = dir.join("dsh-last-session");
+        remember_last_session_at(&memory, "session-old");
+        let alias = dir.join("alias");
+        std::fs::hard_link(&memory, &alias).unwrap();
+
+        remember_last_session_at(&memory, "session-new");
+        assert_eq!(
+            std::fs::read_to_string(&alias).unwrap(),
+            "session-old",
+            "atomic replace swaps the directory entry; the old inode is untouched"
+        );
+        assert_eq!(
+            read_last_session_at(&memory),
+            Some("session-new".to_owned()),
+            "the new value is fully visible at the memory path"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// FIX-4/CA-07：超长会话 id（> 4 KiB）不落盘（opaque id 有界，
+    /// 不擅自假定形状）。
+    #[test]
+    fn an_oversized_session_id_is_rejected_fail_soft() {
+        let path = temp_path("longid");
+        let huge = "i".repeat(8 * 1024);
+        remember_last_session_at(&path, &huge);
+        assert!(!path.exists(), "an over-cap session id must not be written");
         let _ = std::fs::remove_file(path);
     }
 }

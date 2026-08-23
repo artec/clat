@@ -109,8 +109,49 @@ pub fn run_serve_with_shutdown(args: ServeArgs, shutdown: Arc<AtomicBool>) -> i3
         handle.token
     );
     println!("Press Ctrl-C to stop.");
-    handle.join();
-    0
+    serve_join_exit(handle)
+}
+
+/// FIX-3/CA-05：join + 退出码映射（生产与测试共用同一接线——映射
+/// 不在生产入口被旁路）。
+pub(crate) fn serve_join_exit(handle: ServeHandle) -> i32 {
+    serve_exit_code(&handle.join())
+}
+
+/// INV-F3-3 退出码语义：**显式 shutdown + accept 线程正常结束 +
+/// Application close 成功**三者同时成立才返回 0；accept 线程意外退出/
+/// panic、close Err、close_outcome None（归一失败降级）任一发生 →
+/// 非零，根因写 stderr。
+pub(crate) fn serve_exit_code(exit: &ServeExit) -> i32 {
+    let mut clean = true;
+    match &exit.accept {
+        Ok(()) => {}
+        Err(reason) => {
+            eprintln!("clat: serve: accept loop ended unexpectedly: {reason}");
+            clean = false;
+        }
+    }
+    match &exit.close {
+        Some(Ok(())) => {}
+        Some(Err(error)) => {
+            eprintln!("clat: serve: application close failed: {error}");
+            clean = false;
+        }
+        None => {
+            eprintln!("clat: serve: could not close application cleanly");
+            clean = false;
+        }
+    }
+    if clean { 0 } else { 1 }
+}
+
+/// serve 的完整退出视图（`ServeHandle::join` 的产物）。
+pub struct ServeExit {
+    /// accept 线程结局：`Ok` = 正常（shutdown 旗位退出）；`Err` = accept
+    /// fatal 错误或线程 panic（根因在内，panic 已转译为消息）。
+    pub accept: Result<(), String>,
+    /// 显式应用 close 的结果（语义同 `ServeHandle::close_outcome` 注释）。
+    pub close: Option<Result<(), String>>,
 }
 
 pub struct ServeHandle {
@@ -122,7 +163,7 @@ pub struct ServeHandle {
     /// `None` = 归一失败走了降级路径（残留连接/worker 超宽限期），
     /// 应用由 Drop 兜底关闭。
     close_outcome: Arc<Mutex<Option<Result<(), String>>>>,
-    join: JoinHandle<()>,
+    join: JoinHandle<Result<(), String>>,
 }
 
 impl ServeHandle {
@@ -132,18 +173,30 @@ impl ServeHandle {
     }
 
     /// 阻塞到 serve 完整退出（连接/worker 有界 join、应用显式 close），
-    /// 返回显式 close 的结果（语义见 `close_outcome` 字段注释）。
-    pub fn join(self) -> Option<Result<(), String>> {
+    /// 返回完整退出视图（accept 结局 + 显式 close 结果）。
+    pub fn join(self) -> ServeExit {
         let Self {
             join,
             close_outcome,
             ..
         } = self;
-        let _ = join.join();
-        close_outcome
+        // FIX-3/CA-05：accept 线程的 panic 不再被吞——转译为根因。
+        let accept = match join.join() {
+            Ok(outcome) => outcome,
+            Err(panic) => Err(format!(
+                "accept thread panicked: {}",
+                panic
+                    .downcast_ref::<&str>()
+                    .map(|message| (*message).to_owned())
+                    .or_else(|| panic.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "unknown panic payload".to_owned())
+            )),
+        };
+        let close = close_outcome
             .lock()
             .expect("serve close outcome lock")
-            .clone()
+            .clone();
+        ServeExit { accept, close }
     }
 
     pub fn port(&self) -> u16 {
@@ -221,7 +274,7 @@ where
                 app,
                 accept_shutdown,
                 accept_close_outcome,
-            );
+            )
         })
         .map_err(|error| format!("could not spawn accept loop: {error}"))?;
     Ok(ServeHandle {
@@ -239,7 +292,8 @@ fn accept_loop(
     app: Arc<Mutex<TrustedProjectApplication>>,
     shutdown: Arc<AtomicBool>,
     close_outcome: Arc<Mutex<Option<Result<(), String>>>>,
-) {
+) -> Result<(), String> {
+    let mut fatal: Option<String> = None;
     loop {
         if shutdown.load(Ordering::SeqCst) {
             break;
@@ -258,7 +312,12 @@ fn accept_loop(
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 std::thread::sleep(Duration::from_millis(100));
             }
-            Err(_) => break,
+            // FIX-3/CA-05（INV-F3-4）：fatal accept 错误记录根因、仍走
+            // 完整关停序列（不静默消失）；退出码由结果映射判定非零。
+            Err(error) => {
+                fatal = Some(format!("accept failed: {error}"));
+                break;
+            }
         }
     }
 
@@ -289,6 +348,10 @@ fn accept_loop(
             *close_outcome.lock().expect("serve close outcome lock") = Some(outcome);
         }
         None => eprintln!("clat: serve: could not close application cleanly"),
+    }
+    match fatal {
+        Some(reason) => Err(reason),
+        None => Ok(()),
     }
 }
 

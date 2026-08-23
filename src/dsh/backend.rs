@@ -16,7 +16,7 @@
 //! 独立应答（审计 P1-3：重连失败须可识别，UI 才能重新武装重试）。
 
 use crate::dsh::client::DshClient;
-use crate::dsh::connect::{self, ConnectFailure};
+use crate::dsh::connect::{self, ConnectFailure, OwnedDshHost};
 use crate::dsh::files;
 use crate::dsh::frames::{DshFrame, parse_frame};
 use crate::dsh::ws::{self, WsMessage};
@@ -25,7 +25,22 @@ use serde_json::{Value, json};
 use std::net::TcpStream;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
+
+/// 每一级只容纳少量完整协议消息。单条 WS 文本已由 `ws` 层限制为
+/// 16 MiB；四槽把最坏滞留量固定在每级约 64 MiB，并把背压一直传回
+/// socket 读泵。这里宁可让生产者等待，也不能丢协议事件或无限吃内存。
+pub(crate) const DSH_QUEUE_CAPACITY: usize = 4;
+
+/// 连接/WS/worker 到 App 转发线程的生产通道。所有生产入口必须走此
+/// 构造器，避免某个连接路径悄悄退回无界队列。
+pub(crate) fn event_channel() -> (SyncSender<DshEvent>, Receiver<DshEvent>) {
+    sync_channel(DSH_QUEUE_CAPACITY)
+}
+
+fn ws_message_channel() -> (SyncSender<WsMessage>, Receiver<WsMessage>) {
+    sync_channel(DSH_QUEUE_CAPACITY)
+}
 
 /// App 线程外三线程 → App 线程的唯一消息面（D-2 §1.3，四变体定死，
 /// 增删语义须上报）。`Frame` 不区分 mux/host 来路——归约按
@@ -49,7 +64,8 @@ pub(crate) enum DshEvent {
     Reconnected {
         port: u16,
         describe: Value,
-        child: Option<std::process::Child>,
+        /// FIX-3/CA-03：进程组句柄（树级清理语义见 connect.rs）。
+        child: Option<OwnedDshHost>,
     },
 }
 
@@ -145,22 +161,18 @@ pub(crate) enum TaskReply {
     Reconnected {
         port: u16,
         describe: Value,
-        child: Option<std::process::Child>,
+        child: Option<OwnedDshHost>,
     },
 }
 
 /// 初始连接线程：`ensure_online`（探测 → spawn → 就绪轮询）→
 /// `Reconnected`；失败以 `LinkDown` 报告（App 连接期收到即退出）。
-pub(crate) fn spawn_connect(preferred_port: u16, events: Sender<DshEvent>) {
+pub(crate) fn spawn_connect(preferred_port: u16, events: SyncSender<DshEvent>) {
     std::thread::spawn(move || {
         let home = files::dsh_home();
         match connect::ensure_online(preferred_port, "dsh", home.as_deref()) {
             Ok(online) => {
-                let _ = events.send(DshEvent::Reconnected {
-                    port: online.port,
-                    describe: online.describe,
-                    child: online.child,
-                });
+                let _ = deliver_reconnected(&events, online.port, online.describe, online.child);
             }
             Err(ConnectFailure::NotInstalled) => {
                 let _ = events.send(DshEvent::LinkDown {
@@ -184,7 +196,7 @@ pub(crate) fn spawn_worker(
     client: DshClient,
     port: u16,
     tasks: Receiver<DshTask>,
-    events: Sender<DshEvent>,
+    events: SyncSender<DshEvent>,
 ) {
     std::thread::spawn(move || {
         let mut client = client;
@@ -196,13 +208,7 @@ pub(crate) fn spawn_worker(
                     port,
                     describe,
                     child,
-                }) => events
-                    .send(DshEvent::Reconnected {
-                        port,
-                        describe,
-                        child,
-                    })
-                    .is_ok(),
+                }) => deliver_reconnected(&events, port, describe, child),
                 Some(reply) => events.send(DshEvent::Reply(reply)).is_ok(),
                 None => true,
             };
@@ -211,6 +217,24 @@ pub(crate) fn spawn_worker(
             }
         }
     });
+}
+
+/// 初连与重连共享的所有权交接点。发送失败时 `SendError` 持有的
+/// `OwnedDshHost` 随即 Drop；发送成功但 App 先退出时，接收队列中的
+/// 事件被 Drop。两条路径都不会留下宿主树。
+fn deliver_reconnected(
+    events: &SyncSender<DshEvent>,
+    port: u16,
+    describe: Value,
+    child: Option<OwnedDshHost>,
+) -> bool {
+    events
+        .send(DshEvent::Reconnected {
+            port,
+            describe,
+            child,
+        })
+        .is_ok()
 }
 
 /// WS 下行读泵（INV-D3：只收不发）。断开/失败发 `LinkDown` 后线程
@@ -222,14 +246,14 @@ pub(crate) fn spawn_worker(
 pub(crate) fn open_downlink(
     port: u16,
     path: &'static str,
-    events: &Sender<DshEvent>,
+    events: &SyncSender<DshEvent>,
     generation: u64,
     epoch: &Arc<AtomicU64>,
 ) -> Result<(), String> {
     let stream = TcpStream::connect(("127.0.0.1", port))
         .map_err(|error| format!("cannot connect {path}: {error}"))?;
     let host = format!("127.0.0.1:{port}");
-    let (ws_tx, ws_rx) = channel::<WsMessage>();
+    let (ws_tx, ws_rx) = ws_message_channel();
     ws::connect_downlink(stream, path, &host, ws_tx)?;
     let events = events.clone();
     let epoch = Arc::clone(epoch);
@@ -529,6 +553,137 @@ fn call_status(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// RA-02 判别腿：两个生产队列分别由生产构造器创建，填满后必须
+    /// 明确返回 Full。删掉任一 `sync_channel` 都会让对应腿不再成立。
+    #[test]
+    fn both_dsh_transport_queues_apply_backpressure() {
+        use std::sync::mpsc::TrySendError;
+
+        let (ws_tx, _ws_rx) = ws_message_channel();
+        for index in 0..DSH_QUEUE_CAPACITY {
+            assert!(
+                ws_tx.try_send(WsMessage::Text(index.to_string())).is_ok(),
+                "WS queue slot {index}"
+            );
+        }
+        assert!(matches!(
+            ws_tx.try_send(WsMessage::Text("overflow".into())),
+            Err(TrySendError::Full(_))
+        ));
+
+        let (event_tx, _event_rx) = event_channel();
+        for index in 0..DSH_QUEUE_CAPACITY {
+            assert!(
+                event_tx
+                    .try_send(DshEvent::LinkDown {
+                        generation: index as u64,
+                        reason: "fill".into(),
+                    })
+                    .is_ok(),
+                "event queue slot {index}"
+            );
+        }
+        assert!(matches!(
+            event_tx.try_send(DshEvent::LinkDown {
+                generation: u64::MAX,
+                reason: "overflow".into(),
+            }),
+            Err(TrySendError::Full(_))
+        ));
+    }
+
+    /// RA-03：初连和重连共用 `deliver_reconnected`。接收端已经离开时，
+    /// 发送失败所携带的所有权守卫必须同步带走刚 spawn 的宿主。
+    #[cfg(unix)]
+    #[test]
+    fn failed_reconnected_delivery_drops_the_owned_host() {
+        use command_group::CommandGroup as _;
+
+        let child = std::process::Command::new("sleep")
+            .arg("60")
+            .group_spawn()
+            .expect("sleeper spawns");
+        let pid = child.id();
+        let (events, receiver) = event_channel();
+        drop(receiver);
+        assert!(!deliver_reconnected(
+            &events,
+            3080,
+            json!({}),
+            Some(OwnedDshHost::new(child)),
+        ));
+        assert!(
+            !process_alive(pid),
+            "failed delivery must not leak the host"
+        );
+    }
+
+    /// RA-03：发送成功不等于已被 App 收养。事件仍在队列中时 App 退出，
+    /// Receiver::drop 必须经守卫清掉 leader 与忽略 TERM 的后代。
+    #[cfg(unix)]
+    #[test]
+    fn queued_reconnected_event_owns_and_cleans_the_whole_tree() {
+        use command_group::CommandGroup as _;
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let pidfile = std::env::temp_dir().join(format!("clat-queued-dsh-{stamp}.pid"));
+        let script = std::env::temp_dir().join(format!("clat-queued-dsh-{stamp}.sh"));
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\n(trap '' TERM; exec sleep 60) &\necho $! > \"{pidfile}\"\nsleep 60\n",
+                pidfile = pidfile.display(),
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let child = std::process::Command::new(&script)
+            .group_spawn()
+            .expect("tree spawns");
+        let leader = child.id();
+        let mut descendant = None;
+        for _ in 0..100 {
+            if let Ok(text) = std::fs::read_to_string(&pidfile)
+                && let Ok(pid) = text.trim().parse::<u32>()
+            {
+                descendant = Some(pid);
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let descendant = descendant.expect("descendant pid recorded");
+
+        let (events, receiver) = event_channel();
+        assert!(deliver_reconnected(
+            &events,
+            3080,
+            json!({}),
+            Some(OwnedDshHost::new(child)),
+        ));
+        drop(receiver);
+        assert!(!process_alive(leader), "queued owner cleans the leader");
+        assert!(
+            !process_alive(descendant),
+            "queued owner cleans the descendant"
+        );
+        std::fs::remove_file(&script).ok();
+        std::fs::remove_file(&pidfile).ok();
+    }
+
+    #[cfg(unix)]
+    fn process_alive(pid: u32) -> bool {
+        std::process::Command::new("ps")
+            .arg("-p")
+            .arg(pid.to_string())
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false)
+    }
 
     /// 载荷形状逐字钉靶：approval 应答字段与 outcome 词汇。
     #[test]

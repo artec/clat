@@ -1282,10 +1282,145 @@ fn shutdown_runs_the_explicit_application_close() {
     let (handle, storage_root, project_root) =
         spawn_serve("serve-close-explicit", TestBehavior::Success);
     handle.shutdown();
-    let outcome = handle
-        .join()
+    let exit = handle.join();
+    assert!(
+        exit.accept.is_ok(),
+        "accept ended cleanly: {:?}",
+        exit.accept
+    );
+    let outcome = exit
+        .close
         .expect("the explicit close path must run (the app Arc reaches one)");
     assert!(outcome.is_ok(), "close failed: {outcome:?}");
     std::fs::remove_dir_all(storage_root).ok();
     std::fs::remove_dir_all(project_root).ok();
+}
+
+/// FIX-3/CA-05（2026-08-24 审计）：退出码语义——「显式 shutdown +
+/// accept 正常 + close 成功」三者同时成立才 0。R3-3 纯映射逐腿：
+/// accept Err / accept panic 形 / close Err / close None 任一 → 非零。
+/// pre-fix：生产入口 `handle.join(); 0` 恒 0（映射函数不存在）。
+#[test]
+fn serve_exit_code_is_zero_only_when_fully_clean() {
+    use super::{ServeExit, serve_exit_code};
+
+    let clean = ServeExit {
+        accept: Ok(()),
+        close: Some(Ok(())),
+    };
+    assert_eq!(serve_exit_code(&clean), 0, "fully clean exit is 0");
+
+    let accept_fatal = ServeExit {
+        accept: Err("accept failed: too many open files".into()),
+        close: Some(Ok(())),
+    };
+    assert_ne!(
+        serve_exit_code(&accept_fatal),
+        0,
+        "fatal accept is non-zero"
+    );
+
+    let accept_panic = ServeExit {
+        accept: Err("accept thread panicked: boom".into()),
+        close: Some(Ok(())),
+    };
+    assert_ne!(
+        serve_exit_code(&accept_panic),
+        0,
+        "accept panic is non-zero"
+    );
+
+    let close_failed = ServeExit {
+        accept: Ok(()),
+        close: Some(Err("flush failed".into())),
+    };
+    assert_ne!(
+        serve_exit_code(&close_failed),
+        0,
+        "close failure is non-zero"
+    );
+
+    let close_degraded = ServeExit {
+        accept: Ok(()),
+        close: None,
+    };
+    assert_ne!(
+        serve_exit_code(&close_degraded),
+        0,
+        "degraded close (Arc never unified) is non-zero"
+    );
+}
+
+/// R3-3 真接线腿：生产与测试共用的 `serve_join_exit` 在正常关停下
+/// 返回 0——映射不在生产入口被旁路。判别（删修复即红）：把
+/// `serve_exit_code` 体临时还原为恒 0 → 上一测试红。
+#[test]
+fn serve_join_exit_reports_zero_on_a_clean_shutdown() {
+    let (handle, storage_root, project_root) =
+        spawn_serve("serve-exit-zero", TestBehavior::Success);
+    handle.shutdown();
+    let code = super::serve_join_exit(handle);
+    assert_eq!(code, 0, "explicit shutdown + clean close must exit 0");
+    std::fs::remove_dir_all(storage_root).ok();
+    std::fs::remove_dir_all(project_root).ok();
+}
+
+/// RA-06 生产失败 seam：构造真实 `ServeHandle` 的异常 join 结果，穿过
+/// 与生产入口相同的 `serve_join_exit`，必须得到非零；这不是只测纯映射。
+#[test]
+fn serve_join_exit_reports_nonzero_for_synthetic_production_failures() {
+    fn synthetic_handle(
+        accept: Result<(), String>,
+        close: Option<Result<(), String>>,
+    ) -> ServeHandle {
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let close_outcome = Arc::new(Mutex::new(close));
+        ServeHandle {
+            addr: "127.0.0.1:0".parse().unwrap(),
+            token: "synthetic".into(),
+            shutdown,
+            close_outcome,
+            join: std::thread::spawn(move || accept),
+        }
+    }
+
+    assert_ne!(
+        super::serve_join_exit(synthetic_handle(
+            Err("accept failed: injected".into()),
+            Some(Ok(())),
+        )),
+        0,
+        "fatal accept result must reach the process exit mapping"
+    );
+    assert_ne!(
+        super::serve_join_exit(synthetic_handle(
+            Ok(()),
+            Some(Err("close failed: injected".into())),
+        )),
+        0,
+        "close failure must reach the process exit mapping"
+    );
+}
+
+/// RA-06 接线守卫：异常句柄测试只有在生产入口确实调用同一 seam 时才
+/// 有意义。若入口退回 `handle.join(); 0`，本腿直接红。
+#[test]
+fn production_serve_entry_uses_the_checked_join_exit_seam() {
+    let source = include_str!("../serve.rs");
+    let start = source
+        .find("pub fn run_serve_with_shutdown")
+        .expect("production entry exists");
+    let tail = &source[start..];
+    let end = tail
+        .find("\n}\n\n/// FIX-3/CA-05")
+        .expect("production entry boundary");
+    let body = &tail[..end];
+    assert!(
+        body.contains("serve_join_exit(handle)"),
+        "production entry must route the real handle through the checked exit seam"
+    );
+    assert!(
+        !body.contains("handle.join();"),
+        "production entry must not discard the join outcome"
+    );
 }

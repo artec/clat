@@ -605,21 +605,25 @@ fn required_string(value: &Value, key: &str, event_type: &str) -> Result<String,
 
 fn parse_usage(value: Option<&Value>) -> Option<Usage> {
     let value = value?;
+    // RA-01/CA-01：主计费字段是一个整体 admission。usage 缺席 → None；
+    // usage 存在但主字段缺席/负数/字符串/浮点/超 u64 → 同样 None，交给
+    // recorder 兑现保守预留。绝不能把非法字段 `unwrap_or(0)` 成可信零值，
+    // 否则 reconcile(0) 会清空本轮 pending、让 tool-call 循环绕过硬顶。
+    let input_tokens = value.get("input_tokens")?.as_u64()?;
+    let output_tokens = value.get("output_tokens")?.as_u64()?;
     Some(Usage {
-        input_tokens: value
-            .get("input_tokens")
-            .and_then(Value::as_u64)
-            .unwrap_or(0),
-        output_tokens: value
-            .get("output_tokens")
-            .and_then(Value::as_u64)
-            .unwrap_or(0),
-        cached_input_tokens: value
-            .pointer("/input_tokens_details/cached_tokens")
-            .and_then(Value::as_u64),
-        reasoning_tokens: value
-            .pointer("/output_tokens_details/reasoning_tokens")
-            .and_then(Value::as_u64),
+        input_tokens: input_tokens.min(super::MAX_USAGE_FIELD_TOKENS),
+        output_tokens: output_tokens.min(super::MAX_USAGE_FIELD_TOKENS),
+        cached_input_tokens: super::clamp_usage_field(
+            value
+                .pointer("/input_tokens_details/cached_tokens")
+                .and_then(Value::as_u64),
+        ),
+        reasoning_tokens: super::clamp_usage_field(
+            value
+                .pointer("/output_tokens_details/reasoning_tokens")
+                .and_then(Value::as_u64),
+        ),
     })
 }
 
@@ -677,6 +681,69 @@ mod tests {
         assert_eq!(fallback, "Authorization failed for token=[REDACTED]");
         let benign = extract_error_message(r#"{"error":{"message":"rate limited, retry later"}}"#);
         assert_eq!(benign, "rate limited, retry later");
+    }
+
+    /// FIX-1/CA-01（2026-08-24 审计，pre-fix 红）：对端自报 token 必须
+    /// 在 adapter admission 处夹取进 sane 域（1 << 40/字段）——u64::MAX
+    /// 原样透传会在预算账本/统计层变成不可信计数。
+    #[test]
+    fn parse_usage_clamps_hostile_fields_into_the_sane_domain() {
+        let usage = parse_usage(Some(&serde_json::json!({
+            "input_tokens": u64::MAX,
+            "output_tokens": u64::MAX,
+            "input_tokens_details": {"cached_tokens": u64::MAX},
+            "output_tokens_details": {"reasoning_tokens": u64::MAX}
+        })))
+        .expect("usage parses");
+        let sane = crate::providers::MAX_USAGE_FIELD_TOKENS;
+        assert_eq!(usage.input_tokens, sane);
+        assert_eq!(usage.output_tokens, sane);
+        assert_eq!(usage.cached_input_tokens, Some(sane));
+        assert_eq!(usage.reasoning_tokens, Some(sane));
+    }
+
+    /// RA-01/CA-01（pre-fix 红）：usage 对象存在但主字段非法时必须按
+    /// `usage=None` 处理，让 recorder 兑现保守预留；旧实现把两字段
+    /// `unwrap_or(0)` 后会发出可信零 usage，进而 reconcile(0) 清空硬闸。
+    #[test]
+    fn malformed_main_usage_fields_never_become_trusted_zeroes() {
+        for malformed in [
+            json!({"input_tokens": -1, "output_tokens": 0}),
+            json!({"input_tokens": 1, "output_tokens": "0"}),
+            json!({"input_tokens": 1.5, "output_tokens": 0}),
+            json!({"input_tokens": 1}),
+        ] {
+            assert_eq!(
+                parse_usage(Some(&malformed)),
+                None,
+                "malformed usage must preserve the conservative reservation: {malformed}"
+            );
+        }
+
+        // 生产 SSE 接线腿：有效 tool call + 非法 usage 不得发 Usage 事件，
+        // ModelResponse 同样保持 None。只测 parse helper 不足以锁 dispatch。
+        let stream = concat!(
+            "data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"function_call\",\"call_id\":\"call_bad_usage\",\"name\":\"echo\"}}\n\n",
+            "data: {\"type\":\"response.function_call_arguments.done\",\"call_id\":\"call_bad_usage\",\"name\":\"echo\",\"arguments\":\"{\\\"text\\\":\\\"hello\\\"}\"}\n\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":-1,\"output_tokens\":\"0\"}}}\n\n"
+        );
+        let mut events = Vec::new();
+        let response = consume_sse(
+            Cursor::new(stream.as_bytes()),
+            &mut events,
+            &CancelToken::new(),
+            usize::MAX,
+        )
+        .expect("malformed usage degrades to the conservative no-usage path");
+        assert_eq!(response.finish_reason, FinishReason::ToolCalls);
+        assert_eq!(response.tool_calls.len(), 1);
+        assert_eq!(response.usage, None);
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, ModelEvent::Usage(_))),
+            "invalid usage must not reach recorder as a trusted zero"
+        );
     }
     use std::io::{BufRead, BufReader, Cursor, Read, Write};
     use std::net::TcpListener;

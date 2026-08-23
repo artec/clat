@@ -167,6 +167,19 @@ impl FrameAssembler {
             }
             let data = self.take(consumed + payload, consumed, masked)?;
             let payload_bytes = &data[consumed..];
+            // FIX-2/CA-02：完整 message 的累计上限与单帧同值——合法
+            // 分片序列不得绕过单帧帽（INV-F2-2）。
+            let buffered = self
+                .fragment
+                .as_ref()
+                .map_or(0, |(_, buffered)| buffered.len());
+            if buffered + payload_bytes.len() > crate::dsh::budget::WS_MESSAGE_CAP {
+                return Err(format!(
+                    "aggregated message exceeds the {}-byte cap",
+                    crate::dsh::budget::WS_MESSAGE_CAP
+                ));
+            }
+
             let finished = if fin {
                 let mut whole = self
                     .fragment
@@ -263,8 +276,11 @@ fn parse_header(buffer: &[u8]) -> Result<Option<Header>, String> {
         return Ok(None);
     }
     // 上限：单消息 16 MiB（DSH 帧是 JSON 文本，远小于此；防构造帧）。
-    if payload_len > 16 * 1024 * 1024 {
-        return Err("frame payload exceeds the 16 MiB cap".to_owned());
+    if payload_len > crate::dsh::budget::WS_MESSAGE_CAP {
+        return Err(format!(
+            "frame payload exceeds the {}-byte cap",
+            crate::dsh::budget::WS_MESSAGE_CAP
+        ));
     }
     Ok(Some((fin, opcode, masked, payload_len, header_len)))
 }
@@ -289,7 +305,7 @@ pub(crate) fn connect_downlink(
     mut stream: TcpStream,
     path: &str,
     host: &str,
-    sender: std::sync::mpsc::Sender<WsMessage>,
+    sender: std::sync::mpsc::SyncSender<WsMessage>,
 ) -> Result<(), String> {
     let key = base64_encode(&uuid_key());
     let request = format!(
@@ -358,7 +374,7 @@ fn verify_handshake(header: &str, key: &str) -> Result<(), String> {
 fn spawn_reader(
     mut stream: TcpStream,
     leftover: Vec<u8>,
-    sender: std::sync::mpsc::Sender<WsMessage>,
+    sender: std::sync::mpsc::SyncSender<WsMessage>,
 ) {
     std::thread::spawn(move || {
         let mut assembler = FrameAssembler::new();
@@ -448,9 +464,12 @@ mod tests {
         frame.push(if fin { 0x80 } else { 0x00 } | opcode);
         if payload.len() < 126 {
             frame.push(payload.len() as u8);
-        } else {
+        } else if payload.len() < 65536 {
             frame.push(126);
             frame.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+        } else {
+            frame.push(127);
+            frame.extend_from_slice(&(payload.len() as u64).to_be_bytes());
         }
         frame.extend_from_slice(payload);
         frame
@@ -530,5 +549,32 @@ mod tests {
         assert!(verify_handshake(header, "dGhlIHNhbXBsZSBub25jZQ==").is_ok());
         assert!(verify_handshake(header, "wrong-key").is_err());
         assert!(verify_handshake("HTTP/1.1 400 Bad Request\r\n", "k").is_err());
+    }
+
+    /// FIX-2/CA-02（2026-08-24 审计，pre-fix 红）：分片累计 = 单帧同界
+    /// （16 MiB）。每帧 1 MiB、FIN=0 的合法分片序列累计过 16 MiB 时，
+    /// assembler 必须在继续扩容前报错断链。pre-fix：无限接收 Ok → 红。
+    #[test]
+    fn fragment_accumulation_hits_the_message_cap() {
+        let payload = vec![b'x'; 1024 * 1024];
+        let mut legal = Vec::new();
+        legal.extend_from_slice(&server_frame(false, OPCODE_TEXT, &payload));
+        for _ in 0..15 {
+            legal.extend_from_slice(&server_frame(false, OPCODE_CONTINUATION, &payload));
+        }
+        let mut assembler = FrameAssembler::new();
+        // 16 MiB 累计恰在帽内：不报错、无完成消息。
+        assert!(
+            assembler
+                .push(&legal)
+                .expect("16 MiB of fragments stay within the cap")
+                .is_empty()
+        );
+        // 第 17 MiB：超帽，assembler 在继续扩容前报错。
+        let over = server_frame(false, OPCODE_CONTINUATION, &payload);
+        let error = assembler
+            .push(&over)
+            .expect_err("the aggregate must stop at the message cap");
+        assert!(error.contains("exceeds"), "{error}");
     }
 }

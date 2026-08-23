@@ -4,7 +4,7 @@ use crate::{
     ApplicationEvent, ApplicationRunResult, EventSink, PermissionApprover, PermissionDecision,
     PermissionRequest, RunEvent,
 };
-use std::sync::mpsc::{self, Sender};
+use std::sync::mpsc::{self, Sender, SyncSender};
 use std::time::Duration;
 
 /// TUI-local event multiplexing. It carries core facts and terminal input;
@@ -38,7 +38,7 @@ pub(crate) enum WorkerMessage {
     },
 }
 
-pub(crate) struct ChannelEventSink(pub(crate) Sender<UiEvent>);
+pub(crate) struct ChannelEventSink(pub(crate) SyncSender<UiEvent>);
 
 impl EventSink for ChannelEventSink {
     fn emit(&mut self, event: RunEvent) {
@@ -47,11 +47,11 @@ impl EventSink for ChannelEventSink {
 }
 
 pub(crate) struct ChannelApprover {
-    sender: Sender<UiEvent>,
+    sender: SyncSender<UiEvent>,
 }
 
 impl ChannelApprover {
-    pub(crate) fn new(sender: Sender<UiEvent>) -> Self {
+    pub(crate) fn new(sender: SyncSender<UiEvent>) -> Self {
         Self { sender }
     }
 }
@@ -98,11 +98,11 @@ impl PermissionApprover for ChannelApprover {
 /// ask-user 前端实现：把问题送进统一事件通道并阻塞等待对话框应答。
 /// 断连与取消都归约为 Declined（isError 工具结果，run 继续）。
 pub(crate) struct ChannelUserAsker {
-    sender: Sender<UiEvent>,
+    sender: SyncSender<UiEvent>,
 }
 
 impl ChannelUserAsker {
-    pub(crate) fn new(sender: Sender<UiEvent>) -> Self {
+    pub(crate) fn new(sender: SyncSender<UiEvent>) -> Self {
         Self { sender }
     }
 }
@@ -143,9 +143,35 @@ mod tests {
     use crate::ToolEffect;
     use serde_json::json;
 
+    /// RA-02 最后一跳判别腿：DSH 专用队列被转发线程消费后，统一 UI
+    /// 队列仍须有界，否则洪水只是换了一个无界容器。
+    #[test]
+    fn production_ui_event_queue_applies_backpressure() {
+        use std::sync::mpsc::TrySendError;
+
+        let (sender, _receiver) = crate::tui::ui_event_channel();
+        for generation in 0..crate::tui::UI_EVENT_QUEUE_CAPACITY {
+            assert!(
+                sender
+                    .try_send(UiEvent::Dsh(crate::dsh::backend::DshEvent::LinkDown {
+                        generation: generation as u64,
+                        reason: "fill".into(),
+                    }))
+                    .is_ok()
+            );
+        }
+        assert!(matches!(
+            sender.try_send(UiEvent::Dsh(crate::dsh::backend::DshEvent::LinkDown {
+                generation: u64::MAX,
+                reason: "overflow".into(),
+            })),
+            Err(TrySendError::Full(_))
+        ));
+    }
+
     #[test]
     fn dropping_the_permission_dialog_unblocks_the_approver() {
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = crate::tui::ui_event_channel();
         let approver = ChannelApprover::new(sender);
         let worker = std::thread::spawn(move || {
             approver.decide(
@@ -173,7 +199,7 @@ mod tests {
 
     #[test]
     fn dropping_the_ask_dialog_declines_the_question() {
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = crate::tui::ui_event_channel();
         let asker = ChannelUserAsker::new(sender);
         let worker = std::thread::spawn(move || {
             asker.ask(
@@ -202,7 +228,7 @@ mod tests {
     /// 判别：去掉 50ms 轮询（回到裸 recv）即本测试挂死而红。
     #[test]
     fn a_cancelled_run_unblocks_the_pending_permission_wait() {
-        let (sender, _receiver) = mpsc::channel();
+        let (sender, _receiver) = crate::tui::ui_event_channel();
         let approver = ChannelApprover::new(sender);
         let cancel = CancelToken::new();
         let wait_cancel = cancel.clone();

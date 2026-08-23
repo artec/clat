@@ -28,6 +28,17 @@ pub(crate) const MAX_SSE_LINE_BYTES: usize = 1024 * 1024;
 /// FP-02：错误响应体读取帽（诊断价值优先——截断保留 + 尾标）。
 pub(crate) const MAX_ERROR_BODY_BYTES: usize = 64 * 1024;
 
+/// FIX-1/CA-01（2026-08-24 审计）：provider 自报 token 字段的 sane 域
+/// 上限（1 << 40 ≈ 1.1 万亿）。adapter admission 处按字段夹取：夹取值
+/// 必然超过任何真实请求的保守估计、也必然触发默认 10M 硬顶
+/// （fail-closed）；journal / durable stats / 投影从此只见有界值。
+pub(crate) const MAX_USAGE_FIELD_TOKENS: u64 = 1 << 40;
+
+/// FIX-1/CA-01：单字段夹取（`None` 透传——字段缺席语义不变）。
+pub(crate) fn clamp_usage_field(tokens: Option<u64>) -> Option<u64> {
+    tokens.map(|value| value.min(MAX_USAGE_FIELD_TOKENS))
+}
+
 /// FP-02：错误响应体的有界读取——读满 cap 即止并标注截断。
 pub(crate) fn read_error_body_capped(body: impl Read, cap: usize) -> String {
     let mut bytes = Vec::new();

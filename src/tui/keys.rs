@@ -947,7 +947,10 @@ impl App {
         }
         if let Some(text) = self.selection_text().filter(|text| !text.is_empty()) {
             let count = text.chars().count();
-            if copy_to_clipboard(&text) {
+            // FIX-5/CA-08：编码后经注入写出口（测试零真实终端副作用）。
+            let copied =
+                osc52_copy_bytes(&text).is_some_and(|bytes| (self.clipboard_writer)(&bytes));
+            if copied {
                 self.flash_status(format!(
                     "copied {count} chars · Shift+drag uses the terminal's own selection"
                 ));
@@ -1020,7 +1023,9 @@ impl App {
             return false;
         };
         let count = text.chars().count();
-        if copy_to_clipboard(&text) {
+        // FIX-5/CA-08：编码后经注入写出口。
+        let copied = osc52_copy_bytes(&text).is_some_and(|bytes| (self.clipboard_writer)(&bytes));
+        if copied {
             self.flash_status(format!("copied {count} chars"));
         } else {
             self.flash_status("clipboard copy failed");
@@ -1041,7 +1046,10 @@ impl App {
             return false;
         }
         let count = text.chars().count();
-        let _ = copy_to_clipboard(&text);
+        // FIX-5/CA-08：编码后经注入写出口。
+        if let Some(bytes) = osc52_copy_bytes(&text) {
+            let _ = (self.clipboard_writer)(&bytes);
+        }
         self.flash_status(format!("cut {count} chars"));
         self.selection = None;
         true

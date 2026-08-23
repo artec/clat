@@ -129,12 +129,19 @@ fn session_log_mtime(dsh_home: &Path, workspace_path: &str, session_id: &str) ->
 
 /// 只读文本读取（目录以只读 fd 挂载的简化面：单文件读 + 拒绝符号
 /// 链接）。撕裂/缺失 → `None`（fail-soft 由调用方表达）。
+/// FIX-2/CA-02：读取有界（8 MiB）——超帽文件不整体物化，直接 None。
 fn read_text(path: &Path) -> Option<String> {
     let metadata = std::fs::symlink_metadata(path).ok()?;
     if metadata.file_type().is_symlink() || !metadata.is_file() {
         return None;
     }
-    std::fs::read_to_string(path).ok()
+    let file = std::fs::File::open(path).ok()?;
+    crate::dsh::budget::read_string_capped(
+        file,
+        crate::dsh::budget::STORAGE_FILE_CAP,
+        "the dsh storage file",
+    )
+    .ok()
 }
 
 #[cfg(test)]
@@ -190,6 +197,32 @@ mod tests {
         std::fs::create_dir_all(root.join("storages")).unwrap();
         std::fs::write(root.join("storages").join("workspace.json"), "{\"torn").unwrap();
         assert_eq!(read_sessions(&root), None, "torn workspace.json → None");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// FIX-2/CA-02（2026-08-24 审计，pre-fix 红）：数据面文件读取有界
+    /// （8 MiB）——超帽的**可解析** JSON 也必须 fail-soft None，而不是
+    /// 先整体物化再解析。pre-fix：解析成功返回 Some → 红。
+    #[test]
+    fn oversized_storage_file_is_fail_soft() {
+        let root = std::env::temp_dir().join(format!(
+            "clat-dsh-huge-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let storages = root.join("storages");
+        std::fs::create_dir_all(&storages).unwrap();
+        let mut json = String::from("{\"pad\":\"");
+        json.push_str(&"x".repeat(9 * 1024 * 1024));
+        json.push_str("\"}");
+        std::fs::write(storages.join("workspace.json"), json).unwrap();
+        assert_eq!(
+            read_sessions(&root),
+            None,
+            "an over-cap data-plane file must be fail-soft, not fully materialized"
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 }

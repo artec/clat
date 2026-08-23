@@ -319,6 +319,39 @@ fn client_round_trips_against_the_fake_host() {
     assert_eq!(seen[0]["result"]["outcome"], "allowed-once");
 }
 
+/// FIX-2/CA-02（2026-08-24 审计，pre-fix 红）：RPC body 有界——合法
+/// 信封 + >8 MiB padding 也必须在解析前被拒（transport 错误带 cap），
+/// 而不是 `read_to_string` 无界物化。pre-fix：成功解析返回 Ok → 红。
+#[test]
+fn client_rejects_an_oversized_response_body() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept");
+        let (_, _, body) = read_http_request(&mut stream).expect("read request");
+        let rpc_id = serde_json::from_str::<Value>(&body)
+            .expect("request json")
+            .get("rpcId")
+            .and_then(Value::as_str)
+            .expect("rpcId")
+            .to_owned();
+        // 合法信封 + 9 MiB padding：内容可解析，体积超载。
+        let padding = "x".repeat(9 * 1024 * 1024);
+        let response = json!({
+            "type": "server-response",
+            "rpcId": rpc_id,
+            "result": {"ok": true, "value": {"pad": padding}},
+        });
+        let _ = write_response(&mut stream, 200, &response.to_string());
+    });
+    let error = DshClient::new(port)
+        .call("host.describe", json!({}))
+        .expect_err("an oversized body must be rejected at the carrier");
+    assert_eq!(error.code, "transport", "{error:?}");
+    assert!(error.message.contains("exceeds"), "{error:?}");
+    server.join().expect("server");
+}
+
 #[test]
 fn connect_flow_probe_spawn_and_not_installed_legs() {
     // 探测腿：真（fake）DSH 在跑 → 直接在线。
@@ -422,7 +455,7 @@ fn ws_downlink_feeds_the_transcript_end_to_end() {
     });
 
     let stream = TcpStream::connect(("127.0.0.1", port)).expect("connect");
-    let (sender, receiver) = mpsc::channel();
+    let (sender, receiver) = mpsc::sync_channel(crate::dsh::backend::DSH_QUEUE_CAPACITY);
     ws::connect_downlink(
         stream,
         "/api/events.mux",
@@ -519,7 +552,7 @@ fn ws_downlink_reports_disconnect() {
     });
 
     let stream = TcpStream::connect(("127.0.0.1", port)).expect("connect");
-    let (sender, receiver) = mpsc::channel();
+    let (sender, receiver) = mpsc::sync_channel(crate::dsh::backend::DSH_QUEUE_CAPACITY);
     ws::connect_downlink(
         stream,
         "/api/events.mux",
@@ -570,7 +603,7 @@ fn live_dsh_web_connects_and_streams() {
     assert!(list.get("items").is_some(), "{list}");
     // WS 下行握手（真宿主）。
     let stream = TcpStream::connect(("127.0.0.1", online.port)).expect("connect");
-    let (sender, receiver) = mpsc::channel();
+    let (sender, receiver) = mpsc::sync_channel(crate::dsh::backend::DSH_QUEUE_CAPACITY);
     ws::connect_downlink(
         stream,
         "/api/events.mux",

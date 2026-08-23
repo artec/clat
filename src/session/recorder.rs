@@ -618,7 +618,7 @@ impl SessionRecorder {
         // B1/FP-01：落账即累计护栏口径（input+output；缓存命中已在
         // input 内，不重复计），跨 50%/90% 各发一次持久化预警。
         let main_spent = match main_usage {
-            Some(usage) => Some(usage.input_tokens + usage.output_tokens),
+            Some(usage) => Some(usage.input_tokens.saturating_add(usage.output_tokens)),
             None => {
                 // 无主循环 usage：预留兑现（若 run.rs 未预留则无操作——
                 // recorder 直驱的测试路径等同旧 charge 语义）。
@@ -629,7 +629,7 @@ impl SessionRecorder {
             }
         };
         let aux_spent = aux_usage
-            .map(|usage| usage.input_tokens + usage.output_tokens)
+            .map(|usage| usage.input_tokens.saturating_add(usage.output_tokens))
             .unwrap_or(0);
         if main_spent.is_some() || aux_spent > 0 {
             for event in self.budget.crossing_events(main_spent, aux_spent) {
@@ -714,7 +714,11 @@ impl RunBudgetEvents {
                 .log_only(),
             );
         }
-        if !self.warned_most && used >= cap * 9 / 10 {
+        // FIX-1/CA-01：`cap * 9` 在大 cap（用户可自定义到 u64::MAX）下
+        // 溢出。精确无溢出等价：cap = 10a + b 时 cap*9/10 == 9a + 9b/10
+        // （90a 整除 10，两项各自不越 u64）。
+        let most = cap / 10 * 9 + cap % 10 * 9 / 10;
+        if !self.warned_most && used >= most {
             self.warned_most = true;
             events.push(
                 NewSessionEvent::new(
@@ -1799,6 +1803,113 @@ mod tests {
         assert_eq!(budget_events[1].1["usedTokens"], serde_json::json!(1000));
     }
 
+    /// FIX-1/CA-01（2026-08-24 审计，pre-fix 红）：对端回 u64::MAX usage
+    /// 必须单调落账（触顶）并保持硬停 armed。pre-fix：reconcile 经
+    /// `as i64` 记成 -1、`used()` 裁回 0 → 预警不发、exceeds_cap 失效
+    /// → 红。
+    #[test]
+    fn hostile_usage_keeps_the_hard_stop_armed() {
+        let (mut recorder, journal, _seen) = recorder();
+        let ledger = std::sync::Arc::new(crate::model::RunSpendLedger::new(Some(
+            crate::model::RUN_TOKEN_BUDGET_DEFAULT,
+        )));
+        recorder.set_run_ledger(std::sync::Arc::clone(&ledger));
+        recorder.emit(RunEvent::ModelRequested {
+            turn: 1,
+            provider: "p".into(),
+            model: "m".into(),
+        });
+        recorder.emit(RunEvent::ModelStream {
+            turn: 1,
+            event: ModelEvent::Usage(crate::model::Usage {
+                input_tokens: u64::MAX,
+                output_tokens: 0,
+                ..crate::model::Usage::default()
+            }),
+        });
+        recorder.emit(RunEvent::ModelResponded {
+            turn: 1,
+            outcome: crate::event::ModelOutcome {
+                has_text: true,
+                tool_calls: 0,
+            },
+            finish_reason: crate::model::FinishReason::Completed,
+            provider_replay: None,
+        });
+        let _ = recorder.finish(TurnEndReason::Completed);
+
+        assert!(
+            ledger.exceeds_cap(),
+            "a hostile usage report must trip the hard stop, used: {}",
+            ledger.used()
+        );
+        let budget_events: Vec<_> = journal
+            .events()
+            .iter()
+            .filter(|(event_type, _)| event_type == "clat/budget")
+            .cloned()
+            .collect();
+        assert!(
+            budget_events
+                .iter()
+                .any(|(_, data)| data["usedTokens"] == serde_json::json!(u64::MAX)),
+            "the warnings must carry the saturated used value: {budget_events:?}"
+        );
+    }
+
+    /// FIX-1/CA-01（pre-fix 红）：`cap * 9 / 10` 在用户自定义大 cap
+    /// （可到 u64::MAX）下溢出 panic。修复后阈值判定无 panic 且语义
+    /// 正确：小用量远低于 50% 不预警；巨量落账时 50%/90% 各恰好一次。
+    #[test]
+    fn budget_thresholds_handle_an_exhausting_cap() {
+        let (mut recorder, journal, _seen) = recorder();
+        let ledger = std::sync::Arc::new(crate::model::RunSpendLedger::new(Some(u64::MAX)));
+        recorder.set_run_ledger(std::sync::Arc::clone(&ledger));
+        let respond_with_usage = |input: u64, output: u64, recorder: &mut SessionRecorder| {
+            recorder.emit(RunEvent::ModelRequested {
+                turn: 1,
+                provider: "p".into(),
+                model: "m".into(),
+            });
+            recorder.emit(RunEvent::ModelStream {
+                turn: 1,
+                event: ModelEvent::Usage(crate::model::Usage {
+                    input_tokens: input,
+                    output_tokens: output,
+                    ..crate::model::Usage::default()
+                }),
+            });
+            recorder.emit(RunEvent::ModelResponded {
+                turn: 1,
+                outcome: crate::event::ModelOutcome {
+                    has_text: true,
+                    tool_calls: 0,
+                },
+                finish_reason: crate::model::FinishReason::Completed,
+                provider_replay: None,
+            });
+        };
+        // 小用量：任何非零已耗都远低于 u64::MAX 的 50% → 零预警。
+        respond_with_usage(10, 5, &mut recorder);
+        assert!(
+            !journal
+                .events()
+                .iter()
+                .any(|(event_type, _)| event_type == "clat/budget"),
+            "small usage must not warn against an exhausting cap"
+        );
+        // 巨量：50%/90% 同一步各恰好一次，无 panic。
+        respond_with_usage(u64::MAX, 0, &mut recorder);
+        let _ = recorder.finish(TurnEndReason::Completed);
+        let levels: Vec<_> = journal
+            .events()
+            .iter()
+            .filter(|(event_type, _)| event_type == "clat/budget")
+            .map(|(_, data)| data["level"].clone())
+            .collect();
+        assert_eq!(levels, vec![serde_json::json!(50), serde_json::json!(90)]);
+    }
+
     /// FP-01：retry 的每次 attempt 都计入同一 run 预算——两次
     /// RetryScheduled 各兑现一次预留，最终成功 attempt 的实际 usage
     /// 替换（而非叠加）预留。总账 = 2×预留 + 实际。
@@ -1895,6 +2006,37 @@ mod tests {
             "actual usage replaces the reservation"
         );
         assert_eq!(ledger.used(), 6, "no pending residue remains");
+    }
+
+    /// RA-01/CA-01 记账接线腿：adapter 对非法 usage 返回 None 后，
+    /// recorder 必须兑现而不是释放请求前的保守预留。删除 commit_pending
+    /// 或让 adapter 生成零 Usage，跨层组合都会使硬闸归零。
+    #[test]
+    fn missing_or_rejected_usage_commits_the_conservative_reservation() {
+        let (mut recorder, _journal, _seen) = recorder();
+        let ledger = std::sync::Arc::new(crate::model::RunSpendLedger::new(Some(100)));
+        recorder.set_run_ledger(std::sync::Arc::clone(&ledger));
+        ledger.reserve(100);
+
+        recorder.emit(RunEvent::ModelRequested {
+            turn: 1,
+            provider: "p".into(),
+            model: "m".into(),
+        });
+        // 没有 ModelEvent::Usage：这是 adapter 拒绝非法 usage 后的生产形状。
+        recorder.emit(RunEvent::ModelResponded {
+            turn: 1,
+            outcome: crate::event::ModelOutcome {
+                has_text: false,
+                tool_calls: 1,
+            },
+            finish_reason: crate::model::FinishReason::ToolCalls,
+            provider_replay: None,
+        });
+
+        assert_eq!(ledger.committed(), 100, "the reservation becomes spent");
+        assert_eq!(ledger.used(), 100, "no pending residue remains");
+        assert!(ledger.exceeds_cap(), "the next provider request is blocked");
     }
 
     /// B2（DSH 0.1.1-rc.1 对齐）：流中被取消的轮次把已产出的部分前缀

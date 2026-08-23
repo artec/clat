@@ -116,6 +116,12 @@ The `[ Advanced ]` row reveals fields for custom setups only when needed:
   it (not recommended). When a run crosses 50% and 90% of the budget a
   durable warning event is journaled (`clat/budget`); crossing the cap
   stops the run with a three-part error (used / cap / raise via /model).
+  Provider-reported token counts are clamped to a sane domain before they
+  enter the ledger, so an absurd number from a custom endpoint trips the
+  guardrail instead of wrapping it (fail-closed). A report whose main
+  token fields are malformed (negative, string, float, or missing) is
+  treated as absent — the conservative reservation stands instead of
+  being replaced by a trusted zero.
   The budget is per model configuration, so an expensive model can carry
   a tighter cap than a cheap one
 - Temperature

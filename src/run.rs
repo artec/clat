@@ -2143,4 +2143,67 @@ mod tests {
         );
         assert!(ledger.used() > 0, "the reservation must have landed");
     }
+
+    /// FIX-1/CA-01（2026-08-24 审计，pre-fix 红）：对端自报 u64::MAX
+    /// 不得经 `u64 as i64` 反向清空账本绕过硬顶。pre-fix：reconcile
+    /// 把 u64::MAX 记成 -1，`used()` 的 `.max(0)` 裁回 0 → 检查点放行
+    /// 模型请求（calls > 0）→ 红。recorder→reconcile 的通路由 recorder
+    /// 侧 hostile 测试单独钉住；此处直驱账本锁检查点语义。
+    #[test]
+    fn hostile_usage_cannot_unspend_the_ledger_or_bypass_the_cap() {
+        let project = Project::new(".");
+        let tools = ToolRegistry::new();
+        register_test_tool(&tools, EchoTool);
+        let mut model = ScriptedModel { calls: 0 };
+        let mut events = Vec::new();
+        let ledger = std::sync::Arc::new(crate::model::RunSpendLedger::new(Some(
+            crate::model::RUN_TOKEN_BUDGET_DEFAULT,
+        )));
+        // 模拟 recorder 落账对端回的 u64::MAX input usage。
+        ledger.reconcile(u64::MAX);
+        let error = Run::new(&mut model, &tools, &AllowAll, &project)
+            .with_spend_ledger(Some(std::sync::Arc::clone(&ledger)))
+            .execute("use the echo tool", &mut events)
+            .expect_err("a hostile u64::MAX report must keep the cap armed");
+        assert!(
+            error
+                .message
+                .to_string()
+                .contains("run token budget exceeded"),
+            "budget error: {}",
+            error.message
+        );
+        assert_eq!(
+            model.calls, 0,
+            "the model request must be rejected before the provider call"
+        );
+        assert!(
+            ledger.used() >= crate::model::RUN_TOKEN_BUDGET_DEFAULT,
+            "the ledger must stay monotonic, used: {}",
+            ledger.used()
+        );
+    }
+
+    /// FIX-1/CA-01（pre-fix 红）：i64 账本两次 i64::MAX 即溢出（debug
+    /// panic）；无符号饱和域下不 panic、不回绕变小、触顶后单调不减。
+    #[test]
+    fn ledger_accumulation_never_wraps_or_panics_on_hostile_counts() {
+        let ledger = crate::model::RunSpendLedger::new(None);
+        ledger.reconcile(i64::MAX as u64);
+        ledger.charge(i64::MAX as u64);
+        assert_eq!(
+            ledger.committed(),
+            (i64::MAX as u64) * 2,
+            "two i64::MAX-grade reports must sum without panicking or wrapping"
+        );
+        ledger.reconcile(u64::MAX);
+        ledger.charge(1);
+        assert_eq!(
+            ledger.committed(),
+            u64::MAX,
+            "the ledger saturates at the top and stays monotonic"
+        );
+        ledger.reserve(u64::MAX);
+        assert_eq!(ledger.used(), u64::MAX, "the used view saturates too");
+    }
 }
