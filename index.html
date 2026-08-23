@@ -140,11 +140,12 @@
     .stat:first-child { padding-left: 0; }
     .stat-number { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.02em; margin-bottom: 4px; }
     .stat-label { font-size: 0.75rem; color: var(--muted); }
+    /* 手机上仍保持三栏一行，只收紧间距与字号，不折成 2+1 */
     @media (max-width: 680px) {
-      .stats { grid-template-columns: 1fr 1fr; }
-      .stat { padding: 16px 0; border-left: none; }
-      .stat:nth-child(even) { border-left: 1px solid var(--border); padding-left: 20px; }
-      .stat:nth-child(-n+2) { border-bottom: 1px solid var(--border); }
+      .stat { padding: 14px 10px; }
+      .stat:first-child { padding-left: 0; }
+      .stat-number { font-size: 1.2rem; }
+      .stat-label { font-size: 0.68rem; }
     }
 
     /* section scaffolding */
