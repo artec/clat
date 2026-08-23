@@ -21,7 +21,6 @@ const BODY_TIMEOUT: Duration = Duration::from_secs(60);
 pub(crate) struct HttpRequest {
     pub method: String,
     pub path: String,
-    pub query: Option<String>,
     /// `Authorization` 原值（小写头名归一后取值不变）。
     pub authorization: Option<String>,
     /// `Origin` 原值。
@@ -70,7 +69,7 @@ pub(crate) fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, HttpRe
     let body_prefix = buffered[head_end + 4..].to_vec();
     let (method, target, content_length) = parse_head(&head)?;
 
-    let (path, query) = split_target(&target)?;
+    let (path, _query) = split_target(&target)?;
     if content_length > MAX_BODY_BYTES {
         return Err(HttpReadError::TooLarge("body"));
     }
@@ -85,7 +84,6 @@ pub(crate) fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, HttpRe
     Ok(HttpRequest {
         method,
         path,
-        query,
         authorization: header_value(&head, "authorization"),
         origin: header_value(&head, "origin"),
         body,
@@ -187,15 +185,6 @@ fn header_value(head: &str, name: &str) -> Option<String> {
     })
 }
 
-/// 查询参数取值：`?a=1&t=token`（值不再解码——同 split_target 纪律）。
-pub(crate) fn query_value(query: Option<&str>, key: &str) -> Option<String> {
-    let query = query?;
-    query.split('&').find_map(|pair| {
-        let (name, value) = pair.split_once('=')?;
-        (name == key).then(|| value.to_owned())
-    })
-}
-
 /// `Authorization: Bearer <t>` → `<t>`；其他形态不认（token 闸按缺失
 /// 处理，fail-closed）。
 pub(crate) fn bearer_token(authorization: Option<&str>) -> Option<String> {
@@ -212,11 +201,30 @@ pub(crate) fn write_response(
     content_type: &str,
     body: &[u8],
 ) -> std::io::Result<()> {
+    write_response_with_headers(stream, status, content_type, body, &[])
+}
+
+pub(crate) fn write_response_with_headers(
+    stream: &mut TcpStream,
+    status: u16,
+    content_type: &str,
+    body: &[u8],
+    extra_headers: &[(&str, &str)],
+) -> std::io::Result<()> {
     let reason = reason_phrase(status);
-    let head = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+    let mut head = format!(
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n",
         body.len()
     );
+    for (name, value) in extra_headers {
+        debug_assert!(!name.contains(['\r', '\n']));
+        debug_assert!(!value.contains(['\r', '\n']));
+        head.push_str(name);
+        head.push_str(": ");
+        head.push_str(value);
+        head.push_str("\r\n");
+    }
+    head.push_str("Connection: close\r\n\r\n");
     stream.write_all(head.as_bytes())?;
     stream.write_all(body)?;
     stream.flush()
@@ -248,12 +256,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn query_and_bearer_helpers_are_strict() {
-        assert_eq!(query_value(Some("a=1&t=abc&b=2"), "t"), Some("abc".into()));
-        assert_eq!(query_value(Some("t="), "t"), Some(String::new()));
-        assert_eq!(query_value(None, "t"), None);
-        assert_eq!(query_value(Some("x=1"), "t"), None);
-
+    fn bearer_helper_is_strict() {
         assert_eq!(bearer_token(Some("Bearer abc")), Some("abc".into()));
         assert_eq!(bearer_token(Some("bearer abc")), None, "前缀大小写敏感");
         assert_eq!(bearer_token(Some("Basic abc")), None);

@@ -1,20 +1,20 @@
 {
-  "name": "clat",
-  "short_name": "clat",
-  "description": "Local-first command-line agent — web client",
-  "start_url": "/?t={TOKEN}",
+  "name": "CLAT Workbench",
+  "short_name": "CLAT",
+  "description": "Local-first agent workbench",
+  "start_url": "/",
   "scope": "/",
   "display": "standalone",
-  "background_color": "#101418",
-  "theme_color": "#101418",
+  "background_color": "#0c0f11",
+  "theme_color": "#121619",
   "icons": [
     {
-      "src": "/icons/icon-192.png?t={TOKEN}",
+      "src": "/icons/icon-192.png",
       "sizes": "192x192",
       "type": "image/png"
     },
     {
-      "src": "/icons/icon-512.png?t={TOKEN}",
+      "src": "/icons/icon-512.png",
       "sizes": "512x512",
       "type": "image/png"
     }

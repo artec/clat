@@ -17,6 +17,22 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc;
 
+/// `workbench.info.methods` 与实际 dispatch 的同仓能力目录。新增方法
+/// 时必须同时进本表；测试钉住全集，避免 PWA 显示不存在的控制面。
+pub(crate) const RPC_METHODS: &[&str] = &[
+    "workbench.info",
+    "session.list",
+    "session.info",
+    "session.new",
+    "session.switch",
+    "session.rename",
+    "permission.set",
+    "prompt.send",
+    "steer.send",
+    "run.cancel",
+    "approval.respond",
+];
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ErrorCode {
     BadRequest,
@@ -228,6 +244,14 @@ pub(crate) fn dispatch(
         .as_object()
         .ok_or_else(|| RpcError::bad_request("params must be an object"))?;
     match method {
+        "workbench.info" => {
+            let snapshot = with_app(shared, |app| app.workbench_snapshot()).map_err(app_error)?;
+            Ok(super::shapes::workbench_snapshot_json(
+                &snapshot,
+                shared.active_run_info(),
+                RPC_METHODS,
+            ))
+        }
         "session.list" => {
             let sessions = with_app(shared, |app| app.list_sessions()).map_err(app_error)?;
             Ok(json!({
@@ -278,6 +302,24 @@ pub(crate) fn dispatch(
                     "title must be a non-empty single line",
                 )),
             }
+        }
+        "permission.set" => {
+            let raw_mode = required_str(params, "mode")?;
+            let mode = crate::PermissionMode::from_journal_value(&raw_mode).ok_or_else(|| {
+                RpcError::bad_request(
+                    "mode must be read-only, workspace-write, or danger-full-access",
+                )
+            })?;
+            if mode == crate::PermissionMode::FullAccess
+                && params.get("confirm").and_then(Value::as_str)
+                    != Some(crate::PermissionMode::FullAccess.journal_value())
+            {
+                return Err(RpcError::bad_request(
+                    "danger-full-access requires matching `confirm`",
+                ));
+            }
+            with_app(shared, |app| app.set_permission_mode(mode)).map_err(app_error)?;
+            Ok(json!({ "mode": mode.journal_value(), "label": mode.to_string() }))
         }
         "prompt.send" => prompt_send(params, shared),
         "steer.send" => {

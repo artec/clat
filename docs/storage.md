@@ -1,215 +1,282 @@
 # Persistent state
 
-CLAT creates:
+CLAT is local-first: model configuration, trust, session journals, projections,
+extension configuration, and web pairing state live under `~/.clat` by
+default. Frontends never write these files directly; the Application core owns
+all durable state except explicitly user-managed extension manifests.
+
+## File map
+
+Files appear lazily, so a fresh installation may contain only a subset.
 
 ```text
 ~/.clat/
-├── config.json      # control-plane version sentinel (the only Fresh-commit file)
-├── settings.json    # model state, named profiles, active-profile pointer (0600)
-├── credentials.json # per-vendor remembered API keys (0600)
-├── trust.json       # project trust decisions (canonical path → trustedAt)
-├── mcp.json         (optional, user-managed MCP server definitions)
+├── config.json                  # control-plane version sentinel
+├── settings.json                # active model state and named profiles
+├── credentials.json             # remembered per-vendor API keys (0600)
+├── trust.json                   # canonical project path -> trusted timestamp
+├── web-token                    # clat serve Bearer credential (0600)
+├── dsh-last-session             # last session id opened by clat dsh
+├── mcp.json                     # optional, user-managed MCP servers
+├── plugins.json                 # optional, user-managed WASM components
+├── plugin-grants.json           # hash- and directory-bound WASM write grants
 ├── storages/
-│   ├── workspace.json          # multi-workspace registry (DSH-isomorphic)
-│   └── session_projcache.json  # session-list projection cache (pure cache)
-└── sessions/        # DSH-compatible session logs (zstd-framed JSONL)
-    └── --<project-key>--/<session-id>/session.jsonl.zstd
+│   ├── workspace.json           # multi-project workspace registry
+│   └── session_projcache.json   # rebuildable session-list cache
+└── sessions/
+    └── --<project-key>--/
+        └── <encoded-session-id>/
+            ├── session.jsonl.zstd   # authoritative DSH-compatible log
+            ├── clat-checkpoint.json # bounded derived projection cache
+            └── attachments/         # copied local image attachments
 ```
 
-## Session facts
+`mcp.json` and `plugins.json` are declarative inputs written by the user. The
+other files are written through core storage helpers or, for
+`dsh-last-session`, a small fail-soft client preference writer.
 
-Everything a conversation **is** lives in one append-only log per session
-(`docs/research/dsh-session-compatibility.md` pins the format; CLAT logs
-are readable by DSH tooling and vice versa). Events are appended in
-contiguous batches, every batch an independent zstd frame with a content
-checksum; a torn tail frame is truncated and the open turn closed with
-synthetic `tool/result` / `step/end` / `turn/end` events on recovery.
-Every frame is decompressed under a 64 MiB decoded budget, and streamed
-record reads carry the same bound — a compressed bomb fails at the cap
-with a budget-named error instead of exhausting memory.
+## Ownership and sensitivity
 
-Reads never reconstruct state from raw events on the hot path: each
-session folds into projections (surface, transcript, title, todo, stats,
-compaction). Committed batches fold directly from the append path (no
-per-flush re-read of the whole log); listing reads only the bounded first
-frame/line of each log, whatever the body size, plus the bounded
-checkpoint rows for titles/stats. Checkpoint files have an
-8 MiB final-size cap; oversized derived units are omitted and rebuilt
-from the authoritative log. Cold resume is single-pass (invariant R-1,
-2026-08-19): the recovery scan's one physical stream feeds projection
-folding, the transcript replay, and usage stats together — the resume
-path itself never reads checkpoints, because the surface/transcript
-units are deliberately unbounded and would force the checkpoint floor
-back to zero anyway; only the `/resume` listing consumes checkpoint
-rows. The model context is
-derived from the *surface* projection (compaction replaces shadowed
-ranges); the human-visible transcript is deliberately not shadowed, so
-history stays readable after compaction. Reading a log is fail-closed:
-unknown required events, retired event types, malformed payloads of the
-vocabulary CLAT folds, and subagent/delegated/agent-preset headers are
-rejected instead of folded with defaults; only `ignorable: true` unknown
-events are skipped.
-
-Sessions materialize lazily: `/new` writes nothing until the first prompt
-reaches the journal. Input recall comes from the transcript projection.
-
-## Control plane (the `~/.clat/` JSON family)
-
-The control plane is a small family of JSON files, each wrapped in a
-`unit` header (`{"name": …, "version": …}`) that gates loading
-fail-closed: a file carrying a different unit version is refused, never
-guess-read (no-migration policy — a version mismatch is an anomaly, not
-a compatibility case).
-
-| File | Content | Identity |
+| File family | Authority | Failure policy |
 |---|---|---|
-| `config.json` | the five-field version sentinel (control format v5) | publish marker |
-| `settings.json` | model state + named profiles + the active-profile pointer | fact (salvage on tear) |
-| `credentials.json` | per-vendor remembered API keys (INV-VK1..3) | fact (salvage on tear) |
-| `trust.json` | canonical project path → trust timestamp | fact (salvage on tear) |
-| `storages/workspace.json` | the multi-workspace registry | tables are facts; `global`/`sessionIds` are projections |
-| `storages/session_projcache.json` | session-list rows for fast listing | pure cache (silently rebuilt) |
+| session log | authoritative conversation facts | fail closed; recover only a torn tail with explicit synthetic closure |
+| settings, credentials, trust, workspace tables | control-plane facts | preserve torn remnant and start an empty replacement with a diagnostic |
+| projection checkpoint/cache | derived | drop and rebuild from facts |
+| `web-token` | local API credential | validate regular 0600 file; create/rotate atomically |
+| extension manifests | user input | isolate configuration/plugin failure where possible |
+| `dsh-last-session` | decorative client preference | missing/corrupt/oversized/symlink → ignore |
 
-**Fact/projection split (the load-bearing wall).** A torn *fact* file is
-never silently rebuilt: the remnant is renamed to
-`<name>.torn-<date>`, a fresh empty state starts, and a mount diagnostic
-says so loudly — workspace identity loss is unacceptable, so the remnant
-stays for human salvage (sessions themselves re-adopt from their logs).
-A torn or stale *projection* rebuilds from the fact source quietly: the
-sessions directory always wins. On every mount the registry is
-reconciled against it: session ids whose logs vanished are pruned
-(order-preserving), unregistered sessions in a workspace's bucket are
-adopted at the tail (deterministic order, header cwd must match the
-workspace path), and `global.workspaceIds` is synced with the table
-keys. Array order is display order — repair never reorders.
+Back up `~/.clat` as a unit when conversation history and configuration both
+matter. Copying only `storages/workspace.json` does not copy conversations;
+copying only `sessions/` preserves conversation facts but not provider keys,
+trust, or current selections.
 
-`storages/workspace.json` is field-for-field isomorphic to DSH's
-(`unit{name:"workspace",version:2}` / `global` / `tables.workspaces`
-with camelCase `path`/`title`/`sessionIds`/`createdAt`/`updatedAt`);
-reading a real DSH file needs zero adaptation. Two deliberate CLAT
-extensions ride along as additive fields: a per-workspace
-`activeSessionId` (each project remembers its own current session —
-switching between projects restores each one independently) and
-`global.activeWorkspaceId`/`activeSessionId` (the restore-scene
-groundwork for future desktop/PWA panels). CLAT never writes DSH's
-storages. `path` is stamped as the `fs.realpath` canonical form, and
-the session bucket derives from the same spelling by forward encoding.
+## Session journals
 
-The `settings.json` active-profile pointer keeps its B9 semantics: it
-always names the row the single-slot state was installed from — profile
-activation sets it, and any direct save (a preset switch, the classic
-editor, or a `Shift+Tab` thinking change) clears it, so the `●` in
-`/model` never claims a profile the running configuration no longer
-matches. Vendor key memory lives in `credentials.json` (0600), no longer
-as `vendor:` rows inside the profile table; profile names still reject
-the reserved prefix.
+Everything a conversation *is* is represented by one append-only event log.
+CLAT's event types, headers, paths, and encoding are compatible with the DSH
+session format.
 
-All control-plane writes go through capability handles
-(`cap-std`) with tmp+rename+fsync discipline and 0600 permissions; a
-failed write rolls the in-memory state back so memory and disk never
-diverge. One writer at a time: the kernel-level storage-root lease
-covers processes, a facade-level mutex covers threads — the old
-per-project revision CAS is structurally subsumed and gone.
+`/new` may update the workspace's active-session pointer to Fresh, but it does
+not create a session directory or log. The first prompt materializes the new
+session.
+
+### Physical encoding
+
+The normal file is `session.jsonl.zstd`. Each committed batch is an independent
+zstd frame with a content checksum. Independent frames make appending cheap and
+limit crash damage to the final incomplete frame.
+
+Every frame is decoded under a 64 MiB budget. Streamed record reads carry the
+same bound, so a compressed bomb fails with a named error instead of consuming
+unbounded memory.
+
+The session root may contain uncompressed `session.jsonl` from a compatible
+source, but one root cannot mix raw and zstd session encodings. Startup rejects
+an encoding conflict before mounting storage.
+
+### Event admission
+
+Known durable event types are validated before append and again when read.
+Malformed payloads, retired types, unsupported required headers, and unknown
+required events fail closed. Unknown events are skipped only when explicitly
+marked `ignorable: true`.
+
+Adding a durable event is a four-part contract: catalog it, validate its
+payload, fold it into projections/checkpoints, and prove live/replay parity.
+
+### Crash recovery
+
+On open, CLAT scans frames and events in order. A torn final frame is truncated
+to the last durable boundary. If the crash left an open tool/step/turn, recovery
+appends synthetic `tool/result`, `step/end`, and `turn/end` events so later
+folds see a complete state machine.
+
+Recovery does not guess through corruption in an earlier committed frame. A
+corrupt or unsupported session fails before the active-session pointer moves.
+
+## Projections and checkpoints
+
+The journal folds into independent projections:
+
+- model-context surface;
+- human transcript;
+- title;
+- todo state;
+- permission mode;
+- usage/statistics;
+- compaction state.
+
+Committed batches fold directly from the append path; CLAT does not reread the
+whole log after every write. The transcript remains complete after compaction,
+while the surface shadows compacted ranges for the next model request.
+
+`clat-checkpoint.json` caches bounded projection rows and has an 8 MiB final
+size cap. Unbounded units are omitted and rebuilt from the log. Deleting a
+checkpoint changes performance only, never semantics.
+
+Cold resume is a single physical log pass. The recovery stream feeds
+projection folding, transcript replay, and usage restoration together. Session
+listing can use checkpoint rows and the bounded first log record instead of
+decoding the conversation body.
+
+`session_projcache.json` is a higher-level list cache. It is disposable and
+silently rebuilt when stale or torn.
+
+## Attachments
+
+Before the first journal batch of a prompt, CLAT validates each local image and
+copies it into that session's `attachments/` directory. The journal contains an
+absolute attachment reference, not image bytes.
+
+Because the copy happens before the durable user event, a failed import cannot
+leave a journal entry referring to an attachment CLAT never stored. Deleting an
+attachment later degrades replay/model input to a visible missing-file note.
+
+## Control plane
+
+Core JSON files carry a `unit` name/version header. A different version is
+refused rather than guess-migrated.
+
+| File | Content | Kind |
+|---|---|---|
+| `config.json` | five-field control-format sentinel | publication marker |
+| `settings.json` | active model, named profiles, active-profile pointer | fact |
+| `credentials.json` | per-vendor remembered API keys | fact |
+| `trust.json` | canonical project path and trust time | fact |
+| `storages/workspace.json` | workspace tables and current session pointers | facts plus projections |
+| `storages/session_projcache.json` | session-list rows | pure cache |
+
+### Fact versus projection
+
+A torn fact file is never silently reconstructed from partial data. The remnant
+is renamed to `<name>.torn-<date>`, a fresh empty unit is created when needed,
+and mount diagnostics explain what was lost. The remnant remains for manual
+salvage.
+
+A torn projection cache is deleted or replaced from authoritative sources.
+The `sessions/` directory wins over list caches and derived session-id arrays.
+
+### Workspace registry
+
+`storages/workspace.json` is field-for-field compatible with DSH's workspace
+unit: `unit`, `global`, and `tables.workspaces` with camelCase path/title/
+session/time fields. CLAT adds optional active-workspace and active-session
+pointers.
+
+Project paths are canonical real paths. On mount, reconciliation:
+
+- prunes registry session ids whose physical logs vanished;
+- adopts unregistered logs whose header cwd matches the workspace;
+- preserves existing display order and appends adopted sessions
+  deterministically;
+- synchronizes global workspace ids with the table.
+
+Each project remembers its own active session. Switching projects therefore
+restores the conversation last selected in that project.
+
+### Model settings and credentials
+
+`settings.json` stores the effective single model slot plus named profiles. The
+active-profile pointer is cleared whenever the effective configuration no
+longer exactly matches the saved profile—preset switch, direct save, or runtime
+reasoning change—so the model picker's `●` remains truthful.
+
+Vendor preset keys live in `credentials.json` with 0600 permissions rather
+than fake profile rows. Custom profile credentials remain part of their profile
+configuration.
+
+### Atomic writes and rollback
+
+Control-plane writes use opened directory capabilities, temporary files,
+rename, fsync, and 0600 mode where secrets are involved. A failed fact write
+rolls the corresponding in-memory mutation back, keeping memory and disk
+aligned.
+
+A facade mutex serializes threads. A kernel storage-root lease serializes
+processes.
+
+## Web token and DSH preference
+
+`clat serve` creates `~/.clat/web-token` only after the requested loopback port
+binds successfully. Creation and `--rotate-token` use atomic replacement and
+0600 permissions. `--token` bypasses this file for one process and never
+modifies it. The token does not enter manifests, URLs, logs, or session events.
+
+`dsh-last-session` contains one opaque session id, capped at 4 KiB. Reads reject
+symlinks, non-files, invalid UTF-8, and oversized content. Writes are atomic
+and fail-soft. This file is a presentation preference only; deleting it does
+not affect the DSH host or any session.
 
 ## Startup state machine
 
-Bootstrap performs a **zero-write** preflight, classifying `config.json`
-plus the presence of the legacy database and new-family files into
-Fresh / LegacySQLite / LegacyConfigOnly / Ready / Unsupported /
-Inconsistent.
+`BootstrapApplication::open` performs a zero-write preflight and classifies the
+storage root:
 
-`authorize_and_mount` is the only path that persists trust: it acquires a
-kernel-level storage-root lease (`flock` on Unix, taken on the deepest
-existing ancestor directory with no lock files; a named mutex keyed by
-the root's canonical identity on Windows — either way the kernel
-releases it when the process dies), validates the session-root layout
-read-only, then commits: a Fresh root publishes exactly one file (the
-sentinel — everything else is born lazily), and a legacy v4 root has its
-`clat.db` (plus `-wal`/`-shm` sidecars) renamed to
-`clat.db.bak-<date>` before the new sentinel is written. **Zero
-migration, zero deletion**: the old database is preserved byte-for-byte
-as a corpse; the new control plane starts empty (re-approve trust once,
-re-enter the model config once), while session logs — the fact source —
-survive untouched and are adopted into the new registry as each project
-is opened. An interrupted upgrade (db renamed, sentinel still v4)
-re-runs idempotently.
+| State | Meaning | Result |
+|---|---|---|
+| Fresh | no supported control plane or legacy database | wait for authorization, then publish current sentinel |
+| Ready | current sentinel and compatible layout | continue to trust decision |
+| Legacy SQLite | supported old `clat.db` layout | preserve database and start current control plane on authorized mount |
+| Legacy config only | old supported sentinel without database | start current control plane on authorized mount |
+| Unsupported | known but unsupported older format | refuse with manual instructions |
+| Inconsistent | mixed or contradictory files | refuse before writes |
 
-The session-root preflight is a **strict full walk** (root → project
-bucket → session directory → log file): any symlink anywhere on the path,
-a regular file where a directory belongs, an unreadable directory, an
-unknown entry (except a regular `.DS_Store`), or any mix of
-`session.jsonl` and `session.jsonl.zstd` anywhere in the same session root
-is a hard rejection — before any control-plane commit, Fresh or upgrade
-alike. The same SessionId in different project buckets is legal; every
-listing instead verifies that the physical bucket, encoded id directory,
-and Header cwd/id are one consistent SessionKey.
+Session-root preflight walks root → project bucket → session directory. It
+rejects symlinks at every level, invalid bucket/session shapes, unreadable
+directories, non-directory bucket members, non-regular CLAT-owned files, and a
+raw/zstd encoding mix. Unknown non-symlink content *inside* a session directory
+is left opaque for compatible DSH attachments, spill, or delegated state.
 
-Crash windows are covered by the fact/projection split rather than a
-state matrix: a first durable batch that landed without its registry
-update is adopted by mount-time reconciliation; a workspace pointer
-naming a session that cannot load falls back to Fresh in memory with a
-diagnostic, and the next successful command replaces it.
+Only `authorize_and_mount` can acquire the root lease, persist trust, publish a
+fresh sentinel, or perform a supported legacy cutover.
 
-## Run-time persistence
+## Legacy SQLite cutover
 
-A run produces two streams from one loop: `RunEvent`s for frontends and
-`SessionEvent`s into the journal. The first batch (`turn/start` +
-`user/message`) is flushed **before** the model is called; side-effecting
-tools flush `approval/asked` before the human answers and the
-`approval/decided` + `tool/call` group before execution; a successful
-terminal `RunEvent` is published only after the closing `turn/end` is
-durable — if that final flush fails, the frontend receives `RunFailed`
-carrying the journal error instead, so the event stream and the
-completion channel can never disagree. Writes go through a 200 ms
-write-behind window whose flush drains to silence; commit outcomes are
-three-state (NotCommitted / Committed / Unknown); a first-batch publish
-that cannot prove its directory sync returns Unknown (directory fsync
-is a Unix discipline — on Windows the step is a no-op, since directory
-handles cannot be flushed and NTFS metadata journaling covers dirent
-durability), and an append whose
-file identity drifted from the prepared handle (external writer) returns
-Unknown — both poison the session until a cold repair reopens it.
-In-run steering journals as plain mid-turn `user/message` rows,
-durable before the model request that consumes them. Each assistant
-message carries the step's token accounting in the DSH `usage` field
-(TokenUsage: `inputTokens` / `outputTokens` / optional
-`cacheReadTokens` / `reasoningTokens`) when the adapter reported it —
-the status bar's Cache/Context restore from these rows at startup in
-the same streaming pass as the replay.
+CLAT does not translate the old SQLite control plane into the current JSON
+family. On the supported v0.4–v0.8 cutover, `clat.db` and its WAL/SHM sidecars
+are renamed to `clat.db.bak-<date>` and kept byte-for-byte. Then the current
+sentinel is published.
 
-Session switching is two-phase: the target is first staged read-only
-(admission + cold restore), then armed but kept unpublished while pending
-torn-tail recovery, projection catch-up, and view construction finish.
-Only after those fallible operations succeed is the workspace pointer
-persisted (registering the workspace first if this is its first durable
-session); the old session then quiesces and the in-memory target swap releases
-the withheld resume seed without another fallible storage step — install
-first performs a best-effort flush so the seed is durable before it
-returns (a read barrier: a mount-time full-log stream must not mistake
-our own seed for a foreign writer; a failed flush stays on the normal
-retry lane and install remains infallible). A missing,
-corrupt, or unsupported target fails before the pointer moves. A failed
-pointer persistence leaves the old session untouched and closes the
-unpublished writer;
-an idempotent repair already completed while arming may remain, but no
-resume seed or selection change is published. Detaching a session flushes, checkpoints, and
-**joins** its writer thread — session switching does not leak threads
-even when writes keep failing. Dropping a coordinator without an explicit
-close is a safety-net retirement, not a detach: the last `Arc` falling
-runs a best-effort close, so a forgotten quiesce can never leave an
-immortal writer thread (a leaked writer held every parallel
-`wait_for_writer_baseline` check red on slow CI, 2026-08-19).
+The user re-enters model configuration and re-approves project trust. Existing
+DSH-format session logs survive and are adopted when each project opens.
 
-Full-log streams (replay) assume quiescent callers, which same-process
-late writers can violate; the stream's stat→read→stat mismatch is
-retried up to three times with locally rebuilt state before the error
-surfaces (mirroring `read_stable`), and the mount-time `snapshot()`
-reuses the replay produced while arming instead of streaming the log a
-second time.
+An interrupted rename-before-sentinel window is idempotent on the next mount.
+Older SQLite formats that stored conversations in `sessions`/`messages` tables
+are refused rather than silently losing or partially converting data.
+
+## Runtime commit ordering
+
+A run writes and publishes in a deliberate order:
+
+1. `turn/start` + `user/message` are durable before the model request.
+2. `approval/asked` is durable before waiting for a human.
+3. `approval/decided` + `tool/call` are durable before side-effect execution.
+4. Steering is durable before the model request that consumes it.
+5. Closing events are durable before the frontend receives success.
+
+Writes use a 200 ms write-behind window and drain to silence on explicit
+flush. Commit outcomes distinguish NotCommitted, Committed, and Unknown. An
+unknown directory-sync or file-identity result poisons further writes until a
+cold reopen can establish a safe boundary.
+
+## Session switching
+
+Switching is two-phase:
+
+1. Stage and validate the target read-only, including recovery, projection
+   folding, and replay construction.
+2. Persist the workspace pointer, quiesce the old session, install the prepared
+   target, and publish its withheld resume seed.
+
+Any target or pointer failure before commit leaves the old session active. A
+detached session flushes, checkpoints, stops, and joins its writer thread.
+Dropping a coordinator has a best-effort safety close, but normal Application
+shutdown performs explicit closure and reports errors.
 
 ## Layering
 
-Storage is assembled behind `SessionService` (use-case facade) and
-`ControlStorage`. Frontends never see raw persistence: they use
-`BootstrapApplication` (read-only preflight, `authorize_and_mount`) and
-`TrustedProjectApplication` (sessions, model state, profiles, runs).
+`SessionService` owns session use cases and `ControlStorage` owns the JSON
+control plane. `BootstrapApplication` exposes preflight/trust transition;
+`TrustedProjectApplication` exposes session/model/run use cases. TUI, exec, and
+serve clients never open these paths or infer state from file contents.

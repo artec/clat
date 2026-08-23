@@ -627,6 +627,44 @@ impl TrustedProjectApplication {
         McpStatusDto::from(self.mcp_status.as_ref())
     }
 
+    /// 面向应用壳的轻量只读快照（RF-2）：不读取 transcript/replay，
+    /// 不返回 credentials，不配置 monitor，也不改变任何会话状态。
+    pub fn workbench_snapshot(&self) -> Result<crate::WorkbenchSnapshot, ApplicationError> {
+        let (config, _credentials) = self.model_state()?;
+        let root = self.canonical_root.clone();
+        let name = root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(|| root.display().to_string());
+        Ok(crate::WorkbenchSnapshot {
+            project: crate::WorkbenchProjectSnapshot {
+                root,
+                name,
+                workspace_id: self.workspace_id.clone(),
+            },
+            session: crate::WorkbenchSessionSnapshot {
+                id: self.current_session_id(),
+                title: self.effective_session_title(),
+                committed_seq: self.committed_seq(),
+            },
+            model: crate::WorkbenchModelSnapshot {
+                protocol: config.protocol,
+                model: config.model.clone(),
+                preset: config.preset.clone(),
+                active_profile: self.active_model_profile()?,
+                thinking_level: crate::effective_thinking_level(&config),
+                max_context_tokens: config.max_context_tokens,
+                run_token_budget: config
+                    .run_token_budget
+                    .unwrap_or(crate::model::RUN_TOKEN_BUDGET_DEFAULT),
+            },
+            permission_mode: self.permission_mode(),
+            mcp: self.mcp_status(),
+        })
+    }
+
     /// 注入下一次 run worker spawn 失败（A-03 不变量的测试钩）。
     #[cfg(test)]
     pub(crate) fn fail_next_run_spawn_for_test(&mut self) {

@@ -34,7 +34,10 @@ mod trusted;
 
 pub use bootstrap::{BootstrapApplication, ProjectAuthorization};
 pub use compaction::{CompactHandle, CompactReport};
-pub use dto::{McpServerInfoDto, McpStatusDto, ProjectSnapshot, SessionSnapshot, WorkspaceInfo};
+pub use dto::{
+    McpServerInfoDto, McpStatusDto, ProjectSnapshot, SessionSnapshot, WorkbenchModelSnapshot,
+    WorkbenchProjectSnapshot, WorkbenchSessionSnapshot, WorkbenchSnapshot, WorkspaceInfo,
+};
 pub use run_lifecycle::{
     ApplicationRunDone, ApplicationRunFailure, ApplicationRunRequest, ApplicationRunResult,
     RenameOutcome, RunHandle, SteerOutcome,

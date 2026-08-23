@@ -10,8 +10,13 @@ function hostInfo(key) {
   );
 }
 
-function openUrl(entry) {
-  return `${entry.origin}/?t=${entry.token}`;
+async function openWorkbench(page, entry) {
+  await page.goto(`${entry.origin}/`);
+  await expect(page).toHaveURL(`${entry.origin}/`);
+  await expect(page.locator('#landing')).toBeVisible(LIVE);
+  await page.fill('#connect-token', entry.token);
+  await page.click('#connect-form button[type="submit"]');
+  await expect(page.locator('#conn-status')).toHaveText('live', LIVE);
 }
 
 const LIVE = { timeout: 30_000 };
@@ -20,8 +25,7 @@ const LIVE = { timeout: 30_000 };
 test.describe('acceptance ① approval + run lifecycle', () => {
   test('prompt → approval allow → tool executes → settled completed', async ({ page }) => {
     const entry = hostInfo('run-command');
-    await page.goto(openUrl(entry));
-    await expect(page.locator('#conn-status')).toHaveText('live', LIVE);
+    await openWorkbench(page, entry);
 
     await page.fill('#prompt', 'run echo please');
     await page.click('#send');
@@ -41,8 +45,7 @@ test.describe('acceptance ① approval + run lifecycle', () => {
   // —— 验收①的 Deny 腿 + 验收②：会话管理（新会话 → 拒绝 → 侧栏/重命名）
   test('fresh session → approval deny → no tool → sessions + rename', async ({ page }) => {
     const entry = hostInfo('run-command');
-    await page.goto(openUrl(entry));
-    await expect(page.locator('#conn-status')).toHaveText('live', LIVE);
+    await openWorkbench(page, entry);
 
     // 新会话（上一条测试的会话已含 run_command 结果——模型不再请求
     // 工具；新会话保证审批确定性）。等待重建完成的确定性屏障：历史
@@ -77,8 +80,7 @@ test.describe('acceptance ① approval + run lifecycle', () => {
 // —— 验收③：run 进行中 F5 → 视图完整恢复、流式继续（INV-W3）——
 test('refresh mid-run rebuilds the view and streaming continues', async ({ page }) => {
   const entry = hostInfo('long-stream');
-  await page.goto(openUrl(entry));
-  await expect(page.locator('#conn-status')).toHaveText('live', LIVE);
+  await openWorkbench(page, entry);
 
   await page.fill('#prompt', 'long stream');
   await page.click('#send');
@@ -111,15 +113,47 @@ test('refresh mid-run rebuilds the view and streaming continues', async ({ page 
   });
 });
 
+// —— 回归：应用外壳高度约束——转录区在视口内滚动、composer 永不出屏 ——
+// 2026-08-24 bug：.app 网格只定义列未定义行，唯一隐式行按内容 auto 计高；
+// 转录一长整个会话列被撑出视口——转录无法滚动、composer（输入框）被推
+// 出屏。修复：.app { grid-template-rows: minmax(0, 1fr) } 把行钉在容器高。
+test('app shell stays bounded under long content', async ({ page }) => {
+  const entry = hostInfo('long-stream');
+  await openWorkbench(page, entry);
+
+  await page.fill('#prompt', 'long stream');
+  await page.click('#send');
+  await page.waitForFunction(
+    () => {
+      const bodies = document.querySelectorAll('.msg.assistant .body');
+      return bodies.length > 0 && bodies[bodies.length - 1].textContent.length > 4_000;
+    },
+    null,
+    LIVE,
+  );
+
+  const shell = await page.evaluate(() => {
+    const sc = document.querySelector('.transcript-scroll');
+    const composer = document.querySelector('.composer').getBoundingClientRect();
+    return {
+      transcriptClient: sc.clientHeight,
+      transcriptScroll: sc.scrollHeight,
+      composerBottom: composer.bottom,
+      viewport: window.innerHeight,
+    };
+  });
+  expect(shell.transcriptClient).toBeLessThan(shell.viewport);
+  expect(shell.transcriptScroll).toBeGreaterThan(shell.transcriptClient);
+  expect(shell.composerBottom).toBeLessThanOrEqual(shell.viewport);
+});
+
 // —— 验收④：双标签页——同 run 双观察；首答即赢；次答者见 not-pending ——
 test('dual tabs observe the same run; first answer wins', async ({ browser }) => {
   const entry = hostInfo('run-command');
   const tabA = await browser.newPage();
   const tabB = await browser.newPage();
-  await tabA.goto(openUrl(entry));
-  await tabB.goto(openUrl(entry));
-  await expect(tabA.locator('#conn-status')).toHaveText('live', LIVE);
-  await expect(tabB.locator('#conn-status')).toHaveText('live', LIVE);
+  await openWorkbench(tabA, entry);
+  await openWorkbench(tabB, entry);
 
   // 新会话（宿主历史里已有 run_command 结果，保证审批触发）；
   // 等待重建完成（同上：切换防抖屏障）。

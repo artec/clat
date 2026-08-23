@@ -82,8 +82,9 @@ fn print_help() {
     println!("  -V, --version    Print version");
     println!();
     println!("Serve options:");
-    println!("  --port <n>       Port to bind on 127.0.0.1 (default 0 = pick a free port)");
-    println!("  --token <t>      Explicit auth token (default: generate one per run)");
+    println!("  --port <n>       Port to bind on 127.0.0.1 (default 2691; 0 = pick free)");
+    println!("  --token <t>      Temporary auth token (default: ~/.clat/web-token)");
+    println!("  --rotate-token   Replace the persistent web token and revoke old clients");
     println!();
     println!("Exec options:");
     println!("  --continue       Continue the project's most recent session");
@@ -96,7 +97,8 @@ fn print_help() {
     println!("  Piped stdin is used as the prompt, or as context when PROMPT is also present.");
 }
 
-/// `clat serve [--port <n>] [--token <t>]`：本地 HTTP+SSE 前端。
+/// `clat serve [--port <n>] [--token <t> | --rotate-token]`：本地
+/// HTTP+SSE 前端。
 /// Ctrl-C 处理器在进程边界安装一次：第一次优雅关停（accept 循环
 /// 完整走关停序列），第二次强退（serve 同款纪律）。
 fn run_serve_command<I>(args: I) -> ExitCode

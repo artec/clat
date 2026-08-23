@@ -53,9 +53,12 @@ fn spawn_serve_with_queue(
         ServeArgs {
             port: 0,
             token: Some(TEST_TOKEN.into()),
+            rotate_token: false,
         },
         |bootstrap| {
-            bootstrap.authorize_and_mount_with_provider(Arc::new(TestProviderPlugin { behavior }))
+            bootstrap
+                .with_permission_modes()
+                .authorize_and_mount_with_provider(Arc::new(TestProviderPlugin { behavior }))
         },
         Arc::new(AtomicBool::new(false)),
         queue_frames,
@@ -101,6 +104,24 @@ fn post(
     }
 }
 
+fn validate_pairing(addr: SocketAddr, token: &str) -> u16 {
+    let mut stream = connect(addr);
+    let request = format!(
+        "POST /auth HTTP/1.1\r\nHost: clat\r\nAuthorization: Bearer {token}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    );
+    stream.write_all(request.as_bytes()).expect("write auth");
+    let raw = read_raw_response(&mut stream);
+    let (status, _) = parse_response(&raw);
+    if status == 200 {
+        assert!(!raw.contains(token), "pairing response must not echo token");
+        assert!(
+            !raw.to_ascii_lowercase().contains("set-cookie:"),
+            "Bearer must not be copied into a host-wide Cookie"
+        );
+    }
+    status
+}
+
 fn get(addr: SocketAddr, target: &str, headers: &[(&str, &str)]) -> (u16, String) {
     let mut stream = connect(addr);
     let mut request = format!("GET {target} HTTP/1.1\r\nHost: clat\r\n");
@@ -114,9 +135,16 @@ fn get(addr: SocketAddr, target: &str, headers: &[(&str, &str)]) -> (u16, String
 
 /// 读到 EOF（Connection: close 语义），返回 (status, body)。
 fn read_response(stream: &mut TcpStream) -> (u16, String) {
+    parse_response(&read_raw_response(stream))
+}
+
+fn read_raw_response(stream: &mut TcpStream) -> String {
     let mut bytes = Vec::new();
     stream.read_to_end(&mut bytes).expect("read to end");
-    let text = String::from_utf8_lossy(&bytes).into_owned();
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+fn parse_response(text: &str) -> (u16, String) {
     let status = text
         .split_once(' ')
         .and_then(|(_, rest)| rest.split_whitespace().next())
@@ -149,7 +177,7 @@ fn prompt_send(addr: SocketAddr, text: &str) -> serde_json::Value {
 fn sse_connect_raw(addr: SocketAddr) -> TcpStream {
     let mut stream = connect(addr);
     let request = format!(
-        "GET /api/events?t={TEST_TOKEN} HTTP/1.1\r\nHost: clat\r\nConnection: close\r\n\r\n"
+        "GET /api/events HTTP/1.1\r\nHost: clat\r\nAuthorization: Bearer {TEST_TOKEN}\r\nConnection: close\r\n\r\n"
     );
     stream
         .write_all(request.as_bytes())
@@ -176,7 +204,7 @@ impl SseClient {
     fn connect(addr: SocketAddr) -> Self {
         let mut stream = connect(addr);
         let request = format!(
-            "GET /api/events?t={TEST_TOKEN} HTTP/1.1\r\nHost: clat\r\nConnection: close\r\n\r\n"
+            "GET /api/events HTTP/1.1\r\nHost: clat\r\nAuthorization: Bearer {TEST_TOKEN}\r\nConnection: close\r\n\r\n"
         );
         stream
             .write_all(request.as_bytes())
@@ -316,7 +344,12 @@ fn settled_outcome_type(settled: &ParsedSseFrame) -> String {
 // ---- 参数解析（验收 8：--host 是用法错误，安全边界不是配置项）----
 
 #[test]
-fn parse_serve_args_accepts_port_and_token_and_rejects_host() {
+fn parse_serve_args_defaults_to_2691_and_accepts_explicit_controls() {
+    let defaults = super::parse_serve_args([]).unwrap();
+    assert_eq!(defaults.port, 2691);
+    assert_eq!(defaults.token, None);
+    assert!(!defaults.rotate_token);
+
     let parsed = super::parse_serve_args([
         "--port".into(),
         "8099".into(),
@@ -326,11 +359,23 @@ fn parse_serve_args_accepts_port_and_token_and_rejects_host() {
     .unwrap();
     assert_eq!(parsed.port, 8099);
     assert_eq!(parsed.token.as_deref(), Some("abc"));
+    assert!(!parsed.rotate_token);
+    assert!(
+        super::parse_serve_args(["--rotate-token".into()])
+            .unwrap()
+            .rotate_token
+    );
+    assert_eq!(
+        super::parse_serve_args(["--rotate-token".into(), "--token".into(), "abc".into()])
+            .unwrap_err(),
+        "--rotate-token cannot be used with --token"
+    );
     assert_eq!(
         super::parse_serve_args(["--host".into(), "0.0.0.0".into()]).unwrap_err(),
         "unknown option: --host"
     );
     assert!(super::parse_serve_args(["--port".into(), "not-a-number".into()]).is_err());
+    assert!(super::parse_serve_args(["--token".into(), "unsafe token".into()]).is_err());
     assert!(super::parse_serve_args(["positional".into()]).is_err());
 }
 
@@ -342,6 +387,7 @@ fn dispatch_covers_the_full_method_set() {
     prepare_storage(&project, &storage_root, TestBehavior::Success);
     let bootstrap = BootstrapApplication::open(project, storage_root.clone()).unwrap();
     let application = bootstrap
+        .with_permission_modes()
         .into_trusted_with_provider(Arc::new(TestProviderPlugin {
             behavior: TestBehavior::Success,
         }))
@@ -354,6 +400,32 @@ fn dispatch_covers_the_full_method_set() {
 
     let list = protocol::dispatch("session.list", &serde_json::json!({}), &shared).unwrap();
     assert!(list.get("sessions").unwrap().is_array());
+
+    let workbench = protocol::dispatch("workbench.info", &serde_json::json!({}), &shared).unwrap();
+    assert_eq!(
+        workbench["project"]["root"],
+        project_root
+            .canonicalize()
+            .unwrap()
+            .to_string_lossy()
+            .as_ref()
+    );
+    assert_eq!(workbench["permission"]["mode"], "workspace-write");
+    assert_eq!(workbench["model"]["model"], "deterministic");
+    assert_eq!(
+        workbench["methods"].as_array().unwrap().len(),
+        protocol::RPC_METHODS.len()
+    );
+    assert!(
+        workbench["capabilities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|capability| capability == "permission-modes")
+    );
+    let encoded_workbench = workbench.to_string();
+    assert!(!encoded_workbench.contains("test-key"));
+    assert!(!encoded_workbench.contains("credentials"));
 
     let info = protocol::dispatch("session.info", &serde_json::json!({}), &shared).unwrap();
     assert!(info.get("session_id").is_some());
@@ -376,6 +448,36 @@ fn dispatch_covers_the_full_method_set() {
     assert_eq!(steer.get("outcome").unwrap(), "not_running");
 
     protocol::dispatch("run.cancel", &serde_json::json!({}), &shared).unwrap();
+
+    let invalid_mode = protocol::dispatch(
+        "permission.set",
+        &serde_json::json!({"mode": "write-everywhere"}),
+        &shared,
+    )
+    .unwrap_err();
+    assert_eq!(invalid_mode.code, ErrorCode::BadRequest);
+    let unconfirmed_full_access = protocol::dispatch(
+        "permission.set",
+        &serde_json::json!({"mode": "danger-full-access"}),
+        &shared,
+    )
+    .unwrap_err();
+    assert_eq!(unconfirmed_full_access.code, ErrorCode::BadRequest);
+    let permission = protocol::dispatch(
+        "permission.set",
+        &serde_json::json!({
+            "mode": "danger-full-access",
+            "confirm": "danger-full-access",
+        }),
+        &shared,
+    )
+    .unwrap();
+    assert_eq!(permission["mode"], "danger-full-access");
+    assert_eq!(
+        protocol::dispatch("workbench.info", &serde_json::json!({}), &shared).unwrap()["permission"]
+            ["mode"],
+        "danger-full-access"
+    );
 
     let rename = protocol::dispatch(
         "session.rename",
@@ -460,45 +562,74 @@ fn realtime_frames_are_byte_identical_to_envelope_line() {
 fn security_gates_fail_closed() {
     let (handle, storage_root, project_root) = spawn_serve("serve-gates", TestBehavior::Success);
 
-    // 无 token → 401。
-    let (status, _) = get(handle.addr, "/", &[]);
+    // 静态 shell 公开且不含凭据；特权面无 token → 401。
+    let (status, body) = get(handle.addr, "/", &[]);
+    assert_eq!(status, 200);
+    assert!(!body.contains(TEST_TOKEN));
+    let (status, _) = get(handle.addr, "/api/events", &[]);
     assert_eq!(status, 401);
-    // 错 token（query 轨）→ 401。
-    let (status, _) = get(handle.addr, "/?t=wrong", &[]);
+    // 历史 query token 不再具有鉴权语义。
+    let (status, _) = get(handle.addr, &format!("/api/events?t={TEST_TOKEN}"), &[]);
     assert_eq!(status, 401);
-    // 恶意 Origin（带合法 token）→ 403。
-    let (status, _) = get(
-        handle.addr,
-        "/?t={TEST_TOKEN}",
-        &[("Origin", "http://evil.example")],
-    );
+    // 恶意 Origin 即使请求公开 shell 也先被拒绝。
+    let (status, _) = get(handle.addr, "/", &[("Origin", "http://evil.example")]);
     assert_eq!(status, 403);
     // 恶意 Origin + Bearer → 仍 403（Origin 闸先于 token 放行判定）。
     let (status, _) = post_error_origin(handle.addr);
     assert_eq!(status, 403);
-    // 允许集 Origin + token → 200。
+    // 允许集 Origin + Bearer → 200。
     let allowed = format!("http://127.0.0.1:{}", handle.port());
-    let (status, _) = get(
+    let (status, result) = post_with_headers(
         handle.addr,
-        &format!("/?t={TEST_TOKEN}"),
+        TEST_TOKEN,
+        "session.list",
+        "{}",
         &[("Origin", &allowed)],
     );
     assert_eq!(status, 200);
-    // 不带 Origin（curl 形态）+ token → 200。
-    let (status, body) = get(handle.addr, &format!("/?t={TEST_TOKEN}"), &[]);
-    assert_eq!(status, 200, "{body}");
+    assert!(result.is_ok());
     // POST 无 token → 401。
     let (status, _) = post(handle.addr, "wrong-token", "session.list", "{}");
     assert_eq!(status, 401);
-    // PWA2-02：POST 只认 Authorization 头——query token 形态拒绝。
+    // query token 形态拒绝。
     let (status, _) = post_query_token(handle.addr);
     assert_eq!(status, 401);
+    // 配对端点验证 Bearer 但不回显 token；错 token 仍 fail-closed。
+    assert_eq!(validate_pairing(handle.addr, TEST_TOKEN), 200);
+    assert_eq!(validate_pairing(handle.addr, "wrong-token"), 401);
     // POST 未知方法（带 token）→ 200 + bad-request（方法词汇政策）。
     let (status, result) = post(handle.addr, TEST_TOKEN, "no.such.method", "{}");
     assert_eq!(status, 200);
     assert_eq!(result.unwrap_err(), ErrorCode::BadRequest);
 
     cleanup(handle, &storage_root, &project_root);
+}
+
+fn post_with_headers(
+    addr: SocketAddr,
+    token: &str,
+    method: &str,
+    body: &str,
+    headers: &[(&str, &str)],
+) -> (u16, Result<serde_json::Value, ErrorCode>) {
+    let mut stream = connect(addr);
+    let mut request = format!(
+        "POST /api/{method} HTTP/1.1\r\nHost: clat\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n",
+        body.len()
+    );
+    for (name, value) in headers {
+        request.push_str(&format!("{name}: {value}\r\n"));
+    }
+    request.push_str(&format!("Connection: close\r\n\r\n{body}"));
+    stream.write_all(request.as_bytes()).unwrap();
+    let (status, response_body) = read_response(&mut stream);
+    let parsed = protocol::parse_rpc_result(&response_body).expect("rpc result json");
+    if parsed.ok {
+        (status, Ok(parsed.value.unwrap_or(serde_json::json!(null))))
+    } else {
+        let (code, _, _) = parsed.error.expect("error triple");
+        (status, Err(code))
+    }
 }
 
 /// POST 只带 query token（无 Authorization 头）——PWA2-02 拒绝腿。
@@ -527,10 +658,10 @@ fn post_error_origin(addr: SocketAddr) -> (u16, String) {
     read_response(&mut stream)
 }
 
-// ---- token 不落任何文件（验收 7）----
+// ---- 显式 --token 只属本次进程，不污染持久 token/journal ----
 
 #[test]
-fn token_never_reaches_disk() {
+fn explicit_token_never_reaches_disk() {
     let (handle, storage_root, project_root) =
         spawn_serve("serve-token-hygiene", TestBehavior::Success);
     let mut client = SseClient::connect(handle.addr);
@@ -538,11 +669,72 @@ fn token_never_reaches_disk() {
     client.wait_settled();
 
     // 全量扫描 storage 树：journal（zstd 压缩）、控制面、一切文件。
+    // 缺省模式唯一允许的凭据文件由下一测试单独锁定。
     let mut found = Vec::new();
     scan_for(&storage_root, TEST_TOKEN.as_bytes(), &mut found);
     assert!(found.is_empty(), "token 出现在落盘文件里: {found:?}");
 
     cleanup(handle, &storage_root, &project_root);
+}
+
+#[test]
+fn persistent_token_survives_restart_and_rotation_revokes_the_old_bearer() {
+    let (storage_root, project_root, project) = setup("serve-token-lifecycle");
+    prepare_storage(&project, &storage_root, TestBehavior::Success);
+
+    let start = |port, rotate_token| {
+        crate::serve::serve_with_with_queue(
+            project.clone(),
+            Some(storage_root.clone()),
+            ServeArgs {
+                port,
+                token: None,
+                rotate_token,
+            },
+            |bootstrap| {
+                bootstrap
+                    .with_permission_modes()
+                    .authorize_and_mount_with_provider(Arc::new(TestProviderPlugin {
+                        behavior: TestBehavior::Success,
+                    }))
+            },
+            Arc::new(AtomicBool::new(false)),
+            super::state::SUBSCRIBER_QUEUE_FRAMES,
+        )
+        .unwrap()
+    };
+
+    let first = start(0, false);
+    let port = first.port();
+    let first_token = first.token.clone();
+    let expected_token_path = storage_root.join(super::token::FILE_NAME);
+    assert_eq!(
+        first.token_path.as_deref(),
+        Some(expected_token_path.as_path())
+    );
+    assert_eq!(validate_pairing(first.addr, &first_token), 200);
+    first.shutdown();
+    assert!(first.join().accept.is_ok());
+
+    let second = start(port, false);
+    assert_eq!(second.token, first_token, "restart must reuse web-token");
+    assert_eq!(
+        post(second.addr, &first_token, "session.list", "{}").0,
+        200,
+        "stable port + token keeps the installed PWA credential valid"
+    );
+    second.shutdown();
+    assert!(second.join().accept.is_ok());
+
+    let rotated = start(port, true);
+    assert_ne!(rotated.token, first_token);
+    assert_eq!(
+        post(rotated.addr, &first_token, "session.list", "{}").0,
+        401,
+        "rotation must revoke the old browser Bearer"
+    );
+    assert_eq!(validate_pairing(rotated.addr, &rotated.token), 200);
+    cleanup(rotated, &storage_root, &project_root);
 }
 
 fn scan_for(root: &Path, needle: &[u8], found: &mut Vec<PathBuf>) {
@@ -1047,71 +1239,67 @@ fn slow_subscriber_overflow_is_dropped_and_run_buffer_is_intact() {
 // ---- web 资产 + PWA（验收⑤⑥⑦，PWA-4）----
 
 #[test]
-fn web_assets_serve_behind_the_token_gate() {
+fn web_assets_are_public_but_contain_no_credentials() {
     let (handle, storage_root, project_root) =
         spawn_serve("serve-web-assets", TestBehavior::Success);
 
     // 应用资产：200 + content-type（验收⑥：编译期嵌入）。
-    let (status, body) = get(handle.addr, &format!("/?t={TEST_TOKEN}"), &[]);
+    let (status, body) = get(handle.addr, "/", &[]);
     assert_eq!(status, 200, "{body:?}");
+    assert!(get_response_content_type(handle.addr, "/").contains("text/html"));
     assert!(
-        get_response_content_type(handle.addr, &format!("/?t={TEST_TOKEN}")).contains("text/html")
+        get_response_header(handle.addr, "/", "content-security-policy")
+            .contains("default-src 'self'")
     );
+    assert_eq!(
+        get_response_header(handle.addr, "/", "referrer-policy"),
+        "no-referrer"
+    );
+    assert!(!body.contains(TEST_TOKEN));
+    assert!(!body.contains("?t="));
     for (path, kind) in [
         ("/app.js", "application/javascript"),
         ("/style.css", "text/css"),
     ] {
-        let target = format!("{path}?t={TEST_TOKEN}");
-        let content_type = get_response_content_type(handle.addr, &target);
-        assert_eq!(
-            get(handle.addr, &target, &[]).0,
-            200,
-            "{path} must be served"
-        );
+        let content_type = get_response_content_type(handle.addr, path);
+        assert_eq!(get(handle.addr, path, &[]).0, 200, "{path} must be served");
         assert!(content_type.contains(kind), "{path}: {content_type}");
     }
 
-    // manifest（验收⑤）：200 + JSON 结构 + {TOKEN} 占位符替换为已验证
-    // token——安装链路（浏览器自拉 manifest/图标，不能带 header）靠它
-    // 过闸，INV-S1 对资产原样生效。
-    let target = format!("/manifest.webmanifest?t={TEST_TOKEN}");
-    let (status, body) = get(handle.addr, &target, &[]);
+    // manifest 与图标 URL 全部干净；安装后的 start_url 跨重启稳定。
+    let (status, body) = get(handle.addr, "/manifest.webmanifest", &[]);
     assert_eq!(status, 200, "{body:?}");
     let manifest: serde_json::Value = serde_json::from_str(&body).expect("manifest json");
-    assert_eq!(manifest["name"], "clat");
+    assert_eq!(manifest["name"], "CLAT Workbench");
     assert_eq!(manifest["display"], "standalone");
-    assert!(
-        manifest["start_url"]
-            .as_str()
-            .unwrap()
-            .contains(&format!("t={TEST_TOKEN}"))
-    );
+    assert_eq!(manifest["start_url"], "/");
     let icons = manifest["icons"].as_array().expect("icons");
     assert_eq!(icons.len(), 2, "192 + 512");
     for icon in icons {
         let src = icon["src"].as_str().expect("src");
         assert!(
-            src.contains(&format!("t={TEST_TOKEN}")),
-            "icon URL 携带已验证 token: {src}"
+            !src.contains('?'),
+            "icon URL must be credential-free: {src}"
         );
     }
-    assert!(!body.contains("{TOKEN}"), "占位符不得泄漏");
+    assert!(!body.contains(TEST_TOKEN));
+    assert!(!body.contains("{TOKEN}"));
 
-    // 图标：200 + image/png；错 token → 401（闸完整性）。
+    // 图标属于公开 shell；API 仍在鉴权闸之后。
     for icon in ["/icons/icon-192.png", "/icons/icon-512.png"] {
-        let target = format!("{icon}?t={TEST_TOKEN}");
-        assert_eq!(get(handle.addr, &target, &[]).0, 200, "{icon}");
-        assert!(get_response_content_type(handle.addr, &target).contains("image/png"));
+        assert_eq!(get(handle.addr, icon, &[]).0, 200, "{icon}");
+        assert!(get_response_content_type(handle.addr, icon).contains("image/png"));
     }
-    let (status, _) = get(handle.addr, "/manifest.webmanifest?t=wrong", &[]);
-    assert_eq!(status, 401, "manifest 同样过 token 闸");
-    let (status, _) = get(handle.addr, "/icons/icon-192.png?t=wrong", &[]);
-    assert_eq!(status, 401, "图标同样过 token 闸");
+    assert_eq!(get(handle.addr, "/api/events", &[]).0, 401);
 
     cleanup(handle, &storage_root, &project_root);
 }
 
 fn get_response_content_type(addr: SocketAddr, target: &str) -> String {
+    get_response_header(addr, target, "content-type")
+}
+
+fn get_response_header(addr: SocketAddr, target: &str, wanted: &str) -> String {
     let mut stream = connect(addr);
     let request = format!("GET {target} HTTP/1.1\r\nHost: clat\r\nConnection: close\r\n\r\n");
     stream.write_all(request.as_bytes()).expect("write");
@@ -1122,7 +1310,7 @@ fn get_response_content_type(addr: SocketAddr, target: &str) -> String {
         .find_map(|line| {
             let (name, value) = line.split_once(':')?;
             name.trim()
-                .eq_ignore_ascii_case("content-type")
+                .eq_ignore_ascii_case(wanted)
                 .then(|| value.trim().to_owned())
         })
         .unwrap_or_default()
@@ -1191,6 +1379,7 @@ fn host_serve_for_playwright(key: &str, behavior: TestBehavior) {
         ServeArgs {
             port: 0,
             token: Some(token.clone()),
+            rotate_token: false,
         },
         |bootstrap| {
             bootstrap.authorize_and_mount_with_provider(Arc::new(TestProviderPlugin { behavior }))
@@ -1378,6 +1567,7 @@ fn serve_join_exit_reports_nonzero_for_synthetic_production_failures() {
         ServeHandle {
             addr: "127.0.0.1:0".parse().unwrap(),
             token: "synthetic".into(),
+            token_path: None,
             shutdown,
             close_outcome,
             join: std::thread::spawn(move || accept),

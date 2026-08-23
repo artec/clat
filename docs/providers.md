@@ -1,153 +1,236 @@
 # Providers
 
-Model vendors are adapters behind CLAT-owned interfaces; no provider
-defines the core runtime.
+Model vendors are adapters behind CLAT-owned interfaces. This document is for
+maintainers and advanced users who need request, streaming, retry, or preset
+details. Normal setup should begin with the [Model editor](model-editor.md).
 
-## OpenAI Responses
+## Protocol adapters
 
-`OpenAiModel` targets the `/responses` endpoint over SSE. Notable
-details:
+CLAT ships two provider-neutral protocol implementations.
 
-- Tool schemas are sent with `strict` as declared by the tool.
-- Reasoning items are preserved across turns through `provider_state`,
-  so the provider wire format never leaks into `Run`.
-- Managed request fields (`model`, `stream`, `instructions`, …) are
-  protected: provider options that would override them are rejected.
+### OpenAI Compatible
 
-## OpenAI Compatible
+`OpenAiCompatibleModel` targets streaming `/chat/completions`-style APIs and is
+the default for new custom profiles. Endpoint, request path, authentication,
+headers, and body additions are configurable.
 
-`OpenAiCompatibleModel` targets streaming `/chat/completions`-style APIs
-and is the default protocol, so CLAT works with DeepSeek, local
-gateways, and other OpenAI-shaped providers.
+The adapter protects fields owned by the runtime—`model`, `messages`, `tools`,
+and `stream`—from Extra Body overrides. It assembles incremental text,
+reasoning, tool-call arguments, finish reason, and usage into typed
+`ModelEvent`s.
 
-- Endpoint, request path, auth header/prefix, extra headers, and extra
-  body are all configurable through `/model`'s advanced fields.
-- Managed body fields (`model`, `messages`, `tools`, `stream`) are
-  protected against overrides.
+### OpenAI Responses
 
-### Built-in presets (2026-08)
+`OpenAiModel` targets the `/responses` SSE API.
 
-Four vendors ship official presets (pick by name in `/model`; only an
-API key is left to fill):
+- Tool schemas carry their declared `strict` setting.
+- Provider reasoning items are retained as opaque `provider_state` and replayed
+  on later turns without leaking the wire format into `Run`.
+- Managed request fields such as `model`, `stream`, `instructions`, and input
+  items cannot be replaced by provider options.
 
-- **DeepSeek** (`api.deepseek.com`): `thinking {type: enabled}` +
-  `reasoning_effort`, `stream_options.include_usage` for live cache
-  stats. Implicit prompt caching; usage reports
-  `prompt_cache_hit_tokens`.
-- **GLM Coding Plan** (`open.bigmodel.cn/api/coding/paas/v4`): as
-  DeepSeek plus preserved thinking (`clear_thinking: false`); usage
-  rides the stream by default.
-- **Qwen Token Plan**
-  (`token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1`,
-  dedicated subscription key): top-level `reasoning_effort` with the
-  official ladder `low`/`medium`/`xhigh` (CLAT's Low/High/Max tiers map
-  onto them; no `thinking` object). Context caching is implicit and
-  cannot be disabled (~20% hit discount); `include_usage` brings back
-  `prompt_tokens_details.cached_tokens` (some Singapore deployments
-  report the top-level `cached_tokens` transitional field — both are
-  parsed). Explicit `cache_control` marking is deliberately not sent:
-  its availability on the Singapore Token Plan endpoint is not
-  documented and misses cost 125% of input price.
-- **Kimi Coding Plan** (`api.kimi.com/coding/v1`, subscription
-  membership): top-level `reasoning_effort` (`low`/`high`/`max`, no
-  `thinking` object); context caching is fully automatic (≥256-token
-  prefix). The endpoint gates traffic by a User-Agent whitelist
-  (Kimi CLI / Claude Code / Roo Code / Kilo Code …) and returns 403
-  for unknown clients, so the preset injects the field-verified
-  whitelisted UA `claude-cli/2.1.161` (cc-switch PR #3671's fallback
-  constant; their measured whitelist: `claude-cli/*`, `claude-code/*`,
-  and `Kilo-Code/*` pass, while `codex-cli/*`, `kimi-cli/*`, and
-  `openclaw/*` are rejected). This sits in a gray zone of the
-  subscription terms — override it via `/model` → Extra Headers if you
-  want a different choice. The status bar's `Token` segment shows the 5-hour-window
-  remaining percentage from `GET /coding/v1/usages` (same endpoint as
-  cc-switch's Kimi quota query; the request carries the whitelisted
-  UA). Qwen Token Plan has no public balance API (credits are visible
-  only in the console's subscription page), so its status line carries
-  Cache/Context without a Token segment.
+Both adapters receive the same `ModelRequest`, tool definitions, cancellation
+token, output limit, and event sink. The agent loop does not branch on vendor.
 
-### Reasoning replay (DeepSeek)
+## Built-in presets
 
-DeepSeek thinking mode streams chain-of-thought as
-`delta.reasoning_content` and requires it to be replayed on assistant
-messages that carry tool calls. CLAT:
+The preset catalog configures the OpenAI-compatible adapter:
 
-1. captures `reasoning_content` chunks from the stream,
-2. attaches the accumulated reasoning to the turn's assistant item when
-   (and only when) the turn makes tool calls — plain answer turns drop
-   it, since the API ignores it there and sending it would waste tokens,
-3. groups a turn's assistant text, reasoning, and all of its tool calls
-   into one assistant message followed by the turn's tool results — the
-   official replay shape.
+| Vendor/preset | Model | Context | Max output | Reasoning default |
+|---|---|---:|---:|---|
+| DeepSeek V4.0 Flash | `deepseek-v4-flash` | 1M | 384K | `high` |
+| DeepSeek V4.0 Pro | `deepseek-v4-pro` | 1M | 384K | `high` |
+| DeepSeek V4.0 Flash Vision (Exp) | `deepseek-v4-flash-vision-exp` | 1M | 384K | `high` |
+| GLM 5.3 Coding Plan | `glm-5.3` | 1M | 128K | `high` |
+| Qwen3.8 Max Token Plan | `qwen3.8-max` | 1M | 128K | `medium` |
+| Kimi K3 Coding Plan | `kimi-k3` | 1M | 128K | `high` |
 
-## Resource budgets
+The context value also seeds automatic compaction. The output value bounds
+request configuration and the aggregated response budget. User edits convert a
+preset to Custom so the label cannot outlive its owned parameters.
 
-Model responses are bounded layer by layer, so a hostile or broken
-endpoint cannot exhaust memory (2026-08-22 hardening):
+### DeepSeek
 
-- an SSE line larger than **1 MiB** fails the request — the transport
-  layer never buffers an unbounded line;
-- an error body is read up to **64 KiB** — enough for a useful message,
-  never a firehose;
-- the whole aggregated response is capped at a budget tied to the
-  configured output limit (output tokens × 64 bytes, clamped to
-  1–64 MiB; a higher output limit raises the ceiling) — a legitimate
-  long reply is never killed by a flat cap, while a runaway stream
-  still stops at the ceiling.
+The three presets use `https://api.deepseek.com` and explicitly send:
 
-On the journal side, every zstd frame is decompressed under a 64 MiB
-decoded budget (see [persistent state](storage.md)); a compressed bomb
-fails at the cap with a budget-named error instead of exhausting
-memory.
+```json
+{
+  "thinking": { "type": "enabled" },
+  "reasoning_effort": "high",
+  "stream_options": { "include_usage": true }
+}
+```
 
-## Retry and deadlines
+Thinking mode ignores sampling fields such as temperature, so the presets leave
+them unset. Usage parsing recognizes DeepSeek's cache-hit token field. The
+Vision experimental preset uses the same protocol with native image input.
 
-Every model call the agent makes goes through a factory-backed `RetryModel`
-wrapper. Each attempt builds a fresh model instance from the provider
-factory, so no connection state is reused across attempts.
+DeepSeek streams chain-of-thought as `delta.reasoning_content`. CLAT accumulates
+it and attaches it only to an assistant item that made tool calls. On the next
+request, the adapter emits one assistant message containing its text,
+reasoning, and tool calls, followed by the matching tool results. Plain answer
+turns drop reasoning replay because the API ignores it there.
 
-Retry decisions come from the typed `ModelError` classification:
+### GLM Coding Plan
 
-- `Transport`, `RateLimited`, `Server` are retriable.
-- `Decode`, `Auth`, `Request`, `Other` fail immediately — retrying a decode
-  or auth error can only produce the same failure.
-- Factory (constructor) failures follow the same rule: transient typed
-  errors retry, everything else surfaces.
-- **Event safety**: once an attempt has emitted any stream event to the
-  caller, the failure is never retried — a resend would duplicate model
-  output the user already saw.
+The preset uses the dedicated endpoint
+`https://open.bigmodel.cn/api/coding/paas/v4`, not the generic platform URL. It
+sends enabled preserved thinking:
 
-`Retry-After` hints from 429/503 responses are honored, capped at 30s.
+```json
+{
+  "thinking": { "type": "enabled", "clear_thinking": false },
+  "reasoning_effort": "high"
+}
+```
 
-**Total deadlines are request capabilities, not just backoff budgets.**
-When a retry policy carries a `total_deadline` (internal consumers always
-do), the deadline is attached to the request's `CancelToken`:
+GLM 5.3 does not accept disabled reasoning. The status monitor reports Coding
+Plan quota when the provider endpoint makes it available.
 
-- the token reports itself cancelled at expiry, so SSE body polling stops
-  even when the server goes silent after sending headers;
-- providers clamp their HTTP timeouts (`timeout_global`, connect, and
-  response-header wait) to the remaining time, so connection setup and
-  header waits are bounded by the same deadline — the provider's default
-  30s/60s timeouts never override a shorter internal deadline;
-- a parent cancellation (user `Esc`, run cancel, scope close) short-circuits
-  immediately; it never waits out the deadline.
+When this preset and its API key are active at project mount, the MCP adapter
+also prepares the GLM Coding Plan server pack. See
+[MCP integration](mcp.md#glm-coding-plan-pack).
 
-A second policy field, `total_attempt_cap`, bounds the number of underlying
-HTTP/factory attempts across the wrapper's whole lifetime — map/reduce
-style consumers share one wrapper so the cap covers every request.
+### Qwen Token Plan
 
-Internal consumers:
+The preset uses the Singapore Token Plan endpoint and its subscription key. It
+sends top-level `reasoning_effort` without a `thinking` object. CLAT maps its
+Low / High / Max UI to Qwen's `low` / `medium` / `xhigh` ladder.
 
-| Consumer | Deadline | Attempt cap | Notes |
-|---|---|---|---|
-| Session titles | 15s | 2 | background worker; cancelled on close |
-| Compaction summaries | 60s | 8 | one shared wrapper across map and reduce rounds |
+Context caching is implicit. Usage parsing accepts both
+`prompt_tokens_details.cached_tokens` and the transitional top-level cached
+token field. CLAT does not send explicit `cache_control`, whose availability
+and miss pricing differ from this endpoint's documented implicit cache.
 
-Normal agent turns run without a total deadline and remain bounded only by
-the user's cancellation token.
+There is no public balance endpoint for the plan, so the status surface shows
+cache and context but does not invent a Token segment.
+
+### Kimi Coding Plan
+
+The preset uses `https://api.kimi.com/coding/v1`, top-level
+`reasoning_effort`, and automatic context caching. Low / High / Max map directly
+to the vendor ladder.
+
+The Coding membership endpoint currently filters clients by a coding-agent
+User-Agent. The preset injects the field-verified compatible value
+`claude-cli/2.1.161`; Extra Headers can override it. This is an interoperability
+workaround rather than a core protocol requirement, and users should make
+their own terms/compliance decision before relying on it.
+
+The status monitor queries the provider's five-hour usage window and displays
+the remaining percentage when available.
+
+## Reasoning control
+
+`ThinkingLevel` is provider-aware:
+
+| CLAT level | DeepSeek / GLM / Kimi | Qwen |
+|---|---|---|
+| Low | `low` | `low` |
+| High | `high` | `medium` |
+| Max | `max` | `xhigh` |
+
+Known endpoint domains receive this mapping even for a custom profile. Unknown
+domains do not receive an inferred field. The raw Extra Body remains the
+escape hatch for local gateways or other vendors.
+
+Reasoning deltas are observable live, but private reasoning is not rendered as
+ordinary assistant text. Provider replay state persists only when required for
+correct subsequent requests.
+
+## Response resource budgets
+
+Transport and aggregation limits prevent a hostile or broken endpoint from
+exhausting memory:
+
+| Surface | Limit |
+|---|---:|
+| one SSE line | 1 MiB |
+| provider error body | 64 KiB |
+| aggregated response | output tokens × 64 bytes, clamped to 1–64 MiB |
+
+The response ceiling scales with the configured output limit so legitimate
+large outputs are not subject to an unrelated flat cap. Crossing any limit
+returns a typed provider error.
+
+Journal zstd frames have their own 64 MiB decoded budget; see
+[Persistent state](storage.md#session-journals).
+
+## Retry policy
+
+Every model call is built through a `ModelFactory` and wrapped by `RetryModel`.
+Each attempt creates a fresh adapter instance, so connection state is not reused.
+
+Typed errors control retry:
+
+| Error class | Retry? |
+|---|---|
+| transport | yes |
+| rate limited | yes |
+| server | yes |
+| decode | no |
+| authentication | no |
+| invalid request | no |
+| other | no |
+
+`Retry-After` on 429/503 is honored up to 30 seconds. Once any stream event has
+been emitted to the caller, the attempt is no longer retryable; resending would
+duplicate output or tool calls the user already observed.
+
+Factory failures follow the same typed classification.
+
+## Deadlines and attempt caps
+
+Normal interactive agent turns have no total deadline; the user cancellation
+token is their outer lifetime. Internal model consumers use explicit budgets:
+
+| Consumer | Total deadline | Underlying attempt cap |
+|---|---:|---:|
+| automatic session title | 15 s | 2 |
+| compaction map/reduce | 60 s | 8 |
+
+A deadline is attached to a child `CancelToken`, not only to retry sleep. It
+therefore bounds connection setup, response headers, a silent SSE body, and
+backoff together. Provider connect/header/global timeouts are clamped to the
+remaining time.
+
+Map/reduce consumers share one retry wrapper, so the attempt cap covers the
+whole operation instead of resetting for each subrequest.
 
 ## Cancellation
 
-Providers poll the shared `CancelToken` between SSE chunks and stop
-promptly when it is set; a cancelled compatible stream discards
-half-received tool-call arguments instead of failing on partial JSON.
+Providers check the shared token between SSE reads and before decoding a
+completed tool call. Cancelling a compatible stream discards incomplete tool
+arguments instead of reporting misleading malformed JSON.
+
+Parent cancellation always wins over an internal deadline. Run cancellation
+also propagates to native tools, MCP requests, WASM execution, and plugin-host
+sampling so the provider layer is not an isolated cancellation island.
+
+## Usage accounting
+
+Provider usage is normalized into input, output, optional cache-read, and
+reasoning token counts. It drives:
+
+- live frontend telemetry;
+- per-run spend reconciliation;
+- durable session statistics;
+- context estimates used for compaction;
+- usage attributed to extension sampling.
+
+Malformed main token fields are treated as absent, leaving the conservative
+pre-request reservation in place. Values are clamped to a sane numeric domain
+before arithmetic, so a custom endpoint cannot wrap the ledger with an absurd
+report.
+
+## Adding a provider
+
+A new provider should normally implement a `ModelFactory` and `Model` adapter,
+then register it through the Provider registry. Keep vendor request/response
+types inside the adapter. Do not add vendor matches to `Run`, frontends, or
+session projections.
+
+Before adding a preset, verify model id, endpoint, request path, context window,
+output limit, reasoning parameters, usage shape, and authentication semantics.
+The preset application path and editor must continue to share one catalog
+entry so displayed and executed values cannot drift.

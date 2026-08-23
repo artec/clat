@@ -1,131 +1,164 @@
 # Model editor (`/model`)
 
-`/model` opens a picker: the four built-in provider vendors plus
-**Custom**. Custom models are **named profiles** — each profile persists
-its own configuration *and* its own API key, so switching between
-profiles (or between a profile and a preset) never loses anything.
+Use `/model` to select a built-in provider preset or manage named custom model
+profiles. This document covers the editor workflow and saved fields. Wire-level
+adapter behavior lives in [Providers](providers.md).
 
-- **No profiles yet**: selecting Custom goes straight to the new-profile
-  page (a blank template with safe defaults).
-- **One or more profiles**: Custom shows the profile list (name plus an
-  `endpoint · model` summary; the active profile is marked `●`). `Enter`
-  switches and closes, `e` edits, `d` deletes (press `d` twice to
-  confirm), and the `New…` row at the bottom starts a blank template.
+## Fast path: built-in preset
 
-Going back a level (`Esc`) always restores the cursor to the row you
-entered from, and cancelling an editor opened from the picker returns
-to the picker in place — one `Esc` never collapses the whole selection
-chain.
+1. Run `/model`.
+2. Choose a vendor, then a preset.
+3. Open the preset editor, paste the API key, and save with `Ctrl+S` or the
+   `[ Save ]` row.
 
-The profile editor never shows the Preset row (profiles are by
-definition custom), and every numeric parameter is a choice, not a blank
-box, listed small to large: **Context Window** (128K default / 256K /
-1M / Custom…), **Max Output** (8K / 32K default / 128K / Custom…), and
-**Spend Budget** (1M / default 10M / 50M / off / Custom…). `Enter` or
-`←`/`→` cycles; the `Custom…` position opens a numeric input. **Thinking** is a choice
-too (low / **high (default)** / max / off) and is stored with the
-profile, matching the built-in presets which all ship
-`reasoning_effort: high`; `off` sends nothing and follows the vendor
-default. The level is injected automatically when the endpoint is one
-of the four known vendor domains; on unknown endpoints it is stored but
-never injected (strict gateways reject unknown parameters) — write the
-vendor-native parameter into Extra Body there instead. `Shift+Tab`
-stays a live adjustment of the running configuration: while a profile
-is active it changes the current model's level but not the stored row —
-the `●` drops until you switch away and back (the row's saved level
-returns with it); to keep a level, set it in the profile editor. Fill
-in **Name**, **Model**, **Endpoint** (an API key is optional — local
-gateways don't need one), save, and the profile becomes active
-immediately. Deleting the active profile falls back to the first
-remaining profile, or to factory defaults when none are left. Upgrades
-migrate an existing single-slot custom configuration into the first
-profile automatically.
+The short preset form contains only Preset, Model, Endpoint, and API Key.
+Changing Model or Endpoint intentionally converts the configuration to Custom;
+the preset label never remains attached to modified preset-owned fields.
 
-For preset configurations, the editor opens on a short form: **Preset**,
-**Model**, **Endpoint**, and **API Key** — the four things a normal user
-needs.
+API keys are remembered per vendor. Switching among presets of the same vendor
+does not erase the key, and choosing a preset never copies credentials into a
+session journal.
 
-Press `Enter` (or click, or just start typing) on any field to open a
-small input box — `Enter` confirms, `Esc` cancels. `Ctrl+S` or the
-`[ Save ]` row saves; `Esc` leaves the editor and returns to the picker
-position you came from (at the top level it closes the dialog). Every
-model dialog pins its key-hint bar to the bottom edge in the same dim
-gray, separated from the content by one blank line.
+## Built-in presets
 
-## Presets
+The shipped catalog is the source used by both the picker and runtime:
 
-Presets ship with official provider parameters. `←` / `→` or `Enter` on
-the Preset row cycles through Custom → the built-ins → Custom:
+| Preset | Model id | Endpoint | Context | Max output |
+|---|---|---|---:|---:|
+| DeepSeek V4.0 Flash | `deepseek-v4-flash` | `https://api.deepseek.com` | 1M | 384K |
+| DeepSeek V4.0 Pro | `deepseek-v4-pro` | `https://api.deepseek.com` | 1M | 384K |
+| DeepSeek V4.0 Flash Vision (Exp) | `deepseek-v4-flash-vision-exp` | `https://api.deepseek.com` | 1M | 384K |
+| GLM 5.3 | `glm-5.3` | `https://open.bigmodel.cn/api/coding/paas/v4` | 1M | 128K |
+| Qwen3.8 Max | `qwen3.8-max` | `https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1` | 1M | 128K |
+| Kimi K3 | `kimi-k3` | `https://api.kimi.com/coding/v1` | 1M | 128K |
 
-| Preset | Model | Endpoint |
-|---|---|---|
-| DeepSeek V4.0 Flash | `deepseek-v4-flash` (V4-Flash-0731) | `https://api.deepseek.com` |
-| DeepSeek V4.0 Pro | `deepseek-v4-pro` (V4-Pro-0813) | `https://api.deepseek.com` |
-| DeepSeek V4.0 Flash Vision (Exp) | `deepseek-v4-flash-vision-exp` | `https://api.deepseek.com` |
-| GLM 5.3 | `glm-5.3` | `https://open.bigmodel.cn/api/coding/paas/v4` |
-| Qwen3.8 Max | `qwen3.8-max` | `https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1` |
-| Kimi K3 | `kimi-k3` | `https://api.kimi.com/coding/v1` |
+All use the OpenAI-compatible protocol. The catalog also owns request paths,
+reasoning parameters, usage streaming, context-window seeds, and vendor-specific
+headers. For example, GLM preserves thinking, Qwen uses its
+`low`/`medium`/`xhigh` ladder, and the Kimi Coding endpoint requires a
+whitelisted coding-agent User-Agent. See [Providers](providers.md#built-in-presets)
+before overriding those fields.
 
-The DeepSeek presets share the official OpenAI-compatible API with a 1M
-context window and a 384K output limit, and set
-`reasoning_effort: high` (thinking mode ignores `temperature`, so
-presets leave it unset). **Flash Vision (Exp)** is the experimental
-multimodal entry — the first preset that reads image input, which pairs
-with CLAT's image attachments (images are billed as tokens by their
-dimensions). The GLM 5.3 preset targets the dedicated Coding Plan
-endpoint with a 128K output limit, preserved thinking
-(`clear_thinking: false`), and `reasoning_effort: high` as well.
-GLM 5.3 cannot disable thinking (the API rejects `disabled`), while
-DeepSeek's non-thinking mode stays available through the raw extra
-body. Picking a preset fills Model, Endpoint, and the request
-parameters; the API Key is never touched.
+The DeepSeek Vision preset accepts the image attachments described in
+[Using CLAT](usage.md#image-attachments). Other endpoints may still process
+images through configured MCP vision tools.
 
-Editing any preset-controlled field by hand — Model, Endpoint,
-Protocol, Request Path, Extra Body, Max Output Tokens, Temperature, or
-Parallel Tool Calls — marks the configuration as Custom, so the preset
-label never lies about what is active (and preset defaults never
-overwrite your saved values on the next run). Editing the Extra Body
-also clears the `Shift+Tab`-saved thinking level: the raw body becomes
-the source of truth.
+## Custom profiles
 
-## DeepSeek reasoning content
+Custom models are named profiles. Each row keeps a complete model
+configuration and its own optional API key, so switching profiles does not
+destroy the inactive configuration.
 
-DeepSeek's chain of thought (`reasoning_content`) is handled explicitly:
-CLAT captures it from the stream, persists it with the conversation, and
-replays it on assistant messages that carry tool calls — the exact shape
-DeepSeek requires for multi-turn tool use — while dropping it on plain
-answer turns, where the API ignores it and sending it would only waste
-tokens. See [providers](providers.md) for the wire-level details.
+- With no profiles, selecting Custom opens a blank profile template.
+- With profiles, Custom opens a list showing `name`, `endpoint · model`, and a
+  `●` beside the active saved row.
+- `Enter` activates a row, `e` edits, and `d` twice confirms deletion.
+- `New…` opens the blank template.
+
+Deleting the active profile activates the first remaining profile. If none
+remain, CLAT returns to factory custom defaults. Existing installations with a
+legacy single custom slot are adopted into the first named profile.
+
+The required profile fields are:
+
+- **Name** — unique display identity;
+- **Model** — provider model id;
+- **Endpoint** — base URL;
+- **API Key** — optional, so local gateways can omit it.
+
+Save activates the profile immediately. `Esc` cancels the current editor and
+returns to the exact picker row it came from; it does not collapse the entire
+dialog chain.
+
+## Editor controls
+
+Press `Enter`, click, or type on a text field to open its input. `Enter`
+confirms the field, `Esc` cancels it. `Ctrl+S` saves the whole editor.
+
+Numeric settings use bounded choice rows before a custom input:
+
+| Field | Choices |
+|---|---|
+| Context Window | 128K (default template), 256K, 1M, Custom… |
+| Max Output | 8K, 32K (default template), 128K, Custom… |
+| Spend Budget | 1M, 10M (default), 50M, off, Custom… |
+
+`Enter` or `←`/`→` cycles a choice. Selecting Custom opens a numeric input.
+
+## Reasoning level
+
+The profile Thinking row offers Low, High, Max, and Off. Off sends no inferred
+reasoning parameter and follows the endpoint's own behavior. Known vendor
+domains receive the vendor-native mapping; unknown domains retain the saved
+selection for display but do not receive an injected parameter because strict
+gateways may reject it. Configure unknown endpoints through Extra Body.
+
+Preset defaults are pinned to a practical middle tier:
+
+- DeepSeek, GLM, and Kimi store `high`;
+- Qwen stores `medium`, which is CLAT's High tier;
+- all presets keep a context-window value so automatic compaction works on the
+  first long conversation.
+
+`Shift+Tab` changes the active runtime configuration for the next run. For a
+named profile this deliberately does not rewrite the saved row: the `●` marker
+drops until you switch away and reactivate the profile. To persist the change
+inside that profile, edit its Thinking row.
+
+DeepSeek also supports a raw non-thinking mode, but the shortcut ladder stays
+Low → High → Max. GLM 5.3 rejects disabled thinking. Hand-written Extra Body is
+the escape hatch for any provider-specific mode not represented by the editor.
 
 ## Advanced fields
 
-The `[ Advanced ]` row reveals fields for custom setups only when needed:
+`[ Advanced ]` exposes transport and request controls:
 
-- Protocol — `OpenAI Compatible` (default) or `OpenAI Responses`
-- Request Path (default `/chat/completions` for compatible providers,
-  `/responses` for Responses)
-- Auth Header (default `Authorization`)
-- Auth Prefix (default `Bearer `)
-- Extra Headers JSON, for example `{"X-Tenant":"acme"}`
-- Extra Body JSON, for example `{"top_p":0.9}`
-- Max Output Tokens
-- Context Window — the auto-compact budget in tokens; once set, history
-  beyond it is compacted automatically at the start of the next run
-- Spend Budget — the per-run token guardrail (`input+output`; cache hits
-  count inside input, never twice). Empty = the 10M default; `0` disables
-  it (not recommended). When a run crosses 50% and 90% of the budget a
-  durable warning event is journaled (`clat/budget`); crossing the cap
-  stops the run with a three-part error (used / cap / raise via /model).
-  Provider-reported token counts are clamped to a sane domain before they
-  enter the ledger, so an absurd number from a custom endpoint trips the
-  guardrail instead of wrapping it (fail-closed). A report whose main
-  token fields are malformed (negative, string, float, or missing) is
-  treated as absent — the conservative reservation stands instead of
-  being replaced by a trusted zero.
-  The budget is per model configuration, so an expensive model can carry
-  a tighter cap than a cheap one
-- Temperature
-- Parallel Tool Calls
+- **Protocol** — OpenAI Compatible (default) or OpenAI Responses;
+- **Request Path** — `/chat/completions` or `/responses` by default;
+- **Auth Header** and **Auth Prefix** — default `Authorization` and `Bearer `;
+- **Extra Headers JSON** — for example `{"X-Tenant":"acme"}`;
+- **Extra Body JSON** — for example `{"top_p":0.9}`;
+- **Max Output Tokens**;
+- **Context Window**;
+- **Spend Budget**;
+- **Temperature**;
+- **Parallel Tool Calls**.
 
-`OpenAI Compatible` is the default for a fresh installation so CLAT is
-not tied to the official OpenAI endpoint.
+The provider adapter protects managed fields such as model, messages, tools,
+stream, and instructions. Trying to override them through Extra Body is an
+error rather than an ambiguous merge.
+
+Editing any preset-controlled field—Model, Endpoint, Protocol, Request Path,
+Extra Body, Max Output, Temperature, or Parallel Tool Calls—clears the preset
+identity. Editing Extra Body also clears the shortcut-managed thinking value so
+the raw body becomes the single source of truth.
+
+## Context and spend budgets
+
+**Context Window** is the automatic compaction budget. Presets seed it with the
+catalog value; a user-entered value wins. CLAT estimates context before the
+next run, triggers around 80% of the window, and compacts toward the same ratio
+while preserving the original journal.
+
+**Spend Budget** limits total input+output tokens for one run. The default is
+10M and `0` disables it. Despite the label, its unit is tokens, not money.
+Every model or extension-sampling request reserves a
+conservative amount before it starts; provider usage reconciles the reservation
+when available. Malformed or absurd usage cannot wrap or silently reset the
+ledger. Crossing the cap stops the run with used/cap values and a pointer back
+to `/model`.
+
+The spend value belongs to the model configuration, so different profiles can
+carry different risk/cost limits.
+
+## Provider replay data
+
+Some providers require hidden state on later turns. The editor does not expose
+or persist that state as configuration:
+
+- OpenAI Responses reasoning items travel as opaque provider replay state;
+- DeepSeek `reasoning_content` is replayed only on assistant turns that made
+  tool calls, which is the wire shape required for multi-turn tool use.
+
+This data belongs to the session journal and provider adapter. Switching a
+profile changes future requests but does not rewrite historical events.

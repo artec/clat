@@ -1,55 +1,252 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="system">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="dark">
-<title>clat</title>
-<link rel="stylesheet" href="/style.css?t={TOKEN}">
-<link rel="icon" href="/icons/icon-192.png?t={TOKEN}">
-<link rel="manifest" href="/manifest.webmanifest?t={TOKEN}">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#121619">
+<title>CLAT · local agent workbench</title>
+<link rel="stylesheet" href="/style.css">
+<link rel="icon" href="/icons/icon-192.png">
+<link rel="manifest" href="/manifest.webmanifest">
 </head>
 <body>
+<a class="skip-link" href="#prompt">Skip to composer</a>
+
 <div id="landing" class="landing hidden">
-  <div class="landing-card">
-    <div class="landing-logo"><img src="/icons/icon-192.png?t={TOKEN}" alt="clat"></div>
-    <h1>clat</h1>
-    <p>This is the clat web client. It needs a running <code>clat serve</code>.</p>
-    <p class="hint">Start it in your project directory — the URL it prints
-    (containing the per-run token) opens this app already connected.</p>
-    <form id="connect-form">
-      <input id="connect-url" type="text" placeholder="127.0.0.1:PORT/?t=TOKEN"
-             autocomplete="off" spellcheck="false" aria-label="clat serve URL">
-      <button type="submit">Connect</button>
-    </form>
-    <p id="connect-error" class="error" role="alert"></p>
-  </div>
+  <main class="landing-card">
+    <div class="landing-rail" aria-hidden="true">
+      <span>LOCAL</span><span>ONE BINARY</span><span>PERMISSION FIRST</span>
+    </div>
+    <section class="landing-copy">
+      <div class="landing-mark">
+        <img src="/icons/icon-192.png" alt="">
+        <span>CLAT / WORKBENCH</span>
+      </div>
+      <p class="eyebrow">A local agent, at the project boundary</p>
+      <h1>Return to your<br><em>working context.</em></h1>
+      <p class="landing-intro">Pair this browser once with the local token stored at
+        <code>~/.clat/web-token</code>. The credential stays out of the URL and is retained only
+        for this exact local origin.</p>
+      <form id="connect-form">
+        <label for="connect-token">Local pairing token</label>
+        <div class="connect-row">
+          <input id="connect-token" type="password" placeholder="Paste ~/.clat/web-token"
+                 autocomplete="off" spellcheck="false" aria-describedby="connect-help">
+          <button type="submit" class="primary">Pair browser</button>
+        </div>
+      </form>
+      <p id="connect-error" class="error" role="alert"></p>
+      <p id="connect-help" class="landing-hint"><code>clat serve</code> · loopback only ·
+        default port 2691 · rotate with <code>--rotate-token</code></p>
+    </section>
+  </main>
 </div>
 
-<div id="app" class="app hidden">
-  <header class="topbar">
-    <span class="brand">clat</span>
-    <span id="session-title" class="session-title" title="click to rename"></span>
-    <span id="conn-status" class="conn-status" data-state="connecting">connecting…</span>
-  </header>
-  <div class="main">
-    <aside class="sidebar">
-      <button id="new-session" class="side-action">＋ New chat</button>
+<div id="app" class="app hidden" data-sidebar="expanded" data-inspector="open" data-mobile-sidebar="closed">
+  <aside id="sidebar" class="sidebar" aria-label="Project and sessions">
+    <div class="sidebar-head">
+      <div class="brand-lockup">
+        <img src="/icons/icon-192.png" alt="" class="brand-icon">
+        <div class="sidebar-expanded-only">
+          <strong>CLAT</strong>
+          <span>agent workbench</span>
+        </div>
+      </div>
+      <button id="sidebar-toggle" class="icon-button desktop-only" type="button"
+              aria-label="Collapse sidebar" aria-expanded="true">‹</button>
+      <button id="mobile-sidebar-close" class="icon-button mobile-only" type="button"
+              aria-label="Close sidebar">×</button>
+    </div>
+
+    <section class="project-card sidebar-expanded-only" aria-labelledby="project-name">
+      <span class="section-kicker">PROJECT</span>
+      <strong id="project-name">Loading…</strong>
+      <span id="project-root" class="project-root"></span>
+    </section>
+
+    <button id="new-session" class="new-session" type="button">
+      <span class="button-glyph" aria-hidden="true">＋</span>
+      <span class="sidebar-expanded-only">New session</span>
+    </button>
+
+    <label class="session-search sidebar-expanded-only" for="session-search">
+      <span aria-hidden="true">⌕</span>
+      <input id="session-search" type="search" placeholder="Find a session" autocomplete="off"
+             aria-label="Find a session">
+      <kbd>/</kbd>
+    </label>
+
+    <nav class="session-nav" aria-label="Sessions">
+      <div class="section-row sidebar-expanded-only">
+        <span class="section-kicker">SESSIONS</span>
+        <span id="session-count">0</span>
+      </div>
       <ul id="session-list" class="session-list"></ul>
-    </aside>
-    <section class="conversation">
-      <div id="transcript" class="transcript" aria-live="polite"></div>
-      <div class="composer">
-        <textarea id="prompt" rows="2" placeholder="Send a message (Enter to submit, Shift+Enter for a newline)"></textarea>
+      <p id="session-empty" class="session-empty sidebar-expanded-only hidden">No matching sessions.</p>
+    </nav>
+
+    <div class="sidebar-footer">
+      <button id="settings-open" class="sidebar-footer-button" type="button">
+        <span aria-hidden="true">⚙</span>
+        <span class="sidebar-expanded-only">Workbench settings</span>
+      </button>
+      <div class="sidebar-footnote sidebar-expanded-only">
+        <span class="pulse-dot" aria-hidden="true"></span>
+        <span id="sidebar-connection">Connecting to local runtime</span>
+      </div>
+    </div>
+  </aside>
+
+  <main class="conversation" aria-label="Conversation">
+    <header class="conversation-header">
+      <button id="mobile-sidebar-open" class="icon-button mobile-only" type="button"
+              aria-label="Open sessions">☰</button>
+      <div class="conversation-identity">
+        <button id="session-title" class="session-title" type="button" title="Rename session">Untitled session</button>
+        <div class="conversation-meta">
+          <span id="conn-status" class="conn-status" data-state="connecting" role="status">connecting…</span>
+          <span aria-hidden="true">/</span>
+          <span id="header-model">model unavailable</span>
+        </div>
+      </div>
+      <div class="header-actions">
+        <span id="header-permission" class="permission-badge">Project Write</span>
+        <button id="inspector-toggle" class="icon-button" type="button"
+                aria-label="Toggle workbench details" aria-expanded="true">◫</button>
+      </div>
+    </header>
+
+    <div id="transcript-scroll" class="transcript-scroll">
+      <div id="empty-state" class="empty-state">
+        <span class="empty-index">01</span>
+        <p class="eyebrow">READY AT PROJECT ROOT</p>
+        <h2>What should we<br>work through?</h2>
+        <p>Ask CLAT to inspect, change, and verify the repository. Tool effects remain governed by the active permission mode.</p>
+        <div class="prompt-suggestions" aria-label="Prompt suggestions">
+          <button type="button" data-prompt="Map the architecture and identify the highest-risk boundary.">Map the architecture</button>
+          <button type="button" data-prompt="Inspect the current changes and run the most relevant checks.">Review current changes</button>
+        </div>
+      </div>
+      <div id="transcript" class="transcript" aria-live="polite" aria-relevant="additions text"></div>
+    </div>
+
+    <section class="composer" aria-label="Message composer">
+      <div class="composer-shell">
+        <div class="composer-context">
+          <button id="composer-permission" class="context-pill" type="button" title="Change permission mode">
+            <span class="shield-dot" aria-hidden="true"></span>
+            <span id="composer-permission-label">Project Write</span>
+          </button>
+          <span id="run-state" class="run-state" role="status"></span>
+        </div>
+        <textarea id="prompt" rows="2" placeholder="Describe the outcome you want…" aria-label="Message CLAT"></textarea>
         <div class="composer-row">
-          <span id="run-state" class="run-state"></span>
-          <button id="send" class="primary">Send</button>
-          <button id="cancel" class="ghost hidden">Cancel run</button>
+          <span class="composer-hint"><kbd>Enter</kbd> send · <kbd>Shift Enter</kbd> newline</span>
+          <div class="composer-actions">
+            <button id="cancel" class="ghost hidden" type="button">Stop</button>
+            <button id="send" class="send-button" type="button" aria-label="Send message">Send <span aria-hidden="true">↵</span></button>
+          </div>
         </div>
       </div>
     </section>
-  </div>
+  </main>
+
+  <aside id="inspector" class="inspector" aria-label="Workbench details">
+    <header class="inspector-head">
+      <div>
+        <span class="section-kicker">CONTEXT</span>
+        <strong>Workbench details</strong>
+      </div>
+      <button id="inspector-close" class="icon-button" type="button" aria-label="Close details">×</button>
+    </header>
+    <div class="inspector-scroll">
+      <section class="inspector-section">
+        <h2>Session</h2>
+        <dl>
+          <div><dt>Status</dt><dd id="detail-run">Idle</dd></div>
+          <div><dt>Journal seq</dt><dd id="detail-seq">—</dd></div>
+          <div><dt>Session ID</dt><dd id="detail-session" class="mono-detail">Fresh</dd></div>
+        </dl>
+      </section>
+      <section class="inspector-section">
+        <h2>Model route</h2>
+        <strong id="detail-model">—</strong>
+        <p id="detail-protocol">—</p>
+        <div class="metric-grid">
+          <div><span>Context</span><strong id="detail-context">—</strong></div>
+          <div><span>Run guard</span><strong id="detail-budget">—</strong></div>
+        </div>
+      </section>
+      <section class="inspector-section">
+        <h2>Capabilities</h2>
+        <div id="capability-list" class="capability-list"></div>
+      </section>
+      <section class="inspector-section">
+        <h2>MCP</h2>
+        <p id="detail-mcp">No servers configured</p>
+        <div id="mcp-servers" class="mcp-servers"></div>
+      </section>
+    </div>
+  </aside>
+
+  <button id="sidebar-backdrop" class="sidebar-backdrop hidden" type="button" aria-label="Close sessions"></button>
 </div>
-<script src="/app.js?t={TOKEN}"></script>
+
+<dialog id="settings-dialog" class="settings-dialog" aria-labelledby="settings-title">
+  <form method="dialog" class="settings-panel">
+    <header>
+      <div>
+        <span class="section-kicker">LOCAL PREFERENCES + SESSION POLICY</span>
+        <h2 id="settings-title">Workbench settings</h2>
+      </div>
+      <button class="icon-button" value="cancel" aria-label="Close settings">×</button>
+    </header>
+
+    <section class="settings-section">
+      <div class="settings-copy">
+        <h3>Appearance</h3>
+        <p>Stored only in this browser. Session content is never cached here.</p>
+      </div>
+      <fieldset id="theme-options" class="segmented" aria-label="Theme">
+        <label><input type="radio" name="theme" value="system" checked><span>System</span></label>
+        <label><input type="radio" name="theme" value="light"><span>Light</span></label>
+        <label><input type="radio" name="theme" value="dark"><span>Dark</span></label>
+      </fieldset>
+    </section>
+
+    <section class="settings-section permission-settings">
+      <div class="settings-copy">
+        <h3>Permission mode</h3>
+        <p>This is a session property. Changes apply at the next tool permission check.</p>
+      </div>
+      <fieldset id="permission-options" class="permission-options" aria-label="Permission mode">
+        <label>
+          <input type="radio" name="permission-mode" value="read-only">
+          <span><strong>Read Only</strong><small>Ask before every side effect.</small></span>
+        </label>
+        <label>
+          <input type="radio" name="permission-mode" value="workspace-write" checked>
+          <span><strong>Project Write</strong><small>Edit this project; ask before commands and destructive tools.</small></span>
+        </label>
+        <label>
+          <input type="radio" name="permission-mode" value="danger-full-access">
+          <span><strong>Full Access</strong><small>Allow every tool and absolute writes without prompts.</small></span>
+        </label>
+      </fieldset>
+      <label id="full-access-confirm-row" class="danger-confirm hidden">
+        <input id="full-access-confirm" type="checkbox">
+        <span>I understand that Full Access removes tool approval prompts.</span>
+      </label>
+      <p id="settings-error" class="error" role="alert"></p>
+      <div class="settings-actions">
+        <span id="settings-saved" role="status"></span>
+        <button id="permission-save" class="primary" type="button">Apply permission mode</button>
+      </div>
+    </section>
+  </form>
+</dialog>
+
+<script src="/app.js"></script>
 </body>
 </html>

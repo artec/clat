@@ -7,8 +7,9 @@
 //!
 //! 不变量（INV-S1…S8，oracle 见设计文档 §10）：
 //! - INV-S1 三闸 fail-closed：只绑 127.0.0.1（无 `--host`——安全边界
-//!   不是配置项）；每请求 token 精确匹配（不落盘、不进日志）；带
-//!   Origin 必属允许集，不发 CORS 头。
+//!   不是配置项）；API 请求必须精确匹配 Bearer；缺省
+//!   token 仅持久化为 `~/.clat/web-token` 0600，不进 URL/日志/journal；
+//!   带 Origin 必属允许集，不发 CORS 头。
 //! - INV-S6 单 run 互斥：busy 即拒；每次受理恰一 `prompt.settled`。
 //! - INV-S7 背压有界：SSE 每连接 1024 帧，满即断连；run worker 永不
 //!   因慢消费者阻塞。
@@ -25,6 +26,7 @@ mod sse;
 mod state;
 #[cfg(test)]
 mod tests;
+mod token;
 mod web_assets;
 
 use crate::{BootstrapApplication, Project, TrustedProjectApplication};
@@ -36,12 +38,26 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 /// `clat serve` 的已解析参数。
-#[derive(Clone, Debug, Default)]
+pub const DEFAULT_SERVE_PORT: u16 = 2691;
+
+#[derive(Clone, Debug)]
 pub struct ServeArgs {
-    /// 绑定端口；0 = OS 自动分配（缺省，打印实际端口）。
+    /// 绑定端口；缺省 2691；0 = OS 自动分配（测试/显式多实例）。
     pub port: u16,
-    /// 显式 token（脚本/测试）；缺省进程启动时生成 uuid v4。
+    /// 显式 token（脚本/测试）；缺省读取/创建 `~/.clat/web-token`。
     pub token: Option<String>,
+    /// 显式轮换持久 token；与 `--token` 互斥。
+    pub rotate_token: bool,
+}
+
+impl Default for ServeArgs {
+    fn default() -> Self {
+        Self {
+            port: DEFAULT_SERVE_PORT,
+            token: None,
+            rotate_token: false,
+        }
+    }
 }
 
 /// 解析 `clat serve` 之后的参数。用法错误返回 `Err(message)`（退出码 2）。
@@ -67,14 +83,16 @@ where
                 let value = iter
                     .next()
                     .ok_or_else(|| "--token requires a value".to_string())?;
-                if value.trim().is_empty() {
-                    return Err("invalid token: empty".into());
-                }
+                token::validate(&value)?;
                 parsed.token = Some(value);
             }
+            "--rotate-token" => parsed.rotate_token = true,
             "--" => return Err("serve takes no positional arguments".into()),
             other => return Err(format!("unknown option: {other}")),
         }
+    }
+    if parsed.rotate_token && parsed.token.is_some() {
+        return Err("--rotate-token cannot be used with --token".into());
     }
     Ok(parsed)
 }
@@ -92,7 +110,7 @@ pub fn run_serve_with_shutdown(args: ServeArgs, shutdown: Arc<AtomicBool>) -> i3
         project,
         None,
         args,
-        |bootstrap| bootstrap.into_trusted(),
+        |bootstrap| bootstrap.with_permission_modes().into_trusted(),
         shutdown,
         state::SUBSCRIBER_QUEUE_FRAMES,
     ) {
@@ -102,12 +120,17 @@ pub fn run_serve_with_shutdown(args: ServeArgs, shutdown: Arc<AtomicBool>) -> i3
             return 1;
         }
     };
-    // 启动横幅（§2.3）：完整入口 URL 只进终端（本机用户可见 = 设计内）。
     println!(
-        "clat serve listening on http://127.0.0.1:{}?t={}",
-        handle.addr.port(),
-        handle.token
+        "clat serve listening on http://127.0.0.1:{}/",
+        handle.addr.port()
     );
+    match &handle.token_path {
+        Some(path) => println!(
+            "Pair this browser once with the token in {}.",
+            path.display()
+        ),
+        None => println!("Pair this browser once with the explicit --token value."),
+    }
     println!("Press Ctrl-C to stop.");
     serve_join_exit(handle)
 }
@@ -157,6 +180,8 @@ pub struct ServeExit {
 pub struct ServeHandle {
     pub addr: SocketAddr,
     pub token: String,
+    /// 持久 token 路径；显式 `--token` 时为 None。
+    pub token_path: Option<PathBuf>,
     shutdown: Arc<AtomicBool>,
     /// 显式应用 close 的结果（accept 线程写入，`join()` 后读取）：
     /// `Some` = 归一成功、显式 close 已执行（Ok/Err 皆算）；
@@ -226,10 +251,11 @@ pub(crate) fn serve_with_with_queue<F>(
 where
     F: FnOnce(BootstrapApplication) -> Result<TrustedProjectApplication, crate::ApplicationError>,
 {
-    let bootstrap = match storage_root {
-        Some(root) => BootstrapApplication::open(project.clone(), root),
-        None => BootstrapApplication::open_default(project.clone()),
+    let storage_root = match storage_root {
+        Some(root) => root,
+        None => crate::control_storage::sentinel::default_storage_root()?,
     };
+    let bootstrap = BootstrapApplication::open(project.clone(), storage_root.clone());
     let bootstrap = bootstrap.map_err(|error| error.to_string())?;
     let trusted = match bootstrap.is_trusted() {
         Ok(true) => into_trusted(bootstrap).map_err(|error| error.to_string())?,
@@ -242,9 +268,6 @@ where
         }
         Err(error) => return Err(error.to_string()),
     };
-    let token = args
-        .token
-        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     // INV-S1a：只绑 IPv4 loopback。
     let listener = TcpListener::bind(("127.0.0.1", args.port))
         .map_err(|error| format!("could not bind 127.0.0.1:{}: {error}", args.port))?;
@@ -254,6 +277,11 @@ where
     let addr = listener
         .local_addr()
         .map_err(|error| format!("could not read local addr: {error}"))?;
+    // 端口成功占用后才读取/轮换凭据，避免 bind 失败却先撤销浏览器中
+    // 已配对的 Bearer。显式 --token 是临时覆盖，resolve 不碰持久文件。
+    let resolved = token::resolve(&storage_root, args.token, args.rotate_token)?;
+    let token = resolved.value;
+    let token_path = resolved.path;
 
     let app = Arc::new(Mutex::new(trusted));
     let mut shared = state::ServeShared::new(Arc::clone(&app), token.clone(), addr.port());
@@ -280,6 +308,7 @@ where
     Ok(ServeHandle {
         addr,
         token,
+        token_path,
         shutdown,
         close_outcome,
         join,
@@ -403,49 +432,70 @@ fn handle_connection(mut stream: TcpStream, shared: Arc<state::ServeShared>) {
         }
     }
 
-    // INV-S1b token 闸：Bearer 或 ?t=，精确匹配。PWA2-02：POST API
-    // 只认 Authorization 头——query token 是 GET/SSE 的引导通道
-    //（EventSource 不能带 header），凭据不应进入会随 URL 泄漏的面
-    // （历史/Referer/截图）。
-    let provided = http::bearer_token(request.authorization.as_deref())
-        .or_else(|| http::query_value(request.query.as_deref(), "t"));
-    if provided.as_deref() != Some(shared.token.as_str())
-        || (request.method == "POST"
-            && http::bearer_token(request.authorization.as_deref()).is_none())
+    // 静态 shell 是无凭据引导面：它不含 token、不暴露 API 数据，允许
+    // PWA 从干净 URL 冷启动并呈现一次配对页。Origin 闸仍先执行。
+    if request.method == "GET"
+        && let Some((bytes, content_type)) = web_assets::asset(&request.path)
     {
-        let _ = write_json(
+        let _ = http::write_response_with_headers(
             &mut stream,
-            401,
-            protocol::rpc_result_json(&Err(protocol::RpcError {
-                code: protocol::ErrorCode::Unauthorized,
-                message: if request.method == "POST" {
-                    "missing or invalid token (POST requires the Authorization header)"
-                } else {
-                    "missing or invalid token"
-                }
-                .into(),
-            })),
+            200,
+            content_type,
+            &bytes,
+            &[
+                (
+                    "Content-Security-Policy",
+                    "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'",
+                ),
+                ("Cache-Control", "no-store"),
+                ("Referrer-Policy", "no-referrer"),
+                ("X-Content-Type-Options", "nosniff"),
+            ],
         );
+        return;
+    }
+
+    // 浏览器一次配对验证：只校验 Bearer、不回显 token。前端成功后把
+    // token 保存在当前 origin（包含端口）的 localStorage，后续仍只发
+    // Authorization。token 从不进入 URL 或 Cookie。
+    if request.method == "POST" && request.path == "/auth" {
+        if http::bearer_token(request.authorization.as_deref()).as_deref()
+            != Some(shared.token.as_str())
+        {
+            write_unauthorized(&mut stream);
+            return;
+        }
+        let body = br#"{"ok":true}"#;
+        let _ = http::write_response_with_headers(
+            &mut stream,
+            200,
+            "application/json",
+            body,
+            &[("Cache-Control", "no-store")],
+        );
+        return;
+    }
+
+    // INV-S1b token 闸：非引导请求只认 Bearer，精确匹配；query token
+    // 与 Cookie 均不具有鉴权语义。
+    let provided = http::bearer_token(request.authorization.as_deref());
+    if provided.as_deref() != Some(shared.token.as_str()) {
+        write_unauthorized(&mut stream);
         return;
     }
 
     match request.method.as_str() {
         "GET" => match request.path.as_str() {
             "/api/events" => sse::handle(&mut stream, &shared),
-            path => match web_assets::asset(path, &shared.token) {
-                Some((bytes, content_type)) => {
-                    let _ = http::write_response(&mut stream, 200, content_type, &bytes);
-                }
-                None => {
-                    let _ = write_json(
-                        &mut stream,
-                        404,
-                        protocol::rpc_result_json(&Err(protocol::RpcError::not_found(format!(
-                            "no such path: {path}"
-                        )))),
-                    );
-                }
-            },
+            path => {
+                let _ = write_json(
+                    &mut stream,
+                    404,
+                    protocol::rpc_result_json(&Err(protocol::RpcError::not_found(format!(
+                        "no such path: {path}"
+                    )))),
+                );
+            }
         },
         "POST" => match request.path.strip_prefix("/api/") {
             Some(method) if !method.is_empty() => {
@@ -490,6 +540,17 @@ fn handle_connection(mut stream: TcpStream, shared: Arc<state::ServeShared>) {
             );
         }
     }
+}
+
+fn write_unauthorized(stream: &mut TcpStream) {
+    let _ = write_json(
+        stream,
+        401,
+        protocol::rpc_result_json(&Err(protocol::RpcError {
+            code: protocol::ErrorCode::Unauthorized,
+            message: "missing or invalid authentication".into(),
+        })),
+    );
 }
 
 fn write_json(stream: &mut TcpStream, status: u16, body: String) -> std::io::Result<()> {

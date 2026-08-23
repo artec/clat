@@ -1,147 +1,229 @@
-# 把 DSH 插件发布给 CLAT 用户：@artec/clat-dsh-adapter 移植指南
+# 把 DSH 插件发布给 CLAT 用户
 
-> 面向 DSH（DeepSeek Harness）插件**作者**。CLAT 宿主不运行 Node、
-> 不内嵌 JS 引擎——兼容的方向是反转的：你在自己的发行物里挂一个
-> 适配器，把现成插件以 **MCP stdio server** 形态对外服务，CLAT 用户
-> 把它当普通 MCP server 配置即可（任何 MCP 宿主都能用）。
-> 适配器对 DSH 插件 API 面钉 revision `99f6f02f`（0.1.0-rc.7），
-> 以 rc.8（`141eb6f`，插件面源码抽查等价）验证。
+本文面向 DeepSeek Harness（DSH）插件作者，介绍如何用
+`@artec/clat-dsh-adapter` 把现有**叶子插件**包装成 MCP stdio server。
+插件主体不需要为 CLAT 分叉，CLAT 也不会内嵌 Node 或 JS 引擎。
 
-## 一、全部改造量：一个 bin 入口
+适配器的方向是刻意反转的：它进入插件作者自己的发行物，加载原插件，
+再向 CLAT 或其他 MCP 宿主暴露标准 MCP。终端用户看到的只是一个 server。
+
+包级 API、安装和最小示例另见
+[适配器中文 README](../sdk/dsh-adapter/README.zh.md)。
+
+## 先判断是否适合适配
+
+| 插件类别 | 判断方式 | 结论 |
+|---|---|---|
+| 纯算法 | 输入 → 输出，不依赖宿主脊柱 | 直接适配；若追求终端用户零 JS，也可提供 Rust/WASM 发行 |
+| 外部服务适配器 | 封装搜索、SaaS、数据库或其他 API | 最适合 adapter |
+| 宿主脊柱 | 深度依赖会话、agent 循环、fs/shell seam、subagent | 不适配；这应由宿主本身实现 |
+| UI 插件 | 面板、设置页、浏览器交互 | 不提供 UI；可选接线会优雅降级 |
+| 内容资产 | 只读取/生产 DSH 会话日志 | 不需要 adapter；CLAT 与 DSH 会话格式兼容 |
+
+核心判断不是“代码是不是 TypeScript”，而是“能力能否收敛成叶子工具，
+并通过 MCP sampling / elicitation 使用宿主能力”。
+
+## 最小移植：增加一个 bin
+
+假设原插件已经导出 `apply`、`Config`、`inject` 与 `name`：
 
 ```ts
-// bin/clat.mjs —— 你的仓库新增的唯一文件
+// bin/clat.mjs
 import { serveClat } from '@artec/clat-dsh-adapter'
-import { apply, Config, inject, name } from '../src/index.js' // 你原有的插件导出
+import { apply, Config, inject, name } from '../src/index.js'
 
 serveClat({ apply, Config, inject, name }, {
-  name: 'my-plugin',            // MCP serverInfo 名（缺省用 plugin.name）
+  name: 'my-plugin',
   version: '1.0.0',
-  config: { apiKey: process.env.MY_API_KEY ?? '' }, // 经你的 Config 校验后传给 apply
-  toolHints: { my_tool: 'network' }, // 可选：声明自家工具的副作用档位
+  config: { apiKey: process.env.MY_API_KEY ?? '' },
+  toolHints: { my_tool: 'network' },
+}).catch(error => {
+  console.error(error)
+  process.exit(1)
 })
 ```
 
-package.json 加一条 `"bin"`，一仓库双出口：同一个包既含 Cordis 插件
-入口（DSH 用户），又含 adapter bin（CLAT 用户）。
+在 `package.json` 添加一条 `bin`。同一个 npm 包可以保留原 Cordis/DSH
+入口，同时为 MCP 宿主提供这个入口。
 
-CLAT 用户侧的配置（`~/.clat/mcp.json`）：
+CLAT 用户在 `~/.clat/mcp.json` 配置：
 
 ```json
 {
   "my-plugin": {
     "command": "node",
-    "args": ["/path/to/your/package/bin/clat.mjs"],
+    "args": ["/path/to/package/bin/clat.mjs"],
     "env": { "MY_API_KEY": "..." }
   }
 }
 ```
 
-## 二、支持面（ctx 服务 → MCP 映射）
+stdout 是 JSON-RPC 专线。诊断只能写 `ctx.logger`、`console.error` 或
+其他 stderr 通道。
 
-| DSH 侧 | 适配器翻译成 | 说明 |
+## `serveClat` 选项
+
+| 选项 | 类型 | 用途 |
 |---|---|---|
-| `ctx.tools.register(defineTool(...))` | MCP `tools/list` + `tools/call` | 接受 `defineTool()` 的产物（其 `parameters` 已是编译后的 JSON Schema，`output.render` 产出模型可见内容）；手工构造的未编译 DSL 会被拒绝并引导 |
-| `ctx.llm.stream(options)` | MCP `sampling/createMessage` | 宿主会话模型 + 宿主权限门（审批参数为完整出站正文）+ per-run 花费预算（64 次/run 硬上限，跨传输共享）+ usage 记账；`provider`/`model` 被忽略（stderr 记录）；结果适配回 dsh-llm 的 chunk 协议（BlockAssembler 等聚合器可直接消费） |
-| `ctx.userQuestions.ask({...})` | MCP `elicitation/create` | 整批问题翻成一个表单，宿主逐字段问；单选 options → 选择字段（无损）；`multiSelect` 降级为逗号分隔文本（见"已知收窄"） |
-| `ctx.web.registerSearchProvider(...)` | 内置 `web_search` 工具 | seam 语义 1:1（执行期选源、maxResults 截断、round-robin 多问合并去重）；工具镜像 dsh-tool-web 的 queries 参数与 sources 输出，标注 readOnly+openWorld |
-| `ctx.web.registerFetchProvider(...)` | （登记，v0 无工具面） | 注册被接受，但适配器 v0 不暴露 `web_fetch` 工具（stderr 提示） |
-| `ctx.get(key)` | 恒 undefined | `launchEnvironmentOf(ctx)` 库内自动回退 `process.env`——API key 走环境变量的插件无需改动 |
-| `ctx.effect(gen)` / `ctx.logger` | 进程内实现 | 清理器 LIFO，单个清理器抛错不截断其余清理（隔离 + 聚合上报）；日志全部走 stderr |
-| 插件导出 `Config` | serveClat 启动时校验 | 可调用则先验 `config`，抛错即拒绝启动 |
+| `name` | `string` | MCP `serverInfo.name`；缺省取 `plugin.name`，再退到 `dsh-plugin` |
+| `version` | `string` | MCP server 版本 |
+| `config` | `unknown` | 传给 `apply(ctx, config)`；有 `Config` 时先校验 |
+| `toolHints` | `Record<string, ToolHint>` | 声明每个工具的副作用档位 |
+| `input` / `output` | streams | 测试缝；缺省为进程 stdio |
 
-**拒绝与降级面**（两类，语义对齐 DSH 宿主，2026-08-21 社区插件实测定稿）：
+MCP `initialize` 应答会等待 `apply()` 结算。`apply` 抛错时，适配器先
+执行关停，再拒绝启动。
 
-- **静态 `inject` 声明**（`export const inject = ['sessions', …]`）与运行期
-  **直接访问** `ctx.fs` / `ctx.shell` / `ctx.sessions` 等脊柱服务 → 启动即
-  报错（带支持清单与改写指引），不假装支持。改写方向：把能力收敛为
-  `ctx.tools.register` 的叶子工具，或直接使用 CLAT 的内建工具。
-- **运行期 `ctx.inject(deps, callback)`**（可选服务接线，如 dsh-settings
-  的设置面板、`systemPrompt` 贡献）→ 按 DSH 宿主的"未挂载"契约处理：
-  回调跳过、stderr 记一条注记，插件照常工作——这正是无 UI 宿主的 DSH
-  环境会发生的降级。纯 UI 插件（如 dsh-smooth-stream）因此以"连接成功
-  但 0 工具"收场，stderr 注记说明原因。**类插件**（`extends Service`）
-  仍被拒。
+## 支持面
 
-## 三、兼容矩阵（先给自己定位，再动手）
-
-| 类别 | 判据 | 建议 |
+| DSH 侧 | MCP 侧 | 语义 |
 |---|---|---|
-| **A 纯算法** | 不碰网络/宿主服务，只做输入→输出变换 | adapter 直接可用；更推荐顺手出 **Rust/WASM 双发行**（`docs/wasm.md`，用户侧零 Node） |
-| **B 外部适配器** | 包一层外部 API（web 检索、SaaS、数据库…） | adapter 的主战场；试点见 `sdk/dsh-adapter/examples/exa/`（npm 真实发布物 web-search-exa 原样挂载） |
-| **C 脊柱** | 深依赖宿主服务（会话、agent 循环、fs/shell seam） | 拒绝——这是 CLAT 自己的工程；按"拒绝面"改写 |
-| **D UI** | 前端/交互面板 | 永远不做 |
-| **E 内容资产** | 只消费/生产会话日志（分析、导出、replay、索引） | **零成本直搬**：CLAT 会话日志与 DSH（rc.7 起）字节级格式兼容，不需要 adapter |
+| `ctx.tools.register(defineTool(...))` | `tools/list` + `tools/call` | 接受已编译 JSON Schema；`output.render` 产出模型可见内容 |
+| `ctx.llm.stream(options)` | `sampling/createMessage` | 使用宿主当前模型，经过宿主权限门与共享花费预算，usage 回到当前 run |
+| `ctx.userQuestions.ask(...)` | `elicitation/create` | 一批问题变为一个表单，由宿主逐字段询问 |
+| `ctx.web.registerSearchProvider(...)` | 内置 `web_search` 工具 | 多 query 轮转、URL 去重、`maxResults` 截断与 source 输出 |
+| `ctx.web.registerFetchProvider(...)` | 只登记 | v0 不暴露 `web_fetch` 工具，stderr 明确提示 |
+| `ctx.get(key)` | 恒 `undefined` | `launchEnvironmentOf(ctx)` 可回退 `process.env` |
+| `ctx.effect(gen)` | 进程内清理器 | LIFO；单个清理失败不会截断其余清理 |
+| `ctx.logger` | stderr | 不污染协议帧 |
+| 插件 `Config` | 启动校验 | 失败即拒绝启动，不运行 `apply` |
 
-## 四、toolHints（可选，但建议）
+### LLM sampling
 
-DSH 工具没有静态 effect 字段；不声明时 CLAT 按最保守档（Destructive）
-处理——每次调用都可能过权限门。用 `toolHints` 声明真实档位：
+`ctx.llm.stream` 的 system prompt 与每条文本消息会完整进入 MCP sampling
+请求。CLAT 宿主审批时看到的也是完整出站正文，而不是截断预览。
 
-| hint | MCP annotations | CLAT 档位 |
+宿主决定最终 provider/model；插件传入的 provider/model 只会产生 stderr
+说明。缺省 `maxTokens` 为 4096，宿主仍会应用自己的 8192 单请求上限、
+每 run 64 次硬上限和跨传输共享的近似 token 花费门。
+
+结果会适配回 dsh-llm chunk 协议，`BlockAssembler` 等聚合器可以继续
+使用。sampling 不支持工具调用，消息只支持文本；图片等内容块返回
+`NON_TEXT_CONTENT`。
+
+`stopSequences` 会进入 MCP 参数，但 CLAT 当前 host bridge 忽略它，并
+在每个 run 最多写一次 stderr 说明。不要把 stop 当成跨宿主一致语义。
+
+### 用户问题
+
+单选 options 无损映射成枚举字段。`multiSelect` 降级为逗号分隔文本，
+按大小写不敏感标签匹配；未匹配文本并入 custom。MCP 单选字段不能同时
+提供自由输入，因此“options + custom”问题应改成纯文本问题。
+
+一次 ask 最多 16 问，每问最多 16 个选项。超过时返回
+`TOO_MANY_QUESTIONS` 或 `TOO_MANY_OPTIONS`。
+
+### 取消
+
+宿主的 `notifications/cancelled` 与 adapter shutdown 会触发当前
+`tools/call` 的 `exec.signal`。在途 sampling / elicitation promise 也会
+以 `ABORTED` 类错误收束。取消若先于 call 注册到达，会在 call 建立时
+补做对账，避免竞态丢失。
+
+插件自己的长任务必须实际监听 `exec.signal`；只接收 signal 而不检查，
+仍然无法被协作式取消。
+
+## 拒绝与优雅降级
+
+适配器把宿主脊柱与可选 UI 接线分开处理。
+
+### 启动即拒绝
+
+- 静态 `inject` 声明 `fs`、`shell`、`sessions`、`agents`、`subagents`、
+  `settings`、`commands`、`systemPrompt` 或 UI 服务；
+- 运行期直接访问 `ctx.fs`、`ctx.shell`、`ctx.sessions` 等脊柱服务；
+- `extends Service` 的类插件；
+- 未编译的手工 DSL，而不是 `defineTool()` 产出的 schema。
+
+错误会列出支持面和改写方向。正确的改写通常是把能力收敛为
+`ctx.tools.register` 叶子工具，或直接依赖 CLAT 的原生能力。
+
+### 优雅降级
+
+运行期 `ctx.inject(deps, callback)` 属于可选接线。目标服务未挂载时，
+回调跳过并写一条 stderr 注记，插件继续工作。这与无 UI 的 DSH 宿主
+行为一致。
+
+因此，纯 UI 插件可能“连接成功、0 工具”。这不是假装支持 UI，而是
+明确保留插件非 UI 部分并报告降级。
+
+`exec.deferContext()` 与 `exec.concludeTurn()` 当前也是 stderr 警告加
+no-op；MCP 叶子工具没有 agent-loop 上下文渡口。
+
+## 安全边界
+
+Adapter 产物最终是一个 MCP stdio **任意代码子进程**，不是 WASM
+capability sandbox。CLAT 启动它时会把工作目录设为 `~/.clat`，但子进程
+仍继承 CLAT 的完整环境变量，并拥有当前操作系统账户授予的文件、网络与
+进程权限。用 Bun 编译成单一可执行文件不会改变这一边界。
+
+`toolHints` 只影响 CLAT 在工具调用前如何分类和审批，既不限制进程权限，
+也不能阻止插件在工具函数之外执行代码。对不完全信任的插件，应从干净
+环境启动 CLAT、使用 `env -i` 一类 wrapper、收窄凭据，并把它当成普通
+第三方可执行程序审查。完整宿主侧威胁模型见
+[MCP Security posture](mcp.md#security-posture)。
+
+## `toolHints` 与权限
+
+DSH 工具没有静态 effect 字段。缺省时 adapter 按最保守的 destructive
+处理。作者应按真实行为声明：
+
+| hint | MCP annotations | CLAT effect |
 |---|---|---|
-| `'read-only'` | `{readOnlyHint: true, openWorldHint: false}` | ExternalRead |
-| `'network'` | `{readOnlyHint: true, openWorldHint: true}` | Network |
-| `'write'` | `{readOnlyHint: false, destructiveHint: false, openWorldHint: false}` | Write |
-| `'destructive'` 或缺省 | 不发标注 | Destructive（保守兜底） |
+| `'read-only'` | readOnly=true, openWorld=false | `ExternalRead` |
+| `'network'` | readOnly=true, openWorld=true | `Network` |
+| `'write'` | readOnly=false, destructive=false | `Write` |
+| `'destructive'` 或缺省 | 保守缺省 | `Destructive` |
 
-声明是作者对自家工具的背书（MCP 惯例），请如实填写。
+这是作者对自己工具行为的声明，不是逃过权限门的手段。MCP 注解在 CLAT
+中永远不会升级成原生 `Read`。
 
-## 五、已知收窄与硬约束
+## 用户侧免 Node
 
-1. **stdout 是协议专线**：任何 `console.log` 都会污染 JSON-RPC 帧。
-   诊断一律 `ctx.logger`（stderr）或 `console.error`。
-2. **`apply()` 必须在握手超时内结算**（CLAT 10s）：initialize 应答
-   等待 apply 完成；重初始化放工具 execute 或后台。
-3. **multiSelect 降级**：宿主逐字段单问，多选翻成"逗号分隔标签"
-   的文本字段（大小写不敏感匹配，未匹配文本并入 custom）。
-4. **`options+custom` 双模式**：选择字段不提供自由输入；需要 custom
-   的问题请改用无 options 的文本问题。
-5. **sampling 无工具面**：`ctx.llm.stream({tools: [...]})` 直接报错
-   （MCP sampling 不带 tool-calling）；`provider`/`model` 恒用宿主
-   会话模型；`maxTokens` 缺省 4096；`stopSequences` 忠实发送但部分
-   宿主（含 CLAT v1）忽略。
-6. **sampling 仅文本**：`ctx.llm.stream` 的消息里出现图片等非文本
-   内容块会直接报错（`NON_TEXT_CONTENT`）——多模态采样暂不在桥上；
-   工具调用参数里的图片附件是 JSON 透传，不受影响。
-7. **取消不转发**：宿主发 `notifications/cancelled` 仅记录；工具的
-   `exec.signal` v0 不会触发（宿主侧以调用截止兜底）。
-8. **`exec.deferContext()` / `exec.concludeTurn()`**：stderr 警告 +
-   no-op（MCP 没有 agent-loop 上下文渡口）。
-9. **数量上限**：一次 ask ≤16 问、每问 ≤16 选项（宿主 elicitation
-   上限）；错误码 `TOO_MANY_QUESTIONS`/`TOO_MANY_OPTIONS`。
+作者侧需要 Node.js 22.19 或更高版本。若不希望终端用户安装 Node，可用
+Bun 把 bin 编译成独立可执行：
 
-## 六、用户侧免 Node：编译型分发
-
-CLAT 用户不想装 Node？用 Bun 把你的 bin 编译成独立可执行：
-
-```sh
+```bash
 bun build bin/clat.mjs --compile --outfile clat-my-plugin
 ```
 
-mcp.json 的 `command` 直接指向该二进制。分发物自带运行时，宿主
-不需要任何 JS 环境。
+用户的 `mcp.json` 直接把 `command` 指向该产物。运行时随可执行文件一起
+分发，仍符合 CLAT 终端用户的一二进制体验。
 
-## 七、验收与冒烟
+## 验收
 
-- 适配器仓库内建三层测试可参照：单元（`sdk/dsh-adapter/test/`）、
-  真实插件免网络验收（`examples/exa/test.mjs`——断言插件原样挂载、
-  工具面板出现、无 key 时的 `WEB_PROVIDER_UNAVAILABLE`）、CLAT 侧
-  全链 e2e（`src/plugin_host.rs` 门控测试）。
-- 联网冒烟：`serveClat` 的 `config` 传入真实 key 后，在 CLAT 里
-  直接调用你的工具即可（tools 面板 `/mcp` 可见 `transport: stdio`）。
-- **npm 现状提示（2026-08-21 社区插件实测）**：DSH 侧发布物的 peer
-  声明普遍不齐，独立安装大概率要手工补。两类问题：
-  1. **死引用**：`@deepseek-ai/dsh-environment` 从未发布（后改名
-     `dsh-launch-environment`）——官方与社区插件的 peerDependencies
-     都还挂着它，需按 `examples/exa/` 的方式本地 stub；
-  2. **漏声明**：`dsh-tools` / `dsh-llm` / `dsh-session` / `dsh-scope` /
-     `dsh-timeout` / `dsh-settings` / `dsh-credentials` / `cordis`
-     常被运行期 import 却不在依赖表里，`--legacy-peer-deps` 安装后
-     逐个补装即可（实测 dsh-free-search 补了 7 个）。
-  个别插件（如 dsh-memento）依赖**尚未发布**的新版导出（如
-  `KNOWN_SESSION_EVENT_TYPES`），npm 上目前装不起来——只能等上游。
-  这是 DSH 生态的发布物问题，与适配器无关。
-- **实测背书**：官方 `dsh-web-search-deepseek`（带 key）与社区
-  `dsh-free-search`（免 key）均已通过"bin → mcp.json → CLAT 真实模型
-  调用"全链验证；`dsh-smooth-stream` 验证了 UI 面的优雅降级路径。
+至少覆盖三层：
+
+1. **适配器单元测试**——schema、调用、sampling、elicitation、取消、
+   清理与协议帧；
+2. **真实插件免网络验收**——本仓库
+   `sdk/dsh-adapter/examples/exa/test.mjs` 原样加载 npm 插件并断言工具面；
+3. **CLAT 全链**——bin → `mcp.json` → `/mcp` → 模型调用 → 权限/
+   usage/取消闭环。
+
+开发命令：
+
+```bash
+cd sdk/dsh-adapter
+npm install
+npm test
+```
+
+当前包 API 面钉在 DSH `dsh-v0.1.0-rc.7`，已对 rc.8 与
+`0.1.1-rc.1` 的插件面复核。上游变更后应重新跑真实插件验收，不能只
+依赖 TypeScript 编译通过。
+
+## 上游包排查提示
+
+DSH 社区包的 peer dependency 可能不完整。遇到“adapter 启动前就模块
+找不到”时，先检查插件发行物，而不是修改 adapter 语义：
+
+- 旧包可能仍引用未发布的 `@deepseek-ai/dsh-environment`，后来上游改名
+  为 `dsh-launch-environment`；
+- `dsh-tools`、`dsh-llm`、`dsh-session`、`dsh-scope`、`dsh-timeout`、
+  `dsh-settings`、`dsh-credentials` 或 `cordis` 可能在运行期 import，
+  却没有完整出现在依赖表；
+- 某些插件依赖尚未进入 npm 发行版的导出，只能等待或选择匹配的上游版本。
+
+`examples/exa/` 展示了测试环境下的 stub 处理方式。正式发行应由插件
+作者修正 package metadata，不应要求每个终端用户手工猜依赖。

@@ -1,14 +1,19 @@
 # MCP integration
 
-CLAT connects to Model Context Protocol servers over the stdio transport
-(local subprocesses) **and the remote Streamable HTTP transport**
-(2026-08-19), exposing their tools to the model alongside the native
-read tools.
+CLAT connects to Model Context Protocol servers over local stdio subprocesses
+and remote Streamable HTTP. Their tools join the same registry, permission
+pipeline, cancellation path, and run event stream as native tools.
+
+Use MCP for capabilities that need a separate process, network service, or
+language runtime. For portable in-process local tools, compare
+[WASM plugins](wasm.md).
 
 ## Configuration
 
+Create `~/.clat/mcp.json`. The file is optional; absence means no user-configured
+MCP servers.
+
 ```json
-// ~/.clat/mcp.json
 {
   "filesystem": {
     "command": "npx",
@@ -18,230 +23,257 @@ read tools.
     "command": "mcp-memory",
     "env": { "STORE": "/data" }
   },
-  "web-search-prime": {
-    "url": "https://open.bigmodel.cn/api/mcp/web_search_prime/mcp",
+  "web-search": {
+    "url": "https://example.com/mcp",
     "headers": { "Authorization": "Bearer YOUR_API_KEY" }
   }
 }
 ```
 
-The file is optional; without it CLAT runs with native tools only.
-The built-in MCP Adapter plugin reads it only after project trust succeeds.
-Server subprocesses belong to that Trusted Project Scope and are shared across
-runs in the project; closing the project tears them down.
+Each entry chooses exactly one transport:
 
-**Startup is non-blocking (2026-08-21)**: connecting servers and listing
-their tools happens on a background worker — CLAT becomes ready immediately,
-and `clat exec` doesn't pay MCP latency either. A run that starts before
-MCP finishes connecting waits for it (bounded at 20s) so the model always
-sees the complete tool set; a server slow enough to exceed the cap lands on
-the next run instead. `/mcp` shows the three states — `connecting` in the
-overview line while servers are still starting, then connected servers with
-their protocol/version/tool counts, plus isolated failures.
+- **stdio** — `command`, optional `args`, and optional `env`;
+- **Streamable HTTP** — `url` and optional `headers`.
 
-A server subprocess's **stderr never reaches your terminal** (2026-08-20):
-it is drained into a bounded tail buffer (last 20 lines) and appended to
-the server's failure message when a connection or `tools/list` fails —
-so `npx` download progress or server banners can neither corrupt the
-TUI nor hide the actual error.
+Restart CLAT after changing the file. `/mcp` shows configured, connecting, and
+connected counts, plus transport, negotiated versions, tool counts, and
+isolated failures.
 
-A server entry with a `url` is a remote Streamable HTTP server (no local
-process): each call POSTs one JSON-RPC message with the configured
-`headers`, the initialize response's `Mcp-Session-Id` is echoed on
-subsequent requests, and JSON or SSE-framed response bodies are both
-accepted. Entries without `url` keep the stdio form (`command` / `args`
-/ `env`). The remote transport's key never touches disk unless you put
-it in this file yourself.
+## Project and startup lifecycle
 
-### GLM Coding Plan pack (2026-08-19)
+MCP servers are global capabilities mounted inside a Trusted Project Scope.
+Nothing is spawned or contacted before project trust succeeds.
 
-When the active model is the GLM preset **and** an API key is
-configured, CLAT automatically injects the four GLM Coding Plan
-exclusive MCP servers at mount time (in-memory merge — the key is read
-from the model credentials and never written to `mcp.json`):
+Startup is asynchronous: CLAT becomes interactive while a background worker
+connects servers and lists tools. The first run waits up to 20 seconds for that
+initial tool surface before the registry freezes. If a server finishes after
+that freeze, its tool registration is rejected and `/mcp` reports the failure;
+restart CLAT after fixing or warming that server.
+
+Configured stdio subprocesses use `~/.clat` as their working directory, never
+the project directory. They are shared across runs in the mounted project and
+closed when that project scope closes. Teardown revokes tool leases before
+closing stdin, waiting a bounded grace, killing/reaping if needed, and joining
+I/O threads.
+
+A server failure is isolated. Spawn, handshake, `tools/list`, name collision,
+or registration failure removes only that server's contributions.
+
+### Stderr diagnostics
+
+Subprocess stderr never writes directly into the TUI or protocol stream. CLAT
+keeps a bounded tail of the last 20 lines and attaches it to startup failures.
+Key-shaped values such as Bearer tokens and common API-key forms are redacted
+before a diagnostic reaches `/mcp` or status surfaces. Redaction limits
+secondary leakage; it does not prevent the subprocess from seeing inherited
+environment variables.
+
+## Transport behavior
+
+### Stdio
+
+CLAT owns one bounded writer queue and a dedicated reader thread. The reader
+routes out-of-order responses by request id and dispatches server-initiated
+requests without blocking response progress.
+
+Modern discovery is probed with a disposable subprocess. If the probe fails,
+CLAT starts a fresh subprocess before performing the legacy initialize /
+initialized handshake. This prevents a strict legacy state machine from seeing
+an unsupported probe followed by initialize in the same process.
+
+### Streamable HTTP
+
+Each client request POSTs a JSON-RPC message to the configured URL. Responses
+may be plain JSON or SSE-framed JSON. If initialize returns `Mcp-Session-Id`,
+CLAT echoes it on later requests.
+
+Remote headers are caller-provided and stay in the in-memory configuration.
+CLAT never writes them elsewhere, but the source `mcp.json` is plaintext if the
+user stores secrets there.
+
+## GLM Coding Plan pack
+
+When GLM 5.3 Coding Plan and its API key are active at project mount, CLAT
+merges four provider-supplied capabilities in memory:
 
 | Name | Transport | Tools |
 |---|---|---|
-| `glm-search` | remote `…/mcp/web_search_prime/mcp` | `webSearchPrime` |
-| `glm-reader` | remote `…/mcp/web_reader/mcp` | `webReader` |
-| `glm-zread` | remote `…/mcp/zread/mcp` | `search_doc`, `get_repo_structure`, `read_file` |
-| `glm-vision` | stdio `npx -y @z_ai/mcp-server@latest` (env `Z_AI_API_KEY`; needs Node.js ≥ 18) | 8 vision tools (screenshot→code, OCR, diagram/chart analysis, video) |
+| `glm-search` | Streamable HTTP | `webSearchPrime` |
+| `glm-reader` | Streamable HTTP | `webReader` |
+| `glm-zread` | Streamable HTTP | `search_doc`, `get_repo_structure`, `read_file` |
+| `glm-vision` | stdio `npx -y @z_ai/mcp-server@latest` | screenshot/code, OCR, diagram/chart, and video tools |
 
-A same-named entry in your `mcp.json` always wins — that is the escape
-hatch for disabling or replacing any pack server (e.g. point `glm-search`
-at your own proxy, or define it with a broken `url` to effectively
-disable it). The pack is evaluated at mount: switching the model vendor
-takes effect on the next CLAT start.
+The API key comes from model credentials and is not copied into `mcp.json`.
+`glm-vision` requires Node.js 18 or newer because it is a subprocess; this is an
+exception to CLAT's own one-binary runtime, not a requirement for core CLAT.
 
-Connection state is exposed through Application DTOs (`configured`,
-`connected`, `connecting`, per-server protocol/version, and isolated
-failures). Frontends do not receive `McpServer`, `StdioSession`, or the
-Tool Registry.
+A same-named user entry wins over the automatic pack and is the supported way
+to replace one server with a pinned version, proxy, or private implementation.
+The pack is evaluated at mount, so changing provider takes effect on the next
+CLAT start.
 
 ## Protocol support
 
-CLAT auto-negotiates both protocol eras. It first probes a disposable
-stdio session with modern `server/discover`; if that fails, it starts a
-fresh process and performs the legacy `initialize` /
-`notifications/initialized` handshake. The fresh fallback prevents the
-probe request from contaminating a strict legacy server's state machine.
+CLAT supports the legacy and modern MCP eras:
 
-Supported versions:
-
-| Version | Notes |
+| Version | Behavior used by CLAT |
 |---|---|
-| `2024-11-05` | initial spec |
-| `2025-03-26` | streamable HTTP, structured output groundwork |
-| `2025-06-18` | structured output, elicitation |
-| `2025-11-25` | tasks, simplified authorization |
-| `2026-07-28` | modern stateless core and per-request envelope |
+| `2024-11-05` | legacy initialize and tools |
+| `2025-03-26` | Streamable HTTP groundwork |
+| `2025-06-18` | structured output and elicitation |
+| `2025-11-25` | current legacy initialize version |
+| `2026-07-28` | stateless modern discovery and per-request envelope |
 
-Every modern request carries the protocol version, CLAT client identity,
-and per-request client capabilities in `_meta`. Modern responses must
-declare `resultType`; normal `complete` results are supported.
-`input_required` multi-round-trip results are rejected with an explicit
-unsupported-feature error instead of being mistaken for completed output.
+Modern requests carry protocol version, CLAT client identity, and per-request
+capabilities in `_meta`. Responses must declare `resultType`. Normal
+`complete` results are supported; `input_required` multi-round-trip results
+return an explicit unsupported-feature error rather than being mistaken for a
+finished call.
 
-## Tool mapping
+## Tool mapping and effects
 
-- Remote tools are named `mcp_{server}_{tool}`. Both segments are
-  normalized to `[a-zA-Z0-9_]`; names longer than 64 characters are
-  truncated with a stable hash suffix. Collisions after normalization
-  are skipped and reported instead of silently routed.
-- MCP annotations refine the approval label into `ExternalRead`,
-  `Network`, `Write`, or `Destructive`. The annotations are untrusted
-  hints: no remote tool can become the auto-allowed native `Read` effect.
-  Missing annotations use the protocol's conservative defaults.
+MCP tools become `mcp_{server}_{tool}`. Both name segments are normalized to
+ASCII letters, digits, and underscores. Names longer than 64 characters use a
+stable hash suffix. A collision after normalization is reported and skipped;
+it never silently replaces a native or earlier extension tool.
 
-## Server-initiated requests: sampling & elicitation (2026-08-21)
+MCP annotations are untrusted effect hints:
 
-While CLAT is executing a remote tool, the server may send its own
-requests back — the two CLAT serves are **sampling** and
-**elicitation**. They run through a transport-agnostic host bridge
-(`src/plugin_host.rs`) that owns the permission gate, usage accounting,
-and user questions; stdio is the reference transport (HTTP serves
-requests found inside POST response streams).
+| Server annotation | CLAT effect |
+|---|---|
+| read-only + closed world | `ExternalRead` |
+| read-only + open world | `Network` |
+| non-read-only + non-destructive | `Write` |
+| destructive, missing, or ambiguous | `Destructive` |
 
-- **sampling** (`sampling/createMessage`) — the server asks CLAT to run
-  the configured model on its behalf. Every call passes the **permission
-  gate** first: the approval dialog's arguments are the **full outbound
-  payload** — the complete `systemPrompt`, every message (role + full
-  text), maxTokens, and temperature — not a truncated preview, so what
-  you review is exactly what leaves for the provider (the total outbound
-  text is capped at 262,144 **characters** — a character cap, not bytes;
-  larger requests are rejected outright). Deny/unavailable fail closed.
-  Approved calls run on the session's model (`modelPreferences`/
-  `includeContext` are deliberately ignored — the latter never sends
-  conversation context to a server). Their token usage is accounted: it
-  lands in the current step's `assistant/message` usage (so live and
-  replayed session stats stay equal) and in the run totals.
-- **sampling spend budget (per run)** — plugin sampling also passes a
-  **budget gate** that is independent of the permission mode: at most
-  **64 requests per run** across every transport (MCP, WASM, DSH
-  adapter), plus a **1,000,000-token spend guard**. A reservation
-  (input estimate at ~4 characters/token + the requested max output) is
-  taken **before** the model call and fails closed when exceeded; it is
-  reconciled against the actual usage when the provider reports one
-  (otherwise the reservation stands). The token figure is an
-  **approximate guard, not a precise ceiling** — the heuristic can
-  underestimate CJK or code — so the strict bounds are the 64-request
-  hard cap and the 8,192-token per-request output clamp. Full Access
-  skips the approval dialog, not the budget. The budget resets on the
-  next run.
-- **elicitation** (`elicitation/create`, protocol ≥ 2025-06-18) — the
-  server asks **you** a form. CLAT asks the fields one at a time through
-  the same dialog the `ask_user` tool uses (first question carries the
-  form's message): booleans become yes/no, enums become option lists,
-  strings/numbers are free input (numbers re-ask up to twice on a bad
-  parse). Esc cancels the whole form; declining answers `declined`.
-  Headless `clat exec` has no frontend: the server receives a clean
-  error. v1 supports the primitive field subset (string / number /
-  boolean / enum, ≤16 fields); multi-select, `mode:"url"`, and nested
-  schemas are rejected with explicit errors.
+No remote tool can claim the native `Read` effect. The resulting effect flows
+through the normal mode table; see [Permissions](permissions.md#mcp-effects).
 
-Only requests arriving during an active run are served; anything else
-gets an error ("no active run") — an idle connection is not a standing
-model-call channel. Unknown server requests (other than `ping`, which
-is answered with `{}`) get `-32601`; a panicking handler is contained
-as `-32603`.
+## Server-initiated sampling
 
-While a request **on that same connection** is in flight, the pending
-`tools/call` deadline extends (60 s steps, capped at +10 min) — your
-thinking time on an elicitation never kills the tool call. The pending
-count is per server: one server's (or a WASM plugin's) in-flight request
-never extends an unrelated server's deadline. `Esc` still cancels
-immediately.
+During an active `tools/call`, a server can request
+`sampling/createMessage`. The transport forwards it to the shared
+`PluginHostBridge`; the MCP client does not call a provider directly.
 
-## Known trade-offs (W1-30 disclosure)
+Sampling passes three gates:
 
-These are deliberate current behaviors, not bugs; they will be revisited
-as separate decisions:
+1. **Payload** — at most 32 messages, text-only content, at most 262,144
+   characters across system prompt and messages, and at most 8,192 requested
+   output tokens.
+2. **Run budget** — no more than 64 extension-sampling requests per run across
+   MCP, WASM, and DSH adapter calls, plus an approximate 1,000,000-token spend
+   guard. Reservation happens before the provider request and is reconciled
+   with actual usage.
+3. **Permission** — the approval arguments contain the complete outbound
+   payload, not a shortened preview. Full Access skips this dialog; payload and
+   budget gates remain.
 
-- **stdio server subprocesses inherit your full environment.** A local
-  MCP server you configure in `mcp.json` runs with every environment
-  variable your terminal has — including API keys of other vendors that
-  happen to be exported. Configure servers you do not trust with a
-  minimal environment (launch CLAT from a clean shell, or wrap the
-  command in `env -i`).
-- **`mcp.json` is plaintext on disk.** Remote-server entries commonly
-  carry `Authorization: Bearer …` headers; the file is never written by
-  CLAT itself, but anything you put there is unencrypted at rest
-  (`~/.clat/mcp.json`). Prefer OS-level disk protection for secrets.
-- **The GLM vision pack runs `npx @z_ai/mcp-server@latest`**, pulling the
-  latest package from npm on every start — a supply-chain surface you do
-  not pin. To lock it, define an override entry in `mcp.json` with a
-  pinned version, e.g. `"glm-vision": { "command": "npx", "args":
-  ["-y", "@z_ai/mcp-server@<pinned-version>"], "env": { … } }`.
+Approved sampling uses the active session model. Server-supplied provider/model
+preferences and `includeContext` do not select another provider or expose the
+conversation. Usage is added to the current run step so live and replayed
+session totals remain equal.
 
-One mitigation note on the first two items: the stderr tail a server
-leaves in failure messages is redacted for key-shaped content
-(`Bearer …`, `sk-…`, `…api_key=…`) before it reaches the `/mcp` panel,
-status flashes, or logs — a server that crashes while printing its own
-environment does not persist your keys into CLAT's surfaces. The
-subprocess still *saw* them; redaction is cleanup, not isolation.
+Only active-run requests are served. An idle MCP connection is not a standing
+channel for model calls.
+
+## Server-initiated elicitation
+
+For protocol `2025-06-18` or newer, a server can request
+`elicitation/create`. CLAT translates one primitive form into the same
+`UserAsker` port used by the native `ask_user` tool:
+
+- strings and numbers become text inputs;
+- booleans become yes/no;
+- enums become single-choice lists;
+- fields are asked sequentially, with the form message on the first question.
+
+The supported subset is at most 16 fields with at most 16 choices each.
+Nested schemas, multi-select, URL mode, and other unsupported shapes return
+explicit errors. Invalid numbers are re-asked up to twice. Esc cancels the form;
+decline returns `declined`.
+
+Headless `clat exec` has no interactive question frontend, so elicitation fails
+cleanly there.
+
+While a request on one connection is waiting for sampling or elicitation, that
+connection's `tools/call` deadline extends in 60-second steps up to ten extra
+minutes. Pending counts are per server; one plugin cannot extend another
+server's timeout. User cancellation still takes effect immediately.
+
+## Cancellation and server requests
+
+`Esc` or client cancellation removes the pending response slot and
+best-effort sends `notifications/cancelled` with the original request id. The
+server may ignore it; CLAT's local wait still ends promptly and the final
+timeout remains a fallback.
+
+Unknown server requests receive JSON-RPC `-32601`; `ping` receives `{}`.
+Handler panics are contained and returned as `-32603`. A bounded queue rejects
+request floods with diagnostics rather than blocking transport reads.
 
 ## Security posture
 
-MCP servers are **global capabilities, not project content**:
+Treat every MCP server as executable code or a remote service you explicitly
+trust.
 
-- Subprocesses are spawned with `~/.clat` as their working directory —
-  never the project directory. An untrusted project cannot hijack
-  cwd-sensitive commands such as `npx` by placing local files.
-- Servers are only started after the project trust gate passes.
-- Each server failure (spawn error, handshake failure, tool-list failure)
-  only skips that server; the rest of CLAT keeps working.
-- Remote Tool contributions carry the MCP plugin owner and a revocable lease.
-  A name collision is reported and never silently replaces a native or earlier
-  remote tool.
+### Local subprocesses
 
-Resource limits protect against misbehaving or malicious servers:
+- They start only after project trust.
+- Their working directory is `~/.clat`, preventing a project from hijacking
+  cwd-sensitive launchers such as `npx`.
+- They inherit CLAT's full process environment, then receive configured `env`
+  values. A server can therefore see unrelated exported secrets. Launch CLAT
+  from a clean environment or use a wrapper such as `env -i` for untrusted
+  servers.
+- `glm-vision` uses `@latest`, which is a supply-chain surface. Override it in
+  `mcp.json` with a same-named pinned package version if reproducibility matters.
 
-| Limit | Value |
-|---|---|
-| single frame (line) size | 4 MiB |
-| handshake timeout | 10 s |
-| modern discovery timeout | 3 s, then fresh legacy fallback |
-| `tools/list` page timeout | 30 s, at most 32 pages |
+### Remote servers and secrets
+
+- `mcp.json` is user-managed plaintext. Authorization headers stored there are
+  not encrypted at rest.
+- Remote servers see tool arguments the model sends and any sampling payload
+  the user explicitly approves.
+- No CORS/browser trust boundary applies here; these requests originate from
+  the CLAT process.
+
+Stderr redaction and permission prompts reduce accidental exposure but are not
+process isolation or secret storage. Prefer OS disk protection and narrowly
+scoped credentials.
+
+## Resource limits
+
+| Surface | Limit |
+|---|---:|
+| one stdio frame | 4 MiB |
+| legacy handshake | 10 s |
+| modern discovery probe | 3 s, then fresh legacy fallback |
+| one `tools/list` page | 30 s |
+| `tools/list` pages | 32 |
 | tools per server | 512 |
-| pagination cursors | repeated cursor aborts |
-| `tools/call` timeout | 120 s (+60 s/step while a server request is pending **on that connection**, ≤ +10 min) |
-| tool result size | 1 MiB |
-| server request queue | 16 (flood drops with diagnostics) |
-| sampling output | ≤ 8192 tokens; ≤ 32 messages; text content only |
-| sampling outbound text | ≤ 262,144 characters, systemPrompt + messages (character cap, not bytes) |
-| sampling budget | 64 requests per run (hard) + 1,000,000-token spend guard (approximate; see above) |
+| one `tools/call` | 120 s, extendable only for same-connection host requests |
+| total host-request extension | 10 min |
+| tool result | 1 MiB |
+| inbound server-request queue | 16 |
+| sampling messages | 32, text only |
+| sampling output request | 8,192 tokens |
+| sampling outbound text | 262,144 characters |
+| shared sampling budget | 64 requests/run + approximate 1,000,000 tokens |
 
-The transport uses a single reader thread that routes responses by request id
-(out-of-order and concurrent responses are handled) and a bounded writer
-queue. Shutdown is explicit and idempotent: reject new work and wake pending
-calls → close stdin → wait for a bounded grace period → kill/reap if necessary
-→ join writer and reader threads. Project-scope teardown revokes MCP Tool
-leases before shutting down their server, so a silent server or stale Tool
-reference cannot hang or outlive CLAT's project scope. `Drop` remains only a
-best-effort fallback.
+Repeated pagination cursors abort listing. Bounded queues never let a slow or
+flooding server block the agent or shutdown path.
 
-`Esc` cancellation propagates through `Tool::invoke` into an in-flight
-MCP request. CLAT removes the pending response slot, returns within a
-short polling interval, and best-effort sends `notifications/cancelled`
-with the original request id; the 120-second timeout remains the final
-fallback for a server that ignores cancellation.
+## Troubleshooting
+
+1. Open `/mcp` and check whether the server is `connecting`, connected, or
+   failed.
+2. Read the attached stderr tail for stdio launch/package errors.
+3. Run the command manually from `~/.clat` with the same environment.
+4. Confirm the entry uses either `command` or `url`, not both.
+5. If a tool is missing, check normalized-name collisions and the 512-tool cap.
+6. If the first run freezes the registry before a very slow server is ready,
+   restart CLAT after fixing or warming that server; the project-scope registry
+   does not thaw between runs.
+
+For DSH plugin-specific packaging problems, use the
+[DSH plugin porting guide](dsh-plugins.md).

@@ -12,7 +12,7 @@ use crate::model::Usage;
 use crate::permission::PermissionRequest;
 use crate::session::replay::{ReplayEvent, ReplayRetryFailure, ReplayTurnEnd};
 use crate::tool::ToolEffect;
-use crate::{ApplicationEvent, SessionSummary};
+use crate::{ApplicationEvent, SessionSummary, WorkbenchSnapshot};
 use serde_json::{Map, Value, json};
 
 #[cfg(test)]
@@ -33,6 +33,191 @@ pub(crate) fn session_summary_json(summary: &SessionSummary) -> Value {
     fields.push(("message_count", json!(summary.message_count)));
     fields.push(("turns", json!(summary.turns)));
     object(fields)
+}
+
+// —— 工作台轻快照（workbench.info）——————————————————————————————
+
+/// RF-2/RF-8：Application DTO → serve wire 的唯一手写映射。这里明确
+/// 枚举字段，避免未来给 core DTO 加字段时把凭据或内部状态顺带上网。
+pub(crate) fn workbench_snapshot_json(
+    snapshot: &WorkbenchSnapshot,
+    active_run: Value,
+    methods: &[&str],
+) -> Value {
+    let model_protocol = match snapshot.model.protocol {
+        crate::ModelProtocol::OpenAiResponses => "open_ai_responses",
+        crate::ModelProtocol::OpenAiCompatible => "open_ai_compatible",
+    };
+    let thinking_level = snapshot
+        .model
+        .thinking_level
+        .map(|level| level.label().to_ascii_lowercase());
+    let servers = snapshot
+        .mcp
+        .servers
+        .iter()
+        .map(|server| {
+            object(vec![
+                ("name", Value::String(server.name.clone())),
+                (
+                    "server_version",
+                    Value::String(server.server_version.clone()),
+                ),
+                (
+                    "protocol_version",
+                    Value::String(server.protocol_version.clone()),
+                ),
+                ("tools", json!(server.tools)),
+                ("transport", Value::String(server.transport.clone())),
+            ])
+        })
+        .collect::<Vec<_>>();
+
+    object(vec![
+        (
+            "project",
+            object(vec![
+                (
+                    "root",
+                    Value::String(snapshot.project.root.to_string_lossy().into_owned()),
+                ),
+                ("name", Value::String(snapshot.project.name.clone())),
+                (
+                    "workspace_id",
+                    snapshot
+                        .project
+                        .workspace_id
+                        .clone()
+                        .map(Value::String)
+                        .unwrap_or(Value::Null),
+                ),
+            ]),
+        ),
+        (
+            "session",
+            object(vec![
+                (
+                    "id",
+                    snapshot
+                        .session
+                        .id
+                        .as_ref()
+                        .map(|id| Value::String(id.as_str().to_owned()))
+                        .unwrap_or(Value::Null),
+                ),
+                (
+                    "title",
+                    snapshot
+                        .session
+                        .title
+                        .clone()
+                        .map(Value::String)
+                        .unwrap_or(Value::Null),
+                ),
+                (
+                    "committed_seq",
+                    snapshot
+                        .session
+                        .committed_seq
+                        .map_or(Value::Null, |seq| json!(seq)),
+                ),
+            ]),
+        ),
+        (
+            "model",
+            object(vec![
+                ("protocol", Value::String(model_protocol.into())),
+                ("model", Value::String(snapshot.model.model.clone())),
+                (
+                    "preset",
+                    snapshot
+                        .model
+                        .preset
+                        .clone()
+                        .map(Value::String)
+                        .unwrap_or(Value::Null),
+                ),
+                (
+                    "active_profile",
+                    snapshot
+                        .model
+                        .active_profile
+                        .clone()
+                        .map(Value::String)
+                        .unwrap_or(Value::Null),
+                ),
+                (
+                    "thinking_level",
+                    thinking_level.map(Value::String).unwrap_or(Value::Null),
+                ),
+                (
+                    "max_context_tokens",
+                    snapshot
+                        .model
+                        .max_context_tokens
+                        .map_or(Value::Null, |tokens| json!(tokens)),
+                ),
+                ("run_token_budget", json!(snapshot.model.run_token_budget)),
+            ]),
+        ),
+        (
+            "permission",
+            object(vec![
+                (
+                    "mode",
+                    Value::String(snapshot.permission_mode.journal_value().into()),
+                ),
+                ("label", Value::String(snapshot.permission_mode.to_string())),
+            ]),
+        ),
+        (
+            "mcp",
+            object(vec![
+                ("configured", json!(snapshot.mcp.configured)),
+                ("connected", json!(snapshot.mcp.connected)),
+                ("connecting", json!(snapshot.mcp.connecting)),
+                (
+                    "failures",
+                    Value::Array(
+                        snapshot
+                            .mcp
+                            .failures
+                            .iter()
+                            .cloned()
+                            .map(Value::String)
+                            .collect(),
+                    ),
+                ),
+                ("servers", Value::Array(servers)),
+            ]),
+        ),
+        ("active_run", active_run),
+        (
+            "methods",
+            Value::Array(
+                methods
+                    .iter()
+                    .map(|method| Value::String((*method).into()))
+                    .collect(),
+            ),
+        ),
+        (
+            "capabilities",
+            Value::Array(
+                [
+                    "session-history",
+                    "in-run-steering",
+                    "permission-modes",
+                    "approval-bridge",
+                    "model-summary",
+                    "mcp-status",
+                ]
+                .into_iter()
+                .map(|capability| Value::String(capability.into()))
+                .collect(),
+            ),
+        ),
+    ])
 }
 
 // —— 重放族（§7.1：ReplayEvent 8 变体，type-tagged snake_case）——————
@@ -394,6 +579,51 @@ mod tests {
         assert_eq!(
             session_summary_json(&summary).to_string(),
             r#"{"id":"0f8c2a4e-1111-2222-3333-444455556666","title":"review the diff","created_at_ms":1755900000000,"last_activity_ms":1755900999000,"message_count":12,"turns":3}"#
+        );
+
+        let workbench = WorkbenchSnapshot {
+            project: crate::WorkbenchProjectSnapshot {
+                root: std::path::PathBuf::from("/work/repo"),
+                name: "repo".into(),
+                workspace_id: Some("workspace-1".into()),
+            },
+            session: crate::WorkbenchSessionSnapshot {
+                id: Some(crate::SessionId::new("session-1")),
+                title: Some("active work".into()),
+                committed_seq: Some(42),
+            },
+            model: crate::WorkbenchModelSnapshot {
+                protocol: crate::ModelProtocol::OpenAiResponses,
+                model: "deepseek-v3".into(),
+                preset: Some("deepseek".into()),
+                active_profile: Some("daily".into()),
+                thinking_level: Some(crate::ThinkingLevel::High),
+                max_context_tokens: Some(128_000),
+                run_token_budget: 10_000_000,
+            },
+            permission_mode: crate::PermissionMode::ReadOnly,
+            mcp: crate::McpStatusDto {
+                configured: 1,
+                connected: 1,
+                connecting: 0,
+                failures: vec!["stale server warning".into()],
+                servers: vec![crate::McpServerInfoDto {
+                    name: "repo-tools".into(),
+                    server_version: "1.2.3".into(),
+                    protocol_version: "2025-06-18".into(),
+                    tools: 4,
+                    transport: "stdio".into(),
+                }],
+            },
+        };
+        assert_eq!(
+            workbench_snapshot_json(
+                &workbench,
+                json!({"prompt_rpc_id": "prompt-1", "started": 99}),
+                &["workbench.info", "permission.set"],
+            )
+            .to_string(),
+            r#"{"project":{"root":"/work/repo","name":"repo","workspace_id":"workspace-1"},"session":{"id":"session-1","title":"active work","committed_seq":42},"model":{"protocol":"open_ai_responses","model":"deepseek-v3","preset":"deepseek","active_profile":"daily","thinking_level":"high","max_context_tokens":128000,"run_token_budget":10000000},"permission":{"mode":"read-only","label":"Read Only"},"mcp":{"configured":1,"connected":1,"connecting":0,"failures":["stale server warning"],"servers":[{"name":"repo-tools","server_version":"1.2.3","protocol_version":"2025-06-18","tools":4,"transport":"stdio"}]},"active_run":{"prompt_rpc_id":"prompt-1","started":99},"methods":["workbench.info","permission.set"],"capabilities":["session-history","in-run-steering","permission-modes","approval-bridge","model-summary","mcp-status"]}"#
         );
 
         let replay: Vec<(&str, &str)> = vec![

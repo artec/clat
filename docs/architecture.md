@@ -1,432 +1,396 @@
 # Architecture
 
-## Source map
+This document is the stable map of CLAT's runtime boundaries. It explains
+where responsibilities live and which contracts frontends and extensions may
+depend on. User-facing operation belongs in [Using CLAT](usage.md); detailed
+persistence and security rules belong in [Persistent state](storage.md) and
+[Permissions](permissions.md).
 
-Every top-level name is one constitution concept; the layout is meant to
-be read without opening the files.
+## Architectural invariants
 
-| Path | Role |
-|---|---|
-| `main.rs` / `lib.rs` | binary composition root / module tree + stable root re-exports |
-| `application.rs` + `application/` | UI-independent Application facade: `bootstrap` (zero-write preflight), `trusted` (mounted project), `run_lifecycle`, `compaction`, `title`, `threads`, DTOs |
-| `run.rs` | the agent loop (model → tool → model) |
-| `model.rs` | model abstraction: config, streaming events, usage, cancel |
-| `providers/` | provider adapters (OpenAI Responses, OpenAI-compatible) |
-| `tool.rs` / `native_tools.rs` | tool abstraction / built-in file, search, command, ask tools |
-| `permission.rs` | permission modes, policies, approver port, write fence |
-| `event.rs` | `RunEvent` vocabulary + `EventSink` (the client protocol) |
-| `interaction.rs` / `media.rs` | ask-user port / image attachment helpers |
-| `project.rs` / `presets.rs` | trusted project root / built-in model presets |
-| `plugin/` | plugin kernel: catalogs, scopes, typed services |
-| `plugins/` | built-in plugins (incl. `mcp.rs` + `wasm.rs` adapter plugins) |
-| `plugin_host.rs` | host bridge for external leaf plugins (sampling / elicitation) |
-| `mcp.rs` + `mcp/` | MCP protocol stack: `transport` (framing) + `client` (session, handshake, tool adapter) |
-| `session/` | DSH-compatible session journal stack |
-| `control_storage/` | control plane: `~/.clat/` JSON file family (settings/credentials/trust, sentinel, DSH-isomorphic workspace registry + projcache) |
-| `command.rs` | slash-command domain (`core.commands`) |
-| `tui.rs` + `tui/` | terminal frontend (entry `run()`, `App`, keys/actions/render/dialogs/widgets) |
-| `exec.rs` / `demo.rs` / `serve.rs` + `serve/` | headless one-shot / deterministic offline / local HTTP+SSE frontends (`clat serve`: loopback RPC + SSE event stream, PWA-2 design doc) |
-| `dsh/` | `clat dsh` protocol/backend layer (D-2): hand-written RFC 6455 downlink + ureq HTTP envelope + task orchestration (`backend.rs`); the UI is the CLAT TUI itself (`tui/dsh_events.rs` reduces DSH events into the same `App`), DSH events rendered through the ReplayEvent path; never writes `~/.dsh` |
-| `upgrade.rs` / `test_support.rs` | self-update / shared test fixtures |
+CLAT is organized around a small set of non-negotiable boundaries:
 
-## Core and static plugin composition
+1. **The core never depends on a frontend.** Terminal, browser, headless, IDE,
+   and future clients consume core ports and DTOs.
+2. **Run state is observed through events.** Frontends do not poll or reach
+   into the agent loop.
+3. **Side effects cross one permission pipeline.** Frontends supply an
+   approver; they do not implement policy semantics.
+4. **Persistence is owned by core.** Frontends never write session or control
+   files directly.
+5. **Providers and tools are replaceable adapters.** No vendor or extension
+   protocol defines the agent algorithm.
+6. **Lifetimes are explicit.** Bootstrap, trusted-project, and run resources
+   close in a defined order and background workers have owners.
+7. **One binary remains the product boundary.** Rust implementations and
+   explicitly configured WASM components do not require a user-side language
+   runtime.
 
-CLAT has a UI-independent Application facade over a small, Rust-native static
-plugin kernel. Core plugin implementations are compiled into the single `clat`
-binary; explicit catalogs select and order them at runtime. The only code
-loaded beyond the binary is WebAssembly components explicitly listed in
-`~/.clat/plugins.json` (see [WASM plugins](wasm.md)); CLAT never loads Rust
-dynamic libraries, JavaScript, or automatically discovered code.
+## System shape
 
 ```text
-TUI / demo / exec (headless CLI) / future desktop or IDE client
-                    │
-                    ▼
- BootstrapApplication ── trust transition ──► TrustedProjectApplication
-                    │                              │
-                    ▼                              ▼
-              Bootstrap Scope              Trusted Project Scope
-                                                   │
-                                                   ▼
-                                               Run Scope
-                    ┌──────────────────────────────┴────────────────────┐
-                    ▼                                                   ▼
-       ServiceRegistry + PluginManager                 EventSink / RunEvent
-       dependency plan, mount, rollback,               stable client protocol
-       child scopes, reverse teardown
+                        local clients
+       ┌───────────┬────────────┬──────────────┐
+       │ TUI       │ clat exec  │ clat serve  │
+       │ terminal  │ stdout     │ HTTP/SSE/PWA│
+       └─────┬─────┴──────┬─────┴──────┬───────┘
+             └────────────┴────────────┘
+                           │
+                           ▼
+                BootstrapApplication
+                  zero-write preflight
+                           │ trust transition
+                           ▼
+             TrustedProjectApplication
+       sessions · config · tools · providers · plugins
+                           │ start_run
+                           ▼
+                      Run Scope
+             model → tools → model, unbounded
+                  │                   │
+                  ▼                   ▼
+          RunEvent / EventSink   Session journal
+
+clat dsh is a separate client path: it reuses the TUI shell but projects
+events and commands from a DSH web host instead of mounting local core state.
 ```
 
-There are three scope-specific explicit catalogs:
+The Application facade is the only supported local-client entry point. It
+offers trust transition, session commands, snapshots, model state, permission
+mode, run lifecycle, and frontend-neutral command dispatch. Concrete storage,
+provider, MCP, plugin, and registry types remain crate-private.
 
-| Scope | Lifetime | Built-in responsibilities |
+## Lifetimes and static composition
+
+CLAT uses a Rust-native plugin kernel for compile-time components. Explicit
+catalogs choose and order built-in plugins; there is no dynamic Rust library or
+JavaScript discovery. Configured WebAssembly components are the only extension
+code loaded into the CLAT process; MCP executables remain separate processes.
+
+| Scope | Lifetime | Owns |
 |---|---|---|
-| Bootstrap | Application open → trust decision | no plugin scope at all — a zero-write control-plane preflight (`sentinel` classification, read-only trust lookup) |
-| Trusted Project | trust accepted → project close | control-plane `ConfigStore`, DSH session persistence (`SessionService`), Tool/Provider/Prompt/**Command** registries, native tools, MCP adapter, **WASM plugin adapter** (Phase 2a), permission and Agent services, monitor, project instructions, tool-result pruning, compaction, per-session todo, session-title services |
-| Run | one active run | `CancelToken` and injected `PermissionApprover`; worker ownership stays in Application |
+| Bootstrap | process open → trust decision | control-format classification and read-only trust lookup |
+| Trusted Project | trust accepted → project close | storage lease, sessions, providers, tools, prompts, commands, MCP/WASM adapters, monitors, compaction, titles, todos |
+| Run | one active agent run | cancel token, permission approver, user asker, plugin-host context, model/tool worker |
 
-The batch-1 capability plugins (`ProjectInstructionsPlugin`,
-`ToolResultPrunerPlugin`, `CompactionPlugin`, `TodoPlugin`,
-`SessionTitlePlugin`) are optional: a minimal catalog without them keeps
-every existing test green. `ToolResultTransformer` is a narrow post-result
-seam with exactly one real consumer (the pruner) — it is not a general
-hook, and the tool pipeline remains the only extension point that invokes
-it. Compaction and title generation run as background work with enforced
-total deadlines and attempt caps; application close cancels and joins
-their workers, so no scope teardown waits unboundedly.
+Bootstrap deliberately has no plugin scope. A catalog is validated before any
+plugin mount can create a side effect. Duplicate IDs or services, missing or
+mis-scoped dependencies, parent-service overrides, and dependency cycles fail
+early.
 
-The catalog is validated before the first plugin produces a side effect.
-Duplicate plugin IDs or services, missing dependencies, scope mismatches, parent
-service overrides, and required/optional dependency cycles all fail early.
-Plugins on the same dependency layer retain catalog order. A failed mount rolls
-back the current plugin and every prior plugin in reverse order while retaining
-the primary error and all cleanup errors. Scope close is idempotent, reverse
-ordered, panic-isolated, and refuses to close a parent with active children.
+Mount and teardown are symmetric:
 
-Services have typed `ServiceKey<T>` values. Collection extension points use
-domain registries instead of competing service providers: Provider factories,
-Tools, Prompt fragments, Tool middleware, post observers, and slash Commands
-each carry an unforgeable plugin owner and a revocable lease. Registries
-freeze before a run, but existing leases can still revoke contributions
-during teardown. The `core.commands` registry owns command semantics
-(`dispatch_command` on the facade is the only frontend entry): handlers are
-frontend-neutral (`&mut TrustedProjectApplication` + parsed args → a
-`CommandOutcome` intent+data DTO) and never forward to the model; the help
-table and `clat exec --command` derive from the same catalog
-(`docs/todo/commands-core.md`).
+- plugins on the same dependency layer preserve catalog order;
+- a failed mount rolls back the current and prior mounts in reverse order;
+- close is reverse-ordered, idempotent, and panic-isolated;
+- a parent scope refuses to close while child scopes are active;
+- collection contributions carry a plugin owner and a revocable lease.
 
-The kernel, domain DTOs/contracts, and frontend ports are deliberately **not**
-plugins. `Project`, `ModelItem`, `RunEvent`, `EventSink`, `PermissionApprover`,
-and Application DTOs remain ordinary typed interfaces. `PluginContext`, raw
-registries, storage, concrete providers, MCP clients, and the `Run` algorithm
-are crate-private so frontends cannot bypass the facade.
+Provider factories, tools, prompt fragments, command handlers, tool
+middleware, and post observers use domain registries. Registries freeze before
+a run, preventing mid-run additions from changing the model's tool surface.
+Teardown can still revoke existing leases.
 
-## Frontends
+## Application boundary
 
-Four CLAT frontends exist today, all talking to the same Application
-facade. `clat dsh` is the same TUI App with a foreign event source (the
-DSH web API) swapped in behind `UiEvent::Dsh` — one shell, two backends
-(D-2):
-
-- **TUI** (`tui*.rs`) — full-screen terminal client; owns raw-mode handling
-  and dialog rendering only.
-- **demo** (`demo.rs`) — the deterministic model → tool → model loop used by
-  `clat demo` and as a living proof that core runs without a UI.
-- **exec** (`exec.rs`) — the headless one-shot CLI behind `clat exec`.
-- **serve** (`serve.rs` + `serve/`) — the local HTTP+SSE server behind
-  `clat serve` (docs/todo/serve-rpc.md): loopback-only with
-  token+Origin gates, a hand-written minimal HTTP subset (no new
-  dependencies), the v1 RunEvent wire reused byte-for-byte on the SSE
-  stream, and the permission approver bridged to the network
-  (`approval.requested` frames + `approval.respond` method,
-  fail-closed on cancel/disconnect/timeout). Frontend-neutral core is
-  untouched apart from one read-only facade accessor
-  (`committed_seq`). It
-  supplies an `EventSink` that streams assistant text to stdout and status
-  to stderr, a permission approver (terminal prompt via a request-scoped
-  input port, deny-on-pipe by default, `--yes` to allow all), and a
-  completion channel. `--command /xxx` runs one `core.commands` registry
-  command through the same facade dispatch as the TUI (query results on
-  stdout, interactive-only selections are usage errors) instead of a model
-  run. Interrupt routing (`ExecCancel`) is injected by the process boundary
-  in `main.rs`, so the library entry is repeatable in-process and never
-  installs global signal handlers. A stdout write failure (broken pipe)
-  cancels the active run instead of pretending success; stdin is read with
-  an explicit byte budget and combined with the positional instruction into
-  one prompt.
-
-Every frontend is presentation and input handling only; run lifecycle,
-persistence, and permission semantics stay in core. A future desktop or
-IDE client reuses the facade the same way, supplying its own approver and
-event presentation.
-
-`Run` still owns the streaming model → tool → model algorithm. The loop is
-unbounded (no turn budget — see the table below) and carries a per-run
-token **spend budget** instead (10M input+output tokens by default, per
-model, `0` disables; every request first reserves a conservative estimate
-and provider-reported usage reconciles it, so the guard holds even when an
-endpoint omits usage). Every observable step (`ModelRequested`,
-`ModelStream`, `ToolRequested`, `ToolFinished`, `PermissionChecked`,
-`RunCompleted`, …) is emitted through `EventSink`. Application-level facts such
-as quota refreshes use `ApplicationEvent`; plugin hooks never enter the
-`RunEvent` protocol.
-
-Protocol notes (session-persistence cutover): `ModelResponded` carries an
-optional `provider_replay` payload (lossless provider state such as OpenAI
-Responses reasoning items) so the journal can persist it as
-`source.replayState`, and `ModelStream` can carry `RetryScheduled` /
-`RetryStarted` meta-events from the retry wrapper (they journal as
-`llm/retry` / `llm/retry-started`). Frontends may ignore both.
-`PermissionDecision::Unavailable` marks fail-closed decisions from
-approvers that could not ask anyone; run semantics match `Deny`, the
-journal records the DSH outcome `unavailable`.
-
-Tool execution failures are returned to the model as structured error results
-so the agent can recover. Cancellation is cooperative: the same `CancelToken`
-is checked between turns, before each tool call, between SSE chunks, inside
-native tools, and inside MCP waits.
-
-## Agentic loop (v0.4.0)
-
-CLAT is now a **minimal viable agent**: the read → change → verify loop is
-closed. What the agent can do autonomously:
+The facade is split structurally:
 
 ```text
-inspect (list/read/search)
-   → locate a problem
-      → change it (edit_file / write_file)
-         → verify (run_command: build, test)
-            → read the failure → change again → until green
+BootstrapApplication::open(project, storage_root)
+├── classify the control-plane sentinel and legacy state
+├── validate session-root shape read-only
+├── query trust read-only
+└── authorize_and_mount(ProjectAuthorization)
+      ├── acquire the storage-root kernel lease
+      ├── persist trust when explicitly authorized
+      ├── publish/upgrade the control-plane sentinel
+      └── mount TrustedProjectApplication
 ```
 
-Current boundaries of that capability, and what is deliberately **not**
-built yet:
+Pre-trust code has no API for project reads, credentials, sessions, tools,
+models, MCP, or control-plane writes. `authorize_and_mount` is the only trust
+write path.
 
-| Capability | State |
-|---|---|
-| Multi-turn run with cancellation and failure persistence | done |
-| Read tools (list/read/search), project-scoped | done |
-| Write/edit tools with capability-relative path binding | done |
-| Command execution with process-tree ownership, timeout, output budget | done |
-| Permission review for every side-effecting call | done |
-| Permission modes (DSH `sandbox/mode`, aligned) | done — three user-switchable modes (`Read Only` / `Project Write` default / `Full Access`) over the `ToolEffect` table; a shared mode cell makes switches effective at the next check; the permission dialog offers exactly the wider modes that would allow the pending call (`w`/`f` escalation keys), `/perm` (alias `/permission`) is the cold-switch/downgrade path with a Full Access confirm step; `clat exec` stays on `SafeByDefault` (zero behavior change); no shell-command classification and no mode-level deny — refusals stay human. The mode is a **session property**: journaled as DSH-vocabulary `sandbox/mode` events (latest-wins projection, birth mode as the session's first event; `Project Write` auto-allows Write/Network/ExternalRead, asks for Execute/Destructive — see `docs/research/dsh-permission-gating.md`), resumed sessions restore their own mode, `/new` restarts at the default, and exec sessions journal none. Sandbox scope: reads accept absolute paths in every mode; writes are fenced by `WriteScope` (Full Access unlocks absolute paths, everything else project-root relative). See permissions.md |
-| Project instruction injection (`AGENTS.md`, then `CLAUDE.md`) | done — capability-bound read in Trusted Project Scope |
-| Context management | done — tool-result pruning, append-only compaction markers, manual `/compact`, automatic compaction on by default: presets seed the budget from the model's official context window (a user-entered value always wins), and the DSH `thresholdRatio` semantics apply — trigger and compact target are both 80% of the window, leaving headroom for single-step growth between checks (2026-08-19; before, the budget came only from a manually filled field and triggered at 100%, so out-of-the-box setups never compacted) |
-| Per-session agent todo state | done — `SessionWrite`, append-only snapshots, dynamic model context |
-| Automatic session titles | done — retried after every successful run while the session has no explicit title (self-heals sessions whose one-shot first-run attempt failed — user-reported on a several-hundred-turn session), bounded background worker, CAS against manual rename; `TitleUpdated` application events refresh the TUI's conversation top-right title without a snapshot pull, `/rename` writes `session/title` with `source.kind=user` (gated on an existing explicit title, sanitized to the first clean line ≤60 chars) |
-| Typed provider retry | done — fresh model attempts, Retry-After, event-safe retry, internal deadlines |
-| Unbounded agent loop (DSH parity) | done — the run loop has **no turn budget** (2026-08-19; DSH's `kick()` is `while (await turn())`, and Claude Code / opencode are the same): it ends only on completion/refusal, user abort, or failure — or the **run token spend budget** (a separate concept from turn caps: 10M input+output tokens/run by default, reservation-based so it does not depend on provider-reported usage; `0` disables via `/model`). Context pressure belongs to pruning/compaction. The earlier fixed-32-turn interruption and its bounded `[auto-continue]` patch were emergency measures and are removed |
-| In-run steering | done — `steer()` queues a message that joins the conversation at the next model-request boundary (never interrupts the in-flight request); a terminal response with pending steering extends the run. The queue is **sealed atomically with the terminal decision** (2026-08-22, adversarial-audit fix): `RunCompleted`/`RunFailed`/`RunCancelled` become visible to the frontend only after the seal (fail/cancel seal before emitting; a RAII guard covers panic unwind), so a late steer returns `NotRunning` and the frontend falls back to a normal submission instead of queueing a message nobody will claim. Unclaimed messages are LIFO-recallable (`Esc`) and leave no durable trace |
-| Single-pass cold resume (R-1) | done — arming a session streams the journal **exactly once**: the recovery scan feeds projection folding, the transcript replay, and usage stats in the same physical read (`prepare_with_visitor` → `ResumeSink`); a torn-tail crash repair re-reads once after discarding the partial visitor output. The resume path no longer reads checkpoints (surface/transcript are deliberately unbounded, so the checkpoint floor is always zero anyway); the `/resume` listing remains their reader. Debug-build reopen of a 400-turn journal dropped ~53% (329ms → 154ms), and the saving scales with log size |
-| Bounded process exit | done — cooperative cancel cannot interrupt a blocked socket read, so every exit-path join is bounded (`join_with_grace`, 2s): the title worker and the quota monitor are abandoned with a stderr notice when stuck, which is semantically a failed title / a dropped refresh. The auto-title request itself now derives a deadline-carrying child `CancelToken`, so its connect / header / stream phases are capped at 15s instead of the raw socket timeouts (30s/60s). Run and compaction workers stay strict joins (they journal) |
-| Headless CLI (`clat exec`) | done — one-shot runs with stdout-only assistant output; dual-input prompt (instruction + piped context, 8 MiB budget); TTY permission prompts with stale-input discard, deny-on-pipe default, `--yes` bypass; `--continue` / `--session` resume; graceful Ctrl-C everywhere (including pending-run and permission-wait windows); broken-pipe cancels the run and fails the exit; closed by the 2026-08-17 headless audit (HL-01…09) |
-| Local image attachments (drag-in) | done — pasting exactly one existing image path attaches it; bytes are copied into the session's `attachments/` dir at run-prepare (pre-journal validation, fail-fast) and the journal stores only the absolute reference; requests inline base64 data URLs at serialization time (chat `image_url` / Responses `input_image`, missing file degrades to a visible note); auto-compaction counts vision-tile estimates from PNG/JPEG headers (`media.rs`, no image crate); transcript shows `📷[name]` placeholders. Video and clipboard capture deliberately out |
-| Subagents, multi-agent orchestration | deferred by constitution |
+`TrustedProjectApplication` exposes use cases rather than subsystems. Examples
+include:
 
-The next growth step is driven by real dogfood need; candidates include a
-structured `--json` event stream for `clat exec` (consumed by editors and CI).
-The Application API remains frontend-neutral:
-every frontend — TUI, `exec`, a future desktop or IDE client — supplies only
-an `EventSink`, a `PermissionApprover`, and a completion channel.
+- `session_list`, `session_info`, `new_session`, `switch_session`, and rename;
+- model state/profile reads and writes;
+- `dispatch_command` for the shared slash-command catalog;
+- permission-mode get/set through the core mode cell;
+- `start_run`, steering, cancellation, and join;
+- lightweight frontend DTOs such as `WorkbenchSnapshot`.
 
-## Model Protocol v0.1
+DTOs contain display-ready facts, not subsystem handles. The workbench
+snapshot deliberately excludes credentials and transcript replay; the server
+combines it with its active-run ledger at the wire boundary.
 
-CLAT models exchange typed, provider-neutral data:
+## Agent run lifecycle
+
+The single-agent runtime is the daily-driver baseline. One trusted project can
+have at most one active run.
+
+```text
+user prompt
+  → validate/prepare attachments
+  → journal turn/start + user/message durably
+  → freeze extension registries
+  → create Run Scope
+  → request model stream
+  → collect text/reasoning/tool calls/usage
+  → permission check each tool call
+  → middleware → Tool::invoke → post observers
+  → append results and continue the model loop
+  → durable turn/end
+  → publish exactly one run terminal event
+```
+
+The loop has no turn-count limit. It stops on model completion/refusal,
+cancellation, failure, or the per-run token spend guard. Tool failures and
+permission denials become structured `ToolResult` errors so the model can
+adapt without aborting the whole run.
+
+Steering is accepted at model-request boundaries. The queue is sealed
+atomically before a terminal event becomes visible, so a late message either
+joins the active run or becomes a new submission; it is never stranded.
+
+Cancellation is cooperative but propagated across the full call path: model
+SSE reads, native tools, command process trees, MCP waits, WASM execution, and
+plugin-host model/question waits observe the shared token. Components that may
+block outside cooperative cancellation have bounded join policies.
+
+## Event contracts
+
+One run produces two related streams:
+
+- **`RunEvent`** is the live client protocol. `EventSink` receives run start,
+  model requests and stream deltas, tool requests/results, permission checks,
+  retry metadata, and exactly one terminal outcome.
+- **`SessionEvent`** is the durable DSH-compatible journal vocabulary. It is
+  folded into transcript, model-context surface, title, todo, permission,
+  usage, and compaction projections.
+
+The live and durable streams are ordered so a frontend cannot observe success
+that persistence later contradicts. The initial user turn is durable before
+the model call. Approval requests and decisions are journaled around the human
+gate. A successful run terminal is emitted only after closing journal events
+commit; failure to persist turns the client outcome into `RunFailed`.
+
+Application-wide facts such as quota refreshes, title updates, compaction, and
+MCP startup use `ApplicationEvent`, not new run events.
+
+`clat exec --json` and `clat serve` serialize the same v1 RunEvent envelopes.
+Changing an event variant or required field is therefore a client-protocol
+change, not an internal refactor.
+
+## Conversation and context model
+
+At runtime the provider-neutral conversation is an ordered `ModelItem` list:
+
+- `User` and `Assistant` text, with optional reasoning;
+- paired `ToolCall` and `ToolResult` items;
+- opaque `ProviderState` required for a vendor's next turn.
+
+The journal, not a frontend copy, is the durable source of truth. Projections
+derive two intentionally different views:
+
+- the **transcript** preserves the full human-visible history;
+- the **surface** supplies model context and applies compaction shadowing.
+
+Tool-result pruning reduces transient model context. Compaction appends a
+summary marker and shadows older surface ranges without deleting original
+events. Preset context windows seed automatic compaction; manual configuration
+remains authoritative.
+
+Provider-specific replay stays opaque to `Run`. For example, OpenAI Responses
+reasoning items travel through `provider_state`, while DeepSeek-compatible
+`reasoning_content` is attached only to assistant messages that made tool calls.
+
+## Providers
+
+`Model` exposes one streaming, provider-neutral protocol:
 
 ```text
 ModelRequest
 ├── instructions
 ├── ModelItem[]
-├── ToolDefinition[]   (JSON Schema)
+├── ToolDefinition[]
 ├── ModelOptions
 └── CancelToken
        │
        ▼
-Model::stream(...)
-       │
-       ├── TextDelta
-       ├── ToolArgumentsDelta
-       ├── ToolCallCompleted
-       ├── ReasoningDelta
-       ├── ReasoningSummaryDelta
-       ├── Usage
-       └── ResponseCompleted
-       │
-       ▼
-ModelResponse
-├── text
-├── tool_calls[]
-├── finish_reason
-├── usage
-├── provider_state
-└── reasoning
+Model::stream
+       ├── text/reasoning deltas
+       ├── tool argument deltas and completed calls
+       ├── usage
+       └── response completion
 ```
 
-Provider-specific state can be preserved for subsequent turns without
-leaking provider wire formats into `Run` (the OpenAI Responses reasoning
-items travel through `provider_state`, for example).
+Provider factories create a fresh adapter for each retry attempt. The two
+built-in protocol families are OpenAI Responses and streaming
+`/chat/completions`-compatible APIs. Managed request fields cannot be
+overridden by user-provided extra body data. See [Providers](providers.md) for
+preset and retry details.
 
-## Conversation model
+## Native tools and permission pipeline
 
-A conversation is an ordered list of `ModelItem`s:
+Built-in read tools are `list_files`, `read_file`, and `search`. They enforce
+byte, depth, entry, and result limits. Project-relative paths reject traversal
+and are resolved with symlink-aware capability discipline. Absolute reads are
+allowed by CLAT's current permission contract.
 
-- `User` / `Assistant` — text turns; assistant items may carry reasoning
-  (chain-of-thought) that providers requiring replay can read back
-- `ToolCall` / `ToolResult` — tool interactions, paired by call id
-- `ProviderState` — opaque provider data preserved across turns
+Trusted projects also receive:
 
-The item list is the source of truth for model context and is persisted
-verbatim (see [storage](storage.md)).
+- `write_file` — bounded atomic replacement with permission preservation;
+- `edit_file` — one exact unique replacement plus conflict revalidation;
+- `run_command` — project-root command execution with timeout, bounded output,
+  and whole-process-tree termination.
 
-## Native tools
-
-CLAT ships project-scoped read tools:
-
-- `list_files` — inspect repository structure with depth and entry limits
-- `read_file` — read UTF-8 files by line range with byte limits
-- `search` — search project text files and return path/line/text matches
-
-and, for trusted projects, three side-effecting tools that close the
-agentic loop (read → change → verify):
-
-- `write_file` — create or overwrite files atomically (temp file +
-  rename; a failed write never leaves partial content); existing file
-  permissions are preserved
-- `edit_file` — replace one exact, unique text snippet; ambiguous or
-  missing matches error without touching the file; the commit
-  re-verifies the read snapshot under a parent-directory lock, so
-  cooperating CLAT writers conflict instead of overwriting each other
-- `run_command` — run a shell command in the project root; termination
-  covers the whole process tree (Unix process group TERM → unconditional
-  KILL after a fixed grace; Windows Job Object), output past the 32 KiB
-  cap is drained without changing command semantics; `exit_code` /
-  `signal` / `timed_out` form the result contract
-
-All paths are constrained to the current project root. Absolute paths and
-`..` traversal are rejected. Reads reject paths that resolve outside the
-project; writes perform parent creation, inspection, temporary-file creation,
-and rename relative to opened capability directory handles, so a symlink or
-concurrent directory replacement cannot retarget later I/O outside the root.
-Common generated and dependency directories such as `.git`, `node_modules`,
-`target`, `dist`, and `build` are skipped by default. Side-effecting
-tools pass through the permission model on every call — see
-[permissions](permissions.md). The adversarial reviews behind these
-guarantees are recorded under `docs/audit/` (a local-only directory in
-development workspaces).
-
-## Project trust
-
-The trust gate is part of the startup state machine, not a UI overlay:
+Writes are project-relative in Read Only, Project Write, and headless runs;
+Full Access can unlock absolute writes. Command execution remains rooted in the
+project. Every call flows through:
 
 ```text
-BootstrapApplication::open            (zero-write preflight; no plugin scope)
-├── classifies config.json + legacy clat.db presence against the sentinel matrix
-├── read-only trust lookup
-└── untrusted: no Session/Config/Tool/Provider service,
-               no project reads, MCP, monitor, or model request
-       │ authorize_and_mount(ProjectAuthorization)   ── the only trust write
-       │   storage-root lease → session-root preflight → control commit
-       │   (Fresh: sentinel only; legacy clat.db: rename-and-preserve upgrade)
-       ▼
-TrustedProjectApplication
-├── mounts the Trusted Project catalog once (holds the root lease)
-└── starts Run child scopes only through start_run
+final tool arguments
+  → PermissionPolicy
+  → ordered middleware
+  → Tool::invoke
+  → ordered post observers
 ```
 
-Trust is persisted per canonical directory path. The two Application types make
-the boundary structural: pre-trust code has no API that can list sessions,
-load credentials, access tools, start MCP, or run a model — and no API that
-can write the control plane before the session-root preflight passed.
+Middleware never sees an unapproved side effect. The frontend-supplied
+`PermissionApprover` only presents and returns a decision. Effect
+classification, escalation options, write scope, and fail-closed behavior stay
+in core. See [Permissions](permissions.md).
 
-## MCP adapter
+## Extension bridge
 
-The built-in `McpAdapterPlugin` mounts only in Trusted Project Scope. Mount
-does **no** network or subprocess I/O (docs/todo/mcp-async-startup.md): it
-registers the config and spawns a background `clat-mcp-startup` worker that
-connects each server (`StdioSession` subprocess or HTTP) and contributes its
-`McpTool`s to the shared Tool Registry through leases as they become ready —
-startup latency never blocks the TUI or `clat exec`. The tool registry
-freezes at the first `start_run` (matching the documented "freeze before a
-run" semantics), and `start_run` first waits — bounded at 20s — for MCP
-startup to settle, so a run always sees the complete tool set unless a
-server is slow enough to exceed the cap (then it lands on the next run and
-`/mcp` shows the server as connecting). Teardown cancels the worker, joins
-it with the exit grace bound, then runs the worker's registered cleanups in
-order: revoke tools first, then explicitly close stdin, bound the child
-grace period, kill/reap if needed, and join both I/O threads. See
-[MCP integration](mcp.md) for the protocol posture, naming rules, and
-resource limits.
+CLAT has three extension delivery paths with one semantic center:
 
-### Server-initiated requests and the plugin host bridge
+| Path | Boundary | Typical use |
+|---|---|---|
+| MCP stdio | subprocess + JSON-RPC | local tools in any language |
+| MCP Streamable HTTP | remote HTTP session | hosted services |
+| WebAssembly component | in-process WIT + WASI capabilities | portable local tools without a runtime dependency |
 
-Servers may send their own requests while a tool call is in flight —
-sampling (borrowing the host's model) and elicitation (asking the user),
-both delivered 2026-08-21 (docs/todo/mcp-sampling-elicitation.md). The
-layering is deliberate:
+MCP framing/session code lives under `mcp/`. The transport classifies incoming
+responses, requests, and notifications and keeps reader/writer queues bounded.
+The `McpAdapterPlugin` starts configured servers only after project trust. Its
+background startup does not block the TUI; `start_run` waits up to 20 seconds
+for the initial tool surface before freezing registries.
 
-- `mcp/transport.rs` / `mcp/client.rs` own the **transport**: incoming frames are
-  classified as response / server request / notification (a request is
-  `method` + `id` — fixing an old misclassification that could route a
-  server request into a pending-response slot), requests are handed to a
-  per-connection dispatcher thread (the reader never blocks), and
-  responses are written back through the session. `ping` is answered
-  inline; unknown methods get `-32601`; handler panics are contained as
-  `-32603`.
-- `plugin_host.rs` owns the **semantics** and is transport-agnostic: the
-  `PluginHostBridge` carries a per-run context (model config, approver,
-  asker, cancel token, usage cell, sampling budget) installed at
-  `start_run` and cleared by the worker at run end. Sampling passes
-  three gates before the model call — a payload cap, a per-run spend
-  budget (request count is the hard cap; the token figure is an
-  approximate reservation guard, reconciled with actual usage), and the
-  permission gate whose arguments are the **full outbound payload**
-  (systemPrompt + every message, untruncated — what you approve is what
-  leaves). Fail-closed on deny/unavailable. Usage is folded into the
-  current step's `assistant/message` usage at `ModelResponded` — one
-  journal landing point, so live and replayed session stats stay equal
-  with zero event-vocabulary changes. Elicitation reuses the
-  `UserAsker` port (same dialog as `ask_user`, one field at a time in
-  v1). While a server request is pending **on that connection**, the
-  in-flight `tools/call` deadline extends in bounded steps (the pending
-  count is per server — one server's or a WASM plugin's wait never
-  extends an unrelated server's deadline); `Esc` still cancels
-  immediately.
+`plugin_host.rs` owns transport-neutral host callbacks:
 
-This split is load-bearing for the plugin bridge (docs/research/
-dsh-plugin-bridge.md): the WASM/WIT plugin runtime (Phase 2a,
-`src/plugins/wasm.rs`) is exactly that third transport — components
-compiled against `wit/plugin.wit` (world `clat:plugin@0.1.0`, a
-transliteration of the MCP leaf semantics) import the same bridge
-methods. The adapter loads components from `~/.clat/plugins.json`
-synchronously at mount, registers their tools through the same lease
-discipline (`wasm_{plugin}_{tool}`), reports into the same `/mcp`
-status panel, and enforces zero-grant sandboxing (a `WasiCtx` with no
-preopens/env/stdio/sockets — capability absence is the boundary),
-fuel-bounded execution (fuel burns only while the component executes —
-host-call waits are free, unlike a wall-clock deadline), and a 256 MB
-memory cap. Phase 2b adds capability grants: preopened directories are
-re-evaluated from the permission mode on every tool call (project root
-read-only always; read-write for write-capable plugins under Project
-Write; configured extra dirs under Full Access), rebuilding the
-instance whenever the mode changes. Write-capable grants additionally
-require a one-time approval bound to plugin name + component sha256 +
-the exact directory set (first use asks with the hash and directory
-list; records persist in `~/.clat/plugin-grants.json` and any change
-re-asks). See [WASM plugins](wasm.md) and
-docs/todo/wasm-plugin-runtime.md.
+- **sampling** lets an extension borrow the active model after payload,
+  per-run spend, and permission gates;
+- **elicitation** lets it ask the user through the injected `UserAsker` port.
 
-On the author side, the same bridge semantics serve DSH (DeepSeek
-Harness) TS plugins: the `@artec/clat-dsh-adapter` npm package mounts an
-unmodified plugin in the author's Node process and exposes it as an MCP
-stdio server — a fourth consumer of the identical leaf contract rather
-than a new transport. See [DSH plugin porting](dsh-plugins.md).
+Usage returns to the same run ledger and journal event as ordinary model
+usage. Requests are served only during an active run. MCP, WASM, and the DSH
+adapter share these semantics instead of implementing parallel policy paths.
 
-## TUI event loop
+WASM components implement `wit/plugin.wit`. The host supplies no ambient
+environment, stdio, or network capability; filesystem preopens come from the
+permission mode and separate hash-bound write grants. Fuel, memory, and epoch
+interruption bound guest execution. See [MCP integration](mcp.md),
+[WASM plugins](wasm.md), and [DSH plugin porting](dsh-plugins.md).
 
-The TUI is a thin frontend. It owns terminal input, rendering, dialog state,
-view-model mapping, an approver adapter, and channels that multiplex
-`RunEvent`/`ApplicationEvent` into UI events. It never opens Storage, builds a
-Model or `Run`, registers tools, launches MCP, persists completion state, or
-owns provider business logic.
+## Persistence
 
-`TrustedProjectApplication::start_run` creates the run scope and core worker;
-`RunHandle` provides cancel/join/finished. Application persists the user turn
-before starting work and persists successful or partial assistant items before
-publishing completion. It rejects a second concurrent run with `Busy` and
-cancels/joins the active run before project teardown.
+Core persistence has two layers:
 
-The provider quota monitor is a Project plugin. Its stop/wake channel, bounded
-provider requests, five-minute refresh policy, and thread join belong to core;
-the TUI only renders `ApplicationEvent::MonitorUpdated`. At process exit the
-join is bounded (`join_with_grace`, 2s): a monitor stuck in an in-flight quota
-fetch is abandoned with a stderr notice instead of holding the exit until the
-HTTP timeout — the Rust/ureq equivalent of DSH's `AbortSignal` disposal.
+- append-only, zstd-framed DSH-compatible session journals;
+- a small JSON control plane for settings, credentials, trust, workspace
+  selection, and listing projections.
 
-## Adding a built-in extension
+A kernel lease prevents concurrent CLAT processes from writing the same
+storage root. Atomic file replacement, fsync discipline, append commit states,
+torn-tail recovery, projection reconciliation, and two-phase session switching
+keep memory, disk, and frontend outcomes aligned. Frontends consume
+`SessionService` and Application use cases, never filesystem paths.
 
-For an existing model protocol or runtime extension, implement the narrow
-domain trait, wrap registration in a scope-correct `Plugin`, declare its stable
-ID and service dependencies, and add it to the explicit catalog. Do not add a
-central provider match, expose a raw registry to a frontend, or create another
-assembly path. The test-only extension catalog demonstrates a typed service,
-ordered Tool contribution, short-circuit middleware, post observer, and full
-revocation without modifying TUI code.
+See [Persistent state](storage.md) for the file map and failure semantics.
+
+## Frontends
+
+### TUI
+
+`tui.rs` and `tui/` own terminal initialization, input, rendering, dialogs,
+view models, and channel multiplexing. They do not create providers, tools,
+storage, MCP processes, or run workers. An approver adapter and user-question
+adapter translate core requests into dialog state.
+
+### Headless runner
+
+`exec.rs` maps stdout/stderr/stdin to the same Application ports. It injects a
+request-scoped terminal approver, denies side effects when stdin is not a TTY,
+supports versioned NDJSON events, and owns no process-global signal handler.
+`main.rs` translates Ctrl-C into an injected `ExecCancel`.
+
+### Local server and PWA
+
+`serve.rs` and `serve/` implement a loopback-only HTTP+SSE frontend. The server
+bridges permission requests to `approval.requested` events and
+`approval.respond` RPC calls, exposes core command/session/run use cases, and
+uses the same event envelopes as headless JSON output.
+
+The embedded `web/` workbench is a projection client. Static assets and pairing
+shell contain no credential. Authenticated API calls carry the persistent
+`~/.clat/web-token` as Bearer; no URL or Cookie token path exists. Browser
+storage contains only UI preferences and the origin-scoped paired token, never
+conversation facts.
+
+### DSH client
+
+`dsh/` implements the HTTP/WebSocket client and host lifecycle for `clat dsh`.
+The TUI reducer maps DSH events into the same presentation state, but commands
+and persistence stay on the DSH host. Local access to `~/.dsh/storages` is
+read-only and used only to populate session selection.
+
+## Source map
+
+| Path | Responsibility |
+|---|---|
+| `src/application.rs`, `src/application/` | client-neutral use-case facade, DTOs, run/session lifecycle |
+| `src/run.rs` | agent loop |
+| `src/model.rs`, `src/providers/` | provider-neutral model contract and adapters |
+| `src/tool.rs`, `src/native_tools.rs` | tool contract and native tools |
+| `src/permission.rs` | effects, modes, policies, approver port, write scope |
+| `src/event.rs` | RunEvent vocabulary and EventSink |
+| `src/interaction.rs`, `src/media.rs` | user-question port and image preparation |
+| `src/plugin/`, `src/plugins/` | plugin kernel and built-in catalogs/adapters |
+| `src/plugin_host.rs` | extension sampling and elicitation semantics |
+| `src/mcp.rs`, `src/mcp/` | MCP config, transport, client, and tool mapping |
+| `src/session/` | journals, projections, recovery, checkpoints |
+| `src/control_storage/` | JSON control plane and workspace registry |
+| `src/command.rs` | frontend-neutral slash-command contract |
+| `src/tui.rs`, `src/tui/` | terminal frontend |
+| `src/exec.rs` | headless frontend |
+| `src/serve.rs`, `src/serve/`, `web/` | local API, SSE, and embedded PWA |
+| `src/dsh/` | DSH client protocol and host lifecycle |
+| `src/demo.rs` | deterministic offline composition |
+| `src/upgrade.rs` | authenticated self-update |
+| `wit/`, `sdk/clat-plugin/` | WASM contract and author SDK |
+| `sdk/dsh-adapter/` | DSH leaf-plugin adapter package |
+
+## Adding a core capability
+
+Before adding code, identify its owner and contract:
+
+1. If another client would need the behavior, implement it in core and expose
+   a facade use case or event—not a TUI method.
+2. If it contributes a provider, tool, prompt, command, middleware, or
+   observer, register it through the correct scoped catalog with an owner
+   lease.
+3. If it creates durable events, update admission validation, projection
+   folding, checkpoint/restore, and live/replay parity together.
+4. If it performs a side effect, classify it and route it through the shared
+   permission policy before middleware or invocation.
+5. If it owns a thread, process, channel, or child scope, define cancellation,
+   join, and reverse teardown behavior.
+6. If it changes user-visible behavior or a public event shape, update the
+   matching public document in the same change.
+
+The architecture test suite enforces the core-to-frontend dependency direction.
+Behavioral tests must also exercise lifecycle sequences—open, run, switch,
+close, reopen—because static boundaries alone cannot prove state correctness.

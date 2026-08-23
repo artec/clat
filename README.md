@@ -2,89 +2,70 @@
 
 English | [中文](README.zh.md)
 
-**cl + at = command-line agent**
+**cl + at = command-line agent** · [Homepage](https://cl.at.cn)
 
-[Homepage](https://cl.at.cn)
+CLAT is a local-first coding agent foundation shipped as one Rust binary. It
+can inspect a repository, edit files, run commands, use external tools, and
+keep durable conversations without requiring a JavaScript or Python runtime.
+That guarantee covers the shipped CLAT core; optional MCP servers and the DSH
+adapter may declare their own runtimes.
 
-CLAT is a rock-solid agent foundation: fast, local-first, open-source,
-shipped as a single Rust binary. The project starts with a simple rule:
-build the agent we actually want to use every day, dogfood it on real
-repositories, and generalize those needs into reusable open-source
-capabilities.
+The project is built by dogfooding real repository work and turning recurring
+needs into reusable, provider-neutral capabilities.
 
-## Features
+## Quick start
 
-**Agent workflow**
+```bash
+# Open the terminal UI in the current repository.
+clat
 
-- Inspects the repository, edits files, and runs commands to verify its
-  own work — no turn limits, and long conversations compact
-  automatically without losing the original history
-- Asks you questions when a decision is yours to make, accepts steering
-  messages while a run is active, and keeps a per-session todo list
-- Attach local images by dragging them into the terminal; vision presets
-  read them natively
+# Then run /model once to choose a preset and enter an API key.
 
-**Models**
+# Headless use: positional text is the instruction; piped input is context.
+clat exec "explain this repository in one sentence"
+git diff | clat exec "review this diff"
 
-- Official presets for DeepSeek, GLM, Qwen, and Kimi — pick one in
-  `/model`, paste an API key, and start; any OpenAI-compatible endpoint
-  works too
-- Thinking levels, live usage/cache/context telemetry, and provider
-  balance or quota in the status bar
+# Deterministic offline proof of the model -> tool -> model loop.
+clat demo
 
-**Tools & extensions**
+# Check whether a signed upgrade is available.
+clat upgrade --check
+```
 
-- Built-in file, search, and command tools
-- MCP servers from `~/.clat/mcp.json` over stdio or HTTP; `/mcp` shows
-  every server's state and tools
-- Sandboxed in-process WebAssembly plugins — a single `.wasm` file, no
-  Node required
-- DSH (DeepSeek Harness) plugin authors can serve existing TS plugins
-  over MCP with a ~10-line bin — no CLAT-specific fork of their code
-- GLM Coding Plan users get the four official GLM MCP servers configured
-  automatically
+Run `clat --help` for the complete command-line surface.
 
-**Safety**
+## Interfaces
 
-- Three switchable permission modes — **Read Only**, **Project Write**
-  (default), **Full Access** — via `/perm`, or escalated right from a
-  permission prompt
-- Every side-effecting action passes interactive review with full
-  argument inspection — in the TUI and in headless runs alike
+| Interface | Best for | Entry point |
+|---|---|---|
+| Terminal UI | Daily interactive repository work | `clat` |
+| Headless runner | Scripts, CI, git hooks, editor integrations | `clat exec` |
+| Web workbench | An installable local PWA and HTTP+SSE clients | `clat serve` |
+| DSH client | Using CLAT's TUI with a local DeepSeek Harness host | `clat dsh` |
+| Offline demo | Verifying the core loop without credentials | `clat demo` |
 
-**Sessions**
+`clat serve` binds only to `127.0.0.1:2691` by default. API access uses a
+persistent `~/.clat/web-token` Bearer credential; the token is never placed in
+the URL. The same binary serves the responsive three-panel PWA.
 
-- Conversations persist locally and survive crashes; `/resume` reopens
-  any previous conversation, the model titles each one, `/rename` edits
-  it
-- Session journals use the DSH-compatible format — readable by DeepSeek
-  Harness tooling and vice versa
-- All state lives under `~/.clat`
+## What is included
 
-**Interfaces**
-
-- Terminal UI with markdown rendering, scrolling, text selection, and a
-  notification sound when a run finishes or needs your approval
-- `clat exec` for headless one-shot runs in scripts and CI, with the
-  same permission model; `--json` streams every run event as versioned
-  NDJSON for editors and pipelines
-- `clat serve` for a local HTTP+SSE API on 127.0.0.1 — token-gated,
-  event-streamed, with a built-in installable web client (PWA) served
-  from the same binary
-- `clat dsh` turns the TUI into a client of a local DSH web host — the
-  terminal seat DSH retired, read-only over `~/.dsh`
-- `clat demo` for a deterministic offline walkthrough of the agent loop
-
-## Principles
-
-- Local first
-- One binary
-- Model agnostic
-- MCP native
-- Project aware
-- Permission first
-- Dogfood driven
-- Generalize, never special-case
+- **Agent workflow** — an unbounded model → tool → model loop, in-run
+  steering, user questions, per-session todos, automatic titles, and context
+  compaction that preserves the original journal.
+- **Models** — built-in DeepSeek, GLM, Qwen, and Kimi presets; named custom
+  profiles; OpenAI Responses and OpenAI-compatible protocols; reasoning,
+  usage, cache, context, and quota telemetry.
+- **Native tools** — bounded file listing, reading, searching, atomic writing,
+  exact editing, and process-tree-owned command execution.
+- **Permissions** — Read Only, Project Write, and Full Access modes; complete
+  argument review; project trust; path fences; fail-closed headless behavior.
+- **Sessions** — crash-resilient, append-only, DSH-compatible journals under
+  `~/.clat`, with local replay and per-project resume state.
+- **Extensions** — MCP over stdio or Streamable HTTP, sandboxed WebAssembly
+  components, and an adapter for DSH leaf plugins.
+- **Client-neutral core** — the TUI, headless runner, local server, and future
+  clients consume the same Application facade and event vocabulary.
 
 ## Install
 
@@ -100,109 +81,74 @@ Windows (PowerShell):
 irm https://raw.githubusercontent.com/artec/clat/main/install.ps1 | iex
 ```
 
-The scripts detect the operating system and architecture, prefer a
-prebuilt binary from GitHub Releases, and fall back to building from
-source when no release is available yet (offering to install the Rust
-toolchain if it is missing). Prebuilt binaries cover macOS (arm64,
-x86_64), Windows (x86_64, arm64), and Linux (x86_64, aarch64; glibc
-2.39+ — older distributions build from source; a Rust toolchain is the
-only requirement). First installs verify a SHA-256 manifest; once
-installed, `clat upgrade` additionally authenticates release manifests
-with the Minisign public key embedded in the binary. Details:
-[release signing](docs/releasing.md).
+The installers prefer prebuilt release artifacts and fall back to a source
+build when an artifact is unavailable. Prebuilt binaries cover macOS arm64 and
+x86_64, Windows x86_64 and arm64, and Linux x86_64 and aarch64 with glibc
+2.39+. Older Linux systems can build from source with the stable Rust
+toolchain. See [release signing](docs/releasing.md) for the trust model and
+platform baselines.
 
-## Quick start
-
-```bash
-clat          # open the TUI, then /model to configure a provider
-clat exec "explain this repository in one sentence"   # headless one-shot run
-git diff | clat exec "review this diff"               # piped input becomes context
-clat --help   # usage
-clat demo     # deterministic model → tool → model loop, no remote model needed
-```
+Prebuilt installs go to `~/.local/bin/clat` on macOS/Linux and
+`%LOCALAPPDATA%\clat\bin\clat.exe` on Windows; the installer prints a PATH hint
+when needed. A source fallback uses Cargo's bin directory, normally
+`~/.cargo/bin`. To uninstall, remove that executable. User state under
+`~/.clat` is deliberately left intact unless you remove it separately.
 
 ## Documentation
 
-**Using CLAT**
+Start with the document that matches your task:
 
-- [Using the TUI](docs/usage.md) — panels, keys, slash commands, image
-  attachments, notifications, thinking levels, and headless `clat exec`
-- [Model editor](docs/model-editor.md) — `/model` presets (DeepSeek,
-  GLM, Qwen, Kimi) and advanced endpoint fields
-- [Permissions](docs/permissions.md) — the three permission modes,
-  interactive approval with argument review, sandbox path fences
+| Goal | Document |
+|---|---|
+| Use the TUI, `exec`, `serve`, or `dsh` | [Using CLAT](docs/usage.md) |
+| Configure a preset or custom model | [Model editor](docs/model-editor.md) |
+| Understand approvals, modes, and path boundaries | [Permissions](docs/permissions.md) |
+| Configure MCP servers | [MCP integration](docs/mcp.md) |
+| Install or author a WASM component | [WASM plugins](docs/wasm.md) |
+| Port a DSH leaf plugin | [DSH plugin porting guide](docs/dsh-plugins.md) |
+| Understand core boundaries and lifecycle | [Architecture](docs/architecture.md) |
+| Understand provider adapters and retry behavior | [Providers](docs/providers.md) |
+| Understand files, journals, and recovery | [Persistent state](docs/storage.md) |
+| Build and publish a release | [Release signing](docs/releasing.md) |
+| Run credentialed smoke tests | [Live-model validation](docs/live-validation.md) |
 
-**Extending CLAT**
-
-- [MCP integration](docs/mcp.md) — `~/.clat/mcp.json`, protocol
-  support, server-initiated sampling & elicitation, resource limits
-- [WASM plugins](docs/wasm.md) — `~/.clat/plugins.json`, the
-  `clat:plugin` WIT contract, and the Rust authoring SDK
-- [DSH plugin porting](docs/dsh-plugins.md) — serve existing DeepSeek
-  Harness TS plugins to CLAT over MCP with `@artec/clat-dsh-adapter`
-
-**Internals**
-
-- [Architecture](docs/architecture.md) — core/frontend layering, the
-  agent loop, the plugin host bridge, trust gate, native tools
-- [Providers](docs/providers.md) — protocol adapters, built-in presets,
-  vendor-specific behavior, retry and deadlines
-- [Persistent state](docs/storage.md) — `~/.clat` layout, the
-  DSH-compatible session journal, crash recovery
-- [Release signing](docs/releasing.md) — Minisign trust root, offline
-  signing, platform baseline
-- [Live-model validation](docs/live-validation.md) — the two gates
-  before the first dogfood run
+The DSH adapter package also has standalone
+[English](sdk/dsh-adapter/README.md) and
+[Chinese](sdk/dsh-adapter/README.zh.md) package documentation.
 
 ## Development
 
-CLAT is a normal Rust project: clone, verify, build, run.
-
-### Prerequisites
-
-- Git
-- the current stable Rust toolchain (`rustup`, `rustc`, `cargo`)
-
-Check the toolchain:
-
-```bash
-rustc --version
-cargo --version
-```
-
-### Build and test
+Prerequisites are Git and the current stable Rust toolchain:
 
 ```bash
 git clone https://github.com/artec/clat.git
 cd clat
-cargo test
+cargo test --all-targets --all-features
 cargo build
-./target/debug/clat
+./target/debug/clat demo
 ```
 
-On Windows:
+Useful repository paths:
 
-```powershell
-.\target\debug\clat.exe
-```
+| Path | Purpose |
+|---|---|
+| `src/` | Rust core and frontends |
+| `web/` | Zero-build assets embedded by `clat serve` |
+| `wit/` | WASM plugin contract |
+| `sdk/clat-plugin/` | Rust SDK for WASM plugin authors |
+| `sdk/dsh-adapter/` | npm adapter for DSH plugin authors |
+| `plugins/` | WASM examples and pilot plugins |
 
-Install the current checkout into Cargo's binary directory:
+Live provider checks are intentionally separate from the normal test suite
+because they require user credentials and may incur charges. Follow
+[live-model validation](docs/live-validation.md) when provider behavior is in
+scope. Contributors and coding agents should also read the project
+constitution in [AGENTS.md](AGENTS.md).
 
-```bash
-cargo install --path . --debug --force
-```
+## Principles
 
-Repository layout beyond the cargo workspace members: `sdk/clat-plugin`
-is the WASM authoring SDK, `sdk/dsh-adapter` is the npm adapter package
-(not a cargo member), `plugins/` holds the WASM pilot plugins, and
-`wit/` defines the plugin contract.
-
-Live model validation is intentionally not part of the normal test suite
-because it requires a user-supplied provider credential and may incur
-provider charges — see [live-model validation](docs/live-validation.md).
-
-Contributors and coding agents should also read
-[AGENTS.md](AGENTS.md), the project constitution.
+Local first · one binary · model agnostic · MCP native · project aware ·
+permission first · dogfood driven · generalize, never special-case.
 
 ## License
 

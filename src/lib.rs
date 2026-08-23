@@ -38,7 +38,8 @@ pub use application::{
     ApplicationRunRequest, ApplicationRunResult, BootstrapApplication, CompactHandle,
     CompactReport, CompactionStatus, McpServerInfoDto, McpStatusDto, ProjectAuthorization,
     ProjectSnapshot, RenameOutcome, RunHandle, SessionSnapshot, SteerOutcome,
-    TrustedProjectApplication,
+    TrustedProjectApplication, WorkbenchModelSnapshot, WorkbenchProjectSnapshot,
+    WorkbenchSessionSnapshot, WorkbenchSnapshot,
 };
 pub use command::{CommandError, CommandInfo, CommandOutcome};
 pub use control_storage::ModelProfileSummary;

@@ -1,8 +1,52 @@
 use crate::model::{ModelConfig, ProviderCredentials, ProviderDescriptor};
+use crate::permission::PermissionMode;
 use crate::plugins::services::McpStatus;
 use crate::session::id::SessionId;
 use crate::session::replay::ReplayEvent;
 use crate::session::use_cases::TranscriptLine;
+use std::path::PathBuf;
+
+/// 轻量、前端中立的工作台读模型。
+///
+/// 与 [`ProjectSnapshot`] 的边界刻意不同：这里不读 transcript/replay，
+/// 不携带 credentials，也不触发 monitor 配置。PWA、未来桌面端和 IDE
+/// 可用它绘制应用壳；会话正文仍只从 journal replay / RunEvent 获得。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkbenchSnapshot {
+    pub project: WorkbenchProjectSnapshot,
+    pub session: WorkbenchSessionSnapshot,
+    pub model: WorkbenchModelSnapshot,
+    pub permission_mode: PermissionMode,
+    pub mcp: McpStatusDto,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkbenchProjectSnapshot {
+    /// Trusted Project 的规范根路径；仅供本机前端展示。
+    pub root: PathBuf,
+    pub name: String,
+    /// 惰性 workspace 注册前为 None。
+    pub workspace_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkbenchSessionSnapshot {
+    pub id: Option<SessionId>,
+    pub title: Option<String>,
+    pub committed_seq: Option<u64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkbenchModelSnapshot {
+    pub protocol: crate::model::ModelProtocol,
+    pub model: String,
+    pub preset: Option<String>,
+    pub active_profile: Option<String>,
+    pub thinking_level: Option<crate::model::ThinkingLevel>,
+    pub max_context_tokens: Option<u32>,
+    /// 已解析缺省值后的单次 run token 花费护栏；0 表示关闭。
+    pub run_token_budget: u64,
+}
 
 #[derive(Clone, Debug)]
 pub struct ProjectSnapshot {
