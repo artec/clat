@@ -29,12 +29,17 @@ profile, matching the built-in presets which all ship
 default. The level is injected automatically when the endpoint is one
 of the four known vendor domains; on unknown endpoints it is stored but
 never injected (strict gateways reject unknown parameters) — write the
-vendor-native parameter into Extra Body there instead. Fill in **Name**,
-**Model**, **Endpoint** (an API key is optional — local gateways don't
-need one), save, and the profile becomes active immediately. Deleting
-the active profile falls back to the first remaining profile, or to
-factory defaults when none are left. Upgrades migrate an existing
-single-slot custom configuration into the first profile automatically.
+vendor-native parameter into Extra Body there instead. `Shift+Tab`
+stays a live adjustment of the running configuration: while a profile
+is active it changes the current model's level but not the stored row —
+the `●` drops until you switch away and back (the row's saved level
+returns with it); to keep a level, set it in the profile editor. Fill
+in **Name**, **Model**, **Endpoint** (an API key is optional — local
+gateways don't need one), save, and the profile becomes active
+immediately. Deleting the active profile falls back to the first
+remaining profile, or to factory defaults when none are left. Upgrades
+migrate an existing single-slot custom configuration into the first
+profile automatically.
 
 For preset configurations, the editor opens on a short form: **Preset**,
 **Model**, **Endpoint**, and **API Key** — the four things a normal user

@@ -51,6 +51,11 @@ pub struct ExecArgs {
     pub yes: bool,
     pub trust: bool,
     pub quiet: bool,
+    /// `--json`：stdout 改为 NDJSON 事件流——一行一个 RunEvent 信封
+    /// `{"v":1,"event":{…}}`（PWA-1，INV-J1）。与 `--command` 互斥（那是
+    /// 注册表命令的纯文本面，不在本契约内）。stderr 状态面与 `--quiet`
+    /// 语义不变。
+    pub json: bool,
 }
 
 /// 解析 `clat exec` 之后的参数。用法错误返回 `Err(message)`（退出码 2）。
@@ -76,6 +81,7 @@ where
             "--yes" => parsed.yes = true,
             "--trust" => parsed.trust = true,
             "--quiet" => parsed.quiet = true,
+            "--json" => parsed.json = true,
             "--command" => {
                 let value = iter
                     .next()
@@ -113,6 +119,9 @@ where
     }
     if parsed.command.is_some() && parsed.prompt.is_some() {
         return Err("--command cannot be combined with a prompt".into());
+    }
+    if parsed.json && parsed.command.is_some() {
+        return Err("--json cannot be combined with --command".into());
     }
     Ok(parsed)
 }
@@ -501,7 +510,13 @@ where
 
     // 会话策略：默认新会话（脚本可预测）；--continue / --session 显式续接。
     if let Err(error) = apply_session_policy(&mut application, &args) {
-        return close_application(application, ExecOutcome::Failure(error));
+        return close_and_finalize(
+            application,
+            ExecOutcome::Failure(error),
+            &args,
+            &io,
+            &io_state,
+        );
     }
 
     // `--command`：core.commands 注册表的 headless 形态（与 TUI 同一
@@ -514,22 +529,31 @@ where
     let (config, _credentials) = match application.model_state() {
         Ok(state) => state,
         Err(error) => {
-            return close_application(application, ExecOutcome::Failure(error.to_string()));
+            return close_and_finalize(
+                application,
+                ExecOutcome::Failure(error.to_string()),
+                &args,
+                &io,
+                &io_state,
+            );
         }
     };
     if !config.is_configured() {
-        return close_application(
+        return close_and_finalize(
             application,
             ExecOutcome::Failure(
                 "model is not configured — run `clat` and use /model to configure a model".into(),
             ),
+            &args,
+            &io,
+            &io_state,
         );
     }
 
     // INV-6：prompt 在信任门/模型检查之后才读 stdin（无效调用不吞输入）。
     let prompt = match resolve_prompt(&args, &io, MAX_STDIN_BYTES) {
         Ok(prompt) => prompt,
-        Err(outcome) => return close_application(application, outcome),
+        Err(outcome) => return close_and_finalize(application, outcome, &args, &io, &io_state),
     };
 
     // 压缩状态可见性（ApplicationEvent 只是展示通道，不进入退出语义）。
@@ -563,6 +587,7 @@ where
         output: Arc::clone(&io.output),
         error: Arc::clone(&io.error),
         quiet: args.quiet,
+        json: args.json,
         stdout_is_terminal: io.stdout_is_terminal,
         io_state: Arc::clone(&io_state),
         cancel: cancel.clone(),
@@ -579,7 +604,13 @@ where
     }) {
         Ok(handle) => handle,
         Err(error) => {
-            return close_application(application, ExecOutcome::Failure(error.to_string()));
+            return close_and_finalize(
+                application,
+                ExecOutcome::Failure(error.to_string()),
+                &args,
+                &io,
+                &io_state,
+            );
         }
     };
     // 发布 handle 会兑现句柄就位前的 pending Ctrl-C；stdout failure
@@ -592,15 +623,24 @@ where
         Err(_) => {
             let _ = handle.join();
             cancel.detach();
-            return close_application(
+            return close_and_finalize(
                 application,
                 ExecOutcome::Failure("run worker exited without a result".into()),
+                &args,
+                &io,
+                &io_state,
             );
         }
     };
     if let Err(error) = handle.join() {
         cancel.detach();
-        return close_application(application, ExecOutcome::Failure(error.to_string()));
+        return close_and_finalize(
+            application,
+            ExecOutcome::Failure(error.to_string()),
+            &args,
+            &io,
+            &io_state,
+        );
     }
     cancel.detach();
 
@@ -631,7 +671,8 @@ where
             }
             // 流式文本以换行收尾：stdout 可直接进管道，不与 shell 提示符
             // 粘连（仍是助手文本的呈现，INV-3 契约随测试固化）。
-            if !done.output.is_empty() {
+            // `--json` 不补：每行信封自带换行，stdout 是 NDJSON 单一契约。
+            if !args.json && !done.output.is_empty() {
                 let result = stream_write(&io.output, format_args!("\n"))
                     .and_then(|()| stream_flush(&io.output));
                 if let Err(error) = result {
@@ -665,7 +706,9 @@ where
     // INV-5：干净退出。run 失败也要走 close（join 后台 worker、flush
     // 会话与 checkpoint）；close 必须先于 forwarder.join——monitor 的
     // sender 在 close 内释放，通道关闭后转发线程才能排空退出。
-    let closed_outcome = close_application(application, outcome);
+    // PWA1-01：`--json` 的 invocation 终态行在 close **之后**由最终
+    // outcome 派生（close_and_finalize），run 终态不再是进程级承诺。
+    let closed_outcome = close_and_finalize(application, outcome, &args, &io, &io_state);
     if let Some(forwarder) = forwarder.as_mut() {
         forwarder.join();
     }
@@ -840,6 +883,56 @@ fn close_application(application: TrustedProjectApplication, outcome: ExecOutcom
                 ExecOutcome::Failure(format!("application close failed: {error}"))
             }
         },
+    }
+}
+
+/// exec_with 的统一收尾（PWA1-01）：先关 application（close 失败可把
+/// Success/Cancelled 改判 Failure——这正是不变量所在），**然后**才从
+/// 最终 outcome 派生 invocation 终态行。`--json` 下 exec 终态与进程
+/// 退出码出自同一份数据，二者不可能矛盾；它恒为 stdout 最后一行
+/// （run worker 已 join，不会再有 RunEvent 行与之竞争次序）。
+/// 非 json 路径行为与直接调 close_application 字节同。
+///
+/// 终态行写失败（消费者断管）与文本路径的收尾换行同纪律：改判失败，
+/// 绝不伪装成功（INV-J6）。
+fn close_and_finalize(
+    application: TrustedProjectApplication,
+    outcome: ExecOutcome,
+    args: &ExecArgs,
+    io: &ExecIo,
+    io_state: &SharedIoState,
+) -> ExecOutcome {
+    let closed = close_application(application, outcome);
+    if !args.json {
+        return closed;
+    }
+    let line = match &closed {
+        ExecOutcome::Success { .. } => crate::wire::exec_completed_line(0),
+        ExecOutcome::Failure(message) => crate::wire::exec_failed_line(1, message),
+        // UsageError 保留退出码 2 契约（与 close_application 同款）。
+        ExecOutcome::UsageError(message) => crate::wire::exec_failed_line(2, message),
+        ExecOutcome::Cancelled { turns, .. } => {
+            crate::wire::exec_failed_line(130, &format!("cancelled after {turns} turns"))
+        }
+    };
+    let result =
+        stream_write(&io.output, format_args!("{line}")).and_then(|()| stream_flush(&io.output));
+    match result {
+        Ok(()) => closed,
+        Err(error) => {
+            io_state.note("stdout", error);
+            match closed {
+                ExecOutcome::Failure(message) => {
+                    ExecOutcome::Failure(format!("{message}; stdout write failed"))
+                }
+                ExecOutcome::UsageError(message) => {
+                    ExecOutcome::UsageError(format!("{message}; stdout write failed"))
+                }
+                ExecOutcome::Success { .. } | ExecOutcome::Cancelled { .. } => {
+                    ExecOutcome::Failure("stdout write failed".into())
+                }
+            }
+        }
     }
 }
 
@@ -1115,10 +1208,16 @@ fn read_line(input: &SharedReader) -> Option<String> {
 /// 记录并取消 run（下游已关闭，继续执行只是浪费模型与副作用，HL-04）；
 /// 状态进 error（stderr），`--quiet` 只保留权限询问（那是交互，不是
 /// 噪音）。
+///
+/// `--json`（INV-J1）：stdout 单一契约改为 NDJSON——每个事件一行
+/// `{"v":1,"event":{…}}` 信封（发射序即行序），模型文本不再走纯文本
+/// 路径（文本在 `model_stream` 事件载荷里）；stderr 状态面原样。
+/// 写失败沿 INV-3 同一管道（记错 + 取消），退出语义不变（INV-J6）。
 struct ExecEventSink {
     output: SharedWriter,
     error: SharedWriter,
     quiet: bool,
+    json: bool,
     stdout_is_terminal: bool,
     io_state: SharedIoState,
     cancel: ExecCancel,
@@ -1126,6 +1225,17 @@ struct ExecEventSink {
 
 impl EventSink for ExecEventSink {
     fn emit(&mut self, event: RunEvent) {
+        if self.json {
+            // FP-10 由 wire 层承担：serde 转义 C0 + 补转义 DEL，结构性
+            // 字节全为可打印 ASCII，无需 TTY 消毒（INV-J3）。
+            let line = crate::wire::envelope_line(&event);
+            let result = stream_write(&self.output, format_args!("{line}"))
+                .and_then(|()| stream_flush(&self.output));
+            if let Err(error) = result {
+                self.io_state.note("stdout", error);
+                self.cancel.cancel_active_run_waiting_for_handle();
+            }
+        }
         match event {
             RunEvent::ModelStream {
                 event: ModelEvent::TextDelta { delta },
@@ -1134,7 +1244,7 @@ impl EventSink for ExecEventSink {
             | RunEvent::ModelStream {
                 event: ModelEvent::RefusalDelta { delta },
                 ..
-            } => {
+            } if !self.json => {
                 // FP-10（双契约）：TTY 显示路径对 C0/DEL 做可见转义——
                 // 远端诱导的 OSC 52（剪贴板改写）/OSC 8/CSI 序列失去
                 // 效力；管道路径字节原样（assistant-text 契约不破）。
@@ -1511,6 +1621,7 @@ mod tests {
                     Box::new(CapturedWriter(Arc::clone(&error))) as Box<dyn Write + Send>
                 )),
                 quiet: false,
+                json: false,
                 stdout_is_terminal: flag,
                 io_state: Arc::new(ExecIoState::default()),
                 cancel: ExecCancel::new(),
@@ -1546,6 +1657,416 @@ mod tests {
             hostile,
             "pipe output stays byte-faithful"
         );
+    }
+
+    // ---- --json：NDJSON 事件流（PWA-1，INV-J1…J6）----
+
+    fn json_args(prompt: Option<&str>) -> ExecArgs {
+        ExecArgs {
+            prompt: prompt.map(str::to_string),
+            json: true,
+            ..ExecArgs::default()
+        }
+    }
+
+    /// INV-J1 断言基础：stdout 必须整体是可逐行解析的 NDJSON（任何一行
+    /// 坏、任何 JSON 外字节都在这里红）。
+    fn parse_json_stream(stdout: &str) -> Vec<crate::wire::WireEvent> {
+        stdout
+            .lines()
+            .map(|line| {
+                crate::wire::parse_envelope_line(line)
+                    .unwrap_or_else(|error| panic!("invalid NDJSON line ({error:?}): {line}"))
+            })
+            .collect()
+    }
+
+    fn json_type_tags(events: &[crate::wire::WireEvent]) -> Vec<&'static str> {
+        events
+            .iter()
+            .map(crate::wire::wire_event_type_tag)
+            .collect()
+    }
+
+    /// Run 层终态计数；exec 层终态另行断言——两层不能混算（PWA1-01：
+    /// run 终态 ≠ invocation 终态）。
+    fn run_terminal_count(events: &[crate::wire::WireEvent]) -> usize {
+        events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event,
+                    crate::wire::WireEvent::Run(
+                        RunEvent::RunCompleted { .. }
+                            | RunEvent::RunCancelled { .. }
+                            | RunEvent::RunFailed { .. },
+                    )
+                )
+            })
+            .count()
+    }
+
+    fn exec_final_count(events: &[crate::wire::WireEvent]) -> usize {
+        events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event,
+                    crate::wire::WireEvent::ExecCompleted { .. }
+                        | crate::wire::WireEvent::ExecFailed { .. }
+                )
+            })
+            .count()
+    }
+
+    /// PWA1-01 核心：流最后一行必须是 exec 终态，其 exit_code 与最终
+    /// outcome 的退出语义一致。旧实现（无 exec 终态行）在这里 panic
+    /// （判别力）。
+    fn last_line_exit_code(stdout: &str) -> u64 {
+        match parse_json_stream(stdout).last() {
+            Some(crate::wire::WireEvent::ExecCompleted { exit_code }) => *exit_code,
+            Some(crate::wire::WireEvent::ExecFailed { exit_code, .. }) => *exit_code,
+            other => panic!("stream must end with an exec final, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_json_flag_and_its_command_conflict() {
+        let parsed = parse_exec_args(["--json".into(), "hi".into()]).unwrap();
+        assert!(parsed.json);
+        assert!(!parse_exec_args(["hi".into()]).unwrap().json);
+        assert_eq!(
+            parse_exec_args(["--json".into(), "--command".into(), "/help".into()]).unwrap_err(),
+            "--json cannot be combined with --command"
+        );
+    }
+
+    /// INV-J1 + 验收①：`--json` 下 stdout 单一契约是 NDJSON——无 JSON 外
+    /// 字节、发射序即行序、助手文本只在事件载荷里；stderr 状态面原样。
+    /// 判别力：sink 不走 JSON 分支（或仍写纯文本 delta）→ 行解析红。
+    #[test]
+    fn json_stdout_is_pure_ndjson_and_keeps_stderr_status() {
+        let (storage_root, project_root, project) = setup("exec-json-purity");
+        prepare_storage(&project, &storage_root, TestBehavior::Success);
+        let (io, captured) = ExecIo::capture(b"");
+        let outcome = exec(
+            &project,
+            &storage_root,
+            TestBehavior::Success,
+            json_args(Some("hi")),
+            io,
+        );
+        assert!(
+            matches!(outcome, ExecOutcome::Success { .. }),
+            "{outcome:?}"
+        );
+        let stdout = captured.output_string();
+        assert!(stdout.ends_with('\n'), "stream ends newline-terminated");
+        for line in stdout.lines() {
+            assert!(
+                line.starts_with(r#"{"v":1,"event":{"type":""#),
+                "no bytes outside the NDJSON contract: {line:?}"
+            );
+        }
+        let events = parse_json_stream(&stdout);
+        let tags = json_type_tags(&events);
+        assert_eq!(tags.first(), Some(&"run_started"), "{tags:?}");
+        // 助手文本在事件载荷里，不再以纯文本落 stdout。
+        let streamed_text: String = events
+            .iter()
+            .filter_map(|event| match event {
+                crate::wire::WireEvent::Run(RunEvent::ModelStream {
+                    event: ModelEvent::TextDelta { delta },
+                    ..
+                }) => Some(delta.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(streamed_text, "done");
+        assert!(!stdout.starts_with("done"), "no plain-text prefix");
+        // PWA1-01：流以 invocation 终态收尾（exit 0），run 终态在其前。
+        assert_eq!(exec_final_count(&events), 1, "{tags:?}");
+        assert_eq!(tags.last(), Some(&"exec_completed"), "{tags:?}");
+        assert_eq!(tags[tags.len() - 2], "run_completed", "{tags:?}");
+        assert_eq!(last_line_exit_code(&stdout), 0);
+        // stderr 状态面不变（未传 --quiet）。
+        let stderr = captured.error_string();
+        assert!(stderr.contains("deterministic"), "{stderr}");
+        assert!(stderr.contains("turn"), "{stderr}");
+        fs::remove_dir_all(storage_root).ok();
+        fs::remove_dir_all(project_root).ok();
+    }
+
+    /// INV-J4 + 验收④ + PWA1-01：两层各自恰一终态——Run 层
+    /// （run_completed/run_cancelled）恰一、exec 层（exec_completed/
+    /// exec_failed）恰一且恒为最后一行、其 exit_code 与进程退出语义
+    /// 一致。消费者不靠 EOF 猜完成，也不把 run 终态当进程结果。
+    #[test]
+    fn json_stream_self_terminates_with_exactly_one_terminal_event() {
+        let (storage_root, project_root, project) = setup("exec-json-terminal-success");
+        prepare_storage(&project, &storage_root, TestBehavior::Success);
+        let (io, captured) = ExecIo::capture(b"");
+        let outcome = exec(
+            &project,
+            &storage_root,
+            TestBehavior::Success,
+            json_args(Some("hi")),
+            io,
+        );
+        assert!(matches!(outcome, ExecOutcome::Success { .. }));
+        let events = parse_json_stream(&captured.output_string());
+        let tags = json_type_tags(&events);
+        assert_eq!(run_terminal_count(&events), 1, "{tags:?}");
+        assert_eq!(exec_final_count(&events), 1, "{tags:?}");
+        assert_eq!(tags[tags.len() - 2], "run_completed", "{tags:?}");
+        assert_eq!(tags.last(), Some(&"exec_completed"), "{tags:?}");
+        assert_eq!(last_line_exit_code(&captured.output_string()), 0);
+        fs::remove_dir_all(storage_root).ok();
+        fs::remove_dir_all(project_root).ok();
+
+        // 取消腿：pending 中断在句柄就位后立即取消（复用 Cancel 行为）。
+        // run 层 run_cancelled；invocation 层 exec_failed 携 exit 130——
+        // 用户中断对 CI 是非零退出，不是成功。
+        let (storage_root, project_root, project) = setup("exec-json-terminal-cancel");
+        prepare_storage(&project, &storage_root, TestBehavior::Cancel);
+        let cancel = ExecCancel::new();
+        assert!(matches!(
+            cancel.on_interrupt(),
+            InterruptOutcome::PendingRunStart
+        ));
+        let (io, captured) = ExecIo::capture(b"");
+        let outcome = exec_with_cancel(
+            &project,
+            &storage_root,
+            TestBehavior::Cancel,
+            json_args(Some("slow work")),
+            io,
+            &cancel,
+        );
+        assert!(
+            matches!(outcome, ExecOutcome::Cancelled { .. }),
+            "{outcome:?}"
+        );
+        let events = parse_json_stream(&captured.output_string());
+        let tags = json_type_tags(&events);
+        assert_eq!(run_terminal_count(&events), 1, "{tags:?}");
+        assert_eq!(exec_final_count(&events), 1, "{tags:?}");
+        assert_eq!(tags[tags.len() - 2], "run_cancelled", "{tags:?}");
+        assert_eq!(tags.last(), Some(&"exec_failed"), "{tags:?}");
+        assert_eq!(last_line_exit_code(&captured.output_string()), 130);
+        fs::remove_dir_all(storage_root).ok();
+        fs::remove_dir_all(project_root).ok();
+    }
+
+    /// INV-J5 + 验收⑤：权限不混流——决策是事件，提示照旧走
+    /// stderr+stdin；管道 NonInteractive 拒绝与 `--yes` 放行两腿的
+    /// 事件面与退出语义都锁定。permission-request 事件留给 Phase 2。
+    #[test]
+    fn json_stream_carries_the_permission_surface_without_prompt_events() {
+        // 管道默认：NonInteractive → Unavailable 拒绝，工具报结构化错误，
+        // run 仍完成（退出语义与无 --json 时一致）。
+        let (storage_root, project_root, project) = setup("exec-json-perm-deny");
+        prepare_storage(&project, &storage_root, TestBehavior::WriteFile);
+        let (io, captured) = ExecIo::capture(b"");
+        let outcome = exec(
+            &project,
+            &storage_root,
+            TestBehavior::WriteFile,
+            json_args(Some("write")),
+            io,
+        );
+        assert!(
+            matches!(outcome, ExecOutcome::Success { .. }),
+            "{outcome:?}"
+        );
+        let events = parse_json_stream(&captured.output_string());
+        let tags = json_type_tags(&events);
+        // run 完成（拒绝是结构化工具错误，agent 继续到完成）→ invocation
+        // 成功：最后一行 exec_completed、exit 0。两层语义在此分野。
+        assert_eq!(tags.last(), Some(&"exec_completed"), "{tags:?}");
+        assert_eq!(last_line_exit_code(&captured.output_string()), 0);
+        let decision = events
+            .iter()
+            .find_map(|event| match event {
+                crate::wire::WireEvent::Run(RunEvent::PermissionChecked { decision, .. }) => {
+                    Some(decision.clone())
+                }
+                _ => None,
+            })
+            .expect("permission_checked event");
+        assert!(
+            matches!(decision, PermissionDecision::Unavailable { .. }),
+            "{decision:?}"
+        );
+        assert!(tags.contains(&"permission_denied"), "{tags:?}");
+        // 被拒调用从不执行：RunEvent 流里没有 tool_started/tool_finished
+        //（拒绝即 continue；error-only tool/result 是 journal 侧的映射，
+        // 不在 RunEvent 词汇里）。工具结果不存在正是「未执行」的证据。
+        assert!(
+            !tags.contains(&"tool_started") && !tags.contains(&"tool_finished"),
+            "{tags:?}"
+        );
+        assert!(
+            !project_root.join("generated.txt").exists(),
+            "denied write_file must not touch the project"
+        );
+        // stderr 状态面照旧承载拒绝提示。
+        assert!(
+            captured.error_string().contains("permission denied"),
+            "denial must stay visible on stderr"
+        );
+        fs::remove_dir_all(storage_root).ok();
+        fs::remove_dir_all(project_root).ok();
+
+        // --yes 腿：Allow，工具执行，文件落地。
+        let (storage_root, project_root, project) = setup("exec-json-perm-yes");
+        prepare_storage(&project, &storage_root, TestBehavior::WriteFile);
+        let mut options = json_args(Some("write"));
+        options.yes = true;
+        let (io, captured) = ExecIo::capture(b"");
+        let outcome = exec(
+            &project,
+            &storage_root,
+            TestBehavior::WriteFile,
+            options,
+            io,
+        );
+        assert!(
+            matches!(outcome, ExecOutcome::Success { .. }),
+            "{outcome:?}"
+        );
+        let events = parse_json_stream(&captured.output_string());
+        let tags = json_type_tags(&events);
+        let decision = events
+            .iter()
+            .find_map(|event| match event {
+                crate::wire::WireEvent::Run(RunEvent::PermissionChecked { decision, .. }) => {
+                    Some(decision.clone())
+                }
+                _ => None,
+            })
+            .expect("permission_checked event");
+        assert!(
+            matches!(decision, PermissionDecision::Allow),
+            "{decision:?}"
+        );
+        assert!(tags.contains(&"tool_started"), "{tags:?}");
+        assert_eq!(tags.last(), Some(&"exec_completed"), "{tags:?}");
+        let written = fs::read_to_string(project_root.join("generated.txt")).unwrap();
+        assert_eq!(written, "from headless test");
+        fs::remove_dir_all(storage_root).ok();
+        fs::remove_dir_all(project_root).ok();
+    }
+
+    /// INV-J6：`--json` 下 stdout 写失败（断管）仍必须取消 run 并以失败
+    /// 退出，绝不伪装成功。判别力：JSON 分支不接 io_state/cancel 管道
+    /// → Success + 吞错误 → 红。
+    #[test]
+    fn json_broken_pipe_fails_the_run() {
+        let (storage_root, project_root, project) = setup("exec-json-broken-pipe");
+        prepare_storage(&project, &storage_root, TestBehavior::Success);
+        let error_capture = Arc::new(Mutex::new(Vec::new()));
+        let io = ExecIo::new(
+            Box::new(std::io::Cursor::new(Vec::new())),
+            Box::new(BrokenPipeWriter),
+            Box::new(CapturedWriter(Arc::clone(&error_capture))),
+            false,
+        );
+        let outcome = exec(
+            &project,
+            &storage_root,
+            TestBehavior::Success,
+            json_args(Some("hi")),
+            io,
+        );
+        match outcome {
+            ExecOutcome::Failure(message) => {
+                assert!(message.contains("stdout"), "{message}");
+            }
+            other => panic!("expected failure, got {other:?}"),
+        }
+        fs::remove_dir_all(storage_root).ok();
+        fs::remove_dir_all(project_root).ok();
+    }
+
+    /// PWA1-01（审计 §3.6）：invocation 终态行与进程结果不得矛盾——
+    /// 三条失败向的真实腿。修复前（无 exec 终态行）本测试红：流以
+    /// run_failed 甚至无终态收尾，消费者无从得知进程将非零退出。
+    #[test]
+    fn json_final_line_never_contradicts_the_process_result() {
+        // 腿 1：模型失败 → run_failed（Run 层）+ exec_failed exit 1。
+        let (storage_root, project_root, project) = setup("exec-json-final-failure");
+        prepare_storage(&project, &storage_root, TestBehavior::Failure);
+        let (io, captured) = ExecIo::capture(b"");
+        let outcome = exec(
+            &project,
+            &storage_root,
+            TestBehavior::Failure,
+            json_args(Some("hi")),
+            io,
+        );
+        assert!(matches!(outcome, ExecOutcome::Failure(_)), "{outcome:?}");
+        let stdout = captured.output_string();
+        let events = parse_json_stream(&stdout);
+        let tags = json_type_tags(&events);
+        assert!(tags.contains(&"run_failed"), "{tags:?}");
+        assert_eq!(tags.last(), Some(&"exec_failed"), "{tags:?}");
+        assert_eq!(last_line_exit_code(&stdout), 1);
+        fs::remove_dir_all(storage_root).ok();
+        fs::remove_dir_all(project_root).ok();
+
+        // 腿 2：run worker 在流中途崩溃（部分 delta 已出、无 Run 终态）
+        // ——exec 终态仍收尾整流，exit 1。这正是「Run 终态 ≠ invocation
+        // 终态」必须分层的极端证据：任何 Run 终态缺失/异常都不该让
+        // 消费者失去权威结果。
+        let (storage_root, project_root, project) = setup("exec-json-final-panic");
+        prepare_storage(&project, &storage_root, TestBehavior::Panic);
+        let (io, captured) = ExecIo::capture(b"");
+        let outcome = exec(
+            &project,
+            &storage_root,
+            TestBehavior::Panic,
+            json_args(Some("hi")),
+            io,
+        );
+        assert!(matches!(outcome, ExecOutcome::Failure(_)), "{outcome:?}");
+        let stdout = captured.output_string();
+        let events = parse_json_stream(&stdout);
+        let tags = json_type_tags(&events);
+        assert!(
+            stdout.contains("partial-panic"),
+            "stream carried the partial delta: {stdout:?}"
+        );
+        assert_eq!(run_terminal_count(&events), 0, "{tags:?}");
+        assert_eq!(exec_final_count(&events), 1, "{tags:?}");
+        assert_eq!(tags.last(), Some(&"exec_failed"), "{tags:?}");
+        assert_eq!(last_line_exit_code(&stdout), 1);
+        fs::remove_dir_all(storage_root).ok();
+        fs::remove_dir_all(project_root).ok();
+
+        // 腿 3：用法错误（管道空、无 prompt）→ 未起 run，stdout 恰一行
+        // exec_failed exit 2，退出码契约不变。
+        let (storage_root, project_root, project) = setup("exec-json-final-usage");
+        prepare_storage(&project, &storage_root, TestBehavior::Success);
+        let (io, captured) = ExecIo::capture(b"");
+        let outcome = exec(
+            &project,
+            &storage_root,
+            TestBehavior::Success,
+            json_args(None),
+            io,
+        );
+        assert!(matches!(outcome, ExecOutcome::UsageError(_)), "{outcome:?}");
+        let stdout = captured.output_string();
+        let events = parse_json_stream(&stdout);
+        assert_eq!(
+            events.len(),
+            1,
+            "no run started, one final line: {stdout:?}"
+        );
+        assert_eq!(last_line_exit_code(&stdout), 2);
+        fs::remove_dir_all(storage_root).ok();
+        fs::remove_dir_all(project_root).ok();
     }
 
     #[test]

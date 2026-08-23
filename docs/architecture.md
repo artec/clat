@@ -25,7 +25,7 @@ be read without opening the files.
 | `control_storage/` | control plane (`clat.db`, sentinel, workspace state) |
 | `command.rs` | slash-command domain (`core.commands`) |
 | `tui.rs` + `tui/` | terminal frontend (entry `run()`, `App`, keys/actions/render/dialogs/widgets) |
-| `exec.rs` / `demo.rs` | headless one-shot / deterministic offline frontends |
+| `exec.rs` / `demo.rs` / `serve.rs` + `serve/` | headless one-shot / deterministic offline / local HTTP+SSE frontends (`clat serve`: loopback RPC + SSE event stream, PWA-2 design doc) |
 | `upgrade.rs` / `test_support.rs` | self-update / shared test fixtures |
 
 ## Core and static plugin composition
@@ -101,13 +101,22 @@ are crate-private so frontends cannot bypass the facade.
 
 ## Frontends
 
-Three frontends exist today, all talking to the same Application facade:
+Four frontends exist today, all talking to the same Application facade:
 
 - **TUI** (`tui*.rs`) — full-screen terminal client; owns raw-mode handling
   and dialog rendering only.
 - **demo** (`demo.rs`) — the deterministic model → tool → model loop used by
   `clat demo` and as a living proof that core runs without a UI.
-- **exec** (`exec.rs`) — the headless one-shot CLI behind `clat exec`. It
+- **exec** (`exec.rs`) — the headless one-shot CLI behind `clat exec`.
+- **serve** (`serve.rs` + `serve/`) — the local HTTP+SSE server behind
+  `clat serve` (docs/todo/serve-rpc.md): loopback-only with
+  token+Origin gates, a hand-written minimal HTTP subset (no new
+  dependencies), the v1 RunEvent wire reused byte-for-byte on the SSE
+  stream, and the permission approver bridged to the network
+  (`approval.requested` frames + `approval.respond` method,
+  fail-closed on cancel/disconnect/timeout). Frontend-neutral core is
+  untouched apart from one read-only facade accessor
+  (`committed_seq`). It
   supplies an `EventSink` that streams assistant text to stdout and status
   to stderr, a permission approver (terminal prompt via a request-scoped
   input port, deny-on-pipe by default, `--yes` to allow all), and a
@@ -373,7 +382,11 @@ memory cap. Phase 2b adds capability grants: preopened directories are
 re-evaluated from the permission mode on every tool call (project root
 read-only always; read-write for write-capable plugins under Project
 Write; configured extra dirs under Full Access), rebuilding the
-instance whenever the mode changes. See [WASM plugins](wasm.md) and
+instance whenever the mode changes. Write-capable grants additionally
+require a one-time approval bound to plugin name + component sha256 +
+the exact directory set (first use asks with the hash and directory
+list; records persist in `~/.clat/plugin-grants.json` and any change
+re-asks). See [WASM plugins](wasm.md) and
 docs/todo/wasm-plugin-runtime.md.
 
 On the author side, the same bridge semantics serve DSH (DeepSeek

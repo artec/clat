@@ -525,6 +525,17 @@ impl TrustedProjectApplication {
         *self.permission_mode.read().expect("permission mode lock")
     }
 
+    /// 活跃会话 journal 的已提交水位（最后一帧 durable seq；无活跃
+    /// 会话为 `None`）。只读访问器——serve 的 `session.info.last_seq`
+    /// 与 `subscribed.last_seq` 竞态自检据此读水位（PWA-2 §1 事实的
+    /// 门面转发；seq 语义见 run_journal `committed_seq`）。
+    pub fn committed_seq(&self) -> Option<u64> {
+        self.sessions
+            .journal()
+            .ok()
+            .and_then(|journal| journal.committed_seq())
+    }
+
     /// 切换权限档位：下一次权限检查生效（P3）。档位是会话属性——活跃
     /// 会话存在时向其 journal 追加 `sandbox/mode` 事件（append + flush +
     /// checkpoint，DSH setSandboxMode 对应物），resume/重启随日志恢复；

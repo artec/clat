@@ -66,7 +66,10 @@ capabilities.
 - Terminal UI with markdown rendering, scrolling, text selection, and a
   notification sound when a run finishes or needs your approval
 - `clat exec` for headless one-shot runs in scripts and CI, with the
-  same permission model
+  same permission model; `--json` streams every run event as versioned
+  NDJSON for editors and pipelines
+- `clat serve` for a local HTTP+SSE API on 127.0.0.1 — token-gated,
+  event-streamed, the base for the upcoming browser client
 - `clat demo` for a deterministic offline walkthrough of the agent loop
 
 ## Principles

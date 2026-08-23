@@ -19,6 +19,9 @@ are readable by DSH tooling and vice versa). Events are appended in
 contiguous batches, every batch an independent zstd frame with a content
 checksum; a torn tail frame is truncated and the open turn closed with
 synthetic `tool/result` / `step/end` / `turn/end` events on recovery.
+Every frame is decompressed under a 64 MiB decoded budget, and streamed
+record reads carry the same bound — a compressed bomb fails at the cap
+with a budget-named error instead of exhausting memory.
 
 Reads never reconstruct state from raw events on the hot path: each
 session folds into projections (surface, transcript, title, todo, stats,
@@ -57,6 +60,13 @@ reaches the journal. Input recall comes from the transcript projection.
 
 No session content, titles, or surface state is stored here.
 
+The `model_profiles` active pointer always names the row the single-slot
+state was installed from: profile activation sets it, the upgrade
+migration adopts the migrated profile, and any direct save (a preset
+switch, the classic editor, or a `Shift+Tab` thinking change) clears it
+— so the `●` in `/model` never claims a profile the running
+configuration no longer matches.
+
 ## Startup state machine
 
 Bootstrap performs a **zero-write** preflight: `config.json` and `clat.db`
@@ -67,12 +77,14 @@ config, or a database with `sessions`/`messages`/`message_items`/
 no migration and no legacy reader.
 
 `authorize_and_mount` is the only path that persists trust: it acquires a
-kernel-level storage-root lease (flock on the deepest existing ancestor
-directory — no lock files), validates the session-root layout read-only,
-commits the control plane (temp DB + no-clobber link publish + config
-sentinel), and mounts the Trusted Project scope holding the lease for its
-lifetime. One CLAT process owns the storage root at a time; a second
-process fails fast with a clear error.
+kernel-level storage-root lease (`flock` on Unix, taken on the deepest
+existing ancestor directory with no lock files; a named mutex keyed by
+the root's canonical identity on Windows — either way the kernel
+releases it when the process dies), validates the session-root layout
+read-only, commits the control plane (temp DB + no-clobber link publish
++ config sentinel), and mounts the Trusted Project scope holding the
+lease for its lifetime. One CLAT process owns the storage root at a
+time; a second process fails fast with a clear error.
 
 The session-root preflight is a **strict full walk** (root → project
 bucket → session directory → log file): any symlink anywhere on the path,
@@ -105,7 +117,10 @@ carrying the journal error instead, so the event stream and the
 completion channel can never disagree. Writes go through a 200 ms
 write-behind window whose flush drains to silence; commit outcomes are
 three-state (NotCommitted / Committed / Unknown); a first-batch publish
-that cannot prove its directory sync returns Unknown, and an append whose
+that cannot prove its directory sync returns Unknown (directory fsync
+is a Unix discipline — on Windows the step is a no-op, since directory
+handles cannot be flushed and NTFS metadata journaling covers dirent
+durability), and an append whose
 file identity drifted from the prepared handle (external writer) returns
 Unknown — both poison the session until a cold repair reopens it.
 In-run steering journals as plain mid-turn `user/message` rows,

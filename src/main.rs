@@ -9,6 +9,7 @@ use std::env;
 use std::io::{self, IsTerminal, Write};
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 const NAME: &str = "clat";
@@ -26,6 +27,7 @@ where
         None => run_tui(),
         Some("demo") => run_demo(),
         Some("exec") => run_exec_command(args),
+        Some("serve") => run_serve_command(args),
         Some("upgrade") => run_upgrade(args.next().as_deref() == Some("--check")),
         Some("-V" | "--version") => {
             println!("{NAME} {}", env!("CARGO_PKG_VERSION"));
@@ -53,12 +55,17 @@ fn print_help() {
     println!();
     println!("Commands:");
     println!("  exec [PROMPT]     Run one agent turn headlessly and print the reply on stdout");
+    println!("  serve             Serve the local HTTP+SSE API on 127.0.0.1");
     println!("  demo             Run the deterministic model → tool → model loop");
     println!("  upgrade          Upgrade to the latest GitHub release");
     println!();
     println!("Options:");
     println!("  -h, --help       Print help");
     println!("  -V, --version    Print version");
+    println!();
+    println!("Serve options:");
+    println!("  --port <n>       Port to bind on 127.0.0.1 (default 0 = pick a free port)");
+    println!("  --token <t>      Explicit auth token (default: generate one per run)");
     println!();
     println!("Exec options:");
     println!("  --continue       Continue the project's most recent session");
@@ -67,7 +74,43 @@ fn print_help() {
     println!("  --trust          Trust the current project without the TUI prompt");
     println!("  --yes            Approve every side-effecting tool call (dangerous)");
     println!("  --quiet          Suppress stderr status output (assistant text only)");
+    println!("  --json           Print the RunEvent stream as NDJSON on stdout instead of text");
     println!("  Piped stdin is used as the prompt, or as context when PROMPT is also present.");
+}
+
+/// `clat serve [--port <n>] [--token <t>]`：本地 HTTP+SSE 前端。
+/// Ctrl-C 处理器在进程边界安装一次：第一次优雅关停（accept 循环
+/// 完整走关停序列），第二次强退（serve 同款纪律）。
+fn run_serve_command<I>(args: I) -> ExitCode
+where
+    I: Iterator<Item = String>,
+{
+    let parsed = match clat::serve::parse_serve_args(args) {
+        Ok(parsed) => parsed,
+        Err(message) => {
+            eprintln!("clat: {message}");
+            eprintln!("Run `clat --help` for usage.");
+            return ExitCode::from(2);
+        }
+    };
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&shutdown);
+    let pressed = Arc::new(AtomicBool::new(false));
+    if ctrlc::set_handler(move || {
+        if pressed.swap(true, Ordering::SeqCst) {
+            std::process::exit(130);
+        }
+        flag.store(true, Ordering::SeqCst);
+    })
+    .is_err()
+    {
+        eprintln!("clat: warning: Ctrl-C will not stop serve gracefully on this host");
+    }
+    match clat::serve::run_serve_with_shutdown(parsed, shutdown) {
+        0 => ExitCode::SUCCESS,
+        1 => ExitCode::FAILURE,
+        _ => ExitCode::from(130),
+    }
 }
 
 fn run_tui() -> ExitCode {

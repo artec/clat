@@ -80,6 +80,26 @@ messages that carry tool calls. CLAT:
    into one assistant message followed by the turn's tool results — the
    official replay shape.
 
+## Resource budgets
+
+Model responses are bounded layer by layer, so a hostile or broken
+endpoint cannot exhaust memory (2026-08-22 hardening):
+
+- an SSE line larger than **1 MiB** fails the request — the transport
+  layer never buffers an unbounded line;
+- an error body is read up to **64 KiB** — enough for a useful message,
+  never a firehose;
+- the whole aggregated response is capped at a budget tied to the
+  configured output limit (output tokens × 64 bytes, clamped to
+  1–64 MiB; a higher output limit raises the ceiling) — a legitimate
+  long reply is never killed by a flat cap, while a runaway stream
+  still stops at the ceiling.
+
+On the journal side, every zstd frame is decompressed under a 64 MiB
+decoded budget (see [persistent state](storage.md)); a compressed bomb
+fails at the cap with a budget-named error instead of exhausting
+memory.
+
 ## Retry and deadlines
 
 Every model call the agent makes goes through a factory-backed `RetryModel`

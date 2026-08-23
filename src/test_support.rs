@@ -83,6 +83,16 @@ pub(crate) enum TestBehavior {
     /// 先立即输出 delta，再稍等后请求 write_file：用于锁定 stdout 在
     /// handle 发布前失败时，取消必须先于后续副作用生效。
     DeltaThenWrite,
+    /// 第一轮调用 run_command（Execute 效果——ProjectWrite 下仍必过
+    /// 审批门），拿到工具结果后第二轮完成：serve 审批穿网测试的
+    /// 确定性闸（approval.requested 到达即 run 稳定停在半途）。
+    RunCommand,
+    /// 发出 `count` 个 128KiB 的 TextDelta 再完成：单请求制造 MB 级
+    /// 事件流，确定性打满任何「内核缓冲 + SSE 队列」（INV-S7 慢消费
+    /// 腿——轮数堆量会先撞 B1 花费护栏的每请求预留）。
+    HugeDeltas {
+        count: usize,
+    },
     /// steering 确定性门闩：第一次模型调用阻塞到测试线程 steer() 并
     /// 放行（否则按取消退出），第二次调用观测 steering 用户项是否已
     /// 并入 items。
@@ -409,6 +419,45 @@ impl Model for TestModel {
                             arguments: json!({
                                 "path": "generated.txt",
                                 "content": "from headless test",
+                            }),
+                        }],
+                        finish_reason: FinishReason::ToolCalls,
+                        usage: None,
+                        provider_response_id: None,
+                        provider_state: Vec::new(),
+                        reasoning: None,
+                    })
+                }
+            }
+            TestBehavior::HugeDeltas { count } => {
+                let blob = "x".repeat(128 * 1024);
+                for _ in 0..*count {
+                    events.emit(ModelEvent::TextDelta {
+                        delta: blob.clone(),
+                    });
+                    // 5ms 间隔：快消费者（毫秒级排空一帧）队列不积压，
+                    // 慢消费者（零排空）必然溢出——两侧结果确定性分离。
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                Ok(response("done", FinishReason::Completed))
+            }
+            TestBehavior::RunCommand => {
+                let has_command_result = request.items.iter().any(|item| {
+                    matches!(item, crate::model::ModelItem::ToolResult(result) if result.tool_name == "run_command")
+                });
+                if has_command_result {
+                    events.emit(ModelEvent::TextDelta {
+                        delta: "command attempted".into(),
+                    });
+                    Ok(response("command attempted", FinishReason::Completed))
+                } else {
+                    Ok(ModelResponse {
+                        text: String::new(),
+                        tool_calls: vec![ToolCall {
+                            id: "call-run".into(),
+                            name: "run_command".into(),
+                            arguments: json!({
+                                "command": "echo from-serve-test",
                             }),
                         }],
                         finish_reason: FinishReason::ToolCalls,

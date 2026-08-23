@@ -56,24 +56,23 @@ instead of cancelling the run.
 
 ## Commands
 
-- `/model` — configure the active model/provider (custom models are
-  named profiles; see [the model editor](model-editor.md))
+- `/model` — configure the active model/provider. Custom models are
+  named profiles (each keeps its own API key; switching never loses
+  keys); see [the model editor](model-editor.md). The editor's
+  context-window field drives automatic compaction: once set, history
+  that exceeds the window is compacted at the start of the next run
+  (compaction inherits the previous summary, so earlier facts survive
+  repeated compactions). Presets and the custom-profile template both
+  seed this field, so automatic compaction works out of the box — it
+  triggers when the estimated context passes 80% of the window and
+  compacts back below it; a value you enter yourself always wins over
+  the seed
 - `/new` — start a new persisted conversation (an empty conversation is
   dropped automatically when you leave it)
 - `/clear` — alias for `/new`
 - `/compact` — summarize this conversation's earlier turns into a compact
   marker to free context; runs in the background (Esc cancels) and the
   original history stays on disk
-- `/model` — configure the active model/provider. Custom models are
-  named profiles (each keeps its own API key; switching never loses
-  keys); see [the model editor](model-editor.md). The advanced rows include
-  a context-window field: once set, history that exceeds the window is
-  compacted automatically at the start of the next run (compaction inherits
-  the previous summary, so earlier facts survive repeated compactions).
-  Presets seed this field with the model's official context window, so
-  automatic compaction works out of the box — it triggers when the
-  estimated context passes 80% of the window and compacts back below it;
-  a value you enter yourself always wins over the preset seed
 - `/resume` — pick a previous conversation of this project and continue
   it; the list shows title and message count, with the current
   conversation marked. Entering a conversation (even read-only) makes
@@ -208,6 +207,39 @@ Conventions:
   If writing to stdout fails (e.g. the downstream consumer closed early,
   like `clat exec … | head`), CLAT cancels the run and exits non-zero
   instead of pretending the truncated output succeeded.
+- **JSON event stream** (`--json`): stdout switches from assistant text to
+  an NDJSON event stream — one JSON object per line, in emission order:
+
+  ```json
+  {"v":1,"event":{"type":"run_started","project":"/repo","prompt":"hi"}}
+  {"v":1,"event":{"type":"model_requested","turn":1,"provider":"glm","model":"glm-5.3"}}
+  {"v":1,"event":{"type":"model_stream","turn":1,"event":{"type":"text_delta","delta":"你好"}}}
+  {"v":1,"event":{"type":"run_completed","output":"…","turns":1,"usage":{"input_tokens":10,"output_tokens":5}}}
+  {"v":1,"event":{"type":"exec_completed","exit_code":0}}
+  ```
+
+  The stream has two layers. Run events project the full `RunEvent`
+  vocabulary (model turns, tool calls, permission decisions, retries);
+  `run_completed` / `run_cancelled` / `run_failed` close the **run**
+  lifecycle — exactly one per run. The **invocation** result is the last
+  line: exactly one `exec_completed` (exit 0) or `exec_failed` (non-zero
+  exit code plus message), emitted only after every exit-code-affecting
+  step (run teardown, application close) has finished. Machine consumers
+  treat the exec final as the authoritative result — a run terminal
+  alone never implies the process exits zero, and completion is never
+  guessed from EOF. The `v` field is a version commitment: within v1,
+  existing event types may gain optional fields (tolerate unknown
+  fields), while adding or changing an event **type** is a vocabulary
+  change that ships as v2 — never by editing v1 lines.
+  `run_started.project` is a UTF-8 display path; non-UTF-8 paths are
+  transcribed lossily and explicitly marked with a
+  `project_utf8_lossy` field, never silently. Exit codes, stderr status
+  output, `--quiet`, and broken-pipe semantics are all unchanged.
+  Permissions stay out of the stream in this phase: interactive prompts
+  still go to stderr/stdin, so machine consumers either pass `--yes` or
+  consume the `permission_denied` events that a non-interactive run
+  produces. `--json` cannot be combined with `--command` (that path has
+  its own plain-text stdout contract).
 - **Exit codes**: `0` success, `1` failure, `2` usage error, `130`
   interrupted by Ctrl-C.
 - **Commands**: `--command /xxx` runs one slash command through the same
@@ -243,6 +275,75 @@ Conventions:
   permission prompt is waiting, which resolves to deny and unwinds the
   run (partial output still persists, exit 130). A second press
   hard-exits.
+
+## Local API server (`clat serve`)
+
+`clat serve` exposes the same agent over a local HTTP+SSE API — the
+foundation for the browser client (PWA-4) and usable directly from
+scripts and editors:
+
+```bash
+clat serve                 # binds 127.0.0.1, picks a free port, prints the URL
+clat serve --port 8099 --token my-secret   # explicit values (scripts/CI)
+```
+
+**Security (fail-closed, loopback only)**: the listener binds
+`127.0.0.1` only (there is no `--host` — widening the boundary is a
+product decision, not a config option); every request must carry the
+per-run token, which is generated at startup, printed once, never
+written to disk or logs, and dies with the process. API calls
+(`POST /api/…`) require the `Authorization: Bearer …` header — the
+`?t=…` query form is accepted only for `GET` (the landing page and
+SSE, where browser APIs cannot set headers), keeping the credential
+out of URL-borne surfaces like history and referrers. Requests
+carrying an `Origin` header are rejected unless it is exactly this
+server's own origin (a malicious page in your browser cannot call the
+API), and no CORS headers are ever sent. An untrusted project refuses
+to start — trust it once from a terminal (`clat exec --trust`) first.
+This is a **single-user** boundary: the token grants the whole API
+(all sessions, all methods). Scoped tokens or per-client session
+ownership are deliberately deferred until any non-local client exists
+— that day re-opens the threat model, exactly like trusted-LAN.
+
+**RPC methods** (`POST /api/<method>`, JSON body, JSON
+`{"ok":true,"value":…}` / `{"ok":false,"error":{code,message}}`
+replies): `session.list` / `session.info` / `session.new` /
+`session.switch` / `session.rename`, `prompt.send` (starts a run;
+busy runs are rejected with `busy` rather than queued),
+`steer.send`, `run.cancel`, and `approval.respond` (answers an
+approval request by its `rpcId`; first answer wins, late answers get
+`not-pending`). New methods may appear without notice; unknown
+methods are `bad-request`. The v1 error-code catalog is frozen at
+`bad-request` / `unauthorized` / `forbidden` / `not-found` / `busy` /
+`not-pending` / `internal`; new codes may be added (clients should
+map unknown codes to `internal` behavior while keeping the raw
+string for diagnostics).
+
+**Event stream** (`GET /api/events`, SSE): on connect the server
+replays the journal history (`replay` frames — the same source as
+`/resume`), confirms with `subscribed`, replays the active run's
+buffered events from the run's head if a run is mid-flight, then
+streams live events. Live `event` frames carry the same versioned v1
+RunEvent envelopes as `clat exec --json`, byte-for-byte; each
+accepted prompt ends with exactly one `prompt.settled` frame
+(completed/cancelled/failed — the invocation verdict; a run terminal
+alone never implies the process is done). Approvals arrive as
+`approval.requested` frames — answer them via `approval.respond`;
+while an approval is pending, cancelling the run, disconnecting every
+subscriber, or the 10-minute timeout each deny the call
+(fail-closed). Application notices (compaction, monitor, title, MCP
+startup) arrive as `notice` frames; ignore unknown notice kinds.
+Reconnecting replays everything from the journal — there is no
+resume cursor. A slow consumer is disconnected (bounded queues never
+block the agent) and simply reconnects. The built-in landing page at
+`/` shows quick examples; the browser UI itself is the next release
+(v0.9.0).
+
+`clat serve` adds no new dependencies — the HTTP layer is a
+hand-written minimal subset, and the server shares the exact
+permission model, session journal, and single-run semantics of the
+TUI and `clat exec`. Ctrl-C stops it gracefully (cancel active run,
+close the application, flush the journal).
 
 ## Title bar and status line
 
@@ -299,14 +400,21 @@ takes effect on the next run (a running turn is not interrupted):
   ladder); GLM's and Kimi's official default is the top tier, so pick
   `Max` if you want the vendor-recommended setting for coding.
 
-Custom (non-preset) endpoints don't participate: the keypress flashes a
-hint and nothing changes. The advanced model editor is the escape hatch
-for full control: committing an edit to the raw extra body, model,
-endpoint, or protocol clears the saved level — the raw configuration
-becomes the source of truth. For example, writing
+Participation follows the active model's **endpoint domain**, not the
+preset flag: a custom profile pointed at one of the four vendor domains
+cycles the same way. On any other endpoint the keypress flashes a hint
+and nothing changes. The editor remains the escape hatch for full
+control, with a per-editor discipline: in the preset editor, committing
+an edit to the raw extra body, model, endpoint, or protocol clears the
+saved level — the raw configuration becomes the source of truth; the
+profile editor has a visible Thinking row, so editing model, endpoint,
+or protocol keeps it, and only a hand-written Extra Body clears it (the
+row visibly flips to `off`). For example, writing
 `thinking.type: "disabled"` into the extra body by hand hides the
 title-bar indicator; the next `Shift+Tab` re-enables thinking at the
-cycled level.
+cycled level. While a profile is active, `Shift+Tab` adjusts the
+running configuration only — see [the model editor](model-editor.md)
+for how that interacts with the stored profile.
 
 ## The agent can edit and run commands
 
@@ -414,8 +522,11 @@ questions through the same dialogs MCP servers use. File access follows
 the permission mode: reads of the project root always work, writes only
 under Project Write / Full Access (extra directories listed in
 `plugins.json` under `dirs` open up under Full Access only); switching
-`/perm` applies to the very next tool call. See
-[WASM plugins](wasm.md) for the authoring side.
+`/perm` applies to the very next tool call. Write access is separately
+approved: the first use of a write-capable plugin asks once, showing
+the component hash and the directory list (a rebuild or a directory
+change asks again; grants persist in `~/.clat/plugin-grants.json`).
+See [WASM plugins](wasm.md) for the authoring side.
 
 ## Storage layout
 

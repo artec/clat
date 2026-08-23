@@ -18,6 +18,7 @@ pub mod project;
 mod providers;
 mod redact;
 pub mod run;
+pub mod serve;
 // DSH-compatible session stack (docs/todo/dsh-session-persistence.md):
 // session facts live exclusively in these logs since the stage-5 cutover.
 // Format-documentation items (catalog constants, layout helpers) exceed the
@@ -29,6 +30,7 @@ pub(crate) mod test_support;
 mod tool;
 pub mod tui;
 pub mod upgrade;
+mod wire;
 
 pub use application::{
     ApplicationError, ApplicationEvent, ApplicationRunDone, ApplicationRunFailure,
