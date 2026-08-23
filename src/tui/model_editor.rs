@@ -346,7 +346,7 @@ impl ModelEditor {
         // 弹窗规范统一（2026-08-22 用户反馈）：说明行钉在弹框内底行、
         // Faint 灰、与内容恰好隔一空行——与选择器及其余弹窗一致（此前
         // 编辑器说明行无样式，亮白刺眼且与 picker 不一致）。
-        let block = crate::tui::popup_block(" /model ");
+        let block = crate::tui::popup_block("/model");
         let inner = block.inner(area);
         let [content_area, footer_area] =
             Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(inner);
@@ -736,10 +736,9 @@ impl ModelEditor {
             )),
         ];
         frame.render_widget(
-            Paragraph::new(lines).block(crate::tui::popup_block(&format!(
-                " {} ",
-                self.edit_target_label(popup.target)
-            ))),
+            Paragraph::new(lines).block(crate::tui::popup_block(
+                self.edit_target_label(popup.target),
+            )),
             popup_area,
         );
         // 光标跳过边框 1 列 + 内边距 POPUP_TEXT_PADDING 列。
@@ -1115,6 +1114,15 @@ pub(crate) enum PickerAction {
     Continue,
     /// 用户在二级列表确认了某个预设。
     SelectPreset(&'static ModelPreset),
+    /// dsh 形态（D-2 §2.5）：确认了宿主组的某个模型——
+    /// `selectModel { provider: group.id, model: model.id }`；effort 是
+    /// 高亮行上 Shift+Tab 循环出的待提交档位（档位接入 2026-08-23；
+    /// None = 不带，宿主 adapter 默认）。
+    SelectDshModel {
+        provider: String,
+        model: String,
+        effort: Option<String>,
+    },
     /// B9：Custom 入口三态派发（零档案 → 新建模板；列表内 `New…` →
     /// 新建模板；`e` → 编辑既有档案）。
     OpenProfileEditor {
@@ -1126,6 +1134,157 @@ pub(crate) enum PickerAction {
     /// B9：两步确认后删除该档案（actions 侧走回退门面）。
     DeleteProfile(String),
     Cancel,
+}
+
+/// dsh 模型目录的 UI 适配（宿主 `session.models` 应答 → 两级 picker
+/// 数据；D-2 §2.5：内置与自定义组一视同仁，数据全宿主动态，不硬编码
+/// 任何厂商）。
+pub(crate) struct DshModelData {
+    pub(crate) groups: Vec<DshModelGroup>,
+    /// 失败组（一级尾部灰行，诚实呈现不静默丢组）。
+    pub(crate) failures: Vec<DshModelFailure>,
+    /// 当前所选 (provider, model id)——二级行标 ●。
+    pub(crate) current: Option<(String, String)>,
+    /// 当前选择的档位 id（`current.reasoningEffort`；缺席 = 不带档位）。
+    pub(crate) current_effort: Option<String>,
+}
+
+pub(crate) struct DshModelGroup {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) models: Vec<DshModelEntry>,
+}
+
+pub(crate) struct DshModelEntry {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) description: Option<String>,
+    /// 该模型的可选档位（`reasoning.efforts`，宿主 adapter 自有词汇、
+    /// 宿主展示序；空 = 无推理档位的模型——Shift+Tab 不可达）。
+    pub(crate) efforts: Vec<DshEffort>,
+}
+
+/// 一个可选档位（id + 宿主展示名，如 `high` / `High`）。
+pub(crate) struct DshEffort {
+    pub(crate) id: String,
+    pub(crate) name: String,
+}
+
+pub(crate) struct DshModelFailure {
+    pub(crate) name: String,
+    pub(crate) message: String,
+}
+
+/// 宿主 models 应答（groups/failures/current）→ picker 数据；groups
+/// 与 failures 皆空 → None（上层 flash "no models available"）。
+pub(crate) fn dsh_model_data_from(value: &serde_json::Value) -> Option<DshModelData> {
+    let group = |entry: &serde_json::Value| DshModelGroup {
+        id: entry
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("?")
+            .to_owned(),
+        name: entry
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("?")
+            .to_owned(),
+        models: entry
+            .get("models")
+            .and_then(serde_json::Value::as_array)
+            .map(|models| {
+                models
+                    .iter()
+                    .map(|model| DshModelEntry {
+                        id: model
+                            .get("id")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("?")
+                            .to_owned(),
+                        name: model
+                            .get("name")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("?")
+                            .to_owned(),
+                        description: model
+                            .get("description")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_owned),
+                        efforts: model
+                            .get("reasoning")
+                            .and_then(|reasoning| reasoning.get("efforts"))
+                            .and_then(serde_json::Value::as_array)
+                            .map(|efforts| {
+                                efforts
+                                    .iter()
+                                    .filter_map(|effort| {
+                                        Some(DshEffort {
+                                            id: effort
+                                                .get("id")
+                                                .and_then(serde_json::Value::as_str)?
+                                                .to_owned(),
+                                            name: effort
+                                                .get("name")
+                                                .and_then(serde_json::Value::as_str)
+                                                .unwrap_or("?")
+                                                .to_owned(),
+                                        })
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+    };
+    let groups: Vec<DshModelGroup> = value
+        .get("groups")
+        .and_then(serde_json::Value::as_array)
+        .map(|entries| entries.iter().map(group).collect())
+        .unwrap_or_default();
+    let failures: Vec<DshModelFailure> = value
+        .get("failures")
+        .and_then(serde_json::Value::as_array)
+        .map(|entries| {
+            entries
+                .iter()
+                .map(|entry| DshModelFailure {
+                    name: entry
+                        .get("name")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("?")
+                        .to_owned(),
+                    message: entry
+                        .get("message")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if groups.is_empty() && failures.is_empty() {
+        return None;
+    }
+    let current = value.get("current").and_then(|current| {
+        let provider = current
+            .get("provider")
+            .and_then(serde_json::Value::as_str)?;
+        let model = current.get("model").and_then(serde_json::Value::as_str)?;
+        Some((provider.to_owned(), model.to_owned()))
+    });
+    let current_effort = value
+        .get("current")
+        .and_then(|current| current.get("reasoningEffort"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    Some(DshModelData {
+        groups,
+        failures,
+        current,
+        current_effort,
+    })
 }
 
 /// B9：档案列表条目（picker 注入的只读摘要）。
@@ -1159,6 +1318,15 @@ pub(crate) struct ModelPicker {
     /// B9：删除两步确认——首按 `d` 记住待删行；再按 `d` 确认，其余
     /// 任意键取消（INV-M3：删除须显式确认）。
     confirm_delete: Option<usize>,
+    /// dsh 数据形态（D-2 §2.5）：Some 时两级全宿主动态（一级 = groups，
+    /// 二级 = 组内模型行），local 字段全部不读；`e`/`d`/`New…`/Custom
+    /// 三态在 dsh 态不可达（无 Custom 行、custom_list 恒 false）。
+    dsh: Option<DshModelData>,
+    /// dsh 二级所在组下标（None = dsh 一级）。
+    dsh_group: Option<usize>,
+    /// dsh 二级高亮行上 Shift+Tab 循环出的待提交档位 id（档位接入
+    /// 2026-08-23）；导航/换行/退级即清——只属于它被循环的那一行。
+    dsh_effort: Option<String>,
 }
 
 /// B9 修复（INV-U1 原位返回，用户反馈 2026-08-22）：进入编辑器前对
@@ -1185,6 +1353,25 @@ impl ModelPicker {
             profiles,
             custom_list: false,
             confirm_delete: None,
+            dsh: None,
+            dsh_group: None,
+            dsh_effort: None,
+        }
+    }
+
+    /// dsh 形态构造（两级骨架复用，数据全宿主动态）。
+    pub fn new_dsh(data: DshModelData) -> Self {
+        Self {
+            vendor: None,
+            selected: 0,
+            home_row: 0,
+            current_preset: None,
+            profiles: Vec::new(),
+            custom_list: false,
+            confirm_delete: None,
+            dsh: Some(data),
+            dsh_group: None,
+            dsh_effort: None,
         }
     }
 
@@ -1228,6 +1415,26 @@ impl ModelPicker {
             rows.push(PickerRow::NewProfile);
             return rows;
         }
+        // dsh 形态：一级 = 宿主组行 + 失败组灰行；二级 = 组内模型行。
+        if let Some(dsh) = &self.dsh {
+            return match self.dsh_group {
+                None => {
+                    let mut rows: Vec<PickerRow> =
+                        (0..dsh.groups.len()).map(PickerRow::DshGroup).collect();
+                    rows.extend((0..dsh.failures.len()).map(PickerRow::DshFailure));
+                    rows
+                }
+                Some(group_index) => dsh
+                    .groups
+                    .get(group_index)
+                    .map(|group| {
+                        (0..group.models.len())
+                            .map(|model| PickerRow::DshModel(group_index, model))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default(),
+            };
+        }
         match self.vendor {
             None => {
                 let mut rows: Vec<PickerRow> = preset_vendors()
@@ -1248,20 +1455,32 @@ impl ModelPicker {
         if self.custom_list {
             return self.handle_custom_list_key(key);
         }
+        // 二级返回一级（INV-U1：光标回到进入时的行）——local 与 dsh 同款。
+        let in_second_level = self.vendor.is_some() || self.dsh_group.is_some();
         match key.code {
-            KeyCode::Esc | KeyCode::Left if self.vendor.is_some() => {
-                // 二级返回一级（INV-U1：光标回到进入时的行）。
+            KeyCode::Esc | KeyCode::Left if in_second_level => {
                 self.vendor = None;
+                self.dsh_group = None;
+                self.dsh_effort = None;
                 self.selected = self.home_row.min(self.row_count().saturating_sub(1));
                 PickerAction::Continue
             }
             KeyCode::Esc => PickerAction::Cancel,
             KeyCode::Up | KeyCode::Char('k') => {
                 self.selected = (self.selected + self.row_count() - 1) % self.row_count();
+                // 档位 pending 只属于它被循环的那一行（换行即弃）。
+                self.dsh_effort = None;
                 PickerAction::Continue
             }
             KeyCode::Down | KeyCode::Char('j') => {
                 self.selected = (self.selected + 1) % self.row_count();
+                self.dsh_effort = None;
+                PickerAction::Continue
+            }
+            // dsh 二级高亮模型行：循环待提交档位（宿主 adapter 自有
+            // 词汇表；无档位模型为无操作）。
+            KeyCode::BackTab if self.dsh.is_some() && self.dsh_group.is_some() => {
+                self.cycle_dsh_effort();
                 PickerAction::Continue
             }
             KeyCode::Enter | KeyCode::Right => self.activate(self.selected),
@@ -1275,6 +1494,60 @@ impl ModelPicker {
             }
             _ => PickerAction::Continue,
         }
+    }
+
+    /// dsh 二级高亮模型行的档位循环（Shift+Tab）：pending 已属于本
+    /// 模型 → 前进一档（回绕）；否则从当前档位的下一档起步（当前
+    /// 模型无当前档 / 非当前模型 → 首档，宿主展示序）。无档位模型
+    /// 无操作。当前档位来自目录 `current.reasoningEffort`。
+    fn cycle_dsh_effort(&mut self) {
+        let Some(data) = self.dsh.as_ref() else {
+            return;
+        };
+        let rows = self.rows();
+        let Some(PickerRow::DshModel(group_index, model_index)) = rows.get(self.selected) else {
+            return;
+        };
+        let Some(model) = data
+            .groups
+            .get(*group_index)
+            .and_then(|group| group.models.get(*model_index))
+        else {
+            return;
+        };
+        if model.efforts.is_empty() {
+            return;
+        }
+        // 高亮行是否当前所选模型：是 → 目录的当前档位作循环起点。
+        let is_current = data.current.as_ref().is_some_and(|(provider, id)| {
+            data.groups.get(*group_index).is_some_and(|group| {
+                provider == &group.id && group.models.get(*model_index).is_some_and(|m| id == &m.id)
+            })
+        });
+        let current_effort = if is_current {
+            data.current_effort.clone()
+        } else {
+            None
+        };
+        let pending = self.dsh_effort.take();
+        let next = match pending.as_deref() {
+            Some(p) if model.efforts.iter().any(|e| e.id == p) => {
+                let index = model
+                    .efforts
+                    .iter()
+                    .position(|e| e.id == p)
+                    .expect("checked");
+                model.efforts[(index + 1) % model.efforts.len()].id.clone()
+            }
+            _ => match current_effort
+                .as_deref()
+                .and_then(|c| model.efforts.iter().position(|e| e.id == c))
+            {
+                Some(index) => model.efforts[(index + 1) % model.efforts.len()].id.clone(),
+                None => model.efforts[0].id.clone(),
+            },
+        };
+        self.dsh_effort = Some(next);
     }
 
     pub fn handle_mouse(&mut self, mouse: MouseEvent, area: Rect) -> PickerAction {
@@ -1302,6 +1575,40 @@ impl ModelPicker {
             return match self.rows().get(index) {
                 Some(PickerRow::Profile(name)) => PickerAction::SwitchProfile(name.clone()),
                 Some(PickerRow::NewProfile) => PickerAction::OpenProfileEditor { edit: None },
+                _ => PickerAction::Continue,
+            };
+        }
+        // dsh 形态：组行进二级；模型行确认；失败组灰行不可选。
+        if let Some(dsh) = &self.dsh {
+            return match self.rows().get(index) {
+                Some(PickerRow::DshGroup(group)) => {
+                    self.home_row = index;
+                    self.dsh_group = Some(*group);
+                    self.dsh_effort = None;
+                    self.selected = 0;
+                    PickerAction::Continue
+                }
+                Some(PickerRow::DshModel(group, model)) => {
+                    match (
+                        dsh.groups.get(*group),
+                        dsh.groups.get(*group).and_then(|g| g.models.get(*model)),
+                    ) {
+                        (Some(group), Some(model)) => PickerAction::SelectDshModel {
+                            provider: group.id.clone(),
+                            model: model.id.clone(),
+                            // 档位只随高亮行提交（数字快选他行不带
+                            // pending；换模型不带旧档位）。
+                            effort: if index == self.selected {
+                                self.dsh_effort
+                                    .clone()
+                                    .filter(|effort| model.efforts.iter().any(|e| &e.id == effort))
+                            } else {
+                                None
+                            },
+                        },
+                        _ => PickerAction::Continue,
+                    }
+                }
                 _ => PickerAction::Continue,
             };
         }
@@ -1392,12 +1699,17 @@ impl ModelPicker {
         // /mcp 一致；此前说明行随 Paragraph 内容浮动，小列表（max(8)
         // 兜底撑高）悬空、各级观感不一。内容行超高时被裁剪，说明行
         // 永不被挤出框外。
-        let title = if self.custom_list {
-            " /model · Custom ".to_owned()
+        let title = if let Some(dsh) = &self.dsh {
+            match self.dsh_group.and_then(|index| dsh.groups.get(index)) {
+                Some(group) => format!("/model · {}", group.name),
+                None => "/model".to_owned(),
+            }
+        } else if self.custom_list {
+            "/model · Custom".to_owned()
         } else {
             match self.vendor {
-                None => " /model ".to_owned(),
-                Some(vendor) => format!(" /model · {vendor} "),
+                None => "/model".to_owned(),
+                Some(vendor) => format!("/model · {vendor}"),
             }
         };
         let block = crate::tui::popup_block(&title);
@@ -1409,13 +1721,16 @@ impl ModelPicker {
         let mut lines = Vec::new();
         let row_width = content_area.width as usize;
         for (index, row) in self.rows().iter().enumerate() {
-            let (mut label, mut hint, current) = self.row_display(row);
+            let (mut label, mut hint, current) = self.row_display(index);
             if self.confirm_delete == Some(index) {
                 label = format!("delete {label}?");
                 hint = "d again to confirm · any other key cancels".into();
             }
             let style = if index == self.selected {
                 crate::tui::theme::style(crate::tui::theme::Role::Selected)
+            } else if matches!(row, PickerRow::DshFailure(_)) {
+                // 失败组灰行：诚实呈现宿主的失败组（不可选，Enter 无动作）。
+                crate::tui::theme::style(crate::tui::theme::Role::Faint)
             } else {
                 Style::default()
             };
@@ -1441,6 +1756,27 @@ impl ModelPicker {
 
         let footer = if self.custom_list {
             "↑↓ select · Enter switch · e edit · d delete · Esc back"
+        } else if self.dsh.is_some() {
+            match self.dsh_group {
+                None => "↑↓ select · Enter open · 1-9 quick pick · Esc close",
+                // 高亮模型有档位表才提示 ⇧Tab（无档位模型不可达）。
+                Some(_) => {
+                    let has_efforts = match self.rows().get(self.selected) {
+                        Some(PickerRow::DshModel(group, model)) => self
+                            .dsh
+                            .as_ref()
+                            .and_then(|dsh| dsh.groups.get(*group))
+                            .and_then(|group| group.models.get(*model))
+                            .is_some_and(|model| !model.efforts.is_empty()),
+                        _ => false,
+                    };
+                    if has_efforts {
+                        "↑↓ select · ⇧Tab effort · Enter confirm · Esc back"
+                    } else {
+                        "↑↓ select · Enter confirm · Esc back"
+                    }
+                }
+            }
         } else {
             match self.vendor {
                 None => "↑↓ select · Enter open · 1-9 quick pick · Esc close",
@@ -1456,7 +1792,93 @@ impl ModelPicker {
         );
     }
 
-    fn row_display(&self, row: &PickerRow) -> (String, String, bool) {
+    fn row_display(&self, index: usize) -> (String, String, bool) {
+        let rows = self.rows();
+        let Some(row) = rows.get(index) else {
+            return (String::new(), String::new(), false);
+        };
+        if let Some(dsh) = &self.dsh {
+            return match row {
+                PickerRow::DshGroup(index) => match dsh.groups.get(*index) {
+                    Some(group) => {
+                        let current = dsh
+                            .current
+                            .as_ref()
+                            .is_some_and(|(provider, _)| *provider == group.id);
+                        (
+                            group.name.clone(),
+                            format!("{} models", group.models.len()),
+                            current,
+                        )
+                    }
+                    None => (String::new(), String::new(), false),
+                },
+                PickerRow::DshModel(group_index, model_index) => {
+                    match dsh
+                        .groups
+                        .get(*group_index)
+                        .and_then(|group| group.models.get(*model_index))
+                    {
+                        Some(model) => {
+                            let current = dsh.current.as_ref().is_some_and(|(provider, id)| {
+                                dsh.groups
+                                    .get(*group_index)
+                                    .is_some_and(|group| *provider == group.id)
+                                    && id == &model.id
+                            });
+                            // 档位呈现：高亮行的 Shift+Tab pending 优先；
+                            // 否则当前模型行常显其当前档位（efforts 表
+                            // 解析展示名，未命中回落裸 id）。
+                            let pending = if index == self.selected {
+                                self.dsh_effort
+                                    .clone()
+                                    .filter(|effort| model.efforts.iter().any(|e| &e.id == effort))
+                            } else {
+                                None
+                            };
+                            let effort = pending.or_else(|| {
+                                let id =
+                                    current.then_some(dsh.current_effort.as_deref()).flatten()?;
+                                let name = model
+                                    .efforts
+                                    .iter()
+                                    .find(|e| e.id == id)
+                                    .map(|e| e.name.clone())
+                                    .unwrap_or_else(|| id.to_owned());
+                                Some(name)
+                            });
+                            let hint = match effort {
+                                Some(effort) => {
+                                    format!(
+                                        "{} · {}",
+                                        model
+                                            .description
+                                            .clone()
+                                            .unwrap_or_else(|| model.id.clone()),
+                                        effort
+                                    )
+                                }
+                                None => model
+                                    .description
+                                    .clone()
+                                    .unwrap_or_else(|| model.id.clone()),
+                            };
+                            (model.name.clone(), hint, current)
+                        }
+                        None => (String::new(), String::new(), false),
+                    }
+                }
+                PickerRow::DshFailure(index) => match dsh.failures.get(*index) {
+                    Some(failure) => (
+                        format!("{} ⚠", failure.name),
+                        failure.message.clone(),
+                        false,
+                    ),
+                    None => (String::new(), String::new(), false),
+                },
+                _ => (String::new(), String::new(), false),
+            };
+        }
         match row {
             PickerRow::Vendor(vendor) => {
                 let count = presets_by_vendor(vendor).len();
@@ -1493,6 +1915,10 @@ impl ModelPicker {
                 )
             }
             PickerRow::NewProfile => ("New…".to_owned(), "blank template".to_owned(), false),
+            // dsh 行在上方 dsh 分支早退，此处不可达。
+            PickerRow::DshGroup(_) | PickerRow::DshModel(_, _) | PickerRow::DshFailure(_) => {
+                (String::new(), String::new(), false)
+            }
         }
     }
 }
@@ -1505,6 +1931,12 @@ enum PickerRow {
     Profile(String),
     /// B9：档案列表底行——新建。
     NewProfile,
+    /// dsh 一级：宿主 provider 组（携带组下标）。
+    DshGroup(usize),
+    /// dsh 二级：组内模型行（组下标, 模型下标）。
+    DshModel(usize, usize),
+    /// dsh 一级尾部：失败组灰行（不可选）。
+    DshFailure(usize),
 }
 
 /// 行内编辑弹窗的目标宽度：上限 68 列，且任何终端下都为
@@ -2477,6 +2909,70 @@ mod tests {
             picker.handle_key(picker_key(KeyCode::Char('d'))),
             PickerAction::Continue
         ));
+    }
+
+    /// 档位接入（2026-08-23）判别：dsh picker 二级在模型行上
+    /// Shift+Tab 循环宿主 efforts 表——从当前档位的下一档起步、回绕，
+    /// pending 只属于高亮行（换行/退级即弃），Enter 随行提交；数字快选
+    /// 他行不带档位；无档位模型不可循环。删掉循环/pending 即红。
+    #[test]
+    fn dsh_picker_cycles_efforts_and_carries_them_on_enter() {
+        let data = dsh_model_data_from(&serde_json::json!({
+            "groups": [{"id": "deepseek", "name": "DeepSeek", "models": [
+                {"id": "deepseek-chat", "name": "DeepSeek Chat",
+                 "reasoning": {"efforts": [
+                     {"id": "off", "name": "Off"},
+                     {"id": "low", "name": "Low"},
+                     {"id": "high", "name": "High"},
+                     {"id": "max", "name": "Max"}
+                 ]}},
+                {"id": "deepseek-coder", "name": "DeepSeek Coder"}
+            ]}],
+            "failures": [],
+            "current": {"provider": "deepseek", "model": "deepseek-chat",
+                        "reasoningEffort": "low"}
+        }))
+        .expect("catalog parses");
+        assert_eq!(data.current_effort.as_deref(), Some("low"));
+        let mut picker = ModelPicker::new_dsh(data);
+        // 进第一组二级。
+        picker.handle_key(picker_key(KeyCode::Enter));
+        // 当前档位 low → 首个 Shift+Tab 到 high；再按到 max、回绕 off
+        //（Enter 确认携带 pending；单元里 picker 不被关闭，连续验证）。
+        picker.handle_key(picker_key(KeyCode::BackTab));
+        for expected in ["high", "max", "off"] {
+            match picker.handle_key(picker_key(KeyCode::Enter)) {
+                PickerAction::SelectDshModel { effort, .. } => {
+                    assert_eq!(effort.as_deref(), Some(expected));
+                }
+                other => panic!("enter confirms with the pending effort: {other:?}"),
+            }
+            picker.handle_key(picker_key(KeyCode::BackTab));
+        }
+        // 数字快选他行（deepseek-coder，无档位）：不带档位。
+        let mut picker = ModelPicker::new_dsh(
+            dsh_model_data_from(&serde_json::json!({
+                "groups": [{"id": "deepseek", "name": "DeepSeek", "models": [
+                    {"id": "deepseek-chat", "name": "DeepSeek Chat",
+                     "reasoning": {"efforts": [{"id": "low", "name": "Low"}]}},
+                    {"id": "deepseek-coder", "name": "DeepSeek Coder"}
+                ]}],
+                "current": {"provider": "deepseek", "model": "deepseek-chat"}
+            }))
+            .expect("catalog parses"),
+        );
+        picker.handle_key(picker_key(KeyCode::Enter));
+        picker.handle_key(picker_key(KeyCode::BackTab));
+        match picker.handle_key(picker_key(KeyCode::Char('2'))) {
+            PickerAction::SelectDshModel { model, effort, .. } => {
+                assert_eq!(model, "deepseek-coder");
+                assert_eq!(
+                    effort, None,
+                    "digit quick-pick of another row carries no effort"
+                );
+            }
+            other => panic!("digit activates the model row: {other:?}"),
+        }
     }
 
     #[test]

@@ -160,6 +160,15 @@ detached when a notification fires (macOS:
 `paplay /usr/share/sounds/…`). `CLAT_NO_BELL=1` silences notifications
 entirely.
 
+Notifications are focus-aware (2026-08-23): CLAT enables terminal focus
+reporting (DECSET 1004), so while the terminal is focused — you are
+watching the dialog or the run finish — the bell stays silent. It rings
+when the terminal is unfocused (the AFK case the bell exists for). If
+your terminal or multiplexer doesn't report focus changes (tmux doesn't
+forward them by default), CLAT can't tell and keeps ringing — missing a
+notification hurts more than an extra ring; silence it explicitly with
+`CLAT_NO_BELL=1` if that's your setup.
+
 ## Markdown rendering
 
 Assistant messages go through a small built-in renderer:
@@ -278,9 +287,11 @@ Conventions:
 
 ## DSH client (`clat dsh`)
 
-`clat dsh` turns the TUI into a client of a local
-[DSH](https://github.com/deepseek-ai/deepseek-harness) web host — the
-terminal seat DSH itself retired. It is a fill-in, not a rival: it never
+`clat dsh` opens the **same CLAT TUI** — identical header, input box,
+status bar, dialogs, and key bindings — with dsh as the event source and
+command backend for a local
+[DSH](https://github.com/deepseek-ai/deepseek-harness) web host (the
+terminal seat DSH itself retired). It is a fill-in, not a rival: it never
 writes `~/.dsh`, and every action goes through the DSH API.
 
 ```bash
@@ -292,18 +303,37 @@ The flow is strictly online: probe → fingerprint (`host.describe`) →
 connect, or start `dsh web` if nothing DSH-shaped is listening (a
 non-DSH squatter is not trusted; if the default port is taken the child
 retries with an OS-assigned port). No `dsh` executable and no `~/.dsh`
-means a clear "not installed" error. On connect the most recently
-active session is restored (`session.history`); typing sends
-(`session.prompt`), typing while a run is active steers, `Esc` cancels.
-Approvals and questions raised by the host pop the usual dialogs and
-are answered through the API.
+means a clear "not installed" error. The header carries the mode mark —
+`CLAT ● dsh` (green dot while connected, red `○` while disconnected);
+the second line shows the host workspace instead of the local project.
+On connect the most recently active session is restored
+(`session.history`); typing sends (`session.prompt`), typing while a
+run is active steers (with the same pending-echo badge as local), `Esc`
+cancels (no steering recall — the host queue has no recall API).
+Approvals and questions raised by the host pop the **same dialogs** as
+local runs (the question dialog prefixes `(1/N)` when a host question
+set has several entries) and are answered through the API. A dropped
+connection shows a top notice and **reconnects automatically** — if the
+host process itself died, clat restarts it (`dsh web`) as part of
+reconnecting, and takes a host it started itself back down when you quit
+(a host you started by hand is never touched). There is no offline mode. The status bar
+hides the wallet segment (that monitors local keys) and projects
+cache/context from the host's usage events instead — segments whose
+denominator the host has not reported stay hidden rather than invented.
 
-Commands: `/new` `/resume` `/model` `/rename <title>` `/reconnect`
-`/help` `/quit`. `/resume` lists every project and session by reading
-`~/.dsh/storages` directly (read-only) instead of going through the
-API. Other CLAT commands answer "not available in clat dsh mode" — the
-DSH host owns those concerns. A dropped connection shows a banner and
-waits for `/reconnect`; there is no offline mode and no auto-reconnect.
+Commands: `/new` `/resume` `/model` `/perm` `/rename` `/clear` `/help`
+`/quit`. `/resume` reads `~/.dsh/storages` directly (read-only) and shows every
+workspace as a group (header rows, all workspaces always listed), opening
+at the current workspace's group; picking a session switches the host to
+it (adoption protocol, so its events stream immediately).
+`/model` shows the host's provider groups dynamically — including
+web-defined custom groups and, honestly grayed out, providers that
+failed to list; enter selects (the header label refreshes). `/perm`
+offers the host's three presets (Read Only / Workspace Write / Full
+Access) and applies through the host's own `/permission` command — the
+input-box corner label mirrors the session's live preset. `/compact`
+and `/mcp` answer "not available in clat dsh mode" — the DSH host owns
+those concerns.
 
 ## Local API server (`clat serve`)
 

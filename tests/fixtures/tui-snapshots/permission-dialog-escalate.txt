@@ -2,9 +2,9 @@ size 80x24
 cursor 3,21
 scroll 0
 000| ┌──────────────────────────────────────────────────────────────────────────────┐  ⟦0..79 DIM⟧
-001| │ CLAT v<VERSION>  ready  ·  not configured — /model                               │  ⟦0..1 DIM · 2..5 BOLD+DIM · 6..79 DIM⟧
+001| │ CLAT v<VERSION>  ready  ·  not configured — /model                               │  ⟦0..1 DIM · 2..5 BOLD+DIM · 6..24 DIM · 25..47 fg=Cyan+DIM · 48..79 DIM⟧
 002| └──────────────────────────────────────────────────────────────────────────────┘  ⟦0..79 DIM⟧
-003| ┌Conv                                                                      ────┐  ⟦0..4 DIM · 75..79 DIM⟧
+003| ┌ Con                                                                      ────┐  ⟦0..4 DIM · 75..79 DIM⟧
 004| │     ┌ Permission ──────────────────────────────────────────────────────┐     │  ⟦0..4 DIM · 6..6 fg=Yellow · 7..18 fg=Yellow+BOLD · 19..73 fg=Yellow · 75..79 DIM⟧
 005| │     │ Permission required                                              │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 8..26 BOLD · 73..73 fg=Yellow · 75..79 DIM⟧
 006| │     │                                                                  │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
@@ -21,7 +21,7 @@ scroll 0
 017| │     │ w — Project Write      ·      f — Full Access                    │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 8..52 BOLD · 73..73 fg=Yellow · 75..79 DIM⟧
 018| │     └──────────────────────────────────────────────────────────────────┘     │  ⟦0..4 DIM · 6..73 fg=Yellow · 75..79 DIM⟧
 019| └────                                                                      ────┘  ⟦0..4 DIM · 75..79 DIM⟧
-020| ┌Message──────────────────────────────────────────────────────────────Read Only┐  ⟦0..69 DIM · 70..78 fg=DarkGray+DIM · 79..79 DIM⟧
+020| ┌ Message ────────────────────────────────────────────────────────── Read Only ┐  ⟦0..67 DIM · 68..78 fg=DarkGray+DIM · 79..79 DIM⟧
 021| │❯                                                                             │  ⟦0..79 DIM⟧
 022| └──────────────────────────────────────────────────────────────────────────────┘  ⟦0..79 DIM⟧
 023|  permission required — review arguments, then allow or deny  ⟦0..58 DIM · 59..79 PAD:21 DIM⟧

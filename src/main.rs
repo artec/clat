@@ -51,11 +51,14 @@ where
     I: Iterator<Item = String>,
 {
     let args: Vec<String> = args.collect();
-    let code = clat::dsh::run_dsh(&args);
-    if code == 0 {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::from(code as u8)
+    // D-2：dsh 态走 CLAT TUI 本体（同一 App/事件循环/弹框），仅数据源
+    // 与命令后端换成宿主。
+    match clat::tui::run_dsh_mode(&args) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("clat: dsh: {error}");
+            ExitCode::FAILURE
+        }
     }
 }
 

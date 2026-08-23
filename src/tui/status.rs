@@ -326,6 +326,17 @@ pub(super) fn fit_status_suffix(segments: &[String], budget: usize) -> String {
     kept.join(" · ")
 }
 
+/// 标题栏首行的数据源参数（D-2 §2.1：local 与 dsh 两模式共用同一
+/// 组合器——model 来自 config 预设名或 `DshState.model_label`，level
+/// 来自本地 ThinkingLevel 或 dsh 档位展示名（档位接入 2026-08-23），
+/// 退化规则与组内间距两模式逐字节一致）。
+pub(super) struct HeaderModel<'a> {
+    pub(super) version: &'a str,
+    pub(super) state: &'a str,
+    pub(super) model: &'a str,
+    pub(super) level: Option<&'a str>,
+}
+
 /// 标题栏首行在 "CLAT" 之后的内容，按可用显示宽度逐级退化（TUI-L02），
 /// 保证档位在窄终端仍可见：
 ///
@@ -336,32 +347,47 @@ pub(super) fn fit_status_suffix(segments: &[String], budget: usize) -> String {
 ///
 /// 模型+思考+强度是一个整体：组内分隔符统一窄间距 ` · `，与主分段
 /// 的宽间距 `  ·  ` 区分。无档位（未配置 / 非 DeepSeek/GLM / 手工
-/// 关闭）时各层级不含档位片段；三级都放不下交由终端截断。
-pub(super) fn compose_header_rest(
-    version: &str,
-    state: &str,
-    model: &str,
-    level: Option<&str>,
-    width: usize,
-) -> String {
+/// 关闭 / dsh 模式）时各层级不含档位片段；三级都放不下交由终端截断。
+/// 返回带样式的段序列：模型名段走 `Role::ModelAccent`（D-2 闪光点 b，
+/// local 与 dsh 同色），其余为原色。
+pub(super) fn compose_header_rest(header: &HeaderModel<'_>, width: usize) -> Vec<Span<'static>> {
+    let HeaderModel {
+        version,
+        state,
+        model,
+        level,
+    } = header;
+    let full_prefix = format!(" v{version}  {state}  ·  ");
     let full_suffix = level
         .map(|level| format!(" · Thinking · {level}"))
         .unwrap_or_default();
-    let full = format!(" v{version}  {state}  ·  {model}{full_suffix}");
-    if UnicodeWidthStr::width(full.as_str()) <= width {
-        return full;
+    if spans_width(&full_prefix, model, &full_suffix) <= width {
+        return styled_spans(full_prefix, model, full_suffix);
     }
-    let compact = match level {
-        Some(level) => format!(" v{version} {state} · {model} · {level}"),
-        None => format!(" v{version} {state} · {model}"),
-    };
-    if UnicodeWidthStr::width(compact.as_str()) <= width {
-        return compact;
+    let compact_prefix = format!(" v{version} {state} · ");
+    let compact_suffix = level.map(|level| format!(" · {level}")).unwrap_or_default();
+    if spans_width(&compact_prefix, model, &compact_suffix) <= width {
+        return styled_spans(compact_prefix, model, compact_suffix);
     }
-    match level {
+    vec![Span::raw(match level {
         Some(level) => format!(" v{version} {state} · Thinking · {level}"),
         None => format!(" v{version} {state}"),
-    }
+    })]
+}
+
+fn spans_width(prefix: &str, model: &str, suffix: &str) -> usize {
+    UnicodeWidthStr::width(prefix) + UnicodeWidthStr::width(model) + UnicodeWidthStr::width(suffix)
+}
+
+fn styled_spans(prefix: String, model: &str, suffix: String) -> Vec<Span<'static>> {
+    vec![
+        Span::raw(prefix),
+        Span::styled(
+            model.to_owned(),
+            super::theme::style(super::theme::Role::ModelAccent),
+        ),
+        Span::raw(suffix),
+    ]
 }
 
 /// 瞬时提示是否已到期：无过期时刻（常驻状态）视为未到期。

@@ -256,5 +256,5 @@ pub(super) fn render_trust_dialog(frame: &mut Frame, area: Rect, root: &Path) {
     let height = (lines.len() as u16 + 2).min(popup_height_cap(area));
     let dialog = centered_rect(84, height.max(10), area);
     clear_popup_with_guards(frame, dialog);
-    frame.render_widget(Paragraph::new(lines).block(popup_block(" Trust ")), dialog);
+    frame.render_widget(Paragraph::new(lines).block(popup_block("Trust")), dialog);
 }

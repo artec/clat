@@ -1,4 +1,5 @@
 use super::*;
+use crate::dsh::backend::DshTask;
 
 /// 粘贴的图片附件判定（M6，纯函数可测）：**整条**粘贴（trim 后）恰好
 /// 是一个存在的图片文件**绝对路径**时返回它（`~` 展开；Windows 盘符
@@ -40,6 +41,7 @@ impl App {
         match event {
             UiEvent::Terminal(event) => self.handle_terminal_event(event),
             UiEvent::Worker(message) => self.handle_worker_message(message),
+            UiEvent::Dsh(event) => self.handle_dsh_event(event),
             UiEvent::Application(ApplicationEvent::MonitorUpdated(value)) => {
                 self.balance = value;
             }
@@ -75,6 +77,14 @@ impl App {
     /// 全部吞掉——否则确权框后面还能滚动会话、往输入框粘贴内容，
     /// 甚至选区高亮会盖住对话框边框，看起来像边框被切掉。
     fn handle_terminal_event(&mut self, event: Event) {
+        // 焦点事件（B-1，DECSET 1004）：纯状态记录，先于一切门——确权
+        // 框/加载门后面焦点照样变化，铃铛判定需要如实的三态；不驱动
+        // 任何交互语义（无按键/鼠标语义可借道）。
+        match event {
+            Event::FocusGained => self.focused = Some(true),
+            Event::FocusLost => self.focused = Some(false),
+            _ => {}
+        }
         if self.trust_prompt {
             if let Event::Key(key) = event
                 && key.kind == KeyEventKind::Press
@@ -119,6 +129,13 @@ impl App {
         if self.loading.is_some() {
             let poll = now + Duration::from_millis(50);
             deadline = Some(deadline.map_or(poll, |current| current.min(poll)));
+        }
+        // dsh 断线自动重连（§0-2）：到点必须唤醒，否则无事件时主循环
+        // 无限挂起、重连任务永不发出。
+        if let Some(dsh) = &self.dsh
+            && let Some(at) = dsh.reconnect_deadline()
+        {
+            deadline = Some(deadline.map_or(at, |current| current.min(at)));
         }
         deadline
     }
@@ -387,11 +404,19 @@ impl App {
 
         // /perm 选择器：独占按键直到选择或取消。
         if self.permission_picker.is_some() {
-            let current = self
-                .application
-                .as_ref()
-                .map(|application| application.permission_mode())
-                .unwrap_or_default();
+            // 档位数据源（D-2 §2.6）：dsh = preset 投影（sandbox/mode
+            // latest-wins fold 的 journal 值）；local = application 直读。
+            let current = if let Some(dsh) = self.dsh.as_ref() {
+                dsh.preset
+                    .as_deref()
+                    .and_then(PermissionMode::from_journal_value)
+                    .unwrap_or_default()
+            } else {
+                self.application
+                    .as_ref()
+                    .map(|application| application.permission_mode())
+                    .unwrap_or_default()
+            };
             if let Some(picker) = self.permission_picker.as_mut() {
                 let action = picker.handle_key(key, current);
                 self.apply_permission_picker_action(action);
@@ -474,10 +499,23 @@ impl App {
             KeyCode::PageDown => self.scroll_down(PAGE_SCROLL_ROWS),
             // Shift+Tab 循环思考档位（Low→High→Max→Low）。不 gate
             // running：配置每次 run 重读，对下一次 run 生效；当前 run
-            // 不受影响。
-            KeyCode::BackTab => self.cycle_thinking_level(),
+            // 不受影响。dsh 态同键循环宿主档位（档位接入 2026-08-23，
+            // /model 的 efforts 表——adapter 自有词汇，非本地枚举）。
+            KeyCode::BackTab => {
+                if self.dsh.is_some() {
+                    self.cycle_dsh_effort();
+                } else {
+                    self.cycle_thinking_level();
+                }
+            }
             KeyCode::Esc => {
                 if self.running {
+                    // dsh：无栈式召回（DSH 无 recall API，INV-U3 例外②）
+                    // ——直接取消宿主 turn。
+                    if self.dsh.is_some() {
+                        self.cancel_dsh();
+                        return;
+                    }
                     // 栈式 ESC（INV-SV4）：先撤最近的用户动作——有未
                     // claim 的插话先召回（文本退回编辑框，可改可重发，
                     // run 不受影响）；队列空了才轮到取消 run。已被
@@ -570,6 +608,23 @@ impl App {
             }
             PermissionPickerAction::Apply(mode) => {
                 self.permission_picker = None;
+                // dsh（§2.5 拍板通道核实）：/permission 走 prompt 通道
+                //（web 客户端 PermissionSelect 同款），宿主落定文本经
+                // 事件流回显、preset 投影由 sandbox/mode fold 刷新。
+                if let Some(dsh) = self.dsh.as_ref() {
+                    match dsh.current_session().map(str::to_owned) {
+                        Some(session) => {
+                            dsh.send_task(DshTask::Prompt {
+                                session,
+                                steer: false,
+                                text: format!("/permission {}", mode.journal_value()),
+                            });
+                            self.flash_status("switching permission…");
+                        }
+                        None => self.flash_status("no active session"),
+                    }
+                    return;
+                }
                 if let Some(application) = &self.application {
                     // journal 写失败不回滚内存档位（本进程行为已生效），
                     // 只提示；同值切换零事件。
@@ -633,6 +688,23 @@ impl App {
             Outcome::Pending => {}
             Outcome::Close => self.rename_dialog = None,
             Outcome::Commit(name) => {
+                // dsh（§2.5）：session.rename API；标题即时更新（宿主
+                // 回执只回 status，不带回标题）。
+                if let Some(dsh) = self.dsh.as_ref() {
+                    match dsh.current_session().map(str::to_owned) {
+                        Some(session) => {
+                            dsh.send_task(DshTask::Rename {
+                                session,
+                                title: name.clone(),
+                            });
+                            self.session_title = Some(name);
+                            self.rename_dialog = None;
+                            self.flash_status("renaming…");
+                        }
+                        None => self.flash_status("no active session"),
+                    }
+                    return;
+                }
                 match self
                     .application
                     .as_mut()

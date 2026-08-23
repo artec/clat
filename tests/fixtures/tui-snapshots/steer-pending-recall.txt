@@ -2,9 +2,9 @@ size 80x24
 cursor 23,21
 scroll 0
 000| ┌──────────────────────────────────────────────────────────────────────────────┐
-001| │ CLAT v<VERSION>  running  ·  not configured — /model                             │  ⟦2..5 BOLD⟧
+001| │ CLAT v<VERSION>  running  ·  not configured — /model                             │  ⟦2..5 BOLD · 27..49 fg=Cyan⟧
 002| └──────────────────────────────────────────────────────────────────────────────┘
-003| ┌Conversation──────────────────────────────────────────────────────────────────┐
+003| ┌ Conversation ────────────────────────────────────────────────────────────────┐
 004| │◐ working                                                                    ▲│  ⟦1..2 fg=Gray · 78..78 fg=DarkGray⟧
 005| │                                                                             ┃│  ⟦78..78 fg=Cyan⟧
 006| │                                                                             ┃│  ⟦78..78 fg=Cyan⟧
@@ -20,7 +20,7 @@ scroll 0
 016| │                                                                             ││  ⟦78..78 fg=DarkGray⟧
 017| │                                                                             ▼│  ⟦78..78 fg=DarkGray⟧
 018| └──────────────────────────────────────────────────────────────────────────────┘
-019| ┌Running — Enter steers · Esc recalls queued, then cancels────────Project Write┐  ⟦66..78 fg=DarkGray⟧
+019| ┌ Running — Enter steers · Esc recalls queued, then cancels ──── Project Write ┐  ⟦64..78 fg=DarkGray⟧
 020| │❯ 等 一 下 ， 先 别 跑 测 试                                                           │
 021| │  改 跑  clippy 再 跑 测 试                                                         │
 022| └──────────────────────────────────────────────────────────────────────────────┘

@@ -183,12 +183,13 @@ pub(crate) const POPUP_TEXT_PADDING: u16 = 1;
 /// 弹出窗统一的边框块：全边框 + 标题 + 1 列水平内边距 + Warning 黄
 /// 边框/标题（弹窗规范 2026-08-19：所有弹窗同一样式——黄边框、背景
 /// 压暗、四边间距；黄 = 需要注意/决策的模态语义，与主题 Role::Warning
-/// 一致）。标题原样使用，调用方自带前后空格（如 `" Permission "`）。
-pub(crate) fn popup_block(title: &str) -> Block<'_> {
+/// 一致）。标题前后空一格由本构造器统一加（D-2 闪光点 a：全库 title
+/// 一致风格），调用方传裸标题。
+pub(crate) fn popup_block(title: &str) -> Block<'static> {
     let warning = theme::style(theme::Role::Warning);
     Block::default()
         .borders(Borders::ALL)
-        .title(title)
+        .title(format!(" {title} "))
         .title_style(warning.add_modifier(Modifier::BOLD))
         .border_style(warning)
         .padding(Padding::horizontal(POPUP_TEXT_PADDING))

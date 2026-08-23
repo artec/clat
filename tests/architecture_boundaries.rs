@@ -22,14 +22,13 @@ fn rust_sources(root: &Path) -> Vec<PathBuf> {
     files
 }
 
-/// Terminal frontends: the CLAT TUI family (`tui*.rs` / `src/tui/`) and
-/// the DSH client family (`src/dsh/` — the terminal face of a FOREIGN host,
-/// D-1). Both render with ratatui/crossterm, so the core-must-not-reference
-/// rule exempts them; the CLAT-runtime-specific guards (no core assembly,
-/// slash commands via `core.commands`) scope to the CLAT TUI family only —
-/// the DSH client owns its command mapping against the DSH API by design.
+/// Terminal frontends: the CLAT TUI family (`tui*.rs` / `src/tui/`) and,
+/// since D-2, the `src/dsh/` protocol/backend tree — INV-U1 撤
+/// `is_dsh_frontend` 豁免，dsh 归入前端纪律（独立壳 `src/dsh/app.rs`
+/// 已拆除，dsh 渲染全部走 CLAT App 本体；协议文件不渲染，主题检查
+/// 天然绿并锁未来）。
 fn is_frontend(path: &Path) -> bool {
-    is_clat_tui_frontend(path) || is_dsh_frontend(path)
+    is_clat_tui_frontend(path)
 }
 
 fn is_clat_tui_frontend(path: &Path) -> bool {
@@ -37,15 +36,8 @@ fn is_clat_tui_frontend(path: &Path) -> bool {
     let in_frontend_dir = path
         .parent()
         .and_then(|parent| parent.file_name())
-        .is_some_and(|dir| dir == "tui");
+        .is_some_and(|dir| dir == "tui" || dir == "dsh");
     name.is_some_and(|name| name == "tui.rs" || name.starts_with("tui_")) || in_frontend_dir
-}
-
-fn is_dsh_frontend(path: &Path) -> bool {
-    // rust_sources 产出绝对路径；按路径分量识别（仓库内唯一 dsh 目录
-    // 即 src/dsh）。
-    path.components()
-        .any(|component| component.as_os_str() == "dsh")
 }
 
 fn relative<'a>(root: &'a Path, path: &'a Path) -> &'a Path {
@@ -109,6 +101,15 @@ fn frontend_styles_come_from_the_theme_module() {
         "src/tui/markdown.rs",
         "src/tui/model_editor.rs",
         "src/tui/session_picker.rs",
+        // D-2（INV-U1 撤豁免）：dsh 协议文件不渲染（天然绿），入清单
+        // 锁未来——任何新的渲染代码必须走 theme 角色。
+        "src/dsh/backend.rs",
+        "src/dsh/client.rs",
+        "src/dsh/connect.rs",
+        "src/dsh/files.rs",
+        "src/dsh/frames.rs",
+        "src/dsh/transcript.rs",
+        "src/dsh/ws.rs",
     ] {
         let source = fs::read_to_string(root.join(name)).expect("read frontend source");
         let production = source.split("\n#[cfg(test)]").next().unwrap_or("");
@@ -117,6 +118,17 @@ fn frontend_styles_come_from_the_theme_module() {
             "{name} production code must use tui_theme roles, not raw Color::"
         );
     }
+}
+
+/// INV-U1 锚：D-1 的独立 dsh 壳必须保持拆除——dsh 渲染只经 CLAT App
+/// 本体，任何"再起一个 dsh 专属 UI"都是回归。
+#[test]
+fn the_dsh_standalone_shell_stays_dismantled() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    assert!(
+        !root.join("src/dsh/app.rs").exists(),
+        "INV-U1: src/dsh/app.rs must stay deleted — dsh renders through the CLAT App"
+    );
 }
 
 /// Frontends may hold public DTOs and implement ports, but must not reach into

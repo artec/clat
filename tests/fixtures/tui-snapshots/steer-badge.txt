@@ -2,9 +2,9 @@ size 80x24
 cursor 3,21
 scroll 0
 000| ┌──────────────────────────────────────────────────────────────────────────────┐
-001| │ CLAT v<VERSION>  running  ·  not configured — /model                             │  ⟦2..5 BOLD⟧
+001| │ CLAT v<VERSION>  running  ·  not configured — /model                             │  ⟦2..5 BOLD · 27..49 fg=Cyan⟧
 002| └──────────────────────────────────────────────────────────────────────────────┘
-003| ┌Conversation──────────────────────────────────────────────────────────────────┐
+003| ┌ Conversation ────────────────────────────────────────────────────────────────┐
 004| │◐ working                                                                    ▲│  ⟦1..2 fg=Gray · 78..78 fg=DarkGray⟧
 005| │                                                                             ┃│  ⟦78..78 fg=Cyan⟧
 006| │❯ 等 一 下 ， 先 别 跑 测 试  · queued                                                ┃│  ⟦1..2 fg=DarkGray · 3..3 DIM · 5..5 DIM · 7..7 DIM · 9..9 DIM · 11..11 DIM · 13..13 DIM · 15..15 DIM · 17..17 DIM · 19..19 DIM · 21..29 fg=DarkGray · 30..77 DIM · 78..78 fg=Cyan⟧
@@ -21,7 +21,7 @@ scroll 0
 017| │                                                                             ││  ⟦78..78 fg=DarkGray⟧
 018| │                                                                             ▼│  ⟦78..78 fg=DarkGray⟧
 019| └──────────────────────────────────────────────────────────────────────────────┘
-020| ┌Running — Enter steers · Esc recalls queued, then cancels────────Project Write┐  ⟦66..78 fg=DarkGray⟧
+020| ┌ Running — Enter steers · Esc recalls queued, then cancels ──── Project Write ┐  ⟦64..78 fg=DarkGray⟧
 021| │❯                                                                             │
 022| └──────────────────────────────────────────────────────────────────────────────┘
 023|  ⠋ Responding 3s · total 5s · steering·2  ⟦1..1 fg=Rgb(65, 118, 230)+BOLD · 2..12 fg=Rgb(65, 118, 230) · 13..26 fg=DarkGray · 27..39 fg=Yellow⟧

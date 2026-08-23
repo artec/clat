@@ -1,4 +1,5 @@
 use super::*;
+use crate::dsh::backend::DshTask;
 use crate::tui::model_editor::{
     EditorAction, ModelEditor, ModelPicker, PickerAction, ProfileSave, ProfileSummary,
 };
@@ -33,6 +34,12 @@ impl App {
             ResumeAction::Continue => {}
             ResumeAction::Cancel => {
                 self.session_picker = None;
+            }
+            ResumeAction::OpenDsh(row) => {
+                // dsh 七步切换（§2.6，§0-1 create 收养式）：②在
+                // dsh_adopt_session 发出；③-⑦由 Created 回执驱动。
+                self.session_picker = None;
+                self.dsh_adopt_session(*row);
             }
             ResumeAction::Open(session_id) => {
                 self.session_picker = None;
@@ -162,6 +169,30 @@ impl App {
                 self.picker = None;
                 self.picker_return = None;
                 self.flash_status("model selection cancelled");
+            }
+            PickerAction::SelectDshModel {
+                provider,
+                model,
+                effort,
+            } => {
+                // dsh（§2.5）：Enter → selectModel（高亮行的循环档位随行
+                // 提交）；model_label/effort 刷新在 TaskReply::Selected
+                // 回执（修 D-1 只 flash 不刷新）。
+                self.picker = None;
+                self.picker_return = None;
+                if let Some(dsh) = self.dsh.as_ref()
+                    && let Some(session) = dsh.current_session().map(str::to_owned)
+                {
+                    dsh.send_task(DshTask::Select {
+                        session,
+                        provider,
+                        model,
+                        effort,
+                    });
+                    self.flash_status("selecting model…");
+                } else {
+                    self.flash_status("no active session");
+                }
             }
             PickerAction::OpenProfileEditor { edit } => {
                 // INV-U1：进入编辑器前拍下导航态，取消时原位重建。
@@ -426,6 +457,21 @@ impl App {
         // transcript 投影（recent_inputs），命令输入永不落盘。
         self.input.remember(value.clone());
 
+        // dsh 分流（§2.4 落点：首行判 dsh 态——命令与消息全部走宿主，
+        // 本地 application/run 全家不激活）。附件判空用已取出的局部值
+        //（审计 P2-3：此前的 `self.attachments` 检查永远落在 mem::take
+        // 之后，恒为空——附件被静默吞掉且提示永不出现）。
+        if self.dsh.is_some() || self.dsh_connect.is_some() {
+            self.submit_dsh(value);
+            // 提交后置位提示：submit_dsh 自己会 flash（sending…），警告
+            // 必须是留在状态栏上的那条——附件没发出去，这比 sending 更
+            // 重要。
+            if !attachments.is_empty() {
+                self.flash_status("attachments are not supported in clat dsh mode");
+            }
+            return;
+        }
+
         // 命令语义全部在 core 注册表（INV-C1）：这里只剩「分发 → 渲染」。
         // 附件剥离/输入历史等输入路由留在前端。
         if is_command {
@@ -521,6 +567,13 @@ impl App {
             // slash 命令只作用于空闲态；退还输入，避免用户丢字。
             self.input.insert_str(&value);
             self.flash_status("slash commands run when idle — steering sends plain text");
+            return;
+        }
+        // dsh 分流：running 态 Enter = steer（session.prompt mode:"steer"），
+        // 回显与队列校正见 dsh_events（§2.3）。
+        if self.dsh.is_some() || self.dsh_connect.is_some() {
+            self.input.remember(value.clone());
+            self.submit_dsh(value);
             return;
         }
         self.input.remember(value.clone());

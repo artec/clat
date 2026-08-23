@@ -13,6 +13,10 @@ pub(crate) enum UiEvent {
     Terminal(crossterm::event::Event),
     Worker(WorkerMessage),
     Application(ApplicationEvent),
+    /// dsh 模式第四源（D-2 §1.3）：连接/WS/HTTP 三线程的 DshEvent 经
+    /// 转发线程汇入——dsh 生命周期与本地 run worker 不同构，独立成源
+    /// 防两边状态机互相污染（设计否决记录 1）。
+    Dsh(crate::dsh::backend::DshEvent),
 }
 
 pub(crate) enum WorkerMessage {

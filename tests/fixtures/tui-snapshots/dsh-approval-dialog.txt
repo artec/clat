@@ -1,0 +1,27 @@
+size 80x24
+cursor 3,21
+scroll 0
+000| ┌──────────────────────────────────────────────────────────────────────────────┐  ⟦0..79 DIM⟧
+001| │ CLAT ● dsh v<VERSION>  ready  ·  deepseek · deepseek-chat                        │  ⟦0..1 DIM · 2..5 BOLD+DIM · 6..11 fg=Green+DIM · 12..30 DIM · 31..54 fg=Cyan+DIM · 55..79 DIM⟧
+002| └──────────────────────────────────────────────────────────────────────────────┘  ⟦0..79 DIM⟧
+003| ┌ Conversation ────────────────────────────────────────────────────────────────┐  ⟦0..79 DIM⟧
+004| │                                                                              │  ⟦0..79 DIM⟧
+005| │                                                                              │  ⟦0..4 DIM · 75..79 DIM⟧
+006| │     ┌ Permission ──────────────────────────────────────────────────────┐     │  ⟦0..4 DIM · 6..6 fg=Yellow · 7..18 fg=Yellow+BOLD · 19..73 fg=Yellow · 75..79 DIM⟧
+007| │     │ Permission required                                              │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 8..26 BOLD · 73..73 fg=Yellow · 75..79 DIM⟧
+008| │     │                                                                  │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+009| │     │ tool:      write_file                                            │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+010| │     │ effect:    writes files                                          │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+011| │     │ reason:    writes outside the workspace                          │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+012| │     │   null                                                           │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+013| │     │ arguments lines 1–1 of 1 · ↑/↓ PgUp/PgDn Home/End                │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 8..56 BOLD · 73..73 fg=Yellow · 75..79 DIM⟧
+014| │     │                                                                  │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+015| │     │ Enter / y — allow      ·      Esc / n — deny                     │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 8..51 BOLD · 73..73 fg=Yellow · 75..79 DIM⟧
+016| │     └──────────────────────────────────────────────────────────────────┘     │  ⟦0..4 DIM · 6..73 fg=Yellow · 75..79 DIM⟧
+017| │                                                                              │  ⟦0..4 DIM · 75..79 DIM⟧
+018| │                                                                              │  ⟦0..79 DIM⟧
+019| └──────────────────────────────────────────────────────────────────────────────┘  ⟦0..79 DIM⟧
+020| ┌ Message ─────────────────────────────────────────────────────────────────────┐  ⟦0..79 DIM⟧
+021| │❯                                                                             │  ⟦0..79 DIM⟧
+022| └──────────────────────────────────────────────────────────────────────────────┘  ⟦0..79 DIM⟧
+023|  <DSH-ROOT>  ⟦0..10 DIM · 11..79 PAD:69 DIM⟧

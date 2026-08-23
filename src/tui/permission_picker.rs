@@ -26,16 +26,48 @@ pub(crate) fn mode_description(mode: PermissionMode) -> &'static str {
     }
 }
 
+/// dsh 档词汇（D-2 §2.5）：显示名与 web 端 transform 后的产品标签一
+/// 致；description 为宿主 permission-presets 原文（read-only 在钉靶
+/// 源无 description——留空不造文）。三档 enum 复用 `PermissionMode`
+///（journal 值词汇与 DSH preset 同源，permission.rs:229）。
+pub(crate) fn dsh_mode_label(mode: PermissionMode) -> &'static str {
+    match mode {
+        PermissionMode::ReadOnly => "Read Only",
+        PermissionMode::ProjectWrite => "Workspace Write",
+        PermissionMode::FullAccess => "Full Access",
+    }
+}
+
+pub(crate) fn dsh_mode_description(mode: PermissionMode) -> &'static str {
+    match mode {
+        PermissionMode::ReadOnly => "",
+        PermissionMode::ProjectWrite => {
+            "Write inside the workspace and permitted temporary directories; wider retries \
+             require approval."
+        }
+        PermissionMode::FullAccess => "Full access without approval prompts.",
+    }
+}
+
 pub(crate) const MODES: [PermissionMode; 3] = [
     PermissionMode::ReadOnly,
     PermissionMode::ProjectWrite,
     PermissionMode::FullAccess,
 ];
 
+/// 词汇源：local（CLAT 文案）或 dsh（DSH preset 词汇 + prompt 通道
+/// Apply——/permission 命令经宿主落定，非 set_permission_mode）。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PermissionSource {
+    Local,
+    Dsh,
+}
+
 pub(crate) struct PermissionPicker {
     selected: usize,
     /// FA 确认子态：true 时 Enter 生效、Esc 退回列表。
     confirming_full_access: bool,
+    source: PermissionSource,
 }
 
 pub(crate) enum PermissionPickerAction {
@@ -52,6 +84,36 @@ impl PermissionPicker {
                 .position(|mode| *mode == current)
                 .unwrap_or_default(),
             confirming_full_access: false,
+            source: PermissionSource::Local,
+        }
+    }
+
+    /// dsh 形态构造（键位与 FA 确认子态同 local，仅词汇与 Apply 通道
+    /// 不同——INV-U9）。
+    pub(crate) fn new_dsh(current: PermissionMode) -> Self {
+        Self {
+            selected: MODES
+                .iter()
+                .position(|mode| *mode == current)
+                .unwrap_or_default(),
+            confirming_full_access: false,
+            source: PermissionSource::Dsh,
+        }
+    }
+
+    fn label(&self, mode: PermissionMode) -> String {
+        match self.source {
+            // local 的 Display 词汇即产品标签（Read Only / Project Write /
+            // Full Access）。
+            PermissionSource::Local => mode.to_string(),
+            PermissionSource::Dsh => dsh_mode_label(mode).to_owned(),
+        }
+    }
+
+    fn description(&self, mode: PermissionMode) -> &'static str {
+        match self.source {
+            PermissionSource::Local => mode_description(mode),
+            PermissionSource::Dsh => dsh_mode_description(mode),
         }
     }
 
@@ -139,13 +201,20 @@ impl PermissionPicker {
             lines
         } else {
             let mut lines = Vec::new();
+            // 标签列宽：local 14（既有布局，快照零回归）；dsh 16
+            //（"Workspace Write" 15 字符）。
+            let label_width = match self.source {
+                PermissionSource::Local => 14,
+                PermissionSource::Dsh => 16,
+            };
             for (index, mode) in MODES.iter().enumerate() {
                 let marker = if *mode == current { "●" } else { " " };
                 let row = format!(
-                    " {marker} {:<14}{}{}",
-                    mode.to_string(),
-                    mode_description(*mode),
-                    if *mode == current { "  (current)" } else { "" }
+                    " {marker} {:<width$}{}{}",
+                    self.label(*mode),
+                    self.description(*mode),
+                    if *mode == current { "  (current)" } else { "" },
+                    width = label_width,
                 );
                 let row = truncate_head(&row, width);
                 let line = if index == self.selected {
@@ -167,7 +236,7 @@ impl PermissionPicker {
         let dialog = crate::tui::centered_rect(84, height.max(7), area);
         crate::tui::clear_popup_with_guards(frame, dialog);
         frame.render_widget(
-            Paragraph::new(lines).block(crate::tui::popup_block(" /perm ")),
+            Paragraph::new(lines).block(crate::tui::popup_block("/perm")),
             dialog,
         );
     }

@@ -41,6 +41,22 @@ pub struct PermissionRequest {
     pub call_id: String,
 }
 
+impl PermissionRequest {
+    /// D-2：DSH 宿主审批帧（`approval/requested`——只带 tool 名/reason/
+    /// call id，无 effect/arguments 语义）的前端投影构造。effect 归
+    /// `Write`（审批语义即副作用放行），arguments 空（前端滚动审阅对
+    /// 缺席参数自然退化）。
+    pub fn from_host_approval(tool: String, reason: String, call_id: String) -> Self {
+        Self {
+            tool,
+            effect: ToolEffect::Write,
+            reason,
+            arguments: Value::Null,
+            call_id,
+        }
+    }
+}
+
 /// UI-independent port implemented by TUI, desktop, headless clients, or
 /// tests. It answers requests; permission classification remains in core.
 /// 审批闭包的装箱形态（A1 起 decide 携带取消令牌）。

@@ -4,7 +4,7 @@ scroll 0
 000| ┌──────────────────────────────────────────────────────────────────────────────┐  ⟦0..79 DIM⟧
 001| │ CLA                                                                          │  ⟦0..1 DIM · 2..4 BOLD+DIM · 75..79 DIM⟧
 002| └──── ┌ Permission ──────────────────────────────────────────────────────┐ ────┘  ⟦0..4 DIM · 6..6 fg=Yellow · 7..18 fg=Yellow+BOLD · 19..73 fg=Yellow · 75..79 DIM⟧
-003| ┌Conv │ Permission required                                              │ ────┐  ⟦0..4 DIM · 6..6 fg=Yellow · 8..26 BOLD · 73..73 fg=Yellow · 75..79 DIM⟧
+003| ┌ Con │ Permission required                                              │ ────┐  ⟦0..4 DIM · 6..6 fg=Yellow · 8..26 BOLD · 73..73 fg=Yellow · 75..79 DIM⟧
 004| │     │                                                                  │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
 005| │     │ tool:      edit_file                                             │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
 006| │     │ effect:    writes files                                          │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
@@ -21,7 +21,7 @@ scroll 0
 017| │     │ + }                                                              │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
 018| │     │ arguments lines 1–9 of 9 · ↑/↓ PgUp/PgDn Home/End                │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 8..56 BOLD · 73..73 fg=Yellow · 75..79 DIM⟧
 019| └──── │                                                                  │ ────┘  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
-020| ┌Mess │ Enter / y — allow      ·      Esc / n — deny                     │ rite┐  ⟦0..4 DIM · 6..6 fg=Yellow · 8..51 BOLD · 73..73 fg=Yellow · 75..78 fg=DarkGray+DIM · 79..79 DIM⟧
+020| ┌ Mes │ Enter / y — allow      ·      Esc / n — deny                     │ ite ┐  ⟦0..4 DIM · 6..6 fg=Yellow · 8..51 BOLD · 73..73 fg=Yellow · 75..78 fg=DarkGray+DIM · 79..79 DIM⟧
 021| │❯    └──────────────────────────────────────────────────────────────────┘     │  ⟦0..4 DIM · 6..73 fg=Yellow · 75..79 DIM⟧
 022| └────                                                                      ────┘  ⟦0..4 DIM · 75..79 DIM⟧
 023|  permission required — review arguments, then allow or deny  ⟦0..58 DIM · 59..79 PAD:21 DIM⟧

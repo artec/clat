@@ -72,14 +72,21 @@ impl App {
         // 左侧保底 MIN_STATUS_LEFT，右侧按优先级让位（TUI-L02）。
         // 左右各留 1 列边距，文字不贴终端边缘。
         let bar = chunks[3].inner(Margin::new(1, 0));
-        let segments = status_suffix_segments(
-            &self.config,
-            &self.balance,
-            // INV-C1：Cache 口径取当前模型路由的桶。桶缺席 = 该路由尚无
-            // 数据（刚切来的模型），`--%` 是诚实值。
-            current_route_usage(&self.usage_routes, &self.config),
-            self.last_turn_usage.as_ref(),
-        );
+        // dsh 态右侧段：Wallet 隐藏（余额是本地 Monitor 对本地 key 的
+        // 监视，与宿主模型无关），Cache/Context 按 DSH 口径投影（§2.4）；
+        // 数据缺席整段隐藏（INV-U7）。
+        let segments = if self.dsh.is_some() {
+            self.dsh_status_segments()
+        } else {
+            status_suffix_segments(
+                &self.config,
+                &self.balance,
+                // INV-C1：Cache 口径取当前模型路由的桶。桶缺席 = 该路由尚无
+                // 数据（刚切来的模型），`--%` 是诚实值。
+                current_route_usage(&self.usage_routes, &self.config),
+                self.last_turn_usage.as_ref(),
+            )
+        };
         let budget = (bar.width.saturating_sub(MIN_STATUS_LEFT + 2)) as usize;
         let suffix = fit_status_suffix(&segments, budget);
         let status_line = if let Some(phase) = self.phases.phase {
@@ -256,7 +263,7 @@ impl App {
             theme::style(theme::Role::Faint),
         )));
         clear_popup_with_guards(frame, dialog);
-        frame.render_widget(Paragraph::new(body).block(popup_block(" /help ")), dialog);
+        frame.render_widget(Paragraph::new(body).block(popup_block("/help")), dialog);
     }
 
     /// /mcp 状态弹窗：连接概览 + 每服务器一行（名称 · 传输 · 协议 ·
@@ -297,7 +304,7 @@ impl App {
             theme::style(theme::Role::Faint),
         )));
         clear_popup_with_guards(frame, dialog);
-        frame.render_widget(Paragraph::new(body).block(popup_block(" /mcp ")), dialog);
+        frame.render_widget(Paragraph::new(body).block(popup_block("/mcp")), dialog);
     }
 
     /// ask-user 对话框：问题原文（按实际宽度换行）+ 选项列表（选择行
@@ -388,10 +395,7 @@ impl App {
             spans.extend(lines);
         }
         clear_popup_with_guards(frame, dialog);
-        frame.render_widget(
-            Paragraph::new(spans).block(popup_block(" Question ")),
-            dialog,
-        );
+        frame.render_widget(Paragraph::new(spans).block(popup_block("Question")), dialog);
     }
 
     pub(super) fn draw_permission_dialog(&mut self, frame: &mut Frame) {
@@ -478,7 +482,7 @@ impl App {
             let dialog = centered_rect(84, height, area);
             clear_popup_with_guards(frame, dialog);
             frame.render_widget(
-                Paragraph::new(compact).block(popup_block(" Permission ")),
+                Paragraph::new(compact).block(popup_block("Permission")),
                 dialog,
             );
             return;
@@ -530,7 +534,7 @@ impl App {
         let dialog = centered_rect(84, height.max(10), area);
         clear_popup_with_guards(frame, dialog);
         frame.render_widget(
-            Paragraph::new(lines).block(popup_block(" Permission ")),
+            Paragraph::new(lines).block(popup_block("Permission")),
             dialog,
         );
     }
@@ -558,10 +562,13 @@ impl App {
             theme::style(theme::Role::Faint),
         )));
         let height = (lines.len() as u16 + 2).min(popup_height_cap(area));
-        let dialog_area = centered_rect(72, height.max(6), area);
+        // 高度 = 内容精确高度（输入行 + 空行 + 脚注 + 双边框）——旧的
+        // `.max(6)` 最小高在单行输入时多出一行空行（2026-08-23 负责人
+        // 报 bug）；多行输入随行数自然长高。
+        let dialog_area = centered_rect(72, height, area);
         clear_popup_with_guards(frame, dialog_area);
         frame.render_widget(
-            Paragraph::new(lines).block(popup_block(" /rename ")),
+            Paragraph::new(lines).block(popup_block("/rename")),
             dialog_area,
         );
         // popup_block：边框 1 列 + 水平 padding 1 列。
@@ -575,45 +582,113 @@ impl App {
     }
 
     pub(super) fn draw_header(&self, frame: &mut Frame, area: Rect) {
-        let (model, level) = if self.config.is_configured() {
-            let name = match self.config.preset.as_deref().and_then(preset_by_id) {
-                // 预设模型的 name 与 model id 重复（仅大小写不同），只展示名称。
-                Some(preset) => preset.name.to_owned(),
-                None => format!("{} · {}", self.config.protocol, self.config.model),
-            };
-            (
-                name,
-                effective_thinking_level(&self.config).map(|level| level.label()),
-            )
-        } else {
-            ("not configured — /model".into(), None)
-        };
-        let state = if self.loading.is_some() {
+        // 数据源参数化（§2.1）：local 走 config（预设名/档位），dsh 走
+        // DshState（model_label、无档位、宿主 cwd 第二行、●/○ 在线点）。
+        // 前缀：local 裸 `CLAT`；dsh `CLAT ●/○ dsh`（绿实心/红空心在线
+        // 点——◆ 菱形方案 2026-08-23 负责人 dogfood 后撤下，仅留 ●）。
+        let connecting = self.dsh.is_none() && self.dsh_connect.is_some();
+        let loading = self.loading.is_some() || connecting;
+        let state = if loading {
             "loading"
         } else if self.running {
             "running"
         } else {
             "ready"
         };
-        // 首行内容预算：总宽减边框 2 列、水平内边距 2 列与 "CLAT " 前缀
-        // 5 列；宽度不足时逐级退化（TUI-L02），档位优先于模型名保留。
-        let rest_budget = area.width.saturating_sub(2 + 2 + 5) as usize;
-        let rest =
-            compose_header_rest(env!("CARGO_PKG_VERSION"), state, &model, level, rest_budget);
-        frame.render_widget(
-            Paragraph::new(vec![
-                Line::from(vec![
+        let (prefix, second_line, model, level): (
+            Vec<Span<'static>>,
+            String,
+            String,
+            Option<String>,
+        ) = if let Some(dsh) = self.dsh.as_ref() {
+            let marker = if dsh.connected {
+                " ● dsh"
+            } else {
+                " ○ dsh"
+            };
+            let role = if dsh.connected {
+                theme::Role::Success
+            } else {
+                theme::Role::Error
+            };
+            let mut prefix = vec![
+                Span::styled("CLAT", theme::style(theme::Role::Bold)),
+                Span::styled(marker, theme::style(role)),
+            ];
+            // 词汇违规徽标（§2.2，INV-D8 呈现）：标题栏追加 ` ⚠ N`
+            //（Warning 角色，与状态栏 steering 徽标同族）。
+            if dsh.unknown_events > 0 {
+                prefix.push(Span::styled(
+                    format!(" ⚠ {}", dsh.unknown_events),
+                    theme::style(theme::Role::Warning),
+                ));
+            }
+            (
+                prefix,
+                format!(
+                    "project: {}",
+                    abbreviate_home(std::path::Path::new(dsh.cwd().as_str()))
+                ),
+                dsh.model_label.clone(),
+                // 档位段（档位接入 2026-08-23）：宿主 adapter 自有词汇的
+                // 展示名（efforts 表解析；无档位 → None 隐藏段）。
+                dsh.effort_display(),
+            )
+        } else if connecting {
+            (
+                vec![
                     Span::styled("CLAT", theme::style(theme::Role::Bold)),
-                    Span::raw(rest),
-                ]),
-                Line::from(format!("project: {}", self.project.root().display())),
-            ])
-            // 水平内边距 1 列：文字与边框字符之间留空，不贴框。
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .padding(Padding::horizontal(1)),
-            ),
+                    Span::styled(" ○ dsh", theme::style(theme::Role::Error)),
+                ],
+                format!("project: {}", self.project.root().display()),
+                "dsh web".to_owned(),
+                None,
+            )
+        } else {
+            let (model, level) = if self.config.is_configured() {
+                let name = match self.config.preset.as_deref().and_then(preset_by_id) {
+                    // 预设模型的 name 与 model id 重复（仅大小写不同），只展示名称。
+                    Some(preset) => preset.name.to_owned(),
+                    None => format!("{} · {}", self.config.protocol, self.config.model),
+                };
+                (
+                    name,
+                    effective_thinking_level(&self.config).map(|level| level.label().to_owned()),
+                )
+            } else {
+                ("not configured — /model".to_owned(), None)
+            };
+            (
+                vec![Span::styled("CLAT", theme::style(theme::Role::Bold))],
+                format!("project: {}", self.project.root().display()),
+                model,
+                level,
+            )
+        };
+        // 首行内容预算按前缀实际显示宽度扣除（local "CLAT" 4 列 /
+        // dsh "CLAT ● dsh" 10 列）；宽度不足时逐级退化（TUI-L02），
+        // 档位优先于模型名保留。
+        let prefix_width = prefix
+            .iter()
+            .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
+            .sum::<usize>();
+        let rest_budget = area.width.saturating_sub(2 + 2 + prefix_width as u16) as usize;
+        let header = HeaderModel {
+            version: env!("CARGO_PKG_VERSION"),
+            state,
+            model: model.as_str(),
+            level: level.as_deref(),
+        };
+        let mut first_line = prefix;
+        first_line.extend(compose_header_rest(&header, rest_budget));
+        frame.render_widget(
+            Paragraph::new(vec![Line::from(first_line), Line::from(second_line)])
+                // 水平内边距 1 列：文字与边框字符之间留空，不贴框。
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .padding(Padding::horizontal(1)),
+                ),
             area,
         );
     }
@@ -622,7 +697,9 @@ impl App {
         // 会话右标题（用户指定布局）：左上角 Conversation、右上角对称
         // 放当前会话名（effective：LLM/用户标题，否则首条消息派生）。
         // 超宽截断保头（标题语义在头部），留出左标题与边框的余量。
-        let mut block = Block::default().title("Conversation").borders(Borders::ALL);
+        let mut block = Block::default()
+            .title(" Conversation ")
+            .borders(Borders::ALL);
         if let Some(title) = self
             .session_title
             .as_deref()
@@ -636,7 +713,11 @@ impl App {
                 title.to_owned()
             };
             block = block.title(
-                Line::from(Span::styled(shown, theme::style(theme::Role::Faint))).right_aligned(),
+                Line::from(Span::styled(
+                    format!(" {shown} "),
+                    theme::style(theme::Role::Faint),
+                ))
+                .right_aligned(),
             );
         }
         // 空会话：LOGO 欢迎页接管会话区（启动 / `/new` / `/clear` 后的
@@ -646,6 +727,7 @@ impl App {
             self.conversation_rows = 0;
             frame.render_widget(&block, area);
             draw_welcome(frame, block.inner(area));
+            self.draw_dsh_banner(frame, area);
             return;
         }
         // 折行宽度比 inner 少一列：滚动条列专属（见
@@ -699,6 +781,28 @@ impl App {
             block.inner(area),
             &mut scrollbar_state,
         );
+        self.draw_dsh_banner(frame, area);
+    }
+
+    /// dsh 断线/重连中/流错误通知条（§2.2）：会话区顶部第一内行，
+    /// Error 角色同族样式——渲染层叠加而非会话 item（零新组件红线），
+    /// 空会话（欢迎页）路径同样可见。
+    fn draw_dsh_banner(&self, frame: &mut Frame, area: Rect) {
+        if let Some(banner) = self.dsh.as_ref().and_then(|dsh| dsh.banner.as_deref()) {
+            let row = Rect {
+                x: area.x + 1,
+                y: area.y + 1,
+                width: area.width.saturating_sub(2),
+                height: 1,
+            };
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    format!(" ⚠ {banner} "),
+                    theme::style(theme::Role::Error),
+                )),
+                row,
+            );
+        }
     }
 
     /// 内容总行数（含分隔空行）；模型内建逐 item 渲染缓存（G3）。
@@ -710,19 +814,40 @@ impl App {
     pub(super) fn draw_input(&self, frame: &mut Frame, area: Rect) {
         // 标题只有两态：空闲 Message / 运行插话提示。loading 不进输入框
         // 标题——头部状态与底部状态栏已在报 loading，第三处是画蛇添足
-        // （2026-08-19 用户反馈；输入禁用本身由 loading 门保证）。
+        // （2026-08-19 用户反馈；输入禁用本身由 loading 门保证）。dsh 态
+        // 的运行提示无 "recalls queued" 段（INV-U3 例外②：无栈式召回）。
         let title = if self.running {
-            "Running — Enter steers · Esc recalls queued, then cancels"
+            if self.dsh.is_some() {
+                "Running — Enter steers · Esc cancels"
+            } else {
+                "Running — Enter steers · Esc recalls queued, then cancels"
+            }
         } else {
             "Message"
         };
-        // 权限档位名放右上角（用户指定布局，与左上角 Message 对称；
-        // DSH composer Access 徽标对应物）。Full Access 用警示黄——
-        // 它是"不再有任何弹窗"的档位，颜色是唯一的风险暗示。Application
-        // 缺席（未确权）时无档位可示。直接读 cell（单一数据源，无前端
-        // 镜像）。
-        let mut block = Block::default().title(title).borders(Borders::ALL);
-        if let Some(mode) = self
+        // 右上角档位（与左上角 Message 对称；DSH composer Access 徽标
+        // 对应物）。Full Access / danger-full-access 用警示黄——它是
+        // "不再有任何弹窗"的档位，颜色是唯一的风险暗示。local 直读
+        // application（单一数据源）；dsh 显示 preset 投影（journal 值 →
+        // web 端产品标签，§2.6）。
+        let mut block = Block::default()
+            .title(format!(" {title} "))
+            .borders(Borders::ALL);
+        if let Some(dsh) = &self.dsh {
+            if let Some(preset) = &dsh.preset {
+                let style = if preset == "danger-full-access" {
+                    theme::style(theme::Role::Warning)
+                } else {
+                    theme::style(theme::Role::Faint)
+                };
+                let label = dsh_preset_label(preset);
+                block = block.title(
+                    Line::from(format!(" {label} "))
+                        .style(style)
+                        .right_aligned(),
+                );
+            }
+        } else if let Some(mode) = self
             .application
             .as_ref()
             .map(|application| application.permission_mode())
@@ -732,7 +857,7 @@ impl App {
             } else {
                 theme::style(theme::Role::Faint)
             };
-            block = block.title(Line::from(mode.to_string()).style(style).right_aligned());
+            block = block.title(Line::from(format!(" {mode} ")).style(style).right_aligned());
         }
         // 输入框与聊天记录的用户消息同款排版：首行 `❯ ` 前缀，续行
         // 两个空格保持等宽左缩进，文本按扣除前缀后的宽度换行。与

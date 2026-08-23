@@ -26,7 +26,7 @@ be read without opening the files.
 | `command.rs` | slash-command domain (`core.commands`) |
 | `tui.rs` + `tui/` | terminal frontend (entry `run()`, `App`, keys/actions/render/dialogs/widgets) |
 | `exec.rs` / `demo.rs` / `serve.rs` + `serve/` | headless one-shot / deterministic offline / local HTTP+SSE frontends (`clat serve`: loopback RPC + SSE event stream, PWA-2 design doc) |
-| `dsh/` | `clat dsh` — terminal client of a local DSH web host (D-1 reverse bridge): hand-written RFC 6455 downlink + ureq HTTP envelope, DSH events rendered through the ReplayEvent path (`ConversationModel` reuse); never writes `~/.dsh` |
+| `dsh/` | `clat dsh` protocol/backend layer (D-2): hand-written RFC 6455 downlink + ureq HTTP envelope + task orchestration (`backend.rs`); the UI is the CLAT TUI itself (`tui/dsh_events.rs` reduces DSH events into the same `App`), DSH events rendered through the ReplayEvent path; never writes `~/.dsh` |
 | `upgrade.rs` / `test_support.rs` | self-update / shared test fixtures |
 
 ## Core and static plugin composition
@@ -103,8 +103,9 @@ are crate-private so frontends cannot bypass the facade.
 ## Frontends
 
 Four CLAT frontends exist today, all talking to the same Application
-facade (plus `clat dsh`, a fifth face that talks to a FOREIGN host instead —
-the DSH web API — and reuses only the presentation widgets):
+facade. `clat dsh` is the same TUI App with a foreign event source (the
+DSH web API) swapped in behind `UiEvent::Dsh` — one shell, two backends
+(D-2):
 
 - **TUI** (`tui*.rs`) — full-screen terminal client; owns raw-mode handling
   and dialog rendering only.

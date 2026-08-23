@@ -58,6 +58,9 @@ pub(crate) enum Role {
     Link,
     /// 思考动画 spinner 的最低亮度帧（品牌例外）。
     ThinkingGlyph,
+    /// 标题栏模型名段（D-2 闪光点 b：local 与 dsh 两模式同色的主题蓝，
+    /// 与 Heading/ScrollThumb 同族 16 色 Cyan）。
+    ModelAccent,
     /// 静态 ASCII LOGO（欢迎页 + 退出告别）。复用白名单 shimmer 低端
     /// 色值——品牌色的静态呈现，不新增色。
     Logo,
@@ -100,6 +103,7 @@ pub(crate) fn style(role: Role) -> Style {
             .fg(Color::LightBlue)
             .add_modifier(Modifier::UNDERLINED),
         Role::ThinkingGlyph => Style::default().fg(BRAND_SHIMMER_LOW),
+        Role::ModelAccent => Style::default().fg(Color::Cyan),
         Role::Logo => Style::default().fg(BRAND_SHIMMER_LOW),
         Role::Success => Style::default().fg(Color::Green),
         Role::Warning => Style::default().fg(Color::Yellow),

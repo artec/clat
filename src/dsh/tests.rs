@@ -2,6 +2,7 @@
 //! 升级 + 脚本化帧）——设计档案 §10 验收 1/2/4/7/8 的 CI 可跑形态
 //! （无需 Node）。真实 dsh 的门控 e2e 走 live-validation 模式，不入套件。
 
+use crate::dsh::backend::{DshTask, TaskReply};
 use crate::dsh::client::{DshClient, looks_like_dsh};
 use crate::dsh::connect::{ConnectFailure, ensure_online};
 use crate::dsh::files;
@@ -21,6 +22,8 @@ struct FakeHost {
     port: u16,
     /// 收到的 respond 请求体（rpcId 断言用）。
     responds: Arc<Mutex<Vec<Value>>>,
+    /// 收到的 (path, body) POST 记录（载荷形状断言用，D-2）。
+    posts: Arc<Mutex<Vec<(String, String)>>>,
     /// 升级后推送的 mux 帧脚本。
     mux_script: Vec<String>,
     /// describe 应答（默认 DSH 形状；异形腿注入别的 JSON）。
@@ -52,15 +55,17 @@ impl FakeHost {
         let host = Self {
             port,
             responds: Arc::new(Mutex::new(Vec::new())),
+            posts: Arc::new(Mutex::new(Vec::new())),
             mux_script,
             describe_value,
             close_after_push,
         };
         let describe = host.describe_value.clone();
         let responds = Arc::clone(&host.responds);
+        let posts = Arc::clone(&host.posts);
         let script = host.mux_script.clone();
         let close_after = host.close_after_push;
-        std::thread::spawn(move || serve(listener, describe, responds, script, close_after));
+        std::thread::spawn(move || serve(listener, describe, responds, posts, script, close_after));
         host
     }
 
@@ -73,6 +78,7 @@ fn serve(
     listener: TcpListener,
     describe: Value,
     responds: Arc<Mutex<Vec<Value>>>,
+    posts: Arc<Mutex<Vec<(String, String)>>>,
     mux_script: Vec<String>,
     close_after_push: bool,
 ) {
@@ -81,10 +87,18 @@ fn serve(
         let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
         let describe = describe.clone();
         let responds = Arc::clone(&responds);
+        let posts = Arc::clone(&posts);
         let script = mux_script.clone();
         let close_after = close_after_push;
         std::thread::spawn(move || {
-            if let Err(error) = handle(&mut stream, &describe, &responds, &script, close_after) {
+            if let Err(error) = handle(
+                &mut stream,
+                &describe,
+                &responds,
+                &posts,
+                &script,
+                close_after,
+            ) {
                 let _ = writeln!(std::io::stderr(), "fake host: {error}");
             }
         });
@@ -95,11 +109,18 @@ fn handle(
     stream: &mut TcpStream,
     describe: &Value,
     responds: &Arc<Mutex<Vec<Value>>>,
+    posts: &Arc<Mutex<Vec<(String, String)>>>,
     mux_script: &[String],
     close_after_push: bool,
 ) -> Result<(), String> {
     let request = read_http_request(stream)?;
     let (method, path, body) = request;
+    if method == "POST" {
+        posts
+            .lock()
+            .expect("posts")
+            .push((path.clone(), body.clone()));
+    }
     if method == "GET" && (path == "/api/events.mux" || path == "/api/events.host") {
         // FakeHost 的 HTTP 面只服务一元调用；WS 腿由各测试的内联
         // listener 承担（脚本推送 + 纪律断言需要定制）。
@@ -124,6 +145,33 @@ fn handle(
         ]}),
         ("POST", "/api/session.prompt") | ("POST", "/api/session.cancel") => {
             json!({"accepted": true})
+        }
+        // D-2：create 收养式——回显请求携带的 sessionId（无则新造）。
+        ("POST", "/api/session.create") => {
+            let session = serde_json::from_str::<Value>(&body)
+                .ok()
+                .and_then(|value| {
+                    value.get("payload").and_then(|payload| {
+                        payload
+                            .get("sessionId")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned)
+                    })
+                })
+                .unwrap_or_else(|| "session-created-fresh".to_owned());
+            json!({"sessionId": session})
+        }
+        ("POST", "/api/session.history") => {
+            json!({"events": []})
+        }
+        ("POST", "/api/session.models") => {
+            json!({
+                "groups": [{"id": "deepseek", "name": "DeepSeek", "models": [
+                    {"id": "test-model", "name": "Test Model"}
+                ]}],
+                "failures": [],
+                "current": {"provider": "deepseek", "model": "test-model"}
+            })
         }
         ("POST", "/api/respond") => {
             responds
@@ -355,6 +403,7 @@ fn ws_downlink_feeds_the_transcript_end_to_end() {
     .expect("handshake");
 
     let mut transcript = DshTranscript::new();
+    let mut model = crate::tui::conversation::ConversationModel::new();
     let mut frames = 0;
     let deadline = Instant::now() + Duration::from_secs(5);
     while frames < script_len {
@@ -371,20 +420,19 @@ fn ws_downlink_feeds_the_transcript_end_to_end() {
             }
             DshFrame::SessionEvent { event, .. } => {
                 assert!(transcript.gap_before(&event).is_none(), "INV-D5: no gaps");
-                transcript.apply(&event);
+                transcript.apply(&mut model, &event);
                 frames += 1;
             }
             other => panic!("unexpected frame: {other:?}"),
         }
     }
-    // 转录终态：用户项 + 落定消息，无重复预览。
-    transcript.model.ensure_rendered(80);
-    let total = transcript
-        .model
-        .total_lines(crate::tui::conversation::ToolCardVisibility::Collapsed);
+    // 转录终态：用户项 + 落定消息，无重复预览（D-2 §1.2 去模型化：
+    // 模型实例由调用方持有）。
+    model.ensure_rendered(80);
+    let total = model.total_lines(crate::tui::conversation::ToolCardVisibility::Collapsed);
     let joined = (0..total)
         .map(|row| {
-            transcript.model.row_plain_text(
+            model.row_plain_text(
                 row,
                 80,
                 crate::tui::conversation::ToolCardVisibility::Collapsed,
@@ -516,4 +564,42 @@ fn live_dsh_web_connects_and_streams() {
             Err(_) => continue,
         }
     }
+}
+
+/// D-2 §0-1（create 收养式）：跨会话切换的 Create 任务在 wire 上携带
+/// `sessionId` + 目标会话自己的 `cwd`（ensureSession 校验锚），回执
+/// 回显同 id（判别：删掉 session_id 透传即红）。
+#[test]
+fn create_adoption_sends_session_id_and_target_cwd_over_the_wire() {
+    let host = FakeHost::spawn();
+    let mut client = host.client();
+    let mut port = host.port;
+    let reply = crate::dsh::backend::run_task(
+        &DshTask::Create {
+            session_id: Some("session-target".into()),
+            cwd: Some("/w/target-workspace".into()),
+        },
+        &mut client,
+        &mut port,
+    )
+    .expect("reply");
+    match reply {
+        TaskReply::Created(session) => {
+            assert_eq!(session, "session-target", "adoption echoes the same id");
+        }
+        other => panic!("expected Created, got {other:?}"),
+    }
+    let posts = host.posts.lock().expect("posts");
+    let (path, body) = posts
+        .iter()
+        .find(|(path, _)| path == "/api/session.create")
+        .expect("the create call reached the host");
+    assert_eq!(path, "/api/session.create");
+    let payload = serde_json::from_str::<Value>(body)
+        .expect("body json")
+        .get("payload")
+        .cloned()
+        .expect("envelope payload");
+    assert_eq!(payload["sessionId"], json!("session-target"));
+    assert_eq!(payload["cwd"], json!("/w/target-workspace"));
 }

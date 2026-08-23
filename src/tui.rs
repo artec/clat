@@ -9,10 +9,12 @@ use crate::tui::input::InputBuffer;
 use crate::tui::model_editor::{ModelEditor, ModelPicker, PickerSnapshot};
 use crate::tui::session_picker::{ResumeAction, SessionPicker};
 
+use crate::dsh::backend::DshEvent;
 use crate::tui::worker::{
     ChannelApprover, ChannelEventSink, ChannelUserAsker, UiEvent, WorkerMessage,
 };
 pub(crate) mod conversation;
+mod dsh_events;
 mod input;
 mod logo;
 mod markdown;
@@ -31,8 +33,8 @@ use crate::{
     effective_thinking_level, escalation_targets, next_thinking_level, thinking_levels,
 };
 use crossterm::event::{
-    self, DisableBracketedPaste, DisableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
-    KeyModifiers, KeyboardEnhancementFlags, MouseButton, MouseEvent, MouseEventKind,
+    self, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, Event, KeyCode, KeyEvent,
+    KeyEventKind, KeyModifiers, KeyboardEnhancementFlags, MouseButton, MouseEvent, MouseEventKind,
     PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
@@ -71,6 +73,7 @@ use render::*;
 
 use bell::*;
 use dialogs::*;
+use dsh_events::*;
 use popup::*;
 use selection::*;
 use status::*;
@@ -95,6 +98,36 @@ const SPINNER_FRAME: Duration = Duration::from_millis(80);
 const STATUS_TTL: Duration = Duration::from_secs(4);
 
 pub fn run(project: Project) -> io::Result<()> {
+    let app = match App::open_deferred(project, None) {
+        Ok(app) => app,
+        Err(error) => return Err(io::Error::other(error)),
+    };
+    run_frontend(app)
+}
+
+/// `clat dsh` 入口（D-2 §1.0）：构造 dsh 态 App（不走本地信任门/存储），
+/// 连接期由后台 ensure_online 线程驱动（`dsh_connect` 占位 + loading 状态），
+/// 复用同一终端生命周期与 App::run 主循环。
+pub fn run_dsh_mode(args: &[String]) -> io::Result<()> {
+    let port = parse_dsh_port(args).unwrap_or(crate::dsh::connect::DEFAULT_PORT);
+    let app = App::open_dsh(port).map_err(io::Error::other)?;
+    run_frontend(app)
+}
+
+/// `--port <n>` 解析（D-1 原样迁移）。
+fn parse_dsh_port(args: &[String]) -> Option<u16> {
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if arg == "--port" {
+            return iter.next().and_then(|value| value.parse().ok());
+        }
+    }
+    None
+}
+
+/// 两模式共用的终端生命周期：初始化（鼠标/粘贴/kitty + panic hook）→
+/// App::run 主循环 → 恢复 + 告别 LOGO + close 错误报告。
+fn run_frontend(mut app: App) -> io::Result<()> {
     let mut terminal = ratatui::init();
 
     // ratatui::init() 安装的 panic hook 只恢复 raw mode 和备用屏幕，
@@ -107,6 +140,7 @@ pub fn run(project: Project) -> io::Result<()> {
             stdout(),
             DisableMouseCapture,
             DisableBracketedPaste,
+            DisableFocusChange,
             PopKeyboardEnhancementFlags
         );
         let _ = stdout().write_all(b"\x1b[?1006l");
@@ -116,7 +150,7 @@ pub fn run(project: Project) -> io::Result<()> {
 
     // Enable mouse reporting without any-event tracking (1003): CLAT only
     // needs clicks (1000), drags (1002), and the wheel via SGR coordinates
-    // (1006). crossterm's EnableMouseCapture also turns 1003 on, and in
+    // (1006). crossterm's EnableMouseCapture also turns on 1003, and in
     // that mode some terminals report the wheel as motion events that
     // crossterm parses as Moved instead of ScrollUp/ScrollDown.
     let mut out = stdout();
@@ -141,17 +175,20 @@ pub fn run(project: Project) -> io::Result<()> {
         stdout(),
         PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
     );
+    // Focus Reporting（DECSET 1004，B-1 前后台感知）：终端焦点变化上报
+    // 为 FocusGained/FocusLost——提醒铃据此区分「人在屏前看得见」与
+    // AFK。不支持的终端（含 tmux 默认不转发）静默忽略，App 保持
+    // None 未知态、铃铛保守响。
+    let focus_result = execute!(stdout(), crossterm::event::EnableFocusChange);
 
-    let (result, close_error) = match App::open_deferred(project, None) {
-        Err(error) => (Err(io::Error::other(error)), None),
-        Ok(mut app) => {
-            let run_result = app.run(&mut terminal);
-            (run_result, app.take_close_error())
-        }
+    let (result, close_error) = {
+        let run_result = app.run(&mut terminal);
+        (run_result, app.take_close_error())
     };
 
     let _ = execute!(stdout(), PopKeyboardEnhancementFlags);
     let paste_result = execute!(stdout(), DisableBracketedPaste);
+    let _ = execute!(stdout(), DisableFocusChange);
     let mouse_result = execute!(stdout(), DisableMouseCapture);
     ratatui::restore();
     // 告别 LOGO：主屏恢复后打印，与启动欢迎页成对（TTY 守卫 + 静默
@@ -161,7 +198,7 @@ pub fn run(project: Project) -> io::Result<()> {
     if let Some(error) = close_error {
         let _ = writeln!(io::stderr(), "clat: {error}");
     }
-    result.and(mouse_result).and(paste_result)
+    result.and(mouse_result).and(paste_result).and(focus_result)
 }
 
 struct App {
@@ -293,6 +330,21 @@ struct App {
     test_run_elapsed: Option<Duration>,
     /// 提醒铃模式（构造期从环境变量解析一次；见 [`BellMode`]）。
     bell: BellMode,
+    /// 终端焦点三态（B-1 前后台感知，DECSET 1004）：`Some(true)` = 收
+    /// 到过 FocusGained（人在屏前看得见，铃静音）；`Some(false)` = 失
+    /// 焦（AFK，响）；`None` = 终端不支持/不转发 1004（tmux 默认不转
+    /// 发）——未知保守响，漏报比多响伤害大（用户已有 NO_BELL/
+    /// BELL_COMMAND 出口）。local 与 dsh 共用（铃铛门禁在 App 层）。
+    focused: Option<bool>,
+    /// dsh 会话状态（D-2 §1.1；local 模式恒 None）。running 不在此——
+    /// App.running 是唯一事实源。
+    dsh: Option<DshState>,
+    /// 连接期占位（D-2 §1.0：Some = 正在连接宿主，`dsh` 为 None）。
+    /// 元组 = (preferred_port, DshEvent 通道发送端——连接线程、后续
+    /// worker 与 WS 线程共用一条通道，App 侧一根转发线程汇入 UiEvent)。
+    dsh_connect: Option<(u16, Sender<DshEvent>)>,
+    /// 连接期 DshEvent 通道接收端（`run` 起转发线程时消费）。
+    dsh_connect_rx: Option<Receiver<DshEvent>>,
 }
 
 impl App {
@@ -417,8 +469,97 @@ impl App {
                 env::var("CLAT_NO_BELL").ok(),
                 env::var("CLAT_BELL_COMMAND").ok(),
             ),
+            focused: None,
+            dsh: None,
+            dsh_connect: None,
+            dsh_connect_rx: None,
         };
         Ok(app)
+    }
+
+    /// dsh 态构造器（D-2 §1.0 字段初值表）：**不走本地信任门**——本地
+    /// run 全家（application/bootstrap/run_handle/compact_handle）不激
+    /// 活、无信任交互、不读写本地存储；模型与余额来自宿主侧，相关
+    /// refresh 调用点不接线。连接期形态：`dsh=None` + `dsh_connect`
+    /// 占位 + status "connecting to dsh…"（快照 dsh-connecting 断言此态）。
+    fn open_dsh(preferred_port: u16) -> Result<Self, String> {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let project = Project::new(&cwd);
+        let (dsh_tx, dsh_rx) = mpsc::channel::<DshEvent>();
+        let status = "connecting to dsh…".to_owned();
+        let config = ModelConfig::default();
+        let credentials = ProviderCredentials::for_protocol(config.protocol);
+        Ok(Self {
+            project,
+            bootstrap: None,
+            application: None,
+            session_id: None,
+            session_title: None,
+            close_error: None,
+            config,
+            credentials,
+            provider_descriptors: Vec::new(),
+            conversation: crate::tui::conversation::ConversationModel::new(),
+            card_visibility: ToolCardVisibility::default(),
+            input: InputBuffer::new(Vec::new()),
+            trust_prompt: false,
+            default_status: status.clone(),
+            status,
+            status_until: None,
+            editor: None,
+            picker: None,
+            picker_return: None,
+            session_picker: None,
+            running: false,
+            events: None,
+            event_sender: None,
+            pending_permission: None,
+            pending_ask_user: None,
+            permission_picker: None,
+            rename_dialog: None,
+            attachments: Vec::new(),
+            run_handle: None,
+            run_epoch: 0,
+            compact_handle: None,
+            phases: PhaseTracker::default(),
+            animation_epoch: Instant::now(),
+            conversation_scroll_from_bottom: 0,
+            input_area: Rect::default(),
+            editor_area: None,
+            conversation_area: Rect::default(),
+            conversation_start: 0,
+            conversation_rows: 0,
+            selection: None,
+            should_quit: false,
+            info_dialog: None,
+            info_scroll_max: 0,
+            info_page: 1,
+            mcp_view: None,
+            help_commands: Vec::new(),
+            balance: None,
+            session_usage: Usage::default(),
+            usage_routes: BTreeMap::new(),
+            run_routes_base: None,
+            run_route: None,
+            last_turn_usage: None,
+            run_usage_base: None,
+            run_usage_acc: Usage::default(),
+            loading: None,
+            #[cfg(test)]
+            test_freeze_tick: false,
+            #[cfg(test)]
+            test_phase_elapsed: None,
+            #[cfg(test)]
+            test_run_elapsed: None,
+            bell: bell_mode_from_env(
+                env::var("CLAT_NO_BELL").ok(),
+                env::var("CLAT_BELL_COMMAND").ok(),
+            ),
+            focused: None,
+            dsh: None,
+            dsh_connect: Some((preferred_port, dsh_tx)),
+            dsh_connect_rx: Some(dsh_rx),
+        })
     }
 
     /// 项目级资源初始化：挂载 Trusted Project（已信任路径）并采纳
@@ -581,6 +722,22 @@ impl App {
         // 在 poll_loading 完成时订阅——两者共用 wire_application_events。
         self.wire_application_events();
 
+        // dsh 连接期启动（D-2 §1.0）：DshEvent 通道 + 转发线程（汇入
+        // UiEvent::Dsh）+ ensure_online 连接线程。
+        if let Some((port, dsh_tx)) = self.dsh_connect.clone()
+            && let Some(dsh_rx) = self.dsh_connect_rx.take()
+        {
+            let ui = event_sender.clone();
+            thread::spawn(move || {
+                while let Ok(event) = dsh_rx.recv() {
+                    if ui.send(UiEvent::Dsh(event)).is_err() {
+                        break;
+                    }
+                }
+            });
+            crate::dsh::backend::spawn_connect(port, dsh_tx);
+        }
+
         let events = self
             .events
             .take()
@@ -630,6 +787,8 @@ impl App {
             // 后台挂载完成则交接（每帧轮询；loading 态自身保证有唤醒
             // deadline，不会死等）。
             self.poll_loading();
+            // dsh：自动重连排程 + 审批/问答应答排水（每帧轮询）。
+            self.poll_dsh();
             terminal.draw(|frame| self.draw(frame))?;
         }
         // 显式 shutdown：flush 会话与 checkpoint、join 全部 worker，
@@ -665,9 +824,21 @@ impl App {
             .or_else(|| self.phases.phase_started.map(|since| since.elapsed()))
     }
 
-    /// 响一声提醒铃（触发点与模式见 [`BellMode`]）。
+    /// 响一声提醒铃（触发点与模式见 [`BellMode`]）。B-1 前后台感知：
+    /// 焦点三态在此单点判——local 与 dsh 的全部触发点（run 结束/弹框）
+    /// 都走这一扇门，两模式同判。
     fn notify(&self) {
-        ring_bell(&self.bell);
+        if self.should_ring() {
+            ring_bell(&self.bell);
+        }
+    }
+
+    /// 铃铛三态判定：`Some(true)`（屏前看得见）不响；失焦响；
+    /// `None`（终端无 Focus Reporting，如 tmux 默认不转发 1004）
+    /// 保守响——漏报比多响伤害大，静音出口已有
+    /// （CLAT_NO_BELL/CLAT_BELL_COMMAND）。
+    fn should_ring(&self) -> bool {
+        self.focused != Some(true)
     }
 
     #[cfg(not(test))]
@@ -827,6 +998,87 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(appeared, "the custom bell command actually ran");
+        let _ = std::fs::remove_file(&marker);
+    }
+
+    /// B-1 前后台感知（DECSET 1004）四条验收的判定面：
+    /// ③无焦点事件的终端（None 未知态——不支持 1004 / tmux 默认不
+    /// 转发）保守响；①FocusGained 后（屏前看得见）零声音；②
+    /// FocusLost 后响；④local 与 dsh 两模式同判（门禁与状态机都在
+    /// App 层单点）。判别：删掉 focused 记录或 should_ring 门禁即红。
+    #[test]
+    fn bell_respects_the_focus_tri_state_in_both_modes() {
+        fn assert_tri_state(app: &mut App) {
+            assert_eq!(app.focused, None);
+            assert!(
+                app.should_ring(),
+                "unknown focus rings conservatively (B-1 acceptance 3)"
+            );
+            app.handle_ui_event(UiEvent::Terminal(Event::FocusGained));
+            assert_eq!(app.focused, Some(true));
+            assert!(
+                !app.should_ring(),
+                "foreground silences the bell (B-1 acceptance 1)"
+            );
+            app.handle_ui_event(UiEvent::Terminal(Event::FocusLost));
+            assert_eq!(app.focused, Some(false));
+            assert!(app.should_ring(), "lost focus rings (B-1 acceptance 2)");
+        }
+        // local 态（未受信虚拟路径——不触碰文件系统，快照测试同款）。
+        let storage = std::env::temp_dir().join(format!(
+            "clat-bell-focus-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut local = App::open(
+            Project::new(std::path::Path::new("/home/dev/example-project")),
+            Some(storage.clone()),
+        )
+        .expect("local app opens");
+        local.test_freeze_tick = true;
+        assert_tri_state(&mut local);
+        // dsh 态（④：同一门禁、同一事件路径）。
+        let mut dsh = App::open_dsh(3080).expect("dsh app opens");
+        dsh.test_freeze_tick = true;
+        assert_tri_state(&mut dsh);
+        let _ = std::fs::remove_dir_all(&storage);
+    }
+
+    /// B-1 端到端腿：门禁真的拦住声音——前台态 `notify()` 不执行铃
+    /// 命令（marker 不出现），失焦态执行。判别：删掉 notify 的
+    /// should_ring 门禁即红（前台 marker 也会出现）。
+    #[test]
+    fn bell_gate_actually_blocks_the_sound_path_in_foreground() {
+        let marker = std::env::temp_dir().join(format!(
+            "clat-bell-gate-{}.marker",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut app = App::open_dsh(3080).expect("dsh app opens");
+        app.bell = BellMode::Command(format!("printf ok > {:?}", marker));
+        app.handle_ui_event(UiEvent::Terminal(Event::FocusGained));
+        app.notify();
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(
+            !marker.exists(),
+            "foreground: the bell command must not run"
+        );
+        app.handle_ui_event(UiEvent::Terminal(Event::FocusLost));
+        app.notify();
+        let mut appeared = false;
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            if marker.exists() {
+                appeared = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(appeared, "lost focus: the bell command runs");
         let _ = std::fs::remove_file(&marker);
     }
 
@@ -1147,7 +1399,7 @@ mod tests {
         terminal
             .draw(|frame| {
                 frame.render_widget(
-                    Paragraph::new("X").block(popup_block(" T ")),
+                    Paragraph::new("X").block(popup_block("T")),
                     Rect::new(0, 0, 40, 7),
                 );
             })
@@ -1690,76 +1942,81 @@ mod tests {
     /// INV-C + TUI-L02：标题栏首行按宽度三级退化，档位优先于模型名
     /// 保留；无档位时各层级不含档位片段。模型+思考+强度是一体：
     /// 组内分隔符统一窄间距（模型↔Thinking 与 Thinking↔强度一致），
-    /// 与主分段宽间距区分。
+    /// 与主分段宽间距区分。模型名段带 `Role::ModelAccent`（D-2 闪光点
+    /// b：两模式同色的主题蓝），其余段原色。
     #[test]
     fn header_rest_degrades_by_width_keeping_the_level_visible() {
-        let full = compose_header_rest("0.5.1", "ready", "DeepSeek V4.0 Flash", Some("High"), 200);
+        fn header<'a>(
+            version: &'a str,
+            state: &'a str,
+            model: &'a str,
+            level: Option<&'a str>,
+        ) -> HeaderModel<'a> {
+            HeaderModel {
+                version,
+                state,
+                model,
+                level,
+            }
+        }
+        fn text(spans: Vec<Span<'static>>) -> String {
+            spans
+                .into_iter()
+                .map(|span| span.content.to_string())
+                .collect()
+        }
+        let levelled = header("0.5.1", "ready", "DeepSeek V4.0 Flash", Some("High"));
+        let full = " v0.5.1  ready  ·  DeepSeek V4.0 Flash · Thinking · High";
+        let full_spans = compose_header_rest(&levelled, 200);
+        assert_eq!(text(full_spans.clone()), full);
+        // 模型名段是唯一的着色段（ModelAccent），前后为原色段。
+        let styled: Vec<&Span<'static>> = full_spans
+            .iter()
+            .filter(|span| span.style.fg.is_some())
+            .collect();
+        assert_eq!(styled.len(), 1, "{full_spans:?}");
+        assert_eq!(styled[0].content, "DeepSeek V4.0 Flash");
         assert_eq!(
-            full,
-            " v0.5.1  ready  ·  DeepSeek V4.0 Flash · Thinking · High"
+            styled[0].style.fg,
+            theme::style(theme::Role::ModelAccent).fg
         );
         // 宽度恰好：完整。
-        let fit = UnicodeWidthStr::width(full.as_str());
-        assert_eq!(
-            compose_header_rest("0.5.1", "ready", "DeepSeek V4.0 Flash", Some("High"), fit),
-            full
-        );
+        let fit = UnicodeWidthStr::width(full);
+        assert_eq!(text(compose_header_rest(&levelled, fit)), full);
         // 差一列 → 紧凑（保留模型与档位、省略 "Thinking · " 文案）。
         let compact = " v0.5.1 ready · DeepSeek V4.0 Flash · High";
-        assert_eq!(
-            compose_header_rest(
-                "0.5.1",
-                "ready",
-                "DeepSeek V4.0 Flash",
-                Some("High"),
-                fit - 1
-            ),
-            compact
-        );
+        assert_eq!(text(compose_header_rest(&levelled, fit - 1)), compact);
         // 紧凑也放不下 → 最小（省略模型名，档位仍在）。
         let compact_fit = UnicodeWidthStr::width(compact);
         assert_eq!(
-            compose_header_rest(
-                "0.5.1",
-                "ready",
-                "DeepSeek V4.0 Flash",
-                Some("High"),
-                compact_fit - 1
-            ),
+            text(compose_header_rest(&levelled, compact_fit - 1)),
             " v0.5.1 ready · Thinking · High"
         );
         // 60 列终端（预算 60-7=53）：紧凑。紧凑层级宽 42 列：预算 42
         // 仍完整，41（48 列终端）即降到最小——档位保留、模型名省略。
+        assert_eq!(text(compose_header_rest(&levelled, 53)), compact);
+        assert_eq!(text(compose_header_rest(&levelled, 42)), compact);
         assert_eq!(
-            compose_header_rest("0.5.1", "ready", "DeepSeek V4.0 Flash", Some("High"), 53),
-            compact
-        );
-        assert_eq!(
-            compose_header_rest("0.5.1", "ready", "DeepSeek V4.0 Flash", Some("High"), 42),
-            compact
-        );
-        assert_eq!(
-            compose_header_rest("0.5.1", "ready", "DeepSeek V4.0 Flash", Some("High"), 41),
+            text(compose_header_rest(&levelled, 41)),
             " v0.5.1 ready · Thinking · High"
         );
         assert_eq!(
-            compose_header_rest("0.5.1", "ready", "DeepSeek V4.0 Flash", Some("High"), 40),
+            text(compose_header_rest(&levelled, 40)),
             " v0.5.1 ready · Thinking · High"
         );
-        // 无档位（未配置 / 其它厂商 / 手工 disabled 由调用方归为 None）：
-        // 各层级不出现档位片段，最小层级只剩版本与状态。
+        // 无档位（未配置 / 其它厂商 / 手工 disabled 由调用方归为 None /
+        // dsh 模式恒 None）：各层级不出现档位片段，最小层级只剩版本与
+        // 状态。
+        let unlevelled = header("0.5.1", "ready", "DeepSeek V4.0 Flash", None);
         assert_eq!(
-            compose_header_rest("0.5.1", "ready", "DeepSeek V4.0 Flash", None, 200),
+            text(compose_header_rest(&unlevelled, 200)),
             " v0.5.1  ready  ·  DeepSeek V4.0 Flash"
         );
         assert_eq!(
-            compose_header_rest("0.5.1", "ready", "DeepSeek V4.0 Flash", None, 35),
+            text(compose_header_rest(&unlevelled, 35)),
             " v0.5.1 ready · DeepSeek V4.0 Flash"
         );
-        assert_eq!(
-            compose_header_rest("0.5.1", "ready", "DeepSeek V4.0 Flash", None, 34),
-            " v0.5.1 ready"
-        );
+        assert_eq!(text(compose_header_rest(&unlevelled, 34)), " v0.5.1 ready");
     }
 
     /// TUI-L02：窄终端下右侧遥测按优先级让位（Context 先弃，Cache 次

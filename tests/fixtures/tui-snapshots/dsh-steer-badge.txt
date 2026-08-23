@@ -2,12 +2,12 @@ size 80x24
 cursor 3,21
 scroll 0
 000| ┌──────────────────────────────────────────────────────────────────────────────┐
-001| │ CLAT v<VERSION>  ready  ·  not configured — /model                               │  ⟦2..5 BOLD · 25..47 fg=Cyan⟧
+001| │ CLAT ● dsh v<VERSION>  running  ·  deepseek · deepseek-chat                      │  ⟦2..5 BOLD · 6..11 fg=Green · 33..56 fg=Cyan⟧
 002| └──────────────────────────────────────────────────────────────────────────────┘
 003| ┌ Conversation ────────────────────────────────────────────────────────────────┐
-004| │❯ select me: the quick brown fox jumps over                                  ▲│  ⟦1..1 fg=Yellow+bg=Rgb(48, 50, 60)+BOLD · 2..2 fg=Yellow+bg=Rgb(48, 50, 60)+BOLD+REVERSED · 3..13 fg=Rgb(233, 234, 239)+bg=Rgb(48, 50, 60)+REVERSED · 14..77 fg=Rgb(233, 234, 239)+bg=Rgb(48, 50, 60) · 78..78 fg=DarkGray⟧
+004| │❯ while you are at it… · queued                                              ▲│  ⟦1..2 fg=DarkGray · 3..22 DIM · 23..31 fg=DarkGray · 32..77 DIM · 78..78 fg=DarkGray⟧
 005| │                                                                             ┃│  ⟦78..78 fg=Cyan⟧
-006| │⏺ ok                                                                         ┃│  ⟦1..2 fg=Gray · 78..78 fg=Cyan⟧
+006| │                                                                             ┃│  ⟦78..78 fg=Cyan⟧
 007| │                                                                             ┃│  ⟦78..78 fg=Cyan⟧
 008| │                                                                             ┃│  ⟦78..78 fg=Cyan⟧
 009| │                                                                             ┃│  ⟦78..78 fg=Cyan⟧
@@ -17,11 +17,11 @@ scroll 0
 013| │                                                                             ┃│  ⟦78..78 fg=Cyan⟧
 014| │                                                                             ┃│  ⟦78..78 fg=Cyan⟧
 015| │                                                                             ┃│  ⟦78..78 fg=Cyan⟧
-016| │                                                                             ││  ⟦78..78 fg=DarkGray⟧
+016| │                                                                             ┃│  ⟦78..78 fg=Cyan⟧
 017| │                                                                             ││  ⟦78..78 fg=DarkGray⟧
 018| │                                                                             ▼│  ⟦78..78 fg=DarkGray⟧
 019| └──────────────────────────────────────────────────────────────────────────────┘
-020| ┌ Message ────────────────────────────────────────────────────── Project Write ┐  ⟦64..78 fg=DarkGray⟧
+020| ┌ Running — Enter steers · Esc cancels ────────────────────────────────────────┐
 021| │❯                                                                             │
 022| └──────────────────────────────────────────────────────────────────────────────┘
-023|  copied 12 chars · Shift+drag uses the terminal's own selection
+023|  ⠋ Waiting first token 0s · steering·1  ⟦1..1 fg=Rgb(65, 118, 230)+BOLD · 2..21 fg=Rgb(65, 118, 230) · 22..24 fg=DarkGray · 25..37 fg=Yellow⟧

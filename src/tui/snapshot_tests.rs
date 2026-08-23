@@ -9,8 +9,13 @@
 
 use super::App;
 use super::{conversation_wrap_width, slice_by_columns};
+use crate::dsh::backend::{DshEvent, DshTask, TaskReply};
 use crate::test_support::{TestBehavior, TestProviderPlugin, roots};
 use crate::tui::conversation::{CardState, ConversationModel, ToolCardVisibility};
+use crate::tui::dialogs::RenameDialog;
+use crate::tui::dsh_events::DshState;
+use crate::tui::permission_picker::PermissionPicker;
+use crate::tui::session_picker::SessionPicker;
 use crate::tui::worker::{UiEvent, WorkerMessage};
 use crate::{BootstrapApplication, ModelEvent, PermissionRequest, Project, RunEvent, ToolEffect};
 use crossterm::event::{
@@ -35,6 +40,20 @@ use unicode_width::UnicodeWidthStr;
 /// 2026-08-19 同日二次刷新：权限命令更名 `/permission` → `/perm`
 ///（长名保留为别名）——permission-picker / permission-confirm-full 的
 /// 弹框标题与 help-dialog 的命令行随之变化。
+/// 2026-08-23 批量刷新（34 个既有场景，D-2 闪光点吸收 · 设计档案 §4
+/// 负责人拍板的三项风格改进）：① 标题栏标识加 ◆ 前缀且模型名段改
+/// 主题蓝 `Role::ModelAccent`；② 全部边框 title 前后空一格
+/// （popup_block 构造器内聚，含 Conversation/Message/权限档位角标）；
+/// ③ 其余零变化（INV-U8 例外清单只此三项）。同日二次刷新：◆ 菱形
+/// 前缀按负责人 dogfood 反馈撤下（"好丑"），local 标识回到裸 `CLAT`。
+/// 同日三次刷新（1 个场景）：dsh-model-picker——标题栏模型标签从裸
+/// id（`deepseek · deepseek-chat`）升级为展示名（`DeepSeek ·
+/// DeepSeek Chat`，名字目录 prime 解析，负责人 dogfood 第三轮反馈）。
+/// 同日四次刷新与新增（档位接入）：dsh-model-picker 再刷——fixture 补
+/// reasoning.efforts + current.reasoningEffort，标题栏出现
+/// `· Thinking · High` 档位段、当前模型行常显档位、footer 提示
+/// ⇧Tab；新场景 dsh-model-effort——二级高亮行 Shift+Tab 后行内呈现
+/// pending 档位（`fast general model · max ●`）。
 const SCENARIOS: &[&str] = &[
     "idle-transcript-80",
     "idle-transcript-40",
@@ -71,6 +90,20 @@ const SCENARIOS: &[&str] = &[
     "rename-dialog",
     "rename-not-named",
     "attachment-chip",
+    // D-2 §7.2：dsh 快照族（App 单壳——同一 draw 管线，事件/状态注入）。
+    "dsh-connecting",
+    "dsh-idle",
+    "dsh-running-phase",
+    "dsh-approval-dialog",
+    "dsh-ask-dialog",
+    "dsh-resume-picker",
+    "dsh-model-picker",
+    "dsh-model-effort",
+    "dsh-permission-picker",
+    "dsh-rename-dialog",
+    "dsh-disconnected",
+    "dsh-unknown-events",
+    "dsh-steer-badge",
 ];
 
 fn snapshot_dir() -> PathBuf {
@@ -1943,4 +1976,353 @@ fn attachment_chip_snapshot() {
         harness.app.attachments.is_empty(),
         "Esc drops the attachment"
     );
+}
+
+// ---- D-2：dsh 快照族（§7.2） ----
+//
+// 构造原则：不走信任流、不触网——DshState 直接预置（任务/事件通道两端
+// 都握在测试手里，发送静默入队），状态一律经**真实事件通路**注入
+//（Reply/Frame），快照锁的是 App 单壳的完整归约渲染管线（INV-U2）。
+// describe fixture 的 cwd 是固定虚拟路径：第二行 project 与状态栏
+// 零环境依赖。TTL flash 有跨时钟漂移，场景收尾统一 settle 状态行。
+
+/// describe fixture（钉靶形状：version/cwd/provider/model/
+/// attachedSessions/home，client.rs looks_like_dsh 同款）。
+fn dsh_describe_fixture() -> serde_json::Value {
+    json!({
+        "version": "0.1.1-rc.2",
+        "cwd": "/home/dev/dsh-project",
+        "provider": "deepseek",
+        "model": "deepseek-chat",
+        "attachedSessions": 1,
+        "home": "/home/dev/.dsh"
+    })
+}
+
+const DSH_SNAP_SESSION: &str = "session-dsh-snap-0001";
+
+/// dsh 已连接态 harness：恢复最近活跃会话 + 空历史（各场景再叠加）。
+fn harness_dsh(tag: &str, width: u16, height: u16) -> Harness {
+    let (storage_root, project_root) = roots(tag);
+    let mut app = App::open_dsh(3080).expect("dsh app opens");
+    app.test_freeze_tick = true;
+    let (task_tx, _task_rx) = mpsc::channel::<DshTask>();
+    let (events_tx, _events_rx) = mpsc::channel::<DshEvent>();
+    let mut state = DshState::new(3080, dsh_describe_fixture(), task_tx, events_tx);
+    state.test_mark_ws_open();
+    app.dsh = Some(state);
+    app.dsh_connect = None;
+    app.dsh_connect_rx = None;
+    app.default_status = "<DSH-ROOT>".into();
+    app.status = "<DSH-ROOT>".into();
+    let mut harness = Harness {
+        app,
+        terminal: Terminal::new(TestBackend::new(width, height)).expect("test terminal"),
+        project_root,
+        storage_root,
+    };
+    harness.event(UiEvent::Dsh(DshEvent::Reply(TaskReply::Restored {
+        session: Some(DSH_SNAP_SESSION.into()),
+    })));
+    harness.event(UiEvent::Dsh(DshEvent::Reply(TaskReply::History {
+        session: DSH_SNAP_SESSION.into(),
+        events: Vec::new(),
+    })));
+    harness.settle_dsh_status();
+    harness
+}
+
+impl Harness {
+    /// 状态行去漂移：TTL flash 换回常驻占位（快照只锁布局与内容语义）。
+    fn settle_dsh_status(&mut self) {
+        self.app.status = "<DSH-ROOT>".into();
+        self.app.status_until = None;
+    }
+
+    fn dsh_frame(&mut self, frame: crate::dsh::frames::DshFrame) {
+        // 以 App 当前代际注入（快照态的 downlink 是预置的，代际恒 0）。
+        let generation = self.app.dsh.as_ref().map(|dsh| dsh.generation).unwrap_or(0);
+        self.event(UiEvent::Dsh(DshEvent::Frame { generation, frame }));
+    }
+
+    fn dsh_session_event(&mut self, event: crate::session::event::SessionEvent) {
+        self.dsh_frame(crate::dsh::frames::DshFrame::SessionEvent {
+            session_id: DSH_SNAP_SESSION.into(),
+            event,
+        });
+    }
+}
+
+/// 连接期形态（§1.0）：dsh=None + dsh_connect 占位 + status 文案 +
+/// 标题栏 loading / ○。
+#[test]
+fn dsh_connecting_snapshot() {
+    let (storage_root, project_root) = roots("snap-dsh-connecting");
+    let mut app = App::open_dsh(3080).expect("dsh app opens");
+    app.test_freeze_tick = true;
+    assert!(app.dsh.is_none() && app.dsh_connect.is_some());
+    let mut harness = Harness {
+        app,
+        terminal: Terminal::new(TestBackend::new(80, 24)).expect("test terminal"),
+        project_root,
+        storage_root,
+    };
+    harness.snapshot("dsh-connecting");
+}
+
+/// 空闲已连接（§4 闪光点吸收后的本体外观）：● 在线点 + 模型蓝名 +
+/// title 空格 + 第二行宿主 cwd。
+#[test]
+fn dsh_idle_snapshot() {
+    let mut harness = harness_dsh("snap-dsh-idle", 80, 24);
+    assert!(harness.app.dsh.as_ref().is_some_and(|dsh| dsh.connected));
+    harness.snapshot("dsh-idle");
+}
+
+/// 运行态：turn/start + text-delta chunk → App.running + phase 派生
+///（Responding）+ 输入框 Running 标题（无召回段）。
+#[test]
+fn dsh_running_phase_snapshot() {
+    let mut harness = harness_dsh("snap-dsh-running", 80, 24);
+    harness.dsh_session_event(crate::session::event::SessionEvent::new(
+        "turn/start",
+        10,
+        1_700_000_040_000,
+        json!({"turn": 1}),
+    ));
+    harness.dsh_session_event(crate::session::event::SessionEvent::new(
+        "assistant/chunk",
+        11,
+        1_700_000_041_000,
+        json!({"turn": 1, "step": 1, "chunk": {"type": "text-delta", "index": 0, "text": "think"}}),
+    ));
+    assert!(harness.app.running, "turn/start sets running");
+    harness.settle_dsh_status();
+    harness.snapshot("dsh-running-phase");
+}
+
+/// 宿主审批帧 → CLAT PendingPermission 弹框（与 local
+/// permission-dialog 形态对拍——同一 draw 管线）。
+#[test]
+fn dsh_approval_dialog_snapshot() {
+    let mut harness = harness_dsh("snap-dsh-approval", 80, 24);
+    harness.dsh_frame(crate::dsh::frames::DshFrame::ApprovalRequested {
+        rpc_id: "rpc-approval-1".into(),
+        session_id: DSH_SNAP_SESSION.into(),
+        approval_id: "approval-1".into(),
+        tool_name: "write_file".into(),
+        call_id: Some("call-7".into()),
+        reason: Some("writes outside the workspace".into()),
+    });
+    assert!(harness.app.pending_permission.is_some());
+    harness.settle_dsh_status();
+    harness.snapshot("dsh-approval-dialog");
+}
+
+/// 宿主问答帧 → PendingAskUser 弹框（多题：(1/2) 前缀融入题面）。
+#[test]
+fn dsh_ask_dialog_snapshot() {
+    let mut harness = harness_dsh("snap-dsh-ask", 80, 24);
+    harness.dsh_frame(crate::dsh::frames::DshFrame::QuestionRequested {
+        rpc_id: "rpc-question-1".into(),
+        session_id: DSH_SNAP_SESSION.into(),
+        questions: json!([
+            {"id": "q1", "question": "Which database?", "options": [
+                {"label": "Postgres"}, {"label": "SQLite"}
+            ]},
+            {"id": "q2", "question": "Any migrations?", "options": []}
+        ]),
+    });
+    assert!(harness.app.pending_ask_user.is_some());
+    let question = &harness.app.pending_ask_user.as_ref().unwrap().question;
+    assert!(question.question.contains("(1/2)"), "{}", question.question);
+    harness.settle_dsh_status();
+    harness.snapshot("dsh-ask-dialog");
+}
+
+/// /resume 选择器（返工终版·单一分组列表）：全部工作区常显、分组
+/// 头 Faint 行、行内无工作区标签；打开定位当前工作区组（活跃会话
+/// session-dsh-snap-0001 属 alpha 组——光标落 alpha 首行）。
+#[test]
+fn dsh_resume_picker_snapshot() {
+    let mut harness = harness_dsh("snap-dsh-resume", 80, 24);
+    let rows = dsh_resume_rows_fixture();
+    harness.app.session_picker = Some(SessionPicker::new_dsh(rows, Some(DSH_SNAP_SESSION.into())));
+    harness.snapshot("dsh-resume-picker");
+}
+
+fn dsh_resume_rows_fixture() -> Vec<crate::dsh::files::DshSessionRow> {
+    // 活跃降序（files::read_sessions 的产出序）：alpha 组两行夹着
+    // beta 组一行——分组归并后 alpha 组在前（最近活跃组）。
+    vec![
+        crate::dsh::files::DshSessionRow {
+            session_id: DSH_SNAP_SESSION.into(),
+            workspace_title: "alpha".into(),
+            workspace_path: "/w/alpha".into(),
+            title: Some("Fix the flaky test".into()),
+            created_at_ms: 1_787_400_000_000,
+            activity_ms: 1_787_493_900_000,
+        },
+        crate::dsh::files::DshSessionRow {
+            session_id: "session-dsh-snap-0002".into(),
+            workspace_title: "beta".into(),
+            workspace_path: "/w/beta".into(),
+            title: None,
+            created_at_ms: 1_787_400_000_000,
+            activity_ms: 1_787_400_000_000,
+        },
+        crate::dsh::files::DshSessionRow {
+            session_id: "session-dsh-snap-0003".into(),
+            workspace_title: "alpha".into(),
+            workspace_path: "/w/alpha".into(),
+            title: Some("Older alpha work".into()),
+            created_at_ms: 1_787_300_000_000,
+            activity_ms: 1_787_300_000_000,
+        },
+    ]
+}
+
+/// /model 选择器（宿主动态组）：组行 + current ● + 失败组灰行 +
+/// 当前档位呈现（档位接入 2026-08-23：当前模型行常显其档位）。
+#[test]
+fn dsh_model_picker_snapshot() {
+    let mut harness = harness_dsh("snap-dsh-model", 80, 24);
+    harness.event(UiEvent::Dsh(DshEvent::Reply(TaskReply::Models(json!({
+        "groups": [
+            {"id": "deepseek", "name": "DeepSeek", "models": [
+                {"id": "deepseek-chat", "name": "DeepSeek Chat",
+                 "description": "fast general model",
+                 "reasoning": {"efforts": [
+                    {"id": "off", "name": "Off"},
+                    {"id": "low", "name": "Low"},
+                    {"id": "high", "name": "High"}
+                 ]}},
+                {"id": "deepseek-reasoner", "name": "DeepSeek Reasoner"}
+            ]},
+            {"id": "custom-ollama", "name": "Ollama (custom)", "models": [
+                {"id": "llama-local", "name": "Llama Local"}
+            ]}
+        ],
+        "failures": [
+            {"id": "broken", "name": "Broken Provider", "message": "connect ECONNREFUSED"}
+        ],
+        "current": {"provider": "deepseek", "model": "deepseek-chat",
+                    "reasoningEffort": "high"}
+    })))));
+    assert!(
+        harness.app.picker.is_some(),
+        "models reply opens the picker"
+    );
+    harness.settle_dsh_status();
+    harness.snapshot("dsh-model-picker");
+}
+
+/// 档位循环（档位接入 2026-08-23）：二级高亮模型行 Shift+Tab 后行内
+/// 呈现 pending 档位、footer 提示 ⇧Tab、标题栏档位段（当前档位）。
+#[test]
+fn dsh_model_effort_snapshot() {
+    let mut harness = harness_dsh("snap-dsh-effort", 80, 24);
+    harness.event(UiEvent::Dsh(DshEvent::Reply(TaskReply::Models(json!({
+        "groups": [
+            {"id": "deepseek", "name": "DeepSeek", "models": [
+                {"id": "deepseek-chat", "name": "DeepSeek Chat",
+                 "description": "fast general model",
+                 "reasoning": {"efforts": [
+                    {"id": "off", "name": "Off"},
+                    {"id": "low", "name": "Low"},
+                    {"id": "high", "name": "High"},
+                    {"id": "max", "name": "Max"}
+                 ]}}
+            ]}
+        ],
+        "current": {"provider": "deepseek", "model": "deepseek-chat",
+                    "reasoningEffort": "high"}
+    })))));
+    // 进二级（Enter）→ Shift+Tab：当前 high → pending max。
+    harness.key(KeyCode::Enter);
+    harness.key(KeyCode::BackTab);
+    harness.settle_dsh_status();
+    harness.snapshot("dsh-model-effort");
+}
+
+/// /perm 选择器（DSH 三档词汇：Read Only / Workspace Write /
+/// Full Access + 宿主 description 原文）。
+#[test]
+fn dsh_permission_picker_snapshot() {
+    let mut harness = harness_dsh("snap-dsh-perm", 80, 24);
+    harness.dsh_session_event(crate::session::event::SessionEvent::new(
+        "sandbox/mode",
+        10,
+        1_700_000_040_000,
+        json!({"mode": "workspace-write"}),
+    ));
+    assert_eq!(
+        harness.app.dsh.as_ref().unwrap().preset.as_deref(),
+        Some("workspace-write"),
+        "sandbox/mode folds into the preset projection"
+    );
+    harness.app.permission_picker = Some(PermissionPicker::new_dsh(
+        crate::PermissionMode::ProjectWrite,
+    ));
+    harness.settle_dsh_status();
+    harness.snapshot("dsh-permission-picker");
+}
+
+/// /rename 弹框（RenameDialog 复用，预填当前标题）。
+#[test]
+fn dsh_rename_dialog_snapshot() {
+    let mut harness = harness_dsh("snap-dsh-rename", 80, 24);
+    harness.app.session_title = Some("Fix the flaky test".into());
+    harness.app.rename_dialog = Some(RenameDialog::new("Fix the flaky test"));
+    harness.snapshot("dsh-rename-dialog");
+}
+
+/// 断线（自动重连拍板）：○ 空心 + 会话区顶部通知条（Error 角色）。
+#[test]
+fn dsh_disconnected_snapshot() {
+    let mut harness = harness_dsh("snap-dsh-disconnect", 80, 24);
+    harness.event(UiEvent::Dsh(DshEvent::LinkDown {
+        generation: 0,
+        reason: "connection closed by peer".into(),
+    }));
+    let dsh = harness.app.dsh.as_ref().unwrap();
+    assert!(!dsh.connected);
+    assert!(dsh.banner.is_some(), "the notice banner is up");
+    harness.settle_dsh_status();
+    harness.snapshot("dsh-disconnected");
+}
+
+/// 词汇违规（INV-D8 呈现）：未知非 ignorable 类型 → 标题栏 ⚠ N 徽标。
+#[test]
+fn dsh_unknown_events_snapshot() {
+    let mut harness = harness_dsh("snap-dsh-unknown", 80, 24);
+    harness.dsh_session_event(crate::session::event::SessionEvent::new(
+        "mystery/kind",
+        10,
+        1_700_000_040_000,
+        json!({"payload": true}),
+    ));
+    assert_eq!(harness.app.dsh.as_ref().unwrap().unknown_events, 1);
+    harness.settle_dsh_status();
+    harness.snapshot("dsh-unknown-events");
+}
+
+/// 插话回显徽标：running 态 Enter steer → pending 回显区 → 状态栏
+/// phase 行 steering·N（与 local 同族样式）。
+#[test]
+fn dsh_steer_badge_snapshot() {
+    let mut harness = harness_dsh("snap-dsh-steer", 80, 24);
+    harness.dsh_session_event(crate::session::event::SessionEvent::new(
+        "turn/start",
+        10,
+        1_700_000_040_000,
+        json!({"turn": 1}),
+    ));
+    harness
+        .app
+        .conversation
+        .push_pending_steering("while you are at it…".into());
+    assert_eq!(harness.app.conversation.pending_steering_count(), 1);
+    harness.settle_dsh_status();
+    harness.snapshot("dsh-steer-badge");
 }
