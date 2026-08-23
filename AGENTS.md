@@ -23,7 +23,7 @@ All contributors and coding agents working in this repository should preserve th
 - Favor observable event-driven execution so future CLI, TUI, IDE, desktop, or remote clients can consume the same runtime events.
 - The single-agent runtime is the daily-driver baseline. Multi-agent features are now admissible, but only when driven by a concrete dogfood need and compared against DSH's subagent design — no speculative orchestration.
 - A new durable-event producer must pass four gates together: catalog known-type, admission payload validation, projection fold (with checkpoint/restore), and live/replay parity.
-- Agents never commit or push autonomously; commits are human-approved.
+- **Commits and pushes are performed by the 负责人 (repo owner) personally.** Developers and coding agents never run `git commit` or `git push` — not even after audit closure, and approval of the changes is not approval to commit. Deliver a gate-green working tree (tests, fmt, clippy, docs updated) and let the owner review and commit it.
 
 ## Documentation map
 
