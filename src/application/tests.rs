@@ -2755,7 +2755,9 @@ fn legacy_sqlite_control_plane_is_upgraded_and_sessions_survive() {
     let corpse = std::fs::read_dir(&storage_root)
         .unwrap()
         .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-        .find(|name| name.starts_with("clat.db.bak-"))
+        .find(|name| {
+            name.starts_with("clat.db.bak-") && !name.ends_with("-wal") && !name.ends_with("-shm")
+        })
         .expect("the corpse is preserved");
     assert_eq!(
         std::fs::read(storage_root.join(&corpse)).unwrap(),

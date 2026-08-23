@@ -2,6 +2,7 @@ pub mod application;
 mod command;
 pub(crate) mod control_storage;
 pub mod demo;
+pub mod dsh;
 pub mod event;
 pub mod exec;
 mod interaction;

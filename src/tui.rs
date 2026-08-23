@@ -12,7 +12,7 @@ use crate::tui::session_picker::{ResumeAction, SessionPicker};
 use crate::tui::worker::{
     ChannelApprover, ChannelEventSink, ChannelUserAsker, UiEvent, WorkerMessage,
 };
-mod conversation;
+pub(crate) mod conversation;
 mod input;
 mod logo;
 mod markdown;

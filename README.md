@@ -71,6 +71,8 @@ capabilities.
 - `clat serve` for a local HTTP+SSE API on 127.0.0.1 — token-gated,
   event-streamed, with a built-in installable web client (PWA) served
   from the same binary
+- `clat dsh` turns the TUI into a client of a local DSH web host — the
+  terminal seat DSH retired, read-only over `~/.dsh`
 - `clat demo` for a deterministic offline walkthrough of the agent loop
 
 ## Principles

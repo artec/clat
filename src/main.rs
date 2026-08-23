@@ -27,6 +27,7 @@ where
         None => run_tui(),
         Some("demo") => run_demo(),
         Some("exec") => run_exec_command(args),
+        Some("dsh") => run_dsh_command(args),
         Some("serve") => run_serve_command(args),
         Some("upgrade") => run_upgrade(args.next().as_deref() == Some("--check")),
         Some("-V" | "--version") => {
@@ -45,6 +46,19 @@ where
     }
 }
 
+fn run_dsh_command<I>(args: I) -> ExitCode
+where
+    I: Iterator<Item = String>,
+{
+    let args: Vec<String> = args.collect();
+    let code = clat::dsh::run_dsh(&args);
+    if code == 0 {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(code as u8)
+    }
+}
+
 fn print_help() {
     println!("{NAME} — {TAGLINE}");
     println!();
@@ -55,6 +69,7 @@ fn print_help() {
     println!();
     println!("Commands:");
     println!("  exec [PROMPT]     Run one agent turn headlessly and print the reply on stdout");
+    println!("  dsh              Open the TUI as a client of a local DSH web host");
     println!("  serve             Serve the local HTTP+SSE API on 127.0.0.1");
     println!("  demo             Run the deterministic model → tool → model loop");
     println!("  upgrade          Upgrade to the latest GitHub release");

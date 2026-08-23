@@ -72,7 +72,7 @@ pub(crate) struct GlobalState {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub(crate) struct Tables {
     #[serde(default)]
-    workspaces: BTreeMap<String, WorkspaceRecord>,
+    pub(crate) workspaces: BTreeMap<String, WorkspaceRecord>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

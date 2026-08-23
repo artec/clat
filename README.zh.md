@@ -59,6 +59,8 @@ CLAT 是一个稳如磐石的 Agent 底座：快速、本地优先、开源，�
   管道消费
 - `clat serve` 在 127.0.0.1 上提供本地 HTTP+SSE API——token 门禁、
   事件流式输出，并内置可安装的 Web 客户端（PWA），同二进制直接服务
+- `clat dsh` 让 TUI 化身本地 DSH web 宿主的终端客户端——补上 DSH
+  砍掉的 TUI 位，对 `~/.dsh` 只读不写
 - `clat demo` 无需远程模型，确定性走一遍智能体循环
 
 ## 原则

@@ -481,11 +481,17 @@ mod tests {
         complete_upgrade(&root).expect("upgrade");
         assert!(matches!(classify(&root), ControlPlaneStatus::Ready { .. }));
 
-        // 保尸：字节原样、不删（INV-MP6）；二次运行不再触碰。
+        // 保尸：字节原样、不删（INV-MP6）；二次运行不再触碰。定位主尸必须
+        // 排除 sidecar——read_dir 的迭代顺序随文件系统而异（Linux htree
+        // 哈希序可先吐 -wal），前缀匹配单独用会读到 wal 内容。
         let bak = std::fs::read_dir(&root)
             .unwrap()
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-            .find(|name| name.starts_with("clat.db.bak-"))
+            .find(|name| {
+                name.starts_with("clat.db.bak-")
+                    && !name.ends_with("-wal")
+                    && !name.ends_with("-shm")
+            })
             .expect("the corpse exists");
         assert_eq!(std::fs::read(root.join(&bak)).unwrap(), b"sqlite bytes");
         assert!(

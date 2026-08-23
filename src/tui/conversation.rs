@@ -282,6 +282,35 @@ impl ConversationModel {
         });
     }
 
+    // ---- DSH 桥流式入口（D-1，INV-D6 的 chunk 粒度补充）----
+
+    /// 开启（或复用已开放态的）流式 assistant 项：DSH `assistant/chunk`
+    /// 的 block-start 时调用；provider/model 未知时以占位名进入。
+    pub(crate) fn open_stream_assistant(&mut self, provider: &str, model: &str) {
+        if !self.assistant_open {
+            self.open_assistant(provider.to_owned(), model.to_owned());
+        }
+    }
+
+    /// chunk 文本增量（`text-delta`）。
+    pub(crate) fn append_stream_text(&mut self, delta: &str) {
+        self.append_assistant(|item| {
+            if let ConversationItem::Assistant { text, .. } = item {
+                text.push_str(delta);
+            }
+        });
+    }
+
+    /// 落定前丢弃开放态的流式 assistant 项：整消息即将经 replay 通路以
+    /// 完整形态进入（`assistant/message`），部分文本不得与完整消息
+    /// 重复呈现。
+    pub(crate) fn discard_open_stream_assistant(&mut self) {
+        if self.assistant_open {
+            self.items.pop();
+            self.assistant_open = false;
+        }
+    }
+
     // ---- live 入口 ----
 
     pub(crate) fn apply_run_event(&mut self, event: &RunEvent) {

@@ -1,0 +1,246 @@
+{
+  "unit": {
+    "name": "session_projcache",
+    "version": 3
+  },
+  "global": null,
+  "tables": {
+    "sessions": {
+      "session-e36f95a0-d23e-4a40-b03a-5c193ace7f66": {
+        "identity": {
+          "createdAt": 1786638530297,
+          "cwd": "/Users/deng/Documents/GitHub/clat"
+        },
+        "rows": {
+          "sessionStats": {
+            "ver": 1,
+            "seq": 394457,
+            "val": {
+              "turns": 43,
+              "steps": 570,
+              "llmMs": 5948537,
+              "toolMs": 1404263,
+              "ttftMs": 1351242,
+              "ttftSteps": 568,
+              "decodeMs": 4597295,
+              "decodeTokens": 414932,
+              "lastTurn": 43,
+              "openStep": null,
+              "pendingCalls": {}
+            }
+          },
+          "title": {
+            "ver": 1,
+            "seq": 394457,
+            "val": "clat项目开发咨询"
+          },
+          "goal": {
+            "ver": 4,
+            "seq": 394457,
+            "val": null
+          },
+          "tokenUsage": {
+            "ver": 1,
+            "seq": 394457,
+            "val": {
+              "totals": {
+                "uncachedInputTokens": 298794,
+                "outputTokens": 414932,
+                "cacheReadTokens": 187685760,
+                "cacheWriteTokens": 0
+              },
+              "last": {
+                "turn": 43,
+                "step": 4,
+                "buckets": {
+                  "uncachedInputTokens": 425,
+                  "outputTokens": 373,
+                  "cacheReadTokens": 577152,
+                  "cacheWriteTokens": 0
+                }
+              }
+            }
+          },
+          "contextPressure": {
+            "ver": 4,
+            "seq": 394457,
+            "val": {
+              "surfaceTokens": 2902,
+              "contextWindow": 1000000,
+              "pressureTokens": 577577,
+              "sampledSurfaceTokens": 525905
+            }
+          },
+          "contextBreakdown": {
+            "ver": 2,
+            "seq": 394457,
+            "val": {
+              "systemTokens": 1522,
+              "toolsTokens": 6376,
+              "messageTokens": 2902
+            }
+          },
+          "subagentTiming": {
+            "ver": 2,
+            "seq": 394457,
+            "val": {
+              "descriptorSeen": false,
+              "settledMs": 0
+            }
+          },
+          "subagent": {
+            "ver": 2,
+            "seq": 394457,
+            "val": {}
+          },
+          "permissions": {
+            "ver": 1,
+            "seq": 394457,
+            "val": {
+              "preset": "workspace-write",
+              "sandbox": "workspace-write",
+              "approval": "ask"
+            }
+          },
+          "sessionListMetadata": {
+            "ver": 1,
+            "seq": 394457,
+            "val": {
+              "blank": false,
+              "lastPromptAt": 1786657484284
+            }
+          },
+          "imageLimits": {
+            "ver": 1,
+            "seq": 394457,
+            "val": null
+          },
+          "todos": {
+            "ver": 2,
+            "seq": 394457,
+            "val": null
+          },
+          "plan": {
+            "ver": 1,
+            "seq": 394457,
+            "val": {
+              "active": false,
+              "wanted": null
+            }
+          }
+        }
+      },
+      "session-76701663-56fe-4d5b-888f-69bb7226dd42": {
+        "identity": {
+          "createdAt": 1787042468322,
+          "cwd": "/Users/deng/Documents/GitHub/clat"
+        },
+        "rows": {
+          "sessionStats": {
+            "ver": 1,
+            "seq": 709,
+            "val": {
+              "turns": 3,
+              "steps": 3,
+              "llmMs": 9171,
+              "toolMs": 0,
+              "ttftMs": 2613,
+              "ttftSteps": 3,
+              "decodeMs": 6558,
+              "decodeTokens": 660,
+              "lastTurn": 3,
+              "openStep": null,
+              "pendingCalls": {}
+            }
+          },
+          "title": {
+            "ver": 1,
+            "seq": 709,
+            "val": "你好"
+          },
+          "goal": {
+            "ver": 4,
+            "seq": 709,
+            "val": null
+          },
+          "tokenUsage": {
+            "ver": 1,
+            "seq": 709,
+            "val": {
+              "totals": {
+                "uncachedInputTokens": 2486,
+                "outputTokens": 660,
+                "cacheReadTokens": 1280,
+                "cacheWriteTokens": 0
+              },
+              "last": {
+                "turn": 3,
+                "step": 1,
+                "buckets": {
+                  "uncachedInputTokens": 117,
+                  "outputTokens": 455,
+                  "cacheReadTokens": 1280,
+                  "cacheWriteTokens": 0
+                }
+              }
+            }
+          },
+          "contextPressure": {
+            "ver": 4,
+            "seq": 709,
+            "val": {
+              "surfaceTokens": 658,
+              "contextWindow": 1000000,
+              "pressureTokens": 1397,
+              "sampledSurfaceTokens": 237
+            }
+          },
+          "contextBreakdown": {
+            "ver": 2,
+            "seq": 709,
+            "val": {
+              "systemTokens": 16,
+              "toolsTokens": 812,
+              "messageTokens": 658
+            }
+          },
+          "subagentTiming": {
+            "ver": 2,
+            "seq": 709,
+            "val": {
+              "descriptorSeen": false,
+              "settledMs": 0
+            }
+          },
+          "subagent": {
+            "ver": 2,
+            "seq": 709,
+            "val": {}
+          },
+          "permissions": {
+            "ver": 1,
+            "seq": 709,
+            "val": {
+              "preset": "workspace-write",
+              "sandbox": "workspace-write",
+              "approval": "ask"
+            }
+          },
+          "sessionListMetadata": {
+            "ver": 1,
+            "seq": 709,
+            "val": {
+              "blank": false,
+              "lastPromptAt": 1787400976176
+            }
+          },
+          "imageLimits": {
+            "ver": 1,
+            "seq": 709,
+            "val": null
+          }
+        }
+      }
+    }
+  }
+}

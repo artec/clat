@@ -1,0 +1,27 @@
+{
+  "unit": {
+    "name": "workspace",
+    "version": 2
+  },
+  "global": {
+    "initialized": true,
+    "workspaceIds": [
+      "6a0093cf-f937-4f1c-8af8-b181dcca3c27"
+    ],
+    "archivedSessionIds": []
+  },
+  "tables": {
+    "workspaces": {
+      "6a0093cf-f937-4f1c-8af8-b181dcca3c27": {
+        "path": "/Users/deng/Documents/GitHub/clat",
+        "title": "clat",
+        "sessionIds": [
+          "session-76701663-56fe-4d5b-888f-69bb7226dd42",
+          "session-e36f95a0-d23e-4a40-b03a-5c193ace7f66"
+        ],
+        "createdAt": "2026-08-13T16:28:50.246Z",
+        "updatedAt": "2026-08-18T08:41:08.344Z"
+      }
+    }
+  }
+}

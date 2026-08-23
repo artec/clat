@@ -22,13 +22,30 @@ fn rust_sources(root: &Path) -> Vec<PathBuf> {
     files
 }
 
+/// Terminal frontends: the CLAT TUI family (`tui*.rs` / `src/tui/`) and
+/// the DSH client family (`src/dsh/` — the terminal face of a FOREIGN host,
+/// D-1). Both render with ratatui/crossterm, so the core-must-not-reference
+/// rule exempts them; the CLAT-runtime-specific guards (no core assembly,
+/// slash commands via `core.commands`) scope to the CLAT TUI family only —
+/// the DSH client owns its command mapping against the DSH API by design.
 fn is_frontend(path: &Path) -> bool {
+    is_clat_tui_frontend(path) || is_dsh_frontend(path)
+}
+
+fn is_clat_tui_frontend(path: &Path) -> bool {
     let name = path.file_name().and_then(|name| name.to_str());
     let in_frontend_dir = path
         .parent()
         .and_then(|parent| parent.file_name())
         .is_some_and(|dir| dir == "tui");
     name.is_some_and(|name| name == "tui.rs" || name.starts_with("tui_")) || in_frontend_dir
+}
+
+fn is_dsh_frontend(path: &Path) -> bool {
+    // rust_sources 产出绝对路径；按路径分量识别（仓库内唯一 dsh 目录
+    // 即 src/dsh）。
+    path.components()
+        .any(|component| component.as_os_str() == "dsh")
 }
 
 fn relative<'a>(root: &'a Path, path: &'a Path) -> &'a Path {
@@ -111,6 +128,7 @@ fn terminal_frontend_has_no_core_assembly_or_persistence_entrypoints() {
         .into_iter()
         .filter(|path| is_frontend(path))
         .collect::<Vec<_>>();
+    // dsh 前端无 CLAT 运行时可装配——但同样不得引用核心装配面。
     assert!(
         frontends.len() >= 6,
         "architecture guard failed to discover the complete terminal frontend"
@@ -155,9 +173,11 @@ fn terminal_frontend_has_no_core_assembly_or_persistence_entrypoints() {
 #[test]
 fn terminal_frontend_does_not_own_slash_command_dispatch() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    // 只约束 CLAT TUI 家族：dsh 模式按设计档案 §5 自有命令映射（对
+    // DSH API），不经 `core.commands`（那是 CLAT 运行时的命令语义源）。
     let frontends = rust_sources(root)
         .into_iter()
-        .filter(|path| is_frontend(path))
+        .filter(|path| is_clat_tui_frontend(path))
         .collect::<Vec<_>>();
     assert!(
         frontends.len() >= 6,

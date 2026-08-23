@@ -276,6 +276,35 @@ Conventions:
   run (partial output still persists, exit 130). A second press
   hard-exits.
 
+## DSH client (`clat dsh`)
+
+`clat dsh` turns the TUI into a client of a local
+[DSH](https://github.com/deepseek-ai/deepseek-harness) web host — the
+terminal seat DSH itself retired. It is a fill-in, not a rival: it never
+writes `~/.dsh`, and every action goes through the DSH API.
+
+```bash
+clat dsh                    # probe 127.0.0.1:3080, connect or start dsh web
+clat dsh --port 3080        # explicit port
+```
+
+The flow is strictly online: probe → fingerprint (`host.describe`) →
+connect, or start `dsh web` if nothing DSH-shaped is listening (a
+non-DSH squatter is not trusted; if the default port is taken the child
+retries with an OS-assigned port). No `dsh` executable and no `~/.dsh`
+means a clear "not installed" error. On connect the most recently
+active session is restored (`session.history`); typing sends
+(`session.prompt`), typing while a run is active steers, `Esc` cancels.
+Approvals and questions raised by the host pop the usual dialogs and
+are answered through the API.
+
+Commands: `/new` `/resume` `/model` `/rename <title>` `/reconnect`
+`/help` `/quit`. `/resume` lists every project and session by reading
+`~/.dsh/storages` directly (read-only) instead of going through the
+API. Other CLAT commands answer "not available in clat dsh mode" — the
+DSH host owns those concerns. A dropped connection shows a banner and
+waits for `/reconnect`; there is no offline mode and no auto-reconnect.
+
 ## Local API server (`clat serve`)
 
 `clat serve` exposes the same agent over a local HTTP+SSE API — the
