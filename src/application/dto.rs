@@ -84,10 +84,23 @@ pub struct SessionSnapshot {
     /// Structured replay of this session's journal (see `ProjectSnapshot::
     /// replay`).
     pub replay: Vec<ReplayEvent>,
-    /// Journal-derived usage stats of the target session (see
+    /// Journal-derived session stats of the target session (see
     /// `ProjectSnapshot::session_usage`).
     pub session_usage: crate::model::Usage,
     pub usage_routes: std::collections::BTreeMap<String, crate::model::Usage>,
     pub last_request_usage: Option<crate::model::Usage>,
     pub input_history: Vec<String>,
+}
+
+/// 工作区枚举行（MP-1 §5：多项目地基 API，v1 无 UI 消费方——
+/// `workspaces()` / `active_workspace()`）。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkspaceInfo {
+    pub id: String,
+    /// realpath 规范形（注册时盖章）。
+    pub path: String,
+    pub title: String,
+    pub session_ids: Vec<String>,
+    /// 该工作区自己的当前会话（None = Fresh）。
+    pub active_session_id: Option<String>,
 }

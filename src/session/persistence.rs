@@ -1589,7 +1589,7 @@ fn read_capped_line(
     }
 }
 
-fn read_header_from_reader(
+pub(crate) fn read_header_from_reader(
     reader: &mut dyn Read,
     compression: JsonlCompression,
 ) -> Result<Option<SessionHeader>, SessionError> {

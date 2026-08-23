@@ -92,6 +92,38 @@ pub(crate) fn project_dir(root: &std::path::Path, cwd: Option<&str>) -> PathBuf 
     }
 }
 
+/// [`encode_segment`] 的严格逆：字面安全单元直读，`~XXXX`（仅大写十六
+/// 进制）解回 UTF-16 单元。解码出的码元序列必须构成合法字符串；任何
+/// 偏离编码形状（小写十六进制、缺位、孤立代理 halves 不成对）都拒绝
+/// （返回 `None`）——对账收编只接受能被本编码产出的目录名。
+pub(crate) fn decode_segment(encoded: &str) -> Option<String> {
+    if encoded.is_empty() {
+        return None;
+    }
+    let mut units: Vec<u16> = Vec::new();
+    let mut chars = encoded.chars();
+    while let Some(character) = chars.next() {
+        if character != '~' {
+            let mut buffer = [0u8; 2];
+            for unit in character.encode_utf8(&mut buffer).encode_utf16() {
+                units.push(unit);
+            }
+            continue;
+        }
+        let mut hex = String::with_capacity(4);
+        for _ in 0..4 {
+            let digit = chars.next()?;
+            if !digit.is_ascii_hexdigit() || digit.is_ascii_lowercase() {
+                return None;
+            }
+            hex.push(digit);
+        }
+        let unit = u16::from_str_radix(&hex, 16).ok()?;
+        units.push(unit);
+    }
+    String::from_utf16(&units).ok()
+}
+
 /// The directory owned by one session.
 pub(crate) fn session_dir(root: &std::path::Path, cwd: Option<&str>, id: &SessionId) -> PathBuf {
     project_dir(root, cwd).join(encode_segment(id.as_str()))
@@ -121,6 +153,18 @@ mod tests {
         assert_eq!(encode_segment("tilde~x"), "tilde~007Ex");
         // Non-BMP: both surrogate halves escape (JS operates on code units).
         assert_eq!(encode_segment("😀"), "~D83D~DE00");
+    }
+
+    #[test]
+    fn decode_segment_round_trips_and_rejects_forges() {
+        for raw in ["plain-id_1.2", ".", "..", "a/b", "a b", "tilde~x", "😀"] {
+            assert_eq!(decode_segment(&encode_segment(raw)).as_deref(), Some(raw));
+        }
+        // 非本编码产出形态：小写十六进制 / 缺位 / 孤立代理 / 空串。
+        assert_eq!(decode_segment("~007e"), None);
+        assert_eq!(decode_segment("~007"), None);
+        assert_eq!(decode_segment("~D83D"), None);
+        assert_eq!(decode_segment(""), None);
     }
 
     #[test]

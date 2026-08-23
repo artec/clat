@@ -1,5 +1,5 @@
 use crate::Project;
-use crate::control_storage::workspace_state::{CasOutcome, WorkspaceSelection};
+use crate::control_storage::workspace::WorkspaceRecord;
 use crate::control_storage::{ControlStorage, sentinel};
 use crate::model::{ModelConfig, ProviderCredentials, ProviderDescriptor};
 use crate::plugin::{Plugin, PluginManager, ScopeKind};
@@ -56,10 +56,10 @@ impl TrustedProjectApplication {
         };
         // 2. Re-classify under the lease (another process may have just
         //    initialized), then run the zero-write session-root preflight
-        //    BEFORE any commit — Fresh initialize and PendingCommit
-        //    completion both happen only after the layout is proven
-        //    (audit P1-01: a failed startup must leave the root
-        //    byte-identical).
+        //    BEFORE any commit — Fresh initialize and the legacy-SQLite
+        //    upgrade (rename-and-preserve) both happen only after the
+        //    layout is proven (audit P1-01: a failed startup must leave
+        //    the root byte-identical).
         let mut status = sentinel::classify(&storage_root);
         let mut fresh_init = false;
         match status {
@@ -72,7 +72,8 @@ impl TrustedProjectApplication {
                 fresh_init = true;
             }
             sentinel::ControlPlaneStatus::Ready { .. } => {}
-            sentinel::ControlPlaneStatus::PendingCommit { .. } => {}
+            sentinel::ControlPlaneStatus::LegacySQLite
+            | sentinel::ControlPlaneStatus::LegacyConfigOnly => {}
             sentinel::ControlPlaneStatus::Unsupported(reason)
             | sentinel::ControlPlaneStatus::Inconsistent(reason) => {
                 return Err(ApplicationError::new(reason));
@@ -81,11 +82,15 @@ impl TrustedProjectApplication {
         let session_root = storage_root.join(sentinel::SESSION_ROOT_NAME);
         crate::session::preflight::check_session_root(&session_root)
             .map_err(|error| ApplicationError::new(error.to_string()))?;
-        // 3. Control-plane commits — only after preflight passed. A
-        //    PendingCommit repair re-runs the classify that just proved the
-        //    database half; the session root above was already validated.
-        if let sentinel::ControlPlaneStatus::PendingCommit { .. } = status {
-            sentinel::complete_pending_commit(&storage_root).map_err(ApplicationError::new)?;
+        // 3. Control-plane commits — only after preflight passed. The
+        //    legacy upgrade renames the v4 SQLite corpse aside and writes
+        //    the new sentinel (zero migration, INV-MP6).
+        if matches!(
+            status,
+            sentinel::ControlPlaneStatus::LegacySQLite
+                | sentinel::ControlPlaneStatus::LegacyConfigOnly
+        ) {
+            sentinel::complete_upgrade(&storage_root).map_err(ApplicationError::new)?;
             status = sentinel::classify(&storage_root);
         }
         match status {
@@ -98,14 +103,15 @@ impl TrustedProjectApplication {
             }
         }
         if fresh_init {
-            sentinel::initialize(&storage_root, Some(project.root()))
-                .map_err(ApplicationError::new)?;
+            sentinel::initialize(&storage_root).map_err(ApplicationError::new)?;
         }
         let control = Arc::new(
             ControlStorage::open_ready(&storage_root)
                 .map_err(|error| ApplicationError::new(error.to_string()))?,
         );
-        if !fresh_init && authorize && !control.is_project_trusted(project.root()) {
+        // 信任提交：Fresh 初始化后信任库为空，授权路径与首次初始化都
+        // 走 add_trust（幂等 upsert）。
+        if (fresh_init || authorize) && !control.is_project_trusted(project.root()) {
             control
                 .add_trust(project.root())
                 .map_err(|error| ApplicationError::new(error.to_string()))?;
@@ -269,8 +275,12 @@ impl TrustedProjectApplication {
             title_worker: None,
             mounted_replay: None,
             subscribers: Arc::new(Mutex::new(Vec::new())),
-            selection: WorkspaceSelection::Fresh,
-            workspace_revision: 0,
+            canonical_root: project
+                .root()
+                .canonicalize()
+                .unwrap_or_else(|_| project.root().to_path_buf()),
+            workspace_id: None,
+            selection: None,
             fresh_session_open: true,
             emitted_request_header: None,
             startup_diagnostic: None,
@@ -284,7 +294,8 @@ impl TrustedProjectApplication {
             #[cfg(test)]
             fail_next_run_spawn: false,
         };
-        // 5. Workspace selection: normalize Materializing, attach Session.
+        // 5. 进入工作区（§4.4）：realpath 命中注册表 → 恢复该工作区自己
+        //    的当前会话；未命中 = 待注册（首条耐久会话落盘时惰性建区）。
         application.load_workspace_selection()?;
         // 会话边界（mount 恢复）之后对齐档位 cell：恢复的会话用自己的
         // fold，Fresh 回落默认——绝不携带上一个进程的任何档位。
@@ -338,53 +349,32 @@ impl TrustedProjectApplication {
         self.set_active_model_profile(Some("Custom"))
     }
 
-    /// Read the workspace pointer and normalize it (plan §13.1):
-    /// Materializing(id) + log exists → Session(id); without a log → Fresh.
-    /// Unresolvable pointers never mutate the control row here — the
-    /// in-memory view falls back and the next successful command replaces.
+    /// 进入工作区并恢复现场（§4.4）：realpath 命中注册表 → 记录内
+    /// `activeSessionId` 是恢复源；未命中 → 待注册（内存 Fresh，零写盘）。
+    /// 不可恢复的指针（日志缺失/损坏）不改控制面——内存回退 Fresh，
+    /// 诊断经 startup_diagnostic 由前端取走；下一次成功命令替换指针
+    /// （与旧世界的语义一致）。
     fn load_workspace_selection(&mut self) -> Result<(), ApplicationError> {
-        let snapshot = self
+        // 挂载期抢救诊断（撕裂残件改名等）一次性并入。
+        let salvage = self.control.take_salvage_diagnostics();
+        let path = self.canonical_root.to_string_lossy().into_owned();
+        let entered: Option<(String, WorkspaceRecord)> = self
             .control
-            .workspace(self.project.root())
+            .enter_workspace(&path)
             .map_err(|error| ApplicationError::new(error.to_string()))?;
-        let (selection, revision) = match snapshot.selection {
-            WorkspaceSelection::Materializing(id) => {
-                let key = self.session_key(&id);
-                let normalized = if self.sessions.has_log(&key) {
-                    WorkspaceSelection::Session(id)
-                } else {
-                    WorkspaceSelection::Fresh
-                };
-                match self.control.workspace_cas(
-                    self.project.root(),
-                    snapshot.revision,
-                    &normalized,
-                ) {
-                    CasOutcome::Committed { revision } => (normalized, revision),
-                    CasOutcome::NotCommitted => {
-                        // Someone moved the row under us; re-read once.
-                        let reloaded = self
-                            .control
-                            .workspace(self.project.root())
-                            .map_err(|error| ApplicationError::new(error.to_string()))?;
-                        (reloaded.selection, reloaded.revision)
-                    }
-                    CasOutcome::Unknown => {
-                        return Err(ApplicationError::new(
-                            "workspace state commit outcome unknown; re-open this project",
-                        ));
-                    }
-                }
-            }
-            selection => (selection, snapshot.revision),
-        };
-        self.workspace_revision = revision;
-        match selection.clone() {
-            WorkspaceSelection::Session(id) => {
+        self.workspace_id = entered.as_ref().map(|(id, _)| id.clone());
+        if !salvage.is_empty() && self.startup_diagnostic.is_none() {
+            self.startup_diagnostic = Some(salvage.join("; "));
+        }
+        let pointer = entered
+            .and_then(|(_, record)| record.active_session_id)
+            .map(SessionId::new);
+        match pointer {
+            Some(id) => {
                 let key = self.session_key(&id);
                 match self.sessions.resume(&key) {
                     Ok(view) => {
-                        self.selection = selection;
+                        self.selection = Some(id.clone());
                         self.fresh_session_open = true;
                         self.emitted_request_header = self.sessions.last_request_header();
                         self.restore_todo_from(&view);
@@ -399,17 +389,21 @@ impl TrustedProjectApplication {
                         // 缺失/损坏：不修控制行，逻辑回退 Fresh；诊断经
                         // startup_diagnostic 由前端在订阅后取走（挂载时
                         // 订阅者列表还为空，广播必然丢失）。
-                        self.selection = WorkspaceSelection::Fresh;
+                        self.selection = None;
                         let _ = self.sessions.quiesce_active();
-                        self.startup_diagnostic = Some(format!(
+                        let diagnostic = format!(
                             "workspace session {id} could not be loaded: {error}; \
                              start fresh with /new or pick another with /resume"
-                        ));
+                        );
+                        self.startup_diagnostic = match self.startup_diagnostic.take() {
+                            Some(existing) => Some(format!("{existing}; {diagnostic}")),
+                            None => Some(diagnostic),
+                        };
                     }
                 }
             }
-            WorkspaceSelection::Fresh | WorkspaceSelection::Materializing(_) => {
-                self.selection = WorkspaceSelection::Fresh;
+            None => {
+                self.selection = None;
             }
         }
         Ok(())
@@ -489,7 +483,9 @@ impl TrustedProjectApplication {
     }
 
     pub(super) fn project_key(&self) -> ProjectKey {
-        let cwd = self.project.root().to_string_lossy().into_owned();
+        // MP-1 §4.4：bucket 从 realpath 规范形正向编码——与 workspace
+        // path 的编码是同一函数（收编反查的正向匹配面）。
+        let cwd = self.canonical_root.to_string_lossy().into_owned();
         ProjectKey::from_cwd(&cwd)
     }
 
@@ -674,43 +670,69 @@ impl TrustedProjectApplication {
         Ok(())
     }
 
-    pub(super) fn cas_selection(
+    /// 持久化当前会话指针（记录内 `activeSessionId` + `global.active*`
+    /// 同步）。未注册 + 置位 = 调用序错误（物化路径先 `ensure_registered`）；
+    /// 未注册 + 清位 = 惰性 no-op（无记录可写）。§4.6：读写全程在同一把
+    /// 控制面互斥内——原 per-project revision CAS 的守护对象由单写者
+    /// 模型结构性覆盖。
+    pub(super) fn persist_selection(
         &mut self,
-        new_selection: WorkspaceSelection,
+        session: Option<&SessionId>,
     ) -> Result<(), ApplicationError> {
-        match self.control.workspace_cas(
-            self.project.root(),
-            self.workspace_revision,
-            &new_selection,
-        ) {
-            CasOutcome::Committed { revision } => {
-                self.workspace_revision = revision;
-                self.selection = new_selection;
-                Ok(())
+        let Some(workspace_id) = self.workspace_id.clone() else {
+            if session.is_some() {
+                return Err(ApplicationError::new(
+                    "internal: session selection before workspace registration",
+                ));
             }
-            CasOutcome::NotCommitted => {
-                let snapshot = self
-                    .control
-                    .workspace(self.project.root())
-                    .map_err(|error| ApplicationError::new(error.to_string()))?;
-                self.workspace_revision = snapshot.revision;
-                Err(ApplicationError::new(
-                    "workspace selection was modified concurrently; retry the command",
-                ))
-            }
-            CasOutcome::Unknown => Err(ApplicationError::new(
-                "workspace selection commit outcome unknown; re-open this project",
-            )),
-        }
+            return Ok(());
+        };
+        self.control
+            .set_workspace_selection(&workspace_id, session.map(|id| id.as_str()))
+            .map_err(|error| ApplicationError::new(error.to_string()))
     }
 
-    /// `/new`：CAS 到 Fresh 后发布空内存态。懒会话——首条 prompt 前
-    /// 什么都不落盘、也不起 writer（plan §13.1）。两阶段（审计
-    /// P1-08）：CAS 失败时旧会话原样保留；CAS 成功后旧会话的清理失败
-    /// 也不会让指针与内存分叉（Fresh + 无活动会话是自洽状态）。
+    /// 惰性建区（§4.4-2）：首条耐久会话落盘/恢复旧会话时注册工作区。
+    /// 收编清单 = `list_sessions`（bucket 扫描 + header cwd 证词），按
+    /// （创建时间, id）确定性排序——旧世界遗留会话原位入账。
+    pub(super) fn ensure_registered(&mut self) -> Result<(), ApplicationError> {
+        if self.workspace_id.is_some() {
+            return Ok(());
+        }
+        let summaries = self.list_sessions()?;
+        let mut ids: Vec<(String, i64)> = summaries
+            .iter()
+            .map(|summary| (summary.id.as_str().to_owned(), summary.created_at_ms))
+            .collect();
+        ids.sort();
+        let path = self.canonical_root.to_string_lossy().into_owned();
+        let title = self
+            .canonical_root
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.clone());
+        let workspace_id = self
+            .control
+            .register_workspace(
+                &path,
+                &title,
+                &ids.into_iter().map(|(id, _)| id).collect::<Vec<_>>(),
+            )
+            .map_err(|error| ApplicationError::new(error.to_string()))?;
+        // 注册即刷新该工作区的投影缓存（收编清单就是列表行）。
+        let _ = self.control.update_projcache(&workspace_id, &summaries);
+        self.workspace_id = Some(workspace_id);
+        Ok(())
+    }
+
+    /// `/new`：指针持久化到 Fresh 后发布空内存态。懒会话——首条
+    /// prompt 前什么都不落盘、也不起 writer。两阶段（审计 P1-08）：
+    /// 指针写失败时旧会话原样保留；指针写成功后旧会话的清理失败也不
+    /// 会让指针与内存分叉（Fresh + 无活动会话是自洽状态）。
     pub fn new_session(&mut self) -> Result<(), ApplicationError> {
         self.reject_session_switch_while_busy()?;
-        self.cas_selection(WorkspaceSelection::Fresh)?;
+        self.persist_selection(None)?;
+        self.selection = None;
         let quiesce = self.sessions.quiesce_active().map_err(session_error);
         self.fresh_session_open = true;
         self.emitted_request_header = None;
@@ -727,9 +749,47 @@ impl TrustedProjectApplication {
     }
 
     pub fn list_sessions(&self) -> Result<Vec<SessionSummary>, ApplicationError> {
-        self.sessions
+        let summaries = self
+            .sessions
             .list_sessions(&self.project_key())
-            .map_err(session_error)
+            .map_err(session_error)?;
+        // 投影缓存顺势刷新（纯缓存，best-effort——事实源在会话日志）。
+        if let Some(workspace_id) = &self.workspace_id {
+            let _ = self.control.update_projcache(workspace_id, &summaries);
+        }
+        Ok(summaries)
+    }
+
+    /// 工作区枚举（MP-1 §5：多项目地基 API——v1 无 UI 消费方，
+    /// PWA/桌面端面板立项时消费）。
+    pub fn workspaces(&self) -> Result<Vec<WorkspaceInfo>, ApplicationError> {
+        Ok(self
+            .control
+            .workspace_infos()
+            .into_iter()
+            .map(|(id, record)| WorkspaceInfo {
+                id,
+                path: record.path,
+                title: record.title,
+                session_ids: record.session_ids,
+                active_session_id: record.active_session_id,
+            })
+            .collect())
+    }
+
+    /// `global.activeWorkspaceId` 指向的工作区（恢复现场读；可能不是
+    /// 本进程当前的工作区——全局现场与当前进程位置是两个概念）。
+    pub fn active_workspace(&self) -> Result<Option<WorkspaceInfo>, ApplicationError> {
+        Ok(self
+            .control
+            .active_workspace()
+            .map(|(id, record)| WorkspaceInfo {
+                id,
+                path: record.path,
+                title: record.title,
+                session_ids: record.session_ids,
+                active_session_id: record.active_session_id,
+            }))
     }
 
     /// `/resume`：两阶段可回滚切换（审计 P1-08）。
@@ -741,8 +801,9 @@ impl TrustedProjectApplication {
     ///    A missing, corrupt, or capability-unsupported target fails HERE,
     ///    leaving the workspace pointer and the in-memory session
     ///    untouched.
-    /// 2. **Commit** the workspace pointer (CAS). NotCommitted/Unknown
-    ///    abort with the old session still active.
+    /// 2. **Commit** the workspace pointer (register the workspace first
+    ///    if this is its first durable session). A failed write aborts
+    ///    with the old session still active.
     /// 3. **Swap**: quiesce the old session, then perform an infallible
     ///    in-memory install and release the withheld resume seed.
     pub fn switch_session(&mut self, id: SessionId) -> Result<SessionSnapshot, ApplicationError> {
@@ -778,8 +839,18 @@ impl TrustedProjectApplication {
         // workspace pointer. A lost CAS closes this empty, unpublished
         // writer and leaves the old active session untouched.
         let armed = self.sessions.arm_session(staged).map_err(session_error)?;
-        // Phase 2: commit the pointer.
-        if let Err(commit_error) = self.cas_selection(WorkspaceSelection::Session(id.clone())) {
+        // Phase 2: commit the pointer (first durable activation in an
+        // unregistered workspace also registers it — the target session
+        // is by definition adopting-ready).
+        let commit = self.ensure_registered().and_then(|()| {
+            if let Some(workspace_id) = self.workspace_id.clone() {
+                self.control
+                    .append_session_to_workspace(&workspace_id, id.as_str())
+                    .map_err(|error| ApplicationError::new(error.to_string()))?;
+            }
+            self.persist_selection(Some(&id))
+        });
+        if let Err(commit_error) = commit {
             return match self.sessions.discard_armed(armed) {
                 Ok(()) => Err(commit_error),
                 Err(close_error) => Err(ApplicationError::new(format!(
@@ -787,6 +858,7 @@ impl TrustedProjectApplication {
                 ))),
             };
         }
+        self.selection = Some(id.clone());
         // Phase 3: swap. A quiesce failure after the committed pointer is
         // reported, but the already-armed target still installs so control
         // and memory do not diverge.

@@ -563,9 +563,14 @@ See [WASM plugins](wasm.md) for the authoring side.
 Session facts live in append-only DSH-compatible JSONL logs (zstd-framed)
 under `~/.clat/sessions/<project>/<session-id>/session.jsonl.zstd` — one
 authoritative log per session, replayed through projections on open.
-`~/.clat/clat.db` keeps only control-plane state (model configuration,
-profiles, trusted projects, the per-project "current session" pointer);
-`~/.clat/config.json` is the control-plane version sentinel.
+Control-plane state is a small JSON file family beside them:
+`~/.clat/settings.json` (model configuration, profiles),
+`~/.clat/credentials.json` (remembered per-vendor API keys),
+`~/.clat/trust.json` (trusted projects), and
+`~/.clat/storages/workspace.json` — a multi-project workspace registry
+that remembers each project's current session, so reopening a project
+restores its own conversation. `~/.clat/config.json` is the control-plane
+version sentinel.
 
 One CLAT process at a time holds the storage root (a kernel-level lease);
 a second process exits with a clear error until the first one closes.
@@ -576,8 +581,11 @@ prompt, and a session with no content never appears on disk. Input recall
 
 ### Upgrading across the storage rewrite
 
-Pre-0.6 storage (SQLite `sessions`/`messages` tables) is **not migrated**:
-CLAT refuses to start with instructions to remove the old files, because
-only pre-release builds ever wrote them. Deleting `~/.clat/config.json`,
-`~/.clat/clat.db`, and `~/.clat/sessions/` (keep `mcp.json`) starts fresh;
-old conversations cannot be carried over.
+Older control-plane formats are **not migrated**. A v0.4–v0.8 SQLite
+`clat.db` is renamed aside automatically (`clat.db.bak-<date>`, kept —
+never deleted) the first time the new build mounts, and the control plane
+starts fresh: approve trust once per project and re-enter the model
+config once. Conversations survive untouched — they live in the session
+logs, and each project re-adopts its sessions when reopened
+(`/resume` lists them). Pre-0.6 storage (SQLite `sessions`/`messages`
+tables) is refused with removal instructions instead.

@@ -4,9 +4,14 @@ CLAT creates:
 
 ```text
 ~/.clat/
-├── config.json      # control-plane version sentinel (Ready commit marker)
-├── clat.db          # control plane: model state, profiles, trust, workspace pointers
+├── config.json      # control-plane version sentinel (the only Fresh-commit file)
+├── settings.json    # model state, named profiles, active-profile pointer (0600)
+├── credentials.json # per-vendor remembered API keys (0600)
+├── trust.json       # project trust decisions (canonical path → trustedAt)
 ├── mcp.json         (optional, user-managed MCP server definitions)
+├── storages/
+│   ├── workspace.json          # multi-workspace registry (DSH-isomorphic)
+│   └── session_projcache.json  # session-list projection cache (pure cache)
 └── sessions/        # DSH-compatible session logs (zstd-framed JSONL)
     └── --<project-key>--/<session-id>/session.jsonl.zstd
 ```
@@ -48,61 +53,102 @@ events are skipped.
 Sessions materialize lazily: `/new` writes nothing until the first prompt
 reaches the journal. Input recall comes from the transcript projection.
 
-## Control plane (`clat.db`)
+## Control plane (the `~/.clat/` JSON family)
 
-| Table | Content |
-|---|---|
-| `clat_storage_meta` | control schema version + init id, matched against `config.json` |
-| `model_state` | model configuration and provider-neutral credentials |
-| `model_profiles` | named configuration snapshots + the active pointer |
-| `trusted_projects` | directories the user has explicitly trusted |
-| `project_workspace_state` | per-project current-session pointer (Fresh / Materializing / Session) with a revision for compare-and-set |
+The control plane is a small family of JSON files, each wrapped in a
+`unit` header (`{"name": …, "version": …}`) that gates loading
+fail-closed: a file carrying a different unit version is refused, never
+guess-read (no-migration policy — a version mismatch is an anomaly, not
+a compatibility case).
 
-No session content, titles, or surface state is stored here.
+| File | Content | Identity |
+|---|---|---|
+| `config.json` | the five-field version sentinel (control format v5) | publish marker |
+| `settings.json` | model state + named profiles + the active-profile pointer | fact (salvage on tear) |
+| `credentials.json` | per-vendor remembered API keys (INV-VK1..3) | fact (salvage on tear) |
+| `trust.json` | canonical project path → trust timestamp | fact (salvage on tear) |
+| `storages/workspace.json` | the multi-workspace registry | tables are facts; `global`/`sessionIds` are projections |
+| `storages/session_projcache.json` | session-list rows for fast listing | pure cache (silently rebuilt) |
 
-The `model_profiles` active pointer always names the row the single-slot
-state was installed from: profile activation sets it, the upgrade
-migration adopts the migrated profile, and any direct save (a preset
-switch, the classic editor, or a `Shift+Tab` thinking change) clears it
-— so the `●` in `/model` never claims a profile the running
-configuration no longer matches.
+**Fact/projection split (the load-bearing wall).** A torn *fact* file is
+never silently rebuilt: the remnant is renamed to
+`<name>.torn-<date>`, a fresh empty state starts, and a mount diagnostic
+says so loudly — workspace identity loss is unacceptable, so the remnant
+stays for human salvage (sessions themselves re-adopt from their logs).
+A torn or stale *projection* rebuilds from the fact source quietly: the
+sessions directory always wins. On every mount the registry is
+reconciled against it: session ids whose logs vanished are pruned
+(order-preserving), unregistered sessions in a workspace's bucket are
+adopted at the tail (deterministic order, header cwd must match the
+workspace path), and `global.workspaceIds` is synced with the table
+keys. Array order is display order — repair never reorders.
+
+`storages/workspace.json` is field-for-field isomorphic to DSH's
+(`unit{name:"workspace",version:2}` / `global` / `tables.workspaces`
+with camelCase `path`/`title`/`sessionIds`/`createdAt`/`updatedAt`);
+reading a real DSH file needs zero adaptation. Two deliberate CLAT
+extensions ride along as additive fields: a per-workspace
+`activeSessionId` (each project remembers its own current session —
+switching between projects restores each one independently) and
+`global.activeWorkspaceId`/`activeSessionId` (the restore-scene
+groundwork for future desktop/PWA panels). CLAT never writes DSH's
+storages. `path` is stamped as the `fs.realpath` canonical form, and
+the session bucket derives from the same spelling by forward encoding.
+
+The `settings.json` active-profile pointer keeps its B9 semantics: it
+always names the row the single-slot state was installed from — profile
+activation sets it, and any direct save (a preset switch, the classic
+editor, or a `Shift+Tab` thinking change) clears it, so the `●` in
+`/model` never claims a profile the running configuration no longer
+matches. Vendor key memory lives in `credentials.json` (0600), no longer
+as `vendor:` rows inside the profile table; profile names still reject
+the reserved prefix.
+
+All control-plane writes go through capability handles
+(`cap-std`) with tmp+rename+fsync discipline and 0600 permissions; a
+failed write rolls the in-memory state back so memory and disk never
+diverge. One writer at a time: the kernel-level storage-root lease
+covers processes, a facade-level mutex covers threads — the old
+per-project revision CAS is structurally subsumed and gone.
 
 ## Startup state machine
 
-Bootstrap performs a **zero-write** preflight: `config.json` and `clat.db`
-are classified against the sentinel matrix (Fresh / PendingCommit / Ready /
-Unsupported / Inconsistent). Old pre-release layouts — a `version: 3`
-config, or a database with `sessions`/`messages`/`message_items`/
-`input_history` tables — are refused with removal instructions; there is
-no migration and no legacy reader.
+Bootstrap performs a **zero-write** preflight, classifying `config.json`
+plus the presence of the legacy database and new-family files into
+Fresh / LegacySQLite / LegacyConfigOnly / Ready / Unsupported /
+Inconsistent.
 
 `authorize_and_mount` is the only path that persists trust: it acquires a
 kernel-level storage-root lease (`flock` on Unix, taken on the deepest
 existing ancestor directory with no lock files; a named mutex keyed by
 the root's canonical identity on Windows — either way the kernel
 releases it when the process dies), validates the session-root layout
-read-only, commits the control plane (temp DB + no-clobber link publish
-+ config sentinel), and mounts the Trusted Project scope holding the
-lease for its lifetime. One CLAT process owns the storage root at a
-time; a second process fails fast with a clear error.
+read-only, then commits: a Fresh root publishes exactly one file (the
+sentinel — everything else is born lazily), and a legacy v4 root has its
+`clat.db` (plus `-wal`/`-shm` sidecars) renamed to
+`clat.db.bak-<date>` before the new sentinel is written. **Zero
+migration, zero deletion**: the old database is preserved byte-for-byte
+as a corpse; the new control plane starts empty (re-approve trust once,
+re-enter the model config once), while session logs — the fact source —
+survive untouched and are adopted into the new registry as each project
+is opened. An interrupted upgrade (db renamed, sentinel still v4)
+re-runs idempotently.
 
 The session-root preflight is a **strict full walk** (root → project
 bucket → session directory → log file): any symlink anywhere on the path,
 a regular file where a directory belongs, an unreadable directory, an
 unknown entry (except a regular `.DS_Store`), or any mix of
 `session.jsonl` and `session.jsonl.zstd` anywhere in the same session root
-is a hard rejection — before any control-plane commit, Fresh
-or PendingCommit alike. The same SessionId in different project buckets
-is legal; every listing instead verifies that the physical bucket,
-encoded id directory, and Header cwd/id are one consistent SessionKey.
-The database half of a PendingCommit is additionally verified against
-this build's complete schema-object DDL (including indexes, views, and
-triggers), not just its table names.
+is a hard rejection — before any control-plane commit, Fresh or upgrade
+alike. The same SessionId in different project buckets is legal; every
+listing instead verifies that the physical bucket, encoded id directory,
+and Header cwd/id are one consistent SessionKey.
 
-Crash windows are covered by the state matrix: a database published
-without its config re-runs the read-only preflight and idempotently
-completes the config; a workspace pointer stuck in `Materializing` is
-normalized to `Session` (log exists) or `Fresh` (it does not) on mount.
+Crash windows are covered by the fact/projection split rather than a
+state matrix: a first durable batch that landed without its registry
+update is adopted by mount-time reconciliation; a workspace pointer
+naming a session that cannot load falls back to Fresh in memory with a
+diagnostic, and the next successful command replaces it.
 
 ## Run-time persistence
 
@@ -135,14 +181,16 @@ Session switching is two-phase: the target is first staged read-only
 (admission + cold restore), then armed but kept unpublished while pending
 torn-tail recovery, projection catch-up, and view construction finish.
 Only after those fallible operations succeed is the workspace pointer
-CASed; the old session then quiesces and the in-memory target swap releases
+persisted (registering the workspace first if this is its first durable
+session); the old session then quiesces and the in-memory target swap releases
 the withheld resume seed without another fallible storage step — install
 first performs a best-effort flush so the seed is durable before it
 returns (a read barrier: a mount-time full-log stream must not mistake
 our own seed for a foreign writer; a failed flush stays on the normal
 retry lane and install remains infallible). A missing,
-corrupt, or unsupported target fails before the pointer moves. A lost CAS
-race leaves the old session untouched and closes the unpublished writer;
+corrupt, or unsupported target fails before the pointer moves. A failed
+pointer persistence leaves the old session untouched and closes the
+unpublished writer;
 an idempotent repair already completed while arming may remain, but no
 resume seed or selection change is published. Detaching a session flushes, checkpoints, and
 **joins** its writer thread — session switching does not leak threads

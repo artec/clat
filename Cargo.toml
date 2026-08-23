@@ -40,7 +40,6 @@ ctrlc = "3"
 crossterm = "0.29"
 minisign-verify = "0.2.5"
 ratatui = "0.30.2"
-rusqlite = { version = "0.40.1", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 # preserve_order keeps json!-built payloads in insertion order, matching
 # DSH's JSON.stringify field order for byte-level wire compat.

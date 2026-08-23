@@ -1,7 +1,7 @@
 use super::trusted::glm_mcp_pack_from_control;
 use super::*;
 use crate::RunEvent;
-use crate::control_storage::workspace_state::CasOutcome;
+use crate::control_storage::ControlStorage;
 use crate::event::EventSink;
 use crate::model::ModelConfig;
 use crate::permission::PermissionApprover;
@@ -14,6 +14,16 @@ use crate::test_support::{
 use serde_json::json;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
+
+/// 探查某项目路径的持久化当前会话指针（workspace.json 记录内
+/// `activeSessionId`；None = Fresh/未注册）。
+fn persisted_pointer(
+    storage_root: &std::path::Path,
+    project_root: &std::path::Path,
+) -> Option<String> {
+    let control = ControlStorage::open_ready(storage_root).expect("open ready");
+    control.workspace_pointer(&crate::control_storage::sentinel::project_key(project_root))
+}
 
 #[test]
 fn trusted_application_is_send() {
@@ -565,12 +575,12 @@ fn authorize_and_mount_initializes_fresh_storage_and_rejects_old_state() {
     std::fs::create_dir_all(&project_root).unwrap();
     let project = Project::new(&project_root);
 
-    // Fresh → authorize → trust row + sentinel config.
+    // Fresh → authorize → trust 行 + 哨兵（MP-1：Fresh 只写 config.json，
+    // 其余文件惰性诞生）。
     {
         let application = mount(&project, &storage_root, TestBehavior::Success);
         assert!(storage_root.join("config.json").exists());
-        assert!(storage_root.join("clat.db").exists());
-        assert!(storage_root.join("sessions").exists() || true);
+        assert!(storage_root.join("trust.json").exists());
         application.close().unwrap();
     }
     // Reopen without authorization: already trusted.
@@ -592,7 +602,10 @@ fn authorize_and_mount_initializes_fresh_storage_and_rejects_old_state() {
     let error = BootstrapApplication::open(Project::new(&old_project_root), old_root.clone())
         .err()
         .expect("old config must be rejected");
-    assert!(error.to_string().contains("pre-release"), "{error}");
+    assert!(
+        error.to_string().contains("unsupported or unreadable"),
+        "{error}"
+    );
     let after = std::fs::read_to_string(old_root.join("config.json")).unwrap();
     assert_eq!(before, after, "rejection must not touch the old state");
 
@@ -2548,46 +2561,320 @@ fn new_run_resume_exit_reopen_user_sequence() {
     std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
 }
 
+/// INV-MP5（事实赢 + 保序修复）：会话物化后、投影写盘前崩溃的等价
+/// 注入——手工把 id 从 sessionIds 剔除。重挂载后对账收编它；指针
+/// 完好时恢复现场照常。取代旧 Materializing 归一化测试（该状态已被
+/// 事实/投影二分结构性取代）。
 #[test]
-fn materializing_selection_normalizes_on_mount() {
-    let (storage_root, project_root) = roots("cutover-materializing");
+fn mount_reconciles_a_session_that_missed_the_ledger_write() {
+    let (storage_root, project_root) = roots("mp1-reconcile");
     std::fs::create_dir_all(&project_root).unwrap();
     let project = Project::new(&project_root);
     let mut application = mount(&project, &storage_root, TestBehavior::Success);
     configure_test_model(&application);
-    run(&mut application, "materialize me").unwrap();
-    let id = application.current_session_id().unwrap();
+    run(&mut application, "first session").unwrap();
+    let first = application.current_session_id().unwrap();
     application.close().unwrap();
 
-    // 手工把 workspace 置为 Materializing(id)（模拟最终 CAS 前崩溃）：
-    // 日志已物化 → 挂载时归一化为 Session(id)。
-    {
-        let control = ControlStorage::open_ready(&storage_root).unwrap();
-        let snapshot = control.workspace(project.root()).expect("workspace");
-        control.workspace_cas(
-            project.root(),
-            snapshot.revision,
-            &WorkspaceSelection::Materializing(id.clone()),
-        );
-    }
+    // 注入漂移：sessionIds 少记了 first（崩溃窗口等价物）。
+    remove_session_from_ledger(&storage_root, &project_root, &first);
     let application = mount(&project, &storage_root, TestBehavior::Success);
-    assert_eq!(application.current_session_id(), Some(id));
-    application.close().unwrap();
-
-    // Materializing(不存在 id)：无日志 → Fresh。
-    {
-        let control = ControlStorage::open_ready(&storage_root).unwrap();
-        let snapshot = control.workspace(project.root()).expect("workspace");
-        control.workspace_cas(
-            project.root(),
-            snapshot.revision,
-            &WorkspaceSelection::Materializing(SessionId::new("missing-id")),
-        );
-    }
-    let application = mount(&project, &storage_root, TestBehavior::Success);
-    assert!(application.current_session_id().is_none());
+    // 指针仍指 first：恢复现场照常命中。
+    assert_eq!(application.current_session_id(), Some(first.clone()));
+    // 账本已被对账修复（目录赢）。
+    let workspaces = application.workspaces().unwrap();
+    let ledger = workspaces
+        .iter()
+        .find(|workspace| {
+            workspace.path == crate::control_storage::sentinel::project_key(&project_root)
+        })
+        .expect("the workspace")
+        .session_ids
+        .clone();
+    assert!(ledger.iter().any(|id| id == first.as_str()), "{ledger:?}");
     application.close().unwrap();
     std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
+}
+
+/// 直接改写 workspace.json：从 sessionIds 中剔除一个 id（漂移注入）。
+fn remove_session_from_ledger(
+    storage_root: &std::path::Path,
+    project_root: &std::path::Path,
+    session: &SessionId,
+) {
+    let path = storage_root.join("storages").join("workspace.json");
+    let mut value: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let key = crate::control_storage::sentinel::project_key(project_root);
+    let record = value["tables"]["workspaces"]
+        .as_object_mut()
+        .unwrap()
+        .values_mut()
+        .find(|record| record["path"] == serde_json::json!(key))
+        .expect("the workspace record");
+    record["sessionIds"] = json!(
+        record["sessionIds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|id| id.as_str() != Some(session.as_str()))
+            .collect::<Vec<_>>()
+    );
+    std::fs::write(&path, serde_json::to_string_pretty(&value).unwrap()).unwrap();
+}
+
+/// MP-1 验收 §9-7 + 负责人拍板（每工作区各记各的）：A/B/A 交替使用时，
+/// 重开 A 恢复 A 自己的上次会话（全局指针下会回到空白——本腿是
+/// 该决策的判别锚）。同一存储根、两个项目、顺序挂载。
+#[test]
+fn alternating_projects_each_restore_their_own_session() {
+    let (storage_root, project_a) = roots("mp1-aba-a");
+    let (root_b, project_b) = roots("mp1-aba-b");
+    std::fs::create_dir_all(&project_a).unwrap();
+    std::fs::create_dir_all(&project_b).unwrap();
+    // 两个项目共用 A 的存储根（B 自己的临时存储根弃用）。
+    let project_a_handle = Project::new(&project_a);
+    let project_b_handle = Project::new(&project_b);
+
+    let mut application = mount(&project_a_handle, &storage_root, TestBehavior::Success);
+    configure_test_model(&application);
+    run(&mut application, "session in A").unwrap();
+    let session_a = application.current_session_id().unwrap();
+    application.close().unwrap();
+
+    let mut application = mount(&project_b_handle, &storage_root, TestBehavior::Success);
+    run(&mut application, "session in B").unwrap();
+    let session_b = application.current_session_id().unwrap();
+    assert_ne!(session_a, session_b);
+    application.close().unwrap();
+
+    // 回到 A：恢复 A 自己的会话（不是 B 的，也不是空白）。
+    let application = mount(&project_a_handle, &storage_root, TestBehavior::Success);
+    assert_eq!(
+        application.current_session_id(),
+        Some(session_a.clone()),
+        "A/B/A 交替：每工作区指针独立（负责人拍板 2026-08-23）"
+    );
+    // 多项目地基 API：两个工作区都在册，全局现场指向当前进程的 B 交互
+    // 之后……第三次挂载 enter A 已把 active 指向 A。
+    let workspaces = application.workspaces().unwrap();
+    assert_eq!(workspaces.len(), 2);
+    let active = application.active_workspace().unwrap().expect("active");
+    assert_eq!(
+        active.path,
+        crate::control_storage::sentinel::project_key(&project_a)
+    );
+    assert_eq!(
+        active.active_session_id.as_deref(),
+        Some(session_a.as_str())
+    );
+    application.close().unwrap();
+    std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
+    std::fs::remove_dir_all(root_b.parent().unwrap()).ok();
+}
+
+/// MP-1 §4.4 两腿：首次进入 = 惰性建区（首条耐久会话落盘时注册，
+/// title 取目录名）；二次进入 = 命中定位（不重复建区）。未物化前
+/// （仅 /new）零写盘。
+#[test]
+fn first_entry_registers_lazily_and_second_entry_hits() {
+    let (storage_root, project_root) = roots("mp1-lazy-register");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let project = Project::new(&project_root);
+
+    let mut application = mount(&project, &storage_root, TestBehavior::Success);
+    // 仅挂载 + /new：无工作区注册（storages/workspace.json 不存在）。
+    application.new_session().unwrap();
+    assert!(application.workspaces().unwrap().is_empty());
+    assert!(
+        !storage_root
+            .join("storages")
+            .join("workspace.json")
+            .exists()
+    );
+    // 首条耐久会话落盘 → 建区（title = 目录名）。
+    configure_test_model(&application);
+    run(&mut application, "materialize").unwrap();
+    let id = application.current_session_id().unwrap();
+    let workspaces = application.workspaces().unwrap();
+    assert_eq!(workspaces.len(), 1);
+    assert_eq!(
+        workspaces[0].title,
+        project_root.file_name().unwrap().to_string_lossy(),
+        "title 取目录名（开放问题①默认）"
+    );
+    assert_eq!(workspaces[0].session_ids, vec![id.as_str().to_owned()]);
+    application.close().unwrap();
+
+    // 二次进入：命中既有工作区（同 id，不重复建区）。
+    let application = mount(&project, &storage_root, TestBehavior::Success);
+    assert_eq!(application.current_session_id(), Some(id));
+    assert_eq!(application.workspaces().unwrap().len(), 1);
+    application.close().unwrap();
+    std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
+}
+
+/// MP-1 §4.5 + INV-MP6：v4 旧库（clat.db）在场 → 挂载走升级路径：
+/// 旧库改名保尸（字节原样）、新控制面诞生、既有会话（事实源）被
+/// 收编进新注册表。
+#[test]
+fn legacy_sqlite_control_plane_is_upgraded_and_sessions_survive() {
+    let (storage_root, project_root) = roots("mp1-legacy-upgrade");
+    std::fs::create_dir_all(&project_root).unwrap();
+    std::fs::create_dir_all(&storage_root).unwrap();
+    let project = Project::new(&project_root);
+    // 旧世界尸体 + 一个既有会话日志（事实源不动）。
+    std::fs::write(storage_root.join("clat.db"), b"legacy sqlite bytes").unwrap();
+    let legacy_id = SessionId::new("session-legacy-survivor");
+    let canonical = crate::control_storage::sentinel::project_key(&project_root);
+    let legacy_dir = storage_root
+        .join(crate::control_storage::sentinel::SESSION_ROOT_NAME)
+        .join(crate::session::path_layout::project_key(&canonical))
+        .join(crate::session::path_layout::encode_segment(
+            legacy_id.as_str(),
+        ));
+    std::fs::create_dir_all(&legacy_dir).unwrap();
+    {
+        use std::io::Write as _;
+        let header = crate::session::header::SessionHeader::new(
+            legacy_id.clone(),
+            Some(canonical.clone()),
+            1_700_000_000_000,
+        );
+        let mut line = header.to_line();
+        line.push('\n');
+        let mut buffer = Vec::new();
+        let mut encoder = zstd::stream::Encoder::new(&mut buffer, 3).unwrap();
+        encoder.write_all(line.as_bytes()).unwrap();
+        encoder.finish().unwrap();
+        std::fs::write(legacy_dir.join("session.jsonl.zstd"), buffer).unwrap();
+    }
+
+    let mut application = mount(&project, &storage_root, TestBehavior::Success);
+    // 保尸 + 新控制面。
+    let corpse = std::fs::read_dir(&storage_root)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .find(|name| name.starts_with("clat.db.bak-"))
+        .expect("the corpse is preserved");
+    assert_eq!(
+        std::fs::read(storage_root.join(&corpse)).unwrap(),
+        b"legacy sqlite bytes"
+    );
+    assert!(!storage_root.join("clat.db").exists());
+    assert!(storage_root.join("config.json").exists());
+    // 事实源收编：旧会话出现在 /resume 列表（零迁移下唯一幸存面）。
+    let sessions = application.list_sessions().unwrap();
+    assert!(
+        sessions.iter().any(|summary| summary.id == legacy_id),
+        "{sessions:?}"
+    );
+    // 恢复旧会话 = 首次耐久激活 → 注册工作区并收编。
+    application.switch_session(legacy_id.clone()).unwrap();
+    let workspaces = application.workspaces().unwrap();
+    assert_eq!(workspaces.len(), 1);
+    assert!(
+        workspaces[0]
+            .session_ids
+            .iter()
+            .any(|id| id == legacy_id.as_str())
+    );
+    application.close().unwrap();
+    std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
+}
+
+/// INV-MP3 原子写三腿（控制面级）：settings 撕裂 → 拒载进抢救路径
+///（残件保留 + 空态 + 诊断）；projcache 撕裂 → 静默重建；workspace
+/// 撕裂 → 抢救 + 残件保留。版本错位（INV-MP6）→ fail-closed 拒载。
+#[test]
+fn torn_control_files_are_salvaged_and_version_gates_fail_closed() {
+    let root = std::env::temp_dir().join(format!(
+        "clat-torn-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    crate::control_storage::sentinel::initialize(&root).expect("initialize");
+
+    // —— 腿 1：settings.json 撕裂 → 抢救（残件 + 空态 + 诊断）。——
+    std::fs::write(root.join("settings.json"), "{\"unit\": {\"name\": \"sett").unwrap();
+    let storage = ControlStorage::open_ready(&root).expect("salvage opens");
+    let diagnostics = storage.take_salvage_diagnostics();
+    assert!(
+        diagnostics
+            .iter()
+            .any(|line| line.contains("settings.json") && line.contains("torn")),
+        "{diagnostics:?}"
+    );
+    let torn_remnant = std::fs::read_dir(&root)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .find(|name| name.starts_with("settings.json.torn-"))
+        .expect("the torn remnant is preserved");
+    assert!(torn_remnant.starts_with("settings.json.torn-"));
+    assert!(
+        storage.load_model_state().unwrap().is_none(),
+        "fresh empty state"
+    );
+    drop(storage);
+
+    // —— 腿 2：版本错位 → fail-closed（拒载，不抢救）。——
+    std::fs::write(
+        root.join("trust.json"),
+        serde_json::json!({"unit": {"name": "trust", "version": 99}, "projects": {}}).to_string(),
+    )
+    .unwrap();
+    let error = match ControlStorage::open_ready(&root) {
+        Ok(_) => panic!("version mismatch must fail closed"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("trust.json"), "{error}");
+    assert!(error.to_string().contains("unit trust v99"), "{error}");
+    std::fs::remove_file(root.join("trust.json")).unwrap();
+
+    // —— 腿 3：workspace.json 撕裂 → 抢救 + 残件保留（tables 是事实，
+    // 丢失响亮上报，会话由收编自愈）。——
+    std::fs::create_dir_all(root.join("storages")).unwrap();
+    std::fs::write(
+        root.join("storages").join("workspace.json"),
+        "{\"unit\": {\"name\": \"workspace\", \"versi",
+    )
+    .unwrap();
+    let storage = ControlStorage::open_ready(&root).expect("salvage opens");
+    let diagnostics = storage.take_salvage_diagnostics();
+    assert!(
+        diagnostics
+            .iter()
+            .any(|line| line.contains("workspace.json") && line.contains("torn")),
+        "{diagnostics:?}"
+    );
+    assert!(storage.workspace_infos().is_empty());
+    assert!(
+        std::fs::read_dir(root.join("storages"))
+            .unwrap()
+            .any(|entry| entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("workspace.json.torn-"))
+    );
+    drop(storage);
+
+    // —— 腿 4：projcache 撕裂 → 静默重建（纯缓存，无诊断无残件）。——
+    std::fs::write(
+        root.join("storages").join("session_projcache.json"),
+        "]{not json",
+    )
+    .unwrap();
+    let storage = ControlStorage::open_ready(&root).expect("projcache rebuild opens");
+    assert!(
+        storage.take_salvage_diagnostics().is_empty(),
+        "silent rebuild"
+    );
+    drop(storage);
+    crate::test_support::cleanup_tree(&root);
 }
 
 #[test]
@@ -2669,7 +2956,9 @@ fn switching_to_a_corrupt_session_leaves_the_pointer_and_active_session_intact()
     let corrupt_dir = storage_root
         .join("sessions")
         .join(crate::session::path_layout::project_key(
-            &project_root.to_string_lossy(),
+            // MP-1：bucket 从 realpath 规范形正向编码（macOS 临时目录
+            // 是符号链接路径，raw 拼写与 canonical 不同）。
+            &crate::control_storage::sentinel::project_key(&project_root),
         ))
         .join(crate::session::path_layout::encode_segment(
             corrupt_id.as_str(),
@@ -2682,15 +2971,11 @@ fn switching_to_a_corrupt_session_leaves_the_pointer_and_active_session_intact()
         .switch_session(corrupt_id.clone())
         .expect_err("switching to a corrupt session must fail at the stage phase");
     assert!(error.to_string().contains("corrupt session log"), "{error}");
-    {
-        let control = ControlStorage::open_ready(&storage_root).unwrap();
-        let snapshot = control.workspace(project.root()).expect("workspace");
-        assert_eq!(
-            snapshot.selection,
-            WorkspaceSelection::Session(anchor.clone()),
-            "the pointer never moved to the corrupt target"
-        );
-    }
+    assert_eq!(
+        persisted_pointer(&storage_root, &project_root).as_deref(),
+        Some(anchor.as_str()),
+        "the pointer never moved to the corrupt target"
+    );
     assert_eq!(
         application.current_session_id(),
         Some(anchor.clone()),
@@ -2703,10 +2988,13 @@ fn switching_to_a_corrupt_session_leaves_the_pointer_and_active_session_intact()
     std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
 }
 
-/// 审计 P1-08：/new 的 CAS 被并发移动失败时，旧会话不被销毁。
+/// 审计 P1-08（MP-1 重述）：/new 的指针持久化失败时，旧会话不被销毁。
+/// 原 CAS 竞态腿随 revision CAS 一起结构性消失（单写者互斥，设计
+/// §4.6）；判别锚改为投影写失败注入（storages/ 只读，Unix）。
 #[test]
-fn new_session_cas_failure_keeps_the_old_session() {
-    let (storage_root, project_root) = roots("audit-new-cas");
+#[cfg(unix)]
+fn new_session_write_failure_keeps_the_old_session() {
+    let (storage_root, project_root) = roots("audit-new-write");
     std::fs::create_dir_all(&project_root).unwrap();
     let project = Project::new(&project_root);
     let mut application = mount(&project, &storage_root, TestBehavior::Success);
@@ -2714,40 +3002,32 @@ fn new_session_cas_failure_keeps_the_old_session() {
     run(&mut application, "anchor session").unwrap();
     let anchor = application.current_session_id().unwrap();
 
-    // Move the workspace row behind the application's back: its next
-    // CAS (against the stale in-memory revision) must fail as
-    // NotCommitted.
-    {
-        let control = ControlStorage::open_ready(&storage_root).unwrap();
-        let snapshot = control.workspace(project.root()).unwrap();
-        match control.workspace_cas(
-            project.root(),
-            snapshot.revision,
-            &WorkspaceSelection::Session(anchor.clone()),
-        ) {
-            CasOutcome::Committed { .. } => {}
-            other => panic!("external revision bump failed: {other:?}"),
-        }
-    }
+    use std::os::unix::fs::PermissionsExt as _;
+    let storages = storage_root.join("storages");
+    std::fs::set_permissions(&storages, std::fs::Permissions::from_mode(0o500)).unwrap();
     let error = application
         .new_session()
-        .expect_err("stale-revision CAS must fail");
-    assert!(error.to_string().contains("concurrently"), "{error}");
+        .expect_err("the pointer write must fail on a read-only storages dir");
+    std::fs::set_permissions(&storages, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(error.to_string().contains("workspace.json"), "{error}");
     assert_eq!(
         application.current_session_id(),
         Some(anchor),
         "the old session survived the failed /new"
     );
+    // 内存/磁盘不分叉（落盘失败回滚）：恢复可写后 /new 成功。
+    application.new_session().unwrap();
+    assert_eq!(application.current_session_id(), None);
     application.close().unwrap();
     std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
 }
 
-/// 复核 R5：重新选择当前已活动的会话必须是无条件 no-op——不
-/// stage、不 arm 第二个同会话 writer、连 CAS 都不发生（双 writer
-/// 会打开同一日志的双写窗口）。外部把 workspace revision 移走后，
-/// 对活动 id 的切换仍须成功并返回现场 transcript。
+/// 复核 R5（MP-1 重述）：重新选择当前已活动的会话必须是无条件
+/// no-op——不 stage、不 arm 第二个同会话 writer、不发生任何持久化
+/// 写（双 writer 会打开同一日志的双写窗口）。指针写失败注入下对
+/// 活动 id 的切换仍须成功并返回现场 transcript。
 #[test]
-fn switching_to_the_already_active_session_is_a_cas_free_no_op() {
+fn switching_to_the_already_active_session_never_stages_a_second_writer() {
     let (storage_root, project_root) = roots("recheck-switch-active");
     std::fs::create_dir_all(&project_root).unwrap();
     let project = Project::new(&project_root);
@@ -2756,20 +3036,24 @@ fn switching_to_the_already_active_session_is_a_cas_free_no_op() {
     run(&mut application, "anchor session").unwrap();
     let anchor = application.current_session_id().unwrap();
 
-    // Stale the application's in-memory revision: any CAS a switch might
-    // attempt must now fail, so a successful re-select proves the switch
-    // committed nothing.
+    // 任何持久化写都会失败（Unix 注入；Windows 腿退化为只验证
+    // no-op 语义本身）。成功重选 = 提交路径零触碰。
+    #[cfg(unix)]
     {
-        let control = ControlStorage::open_ready(&storage_root).unwrap();
-        let snapshot = control.workspace(project.root()).unwrap();
-        match control.workspace_cas(
-            project.root(),
-            snapshot.revision,
-            &WorkspaceSelection::Session(anchor.clone()),
-        ) {
-            CasOutcome::Committed { .. } => {}
-            other => panic!("external revision bump failed: {other:?}"),
-        }
+        use std::os::unix::fs::PermissionsExt as _;
+        let storages = storage_root.join("storages");
+        std::fs::set_permissions(&storages, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let snapshot = application
+            .switch_session(anchor.clone())
+            .expect("re-selecting the active session must not commit anything");
+        std::fs::set_permissions(&storages, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(
+            snapshot
+                .transcript
+                .iter()
+                .any(|line| line.text.contains("anchor session")),
+            "the snapshot reflects the live transcript"
+        );
     }
 
     let snapshot = application
@@ -2885,11 +3169,14 @@ fn request_header_appends_once_and_only_again_on_change() {
     std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
 }
 
-/// /resume CAS 失败必须显式关闭 unpublished armed target：
-/// 既不泄漏 writer，也不得把扣留的 resume seed 写入目标日志。
+/// /resume 的提交失败（指针持久化写盘失败）必须显式关闭 unpublished
+/// armed target：既不泄漏 writer，也不得把扣留的 resume seed 写入目标
+/// 日志。原 CAS 竞态腿随 revision CAS 一起结构性消失；判别锚改为
+/// 投影写失败注入（storages/ 只读，Unix）。
 #[test]
-fn resume_cas_failure_drops_the_staged_target_without_leaking_a_writer() {
-    let (storage_root, project_root) = roots("audit-resume-cas");
+#[cfg(unix)]
+fn resume_commit_failure_drops_the_staged_target_without_leaking_a_writer() {
+    let (storage_root, project_root) = roots("audit-resume-commit");
     std::fs::create_dir_all(&project_root).unwrap();
     let project = Project::new(&project_root);
     let mut application = mount(&project, &storage_root, TestBehavior::Success);
@@ -2901,7 +3188,9 @@ fn resume_cas_failure_drops_the_staged_target_without_leaking_a_writer() {
     let second = application.current_session_id().unwrap();
     assert_ne!(first, second);
     let first_key = SessionKey {
-        project: ProjectKey::from_cwd(&project.root().to_string_lossy()),
+        project: ProjectKey::from_cwd(&crate::control_storage::sentinel::project_key(
+            &project_root,
+        )),
         id: first.clone(),
     };
     let first_log = crate::session::persistence::JsonlBackend::new(
@@ -2917,25 +3206,16 @@ fn resume_cas_failure_drops_the_staged_target_without_leaking_a_writer() {
         .filter(|event| event.event_type == "session/end-seed")
         .count();
 
-    // Stale the application's workspace revision behind its back: the
-    // CAS inside switch_session (AFTER staging) must fail.
-    {
-        let control = ControlStorage::open_ready(&storage_root).unwrap();
-        let snapshot = control.workspace(project.root()).unwrap();
-        match control.workspace_cas(
-            project.root(),
-            snapshot.revision,
-            &WorkspaceSelection::Session(second.clone()),
-        ) {
-            CasOutcome::Committed { .. } => {}
-            other => panic!("external revision bump failed: {other:?}"),
-        }
-    }
+    // 指针写盘失败注入（staging 完成之后）。
+    use std::os::unix::fs::PermissionsExt as _;
+    let storages = storage_root.join("storages");
+    std::fs::set_permissions(&storages, std::fs::Permissions::from_mode(0o500)).unwrap();
     let baseline = crate::session::write_behind::live_writers_for_test();
     let error = application
         .switch_session(first.clone())
-        .expect_err("stale-revision CAS must fail");
-    assert!(error.to_string().contains("concurrently"), "{error}");
+        .expect_err("the pointer write must fail on a read-only storages dir");
+    std::fs::set_permissions(&storages, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(error.to_string().contains("workspace.json"), "{error}");
     assert_eq!(application.current_session_id(), Some(second));
     let seeds_after = first_log
         .inspect(&first_key)
@@ -2946,7 +3226,7 @@ fn resume_cas_failure_drops_the_staged_target_without_leaking_a_writer() {
         .count();
     assert_eq!(
         seeds_after, seeds_before,
-        "a lost CAS closes the armed target without publishing its seed"
+        "a failed commit closes the armed target without publishing its seed"
     );
     // 30s 容忍窗口（并行套件里别家测试的 writer 会有瞬时存活）：
     // 真泄漏永不满足，瞬时 +1 在间隙处穿过。5s 窗口在慢 CI 上被
@@ -2966,22 +3246,18 @@ fn resume_cas_failure_drops_the_staged_target_without_leaking_a_writer() {
     std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
 }
 
-/// 审计 P1-01：PendingCommit 状态 + 非法 session root → 挂载失败时
-/// config.json 不存在、存储根字节不变（补写 config 发生在 preflight
-/// 通过之后）。
+/// 审计 P1-01（MP-1 重述）：非法 session root + 需要提交的控制面
+/// （Fresh 或旧库升级）→ 挂载失败时 config.json 不存在、旧库原样
+/// （提交发生在 preflight 通过之后——零写纪律）。原 PendingCommit
+/// 状态已死（单文件哨兵无两写窗口），Fresh 与 LegacySQLite 两腿接棒。
 #[test]
-fn pending_commit_with_an_invalid_session_root_publishes_no_config() {
-    let (storage_root, project_root) = roots("audit-pending-preflight");
+fn commit_over_an_invalid_session_root_publishes_nothing() {
+    let (storage_root, project_root) = roots("audit-commit-preflight");
     std::fs::create_dir_all(&project_root).unwrap();
+    std::fs::create_dir_all(&storage_root).unwrap();
     let project = Project::new(&project_root);
-
-    // Initialize cleanly, then simulate the crash between the db and
-    // config publishes by removing config.json.
-    {
-        let application = mount(&project, &storage_root, TestBehavior::Success);
-        let _ = application;
-    }
-    std::fs::remove_file(storage_root.join("config.json")).unwrap();
+    // 旧库在场：升级（改名保尸 + 新哨兵）同样必须等 preflight 通过。
+    std::fs::write(storage_root.join("clat.db"), b"legacy sqlite bytes").unwrap();
     // An invalid session root: a bucket that is a symlink pointing out
     //（unix 逃逸攻击）；Windows 上 symlink 需要特权，以「bucket 不是
     // 目录」的 NotADirectory 形态攻击同一不变量（preflight 两种都拒）。
@@ -3012,11 +3288,12 @@ fn pending_commit_with_an_invalid_session_root_publishes_no_config() {
     );
     assert!(
         !storage_root.join("config.json").exists(),
-        "PendingCommit repair must not publish config over an invalid session root"
+        "the upgrade must not publish the sentinel over an invalid session root"
     );
-    assert!(
-        storage_root.join("clat.db").exists(),
-        "the database half of the PendingCommit is untouched"
+    assert_eq!(
+        std::fs::read(storage_root.join("clat.db")).unwrap(),
+        b"legacy sqlite bytes",
+        "the legacy database is untouched (no rename before preflight)"
     );
     std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
 }
@@ -3038,14 +3315,10 @@ fn switching_to_a_missing_session_errors_without_touching_the_pointer() {
         .expect_err("switching to a missing session must fail");
     assert!(error.to_string().contains("no-such-session"), "{error}");
     // 指针未被污染：仍是 anchor。
-    {
-        let control = ControlStorage::open_ready(&storage_root).unwrap();
-        let snapshot = control.workspace(project.root()).expect("workspace");
-        assert_eq!(
-            snapshot.selection,
-            WorkspaceSelection::Session(anchor.clone())
-        );
-    }
+    assert_eq!(
+        persisted_pointer(&storage_root, &project_root).as_deref(),
+        Some(anchor.as_str())
+    );
     // 原会话仍是活动会话。
     assert_eq!(application.current_session_id(), Some(anchor));
     application.close().unwrap();

@@ -1,5 +1,4 @@
 use crate::CancelToken;
-use crate::control_storage::workspace_state::WorkspaceSelection;
 use crate::event::{EventSink, RunEvent};
 use crate::model::Usage;
 use crate::permission::PermissionApprover;
@@ -33,40 +32,31 @@ impl TrustedProjectApplication {
         self.start_run_with_catalog(request, catalog)
     }
 
-    /// The durable prelude of a run (plan §13.1): ensure the selection is
-    /// Session(id) with a live writer, then atomically append
-    /// `turn/start` + `user/message` and flush — the model is only called
-    /// after all three CAS/append steps committed.
+    /// The durable prelude of a run: ensure a session with a live writer,
+    /// then atomically append `turn/start` + `user/message` and flush —
+    /// the model is only called after the durable batch committed. For a
+    /// fresh session the fact lands FIRST (MP-1 §4.3); workspace
+    /// registration and the selection pointer follow as projections, so a
+    /// crash between them is healed by mount-time reconciliation.
     fn prepare_run(
         &mut self,
         prompt: &str,
         attachments: &[std::path::PathBuf],
     ) -> Result<PreparedRun, ApplicationError> {
-        let mut materialized = false;
+        let mut materialized: Option<SessionId> = None;
         match self.selection.clone() {
-            WorkspaceSelection::Fresh => {
-                // `new_session` no longer self-quiesces (the /new flow CASes
-                // first); the run path detaches whatever is still active.
+            None => {
+                // `new_session` no longer self-quiesces (the /new flow
+                // persists the pointer first); the run path detaches
+                // whatever is still active.
                 self.sessions.quiesce_active().map_err(session_error)?;
                 let summary = self
                     .sessions
                     .new_session(&self.project_key())
                     .map_err(session_error)?;
-                self.cas_selection(WorkspaceSelection::Materializing(summary.id.clone()))?;
-                materialized = true;
+                materialized = Some(summary.id);
             }
-            WorkspaceSelection::Materializing(id) => {
-                // Normalized at mount; if it reappears here the row moved.
-                let key = self.session_key(&id);
-                let normalized = if self.sessions.has_log(&key) {
-                    WorkspaceSelection::Session(id)
-                } else {
-                    WorkspaceSelection::Fresh
-                };
-                self.cas_selection(normalized)?;
-                return self.prepare_run(prompt, attachments);
-            }
-            WorkspaceSelection::Session(id) => {
+            Some(id) => {
                 if self.sessions.active_id().as_ref() != Some(&id) {
                     // Mounted but not attached (e.g. after a failed load):
                     // attach now or fail loudly.
@@ -106,7 +96,7 @@ impl TrustedProjectApplication {
         // 对应物即出生事件排在首个 turn 之前（PS2）——回放从第一条
         // 事件起就有确定的档位。Classic（exec）不落此事件（PS4）。
         let mut first_batch = Vec::new();
-        if materialized && self.permission_modes_enabled {
+        if materialized.is_some() && self.permission_modes_enabled {
             first_batch.push(NewSessionEvent::new(
                 "sandbox/mode",
                 payloads::sandbox_mode(&self.permission_mode()),
@@ -129,9 +119,17 @@ impl TrustedProjectApplication {
         journal
             .flush()
             .map_err(|error| ApplicationError::new(format!("session flush failed: {error}")))?;
-        // Final selection commit before the model call.
-        if let WorkspaceSelection::Materializing(materializing) = self.selection.clone() {
-            self.cas_selection(WorkspaceSelection::Session(materializing))?;
+        // 事实已耐久：投影随后（注册工作区 + 账本 + 指针）。两者之间的
+        // 崩溃由挂载期对账收编自愈（会话日志永远赢）。
+        if let Some(id) = materialized {
+            self.ensure_registered()?;
+            if let Some(workspace_id) = self.workspace_id.clone() {
+                self.control
+                    .append_session_to_workspace(&workspace_id, id.as_str())
+                    .map_err(|error| ApplicationError::new(error.to_string()))?;
+            }
+            self.selection = Some(id.clone());
+            self.persist_selection(Some(&id))?;
         }
         let history_nodes = self.sessions.surface_nodes().map_err(session_error)?;
         let mut history: Vec<crate::model::ModelItem> =

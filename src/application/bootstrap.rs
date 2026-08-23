@@ -69,7 +69,7 @@ impl BootstrapApplication {
     }
 
     /// Read-only trust check through the sentinel path — no writable
-    /// connection is ever opened here.
+    /// file is ever created here.
     pub fn is_trusted(&self) -> Result<bool, ApplicationError> {
         match sentinel::classify(&self.storage_root) {
             sentinel::ControlPlaneStatus::Fresh => Ok(false),
@@ -77,10 +77,8 @@ impl BootstrapApplication {
                 sentinel::is_trusted_read_only(&self.storage_root, self.project.root())
                     .map_err(ApplicationError::new)
             }
-            sentinel::ControlPlaneStatus::PendingCommit { .. } => {
-                sentinel::is_trusted_read_only(&self.storage_root, self.project.root())
-                    .map_err(ApplicationError::new)
-            }
+            // LegacySQLite / LegacyConfigOnly: 新世界信任库尚未诞生，
+            // 一律未信任（authorize_and_mount 走升级 + add_trust）。
             _ => Ok(false),
         }
     }

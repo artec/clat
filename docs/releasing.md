@@ -79,4 +79,5 @@ Linux policy: the runners are pinned to GitHub's lowest supported generation,
 not `-latest`. Raising the baseline is a deliberate, documented decision that
 happens only when the pinned runner is retired — never as silent drift of the
 runner label. Users on older distributions can build from source: the tree
-bundles SQLite and uses rustls, so a Rust toolchain is the only requirement.
+is pure Rust (rustls, no SQLite since the v0.9 control-plane rewrite), so a
+Rust toolchain is the only requirement.

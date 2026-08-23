@@ -1,15 +1,14 @@
 //! UI-independent application facade and explicit plugin-scope lifecycle.
 //!
-//! Storage cutover (plan §16 stage 5): session facts live exclusively in
-//! the DSH JSONL logs behind `SessionService`; the SQLite control plane
-//! (`ControlStorage`) keeps only model state, profiles, trust, and the
-//! per-project workspace selection. Bootstrap is a zero-write preflight;
-//! `authorize_and_mount` owns the storage-root lease for the whole
-//! Trusted Project lifetime.
+//! Storage cutover (MP-1): session facts live exclusively in the DSH JSONL
+//! logs behind `SessionService`; the control plane is the `~/.clat/` JSON
+//! file family (`ControlStorage`) — model settings, credentials, trust,
+//! and the multi-workspace registry with per-workspace current-session
+//! pointers. Bootstrap is a zero-write preflight; `authorize_and_mount`
+//! owns the storage-root lease for the whole Trusted Project lifetime.
 
 use crate::Project;
 use crate::control_storage::ControlStorage;
-use crate::control_storage::workspace_state::WorkspaceSelection;
 use crate::plugin::PluginManager;
 use crate::plugins::services::{
     ConfigStore, HistoryCompactor, McpStatus, MonitorService, ProviderRegistry, SessionTitler,
@@ -20,6 +19,7 @@ use crate::session::root_lease::StorageRootLease;
 use crate::session::use_cases::SessionService;
 use serde_json::Value;
 use std::fmt;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, mpsc};
 
 mod bootstrap;
@@ -34,7 +34,7 @@ mod trusted;
 
 pub use bootstrap::{BootstrapApplication, ProjectAuthorization};
 pub use compaction::{CompactHandle, CompactReport};
-pub use dto::{McpServerInfoDto, McpStatusDto, ProjectSnapshot, SessionSnapshot};
+pub use dto::{McpServerInfoDto, McpStatusDto, ProjectSnapshot, SessionSnapshot, WorkspaceInfo};
 pub use run_lifecycle::{
     ApplicationRunDone, ApplicationRunFailure, ApplicationRunRequest, ApplicationRunResult,
     RenameOutcome, RunHandle, SteerOutcome,
@@ -133,9 +133,15 @@ pub struct TrustedProjectApplication {
         crate::session::use_cases::UsageStats,
     )>,
     subscribers: Arc<Mutex<Vec<mpsc::Sender<ApplicationEvent>>>>,
-    /// The workspace selection mirror (control DB is authoritative).
-    selection: WorkspaceSelection,
-    workspace_revision: i64,
+    /// 当前工作区（MP-1）：realpath 规范形——workspace 身份、会话 bucket
+    /// （project_key 正向编码）与信任键的统一推导源。
+    canonical_root: PathBuf,
+    /// 当前工作区在注册表里的 id（None = 尚未注册——首条耐久会话落盘
+    /// 或恢复旧会话时惰性注册）。
+    workspace_id: Option<String>,
+    /// The current-session selection mirror (the workspace record's
+    /// `activeSessionId` is authoritative; None = Fresh).
+    selection: Option<SessionId>,
     /// No run has dispatched in the current session within this process
     /// (mount/switch//new set it): the first dispatch appends
     /// `request/header` with `initial` (nothing journaled yet) or

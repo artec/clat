@@ -22,7 +22,7 @@ be read without opening the files.
 | `plugin_host.rs` | host bridge for external leaf plugins (sampling / elicitation) |
 | `mcp.rs` + `mcp/` | MCP protocol stack: `transport` (framing) + `client` (session, handshake, tool adapter) |
 | `session/` | DSH-compatible session journal stack |
-| `control_storage/` | control plane (`clat.db`, sentinel, workspace state) |
+| `control_storage/` | control plane: `~/.clat/` JSON file family (settings/credentials/trust, sentinel, DSH-isomorphic workspace registry + projcache) |
 | `command.rs` | slash-command domain (`core.commands`) |
 | `tui.rs` + `tui/` | terminal frontend (entry `run()`, `App`, keys/actions/render/dialogs/widgets) |
 | `exec.rs` / `demo.rs` / `serve.rs` + `serve/` | headless one-shot / deterministic offline / local HTTP+SSE frontends (`clat serve`: loopback RPC + SSE event stream, PWA-2 design doc) |
@@ -295,12 +295,13 @@ The trust gate is part of the startup state machine, not a UI overlay:
 
 ```text
 BootstrapApplication::open            (zero-write preflight; no plugin scope)
-├── classifies config.json + clat.db against the sentinel matrix
+├── classifies config.json + legacy clat.db presence against the sentinel matrix
 ├── read-only trust lookup
 └── untrusted: no Session/Config/Tool/Provider service,
                no project reads, MCP, monitor, or model request
        │ authorize_and_mount(ProjectAuthorization)   ── the only trust write
        │   storage-root lease → session-root preflight → control commit
+       │   (Fresh: sentinel only; legacy clat.db: rename-and-preserve upgrade)
        ▼
 TrustedProjectApplication
 ├── mounts the Trusted Project catalog once (holds the root lease)
