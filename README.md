@@ -63,7 +63,8 @@ the URL. The same binary serves the responsive three-panel PWA.
 - **Sessions** — crash-resilient, append-only, DSH-compatible journals under
   `~/.clat`, with local replay and per-project resume state.
 - **Extensions** — MCP over stdio or Streamable HTTP, sandboxed WebAssembly
-  components, and an adapter for DSH leaf plugins.
+  components, and a static Cordis compatibility adapter for portable DSH
+  plugin capabilities.
 - **Client-neutral core** — the TUI, headless runner, local server, and future
   clients consume the same Application facade and event vocabulary.
 
@@ -105,7 +106,7 @@ Start with the document that matches your task:
 | Understand approvals, modes, and path boundaries | [Permissions](docs/permissions.md) |
 | Configure MCP servers | [MCP integration](docs/mcp.md) |
 | Install or author a WASM component | [WASM plugins](docs/wasm.md) |
-| Port a DSH leaf plugin | [DSH plugin porting guide](docs/dsh-plugins.md) |
+| Port a DSH/Cordis plugin | [DSH plugin compatibility guide](docs/dsh-plugins.md) |
 | Understand core boundaries and lifecycle | [Architecture](docs/architecture.md) |
 | Understand provider adapters and retry behavior | [Providers](docs/providers.md) |
 | Understand files, journals, and recovery | [Persistent state](docs/storage.md) |

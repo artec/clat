@@ -2482,6 +2482,14 @@ mod tests {
         for expected in ["echo", "sample_roundtrip", "ask_roundtrip"] {
             assert!(names.contains(&expected), "tools: {names:?}");
         }
+        let prompts = server.list_system_prompts().expect("system prompts");
+        assert_eq!(prompts.len(), 1);
+        let mut prompt_arguments = std::collections::BTreeMap::new();
+        prompt_arguments.insert("cwd".to_owned(), "/tmp/project".to_owned());
+        let prompt = server
+            .get_system_prompt(&prompts[0], &prompt_arguments)
+            .expect("resolve DSH system prompt");
+        assert_eq!(prompt, "Demo plugin is active in /tmp/project.");
 
         let cancel = CancelToken::new();
         let echo = server

@@ -2,9 +2,9 @@
 
 English | [中文](README.zh.md)
 
-Serve an existing
-[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) leaf plugin
-as an MCP stdio server for
+Serve the portable capabilities of an existing
+[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) plugin as
+an MCP stdio server for
 [CLAT](https://github.com/artec/clat) or any MCP host—without modifying the
 plugin itself.
 
@@ -13,10 +13,11 @@ JavaScript runtime; to the end user, the result is an ordinary MCP server.
 
 ## Is this adapter a fit?
 
-Good fits are pure algorithms and wrappers around search, SaaS, database, or
-other external APIs. Plugins that depend directly on host sessions, agents,
-subagents, filesystem/shell seams, or UI services are host-spine plugins and
-must be redesigned as leaf tools first.
+Good fits contribute tools, system-prompt material, model sampling, user
+questions, web providers, local services, or Cordis events/effects. Plugins
+that depend directly on host sessions, agents, subagents, filesystem/shell
+seams, permissions, or UI services still need corresponding native CLAT host
+services or must be split at that boundary.
 
 For the complete compatibility matrix and migration guidance, read the
 [porting guide](https://github.com/artec/clat/blob/main/docs/dsh-plugins.md).
@@ -79,9 +80,10 @@ stdout is protocol-only. Use `ctx.logger` or `console.error` for diagnostics.
 
 ## API
 
-`serveClat(plugin, options)` accepts the plugin export object or a bare
-`apply` function. MCP initialization waits for `apply()` to settle. If it
-throws, the adapter shuts down before rejecting startup.
+`serveClat(plugin, options)` accepts the plugin export object, a bare `apply`
+function, or a static `class Foo extends Service` plugin. MCP initialization
+waits for startup to settle. If it throws, the adapter shuts down before
+rejecting startup.
 
 | Option | Type | Purpose |
 |---|---|---|
@@ -99,16 +101,30 @@ throws, the adapter shuts down before rejecting startup.
 | `ctx.llm.stream(...)` | `sampling/createMessage` using the host model, permission gate, spend budget, and usage ledger |
 | `ctx.userQuestions.ask(...)` | `elicitation/create`; fields are asked sequentially |
 | `ctx.web.registerSearchProvider(...)` | built-in `web_search` with multi-query merge, URL deduplication, and bounded results |
-| `ctx.web.registerFetchProvider(...)` | registration accepted; no `web_fetch` tool in v0 |
-| `ctx.get(key)` | always `undefined` |
+| `ctx.web.registerFetchProvider(...)` | built-in, bounded `web_fetch` |
+| `ctx.systemPrompt` | sections, contexts, ordering, complete sections, variables, tool providers, change events, and assembly waterfall |
+| `ctx.get/set/provide`, `ctx.reflect.provide` | process-local service registration and disposal |
+| `ctx.on/once`, `emit/parallel/serial/bail/waterfall` | process-local Cordis dispatch semantics |
 | `launchEnvironmentOf(ctx)` | falls back to `process.env` for plugin environment lookup |
-| `ctx.effect`, `ctx.logger` | in-process LIFO cleanup and stderr logging |
+| `ctx.effect`, callable `ctx.logger(name)` | direct/promise/generator cleanup in reverse order; stderr logging |
+| `class Foo extends Service` | constructor, `initHooks`, `Service.init`, and yielded cleanup |
 | exported `Config` | startup validation before `apply` |
 
-Static spine-service `inject` declarations, runtime direct spine access, and
-class plugins (`extends Service`) fail startup with a migration hint. Optional
-runtime `ctx.inject(deps, callback)` follows the DSH "not mounted" contract:
-the callback is skipped with a stderr note and the plugin keeps running.
+Static `inject` declarations succeed for adapter/local services and fail with
+a precise diagnostic for missing host-spine services. Runtime
+`ctx.inject(deps, callback)` runs immediately when all services exist and
+returns an awaitable/disposable static Fiber-shaped handle; otherwise it
+follows the DSH "not mounted" contract and skips the callback.
+This is a static single-scope Cordis subset: it does not emulate hot reload,
+scope chains, isolate/intercept filtering, or dependency-driven restart.
+Function/object `apply()` results and Service lifecycle results may be direct,
+promised, or sync/async-generator cleanups; the adapter owns all of them.
+
+System-prompt contributions are exposed through a marked MCP prompt. CLAT
+imports only that marked prompt, passes the real project directory as `cwd`,
+and freezes imported prompts with tools before the first run. Runtime-context
+text remains MCP metadata because CLAT does not yet have DSH's user-role
+context-snapshot registry.
 
 ## Tool hints
 
@@ -135,6 +151,10 @@ permission policy.
 - `multiSelect` questions become comma-separated text.
 - One ask contains at most 16 questions and 16 options per question.
 - `exec.deferContext()` and `exec.concludeTurn()` are warning + no-op seams.
+- `web_fetch` caps rendered content at 100,000 characters and does not reproduce
+  DSH's complete HTML-to-Markdown pipeline.
+- Agent/session/fs/shell/permission/settings/commands/UI services and scoped
+  prompt shadowing remain native-host responsibilities.
 
 Host `notifications/cancelled` and adapter shutdown abort the active
 `tools/call` signal and pending sampling/elicitation promises. Plugin work must
@@ -145,7 +165,8 @@ observe `exec.signal` to stop cooperatively.
 The adapter is an MCP stdio process running arbitrary plugin code, not a WASM
 capability sandbox. Under CLAT it inherits the host process environment and the
 operating-system account's filesystem, process, and network authority. CLAT
-sets an MCP subprocess's cwd to `~/.clat`, but that is not isolation.
+sets an MCP subprocess's cwd to `~/.clat`; the real project root is passed
+only as the controlled prompt argument `cwd`. Neither measure is isolation.
 
 `toolHints` affect pre-call approval classification only. They cannot restrict
 what the process can do outside a tool handler. Review the plugin as an
@@ -168,8 +189,8 @@ artifact, so end users install no JavaScript environment.
 
 - Author runtime: Node.js 22.19 or newer.
 - Adapter runtime dependencies: zero.
-- API target: `dsh-v0.1.0-rc.7`, verified equivalent on rc.8 and rechecked
-  against the plugin surface of `0.1.1-rc.1`.
+- API target: `dsh-v0.1.1-rc.2`, source revision
+  `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`.
 - Acceptance fixture: the npm-published
   `@deepseek-ai/dsh-web-search-exa` mounts unmodified under
   [`examples/exa`](https://github.com/artec/clat/tree/main/sdk/dsh-adapter/examples/exa).

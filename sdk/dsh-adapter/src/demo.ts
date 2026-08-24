@@ -1,5 +1,5 @@
 /**
- * Demo leaf plugin (the Phase 2 `probe` equivalent): three tools exercising
+ * Demo DSH plugin (the Phase 2 `probe` equivalent): three tools exercising
  * the pure path, the sampling bridge, and the elicitation bridge including
  * the multi-select degradation. Definitions are hand-rolled in the compiled
  * shape `defineTool()` produces — real authors use defineTool from
@@ -34,6 +34,11 @@ function textTool(tool: {
 export const demoPlugin: DshPluginLike = {
   name: 'demo',
   apply(ctx: DshContext): void {
+    ctx.systemPrompt.section({
+      name: 'demo:guidance',
+      order: 100,
+      text: 'Demo plugin is active in {{cwd}}.',
+    })
     ctx.tools.register(textTool({
       name: 'echo',
       description: 'Echo text back, repeated `times` times (1-8, default 1).',

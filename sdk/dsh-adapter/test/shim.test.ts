@@ -5,7 +5,7 @@ import test from 'node:test'
 import { AdapterError } from '../src/errors.js'
 import { Shim } from '../src/shim.js'
 import type { HostChannel, SamplingParams, ElicitationParams } from '../src/shim.js'
-import type { ToolDefinitionLike } from '../src/types.js'
+import type { DshContext, ToolDefinitionLike } from '../src/types.js'
 
 interface HostScript {
   samplingResult?: unknown
@@ -91,7 +91,7 @@ test('INV-D3: unsupported ctx services fail loudly; get/then pass through', () =
   })
 })
 
-test('ctx.inject follows host "not mounted" semantics: callback skipped, noted, plugin survives', () => {
+test('ctx.inject follows host "not mounted" semantics: callback skipped, noted, plugin survives', async () => {
   // 回归锁（2026-08-21，dsh-free-search 实测）：dsh-settings 的
   // installSettingsSection 契约是"settings 服务未挂载 → 注册不生效、
   // 插件照常工作"。适配器此前不提供 ctx.inject，属性访问即抛，
@@ -106,19 +106,45 @@ test('ctx.inject follows host "not mounted" semantics: callback skipped, noted, 
   const shim = new Shim(host, 'p')
   const ctx = shim.buildContext()
   let ran = false
-  ctx.inject(['settings'], () => {
+  const skipped = ctx.inject(['settings'], () => {
     ran = true
   })
   assert.equal(ran, false, '未挂载服务的回调不得执行')
   assert.equal(notes.length, 1)
   assert.match(notes[0]!, /settings/)
   assert.match(notes[0]!, /skipped/)
+  const skippedFiber = await skipped
+  await skippedFiber.dispose()
   // 单依赖（非数组）形式同样适用
   ctx.inject('settings', () => {
     ran = true
   })
   assert.equal(ran, false)
   assert.equal(notes.length, 2)
+})
+
+test('ctx.get and ctx.inject expose mounted adapter services and own async callback effects', async () => {
+  const shim = new Shim(fakeHost(), 'p')
+  const ctx = shim.buildContext()
+  assert.equal(ctx.get('systemPrompt'), ctx.systemPrompt)
+  assert.equal(ctx.get('tools'), ctx.tools)
+  let injected: DshContext | undefined
+  const order: string[] = []
+  const mounted = ctx.inject(['tools', 'systemPrompt'], async candidate => {
+    injected = candidate
+    await Promise.resolve()
+    candidate.tools.register(echoTool('injected'))
+    candidate.effect(() => () => order.push('inner-cleanup'))
+    return () => order.push('returned-cleanup')
+  })
+  const fiber = await mounted
+  assert.equal(injected, ctx)
+  assert(shim.listTools().some(tool => tool.name === 'injected'))
+  await fiber.dispose()
+  assert(!shim.listTools().some(tool => tool.name === 'injected'))
+  assert.deepEqual(order, ['returned-cleanup', 'inner-cleanup'])
+  await shim.disposeAll()
+  assert.deepEqual(order, ['returned-cleanup', 'inner-cleanup'])
 })
 
 test('effect: setup immediate, cleanups LIFO, per-effect disposer removes', async () => {
@@ -132,12 +158,59 @@ test('effect: setup immediate, cleanups LIFO, per-effect disposer removes', asyn
   ctx.effect(function* () {
     order.push('setup-b')
     yield [() => order.push('cleanup-b1'), () => order.push('cleanup-b2')]
+    yield () => order.push('cleanup-b3')
   })
   assert.deepEqual(order, ['setup-a', 'setup-b'], 'setup runs eagerly')
   await disposeA()
   assert.deepEqual(order, ['setup-a', 'setup-b', 'cleanup-a'], 'per-effect disposer runs only its own cleanup')
   await shim.disposeAll()
-  assert.deepEqual(order, ['setup-a', 'setup-b', 'cleanup-a', 'cleanup-b1', 'cleanup-b2'], 'disposeAll pops effects LIFO; a yielded array runs in array order')
+  assert.deepEqual(order, ['setup-a', 'setup-b', 'cleanup-a', 'cleanup-b3', 'cleanup-b2', 'cleanup-b1'], 'disposeAll pops effects LIFO and every yielded cleanup runs in reverse registration order')
+})
+
+test('effect accepts direct cleanup, promised cleanup, and async generators', async () => {
+  const order: string[] = []
+  const shim = new Shim(fakeHost(), 'p')
+  const ctx = shim.buildContext()
+  ctx.effect(() => {
+    order.push('direct:setup')
+    return () => order.push('direct:cleanup')
+  })
+  ctx.effect(async () => {
+    order.push('promise:setup')
+    return () => order.push('promise:cleanup')
+  })
+  ctx.effect(async function* () {
+    order.push('generator:setup')
+    yield () => order.push('generator:cleanup-1')
+    yield () => order.push('generator:cleanup-2')
+  })
+  await shim.disposeAll()
+  assert.deepEqual(order, [
+    'direct:setup',
+    'promise:setup',
+    'generator:setup',
+    'generator:cleanup-2',
+    'generator:cleanup-1',
+    'promise:cleanup',
+    'direct:cleanup',
+  ])
+})
+
+test('async effect disposer is awaitable and yields a callable disposer', async () => {
+  const order: string[] = []
+  const shim = new Shim(fakeHost(), 'p')
+  const ctx = shim.buildContext()
+  const registered = ctx.effect(async function* () {
+    await Promise.resolve()
+    order.push('setup')
+    yield () => order.push('cleanup')
+  })
+  const dispose = await (registered as unknown as PromiseLike<() => Promise<void>>)
+  assert.deepEqual(order, ['setup'])
+  await dispose()
+  assert.deepEqual(order, ['setup', 'cleanup'])
+  await shim.disposeAll()
+  assert.deepEqual(order, ['setup', 'cleanup'])
 })
 
 test('disposeAll: later registrations fail closed', async () => {
@@ -194,8 +267,8 @@ test('W1-06: one failing cleanup never truncates the teardown', async () => {
     'setup-a',
     'setup-b',
     'setup-c',
-    'cleanup-c1',
     'cleanup-c3',
+    'cleanup-c1',
     'cleanup-b',
     'cleanup-a',
   ], 'every cleanup step runs LIFO despite failures')
@@ -206,8 +279,8 @@ test('W1-06: one failing cleanup never truncates the teardown', async () => {
     'setup-a',
     'setup-b',
     'setup-c',
-    'cleanup-c1',
     'cleanup-c3',
+    'cleanup-c1',
     'cleanup-b',
     'cleanup-a',
   ])

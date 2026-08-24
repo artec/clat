@@ -1,8 +1,7 @@
 /**
- * Minimal runtime shapes of the DeepSeek Harness (DSH) leaf-plugin API the
- * adapter hosts. Pinned to DSH revision `99f6f02f` (0.1.0-rc.7); validated
- * against the local rc.8 checkout (`141eb6f`, plugin-facing src spot-checked
- * equivalent — see docs/todo/dsh-adapter.md §2).
+ * Runtime shapes of the DeepSeek Harness (DSH) plugin API exposed by the
+ * adapter. Pinned to DSH revision `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`
+ * (`dsh-v0.1.1-rc.2`).
  *
  * These are deliberately structural: a real plugin brings its own types via
  * `@deepseek-ai/cordis` / `@deepseek-ai/dsh-tools` type-only imports; at
@@ -91,6 +90,76 @@ export interface ToolDefinitionLike {
   [key: string]: unknown
 }
 
+/** Event registration options (matching Cordis). */
+export interface EventOptionsLike {
+  prepend?: boolean
+  global?: boolean
+}
+
+/** Per-assembly context accepted by DSH SystemPrompt plus bridge variables. */
+export interface AssembleContextLike {
+  signal?: AbortSignal
+  cwd?: string
+  provider?: string
+  model?: string
+  variables?: Record<string, string | undefined>
+  [key: string]: unknown
+}
+
+export interface PromptSectionLike {
+  readonly name: string
+  readonly order: number
+  readonly text: string | ((context: AssembleContextLike) => string)
+  readonly complete?: boolean
+}
+
+export interface PromptContextLike {
+  readonly name: string
+  readonly order: number
+  readonly text: string | ((context: AssembleContextLike) => string)
+}
+
+export interface ToolSchemaLike {
+  name: string
+  description: string
+  parameters: Record<string, unknown>
+}
+
+export interface ToolProviderResultLike {
+  readonly schemas: readonly ToolSchemaLike[]
+  readonly knownNames?: readonly string[]
+}
+
+export interface PromptAssemblyLike {
+  sections: { name: string; text: string }[]
+  contexts: { name: string; text: string }[]
+  tools: ToolSchemaLike[]
+  variables: Record<string, string | undefined>
+}
+
+/** DSH `ctx.systemPrompt` service surface implemented by the adapter. */
+export interface SystemPromptLike {
+  section(section: PromptSectionLike): () => void
+  context(context: PromptContextLike): () => void
+  suppressRuntimeContext(): () => void
+  tools(provider: (context: AssembleContextLike) => ToolProviderResultLike): () => void
+  variable(name: string, provider: (context: AssembleContextLike) => string | undefined): () => void
+  assemble(context?: AssembleContextLike): Promise<PromptAssemblyLike>
+}
+
+export interface ReflectServiceLike {
+  get(key: string): unknown
+  set(key: string, value: unknown): void
+  provide(key: string, value?: unknown, check?: () => boolean): () => void
+}
+
+/** Static adapter counterpart of Cordis' `Fiber & PromiseLike<Fiber>`. */
+export interface InjectFiberLike {
+  dispose(): Promise<void>
+}
+
+export type InjectResultLike = InjectFiberLike & PromiseLike<InjectFiberLike>
+
 /** `ctx.userQuestions.ask` input (AskUserQuestionRequest). */
 export interface AskRequestLike {
   questions: AskItemLike[]
@@ -122,6 +191,7 @@ export interface AskAnswerLike {
 
 /** Cordis logger surface (all levels go to stderr — INV-D4). */
 export interface LoggerLike {
+  (name?: string): LoggerLike
   debug(...args: unknown[]): void
   info(...args: unknown[]): void
   warn(...args: unknown[]): void
@@ -137,17 +207,24 @@ export interface DshContext {
   web: {
     registerSearchProvider(provider: WebSearchProviderLike): () => void
     registerFetchProvider(provider: WebFetchProviderLike): () => void
+    search(request: WebSearchRequestLike, signal?: AbortSignal): Promise<WebSearchResultLike>
+    fetch(request: WebFetchRequestLike, signal?: AbortSignal): Promise<WebFetchResultLike>
   }
+  systemPrompt: SystemPromptLike
+  reflect: ReflectServiceLike
   get(key: string): unknown
-  effect(setup: () => Generator<unknown, unknown, unknown>, label?: string): () => Promise<void>
+  set(key: string, value: unknown): void
+  provide(key: string, value?: unknown): () => void
+  effect(setup: () => unknown, label?: string): () => Promise<void>
   logger: LoggerLike
-  /**
-   * Cordis service injection under host semantics: the callback runs only
-   * when every requested service is mounted. The adapter mounts no
-   * injectable host services, so callbacks are skipped with a stderr note
-   * (the documented "not mounted → wiring never runs" contract).
-   */
-  inject(deps: string | string[], callback: (ctx: unknown) => unknown): void
+  inject(deps: string | string[], callback: (ctx: DshContext) => unknown): InjectResultLike
+  on(name: string | symbol, listener: (...args: unknown[]) => unknown, options?: boolean | EventOptionsLike): () => boolean
+  once(name: string | symbol, listener: (...args: unknown[]) => unknown, options?: boolean | EventOptionsLike): () => boolean
+  emit(...args: unknown[]): void
+  parallel(...args: unknown[]): Promise<void>
+  serial(...args: unknown[]): Promise<unknown>
+  bail(...args: unknown[]): unknown
+  waterfall(...args: unknown[]): unknown
 }
 
 /** A DSH plugin object as the author exports it. */
@@ -156,7 +233,15 @@ export interface DshPluginLike {
   inject?: readonly string[]
   /** schemastery (or compatible) validator; called with the serveClat config. */
   Config?: (config: unknown) => unknown
-  apply(ctx: DshContext, config: unknown): void | Promise<void>
+  apply(ctx: DshContext, config: unknown): unknown
+}
+
+/** Static class-plugin shape (`class Foo extends Service`). */
+export interface DshServiceConstructorLike {
+  new (ctx: DshContext, config: unknown): unknown
+  name?: string
+  inject?: readonly string[]
+  Config?: (config: unknown) => unknown
 }
 
 /** Author-side effect hints → MCP annotations (CLAT ToolEffect in braces). */
@@ -191,9 +276,21 @@ export interface WebSearchProviderLike {
   search(request: WebSearchRequestLike, signal?: AbortSignal): Promise<WebSearchResultLike>
 }
 
-/** A fetch-capable backend (registered with `ctx.web`; v0 has no web_fetch tool). */
+/** Normalized fetch request used by DSH web providers. */
+export interface WebFetchRequestLike {
+  url: string
+}
+
+export interface WebFetchResultLike {
+  url: string
+  statusCode: number
+  body: { kind: 'html' | 'text'; content: string }
+  truncated: boolean
+}
+
+/** A fetch-capable backend registered with `ctx.web`. */
 export interface WebFetchProviderLike {
   id: string
   available(): boolean
-  fetch(request: { url: string }, signal?: AbortSignal): Promise<unknown>
+  fetch(request: WebFetchRequestLike, signal?: AbortSignal): Promise<WebFetchResultLike>
 }

@@ -1,9 +1,9 @@
-//! MCP 客户端会话与工具适配：支持 legacy initialize 握手和
+//! MCP 客户端会话、工具与标记 prompt 适配：支持 legacy initialize 握手和
 //! 2026-07-28 modern per-request envelope，并把远端工具映射为 CLAT
 //! 的 [`Tool`] trait。
 //!
-//! 资源上限（对抗恶意服务）：分页页数/工具数/cursor 循环/结果大小
-//! 均有界，超限隔离该服务器。
+//! 资源上限（对抗恶意服务）：分页页数/工具数/prompt 数/cursor 循环/
+//! 结果大小均有界，超限隔离该服务器。
 //!
 //! 远端 annotations 仅用于细分权限提示，永远不会把 MCP 工具降级成
 //! 可自动放行的本地只读能力。
@@ -50,6 +50,10 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_LIST_PAGES: usize = 32;
 /// 单服务器工具数上限。
 const MAX_TOOLS: usize = 512;
+/// 单服务器可自动导入的 DSH system-prompt 描述数上限。
+const MAX_PROMPTS: usize = 128;
+/// 单个远端系统提示词上限（防止恶意 prompts/get 注入无界文本）。
+const MAX_PROMPT_BYTES: usize = 256 * 1024;
 /// 单次 tools/call 拼接文本的字节上限。
 const MAX_RESULT_BYTES: usize = 1024 * 1024;
 /// 服务端请求投递通道容量（reader → dispatcher）：洪泛即丢弃并记
@@ -192,6 +196,8 @@ pub struct McpServer {
     server_version: String,
     /// 握手协商出的协议版本（服务器回显或其支持的最新版）。
     negotiated_version: String,
+    /// initialize/discover 声明的服务器能力；决定是否探测 prompts。
+    capabilities: Value,
     era: ProtocolEra,
     /// 服务端请求处理端（sampling/elicitation）；None = 本连接不受理。
     handler: Option<Arc<dyn McpServerRequestHandler>>,
@@ -368,6 +374,13 @@ pub struct McpToolInfo {
     pub annotations: McpToolAnnotations,
 }
 
+/// MCP prompts/list 中由 CLAT/DSH 桥显式标记为系统提示词的条目。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct McpPromptInfo {
+    pub name: String,
+    pub description: String,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct McpToolAnnotations {
     pub read_only: Option<bool>,
@@ -410,11 +423,12 @@ impl McpServer {
         };
         let probe = transport.new_session(cwd)?;
         let mut server = match Self::discover(&probe) {
-            Ok(server_version) => Self {
+            Ok((server_version, capabilities)) => Self {
                 name: name.to_owned(),
                 session: probe,
                 server_version,
                 negotiated_version: MODERN_PROTOCOL_VERSION.to_owned(),
+                capabilities,
                 era: ProtocolEra::Modern,
                 handler: None,
                 dispatcher: None,
@@ -422,7 +436,9 @@ impl McpServer {
             Err(modern_error) => {
                 let _ = shutdown_session(probe);
                 let session = transport.new_session(cwd)?;
-                let (server_version, negotiated_version) = match Self::handshake(&session) {
+                let (server_version, negotiated_version, capabilities) = match Self::handshake(
+                    &session,
+                ) {
                     Ok(negotiated) => negotiated,
                     Err(legacy_error) => {
                         let tail = session.stderr_tail();
@@ -441,6 +457,7 @@ impl McpServer {
                     session,
                     server_version,
                     negotiated_version,
+                    capabilities,
                     era: ProtocolEra::Legacy,
                     handler: None,
                     dispatcher: None,
@@ -523,7 +540,7 @@ impl McpServer {
         }
     }
 
-    fn discover(session: &Session) -> Result<String, McpError> {
+    fn discover(session: &Session) -> Result<(String, Value), McpError> {
         let result = session.call(
             "server/discover",
             modern_params(json!({})),
@@ -542,20 +559,23 @@ impl McpServer {
                 "server/discover does not offer {MODERN_PROTOCOL_VERSION}"
             )));
         }
-        if !result.get("capabilities").is_some_and(Value::is_object) {
-            return Err(McpError::new("server/discover missing capabilities"));
-        }
-        Ok(result
+        let capabilities = result
+            .get("capabilities")
+            .filter(|value| value.is_object())
+            .cloned()
+            .ok_or_else(|| McpError::new("server/discover missing capabilities"))?;
+        let version = result
             .get("_meta")
             .and_then(|meta| meta.get("io.modelcontextprotocol/serverInfo"))
             .and_then(|info| info.get("version"))
             .and_then(Value::as_str)
             .unwrap_or("unknown")
-            .to_owned())
+            .to_owned();
+        Ok((version, capabilities))
     }
 
-    /// legacy initialize 握手：返回 (serverInfo.version, 协商出的协议版本)。
-    fn handshake(session: &Session) -> Result<(String, String), McpError> {
+    /// legacy initialize 握手：返回版本、协商协议与服务器能力。
+    fn handshake(session: &Session) -> Result<(String, String, Value), McpError> {
         let result = session.call(
             "initialize",
             json!({
@@ -573,6 +593,14 @@ impl McpServer {
             .and_then(Value::as_str)
             .unwrap_or("unknown")
             .to_owned();
+        let capabilities = result
+            .get("capabilities")
+            .filter(|value| value.is_object())
+            .cloned()
+            // Older but otherwise valid legacy servers omitted this optional
+            // surface. Treat omission/malformed data as no advertised
+            // capabilities so the pre-prompts tool path remains compatible.
+            .unwrap_or_else(|| json!({}));
         // 版本协商：服务器回显则一致；否则返回它支持的版本。只接受
         // 明确验证过的 legacy 版本；modern/未知版本不能套用旧信封。
         let negotiated_version = result
@@ -583,7 +611,7 @@ impl McpServer {
         validate_legacy_version(&negotiated_version)?;
         // 握手收尾：规范要求客户端发送 initialized notification。
         session.notify("notifications/initialized", json!({}))?;
-        Ok((server_version, negotiated_version))
+        Ok((server_version, negotiated_version, capabilities))
     }
 
     pub fn name(&self) -> &str {
@@ -604,6 +632,13 @@ impl McpServer {
         &self.negotiated_version
     }
 
+    /// 是否声明 MCP prompts 能力。未声明时绝不试探未知方法。
+    pub fn supports_prompts(&self) -> bool {
+        self.capabilities
+            .get("prompts")
+            .is_some_and(Value::is_object)
+    }
+
     pub fn shutdown(mut self) -> Result<(), McpError> {
         // dispatcher 先于会话关停（序：摘响应端 → 关投递通道 → 有界
         // join → 优雅关会话）——保证 session.shutdown 的 writer join
@@ -619,6 +654,128 @@ impl McpServer {
     /// 页数、工具数、cursor 循环、**总时长**均有界。
     pub fn list_tools(&self) -> Result<Vec<McpToolInfo>, McpError> {
         self.list_tools_with_budget(LIST_TOTAL_BUDGET)
+    }
+
+    /// 列出桥显式标记为系统提示词的 MCP prompts；普通用户提示模板
+    /// 不会被悄悄注入模型系统消息。
+    pub fn list_system_prompts(&self) -> Result<Vec<McpPromptInfo>, McpError> {
+        if !self.supports_prompts() {
+            return Ok(Vec::new());
+        }
+        let started = std::time::Instant::now();
+        let mut prompts = Vec::new();
+        let mut seen_cursors: HashSet<String> = HashSet::new();
+        let mut cursor: Option<String> = None;
+        for _ in 0..MAX_LIST_PAGES {
+            let remaining = LIST_TOTAL_BUDGET.saturating_sub(started.elapsed());
+            if remaining.is_zero() {
+                return Err(McpError::new(format!(
+                    "server `{}` exceeded the {:?} prompts/list budget",
+                    self.name, LIST_TOTAL_BUDGET
+                )));
+            }
+            let params = cursor
+                .as_ref()
+                .map_or_else(|| json!({}), |cursor| json!({"cursor": cursor}));
+            let result = self.call("prompts/list", params, remaining.min(LIST_TIMEOUT), None)?;
+            if let Some(list) = result.get("prompts").and_then(Value::as_array) {
+                for prompt in list {
+                    let marked = prompt
+                        .get("_meta")
+                        .and_then(|meta| meta.get("io.artec.clat/dshSystemPrompt"))
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
+                    if !marked {
+                        continue;
+                    }
+                    let name = prompt
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    if name.is_empty() {
+                        continue;
+                    }
+                    if prompts.len() >= MAX_PROMPTS {
+                        return Err(McpError::new(format!(
+                            "server `{}` exposes more than {MAX_PROMPTS} CLAT system prompts",
+                            self.name
+                        )));
+                    }
+                    prompts.push(McpPromptInfo {
+                        name: name.to_owned(),
+                        description: prompt
+                            .get("description")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned(),
+                    });
+                }
+            }
+            cursor = result
+                .get("nextCursor")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            match cursor {
+                None => return Ok(prompts),
+                Some(ref cursor) if !seen_cursors.insert(cursor.clone()) => {
+                    return Err(McpError::new(format!(
+                        "server `{}` repeats a prompts pagination cursor",
+                        self.name
+                    )));
+                }
+                Some(_) => {}
+            }
+        }
+        Err(McpError::new(format!(
+            "server `{}` exceeds {MAX_LIST_PAGES} prompts pagination pages",
+            self.name
+        )))
+    }
+
+    /// 解析桥标记 prompt 的系统文本。优先读取 CLAT 扩展元数据；标准
+    /// text message 是通用 MCP 客户端的回退表示。
+    pub fn get_system_prompt(
+        &self,
+        prompt: &McpPromptInfo,
+        arguments: &std::collections::BTreeMap<String, String>,
+    ) -> Result<String, McpError> {
+        let result = self.call(
+            "prompts/get",
+            json!({"name": prompt.name, "arguments": arguments}),
+            LIST_TIMEOUT,
+            None,
+        )?;
+        let mut text = result
+            .get("_meta")
+            .and_then(|meta| meta.get("io.artec.clat/systemPrompt"))
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .unwrap_or_default();
+        if text.is_empty()
+            && let Some(messages) = result.get("messages").and_then(Value::as_array)
+        {
+            for message in messages {
+                let Some(chunk) = message
+                    .get("content")
+                    .filter(|content| content.get("type").and_then(Value::as_str) == Some("text"))
+                    .and_then(|content| content.get("text"))
+                    .and_then(Value::as_str)
+                else {
+                    continue;
+                };
+                if !text.is_empty() {
+                    text.push_str("\n\n");
+                }
+                text.push_str(chunk);
+            }
+        }
+        if text.len() > MAX_PROMPT_BYTES {
+            return Err(McpError::new(format!(
+                "MCP prompt `{}` exceeds {MAX_PROMPT_BYTES} bytes",
+                prompt.name
+            )));
+        }
+        Ok(text)
     }
 
     /// [`Self::list_tools`] 的可注入预算变体（测试用小帽验证）。

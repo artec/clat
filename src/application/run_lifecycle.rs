@@ -197,12 +197,13 @@ impl TrustedProjectApplication {
         }
         // MCP 后台启动落定（有界等待）后再冻结工具注册表（INV-M2/M3）：
         // 任何 run 看到的都是完整工具集——除非等待超时（此时以现状冻结，
-        // 状态面板可见未落定 server，下一次 run 可见）。无 MCP 配置时
-        // 立即返回，零等待成本。
+        // 状态面板可见未落定 server，修复后需重启以重新挂载）。无 MCP
+        // 配置时立即返回，零等待成本。
         let _settled = self.mcp_status.wait_until_settled(MCP_STARTUP_RUN_WAIT);
         self.tools
             .freeze()
             .map_err(|error| ApplicationError::new(error.to_string()))?;
+        self.prompts.freeze();
         let ApplicationRunRequest {
             attachments,
             prompt,

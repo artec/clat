@@ -61,7 +61,7 @@ clat upgrade --check
 - **会话**——`~/.clat` 下可从崩溃恢复的追加式 DSH 兼容日志、本地 replay
   与按项目恢复当前会话。
 - **扩展**——stdio / Streamable HTTP MCP、沙箱化 WebAssembly 组件，
-  以及 DSH 叶子插件适配器。
+  以及面向 DSH 可移植插件能力的静态 Cordis 兼容适配器。
 - **前端中立核心**——TUI、无头运行器、本地服务和未来客户端共享同一个
   Application 门面与事件词汇。
 
@@ -100,7 +100,7 @@ irm https://raw.githubusercontent.com/artec/clat/main/install.ps1 | iex
 | 理解审批、权限档位与路径边界 | [权限](docs/permissions.md) |
 | 配置 MCP server | [MCP 集成](docs/mcp.md) |
 | 安装或编写 WASM 组件 | [WASM 插件](docs/wasm.md) |
-| 移植 DSH 叶子插件 | [DSH 插件移植指南](docs/dsh-plugins.md) |
+| 移植 DSH/Cordis 插件 | [DSH 插件兼容指南](docs/dsh-plugins.md) |
 | 理解核心边界与生命周期 | [架构](docs/architecture.md) |
 | 理解 Provider 适配与重试 | [Providers](docs/providers.md) |
 | 理解文件、会话日志与恢复 | [持久化状态](docs/storage.md) |

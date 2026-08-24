@@ -14,6 +14,12 @@ import type { ContentBlockLike, ToolDefinitionLike, ToolHint } from './types.js'
 /** What the server needs from the shim to answer host requests. */
 export interface ServerHandler {
   listTools(): ToolDefinitionLike[]
+  listPrompts(): { name: string; description: string }[]
+  getPrompt(name: string, arguments_: Record<string, string>): Promise<{
+    description: string
+    prompt: string
+    context: string
+  }>
   callTool(name: string, arguments_: unknown, callId: string): Promise<{ content: ContentBlockLike[]; structuredContent: unknown 
   /** W1-18（A3）：在途 tools/call 开始——返回该调用的取消信号（宿主
    * notifications/cancelled / shutdown 会触发 abort）。可选：旧宿主
@@ -50,6 +56,7 @@ const HINT_ANNOTATIONS: Record<ToolHint, Record<string, boolean> | undefined> = 
  * web_search is a read-only, open-world lookup → CLAT Network effect). */
 const BUILTIN_ANNOTATIONS: Record<string, Record<string, boolean>> = {
   web_search: { readOnlyHint: true, openWorldHint: true },
+  web_fetch: { readOnlyHint: true, openWorldHint: true },
 }
 
 const JSONRPC_PARSE_ERROR = -32700
@@ -185,7 +192,9 @@ export class McpStdioServer {
   shutdown(): Promise<void> {
     if (this.#shutdownPromise !== undefined) return this.#shutdownPromise
     this.#closed = true
-    this.#shutdownPromise = this.#shutdown()
+    // Install the single-flight promise before #shutdown closes readline:
+    // `rl.close()` emits `close` synchronously and re-enters shutdown().
+    this.#shutdownPromise = Promise.resolve().then(() => this.#shutdown())
     return this.#shutdownPromise
   }
 
@@ -292,7 +301,10 @@ export class McpStdioServer {
       const requested = (params as { protocolVersion?: unknown } | undefined)?.protocolVersion
       return {
         protocolVersion: typeof requested === 'string' ? requested : '2025-06-18',
-        capabilities: { tools: { listChanged: false } },
+        capabilities: {
+          tools: { listChanged: false },
+          prompts: { listChanged: false },
+        },
         serverInfo: { name: this.#options.name, version: this.#options.version ?? '0.0.0' },
       }
     }
@@ -304,6 +316,48 @@ export class McpStdioServer {
         return {}
       case 'tools/list':
         return { tools: this.#handler().listTools().map(tool => this.#toolDescriptor(tool)) }
+      case 'prompts/list':
+        return {
+          prompts: this.#handler().listPrompts().map(prompt => ({
+            name: prompt.name,
+            description: prompt.description,
+            arguments: [
+              { name: 'cwd', description: 'Current CLAT project directory.', required: false },
+              { name: 'provider', description: 'Current CLAT model provider.', required: false },
+              { name: 'model', description: 'Current CLAT model name.', required: false },
+            ],
+            _meta: { 'io.artec.clat/dshSystemPrompt': true },
+          })),
+        }
+      case 'prompts/get': {
+        const record = params as { name?: unknown; arguments?: unknown } | undefined
+        if (typeof record?.name !== 'string' || record.name === '') {
+          throw new JsonRpcError(JSONRPC_INVALID_PARAMS, 'prompts/get: name must be a non-empty string')
+        }
+        const raw = record.arguments ?? {}
+        if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+          throw new JsonRpcError(JSONRPC_INVALID_PARAMS, 'prompts/get: arguments must be an object')
+        }
+        const arguments_: Record<string, string> = {}
+        for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+          if (typeof value !== 'string') {
+            throw new JsonRpcError(JSONRPC_INVALID_PARAMS, `prompts/get: argument ${key} must be a string`)
+          }
+          arguments_[key] = value
+        }
+        const resolved = await this.#handler().getPrompt(record.name, arguments_)
+        return {
+          description: resolved.description,
+          messages: resolved.prompt === '' ? [] : [{
+            role: 'user',
+            content: { type: 'text', text: resolved.prompt },
+          }],
+          _meta: {
+            'io.artec.clat/systemPrompt': resolved.prompt,
+            'io.artec.clat/runtimeContext': resolved.context,
+          },
+        }
+      }
       case 'tools/call': {
         const record = params as { name?: unknown; arguments?: unknown } | undefined
         const name = record?.name

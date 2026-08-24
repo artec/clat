@@ -1,7 +1,7 @@
 {
   "name": "@artec/clat-dsh-adapter",
   "version": "0.1.0",
-  "description": "Serve a DeepSeek Harness (DSH) leaf plugin as an MCP stdio server for CLAT and any MCP host",
+  "description": "Serve portable DeepSeek Harness (DSH) plugin capabilities as an MCP stdio server for CLAT and any MCP host",
   "type": "module",
   "license": "MIT",
   "author": "Artec",

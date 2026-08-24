@@ -11,6 +11,8 @@ import { AdapterError } from './errors.js'
 import type {
   ToolDefinitionLike,
   WebFetchProviderLike,
+  WebFetchRequestLike,
+  WebFetchResultLike,
   WebSearchProviderLike,
   WebSearchRequestLike,
   WebSearchResultLike,
@@ -20,6 +22,8 @@ import type {
 /** Default upper bounds, mirroring dsh-tool-web's deployment defaults. */
 export const WEB_SEARCH_MAX_RESULTS = 8
 export const WEB_SEARCH_MAX_QUERIES = 4
+/** Bound model-visible fetch output even when a provider forgets its own cap. */
+export const WEB_FETCH_MAX_OUTPUT_CHARS = 100_000
 
 /** Shared web error codes (mirrors dsh-web's WebError codes). */
 export type WebErrorCode =
@@ -52,7 +56,7 @@ export class WebSeam {
     return this.#register(this.#searchProviders, provider, 'search')
   }
 
-  /** Register a fetch provider (accepted; v0 exposes no web_fetch tool over it). */
+  /** Register a fetch provider. */
   registerFetchProvider(provider: WebFetchProviderLike): () => void {
     return this.#register(this.#fetchProviders, provider, 'fetch')
   }
@@ -68,9 +72,7 @@ export class WebSeam {
       )
     }
     store.set(provider.id, provider)
-    if (kind === 'fetch') {
-      this.#log(`note: fetch provider "${provider.id}" registered; v0 of the adapter exposes no web_fetch tool`)
-    }
+    this.#log(`registered ${kind} provider ${provider.id}`)
     return () => {
       store.delete(provider.id)
     }
@@ -79,6 +81,11 @@ export class WebSeam {
   /** Whether any search provider is registered (gates the built-in tool). */
   hasSearchProvider(): boolean {
     return this.#searchProviders.size > 0
+  }
+
+  /** Whether any fetch provider is registered (gates the built-in tool). */
+  hasFetchProvider(): boolean {
+    return this.#fetchProviders.size > 0
   }
 
   /** Drop all providers (disposeAll path). */
@@ -93,6 +100,13 @@ export class WebSeam {
     const provider = resolveProvider(this.#searchProviders, configuredId)
     const result = await provider.search(request, signal)
     return capSources(result, request.maxResults)
+  }
+
+  /** Retrieve one URL through the selected provider (DSH WebRuntime semantics). */
+  async fetch(request: WebFetchRequestLike, signal?: AbortSignal): Promise<WebFetchResultLike> {
+    const configuredId = process.env.DSH_WEB_FETCH_PROVIDER
+    const provider = resolveProvider(this.#fetchProviders, configuredId)
+    return provider.fetch(request, signal)
   }
 
   /** The model-facing `web_search` tool (mirrors dsh-tool-web search.ts). */
@@ -125,6 +139,45 @@ export class WebSeam {
       },
     }
   }
+
+
+  /** The model-facing `web_fetch` tool over the registered DSH provider seam. */
+  webFetchTool(): ToolDefinitionLike {
+    return {
+      name: 'web_fetch',
+      description: 'Fetch the content of a specific HTTP(S) URL and return it decoded to text.',
+      parameters: {
+        type: 'object',
+        properties: {
+          url: { type: 'string', description: 'The HTTP(S) URL to fetch.' },
+        },
+        required: ['url'],
+      },
+      output: {
+        render: (_args: unknown, value: unknown) => [{
+          type: 'text',
+          text: formatFetchOutput(value as WebFetchResultLike, WEB_FETCH_MAX_OUTPUT_CHARS),
+        }],
+      },
+      execute: async (args: unknown, exec) => {
+        const url = (args as { url?: unknown } | null)?.url
+        if (typeof url !== 'string' || url.trim().length === 0) {
+          throw new Error('url must be a non-empty string')
+        }
+        return this.fetch({ url }, exec.signal)
+      },
+    }
+  }
+}
+
+/** Render the normalized DSH fetch result with an explicit output cap. */
+export function formatFetchOutput(result: WebFetchResultLike, maxChars: number): string {
+  const header = `Fetched ${result.url} (HTTP ${result.statusCode}, ${result.body.kind})`
+  const available = Math.max(0, maxChars - header.length - 2)
+  const clipped = result.body.content.length > available
+  const content = clipped ? result.body.content.slice(0, available) : result.body.content
+  const suffix = result.truncated || clipped ? '\n\n[content truncated]' : ''
+  return `${header}\n\n${content}${suffix}`
 }
 
 /** Resolve the selected provider or throw the matching WebError (dsh-web semantics). */

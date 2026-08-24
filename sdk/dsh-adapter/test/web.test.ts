@@ -164,7 +164,7 @@ test('provider failure propagates as an isError tool result', async () => {
   await assert.rejects(shim.callTool('web_search', { queries: ['x'] }, 'c'), /upstream 503/)
 })
 
-test('plugin tool named web_search shadows the built-in; fetch providers never gate it', async () => {
+test('plugin tool named web_search shadows the built-in; fetch providers expose only web_fetch', async () => {
   const shim = new Shim(quietHost, 'p')
   const ctx = shim.buildContext()
   const shadow: ToolDefinitionLike = {
@@ -175,7 +175,16 @@ test('plugin tool named web_search shadows the built-in; fetch providers never g
     execute: async () => 'shadow-value',
   }
   ctx.web.registerSearchProvider(fakeProvider('p', [['https://a']]))
-  ctx.web.registerFetchProvider({ id: 'f', available: () => true, fetch: async () => ({}) })
+  ctx.web.registerFetchProvider({
+    id: 'f',
+    available: () => true,
+    fetch: async request => ({
+      url: request.url,
+      statusCode: 200,
+      body: { kind: 'text', content: 'fetched' },
+      truncated: false,
+    }),
+  })
   ctx.tools.register(shadow)
   const outcome = await shim.callTool('web_search', {}, 'c')
   assert.equal(outcome.structuredContent, 'shadow-value', 'plugin registry wins')
@@ -183,8 +192,20 @@ test('plugin tool named web_search shadows the built-in; fetch providers never g
   assert.equal(names.filter(name => name === 'web_search').length, 1)
 
   const fetchOnly = new Shim(quietHost, 'p')
-  fetchOnly.buildContext().web.registerFetchProvider({ id: 'f', available: () => true, fetch: async () => ({}) })
+  fetchOnly.buildContext().web.registerFetchProvider({
+    id: 'f',
+    available: () => true,
+    fetch: async request => ({
+      url: request.url,
+      statusCode: 200,
+      body: { kind: 'text', content: 'body' },
+      truncated: false,
+    }),
+  })
   assert(!fetchOnly.listTools().some(tool => tool.name === 'web_search'), 'fetch-only registration never lists web_search')
+  assert(fetchOnly.listTools().some(tool => tool.name === 'web_fetch'), 'fetch-only registration lists web_fetch')
+  const fetched = await fetchOnly.callTool('web_fetch', { url: 'https://example.com' }, 'fetch-call')
+  assert.match(String((fetched.content[0] as { text?: unknown }).text), /body/)
 })
 
 test('disposeAll drops providers', async () => {

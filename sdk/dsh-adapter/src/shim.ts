@@ -1,10 +1,13 @@
 /**
- * Minimal Cordis-shaped host shim: the ctx a DSH leaf plugin sees. Every
+ * Static Cordis-shaped host shim: the ctx a DSH plugin sees. Every portable
  * capability maps 1:1 onto MCP (INV-D1); anything outside the supported
  * service list fails loudly (INV-D3). See docs/todo/dsh-adapter.md §4.3.
  */
 
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { AdapterError } from './errors.js'
+import { EventBus } from './events.js'
+import { SystemPromptSeam } from './system-prompt.js'
 import { WebSeam } from './web.js'
 import type {
   AskAnswerLike,
@@ -14,6 +17,8 @@ import type {
   DshContext,
   FinishReasonLike,
   GenerateOptionsLike,
+  InjectFiberLike,
+  InjectResultLike,
   MessageLike,
   StreamChunk,
   TextContentBlock,
@@ -62,8 +67,12 @@ const MAX_OPTIONS = 16
 const DEFAULT_MAX_TOKENS = 4096
 
 /** Services the shim provides (inject-checkable subset first four). */
-const SERVICE_KEYS = ['tools', 'llm', 'userQuestions', 'web', 'get', 'effect', 'logger', 'inject'] as const
-const INJECTABLE_KEYS = ['tools', 'llm', 'userQuestions', 'web'] as const
+const SERVICE_KEYS = [
+  'tools', 'llm', 'userQuestions', 'web', 'systemPrompt',
+  'reflect', 'get', 'set', 'provide', 'effect', 'logger', 'inject',
+  'on', 'once', 'emit', 'parallel', 'serial', 'bail', 'waterfall',
+] as const
+const INJECTABLE_KEYS = ['tools', 'llm', 'userQuestions', 'web', 'systemPrompt'] as const
 
 /** One registered question's field mapping for answer reconstruction. */
 interface FieldPlan {
@@ -84,14 +93,22 @@ export class Shim {
   #activeSignal: AbortSignal | undefined
   readonly #pluginName: string
   readonly #tools = new Map<string, ToolDefinitionLike>()
+  readonly #provided = new Map<string, unknown>()
   readonly #web: WebSeam
   readonly #cleanups: (() => unknown)[] = []
+  readonly #cleanupScope = new AsyncLocalStorage<Array<() => unknown>>()
+  readonly #events: EventBus
+  readonly #systemPrompt: SystemPromptSeam
+  #context: DshContext | undefined
   #disposed = false
 
   constructor(host: HostChannel, pluginName: string) {
     this.#host = host
     this.#pluginName = pluginName
     this.#web = new WebSeam(host.log)
+    const trackCleanup = (cleanup: () => unknown) => this.#trackCleanup(cleanup)
+    this.#events = new EventBus(trackCleanup)
+    this.#systemPrompt = new SystemPromptSeam(this.#events, trackCleanup)
   }
 
   get pluginName(): string {
@@ -104,28 +121,85 @@ export class Shim {
   }
 
   /**
-   * Cordis `ctx.inject(deps, callback)` under host semantics: the callback
-   * runs only when every requested service is mounted. The adapter mounts
-   * no injectable host services, so the callback is skipped and noted on
-   * stderr — plugins written against the documented "not mounted → the
-   * wiring never runs, the plugin keeps working" contract (e.g. optional
-   * settings sections via dsh-settings) degrade gracefully instead of
-   * dying at startup. A static `inject` export remains a hard requirement
-   * (checked in serveClat), so plugins that *declare* a spine dependency
-   * are still rejected up front.
+   * Cordis `ctx.inject(deps, callback)` under host semantics: run immediately
+   * when every requested adapter service is mounted; otherwise keep the
+   * documented optional-dependency behavior and skip the callback.
    */
-  #inject(deps: string | string[], callback: (ctx: unknown) => unknown): void {
+  #inject(deps: string | string[], callback: (ctx: DshContext) => unknown): InjectResultLike {
     const names = Array.isArray(deps) ? deps : [deps]
-    this.#host.log(
-      `ctx.inject([${names.join(', ')}]) requested services this adapter does not mount; ` +
-        `the wiring is skipped (host "not mounted" semantics) — declare what you need via the ` +
-        `plugin's static inject export if it is required`,
-    )
-    void callback
+    const parentCleanups = this.#cleanupTarget()
+    const ownedCleanups: Array<() => unknown> = []
+    let setup: Promise<void>
+    if (names.every(name =>
+      (INJECTABLE_KEYS as readonly string[]).includes(name) || this.#provided.has(name))) {
+      if (this.#context === undefined) throw new AdapterError('BAD_CONTEXT', 'adapter context is not initialized')
+      let produced: unknown
+      try {
+        produced = this.#cleanupScope.run(ownedCleanups, () => callback(this.#context as DshContext))
+        setup = collectEffectCleanups(produced).then(cleanups => {
+          ownedCleanups.push(...cleanups)
+        })
+      } catch (error) {
+        setup = Promise.reject(error)
+      }
+    } else {
+      this.#host.log(
+        `ctx.inject([${names.join(', ')}]) requested services this adapter does not mount; ` +
+          `the wiring is skipped (host "not mounted" semantics) — declare what you need via the ` +
+          `plugin's static inject export if it is required`,
+      )
+      setup = Promise.resolve()
+    }
+
+    // Avoid an unhandled rejection when a plugin intentionally treats inject
+    // as fire-and-forget; awaiting the returned handle still observes it.
+    void setup.catch(error => this.#host.log('ctx.inject callback failed:', error))
+    let active = true
+    const entry = async () => {
+      if (!active) return
+      active = false
+      const errors: unknown[] = []
+      try {
+        await setup
+      } catch (error) {
+        errors.push(error)
+      }
+      while (ownedCleanups.length > 0) {
+        const cleanup = ownedCleanups.pop()
+        if (cleanup === undefined) continue
+        try {
+          await cleanup()
+        } catch (error) {
+          errors.push(error)
+        }
+      }
+      if (errors.length === 1) throw errors[0]
+      if (errors.length > 1) {
+        throw new AdapterError('CLEANUP_FAILED', `${errors.length} ctx.inject setup/cleanup steps failed`)
+      }
+    }
+    parentCleanups.push(entry)
+    const fiber: InjectFiberLike = {
+      dispose: async () => {
+        if (!active) return
+        const index = parentCleanups.indexOf(entry)
+        if (index >= 0) parentCleanups.splice(index, 1)
+        await entry()
+      },
+    }
+    const wrapped = Object.create(fiber) as InjectResultLike
+    Object.defineProperty(wrapped, 'then', {
+      value: (onFulfilled: ((value: InjectFiberLike) => unknown) | undefined,
+        onRejected: ((reason: unknown) => unknown) | undefined) => setup
+        .then(() => fiber)
+        .then(onFulfilled, onRejected),
+    })
+    return wrapped
   }
 
   /** The ctx object `apply()` receives (Proxy: whitelist + INV-D3 rejects). */
   buildContext(): DshContext {
+    if (this.#context !== undefined) return this.#context
     const services: DshContext = {
       tools: {
         register: (tool: ToolDefinitionLike) => this.#registerTool(tool),
@@ -137,30 +211,92 @@ export class Shim {
         ask: (request: AskRequestLike) => this.#ask(request),
       },
       web: {
-        registerSearchProvider: provider => this.#web.registerSearchProvider(provider),
-        registerFetchProvider: provider => this.#web.registerFetchProvider(provider),
+        registerSearchProvider: provider => this.#trackedRegistration(
+          this.#web.registerSearchProvider(provider),
+        ),
+        registerFetchProvider: provider => this.#trackedRegistration(
+          this.#web.registerFetchProvider(provider),
+        ),
+        search: (request, signal) => this.#web.search(request, signal),
+        fetch: (request, signal) => this.#web.fetch(request, signal),
       },
-      get: () => undefined,
+      systemPrompt: this.#systemPrompt,
+      reflect: {
+        get: (key: string) => this.#get(key),
+        set: (key: string, value: unknown) => this.#set(key, value),
+        provide: (key: string, value?: unknown, check?: () => boolean) =>
+          this.#provide(key, value, check),
+      },
+      get: (key: string) => this.#get(key),
+      set: (key: string, value: unknown) => this.#set(key, value),
+      provide: (key: string, value?: unknown) => this.#provide(key, value),
       effect: (setup, label) => this.#effect(setup, label),
       logger: this.#logger(),
-      inject: (deps: string | string[], callback: (ctx: unknown) => unknown) =>
+      inject: (deps: string | string[], callback: (ctx: DshContext) => unknown) =>
         this.#inject(deps, callback),
+      on: (name, listener, options) => this.#events.on(name, listener, options),
+      once: (name, listener, options) => this.#events.once(name, listener, options),
+      emit: (...args) => this.#events.emit(...args),
+      parallel: (...args) => this.#events.parallel(...args),
+      serial: (...args) => this.#events.serial(...args),
+      bail: (...args) => this.#events.bail(...args),
+      waterfall: (...args) => this.#events.waterfall(...args),
     }
-    return new Proxy(services, {
+    Object.defineProperties(services, {
+      [Symbol.for('cordis.isolate')]: { value: Object.create(null), enumerable: false },
+      [Symbol.for('cordis.intercept')]: { value: Object.create(null), enumerable: false },
+    })
+    const provided = this.#provided
+    this.#context = new Proxy(services, {
       get(target, property, receiver) {
-        if (typeof property === 'symbol' || property === 'then') return undefined
+        if (property === 'then') return undefined
+        if (typeof property === 'symbol') return Reflect.get(target, property, receiver)
         if ((SERVICE_KEYS as readonly string[]).includes(property)) {
           return Reflect.get(target, property, receiver)
         }
+        if (provided.has(property)) return provided.get(property)
         throw new AdapterError(
           'SPINE_SERVICE',
           `ctx.${String(property)} is not provided by @artec/clat-dsh-adapter (supported: ` +
             `${SERVICE_KEYS.join(', ')}). Spine/UI services are out of scope for the MCP ` +
-            `leaf-plugin bridge — restructure the capability as a tool (ctx.tools.register) ` +
+            `plugin bridge — restructure the capability as a tool (ctx.tools.register) ` +
             `or use CLAT's native features.`,
         )
       },
     })
+    return this.#context
+  }
+
+  #get(key: string): unknown {
+    if ((INJECTABLE_KEYS as readonly string[]).includes(key)) {
+      return (this.#context as unknown as Record<string, unknown> | undefined)?.[key]
+    }
+    return this.#provided.get(key)
+  }
+
+  #set(key: string, value: unknown): void {
+    if (!this.#provided.has(key)) throw new Error(`cannot set unprovided service "${key}"`)
+    this.#provided.set(key, value)
+  }
+
+  #provide(key: string, value?: unknown, check?: () => boolean): () => void {
+    this.#assertLive()
+    if (typeof key !== 'string' || key === '') throw new TypeError('ctx.provide: key must be a non-empty string')
+    if ((INJECTABLE_KEYS as readonly string[]).includes(key) || this.#provided.has(key)) {
+      throw new Error(`service "${key}" is already provided`)
+    }
+    if (check !== undefined && check.call(value) === false) {
+      return () => {}
+    }
+    this.#provided.set(key, value)
+    let active = true
+    const dispose = () => {
+      if (!active) return
+      active = false
+      if (this.#provided.get(key) === value) this.#provided.delete(key)
+    }
+    this.#trackCleanup(dispose)
+    return dispose
   }
 
   // ---- ctx.tools ----------------------------------------------------------
@@ -193,17 +329,22 @@ export class Shim {
     }
     this.#tools.set(tool.name, tool)
     this.#host.log(`registered tool ${tool.name}`)
-    return () => {
+    return this.#trackedRegistration(() => {
       this.#tools.delete(tool.name)
-    }
+    })
   }
 
   /** tools/list projection (name/description/compiled parameters). */
   listTools(): ToolDefinitionLike[] {
     // 内置 web_search 仅在 ≥1 个 search provider 注册、且插件未以同名
     // 工具覆盖时出现（Phase 3b；同名时插件注册表优先，不重复列出）。
-    const builtIns =
-      this.#web.hasSearchProvider() && !this.#tools.has('web_search') ? [this.#web.webSearchTool()] : []
+    const builtIns: ToolDefinitionLike[] = []
+    if (this.#web.hasSearchProvider() && !this.#tools.has('web_search')) {
+      builtIns.push(this.#web.webSearchTool())
+    }
+    if (this.#web.hasFetchProvider() && !this.#tools.has('web_fetch')) {
+      builtIns.push(this.#web.webFetchTool())
+    }
     return [...this.#tools.values(), ...builtIns]
   }
 
@@ -247,7 +388,38 @@ export class Shim {
     if (name === 'web_search' && this.#web.hasSearchProvider()) {
       return this.#web.webSearchTool()
     }
+    if (name === 'web_fetch' && this.#web.hasFetchProvider()) {
+      return this.#web.webFetchTool()
+    }
     return undefined
+  }
+
+  /** MCP prompts/list projection for DSH system-prompt contributions. */
+  listPrompts(): { name: string; description: string }[] {
+    return this.#systemPrompt.hasContributions()
+      ? [{ name: 'dsh-system-prompt', description: `System-prompt contribution from DSH plugin ${this.#pluginName}` }]
+      : []
+  }
+
+  /** Resolve the DSH prompt at request time with strict variable semantics. */
+  async getPrompt(name: string, arguments_: Record<string, string> = {}): Promise<{
+    description: string
+    prompt: string
+    context: string
+  }> {
+    if (name !== 'dsh-system-prompt' || !this.#systemPrompt.hasContributions()) {
+      throw new AdapterError('UNKNOWN_PROMPT', `unknown prompt: ${name}`)
+    }
+    const resolved = await this.#systemPrompt.render({
+      cwd: arguments_['cwd'],
+      provider: arguments_['provider'],
+      model: arguments_['model'],
+    })
+    return {
+      description: `System-prompt contribution from DSH plugin ${this.#pluginName}`,
+      prompt: resolved.prompt,
+      context: resolved.context,
+    }
   }
 
   // ---- ctx.llm ------------------------------------------------------------
@@ -501,24 +673,35 @@ export class Shim {
 
   // ---- ctx.effect / logger / dispose --------------------------------------
 
-  #effect(setup: () => Generator<unknown, unknown, unknown>, label?: string): () => Promise<void> {
+  #effect(setup: () => unknown, label?: string): () => Promise<void> {
     this.#assertLive()
     void label
-    const iterator = setup()
-    const first = iterator.next()
-    const cleanup = normalizeCleanup(first.value)
-    const entry = () => {
+    const produced = setup()
+    const syncIterator = isSyncIterator(produced) ? produced : undefined
+    const asyncIterator = isAsyncIterator(produced) ? produced : undefined
+    // Cordis drains generator effects during setup and owns every yielded
+    // disposer. Teardown runs those disposers in reverse yield order.
+    const cleanup = syncIterator !== undefined
+      ? Promise.resolve(collectSyncCleanups(syncIterator))
+      : asyncIterator !== undefined
+        ? collectAsyncCleanups(asyncIterator)
+        : Promise.resolve(produced).then(normalizeCleanup)
+    const entry = async () => {
       // 每步隔离（W1-06）：单个 cleanup 抛错不得截断同一 effect 的
       // 其余拆解步骤；全部尝试完再聚合上报。
       const errors: unknown[] = []
+      let steps: Array<() => unknown> = []
       try {
-        void iterator.return?.(undefined)
+        // Cordis waits for asynchronous effect setup before teardown. Waiting
+        // also lets an async generator yield every disposer instead of
+        // racing `return()` against its second `next()`.
+        steps = await cleanup
       } catch (error) {
         errors.push(error)
       }
-      for (const fn of cleanup) {
+      for (const fn of steps.reverse()) {
         try {
-          fn()
+          await fn()
         } catch (error) {
           errors.push(error)
         }
@@ -529,28 +712,64 @@ export class Shim {
         throw errors.length === 1 ? errors[0] : new AdapterError('CLEANUP_FAILED', `${errors.length} cleanup steps failed`)
       }
     }
-    this.#cleanups.push(entry)
-    return async () => {
-      const index = this.#cleanups.indexOf(entry)
+    const cleanupTarget = this.#cleanupTarget()
+    cleanupTarget.push(entry)
+    const dispose = async () => {
+      const index = cleanupTarget.indexOf(entry)
       if (index >= 0) {
-        this.#cleanups.splice(index, 1)
-        entry()
+        cleanupTarget.splice(index, 1)
+        await entry()
       }
     }
+    // Cordis' async effect disposer is PromiseLike: awaiting registration
+    // waits for setup and yields a callable disposer. Use a distinct closure
+    // as the fulfillment value to avoid thenable self-assimilation.
+    Object.defineProperty(dispose, 'then', {
+      value: (onFulfilled: ((value: () => Promise<void>) => unknown) | undefined,
+        onRejected: ((reason: unknown) => unknown) | undefined) => cleanup
+        .then(() => () => dispose())
+        .then(onFulfilled, onRejected),
+    })
+    return dispose
   }
 
   #logger() {
-    const prefix = `[dsh:${this.#pluginName}]`
-    const emit = (level: string) => (...args: unknown[]) => {
-      this.#host.log(prefix, level, ...args)
+    const create = (name?: string) => {
+      const prefix = `[dsh:${name ?? this.#pluginName}]`
+      const emit = (level: string) => (...args: unknown[]) => {
+        this.#host.log(prefix, level, ...args)
+      }
+      const logger = ((child?: string) => create(child ?? name)) as import('./types.js').LoggerLike
+      logger.debug = emit('debug')
+      logger.info = emit('info')
+      logger.warn = emit('warn')
+      logger.error = emit('error')
+      logger.success = emit('success')
+      return logger
     }
-    return {
-      debug: emit('debug'),
-      info: emit('info'),
-      warn: emit('warn'),
-      error: emit('error'),
-      success: emit('success'),
-    }
+    return create()
+  }
+
+  #cleanupTarget(): Array<() => unknown> {
+    return this.#cleanupScope.getStore() ?? this.#cleanups
+  }
+
+  #trackCleanup(cleanup: () => unknown): void {
+    this.#cleanupTarget().push(cleanup)
+  }
+
+  #trackedRegistration<T extends () => unknown>(dispose: T): T {
+    const target = this.#cleanupTarget()
+    let active = true
+    const owned = (() => {
+      if (!active) return
+      active = false
+      const index = target.indexOf(owned)
+      if (index >= 0) target.splice(index, 1)
+      return dispose()
+    }) as T
+    target.push(owned)
+    return owned
   }
 
   /** LIFO dispose (INV-D4): stdin EOF / shutdown path. 每步隔离（W1-06）：
@@ -570,7 +789,10 @@ export class Shim {
       }
     }
     this.#tools.clear()
+    this.#provided.clear()
     this.#web.dispose()
+    this.#systemPrompt.clear()
+    this.#events.clear()
     if (errors.length === 1) throw errors[0]
     if (errors.length > 1) {
       throw new AdapterError('CLEANUP_FAILED', `${errors.length} effect cleanups failed during dispose`)
@@ -624,6 +846,42 @@ function normalizeCleanup(value: unknown): Array<() => unknown> {
     return value.filter(entry => typeof entry === 'function') as Array<() => unknown>
   }
   return []
+}
+
+function collectSyncCleanups(iterator: Iterator<unknown>): Array<() => unknown> {
+  const cleanups: Array<() => unknown> = []
+  while (true) {
+    const step = iterator.next()
+    if (step.done) return cleanups
+    cleanups.push(...normalizeCleanup(step.value))
+  }
+}
+
+function collectEffectCleanups(produced: unknown): Promise<Array<() => unknown>> {
+  if (isSyncIterator(produced)) return Promise.resolve(collectSyncCleanups(produced))
+  if (isAsyncIterator(produced)) return collectAsyncCleanups(produced)
+  return Promise.resolve(produced).then(normalizeCleanup)
+}
+
+async function collectAsyncCleanups(iterator: AsyncIterator<unknown>): Promise<Array<() => unknown>> {
+  const cleanups: Array<() => unknown> = []
+  while (true) {
+    const step = await iterator.next()
+    if (step.done) return cleanups
+    cleanups.push(...normalizeCleanup(step.value))
+  }
+}
+
+function isSyncIterator(value: unknown): value is Iterator<unknown> {
+  return value !== null && typeof value === 'object'
+    && typeof (value as { next?: unknown }).next === 'function'
+    && !(Symbol.asyncIterator in value)
+}
+
+function isAsyncIterator(value: unknown): value is AsyncIterator<unknown> {
+  return value !== null && typeof value === 'object'
+    && Symbol.asyncIterator in value
+    && typeof (value as { next?: unknown }).next === 'function'
 }
 
 /** W1-18（A3）：把一个宿主等待挂到取消信号上——signal abort 即以

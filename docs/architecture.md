@@ -277,7 +277,8 @@ MCP framing/session code lives under `mcp/`. The transport classifies incoming
 responses, requests, and notifications and keeps reader/writer queues bounded.
 The `McpAdapterPlugin` starts configured servers only after project trust. Its
 background startup does not block the TUI; `start_run` waits up to 20 seconds
-for the initial tool surface before freezing registries.
+for the initial tool and marked DSH system-prompt surface before freezing both
+registries. Ordinary MCP prompts are not imported automatically.
 
 `plugin_host.rs` owns transport-neutral host callbacks:
 
@@ -288,6 +289,13 @@ for the initial tool surface before freezing registries.
 Usage returns to the same run ledger and journal event as ordinary model
 usage. Requests are served only during an active run. MCP, WASM, and the DSH
 adapter share these semantics instead of implementing parallel policy paths.
+
+The DSH adapter is a static Cordis compatibility layer, not only a tool
+wrapper. It accepts function/object plugins and `Service` classes, implements
+process-local services, events/effects, system-prompt assembly, web providers,
+sampling, and elicitation, then projects portable contributions through MCP.
+Host-spine state (sessions, agents, filesystem/shell, permissions, settings,
+commands, UI, and scoped dynamic restart) remains in Rust-owned core services.
 
 WASM components implement `wit/plugin.wit`. The host supplies no ambient
 environment, stdio, or network capability; filesystem preopens come from the
@@ -371,7 +379,7 @@ read-only and used only to populate session selection.
 | `src/demo.rs` | deterministic offline composition |
 | `src/upgrade.rs` | authenticated self-update |
 | `wit/`, `sdk/clat-plugin/` | WASM contract and author SDK |
-| `sdk/dsh-adapter/` | DSH leaf-plugin adapter package |
+| `sdk/dsh-adapter/` | static Cordis/DSH compatibility adapter package |
 
 ## Adding a core capability
 

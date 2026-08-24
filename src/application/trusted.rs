@@ -171,8 +171,9 @@ impl TrustedProjectApplication {
             ]),
         }
         catalog.extend([
-            Arc::new(crate::plugins::McpAdapterPlugin::new(
+            Arc::new(crate::plugins::McpAdapterPlugin::with_project_root(
                 storage_root.clone(),
+                project.root().to_owned(),
                 glm_mcp_pack_from_control(&control),
                 Arc::clone(&plugin_host),
             )) as Arc<dyn Plugin>,
@@ -212,7 +213,9 @@ impl TrustedProjectApplication {
         // 具，冻结点后移到首次 `start_run`（先有界等待 MCP 落定，见
         // `start_run_with_catalog`——architecture.md 的 "Registries
         // freeze before a run" 语义，docs/todo/mcp-async-startup.md）。
-        // providers/prompts/commands 的贡献在挂载期完成，照旧冻结。
+        // prompts 同样不在此冻结：DSH adapter 可在 MCP 后台启动期导入
+        // `ctx.systemPrompt`；首次 run 等 MCP 落定后与 tools 一起冻结。
+        // providers/commands 的贡献仍在挂载期完成，照旧冻结。
         let tools = project_manager
             .require(TOOL_SERVICE)
             .map_err(|error| ApplicationError::new(error.to_string()))?;
@@ -225,7 +228,6 @@ impl TrustedProjectApplication {
         let prompts = project_manager
             .require(PROMPT_SERVICE)
             .map_err(|error| ApplicationError::new(error.to_string()))?;
-        prompts.freeze();
         // 命令注册表与工具/厂商/提示词同点冻结：贡献只发生在挂载期，
         // 冻结后挡注册不挡撤销（INV-C3）。
         let commands = project_manager

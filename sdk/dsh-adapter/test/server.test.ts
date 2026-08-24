@@ -180,6 +180,34 @@ test('tools face: list, call, bad args, unknown tool, unknown method, ping', asy
   await adapter.dispose()
 })
 
+test('DSH systemPrompt is exposed through marked MCP prompts/list + prompts/get', async () => {
+  const client = new Client()
+  const adapter = await start(client, {
+    name: 'prompted',
+    apply(ctx) {
+      ctx.systemPrompt.section({ name: 'later', order: 20, text: 'cwd={{cwd}}' })
+      ctx.systemPrompt.section({ name: 'first', order: 10, text: 'be precise' })
+      ctx.systemPrompt.context({ name: 'runtime', order: 0, text: 'model={{model}}' })
+    },
+  })
+  await client.initialize()
+  const listed = await client.call('prompts/list')
+  const prompts = (listed.result as {
+    prompts?: Array<{ name?: string; _meta?: Record<string, unknown> }>
+  }).prompts ?? []
+  assert.equal(prompts[0]?.name, 'dsh-system-prompt')
+  assert.equal(prompts[0]?._meta?.['io.artec.clat/dshSystemPrompt'], true)
+
+  const resolved = await client.call('prompts/get', {
+    name: 'dsh-system-prompt',
+    arguments: { cwd: '/repo', model: 'deepseek-v4' },
+  })
+  const meta = (resolved.result as { _meta?: Record<string, unknown> })._meta
+  assert.equal(meta?.['io.artec.clat/systemPrompt'], 'be precise\n\ncwd=/repo')
+  assert.match(String(meta?.['io.artec.clat/runtimeContext']), /model=deepseek-v4/)
+  await adapter.dispose()
+})
+
 test('sampling round-trip: tools/call → sampling/createMessage → result', async () => {
   const client = new Client()
   const adapter = await start(client)
@@ -335,7 +363,7 @@ test('INV-D4: stdin EOF disposes effects LIFO and settles pending requests', asy
   assert.deepEqual(order, ['setup-1', 'setup-2', 'cleanup-2', 'cleanup-1'])
 })
 
-test('serveClat: inject whitelist, Config validation, class rejection', async () => {
+test('serveClat: inject whitelist, Config validation, and static Service class lifecycle', async () => {
   const client = new Client()
   await assert.rejects(
     start(client, { name: 'x', inject: ['fs'], apply() {} }),
@@ -356,6 +384,19 @@ test('serveClat: inject whitelist, Config validation, class rejection', async ()
   assert.deepEqual(seenConfig, { greeting: 'default' })
   await validating.dispose()
 
+  const returnedLifecycle: string[] = []
+  const cleanupClient = new Client()
+  const cleanupAdapter = await start(cleanupClient, {
+    name: 'returned-cleanup',
+    apply() {
+      returnedLifecycle.push('apply')
+      return () => returnedLifecycle.push('cleanup')
+    },
+  })
+  assert.deepEqual(returnedLifecycle, ['apply'])
+  await cleanupAdapter.dispose()
+  assert.deepEqual(returnedLifecycle, ['apply', 'cleanup'])
+
   await assert.rejects(
     start(client, {
       name: 'badcfg',
@@ -370,16 +411,34 @@ test('serveClat: inject whitelist, Config validation, class rejection', async ()
     'a throwing Config validator rejects serveClat before the server starts',
   )
 
+  const lifecycle: string[] = []
   class ServicePlugin {
-    apply(): void {}
+    static inject = ['tools']
+    constructor(readonly ctx: DshContext) {
+      ctx.reflect.provide('fixtureService', this)
+    }
+
+    *[Symbol.for('cordis.init')](): Generator<() => void> {
+      lifecycle.push('init')
+      this.ctx.tools.register({
+        name: 'class_tool',
+        description: 'registered by a Service class',
+        parameters: { type: 'object', properties: {} },
+        output: { render: () => [{ type: 'text', text: 'class ok' }] },
+        execute: async () => ({ ok: true }),
+      })
+      yield () => lifecycle.push('cleanup')
+    }
   }
-  await assert.rejects(
-    start(client, ServicePlugin as unknown as DshPluginLike),
-    (error: unknown) => {
-      assert.match((error as Error).message, /class plugins/)
-      return true
-    },
-  )
+  const classClient = new Client()
+  const classAdapter = await start(classClient, ServicePlugin as unknown as DshPluginLike)
+  await classClient.initialize()
+  const listed = await classClient.call('tools/list')
+  const classTools = (listed.result as { tools?: Array<{ name?: string }> }).tools ?? []
+  assert(classTools.some(tool => tool.name === 'class_tool'))
+  assert.deepEqual(lifecycle, ['init'])
+  await classAdapter.dispose()
+  assert.deepEqual(lifecycle, ['init', 'cleanup'])
 })
 
 test('apply failure rejects serveClat and disposes', async () => {

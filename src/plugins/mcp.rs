@@ -1,9 +1,10 @@
 //! MCP adapter plugin: mounts configured MCP servers (stdio/HTTP) after
-//! trust and contributes their tools through revocable leases.
+//! trust and contributes their tools plus marked DSH system prompts through
+//! revocable leases.
 
 use super::services::{
-    MCP_STATUS_SERVICE, MCP_STATUS_SERVICE_ID, McpServerStatus, McpStatus, TOOL_SERVICE,
-    TOOL_SERVICE_ID,
+    MCP_STATUS_SERVICE, MCP_STATUS_SERVICE_ID, McpServerStatus, McpStatus, PROMPT_SERVICE,
+    PROMPT_SERVICE_ID, PromptRegistry, TOOL_SERVICE, TOOL_SERVICE_ID,
 };
 use crate::mcp::client::{
     McpServer, McpServerRequestHandler, McpTool, load_mcp_config, merge_vendor_pack,
@@ -23,16 +24,20 @@ use std::sync::atomic::{AtomicBool, Ordering};
 const ID: PluginId = PluginId::new("builtin.mcp_adapter");
 const PROVIDES: &[ServiceId] = &[MCP_STATUS_SERVICE_ID];
 const REQUIRES: &[ServiceId] = &[TOOL_SERVICE_ID];
+const OPTIONAL: &[ServiceId] = &[PROMPT_SERVICE_ID];
 const DESCRIPTOR: PluginDescriptor = PluginDescriptor {
     id: ID,
     scope: ScopeKind::TrustedProject,
     provides: PROVIDES,
     requires: REQUIRES,
-    optional: &[],
+    optional: OPTIONAL,
 };
 
 pub(crate) struct McpAdapterPlugin {
     storage_root: PathBuf,
+    /// DSH `{{cwd}}` 变量的项目真值。子进程 cwd 仍是 storage_root，
+    /// 防止不受信任项目劫持 cwd-sensitive launcher（如 npx）。
+    project_root: PathBuf,
     /// 厂商专属 MCP 包（如 GLM Coding Plan 的四件套），由 application
     /// 在挂载期按激活厂商与凭据算好传入；密钥只在内存，用户
     /// `mcp.json` 同名条目优先（见 `merge_vendor_pack`）。
@@ -44,13 +49,31 @@ pub(crate) struct McpAdapterPlugin {
 }
 
 impl McpAdapterPlugin {
+    #[cfg(test)]
     pub(crate) fn new(
         storage_root: PathBuf,
         vendor_pack: Vec<(String, crate::mcp::client::McpServerConfig)>,
         host: Arc<PluginHostBridge>,
     ) -> Self {
         Self {
+            project_root: storage_root.clone(),
             storage_root,
+            vendor_pack,
+            host,
+        }
+    }
+
+    /// 生产 Catalog 使用：控制面与 MCP 子进程 cwd 仍取 `storage_root`；
+    /// 仅 DSH prompt 变量使用真实项目根。
+    pub(crate) fn with_project_root(
+        storage_root: PathBuf,
+        project_root: PathBuf,
+        vendor_pack: Vec<(String, crate::mcp::client::McpServerConfig)>,
+        host: Arc<PluginHostBridge>,
+    ) -> Self {
+        Self {
+            storage_root,
+            project_root,
             vendor_pack,
             host,
         }
@@ -58,9 +81,9 @@ impl McpAdapterPlugin {
 }
 
 /// worker 与 close 协作的共享状态：取消位 + 清理闭包列表。worker 在
-/// server 间检查取消；清理按 push 序执行（**每 server 先工具 lease 后
-/// 进程关闭**——线性 drain 等价旧 LIFO teardown 语义：工具先撤、进程
-/// 后关）。
+/// server 间检查取消；清理按 push 序执行（**每 server 先工具/prompt
+/// lease 后进程关闭**——线性 drain 等价旧 LIFO teardown 语义：贡献先撤、
+/// 进程后关）。
 struct McpStartupState {
     cancelled: AtomicBool,
     cleanups: Mutex<Vec<Box<dyn FnOnce() + Send>>>,
@@ -99,6 +122,9 @@ impl Plugin for McpAdapterPlugin {
         let registry = context
             .require(TOOL_SERVICE)
             .map_err(|error| PluginError::new(error.to_string()))?;
+        let prompts = context
+            .try_require(PROMPT_SERVICE)
+            .map_err(|error| PluginError::new(error.to_string()))?;
         // 本地配置读取保留 fail-fast（无网络/子进程 I/O，INV-M1）；
         // 连接与握手全部挪进后台 worker——mount 即返回，ready 不再被
         // MCP 阻塞（docs/todo/mcp-async-startup.md）。
@@ -115,11 +141,22 @@ impl Plugin for McpAdapterPlugin {
             let registry = Arc::clone(&registry);
             let state = Arc::clone(&state);
             let host = Arc::clone(&self.host);
-            let storage_root = self.storage_root.clone();
+            let server_cwd = self.storage_root.clone();
+            let project_root = self.project_root.clone();
             std::thread::Builder::new()
                 .name("clat-mcp-startup".into())
                 .spawn(move || {
-                    run_startup(config, &storage_root, registry, owner, status, state, host)
+                    run_startup(McpStartupInputs {
+                        config,
+                        server_cwd,
+                        project_root,
+                        registry,
+                        prompt_registry: prompts,
+                        owner,
+                        status,
+                        state,
+                        host,
+                    })
                 })
                 .map_err(|error| PluginError::new(format!("spawn mcp startup worker: {error}")))?
         };
@@ -147,29 +184,46 @@ impl Plugin for McpAdapterPlugin {
 /// 后台启动 server：**并行**连接（W1-16/A2——此前串行逐 server，第一
 /// 个坏 server 的握手/list 全额超时会顺延所有后续 server 的工具注册）。
 /// 每 server 一线程做 connect（spawn/HTTP + initialize 握手）→
-/// `list_tools`（各超时有界：握手 10s / discover 3s / list 总帽 30s），
-/// 完成即经 channel 交回主 worker 按到达序注册工具与上报状态；失败
+/// `list_tools` + 标记 prompt 解析（各超时有界：握手 10s / discover 3s /
+/// list 总帽 30s），完成即经 channel 交回主 worker 按到达序注册贡献并
+/// 上报状态；失败
 /// （含 stderr 尾部）记入状态，不影响其余 server。全部落定（或取消）
 /// 后 mark_settled——`start_run` 的有界等待以此为准（INV-M2/M3）。
-fn run_startup(
+struct McpStartupInputs {
     config: BTreeMap<String, crate::mcp::client::McpServerConfig>,
-    storage_root: &std::path::Path,
+    server_cwd: PathBuf,
+    project_root: PathBuf,
     registry: Arc<ToolRegistry>,
+    prompt_registry: Option<Arc<PromptRegistry>>,
     owner: PluginOwner,
     status: Arc<McpStatus>,
     state: Arc<McpStartupState>,
     host: Arc<PluginHostBridge>,
-) {
+}
+
+struct ConnectedContributions {
+    server: crate::mcp::client::McpServer,
+    tools: Vec<crate::mcp::client::McpToolInfo>,
+    prompts: Vec<(crate::mcp::client::McpPromptInfo, String)>,
+    prompt_failure: Option<String>,
+}
+
+fn run_startup(inputs: McpStartupInputs) {
+    let McpStartupInputs {
+        config,
+        server_cwd,
+        project_root,
+        registry,
+        prompt_registry,
+        owner,
+        status,
+        state,
+        host,
+    } = inputs;
     struct ServerOutcome {
         name: String,
         transport: &'static str,
-        result: Result<
-            (
-                crate::mcp::client::McpServer,
-                Vec<crate::mcp::client::McpToolInfo>,
-            ),
-            String,
-        >,
+        result: Result<ConnectedContributions, String>,
     }
     let (tx, rx) = std::sync::mpsc::channel::<ServerOutcome>();
     let mut pending = 0usize;
@@ -187,15 +241,48 @@ fn run_startup(
         let thread_name = name.clone();
         let name = name.clone();
         let server_config = server_config.clone();
-        let storage_root = storage_root.to_path_buf();
+        let server_cwd = server_cwd.clone();
+        let project_root = project_root.clone();
         let spawned = std::thread::Builder::new()
             .name(format!("clat-mcp-connect-{thread_name}"))
             .spawn(move || {
                 let outcome =
-                    match McpServer::connect(&name, &server_config, &storage_root, server_requests)
-                    {
+                    match McpServer::connect(&name, &server_config, &server_cwd, server_requests) {
                         Ok(server) => match server.list_tools() {
-                            Ok(infos) => Ok((server, infos)),
+                            Ok(infos) => {
+                                let mut arguments = BTreeMap::new();
+                                arguments.insert(
+                                    "cwd".to_owned(),
+                                    project_root.to_string_lossy().into_owned(),
+                                );
+                                let prompt_result =
+                                    server.list_system_prompts().and_then(|items| {
+                                        items
+                                            .into_iter()
+                                            .map(|prompt| {
+                                                server
+                                                    .get_system_prompt(&prompt, &arguments)
+                                                    .map(|text| (prompt, text))
+                                            })
+                                            .collect::<Result<Vec<_>, _>>()
+                                    });
+                                match prompt_result {
+                                    Ok(prompts) => Ok(ConnectedContributions {
+                                        server,
+                                        tools: infos,
+                                        prompts,
+                                        prompt_failure: None,
+                                    }),
+                                    Err(error) => Ok(ConnectedContributions {
+                                        server,
+                                        tools: infos,
+                                        prompts: Vec::new(),
+                                        prompt_failure: Some(format!(
+                                            "mcp `{name}` prompts: {error}"
+                                        )),
+                                    }),
+                                }
+                            }
                             Err(error) => {
                                 // 失败消息带上服务器 stderr 尾部——npx/npm 的
                                 // 报错就在这里；连上但列具失败的连接显式关闭。
@@ -241,8 +328,8 @@ fn run_startup(
         pending -= 1;
         if state.is_cancelled() {
             // 已连上但来不及注册的：显式关闭，不依赖 Drop 兜底。
-            if let Ok((server, _)) = outcome.result {
-                let _ = server.shutdown();
+            if let Ok(connected) = outcome.result {
+                let _ = connected.server.shutdown();
             }
             continue;
         }
@@ -251,13 +338,21 @@ fn run_startup(
             transport,
             result,
         } = outcome;
-        let (server, infos) = match result {
-            Ok(pair) => pair,
+        let ConnectedContributions {
+            server,
+            tools: infos,
+            prompts: prompt_infos,
+            prompt_failure,
+        } = match result {
+            Ok(connected) => connected,
             Err(message) => {
                 status.record_failed_server(message);
                 continue;
             }
         };
+        if let Some(failure) = prompt_failure {
+            status.record_failure(failure);
+        }
         let server = Arc::new(server);
         let mut tools = 0usize;
         for info in infos {
@@ -281,7 +376,7 @@ fn run_startup(
             let tool: Arc<dyn Tool> = Arc::new(McpTool::new(&server, info));
             match registry.register(owner, tool) {
                 Ok(lease) => {
-                    // 清理序（每 server）：先工具 lease、后进程关闭。
+                    // 清理序（每 server）：先贡献 lease、后进程关闭。
                     state.push_cleanup(Box::new(move || {
                         let _ = lease.revoke();
                     }));
@@ -294,9 +389,23 @@ fn run_startup(
                 }
             }
         }
+        if let Some(prompt_registry) = &prompt_registry {
+            for (prompt, text) in prompt_infos {
+                if text.trim().is_empty() {
+                    continue;
+                }
+                match prompt_registry.contribute(owner, text) {
+                    Ok(lease) => state.push_cleanup(Box::new(move || {
+                        let _ = lease.revoke();
+                    })),
+                    Err(error) => status
+                        .record_failure(format!("mcp `{name}` prompt `{}`: {error}", prompt.name)),
+                }
+            }
+        }
         let shutdown_server = Arc::clone(&server);
         state.push_cleanup(Box::new(move || {
-            // 工具 lease 已先行 revoke（McpTool 释放 Arc）；仍被放弃的
+            // 工具/prompt lease 已先行 revoke（McpTool 释放 Arc）；仍被放弃的
             // 连接线程持有 Arc 时放弃显式关闭（其自身超时有界、发送失
             // 败即自关闭，进程退出兜底），不算失败。
             if let Ok(server) = Arc::try_unwrap(shutdown_server) {
@@ -319,7 +428,7 @@ fn run_startup(
 mod tests {
     use super::*;
     use crate::plugin::{Plugin, PluginManager};
-    use crate::plugins::ToolRegistryPlugin;
+    use crate::plugins::{PromptRegistryPlugin, ToolRegistryPlugin};
     use std::fs;
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -383,7 +492,7 @@ for line in sys.stdin:
         send({"jsonrpc": "2.0", "id": msg["id"], "result": {
             "resultType": "complete",
             "supportedVersions": ["2026-07-28"],
-            "capabilities": {"tools": {}},
+            "capabilities": {"tools": {}, "prompts": {}},
             "_meta": {"io.modelcontextprotocol/serverInfo": {
                 "name": "plugin-test", "version": "1.0"}}}})
     elif method == "tools/list":
@@ -391,6 +500,15 @@ for line in sys.stdin:
             "resultType": "complete", "tools": [{
                 "name": "echo", "description": "test tool",
                 "inputSchema": {"type": "object"}}]}})
+    elif method == "prompts/list":
+        send({"jsonrpc": "2.0", "id": msg["id"], "result": {
+            "resultType": "complete", "prompts": [{
+                "name": "dsh-system-prompt", "description": "fixture prompt",
+                "_meta": {"io.artec.clat/dshSystemPrompt": True}}]}})
+    elif method == "prompts/get":
+        send({"jsonrpc": "2.0", "id": msg["id"], "result": {
+            "resultType": "complete", "messages": [],
+            "_meta": {"io.artec.clat/systemPrompt": "fixture guidance"}}})
     else:
         send({"jsonrpc": "2.0", "id": msg["id"],
               "error": {"code": -32601, "message": "unsupported"}})
@@ -411,6 +529,7 @@ with open(sys.argv[1], "w", encoding="utf-8") as output:
 
         let catalog: Vec<Arc<dyn Plugin>> = vec![
             Arc::new(ToolRegistryPlugin),
+            Arc::new(PromptRegistryPlugin),
             Arc::new(McpAdapterPlugin::new(
                 root.clone(),
                 Vec::new(),
@@ -447,6 +566,8 @@ with open(sys.argv[1], "w", encoding="utf-8") as output:
                 .collect::<Vec<_>>(),
             ["mcp_fixture_echo"]
         );
+        let prompts = manager.require(PROMPT_SERVICE).expect("prompt registry");
+        assert_eq!(prompts.instructions(), "fixture guidance");
 
         manager.close().expect("close project scope");
         assert!(registry.is_empty(), "MCP tool lease was not revoked");

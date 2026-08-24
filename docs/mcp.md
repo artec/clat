@@ -45,19 +45,24 @@ MCP servers are global capabilities mounted inside a Trusted Project Scope.
 Nothing is spawned or contacted before project trust succeeds.
 
 Startup is asynchronous: CLAT becomes interactive while a background worker
-connects servers and lists tools. The first run waits up to 20 seconds for that
-initial tool surface before the registry freezes. If a server finishes after
-that freeze, its tool registration is rejected and `/mcp` reports the failure;
-restart CLAT after fixing or warming that server.
+connects servers and lists tools. Servers that advertise MCP prompts are also
+queried, but CLAT automatically imports only entries explicitly marked by the
+DSH adapter as system-prompt contributions. The first run waits up to 20
+seconds for that initial surface before the tool and prompt registries freeze.
+If a server finishes after that freeze, its registrations are rejected and
+`/mcp` reports the failure; restart CLAT after fixing or warming that server.
 
 Configured stdio subprocesses use `~/.clat` as their working directory, never
-the project directory. They are shared across runs in the mounted project and
-closed when that project scope closes. Teardown revokes tool leases before
-closing stdin, waiting a bounded grace, killing/reaping if needed, and joining
-I/O threads.
+the project directory. The DSH adapter receives the real project root only as
+the controlled `cwd` prompt argument. Servers are shared across runs in the
+mounted project and closed when that project scope closes. Teardown revokes
+prompt and tool leases before closing stdin, waiting a bounded grace,
+killing/reaping if needed, and joining I/O threads.
 
 A server failure is isolated. Spawn, handshake, `tools/list`, name collision,
-or registration failure removes only that server's contributions.
+or registration failure removes only that server's contributions. A marked
+DSH prompt discovery/resolution failure is reported but does not discard tools
+that the same server registered successfully.
 
 ### Stderr diagnostics
 
@@ -251,6 +256,8 @@ scoped credentials.
 | one `tools/list` page | 30 s |
 | `tools/list` pages | 32 |
 | tools per server | 512 |
+| marked DSH prompts per server | 128 |
+| one resolved DSH system prompt | 256 KiB |
 | one `tools/call` | 120 s, extendable only for same-connection host requests |
 | total host-request extension | 10 min |
 | tool result | 1 MiB |
@@ -270,7 +277,8 @@ flooding server block the agent or shutdown path.
 2. Read the attached stderr tail for stdio launch/package errors.
 3. Run the command manually from `~/.clat` with the same environment.
 4. Confirm the entry uses either `command` or `url`, not both.
-5. If a tool is missing, check normalized-name collisions and the 512-tool cap.
+5. If a tool is missing, check normalized-name collisions and the 512-tool cap;
+   if a DSH prompt is missing, confirm the adapter marker and 128-prompt cap.
 6. If the first run freezes the registry before a very slow server is ready,
    restart CLAT after fixing or warming that server; the project-scope registry
    does not thaw between runs.
