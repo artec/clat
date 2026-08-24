@@ -66,6 +66,9 @@ CLAT uses a Rust-native plugin kernel for compile-time components. Explicit
 catalogs choose and order built-in plugins; there is no dynamic Rust library or
 JavaScript discovery. Configured WebAssembly components are the only extension
 code loaded into the CLAT process; MCP executables remain separate processes.
+Dynamic native libraries are deliberately not a plugin ABI: Rust's compiler ABI
+is not stable enough for a durable market contract. Rust-authored third-party
+plugins compile to the versioned WIT/WASM component boundary instead.
 
 | Scope | Lifetime | Owns |
 |---|---|---|
@@ -285,6 +288,9 @@ registries. Ordinary MCP prompts are not imported automatically.
 - **sampling** lets an extension borrow the active model after payload,
   per-run spend, and permission gates;
 - **elicitation** lets it ask the user through the injected `UserAsker` port.
+- **context** exposes a bounded, detached run/session mirror;
+- **host tool calls** reach only an explicit native allowlist through the same
+  permission policy, project fence, cancellation token, and execution pipeline.
 
 Usage returns to the same run ledger and journal event as ordinary model
 usage. Requests are served only during an active run. MCP, WASM, and the DSH
@@ -294,14 +300,17 @@ The DSH adapter is a static Cordis compatibility layer, not only a tool
 wrapper. It accepts function/object plugins and `Service` classes, implements
 process-local services, events/effects, system-prompt assembly, web providers,
 sampling, and elicitation, then projects portable contributions through MCP.
-Host-spine state (sessions, agents, filesystem/shell, permissions, settings,
-commands, UI, and scoped dynamic restart) remains in Rust-owned core services.
+Its `ctx.fs` / `ctx.shell` services call the Rust-owned host bridge, while
+`ctx.sessions` / `ctx.agents` are explicitly read-only current-run mirrors.
+Mutable session/agent state, subagents, permissions, settings, commands, UI,
+and scoped dynamic restart remain Rust-owned core services.
 
 WASM components implement `wit/plugin.wit`. The host supplies no ambient
 environment, stdio, or network capability; filesystem preopens come from the
 permission mode and separate hash-bound write grants. Fuel, memory, and epoch
 interruption bound guest execution. See [MCP integration](mcp.md),
-[WASM plugins](wasm.md), and [DSH plugin porting](dsh-plugins.md).
+[WASM plugins](wasm.md), [DSH plugin porting](dsh-plugins.md), and the
+[plugin package model](plugins.md).
 
 ## Persistence
 

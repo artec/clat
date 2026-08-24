@@ -14,10 +14,10 @@ JavaScript runtime; to the end user, the result is an ordinary MCP server.
 ## Is this adapter a fit?
 
 Good fits contribute tools, system-prompt material, model sampling, user
-questions, web providers, local services, or Cordis events/effects. Plugins
-that depend directly on host sessions, agents, subagents, filesystem/shell
-seams, permissions, or UI services still need corresponding native CLAT host
-services or must be split at that boundary.
+questions, web providers, filesystem/shell work, read-only session/agent
+inspection, local services, or Cordis events/effects. Mutable sessions/agents,
+subagents, permissions, settings, commands, or UI services still need a native
+CLAT host capability or must be split at that boundary.
 
 For the complete compatibility matrix and migration guidance, read the
 [porting guide](https://github.com/artec/clat/blob/main/docs/dsh-plugins.md).
@@ -103,6 +103,10 @@ rejecting startup.
 | `ctx.web.registerSearchProvider(...)` | built-in `web_search` with multi-query merge, URL deduplication, and bounded results |
 | `ctx.web.registerFetchProvider(...)` | built-in, bounded `web_fetch` |
 | `ctx.systemPrompt` | sections, contexts, ordering, complete sections, variables, tool providers, change events, and assembly waterfall |
+| `ctx.clat` | bounded current-run context and permission-gated native host-tool calls |
+| `ctx.fs` | DSH-shaped filesystem over CLAT read/list/write/edit tools |
+| `ctx.shell` | foreground `resolve` / `run` over CLAT `run_command` |
+| `ctx.sessions`, `ctx.agents` | detached, read-only current-run mirrors |
 | `ctx.get/set/provide`, `ctx.reflect.provide` | process-local service registration and disposal |
 | `ctx.on/once`, `emit/parallel/serial/bail/waterfall` | process-local Cordis dispatch semantics |
 | `launchEnvironmentOf(ctx)` | falls back to `process.env` for plugin environment lookup |
@@ -153,8 +157,13 @@ permission policy.
 - `exec.deferContext()` and `exec.concludeTurn()` are warning + no-op seams.
 - `web_fetch` caps rendered content at 100,000 characters and does not reproduce
   DSH's complete HTML-to-Markdown pipeline.
-- Agent/session/fs/shell/permission/settings/commands/UI services and scoped
-  prompt shadowing remain native-host responsibilities.
+- Session/agent mutations and live events, subagents, permission/settings/
+  commands/UI services, background shell processes, atomic fs version guards,
+  and scoped prompt shadowing remain native-host responsibilities.
+- `ctx.fs.readText/readBytes` rejects files above the host's 64 KiB complete
+  read cap; guarded writes and `replaceAll` reject instead of faking DSH
+  atomicity. Projected fs paths are confined to the active CLAT project. Shell
+  cwd is the CLAT project root; env/stdin overrides reject.
 
 Host `notifications/cancelled` and adapter shutdown abort the active
 `tools/call` signal and pending sampling/elicitation promises. Plugin work must
@@ -198,7 +207,12 @@ artifact, so end users install no JavaScript environment.
 ```bash
 npm install
 npm test
+npm run scan -- /path/to/deepseek-harness --output /tmp/dsh-compat.json
 ```
+
+The scanner emits a revision-pinned, machine-readable per-package seam matrix.
+It is conservative static evidence, not a replacement for fixture and
+end-to-end acceptance.
 
 Repository: [artec/clat](https://github.com/artec/clat) ·
 [sdk/dsh-adapter](https://github.com/artec/clat/tree/main/sdk/dsh-adapter)

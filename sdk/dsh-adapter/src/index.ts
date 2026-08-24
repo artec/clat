@@ -29,6 +29,8 @@ export { McpStdioServer } from './server.js'
 export { WebSeam } from './web.js'
 export { EventBus, isBailed } from './events.js'
 export { SystemPromptSeam } from './system-prompt.js'
+export { scanDshCompatibility, writeCompatibilityMatrix } from './scanner.js'
+export type { CompatibilityMatrix, CompatibilityStatus, PackageCompatibility } from './scanner.js'
 export type {
   AssembleContextLike,
   AskAnswerLike,
@@ -36,20 +38,30 @@ export type {
   AskOptionLike,
   AskRequestLike,
   ContentBlockLike,
+  ClatHostContextLike,
+  ClatHostLike,
   DshContext,
   DshPluginLike,
   DshServiceConstructorLike,
   EventOptionsLike,
   FinishReasonLike,
+  FileSystemLike,
+  FsInfoLike,
+  FsTargetLike,
   GenerateOptionsLike,
   InjectFiberLike,
   InjectResultLike,
   LoggerLike,
   MessageLike,
+  AgentMirrorLike,
+  AgentRegistryLike,
   PromptAssemblyLike,
   PromptContextLike,
   PromptSectionLike,
   StreamChunk,
+  SessionMirrorLike,
+  SessionStoreLike,
+  ShellLike,
   SystemPromptLike,
   TextContentBlock,
   ToolDefinitionLike,
@@ -198,6 +210,7 @@ export async function serveClat(plugin: PluginInput, options: ServeClatOptions =
         if (shim === undefined) throw new AdapterError('DISPOSED', 'the adapter is shutting down')
         return shim.callTool(toolName, args, callId)
       },
+      hostContextChanged: context => shim?.updateHostContext(context),
       dispose: () => shim?.disposeAll() ?? Promise.resolve(),
     },
   })
@@ -206,6 +219,8 @@ export async function serveClat(plugin: PluginInput, options: ServeClatOptions =
       sampling: params => server.sampling(params),
       beginCall: callId => server.beginCall(callId),
       elicitation: params => server.elicitation(params),
+      context: () => server.hostContext(),
+      hostTool: (toolName, args) => server.hostTool(toolName, args),
       get capabilities() {
         return server.clientCapabilities
       },

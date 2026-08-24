@@ -142,6 +142,48 @@ test('initialize handshake echoes protocol version and gates on apply', async ()
   await adapter.dispose()
 })
 
+test('CLAT host-services negotiation, context notification, and tool request round-trip', async () => {
+  const client = new Client()
+  let pluginContext: DshContext | undefined
+  const adapter = await start(client, {
+    name: 'host-services',
+    apply(ctx) { pluginContext = ctx },
+  })
+  const initialized = await client.initialize({
+    sampling: {},
+    elicitation: {},
+    experimental: { 'io.artec.clat/hostServices': { version: '0.1.0' } },
+  })
+  assert.equal(
+    (initialized.result as { capabilities?: { experimental?: Record<string, unknown> } })
+      .capabilities?.experimental?.['io.artec.clat/hostServices'] !== undefined,
+    true,
+  )
+  client.send({
+    jsonrpc: '2.0',
+    method: 'io.artec.clat/context/changed',
+    params: {
+      context: {
+        protocolVersion: '0.1.0',
+        project: { root: '/workspace' },
+        run: { sessionId: 's1', provider: 'fixture', model: 'm', messages: [] },
+        hostTools: ['read_file'],
+      },
+    },
+  })
+  await client.call('ping')
+  assert.equal(pluginContext?.sessions.get('s1')?.id, 's1')
+
+  const pending = pluginContext?.clat.callTool('read_file', { path: 'README.md' })
+  assert.ok(pending)
+  const request = await client.serverRequest()
+  assert.equal(request.method, 'io.artec.clat/tools/call')
+  assert.deepEqual(request.params, { name: 'read_file', arguments: { path: 'README.md' } })
+  client.reply(request.id, { output: { content: '1 | hello\n' } })
+  assert.deepEqual(await pending, { content: '1 | hello\n' })
+  await adapter.dispose()
+})
+
 test('requests before initialize fail with -32002', async () => {
   const client = new Client()
   const adapter = await start(client)
@@ -157,7 +199,7 @@ test('tools face: list, call, bad args, unknown tool, unknown method, ping', asy
 
   const listed = await client.call('tools/list')
   const tools = (listed.result as { tools?: Array<{ name?: string; inputSchema?: { type?: string } }> }).tools ?? []
-  assert.deepEqual(tools.map(tool => tool.name).sort(), ['ask_roundtrip', 'echo', 'sample_roundtrip'])
+  assert.deepEqual(tools.map(tool => tool.name).sort(), ['ask_roundtrip', 'echo', 'host_roundtrip', 'sample_roundtrip'])
   assert.equal(tools[0]?.inputSchema?.type, 'object')
 
   const echoed = await client.call('tools/call', { name: 'echo', arguments: { text: 'hi', times: 2 } })
@@ -366,9 +408,9 @@ test('INV-D4: stdin EOF disposes effects LIFO and settles pending requests', asy
 test('serveClat: inject whitelist, Config validation, and static Service class lifecycle', async () => {
   const client = new Client()
   await assert.rejects(
-    start(client, { name: 'x', inject: ['fs'], apply() {} }),
+    start(client, { name: 'x', inject: ['subagents'], apply() {} }),
     (error: unknown) => {
-      assert.match((error as Error).message, /inject \['fs'\]/)
+      assert.match((error as Error).message, /inject \['subagents'\]/)
       return true
     },
   )

@@ -235,64 +235,71 @@ fn run_startup(inputs: McpStartupInputs) {
         }
         pending += 1;
         // 每 server 一个 McpHostHandler：服务端请求带 server 名过桥。
+        let server_handler = Arc::new(McpHostHandler::new(Arc::clone(&host), name));
         let server_requests: Option<Arc<dyn McpServerRequestHandler>> =
-            Some(Arc::new(McpHostHandler::new(Arc::clone(&host), name)));
+            Some(server_handler.clone());
         let tx = tx.clone();
         let thread_name = name.clone();
         let name = name.clone();
         let server_config = server_config.clone();
         let server_cwd = server_cwd.clone();
         let project_root = project_root.clone();
+        let server_handler = Arc::clone(&server_handler);
         let spawned = std::thread::Builder::new()
             .name(format!("clat-mcp-connect-{thread_name}"))
             .spawn(move || {
                 let outcome =
                     match McpServer::connect(&name, &server_config, &server_cwd, server_requests) {
-                        Ok(server) => match server.list_tools() {
-                            Ok(infos) => {
-                                let mut arguments = BTreeMap::new();
-                                arguments.insert(
-                                    "cwd".to_owned(),
-                                    project_root.to_string_lossy().into_owned(),
-                                );
-                                let prompt_result =
-                                    server.list_system_prompts().and_then(|items| {
-                                        items
-                                            .into_iter()
-                                            .map(|prompt| {
-                                                server
-                                                    .get_system_prompt(&prompt, &arguments)
-                                                    .map(|text| (prompt, text))
-                                            })
-                                            .collect::<Result<Vec<_>, _>>()
-                                    });
-                                match prompt_result {
-                                    Ok(prompts) => Ok(ConnectedContributions {
-                                        server,
-                                        tools: infos,
-                                        prompts,
-                                        prompt_failure: None,
-                                    }),
-                                    Err(error) => Ok(ConnectedContributions {
-                                        server,
-                                        tools: infos,
-                                        prompts: Vec::new(),
-                                        prompt_failure: Some(format!(
-                                            "mcp `{name}` prompts: {error}"
-                                        )),
-                                    }),
+                        Ok(server) => {
+                            if server.supports_clat_host_services() {
+                                server_handler.enable_host_services();
+                            }
+                            match server.list_tools() {
+                                Ok(infos) => {
+                                    let mut arguments = BTreeMap::new();
+                                    arguments.insert(
+                                        "cwd".to_owned(),
+                                        project_root.to_string_lossy().into_owned(),
+                                    );
+                                    let prompt_result =
+                                        server.list_system_prompts().and_then(|items| {
+                                            items
+                                                .into_iter()
+                                                .map(|prompt| {
+                                                    server
+                                                        .get_system_prompt(&prompt, &arguments)
+                                                        .map(|text| (prompt, text))
+                                                })
+                                                .collect::<Result<Vec<_>, _>>()
+                                        });
+                                    match prompt_result {
+                                        Ok(prompts) => Ok(ConnectedContributions {
+                                            server,
+                                            tools: infos,
+                                            prompts,
+                                            prompt_failure: None,
+                                        }),
+                                        Err(error) => Ok(ConnectedContributions {
+                                            server,
+                                            tools: infos,
+                                            prompts: Vec::new(),
+                                            prompt_failure: Some(format!(
+                                                "mcp `{name}` prompts: {error}"
+                                            )),
+                                        }),
+                                    }
+                                }
+                                Err(error) => {
+                                    // 失败消息带上服务器 stderr 尾部——npx/npm 的
+                                    // 报错就在这里；连上但列具失败的连接显式关闭。
+                                    let tail = crate::mcp::client::format_stderr_tail_public(
+                                        &server.stderr_tail(),
+                                    );
+                                    let _ = server.shutdown();
+                                    Err(format!("mcp `{name}`: {error}{tail}"))
                                 }
                             }
-                            Err(error) => {
-                                // 失败消息带上服务器 stderr 尾部——npx/npm 的
-                                // 报错就在这里；连上但列具失败的连接显式关闭。
-                                let tail = crate::mcp::client::format_stderr_tail_public(
-                                    &server.stderr_tail(),
-                                );
-                                let _ = server.shutdown();
-                                Err(format!("mcp `{name}`: {error}{tail}"))
-                            }
-                        },
+                        }
                         Err(error) => Err(format!("mcp `{name}`: {error}")),
                     };
                 let transport = if server_config.is_http() {
@@ -354,6 +361,15 @@ fn run_startup(inputs: McpStartupInputs) {
             status.record_failure(failure);
         }
         let server = Arc::new(server);
+        if server.supports_clat_host_services() {
+            let weak_server = Arc::downgrade(&server);
+            let lease = host.subscribe_context(Arc::new(move |context| {
+                if let Some(server) = weak_server.upgrade() {
+                    let _ = server.notify_clat_host_context(context);
+                }
+            }));
+            state.push_cleanup(Box::new(move || lease.revoke()));
+        }
         let mut tools = 0usize;
         for info in infos {
             let remote_name = info.name.clone();

@@ -43,6 +43,11 @@ Rust 内核有意去掉 Cordis 的运行时猴子补丁、原型链注入、热�
 | `ctx.llm.stream` | MCP `sampling/createMessage`，回适配 dsh-llm chunks | 支持文本采样 |
 | `ctx.userQuestions.ask` | MCP `elicitation/create` | 支持，有收窄 |
 | `ctx.web` search/fetch provider | `web_search` / `web_fetch` 内置工具，保留 provider 选择错误 | 支持 |
+| `ctx.clat` | 读取当前 run 的有界上下文；调用宿主 allowlist 工具 | 支持（CLAT 扩展） |
+| `ctx.fs` | 经 `read_file` / `list_files` / `write_file` / `edit_file` 投影 DSH FileSystem | 支持，有明确收窄 |
+| `ctx.shell` | 经 `run_command` 前台执行 | 支持前台 `resolve` / `run` |
+| `ctx.sessions` | 当前 CLAT session 的只读、run 级镜像 | 支持只读镜像 |
+| `ctx.agents` | 当前 root agent 的只读镜像 | 支持只读镜像 |
 | callable `ctx.logger(name)` | 所有级别写 stderr，stdout 只走协议 | 支持 |
 
 DSH system prompt 通过带 CLAT 标记的 MCP prompt 发布。CLAT 只导入明确
@@ -57,10 +62,20 @@ prompt 不会未经用户选择自动进入系统指令。
 
 ## 仍需原生宿主实现的部分
 
-以下能力属于 DSH agent host 的脊柱，不能由一个 MCP 子进程安全地伪造：
+第二阶段没有把 DSH agent host 的脊柱复制进 JavaScript。CLAT 内核新增了
+传输无关的 host contract；DSH adapter 与 Rust/WASM 插件都调用同一个
+`PluginHostBridge`。上下文只在活动 run 内存在；stdio adapter 在卸载时会尽力
+推送 `null`，权威状态仍是 `context/get`，且所有新宿主调用都会在桥层拒绝旧 run。宿主
+工具只开放 `list_files`、`read_file`、`search`、`write_file`、`edit_file`
+与 `run_command`，仍依次经过当前 run 的权限策略、项目路径围栏、取消令牌
+和 `ToolExecutionPipeline`。其中 fs 投影的读写路径都被收紧到当前项目根；
+不继承 CLAT agent 原生读工具“显式绝对路径可读”的宽松能力。
 
-- sessions、agents、subagents、agent loop 与 compaction；
-- fs、shell、permission、approval 与 project fence；
+以下能力仍不能由 MCP 子进程安全地伪造：
+
+- sessions/agents 的创建、恢复、写入、实时事件流，subagents、agent loop 与 compaction；
+- `ctx.shell.start` 后台进程、fs 原子版本 guard、`replaceAll`；
+- permission/approval 策略本身与 project fence 的修改权；
 - settings、commands、credentials、UI/Web 面板；
 - Cordis scope chain、isolate/intercept、动态依赖重启、插件热更新；
 - tool pre/post waterfall、并发策略、`finalizeContent` 与完整 presentation；
@@ -116,6 +131,14 @@ stderr 通道。包级 API 和双语示例见
   DSH 完整的 HTML 到 Markdown 清洗管线。
 - event 的 context filter、`global` 过滤与 scoped shadowing 在单插件进程内
   没有可观察的多 scope 对象，因此只保留注册、顺序和调度语义。
+- `ctx.fs.readText/readBytes` 受宿主 `read_file` 的 64 KiB 完整读取上限；
+  超限明确报 `FS_TOO_LARGE`，不会返回假装完整的截断内容。
+- `ctx.fs` 的 DSH `expected` 版本 guard 无法由当前原生工具原子表达，因此
+  明确报 `FS_GUARD_UNSUPPORTED`；无 guard 的写入仍过 CLAT 权限与路径围栏。
+- `ctx.shell` 固定在项目根运行，不接受 `env`、`dshEnv`、`stdin` 或任意
+  workdir；`start()` 明确不可用。
+- `ctx.sessions` / `ctx.agents` 仅镜像当前活动 run，最多携带最近 64 个、
+  合计 256 KiB 的模型项；所有 mutation API 报 `READ_ONLY_HOST_SERVICE`。
 
 宿主 `notifications/cancelled` 与 adapter shutdown 会触发当前 tool call 的
 `exec.signal`，并让该调用中的 sampling/elicitation 等待以取消错误收束。
@@ -163,3 +186,23 @@ npm test
 
 新增 host-spine 兼容面时，应先在 CLAT Rust 内核中建立对应 typed service，
 再让 adapter 做协议投影；不要把关键权限或持久化语义塞回 JavaScript shim。
+
+## 兼容性扫描器
+
+Adapter 包含保守的源码扫描器。它按 package 报告使用的 `ctx.*` seam，并把
+结果分成 `portable`、`host-bridged`、`partial`、`unsupported` 与
+`not-plugin`；结果按包名排序、携带 DSH Git revision，可作为后续逐包移植
+清单，但不能替代行为验收：
+
+```bash
+cd sdk/dsh-adapter
+npm run scan -- /path/to/deepseek-harness --output /tmp/dsh-compat.json
+```
+
+对本页钉定的 `b150a551…` checkout，本阶段扫描到 249 个 package，其中
+234 个含插件候选证据：1 `portable`、188 `partial`、45 `unsupported`、
+15 `not-plugin`。这是刻意保守的静态结果：一个未知 service 就不会被算作
+完全兼容；它也没有把 Web preset 的 147 个配置行冒充 147 个已验收包。
+
+CLAT 插件包、Rust/WASM 原生插件与未来市场的统一身份模型见
+[CLAT 插件与包格式](plugins.md)。

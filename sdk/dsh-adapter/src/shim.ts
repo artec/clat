@@ -7,6 +7,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { AdapterError } from './errors.js'
 import { EventBus } from './events.js'
+import { HostServicesSeam } from './host-services.js'
 import { SystemPromptSeam } from './system-prompt.js'
 import { WebSeam } from './web.js'
 import type {
@@ -54,8 +55,11 @@ export interface HostChannel {
   beginCall?(callId: string): AbortSignal
   /** Send elicitation/create; resolves with the JSON-RPC result object. */
   elicitation(params: ElicitationParams): Promise<unknown>
+  /** CLAT experimental host-services extension. */
+  context?(): Promise<import('./types.js').ClatHostContextLike>
+  hostTool?(name: string, arguments_: Record<string, unknown>): Promise<unknown>
   /** Host capabilities seen at initialize. */
-  readonly capabilities: { sampling: boolean; elicitation: boolean }
+  readonly capabilities: { sampling: boolean; elicitation: boolean; hostServices: boolean }
   /** stderr diagnostics. */
   log(...args: unknown[]): void
 }
@@ -68,11 +72,13 @@ const DEFAULT_MAX_TOKENS = 4096
 
 /** Services the shim provides (inject-checkable subset first four). */
 const SERVICE_KEYS = [
-  'tools', 'llm', 'userQuestions', 'web', 'systemPrompt',
+  'tools', 'llm', 'userQuestions', 'web', 'systemPrompt', 'clat', 'fs', 'shell', 'sessions', 'agents',
   'reflect', 'get', 'set', 'provide', 'effect', 'logger', 'inject',
   'on', 'once', 'emit', 'parallel', 'serial', 'bail', 'waterfall',
 ] as const
-const INJECTABLE_KEYS = ['tools', 'llm', 'userQuestions', 'web', 'systemPrompt'] as const
+const INJECTABLE_KEYS = [
+  'tools', 'llm', 'userQuestions', 'web', 'systemPrompt', 'clat', 'fs', 'shell', 'sessions', 'agents',
+] as const
 
 /** One registered question's field mapping for answer reconstruction. */
 interface FieldPlan {
@@ -99,6 +105,7 @@ export class Shim {
   readonly #cleanupScope = new AsyncLocalStorage<Array<() => unknown>>()
   readonly #events: EventBus
   readonly #systemPrompt: SystemPromptSeam
+  readonly #hostServices: HostServicesSeam
   #context: DshContext | undefined
   #disposed = false
 
@@ -109,6 +116,7 @@ export class Shim {
     const trackCleanup = (cleanup: () => unknown) => this.#trackCleanup(cleanup)
     this.#events = new EventBus(trackCleanup)
     this.#systemPrompt = new SystemPromptSeam(this.#events, trackCleanup)
+    this.#hostServices = new HostServicesSeam(host)
   }
 
   get pluginName(): string {
@@ -221,6 +229,11 @@ export class Shim {
         fetch: (request, signal) => this.#web.fetch(request, signal),
       },
       systemPrompt: this.#systemPrompt,
+      clat: this.#hostServices.clat,
+      fs: this.#hostServices.fs,
+      shell: this.#hostServices.shell,
+      sessions: this.#hostServices.sessions,
+      agents: this.#hostServices.agents,
       reflect: {
         get: (key: string) => this.#get(key),
         set: (key: string, value: unknown) => this.#set(key, value),
@@ -264,7 +277,13 @@ export class Shim {
         )
       },
     })
+    this.#hostServices.attachContext(this.#context)
     return this.#context
+  }
+
+  /** Receives one detached current-run snapshot from the CLAT host. */
+  updateHostContext(context: import('./types.js').ClatHostContextLike | null): void {
+    this.#hostServices.updateContext(context)
   }
 
   #get(key: string): unknown {

@@ -761,6 +761,29 @@ impl StdioSession {
         self.send_frame_until(frame, Instant::now() + NOTIFY_TIMEOUT, None)
     }
 
+    /// Best-effort notification enqueue for lifecycle broadcasts. Unlike
+    /// [`Self::notify`], this never waits for an uncooperative child to drain
+    /// stdin; a full/broken writer simply drops the advisory notification.
+    pub(crate) fn try_notify(&self, method: &str, params: Value) -> Result<(), McpError> {
+        let frame = notification_frame(method, params);
+        if frame.len() > MAX_FRAME_BYTES {
+            return Err(McpError::new(format!(
+                "outbound MCP frame exceeds {MAX_FRAME_BYTES} byte limit"
+            )));
+        }
+        let writer = self
+            .writer
+            .as_ref()
+            .ok_or_else(|| McpError::new("MCP session is shutting down"))?;
+        let (result, _ignored) = mpsc::channel();
+        writer
+            .try_send(WriterRequest { frame, result })
+            .map_err(|error| match error {
+                mpsc::TrySendError::Full(_) => McpError::new("MCP writer is busy"),
+                mpsc::TrySendError::Disconnected(_) => McpError::new("MCP writer closed"),
+            })
+    }
+
     fn try_cancel_request(&self, id: u64, method: &str) {
         let frame = notification_frame(
             "notifications/cancelled",

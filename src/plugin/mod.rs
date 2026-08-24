@@ -6,6 +6,7 @@ mod context;
 mod effect;
 mod id;
 mod manager;
+mod package;
 
 /// panic 载荷的统一文案化（mount/run worker/dispatch 三处隔离共用）。
 pub(crate) use manager::panic_message;
@@ -15,6 +16,9 @@ pub(crate) use context::PluginContext;
 pub(crate) use effect::DisposeError;
 pub(crate) use id::{PluginId, PluginOwner, ServiceId};
 pub(crate) use manager::PluginManager;
+pub(crate) use package::{
+    ManifestPrompt, PluginCapabilities, PluginPackageManifest, PluginRuntimeKind,
+};
 pub(crate) use service::ServiceKey;
 
 use std::fmt;

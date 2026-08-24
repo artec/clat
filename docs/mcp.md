@@ -154,6 +154,29 @@ MCP annotations are untrusted effect hints:
 No remote tool can claim the native `Read` effect. The resulting effect flows
 through the normal mode table; see [Permissions](permissions.md#mcp-effects).
 
+## CLAT host-services extension
+
+CLAT advertises experimental capability `io.artec.clat/hostServices` version
+`0.1.0`. A server that advertises the matching server capability may use:
+
+- `io.artec.clat/context/get` — a bounded detached snapshot of the active
+  project/run/session context;
+- `io.artec.clat/tools/call` — an audited native host-tool call;
+- `io.artec.clat/context/changed` — a best-effort CLAT-to-stdio-server
+  notification carrying the latest snapshot, or `null` when the run ends.
+
+Only `list_files`, `read_file`, `search`, `write_file`, `edit_file`, and
+`run_command` are callable. Each invocation still passes through the current
+run's permission policy, project path fence, cancel token, and tool execution
+pipeline. Credentials, approver objects, registries, and journal writers never
+cross the protocol. Notifications never block a CLAT run; `context/get` is the
+authoritative snapshot and the fallback for HTTP peers. Generic MCP servers
+that do not opt in receive no context notifications.
+
+The extension exists so the DSH adapter and WASM/WIT guests consume one
+language-neutral host contract. It is not a general path for recursively
+calling arbitrary MCP tools.
+
 ## Server-initiated sampling
 
 During an active `tools/call`, a server can request

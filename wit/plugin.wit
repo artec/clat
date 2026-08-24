@@ -7,9 +7,10 @@
 // 宿主桥 src/plugin_host.rs——一个对外契约、三种传输
 // （stdio / HTTP / WIT），不造第二套插件 API。
 //
-// 沙箱缺省：v1 组件无 WASI（无文件系统/网络/环境变量/时钟）——
-// 不 import sampling/elicitation 的组件是纯函数（INV-W1）。
-// 能力授予（预开放目录等）是 Phase 2b，届时以新版本号扩展。
+// 沙箱缺省：宿主提供 WASI 界面，但不授予环境变量、stdio、网络
+// 或任意文件系统访问；目录 preopen 由 CLAT 权限档位另行求值。
+// manifest 又是 import 能力的静态上限：没有声明的 sampling、
+// elicitation、host-context 或 host-tool 调用会在宿主处拒绝。
 
 package clat:plugin@0.1.0;
 
@@ -121,9 +122,21 @@ interface config {
     get: func() -> result<string, string>;
 }
 
+/// CLAT-owned, language-neutral host contract. These calls mirror the MCP
+/// extension used by the DSH adapter; both transports terminate in the same
+/// permission-gated PluginHostBridge.
+interface host {
+    /// Detached, bounded current-run context encoded as JSON.
+    context: func() -> result<string, string>;
+    /// Invoke an explicitly allowlisted native tool. Arguments and output are
+    /// JSON; the host still applies the run's permission policy and path fence.
+    call-tool: func(name: string, arguments: string) -> result<string, string>;
+}
+
 world plugin {
     export tools;
     import sampling;
     import elicitation;
     import config;
+    import host;
 }

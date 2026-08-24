@@ -103,5 +103,25 @@ macro_rules! define_plugin {
         pub fn plugin_config_string() -> Result<String, String> {
             crate::clat::plugin::config::get()
         }
+
+        /// 读取当前 run 的有界、只读宿主上下文。
+        pub fn host_context<T: serde::de::DeserializeOwned>() -> Result<T, String> {
+            let raw = crate::clat::plugin::host::context()?;
+            serde_json::from_str(&raw)
+                .map_err(|error| format!("invalid host context: {error}"))
+        }
+
+        /// 经 CLAT 权限策略、项目围栏和工具管线调用允许的原生工具。
+        pub fn call_host_tool<A, T>(name: &str, arguments: &A) -> Result<T, String>
+        where
+            A: serde::Serialize,
+            T: serde::de::DeserializeOwned,
+        {
+            let arguments = serde_json::to_string(arguments)
+                .map_err(|error| format!("serialize host tool arguments: {error}"))?;
+            let output = crate::clat::plugin::host::call_tool(name, &arguments)?;
+            serde_json::from_str(&output)
+                .map_err(|error| format!("invalid host tool output: {error}"))
+        }
     };
 }

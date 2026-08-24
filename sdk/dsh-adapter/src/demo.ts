@@ -1,9 +1,9 @@
 /**
- * Demo DSH plugin (the Phase 2 `probe` equivalent): three tools exercising
- * the pure path, the sampling bridge, and the elicitation bridge including
- * the multi-select degradation. Definitions are hand-rolled in the compiled
- * shape `defineTool()` produces — real authors use defineTool from
- * `@deepseek-ai/dsh-tools`; its output is structurally identical.
+ * Demo DSH plugin (the Phase 2 `probe` equivalent): four tools exercising
+ * the pure path, sampling, elicitation, and the CLAT host-service projection.
+ * Definitions are hand-rolled in the compiled shape `defineTool()` produces
+ * — real authors use defineTool from `@deepseek-ai/dsh-tools`; its output is
+ * structurally identical.
  */
 
 import { serveClat } from './index.js'
@@ -102,6 +102,31 @@ export const demoPlugin: DshPluginLike = {
           ],
         })
         return { answers: answer.answers }
+      },
+    }))
+
+    ctx.tools.register(textTool({
+      name: 'host_roundtrip',
+      description: 'Exercise DSH-shaped fs, shell, sessions, and agents over the CLAT host contract.',
+      properties: {
+        path: { type: 'string', description: 'Project-relative text file to read' },
+      },
+      required: ['path'],
+      execute: async args => {
+        const path = args['path']
+        if (typeof path !== 'string' || path === '') throw new Error('host_roundtrip: `path` must be a non-empty string')
+        const context = await ctx.clat.context()
+        const target = await ctx.fs.resolve(path)
+        const text = await ctx.fs.readText(target)
+        const shellSpec = ctx.shell.resolve({ command: 'printf dsh-shell' })
+        const shell = await ctx.shell.run(shellSpec) as { stdout?: { text?: string } }
+        return {
+          projectRoot: context.project.root,
+          text,
+          stdout: shell.stdout?.text ?? '',
+          sessionIds: ctx.sessions.list().map(session => session.id),
+          agentIds: ctx.agents.list().map(agent => agent.id),
+        }
       },
     }))
   },

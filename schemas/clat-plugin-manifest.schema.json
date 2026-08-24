@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clat.dev/schemas/plugin-manifest-v1.json",
+  "title": "CLAT Plugin Package Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["manifestVersion", "id", "name", "version", "runtime"],
+  "properties": {
+    "manifestVersion": { "const": 1 },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+    },
+    "name": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "version": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "description": { "type": "string", "maxLength": 4096 },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "entry", "sha256"],
+      "properties": {
+        "kind": { "enum": ["wasm-component", "mcp-stdio"] },
+        "entry": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?!/)(?![A-Za-z]:[\\\\/])(?!.*(?:^|[\\\\/])\\.\\.(?:[\\\\/]|$)).+$"
+        },
+        "sha256": { "type": "string", "pattern": "^(sha256:)?[0-9A-Fa-f]{64}$" },
+        "args": {
+          "type": "array",
+          "maxItems": 64,
+          "items": { "type": "string", "maxLength": 4096 }
+        }
+      }
+    },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "tools": { "type": "boolean" },
+        "prompts": { "type": "boolean" },
+        "sampling": { "type": "boolean" },
+        "elicitation": { "type": "boolean" },
+        "hostContext": { "type": "boolean" },
+        "hostTools": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$" }
+        }
+      }
+    },
+    "prompts": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "system"],
+        "properties": {
+          "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$" },
+          "description": { "type": "string", "maxLength": 1024 },
+          "system": { "type": "string", "maxLength": 65536 }
+        }
+      }
+    },
+    "configSchema": { "type": "object" },
+    "compatibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "revision": { "type": "string", "minLength": 1, "maxLength": 256 }
+      }
+    }
+  }
+}

@@ -11,7 +11,7 @@ interface HostScript {
   samplingResult?: unknown
   samplingError?: { code: number; message: string }
   elicitationResult?: unknown
-  capabilities?: { sampling: boolean; elicitation: boolean }
+  capabilities?: { sampling: boolean; elicitation: boolean; hostServices: boolean }
   samplingParams?: SamplingParams[]
   elicitationParams?: ElicitationParams[]
 }
@@ -19,7 +19,7 @@ interface HostScript {
 function fakeHost(script: HostScript = {}): HostChannel & { params: { sampling: SamplingParams[]; elicitation: ElicitationParams[] } } {
   const params: { sampling: SamplingParams[]; elicitation: ElicitationParams[] } = { sampling: [], elicitation: [] }
   const channel: HostChannel & { params: typeof params } = {
-    capabilities: script.capabilities ?? { sampling: true, elicitation: true },
+    capabilities: script.capabilities ?? { sampling: true, elicitation: true, hostServices: false },
     async sampling(p) {
       params.sampling.push(p)
       if (script.samplingError !== undefined) {
@@ -77,15 +77,74 @@ test('tools: register, list, call, and rejections', async () => {
   assert.equal(shim.listTools().length, 0)
 })
 
+test('CLAT host services project context, filesystem, shell, and read-only mirrors', async () => {
+  const calls: Array<[string, Record<string, unknown>]> = []
+  let contextActive = true
+  const context = {
+    protocolVersion: '0.1.0' as const,
+    project: { root: '/workspace' },
+    run: {
+      sessionId: 'session-1',
+      provider: 'OpenAI Compatible',
+      model: 'fixture',
+      messages: [{ User: { content: [{ Text: 'hello' }] } }],
+    },
+    hostTools: ['read_file', 'list_files', 'run_command'],
+  }
+  const host: HostChannel = {
+    capabilities: { sampling: true, elicitation: true, hostServices: true },
+    sampling: async () => ({}),
+    elicitation: async () => ({}),
+    context: async () => {
+      if (!contextActive) throw new Error('no active run')
+      return context
+    },
+    async hostTool(name, arguments_) {
+      calls.push([name, arguments_])
+      if (name === 'read_file') {
+        return { path: arguments_.path, content: '1 | alpha\n2 | beta\n', truncated: false }
+      }
+      if (name === 'list_files') {
+        return { entries: [{ path: 'src', kind: 'directory' }], truncated: false }
+      }
+      if (name === 'run_command') {
+        return { exit_code: 0, signal: null, timed_out: false, stdout: 'ok', stderr: '', stdout_truncated: false, stderr_truncated: false }
+      }
+      return {}
+    },
+    log: () => {},
+  }
+  const shim = new Shim(host, 'host-fixture')
+  const ctx = shim.buildContext()
+  shim.updateHostContext(context)
+
+  assert.equal((await ctx.clat.context()).run.sessionId, 'session-1')
+  const target = await ctx.fs.resolve('README.md')
+  assert.equal(target.displayPath, '/workspace/README.md')
+  assert.equal(await ctx.fs.readText(target), 'alpha\nbeta\n')
+  assert.deepEqual((await ctx.fs.listDir(await ctx.fs.resolve('.'))).map(item => item.name), ['src'])
+  const spec = ctx.shell.resolve({ command: 'printf ok' })
+  const result = await ctx.shell.run(spec) as { stdout: { text: string } }
+  assert.equal(result.stdout.text, 'ok')
+  assert.equal(ctx.sessions.get('session-1')?.messages.length, 1)
+  assert.equal(ctx.agents.roots()[0]?.session.id, 'session-1')
+  assert.throws(() => ctx.sessions.create(), { code: 'READ_ONLY_HOST_SERVICE' })
+  assert.deepEqual(calls.map(([name]) => name), ['read_file', 'list_files', 'run_command'])
+
+  contextActive = false
+  await assert.rejects(ctx.clat.context(), /no active run/)
+  assert.deepEqual(ctx.sessions.list(), [])
+})
+
 test('INV-D3: unsupported ctx services fail loudly; get/then pass through', () => {
   const shim = new Shim(fakeHost(), 'p')
   const ctx = shim.buildContext()
   assert.equal(ctx.get('launchEnvironment'), undefined)
   assert.equal((ctx as unknown as { then?: unknown }).then, undefined)
-  assert.throws(() => (ctx as unknown as { sessions: unknown }).sessions, (error: unknown) => {
+  assert.throws(() => (ctx as unknown as { subagents: unknown }).subagents, (error: unknown) => {
     assert.ok(error instanceof AdapterError)
     assert.equal(error.code, 'SPINE_SERVICE')
-    assert.match(error.message, /ctx\.sessions/)
+    assert.match(error.message, /ctx\.subagents/)
     assert.match(error.message, /tools, llm, userQuestions/)
     return true
   })
@@ -325,7 +384,7 @@ test('llm.stream: default maxTokens, block-array content, max-tokens mapping', a
 })
 
 test('llm.stream fail-closed paths', async () => {
-  const noSampling = new Shim(fakeHost({ capabilities: { sampling: false, elicitation: true } }), 'p')
+  const noSampling = new Shim(fakeHost({ capabilities: { sampling: false, elicitation: true, hostServices: false } }), 'p')
   await assert.rejects(collect(noSampling.buildContext().llm.stream({ messages: [{ role: 'user', content: [{ type: 'text', text: 'q' }] }] })), {
     code: 'NO_SAMPLING',
   })
@@ -418,7 +477,7 @@ test('ask: decline/cancel and validation failures', async () => {
   const cancelled = new Shim(fakeHost({ elicitationResult: { action: 'cancel' } }), 'p')
   await assert.rejects(cancelled.buildContext().userQuestions.ask({ questions: [{ id: 'x', question: 'q' }] }), { code: 'USER_CANCELLED' })
 
-  const noElicitation = new Shim(fakeHost({ capabilities: { sampling: true, elicitation: false } }), 'p')
+  const noElicitation = new Shim(fakeHost({ capabilities: { sampling: true, elicitation: false, hostServices: false } }), 'p')
   await assert.rejects(noElicitation.buildContext().userQuestions.ask({ questions: [{ id: 'x', question: 'q' }] }), { code: 'NO_ELICITATION' })
 
   const shim = new Shim(fakeHost(), 'p')

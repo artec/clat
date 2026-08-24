@@ -7,7 +7,7 @@ import type { HostChannel } from '../src/shim.js'
 import type { ToolDefinitionLike, WebSearchProviderLike, WebSearchResultLike } from '../src/types.js'
 
 const quietHost: HostChannel = {
-  capabilities: { sampling: true, elicitation: true },
+  capabilities: { sampling: true, elicitation: true, hostServices: false },
   sampling: async () => ({}),
   elicitation: async () => ({}),
   log: () => {},

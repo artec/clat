@@ -241,6 +241,17 @@ impl Session {
         }
     }
 
+    /// Lifecycle broadcasts must not put a run worker behind a plugin's I/O.
+    /// The DSH adapter is a stdio server, so enqueue there without waiting.
+    /// HTTP peers can fetch the authoritative snapshot through
+    /// `io.artec.clat/context/get`; advisory pushes are skipped for them.
+    fn try_notify_lifecycle(&self, method: &str, params: Value) -> Result<(), McpError> {
+        match self {
+            Self::Stdio(session) => session.try_notify(method, params),
+            Self::Http(_) => Ok(()),
+        }
+    }
+
     /// 诊断尾缓冲（stdio：服务器 stderr + 会话异常；HTTP：空）。
     fn stderr_tail(&self) -> Vec<String> {
         match self {
@@ -639,6 +650,24 @@ impl McpServer {
             .is_some_and(Value::is_object)
     }
 
+    /// CLAT extension negotiated by the DSH adapter. Servers must opt in so
+    /// generic MCP processes never receive unknown notifications.
+    pub fn supports_clat_host_services(&self) -> bool {
+        self.capabilities
+            .get("experimental")
+            .and_then(|value| value.get("io.artec.clat/hostServices"))
+            .and_then(|value| value.get("version"))
+            .and_then(Value::as_str)
+            == Some("0.1.0")
+    }
+
+    pub(crate) fn notify_clat_host_context(&self, context: Option<Value>) -> Result<(), McpError> {
+        self.session.try_notify_lifecycle(
+            "io.artec.clat/context/changed",
+            json!({ "context": context }),
+        )
+    }
+
     pub fn shutdown(mut self) -> Result<(), McpError> {
         // dispatcher 先于会话关停（序：摘响应端 → 关投递通道 → 有界
         // join → 优雅关会话）——保证 session.shutdown 的 writer join
@@ -999,6 +1028,16 @@ fn client_capabilities() -> Value {
     json!({
         "sampling": {},
         "elicitation": {},
+        "experimental": {
+            "io.artec.clat/hostServices": {
+                "version": "0.1.0",
+                "methods": [
+                    "io.artec.clat/context/get",
+                    "io.artec.clat/tools/call",
+                    "io.artec.clat/context/changed"
+                ]
+            }
+        }
     })
 }
 

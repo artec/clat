@@ -9,7 +9,7 @@ import { createInterface } from 'node:readline'
 import type { Readable, Writable } from 'node:stream'
 import { errorMessage } from './errors.js'
 import type { ElicitationParams, SamplingParams } from './shim.js'
-import type { ContentBlockLike, ToolDefinitionLike, ToolHint } from './types.js'
+import type { ClatHostContextLike, ContentBlockLike, ToolDefinitionLike, ToolHint } from './types.js'
 
 /** What the server needs from the shim to answer host requests. */
 export interface ServerHandler {
@@ -20,13 +20,16 @@ export interface ServerHandler {
     prompt: string
     context: string
   }>
-  callTool(name: string, arguments_: unknown, callId: string): Promise<{ content: ContentBlockLike[]; structuredContent: unknown 
+  callTool(name: string, arguments_: unknown, callId: string): Promise<{
+    content: ContentBlockLike[]
+    structuredContent: unknown
+  }>
   /** W1-18（A3）：在途 tools/call 开始——返回该调用的取消信号（宿主
    * notifications/cancelled / shutdown 会触发 abort）。可选：旧宿主
    * 实现不提供时取消传播退化为 v0 行为。
    */
   beginCall?(callId: string): AbortSignal
-}>
+  hostContextChanged?(context: ClatHostContextLike | null): void
   dispose(): Promise<void>
 }
 
@@ -109,7 +112,7 @@ export class McpStdioServer {
   #shutdownPromise: Promise<void> | undefined
   #processChain: Promise<void> = Promise.resolve()
   #writeChain: Promise<void> = Promise.resolve()
-  #capabilities = { sampling: false, elicitation: false }
+  #capabilities = { sampling: false, elicitation: false, hostServices: false }
   #rl: ReturnType<typeof createInterface> | undefined
 
   constructor(options: ServeServerOptions) {
@@ -120,7 +123,7 @@ export class McpStdioServer {
   }
 
   /** Host capabilities observed at initialize (INV-D1's error basis). */
-  get clientCapabilities(): { sampling: boolean; elicitation: boolean } {
+  get clientCapabilities(): { sampling: boolean; elicitation: boolean; hostServices: boolean } {
     return { ...this.#capabilities }
   }
 
@@ -186,6 +189,18 @@ export class McpStdioServer {
   /** elicitation/create. */
   elicitation(params: ElicitationParams): Promise<unknown> {
     return this.request('elicitation/create', params)
+  }
+
+  async hostContext(): Promise<ClatHostContextLike> {
+    return await this.request('io.artec.clat/context/get', {}) as ClatHostContextLike
+  }
+
+  async hostTool(name: string, arguments_: Record<string, unknown>): Promise<unknown> {
+    const result = await this.request('io.artec.clat/tools/call', { name, arguments: arguments_ })
+    if (result === null || typeof result !== 'object' || !('output' in result)) {
+      throw new JsonRpcError(JSONRPC_INTERNAL, 'CLAT host tool returned an invalid envelope')
+    }
+    return (result as { output: unknown }).output
   }
 
   /** Graceful shutdown: settle pending, run disposers LIFO (INV-D4). Idempotent. */
@@ -256,6 +271,17 @@ export class McpStdioServer {
   }
 
   #onNotification(method: string, params: unknown): void {
+    if (method === 'io.artec.clat/context/changed') {
+      const context = (params as { context?: unknown } | undefined)?.context
+      if (context === null) {
+        this.#handler().hostContextChanged?.(null)
+      } else if (context !== undefined && typeof context === 'object' && !Array.isArray(context)) {
+        this.#handler().hostContextChanged?.(context as ClatHostContextLike)
+      } else {
+        this.#log('note: ignoring malformed CLAT host-context notification')
+      }
+      return
+    }
     if (method === 'notifications/cancelled') {
       const id = (params as { requestId?: unknown } | undefined)?.requestId
       const controller = this.#calls.get(String(id))
@@ -292,9 +318,12 @@ export class McpStdioServer {
   async #dispatch(method: string, params: unknown, id: number | string): Promise<unknown> {
     if (method === 'initialize') {
       const capabilities = (params as { capabilities?: Record<string, unknown> } | undefined)?.capabilities
+      const experimental = capabilities?.experimental as Record<string, unknown> | undefined
+      const hostServices = experimental?.['io.artec.clat/hostServices'] as Record<string, unknown> | undefined
       this.#capabilities = {
         sampling: capabilities?.sampling !== undefined,
         elicitation: capabilities?.elicitation !== undefined,
+        hostServices: hostServices?.version === '0.1.0',
       }
       if (this.#options.ready !== undefined) await this.#options.ready
       this.#initialized = true
@@ -304,6 +333,9 @@ export class McpStdioServer {
         capabilities: {
           tools: { listChanged: false },
           prompts: { listChanged: false },
+          experimental: {
+            'io.artec.clat/hostServices': { version: '0.1.0' },
+          },
         },
         serverInfo: { name: this.#options.name, version: this.#options.version ?? '0.0.0' },
       }

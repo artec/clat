@@ -5,8 +5,8 @@ use crate::model::{ModelConfig, ProviderCredentials, ProviderDescriptor};
 use crate::plugin::{Plugin, PluginManager, ScopeKind};
 use crate::plugins::services::{
     AGENT_SERVICE, COMMAND_SERVICE, COMPACTION_SERVICE, CONFIG_SERVICE, MCP_STATUS_SERVICE,
-    MONITOR_SERVICE, PROMPT_SERVICE, PROVIDER_SERVICE, SESSION_SERVICE, SESSION_TITLE_SERVICE,
-    TODO_SERVICE, TOOL_PIPELINE_SERVICE, TOOL_SERVICE,
+    MONITOR_SERVICE, PERMISSION_SERVICE, PROMPT_SERVICE, PROVIDER_SERVICE, SESSION_SERVICE,
+    SESSION_TITLE_SERVICE, TODO_SERVICE, TOOL_PIPELINE_SERVICE, TOOL_SERVICE,
 };
 use crate::plugins::{ProjectControlStoragePlugin, SessionPersistencePlugin};
 use crate::presets::preset_by_id;
@@ -234,11 +234,21 @@ impl TrustedProjectApplication {
             .require(COMMAND_SERVICE)
             .map_err(|error| ApplicationError::new(error.to_string()))?;
         commands.freeze();
-        project_manager
+        let tool_pipeline = project_manager
             .require(TOOL_PIPELINE_SERVICE)
-            .map_err(|error| ApplicationError::new(error.to_string()))?
+            .map_err(|error| ApplicationError::new(error.to_string()))?;
+        tool_pipeline
             .freeze()
             .map_err(|error| ApplicationError::new(error.to_string()))?;
+        let permissions = project_manager
+            .require(PERMISSION_SERVICE)
+            .map_err(|error| ApplicationError::new(error.to_string()))?;
+        plugin_host.configure_host_services(
+            project.clone(),
+            Arc::clone(&tools),
+            tool_pipeline,
+            permissions,
+        );
         let sessions = project_manager
             .require(SESSION_SERVICE)
             .map_err(|error| ApplicationError::new(error.to_string()))?;

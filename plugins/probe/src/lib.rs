@@ -19,6 +19,8 @@ const PROBE_SCHEMA: &str = r#"{
   "properties": {
     "sample": { "type": "boolean" },
     "elicit": { "type": "boolean" },
+    "context": { "type": "boolean" },
+    "read_path": { "type": "string" },
     "text": { "type": "string" }
   }
 }"#;
@@ -44,6 +46,10 @@ struct ProbeArgs {
     sample: bool,
     #[serde(default)]
     elicit: bool,
+    #[serde(default)]
+    context: bool,
+    #[serde(default)]
+    read_path: Option<String>,
     #[serde(default = "default_text")]
     text: String,
 }
@@ -146,6 +152,24 @@ fn probe(arguments: String) -> Result<String, String> {
     let args: ProbeArgs =
         serde_json::from_str(&arguments).map_err(|error| format!("invalid arguments: {error}"))?;
     let mut parts: Vec<(String, serde_json::Value)> = Vec::new();
+
+    if args.context {
+        let raw = clat::plugin::host::context()
+            .map_err(|error| format!("host context error: {error}"))?;
+        let context =
+            serde_json::from_str(&raw).map_err(|error| format!("invalid host context: {error}"))?;
+        parts.push(("context".to_owned(), context));
+    }
+
+    if let Some(path) = args.read_path {
+        let arguments = serde_json::to_string(&serde_json::json!({ "path": path }))
+            .map_err(|error| format!("serialize host tool arguments: {error}"))?;
+        let raw = clat::plugin::host::call_tool("read_file", &arguments)
+            .map_err(|error| format!("host read error: {error}"))?;
+        let output = serde_json::from_str(&raw)
+            .map_err(|error| format!("invalid host read output: {error}"))?;
+        parts.push(("host_read".to_owned(), output));
+    }
 
     if args.sample {
         match clat::plugin::sampling::create_message(&Request {

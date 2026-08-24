@@ -12,10 +12,10 @@
 
 ## 适合使用吗？
 
-工具、system prompt、模型采样、用户问题、web provider、本地 service 与
-Cordis events/effects 都可适配。若插件直接依赖宿主会话、agent、subagent、
-fs/shell、权限或 UI 服务，仍需 CLAT 先提供对应原生宿主 service，或在该
-边界拆分插件。
+工具、system prompt、模型采样、用户问题、web provider、fs/shell、只读
+session/agent 检视、本地 service 与 Cordis events/effects 都可适配。
+可变 session/agent、subagent、权限、settings、commands 或 UI 服务仍需
+CLAT 先提供对应原生宿主能力，或在该边界拆分插件。
 
 完整兼容矩阵与迁移方法见
 [移植指南](https://github.com/artec/clat/blob/main/docs/dsh-plugins.md)。
@@ -100,6 +100,10 @@ stdout 是协议专线。诊断请使用 `ctx.logger` 或 `console.error`。
 | `ctx.web.registerSearchProvider(...)` | 内置 `web_search`，支持多 query 合并、URL 去重和有界结果 |
 | `ctx.web.registerFetchProvider(...)` | 内置、有输出上限的 `web_fetch` |
 | `ctx.systemPrompt` | section/context/order/complete/variable/tools/change/assemble waterfall |
+| `ctx.clat` | 有界的当前 run 上下文与过权限门的原生宿主工具调用 |
+| `ctx.fs` | 通过 CLAT read/list/write/edit 工具投影的 DSH FileSystem |
+| `ctx.shell` | 通过 `run_command` 提供前台 `resolve` / `run` |
+| `ctx.sessions`、`ctx.agents` | 当前 run 的分离、只读镜像 |
 | `ctx.get/set/provide`、`ctx.reflect.provide` | 进程内 service 注册、查询与撤销 |
 | `ctx.on/once`、`emit/parallel/serial/bail/waterfall` | 进程内 Cordis 调度语义 |
 | `launchEnvironmentOf(ctx)` | 插件查询环境时回退 `process.env` |
@@ -142,8 +146,11 @@ Hint 会转为 MCP annotations；最终 effect 映射与权限策略仍由宿主
 - 一次 ask 最多 16 问、每问最多 16 个选项。
 - `exec.deferContext()` 与 `exec.concludeTurn()` 是警告 + no-op seam。
 - `web_fetch` 输出最多 100,000 字符，不复刻 DSH 完整 HTML→Markdown 管线。
-- agent/session/fs/shell/permission/settings/commands/UI service 与 scoped
-  prompt shadowing 仍属于原生宿主职责。
+- session/agent 修改与实时事件、subagent、permission/settings/commands/UI、
+  后台 shell、fs 原子版本 guard 与 scoped prompt shadowing 仍属原生宿主职责。
+- `ctx.fs.readText/readBytes` 对超过宿主 64 KiB 完整读取上限的文件明确拒绝；
+  guarded write 与 `replaceAll` 不伪造 DSH 原子性，投影的 fs 路径只能位于
+  当前 CLAT 项目内。Shell cwd 固定为项目根，env/stdin override 会被拒绝。
 
 宿主 `notifications/cancelled` 与 adapter shutdown 会中止活动
 `tools/call` signal 及在途 sampling/elicitation promise。插件自己的工作
@@ -185,7 +192,11 @@ MCP `command` 指向这个可执行文件。运行时已经打入产物，终端
 ```bash
 npm install
 npm test
+npm run scan -- /path/to/deepseek-harness --output /tmp/dsh-compat.json
 ```
+
+扫描器输出钉定 revision、逐包可机读的 seam 矩阵。它是保守的静态证据，
+不能替代 fixture 与端到端验收。
 
 仓库：[artec/clat](https://github.com/artec/clat) ·
 [sdk/dsh-adapter](https://github.com/artec/clat/tree/main/sdk/dsh-adapter)

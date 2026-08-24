@@ -99,6 +99,7 @@ irm https://raw.githubusercontent.com/artec/clat/main/install.ps1 | iex
 | 配置预设或自定义模型 | [模型编辑器](docs/model-editor.md) |
 | 理解审批、权限档位与路径边界 | [权限](docs/permissions.md) |
 | 配置 MCP server | [MCP 集成](docs/mcp.md) |
+| 理解插件运行时、包格式与市场基础 | [CLAT 插件](docs/plugins.md) |
 | 安装或编写 WASM 组件 | [WASM 插件](docs/wasm.md) |
 | 移植 DSH/Cordis 插件 | [DSH 插件兼容指南](docs/dsh-plugins.md) |
 | 理解核心边界与生命周期 | [架构](docs/architecture.md) |

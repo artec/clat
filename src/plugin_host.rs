@@ -6,14 +6,15 @@
 //! per-run 花费预算（W1-03：事前预留 + 事后对账，独立于权限档位）、
 //! usage 记账（INV-S6）、用户问答都在本层；wire 协议（MCP JSON）翻译
 //! 由 [`McpHostHandler`] 完成（在途计数 per-handler，W1-05），传输
-//! （stdio/HTTP）归 mcp/mcp_client。将来 WASM/WIT 插件（桥 Phase 2）
-//! 以 WIT 镜像同一语义面直接调用本桥——一个对外契约、多种传输，
+//! （stdio/HTTP）归 mcp/mcp_client。WASM/WIT 插件以 WIT 镜像同一
+//! 语义面直接调用本桥——一个对外契约、多种传输，
 //! 不造第二套插件 API（研究档案 dsh-plugin-bridge.md §6-3）。
 //!
 //! 上下文按 run 安装（镜像 AskUserSlot 姿势）：`start_run` 装入、
 //! worker 收尾卸载（INV-S1：无免费通道——未安装时一律错误响应，
 //! 跨 run 不泄漏旧 approver/asker）。
 
+use crate::Project;
 use crate::interaction::{AskAnswer, AskOption, AskQuestion, UserAsker};
 use crate::mcp::client::McpServerRequestHandler;
 use crate::model::{
@@ -23,12 +24,16 @@ use crate::model::{
 use crate::permission::{
     PermissionApprover, PermissionDecision, PermissionMode, PermissionRequest,
 };
-use crate::plugins::services::ProviderRegistry;
+use crate::plugins::services::{PermissionPolicyFactory, ProviderRegistry};
 use crate::providers::{ModelBuildFn, RetryPolicy, retry_model_with};
-use crate::tool::{ToolDefinition, ToolEffect};
+use crate::tool::{
+    ToolCall, ToolDefinition, ToolEffect, ToolExecutionPipeline, ToolInvocation, ToolRegistry,
+};
 use serde_json::{Map, Value, json};
+use std::collections::BTreeMap;
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::{Duration, Instant};
 
 /// sampling 单次输出上限（maxTokens 夹紧）。
@@ -61,6 +66,19 @@ const MAX_ELICIT_MESSAGE_CHARS: usize = 4096;
 const NUMBER_RETRIES: usize = 2;
 /// 可选枚举/布尔字段在选项尾部追加的跳过项标签。
 const SKIP_LABEL: &str = "(skip)";
+/// External plugins may reach only this audited subset of the native registry.
+/// In particular, recursive external/MCP tools and frontend-only interaction
+/// tools are intentionally absent.
+const HOST_TOOL_ALLOWLIST: &[&str] = &[
+    "list_files",
+    "read_file",
+    "search",
+    "write_file",
+    "edit_file",
+    "run_command",
+];
+const HOST_CONTEXT_MAX_ITEMS: usize = 64;
+const HOST_CONTEXT_MAX_BYTES: usize = 256 * 1024;
 
 /// sampling/elicitation 的发起方：MCP 服务器或 WASM 插件（权限弹框
 /// 的工具标签、理由措辞与关联都用它——桥本身传输无关）。
@@ -160,6 +178,10 @@ pub enum ElicitOutcome {
 #[derive(Debug)]
 pub enum PluginHostError {
     NoActiveRun,
+    NoHostServices,
+    UnknownHostTool(String),
+    HostToolDenied(String),
+    HostTool(String),
     NoInteractiveFrontend,
     PermissionDenied(String),
     Model(String),
@@ -179,8 +201,21 @@ impl PluginHostError {
         match self {
             Self::NoActiveRun => (
                 SERVER_ERROR,
-                "no active run: CLAT serves sampling/elicitation only during a run".into(),
+                "no active run: CLAT host services are available only during a run".into(),
             ),
+            Self::NoHostServices => (
+                SERVER_ERROR,
+                "CLAT host services are not configured for this project".into(),
+            ),
+            Self::UnknownHostTool(name) => (
+                -32602,
+                format!("host tool `{name}` is not in CLAT's external-plugin allowlist"),
+            ),
+            Self::HostToolDenied(reason) => (
+                SERVER_ERROR,
+                format!("host tool call was not approved: {reason}"),
+            ),
+            Self::HostTool(message) => (SERVER_ERROR, format!("host tool call failed: {message}")),
             Self::NoInteractiveFrontend => (
                 SERVER_ERROR,
                 "no interactive frontend is attached; elicitation is unavailable in headless \
@@ -234,6 +269,22 @@ pub(crate) struct RunHostContext {
     /// 事后记账（journal 归账），前者是事前闸门（fail-closed）。
     pub(crate) budget: Arc<Mutex<SamplingBudget>>,
 }
+
+#[derive(Clone)]
+struct HostProjectServices {
+    project: Project,
+    tools: Arc<ToolRegistry>,
+    pipeline: Arc<ToolExecutionPipeline>,
+    permissions: Arc<dyn PermissionPolicyFactory>,
+}
+
+#[derive(Clone)]
+struct HostRunMetadata {
+    session_id: Option<String>,
+    history: Vec<ModelItem>,
+}
+
+type ContextSubscriber = Arc<dyn Fn(Option<Value>) + Send + Sync>;
 
 /// per-run sampling 预算（W1-03）：请求数 + token 双上限，独立于权限
 /// 档位（Full Access ≠ 无限额度）。发起前 reserve（保守预留），成功
@@ -336,6 +387,91 @@ fn estimate_input_tokens(request: &SamplingRequest) -> u64 {
     chars.div_ceil(4) as u64
 }
 
+fn bounded_history(history: &[ModelItem]) -> Vec<ModelItem> {
+    let start = history.len().saturating_sub(HOST_CONTEXT_MAX_ITEMS);
+    let mut bounded = history[start..].to_vec();
+    while !bounded.is_empty()
+        && serde_json::to_vec(&bounded)
+            .map(|bytes| bytes.len() > HOST_CONTEXT_MAX_BYTES)
+            .unwrap_or(true)
+    {
+        bounded.remove(0);
+    }
+    bounded
+}
+
+fn external_project_relative(
+    project: &Project,
+    requested: &Path,
+) -> Result<PathBuf, PluginHostError> {
+    if !requested.is_absolute() {
+        return Ok(requested.to_owned());
+    }
+    let canonical_root = project.root().canonicalize().map_err(|error| {
+        PluginHostError::HostTool(format!("resolve project root for path fence: {error}"))
+    })?;
+    let relative = requested
+        .strip_prefix(project.root())
+        .or_else(|_| requested.strip_prefix(&canonical_root))
+        .map_err(|_| {
+            PluginHostError::HostTool(format!(
+                "external plugin path `{}` is outside the project root",
+                requested.display()
+            ))
+        })?;
+    if relative.components().any(|component| {
+        matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    }) {
+        return Err(PluginHostError::HostTool(format!(
+            "external plugin path `{}` escapes the project root",
+            requested.display()
+        )));
+    }
+    Ok(relative.to_owned())
+}
+
+/// External plugins get a stricter path boundary than the agent's native read
+/// tools: every filesystem path is normalized to a project-relative path
+/// before permission review and invocation. This keeps a manifest/DSH plugin
+/// from reading ambient user files through the agent's deliberate absolute-read
+/// capability.
+fn fence_host_tool_arguments(
+    project: &Project,
+    name: &str,
+    mut arguments: Value,
+) -> Result<Value, PluginHostError> {
+    let is_read = matches!(name, "list_files" | "read_file" | "search");
+    let is_write = matches!(name, "write_file" | "edit_file");
+    if !is_read && !is_write {
+        return Ok(arguments);
+    }
+    let Some(object) = arguments.as_object_mut() else {
+        return Ok(arguments);
+    };
+    let Some(raw) = object.get("path").and_then(Value::as_str) else {
+        return Ok(arguments);
+    };
+    let requested = Path::new(raw);
+    let relative = if is_read {
+        let resolved = project.resolve_existing(requested).map_err(|error| {
+            PluginHostError::HostTool(format!("external plugin path fence: {error}"))
+        })?;
+        project.relative_path(&resolved).map_err(|error| {
+            PluginHostError::HostTool(format!("external plugin path fence: {error}"))
+        })?
+    } else {
+        external_project_relative(project, requested)?
+    };
+    object.insert(
+        "path".into(),
+        Value::String(relative.to_string_lossy().into_owned()),
+    );
+    Ok(arguments)
+}
+
 /// 宿主桥本体：per-run 上下文槽。sampling/elicitation 的在途计数不
 /// 在这里（W1-05）：那是每条 MCP 连接的超时延展信号，归
 /// [`McpHostHandler`] 各自持有；WASM 直调桥，不参与任何 MCP 截止。
@@ -346,6 +482,29 @@ pub struct PluginHostBridge {
     context: RwLock<Option<(u64, RunHostContext)>>,
     epoch: AtomicU64,
     sampling_seq: AtomicU64,
+    host_tool_seq: AtomicU64,
+    project_services: RwLock<Option<HostProjectServices>>,
+    run_metadata: RwLock<Option<(u64, HostRunMetadata)>>,
+    context_subscribers: Mutex<BTreeMap<u64, ContextSubscriber>>,
+    subscriber_seq: AtomicU64,
+}
+
+/// Revocable context-notification subscription owned by an adapter instance.
+/// Dropping is intentionally inert: adapters revoke explicitly during their
+/// ordered cleanup so no callback can race server shutdown.
+pub(crate) struct HostContextLease {
+    bridge: Weak<PluginHostBridge>,
+    id: u64,
+}
+
+impl HostContextLease {
+    pub(crate) fn revoke(self) {
+        if let Some(bridge) = self.bridge.upgrade()
+            && let Ok(mut subscribers) = bridge.context_subscribers.lock()
+        {
+            subscribers.remove(&self.id);
+        }
+    }
 }
 
 /// 单连接在途服务端请求守卫：dispatcher 处理期间计数 >0，该连接的
@@ -371,7 +530,32 @@ impl PluginHostBridge {
             context: RwLock::new(None),
             epoch: AtomicU64::new(0),
             sampling_seq: AtomicU64::new(0),
+            host_tool_seq: AtomicU64::new(0),
+            project_services: RwLock::new(None),
+            run_metadata: RwLock::new(None),
+            context_subscribers: Mutex::new(BTreeMap::new()),
+            subscriber_seq: AtomicU64::new(0),
         })
+    }
+
+    /// Binds the project-owned services used by both MCP and WIT host calls.
+    /// This is configured only after the catalog has mounted, so external
+    /// adapters cannot bypass the normal registry/pipeline/policy graph.
+    pub(crate) fn configure_host_services(
+        &self,
+        project: Project,
+        tools: Arc<ToolRegistry>,
+        pipeline: Arc<ToolExecutionPipeline>,
+        permissions: Arc<dyn PermissionPolicyFactory>,
+    ) {
+        if let Ok(mut services) = self.project_services.write() {
+            *services = Some(HostProjectServices {
+                project,
+                tools,
+                pipeline,
+                permissions,
+            });
+        }
     }
 
     /// 装入本次 run 的上下文（`start_run` 主线程调用）。安装纪元由
@@ -381,12 +565,76 @@ impl PluginHostBridge {
         if let Ok(mut slot) = self.context.write() {
             *slot = Some((epoch, context));
         }
+        if let Ok(mut metadata) = self.run_metadata.write() {
+            *metadata = Some((
+                epoch,
+                HostRunMetadata {
+                    session_id: None,
+                    history: Vec::new(),
+                },
+            ));
+        }
+        self.notify_context_subscribers(self.host_context().ok());
+    }
+
+    /// Publishes the durable session identity and the post-compaction model
+    /// surface. The snapshot is detached and bounded before it crosses a
+    /// plugin boundary.
+    pub(crate) fn update_run_metadata(&self, session_id: &str, history: &[ModelItem]) {
+        let Some(epoch) = self.installed_epoch() else {
+            return;
+        };
+        let history = bounded_history(history);
+        if let Ok(mut metadata) = self.run_metadata.write()
+            && metadata
+                .as_ref()
+                .is_some_and(|(current, _)| *current == epoch)
+        {
+            *metadata = Some((
+                epoch,
+                HostRunMetadata {
+                    session_id: Some(session_id.to_owned()),
+                    history,
+                },
+            ));
+        }
+        self.notify_context_subscribers(self.host_context().ok());
     }
 
     /// 卸载上下文（run worker 收尾调用； INV-S1：不留旧 approver）。
     pub(crate) fn clear(&self) {
         if let Ok(mut slot) = self.context.write() {
             *slot = None;
+        }
+        if let Ok(mut metadata) = self.run_metadata.write() {
+            *metadata = None;
+        }
+        self.notify_context_subscribers(None);
+    }
+
+    pub(crate) fn subscribe_context(
+        self: &Arc<Self>,
+        subscriber: ContextSubscriber,
+    ) -> HostContextLease {
+        let id = self.subscriber_seq.fetch_add(1, Ordering::AcqRel) + 1;
+        if let Ok(mut subscribers) = self.context_subscribers.lock() {
+            subscribers.insert(id, Arc::clone(&subscriber));
+        }
+        subscriber(self.host_context().ok());
+        HostContextLease {
+            bridge: Arc::downgrade(self),
+            id,
+        }
+    }
+
+    fn notify_context_subscribers(&self, snapshot: Option<Value>) {
+        let subscribers = self
+            .context_subscribers
+            .lock()
+            .map(|items| items.values().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        for subscriber in subscribers {
+            subscriber(snapshot.clone());
         }
     }
 
@@ -418,6 +666,109 @@ impl PluginHostBridge {
                 },
             )
         })
+    }
+
+    /// Language-neutral detached context used by MCP and WIT adapters.
+    /// Credentials, approvers, journal writers and other live capabilities are
+    /// deliberately absent.
+    pub fn host_context(&self) -> Result<Value, PluginHostError> {
+        let (epoch, context) = self.context().ok_or(PluginHostError::NoActiveRun)?;
+        let services = self
+            .project_services
+            .read()
+            .ok()
+            .and_then(|services| services.clone())
+            .ok_or(PluginHostError::NoHostServices)?;
+        let metadata = self
+            .run_metadata
+            .read()
+            .ok()
+            .and_then(|metadata| metadata.clone())
+            .filter(|(metadata_epoch, _)| *metadata_epoch == epoch)
+            .map(|(_, metadata)| metadata)
+            .unwrap_or(HostRunMetadata {
+                session_id: None,
+                history: Vec::new(),
+            });
+        Ok(json!({
+            "protocolVersion": "0.1.0",
+            "project": {
+                "root": services.project.root().to_string_lossy(),
+            },
+            "run": {
+                "sessionId": metadata.session_id,
+                "provider": context.model_config.protocol.to_string(),
+                "model": context.model_config.model,
+                "permissionMode": context.permission_mode
+                    .as_ref()
+                    .and_then(|mode| mode.read().ok())
+                    .map(|mode| format!("{mode:?}")),
+                "messages": metadata.history,
+            },
+            "hostTools": HOST_TOOL_ALLOWLIST,
+        }))
+    }
+
+    /// Invoke an audited native host tool through the same permission policy,
+    /// project fence and execution pipeline as the agent runtime.
+    pub fn call_host_tool(
+        &self,
+        source: PluginSource,
+        name: &str,
+        arguments: Value,
+    ) -> Result<Value, PluginHostError> {
+        if !HOST_TOOL_ALLOWLIST.contains(&name) {
+            return Err(PluginHostError::UnknownHostTool(name.to_owned()));
+        }
+        let (epoch, context) = self.context().ok_or(PluginHostError::NoActiveRun)?;
+        if context.cancel.is_cancelled() {
+            return Err(PluginHostError::Cancelled);
+        }
+        let services = self
+            .project_services
+            .read()
+            .ok()
+            .and_then(|services| services.clone())
+            .ok_or(PluginHostError::NoHostServices)?;
+        let tool = services
+            .tools
+            .get(name)
+            .ok_or_else(|| PluginHostError::UnknownHostTool(name.to_owned()))?;
+        let call_id = format!(
+            "clat-host-{}",
+            self.host_tool_seq.fetch_add(1, Ordering::AcqRel) + 1
+        );
+        let mut call = ToolCall {
+            id: call_id,
+            name: name.to_owned(),
+            arguments,
+        };
+        let mut permission_definition = tool.definition();
+        permission_definition.name = format!("{}:host:{name}", source.label());
+        let policy = services
+            .permissions
+            .create(Arc::clone(&context.approver), &context.cancel);
+        match policy.check(&services.project, &permission_definition, &call) {
+            PermissionDecision::Allow => {}
+            PermissionDecision::Ask { reason }
+            | PermissionDecision::Deny { reason }
+            | PermissionDecision::Unavailable { reason } => {
+                return Err(PluginHostError::HostToolDenied(reason));
+            }
+        }
+        call.arguments = fence_host_tool_arguments(&services.project, name, call.arguments)?;
+        if !self.context_is_current(epoch, &context.cancel) {
+            return Err(PluginHostError::Cancelled);
+        }
+        services
+            .pipeline
+            .execute(&ToolInvocation {
+                tool: tool.as_ref(),
+                arguments: &call.arguments,
+                project: &services.project,
+                cancel: &context.cancel,
+            })
+            .map_err(|error| PluginHostError::HostTool(error.to_string()))
     }
 
     /// W1-17/A1（INV-S8 半边）：在途审批/采样所属的 run 是否仍然活着
@@ -874,6 +1225,7 @@ pub struct McpHostHandler {
     bridge: Arc<PluginHostBridge>,
     server: String,
     pending: AtomicUsize,
+    host_services_enabled: std::sync::atomic::AtomicBool,
 }
 
 impl McpHostHandler {
@@ -882,6 +1234,25 @@ impl McpHostHandler {
             bridge,
             server: server.to_owned(),
             pending: AtomicUsize::new(0),
+            host_services_enabled: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// Enable the CLAT extension only after the server advertised the matching
+    /// experimental capability during initialize/discover. Merely knowing a
+    /// private method name is not authority to call native host tools.
+    pub(crate) fn enable_host_services(&self) {
+        self.host_services_enabled.store(true, Ordering::Release);
+    }
+
+    fn require_host_services(&self) -> Result<(), (i64, String)> {
+        if self.host_services_enabled.load(Ordering::Acquire) {
+            Ok(())
+        } else {
+            Err((
+                -32601,
+                "CLAT host-services were not negotiated for this MCP server".into(),
+            ))
         }
     }
 }
@@ -890,6 +1261,28 @@ impl McpServerRequestHandler for McpHostHandler {
     fn handle(&self, method: &str, params: Value) -> Result<Value, (i64, String)> {
         let _pending = PendingGuard::new(&self.pending);
         match method {
+            "io.artec.clat/context/get" => {
+                self.require_host_services()?;
+                self.bridge.host_context().map_err(|error| error.json_rpc())
+            }
+            "io.artec.clat/tools/call" => {
+                self.require_host_services()?;
+                let name = params
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| (-32602, "host tool call requires string `name`".into()))?;
+                let arguments = params
+                    .get("arguments")
+                    .cloned()
+                    .unwrap_or_else(|| json!({}));
+                if !arguments.is_object() {
+                    return Err((-32602, "host tool `arguments` must be an object".into()));
+                }
+                self.bridge
+                    .call_host_tool(PluginSource::Mcp(self.server.clone()), name, arguments)
+                    .map(|output| json!({ "output": output }))
+                    .map_err(|error| error.json_rpc())
+            }
             "sampling/createMessage" => {
                 let request = parse_sampling_params(&params)?;
                 self.bridge
@@ -1124,6 +1517,31 @@ mod tests {
     use crate::plugins::ProviderRegistryPlugin;
     use crate::plugins::services::PROVIDER_SERVICE;
 
+    struct AllowPolicy;
+
+    impl crate::permission::PermissionPolicy for AllowPolicy {
+        fn check(
+            &self,
+            _project: &Project,
+            _tool: &ToolDefinition,
+            _call: &ToolCall,
+        ) -> PermissionDecision {
+            PermissionDecision::Allow
+        }
+    }
+
+    struct AllowPolicyFactory;
+
+    impl PermissionPolicyFactory for AllowPolicyFactory {
+        fn create(
+            &self,
+            _approver: Arc<dyn PermissionApprover>,
+            _cancel: &CancelToken,
+        ) -> Box<dyn crate::permission::PermissionPolicy> {
+            Box::new(AllowPolicy)
+        }
+    }
+
     // ---- 假件：provider / approver / asker ----
 
     struct CannedFactory {
@@ -1330,6 +1748,82 @@ mod tests {
             bridge.sample(PluginSource::Mcp("srv".into()), sampling_request()),
             Err(PluginHostError::NoActiveRun)
         ));
+    }
+
+    #[test]
+    fn host_context_and_tool_call_share_run_scoped_permission_pipeline() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("clat-plugin-host-{unique}"));
+        std::fs::create_dir_all(&root).expect("root");
+        std::fs::write(root.join("note.txt"), "hello\n").expect("fixture");
+        let approver = Arc::new(ScriptedApprover {
+            decisions: Mutex::new(Vec::new()),
+            verdict: PermissionDecision::Allow,
+        });
+        let (bridge, _cell) = installed_bridge(
+            providers_with(CannedFactory {
+                text: "ok",
+                usage: None,
+            }),
+            approver,
+            None,
+        );
+        let tools = Arc::new(ToolRegistry::new());
+        let _lease = tools
+            .register(
+                PluginOwner::for_test(PluginId::new("test.host-tool")),
+                Arc::new(crate::native_tools::ReadFileTool),
+            )
+            .expect("register read tool");
+        bridge.configure_host_services(
+            Project::new(&root),
+            Arc::clone(&tools),
+            Arc::new(ToolExecutionPipeline::new()),
+            Arc::new(AllowPolicyFactory),
+        );
+        bridge.update_run_metadata("session-host", &[ModelItem::user_text("hello")]);
+
+        let context = bridge.host_context().expect("host context");
+        assert_eq!(context["run"]["sessionId"], "session-host");
+        assert_eq!(context["run"]["messages"].as_array().map(Vec::len), Some(1));
+        let output = bridge
+            .call_host_tool(
+                PluginSource::Wasm("fixture".into()),
+                "read_file",
+                json!({"path": "note.txt"}),
+            )
+            .expect("host read");
+        assert_eq!(output["content"], "1 | hello\n");
+        assert!(matches!(
+            bridge.call_host_tool(PluginSource::Wasm("fixture".into()), "ask_user", json!({})),
+            Err(PluginHostError::UnknownHostTool(_))
+        ));
+        let outside = std::env::temp_dir().join(format!("clat-plugin-host-outside-{unique}"));
+        std::fs::write(&outside, "secret\n").expect("outside fixture");
+        let error = bridge
+            .call_host_tool(
+                PluginSource::Wasm("fixture".into()),
+                "read_file",
+                json!({"path": outside}),
+            )
+            .expect_err("external plugins must not use ambient absolute reads");
+        assert!(error.to_string().contains("outside project"));
+        bridge.clear();
+        assert!(matches!(
+            bridge.host_context(),
+            Err(PluginHostError::NoActiveRun)
+        ));
+        std::fs::remove_file(outside).expect("cleanup outside fixture");
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn host_context_drops_a_single_oversized_history_item() {
+        let history = vec![ModelItem::user_text("x".repeat(HOST_CONTEXT_MAX_BYTES + 1))];
+        assert!(bounded_history(&history).is_empty());
     }
 
     /// B7（C2 定案）：非空 stop_sequences → 一次/run 的诊断标志置位，
@@ -2309,6 +2803,10 @@ mod tests {
             None,
         );
         let handler = McpHostHandler::new(Arc::clone(&bridge), "srv");
+        let host_error = handler
+            .handle("io.artec.clat/context/get", json!({}))
+            .expect_err("private extension requires negotiated capability");
+        assert_eq!(host_error.0, -32601);
         let result = handler
             .handle(
                 "sampling/createMessage",
@@ -2407,7 +2905,9 @@ mod tests {
     /// 插件桥 Phase 3 e2e（INV-D7）：`@artec/clat-dsh-adapter` 的 demo 插件作为
     /// 真实 MCP stdio server 被 CLAT 客户端挂载——echo 纯路径、
     /// sample_roundtrip 过本桥的权限门 + 假模型 + usage 记账、
-    /// ask_roundtrip 过顺序单问（含 enumValues 选择与 multiSelect 降级）。
+    /// ask_roundtrip 过顺序单问（含 enumValues 选择与 multiSelect 降级），
+    /// host_roundtrip 把 DSH 形状的 fs/shell/sessions/agents 打到同一 Rust
+    /// 宿主桥与原生工具管线。
     /// 需 node ≥22.19 与已构建的适配器（`dist/` 是 gitignore 的构建产物，
     /// 缺失时 skip 而非误报——CI 的门控腿先构建 adapter，见 ci.yml），
     /// `cargo test -- --ignored` 显式跑。
@@ -2469,17 +2969,42 @@ mod tests {
             approver,
             Some(asker),
         );
-        let server = McpServer::connect(
-            "demo",
-            &config,
-            Path::new("/tmp"),
-            Some(Arc::new(McpHostHandler::new(bridge, "demo"))),
-        )
-        .expect("connect to the dsh-adapter demo");
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let project_root = std::env::temp_dir().join(format!("clat-dsh-host-e2e-{unique}"));
+        std::fs::create_dir_all(&project_root).expect("project root");
+        std::fs::write(project_root.join("host.txt"), "from dsh host\n").expect("host fixture");
+        let host_tools = Arc::new(ToolRegistry::new());
+        let host_owner = PluginOwner::for_test(PluginId::new("test.dsh_host_e2e"));
+        let _read_lease = host_tools
+            .register(host_owner, Arc::new(crate::native_tools::ReadFileTool))
+            .expect("register read_file");
+        let _run_lease = host_tools
+            .register(host_owner, Arc::new(crate::native_tools::RunCommandTool))
+            .expect("register run_command");
+        bridge.configure_host_services(
+            Project::new(&project_root),
+            Arc::clone(&host_tools),
+            Arc::new(ToolExecutionPipeline::new()),
+            Arc::new(AllowPolicyFactory),
+        );
+        bridge.update_run_metadata("dsh-host-session", &[ModelItem::user_text("hello")]);
+        let handler = Arc::new(McpHostHandler::new(Arc::clone(&bridge), "demo"));
+        let server = McpServer::connect("demo", &config, &project_root, Some(handler.clone()))
+            .expect("connect to the dsh-adapter demo");
+        assert!(server.supports_clat_host_services());
+        handler.enable_host_services();
 
         let tools = server.list_tools().expect("tools");
         let names: Vec<&str> = tools.iter().map(|tool| tool.name.as_str()).collect();
-        for expected in ["echo", "sample_roundtrip", "ask_roundtrip"] {
+        for expected in [
+            "echo",
+            "sample_roundtrip",
+            "ask_roundtrip",
+            "host_roundtrip",
+        ] {
             assert!(names.contains(&expected), "tools: {names:?}");
         }
         let prompts = server.list_system_prompts().expect("system prompts");
@@ -2522,7 +3047,19 @@ mod tests {
         assert!(answer.contains("fudge"), "answer: {answer}");
         assert!(answer.contains("no sugar"), "answer: {answer}");
 
+        // 宿主服务全链：DSH ctx.fs/ctx.shell/ctx.sessions/ctx.agents →
+        // adapter experimental RPC → PluginHostBridge → 原生 Rust 工具。
+        let hosted = server
+            .call_tool_for_test("host_roundtrip", &json!({"path": "host.txt"}), &cancel)
+            .expect("host_roundtrip");
+        let hosted = hosted.as_str().unwrap_or_default();
+        assert!(hosted.contains("from dsh host"), "hosted: {hosted}");
+        assert!(hosted.contains("dsh-shell"), "hosted: {hosted}");
+        assert!(hosted.contains("dsh-host-session"), "hosted: {hosted}");
+
         server.shutdown().expect("shutdown reaps the node process");
+        bridge.clear();
+        std::fs::remove_dir_all(project_root).expect("cleanup project root");
     }
 
     /// 插件桥 Phase 3b e2e：npm 真实发布物 `dsh-web-search-exa@0.0.1-rc.1`

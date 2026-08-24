@@ -2,15 +2,17 @@
 //!
 //! WIT world `wit/plugin.wit`（`clat:plugin@0.1.0`）逐字镜像 MCP 叶子
 //! 语义：组件导出 `tools`（= tools/list + tools/call），导入
-//! sampling/elicitation——由 `PluginHostBridge` 提供实现，与 MCP 传输
-//! 共用同一语义面（INV-W4：一个对外契约、三种传输）。
+//! sampling/elicitation/config/host——由 `PluginHostBridge` 提供
+//! 实现，与 MCP 传输共用同一语义面（INV-W4：一个对外
+//! 契约、三种传输）。
 //!
 //! 沙箱（INV-W1，2026-08-21 修正措辞）：**零授权 WASI**——wasm32-
 //! wasip2 组件天然导入 wasi:io/poll 等接口，宿主经 wasmtime-wasi 提
 //! 供接口但 WasiCtx 不授予任何能力：无 preopen（文件系统可达面为
 //! 空）、无环境变量、stdio 关闭、sockets 无地址授权。组件的授权面
-//! 只有 world 声明的 sampling/elicitation（全部过桥）；Phase 2b 的能
-//! 力授予就是往 WasiCtx 里按权限档位加 preopen。
+//! 只有 world 声明的 sampling/elicitation/config/host（受 manifest
+//! 能力声明和宿主权限门共同限制），以及按权限档位授予的
+//! preopen。
 //! 有界执行（INV-W3，2d 起为 fuel 计量 + W1-01 取消中断）：燃料只在
 //! wasm 实际执行时消耗——host 调用阻塞等人（elicitation/sampling）不
 //! 烧预算；每次工具调用重置预算（校准 ≈120s 纯执行），超耗 trap 为
@@ -20,14 +22,15 @@
 //! 燃料耗尽。epoch 刻度不经时间流逝推进，"等待不烧预算"不变量保持。
 
 use super::services::{
-    MCP_STATUS_SERVICE, MCP_STATUS_SERVICE_ID, McpServerStatus, TOOL_SERVICE, TOOL_SERVICE_ID,
+    MCP_STATUS_SERVICE, MCP_STATUS_SERVICE_ID, McpServerStatus, PROMPT_SERVICE, PROMPT_SERVICE_ID,
+    TOOL_SERVICE, TOOL_SERVICE_ID,
 };
 use super::wasm_grants;
 use crate::mcp::client::qualify_prefixed_tool_name;
 use crate::model::CancelToken;
 use crate::plugin::{
-    Plugin as PluginTrait, PluginContext, PluginDescriptor, PluginError, PluginId, ScopeKind,
-    ServiceId,
+    Plugin as PluginTrait, PluginCapabilities, PluginContext, PluginDescriptor, PluginError,
+    PluginId, PluginPackageManifest, PluginRuntimeKind, ScopeKind, ServiceId,
 };
 use crate::plugin_host::{
     ElicitField, ElicitFieldKind, ElicitForm, ElicitOutcome, PluginHostBridge, PluginSource,
@@ -57,7 +60,7 @@ wasmtime::component::bindgen!({
 const ID: PluginId = PluginId::new("builtin.wasm_adapter");
 const PROVIDES: &[ServiceId] = &[];
 const REQUIRES: &[ServiceId] = &[TOOL_SERVICE_ID];
-const OPTIONAL: &[ServiceId] = &[MCP_STATUS_SERVICE_ID];
+const OPTIONAL: &[ServiceId] = &[MCP_STATUS_SERVICE_ID, PROMPT_SERVICE_ID];
 const DESCRIPTOR: PluginDescriptor = PluginDescriptor {
     id: ID,
     scope: ScopeKind::TrustedProject,
@@ -99,7 +102,13 @@ const MAX_PLUGIN_TOOLS: usize = 512;
 pub struct WasmPluginConfig {
     /// 组件文件路径：`~/…` 展开到 home；相对路径相对 `~/.clat`；
     /// 绝对路径原样。
+    #[serde(default)]
     pub path: String,
+    /// 可分发包清单（CLAT plugin manifest v1）。配置该字段时，组件
+    /// entry、digest、版本、能力声明和静态 prompt 从清单读取；`path`
+    /// 可省略。相对路径仍相对 `~/.clat`。
+    #[serde(default)]
+    pub manifest: Option<String>,
     /// 额外授予目录（Phase 2b，仅 FullAccess 档且插件具备 fs 上限时
     /// 授予 RW）：绝对路径或 `~/…`；guest 路径 = 清洗后的目录名。
     #[serde(default)]
@@ -216,6 +225,9 @@ struct PluginState {
     /// 本插件的配置 JSON（Phase 2c，INV-K2：只有自己的，未配置为
     /// None → config::get 报错而非静默空串）。
     config: Option<String>,
+    /// Manifest capability ceiling. `None` preserves the pre-manifest legacy
+    /// configuration; a package manifest is deny-by-default for every import.
+    capabilities: Option<PluginCapabilities>,
     /// W1-10：时钟等待状态（每次 invoke 重置；列工具的临时实例用
     /// 默认值——其燃料本就秒级，且不接取消令牌）。
     clock: ClockShared,
@@ -234,6 +246,15 @@ impl WasiView for PluginState {
 static MONOTONIC_EPOCH: std::sync::LazyLock<Instant> = std::sync::LazyLock::new(Instant::now);
 
 impl PluginState {
+    fn require_declared(&self, capability: &str, declared: bool) -> Result<(), String> {
+        if self.capabilities.is_some() && !declared {
+            return Err(format!(
+                "plugin manifest does not declare capability `{capability}`"
+            ));
+        }
+        Ok(())
+    }
+
     /// 建立一个有界时钟订阅（W1-10）。
     fn subscribe_clock_wait(
         &mut self,
@@ -391,6 +412,12 @@ impl clat::plugin::sampling::Host for PluginState {
         &mut self,
         request: clat::plugin::sampling::Request,
     ) -> Result<clat::plugin::sampling::Outcome, String> {
+        self.require_declared(
+            "sampling",
+            self.capabilities
+                .as_ref()
+                .is_none_or(|capabilities| capabilities.sampling),
+        )?;
         let domain = SamplingRequest {
             system_prompt: request.system_prompt,
             messages: request
@@ -424,6 +451,12 @@ impl clat::plugin::elicitation::Host for PluginState {
         &mut self,
         form: clat::plugin::elicitation::Form,
     ) -> Result<clat::plugin::elicitation::Outcome, String> {
+        self.require_declared(
+            "elicitation",
+            self.capabilities
+                .as_ref()
+                .is_none_or(|capabilities| capabilities.elicitation),
+        )?;
         let domain = ElicitForm {
             message: form.message,
             fields: form
@@ -467,6 +500,43 @@ impl clat::plugin::config::Host for PluginState {
             "no config provided for this plugin (add a `config` object to its              plugins.json entry)"
                 .to_owned()
         })
+    }
+}
+
+impl clat::plugin::host::Host for PluginState {
+    fn context(&mut self) -> Result<String, String> {
+        self.require_declared(
+            "hostContext",
+            self.capabilities
+                .as_ref()
+                .is_none_or(|capabilities| capabilities.host_context),
+        )?;
+        self.bridge
+            .host_context()
+            .and_then(|context| {
+                serde_json::to_string(&context).map_err(|error| {
+                    crate::plugin_host::PluginHostError::HostTool(error.to_string())
+                })
+            })
+            .map_err(|error| error.to_string())
+    }
+
+    fn call_tool(&mut self, name: String, arguments: String) -> Result<String, String> {
+        let declared = self
+            .capabilities
+            .as_ref()
+            .is_none_or(|capabilities| capabilities.host_tools.iter().any(|tool| tool == &name));
+        self.require_declared(&format!("hostTools.{name}"), declared)?;
+        let arguments: Value = serde_json::from_str(&arguments)
+            .map_err(|error| format!("invalid host tool arguments: {error}"))?;
+        self.bridge
+            .call_host_tool(self.source.clone(), &name, arguments)
+            .and_then(|output| {
+                serde_json::to_string(&output).map_err(|error| {
+                    crate::plugin_host::PluginHostError::HostTool(error.to_string())
+                })
+            })
+            .map_err(|error| error.to_string())
     }
 }
 
@@ -634,6 +704,8 @@ struct WasmInstance {
     grants: GrantPolicy,
     /// 本插件的配置 JSON 字符串（Phase 2c）。
     config: Option<String>,
+    /// Manifest capability ceiling copied into every rebuilt store.
+    capabilities: Option<PluginCapabilities>,
     /// 单次调用燃料预算（INV-W3；测试用小额验证打断）。
     fuel: u64,
     /// B5：组件 sha256——写授予记录三要素之一。
@@ -824,6 +896,7 @@ fn build_slot(
             wasi: builder.build(),
             table: ResourceTable::new(),
             config: instance.config.clone(),
+            capabilities: instance.capabilities.clone(),
             clock: ClockShared::default(),
         },
     );
@@ -991,6 +1064,9 @@ impl PluginTrait for WasmAdapterPlugin {
         let status = context
             .try_require(MCP_STATUS_SERVICE)
             .map_err(|error| PluginError::new(error.to_string()))?;
+        let prompt_registry = context
+            .try_require(PROMPT_SERVICE)
+            .map_err(|error| PluginError::new(error.to_string()))?;
         let config = load_wasm_config(&self.storage_root)
             .map_err(|error| PluginError::new(error.to_string()))?;
         // INV-W6：与 MCP 同一状态面板；configured 分母先扩（wasm 同步
@@ -1029,6 +1105,7 @@ impl PluginTrait for WasmAdapterPlugin {
         let owner = context.owner();
         let mut instances: Vec<Arc<WasmInstance>> = Vec::new();
         let mut leases = Vec::new();
+        let mut prompt_leases = Vec::new();
         // 非 server 级失败（空名段/工具注册失败）上报状态面板（对齐
         // MCP 适配器的 record_failure 语义——对抗自审 2026-08-21：此前
         // 仅收集进本地 vec 后丢弃，工具静默失踪）。
@@ -1043,6 +1120,24 @@ impl PluginTrait for WasmAdapterPlugin {
                     // A4-2：元数据消毒诊断上状态面板（不拖垮整个插件）。
                     for diagnostic in &compiled.diagnostics {
                         record_failure(diagnostic.clone());
+                    }
+                    if let Some(prompt_registry) = &prompt_registry {
+                        for prompt in &compiled.prompts {
+                            if prompt.system.trim().is_empty() {
+                                continue;
+                            }
+                            match prompt_registry.contribute(owner, prompt.system.clone()) {
+                                Ok(lease) => prompt_leases.push(lease),
+                                Err(error) => record_failure(format!(
+                                    "wasm `{name}` prompt `{}`: {error}",
+                                    prompt.name
+                                )),
+                            }
+                        }
+                    } else if !compiled.prompts.is_empty() {
+                        record_failure(format!(
+                            "wasm `{name}` manifest declares prompts but PromptRegistry is unavailable"
+                        ));
                     }
                     let mut tools = 0usize;
                     let fs_cap = compiled.definitions.iter().any(|definition| {
@@ -1064,6 +1159,7 @@ impl PluginTrait for WasmAdapterPlugin {
                             extra_dirs: compiled.extra_dirs,
                         },
                         config: compiled.config,
+                        capabilities: compiled.capabilities,
                         fuel: self.fuel,
                         digest: compiled.digest,
                         grants_path: wasm_grants::grants_path(&self.storage_root),
@@ -1102,8 +1198,15 @@ impl PluginTrait for WasmAdapterPlugin {
                     if let Some(status) = &status {
                         status.record_connected(McpServerStatus {
                             name: name.clone(),
-                            server_version: WASMTIME_VERSION.to_owned(),
-                            protocol_version: WIT_PROTOCOL.to_owned(),
+                            server_version: compiled
+                                .package_version
+                                .clone()
+                                .unwrap_or_else(|| WASMTIME_VERSION.to_owned()),
+                            protocol_version: compiled
+                                .package_version
+                                .as_ref()
+                                .map(|_| "clat-plugin-manifest/1".to_owned())
+                                .unwrap_or_else(|| WIT_PROTOCOL.to_owned()),
                             tools,
                             transport: "wasm".to_owned(),
                         });
@@ -1121,6 +1224,9 @@ impl PluginTrait for WasmAdapterPlugin {
         // 线程需要停机）。
         context.defer(move || {
             for lease in leases.drain(..) {
+                let _ = lease.revoke();
+            }
+            for lease in prompt_leases.drain(..) {
                 let _ = lease.revoke();
             }
             for instance in instances.drain(..) {
@@ -1146,9 +1252,16 @@ struct CompiledPlugin {
     diagnostics: Vec<String>,
     /// 本插件的配置 JSON 字符串（Phase 2c）。
     config: Option<String>,
+    /// Manifest capability ceiling; None is the legacy path-only mode.
+    capabilities: Option<PluginCapabilities>,
     /// B5：组件 sha256（小写 hex）——写授予记录三要素之一，无条件
     /// 计算（A4-3 钉扎校验复用同一摘要，不再只配 pin 才算）。
     digest: String,
+    /// Manifest-owned static system-prompt contributions.
+    prompts: Vec<crate::plugin::ManifestPrompt>,
+    /// Package version for status/market identity; None is the legacy
+    /// path-only configuration.
+    package_version: Option<String>,
 }
 
 /// WIT 工具声明到宿主 ToolDefinition 字段的最小投影（A4-2 消毒的
@@ -1184,12 +1297,18 @@ fn compile_plugin(
     name: &str,
     plugin_config: &WasmPluginConfig,
 ) -> Result<CompiledPlugin, String> {
-    let path = resolve_component_path(storage_root, &plugin_config.path);
+    let ResolvedPackage {
+        path,
+        sha256,
+        prompts,
+        version,
+        manifest_declares_tools,
+        capabilities,
+    } = resolve_package(storage_root, name, plugin_config)?;
     if !path.is_file() {
         return Err(format!(
-            "component file not found: {} (from `{}`)",
+            "component file not found: {} (plugin `{name}`)",
             path.display(),
-            plugin_config.path
         ));
     }
     // A4-3：大小闸先于读取/编译——启动同步路径不被大文件拖住。
@@ -1213,7 +1332,7 @@ fn compile_plugin(
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
-    if let Some(expected) = &plugin_config.sha256
+    if let Some(expected) = &sha256
         && !digest_hex.eq_ignore_ascii_case(expected.trim().trim_start_matches("sha256:"))
     {
         return Err(format!(
@@ -1246,6 +1365,7 @@ fn compile_plugin(
             wasi: WasiCtxBuilder::new().build(),
             table: ResourceTable::new(),
             config: None,
+            capabilities: capabilities.clone(),
             clock: ClockShared::default(),
         },
     );
@@ -1264,6 +1384,11 @@ fn compile_plugin(
         return Err(format!("plugin exposes more than {MAX_PLUGIN_TOOLS} tools"));
     }
     let (parsed, diagnostics) = sanitize_definitions(name, definitions);
+    if manifest_declares_tools == Some(false) && !parsed.is_empty() {
+        return Err(
+            "component exports tools but its manifest declares capabilities.tools=false".into(),
+        );
+    }
     Ok(CompiledPlugin {
         component,
         definitions: parsed,
@@ -1273,7 +1398,79 @@ fn compile_plugin(
             .config
             .as_ref()
             .and_then(|value| serde_json::to_string(value).ok()),
+        capabilities,
         digest: digest_hex,
+        prompts,
+        package_version: version,
+    })
+}
+
+struct ResolvedPackage {
+    path: PathBuf,
+    sha256: Option<String>,
+    prompts: Vec<crate::plugin::ManifestPrompt>,
+    version: Option<String>,
+    manifest_declares_tools: Option<bool>,
+    capabilities: Option<PluginCapabilities>,
+}
+
+/// Resolve legacy `path` entries and v1 package manifests into the same
+/// compile input. A manifest is authoritative: path/digest cannot have a
+/// second conflicting source in plugins.json.
+fn resolve_package(
+    storage_root: &std::path::Path,
+    name: &str,
+    plugin_config: &WasmPluginConfig,
+) -> Result<ResolvedPackage, String> {
+    let Some(raw_manifest) = plugin_config.manifest.as_deref() else {
+        if plugin_config.path.trim().is_empty() {
+            return Err("plugin entry requires `path` or `manifest`".into());
+        }
+        return Ok(ResolvedPackage {
+            path: resolve_component_path(storage_root, &plugin_config.path),
+            sha256: plugin_config.sha256.clone(),
+            prompts: Vec::new(),
+            version: None,
+            manifest_declares_tools: None,
+            capabilities: None,
+        });
+    };
+    if !plugin_config.path.trim().is_empty() {
+        return Err("manifest-backed plugin must not also set `path`".into());
+    }
+    let manifest_path = resolve_component_path(storage_root, raw_manifest);
+    let manifest = PluginPackageManifest::load(&manifest_path)?;
+    if manifest.id != name {
+        return Err(format!(
+            "manifest id `{}` does not match plugins.json key `{name}`",
+            manifest.id
+        ));
+    }
+    if manifest.runtime.kind != PluginRuntimeKind::WasmComponent {
+        return Err(format!(
+            "manifest `{name}` runtime is not `wasm-component` (MCP packages belong in the MCP installer/config path)"
+        ));
+    }
+    if !manifest.runtime.args.is_empty() {
+        return Err("wasm-component runtime does not accept runtime.args".into());
+    }
+    manifest.validate_config(plugin_config.config.as_ref())?;
+    if let Some(config_pin) = &plugin_config.sha256
+        && !config_pin
+            .trim()
+            .trim_start_matches("sha256:")
+            .eq_ignore_ascii_case(manifest.runtime.sha256.trim().trim_start_matches("sha256:"))
+    {
+        return Err("plugins.json sha256 conflicts with manifest runtime.sha256".into());
+    }
+    let path = manifest.entry_path(&manifest_path)?;
+    Ok(ResolvedPackage {
+        path,
+        sha256: Some(manifest.runtime.sha256.clone()),
+        prompts: manifest.prompts.clone(),
+        version: Some(manifest.version.clone()),
+        manifest_declares_tools: Some(manifest.capabilities.tools),
+        capabilities: Some(manifest.capabilities.clone()),
     })
 }
 
@@ -1331,6 +1528,31 @@ mod tests {
         PermissionDecision::Allow
     }
 
+    struct AllowHostPolicy;
+
+    impl crate::permission::PermissionPolicy for AllowHostPolicy {
+        fn check(
+            &self,
+            _project: &crate::project::Project,
+            _tool: &crate::tool::ToolDefinition,
+            _call: &crate::tool::ToolCall,
+        ) -> PermissionDecision {
+            PermissionDecision::Allow
+        }
+    }
+
+    struct AllowHostPolicyFactory;
+
+    impl crate::plugins::services::PermissionPolicyFactory for AllowHostPolicyFactory {
+        fn create(
+            &self,
+            _approver: std::sync::Arc<dyn PermissionApprover>,
+            _cancel: &CancelToken,
+        ) -> Box<dyn crate::permission::PermissionPolicy> {
+            Box::new(AllowHostPolicy)
+        }
+    }
+
     use super::super::wasm_grants;
     use super::*;
     use std::time::Duration;
@@ -1367,6 +1589,124 @@ mod tests {
         std::fs::write(root.join("plugins.json"), b"{not json").expect("write");
         assert!(load_wasm_config(&root).is_err());
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn manifest_package_resolves_relative_entry_identity_digest_and_prompts() {
+        let root = unique_root("manifest-resolve");
+        let package = root.join("package");
+        std::fs::create_dir_all(&package).expect("package");
+        std::fs::copy(fixture("digest.wasm"), package.join("plugin.wasm")).expect("component");
+        let digest = fixture_sha256("digest.wasm");
+        let manifest_path = package.join("clat-plugin.json");
+        std::fs::write(
+            &manifest_path,
+            serde_json::to_vec(&serde_json::json!({
+                "manifestVersion": 1,
+                "id": "dev.clat.digest",
+                "name": "Digest",
+                "version": "1.2.3",
+                "runtime": {
+                    "kind": "wasm-component",
+                    "entry": "plugin.wasm",
+                    "sha256": digest,
+                },
+                "capabilities": { "tools": true, "prompts": true },
+                "prompts": [{ "name": "digest", "system": "Prefer concise digests." }],
+            }))
+            .expect("manifest json"),
+        )
+        .expect("manifest");
+        let config = WasmPluginConfig {
+            manifest: Some(manifest_path.display().to_string()),
+            ..WasmPluginConfig::default()
+        };
+        let resolved = resolve_package(&root, "dev.clat.digest", &config).expect("resolve");
+        assert_eq!(
+            resolved.path,
+            package
+                .join("plugin.wasm")
+                .canonicalize()
+                .expect("canonical entry")
+        );
+        assert_eq!(resolved.version.as_deref(), Some("1.2.3"));
+        assert_eq!(resolved.prompts[0].system, "Prefer concise digests.");
+        assert!(resolve_package(&root, "wrong.id", &config).is_err());
+
+        let mut escape: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&manifest_path).expect("read manifest"))
+                .expect("parse manifest");
+        escape["runtime"]["entry"] = serde_json::json!("../escape.wasm");
+        std::fs::write(
+            &manifest_path,
+            serde_json::to_vec(&escape).expect("escape json"),
+        )
+        .expect("escape manifest");
+        assert!(resolve_package(&root, "dev.clat.digest", &config).is_err());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn manifest_package_contributes_static_system_prompt() {
+        let root = unique_root("manifest-prompt");
+        let package = root.join("package");
+        std::fs::create_dir_all(&package).expect("package");
+        std::fs::copy(fixture("digest.wasm"), package.join("plugin.wasm")).expect("component");
+        let manifest_path = package.join("clat-plugin.json");
+        std::fs::write(
+            &manifest_path,
+            serde_json::to_vec(&serde_json::json!({
+                "manifestVersion": 1,
+                "id": "dev.clat.digest",
+                "name": "Digest",
+                "version": "1.2.3",
+                "runtime": {
+                    "kind": "wasm-component",
+                    "entry": "plugin.wasm",
+                    "sha256": fixture_sha256("digest.wasm"),
+                },
+                "capabilities": { "tools": true, "prompts": true },
+                "prompts": [{ "name": "digest", "system": "Prefer concise digests." }],
+            }))
+            .expect("manifest json"),
+        )
+        .expect("manifest");
+        write_config_json(
+            &root,
+            &[(
+                "dev.clat.digest".to_owned(),
+                serde_json::json!({ "manifest": manifest_path.display().to_string() }),
+            )],
+        );
+        let mcp_root = unique_root("manifest-prompt-mcp");
+        let catalog: Vec<std::sync::Arc<dyn PluginTrait>> = vec![
+            std::sync::Arc::new(ToolRegistryPlugin),
+            std::sync::Arc::new(McpAdapterPlugin::new(
+                mcp_root.clone(),
+                Vec::new(),
+                crate::plugin_host::PluginHostBridge::shared(),
+            )),
+            std::sync::Arc::new(crate::plugins::PromptRegistryPlugin),
+            std::sync::Arc::new(WasmAdapterPlugin::new(
+                root.clone(),
+                crate::plugin_host::PluginHostBridge::shared(),
+                root.clone(),
+                None,
+            )),
+        ];
+        let mut manager = PluginManager::root(ScopeKind::TrustedProject);
+        manager.mount_all(catalog).expect("mount package");
+        let prompts = manager
+            .require(crate::plugins::services::PROMPT_SERVICE)
+            .expect("prompt registry");
+        assert_eq!(prompts.instructions(), "Prefer concise digests.");
+        let status = manager.require(MCP_STATUS_SERVICE).expect("status");
+        assert!(status.snapshot().servers.iter().any(|server| {
+            server.name == "dev.clat.digest" && server.server_version == "1.2.3"
+        }));
+        manager.close().expect("close");
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(mcp_root);
     }
 
     // ---- 门控端到端（需要 tests/fixtures/wasm/ 的组件；本地构建插件
@@ -1519,6 +1859,7 @@ mod tests {
             "read".to_owned(),
             WasmPluginConfig {
                 path: fixture("read.wasm").display().to_string(),
+                manifest: None,
                 dirs: vec![extra.display().to_string()],
                 config: None,
                 sha256: None,
@@ -2049,6 +2390,7 @@ mod tests {
                 "greeter".to_owned(),
                 WasmPluginConfig {
                     path: fixture("greeter.wasm").display().to_string(),
+                    manifest: None,
                     dirs: Vec::new(),
                     config,
                     sha256: None,
@@ -2588,6 +2930,19 @@ mod tests {
 
         let mut manager = mount_probe(&root, &mcp_root, std::sync::Arc::clone(&bridge), CALL_FUEL);
         let registry = manager.require(TOOL_SERVICE).expect("registry");
+        std::fs::write(root.join("host.txt"), "from host\n").expect("host fixture");
+        let read_lease = registry
+            .register(
+                PluginOwner::for_test(PluginId::new("test.wasm_host_read")),
+                std::sync::Arc::new(crate::native_tools::ReadFileTool),
+            )
+            .expect("register native read");
+        bridge.configure_host_services(
+            crate::project::Project::new(&root),
+            std::sync::Arc::clone(&registry),
+            std::sync::Arc::new(crate::tool::ToolExecutionPipeline::new()),
+            std::sync::Arc::new(AllowHostPolicyFactory),
+        );
 
         // 安装桥上下文（等价 start_run 的 install）：fake 模型 + Allow
         // 审批 + 脚本 asker。
@@ -2616,13 +2971,23 @@ mod tests {
             usage_cell: std::sync::Arc::clone(&usage_cell),
             budget: std::sync::Arc::new(Mutex::new(crate::plugin_host::SamplingBudget::per_run())),
         });
+        bridge.update_run_metadata(
+            "wasm-host-session",
+            &[crate::model::ModelItem::user_text("hi")],
+        );
 
         let project = crate::project::Project::new(&root);
         let output = registry
             .get("wasm_probe_probe")
             .expect("probe tool")
             .invoke(
-                &serde_json::json!({"sample": true, "elicit": true, "text": "hi"}),
+                &serde_json::json!({
+                    "sample": true,
+                    "elicit": true,
+                    "context": true,
+                    "read_path": "host.txt",
+                    "text": "hi"
+                }),
                 &project,
                 &CancelToken::new(),
             )
@@ -2633,6 +2998,9 @@ mod tests {
         // WIT 的 number 是 f64（契约层形状）：整数经往返变 2.0——
         // INV-W4 允许的 wire 层差异，语义等价。
         assert_eq!(output["elicit"]["servings"].as_f64(), Some(2.0));
+        assert_eq!(output["context"]["run"]["sessionId"], "wasm-host-session");
+        assert_eq!(output["host_read"]["content"], "1 | from host\n");
+        read_lease.revoke().expect("revoke native read");
         manager.close().expect("close");
         bridge.clear();
         let _ = std::fs::remove_dir_all(root);
@@ -2766,8 +3134,58 @@ mod tests {
             wasi: WasiCtxBuilder::new().build(),
             table: ResourceTable::new(),
             config: None,
+            capabilities: None,
             clock: ClockShared::begin_invoke(cancel),
         }
+    }
+
+    #[test]
+    fn manifest_capability_ceiling_guards_every_host_import() {
+        use clat::plugin::elicitation::Host as _;
+        use clat::plugin::host::Host as _;
+        use clat::plugin::sampling::Host as _;
+
+        let cancel = CancelToken::new();
+        let mut state = clock_state(&cancel);
+        state.capabilities = Some(PluginCapabilities::default());
+
+        let sampling = state
+            .create_message(clat::plugin::sampling::Request {
+                system_prompt: None,
+                messages: Vec::new(),
+                max_tokens: 1,
+                temperature: None,
+            })
+            .expect_err("sampling must be manifest-gated");
+        assert!(sampling.contains("capability `sampling`"));
+
+        let elicitation = state
+            .elicit(clat::plugin::elicitation::Form {
+                message: "question".into(),
+                fields: Vec::new(),
+            })
+            .expect_err("elicitation must be manifest-gated");
+        assert!(elicitation.contains("capability `elicitation`"));
+
+        let context = state.context().expect_err("context must be manifest-gated");
+        assert!(context.contains("capability `hostContext`"));
+
+        let call = state
+            .call_tool("read_file".into(), "{}".into())
+            .expect_err("host tools must be manifest-gated");
+        assert!(call.contains("capability `hostTools.read_file`"));
+
+        state.capabilities = Some(PluginCapabilities {
+            sampling: true,
+            elicitation: true,
+            host_context: true,
+            host_tools: vec!["read_file".into()],
+            ..PluginCapabilities::default()
+        });
+        let permitted_but_unavailable = state
+            .call_tool("read_file".into(), "{}".into())
+            .expect_err("the detached test bridge has no active run");
+        assert!(!permitted_but_unavailable.contains("does not declare capability"));
     }
 
     /// 经同步 poll 宿主驱动一个订阅的就绪（同步 `wasi:io/poll` 的

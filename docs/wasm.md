@@ -46,6 +46,52 @@ cost.
 }
 ```
 
+For a distributable package, prefer a manifest-backed entry:
+
+```json
+{
+  "dev.example.greeter": {
+    "manifest": "~/.clat/plugins/greeter/clat-plugin.json",
+    "config": { "greeting": "Hola" }
+  }
+}
+```
+
+The package's `clat-plugin.json` binds identity, version, component path,
+SHA-256, declared capabilities, config schema, and static system prompts:
+
+```json
+{
+  "manifestVersion": 1,
+  "id": "dev.example.greeter",
+  "name": "Greeter",
+  "version": "1.0.0",
+  "runtime": {
+    "kind": "wasm-component",
+    "entry": "greeter.wasm",
+    "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  },
+  "capabilities": {
+    "tools": true,
+    "prompts": true,
+    "hostContext": true,
+    "hostTools": ["read_file"]
+  },
+  "prompts": [{ "name": "greeting", "system": "Be concise and friendly." }],
+  "configSchema": { "type": "object", "required": ["greeting"] }
+}
+```
+
+The manifest path is authoritative: it cannot be combined with `path`, its
+entry must remain package-relative, its id must equal the `plugins.json` key,
+and its digest is always checked before compilation. The machine-readable
+schema is `schemas/clat-plugin-manifest.schema.json`.
+
+For manifest-backed packages, capability declarations are an enforced ceiling:
+undeclared sampling, elicitation, host-context, and individual host-tool imports
+fail at the host boundary. Legacy path-only entries retain their existing
+behavior so previously built components continue to load.
+
 `path` accepts:
 
 - `~/...`, expanded against the user's home directory;
@@ -111,8 +157,9 @@ file is treated as no grants and does not prevent CLAT startup.
 
 ## WIT contract
 
-The world in `wit/plugin.wit` exposes one required export and two optional host
-imports.
+The world in `wit/plugin.wit` exposes one required export and four optional
+guest imports. Existing components that do not import newer host interfaces
+continue to instantiate.
 
 ### Export: tools
 
@@ -140,8 +187,22 @@ and subject to the shared per-run sampling limits described in
 fields through the frontend's user-question port. The result is typed, declined,
 or cancelled. Headless clients without a question frontend return an error.
 
-A component importing neither host service and declaring only pure/read tools
-is effectively a local bounded computation with read-only project access.
+### Imports: config and host
+
+`config.get()` returns only this plugin's configured JSON object.
+
+`host.context()` returns a detached, bounded snapshot of the active project,
+run, session id, model surface, and available host tools. `host.call-tool()`
+can invoke only the audited native allowlist. It uses the same run-scoped
+permission policy, project path fence, cancellation token, and tool middleware
+pipeline as an agent-issued call; it is unavailable outside an active run.
+
+This is the same semantic host contract that the DSH adapter reaches through
+MCP. Rust plugins do not depend on TypeScript or Cordis.
+
+A component importing none of sampling, elicitation, or the general host bridge
+and declaring only pure/read tools is effectively a local bounded computation
+with read-only project access.
 
 ## Authoring with the Rust SDK
 
@@ -175,7 +236,13 @@ Host imports are ordinary generated functions:
 ```rust
 clat::plugin::sampling::create_message(request);
 clat::plugin::elicitation::elicit(form);
+clat::plugin::host::context();
+clat::plugin::host::call_tool("read_file", r#"{"path":"README.md"}"#);
 ```
+
+Plugins using `define_plugin!` also receive typed helpers
+`host_context::<T>()` and `call_host_tool::<A, T>()` alongside
+`plugin_config::<T>()`.
 
 The SDK pins versions validated with the host. Because proc-macro resolution
 still requires direct dependencies, plugin crates should copy the
@@ -197,7 +264,8 @@ cargo build --release --target wasm32-wasip2
 Point the plugin's `path` at
 `target/wasm32-wasip2/release/<name>.wasm`, restart CLAT, and inspect `/mcp`.
 
-For distribution, publish the component file plus its checksum and document:
+For distribution, publish the component and `clat-plugin.json`. The manifest
+records:
 
 - tool names and effects;
 - configuration schema;

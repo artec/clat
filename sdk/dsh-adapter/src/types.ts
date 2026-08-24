@@ -153,6 +153,98 @@ export interface ReflectServiceLike {
   provide(key: string, value?: unknown, check?: () => boolean): () => void
 }
 
+/** Detached CLAT run context delivered by the language-neutral host bridge. */
+export interface ClatHostContextLike {
+  protocolVersion: '0.1.0'
+  project: { root: string }
+  run: {
+    sessionId?: string
+    provider: string
+    model: string
+    permissionMode?: string
+    messages: unknown[]
+  }
+  hostTools: string[]
+}
+
+export interface ClatHostLike {
+  context(): Promise<ClatHostContextLike>
+  callTool(name: string, arguments_: Record<string, unknown>): Promise<unknown>
+}
+
+export interface FsTargetLike {
+  targetKey: string
+  displayPath: string
+}
+
+export interface FsInfoLike {
+  version: string
+  type: 'file' | 'directory' | 'other'
+  size?: number
+}
+
+export interface FileSystemLike {
+  readonly sandboxMode: undefined
+  resolve(path: string, opts?: { cwd?: string; signal?: AbortSignal }): Promise<FsTargetLike>
+  processPath(target: FsTargetLike): string
+  fileUrl(target: FsTargetLike): string
+  contains(parent: FsTargetLike, child: FsTargetLike): boolean
+  stat(target: FsTargetLike, signal?: AbortSignal): Promise<FsInfoLike | undefined>
+  lstat(path: string, opts?: { cwd?: string }, signal?: AbortSignal): Promise<{ version: string; type: 'file' | 'directory' | 'symlink' | 'other'; size?: number } | undefined>
+  readText(target: FsTargetLike, signal?: AbortSignal): Promise<string>
+  streamText(target: FsTargetLike, signal?: AbortSignal): Promise<AsyncIterable<string>>
+  readBytes(target: FsTargetLike, signal: AbortSignal | undefined, maxBytes: number): Promise<Uint8Array>
+  listDir(target: FsTargetLike, signal?: AbortSignal): Promise<Array<{ name: string; type: 'file' | 'directory' | 'other'; target: FsTargetLike; version?: string; size?: number }>>
+  writeText(target: FsTargetLike, content: string, expected?: unknown, signal?: AbortSignal, sandboxPolicy?: unknown): Promise<{ operation: 'create' | 'update'; version: string; before: string | null; after: string }>
+  editText(target: FsTargetLike, edit: { oldString: string; newString: string; replaceAll: boolean }, expected?: unknown, signal?: AbortSignal, sandboxPolicy?: unknown): Promise<{ version: string; before: string; after: string }>
+}
+
+export interface ShellLike {
+  readonly sandboxMode: undefined
+  resolve(request: Record<string, unknown> & { command: string }): Record<string, unknown> & {
+    command: string
+    workdir: string
+    timeoutMs: number
+    stdoutMaxBytes: number
+    sandboxPolicy: undefined
+  }
+  run(spec: Record<string, unknown> & { command: string; timeoutMs: number }): Promise<unknown>
+  start(spec: unknown): never
+}
+
+export interface SessionMirrorLike {
+  readonly id: string
+  readonly header: Readonly<Record<string, unknown>>
+  readonly events: readonly unknown[]
+  readonly messages: readonly unknown[]
+}
+
+export interface SessionStoreLike {
+  get(id: string): SessionMirrorLike | undefined
+  list(): SessionMirrorLike[]
+  create(...args: unknown[]): never
+  prepare(...args: unknown[]): never
+  enter(...args: unknown[]): never
+  announce(...args: unknown[]): never
+  flush(...args: unknown[]): never
+  fork(...args: unknown[]): never
+}
+
+export interface AgentMirrorLike {
+  readonly id: string
+  readonly session: SessionMirrorLike
+  readonly ctx: DshContext
+}
+
+export interface AgentRegistryLike {
+  get(id: string): AgentMirrorLike | undefined
+  list(): AgentMirrorLike[]
+  roots(): AgentMirrorLike[]
+  create(...args: unknown[]): never
+  resume(...args: unknown[]): never
+  setFactory(...args: unknown[]): never
+}
+
 /** Static adapter counterpart of Cordis' `Fiber & PromiseLike<Fiber>`. */
 export interface InjectFiberLike {
   dispose(): Promise<void>
@@ -211,6 +303,11 @@ export interface DshContext {
     fetch(request: WebFetchRequestLike, signal?: AbortSignal): Promise<WebFetchResultLike>
   }
   systemPrompt: SystemPromptLike
+  clat: ClatHostLike
+  fs: FileSystemLike
+  shell: ShellLike
+  sessions: SessionStoreLike
+  agents: AgentRegistryLike
   reflect: ReflectServiceLike
   get(key: string): unknown
   set(key: string, value: unknown): void

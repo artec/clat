@@ -359,6 +359,7 @@ impl TrustedProjectApplication {
                         history = nodes.into_iter().map(|(_, item)| item).collect();
                     }
                 }
+                plugin_host_worker.update_run_metadata(&session_id.to_string(), &history);
                 let captured_text = Arc::new(Mutex::new(String::new()));
                 let ui_events: Box<dyn EventSink + Send> = Box::new(CapturingEventSink {
                     inner: events,
