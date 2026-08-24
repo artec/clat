@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "scenario_id": "patch-multi-hunk-before-plugin",
+  "gate": "matched",
+  "expected": {
+    "outcome": "failure",
+    "category": "tool_unavailable",
+    "message_contains": "unknown tool `apply_patch`",
+    "event_kinds": [
+      "run_started",
+      "model_requested",
+      "model_responded",
+      "tool_requested",
+      "run_failed"
+    ],
+    "durable_event_kinds": [
+      "turn/start",
+      "user/message",
+      "step/start",
+      "request/header",
+      "assistant/message",
+      "step/end",
+      "turn/end"
+    ],
+    "permission_checks": []
+  },
+  "observed": {
+    "status": "failure",
+    "category": "tool_unavailable",
+    "message": "unknown tool `apply_patch`",
+    "turns": 1
+  },
+  "model_steps": {
+    "expected": 1,
+    "observed": 1,
+    "violations": []
+  },
+  "event_kinds": [
+    "run_started",
+    "model_requested",
+    "model_responded",
+    "tool_requested",
+    "run_failed"
+  ],
+  "durable_event_kinds": [
+    "turn/start",
+    "user/message",
+    "step/start",
+    "request/header",
+    "assistant/message",
+    "step/end",
+    "turn/end"
+  ],
+  "permission_checks": [],
+  "files": [
+    {
+      "path": "demo.txt",
+      "bytes": 58,
+      "sha256": "e551ceb011a0f66ba351de3947fb9fbdfd330e4e3c7fa8630b73cac0407c92ff"
+    }
+  ],
+  "files_match": true,
+  "application_close": "clean"
+}

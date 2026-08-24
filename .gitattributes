@@ -14,3 +14,6 @@ tests/fixtures/wasm/** -text
 tests/fixtures/market-*.json text eol=lf
 tests/fixtures/market-*.minisig -text
 tests/fixtures/market-package/** -text
+# Agent Scenario Harness 对 input/expected/report 做逐字节断言；文本
+# fixture 固定 LF，避免 Windows checkout 把 baseline 变化伪装成能力回归。
+tests/fixtures/agent-scenarios/** text eol=lf

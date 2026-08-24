@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "id": "patch-multi-hunk-before-plugin",
+  "prompt": "Update both functions in demo.txt as one atomic patch.",
+  "model_steps": [
+    {
+      "expect": {
+        "available_tools_exclude": ["apply_patch"]
+      },
+      "response": {
+        "tool_calls": [
+          {
+            "id": "call-apply-patch",
+            "name": "apply_patch",
+            "arguments": {
+              "patch": "*** Begin Patch\n*** Update File: demo.txt\n@@\n fn alpha() -> i32 {\n-    1\n+    10\n }\n@@\n fn omega() -> i32 {\n-    2\n+    20\n }\n*** End Patch"
+            }
+          }
+        ],
+        "finish_reason": "tool_calls"
+      }
+    }
+  ],
+  "expected": {
+    "outcome": "failure",
+    "category": "tool_unavailable",
+    "message_contains": "unknown tool `apply_patch`",
+    "event_kinds": [
+      "run_started",
+      "model_requested",
+      "model_responded",
+      "tool_requested",
+      "run_failed"
+    ],
+    "durable_event_kinds": [
+      "turn/start",
+      "user/message",
+      "step/start",
+      "request/header",
+      "assistant/message",
+      "step/end",
+      "turn/end"
+    ],
+    "permission_checks": []
+  }
+}

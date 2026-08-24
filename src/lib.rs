@@ -1,3 +1,5 @@
+#[cfg(test)]
+mod agent_eval;
 pub mod application;
 mod command;
 pub(crate) mod control_storage;

@@ -37,6 +37,18 @@ pub(crate) struct TestProviderPlugin {
     pub(crate) behavior: TestBehavior,
 }
 
+/// 可组合 scripted model 接缝：Scenario Harness 经生产 Provider/Run
+/// 路径驱动任意确定步骤，而不是为每个新病历继续扩张 `TestBehavior`
+/// 枚举。实现必须自行串行化 cursor；RetryModel 会为每次请求重建
+/// `TestModel`，所以脚本状态不能放在 model 实例里。
+pub(crate) trait TestModelScript: Send + Sync {
+    fn stream(
+        &self,
+        request: ModelRequest<'_>,
+        events: &mut dyn crate::model::ModelEventSink,
+    ) -> Result<ModelResponse, ModelError>;
+}
+
 impl crate::plugin::Plugin for TestProviderPlugin {
     fn descriptor(&self) -> &'static PluginDescriptor {
         &TEST_PROVIDER_DESCRIPTOR
@@ -116,6 +128,10 @@ pub(crate) enum TestBehavior {
     /// 第一轮调用 ask_user 工具（Pure 效果，免审批），拿到答案后第二
     /// 轮完成：端到端验证 ask-user 端口（asker 由 run 请求安装）。
     AskUser(Arc<ScriptedAsker>),
+    /// 阶段 0 Agent Scenario Harness 使用的通用脚本。它仍经真实
+    /// TestProviderPlugin → ModelFactory → RetryModel → Run 路径；
+    /// 这里只提供确定 Provider 响应，不绕开工具/权限/持久化。
+    Scripted(Arc<dyn TestModelScript>),
 }
 
 /// 脚本化 UserAsker：固定回传一个选项，并记录收到的问题供断言。
@@ -227,9 +243,10 @@ impl Model for TestModel {
             }
             TestBehavior::SlowTitle => {
                 // 标题请求（由 instructions 识别）慢 3s；普通对话快返回。
-                let is_title = request
-                    .instructions
-                    .is_some_and(|text| text.contains("Generate a concise title"));
+                let is_title = request.tools.is_empty()
+                    && request.instructions.is_some_and(|text| {
+                        text.starts_with("Generate a concise title (at most 8 words)")
+                    });
                 if is_title {
                     std::thread::sleep(std::time::Duration::from_secs(3));
                     Ok(response("slow title", FinishReason::Completed))
@@ -401,6 +418,24 @@ impl Model for TestModel {
                     provider_state: Vec::new(),
                     reasoning: None,
                 })
+            }
+            TestBehavior::Scripted(script) => {
+                // 标题生成是 Application 的旁路内部模型请求，不属于
+                // Scenario 声明的 agent step。与 ToolLoop 同纪律：不
+                // 消耗脚本 cursor，否则首轮成功后的异步标题会让稳定
+                // scenario 偶发多一步。
+                let is_title = request.tools.is_empty()
+                    && request.instructions.is_some_and(|text| {
+                        text.starts_with("Generate a concise title (at most 8 words)")
+                    });
+                if is_title {
+                    // Report 不能被标题 worker 的调度时机污染：close
+                    // 可能在它开始前取消，也可能让它先提交标题。固定
+                    // 返回 Cancelled，使两条调度都不产生 session/title。
+                    Ok(response("", FinishReason::Cancelled))
+                } else {
+                    script.stream(request, events)
+                }
             }
             TestBehavior::WriteFile | TestBehavior::DeltaThenWrite => {
                 let has_write_result = request.items.iter().any(|item| {
