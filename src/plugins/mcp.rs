@@ -761,8 +761,15 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "builds a Bun DSH package and spawns its MCP executable"]
+    #[ignore = "author-side packaging acceptance (armed with CLAT_DSH_ADAPTER_E2E=1; needs Bun + minisign + built sdk/dsh-adapter)"]
     fn generated_dsh_package_installs_and_invokes_through_the_normal_mcp_adapter() {
+        // CI 的 `-- --ignored` 门控面不带此变量——本测试瞬过；真实验收
+        // 在本地武装（模式同 CLAT_E2E_HOST）：CLAT_DSH_ADAPTER_E2E=1，
+        // 另需 Bun、minisign 和已构建的 sdk/dsh-adapter。
+        if std::env::var("CLAT_DSH_ADAPTER_E2E").ok().as_deref() != Some("1") {
+            eprintln!("generated_dsh_package: not armed (set CLAT_DSH_ADAPTER_E2E=1 to run it)");
+            return;
+        }
         let repository = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let adapter = repository.join("sdk/dsh-adapter");
         let cli = adapter.join("dist/src/dsh-cli.js");

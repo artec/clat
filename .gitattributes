@@ -7,3 +7,10 @@ tests/fixtures/tui-snapshots/** text eol=lf
 tests/fixtures/dsh-session/** -text
 tests/fixtures/release-manifest.sha256* -text
 tests/fixtures/wasm/** -text
+# 同类第三次（CI，2026-08-24）：market 签名 fixture 被 windows 检出
+# 重写为 CRLF——minisig 验签直接失败，market-package 打包后比 golden
+# 长 7 字节（1292 vs 1285）。签名链的 json 钉 eol=lf；minisig 与整棵
+# package 树（打包后按总长度断言）标 -text。
+tests/fixtures/market-*.json text eol=lf
+tests/fixtures/market-*.minisig -text
+tests/fixtures/market-package/** -text
