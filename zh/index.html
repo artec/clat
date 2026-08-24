@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>CLAT — command-line agent</title>
-  <meta name="description" content="CLAT：稳如磐石的 Agent 底座，DSH 的 TUI 客户端。Rust 单文件，DeepSeek / GLM / Qwen / Kimi 开箱即用，支持 WASM 插件与 MCP 扩展。">
+  <meta name="description" content="CLAT：稳如磐石的 Agent 底座，DSH 的 TUI 客户端。Rust 单文件，DeepSeek / GLM / Qwen / Kimi 开箱即用，签名插件市场 + WASM / MCP 扩展。">
   <link rel="alternate" hreflang="en" href="https://cl.at.cn/">
   <link rel="alternate" hreflang="zh" href="https://cl.at.cn/zh/">
   <link rel="alternate" hreflang="x-default" href="https://cl.at.cn/">
@@ -349,6 +349,7 @@
       </div>
       <div class="links">
         <a href="https://github.com/artec/clat">GitHub</a>
+        <a href="https://pi.at.cn">Plugin</a>
         <a href="https://github.com/artec/clat/blob/main/README.md">Docs</a>
       </div>
     </nav>
@@ -356,13 +357,15 @@
     <header class="hero">
       <img class="big" src="../logo.png" alt="CLAT logo">
       <h1>CLAT</h1>
-      <div><a class="release-pill" href="https://github.com/artec/clat/releases/latest" data-release>v0.9.0 — 最新版本</a></div>
+      <div><a class="release-pill" href="https://github.com/artec/clat/releases/latest" data-release>v0.9.3 — 最新版本</a></div>
       <p class="tagline">稳如磐石的 Agent 底座 · DSH 的 TUI 客户端 · Rust 单文件</p>
       <div class="term">
         <div class="row"><span class="p">❯</span><span>clat</span></div>
         <div class="row"><span class="dim"># 在当前项目目录启动交互式 TUI</span></div>
         <div class="row"><span class="p">❯</span><span>clat dsh</span></div>
         <div class="row"><span class="dim"># 把同一套 TUI 变成 DSH 宿主的终端客户端</span></div>
+        <div class="row"><span class="p">❯</span><span>clat plugin</span></div>
+        <div class="row"><span class="dim"># 浏览签名插件市场，一条命令安装</span></div>
         <div class="row"><span class="p">❯</span><span>clat upgrade</span></div>
         <div class="row"><span class="dim"># 自更新到最新 GitHub Release</span></div>
       </div>
@@ -370,11 +373,11 @@
         <a class="btn" href="#install">安装</a>
         <a class="btn" href="https://github.com/artec/clat">View on GitHub</a>
       </div>
-      <!-- 数据带：数字须真实。下载体积 = macOS tar.gz 压缩包大小（各平台 6.7–8.3 MB），
+      <!-- 数据带：数字须真实。下载体积 = macOS tar.gz 压缩包大小（v0.9.3 实测 7.0 MiB），
            解压后磁盘体积约 16 MiB；发布时复核压缩包即可。 -->
       <div class="stats">
         <div class="stat">
-          <div class="stat-number">6.7 MB</div>
+          <div class="stat-number">7.0 MB</div>
           <div class="stat-label">下载体积：单二进制，无需 Node / Python</div>
         </div>
         <div class="stat">
@@ -480,8 +483,8 @@
         </div>
         <div class="feature-cell">
           <p class="feature-label">10 — 插件</p>
-          <h3>WASM 插件</h3>
-          <p>与 DSH 插件生态互通：社区现成的能力拿来即用，你写的插件两边通用。稳定的 Rust 底座配上开放的插件生态，把 CLAT 组合成你需要的 Agent 系统。</p>
+          <h3>插件与市场</h3>
+          <p>签名插件市场 <a href="https://pi.at.cn">pi.at.cn</a> 已上线：<code>clat plugin</code> 一条命令浏览、安装、更新与回滚，依赖解析、发布者核验、能力审查全部内置；WASM 组件与 MCP 服务共用一套管理器，并与 DSH 插件生态互通。</p>
         </div>
         <div class="feature-cell">
           <p class="feature-label">11 — 生态</p>
@@ -490,8 +493,8 @@
         </div>
         <div class="feature-cell">
           <p class="feature-label">12 — 前端</p>
-          <h3>Web 客户端与本地 API</h3>
-          <p><code>clat serve</code> 在本机启动一个 HTTP+SSE 服务，浏览器打开即是可安装的 Web 客户端（PWA）；<code>clat exec --json</code> 把全部运行事件以 NDJSON 输出，供编辑器与流水线消费。</p>
+          <h3>Web 工作台与本地 API</h3>
+          <p><code>clat serve</code> 在本机 127.0.0.1:2691 启动 HTTP+SSE 服务，浏览器打开即是可安装的三栏 PWA 工作台：流式输出、工具卡片、审批、会话管理一应俱全，插件市场也内嵌其中，可直接安装；<code>clat exec --json</code> 把全部运行事件以 NDJSON 输出。</p>
         </div>
       </div>
     </section>

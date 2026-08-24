@@ -22,7 +22,7 @@
       } catch (e) { /* 无 localStorage 则留在英文页 */ }
     })();
   </script>
-  <meta name="description" content="CLAT: a rock-solid agent foundation and the TUI client for DSH. A single Rust binary with DeepSeek / GLM / Qwen / Kimi presets out of the box, WASM plugins, and MCP extensions.">
+  <meta name="description" content="CLAT: a rock-solid agent foundation and the TUI client for DSH. A single Rust binary with DeepSeek / GLM / Qwen / Kimi presets out of the box, plus a signed plugin marketplace, WASM plugins, and MCP extensions.">
   <link rel="alternate" hreflang="en" href="https://cl.at.cn/">
   <link rel="alternate" hreflang="zh" href="https://cl.at.cn/zh/">
   <link rel="alternate" hreflang="x-default" href="https://cl.at.cn/">
@@ -367,6 +367,7 @@
       </div>
       <div class="links">
         <a href="https://github.com/artec/clat">GitHub</a>
+        <a href="https://pi.at.cn">Plugin</a>
         <a href="https://github.com/artec/clat/blob/main/README.md">Docs</a>
       </div>
     </nav>
@@ -374,13 +375,15 @@
     <header class="hero">
       <img class="big" src="logo.png" alt="CLAT logo">
       <h1>CLAT</h1>
-      <div><a class="release-pill" href="https://github.com/artec/clat/releases/latest" data-release>v0.9.0 — Latest release</a></div>
+      <div><a class="release-pill" href="https://github.com/artec/clat/releases/latest" data-release>v0.9.3 — Latest release</a></div>
       <p class="tagline">A rock-solid agent foundation · The TUI client for DSH · A single Rust file</p>
       <div class="term">
         <div class="row"><span class="p">❯</span><span>clat</span></div>
         <div class="row"><span class="dim"># start the interactive TUI in the current project</span></div>
         <div class="row"><span class="p">❯</span><span>clat dsh</span></div>
         <div class="row"><span class="dim"># turn the same TUI into a client for a local DSH host</span></div>
+        <div class="row"><span class="p">❯</span><span>clat plugin</span></div>
+        <div class="row"><span class="dim"># browse the signed plugin market, install in one command</span></div>
         <div class="row"><span class="p">❯</span><span>clat upgrade</span></div>
         <div class="row"><span class="dim"># self-update to the latest GitHub release</span></div>
       </div>
@@ -388,11 +391,11 @@
         <a class="btn" href="#install">Install</a>
         <a class="btn" href="https://github.com/artec/clat">View on GitHub</a>
       </div>
-      <!-- 数据带：数字须真实。下载体积 = macOS tar.gz 压缩包大小（各平台 6.7–8.3 MB），
+      <!-- 数据带：数字须真实。下载体积 = macOS tar.gz 压缩包大小（v0.9.3 实测 7.0 MiB），
            解压后磁盘体积约 16 MiB；发布时复核压缩包即可。 -->
       <div class="stats">
         <div class="stat">
-          <div class="stat-number">6.7 MB</div>
+          <div class="stat-number">7.0 MB</div>
           <div class="stat-label">Download size: one binary, no Node / Python required</div>
         </div>
         <div class="stat">
@@ -498,8 +501,8 @@
         </div>
         <div class="feature-cell">
           <p class="feature-label">10 — Plugins</p>
-          <h3>WASM plugins</h3>
-          <p>Interoperable with the DSH plugin ecosystem: community plugins work as-is, and what you write runs on both. A stable Rust foundation plus an open plugin ecosystem — assemble CLAT into the agent system you need.</p>
+          <h3>Plugins &amp; marketplace</h3>
+          <p>The signed plugin marketplace <a href="https://pi.at.cn">pi.at.cn</a> is live: <code>clat plugin</code> browses, installs, updates, and rolls back in one command, with dependency solving, publisher and revocation checks, and capability review built in. WASM components and MCP servers share one manager, interoperable with the DSH ecosystem.</p>
         </div>
         <div class="feature-cell">
           <p class="feature-label">11 — Ecosystem</p>
@@ -508,8 +511,8 @@
         </div>
         <div class="feature-cell">
           <p class="feature-label">12 — Frontends</p>
-          <h3>Web client &amp; local API</h3>
-          <p><code>clat serve</code> starts an HTTP+SSE service on your machine; open a browser and you get an installable web client (PWA). <code>clat exec --json</code> streams every run event as NDJSON for editors and pipelines.</p>
+          <h3>Web workbench &amp; local API</h3>
+          <p><code>clat serve</code> starts an HTTP+SSE service on 127.0.0.1:2691; open a browser and you get an installable three-panel PWA workbench — streaming output, tool cards, approvals, and session management, with the plugin market embedded for one-click installs. <code>clat exec --json</code> streams every run event as NDJSON.</p>
         </div>
       </div>
     </section>
