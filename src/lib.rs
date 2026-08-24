@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod agent_eval;
 pub mod application;
+mod apply_patch;
 mod command;
 pub(crate) mod control_storage;
 pub mod demo;
@@ -19,9 +20,11 @@ mod plugin_host;
 mod plugins;
 pub mod presets;
 pub mod project;
+mod project_instructions;
 mod providers;
 mod redact;
 pub mod run;
+mod search;
 pub mod serve;
 // DSH-compatible session stack (docs/todo/dsh-session-persistence.md):
 // session facts live exclusively in these logs since the stage-5 cutover.

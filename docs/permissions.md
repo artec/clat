@@ -108,6 +108,8 @@ and complete arguments.
 The TUI renders dangerous native calls as readable previews:
 
 - `edit_file` shows the old and new snippets as a diff;
+- `apply_patch` shows the complete patch JSON, including its single target and
+  every hunk; v1 rejects add/delete/rename and multi-file forms;
 - `write_file` shows the target and full content;
 - `run_command` shows the command, working directory, and timeout;
 - other tools show formatted JSON plus all top-level field names.
@@ -174,7 +176,7 @@ with a model or extension you would not trust with local readable data.
 ### Writes
 
 `WriteScope` is derived from the same mode cell used by permission checks for
-the native `write_file` and `edit_file` tools:
+the native `write_file`, `edit_file`, and `apply_patch` tools:
 
 | Client/mode | Writable paths |
 |---|---|
@@ -205,6 +207,7 @@ installed.
 |---|---|---|
 | `write_file` | `Write` | content ≤1 MiB; atomic temp+rename; existing mode bits preserved; failed writes leave no partial target; capability-relative path operations |
 | `edit_file` | `Write` | target/result ≤1 MiB; exactly one text match; cooperating writers serialized; source snapshot revalidated before atomic replace |
+| `apply_patch` | `Write` | patch/target/result ≤1 MiB; one existing UTF-8 target; all exact hunks prevalidated; one snapshot-checked atomic commit; no add/delete/rename/multi-file v1 |
 | `run_command` | `Execute` | canonical project cwd; bounded timeout; cancellation; whole process-tree termination; stdout and stderr each retained up to 32 KiB while excess is drained |
 
 The edit lock coordinates CLAT writers, not arbitrary external editors.

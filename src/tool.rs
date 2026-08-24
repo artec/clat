@@ -184,13 +184,6 @@ impl ToolExecutionPipeline {
         })
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "post observer registration is exercised by extension catalogs"
-        )
-    )]
     pub(crate) fn register_observer(
         &self,
         owner: PluginOwner,
@@ -332,10 +325,6 @@ impl ToolNext for MiddlewareCursor<'_> {
 
 enum PipelineContribution {
     Middleware,
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "reserved for registered post observers")
-    )]
     Observer,
     ResultTransformer,
 }

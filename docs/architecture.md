@@ -254,17 +254,29 @@ preset and retry details.
 
 ## Native tools and permission pipeline
 
-Built-in read tools are `list_files`, `read_file`, and `search`. They enforce
-byte, depth, entry, and result limits. Project-relative paths reject traversal
-and are resolved with symlink-aware capability discipline. Absolute reads are
-allowed by CLAT's current permission contract.
+Built-in read tools are `list_files`, `read_file`, and `search`. Search is an
+independent internal plugin: literal remains the default, while regex,
+include/exclude globs, extensions, gitignore/hidden policy, stable ordering and
+snapshot-bound pagination remain bounded inside the Rust binary. Read tools
+enforce byte, depth, entry, match and result limits. Project-relative paths
+reject traversal and use symlink-aware capability discipline. Explicit
+absolute reads remain allowed by CLAT's current permission contract.
 
 Trusted projects also receive:
 
 - `write_file` — bounded atomic replacement with permission preservation;
 - `edit_file` — one exact unique replacement plus conflict revalidation;
+- `apply_patch` — one existing UTF-8 file, multiple exact hunks, complete
+  in-memory validation followed by one snapshot-checked atomic commit;
 - `run_command` — project-root command execution with timeout, bounded output,
   and whole-process-tree termination.
+
+`ProjectInstructionsPlugin` supplies cached scope-aware instructions rather
+than a one-time root prompt. It starts at the project root, observes only
+approved successful file tools through a post-tool observer, and adds nested
+`AGENTS.md`/`CLAUDE.md` scopes before the next model request. The complete
+system snapshot and source path/scope/digest metadata travel in
+`request/header`; resume restores the active scopes from that durable fact.
 
 Writes are project-relative in Read Only, Project Write, and headless runs;
 Full Access can unlock absolute writes. Command execution remains rooted in the
@@ -394,7 +406,8 @@ read-only and used only to populate session selection.
 | `src/application.rs`, `src/application/` | client-neutral use-case facade, DTOs, run/session lifecycle |
 | `src/run.rs` | agent loop |
 | `src/model.rs`, `src/providers/` | provider-neutral model contract and adapters |
-| `src/tool.rs`, `src/native_tools.rs` | tool contract and native tools |
+| `src/tool.rs`, `src/native_tools.rs`, `src/apply_patch.rs`, `src/search.rs` | tool contract and native coding tools |
+| `src/project_instructions.rs`, `src/plugins/instructions.rs` | scoped project-instruction discovery, caching and observation |
 | `src/permission.rs` | effects, modes, policies, approver port, write scope |
 | `src/event.rs` | RunEvent vocabulary and EventSink |
 | `src/interaction.rs`, `src/media.rs` | user-question port and image preparation |

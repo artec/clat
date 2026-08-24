@@ -1,19 +1,25 @@
 {
   "schema_version": 1,
-  "id": "patch-multi-hunk-before-plugin",
-  "prompt": "Update both functions in demo.txt as one atomic patch.",
+  "id": "search-regex-glob-ignore",
+  "prompt": "Find the two Rust needle functions under src, respecting project ignore rules.",
   "model_steps": [
     {
       "expect": {
-        "available_tools_include": ["apply_patch"]
+        "available_tools_include": ["search"]
       },
       "response": {
         "tool_calls": [
           {
-            "id": "call-apply-patch",
-            "name": "apply_patch",
+            "id": "call-search",
+            "name": "search",
             "arguments": {
-              "patch": "*** Begin Patch\n*** Update File: demo.txt\n@@\n fn alpha() -> i32 {\n-    1\n+    10\n }\n@@\n fn omega() -> i32 {\n-    2\n+    20\n }\n*** End Patch"
+              "query": "fn needle_(alpha|beta)",
+              "path": ".",
+              "mode": "regex",
+              "include_globs": ["src/**/*.rs"],
+              "extensions": ["rs"],
+              "respect_gitignore": true,
+              "max_results": 10
             }
           }
         ],
@@ -22,10 +28,18 @@
     },
     {
       "expect": {
-        "required_tool_results": ["apply_patch"]
+        "required_tool_results": ["search"],
+        "required_tool_result_contains": [
+          {"tool": "search", "text": "src/alpha.rs"},
+          {"tool": "search", "text": "src/beta.rs"}
+        ],
+        "forbidden_tool_result_contains": [
+          {"tool": "search", "text": "ignored.txt"},
+          {"tool": "search", "text": "README.md"}
+        ]
       },
       "response": {
-        "text": "patch complete",
+        "text": "search complete",
         "finish_reason": "completed"
       }
     }
@@ -51,8 +65,6 @@
       "step/start",
       "request/header",
       "assistant/message",
-      "approval/asked",
-      "approval/decided",
       "tool/call",
       "tool/result",
       "step/end",
@@ -63,10 +75,8 @@
       "turn/end"
     ],
     "permission_checks": [
-      {
-        "tool": "apply_patch",
-        "decision": "allow"
-      }
+      {"tool": "search", "decision": "allow"}
     ]
   }
 }
+

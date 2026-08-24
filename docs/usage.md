@@ -46,6 +46,19 @@ After trust is accepted, run `/model`, choose a built-in preset or Custom, and
 enter the provider credential. The setting is reused by `clat exec` and
 `clat serve` for the same local installation.
 
+CLAT loads the root `AGENTS.md`, falling back to `CLAUDE.md`. When an approved
+successful file tool reaches a nested path, the next model request also sees
+the first instruction file found in each directory from the root to that
+path. More-specific scopes appear later and apply only below their directory.
+The resolved source paths and digests are durable request-header facts, so a
+resume can rebuild the same scope set and detect changed or removed files.
+
+The native `search` tool defaults to case-insensitive literal matching and can
+also use bounded regex, globs, extension filters, gitignore/hidden policy and
+snapshot-bound cursors. `apply_patch` performs one existing file's exact
+multi-hunk update atomically; creation remains `write_file` and v1 does not
+delete or rename files.
+
 For non-interactive setup, `clat exec --trust "..."` accepts trust for the
 current project. `clat serve` never grants trust by itself; open `clat` once or
 run `clat exec --trust` before starting the server.

@@ -1,7 +1,8 @@
 //! Default agent runtime plugin (the run worker) + tool pipeline plugin.
 
 use super::services::{
-    AGENT_SERVICE, AGENT_SERVICE_ID, AgentFailure, AgentRequest, AgentRuntime, PERMISSION_SERVICE,
+    AGENT_SERVICE, AGENT_SERVICE_ID, AgentFailure, AgentRequest, AgentRuntime,
+    DYNAMIC_INSTRUCTIONS_SERVICE, DYNAMIC_INSTRUCTIONS_SERVICE_ID, PERMISSION_SERVICE,
     PERMISSION_SERVICE_ID, PROMPT_SERVICE, PROMPT_SERVICE_ID, PROVIDER_SERVICE,
     PROVIDER_SERVICE_ID, ProviderRegistry, TOOL_PIPELINE_SERVICE, TOOL_PIPELINE_SERVICE_ID,
     TOOL_SERVICE, TOOL_SERVICE_ID,
@@ -28,6 +29,7 @@ const AGENT_REQUIRES: &[ServiceId] = &[
     PROMPT_SERVICE_ID,
     TOOL_PIPELINE_SERVICE_ID,
 ];
+const AGENT_OPTIONAL: &[ServiceId] = &[DYNAMIC_INSTRUCTIONS_SERVICE_ID];
 const PIPELINE_DESCRIPTOR: PluginDescriptor = PluginDescriptor {
     id: PIPELINE_ID,
     scope: ScopeKind::TrustedProject,
@@ -40,7 +42,7 @@ const AGENT_DESCRIPTOR: PluginDescriptor = PluginDescriptor {
     scope: ScopeKind::TrustedProject,
     provides: AGENT_PROVIDES,
     requires: AGENT_REQUIRES,
-    optional: &[],
+    optional: AGENT_OPTIONAL,
 };
 
 pub(crate) struct ToolPipelinePlugin;
@@ -111,6 +113,9 @@ impl Plugin for DefaultAgentPlugin {
             prompts: context
                 .require(PROMPT_SERVICE)
                 .map_err(|error| PluginError::new(error.to_string()))?,
+            dynamic_instructions: context
+                .try_require(DYNAMIC_INSTRUCTIONS_SERVICE)
+                .map_err(|error| PluginError::new(error.to_string()))?,
             pipeline: context
                 .require(TOOL_PIPELINE_SERVICE)
                 .map_err(|error| PluginError::new(error.to_string()))?,
@@ -127,6 +132,7 @@ struct DefaultAgentRuntime {
     providers: Arc<ProviderRegistry>,
     permissions: Arc<dyn super::services::PermissionPolicyFactory>,
     prompts: Arc<super::services::PromptRegistry>,
+    dynamic_instructions: Option<Arc<dyn super::services::DynamicInstructions>>,
     pipeline: Arc<ToolExecutionPipeline>,
 }
 
@@ -158,15 +164,9 @@ impl AgentRuntime for DefaultAgentRuntime {
         // 档位说明注入系统指令（DSH renderPolicyContext 对应物）：让模
         // 型在尝试前知道审批边界。快照于 run 起点；运行中切档只改决策
         // （cell），说明下一 run 更新。Classic（exec）不注入。
-        let mut instructions = self.prompts.instructions();
-        if let Some(mode) = request.permission_mode {
-            instructions.push_str("\n\nPermission mode: ");
-            instructions.push_str(&mode.to_string());
-            instructions.push_str(". ");
-            instructions.push_str(crate::permission::mode_guidance(mode));
-            instructions.push('\n');
-        }
-        Run::new(
+        let instructions =
+            super::services::base_model_instructions(&self.prompts, request.permission_mode);
+        let run = Run::new(
             model.as_mut(),
             &self.tools,
             permissions.as_ref(),
@@ -177,8 +177,12 @@ impl AgentRuntime for DefaultAgentRuntime {
         .with_cancel_token(request.cancel)
         .with_steering(request.steering)
         .with_tool_pipeline(&self.pipeline)
-        .with_instructions(instructions)
-        .execute_with_items(
+        .with_instructions(instructions);
+        let mut run = match &self.dynamic_instructions {
+            Some(source) => run.with_dynamic_instructions(Arc::clone(source)),
+            None => run,
+        };
+        run.execute_with_items(
             request.history_items,
             request.prompt,
             request.events.as_mut(),

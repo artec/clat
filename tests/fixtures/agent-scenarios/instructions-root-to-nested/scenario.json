@@ -1,20 +1,20 @@
 {
   "schema_version": 1,
-  "id": "patch-multi-hunk-before-plugin",
-  "prompt": "Update both functions in demo.txt as one atomic patch.",
+  "id": "instructions-root-to-nested",
+  "prompt": "Read src/deep/file.rs, then finish.",
   "model_steps": [
     {
       "expect": {
-        "available_tools_include": ["apply_patch"]
+        "available_tools_include": ["read_file"],
+        "instructions_include": ["root-rule-token"],
+        "instructions_exclude": ["nested-rule-token"]
       },
       "response": {
         "tool_calls": [
           {
-            "id": "call-apply-patch",
-            "name": "apply_patch",
-            "arguments": {
-              "patch": "*** Begin Patch\n*** Update File: demo.txt\n@@\n fn alpha() -> i32 {\n-    1\n+    10\n }\n@@\n fn omega() -> i32 {\n-    2\n+    20\n }\n*** End Patch"
-            }
+            "id": "call-read-nested",
+            "name": "read_file",
+            "arguments": {"path": "src/deep/file.rs"}
           }
         ],
         "finish_reason": "tool_calls"
@@ -22,10 +22,11 @@
     },
     {
       "expect": {
-        "required_tool_results": ["apply_patch"]
+        "required_tool_results": ["read_file"],
+        "instructions_include": ["root-rule-token", "nested-rule-token"]
       },
       "response": {
-        "text": "patch complete",
+        "text": "instructions complete",
         "finish_reason": "completed"
       }
     }
@@ -51,22 +52,19 @@
       "step/start",
       "request/header",
       "assistant/message",
-      "approval/asked",
-      "approval/decided",
       "tool/call",
       "tool/result",
       "step/end",
       "step/start",
+      "request/header",
       "assistant/chunk",
       "assistant/message",
       "step/end",
       "turn/end"
     ],
     "permission_checks": [
-      {
-        "tool": "apply_patch",
-        "decision": "allow"
-      }
+      {"tool": "read_file", "decision": "allow"}
     ]
   }
 }
+

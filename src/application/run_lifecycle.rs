@@ -178,6 +178,22 @@ impl TrustedProjectApplication {
         if let Some(previous) = self.active_run.take() {
             previous.join()?;
         }
+        if !self.fresh_session_open
+            && let Some(header) = self.sessions.last_request_header()
+        {
+            // A dynamic project-instruction change may have appended a
+            // request/header after the run started. Re-seed dedupe from the
+            // durable projection instead of the start-time snapshot.
+            self.emitted_request_header = Some(header);
+        }
+        if !self.fresh_session_open
+            && let Some(header) = self.sessions.last_request_header()
+        {
+            // A dynamic project-instruction change may have appended a
+            // request/header after the run started. Re-seed dedupe from the
+            // durable projection instead of the start-time snapshot.
+            self.emitted_request_header = Some(header);
+        }
         if self
             .active_compaction
             .as_ref()
@@ -222,7 +238,7 @@ impl TrustedProjectApplication {
         // 请求输入构建（审计 P1-14）。
         let title_config = config.clone();
         let title_credentials = credentials.clone();
-        let request_header = self.request_header_data(&config);
+        let request_header = self.request_header_data(&config)?;
         let header_reason = self.request_header_reason(&request_header.header);
         let emitted_header_value = header_reason
             .is_some()

@@ -27,6 +27,8 @@ pub(crate) const RUN_SCOPE_SERVICE_ID: ServiceId = ServiceId::new("core.run_scop
 pub(crate) const MCP_STATUS_SERVICE_ID: ServiceId = ServiceId::new("core.mcp_status");
 pub(crate) const COMPACTION_SERVICE_ID: ServiceId = ServiceId::new("core.compaction");
 pub(crate) const COMMAND_SERVICE_ID: ServiceId = ServiceId::new("core.commands");
+pub(crate) const DYNAMIC_INSTRUCTIONS_SERVICE_ID: ServiceId =
+    ServiceId::new("core.dynamic_instructions");
 
 pub(crate) const SESSION_SERVICE: ServiceKey<crate::session::use_cases::SessionService> =
     ServiceKey::new(SESSION_SERVICE_ID);
@@ -49,6 +51,95 @@ pub(crate) const COMPACTION_SERVICE: ServiceKey<dyn HistoryCompactor> =
     ServiceKey::new(COMPACTION_SERVICE_ID);
 pub(crate) const COMMAND_SERVICE: ServiceKey<crate::command::CommandRegistry> =
     ServiceKey::new(COMMAND_SERVICE_ID);
+pub(crate) const DYNAMIC_INSTRUCTIONS_SERVICE: ServiceKey<dyn DynamicInstructions> =
+    ServiceKey::new(DYNAMIC_INSTRUCTIONS_SERVICE_ID);
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct InstructionSourceInfo {
+    pub path: String,
+    pub scope: String,
+    pub digest: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct InstructionSnapshot {
+    pub digest: String,
+    pub text: String,
+    pub sources: Vec<InstructionSourceInfo>,
+}
+
+/// Dynamic project instructions are filesystem-derived plugin state. Reads
+/// happen on mount or after an approved successful file tool; Run and the
+/// recorder only clone the cached snapshot at model-request boundaries.
+pub(crate) trait DynamicInstructions: Send + Sync {
+    fn snapshot(&self) -> Result<Option<InstructionSnapshot>, String>;
+    fn restore_from_header(&self, header: Option<&serde_json::Value>) -> Result<(), String>;
+}
+
+pub(crate) fn compose_instructions(base: &str, snapshot: Option<&InstructionSnapshot>) -> String {
+    let dynamic = snapshot
+        .map(|snapshot| snapshot.text.trim())
+        .unwrap_or_default();
+    match (base.trim(), dynamic) {
+        ("", "") => String::new(),
+        (base, "") => base.to_owned(),
+        ("", dynamic) => dynamic.to_owned(),
+        (base, dynamic) => format!("{base}\n\n{dynamic}"),
+    }
+}
+
+pub(crate) fn base_model_instructions(
+    prompts: &PromptRegistry,
+    mode: Option<crate::permission::PermissionMode>,
+) -> String {
+    let mut instructions = prompts.instructions();
+    if let Some(mode) = mode {
+        instructions.push_str("\n\nPermission mode: ");
+        instructions.push_str(&mode.to_string());
+        instructions.push_str(". ");
+        instructions.push_str(crate::permission::mode_guidance(mode));
+        instructions.push('\n');
+    }
+    instructions
+}
+
+/// Make `request/header.system` and its machine-readable provenance exactly
+/// match the dynamic snapshot used by Run. Returns whether the header changed.
+pub(crate) fn apply_instructions_to_header(
+    header: &mut serde_json::Value,
+    base: &str,
+    snapshot: Option<&InstructionSnapshot>,
+) -> bool {
+    let before = header.clone();
+    let Some(object) = header.as_object_mut() else {
+        return false;
+    };
+    let system = compose_instructions(base, snapshot);
+    if system.is_empty() {
+        object.remove("system");
+    } else {
+        object.insert("system".into(), serde_json::json!(system));
+    }
+    match snapshot {
+        Some(snapshot) => {
+            object.insert(
+                "clatInstructionContext".into(),
+                serde_json::json!({
+                    "digest": snapshot.digest,
+                    "sources": snapshot.sources.iter().map(|source| serde_json::json!({
+                        "path": source.path,
+                        "scope": source.scope,
+                        "digest": source.digest,
+                    })).collect::<Vec<_>>()
+                }),
+            );
+        }
+        None => {
+            object.remove("clatInstructionContext");
+        }
+    }
+    *header != before
+}
 pub(crate) const TODO_SERVICE_ID: ServiceId = ServiceId::new("core.todo");
 pub(crate) const TODO_SERVICE: ServiceKey<TodoService> = ServiceKey::new(TODO_SERVICE_ID);
 

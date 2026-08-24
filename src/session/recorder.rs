@@ -27,9 +27,11 @@ use std::sync::{Arc, Mutex};
 /// real model request inputs (provider, model, sampling/thinking config,
 /// resolved system prompt, tool definitions). Built once per run; the
 /// recorder publishes it before the first dispatch (catalog §2.7).
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub(crate) struct RequestHeaderData {
     pub(crate) header: Value,
+    pub(crate) base_system: String,
+    pub(crate) dynamic_instructions: Option<Arc<dyn crate::plugins::services::DynamicInstructions>>,
 }
 
 /// Shared between the recorder (which stashes `ToolRequested` calls) and
@@ -236,6 +238,8 @@ pub(crate) struct SessionRecorder {
     header_reason: Option<&'static str>,
     /// Canonical request/header body from the real model-request inputs.
     request_header: Value,
+    base_system: String,
+    dynamic_instructions: Option<Arc<dyn crate::plugins::services::DynamicInstructions>>,
     step_open: bool,
     /// The open step's assistant/message was already journaled.
     message_emitted: bool,
@@ -290,6 +294,8 @@ impl SessionRecorder {
             model: model.into(),
             header_reason,
             request_header: request_header.header,
+            base_system: request_header.base_system,
+            dynamic_instructions: request_header.dynamic_instructions,
             step_open: false,
             message_emitted: false,
             stream_usage: None,
@@ -478,6 +484,27 @@ impl SessionRecorder {
         self.stream_usage = None;
         self.pending_retry_id = None;
         self.next_block_index = 0;
+    }
+
+    fn refresh_dynamic_instructions(&mut self) {
+        let Some(source) = &self.dynamic_instructions else {
+            return;
+        };
+        let snapshot = match source.snapshot() {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                self.journal_error
+                    .get_or_insert(format!("project instructions failed: {error}"));
+                return;
+            }
+        };
+        if crate::plugins::services::apply_instructions_to_header(
+            &mut self.request_header,
+            &self.base_system,
+            snapshot.as_ref(),
+        ) {
+            self.header_reason = Some("change");
+        }
     }
 
     /// Whether deltas accumulated for the open step have content worth a
@@ -772,6 +799,7 @@ impl SessionRecorder {
             // atomic batch, already written before the run started.
             RunEvent::RunStarted { .. } => {}
             RunEvent::ModelRequested { .. } => {
+                self.refresh_dynamic_instructions();
                 self.close_open_step();
                 self.open_step();
             }
@@ -1052,6 +1080,8 @@ mod tests {
                 "system": "you are clat",
                 "tools": [{ "name": "read_file" }],
             }),
+            base_system: "you are clat".into(),
+            dynamic_instructions: None,
         }
     }
 

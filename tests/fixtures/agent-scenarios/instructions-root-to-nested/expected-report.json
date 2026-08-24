@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "scenario_id": "patch-multi-hunk-before-plugin",
+  "scenario_id": "instructions-root-to-nested",
   "gate": "matched",
   "expected": {
     "outcome": "success",
@@ -23,12 +23,11 @@
       "step/start",
       "request/header",
       "assistant/message",
-      "approval/asked",
-      "approval/decided",
       "tool/call",
       "tool/result",
       "step/end",
       "step/start",
+      "request/header",
       "assistant/chunk",
       "assistant/message",
       "step/end",
@@ -36,14 +35,14 @@
     ],
     "permission_checks": [
       {
-        "tool": "apply_patch",
+        "tool": "read_file",
         "decision": "allow"
       }
     ]
   },
   "observed": {
     "status": "success",
-    "output": "patch complete",
+    "output": "instructions complete",
     "turns": 2
   },
   "model_steps": {
@@ -70,12 +69,11 @@
     "step/start",
     "request/header",
     "assistant/message",
-    "approval/asked",
-    "approval/decided",
     "tool/call",
     "tool/result",
     "step/end",
     "step/start",
+    "request/header",
     "assistant/chunk",
     "assistant/message",
     "step/end",
@@ -83,15 +81,25 @@
   ],
   "permission_checks": [
     {
-      "tool": "apply_patch",
+      "tool": "read_file",
       "decision": "allow"
     }
   ],
   "files": [
     {
-      "path": "demo.txt",
-      "bytes": 59,
-      "sha256": "cdce70675ed87a2509c050c9b318e901929cafab8815277dee5634c72c319738"
+      "path": "AGENTS.md",
+      "bytes": 16,
+      "sha256": "69f53cbe78e021b429883e45fe6b1d89d964d0752660ab8958f631c943bdd007"
+    },
+    {
+      "path": "src/AGENTS.md",
+      "bytes": 18,
+      "sha256": "8da70b7180ee0fbf210b78fc617c22f400b35f8325e1251901db1380bc6c86bf"
+    },
+    {
+      "path": "src/deep/file.rs",
+      "bytes": 15,
+      "sha256": "6900828aa68c2b41e8832e49d80befe0f5c8e578be625ce53726f2d2070fa5a1"
     }
   ],
   "files_match": true,

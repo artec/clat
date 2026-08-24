@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "scenario_id": "patch-multi-hunk-before-plugin",
+  "scenario_id": "search-regex-glob-ignore",
   "gate": "matched",
   "expected": {
     "outcome": "success",
@@ -23,8 +23,6 @@
       "step/start",
       "request/header",
       "assistant/message",
-      "approval/asked",
-      "approval/decided",
       "tool/call",
       "tool/result",
       "step/end",
@@ -36,14 +34,14 @@
     ],
     "permission_checks": [
       {
-        "tool": "apply_patch",
+        "tool": "search",
         "decision": "allow"
       }
     ]
   },
   "observed": {
     "status": "success",
-    "output": "patch complete",
+    "output": "search complete",
     "turns": 2
   },
   "model_steps": {
@@ -70,8 +68,6 @@
     "step/start",
     "request/header",
     "assistant/message",
-    "approval/asked",
-    "approval/decided",
     "tool/call",
     "tool/result",
     "step/end",
@@ -83,15 +79,35 @@
   ],
   "permission_checks": [
     {
-      "tool": "apply_patch",
+      "tool": "search",
       "decision": "allow"
     }
   ],
   "files": [
     {
-      "path": "demo.txt",
-      "bytes": 59,
-      "sha256": "cdce70675ed87a2509c050c9b318e901929cafab8815277dee5634c72c319738"
+      "path": ".gitignore",
+      "bytes": 12,
+      "sha256": "7d8bf54db0e090506421e6057a4020f598538b9ecc134a87376e4596309634b8"
+    },
+    {
+      "path": "README.md",
+      "bytes": 22,
+      "sha256": "09b7401154b3736f15771eb53f2d6ceb2d59e1eb76fcad9b946f604568da02c0"
+    },
+    {
+      "path": "ignored.txt",
+      "bytes": 23,
+      "sha256": "a71ffcde21852694d195c11c6bccd5103742fe0cd765188eceb46541a54d580c"
+    },
+    {
+      "path": "src/alpha.rs",
+      "bytes": 21,
+      "sha256": "cb5f4ff033eeacc48384d9b196a0a7fd3e665f7996255c8823e672baac2cfab0"
+    },
+    {
+      "path": "src/beta.rs",
+      "bytes": 20,
+      "sha256": "29946feede7191003ff490d69a179602248819eb2e4a7358e967ecf9e20c45c5"
     }
   ],
   "files_match": true,

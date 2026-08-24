@@ -3,6 +3,7 @@
 //! titles, monitor — capabilities are plugins over the `plugin/` kernel.
 
 mod agent;
+mod apply_patch;
 mod commands;
 mod compaction;
 mod instructions;
@@ -13,6 +14,7 @@ mod prompt;
 mod providers;
 mod pruner;
 mod run_scope;
+mod search;
 pub(crate) mod services;
 mod storage;
 mod title;
@@ -25,6 +27,9 @@ mod wasm_grants;
 mod tests;
 
 pub(crate) use agent::{DefaultAgentPlugin, ToolPipelinePlugin};
+pub(crate) use apply_patch::ApplyPatchPlugin;
+#[cfg(test)]
+pub(crate) use apply_patch::ApplyPatchTool;
 pub(crate) use commands::{BuiltinCommandsPlugin, CommandsPlugin};
 pub(crate) use compaction::CompactionPlugin;
 pub(crate) use instructions::ProjectInstructionsPlugin;
@@ -37,11 +42,15 @@ pub(crate) use providers::{OpenAiCompatiblePlugin, OpenAiResponsesPlugin, Provid
 pub(crate) use pruner::ResultPruner;
 pub(crate) use pruner::ToolResultPrunerPlugin;
 pub(crate) use run_scope::RunScopePlugin;
+pub(crate) use search::SearchPlugin;
+#[cfg(test)]
+pub(crate) use search::SearchTool;
 pub(crate) use storage::{ProjectControlStoragePlugin, SessionPersistencePlugin};
 pub(crate) use title::SessionTitlePlugin;
 pub(crate) use todo::TodoPlugin;
 pub(crate) use tools::{
-    NativeInteractionToolsPlugin, NativeReadToolsPlugin, NativeWriteToolsPlugin, ToolRegistryPlugin,
+    NativeExecuteToolsPlugin, NativeInteractionToolsPlugin, NativeReadToolsPlugin,
+    NativeWriteToolsPlugin, ToolRegistryPlugin,
 };
 pub(crate) use wasm::WasmAdapterPlugin;
 

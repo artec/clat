@@ -1,7 +1,7 @@
 use super::services::{
     TOOL_PIPELINE_SERVICE, TOOL_PIPELINE_SERVICE_ID, TOOL_SERVICE, TOOL_SERVICE_ID,
 };
-use super::{NativeReadToolsPlugin, ToolPipelinePlugin, ToolRegistryPlugin};
+use super::{NativeReadToolsPlugin, SearchPlugin, ToolPipelinePlugin, ToolRegistryPlugin};
 use crate::plugin::{
     DisposeError, Plugin, PluginContext, PluginDescriptor, PluginError, PluginId, PluginManager,
     ScopeKind, ServiceId, ServiceKey,
@@ -97,6 +97,7 @@ fn one_catalog_entry_composes_typed_service_tool_and_reversible_middleware() {
         .mount_all(vec![
             Arc::new(ToolRegistryPlugin),
             Arc::new(NativeReadToolsPlugin),
+            Arc::new(SearchPlugin),
             Arc::new(ToolPipelinePlugin),
             Arc::new(StaticExtensionPlugin),
         ])

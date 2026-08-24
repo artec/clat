@@ -279,6 +279,8 @@ mod tests {
                     "system": "you are clat",
                     "tools": [],
                 }),
+                base_system: "you are clat".into(),
+                dynamic_instructions: None,
             },
             "mock",
             "mock",

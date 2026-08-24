@@ -33,6 +33,11 @@ cap-primitives = "4.0.2"
 # Cross-platform process groups (Unix) and Job Objects (Windows) make command
 # timeout/cancellation cover the complete descendant tree.
 command-group = "5.0.1"
+# Agent phase 1 search: Git-aware traversal and bounded compiled glob/regex
+# matching stay inside the Rust binary (no user-installed ripgrep runtime).
+globset = "0.4"
+ignore = "0.4.23"
+regex = "1.12"
 # `clat exec` turns Ctrl-C into a graceful CancelToken trip so partial output
 # still persists; a second press hard-exits 130. Installed once at the
 # process boundary in main.rs (the lib exposes ExecCancel instead).

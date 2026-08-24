@@ -53,8 +53,17 @@ struct StepExpectation {
     available_tools_include: Vec<String>,
     available_tools_exclude: Vec<String>,
     required_tool_results: Vec<String>,
+    required_tool_result_contains: Vec<ToolResultContentExpectation>,
+    forbidden_tool_result_contains: Vec<ToolResultContentExpectation>,
     instructions_include: Vec<String>,
     instructions_exclude: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ToolResultContentExpectation {
+    tool: String,
+    text: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -340,6 +349,46 @@ impl TestModelScript for ScenarioScript {
                 return Err(Self::reject(
                     &mut state,
                     format!("request {} is missing tool result `{required}`", index + 1),
+                ));
+            }
+        }
+        for required in &step.expect.required_tool_result_contains {
+            let matched = request.items.iter().any(|item| match item {
+                crate::ModelItem::ToolResult(result) if result.tool_name == required.tool => {
+                    serde_json::to_string(&result.output)
+                        .is_ok_and(|output| output.contains(&required.text))
+                }
+                _ => false,
+            });
+            if !matched {
+                return Err(Self::reject(
+                    &mut state,
+                    format!(
+                        "request {} tool result `{}` does not contain `{}`",
+                        index + 1,
+                        required.tool,
+                        required.text
+                    ),
+                ));
+            }
+        }
+        for forbidden in &step.expect.forbidden_tool_result_contains {
+            let matched = request.items.iter().any(|item| match item {
+                crate::ModelItem::ToolResult(result) if result.tool_name == forbidden.tool => {
+                    serde_json::to_string(&result.output)
+                        .is_ok_and(|output| output.contains(&forbidden.text))
+                }
+                _ => false,
+            });
+            if matched {
+                return Err(Self::reject(
+                    &mut state,
+                    format!(
+                        "request {} tool result `{}` unexpectedly contains `{}`",
+                        index + 1,
+                        forbidden.tool,
+                        forbidden.text
+                    ),
                 ));
             }
         }
@@ -967,7 +1016,7 @@ mod tests {
     }
 
     #[test]
-    fn patch_multi_hunk_pre_fix_baseline_is_stable() {
+    fn patch_multi_hunk_scenario_is_stable_after_plugin_graduation() {
         let fixture = fixture("patch-multi-hunk-before-plugin");
         let report = run_fixture(&fixture).expect("scenario runs through Application");
         assert_eq!(report.gate, GateStatus::Matched, "report: {report:#?}");
@@ -990,7 +1039,7 @@ mod tests {
         let unconsumed =
             ScenarioScript::new(load_definition(&fixture).expect("fixture").model_steps).report();
         assert!(
-            unconsumed.violations[0].contains("run ended after 0 of 1"),
+            unconsumed.violations[0].contains("run ended after 0 of 2"),
             "too few model requests must be a named contract violation"
         );
         let mut definition = load_definition(&fixture).expect("fixture");
@@ -1021,13 +1070,7 @@ mod tests {
         let fixture = fixture("patch-multi-hunk-before-plugin");
         let definition = load_definition(&fixture).expect("fixture");
         let script = ScenarioScript::new(definition.model_steps);
-        let tools = vec![crate::ToolDefinition {
-            name: "apply_patch".into(),
-            description: String::new(),
-            input_schema: serde_json::json!({}),
-            effect: crate::ToolEffect::Write,
-            strict: true,
-        }];
+        let tools = Vec::new();
         let items = vec![crate::ModelItem::user_text("probe")];
         let options = crate::model::ModelOptions::default();
         let cancel = crate::CancelToken::new();
@@ -1042,14 +1085,18 @@ mod tests {
         let first = script
             .stream(request, &mut events)
             .expect_err("catalog drift");
-        assert!(first.to_string().contains("unexpectedly exposes tool"));
+        assert!(first.to_string().contains("missing tool `apply_patch`"));
         let second = script
             .stream(request, &mut events)
+            .expect_err("missing prior result");
+        assert!(second.to_string().contains("missing tool result"));
+        let third = script
+            .stream(request, &mut events)
             .expect_err("extra request");
-        assert!(second.to_string().contains("after script end"));
+        assert!(third.to_string().contains("after script end"));
         let report = script.report();
-        assert_eq!(report.observed, 2);
-        assert_eq!(report.violations.len(), 2);
+        assert_eq!(report.observed, 3);
+        assert_eq!(report.violations.len(), 3);
     }
 
     #[test]

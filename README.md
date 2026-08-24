@@ -57,8 +57,10 @@ the URL. The same binary serves the responsive three-panel PWA.
 - **Models** — built-in DeepSeek, GLM, Qwen, and Kimi presets; named custom
   profiles; OpenAI Responses and OpenAI-compatible protocols; reasoning,
   usage, cache, context, and quota telemetry.
-- **Native tools** — bounded file listing, reading, searching, atomic writing,
-  exact editing, and process-tree-owned command execution.
+- **Native tools** — bounded Git-aware literal/regex/glob search, file listing
+  and reading, atomic writes, exact edits, single-file multi-hunk patches, and
+  process-tree-owned command execution. Scoped project instructions refresh as
+  successful file tools reach nested paths.
 - **Permissions** — Read Only, Project Write, and Full Access modes; complete
   argument review; project trust; path fences; fail-closed headless behavior.
 - **Sessions** — crash-resilient, append-only, DSH-compatible journals under

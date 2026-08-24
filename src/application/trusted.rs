@@ -4,9 +4,10 @@ use crate::control_storage::{ControlStorage, sentinel};
 use crate::model::{ModelConfig, ProviderCredentials, ProviderDescriptor};
 use crate::plugin::{Plugin, PluginManager, ScopeKind};
 use crate::plugins::services::{
-    AGENT_SERVICE, COMMAND_SERVICE, COMPACTION_SERVICE, CONFIG_SERVICE, MCP_STATUS_SERVICE,
-    MONITOR_SERVICE, PERMISSION_SERVICE, PROMPT_SERVICE, PROVIDER_SERVICE, SESSION_SERVICE,
-    SESSION_TITLE_SERVICE, TODO_SERVICE, TOOL_PIPELINE_SERVICE, TOOL_SERVICE,
+    AGENT_SERVICE, COMMAND_SERVICE, COMPACTION_SERVICE, CONFIG_SERVICE,
+    DYNAMIC_INSTRUCTIONS_SERVICE, MCP_STATUS_SERVICE, MONITOR_SERVICE, PERMISSION_SERVICE,
+    PROMPT_SERVICE, PROVIDER_SERVICE, SESSION_SERVICE, SESSION_TITLE_SERVICE, TODO_SERVICE,
+    TOOL_PIPELINE_SERVICE, TOOL_SERVICE,
 };
 use crate::plugins::{ProjectControlStoragePlugin, SessionPersistencePlugin};
 use crate::presets::preset_by_id;
@@ -149,6 +150,7 @@ impl TrustedProjectApplication {
             Arc::new(SessionPersistencePlugin::new(Arc::clone(&session_service))),
             Arc::new(crate::plugins::ToolRegistryPlugin),
             Arc::new(crate::plugins::NativeReadToolsPlugin),
+            Arc::new(crate::plugins::SearchPlugin),
             Arc::new(crate::plugins::NativeWriteToolsPlugin {
                 // 写入围栏来源与权限策略读同一个 cell（SR2）：切 FA 的
                 // 下一次写即开放绝对路径；exec（Classic）恒项目根。
@@ -158,6 +160,14 @@ impl TrustedProjectApplication {
                     crate::permission::WriteScopeSource::ProjectRoot
                 },
             }),
+            Arc::new(crate::plugins::ApplyPatchPlugin {
+                scope: if permission_modes {
+                    crate::permission::WriteScopeSource::Shared(Arc::clone(&permission_mode))
+                } else {
+                    crate::permission::WriteScopeSource::ProjectRoot
+                },
+            }),
+            Arc::new(crate::plugins::NativeExecuteToolsPlugin),
             Arc::new(crate::plugins::NativeInteractionToolsPlugin {
                 slot: Arc::clone(&asker_slot),
             }),
@@ -228,6 +238,9 @@ impl TrustedProjectApplication {
         let prompts = project_manager
             .require(PROMPT_SERVICE)
             .map_err(|error| ApplicationError::new(error.to_string()))?;
+        let dynamic_instructions = project_manager
+            .require(DYNAMIC_INSTRUCTIONS_SERVICE)
+            .map_err(|error| ApplicationError::new(error.to_string()))?;
         // 命令注册表与工具/厂商/提示词同点冻结：贡献只发生在挂载期，
         // 冻结后挡注册不挡撤销（INV-C3）。
         let commands = project_manager
@@ -277,6 +290,7 @@ impl TrustedProjectApplication {
             providers,
             tools,
             prompts,
+            dynamic_instructions,
             commands,
             agent,
             mcp_status,
@@ -389,6 +403,7 @@ impl TrustedProjectApplication {
                         self.selection = Some(id.clone());
                         self.fresh_session_open = true;
                         self.emitted_request_header = self.sessions.last_request_header();
+                        self.restore_instruction_sources();
                         self.restore_todo_from(&view);
                         // arm 阶段已经付过一遍全量回放的成本，把结果
                         // 递给第一次 snapshot()（同 switch_session 复用
@@ -455,7 +470,7 @@ impl TrustedProjectApplication {
     pub(super) fn request_header_data(
         &self,
         config: &ModelConfig,
-    ) -> crate::session::recorder::RequestHeaderData {
+    ) -> Result<crate::session::recorder::RequestHeaderData, ApplicationError> {
         let mut header = serde_json::Map::new();
         let mut config_json = serde_json::Map::new();
         config_json.insert("provider".into(), json!(config.protocol.to_string()));
@@ -470,10 +485,11 @@ impl TrustedProjectApplication {
             config_json.insert("thinking".into(), json!(level.label().to_lowercase()));
         }
         header.insert("config".into(), Value::Object(config_json));
-        let system = self.prompts.instructions();
-        if !system.is_empty() {
-            header.insert("system".into(), json!(system));
-        }
+        let base_system = crate::plugins::services::base_model_instructions(
+            &self.prompts,
+            self.permission_modes_enabled
+                .then(|| self.permission_mode()),
+        );
         let tools: Vec<Value> = self
             .tools
             .definitions()
@@ -489,9 +505,21 @@ impl TrustedProjectApplication {
         if !tools.is_empty() {
             header.insert("tools".into(), Value::Array(tools));
         }
-        crate::session::recorder::RequestHeaderData {
-            header: Value::Object(header),
-        }
+        let snapshot = self
+            .dynamic_instructions
+            .snapshot()
+            .map_err(ApplicationError::new)?;
+        let mut header = Value::Object(header);
+        crate::plugins::services::apply_instructions_to_header(
+            &mut header,
+            &base_system,
+            snapshot.as_ref(),
+        );
+        Ok(crate::session::recorder::RequestHeaderData {
+            header,
+            base_system,
+            dynamic_instructions: Some(Arc::clone(&self.dynamic_instructions)),
+        })
     }
 
     pub(super) fn project_key(&self) -> ProjectKey {
@@ -515,6 +543,19 @@ impl TrustedProjectApplication {
                     })
                     .collect::<Vec<_>>(),
             );
+        }
+    }
+
+    fn restore_instruction_sources(&mut self) {
+        if let Err(error) = self
+            .dynamic_instructions
+            .restore_from_header(self.emitted_request_header.as_ref())
+        {
+            let diagnostic = format!("project instructions could not restore: {error}");
+            self.startup_diagnostic = match self.startup_diagnostic.take() {
+                Some(existing) => Some(format!("{existing}; {diagnostic}")),
+                None => Some(diagnostic),
+            };
         }
     }
 
@@ -786,6 +827,7 @@ impl TrustedProjectApplication {
         let quiesce = self.sessions.quiesce_active().map_err(session_error);
         self.fresh_session_open = true;
         self.emitted_request_header = None;
+        self.restore_instruction_sources();
         // 新会话从默认档起步：上一个会话的档位绝不跨 /new 携带（PS1
         // 的进程内变体）；物化前 /perm 的选择仍是出生档（PS7）。
         if self.permission_modes_enabled {
@@ -920,6 +962,7 @@ impl TrustedProjectApplication {
         self.fresh_session_open = true;
         // Dedupe authority: whatever the log already holds.
         self.emitted_request_header = self.sessions.last_request_header();
+        self.restore_instruction_sources();
         self.restore_todo_from(&view);
         let input_history = self.sessions.recent_inputs(500).map_err(session_error)?;
         quiesce?;

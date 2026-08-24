@@ -11,8 +11,8 @@ use crate::Project;
 use crate::control_storage::ControlStorage;
 use crate::plugin::PluginManager;
 use crate::plugins::services::{
-    ConfigStore, HistoryCompactor, McpStatus, MonitorService, ProviderRegistry, SessionTitler,
-    StoreError, TodoService,
+    ConfigStore, DynamicInstructions, HistoryCompactor, McpStatus, MonitorService,
+    ProviderRegistry, SessionTitler, StoreError, TodoService,
 };
 use crate::session::id::SessionId;
 use crate::session::root_lease::StorageRootLease;
@@ -103,6 +103,10 @@ pub struct TrustedProjectApplication {
     /// Frozen prompt registry: `request/header.system` reads the resolved
     /// instructions (audit P1-14).
     prompts: Arc<crate::plugins::services::PromptRegistry>,
+    /// Cached scope-aware project instructions. The service is owned by the
+    /// internal plugin; Application only restores its source scopes from the
+    /// durable request/header when sessions change.
+    dynamic_instructions: Arc<dyn DynamicInstructions>,
     /// Frozen command registry（`core.commands`）：斜杠命令的唯一语义
     /// 源，前端经 `dispatch_command` 触达（INV-C1）。
     commands: Arc<crate::command::CommandRegistry>,

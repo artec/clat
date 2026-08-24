@@ -126,6 +126,13 @@ Committed batches fold directly from the append path; CLAT does not reread the
 whole log after every write. The transcript remains complete after compaction,
 while the surface shadows compacted ranges for the next model request.
 
+`request/header` is also the durable model-input witness. Besides provider,
+model, system text and tool schemas, CLAT records
+`clatInstructionContext` with the active project-instruction digest and bounded
+source path/scope/digest rows. A successful file tool can cause a `change`
+header before the next model request; resume restores those scopes and rereads
+the current files instead of trusting cached repository text.
+
 `clat-checkpoint.json` caches bounded projection rows and has an 8 MiB final
 size cap. Unbounded units are omitted and rebuilt from the log. Deleting a
 checkpoint changes performance only, never semantics.

@@ -5,4 +5,3 @@ fn alpha() -> i32 {
 fn omega() -> i32 {
     2
 }
-

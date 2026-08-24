@@ -123,6 +123,7 @@ pub(crate) struct Run<'a> {
     permissions: &'a dyn PermissionPolicy,
     project: &'a Project,
     instructions: Option<String>,
+    dynamic_instructions: Option<std::sync::Arc<dyn crate::plugins::services::DynamicInstructions>>,
     model_options: ModelOptions,
     cancel: CancelToken,
     steering: SteeringQueue,
@@ -146,6 +147,7 @@ impl<'a> Run<'a> {
             permissions,
             project,
             instructions: None,
+            dynamic_instructions: None,
             model_options: ModelOptions::default(),
             cancel: CancelToken::new(),
             steering: SteeringQueue::new(),
@@ -156,6 +158,14 @@ impl<'a> Run<'a> {
 
     pub(crate) fn with_instructions(mut self, instructions: impl Into<String>) -> Self {
         self.instructions = Some(instructions.into());
+        self
+    }
+
+    pub(crate) fn with_dynamic_instructions(
+        mut self,
+        source: std::sync::Arc<dyn crate::plugins::services::DynamicInstructions>,
+    ) -> Self {
+        self.dynamic_instructions = Some(source);
         self
     }
 
@@ -260,6 +270,28 @@ impl<'a> Run<'a> {
                 items.push(ModelItem::user_text(text));
             }
 
+            let dynamic_snapshot = match &self.dynamic_instructions {
+                Some(source) => match source.snapshot() {
+                    Ok(snapshot) => snapshot,
+                    Err(error) => {
+                        return Err(fail(
+                            events,
+                            &self.steering,
+                            format!("project instructions failed: {error}"),
+                            turn,
+                            total_usage,
+                            items,
+                        ));
+                    }
+                },
+                None => None,
+            };
+            let instructions = crate::plugins::services::compose_instructions(
+                self.instructions.as_deref().unwrap_or_default(),
+                dynamic_snapshot.as_ref(),
+            );
+            let instructions = (!instructions.is_empty()).then_some(instructions);
+
             // B1 花费护栏（每轮模型请求前比对；steering 延长的同一 run
             // 继续累计）。FP-01（预留制）：检查通过后先预留保守用量
             //（input 估算 + output_limit）——provider 自报 usage 不再是
@@ -287,7 +319,7 @@ impl<'a> Run<'a> {
                 let output_limit = u64::from(self.model_options.output_limit.unwrap_or(4096));
                 ledger.reserve(
                     crate::model::estimate_request_tokens(
-                        self.instructions.as_deref(),
+                        instructions.as_deref(),
                         &items,
                         &definitions,
                     )
@@ -303,7 +335,7 @@ impl<'a> Run<'a> {
 
             let definitions = self.tools.definitions();
             let request = ModelRequest {
-                instructions: self.instructions.as_deref(),
+                instructions: instructions.as_deref(),
                 items: &items,
                 tools: &definitions,
                 options: &self.model_options,

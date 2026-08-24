@@ -1,5 +1,5 @@
-//! Built-in native tools: project-scoped `list_files`/`read_file`/
-//! `search` plus trusted-project `write_file`/`edit_file`/`run_command`/
+//! Built-in native tools: project-scoped `list_files`/`read_file` plus
+//! trusted-project `write_file`/`edit_file`/`run_command`/
 //! `ask_user`.
 
 use crate::CancelToken;
@@ -9,7 +9,7 @@ use command_group::CommandGroup;
 use serde_json::{Value, json};
 use std::fs;
 use std::io::BufReader;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 const DEFAULT_LIST_DEPTH: usize = 2;
 const DEFAULT_LIST_ENTRIES: usize = 200;
@@ -17,16 +17,10 @@ const MAX_LIST_DEPTH: usize = 8;
 const MAX_LIST_ENTRIES: usize = 2_000;
 const DEFAULT_READ_BYTES: usize = 64 * 1024;
 const MAX_READ_BYTES: usize = 1024 * 1024;
-const DEFAULT_SEARCH_RESULTS: usize = 50;
-const MAX_SEARCH_RESULTS: usize = 500;
-const DEFAULT_SEARCH_FILES: usize = 20_000;
-const MAX_SEARCH_FILE_BYTES: u64 = 1024 * 1024;
-
 pub(crate) fn native_read_tools() -> Vec<std::sync::Arc<dyn Tool>> {
     vec![
         std::sync::Arc::new(ListFilesTool),
         std::sync::Arc::new(ReadFileTool),
-        std::sync::Arc::new(SearchTool),
     ]
 }
 
@@ -229,145 +223,6 @@ impl Tool for ReadFileTool {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default)]
-pub struct SearchTool;
-
-impl Tool for SearchTool {
-    fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "search".into(),
-            description: "Search UTF-8 files for a literal text query and return matching paths, line numbers, and lines. Common generated and dependency directories are skipped. Paths are project-relative; absolute paths (anywhere on disk) are also accepted.".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Literal text to search for"
-                    },
-                    "path": {
-                        "type": "string",
-                        "description": "Project-relative or absolute file/directory to search. Defaults to '.'"
-                    },
-                    "case_sensitive": {
-                        "type": "boolean",
-                        "description": "Whether matching is case-sensitive. Defaults to false"
-                    },
-                    "max_results": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "maximum": MAX_SEARCH_RESULTS,
-                        "description": "Maximum matches returned. Defaults to 50"
-                    }
-                },
-                "required": ["query"],
-                "additionalProperties": false
-            }),
-            effect: ToolEffect::Read,
-            strict: false,
-        }
-    }
-
-    fn invoke(
-        &self,
-        arguments: &Value,
-        project: &Project,
-        cancel: &CancelToken,
-    ) -> Result<Value, ToolError> {
-        let query = required_string_arg(arguments, "query", "search")?;
-        if query.is_empty() {
-            return Err(ToolError::new("search: `query` cannot be empty"));
-        }
-        let requested = string_arg(arguments, "path").unwrap_or(".");
-        let case_sensitive = arguments
-            .get("case_sensitive")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        let max_results = usize_arg(arguments, "max_results")
-            .unwrap_or(DEFAULT_SEARCH_RESULTS)
-            .clamp(1, MAX_SEARCH_RESULTS);
-        let root = project
-            .resolve_existing(requested)
-            .map_err(|error| tool_io_error("search", requested, error))?;
-
-        let mut files = Vec::new();
-        let mut truncated = false;
-        collect_search_files(
-            &root,
-            &mut files,
-            DEFAULT_SEARCH_FILES,
-            &mut truncated,
-            cancel,
-        )?;
-        let mut matches = Vec::new();
-        let mut files_searched = 0usize;
-        let normalized_query = (!case_sensitive).then(|| query.to_lowercase());
-
-        for path in files {
-            check_cancelled(cancel)?;
-            if matches.len() >= max_results {
-                truncated = true;
-                break;
-            }
-            if !is_searchable_file(&path)? {
-                continue;
-            }
-
-            // FP-06：实读走 take(cap+1)——stat 与 read 之间文件增长
-            // （TOCTOU）时按"不可搜索"跳过，而不是把超帽字节读进来。
-            let mut bytes = Vec::new();
-            fs::File::open(&path)
-                .and_then(|file| {
-                    use std::io::Read as _;
-                    file.take(MAX_SEARCH_FILE_BYTES + 1).read_to_end(&mut bytes)
-                })
-                .map_err(|error| {
-                    ToolError::new(format!(
-                        "search: failed to read `{}`: {error}",
-                        path.display()
-                    ))
-                })?;
-            if bytes.len() > MAX_SEARCH_FILE_BYTES as usize || bytes.contains(&0) {
-                continue;
-            }
-            let Ok(text) = std::str::from_utf8(&bytes) else {
-                continue;
-            };
-            files_searched += 1;
-
-            for (index, line) in text.lines().enumerate() {
-                let matched = if case_sensitive {
-                    line.contains(query)
-                } else {
-                    line.to_lowercase()
-                        .contains(normalized_query.as_deref().unwrap_or_default())
-                };
-                if !matched {
-                    continue;
-                }
-
-                let relative = display_project_path(project, &path)?;
-                matches.push(json!({
-                    "path": relative,
-                    "line": index + 1,
-                    "text": line
-                }));
-                if matches.len() >= max_results {
-                    truncated = true;
-                    break;
-                }
-            }
-        }
-
-        Ok(json!({
-            "query": query,
-            "path": requested,
-            "matches": matches,
-            "files_searched": files_searched,
-            "truncated": truncated
-        }))
-    }
-}
-
 pub(crate) fn native_write_tools(
     scope: crate::permission::WriteScopeSource,
 ) -> Vec<std::sync::Arc<dyn Tool>> {
@@ -376,8 +231,11 @@ pub(crate) fn native_write_tools(
             scope: scope.clone(),
         }),
         std::sync::Arc::new(EditFileTool { scope }),
-        std::sync::Arc::new(RunCommandTool),
     ]
+}
+
+pub(crate) fn native_execute_tools() -> Vec<std::sync::Arc<dyn Tool>> {
+    vec![std::sync::Arc::new(RunCommandTool)]
 }
 
 const MAX_WRITE_BYTES: usize = 1024 * 1024;
@@ -856,49 +714,6 @@ fn walk_directory(
     Ok(())
 }
 
-fn collect_search_files(
-    path: &Path,
-    output: &mut Vec<PathBuf>,
-    max_files: usize,
-    truncated: &mut bool,
-    cancel: &CancelToken,
-) -> Result<(), ToolError> {
-    check_cancelled(cancel)?;
-    if output.len() >= max_files {
-        return Ok(());
-    }
-    if path.is_file() {
-        output.push(path.to_path_buf());
-        return Ok(());
-    }
-    if !path.is_dir() {
-        return Ok(());
-    }
-
-    let (entries, dir_overflow) = sorted_entries(path)?;
-    if dir_overflow {
-        *truncated = true;
-    }
-    for entry in entries {
-        if output.len() >= max_files {
-            break;
-        }
-        let file_type = entry
-            .file_type()
-            .map_err(|error| ToolError::new(format!("search: failed to inspect entry: {error}")))?;
-        let name = entry.file_name();
-        if file_type.is_dir() {
-            if is_ignored_directory(&name.to_string_lossy()) {
-                continue;
-            }
-            collect_search_files(&entry.path(), output, max_files, truncated, cancel)?;
-        } else if file_type.is_file() {
-            output.push(entry.path());
-        }
-    }
-    Ok(())
-}
-
 fn check_cancelled(cancel: &CancelToken) -> Result<(), ToolError> {
     if cancel.is_cancelled() {
         Err(ToolError::new("tool invocation cancelled"))
@@ -948,16 +763,6 @@ fn is_ignored_directory(name: &str) -> bool {
             | "build"
             | "coverage"
     )
-}
-
-fn is_searchable_file(path: &Path) -> Result<bool, ToolError> {
-    let metadata = fs::metadata(path).map_err(|error| {
-        ToolError::new(format!(
-            "search: failed to stat `{}`: {error}",
-            path.display()
-        ))
-    })?;
-    Ok(metadata.is_file() && metadata.len() <= MAX_SEARCH_FILE_BYTES)
 }
 
 /// 展示路径：项目内用相对路径；项目外（SR1 绝对读口）用绝对路径——
@@ -1109,7 +914,9 @@ impl Tool for AskUserTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::plugins::SearchTool;
     use std::env;
+    use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -2077,9 +1884,17 @@ mod tests {
     fn native_tool_definition_order_is_stable() {
         let definitions = native_read_tools()
             .into_iter()
+            .chain(std::iter::once(
+                std::sync::Arc::new(crate::plugins::SearchTool) as std::sync::Arc<dyn Tool>,
+            ))
             .chain(native_write_tools(
                 crate::permission::WriteScopeSource::default(),
             ))
+            .chain(std::iter::once(
+                std::sync::Arc::new(crate::plugins::ApplyPatchTool::default())
+                    as std::sync::Arc<dyn Tool>,
+            ))
+            .chain(native_execute_tools())
             .chain(native_interaction_tools(
                 crate::interaction::AskUserSlot::shared(),
             ))
@@ -2093,6 +1908,7 @@ mod tests {
                 "search",
                 "write_file",
                 "edit_file",
+                "apply_patch",
                 "run_command",
                 "ask_user"
             ]
