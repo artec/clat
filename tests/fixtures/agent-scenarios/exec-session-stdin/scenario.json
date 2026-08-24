@@ -1,6 +1,7 @@
 {
   "schema_version": 1,
   "id": "exec-session-stdin",
+  "os": "unix",
   "prompt": "Start the stdin command, send hello, then report completion.",
   "model_steps": [
     {

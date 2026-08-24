@@ -35,8 +35,31 @@ struct ScenarioDefinition {
     schema_version: u32,
     id: String,
     prompt: String,
+    /// 场景命令经由平台 shell 执行（unix=`/bin/sh -c`，windows=
+    /// `cmd.exe /C`）；POSIX 语义的场景在 Windows 上不可复现，显式
+    /// 声明绑定后由目录测试在该平台跳过。
+    #[serde(default)]
+    os: ScenarioOs,
     model_steps: Vec<ScenarioStep>,
     expected: ExpectedDefinition,
+}
+
+/// 场景的平台绑定；缺省为 Any（全部平台运行）。
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+enum ScenarioOs {
+    #[default]
+    Any,
+    Unix,
+}
+
+impl ScenarioOs {
+    fn matches_current_platform(self) -> bool {
+        match self {
+            Self::Any => true,
+            Self::Unix => cfg!(unix),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -1035,6 +1058,15 @@ mod tests {
                 continue;
             }
             let fixture = entry.path();
+            let definition = load_definition(&fixture).expect("scenario definition parses");
+            if !definition.os.matches_current_platform() {
+                eprintln!(
+                    "scenario `{}` skipped: os={:?} (this platform cannot run it)",
+                    fixture.display(),
+                    definition.os
+                );
+                continue;
+            }
             let report = run_fixture(&fixture).expect("catalog scenario runs");
             assert_eq!(report.gate, GateStatus::Matched, "report: {report:#?}");
             let actual = report_json(&report).expect("serialize report");

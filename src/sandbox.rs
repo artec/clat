@@ -108,6 +108,9 @@ impl SandboxModeSource {
 }
 
 pub(crate) struct SandboxService {
+    /// seatbelt（macOS）读取它生成路径字面量；bwrap/AppContainer 等
+    /// provider 落地后同样读取。在尚无 provider 的平台上仅构造写入。
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     project_root: PathBuf,
     mode: SandboxModeSource,
 }
@@ -290,7 +293,10 @@ fn sbpl_string(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // 这三个导入只被 macOS 门控的 seatbelt 测试使用。
+    #[cfg(target_os = "macos")]
     use crate::{CancelToken, Project};
+    #[cfg(target_os = "macos")]
     use std::time::Duration;
 
     #[test]

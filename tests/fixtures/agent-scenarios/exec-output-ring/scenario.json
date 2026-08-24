@@ -1,6 +1,7 @@
 {
   "schema_version": 1,
   "id": "exec-output-ring",
+  "os": "unix",
   "prompt": "Run the bounded-output command and confirm it completed.",
   "model_steps": [
     {

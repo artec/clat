@@ -220,6 +220,12 @@ pub(super) fn abbreviate_home(path: &Path) -> String {
 }
 
 pub(super) fn abbreviate_with(path: &Path, home: &Path) -> String {
+    // 退化 HOME（空串或 "/"——无 passwd 条目的容器环境常见）会让
+    // strip_prefix 匹配一切绝对路径，把所有路径都吞成 `~/…`；退化为
+    // 不缩写。
+    if home.as_os_str().is_empty() || home == Path::new("/") {
+        return path.display().to_string();
+    }
     match path.strip_prefix(home) {
         Ok(rest) if rest.as_os_str().is_empty() => "~".to_string(),
         Ok(rest) => format!("~/{}", rest.display()),

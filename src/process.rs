@@ -25,6 +25,8 @@ const JOIN_GRACE: Duration = Duration::from_secs(5);
 /// Bounded infrastructure probe routed through the process module so sandbox
 /// providers never grow a second ad-hoc spawn implementation. This is not a
 /// model job and carries no project authority.
+// 唯一消费者是 macOS 的 seatbelt 探测；其他平台的 provider 落地后再放宽。
+#[cfg(target_os = "macos")]
 pub(crate) fn probe_command(
     program: &Path,
     args: &[&str],

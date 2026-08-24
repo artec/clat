@@ -1721,6 +1721,15 @@ mod tests {
             abbreviate_with(Path::new("/tmp/project"), home),
             "/tmp/project"
         );
+        // 退化 HOME（空 / "/"，无 passwd 的容器）不吞掉一切路径
+        assert_eq!(
+            abbreviate_with(Path::new("/w/target"), Path::new("/")),
+            "/w/target"
+        );
+        assert_eq!(
+            abbreviate_with(Path::new("/w/target"), Path::new("")),
+            "/w/target"
+        );
         // 前缀相似但不同的目录不算 home
         assert_eq!(
             abbreviate_with(Path::new("/Users/dengger/app"), home),

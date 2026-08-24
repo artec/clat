@@ -1,6 +1,7 @@
 {
   "schema_version": 1,
   "id": "exec-session-terminate",
+  "os": "unix",
   "prompt": "Start the long command, terminate it, then finish.",
   "model_steps": [
     {
