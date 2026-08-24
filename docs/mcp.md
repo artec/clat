@@ -175,7 +175,10 @@ Only `list_files`, `read_file`, `search`, `write_file`, `edit_file`, and
 `run_command` are callable. Each invocation still passes through the current
 run's permission policy, project path fence, cancel token, and tool execution
 pipeline. Credentials, approver objects, registries, and journal writers never
-cross the protocol. Notifications never block a CLAT run; `context/get` is the
+cross the protocol. `run_command` is the same one-shot ProcessService wrapper
+used by the agent, including run ownership, managed process-group cleanup and
+the current platform sandbox policy; this does not sandbox the MCP server
+subprocess itself. Notifications never block a CLAT run; `context/get` is the
 authoritative snapshot and the fallback for HTTP peers. Generic MCP servers
 that do not opt in receive no context notifications.
 

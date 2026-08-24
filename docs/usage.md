@@ -250,8 +250,10 @@ stdin, a side-effecting tool displays its full arguments and waits for `y` +
 Enter; `Esc` or any other answer denies it. Input typed before the prompt is
 discarded. With piped stdin there is nobody to ask, so side effects are denied
 and returned to the model as tool errors. `--yes` approves every side effect,
-including command execution, and should be used only inside an already
-contained environment.
+including command execution. On macOS the native command tools still default
+to workspace-write Seatbelt confinement; on Linux/Windows there is currently
+no graduated provider, so unattended `--yes` should run only inside an
+external container, sandbox or disposable environment.
 
 ### Machine-readable events
 
@@ -285,6 +287,51 @@ clat exec --continue --command /compact
 ```
 
 Query results use stdout. Interactive-only continuations exit with code 2.
+
+## Command sessions and sandbox controls
+
+The model-facing command surface has two session tools plus a compatibility
+wrapper:
+
+- `exec_command` starts a command in the project or a project-relative
+  workdir. It waits up to `yield_time_ms`; a still-running command returns a
+  numeric `session_id`. Command text is capped at 64 KiB.
+- `write_stdin` writes characters, closes stdin, polls for output, or
+  terminates that same-run id. An empty `chars` value is a poll. Raw characters
+  are redacted from the durable tool-call journal; the model tool rejects
+  `sensitive: true` rather than pretending to protect a secret already sent to
+  the model. One write is capped at 256 KiB; five seconds of write backpressure
+  terminates the session instead of starving cancellation/TTL teardown.
+- `run_command` remains the one-shot project-root API and uses the same core
+  ProcessService and command-text cap.
+
+`tty: true` requests a real PTY on macOS/Linux; Windows rejects PTY sessions
+until its process-tree isolation graduates. At most eight sessions may run in
+one run. Every id belongs to exactly that run/session; cancellation, run end,
+TTL, explicit termination or Application shutdown stops and reaps its process
+group and ordinary descendants. Output is incrementally consumed from 256 KiB
+per-stream transient rings, and one tool result is capped at 64 KiB. A `lossy`
+or `output_truncated` flag means the cursor fell behind or more bounded output
+remains.
+
+That ownership guarantee covers CLAT-controlled lifecycle paths and descendants
+that remain in the owned group. A deliberately daemonized child that creates a
+new session/group can escape it. A fatal native crash, `SIGKILL`, power loss,
+or another failure that cannot run teardown needs an external supervisor or
+container boundary; macOS cannot promise parent-death cleanup for those cases.
+
+Native command calls accept `sandbox: auto|required|off` and `network`:
+
+- macOS `auto`/`required` uses a functionally probed Seatbelt profile outside
+  Full Access. Network is denied unless explicitly requested. `off` requires
+  Full Access. Account-readable files and inherited environment variables stay
+  visible; Workspace Write also permits `/tmp` and the process temporary
+  directory.
+- Linux/Windows `auto` reports `provider=none, enforcement=none`;
+  `required` fails closed. This is lifecycle supervision, not OS confinement.
+
+Process completion also appears as an Application notice in TUI/PWA. It
+contains only id and terminal metadata, never the command or raw output.
 
 ## Local server and web workbench (`clat serve`)
 
@@ -458,11 +505,13 @@ rules, and the legacy SQLite cutover.
   your repository.
 - Keep Project Write as the normal interactive mode. Use Full Access only when
   the repository and requested operations justify removing all prompts.
-- In CI, prefer fail-closed defaults. Use `--yes` only inside a container,
-  sandbox, disposable checkout, or similarly explicit containment boundary.
-- Remember that `--yes` does not sandbox `run_command`: approved subprocesses
-  can use all filesystem, environment, and network authority of the CLAT
-  process even though native `write_file`/`edit_file` remain project-fenced.
+- In CI, prefer fail-closed defaults. On macOS the default Seatbelt profile is
+  an additional boundary, but exported environment secrets remain visible.
+  On Linux/Windows use `--yes` only inside a container, sandbox, disposable
+  checkout, or similarly explicit containment boundary.
+- Inspect the returned `sandbox.provider`, `enforcement`, `policy_digest`,
+  fallback and denial facts. Process-tree cleanup proves lifecycle ownership;
+  it does not prove OS confinement on a fallback platform.
 - Treat MCP servers and WASM components as code you are choosing to run; read
   [MCP security](mcp.md#security-posture) and
   [WASM write grants](wasm.md#filesystem-write-grants) before adding

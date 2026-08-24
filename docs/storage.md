@@ -133,6 +133,18 @@ source path/scope/digest rows. A successful file tool can cause a `change`
 header before the next model request; resume restores those scopes and rereads
 the current files instead of trusting cached repository text.
 
+Process stdout/stderr/PTY rings and stdin are intentionally not durable state.
+Process `tool/result` events retain only byte counts, terminal/truncation and
+sandbox metadata plus an explicit output-omitted marker; raw output remains in
+the bounded live model result. `write_stdin` replaces `chars` in durable
+`tool/call` arguments with `chars_bytes` and a redaction marker; permission
+review and the live invocation still receive the complete arguments. Command
+text is limited to 64 KiB; an oversized invalid call is journaled as byte count
+plus an omitted marker rather than copying the rejected body. Process
+completion notices contain terminal metadata only and are not session facts.
+Consequently, a run never resumes a live process: run or Application teardown
+owns and reaps it.
+
 `clat-checkpoint.json` caches bounded projection rows and has an 8 MiB final
 size cap. Unbounded units are omitted and rebuilt from the log. Deleting a
 checkpoint changes performance only, never semantics.

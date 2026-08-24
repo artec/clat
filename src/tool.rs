@@ -97,6 +97,20 @@ pub(crate) const MAX_TOOL_DESCRIPTION_CHARS: usize = 4096;
 pub trait Tool: Send + Sync {
     fn definition(&self) -> ToolDefinition;
 
+    /// Durable tool/call arguments. The default is lossless; tools carrying
+    /// interactive bytes may replace only the journal copy while permission
+    /// review and invocation still receive the complete arguments.
+    fn journal_arguments(&self, arguments: &Value) -> Value {
+        arguments.clone()
+    }
+
+    /// Durable tool/result payload. Process tools use this to keep raw
+    /// stdout/stderr/PTY bytes transient while the live model still receives
+    /// their bounded result. The default remains lossless.
+    fn journal_output(&self, output: &Value) -> Value {
+        output.clone()
+    }
+
     fn invoke(
         &self,
         arguments: &Value,

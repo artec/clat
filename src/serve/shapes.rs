@@ -509,6 +509,27 @@ pub(crate) fn notice_ctl(event: &ApplicationEvent) -> Value {
             ("kind", Value::String("mcp_startup".into())),
             ("payload", object(vec![("failures", json!(failures))])),
         ]),
+        ApplicationEvent::ProcessFinished {
+            session_id,
+            exit_code,
+            signal,
+            timed_out,
+            cancelled,
+            terminated,
+        } => object(vec![
+            ("kind", Value::String("process_finished".into())),
+            (
+                "payload",
+                object(vec![
+                    ("session_id", json!(session_id)),
+                    ("exit_code", json!(exit_code)),
+                    ("signal", json!(signal)),
+                    ("timed_out", json!(timed_out)),
+                    ("cancelled", json!(cancelled)),
+                    ("terminated", json!(terminated)),
+                ]),
+            ),
+        ]),
     }
 }
 
@@ -804,7 +825,7 @@ mod tests {
             r#"{"prompt_rpc_id":"prompt-1","outcome":{"type":"failed","error":"model error"}}"#
         );
 
-        // notice 四 kind（kind 是开放枚举，形状进 golden）。
+        // notice kind 是开放枚举，已实现形状进入 golden。
         assert_eq!(
             notice_ctl(&ApplicationEvent::MonitorUpdated(Some("GLM 12%".into()))).to_string(),
             r#"{"kind":"monitor","payload":"GLM 12%"}"#
@@ -833,6 +854,18 @@ mod tests {
         assert_eq!(
             notice_ctl(&ApplicationEvent::McpStartupNotice { failures: 2 }).to_string(),
             r#"{"kind":"mcp_startup","payload":{"failures":2}}"#
+        );
+        assert_eq!(
+            notice_ctl(&ApplicationEvent::ProcessFinished {
+                session_id: 7,
+                exit_code: Some(0),
+                signal: None,
+                timed_out: false,
+                cancelled: false,
+                terminated: false,
+            })
+            .to_string(),
+            r#"{"kind":"process_finished","payload":{"session_id":7,"exit_code":0,"signal":null,"timed_out":false,"cancelled":false,"terminated":false}}"#
         );
     }
 }

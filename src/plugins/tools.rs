@@ -1,9 +1,7 @@
 //! Tool registry plugin + native tool mount points.
 
 use super::services::{TOOL_SERVICE, TOOL_SERVICE_ID};
-use crate::native_tools::{
-    native_execute_tools, native_interaction_tools, native_read_tools, native_write_tools,
-};
+use crate::native_tools::{native_interaction_tools, native_read_tools, native_write_tools};
 use crate::plugin::{
     DisposeError, Plugin, PluginContext, PluginDescriptor, PluginError, PluginId, ScopeKind,
     ServiceId,
@@ -14,7 +12,6 @@ use std::sync::Arc;
 const REGISTRY_ID: PluginId = PluginId::new("builtin.tool_registry");
 const READ_ID: PluginId = PluginId::new("builtin.native_read");
 const WRITE_ID: PluginId = PluginId::new("builtin.native_write");
-const EXECUTE_ID: PluginId = PluginId::new("builtin.native_execute");
 const REGISTRY_PROVIDES: &[ServiceId] = &[TOOL_SERVICE_ID];
 const REQUIRES_REGISTRY: &[ServiceId] = &[TOOL_SERVICE_ID];
 const REGISTRY_DESCRIPTOR: PluginDescriptor = PluginDescriptor {
@@ -33,13 +30,6 @@ const READ_DESCRIPTOR: PluginDescriptor = PluginDescriptor {
 };
 const WRITE_DESCRIPTOR: PluginDescriptor = PluginDescriptor {
     id: WRITE_ID,
-    scope: ScopeKind::TrustedProject,
-    provides: &[],
-    requires: REQUIRES_REGISTRY,
-    optional: &[],
-};
-const EXECUTE_DESCRIPTOR: PluginDescriptor = PluginDescriptor {
-    id: EXECUTE_ID,
     scope: ScopeKind::TrustedProject,
     provides: &[],
     requires: REQUIRES_REGISTRY,
@@ -94,18 +84,6 @@ impl Plugin for NativeWriteToolsPlugin {
 
     fn mount(&self, context: &mut PluginContext<'_>) -> Result<(), PluginError> {
         contribute_tools(context, native_write_tools(self.scope.clone()))
-    }
-}
-
-pub(crate) struct NativeExecuteToolsPlugin;
-
-impl Plugin for NativeExecuteToolsPlugin {
-    fn descriptor(&self) -> &'static PluginDescriptor {
-        &EXECUTE_DESCRIPTOR
-    }
-
-    fn mount(&self, context: &mut PluginContext<'_>) -> Result<(), PluginError> {
-        contribute_tools(context, native_execute_tools())
     }
 }
 

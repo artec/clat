@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "id": "exec-session-stdin",
+  "prompt": "Start the stdin command, send hello, then report completion.",
+  "model_steps": [
+    {
+      "expect": {"available_tools_include": ["exec_command", "write_stdin"]},
+      "response": {
+        "tool_calls": [{
+          "id": "call-exec",
+          "name": "exec_command",
+          "arguments": {
+            "cmd": "read line; printf 'got:%s' \"$line\"",
+            "yield_time_ms": 250,
+            "sandbox": "auto"
+          }
+        }],
+        "finish_reason": "tool_calls"
+      }
+    },
+    {
+      "expect": {
+        "required_tool_results": ["exec_command"],
+        "required_tool_result_contains": [
+          {"tool": "exec_command", "text": "\"session_id\":1"},
+          {"tool": "exec_command", "text": "\"running\":true"}
+        ]
+      },
+      "response": {
+        "tool_calls": [{
+          "id": "call-stdin",
+          "name": "write_stdin",
+          "arguments": {
+            "session_id": 1,
+            "chars": "super-secret\n",
+            "yield_time_ms": 1000
+          }
+        }],
+        "finish_reason": "tool_calls"
+      }
+    },
+    {
+      "expect": {
+        "required_tool_results": ["write_stdin"],
+        "required_tool_result_contains": [
+          {"tool": "write_stdin", "text": "got:super-secret"}
+        ]
+      },
+      "response": {"text": "exec stdin complete", "finish_reason": "completed"}
+    }
+  ],
+  "expected": {
+    "outcome": "success",
+    "event_kinds": [
+      "run_started", "model_requested", "model_responded", "tool_requested",
+      "permission_checked", "tool_started", "tool_finished", "model_requested",
+      "model_responded", "tool_requested", "permission_checked", "tool_started",
+      "tool_finished", "model_requested", "model_stream", "model_responded",
+      "run_completed"
+    ],
+    "durable_event_kinds": [
+      "turn/start", "user/message", "step/start", "request/header", "assistant/message",
+      "approval/asked", "approval/decided", "tool/call", "tool/result", "step/end",
+      "step/start", "assistant/message", "approval/asked", "approval/decided", "tool/call",
+      "tool/result", "step/end", "step/start", "assistant/chunk", "assistant/message",
+      "step/end", "turn/end"
+    ],
+    "permission_checks": [
+      {"tool": "exec_command", "decision": "allow"},
+      {"tool": "write_stdin", "decision": "allow"}
+    ],
+    "durable_forbidden_text": ["super-secret"]
+  }
+}

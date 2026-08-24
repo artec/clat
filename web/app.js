@@ -498,6 +498,22 @@ function onNotice(ctl) {
       addNoticeLine('mcp startup: ' + jsonText(payload));
       refreshWorkbench();
       break;
+    case 'process_finished': {
+      const id = payload && payload.session_id;
+      const state = payload && payload.timed_out
+        ? 'timed out'
+        : payload && payload.cancelled
+          ? 'cancelled'
+          : payload && payload.terminated
+            ? 'terminated'
+            : payload && payload.signal
+              ? 'signal ' + payload.signal
+            : payload && payload.exit_code !== null && payload.exit_code !== undefined
+              ? 'exit ' + payload.exit_code
+              : 'finished';
+      addNoticeLine('process ' + id + ': ' + state);
+      break;
+    }
     default: break;
   }
 }

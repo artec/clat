@@ -1,0 +1,134 @@
+{
+  "schema_version": 1,
+  "scenario_id": "exec-session-terminate",
+  "gate": "matched",
+  "expected": {
+    "outcome": "success",
+    "event_kinds": [
+      "run_started",
+      "model_requested",
+      "model_responded",
+      "tool_requested",
+      "permission_checked",
+      "tool_started",
+      "tool_finished",
+      "model_requested",
+      "model_responded",
+      "tool_requested",
+      "permission_checked",
+      "tool_started",
+      "tool_finished",
+      "model_requested",
+      "model_stream",
+      "model_responded",
+      "run_completed"
+    ],
+    "durable_event_kinds": [
+      "turn/start",
+      "user/message",
+      "step/start",
+      "request/header",
+      "assistant/message",
+      "approval/asked",
+      "approval/decided",
+      "tool/call",
+      "tool/result",
+      "step/end",
+      "step/start",
+      "assistant/message",
+      "approval/asked",
+      "approval/decided",
+      "tool/call",
+      "tool/result",
+      "step/end",
+      "step/start",
+      "assistant/chunk",
+      "assistant/message",
+      "step/end",
+      "turn/end"
+    ],
+    "permission_checks": [
+      {
+        "tool": "exec_command",
+        "decision": "allow"
+      },
+      {
+        "tool": "write_stdin",
+        "decision": "allow"
+      }
+    ],
+    "settle_ms": 1500
+  },
+  "observed": {
+    "status": "success",
+    "output": "exec terminate complete",
+    "turns": 3
+  },
+  "model_steps": {
+    "expected": 3,
+    "observed": 3,
+    "violations": []
+  },
+  "event_kinds": [
+    "run_started",
+    "model_requested",
+    "model_responded",
+    "tool_requested",
+    "permission_checked",
+    "tool_started",
+    "tool_finished",
+    "model_requested",
+    "model_responded",
+    "tool_requested",
+    "permission_checked",
+    "tool_started",
+    "tool_finished",
+    "model_requested",
+    "model_stream",
+    "model_responded",
+    "run_completed"
+  ],
+  "durable_event_kinds": [
+    "turn/start",
+    "user/message",
+    "step/start",
+    "request/header",
+    "assistant/message",
+    "approval/asked",
+    "approval/decided",
+    "tool/call",
+    "tool/result",
+    "step/end",
+    "step/start",
+    "assistant/message",
+    "approval/asked",
+    "approval/decided",
+    "tool/call",
+    "tool/result",
+    "step/end",
+    "step/start",
+    "assistant/chunk",
+    "assistant/message",
+    "step/end",
+    "turn/end"
+  ],
+  "permission_checks": [
+    {
+      "tool": "exec_command",
+      "decision": "allow"
+    },
+    {
+      "tool": "write_stdin",
+      "decision": "allow"
+    }
+  ],
+  "files": [
+    {
+      "path": ".keep",
+      "bytes": 23,
+      "sha256": "9173ebf9f9498804e92f05bed67da3b3cdbd620eeb2db2902b8186196054f5ba"
+    }
+  ],
+  "files_match": true,
+  "application_close": "clean"
+}

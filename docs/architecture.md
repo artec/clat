@@ -268,8 +268,37 @@ Trusted projects also receive:
 - `edit_file` — one exact unique replacement plus conflict revalidation;
 - `apply_patch` — one existing UTF-8 file, multiple exact hunks, complete
   in-memory validation followed by one snapshot-checked atomic commit;
-- `run_command` — project-root command execution with timeout, bounded output,
-  and whole-process-tree termination.
+- `exec_command` + `write_stdin` — run-owned command sessions with incremental
+  stdout/stderr or PTY output, stdin/poll/terminate, bounded cursors and TTL;
+- `run_command` — a one-shot compatibility wrapper over the same
+  `ProcessService`, fixed to the project root.
+
+`ProcessService` is the only agent-command spawn seam. One Trusted Project
+owns the service; each active Run binds a fresh generation and session id.
+Process ids never cross that boundary, at most eight jobs run concurrently,
+and run cancellation/terminal, TTL, explicit termination and Application
+close all terminate the owned process group and ordinary descendants. Each
+stdout, stderr and PTY stream has a 256 KiB transient ring; tool results are
+separately bounded. Raw streams and stdin have no persistence path. `write_stdin`
+redacts its characters from the durable `tool/call` while permission review
+and invocation still see the complete arguments.
+
+The lifecycle claim is limited to code paths where CLAT can execute teardown
+and to descendants that remain in the owned group. A daemon that deliberately
+creates a new session/process group can escape this local boundary. Fatal
+native crashes, `SIGKILL`, power loss and equivalent failures also require an
+external supervisor or container; macOS has no parent-death primitive that
+would make those paths an in-process guarantee.
+
+`SandboxService` plans every command before spawn. On macOS, Read Only,
+Project Write and classic headless execution use a functionally probed
+Seatbelt profile with a policy digest; its file-write and network rules are
+enforced by the OS. Account-readable files, inherited environment variables
+and the writable `/tmp`/process-temporary roots remain available; this is not
+a container boundary. Full Access is deliberately unconfined. Linux and
+Windows currently report an explicit supervised/no-enforcement fallback for
+`auto`, and reject `required`; they are not described as sandboxed. Execute
+approval remains in front of this OS boundary on every platform.
 
 `ProjectInstructionsPlugin` supplies cached scope-aware instructions rather
 than a one-time root prompt. It starts at the project root, observes only
@@ -407,6 +436,7 @@ read-only and used only to populate session selection.
 | `src/run.rs` | agent loop |
 | `src/model.rs`, `src/providers/` | provider-neutral model contract and adapters |
 | `src/tool.rs`, `src/native_tools.rs`, `src/apply_patch.rs`, `src/search.rs` | tool contract and native coding tools |
+| `src/process.rs`, `src/plugins/process.rs`, `src/sandbox.rs` | run-owned process sessions, exec tools and platform sandbox policy |
 | `src/project_instructions.rs`, `src/plugins/instructions.rs` | scoped project-instruction discovery, caching and observation |
 | `src/permission.rs` | effects, modes, policies, approver port, write scope |
 | `src/event.rs` | RunEvent vocabulary and EventSink |

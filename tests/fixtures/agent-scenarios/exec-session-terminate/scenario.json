@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "id": "exec-session-terminate",
+  "prompt": "Start the long command, terminate it, then finish.",
+  "model_steps": [
+    {
+      "expect": {"available_tools_include": ["exec_command", "write_stdin"]},
+      "response": {
+        "tool_calls": [{
+          "id": "call-exec-long",
+          "name": "exec_command",
+          "arguments": {
+            "cmd": "(sleep 1; printf orphan > orphan-marker) & wait",
+            "yield_time_ms": 250,
+            "sandbox": "auto"
+          }
+        }],
+        "finish_reason": "tool_calls"
+      }
+    },
+    {
+      "expect": {
+        "required_tool_result_contains": [
+          {"tool": "exec_command", "text": "\"running\":true"}
+        ]
+      },
+      "response": {
+        "tool_calls": [{
+          "id": "call-terminate",
+          "name": "write_stdin",
+          "arguments": {"session_id": 1, "terminate": true, "yield_time_ms": 1000}
+        }],
+        "finish_reason": "tool_calls"
+      }
+    },
+    {
+      "expect": {
+        "required_tool_result_contains": [
+          {"tool": "write_stdin", "text": "\"terminated\":true"}
+        ]
+      },
+      "response": {"text": "exec terminate complete", "finish_reason": "completed"}
+    }
+  ],
+  "expected": {
+    "outcome": "success",
+    "event_kinds": [
+      "run_started", "model_requested", "model_responded", "tool_requested",
+      "permission_checked", "tool_started", "tool_finished", "model_requested",
+      "model_responded", "tool_requested", "permission_checked", "tool_started",
+      "tool_finished", "model_requested", "model_stream", "model_responded",
+      "run_completed"
+    ],
+    "durable_event_kinds": [
+      "turn/start", "user/message", "step/start", "request/header", "assistant/message",
+      "approval/asked", "approval/decided", "tool/call", "tool/result", "step/end",
+      "step/start", "assistant/message", "approval/asked", "approval/decided", "tool/call",
+      "tool/result", "step/end", "step/start", "assistant/chunk", "assistant/message",
+      "step/end", "turn/end"
+    ],
+    "permission_checks": [
+      {"tool": "exec_command", "decision": "allow"},
+      {"tool": "write_stdin", "decision": "allow"}
+    ],
+    "settle_ms": 1500
+  }
+}

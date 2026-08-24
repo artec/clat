@@ -19,11 +19,13 @@ pub mod plugin_cli;
 mod plugin_host;
 mod plugins;
 pub mod presets;
+mod process;
 pub mod project;
 mod project_instructions;
 mod providers;
 mod redact;
 pub mod run;
+mod sandbox;
 mod search;
 pub mod serve;
 // DSH-compatible session stack (docs/todo/dsh-session-persistence.md):

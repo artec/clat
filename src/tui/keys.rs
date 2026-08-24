@@ -67,6 +67,28 @@ impl App {
             UiEvent::Application(ApplicationEvent::TitleUpdated { title }) => {
                 self.session_title = Some(title);
             }
+            UiEvent::Application(ApplicationEvent::ProcessFinished {
+                session_id,
+                exit_code,
+                signal,
+                timed_out,
+                cancelled,
+                terminated,
+            }) => {
+                let state = if timed_out {
+                    "timed out".to_owned()
+                } else if cancelled {
+                    "cancelled".to_owned()
+                } else if terminated {
+                    "terminated".to_owned()
+                } else if let Some(signal) = signal {
+                    format!("signal {signal}")
+                } else {
+                    exit_code.map_or_else(|| "finished".into(), |code| format!("exit {code}"))
+                };
+                self.flash_status(format!("process {session_id} · {state}"));
+                self.notify();
+            }
         }
     }
 

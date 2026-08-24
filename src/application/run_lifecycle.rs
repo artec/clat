@@ -4,7 +4,7 @@ use crate::model::Usage;
 use crate::permission::PermissionApprover;
 use crate::plugin::{Plugin, ScopeKind};
 use crate::plugins::run_catalog;
-use crate::plugins::services::{AgentRequest, RUN_SCOPE_SERVICE};
+use crate::plugins::services::{AgentFailure, AgentRequest, RUN_SCOPE_SERVICE};
 use crate::session::event::{TurnEndCancelCause, TurnEndReason, payloads};
 use crate::session::id::SessionId;
 use crate::session::recorder::SessionRecorder;
@@ -294,6 +294,7 @@ impl TrustedProjectApplication {
         };
         let sessions = Arc::clone(&self.sessions);
         let agent = Arc::clone(&self.agent);
+        let process_service = Arc::clone(&self.process_service);
         let monitor = Arc::clone(&self.monitor);
         let compactor = self.compactor.clone();
         let todo_service = self.todo.clone();
@@ -343,6 +344,8 @@ impl TrustedProjectApplication {
                     mut history,
                     journal,
                 } = prepared;
+                let process_generation = process_service
+                    .bind_run(session_id.as_str(), cancel.clone());
                 // todo（INV-T3）：事件直达日志——write 在绑定 journal 上
                 // 追加 todo/write，恢复走 todo 投影。
                 if let Some(todo_service) = &todo_service {
@@ -414,6 +417,11 @@ impl TrustedProjectApplication {
                 let prompt_for_request = worker_prompt.clone();
                 let permission_mode_for_request = permission_mode_snapshot;
                 let execution = catch_unwind(AssertUnwindSafe(|| {
+                    process_generation.as_ref().map_err(|error| AgentFailure {
+                        error: crate::RunError::new(format!(
+                            "process service could not bind this run: {error}"
+                        )),
+                    })?;
                     agent.execute(AgentRequest {
                         config,
                         spend_ledger: Some(Arc::clone(&spend_ledger)),
@@ -427,6 +435,22 @@ impl TrustedProjectApplication {
                         permission_mode: permission_mode_for_request,
                     })
                 }));
+                let process_bind_error = process_generation.as_ref().err().cloned();
+                let process_cleanup_error = process_generation
+                    .as_ref()
+                    .ok()
+                    .and_then(|generation| process_service.unbind_run(*generation).err());
+                if let Some(error) = process_bind_error
+                    .as_ref()
+                    .or(process_cleanup_error.as_ref())
+                {
+                    recorder
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .force_terminal_failure(format!(
+                            "process lifecycle failed before run completion: {error}"
+                        ));
+                }
                 let (outcome, panic_text) = match execution {
                     Ok(outcome) => (Some(outcome), None),
                     Err(payload) => (
@@ -442,15 +466,21 @@ impl TrustedProjectApplication {
                     ),
                 };
                 let was_cancelled = cancel.is_cancelled();
-                let reason = match &outcome {
-                    Some(Ok(_)) if was_cancelled => TurnEndReason::Aborted {
+                let reason = match (&outcome, &process_bind_error, &process_cleanup_error) {
+                    (_, Some(error), _) => TurnEndReason::Error {
+                        error: json!({ "message": format!("process bind failed: {error}") }),
+                    },
+                    (_, None, Some(error)) => TurnEndReason::Error {
+                        error: json!({ "message": format!("process cleanup failed: {error}") }),
+                    },
+                    (Some(Ok(_)), None, None) if was_cancelled => TurnEndReason::Aborted {
                         reason: TurnEndCancelCause::User,
                     },
-                    Some(Ok(_)) => TurnEndReason::Completed,
-                    Some(Err(failure)) => TurnEndReason::Error {
+                    (Some(Ok(_)), None, None) => TurnEndReason::Completed,
+                    (Some(Err(failure)), None, None) => TurnEndReason::Error {
                         error: json!({ "message": failure.error.to_string() }),
                     },
-                    None => TurnEndReason::Error {
+                    (None, None, None) => TurnEndReason::Error {
                         error: json!({ "message": "run worker panicked" }),
                     },
                 };
@@ -482,8 +512,8 @@ impl TrustedProjectApplication {
                 if let Some(todo_service) = &todo_service {
                     todo_service.unbind();
                 }
-                let result = match (outcome, journal_error, panic_text) {
-                    (Some(result), journal_error, panic_text) => {
+                let result = match (outcome, journal_error, panic_text, process_cleanup_error) {
+                    (Some(result), journal_error, panic_text, process_cleanup_error) => {
                         let base = result
                             .map(|done| ApplicationRunDone {
                                 output: done.text,
@@ -499,6 +529,14 @@ impl TrustedProjectApplication {
                                     usage,
                                 }
                             });
+                        let base = match (base, process_cleanup_error) {
+                            (Ok(done), Some(error)) => Err(ApplicationRunFailure {
+                                error: format!("process cleanup failed: {error}"),
+                                turns: done.turns,
+                                usage: done.usage,
+                            }),
+                            (base, _) => base,
+                        };
                         match (base, journal_error, panic_text) {
                             (base, None, None) => base,
                             (Ok(done), Some(error), _) => Err(ApplicationRunFailure {
@@ -523,12 +561,14 @@ impl TrustedProjectApplication {
                             }),
                         }
                     }
-                    (None, journal_error, panic_text) => Err(ApplicationRunFailure {
+                    (None, journal_error, panic_text, process_cleanup_error) => Err(ApplicationRunFailure {
                         error: match (panic_text, journal_error) {
                             (Some(text), Some(error)) => format!("{text}; {error}"),
                             (Some(text), None) => text,
                             (None, Some(error)) => error,
-                            (None, None) => "run worker panicked".into(),
+                            (None, None) => process_cleanup_error
+                                .map(|error| format!("process cleanup failed: {error}"))
+                                .unwrap_or_else(|| "run worker panicked".into()),
                         },
                         turns: 0,
                         usage: Usage::default(),

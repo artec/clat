@@ -1196,6 +1196,29 @@ mod tests {
         );
     }
 
+    #[test]
+    fn run_command_preview_exposes_sandbox_and_network_arguments() {
+        let lines = tool_argument_lines(
+            "run_command",
+            &serde_json::json!({
+                "command": "curl https://example.com",
+                "timeout_seconds": 30,
+                "network": true,
+                "sandbox": "required"
+            }),
+            80,
+        )
+        .expect("preview");
+        let rendered = lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<Vec<_>>()
+            .join("");
+        assert!(rendered.contains("sandbox required"), "{rendered}");
+        assert!(rendered.contains("network requested"), "{rendered}");
+    }
+
     /// 审计回归：80 列终端的权限框只有约 67 列，参数区更窄。
     /// 换行宽度必须来自真实矩形；旧实现固定传 78，命令尾部会在
     /// Paragraph 渲染时被水平裁掉，但一行审阅计数仍可解锁批准。

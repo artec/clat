@@ -31,10 +31,11 @@ Read Only does not create a hard deny. It asks before every side effect and
 still confines approved writes to the project. A deny always comes from the
 approver or from an unavailable approver, not from a table-level mode rule.
 
-CLAT deliberately has no "read-only shell command" allowlist. Without an
-OS-level process sandbox, an apparently harmless command can contain a write,
-network call, or destructive suffix. `run_command` therefore remains `Execute`
-and asks in Project Write.
+CLAT deliberately has no "read-only shell command" approval allowlist. An
+apparently harmless command can contain a write, network call, or destructive
+suffix, and Linux/Windows do not yet have a graduated sandbox provider.
+`run_command`, `exec_command`, and `write_stdin` therefore remain `Execute` and
+ask in Project Write even where macOS Seatbelt adds a second OS boundary.
 
 ### Session persistence
 
@@ -111,7 +112,8 @@ The TUI renders dangerous native calls as readable previews:
 - `apply_patch` shows the complete patch JSON, including its single target and
   every hunk; v1 rejects add/delete/rename and multi-file forms;
 - `write_file` shows the target and full content;
-- `run_command` shows the command, working directory, and timeout;
+- `run_command` shows the command, working directory, timeout, sandbox request,
+  and whether network is requested;
 - other tools show formatted JSON plus all top-level field names.
 
 Long previews scroll with arrows, PageUp/PageDown, Home, and End. Allow remains
@@ -132,7 +134,10 @@ other answer denies. Ctrl-C resolves the wait and cancels the run.
 
 With piped stdin, no person can answer. Every `Ask` becomes unavailable/denied
 and the model receives the tool error. `--yes` installs an allow-all approver;
-it is the caller's responsibility to provide an external containment boundary.
+it does not replace sandbox policy. On macOS classic headless commands still
+use the workspace-write Seatbelt profile by default. On Linux/Windows `auto`
+is an explicitly reported no-enforcement fallback, so external containment is
+still required for unattended `--yes` execution.
 
 ### Server approval
 
@@ -185,21 +190,34 @@ the native `write_file`, `edit_file`, and `apply_patch` tools:
 | TUI/PWA Full Access | project-relative and absolute |
 | `clat exec` | project-relative only, even with `--yes` |
 
-This table is **not an OS process sandbox**. `clat exec --yes` also approves
-`run_command`; that subprocess can use the operating-system account's normal
-authority to read or write absolute paths, access the network, and inspect
-inherited environment variables. The project-relative row constrains CLAT's
-native write/edit path resolver only.
+This table governs CLAT's native write/edit/patch path resolver; command
+confinement is a separate boundary. On macOS, classic headless, Read Only and
+Project Write commands default to a functionally probed Seatbelt profile.
+Classic/Project Write can write only the canonical project, `/tmp`, and the
+process temporary directory; Read Only cannot write the project. Network is
+denied unless the tool call explicitly sets `network: true`. Full Access is
+deliberately unconfined.
+The current profile intentionally permits account-readable filesystem reads,
+inherits CLAT's environment, and permits Workspace Write commands to use those
+temporary roots. It is graduated write/network confinement, not a
+container or a secret filter.
+
+Linux and Windows currently have no graduated command sandbox provider:
+`sandbox: "auto"` reports `provider=none, enforcement=none`, while
+`sandbox: "required"` fails closed. Therefore `clat exec --yes` on those
+platforms still gives approved commands the operating-system account's normal
+filesystem, environment and network authority.
 
 Project-relative writes bind all parent creation, inspection, temporary-file
 creation, and rename operations to opened directory capabilities. Final
 symlinks are rejected. Under Full Access, CLAT canonicalizes and opens the
 absolute target parent before applying the same atomic discipline.
 
-`run_command` always runs in the canonical project root. Full Access removes
-its prompt but does not turn it into an arbitrary-working-directory tool. The
-command can still name paths outside that cwd because no kernel sandbox is
-installed.
+`run_command` always runs in the canonical project root. `exec_command` accepts
+only a project-relative existing directory. Both use the same ProcessService
+and sandbox plan. `sandbox: "off"` is accepted only under interactive Full
+Access; `required` refuses when the current platform/policy cannot provide the
+claimed confinement.
 
 ## Native side-effecting tools
 
@@ -208,7 +226,9 @@ installed.
 | `write_file` | `Write` | content ≤1 MiB; atomic temp+rename; existing mode bits preserved; failed writes leave no partial target; capability-relative path operations |
 | `edit_file` | `Write` | target/result ≤1 MiB; exactly one text match; cooperating writers serialized; source snapshot revalidated before atomic replace |
 | `apply_patch` | `Write` | patch/target/result ≤1 MiB; one existing UTF-8 target; all exact hunks prevalidated; one snapshot-checked atomic commit; no add/delete/rename/multi-file v1 |
-| `run_command` | `Execute` | canonical project cwd; bounded timeout; cancellation; whole process-tree termination; stdout and stderr each retained up to 32 KiB while excess is drained |
+| `exec_command` | `Execute` | run-owned session; project-relative cwd; incremental stdout/stderr or real PTY; 256 KiB transient rings; sandbox facts; max 8 active jobs |
+| `write_stdin` | `Execute` | poll/input/close/terminate one same-run session; ≤256 KiB per write with a 5 s backpressure deadline; characters redacted from durable `tool/call`; sensitive model input rejected |
+| `run_command` | `Execute` | one-shot ProcessService wrapper; canonical project cwd; ≤600 s call timeout; owned process-group termination; 32 KiB stdout/stderr compatibility result |
 
 The edit lock coordinates CLAT writers, not arbitrary external editors.
 Snapshot revalidation reports a conflict when a cooperating or visible
@@ -217,7 +237,8 @@ processes transactional.
 
 Commands inherit the CLAT process environment. That is useful for normal
 tooling and also means secrets exported in the launching shell are visible to
-approved commands.
+approved commands even under a filesystem/network sandbox. Seatbelt is not an
+environment-secret filter.
 
 ## MCP effects
 

@@ -32,6 +32,7 @@ pub(crate) struct RequestHeaderData {
     pub(crate) header: Value,
     pub(crate) base_system: String,
     pub(crate) dynamic_instructions: Option<Arc<dyn crate::plugins::services::DynamicInstructions>>,
+    pub(crate) tool_registry: Option<Arc<crate::tool::ToolRegistry>>,
 }
 
 /// Shared between the recorder (which stashes `ToolRequested` calls) and
@@ -240,6 +241,7 @@ pub(crate) struct SessionRecorder {
     request_header: Value,
     base_system: String,
     dynamic_instructions: Option<Arc<dyn crate::plugins::services::DynamicInstructions>>,
+    tool_registry: Option<Arc<crate::tool::ToolRegistry>>,
     step_open: bool,
     /// The open step's assistant/message was already journaled.
     message_emitted: bool,
@@ -296,6 +298,7 @@ impl SessionRecorder {
             request_header: request_header.header,
             base_system: request_header.base_system,
             dynamic_instructions: request_header.dynamic_instructions,
+            tool_registry: request_header.tool_registry,
             step_open: false,
             message_emitted: false,
             stream_usage: None,
@@ -793,6 +796,12 @@ impl SessionRecorder {
         std::mem::take(&mut self.forwarded)
     }
 
+    pub(crate) fn force_terminal_failure(&mut self, message: impl Into<String>) {
+        self.terminal = Some(RunEvent::RunFailed {
+            message: message.into(),
+        });
+    }
+
     fn record(&mut self, event: RunEvent) {
         match &event {
             // turn/start + user/message are the application's first durable
@@ -877,10 +886,18 @@ impl SessionRecorder {
             }
             RunEvent::ToolRequested { call } => {
                 let index = 2 + self.next_block_index();
+                let arguments = self
+                    .tool_registry
+                    .as_ref()
+                    .and_then(|registry| registry.get(&call.name))
+                    .map_or_else(
+                        || call.arguments.clone(),
+                        |tool| tool.journal_arguments(&call.arguments),
+                    );
                 let pending = PendingCall {
                     id: call.id.clone(),
                     name: call.name.clone(),
-                    arguments: call.arguments.clone(),
+                    arguments,
                     index,
                 };
                 if let Ok(mut shared) = self.shared.lock() {
@@ -945,13 +962,21 @@ impl SessionRecorder {
             }
             RunEvent::ToolFinished { result } => {
                 let (turn, step) = self.state();
+                let output = self
+                    .tool_registry
+                    .as_ref()
+                    .and_then(|registry| registry.get(&result.tool_name))
+                    .map_or_else(
+                        || result.output.clone(),
+                        |tool| tool.journal_output(&result.output),
+                    );
                 let event = NewSessionEvent::new(
                     "tool/result",
                     payloads::tool_result(
                         turn,
                         step,
                         &result.call_id,
-                        payloads::tool_result_content(&result.output),
+                        payloads::tool_result_content(&output),
                         result.is_error,
                     ),
                 )
@@ -1082,6 +1107,7 @@ mod tests {
             }),
             base_system: "you are clat".into(),
             dynamic_instructions: None,
+            tool_registry: None,
         }
     }
 

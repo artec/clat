@@ -56,8 +56,10 @@ clat upgrade --check
 - **模型**——DeepSeek、GLM、Qwen、Kimi 内置预设，命名自定义档案，
   OpenAI Responses 与 OpenAI 兼容协议，思考/用量/缓存/上下文/配额遥测。
 - **原生工具**——有界且理解 gitignore 的字面量/正则/glob 搜索、文件列表与
-  读取、原子写入、精确编辑、单文件多 hunk 补丁，以及能管理整个进程树的
-  命令执行；成功文件工具触及嵌套路径后，会刷新对应作用域的项目指令。
+  读取、原子写入、精确编辑、单文件多 hunk 补丁，以及支持增量输出、stdin、
+  PTY 和受管进程组清理的 run 级命令会话。macOS 在 Full Access 之外使用功能
+  探测过的 Seatbelt 写入/网络强制隔离，其他平台如实报告受监督 fallback；
+  成功文件工具触及嵌套路径后，会刷新对应作用域的项目指令。
 - **权限**——Read Only、Project Write、Full Access 三档，完整参数审查，
   项目信任、路径围栏，以及无头场景的失败关闭。
 - **会话**——`~/.clat` 下可从崩溃恢复的追加式 DSH 兼容日志、本地 replay

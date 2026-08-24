@@ -59,8 +59,11 @@ the URL. The same binary serves the responsive three-panel PWA.
   usage, cache, context, and quota telemetry.
 - **Native tools** — bounded Git-aware literal/regex/glob search, file listing
   and reading, atomic writes, exact edits, single-file multi-hunk patches, and
-  process-tree-owned command execution. Scoped project instructions refresh as
-  successful file tools reach nested paths.
+  run-owned command sessions with incremental output, stdin, PTY and owned
+  process-group cleanup. macOS commands use functionally probed Seatbelt write/network
+  confinement outside Full Access; other platforms report supervised fallback
+  honestly. Scoped project instructions refresh as successful file tools reach
+  nested paths.
 - **Permissions** — Read Only, Project Write, and Full Access modes; complete
   argument review; project trust; path fences; fail-closed headless behavior.
 - **Sessions** — crash-resilient, append-only, DSH-compatible journals under

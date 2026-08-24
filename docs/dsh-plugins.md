@@ -68,7 +68,9 @@ prompt 不会未经用户选择自动进入系统指令。
 推送 `null`，权威状态仍是 `context/get`，且所有新宿主调用都会在桥层拒绝旧 run。宿主
 工具只开放 `list_files`、`read_file`、`search`、`write_file`、`edit_file`
 与 `run_command`，仍依次经过当前 run 的权限策略、项目路径围栏、取消令牌
-和 `ToolExecutionPipeline`。其中 fs 投影的读写路径都被收紧到当前项目根；
+和 `ToolExecutionPipeline`。`run_command` 现在还经过同一个 run-owned
+ProcessService：macOS 使用当前 Seatbelt 策略，其他平台如实报告无强制隔离的
+fallback；这不等于 adapter 子进程本身被沙箱化。其中 fs 投影的读写路径都被收紧到当前项目根；
 不继承 CLAT agent 原生读工具“显式绝对路径可读”的宽松能力。
 
 以下能力仍不能由 MCP 子进程安全地伪造：
@@ -136,7 +138,8 @@ stderr 通道。包级 API 和双语示例见
 - `ctx.fs` 的 DSH `expected` 版本 guard 无法由当前原生工具原子表达，因此
   明确报 `FS_GUARD_UNSUPPORTED`；无 guard 的写入仍过 CLAT 权限与路径围栏。
 - `ctx.shell` 固定在项目根运行，不接受 `env`、`dshEnv`、`stdin` 或任意
-  workdir；`start()` 明确不可用。
+  workdir；`start()` 明确不可用。前台 `resolve/run` 复用宿主 `run_command`
+  的 Execute 审批、TTL、受管进程组清理和平台 sandbox facts。
 - `ctx.sessions` / `ctx.agents` 仅镜像当前活动 run，最多携带最近 64 个、
   合计 256 KiB 的模型项；所有 mutation API 报 `READ_ONLY_HOST_SERVICE`。
 

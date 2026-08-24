@@ -111,11 +111,25 @@ pub(crate) fn tool_argument_lines(
                 .get("timeout_seconds")
                 .and_then(serde_json::Value::as_u64)
                 .unwrap_or(120);
+            let network = object
+                .get("network")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            let sandbox = object
+                .get("sandbox")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("auto");
             push_header(&mut lines, format!("$ {command}"), width);
-            lines.push(Line::from(Span::styled(
-                format!("  in the project root · timeout {timeout}s"),
-                theme::style(theme::Role::Dim),
-            )));
+            let metadata = format!(
+                "in project root · timeout {timeout}s · sandbox {sandbox} · network {}",
+                if network { "requested" } else { "blocked" }
+            );
+            for wrapped in wrap_text(&metadata, width.saturating_sub(2)) {
+                lines.push(Line::from(Span::styled(
+                    format!("  {wrapped}"),
+                    theme::style(theme::Role::Dim),
+                )));
+            }
         }
         _ => return None,
     }

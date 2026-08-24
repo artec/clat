@@ -174,6 +174,37 @@ fn terminal_frontend_has_no_core_assembly_or_persistence_entrypoints() {
     }
 }
 
+/// Agent command execution has one core spawn seam. Tools and run/application
+/// orchestration may call ProcessService but must never grow a second direct
+/// Command/PTY implementation; sandbox functional probes are routed through
+/// the same process module too.
+#[test]
+fn agent_command_spawning_is_owned_only_by_process_service() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for name in [
+        "src/native_tools.rs",
+        "src/plugins/process.rs",
+        "src/application/run_lifecycle.rs",
+        "src/run.rs",
+        "src/sandbox.rs",
+    ] {
+        let source = fs::read_to_string(root.join(name)).expect("read source");
+        for forbidden in [
+            "std::process::Command::new",
+            ".group_spawn()",
+            "native_pty_system()",
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "{name} must route agent command spawning through ProcessService, found `{forbidden}`"
+            );
+        }
+    }
+    let owner = fs::read_to_string(root.join("src/process.rs")).expect("process service");
+    assert!(owner.contains(".group_spawn()"));
+    assert!(owner.contains("native_pty_system()"));
+}
+
 /// Slash command semantics live in the `core.commands` registry
 /// (docs/todo/commands-core.md, INV-C1): frontends reach commands only
 /// through `TrustedProjectApplication::dispatch_command` and render the

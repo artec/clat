@@ -6,8 +6,8 @@ use crate::plugin::{Plugin, PluginManager, ScopeKind};
 use crate::plugins::services::{
     AGENT_SERVICE, COMMAND_SERVICE, COMPACTION_SERVICE, CONFIG_SERVICE,
     DYNAMIC_INSTRUCTIONS_SERVICE, MCP_STATUS_SERVICE, MONITOR_SERVICE, PERMISSION_SERVICE,
-    PROMPT_SERVICE, PROVIDER_SERVICE, SESSION_SERVICE, SESSION_TITLE_SERVICE, TODO_SERVICE,
-    TOOL_PIPELINE_SERVICE, TOOL_SERVICE,
+    PROCESS_SERVICE, PROMPT_SERVICE, PROVIDER_SERVICE, SESSION_SERVICE, SESSION_TITLE_SERVICE,
+    TODO_SERVICE, TOOL_PIPELINE_SERVICE, TOOL_SERVICE,
 };
 use crate::plugins::{ProjectControlStoragePlugin, SessionPersistencePlugin};
 use crate::presets::preset_by_id;
@@ -167,7 +167,14 @@ impl TrustedProjectApplication {
                     crate::permission::WriteScopeSource::ProjectRoot
                 },
             }),
-            Arc::new(crate::plugins::NativeExecuteToolsPlugin),
+            Arc::new(crate::plugins::SandboxPlugin {
+                project_root: project.root().to_path_buf(),
+                permission_mode: permission_modes.then(|| Arc::clone(&permission_mode)),
+            }),
+            Arc::new(crate::plugins::ProcessServicePlugin {
+                project: project.clone(),
+            }),
+            Arc::new(crate::plugins::ExecToolsPlugin),
             Arc::new(crate::plugins::NativeInteractionToolsPlugin {
                 slot: Arc::clone(&asker_slot),
             }),
@@ -241,6 +248,9 @@ impl TrustedProjectApplication {
         let dynamic_instructions = project_manager
             .require(DYNAMIC_INSTRUCTIONS_SERVICE)
             .map_err(|error| ApplicationError::new(error.to_string()))?;
+        let process_service = project_manager
+            .require(PROCESS_SERVICE)
+            .map_err(|error| ApplicationError::new(error.to_string()))?;
         // 命令注册表与工具/厂商/提示词同点冻结：贡献只发生在挂载期，
         // 冻结后挡注册不挡撤销（INV-C3）。
         let commands = project_manager
@@ -291,6 +301,7 @@ impl TrustedProjectApplication {
             tools,
             prompts,
             dynamic_instructions,
+            process_service,
             commands,
             agent,
             mcp_status,
@@ -346,6 +357,22 @@ impl TrustedProjectApplication {
                 );
             }));
         }
+        let process_subscribers = Arc::clone(&application.subscribers);
+        application
+            .process_service
+            .set_notice_sink(Arc::new(move |notice| {
+                broadcast_to(
+                    &process_subscribers,
+                    ApplicationEvent::ProcessFinished {
+                        session_id: notice.session_id,
+                        exit_code: notice.exit_code,
+                        signal: notice.signal,
+                        timed_out: notice.timed_out,
+                        cancelled: notice.cancelled,
+                        terminated: notice.terminated,
+                    },
+                );
+            }));
         // B9 迁移腿（INV-M3 升级腿）：旧世界的唯一自定义持久化形态是
         // 单槽 model_state——档案注册表出现前切走即丢。挂载时把
         // `preset=None 且 endpoint 非空` 的存量态自动转为第一个档案；
@@ -519,6 +546,7 @@ impl TrustedProjectApplication {
             header,
             base_system,
             dynamic_instructions: Some(Arc::clone(&self.dynamic_instructions)),
+            tool_registry: Some(Arc::clone(&self.tools)),
         })
     }
 

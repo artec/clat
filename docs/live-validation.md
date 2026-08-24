@@ -95,6 +95,14 @@ Run only those relevant to the change:
   partial persistence, and clean next run;
 - **retry** — use a controlled endpoint that returns a transient response before
   success, and confirm no retry occurs after visible stream output.
+- **command session** — require the model to start a short `exec_command` that
+  waits for stdin, continue it through `write_stdin`, then start and terminate a
+  watcher. Confirm both Execute approvals show full arguments, output is
+  incremental, the terminal metadata is visible, and no child survives run end.
+- **macOS sandbox** — from Project Write, run one project write and one project-
+  external write with `sandbox: "required"`; the first must succeed and report
+  Seatbelt/full plus a policy digest, while the second must fail without
+  creating the target. Repeat network-disabled against a controlled listener.
 
 ## Headless parity spot-check
 

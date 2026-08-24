@@ -29,6 +29,8 @@ pub(crate) const COMPACTION_SERVICE_ID: ServiceId = ServiceId::new("core.compact
 pub(crate) const COMMAND_SERVICE_ID: ServiceId = ServiceId::new("core.commands");
 pub(crate) const DYNAMIC_INSTRUCTIONS_SERVICE_ID: ServiceId =
     ServiceId::new("core.dynamic_instructions");
+pub(crate) const SANDBOX_SERVICE_ID: ServiceId = ServiceId::new("core.sandbox");
+pub(crate) const PROCESS_SERVICE_ID: ServiceId = ServiceId::new("core.process");
 
 pub(crate) const SESSION_SERVICE: ServiceKey<crate::session::use_cases::SessionService> =
     ServiceKey::new(SESSION_SERVICE_ID);
@@ -53,6 +55,10 @@ pub(crate) const COMMAND_SERVICE: ServiceKey<crate::command::CommandRegistry> =
     ServiceKey::new(COMMAND_SERVICE_ID);
 pub(crate) const DYNAMIC_INSTRUCTIONS_SERVICE: ServiceKey<dyn DynamicInstructions> =
     ServiceKey::new(DYNAMIC_INSTRUCTIONS_SERVICE_ID);
+pub(crate) const SANDBOX_SERVICE: ServiceKey<crate::sandbox::SandboxService> =
+    ServiceKey::new(SANDBOX_SERVICE_ID);
+pub(crate) const PROCESS_SERVICE: ServiceKey<crate::process::ProcessService> =
+    ServiceKey::new(PROCESS_SERVICE_ID);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct InstructionSourceInfo {

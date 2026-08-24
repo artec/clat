@@ -1,11 +1,10 @@
 //! Built-in native tools: project-scoped `list_files`/`read_file` plus
-//! trusted-project `write_file`/`edit_file`/`run_command`/
-//! `ask_user`.
+//! trusted-project `write_file`/`edit_file`/`ask_user`. Process tools live in
+//! `plugins/process.rs` over the shared ProcessService.
 
 use crate::CancelToken;
 use crate::project::Project;
 use crate::tool::{Tool, ToolDefinition, ToolEffect, ToolError};
-use command_group::CommandGroup;
 use serde_json::{Value, json};
 use std::fs;
 use std::io::BufReader;
@@ -234,14 +233,7 @@ pub(crate) fn native_write_tools(
     ]
 }
 
-pub(crate) fn native_execute_tools() -> Vec<std::sync::Arc<dyn Tool>> {
-    vec![std::sync::Arc::new(RunCommandTool)]
-}
-
 const MAX_WRITE_BYTES: usize = 1024 * 1024;
-const DEFAULT_COMMAND_TIMEOUT_SECS: u64 = 120;
-const MAX_COMMAND_TIMEOUT_SECS: u64 = 600;
-const MAX_COMMAND_OUTPUT_BYTES: usize = 32 * 1024;
 
 /// 写工具携带写入围栏来源（SR2）：每次 invoke 解析当前档位——FA 开放
 /// 绝对路径，RO/PW（与 exec）保持项目根相对路径。
@@ -412,33 +404,32 @@ impl Tool for EditFileTool {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default)]
-pub struct RunCommandTool;
+#[derive(Clone, Copy)]
+struct WalkLimits {
+    depth: usize,
+    entries: usize,
+}
 
+/// Migration characterization only: the historical native-tool tests drive
+/// the new ProcessService through this compatibility adapter. Production
+/// `run_command` is registered by `builtin.exec_tools`; no second spawn path
+/// exists outside tests.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct RunCommandTool;
+
+#[cfg(test)]
+const MAX_COMMAND_OUTPUT_BYTES: usize = 32 * 1024;
+
+#[cfg(test)]
 impl Tool for RunCommandTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "run_command".into(),
-            description: "Run a shell command in the project root (Unix: sh -c, Windows: cmd /C) and return exit code with captured output. Use it to build, test, and inspect the repository. Commands are subject to interactive approval.".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "command": {
-                        "type": "string",
-                        "description": "Command line to execute"
-                    },
-                    "timeout_seconds": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "maximum": MAX_COMMAND_TIMEOUT_SECS,
-                        "description": "Execution timeout. Defaults to 120"
-                    }
-                },
-                "required": ["command"],
-                "additionalProperties": false
-            }),
+            description: "test compatibility adapter".into(),
+            input_schema: json!({"type": "object"}),
             effect: ToolEffect::Execute,
-            strict: false,
+            strict: true,
         }
     }
 
@@ -448,214 +439,45 @@ impl Tool for RunCommandTool {
         project: &Project,
         cancel: &CancelToken,
     ) -> Result<Value, ToolError> {
-        check_cancelled(cancel)?;
         let command = required_string_arg(arguments, "command", "run_command")?;
-        let timeout_seconds = (usize_arg(arguments, "timeout_seconds")
-            .unwrap_or(DEFAULT_COMMAND_TIMEOUT_SECS as usize)
-            as u64)
-            .clamp(1, MAX_COMMAND_TIMEOUT_SECS);
-        // C-INV1：cwd 是 canonical 项目根，绝无第二条来源。
-        let cwd = project.resolve_existing(".").map_err(|error| {
-            ToolError::new(format!("run_command: cannot resolve project root: {error}"))
-        })?;
-
-        #[cfg(unix)]
-        let mut process = std::process::Command::new("sh");
-        #[cfg(unix)]
-        process.arg("-c").arg(command);
-        #[cfg(windows)]
-        let mut process = std::process::Command::new("cmd");
-        #[cfg(windows)]
-        process.arg("/C").arg(command);
-
-        process
-            .current_dir(&cwd)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
-
-        // command-group 在 Unix 创建独立进程组，在 Windows 创建并
-        // 绑定 Job Object；Windows 子进程以 suspended 状态完成绑定
-        // 后才恢复，避免 spawn→assign 间隙泄漏后代。
-        let mut child = process
-            .group_spawn()
-            .map_err(|error| ToolError::new(format!("run_command: spawn failed: {error}")))?;
-        // NWE-03：reader 排空管道到 EOF——读满保存上限后继续读并
-        // 丢弃多余字节，**绝不关闭读取端**（关闭会让命令收 SIGPIPE
-        // 而死，截断改变命令语义）。
-        let stdout_handle = spawn_output_reader(child.inner().stdout.take());
-        let stderr_handle = spawn_output_reader(child.inner().stderr.take());
-
-        // C-INV2：退出 / 超时 / 取消，三者必有其一；后两者终止整个
-        // 进程组（TERM → 短宽限 → KILL）。FP-03（2026-08-22 审计）：
-        // leader shell 正常先退出后，后台后代仍可继承持有 stdout/stderr
-        // 管道——reader 不 EOF、join 无界、取消/超时监控随 leader 一起
-        // 停止（`sleep 30 &` 类日常命令即可永久挂死工具且 Esc 失效）。
-        // 修复：leader 退出后进入**有界 drain 宽限**（前台命令的写端都
-        // 先于 leader 退出，读者通常即刻 EOF）；宽限内继续观察取消；
-        // 宽限耗尽仍未 EOF → 判定有后代持管道 → 终止整组（管道随组
-        // 关闭，join 有界），以 leader 的真实退出码收尾——这不是命令
-        // 超时（leader 已按期完成），timed_out 保持 false，输出可能被
-        // 置 truncated。
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_seconds);
-        const DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
-        let mut timed_out = false;
-        let mut status: Option<std::process::ExitStatus> = None;
-        let mut leader_done_at: Option<std::time::Instant> = None;
-        loop {
-            if cancel.is_cancelled() {
-                terminate_process_tree(&mut child);
-                let _ = child.wait();
-                let _ = stdout_handle.join();
-                let _ = stderr_handle.join();
-                return Err(ToolError::new("run_command: cancelled"));
-            }
-            if leader_done_at.is_none() {
-                match child.try_wait() {
-                    Ok(leader_status @ Some(_)) => {
-                        status = leader_status;
-                        leader_done_at = Some(std::time::Instant::now());
-                    }
-                    Ok(None) => {}
-                    Err(error) => {
-                        terminate_process_tree(&mut child);
-                        let _ = child.wait();
-                        let _ = stdout_handle.join();
-                        let _ = stderr_handle.join();
-                        return Err(ToolError::new(format!("run_command: wait failed: {error}")));
-                    }
-                }
-            } else if stdout_handle.is_finished() && stderr_handle.is_finished() {
-                // leader 已退出且读者都到 EOF（前台命令的常态）——正常
-                // 收尾，join 即返。
-                break;
-            }
-            // 全局超时只对「leader 仍存活」有意义（leader 已按期完成时
-            // 杀的是残留后代，不是命令超时）。
-            if leader_done_at.is_none() && std::time::Instant::now() >= deadline {
-                timed_out = true;
-                terminate_process_tree(&mut child);
-                status = child.wait().ok();
-                break;
-            }
-            // FP-03：leader 已死 + drain 宽限耗尽 + 管道仍被后代持有
-            // → 整组终止，夺回 join 的有界性。
-            if leader_done_at
-                .is_some_and(|done_at| done_at + DRAIN_GRACE <= std::time::Instant::now())
-            {
-                terminate_process_tree(&mut child);
-                let _ = child.wait();
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(25));
+        let timeout = usize_arg(arguments, "timeout_seconds").unwrap_or(120) as u64;
+        let sandbox = std::sync::Arc::new(
+            crate::sandbox::SandboxService::new(
+                project.root().to_path_buf(),
+                crate::sandbox::SandboxModeSource::Classic,
+            )
+            .map_err(ToolError::new)?,
+        );
+        let service = crate::process::ProcessService::new(project.clone(), sandbox);
+        let generation = service
+            .bind_run("native-tool-characterization", cancel.clone())
+            .map_err(ToolError::new)?;
+        let output = service
+            .run_compat(
+                command,
+                std::time::Duration::from_secs(timeout.clamp(1, 600)),
+                false,
+                crate::sandbox::SandboxRequest::Auto,
+            )
+            .map_err(ToolError::new)?;
+        let cleanup = service.unbind_run(generation);
+        let _ = service.close();
+        cleanup.map_err(ToolError::new)?;
+        if output.cancelled {
+            return Err(ToolError::new("run_command: cancelled"));
         }
-
-        let (stdout, stdout_truncated) = stdout_handle
-            .join()
-            .map_err(|_| ToolError::new("run_command: stdout reader panicked"))?;
-        let (stderr, stderr_truncated) = stderr_handle
-            .join()
-            .map_err(|_| ToolError::new("run_command: stderr reader panicked"))?;
-
-        // NWE-07：终止契约。exit_code 与 signal 互斥（正常退出给
-        // code，被信号终止给 signal）；timed_out 独立标记 CLAT 主动
-        // 终止的原因。取消走 Err 路径，不进结果。
-        #[cfg(unix)]
-        let signal = status
-            .as_ref()
-            .and_then(|status| {
-                use std::os::unix::process::ExitStatusExt;
-                status.signal()
-            })
-            .map(|signal| signal as i64);
-        #[cfg(not(unix))]
-        let signal: Option<i64> = None;
-
         Ok(json!({
             "command": command,
-            "cwd": cwd.to_string_lossy(),
-            "exit_code": status.and_then(|status| status.code()),
-            "signal": signal,
-            "timed_out": timed_out,
-            "stdout": stdout,
-            "stderr": stderr,
-            "stdout_truncated": stdout_truncated,
-            "stderr_truncated": stderr_truncated
+            "cwd": project.resolve_existing(".").map_err(|error| ToolError::new(error.to_string()))?.to_string_lossy(),
+            "exit_code": output.exit_code,
+            "signal": output.signal.as_deref().and_then(|signal| signal.parse::<i64>().ok()),
+            "timed_out": output.timed_out,
+            "stdout": output.stdout,
+            "stderr": output.stderr,
+            "stdout_truncated": output.output_truncated || output.stdout_lossy,
+            "stderr_truncated": output.output_truncated || output.stderr_lossy,
         }))
     }
-}
-
-/// NWE-02：终止整个进程树。Unix 先向进程组发 TERM，宽限结束后
-/// **无论 leader shell 是否已退出**都对组发 KILL；保留 GroupChild
-/// 直到 wait 完成，PGID 不会在清理窗口被误复用。Windows 的 kill
-/// 终止 Job Object，覆盖 cmd.exe 及其全部后代。
-fn terminate_process_tree(child: &mut command_group::GroupChild) {
-    #[cfg(unix)]
-    {
-        use command_group::{Signal, UnixChildExt};
-
-        let _ = child.signal(Signal::SIGTERM);
-        for _ in 0..20 {
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-        // 不以 leader 的退出状态判断整组是否已结束：它可能先于
-        // 忽略 TERM 的后代退出。GroupChild::kill 仍持有原 PGID。
-        let _ = child.kill();
-    }
-    #[cfg(windows)]
-    {
-        // command-group 的 Windows 后端终止 Job Object，而非仅 child。
-        let _ = child.kill();
-    }
-}
-
-/// 读取一根管道到 EOF：保留前 `MAX_COMMAND_OUTPUT_BYTES` 字节，
-/// 超限后**继续读取并丢弃**（NWE-03：不得关闭读取端——那会让命令
-/// 因 SIGPIPE 中途死亡，截断不得改变命令语义）。返回 (文本, 是否截断)。
-fn spawn_output_reader(
-    pipe: Option<impl std::io::Read + Send + 'static>,
-) -> std::thread::JoinHandle<(String, bool)> {
-    std::thread::spawn(move || {
-        let Some(mut pipe) = pipe else {
-            return (String::new(), false);
-        };
-        let mut bytes = Vec::new();
-        let mut truncated = false;
-        let mut chunk = [0u8; 4096];
-        loop {
-            match pipe.read(&mut chunk) {
-                Ok(0) => break,
-                Ok(read) => {
-                    if bytes.len() >= MAX_COMMAND_OUTPUT_BYTES {
-                        truncated = true;
-                        continue;
-                    }
-                    if bytes.len() + read > MAX_COMMAND_OUTPUT_BYTES {
-                        let keep = MAX_COMMAND_OUTPUT_BYTES.saturating_sub(bytes.len());
-                        bytes.extend_from_slice(&chunk[..keep]);
-                        truncated = true;
-                    } else {
-                        bytes.extend_from_slice(&chunk[..read]);
-                    }
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-                // NWE-03：读错误不再静默当作 EOF——终止排空并标记
-                // 截断，错误事实进入 truncated 标记（保留的字节仍
-                // 忠实呈现）。
-                Err(_) => {
-                    truncated = true;
-                    break;
-                }
-            }
-        }
-        (String::from_utf8_lossy(&bytes).into_owned(), truncated)
-    })
-}
-
-#[derive(Clone, Copy)]
-struct WalkLimits {
-    depth: usize,
-    entries: usize,
 }
 
 fn walk_directory(
@@ -1894,7 +1716,9 @@ mod tests {
                 std::sync::Arc::new(crate::plugins::ApplyPatchTool::default())
                     as std::sync::Arc<dyn Tool>,
             ))
-            .chain(native_execute_tools())
+            .chain(std::iter::once(
+                std::sync::Arc::new(RunCommandTool) as std::sync::Arc<dyn Tool>
+            ))
             .chain(native_interaction_tools(
                 crate::interaction::AskUserSlot::shared(),
             ))

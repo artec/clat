@@ -1,6 +1,6 @@
 [package]
 name = "clat"
-version = "0.9.3"
+version = "0.9.4"
 edition = "2024"
 description = "A rock-solid agent foundation: fast, local-first, one Rust binary"
 license-file = "LICENSE"
@@ -37,6 +37,9 @@ command-group = "5.0.1"
 # matching stay inside the Rust binary (no user-installed ripgrep runtime).
 globset = "0.4"
 ignore = "0.4.23"
+# Agent phase 2: cross-platform PTY sessions (same pinned crate line as the
+# local Codex reference); compiled into the CLAT binary.
+portable-pty = "=0.9.0"
 regex = "1.12"
 # `clat exec` turns Ctrl-C into a graceful CancelToken trip so partial output
 # still persists; a second press hard-exits 130. Installed once at the

@@ -10,6 +10,7 @@ mod instructions;
 mod mcp;
 mod monitor;
 mod permission;
+mod process;
 mod prompt;
 mod providers;
 mod pruner;
@@ -36,6 +37,7 @@ pub(crate) use instructions::ProjectInstructionsPlugin;
 pub(crate) use mcp::McpAdapterPlugin;
 pub(crate) use monitor::MonitorPlugin;
 pub(crate) use permission::DefaultPermissionPlugin;
+pub(crate) use process::{ExecToolsPlugin, ProcessServicePlugin, SandboxPlugin};
 pub(crate) use prompt::{DefaultPromptPlugin, PromptRegistryPlugin};
 pub(crate) use providers::{OpenAiCompatiblePlugin, OpenAiResponsesPlugin, ProviderRegistryPlugin};
 #[cfg(test)]
@@ -49,8 +51,7 @@ pub(crate) use storage::{ProjectControlStoragePlugin, SessionPersistencePlugin};
 pub(crate) use title::SessionTitlePlugin;
 pub(crate) use todo::TodoPlugin;
 pub(crate) use tools::{
-    NativeExecuteToolsPlugin, NativeInteractionToolsPlugin, NativeReadToolsPlugin,
-    NativeWriteToolsPlugin, ToolRegistryPlugin,
+    NativeInteractionToolsPlugin, NativeReadToolsPlugin, NativeWriteToolsPlugin, ToolRegistryPlugin,
 };
 pub(crate) use wasm::WasmAdapterPlugin;
 

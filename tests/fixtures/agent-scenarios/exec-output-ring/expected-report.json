@@ -1,0 +1,104 @@
+{
+  "schema_version": 1,
+  "scenario_id": "exec-output-ring",
+  "gate": "matched",
+  "expected": {
+    "outcome": "success",
+    "event_kinds": [
+      "run_started",
+      "model_requested",
+      "model_responded",
+      "tool_requested",
+      "permission_checked",
+      "tool_started",
+      "tool_finished",
+      "model_requested",
+      "model_stream",
+      "model_responded",
+      "run_completed"
+    ],
+    "durable_event_kinds": [
+      "turn/start",
+      "user/message",
+      "step/start",
+      "request/header",
+      "assistant/message",
+      "approval/asked",
+      "approval/decided",
+      "tool/call",
+      "tool/result",
+      "step/end",
+      "step/start",
+      "assistant/chunk",
+      "assistant/message",
+      "step/end",
+      "turn/end"
+    ],
+    "permission_checks": [
+      {
+        "tool": "exec_command",
+        "decision": "allow"
+      }
+    ]
+  },
+  "observed": {
+    "status": "success",
+    "output": "output ring complete",
+    "turns": 2
+  },
+  "model_steps": {
+    "expected": 2,
+    "observed": 2,
+    "violations": []
+  },
+  "event_kinds": [
+    "run_started",
+    "model_requested",
+    "model_responded",
+    "tool_requested",
+    "permission_checked",
+    "tool_started",
+    "tool_finished",
+    "model_requested",
+    "model_stream",
+    "model_responded",
+    "run_completed"
+  ],
+  "durable_event_kinds": [
+    "turn/start",
+    "user/message",
+    "step/start",
+    "request/header",
+    "assistant/message",
+    "approval/asked",
+    "approval/decided",
+    "tool/call",
+    "tool/result",
+    "step/end",
+    "step/start",
+    "assistant/chunk",
+    "assistant/message",
+    "step/end",
+    "turn/end"
+  ],
+  "permission_checks": [
+    {
+      "tool": "exec_command",
+      "decision": "allow"
+    }
+  ],
+  "files": [
+    {
+      "path": ".keep",
+      "bytes": 17,
+      "sha256": "18efcb2de41a66c7f07bff2c7b3161c6b62625eac08c6c7c919d5a845cd6d831"
+    },
+    {
+      "path": "ring-marker",
+      "bytes": 5,
+      "sha256": "d117fa006ba9208500b2930ce69cbde436c647afa917cb7396a9bc9111a46dd2"
+    }
+  ],
+  "files_match": true,
+  "application_close": "clean"
+}

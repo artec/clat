@@ -9,7 +9,8 @@ use crate::presets::preset_by_id;
 use crate::session::key::{ProjectKey, SessionKey};
 use crate::session::persistence::JsonlCompression;
 use crate::test_support::{
-    CountingApprover, SharedEvents, TestBehavior, TestProviderPlugin, configure_test_model, roots,
+    CountingApprover, SharedEvents, TestBehavior, TestModelScript, TestProviderPlugin,
+    configure_test_model, roots,
 };
 use serde_json::json;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1572,7 +1573,8 @@ fn rename_facade_gates_journals_and_broadcasts() {
                     ApplicationEvent::MonitorUpdated(_)
                     | ApplicationEvent::CompactionUpdated(_)
                     | ApplicationEvent::TitleUpdated { .. }
-                    | ApplicationEvent::McpStartupNotice { .. },
+                    | ApplicationEvent::McpStartupNotice { .. }
+                    | ApplicationEvent::ProcessFinished { .. },
                 ) => {}
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
@@ -3110,6 +3112,29 @@ fn failed_run_spawn_does_not_mark_the_request_header_emitted() {
         .collect();
     assert_eq!(headers.len(), 1, "the header survived the failed spawn");
     assert_eq!(headers[0].data["reason"], json!("initial"));
+    let tool_names = headers[0].data["header"]["tools"]
+        .as_array()
+        .expect("tool catalog")
+        .iter()
+        .filter_map(|tool| tool.get("name").and_then(serde_json::Value::as_str))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        tool_names,
+        [
+            "list_files",
+            "read_file",
+            "search",
+            "write_file",
+            "edit_file",
+            "apply_patch",
+            "run_command",
+            "exec_command",
+            "write_stdin",
+            "ask_user",
+            "todo_write",
+        ],
+        "request/header freezes the complete model-visible native catalog order"
+    );
     application.close().unwrap();
     std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
 }
@@ -3167,6 +3192,197 @@ fn request_header_appends_once_and_only_again_on_change() {
         .map(|event| event.data["reason"].as_str().unwrap())
         .collect();
     assert_eq!(reasons, vec!["initial", "change", "resume"]);
+    application.close().unwrap();
+    std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
+}
+
+#[test]
+fn process_completion_is_a_frontend_neutral_application_event() {
+    let (storage_root, project_root) = roots("process-completion-notice");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let project = Project::new(&project_root);
+    let mut application = mount(&project, &storage_root, TestBehavior::RunCommand);
+    configure_test_model(&application);
+    let (sender, receiver) = mpsc::channel();
+    application.subscribe(sender);
+
+    run(&mut application, "run the command").expect("command run");
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    let notice = loop {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "process notice timeout"
+        );
+        match receiver.recv_timeout(Duration::from_millis(100)) {
+            Ok(ApplicationEvent::ProcessFinished {
+                session_id,
+                exit_code,
+                ..
+            }) => {
+                break (session_id, exit_code);
+            }
+            Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => panic!("notice channel closed"),
+        }
+    };
+    assert_eq!(notice.0, 1);
+    assert_eq!(notice.1, Some(0));
+    application.close().unwrap();
+    std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
+}
+
+struct CrossRunProcessScript {
+    step: AtomicUsize,
+}
+
+impl TestModelScript for CrossRunProcessScript {
+    fn stream(
+        &self,
+        request: crate::ModelRequest<'_>,
+        events: &mut dyn crate::ModelEventSink,
+    ) -> Result<crate::ModelResponse, crate::ModelError> {
+        let step = self.step.fetch_add(1, Ordering::SeqCst);
+        let mut response = |text: &str| {
+            if !text.is_empty() {
+                events.emit(crate::ModelEvent::TextDelta { delta: text.into() });
+            }
+            crate::ModelResponse {
+                text: text.into(),
+                tool_calls: Vec::new(),
+                finish_reason: crate::FinishReason::Completed,
+                usage: None,
+                provider_response_id: None,
+                provider_state: Vec::new(),
+                reasoning: None,
+            }
+        };
+        Ok(match step {
+            0 => crate::ModelResponse {
+                text: String::new(),
+                tool_calls: vec![crate::ToolCall {
+                    id: "start-old-process".into(),
+                    name: "exec_command".into(),
+                    arguments: json!({
+                        "cmd": "(sleep 1; printf orphan > cross-run-marker) & wait",
+                        "yield_time_ms": 250
+                    }),
+                }],
+                finish_reason: crate::FinishReason::ToolCalls,
+                usage: None,
+                provider_response_id: None,
+                provider_state: Vec::new(),
+                reasoning: None,
+            },
+            1 => response("first run complete"),
+            2 => crate::ModelResponse {
+                text: String::new(),
+                tool_calls: vec![crate::ToolCall {
+                    id: "poll-old-process".into(),
+                    name: "write_stdin".into(),
+                    arguments: json!({"session_id": 1}),
+                }],
+                finish_reason: crate::FinishReason::ToolCalls,
+                usage: None,
+                provider_response_id: None,
+                provider_state: Vec::new(),
+                reasoning: None,
+            },
+            3 => {
+                let old_id_rejected = request.items.iter().any(|item| {
+                    matches!(item, crate::ModelItem::ToolResult(result)
+                        if result.tool_name == "write_stdin"
+                            && result.is_error
+                            && result.output.to_string().contains("not available in this run"))
+                });
+                if !old_id_rejected {
+                    return Err(crate::ModelError::request(
+                        "old process id was not fenced from the next run",
+                    ));
+                }
+                response("old process fenced")
+            }
+            _ => return Err(crate::ModelError::request("unexpected scripted request")),
+        })
+    }
+}
+
+#[test]
+fn process_session_ids_never_cross_application_run_ownership() {
+    let (storage_root, project_root) = roots("process-cross-run-fence");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let project = Project::new(&project_root);
+    let script = Arc::new(CrossRunProcessScript {
+        step: AtomicUsize::new(0),
+    });
+    let mut application = mount(&project, &storage_root, TestBehavior::Scripted(script));
+    configure_test_model(&application);
+
+    run(&mut application, "start a background process").expect("first run");
+    std::thread::sleep(Duration::from_millis(1300));
+    assert!(
+        !project_root.join("cross-run-marker").exists(),
+        "run terminal must reap background descendants before the next run"
+    );
+    let done = run(&mut application, "try the old process id").expect("second run");
+    assert_eq!(done.output, "old process fenced");
+    assert!(
+        load_events(&storage_root).iter().any(|event| {
+            event.event_type == "tool/result"
+                && serde_json::to_string(&event.data)
+                    .is_ok_and(|text| text.contains("not available in this run"))
+        }),
+        "durable replay must preserve a process-tool error, not rewrite it as an empty output summary"
+    );
+    application.close().unwrap();
+    std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
+}
+
+#[test]
+fn process_bind_failure_still_closes_the_turn_and_publishes_one_terminal() {
+    let (storage_root, project_root) = roots("process-bind-failure");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let project = Project::new(&project_root);
+    let mut application = mount(&project, &storage_root, TestBehavior::Success);
+    configure_test_model(&application);
+    let occupied = application
+        .process_service
+        .bind_run("synthetic-owner", crate::CancelToken::new())
+        .unwrap();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let (completion, receiver) = mpsc::channel();
+    let handle = application
+        .start_run(ApplicationRunRequest {
+            prompt: "bind must fail".into(),
+            attachments: Vec::new(),
+            approver: allow_all_approver(),
+            asker: None,
+            events: Box::new(SharedEvents(Arc::clone(&events))),
+            completion,
+        })
+        .unwrap();
+    handle.join().unwrap();
+    let failure = receiver.recv().unwrap().expect_err("bind failure");
+    assert!(failure.error.contains("process service could not bind"));
+    let terminal = events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|event| {
+            matches!(
+                event,
+                RunEvent::RunCompleted { .. }
+                    | RunEvent::RunCancelled { .. }
+                    | RunEvent::RunFailed { .. }
+            )
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(terminal.len(), 1);
+    assert!(matches!(terminal[0], RunEvent::RunFailed { .. }));
+    let durable = load_events(&storage_root);
+    assert_eq!(durable.last().unwrap().event_type, "turn/end");
+    assert_eq!(durable.last().unwrap().data["reason"]["kind"], "error");
+    application.process_service.unbind_run(occupied).unwrap();
     application.close().unwrap();
     std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
 }

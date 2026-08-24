@@ -88,6 +88,16 @@ pub enum ApplicationEvent {
     McpStartupNotice {
         failures: usize,
     },
+    /// A run-owned background process settled. Raw process output and command
+    /// text stay in ProcessService/tool results; this notice is metadata only.
+    ProcessFinished {
+        session_id: u64,
+        exit_code: Option<i32>,
+        signal: Option<String>,
+        timed_out: bool,
+        cancelled: bool,
+        terminated: bool,
+    },
 }
 
 pub struct TrustedProjectApplication {
@@ -107,6 +117,7 @@ pub struct TrustedProjectApplication {
     /// internal plugin; Application only restores its source scopes from the
     /// durable request/header when sessions change.
     dynamic_instructions: Arc<dyn DynamicInstructions>,
+    process_service: Arc<crate::process::ProcessService>,
     /// Frozen command registry（`core.commands`）：斜杠命令的唯一语义
     /// 源，前端经 `dispatch_command` 触达（INV-C1）。
     commands: Arc<crate::command::CommandRegistry>,

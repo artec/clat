@@ -281,6 +281,7 @@ mod tests {
                 }),
                 base_system: "you are clat".into(),
                 dynamic_instructions: None,
+                tool_registry: None,
             },
             "mock",
             "mock",

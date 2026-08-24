@@ -130,6 +130,10 @@ struct ExpectedDefinition {
     durable_event_kinds: Vec<String>,
     #[serde(default)]
     permission_checks: Vec<PermissionReport>,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    settle_ms: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    durable_forbidden_text: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -236,6 +240,8 @@ struct ScenarioReport {
     event_kinds: Vec<String>,
     durable_event_kinds: Vec<String>,
     permission_checks: Vec<PermissionReport>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    durable_forbidden_matches: Vec<String>,
     files: Vec<FileReport>,
     files_match: bool,
     application_close: CloseStatus,
@@ -532,7 +538,19 @@ fn run_fixture(fixture: &Path) -> Result<ScenarioReport, String> {
             _ => None,
         })
         .collect::<Vec<_>>();
-    let durable_event_kinds = load_durable_event_kinds(&storage_root)?;
+    let (durable_event_kinds, durable_text) = load_durable_events(&storage_root)?;
+    let durable_forbidden_matches = definition
+        .expected
+        .durable_forbidden_text
+        .iter()
+        .filter(|needle| durable_text.contains(needle.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    if definition.expected.settle_ms > 0 {
+        std::thread::sleep(std::time::Duration::from_millis(
+            definition.expected.settle_ms,
+        ));
+    }
     let actual_files = collect_files(&project_root)?;
     let expected_files = collect_files(&fixture.join("expected"))?;
     let files_match = actual_files == expected_files;
@@ -553,6 +571,7 @@ fn run_fixture(fixture: &Path) -> Result<ScenarioReport, String> {
             event_kinds: &event_kinds,
             durable_event_kinds: &durable_event_kinds,
             permission_checks: &permission_checks,
+            durable_forbidden_matches: &durable_forbidden_matches,
             files_match,
             close: &close,
         },
@@ -568,6 +587,7 @@ fn run_fixture(fixture: &Path) -> Result<ScenarioReport, String> {
         event_kinds,
         durable_event_kinds,
         permission_checks,
+        durable_forbidden_matches,
         files,
         files_match,
         application_close: close,
@@ -659,6 +679,17 @@ fn validate_definition(definition: &ScenarioDefinition, fixture: &Path) -> Resul
     if definition.expected.durable_event_kinds.is_empty() {
         return Err("expected durable_event_kinds must not be empty".into());
     }
+    if definition.expected.settle_ms > 5_000 {
+        return Err("expected settle_ms is limited to 5000".into());
+    }
+    if definition
+        .expected
+        .durable_forbidden_text
+        .iter()
+        .any(String::is_empty)
+    {
+        return Err("durable_forbidden_text entries must not be empty".into());
+    }
     for (index, step) in definition.model_steps.iter().enumerate() {
         let include = step
             .expect
@@ -726,6 +757,7 @@ struct GateEvidence<'a> {
     event_kinds: &'a [String],
     durable_event_kinds: &'a [String],
     permission_checks: &'a [PermissionReport],
+    durable_forbidden_matches: &'a [String],
     files_match: bool,
     close: &'a CloseStatus,
 }
@@ -745,6 +777,7 @@ fn evaluate_gate(expected: &ExpectedDefinition, evidence: GateEvidence<'_>) -> G
         && expected.event_kinds == evidence.event_kinds
         && expected.durable_event_kinds == evidence.durable_event_kinds
         && expected.permission_checks == evidence.permission_checks
+        && evidence.durable_forbidden_matches.is_empty()
         && evidence.files_match
         && evidence.close == &CloseStatus::Clean;
     if matched {
@@ -799,7 +832,7 @@ fn permission_decision(decision: &PermissionDecision) -> PermissionDecisionKind 
     }
 }
 
-fn load_durable_event_kinds(storage_root: &Path) -> Result<Vec<String>, String> {
+fn load_durable_events(storage_root: &Path) -> Result<(Vec<String>, String), String> {
     let backend = crate::session::persistence::JsonlBackend::new(
         storage_root.join("sessions"),
         crate::session::persistence::JsonlCompression::Zstd,
@@ -824,11 +857,13 @@ fn load_durable_event_kinds(storage_root: &Path) -> Result<Vec<String>, String> 
     let loaded = backend
         .load(&key, false)
         .map_err(|error| error.to_string())?;
-    Ok(loaded
+    let text = serde_json::to_string(&loaded.events).map_err(|error| error.to_string())?;
+    let kinds = loaded
         .events
         .into_iter()
         .map(|event| event.event_type)
-        .collect())
+        .collect();
+    Ok((kinds, text))
 }
 
 fn copy_fixture_tree(source: &Path, destination: &Path) -> Result<(), String> {
@@ -960,6 +995,10 @@ fn relative_path(display: &str) -> Result<PathBuf, String> {
 
 fn hex_digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
+}
+
+fn is_zero_u64(value: &u64) -> bool {
+    *value == 0
 }
 
 fn report_json(report: &ScenarioReport) -> Result<String, String> {
@@ -1108,6 +1147,8 @@ mod tests {
             event_kinds: vec!["run_failed".into()],
             durable_event_kinds: vec!["turn/end".into()],
             permission_checks: Vec::new(),
+            settle_ms: 0,
+            durable_forbidden_text: Vec::new(),
         };
         let observed = ObservedOutcome::Failure {
             category: FailureCategory::ToolUnavailable,
@@ -1128,6 +1169,7 @@ mod tests {
                     event_kinds: &["run_failed".into()],
                     durable_event_kinds: &["turn/end".into()],
                     permission_checks: &[],
+                    durable_forbidden_matches: &[],
                     files_match: true,
                     close: &CloseStatus::Clean,
                 },
@@ -1143,6 +1185,7 @@ mod tests {
                     event_kinds: &["run_completed".into()],
                     durable_event_kinds: &["turn/end".into()],
                     permission_checks: &[],
+                    durable_forbidden_matches: &[],
                     files_match: true,
                     close: &CloseStatus::Clean,
                 },
