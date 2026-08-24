@@ -264,7 +264,11 @@
       justify-content: space-between;
       align-items: center;
     }
-    @media (max-width: 640px) { footer .footer-grid { grid-template-columns: 1fr; } }
+    /* 手机：品牌独占一行，项目与文档两列并排成一块 */
+    @media (max-width: 640px) {
+      footer .footer-grid { grid-template-columns: 1fr 1fr; gap: 24px; }
+      footer .footer-grid > div:first-child { grid-column: 1 / -1; }
+    }
   </style>
 </head>
 <body>
