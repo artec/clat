@@ -45,6 +45,14 @@ pub(crate) enum InstallKind {
 }
 
 #[derive(Clone, Debug)]
+pub(crate) struct PackageInstallRequest {
+    pub(crate) path: PathBuf,
+    pub(crate) config: Option<Value>,
+    pub(crate) accept_capabilities: bool,
+    pub(crate) kind: InstallKind,
+}
+
+#[derive(Clone, Debug)]
 pub(crate) struct PackageInspection {
     pub(crate) manifest: PluginPackageManifest,
     pub(crate) manifest_path: PathBuf,
@@ -86,6 +94,7 @@ pub(crate) struct PackageListEntry {
     pub(crate) rollback_version: Option<String>,
     pub(crate) trust: TrustLabel,
     pub(crate) publisher: Option<String>,
+    pub(crate) publisher_key: Option<String>,
     pub(crate) health: Option<String>,
 }
 
@@ -252,166 +261,213 @@ impl PackageStore {
         accept_capabilities: bool,
         kind: InstallKind,
     ) -> Result<PackageMutation, String> {
-        let inspection = inspect_source(path)?;
-        if let Some(config) = &config {
-            let bytes = serde_json::to_vec(config)
-                .map_err(|error| format!("serialize plugin config: {error}"))?;
-            if bytes.len() > MAX_PLUGIN_CONFIG_BYTES {
-                return Err(format!(
-                    "plugin config is {} bytes; the cap is {MAX_PLUGIN_CONFIG_BYTES}",
-                    bytes.len()
-                ));
-            }
+        self.install_batch(vec![PackageInstallRequest {
+            path: path.to_path_buf(),
+            config,
+            accept_capabilities,
+            kind,
+        }])?
+        .pop()
+        .ok_or_else(|| "package batch unexpectedly produced no mutation".to_owned())
+    }
+
+    /// Publish a complete dependency graph with one registry replacement.
+    /// Immutable artifacts may be left orphaned after a crash, but the active
+    /// graph is always entirely old or entirely new.
+    pub(crate) fn install_batch(
+        &mut self,
+        requests: Vec<PackageInstallRequest>,
+    ) -> Result<Vec<PackageMutation>, String> {
+        if requests.is_empty() {
+            return Err("package install batch is empty".into());
         }
-        inspection.manifest.validate_config(config.as_ref())?;
-        let id = inspection.manifest.id.clone();
-        let existing = self.registry.packages.get(&id);
-        match (kind, existing.is_some()) {
-            (InstallKind::Install, true) => {
-                return Err(format!(
-                    "plugin `{id}` is already installed; use `clat plugin update`"
-                ));
-            }
-            (InstallKind::Update, false) => {
-                return Err(format!(
-                    "plugin `{id}` is not installed; use `clat plugin install`"
-                ));
-            }
-            _ => {}
+        if requests.len() > 256 {
+            return Err("package install batch exceeds 256 packages".into());
         }
-        let old_capabilities = existing.map(|plugin| {
-            &plugin
-                .artifacts
-                .get(&plugin.active.artifact)
-                .expect("validated registry active artifact")
+        let mut prepared = Vec::with_capacity(requests.len());
+        let mut ids = BTreeSet::new();
+        for request in requests {
+            let inspection = inspect_source(&request.path)?;
+            let id = inspection.manifest.id.clone();
+            if !ids.insert(id.clone()) {
+                return Err(format!("package install batch contains duplicate `{id}`"));
+            }
+            if let Some(config) = &request.config {
+                let bytes = serde_json::to_vec(config)
+                    .map_err(|error| format!("serialize plugin config: {error}"))?;
+                if bytes.len() > MAX_PLUGIN_CONFIG_BYTES {
+                    return Err(format!(
+                        "plugin config is {} bytes; the cap is {MAX_PLUGIN_CONFIG_BYTES}",
+                        bytes.len()
+                    ));
+                }
+            }
+            inspection
                 .manifest
-                .capabilities
-        });
-        if let Some(plugin) = existing {
-            let active = plugin
-                .artifacts
-                .get(&plugin.active.artifact)
-                .expect("validated registry active artifact");
-            verify_artifact_record(&self.store_root, &id, active)?;
-            if active.publisher != inspection.publisher {
+                .validate_config(request.config.as_ref())?;
+            let existing = self.registry.packages.get(&id);
+            match (request.kind, existing.is_some()) {
+                (InstallKind::Install, true) => {
+                    return Err(format!(
+                        "plugin `{id}` is already installed; use `clat plugin update`"
+                    ));
+                }
+                (InstallKind::Update, false) => {
+                    return Err(format!(
+                        "plugin `{id}` is not installed; use `clat plugin install`"
+                    ));
+                }
+                _ => {}
+            }
+            let old_capabilities = existing.map(|plugin| {
+                &plugin
+                    .artifacts
+                    .get(&plugin.active.artifact)
+                    .expect("validated registry active artifact")
+                    .manifest
+                    .capabilities
+            });
+            if let Some(plugin) = existing {
+                let active = plugin
+                    .artifacts
+                    .get(&plugin.active.artifact)
+                    .expect("validated registry active artifact");
+                verify_artifact_record(&self.store_root, &id, active)?;
+                if active.publisher != inspection.publisher {
+                    return Err(format!(
+                        "plugin `{id}` publisher identity changed; uninstall it before accepting a different publisher key"
+                    ));
+                }
+            }
+            let expansion =
+                capability_expansion(old_capabilities, &inspection.manifest.capabilities);
+            if !expansion.is_empty() && !request.accept_capabilities {
                 return Err(format!(
-                    "plugin `{id}` publisher identity changed; uninstall it before accepting a different publisher key"
+                    "plugin `{id}` requests new capabilities: {}; inspect them and retry with \
+                     `--accept-capabilities`",
+                    expansion.join(", ")
                 ));
             }
-        }
-        let expansion = capability_expansion(old_capabilities, &inspection.manifest.capabilities);
-        if !expansion.is_empty() && !accept_capabilities {
-            return Err(format!(
-                "plugin `{id}` requests new capabilities: {}; inspect them and retry with \
-                 `--accept-capabilities`",
-                expansion.join(", ")
-            ));
+            prepared.push((inspection, request));
         }
 
-        let staging = self
-            .store_root
-            .join(STAGING_DIR)
-            .join(uuid::Uuid::new_v4().to_string());
+        let mut staging_paths = Vec::with_capacity(prepared.len());
         let result = (|| {
-            create_private_dir(&staging)?;
-            let plan = scan_tree(&inspection.package_root)?;
-            if plan.sha256 != inspection.tree_sha256 {
-                return Err("package changed between inspection and staging".into());
+            for (inspection, _) in &prepared {
+                let staging = self
+                    .store_root
+                    .join(STAGING_DIR)
+                    .join(uuid::Uuid::new_v4().to_string());
+                create_private_dir(&staging)?;
+                staging_paths.push(staging.clone());
+                let plan = scan_tree(&inspection.package_root)?;
+                if plan.sha256 != inspection.tree_sha256 {
+                    return Err("package changed between inspection and staging".into());
+                }
+                copy_tree(&plan, &staging)?;
+                let staged = inspect_source(&staging)?;
+                if staged.tree_sha256 != inspection.tree_sha256
+                    || staged.manifest != inspection.manifest
+                    || staged.publisher != inspection.publisher
+                {
+                    return Err("staged package verification did not match the source".into());
+                }
+                let artifact_root = self
+                    .store_root
+                    .join(ARTIFACTS_DIR)
+                    .join(&inspection.manifest.id)
+                    .join(&inspection.tree_sha256);
+                publish_artifact(&staging, &artifact_root, &staged)?;
             }
-            copy_tree(&plan, &staging)?;
-            let staged = inspect_source(&staging)?;
-            if staged.tree_sha256 != inspection.tree_sha256
-                || staged.manifest != inspection.manifest
-            {
-                return Err("staged package verification did not match the source".into());
-            }
-            let artifact_root = self
-                .store_root
-                .join(ARTIFACTS_DIR)
-                .join(&id)
-                .join(&inspection.tree_sha256);
-            publish_artifact(&staging, &artifact_root, &staged)?;
 
             #[cfg(test)]
             if self.fault_before_registry_publish {
                 return Err("injected failure before registry publication".into());
             }
 
-            let artifact = ArtifactRecord {
-                tree_sha256: inspection.tree_sha256.clone(),
-                manifest: inspection.manifest.clone(),
-                trust: inspection.trust,
-                publisher: inspection.publisher.clone(),
-            };
-            let activation = Activation {
-                artifact: inspection.tree_sha256.clone(),
-                config,
-                accepted_capabilities: inspection.manifest.capabilities.clone(),
-            };
             let mut next = self.registry.clone();
-            let rollback_version;
-            let enabled;
-            match next.packages.get_mut(&id) {
-                Some(plugin) => {
-                    enabled = plugin.enabled;
-                    plugin
-                        .artifacts
-                        .insert(artifact.tree_sha256.clone(), artifact);
-                    if plugin.active != activation {
-                        plugin.rollback = Some(plugin.active.clone());
-                        plugin.active = activation;
-                    }
-                    let active_key = plugin.active.artifact.clone();
-                    let rollback_key = plugin
-                        .rollback
-                        .as_ref()
-                        .map(|rollback| rollback.artifact.clone());
-                    plugin.artifacts.retain(|digest, _| {
-                        digest == &active_key || rollback_key.as_ref() == Some(digest)
-                    });
-                    rollback_version = plugin.rollback.as_ref().and_then(|rollback| {
+            let mut mutations = Vec::with_capacity(prepared.len());
+            for (inspection, request) in prepared {
+                let id = inspection.manifest.id.clone();
+                let artifact = ArtifactRecord {
+                    tree_sha256: inspection.tree_sha256.clone(),
+                    manifest: inspection.manifest.clone(),
+                    trust: inspection.trust,
+                    publisher: inspection.publisher.clone(),
+                };
+                let activation = Activation {
+                    artifact: inspection.tree_sha256.clone(),
+                    config: request.config,
+                    accepted_capabilities: inspection.manifest.capabilities.clone(),
+                };
+                let (enabled, rollback_version) = match next.packages.get_mut(&id) {
+                    Some(plugin) => {
                         plugin
                             .artifacts
-                            .get(&rollback.artifact)
-                            .map(|artifact| artifact.manifest.version.clone())
-                    });
-                }
-                None => {
-                    enabled = true;
-                    next.packages.insert(
-                        id.clone(),
-                        InstalledPlugin {
-                            enabled,
-                            active: activation,
-                            rollback: None,
-                            artifacts: BTreeMap::from([(artifact.tree_sha256.clone(), artifact)]),
-                        },
-                    );
-                    rollback_version = None;
-                }
+                            .insert(artifact.tree_sha256.clone(), artifact);
+                        if plugin.active != activation {
+                            plugin.rollback = Some(plugin.active.clone());
+                            plugin.active = activation;
+                        }
+                        let active_key = plugin.active.artifact.clone();
+                        let rollback_key = plugin
+                            .rollback
+                            .as_ref()
+                            .map(|rollback| rollback.artifact.clone());
+                        plugin.artifacts.retain(|digest, _| {
+                            digest == &active_key || rollback_key.as_ref() == Some(digest)
+                        });
+                        (
+                            plugin.enabled,
+                            plugin.rollback.as_ref().and_then(|rollback| {
+                                plugin
+                                    .artifacts
+                                    .get(&rollback.artifact)
+                                    .map(|artifact| artifact.manifest.version.clone())
+                            }),
+                        )
+                    }
+                    None => {
+                        next.packages.insert(
+                            id.clone(),
+                            InstalledPlugin {
+                                enabled: true,
+                                active: activation,
+                                rollback: None,
+                                artifacts: BTreeMap::from([(
+                                    artifact.tree_sha256.clone(),
+                                    artifact,
+                                )]),
+                            },
+                        );
+                        (true, None)
+                    }
+                };
+                mutations.push(PackageMutation {
+                    id,
+                    version: inspection.manifest.version,
+                    runtime: inspection.manifest.runtime.kind,
+                    tree_sha256: inspection.tree_sha256,
+                    enabled,
+                    rollback_version,
+                    note: match request.kind {
+                        InstallKind::Install => "installed and activated".into(),
+                        InstallKind::Update => "updated and activated".into(),
+                    },
+                });
             }
             write_registry(&self.store_root, &next)?;
             self.registry = next;
-            Ok(PackageMutation {
-                id: id.clone(),
-                version: inspection.manifest.version.clone(),
-                runtime: inspection.manifest.runtime.kind,
-                tree_sha256: inspection.tree_sha256.clone(),
-                enabled,
-                rollback_version,
-                note: match kind {
-                    InstallKind::Install => "installed and activated".into(),
-                    InstallKind::Update => "updated and activated".into(),
-                },
-            })
+            Ok(mutations)
         })();
-        if staging.exists() {
-            let _ = remove_tree(&staging);
+        for staging in staging_paths {
+            if staging.exists() {
+                let _ = remove_tree(&staging);
+            }
         }
         result
     }
 
-    #[cfg(test)]
     pub(crate) fn list(&self) -> Vec<PackageListEntry> {
         registry_list(&self.registry)
     }
@@ -636,6 +692,10 @@ fn registry_list(registry: &PackageRegistry) -> Vec<PackageListEntry> {
                     .publisher
                     .as_ref()
                     .map(|publisher| publisher.publisher.clone()),
+                publisher_key: active
+                    .publisher
+                    .as_ref()
+                    .map(|publisher| publisher.public_key.clone()),
                 health: None,
             })
         })
@@ -1603,6 +1663,46 @@ mod tests {
         store.uninstall("dev.clat.fixture").expect("uninstall");
         assert!(store.list().is_empty());
         assert!(active_packages(&root).expect("active").packages.is_empty());
+        drop(store);
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn dependency_batch_has_one_atomic_registry_publication() {
+        let root = root("batch-atomic");
+        let first = package(&root, "dev.clat.first", "1.0.0", json!({"tools": true}));
+        let second = package(&root, "dev.clat.second", "1.0.1", json!({"prompts": true}));
+        let mut store = PackageStore::open(&root).expect("open");
+        store.inject_failure_before_registry_publish();
+        let error = store
+            .install_batch(vec![
+                PackageInstallRequest {
+                    path: first,
+                    config: None,
+                    accept_capabilities: true,
+                    kind: InstallKind::Install,
+                },
+                PackageInstallRequest {
+                    path: second,
+                    config: None,
+                    accept_capabilities: true,
+                    kind: InstallKind::Install,
+                },
+            ])
+            .expect_err("batch publication fault must stop the graph");
+        assert!(error.contains("injected failure"));
+        assert!(store.list().is_empty(), "no subset may become active");
+        drop(store);
+
+        let store = PackageStore::open(&root).expect("reopen");
+        assert!(store.list().is_empty());
+        assert!(
+            fs::read_dir(root.join(STORE_DIR).join(ARTIFACTS_DIR))
+                .expect("artifact directory")
+                .next()
+                .is_none(),
+            "orphaned immutable artifacts are reclaimed on reopen"
+        );
         drop(store);
         fs::remove_dir_all(root).expect("cleanup");
     }

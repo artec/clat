@@ -24,6 +24,8 @@ Files appear lazily, so a fresh installation may contain only a subset.
 │   ├── registry.json            # atomic active/enabled package pointers (0600)
 │   ├── staging/                 # inert, recoverable install transactions
 │   └── artifacts/<id>/<digest>/ # immutable complete package trees
+├── market-cache/<origin-hash>/  # signed index + signature; reverified on use
+├── plugin-market-staging/       # inert remote download/unpack transactions
 ├── storages/
 │   ├── workspace.json           # multi-project workspace registry
 │   └── session_projcache.json   # rebuildable session-list cache
@@ -40,6 +42,10 @@ user and override a same-id installed package. `plugin-store` is written only
 by `clat plugin` while holding the same storage-root lease as a running CLAT
 application. The other files are written through core storage helpers or, for
 `dsh-last-session`, a small fail-soft client preference writer.
+Market cache bytes are not trusted merely because they are local: every online
+or offline use rechecks the embedded public-key signature and index expiry.
+Market staging is protected by the package-store storage-root lease during
+installation and never participates in runtime discovery.
 
 ## Ownership and sensitivity
 
@@ -52,6 +58,7 @@ application. The other files are written through core storage helpers or, for
 | extension manifests | user input | isolate configuration/plugin failure where possible |
 | plugin registry | authoritative activation pointers | version/digest/signature mismatch fails closed; never reset or guess |
 | plugin artifacts/staging | immutable code / uncommitted transaction bytes | verify complete tree before activation; stale staging is never executable |
+| market cache/staging | public signed metadata / uncommitted downloaded code | signature+expiry checks on every read; only a committed package registry can activate code |
 | `dsh-last-session` | decorative client preference | missing/corrupt/oversized/symlink → ignore |
 
 Back up `~/.clat` as a unit when conversation history and configuration both

@@ -1,0 +1,12 @@
+{
+  "name": "clat-plugin-index-site",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "validate": "node scripts/validate.mjs",
+    "release-index": "node scripts/release-index.mjs",
+    "sign-package": "node scripts/sign-package.mjs"
+  }
+}

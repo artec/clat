@@ -1,0 +1,75 @@
+{
+  "schemaVersion": 1,
+  "market": {
+    "name": "CLAT Plugin Index",
+    "homepage": "https://pi.at.cn",
+    "updated": "2026-08-24",
+    "notice": "首批包正在完成发布者复核。预览条目展示真实的 CLAT 示例或兼容方向，不代表已经可从远程安装。"
+  },
+  "packages": [
+    {
+      "id": "dev.clat.digest",
+      "name": "Digest Lab",
+      "summary": "用受限 WASM 组件生成稳定摘要，演示纯计算插件的最小权限边界。",
+      "runtime": "wasm-component",
+      "ecosystem": "clat-native",
+      "status": "preview",
+      "publisher": "CLAT Labs",
+      "trust": "source-reviewed",
+      "latest": "0.1.0",
+      "tags": ["WASM", "Pure", "Rust"],
+      "capabilities": ["tools"],
+      "accent": "lime",
+      "sourceUrl": "https://github.com/artec/clat/tree/main/plugins/digest",
+      "docsUrl": "https://github.com/artec/clat/blob/main/docs/wasm.md"
+    },
+    {
+      "id": "dev.clat.greeter",
+      "name": "Greeter Component",
+      "summary": "Rust SDK、配置校验、host context 与提示词贡献的端到端作者示例。",
+      "runtime": "wasm-component",
+      "ecosystem": "clat-native",
+      "status": "preview",
+      "publisher": "CLAT Labs",
+      "trust": "source-reviewed",
+      "latest": "0.1.0",
+      "tags": ["WASM", "SDK", "Starter"],
+      "capabilities": ["tools", "prompts", "hostContext"],
+      "accent": "amber",
+      "sourceUrl": "https://github.com/artec/clat/tree/main/plugins/greeter",
+      "docsUrl": "https://github.com/artec/clat/blob/main/docs/wasm.md"
+    },
+    {
+      "id": "cn.at.clat.dsh-port",
+      "name": "DSH Porting Bridge",
+      "summary": "把 DSH/Cordis 插件的工具、提示词、sampling 与 elicitation 投射到 CLAT MCP 宿主。",
+      "runtime": "mcp-stdio",
+      "ecosystem": "dsh-compatible",
+      "status": "preview",
+      "publisher": "CLAT Labs",
+      "trust": "adapter-reviewed",
+      "latest": "0.9.2",
+      "tags": ["DSH", "Cordis", "MCP"],
+      "capabilities": ["tools", "prompts", "sampling", "elicitation"],
+      "accent": "cyan",
+      "sourceUrl": "https://github.com/artec/clat/tree/main/sdk/dsh-adapter",
+      "docsUrl": "https://github.com/artec/clat/blob/main/docs/dsh-plugins.md"
+    },
+    {
+      "id": "dev.clat.probe",
+      "name": "Host Probe",
+      "summary": "验证权限、取消、host tool allowlist 与运行上下文隔离的开发者诊断组件。",
+      "runtime": "wasm-component",
+      "ecosystem": "clat-native",
+      "status": "preview",
+      "publisher": "CLAT Labs",
+      "trust": "source-reviewed",
+      "latest": "0.1.0",
+      "tags": ["WASM", "Diagnostics", "Permissions"],
+      "capabilities": ["tools", "hostContext", "hostTools.read_file"],
+      "accent": "violet",
+      "sourceUrl": "https://github.com/artec/clat/tree/main/plugins/probe",
+      "docsUrl": "https://github.com/artec/clat/blob/main/docs/permissions.md"
+    }
+  ]
+}

@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#10120f" />
+    <meta
+      name="description"
+      content="CLAT Plugin Index — CLAT 原生 Rust/WASM 与 DSH 兼容插件的公开市场。"
+    />
+    <title>CLAT Plugin Index</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#catalog">跳到插件目录</a>
+    <header class="site-header">
+      <a class="brand" href="/" aria-label="CLAT Plugin Index 首页">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 32 32" role="img">
+            <path d="M6 8h20v16H6z" />
+            <path d="M11 13h10M11 18h6" />
+          </svg>
+        </span>
+        <span><b>CLAT</b><small>PLUGIN INDEX / PI</small></span>
+      </a>
+      <nav aria-label="主导航">
+        <a href="#catalog">目录</a>
+        <a href="#trust">信任模型</a>
+        <a href="https://github.com/artec/clat/blob/main/docs/plugins.md">开发文档</a>
+      </nav>
+      <a class="header-cta" href="https://github.com/artec/clat">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5h11v11M19 5 5 19" /></svg>
+        GitHub
+      </a>
+    </header>
+
+    <main>
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="hero-grid" aria-hidden="true"></div>
+        <p class="eyebrow"><span></span> PUBLIC REGISTRY / SIGNED INDEX</p>
+        <h1 id="hero-title">一切皆插件。<br /><em>信任必须可验证。</em></h1>
+        <p class="hero-copy">
+          一个市场，两种生态：CLAT 原生 Rust/WASM 插件与 DSH 兼容插件共享同一套包格式、
+          发布者身份、能力复审和事务回滚。
+        </p>
+        <div class="hero-actions">
+          <a class="primary-action" href="#catalog">
+            浏览预览
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6" /></svg>
+          </a>
+          <code>clat plugin market search &lt;query&gt;</code>
+        </div>
+        <dl class="hero-facts">
+          <div><dt>INDEX</dt><dd>Minisign</dd></div>
+          <div><dt>INSTALL</dt><dd>Atomic</dd></div>
+          <div><dt>RUNTIMES</dt><dd>WASM + MCP</dd></div>
+          <div><dt>HOST</dt><dd>pi.at.cn</dd></div>
+        </dl>
+      </section>
+
+      <section class="catalog-section" id="catalog" aria-labelledby="catalog-title">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">CATALOG / 001</p>
+            <h2 id="catalog-title">插件目录</h2>
+          </div>
+          <p id="catalog-notice" class="catalog-notice" role="status"></p>
+        </div>
+        <div class="catalog-controls">
+          <label class="search-control">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6" /><path d="m16 16 4 4" /></svg>
+            <span class="sr-only">搜索插件</span>
+            <input id="search" type="search" placeholder="搜索名称、ID、标签…" autocomplete="off" />
+            <kbd>/</kbd>
+          </label>
+          <div class="filter-group" role="group" aria-label="插件生态筛选">
+            <button class="filter is-active" type="button" data-filter="all">全部</button>
+            <button class="filter" type="button" data-filter="clat-native">CLAT 原生</button>
+            <button class="filter" type="button" data-filter="dsh-compatible">DSH 兼容</button>
+          </div>
+        </div>
+        <div class="catalog-meta">
+          <span id="result-count">正在读取目录…</span>
+          <span>状态：<b class="status-dot"></b> 预发布目录</span>
+        </div>
+        <div id="package-grid" class="package-grid" aria-live="polite"></div>
+        <div id="empty-state" class="empty-state" hidden>
+          <svg viewBox="0 0 48 48" aria-hidden="true"><path d="M8 12h32v24H8zM15 20h18M15 27h10" /></svg>
+          <h3>没有匹配的插件</h3>
+          <p>换一个关键词，或清除当前生态筛选。</p>
+        </div>
+      </section>
+
+      <section class="trust-section" id="trust" aria-labelledby="trust-title">
+        <div class="trust-intro">
+          <p class="eyebrow">SUPPLY CHAIN / 002</p>
+          <h2 id="trust-title">每一步都留下证据</h2>
+          <p>搜索不会执行代码。安装前，CLAT 会从市场索引一直验证到包内每一个文件。</p>
+        </div>
+        <ol class="trust-flow">
+          <li><span>01</span><b>索引验签</b><p>内置 release 公钥、短有效期、防重放。</p></li>
+          <li><span>02</span><b>发布者身份</b><p>审核状态、密钥轮换、撤销时间线。</p></li>
+          <li><span>03</span><b>制品完整性</b><p>长度、外层摘要、逐文件摘要、包签名。</p></li>
+          <li><span>04</span><b>原子激活</b><p>依赖全量验证后一次提交，旧版本可回滚。</p></li>
+        </ol>
+      </section>
+    </main>
+
+    <footer>
+      <div class="brand footer-brand"><b>CLAT / PI</b><small>LOCAL-FIRST PLUGIN ECOSYSTEM</small></div>
+      <p>市场负责发现与验证；权限仍由你的本地 CLAT 掌握。</p>
+      <p>© 2026 Artec · <a href="https://github.com/artec/clat">Open source</a></p>
+    </footer>
+
+    <dialog id="package-dialog" aria-labelledby="dialog-title">
+      <button class="dialog-close" type="button" aria-label="关闭详情">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
+      </button>
+      <div id="dialog-content"></div>
+    </dialog>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

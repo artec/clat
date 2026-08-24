@@ -284,6 +284,23 @@ Use a transition sequence:
 Treat loss or suspected compromise of the private key as a release incident.
 Pause publication until the transition and user communication plan is explicit.
 
+### Plugin Index signing
+
+The v1 `pi.at.cn` machine index deliberately reuses this offline CLAT release
+trust anchor; it never uses a publisher key or a CI secret. This avoids shipping
+an unmanageable second production private key during the first market release,
+but it also joins the incident boundary: suspected compromise pauses both
+binary releases and market-index publication, followed by fresh revocation and
+vulnerability records once trust is restored.
+
+Run `market/scripts/release-index.mjs` only on the offline release-signing
+machine and point it at the same Git-ignored key. The script validates local
+artifact hashes, writes a seven-day index and binds the market id/generation in
+the Minisign trusted comment. Deploy `market/dist/` only after local signature
+verification. A future dedicated market root must use the same overlapping-key
+binary-release sequence above; replacing an embedded public key in-place would
+strand installed clients.
+
 ## Platform baseline
 
 The workflow currently builds:

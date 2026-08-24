@@ -2,10 +2,12 @@
 //! Trusted Project / Run scopes with typed services, ordered dependency
 //! planning, rollback on failure, and reverse teardown.
 
+mod bundle;
 mod context;
 mod effect;
 mod id;
 mod manager;
+mod market;
 mod package;
 mod store;
 
@@ -13,17 +15,21 @@ mod store;
 pub(crate) use manager::panic_message;
 mod service;
 
+pub(crate) use bundle::{pack_directory, unpack_bundle};
 pub(crate) use context::PluginContext;
 pub(crate) use effect::DisposeError;
 pub(crate) use id::{PluginId, PluginOwner, ServiceId};
 pub(crate) use manager::PluginManager;
+pub(crate) use market::{
+    DEFAULT_MARKET_URL, Market, MarketAuditFinding, MarketInstallOptions, VulnerabilitySeverity,
+};
 pub(crate) use package::{
     ManifestPrompt, PluginCapabilities, PluginPackageManifest, PluginRuntimeKind,
 };
 pub(crate) use service::ServiceKey;
 pub(crate) use store::{
-    InstallKind, PackageInspection, PackageMutation, PackageStore, TrustLabel,
-    active_packages_for_runtime_excluding, installed_packages,
+    InstallKind, PackageInspection, PackageInstallRequest, PackageMutation, PackageStore,
+    PublisherIdentity, TrustLabel, active_packages_for_runtime_excluding, installed_packages,
 };
 
 use std::fmt;

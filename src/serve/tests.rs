@@ -9,6 +9,7 @@ use super::state::ServeShared;
 use crate::serve::ServeHandle;
 use crate::test_support::{TestBehavior, TestProviderPlugin, roots};
 use crate::{BootstrapApplication, Project};
+use std::collections::BTreeSet;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
@@ -1251,6 +1252,10 @@ fn web_assets_are_public_but_contain_no_credentials() {
         get_response_header(handle.addr, "/", "content-security-policy")
             .contains("default-src 'self'")
     );
+    assert!(
+        get_response_header(handle.addr, "/", "content-security-policy")
+            .contains("connect-src 'self' https://pi.at.cn")
+    );
     assert_eq!(
         get_response_header(handle.addr, "/", "referrer-policy"),
         "no-referrer"
@@ -1316,20 +1321,28 @@ fn get_response_header(addr: SocketAddr, target: &str, wanted: &str) -> String {
         .unwrap_or_default()
 }
 
-/// 验收⑦（INV-W2 边界）：`web/` 静态资产不得引用 serve 之外的任何
-/// 端点——前端只与自己的 serve 对话。
+/// Phase 4（INV-W2 边界）：`web/` 只允许公开、无凭据的市场目录出站；
+/// 所有本地事实与写操作仍只与自己的 serve 对话。
 #[test]
-fn web_assets_reference_no_external_endpoints() {
+fn web_assets_reference_only_the_public_market_endpoint() {
     let web_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("web");
+    let mut seen = BTreeSet::new();
     let mut offenders = Vec::new();
-    scan_web_for_urls(&web_root, &mut offenders);
+    scan_web_for_urls(&web_root, &mut seen, &mut offenders);
     assert!(
         offenders.is_empty(),
-        "web 资产出现外部端点引用（INV-W2 违例）: {offenders:?}"
+        "web 资产出现非市场端点引用（INV-W2 违例）: {offenders:?}"
+    );
+    assert_eq!(
+        seen,
+        BTreeSet::from([
+            "https://pi.at.cn".to_owned(),
+            "https://pi.at.cn/catalog.json".to_owned(),
+        ])
     );
 }
 
-fn scan_web_for_urls(dir: &Path, offenders: &mut Vec<String>) {
+fn scan_web_for_urls(dir: &Path, seen: &mut BTreeSet<String>, offenders: &mut Vec<String>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -1341,15 +1354,43 @@ fn scan_web_for_urls(dir: &Path, offenders: &mut Vec<String>) {
             if path.file_name().is_some_and(|name| name == "e2e") {
                 continue;
             }
-            scan_web_for_urls(&path, offenders);
+            scan_web_for_urls(&path, seen, offenders);
         } else if let Ok(text) = std::fs::read_to_string(&path) {
             for line in text.lines() {
-                if line.contains("http://") || line.contains("https://") {
-                    offenders.push(format!("{}: {}", path.display(), line.trim()));
+                for url in urls_in_line(line) {
+                    if url == "http://www.w3.org/2000/svg" {
+                        continue;
+                    }
+                    seen.insert(url.clone());
+                    if !matches!(
+                        url.as_str(),
+                        "https://pi.at.cn" | "https://pi.at.cn/catalog.json"
+                    ) {
+                        offenders.push(format!("{}: {url}", path.display()));
+                    }
                 }
             }
         }
     }
+}
+
+fn urls_in_line(line: &str) -> Vec<String> {
+    let mut urls = Vec::new();
+    for scheme in ["https://", "http://"] {
+        let mut rest = line;
+        while let Some(start) = rest.find(scheme) {
+            let candidate = &rest[start..];
+            let end = candidate
+                .find(|character: char| {
+                    character.is_ascii_whitespace()
+                        || matches!(character, '"' | '\'' | '`' | '<' | '>' | '(' | ')')
+                })
+                .unwrap_or(candidate.len());
+            urls.push(candidate[..end].to_owned());
+            rest = &candidate[end..];
+        }
+    }
+    urls
 }
 
 // ---- Playwright e2e 宿主（验收⑧基建；门控腿）--------------------

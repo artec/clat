@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "market": {
+    "id": "cn.at.pi",
+    "name": "CLAT Plugin Index",
+    "homepage": "https://pi.at.cn"
+  },
+  "publishers": [],
+  "packages": [],
+  "revocations": [],
+  "vulnerabilities": []
+}

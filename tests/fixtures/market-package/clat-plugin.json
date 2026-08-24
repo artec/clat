@@ -1,0 +1,1 @@
+{"manifestVersion":1,"id":"dev.clat.market-fixture","name":"Market Fixture","version":"1.0.0","runtime":{"kind":"wasm-component","entry":"plugin.wasm","sha256":"056d276034f17bd032d7648230ae9b4567b510d5bdd67e6bb877b0fbfec7f682"},"capabilities":{"tools":true}}

@@ -39,6 +39,20 @@ clat plugin install ./greeter-package --config-json '{"greeting":"Hola"}' \
 Restart CLAT after activation. The package is content-addressed, and later
 updates can be rolled back with `clat plugin rollback <id>`.
 
+Published components can also be discovered and installed through the signed
+market. Search and inspect are read-only; the CLI verifies the market,
+publisher, bundle and component package before one atomic activation:
+
+```bash
+clat plugin market search wasm
+clat plugin market info dev.example.greeter
+clat plugin market install dev.example.greeter --accept-capabilities
+```
+
+To publish a deterministic market artifact, first create the signed package
+directory, then run `clat plugin pack <directory> --output <file.clatpkg>`.
+See [the plugin market and supply-chain model](plugins.md#signed-remote-market).
+
 ## Legacy configuration
 
 `~/.clat/plugins.json` remains a user-managed development/override path.

@@ -178,3 +178,63 @@ test('dual tabs observe the same run; first answer wins', async ({ browser }) =>
   await tabA.close();
   await tabB.close();
 });
+
+// —— Phase 4：公开市场只读投影；跨源请求绝不携带本地 Bearer token。——
+test('plugin index panel is searchable, SVG-led, and never leaks the local token', async ({ page }) => {
+  const entry = hostInfo('run-command');
+  let catalogRequest;
+  await page.route('https://pi.at.cn/catalog.json', async (route) => {
+    catalogRequest = route.request();
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        schemaVersion: 1,
+        market: { name: 'CLAT Plugin Index' },
+        packages: [
+          {
+            id: 'dev.clat.digest',
+            name: 'Digest Lab',
+            runtime: 'wasm-component',
+            status: 'preview',
+            summary: 'Deterministic local digests.',
+            tags: ['WASM', 'Rust'],
+          },
+          {
+            id: 'cn.at.clat.dsh-port',
+            name: 'DSH Porting Bridge',
+            runtime: 'mcp-stdio',
+            status: 'preview',
+            summary: 'Cordis compatibility bridge.',
+            tags: ['DSH', 'MCP'],
+          },
+        ],
+      }),
+    });
+  });
+  await openWorkbench(page, entry);
+  await page.click('#market-open');
+  await expect(page.locator('#market-dialog')).toBeVisible(LIVE);
+  await expect(page.locator('.market-item')).toHaveCount(2);
+  expect(catalogRequest).toBeTruthy();
+  expect(catalogRequest.headers().authorization).toBeUndefined();
+  expect(catalogRequest.headers().cookie).toBeUndefined();
+  await page.fill('#market-search', 'DSH');
+  await expect(page.locator('.market-item')).toHaveCount(1);
+  await expect(page.locator('.market-item h3')).toHaveText('DSH Porting Bridge');
+  await expect(page.locator('#market-dialog svg')).not.toHaveCount(0);
+});
+
+// 模型协议 ID 保留在 title 供诊断，视觉层显示可理解的事件名称。
+test('model trace renders human-readable event names instead of raw protocol ids', async ({ page }) => {
+  const entry = hostInfo('run-command');
+  await openWorkbench(page, entry);
+  await page.click('#new-session');
+  await expect(page.locator('#send')).toBeEnabled(LIVE);
+  await page.fill('#prompt', 'trace labels');
+  await page.click('#send');
+  const trace = page.locator('.trace-event', { hasText: 'Model request started' }).first();
+  await expect(trace).toBeVisible(LIVE);
+  await expect(trace).toHaveAttribute('title', 'Event ID: model_requested');
+  await expect(trace).not.toContainText('model_requested');
+});

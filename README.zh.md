@@ -42,7 +42,7 @@ clat upgrade --check
 | 无头运行器 | 脚本、CI、git hook、编辑器集成 | `clat exec` |
 | Web 工作台 | 可安装的本地 PWA 与 HTTP+SSE 客户端 | `clat serve` |
 | DSH 客户端 | 用 CLAT TUI 连接本地 DeepSeek Harness 宿主 | `clat dsh` |
-| 插件管理器 | 检查、安装、更新或回滚本地插件包 | `clat plugin` |
+| 插件管理器 | 浏览签名市场，安装、更新、审计或回滚插件包 | `clat plugin` / [pi.at.cn](https://pi.at.cn) |
 | 离线演示 | 无凭据验证核心循环 | `clat demo` |
 
 `clat serve` 默认只绑定 `127.0.0.1:2691`。API 使用持久化的
@@ -63,7 +63,8 @@ clat upgrade --check
   与按项目恢复当前会话。
 - **扩展**——stdio / Streamable HTTP MCP、沙箱化 WebAssembly 组件，
   以及面向 DSH 可移植插件能力的静态 Cordis 兼容适配器；同一个
-  事务型插件管理器安装 WASM 与可执行 MCP 包，并提供能力复审与回滚。
+  事务型插件管理器安装 WASM 与可执行 MCP 包，并提供签名市场发现、依赖求解、
+  发布者/撤销校验、能力复审与回滚。
 - **前端中立核心**——TUI、无头运行器、本地服务和未来客户端共享同一个
   Application 门面与事件词汇。
 
@@ -101,7 +102,7 @@ irm https://raw.githubusercontent.com/artec/clat/main/install.ps1 | iex
 | 配置预设或自定义模型 | [模型编辑器](docs/model-editor.md) |
 | 理解审批、权限档位与路径边界 | [权限](docs/permissions.md) |
 | 配置 MCP server | [MCP 集成](docs/mcp.md) |
-| 理解插件运行时、包格式与市场基础 | [CLAT 插件](docs/plugins.md) |
+| 理解插件运行时、包格式与签名市场 | [CLAT 插件](docs/plugins.md) |
 | 安装或编写 WASM 组件 | [WASM 插件](docs/wasm.md) |
 | 移植 DSH/Cordis 插件 | [DSH 插件兼容指南](docs/dsh-plugins.md) |
 | 理解核心边界与生命周期 | [架构](docs/architecture.md) |
@@ -136,6 +137,7 @@ cargo build
 | `sdk/clat-plugin/` | WASM 插件作者使用的 Rust SDK |
 | `sdk/dsh-adapter/` | DSH 插件作者使用的 npm 适配器 |
 | `plugins/` | WASM 示例与试点插件 |
+| `market/` | 可独立部署的 `pi.at.cn` 目录与签名索引发布工具 |
 
 真实 Provider 检查不会进入常规测试套件，因为它需要用户凭据且可能产生
 费用。Provider 行为在改动范围内时，请按[真实模型验证](docs/live-validation.md)

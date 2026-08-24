@@ -78,6 +78,15 @@ storage-root lease as a Trusted Project Scope, so a running application and the
 installer never race plugin state. User `plugins.json` / `mcp.json` entries are
 late same-id overrides, not a second package database.
 
+Remote discovery remains outside runtime activation. `plugin::market` verifies
+the short-lived official Minisign index, publisher/key state, target and CLAT
+compatibility, deterministic dependency solution, revocations and advisories.
+`plugin::bundle` streams a bounded content-addressed `.clatpkg` into a fresh
+tree. Only after every transitive package passes the existing manifest/tree/
+publisher checks does `PackageStore::install_batch` replace the registry once.
+The market never introduces a second activation pointer or an install-hook
+execution path.
+
 | Scope | Lifetime | Owns |
 |---|---|---|
 | Bootstrap | process open → trust decision | control-format classification and read-only trust lookup |
@@ -364,6 +373,12 @@ shell contain no credential. Authenticated API calls carry the persistent
 `~/.clat/web-token` as Bearer; no URL or Cookie token path exists. Browser
 storage contains only UI preferences and the origin-scoped paired token, never
 conversation facts.
+
+The read-only Plugin Index panel is a special public-data projection: it fetches
+`https://pi.at.cn/catalog.json` with credentials omitted and never sends the
+local token cross-origin. It has no install RPC. Model trace protocol ids are
+mapped to human-readable presentation labels while the original `RunEvent`
+vocabulary remains unchanged and available as diagnostic metadata.
 
 ### DSH client
 

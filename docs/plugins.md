@@ -126,9 +126,10 @@ contains both:
 
 A valid self-contained signature is displayed as `publisher/verified` and is
 reverified from immutable installed bytes at activation. This proves that the
-same publisher key signed the package; it does **not** mean CLAT or a future
-market has reviewed or trusted that publisher. Publisher onboarding, key
-rotation and revocation remain market policy.
+same publisher key signed the package; by itself it does **not** mean the CLAT
+market reviewed that publisher. Remote installation additionally requires the
+signed market index to name the exact publisher and key as trusted and valid at
+the package publication time.
 
 An in-place update must retain the exact publisher id and key (including the
 unsigned `local/unverified` identity). A publisher/key change or signed-to-
@@ -151,25 +152,92 @@ Installed MCP processes receive package identity/trust plus private config in
 as cwd. User-configured MCP entries may set an explicit `cwd`; a relative value
 is resolved under `~/.clat`, never under the untrusted project.
 
-## Marketplace readiness and remaining work
+## Signed remote market
 
-The repository now has the runtime contract, package identity, bounded and
-transactional local install/update/rollback/uninstall, complete-tree digest
-binding, capability review, optional publisher signatures, trust labels,
-config validation, failure isolation, DSH port/package tooling and a semantic
-compatibility lab. It does **not** yet have a remote catalog, publisher
-onboarding/review policy, dependency/update solver, revocation feed,
-vulnerability service, or marketplace UI.
+The official market origin is [pi.at.cn](https://pi.at.cn). Its human catalog
+and website are static; `index.json` plus `index.json.minisig` are the
+machine-readable source. The production trust anchor is the same embedded
+Minisign public key used for CLAT releases. The index signature's trusted
+comment binds the market id and generation timestamp, and each index expires
+within fourteen days. CLAT accepts HTTPS only, except loopback HTTP for local
+testing.
 
-A safe marketplace should add those layers in this order:
+The schema is `schemas/clat-plugin-market-index.schema.json`. It carries:
 
-1. signed immutable remote index records and publisher onboarding;
-2. review policy and separate trust labels for sandboxed WASM versus MCP code;
-3. dependency/update solving over immutable versions;
-4. compatibility evidence tied to exact CLAT/WIT/DSH revisions;
-5. revocation and vulnerability feeds;
-6. remote download transactions and marketplace UI over the existing local
-   activation/rollback core.
+- reviewed publishers, active/retired/revoked keys and validity windows;
+- immutable package versions, capabilities, compatibility and dependencies;
+- target-specific or `any` content-addressed `.clatpkg` artifacts;
+- yanks, timed package/version/artifact revocations and vulnerability records.
+
+Publisher onboarding requires a stable publisher id, a Minisign public key, a
+review record, and separate review of runtime risk. A capability-bounded WASM
+component and an unrestricted `mcp-stdio` executable can share the market but
+must not receive the same review conclusion merely because both signatures are
+valid. Rotation adds the new key before it is used and retires the old key;
+compromise marks the key revoked and adds affected artifact revocations.
+
+Browse without executing package code:
+
+```text
+clat plugin market list
+clat plugin market search <query>
+clat plugin market info <id>
+clat plugin market audit
+```
+
+`audit` compares installed publisher keys and versions with the current signed
+publisher, revocation and vulnerability records. It reports; it never silently
+disables a working local plugin merely because the network or market is
+unavailable. Operators decide whether to disable, roll back or uninstall.
+
+Install or update from a mirror/staging index by adding `--market <HTTPS-URL>`:
+
+```bash
+clat plugin market install <id> --version '^1.2.0' --accept-capabilities
+clat plugin market update <id> --accept-capabilities
+```
+
+Supported dependency constraints are `*`, an exact three-component SemVer,
+`^`, `~`, and space/comma-separated `>`, `>=`, `<`, `<=` comparisons. The
+solver deterministically chooses the highest compatible non-yanked version for
+the current CLAT and target. Missing versions, conflicts, dependency cycles,
+revocations and unknown range syntax fail closed. A known vulnerability also
+blocks installation; `--accept-vulnerabilities` is an explicit emergency
+override, not a global preference.
+
+The index and signature cache is usable only after signature and expiry checks.
+Artifacts are streamed with advertised length and outer SHA-256 checks. CLAT
+then validates the `.clatpkg` file table, extracts with non-overwriting paths,
+checks each file digest, and reuses the manifest, complete-tree and publisher
+signature verification from local install. All transitive dependencies finish
+those checks before one registry replacement activates the complete graph.
+
+## `.clatpkg` bundles and publishing
+
+Authors or market operators can build a deterministic container without a
+language runtime or install hook:
+
+```bash
+clat plugin inspect ./my-plugin
+clat plugin pack ./my-plugin --output my-plugin-1.0.0-any.clatpkg
+```
+
+The format begins with `CLATPKG1`, a bounded JSON file table, then sorted raw
+file bodies. Paths are UTF-8 relative paths; absolute/parent paths, duplicate
+entries, symlinks, special files, truncation, trailing data, oversized files
+and digest mismatch are rejected. The market index binds the entire container
+length and SHA-256; the package signature binds its identity and inner content.
+
+The independently deployable site and signed-index release tooling live in
+`market/`; its deployment runbook is `market/README.md`. The repository ships
+honestly labelled preview catalog entries. A preview does not become remotely
+installable until a reviewed publisher, signed index record and immutable
+artifact are deployed together.
+
+The local PWA exposes a searchable read-only market panel and an external
+`pi.at.cn` entry. Its cross-origin catalog request uses no credentials or local
+Bearer token. Installation deliberately remains in the local CLI (or a future
+permission-gated local control plane), never a public website action.
 
 See [WASM authoring](wasm.md), [DSH porting](dsh-plugins.md),
 [MCP integration](mcp.md), and [architecture](architecture.md).

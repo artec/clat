@@ -42,7 +42,7 @@ Run `clat --help` for the complete command-line surface.
 | Headless runner | Scripts, CI, git hooks, editor integrations | `clat exec` |
 | Web workbench | An installable local PWA and HTTP+SSE clients | `clat serve` |
 | DSH client | Using CLAT's TUI with a local DeepSeek Harness host | `clat dsh` |
-| Plugin manager | Inspecting, installing, updating, or rolling back local packages | `clat plugin` |
+| Plugin manager | Browsing the signed market; installing, updating, auditing, or rolling back packages | `clat plugin` / [pi.at.cn](https://pi.at.cn) |
 | Offline demo | Verifying the core loop without credentials | `clat demo` |
 
 `clat serve` binds only to `127.0.0.1:2691` by default. API access uses a
@@ -66,7 +66,8 @@ the URL. The same binary serves the responsive three-panel PWA.
 - **Extensions** — MCP over stdio or Streamable HTTP, sandboxed WebAssembly
   components, and a static Cordis compatibility adapter for portable DSH
   plugin capabilities; one transactional package manager installs both WASM
-  and executable MCP packages with capability review and rollback.
+  and executable MCP packages with signed market discovery, dependency solving,
+  publisher/revocation checks, capability review and rollback.
 - **Client-neutral core** — the TUI, headless runner, local server, and future
   clients consume the same Application facade and event vocabulary.
 
@@ -107,7 +108,7 @@ Start with the document that matches your task:
 | Configure a preset or custom model | [Model editor](docs/model-editor.md) |
 | Understand approvals, modes, and path boundaries | [Permissions](docs/permissions.md) |
 | Configure MCP servers | [MCP integration](docs/mcp.md) |
-| Understand plugin runtimes, packages, and the market foundation | [CLAT plugins](docs/plugins.md) |
+| Understand plugin runtimes, packages, and the signed market | [CLAT plugins](docs/plugins.md) |
 | Install or author a WASM component | [WASM plugins](docs/wasm.md) |
 | Port a DSH/Cordis plugin | [DSH plugin compatibility guide](docs/dsh-plugins.md) |
 | Understand core boundaries and lifecycle | [Architecture](docs/architecture.md) |
@@ -143,6 +144,7 @@ Useful repository paths:
 | `sdk/clat-plugin/` | Rust SDK for WASM plugin authors |
 | `sdk/dsh-adapter/` | npm adapter for DSH plugin authors |
 | `plugins/` | WASM examples and pilot plugins |
+| `market/` | independently deployable `pi.at.cn` catalog and signed-index release tooling |
 
 Live provider checks are intentionally separate from the normal test suite
 because they require user credentials and may incur charges. Follow

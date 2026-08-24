@@ -301,7 +301,9 @@ process-only override; it neither reads nor changes the persistent token.
   assets, logs, or journals. Authenticated requests use
   `Authorization: Bearer <token>`.
 - Requests carrying `Origin` must match the server's exact origin. No CORS
-  headers are emitted.
+  headers are emitted by the local server. The static shell CSP permits one
+  outbound public-data origin, `https://pi.at.cn`; its catalog request omits
+  credentials and cannot call the local API on behalf of that origin.
 - The token grants the entire local API. This is a single-user, local-machine
   boundary, not multi-tenant authentication.
 
@@ -325,6 +327,21 @@ The workbench supports streaming responses, tool cards, approvals, new/switch/
 rename session actions, permission-mode changes, cancellation, and in-run
 steering. Full Access requires both a UI warning acknowledgement and the
 protocol confirmation described in [Permissions](permissions.md).
+
+Model lifecycle and reasoning traces use human-readable labels in the visual
+surface (`Model request started`, `Reasoning summary`, and so on). The stable
+wire event id remains available as diagnostic metadata; the frontend does not
+rename or mutate the underlying `RunEvent` protocol. The workbench uses one
+consistent inline SVG icon language for actions, tools, traces and panel
+navigation, including keyboard and reduced-motion accessibility.
+
+The sidebar's Plugin Index opens a searchable, display-only projection of the
+public [pi.at.cn](https://pi.at.cn) catalog. That cross-origin GET explicitly
+omits credentials, cookies, referrer and the local Bearer token. When the
+catalog is unavailable, the PWA shows a clearly labelled built-in preview and
+retains the external link. It cannot install or update packages; use the
+signed local `clat plugin market` workflow documented in
+[CLAT plugins](plugins.md#signed-remote-market).
 
 The manifest and all asset URLs are credential-free. With the default stable
 port and persistent token, an installed PWA survives normal server restarts.

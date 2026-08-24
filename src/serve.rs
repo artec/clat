@@ -445,7 +445,7 @@ fn handle_connection(mut stream: TcpStream, shared: Arc<state::ServeShared>) {
             &[
                 (
                     "Content-Security-Policy",
-                    "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'",
+                    "default-src 'self'; connect-src 'self' https://pi.at.cn; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'",
                 ),
                 ("Cache-Control", "no-store"),
                 ("Referrer-Policy", "no-referrer"),

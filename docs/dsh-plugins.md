@@ -224,6 +224,7 @@ clat-dsh port /path/to/dsh-plugin --out ./clat-port
 clat-dsh test ./clat-port
 clat-dsh package ./clat-port --out ./clat-package
 clat plugin install ./clat-package --accept-capabilities
+clat plugin pack ./clat-package --output my-dsh-plugin.clatpkg
 ```
 
 `port` 保留原 DSH 入口并生成独立 MCP wrapper、逐 seam 报告和 TODO。
@@ -233,11 +234,13 @@ Node.js。`test` 和 `package` 都会进行真实 MCP initialize/tools-list smok
 
 可选的 `--publisher`、`--publisher-key`、`--minisign-key` 会生成
 Minisign companion 文件。CLAT 安装器重新计算完整包树并验签，但
-`publisher/verified` 只证明同一自声明 publisher key 签过该包，不代表未来
-市场已经审核该作者。
+`publisher/verified` 只证明同一自声明 publisher key 签过该包；从远程市场
+安装时还要求 `pi.at.cn` 的签名索引把该 publisher 与精确 key 标为可信、
+未撤销且处于发布有效期。DSH 兼容包与 Rust/WASM 原生包使用同一套市场索引、
+依赖求解、漏洞阻断与原子安装协议。
 
 这是刻意保守的证据：未知/可变 service 不会被算作完全兼容，也没有把 Web
 preset 的 147 个配置行冒充 147 个已行为验收包。
 
-CLAT 插件包、Rust/WASM 原生插件与未来市场的统一身份模型见
+CLAT 插件包、Rust/WASM 原生插件与远程市场的统一身份模型见
 [CLAT 插件与包格式](plugins.md)。

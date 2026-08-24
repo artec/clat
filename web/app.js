@@ -21,6 +21,59 @@ function el(tag, cls, text) {
   return node;
 }
 
+const ICON_PATHS = {
+  user: ['M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z', 'M5 21c.8-4 3.1-6 7-6s6.2 2 7 6'],
+  agent: ['M7 8h10v9H7z', 'M9 4h6M12 4v4M4 11h3m10 0h3M10 13h.01m4-.01h.01'],
+  tool: ['m14 6 4 4-8 8-4 1 1-4z', 'm13 7 4 4'],
+  trace: ['M5 17 9 9l4 6 3-10 3 12', 'M4 20h16'],
+  info: ['M12 8h.01M11 12h1v5h1'],
+  check: ['m5 12 4 4L19 6'],
+  wasm: ['M5 5h14v14H5z', 'M9 9h6v6H9z'],
+  mcp: ['M4 12h5m6-5h5m-5 10h5', 'M9 12l6-5m-6 5 6 5'],
+};
+
+function svgIcon(name) {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('aria-hidden', 'true');
+  for (const data of ICON_PATHS[name] || ICON_PATHS.info) {
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', data);
+    svg.appendChild(path);
+  }
+  return svg;
+}
+
+const EVENT_LABELS = {
+  run_started: 'Run started',
+  model_requested: 'Model request started',
+  model_stream: 'Model response streaming',
+  model_responded: 'Model response ready',
+  text_delta: 'Answer text',
+  refusal_delta: 'Model refusal',
+  reasoning_delta: 'Reasoning trace',
+  reasoning_summary_delta: 'Reasoning summary',
+  tool_requested: 'Tool requested',
+  permission_checked: 'Permission checked',
+  permission_denied: 'Permission denied',
+  tool_started: 'Tool running',
+  tool_finished: 'Tool finished',
+  steering_applied: 'Steering applied',
+  retry_scheduled: 'Retry scheduled',
+  turn_ended: 'Turn ended',
+  compaction: 'History compacted',
+  run_completed: 'Run completed',
+  run_cancelled: 'Run cancelled',
+  run_failed: 'Run failed',
+};
+
+function humanEventName(id) {
+  if (!id) return 'Runtime event';
+  return EVENT_LABELS[id] || String(id)
+    .replace(/[._-]+/g, ' ')
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
 function show(node) { node.classList.remove('hidden'); }
 function hide(node) { node.classList.add('hidden'); }
 
@@ -70,6 +123,10 @@ const state = {
   inspector: window.innerWidth <= INSPECTOR_DRAWER_BREAKPOINT
     ? 'closed'
     : (presentation.inspector === 'closed' ? 'closed' : 'open'),
+  marketPackages: [],
+  marketLoaded: false,
+  marketFallback: false,
+  workbenchRequest: 0,
 };
 
 const dom = {};
@@ -85,7 +142,8 @@ for (const id of [
   'detail-context', 'detail-budget', 'capability-list', 'detail-mcp', 'mcp-servers',
   'settings-open', 'settings-dialog', 'theme-options', 'permission-options',
   'full-access-confirm-row', 'full-access-confirm', 'settings-error', 'settings-saved',
-  'permission-save',
+  'permission-save', 'market-open', 'market-dialog', 'market-close', 'market-search',
+  'market-status', 'market-list',
 ]) {
   dom[id] = document.getElementById(id);
 }
@@ -267,7 +325,7 @@ function handleReplay(event) {
       break;
     }
     case 'permission_checked':
-      addNoticeLine('permission · ' + event.tool + ' → ' + decisionText(event.decision));
+      addNoticeLine(event.tool + ' → ' + decisionText(event.decision), event.type);
       break;
     case 'tool_requested':
       addToolCard(event.call && event.call.name, jsonText(event.call && event.call.arguments), null, false);
@@ -276,12 +334,12 @@ function handleReplay(event) {
       addToolCard(event.tool, '← ' + jsonText(event.output), null, event.is_error);
       break;
     case 'retry_scheduled':
-      addNoticeLine('retry #' + event.retry + ' in ' + event.delay_ms + 'ms');
+      addNoticeLine('#' + event.retry + ' in ' + event.delay_ms + 'ms', event.type);
       break;
     case 'turn_ended':
-      addNoticeLine('turn ' + event.turn + ' ended · ' + turnEndText(event.reason));
+      addNoticeLine('turn ' + event.turn + ' · ' + turnEndText(event.reason), event.type);
       break;
-    case 'compaction': addNoticeLine('history compacted'); break;
+    case 'compaction': addNoticeLine('', event.type); break;
     default: console.warn('[clat] unknown replay type:', event.type);
   }
 }
@@ -297,27 +355,33 @@ function handleLive(event) {
       state.run = null;
       if (!lastUserMessageIs(event.prompt)) addUserMessage(event.prompt);
       break;
-    case 'model_requested': ensureAssistant(); break;
+    case 'model_requested':
+      addTraceEvent(event.type, [event.provider, event.model].filter(Boolean).join(' · '));
+      ensureAssistant();
+      break;
     case 'model_stream': {
       const bubble = ensureAssistant();
       const inner = event.event || {};
       if (inner.type === 'text_delta' || inner.type === 'refusal_delta') {
         bubble.appendBody(inner.delta || '');
       } else if (inner.type === 'reasoning_delta' || inner.type === 'reasoning_summary_delta') {
+        bubble.setTraceKind(inner.type);
         bubble.appendReasoning(inner.delta || '');
       }
       break;
     }
-    case 'model_responded': break;
+    case 'model_responded':
+      addTraceEvent(event.type, turnEndText(event.finish_reason));
+      break;
     case 'tool_requested':
       state.run = state.run || {};
       addToolCard(event.call && event.call.name, jsonText(event.call && event.call.arguments), null, false);
       break;
     case 'permission_checked':
-      addNoticeLine('permission · ' + event.tool + ' → ' + decisionText(event.decision));
+      addNoticeLine(event.tool + ' → ' + decisionText(event.decision), event.type);
       break;
     case 'permission_denied':
-      addNoticeLine('permission denied · ' + event.tool + ' — ' + (event.reason || ''));
+      addNoticeLine(event.tool + ' — ' + (event.reason || ''), event.type);
       break;
     case 'tool_started': break;
     case 'tool_finished': {
@@ -325,7 +389,7 @@ function handleLive(event) {
       addToolCard(result.tool_name, '← ' + jsonText(result.output), null, result.is_error);
       break;
     }
-    case 'steering_applied': addNoticeLine('steering applied'); break;
+    case 'steering_applied': addNoticeLine('', event.type); break;
     case 'run_completed':
     case 'run_cancelled':
     case 'run_failed':
@@ -458,26 +522,38 @@ function lastUserMessageIs(text) {
 
 function addUserMessage(text) {
   const msg = el('div', 'msg user');
-  msg.append(el('span', 'marker', 'U'), el('div', 'body', text));
+  const marker = el('span', 'marker');
+  marker.appendChild(svgIcon('user'));
+  msg.append(marker, el('div', 'body', text));
   return appendTranscript(msg);
 }
 
 function addAssistantMessage() {
   const msg = el('div', 'msg assistant');
-  msg.append(el('span', 'marker', 'A'));
+  const marker = el('span', 'marker');
+  marker.appendChild(svgIcon('agent'));
+  msg.append(marker);
   const body = el('div', 'body');
-  const reasoning = el('div', 'reasoning hidden');
+  const reasoning = el('details', 'reasoning hidden');
+  const reasoningSummary = el('summary');
+  reasoningSummary.append(svgIcon('trace'), el('span', null, humanEventName('reasoning_delta')));
+  const reasoningCopy = el('pre', 'reasoning-copy');
+  reasoning.append(reasoningSummary, reasoningCopy);
   msg.append(reasoning, body);
   appendTranscript(msg);
   return {
     appendBody(text) { body.textContent += text; },
     appendReasoning(text) {
       show(reasoning);
-      reasoning.textContent += text;
+      reasoningCopy.textContent += text;
     },
     setReasoning(text) {
       show(reasoning);
-      reasoning.textContent = text;
+      reasoningCopy.textContent = text;
+    },
+    setTraceKind(eventId) {
+      reasoningSummary.querySelector('span').textContent = humanEventName(eventId);
+      reasoningSummary.title = 'Event ID: ' + eventId;
     },
   };
 }
@@ -492,7 +568,12 @@ function ensureAssistant() {
 
 function addToolCard(name, argsText, outputText, isError) {
   const card = el('details', 'tool-card' + (isError ? ' is-error' : ''));
-  const summary = el('summary', null, 'tool / ' + (name || 'unknown') + (isError ? ' / failed' : ''));
+  const summary = el('summary');
+  summary.append(
+    svgIcon('tool'),
+    el('span', null, name || 'Unknown tool'),
+    el('span', 'tool-state', isError ? 'Failed' : 'Tool trace'),
+  );
   const body = el('div', 'tool-body');
   if (argsText) body.appendChild(el('div', null, argsText));
   if (outputText) body.appendChild(el('div', null, outputText));
@@ -505,8 +586,25 @@ function addVerdict(kind, text) {
   scrollIfNearEnd();
 }
 
-function addNoticeLine(text) {
-  appendTranscript(el('div', 'notice-line', '· ' + text));
+function addNoticeLine(text, eventId) {
+  const line = el('div', 'notice-line');
+  line.appendChild(svgIcon(eventId ? 'trace' : 'info'));
+  const label = eventId ? humanEventName(eventId) : text;
+  const copy = el('span');
+  if (eventId) {
+    copy.append(el('b', null, label));
+    if (text) copy.append(el('small', null, ' · ' + text));
+    line.classList.add('trace-event');
+    line.title = 'Event ID: ' + eventId;
+  } else {
+    copy.textContent = text;
+  }
+  line.appendChild(copy);
+  appendTranscript(line);
+}
+
+function addTraceEvent(eventId, detail) {
+  addNoticeLine(detail || '', eventId);
 }
 
 function nearEnd() {
@@ -527,19 +625,19 @@ function jsonText(value) {
 
 function decisionText(decision) {
   if (decision === null || decision === undefined) return '?';
-  if (typeof decision === 'string') return decision;
+  if (typeof decision === 'string') return humanEventName(decision);
   if (typeof decision === 'object') {
     const key = Object.keys(decision)[0];
-    return key + (decision[key] ? ` (${decision[key]})` : '');
+    return humanEventName(key) + (decision[key] ? ` (${decision[key]})` : '');
   }
   return String(decision);
 }
 
 function turnEndText(reason) {
-  if (typeof reason === 'string') return reason;
+  if (typeof reason === 'string') return humanEventName(reason);
   if (reason && typeof reason === 'object') {
     const key = Object.keys(reason)[0];
-    return key + (reason[key] ? ` (${reason[key]})` : '');
+    return humanEventName(key) + (reason[key] ? ` (${reason[key]})` : '');
   }
   return '?';
 }
@@ -574,8 +672,10 @@ function updateDocumentTitle(sessionTitle) {
 }
 
 async function refreshWorkbench() {
+  const request = ++state.workbenchRequest;
   try {
     const info = await rpc('workbench.info', {});
+    if (request !== state.workbenchRequest) return;
     state.workbench = info;
     const project = info.project || {};
     const session = info.session || {};
@@ -743,6 +843,150 @@ dom['session-search'].addEventListener('input', renderSessions);
 
 /* —— Layout and settings —————————————————————————————————— */
 
+const MARKET_CATALOG_URL = 'https://pi.at.cn/catalog.json';
+const MARKET_FALLBACK = [
+  {
+    id: 'dev.clat.digest', name: 'Digest Lab', runtime: 'wasm-component', status: 'preview',
+    summary: 'A minimal-permission Rust/WASM component for deterministic digests.',
+    tags: ['WASM', 'Pure', 'Rust'],
+  },
+  {
+    id: 'dev.clat.greeter', name: 'Greeter Component', runtime: 'wasm-component', status: 'preview',
+    summary: 'An end-to-end starter for the Rust SDK, configuration and host context.',
+    tags: ['WASM', 'SDK', 'Starter'],
+  },
+  {
+    id: 'cn.at.clat.dsh-port', name: 'DSH Porting Bridge', runtime: 'mcp-stdio', status: 'preview',
+    summary: 'Project DSH/Cordis tools, prompts, sampling and elicitation into CLAT.',
+    tags: ['DSH', 'Cordis', 'MCP'],
+  },
+];
+
+function renderMarket() {
+  const query = dom['market-search'].value.trim().toLocaleLowerCase();
+  const packages = state.marketPackages.filter((plugin) => {
+    const haystack = [plugin.id, plugin.name, plugin.summary, ...(plugin.tags || [])]
+      .join(' ').toLocaleLowerCase();
+    return !query || haystack.includes(query);
+  });
+  dom['market-list'].replaceChildren();
+  for (const plugin of packages) {
+    const card = el('article', 'market-item');
+    const top = el('div', 'market-item-top');
+    const icon = el('span', 'market-item-icon');
+    icon.appendChild(svgIcon(plugin.runtime === 'wasm-component' ? 'wasm' : 'mcp'));
+    const statusLabel = { available: 'Available', preview: 'Preview', withdrawn: 'Withdrawn' };
+    top.append(
+      icon,
+      el('span', 'market-item-state', statusLabel[plugin.status]),
+    );
+    const tags = el('div', 'market-tags');
+    for (const tag of plugin.tags || []) tags.appendChild(el('span', null, tag));
+    card.append(
+      top,
+      el('h3', null, plugin.name || plugin.id),
+      el('p', 'market-id', plugin.id),
+      el('p', 'market-summary', plugin.summary || 'No summary provided.'),
+      tags,
+    );
+    dom['market-list'].appendChild(card);
+  }
+  if (packages.length === 0) {
+    dom['market-list'].appendChild(el('div', 'market-item market-empty', 'No matching plugins.'));
+  }
+  const source = state.marketFallback ? 'built-in preview · pi.at.cn unavailable' : 'public catalog';
+  dom['market-status'].textContent = `${packages.length} of ${state.marketPackages.length} · ${source}`;
+}
+
+async function loadMarket() {
+  if (state.marketLoaded) return;
+  dom['market-status'].textContent = 'Loading public catalog…';
+  try {
+    const response = await fetch(MARKET_CATALOG_URL, {
+      method: 'GET',
+      credentials: 'omit',
+      referrerPolicy: 'no-referrer',
+      cache: 'no-cache',
+      headers: { Accept: 'application/json' },
+    });
+    if (!response.ok) throw new Error('HTTP ' + response.status);
+    const catalog = await readBoundedCatalog(response);
+    state.marketPackages = normalizeMarketCatalog(catalog);
+    state.marketFallback = false;
+  } catch (error) {
+    state.marketPackages = MARKET_FALLBACK;
+    state.marketFallback = true;
+    console.warn('[clat] public plugin catalog unavailable:', error.message);
+  }
+  state.marketLoaded = true;
+  renderMarket();
+}
+
+async function readBoundedCatalog(response) {
+  const cap = 1024 * 1024;
+  const advertised = Number(response.headers.get('content-length') || 0);
+  if (advertised > cap) throw new Error('catalog exceeds 1 MiB');
+  if (!response.body) throw new Error('catalog response has no body');
+  const reader = response.body.getReader();
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > cap) {
+      reader.cancel();
+      throw new Error('catalog exceeds 1 MiB');
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  try { return JSON.parse(new TextDecoder().decode(bytes)); }
+  catch (_) { throw new Error('catalog is not valid JSON'); }
+}
+
+function normalizeMarketCatalog(catalog) {
+  if (!catalog || catalog.schemaVersion !== 1 || !Array.isArray(catalog.packages)
+      || catalog.packages.length > 256) {
+    throw new Error('unsupported catalog schema');
+  }
+  return catalog.packages.map((plugin) => {
+    if (!plugin || typeof plugin.id !== 'string' || !/^[a-z0-9][a-z0-9._-]{0,127}$/.test(plugin.id)
+        || typeof plugin.name !== 'string' || plugin.name.length > 128
+        || typeof plugin.summary !== 'string' || plugin.summary.length > 1024
+        || !['wasm-component', 'mcp-stdio'].includes(plugin.runtime)
+        || !['preview', 'available', 'withdrawn'].includes(plugin.status)) {
+      throw new Error('catalog contains an invalid package record');
+    }
+    return {
+      id: plugin.id,
+      name: plugin.name,
+      summary: plugin.summary,
+      runtime: plugin.runtime,
+      status: plugin.status,
+      tags: Array.isArray(plugin.tags)
+        ? plugin.tags.slice(0, 12).filter((tag) => typeof tag === 'string').map((tag) => tag.slice(0, 48))
+        : [],
+    };
+  });
+}
+
+function openMarket() {
+  dom['market-search'].value = '';
+  if (!dom['market-dialog'].open) dom['market-dialog'].showModal();
+  loadMarket();
+  setTimeout(() => dom['market-search'].focus(), 0);
+}
+
+dom['market-open'].addEventListener('click', openMarket);
+dom['market-close'].addEventListener('click', () => dom['market-dialog'].close());
+dom['market-search'].addEventListener('input', renderMarket);
+
 function isMobile() { return window.innerWidth <= MOBILE_BREAKPOINT; }
 
 function syncPanelAccessibility() {
@@ -855,7 +1099,7 @@ for (const button of document.querySelectorAll('[data-prompt]')) {
 document.addEventListener('keydown', (event) => {
   const target = event.target;
   const typing = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement;
-  if (event.key === '/' && !typing && !dom['settings-dialog'].open) {
+  if (event.key === '/' && !typing && !dom['settings-dialog'].open && !dom['market-dialog'].open) {
     event.preventDefault();
     if (isMobile()) dom.app.dataset.mobileSidebar = 'open';
     else if (state.sidebar === 'collapsed') {
@@ -864,7 +1108,9 @@ document.addEventListener('keydown', (event) => {
     }
     setTimeout(() => dom['session-search'].focus(), 0);
   }
-  if (event.key === 'Escape' && !dom['settings-dialog'].open) {
+  if (event.key === 'Escape' && dom['market-dialog'].open) {
+    dom['market-dialog'].close();
+  } else if (event.key === 'Escape' && !dom['settings-dialog'].open) {
     closeMobileSidebar();
     if (isMobile() && state.inspector === 'open') setInspector('closed');
   }

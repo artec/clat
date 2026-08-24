@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pi.at.cn/schemas/clat-plugin-market-index-v1.json",
+  "title": "CLAT Plugin Market Index v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "market", "publishers", "packages", "revocations", "vulnerabilities"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "market": { "$ref": "#/$defs/market" },
+    "publishers": { "type": "array", "maxItems": 4096, "items": { "$ref": "#/$defs/publisher" } },
+    "packages": { "type": "array", "maxItems": 4096, "items": { "$ref": "#/$defs/package" } },
+    "revocations": { "type": "array", "items": { "$ref": "#/$defs/revocation" } },
+    "vulnerabilities": { "type": "array", "items": { "$ref": "#/$defs/vulnerability" } }
+  },
+  "$defs": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$" },
+    "sha256": { "type": "string", "pattern": "^[A-Fa-f0-9]{64}$" },
+    "market": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "generatedAtUnix", "expiresAtUnix", "homepage"],
+      "properties": {
+        "id": { "const": "cn.at.pi" },
+        "name": { "type": "string", "minLength": 1 },
+        "generatedAtUnix": { "type": "integer", "minimum": 0 },
+        "expiresAtUnix": { "type": "integer", "minimum": 1 },
+        "homepage": { "type": "string", "format": "uri", "pattern": "^https://" }
+      }
+    },
+    "publisher": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "status", "reviewUrl", "keys"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "name": { "type": "string", "minLength": 1 },
+        "status": { "enum": ["trusted", "suspended", "revoked"] },
+        "reviewUrl": { "type": "string", "format": "uri", "pattern": "^https://" },
+        "keys": { "type": "array", "minItems": 1, "maxItems": 16, "items": { "$ref": "#/$defs/publisherKey" } }
+      }
+    },
+    "publisherKey": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "publicKey", "status", "notBeforeUnix", "notAfterUnix"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "publicKey": { "type": "string", "minLength": 40, "maxLength": 1024 },
+        "status": { "enum": ["active", "retired", "revoked"] },
+        "notBeforeUnix": { "type": "integer", "minimum": 0 },
+        "notAfterUnix": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "package": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "summary", "versions"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "name": { "type": "string", "minLength": 1 },
+        "summary": { "type": "string", "minLength": 1 },
+        "description": { "type": "string" },
+        "homepage": { "type": "string" },
+        "tags": { "type": "array", "items": { "type": "string" } },
+        "versions": { "type": "array", "items": { "$ref": "#/$defs/version" } }
+      }
+    },
+    "version": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "runtime", "publisher", "publisherKey", "publishedAtUnix", "capabilities", "dependencies", "compatibility", "yanked", "artifacts"],
+      "properties": {
+        "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$" },
+        "runtime": { "enum": ["wasm-component", "mcp-stdio"] },
+        "publisher": { "$ref": "#/$defs/id" },
+        "publisherKey": { "$ref": "#/$defs/id" },
+        "publishedAtUnix": { "type": "integer", "minimum": 0 },
+        "capabilities": { "$ref": "clat-plugin-manifest.schema.json#/properties/capabilities" },
+        "dependencies": { "type": "object", "additionalProperties": { "type": "string", "minLength": 1 } },
+        "compatibility": { "$ref": "#/$defs/compatibility" },
+        "yanked": { "type": "boolean" },
+        "artifacts": { "type": "array", "minItems": 1, "maxItems": 32, "items": { "$ref": "#/$defs/artifact" } }
+      }
+    },
+    "compatibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "minClat": { "type": "string" },
+        "maxClat": { "type": "string" },
+        "wit": { "type": "string" },
+        "dshRevision": { "type": "string" }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["target", "url", "sha256", "bytes"],
+      "properties": {
+        "target": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "url": { "type": "string", "minLength": 1 },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "bytes": { "type": "integer", "minimum": 1, "maximum": 537919500 }
+      }
+    },
+    "revocation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["package", "effectiveAtUnix", "reason"],
+      "properties": {
+        "package": { "$ref": "#/$defs/id" },
+        "version": { "type": "string" },
+        "artifactSha256": { "$ref": "#/$defs/sha256" },
+        "effectiveAtUnix": { "type": "integer", "minimum": 0 },
+        "reason": { "type": "string", "minLength": 1 }
+      }
+    },
+    "vulnerability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "package", "affected", "severity", "summary", "url"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "package": { "$ref": "#/$defs/id" },
+        "affected": { "type": "string", "minLength": 1 },
+        "severity": { "enum": ["low", "moderate", "high", "critical"] },
+        "summary": { "type": "string", "minLength": 1 },
+        "url": { "type": "string", "format": "uri", "pattern": "^https://" }
+      }
+    }
+  }
+}
