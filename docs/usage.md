@@ -16,6 +16,7 @@ runner, local web workbench, and DSH client. Configuration internals belong in
 | CLAT TUI connected to DeepSeek Harness | `clat dsh` | DSH host |
 | Offline core-loop smoke test | `clat demo` | temporary demo state |
 | Check/install a published update | `clat upgrade [--check]` | installed binary |
+| Manage local plugin packages | `clat plugin <COMMAND>` | local CLAT package store |
 
 All local interfaces use the same Application core, session journal, tools,
 and permission semantics. They differ only in how input, events, and approval
@@ -62,6 +63,29 @@ Upgrades authenticate the asset manifest with the Minisign public key embedded
 in the current binary, verify the SHA-256 digest and release-tag binding, then
 stage and replace the executable with rollback on failure. The first-install
 bootstrap has a different trust boundary; see [Release signing](releasing.md).
+
+## Plugin packages
+
+Use `clat plugin inspect <package-dir>` to verify a package without changing
+state. Install, update, enable/disable, rollback and uninstall are top-level
+commands because they operate on the global local package store, not on one
+conversation or project:
+
+```bash
+clat plugin install ./plugin --config-file ./plugin-config.json \
+  --accept-capabilities
+clat plugin list
+clat plugin update ./plugin-v2
+clat plugin rollback dev.example.plugin
+clat plugin disable dev.example.plugin
+clat plugin uninstall dev.example.plugin
+```
+
+Package mutation fails with a busy diagnostic while another CLAT process owns
+the storage root. Restart CLAT after a successful activation change; mounted
+project scopes intentionally keep their frozen tool/prompt surface until
+restart. See [CLAT plugins](plugins.md) for transactions, signatures and trust
+labels.
 
 ## Terminal UI
 

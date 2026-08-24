@@ -25,10 +25,24 @@ model call or user question consumes neither fuel nor a wall-clock execution
 budget. Cancelling a run interrupts a spinning guest promptly and also aborts
 host waits.
 
-## Configuration
+## Installation
 
-Create `~/.clat/plugins.json`. Absence means no components and no WASM startup
-cost.
+Distributable components use `clat-plugin.json` and the transactional package
+store:
+
+```bash
+clat plugin inspect ./greeter-package
+clat plugin install ./greeter-package --config-json '{"greeting":"Hola"}' \
+  --accept-capabilities
+```
+
+Restart CLAT after activation. The package is content-addressed, and later
+updates can be rolled back with `clat plugin rollback <id>`.
+
+## Legacy configuration
+
+`~/.clat/plugins.json` remains a user-managed development/override path.
+Absence means no legacy components and no extra WASM startup cost.
 
 ```json
 {
@@ -46,7 +60,7 @@ cost.
 }
 ```
 
-For a distributable package, prefer a manifest-backed entry:
+It can also point directly at a manifest while developing:
 
 ```json
 {
@@ -82,7 +96,8 @@ SHA-256, declared capabilities, config schema, and static system prompts:
 }
 ```
 
-The manifest path is authoritative: it cannot be combined with `path`, its
+For both installed and legacy manifest entries, the manifest path is
+authoritative: it cannot be combined with `path`, its
 entry must remain package-relative, its id must equal the `plugins.json` key,
 and its digest is always checked before compilation. The machine-readable
 schema is `schemas/clat-plugin-manifest.schema.json`.

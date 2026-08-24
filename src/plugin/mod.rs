@@ -7,6 +7,7 @@ mod effect;
 mod id;
 mod manager;
 mod package;
+mod store;
 
 /// panic 载荷的统一文案化（mount/run worker/dispatch 三处隔离共用）。
 pub(crate) use manager::panic_message;
@@ -20,6 +21,10 @@ pub(crate) use package::{
     ManifestPrompt, PluginCapabilities, PluginPackageManifest, PluginRuntimeKind,
 };
 pub(crate) use service::ServiceKey;
+pub(crate) use store::{
+    InstallKind, PackageInspection, PackageMutation, PackageStore, TrustLabel,
+    active_packages_for_runtime_excluding, installed_packages,
+};
 
 use std::fmt;
 

@@ -64,6 +64,28 @@ serveClat({ apply, Config, inject, name }, {
 Add a `bin` entry to `package.json`. DSH users keep the original Cordis entry;
 MCP users run this bin.
 
+The author-side conversion workflow can generate the bin and a standalone
+package instead:
+
+```bash
+clat-dsh inspect /path/to/plugin
+clat-dsh port /path/to/plugin --out ./clat-port
+clat-dsh test ./clat-port
+clat-dsh package ./clat-port --out ./clat-package
+clat plugin install ./clat-package --accept-capabilities
+```
+
+`port` emits member-level compatibility evidence and explicit unsupported
+TODOs. `package` refuses partial reports unless `--allow-partial` is supplied
+after review, compiles one Bun executable, and smoke-tests its MCP handshake.
+Optional Minisign arguments produce the CLAT publisher companion format.
+TypeScript 5.7+ and Bun are author-side tools; the adapter server still has no
+runtime package dependencies, and a compiled package needs neither Node nor
+Bun on the end-user machine.
+
+`publisher/verified` proves continuity of the self-declared key, not CLAT or
+market review; an update cannot change that publisher id/key silently.
+
 A CLAT user configures `~/.clat/mcp.json`:
 
 ```json
@@ -210,8 +232,12 @@ npm test
 npm run scan -- /path/to/deepseek-harness --output /tmp/dsh-compat.json
 ```
 
-The scanner emits a revision-pinned, machine-readable per-package seam matrix.
-It is conservative static evidence, not a replacement for fixture and
+The v2 scanner uses TypeScript AST/provenance and member-level host seams. On
+the pinned checkout it reports 249 packages / 234 candidates: 2 portable, 171
+partial, 61 unsupported, and 15 non-plugins. The byte-stable matrix SHA-256 is
+`0328b3b3eea092d261df1f93b7bd9185dcf42a1ebbed76e1639cd37e21219d71`.
+The committed 12-package cohort covers the main portable, host-bridged, and
+partial families. Static evidence still does not replace fixture and
 end-to-end acceptance.
 
 Repository: [artec/clat](https://github.com/artec/clat) ·

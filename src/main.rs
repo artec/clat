@@ -29,6 +29,7 @@ where
         Some("exec") => run_exec_command(args),
         Some("dsh") => run_dsh_command(args),
         Some("serve") => run_serve_command(args),
+        Some("plugin") => run_plugin_command(args),
         Some("upgrade") => run_upgrade(args.next().as_deref() == Some("--check")),
         Some("-V" | "--version") => {
             println!("{NAME} {}", env!("CARGO_PKG_VERSION"));
@@ -74,6 +75,7 @@ fn print_help() {
     println!("  exec [PROMPT]     Run one agent turn headlessly and print the reply on stdout");
     println!("  dsh              Open the TUI as a client of a local DSH web host");
     println!("  serve             Serve the local HTTP+SSE API on 127.0.0.1");
+    println!("  plugin            Inspect, install, update, roll back, or remove plugins");
     println!("  demo             Run the deterministic model → tool → model loop");
     println!("  upgrade          Upgrade to the latest GitHub release");
     println!();
@@ -95,6 +97,20 @@ fn print_help() {
     println!("  --quiet          Suppress stderr status output (assistant text only)");
     println!("  --json           Print the RunEvent stream as NDJSON on stdout instead of text");
     println!("  Piped stdin is used as the prompt, or as context when PROMPT is also present.");
+}
+
+fn run_plugin_command<I>(args: I) -> ExitCode
+where
+    I: Iterator<Item = String>,
+{
+    let outcome = clat::plugin_cli::run(args);
+    if !outcome.stdout.is_empty() {
+        print!("{}", outcome.stdout);
+    }
+    if !outcome.stderr.is_empty() {
+        eprint!("{}", outcome.stderr);
+    }
+    ExitCode::from(outcome.exit_code)
 }
 
 /// `clat serve [--port <n>] [--token <t> | --rotate-token]`：本地

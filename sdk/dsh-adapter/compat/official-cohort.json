@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "dshRevision": "b150a551b8d465e31e418e1b2eaf5e79bbb7d28e",
+  "packages": [
+    { "directory": "packages/web/web-search-exa", "name": "@deepseek-ai/dsh-web-search-exa", "status": "portable", "unsupported": [] },
+    { "directory": "packages/web/web-fetch-http", "name": "@deepseek-ai/dsh-web-fetch-http", "status": "portable", "unsupported": [] },
+    { "directory": "packages/web/tool-web", "name": "@deepseek-ai/dsh-tool-web", "status": "portable", "unsupported": [] },
+    { "directory": "packages/interaction/tool-ask-user", "name": "@deepseek-ai/dsh-tool-ask-user", "status": "portable", "unsupported": [] },
+    { "directory": "packages/todo/tool-todo", "name": "@deepseek-ai/dsh-tool-todo", "status": "portable", "unsupported": [] },
+    { "directory": "packages/llm/llm-deepseek", "name": "@deepseek-ai/dsh-llm-deepseek", "status": "portable", "unsupported": [] },
+    { "directory": "packages/fs/tool-fs", "name": "@deepseek-ai/dsh-tool-fs", "status": "host-bridged", "unsupported": [] },
+    { "directory": "packages/core/agent-loop", "name": "@deepseek-ai/dsh-agent-loop", "status": "partial", "unsupported": ["agent", "agentLoop", "agents.requireInitiator", "agents.setFactory", "events", "fiber", "sessionPersistence"] },
+    { "directory": "packages/shell/tool-bash", "name": "@deepseek-ai/dsh-tool-bash", "status": "partial", "unsupported": ["shell.start", "shellEnv"] },
+    { "directory": "packages/subagent/tool-subagent", "name": "@deepseek-ai/dsh-tool-subagent", "status": "partial", "unsupported": ["subagents"] },
+    { "directory": "packages/skill/skill-filesystem", "name": "@deepseek-ai/dsh-skill-filesystem", "status": "partial", "unsupported": ["skills"] },
+    { "directory": "packages/storage/storage-json", "name": "@deepseek-ai/dsh-storage-json", "status": "partial", "unsupported": ["storage"] }
+  ]
+}

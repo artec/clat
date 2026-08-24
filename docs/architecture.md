@@ -70,6 +70,14 @@ Dynamic native libraries are deliberately not a plugin ABI: Rust's compiler ABI
 is not stable enough for a durable market contract. Rust-authored third-party
 plugins compile to the versioned WIT/WASM component boundary instead.
 
+Third-party packages of both runtime kinds are activated from one immutable
+local store. The package tree is copied and fsynced before an atomic registry
+pointer exposes it; update failure leaves the old pointer intact, and rollback
+swaps two already-reviewed activations. Package mutation owns the same
+storage-root lease as a Trusted Project Scope, so a running application and the
+installer never race plugin state. User `plugins.json` / `mcp.json` entries are
+late same-id overrides, not a second package database.
+
 | Scope | Lifetime | Owns |
 |---|---|---|
 | Bootstrap | process open → trust decision | control-format classification and read-only trust lookup |

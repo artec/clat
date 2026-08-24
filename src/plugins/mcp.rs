@@ -7,7 +7,8 @@ use super::services::{
     PROMPT_SERVICE_ID, PromptRegistry, TOOL_SERVICE, TOOL_SERVICE_ID,
 };
 use crate::mcp::client::{
-    McpServer, McpServerRequestHandler, McpTool, load_mcp_config, merge_vendor_pack,
+    McpServer, McpServerConfig, McpServerRequestHandler, McpTool, load_mcp_config,
+    merge_vendor_pack,
 };
 use crate::plugin::{
     Plugin, PluginContext, PluginDescriptor, PluginError, PluginId, PluginOwner, ScopeKind,
@@ -128,9 +129,14 @@ impl Plugin for McpAdapterPlugin {
         // 本地配置读取保留 fail-fast（无网络/子进程 I/O，INV-M1）；
         // 连接与握手全部挪进后台 worker——mount 即返回，ready 不再被
         // MCP 阻塞（docs/todo/mcp-async-startup.md）。
-        let mut config = load_mcp_config(&self.storage_root).map_err(PluginError::new)?;
-        merge_vendor_pack(&mut config, &self.vendor_pack);
-        let status = Arc::new(McpStatus::new(config.len()));
+        let effective = load_effective_mcp_config(&self.storage_root, &self.vendor_pack)
+            .map_err(PluginError::new)?;
+        let status = Arc::new(McpStatus::new(
+            effective.servers.len() + effective.failures.len(),
+        ));
+        for failure in &effective.failures {
+            status.record_failed_server(failure.clone());
+        }
         let state = Arc::new(McpStartupState {
             cancelled: AtomicBool::new(false),
             cleanups: Mutex::new(Vec::new()),
@@ -147,7 +153,8 @@ impl Plugin for McpAdapterPlugin {
                 .name("clat-mcp-startup".into())
                 .spawn(move || {
                     run_startup(McpStartupInputs {
-                        config,
+                        config: effective.servers,
+                        manifest_prompts: effective.manifest_prompts,
                         server_cwd,
                         project_root,
                         registry,
@@ -181,6 +188,129 @@ impl Plugin for McpAdapterPlugin {
     }
 }
 
+fn load_installed_mcp_config(
+    storage_root: &std::path::Path,
+    excluded_ids: &std::collections::BTreeSet<String>,
+) -> Result<EffectiveMcpConfig, String> {
+    let mut config = BTreeMap::new();
+    let mut manifest_prompts = BTreeMap::new();
+    let installed = crate::plugin::active_packages_for_runtime_excluding(
+        storage_root,
+        crate::plugin::PluginRuntimeKind::McpStdio,
+        excluded_ids,
+    )?;
+    for package in installed.packages {
+        let entry = package
+            .manifest
+            .verify_entry_digest(&package.manifest_path)?;
+        let mut env = BTreeMap::from([
+            ("CLAT_PLUGIN_ID".into(), package.id.clone()),
+            (
+                "CLAT_PLUGIN_VERSION".into(),
+                package.manifest.version.clone(),
+            ),
+            ("CLAT_PLUGIN_TREE_SHA256".into(), package.tree_sha256),
+            (
+                "CLAT_PLUGIN_TRUST".into(),
+                match package.trust {
+                    crate::plugin::TrustLabel::LocalUnverified => "local/unverified".into(),
+                    crate::plugin::TrustLabel::PublisherVerified => "publisher/verified".into(),
+                },
+            ),
+        ]);
+        if let Some(value) = package.config {
+            env.insert(
+                "CLAT_PLUGIN_CONFIG".into(),
+                serde_json::to_string(&value)
+                    .map_err(|error| format!("serialize plugin config: {error}"))?,
+            );
+        }
+        if let Some(publisher) = package.publisher {
+            env.insert("CLAT_PLUGIN_PUBLISHER".into(), publisher.publisher);
+        }
+        manifest_prompts.insert(package.id.clone(), package.manifest.prompts.clone());
+        config.insert(
+            package.id,
+            McpServerConfig {
+                command: entry.display().to_string(),
+                args: package.manifest.runtime.args,
+                env,
+                cwd: package
+                    .manifest_path
+                    .parent()
+                    .map(|path| path.display().to_string()),
+                ..McpServerConfig::default()
+            },
+        );
+    }
+    Ok(EffectiveMcpConfig {
+        servers: config,
+        manifest_prompts,
+        failures: installed.failures,
+    })
+}
+
+struct EffectiveMcpConfig {
+    servers: BTreeMap<String, McpServerConfig>,
+    manifest_prompts: BTreeMap<String, Vec<crate::plugin::ManifestPrompt>>,
+    failures: Vec<String>,
+}
+
+fn load_effective_mcp_config(
+    storage_root: &std::path::Path,
+    vendor_pack: &[(String, McpServerConfig)],
+) -> Result<EffectiveMcpConfig, String> {
+    let user = load_mcp_config(storage_root)?;
+    let excluded = user.keys().cloned().collect();
+    let mut effective = load_installed_mcp_config(storage_root, &excluded)?;
+    // User mcp.json is the explicit escape hatch and wins by package id.
+    effective.servers.extend(user);
+    merge_vendor_pack(&mut effective.servers, vendor_pack);
+    Ok(effective)
+}
+
+fn resolve_mcp_cwd(
+    storage_root: &std::path::Path,
+    configured: Option<&str>,
+) -> Result<PathBuf, String> {
+    let requested = configured
+        .map(PathBuf::from)
+        .unwrap_or_else(|| storage_root.to_owned());
+    let candidate = if requested.is_absolute() {
+        requested
+    } else {
+        if requested.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
+            )
+        }) {
+            return Err("relative MCP cwd must not escape ~/.clat".into());
+        }
+        storage_root.join(requested)
+    };
+    let canonical = candidate
+        .canonicalize()
+        .map_err(|error| format!("resolve MCP cwd {}: {error}", candidate.display()))?;
+    if !canonical.is_dir() {
+        return Err(format!(
+            "MCP cwd is not a directory: {}",
+            canonical.display()
+        ));
+    }
+    if configured.is_some_and(|cwd| !PathBuf::from(cwd).is_absolute()) {
+        let root = storage_root
+            .canonicalize()
+            .map_err(|error| format!("resolve ~/.clat for MCP cwd: {error}"))?;
+        if !canonical.starts_with(root) {
+            return Err("relative MCP cwd resolves outside ~/.clat".into());
+        }
+    }
+    Ok(canonical)
+}
+
 /// 后台启动 server：**并行**连接（W1-16/A2——此前串行逐 server，第一
 /// 个坏 server 的握手/list 全额超时会顺延所有后续 server 的工具注册）。
 /// 每 server 一线程做 connect（spawn/HTTP + initialize 握手）→
@@ -191,6 +321,7 @@ impl Plugin for McpAdapterPlugin {
 /// 后 mark_settled——`start_run` 的有界等待以此为准（INV-M2/M3）。
 struct McpStartupInputs {
     config: BTreeMap<String, crate::mcp::client::McpServerConfig>,
+    manifest_prompts: BTreeMap<String, Vec<crate::plugin::ManifestPrompt>>,
     server_cwd: PathBuf,
     project_root: PathBuf,
     registry: Arc<ToolRegistry>,
@@ -211,6 +342,7 @@ struct ConnectedContributions {
 fn run_startup(inputs: McpStartupInputs) {
     let McpStartupInputs {
         config,
+        mut manifest_prompts,
         server_cwd,
         project_root,
         registry,
@@ -233,6 +365,13 @@ fn run_startup(inputs: McpStartupInputs) {
             status.record_failed_server(format!("mcp `{name}`: empty command and no url"));
             continue;
         }
+        let resolved_server_cwd = match resolve_mcp_cwd(&server_cwd, server_config.cwd.as_deref()) {
+            Ok(cwd) => cwd,
+            Err(error) => {
+                status.record_failed_server(format!("mcp `{name}`: {error}"));
+                continue;
+            }
+        };
         pending += 1;
         // 每 server 一个 McpHostHandler：服务端请求带 server 名过桥。
         let server_handler = Arc::new(McpHostHandler::new(Arc::clone(&host), name));
@@ -242,7 +381,7 @@ fn run_startup(inputs: McpStartupInputs) {
         let thread_name = name.clone();
         let name = name.clone();
         let server_config = server_config.clone();
-        let server_cwd = server_cwd.clone();
+        let server_cwd = resolved_server_cwd;
         let project_root = project_root.clone();
         let server_handler = Arc::clone(&server_handler);
         let spawned = std::thread::Builder::new()
@@ -405,7 +544,22 @@ fn run_startup(inputs: McpStartupInputs) {
                 }
             }
         }
+        let static_prompts = manifest_prompts.remove(&name).unwrap_or_default();
         if let Some(prompt_registry) = &prompt_registry {
+            for prompt in &static_prompts {
+                if prompt.system.trim().is_empty() {
+                    continue;
+                }
+                match prompt_registry.contribute(owner, prompt.system.clone()) {
+                    Ok(lease) => state.push_cleanup(Box::new(move || {
+                        let _ = lease.revoke();
+                    })),
+                    Err(error) => status.record_failure(format!(
+                        "mcp `{name}` manifest prompt `{}`: {error}",
+                        prompt.name
+                    )),
+                }
+            }
             for (prompt, text) in prompt_infos {
                 if text.trim().is_empty() {
                     continue;
@@ -418,6 +572,10 @@ fn run_startup(inputs: McpStartupInputs) {
                         .record_failure(format!("mcp `{name}` prompt `{}`: {error}", prompt.name)),
                 }
             }
+        } else if !static_prompts.is_empty() {
+            status.record_failure(format!(
+                "mcp `{name}` manifest declares prompts but PromptRegistry is unavailable"
+            ));
         }
         let shutdown_server = Arc::clone(&server);
         state.push_cleanup(Box::new(move || {
@@ -445,8 +603,344 @@ mod tests {
     use super::*;
     use crate::plugin::{Plugin, PluginManager};
     use crate::plugins::{PromptRegistryPlugin, ToolRegistryPlugin};
+    use sha2::{Digest as _, Sha256};
     use std::fs;
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+    fn installed_mcp_package(storage: &std::path::Path) -> PathBuf {
+        let package = storage
+            .parent()
+            .expect("storage parent")
+            .join("mcp-package-source");
+        fs::create_dir_all(&package).expect("package");
+        let entry = package.join(if cfg!(windows) {
+            "fixture.exe"
+        } else {
+            "fixture"
+        });
+        fs::write(&entry, b"fixture executable").expect("entry");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(&entry, fs::Permissions::from_mode(0o755)).expect("chmod");
+        }
+        let digest = Sha256::digest(b"fixture executable")
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        fs::write(
+            package.join("clat-plugin.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "manifestVersion": 1,
+                "id": "dev.clat.mcp-fixture",
+                "name": "MCP Fixture",
+                "version": "1.0.0",
+                "runtime": {
+                    "kind": "mcp-stdio",
+                    "entry": entry.file_name().and_then(|name| name.to_str()).expect("entry name"),
+                    "sha256": digest,
+                    "args": ["--fixture"],
+                },
+                "capabilities": { "tools": true, "prompts": true },
+                "prompts": [{ "name": "fixture", "system": "Installed MCP prompt." }],
+                "configSchema": { "type": "object", "required": ["answer"] },
+            }))
+            .expect("manifest"),
+        )
+        .expect("write manifest");
+        package
+    }
+
+    #[test]
+    fn installed_mcp_package_projects_config_and_user_override_wins() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!("clat-installed-mcp-{unique}"));
+        let storage = base.join("storage");
+        fs::create_dir_all(&base).expect("base");
+        let package = installed_mcp_package(&storage);
+        {
+            let mut store = crate::plugin::PackageStore::open(&storage).expect("store");
+            store
+                .install(
+                    &package,
+                    Some(serde_json::json!({"answer": "configured"})),
+                    true,
+                    crate::plugin::InstallKind::Install,
+                )
+                .expect("install");
+        }
+        let effective = load_effective_mcp_config(&storage, &[]).expect("effective");
+        let installed = effective
+            .servers
+            .get("dev.clat.mcp-fixture")
+            .expect("installed");
+        assert!(installed.command.contains("plugin-store"));
+        assert!(
+            installed
+                .cwd
+                .as_deref()
+                .is_some_and(|cwd| cwd.contains("plugin-store"))
+        );
+        assert_eq!(installed.args, ["--fixture"]);
+        assert_eq!(
+            installed.env.get("CLAT_PLUGIN_CONFIG").map(String::as_str),
+            Some(r#"{"answer":"configured"}"#)
+        );
+        assert_eq!(
+            effective.manifest_prompts["dev.clat.mcp-fixture"][0].system,
+            "Installed MCP prompt."
+        );
+        let installed_root = std::path::Path::new(&installed.command)
+            .parent()
+            .expect("artifact root")
+            .to_owned();
+        fs::write(installed_root.join("tampered-sidecar"), "tampered")
+            .expect("tamper installed package");
+        let damaged = load_effective_mcp_config(&storage, &[]).expect("isolated damage");
+        assert!(damaged.servers.is_empty());
+        assert!(
+            damaged
+                .failures
+                .iter()
+                .any(|failure| failure.contains("dev.clat.mcp-fixture")),
+            "{:?}",
+            damaged.failures
+        );
+        fs::write(
+            storage.join("mcp.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "dev.clat.mcp-fixture": { "command": "user-override" }
+            }))
+            .expect("user config"),
+        )
+        .expect("write user config");
+        let effective = load_effective_mcp_config(&storage, &[]).expect("effective override");
+        assert_eq!(
+            effective
+                .servers
+                .get("dev.clat.mcp-fixture")
+                .map(|config| config.command.as_str()),
+            Some("user-override")
+        );
+        assert!(
+            !effective
+                .manifest_prompts
+                .contains_key("dev.clat.mcp-fixture")
+        );
+        assert!(effective.failures.is_empty());
+        fs::remove_dir_all(base).expect("cleanup");
+    }
+
+    #[test]
+    fn relative_mcp_cwd_is_fenced_under_storage_root() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("clat-mcp-cwd-{unique}"));
+        fs::create_dir_all(root.join("inside")).expect("inside");
+        assert_eq!(
+            resolve_mcp_cwd(&root, Some("inside")).expect("inside cwd"),
+            root.join("inside")
+                .canonicalize()
+                .expect("canonical inside")
+        );
+        assert!(resolve_mcp_cwd(&root, Some("../outside")).is_err());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let outside = std::env::temp_dir();
+            symlink(outside, root.join("escape")).expect("escape symlink");
+            assert!(resolve_mcp_cwd(&root, Some("escape")).is_err());
+            fs::remove_file(root.join("escape")).expect("remove escape symlink");
+        }
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    #[ignore = "builds a Bun DSH package and spawns its MCP executable"]
+    fn generated_dsh_package_installs_and_invokes_through_the_normal_mcp_adapter() {
+        let repository = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let adapter = repository.join("sdk/dsh-adapter");
+        let cli = adapter.join("dist/src/dsh-cli.js");
+        assert!(
+            cli.is_file(),
+            "build the adapter first: cd sdk/dsh-adapter && npm test"
+        );
+        assert!(
+            std::process::Command::new("bun")
+                .arg("--version")
+                .output()
+                .is_ok_and(|output| output.status.success()),
+            "Bun is required for this author-side packaging acceptance"
+        );
+        assert!(
+            std::process::Command::new("minisign")
+                .arg("-v")
+                .output()
+                .is_ok_and(|output| output.status.success()),
+            "minisign is required for the signed-package acceptance"
+        );
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let base = adapter.join(format!(".tmp-clat-dsh-rust-e2e-{unique}"));
+        let source = base.join("source");
+        let port = base.join("port");
+        let artifact = base.join("artifact");
+        let other_artifact = base.join("artifact-other-publisher");
+        let storage = base.join("storage");
+        let public_key = base.join("publisher.pub");
+        let secret_key = base.join("publisher.key");
+        let other_public_key = base.join("publisher-other.pub");
+        let other_secret_key = base.join("publisher-other.key");
+        fs::create_dir_all(source.join("src")).expect("source");
+        let generated = std::process::Command::new("minisign")
+            .args(["-G", "-W", "-p"])
+            .arg(&public_key)
+            .arg("-s")
+            .arg(&secret_key)
+            .output()
+            .expect("generate minisign key");
+        assert!(
+            generated.status.success(),
+            "key generation failed: {}",
+            String::from_utf8_lossy(&generated.stderr)
+        );
+        let generated = std::process::Command::new("minisign")
+            .args(["-G", "-W", "-p"])
+            .arg(&other_public_key)
+            .arg("-s")
+            .arg(&other_secret_key)
+            .output()
+            .expect("generate other minisign key");
+        assert!(generated.status.success(), "other key generation failed");
+        fs::write(
+            source.join("package.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "name": "@fixture/dsh-rust-e2e",
+                "version": "1.0.0",
+                "type": "module",
+                "exports": "./src/index.ts"
+            }))
+            .expect("package json"),
+        )
+        .expect("package json");
+        fs::write(
+            source.join("src/index.ts"),
+            r#"export default {
+  apply(ctx) {
+    ctx.tools.register({
+      name: 'fixture_echo',
+      description: 'installed DSH fixture',
+      parameters: { type: 'object', properties: {} },
+      output: { render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }] },
+      execute: async () => ({ ok: true, transport: 'installed-mcp' }),
+    })
+  },
+}
+"#,
+        )
+        .expect("plugin source");
+        let run_cli = |arguments: &[String]| {
+            let output = std::process::Command::new("node")
+                .arg(&cli)
+                .args(arguments)
+                .current_dir(&adapter)
+                .output()
+                .expect("run clat-dsh");
+            assert!(
+                output.status.success(),
+                "clat-dsh failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        run_cli(&[
+            "port".into(),
+            source.display().to_string(),
+            "--out".into(),
+            port.display().to_string(),
+        ]);
+        run_cli(&[
+            "package".into(),
+            port.display().to_string(),
+            "--out".into(),
+            artifact.display().to_string(),
+            "--publisher".into(),
+            "dev.clat.tests".into(),
+            "--publisher-key".into(),
+            public_key.display().to_string(),
+            "--minisign-key".into(),
+            secret_key.display().to_string(),
+        ]);
+        run_cli(&[
+            "package".into(),
+            port.display().to_string(),
+            "--out".into(),
+            other_artifact.display().to_string(),
+            "--publisher".into(),
+            "dev.clat.other".into(),
+            "--publisher-key".into(),
+            other_public_key.display().to_string(),
+            "--minisign-key".into(),
+            other_secret_key.display().to_string(),
+        ]);
+        {
+            let mut store = crate::plugin::PackageStore::open(&storage).expect("store");
+            store
+                .install(&artifact, None, true, crate::plugin::InstallKind::Install)
+                .expect("install generated DSH package");
+            assert_eq!(
+                store.list()[0].trust,
+                crate::plugin::TrustLabel::PublisherVerified
+            );
+            let error = store
+                .install(
+                    &other_artifact,
+                    None,
+                    false,
+                    crate::plugin::InstallKind::Update,
+                )
+                .expect_err("publisher switch must fail");
+            assert!(error.contains("publisher identity changed"), "{error}");
+        }
+
+        let catalog: Vec<Arc<dyn Plugin>> = vec![
+            Arc::new(ToolRegistryPlugin),
+            Arc::new(McpAdapterPlugin::new(
+                storage.clone(),
+                Vec::new(),
+                crate::plugin_host::PluginHostBridge::shared(),
+            )),
+        ];
+        let mut manager = PluginManager::root(ScopeKind::TrustedProject);
+        manager
+            .mount_all(catalog)
+            .expect("mount installed MCP package");
+        let status = manager.require(MCP_STATUS_SERVICE).expect("status");
+        assert!(
+            status.wait_until_settled(Duration::from_secs(30)),
+            "MCP package startup did not settle"
+        );
+        assert_eq!(status.snapshot().connected, 1, "{:?}", status.snapshot());
+        let tools = manager.require(TOOL_SERVICE).expect("tools");
+        let output = tools
+            .get("mcp_dsh_fixture_dsh_rust_e2e_fixture_echo")
+            .expect("generated DSH tool")
+            .invoke(
+                &serde_json::json!({}),
+                &crate::project::Project::new(&storage),
+                &crate::model::CancelToken::new(),
+            )
+            .expect("invoke installed DSH tool");
+        assert!(output.to_string().contains("installed-mcp"), "{output}");
+        manager.close().expect("close");
+        fs::remove_dir_all(base).expect("cleanup");
+    }
 
     /// INV-M1（空配置）：mount 即 settled、connecting 0——无 server 时
     /// 启动等待是零成本的；close 干净回收。

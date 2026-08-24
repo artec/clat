@@ -18,6 +18,7 @@
   "main": "./dist/src/index.js",
   "types": "./dist/src/index.d.ts",
   "bin": {
+    "clat-dsh": "./dist/src/dsh-cli.js",
     "clat-dsh-scan": "./dist/src/scan-cli.js"
   },
   "exports": {
@@ -27,7 +28,8 @@
     }
   },
   "files": [
-    "dist"
+    "dist/src",
+    "compat"
   ],
   "publishConfig": {
     "access": "public"
@@ -35,7 +37,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "npm run build && node --test dist/test/*.test.js",
-    "scan": "npm run build && node dist/src/scan-cli.js"
+    "scan": "npm run build && node dist/src/dsh-cli.js scan",
+    "inspect": "npm run build && node dist/src/dsh-cli.js inspect"
   },
   "keywords": [
     "clat",
@@ -48,5 +51,13 @@
   "devDependencies": {
     "@types/node": "^22.10.0",
     "typescript": "^5.7.0"
+  },
+  "peerDependencies": {
+    "typescript": ">=5.7.0"
+  },
+  "peerDependenciesMeta": {
+    "typescript": {
+      "optional": true
+    }
   }
 }

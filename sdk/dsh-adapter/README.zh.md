@@ -62,6 +62,26 @@ serveClat({ apply, Config, inject, name }, {
 在 `package.json` 增加 `bin`。DSH 用户继续走原 Cordis 入口，MCP 用户
 运行这个 bin。
 
+也可以用作者侧工具自动生成入口和独立包：
+
+```bash
+clat-dsh inspect /path/to/plugin
+clat-dsh port /path/to/plugin --out ./clat-port
+clat-dsh test ./clat-port
+clat-dsh package ./clat-port --out ./clat-package
+clat plugin install ./clat-package --accept-capabilities
+```
+
+`port` 输出成员级兼容证据和明确 TODO；`package` 默认拒绝仍有
+unsupported seam 的报告，必须人工审查后显式加 `--allow-partial`。
+它用 Bun 编译单可执行文件并进行真实 MCP smoke test；可选
+Minisign 参数生成 CLAT publisher companion。TypeScript 5.7+ 与 Bun 只是
+作者工具，adapter server 仍无 runtime package 依赖，终端用户也不需
+Node/Bun。
+
+`publisher/verified` 只证明自声明 key 的签名与更新连续性，不等于 CLAT/
+市场审核；普通 update 不能静默替换 publisher id/key。
+
 CLAT 用户配置 `~/.clat/mcp.json`：
 
 ```json
@@ -195,8 +215,12 @@ npm test
 npm run scan -- /path/to/deepseek-harness --output /tmp/dsh-compat.json
 ```
 
-扫描器输出钉定 revision、逐包可机读的 seam 矩阵。它是保守的静态证据，
-不能替代 fixture 与端到端验收。
+v2 扫描器使用 TypeScript AST/来源证明和成员级 host seam。钉定
+checkout 上共 249 包/234 候选：2 portable、171 partial、61 unsupported、
+15 not-plugin；字节稳定矩阵 SHA-256 为
+`0328b3b3eea092d261df1f93b7bd9185dcf42a1ebbed76e1639cd37e21219d71`。
+已提交的 12 包 cohort 覆盖主要 portable、host-bridged 和 partial 家族。
+静态证据仍不能替代 fixture 与端到端验收。
 
 仓库：[artec/clat](https://github.com/artec/clat) ·
 [sdk/dsh-adapter](https://github.com/artec/clat/tree/main/sdk/dsh-adapter)

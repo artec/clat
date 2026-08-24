@@ -137,6 +137,44 @@ pub(crate) fn load_wasm_config(root: &std::path::Path) -> Result<WasmPluginMap, 
     }
 }
 
+/// Merge installed manifest packages under the user-owned legacy file. The
+/// legacy entry is the explicit escape hatch and therefore wins by id.
+struct EffectiveWasmConfig {
+    entries: WasmPluginMap,
+    failures: Vec<String>,
+}
+
+fn load_effective_wasm_config(
+    root: &std::path::Path,
+) -> Result<EffectiveWasmConfig, std::io::Error> {
+    let user = load_wasm_config(root)?;
+    let excluded = user.keys().cloned().collect();
+    let mut effective = BTreeMap::new();
+    let installed = crate::plugin::active_packages_for_runtime_excluding(
+        root,
+        PluginRuntimeKind::WasmComponent,
+        &excluded,
+    )
+    .map_err(std::io::Error::other)?;
+    for package in installed.packages {
+        effective.insert(
+            package.id,
+            WasmPluginConfig {
+                path: String::new(),
+                manifest: Some(package.manifest_path.display().to_string()),
+                dirs: Vec::new(),
+                config: package.config,
+                sha256: None,
+            },
+        );
+    }
+    effective.extend(user);
+    Ok(EffectiveWasmConfig {
+        entries: effective,
+        failures: installed.failures,
+    })
+}
+
 /// 解析 `path` 字段：`~/x` → home/x（home 从 storage_root 的父目录
 /// 推导），相对 → storage_root/x，绝对原样。
 fn resolve_component_path(root: &std::path::Path, raw: &str) -> PathBuf {
@@ -1067,13 +1105,17 @@ impl PluginTrait for WasmAdapterPlugin {
         let prompt_registry = context
             .try_require(PROMPT_SERVICE)
             .map_err(|error| PluginError::new(error.to_string()))?;
-        let config = load_wasm_config(&self.storage_root)
+        let effective = load_effective_wasm_config(&self.storage_root)
             .map_err(|error| PluginError::new(error.to_string()))?;
         // INV-W6：与 MCP 同一状态面板；configured 分母先扩（wasm 同步
         // 挂载，随后逐插件落定）。
         if let Some(status) = &status {
-            status.extend_configured(config.len());
+            status.extend_configured(effective.entries.len() + effective.failures.len());
+            for failure in &effective.failures {
+                status.record_failed_server(failure.clone());
+            }
         }
+        let config = effective.entries;
         if config.is_empty() {
             return Ok(());
         }
@@ -1707,6 +1749,124 @@ mod tests {
         manager.close().expect("close");
         let _ = std::fs::remove_dir_all(root);
         let _ = std::fs::remove_dir_all(mcp_root);
+    }
+
+    #[test]
+    fn installed_wasm_package_enters_the_normal_adapter_pipeline() {
+        let storage = unique_root("installed-wasm");
+        let package = unique_root("installed-wasm-source");
+        std::fs::copy(fixture("digest.wasm"), package.join("plugin.wasm")).expect("component");
+        std::fs::write(
+            package.join("clat-plugin.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "manifestVersion": 1,
+                "id": "dev.clat.installed-digest",
+                "name": "Installed Digest",
+                "version": "1.0.0",
+                "runtime": {
+                    "kind": "wasm-component",
+                    "entry": "plugin.wasm",
+                    "sha256": fixture_sha256("digest.wasm"),
+                },
+                "capabilities": { "tools": true },
+            }))
+            .expect("manifest"),
+        )
+        .expect("write manifest");
+        let bad_package = unique_root("installed-wasm-bad-source");
+        std::fs::copy(fixture("digest.wasm"), bad_package.join("plugin.wasm"))
+            .expect("bad component");
+        std::fs::write(
+            bad_package.join("clat-plugin.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "manifestVersion": 1,
+                "id": "dev.clat.installed-bad",
+                "name": "Installed Bad",
+                "version": "1.0.0",
+                "runtime": {
+                    "kind": "wasm-component",
+                    "entry": "plugin.wasm",
+                    "sha256": fixture_sha256("digest.wasm"),
+                },
+                "capabilities": { "tools": true },
+            }))
+            .expect("bad manifest"),
+        )
+        .expect("write bad manifest");
+        let bad_digest;
+        {
+            let mut store = crate::plugin::PackageStore::open(&storage).expect("store");
+            store
+                .install(&package, None, true, crate::plugin::InstallKind::Install)
+                .expect("install");
+            bad_digest = store
+                .install(
+                    &bad_package,
+                    None,
+                    true,
+                    crate::plugin::InstallKind::Install,
+                )
+                .expect("install bad peer before tamper")
+                .tree_sha256;
+        }
+        std::fs::write(
+            storage
+                .join("plugin-store/artifacts/dev.clat.installed-bad")
+                .join(&bad_digest)
+                .join("tampered"),
+            "tampered",
+        )
+        .expect("tamper one installed package");
+        let mcp_root = unique_root("installed-wasm-mcp");
+        let catalog: Vec<std::sync::Arc<dyn PluginTrait>> = vec![
+            std::sync::Arc::new(ToolRegistryPlugin),
+            std::sync::Arc::new(McpAdapterPlugin::new(
+                mcp_root.clone(),
+                Vec::new(),
+                crate::plugin_host::PluginHostBridge::shared(),
+            )),
+            std::sync::Arc::new(WasmAdapterPlugin::new(
+                storage.clone(),
+                crate::plugin_host::PluginHostBridge::shared(),
+                storage.clone(),
+                None,
+            )),
+        ];
+        let mut manager = PluginManager::root(ScopeKind::TrustedProject);
+        manager.mount_all(catalog).expect("mount installed package");
+        let registry = manager.require(TOOL_SERVICE).expect("tools");
+        let output = registry
+            .get("wasm_dev_clat_installed_digest_digest")
+            .expect("installed wasm tool")
+            .invoke(
+                &serde_json::json!({"op": "sha256", "text": "abc"}),
+                &crate::project::Project::new(&storage),
+                &CancelToken::new(),
+            )
+            .expect("invoke");
+        assert_eq!(
+            output["sha256"],
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert!(
+            registry.get("wasm_dev_clat_installed_bad_digest").is_none(),
+            "the tampered peer must not register"
+        );
+        let status = manager.require(MCP_STATUS_SERVICE).expect("status");
+        assert!(
+            status
+                .snapshot()
+                .failures
+                .iter()
+                .any(|failure| failure.contains("dev.clat.installed-bad")),
+            "{:?}",
+            status.snapshot()
+        );
+        manager.close().expect("close");
+        std::fs::remove_dir_all(storage).expect("cleanup storage");
+        std::fs::remove_dir_all(package).expect("cleanup package");
+        std::fs::remove_dir_all(bad_package).expect("cleanup bad package");
+        std::fs::remove_dir_all(mcp_root).expect("cleanup mcp");
     }
 
     // ---- 门控端到端（需要 tests/fixtures/wasm/ 的组件；本地构建插件

@@ -13,8 +13,9 @@ pub(crate) const MANIFEST_VERSION: u32 = 1;
 pub(crate) const MAX_MANIFEST_BYTES: u64 = 256 * 1024;
 pub(crate) const MAX_MANIFEST_PROMPTS: usize = 32;
 pub(crate) const MAX_MANIFEST_PROMPT_BYTES: usize = 64 * 1024;
+pub(crate) const MAX_MANIFEST_ENTRY_BYTES: u64 = 256 * 1024 * 1024;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct PluginPackageManifest {
     pub manifest_version: u32,
@@ -34,7 +35,7 @@ pub(crate) struct PluginPackageManifest {
     pub compatibility: Option<PluginCompatibility>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct PluginRuntime {
     pub kind: PluginRuntimeKind,
@@ -51,7 +52,7 @@ pub(crate) enum PluginRuntimeKind {
     McpStdio,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct PluginCapabilities {
     #[serde(default)]
@@ -68,7 +69,7 @@ pub(crate) struct PluginCapabilities {
     pub host_tools: Vec<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ManifestPrompt {
     pub name: String,
@@ -77,7 +78,7 @@ pub(crate) struct ManifestPrompt {
     pub system: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct PluginCompatibility {
     pub kind: String,
@@ -112,11 +113,20 @@ impl PluginPackageManifest {
             ));
         }
         validate_identifier(&self.id, "plugin id", 128)?;
-        if self.name.trim().is_empty() || self.name.chars().count() > 128 {
-            return Err("plugin name must contain 1..=128 characters".into());
+        if self.name.trim().is_empty()
+            || self.name.chars().count() > 128
+            || self.name.chars().any(char::is_control)
+        {
+            return Err("plugin name must contain 1..=128 non-control characters".into());
         }
-        if self.version.trim().is_empty() || self.version.chars().count() > 64 {
-            return Err("plugin version must contain 1..=64 characters".into());
+        if self.version.trim().is_empty()
+            || self.version.chars().count() > 64
+            || self
+                .version
+                .chars()
+                .any(|character| character.is_whitespace() || character.is_control())
+        {
+            return Err("plugin version must contain 1..=64 non-whitespace characters".into());
         }
         if self.description.chars().count() > 4096 {
             return Err("plugin description exceeds 4096 characters".into());
@@ -164,7 +174,10 @@ impl PluginPackageManifest {
             return Err("manifest has prompts but capabilities.prompts is false".into());
         }
         if let Some(compatibility) = &self.compatibility {
-            if compatibility.kind.trim().is_empty() || compatibility.kind.len() > 64 {
+            if compatibility.kind.trim().is_empty()
+                || compatibility.kind.len() > 64
+                || compatibility.kind.chars().any(char::is_control)
+            {
                 return Err("compatibility.kind must contain 1..=64 bytes".into());
             }
             if compatibility
@@ -201,6 +214,78 @@ impl PluginPackageManifest {
         Ok(candidate)
     }
 
+    /// Verify the manifest entry before either installer publication or
+    /// runtime activation. The entry digest is the executable-code identity;
+    /// the package store additionally binds the complete directory tree.
+    pub(crate) fn verify_entry_digest(&self, manifest_path: &Path) -> Result<PathBuf, String> {
+        let entry = self.entry_path(manifest_path)?;
+        if !entry.is_file() {
+            return Err(format!(
+                "runtime.entry is not a regular file: {}",
+                entry.display()
+            ));
+        }
+        let package_root = manifest_path
+            .parent()
+            .ok_or_else(|| "package manifest has no parent directory".to_owned())?
+            .canonicalize()
+            .map_err(|error| format!("canonicalize package root: {error}"))?;
+        let dir = cap_std::fs::Dir::open_ambient_dir(&package_root, cap_std::ambient_authority())
+            .map_err(|error| format!("open package root: {error}"))?;
+        let mut options = cap_std::fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use cap_std::fs::OpenOptionsExt as _;
+            options.custom_flags(libc::O_NOFOLLOW);
+        }
+        let relative = Path::new(&self.runtime.entry);
+        let metadata = dir
+            .symlink_metadata(relative)
+            .map_err(|error| format!("stat package entry {}: {error}", entry.display()))?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(format!(
+                "runtime.entry must be a regular no-follow file: {}",
+                entry.display()
+            ));
+        }
+        let size = metadata.len();
+        if size > MAX_MANIFEST_ENTRY_BYTES {
+            return Err(format!(
+                "package entry is {size} bytes; the cap is {MAX_MANIFEST_ENTRY_BYTES}"
+            ));
+        }
+        use sha2::Digest as _;
+        use std::io::Read as _;
+        let mut file = dir
+            .open_with(relative, &options)
+            .map_err(|error| format!("open package entry {}: {error}", entry.display()))?;
+        let mut digest = sha2::Sha256::new();
+        let copied = std::io::copy(
+            &mut file.by_ref().take(MAX_MANIFEST_ENTRY_BYTES + 1),
+            &mut digest,
+        )
+        .map_err(|error| format!("hash package entry {}: {error}", entry.display()))?;
+        if copied != size {
+            return Err(format!(
+                "package entry changed while hashing: {}",
+                entry.display()
+            ));
+        }
+        let actual = digest
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let expected = self.runtime.sha256.trim().trim_start_matches("sha256:");
+        if !actual.eq_ignore_ascii_case(expected) {
+            return Err(format!(
+                "package entry sha256 mismatch: manifest {expected}, actual {actual}"
+            ));
+        }
+        Ok(entry)
+    }
+
     /// Deliberately small install-time JSON Schema guard. Full schema handling
     /// belongs in a future settings UI; the runtime still rejects the common
     /// dangerous mismatch (an object schema receiving a scalar) and missing
@@ -213,11 +298,15 @@ impl PluginPackageManifest {
             return Err("configSchema must be a JSON object".into());
         };
         if schema_object.get("type").and_then(Value::as_str) == Some("object") {
+            let required = schema_object.get("required").and_then(Value::as_array);
+            if config.is_none() && required.is_none_or(Vec::is_empty) {
+                return Ok(());
+            }
             let config = config.ok_or_else(|| "plugin requires a config object".to_owned())?;
             let object = config
                 .as_object()
                 .ok_or_else(|| "plugin config must be an object".to_owned())?;
-            if let Some(required) = schema_object.get("required").and_then(Value::as_array) {
+            if let Some(required) = required {
                 for key in required.iter().filter_map(Value::as_str) {
                     if !object.contains_key(key) {
                         return Err(format!("plugin config is missing required key `{key}`"));
@@ -315,6 +404,11 @@ mod tests {
             .validate_config(Some(&json!({"greeting": "hello"})))
             .expect("config");
         assert!(manifest.validate_config(Some(&json!({}))).is_err());
+        let mut optional = manifest.clone();
+        optional.config_schema = Some(json!({"type": "object"}));
+        optional
+            .validate_config(None)
+            .expect("an object schema without required keys is optional");
     }
 
     #[test]

@@ -42,6 +42,7 @@ clat upgrade --check
 | 无头运行器 | 脚本、CI、git hook、编辑器集成 | `clat exec` |
 | Web 工作台 | 可安装的本地 PWA 与 HTTP+SSE 客户端 | `clat serve` |
 | DSH 客户端 | 用 CLAT TUI 连接本地 DeepSeek Harness 宿主 | `clat dsh` |
+| 插件管理器 | 检查、安装、更新或回滚本地插件包 | `clat plugin` |
 | 离线演示 | 无凭据验证核心循环 | `clat demo` |
 
 `clat serve` 默认只绑定 `127.0.0.1:2691`。API 使用持久化的
@@ -61,7 +62,8 @@ clat upgrade --check
 - **会话**——`~/.clat` 下可从崩溃恢复的追加式 DSH 兼容日志、本地 replay
   与按项目恢复当前会话。
 - **扩展**——stdio / Streamable HTTP MCP、沙箱化 WebAssembly 组件，
-  以及面向 DSH 可移植插件能力的静态 Cordis 兼容适配器。
+  以及面向 DSH 可移植插件能力的静态 Cordis 兼容适配器；同一个
+  事务型插件管理器安装 WASM 与可执行 MCP 包，并提供能力复审与回滚。
 - **前端中立核心**——TUI、无头运行器、本地服务和未来客户端共享同一个
   Application 门面与事件词汇。
 
@@ -130,6 +132,7 @@ cargo build
 | `src/` | Rust 核心与各前端 |
 | `web/` | `clat serve` 内嵌的零构建 Web 资源 |
 | `wit/` | WASM 插件契约 |
+| `schemas/` | 插件/包的机器可读 schema |
 | `sdk/clat-plugin/` | WASM 插件作者使用的 Rust SDK |
 | `sdk/dsh-adapter/` | DSH 插件作者使用的 npm 适配器 |
 | `plugins/` | WASM 示例与试点插件 |

@@ -20,6 +20,10 @@ Files appear lazily, so a fresh installation may contain only a subset.
 ├── mcp.json                     # optional, user-managed MCP servers
 ├── plugins.json                 # optional, user-managed WASM components
 ├── plugin-grants.json           # hash- and directory-bound WASM write grants
+├── plugin-store/
+│   ├── registry.json            # atomic active/enabled package pointers (0600)
+│   ├── staging/                 # inert, recoverable install transactions
+│   └── artifacts/<id>/<digest>/ # immutable complete package trees
 ├── storages/
 │   ├── workspace.json           # multi-project workspace registry
 │   └── session_projcache.json   # rebuildable session-list cache
@@ -31,8 +35,10 @@ Files appear lazily, so a fresh installation may contain only a subset.
             └── attachments/         # copied local image attachments
 ```
 
-`mcp.json` and `plugins.json` are declarative inputs written by the user. The
-other files are written through core storage helpers or, for
+`mcp.json` and `plugins.json` are legacy declarative inputs written by the
+user and override a same-id installed package. `plugin-store` is written only
+by `clat plugin` while holding the same storage-root lease as a running CLAT
+application. The other files are written through core storage helpers or, for
 `dsh-last-session`, a small fail-soft client preference writer.
 
 ## Ownership and sensitivity
@@ -44,6 +50,8 @@ other files are written through core storage helpers or, for
 | projection checkpoint/cache | derived | drop and rebuild from facts |
 | `web-token` | local API credential | validate regular 0600 file; create/rotate atomically |
 | extension manifests | user input | isolate configuration/plugin failure where possible |
+| plugin registry | authoritative activation pointers | version/digest/signature mismatch fails closed; never reset or guess |
+| plugin artifacts/staging | immutable code / uncommitted transaction bytes | verify complete tree before activation; stale staging is never executable |
 | `dsh-last-session` | decorative client preference | missing/corrupt/oversized/symlink → ignore |
 
 Back up `~/.clat` as a unit when conversation history and configuration both

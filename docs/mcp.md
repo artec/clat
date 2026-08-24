@@ -10,8 +10,11 @@ language runtime. For portable in-process local tools, compare
 
 ## Configuration
 
-Create `~/.clat/mcp.json`. The file is optional; absence means no user-configured
-MCP servers.
+For a distributable local package, use `clat plugin install <package-dir>` with
+an `mcp-stdio` manifest; see [CLAT plugins](plugins.md). The package entry must
+be an executable and is launched with its immutable artifact directory as cwd.
+
+`~/.clat/mcp.json` remains the optional user-managed escape hatch:
 
 ```json
 {
@@ -21,7 +24,8 @@ MCP servers.
   },
   "memory": {
     "command": "mcp-memory",
-    "env": { "STORE": "/data" }
+    "env": { "STORE": "/data" },
+    "cwd": "mcp-work"
   },
   "web-search": {
     "url": "https://example.com/mcp",
@@ -32,7 +36,7 @@ MCP servers.
 
 Each entry chooses exactly one transport:
 
-- **stdio** — `command`, optional `args`, and optional `env`;
+- **stdio** — `command`, optional `args`, `env`, and fixed `cwd`;
 - **Streamable HTTP** — `url` and optional `headers`.
 
 Restart CLAT after changing the file. `/mcp` shows configured, connecting, and
@@ -52,10 +56,12 @@ seconds for that initial surface before the tool and prompt registries freeze.
 If a server finishes after that freeze, its registrations are rejected and
 `/mcp` reports the failure; restart CLAT after fixing or warming that server.
 
-Configured stdio subprocesses use `~/.clat` as their working directory, never
-the project directory. The DSH adapter receives the real project root only as
-the controlled `cwd` prompt argument. Servers are shared across runs in the
-mounted project and closed when that project scope closes. Teardown revokes
+User-configured stdio subprocesses use `~/.clat` as their default working
+directory, never the project directory. A relative explicit `cwd` also resolves
+under `~/.clat`. Installed packages use their immutable artifact root so
+bundled resources remain reachable. The DSH adapter receives the real project
+root only as the controlled prompt argument named `cwd`. Servers are shared
+across runs in the mounted project and closed when that project scope closes. Teardown revokes
 prompt and tool leases before closing stdin, waiting a bounded grace,
 killing/reaping if needed, and joining I/O threads.
 

@@ -45,33 +45,131 @@ host capability is designed once and then projected into MCP and WIT.
 - configuration schema;
 - optional compatibility provenance such as a pinned DSH revision.
 
-Runtime kinds are `wasm-component` and `mcp-stdio`. The current CLAT loader
-installs manifest-backed WASM packages through `~/.clat/plugins.json`; MCP/DSH
-packages still launch through `~/.clat/mcp.json`. Keeping both kinds in the
-same schema establishes the index/signing identity needed by a marketplace
-without prematurely adding an installer or executing arbitrary package hooks.
+Runtime kinds are `wasm-component` and `mcp-stdio`. Both are installed and
+activated by the same local package store. A WASM entry enters Wasmtime; an MCP
+entry is a package-relative executable launched out of process. CLAT never
+runs package install hooks and never requires an end-user language runtime.
+DSH authors can use `clat-dsh package` to compile their adapter and dependencies
+into one Bun executable.
 
-Manifest-backed WASM loading rejects unknown fields, id/key mismatch,
-directory escape, malformed digest, digest mismatch, undeclared prompts/tools,
-and invalid required configuration before guest execution. One bad package is
-reported in `/mcp` and does not prevent other packages from loading.
+Package ingestion rejects unknown fields, identity or digest mismatch,
+directory and symlink escape, special files, oversized trees, undeclared
+prompts/tools, invalid required configuration, malformed registry state, and
+tampered installed content before guest execution.
+
+A malformed/unknown-version registry is a global activation-control failure and
+fails closed. A bad artifact behind one otherwise valid record is isolated:
+that package is reported in `/mcp`, while other verified packages of the same
+runtime continue to mount. `clat plugin list` reports its health error;
+`disable` and pointer-first `uninstall` remain available as recovery actions,
+while `enable`, update and rollback always verify the bytes they would expose.
+
+## Local package lifecycle
+
+Inspecting is read-only:
+
+```bash
+clat plugin inspect ./my-plugin
+```
+
+Installation and the first capability-bearing activation require explicit
+review:
+
+```bash
+clat plugin install ./my-plugin --accept-capabilities
+clat plugin install ./my-plugin --config-file ./plugin-config.json \
+  --accept-capabilities
+```
+
+`--config-json` is also available for non-secret automation. Prefer the bounded,
+non-symlink `--config-file` path for credentials so values do not enter shell
+history or process arguments. The resulting JSON is stored only in the 0600
+registry and capped at 64 KiB.
+
+Lifecycle commands are:
+
+```text
+clat plugin list
+clat plugin update <package-dir> [--accept-capabilities]
+clat plugin disable <id>
+clat plugin enable <id>
+clat plugin rollback <id>
+clat plugin uninstall <id>
+```
+
+An update with the same or a narrower capability set needs no redundant
+acceptance. Any newly enabled capability or host-tool name stops before
+activation and lists the expansion. Rollback swaps the active and previous
+already-reviewed activations, including their private configuration.
+
+The immutable artifact tree is copied under `~/.clat/plugin-store/artifacts`
+and addressed by a deterministic complete-tree SHA-256. `registry.json` is the
+only active/enabled pointer. Artifact copy, digest verification and fsync
+finish before one atomic registry replacement commits activation. A failed or
+interrupted update therefore leaves the old version active; stale staging is
+inert and removed under the storage-root lease. The registry retains the
+active and one rollback activation; older unreferenced trees are reclaimed on
+the next package-store mutation.
+
+Uninstall commits pointer removal before deleting artifact bytes. A cleanup
+failure can leave an unreachable directory but cannot leave half-active code.
+
+## Trust and signatures
+
+Unsigned directories are displayed as `local/unverified`. A signed directory
+contains both:
+
+- `clat-plugin.publisher.json` — schema version 1, publisher id and Minisign
+  public key;
+- `clat-plugin.minisig` — signature over the canonical package identity and
+  complete content tree (excluding the signature file itself).
+
+A valid self-contained signature is displayed as `publisher/verified` and is
+reverified from immutable installed bytes at activation. This proves that the
+same publisher key signed the package; it does **not** mean CLAT or a future
+market has reviewed or trusted that publisher. Publisher onboarding, key
+rotation and revocation remain market policy.
+
+An in-place update must retain the exact publisher id and key (including the
+unsigned `local/unverified` identity). A publisher/key change or signed-to-
+unsigned downgrade requires explicit uninstall followed by a fresh install;
+ordinary update can never switch identity silently.
+
+`clat-dsh package` can produce this format with `--publisher`,
+`--publisher-key`, and `--minisign-key`.
+
+## Legacy override files
+
+`~/.clat/plugins.json` and `~/.clat/mcp.json` remain supported escape hatches.
+When a user-managed entry has the same id as an installed package, the user
+entry wins and installed manifest prompts/config do not leak into the override.
+The exclusion happens before artifact activation verification, so an explicit
+override is also a recovery path for a damaged installed artifact; all other
+enabled installed packages remain verified normally.
+Installed MCP processes receive package identity/trust plus private config in
+`CLAT_PLUGIN_*` environment fields and run with their immutable artifact root
+as cwd. User-configured MCP entries may set an explicit `cwd`; a relative value
+is resolved under `~/.clat`, never under the untrusted project.
 
 ## Marketplace readiness and remaining work
 
-The repository now has the runtime contract, package identity, digest binding,
-capability declarations, static prompts, config validation, failure isolation,
-and a DSH compatibility scanner. It does **not** yet have a remote catalog,
-download/install transaction, publisher signatures, review policy, update
-solver, revocation feed, or marketplace UI.
+The repository now has the runtime contract, package identity, bounded and
+transactional local install/update/rollback/uninstall, complete-tree digest
+binding, capability review, optional publisher signatures, trust labels,
+config validation, failure isolation, DSH port/package tooling and a semantic
+compatibility lab. It does **not** yet have a remote catalog, publisher
+onboarding/review policy, dependency/update solver, revocation feed,
+vulnerability service, or marketplace UI.
 
 A safe marketplace should add those layers in this order:
 
-1. signed immutable package/index records and publisher identity;
-2. transactional install/update/rollback with digest verification;
-3. capability and config review before activation;
-4. separate trust labels for sandboxed WASM and out-of-process DSH/MCP code;
-5. compatibility evidence tied to exact CLAT/WIT/DSH revisions;
-6. revocation, vulnerability, and deterministic rollback paths.
+1. signed immutable remote index records and publisher onboarding;
+2. review policy and separate trust labels for sandboxed WASM versus MCP code;
+3. dependency/update solving over immutable versions;
+4. compatibility evidence tied to exact CLAT/WIT/DSH revisions;
+5. revocation and vulnerability feeds;
+6. remote download transactions and marketplace UI over the existing local
+   activation/rollback core.
 
 See [WASM authoring](wasm.md), [DSH porting](dsh-plugins.md),
 [MCP integration](mcp.md), and [architecture](architecture.md).

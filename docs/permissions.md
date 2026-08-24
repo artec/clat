@@ -254,6 +254,21 @@ read-only; a non-interactive run without a stored grant fails closed. Grant
 records live in `~/.clat/plugin-grants.json` and can be revoked by deleting the
 matching record. See [WASM plugins](wasm.md#filesystem-write-grants).
 
+## Package capability review
+
+`clat plugin install/update --accept-capabilities` is an install-time review,
+not a replacement for runtime permission checks. It accepts the manifest's
+static ceiling (tools, prompts, sampling, elicitation, host context and named
+host tools). A later update that adds any ceiling entry stops until it is
+accepted explicitly; same/subset updates and rollback to an already accepted
+artifact do not widen authority.
+
+Runtime calls still pass the ordinary permission policy, project fence,
+cancellation and tool pipeline. WASM write preopens still require their
+separate hash/directory-bound grant. For MCP packages, capability review cannot
+sandbox arbitrary executable code; the package trust label and MCP security
+posture remain visible distinctions. See [CLAT plugins](plugins.md).
+
 ## Core design
 
 Each Run Scope creates `InteractivePermissionPolicy` around one classifier:

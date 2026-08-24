@@ -174,6 +174,11 @@ pub struct McpServerConfig {
     pub args: Vec<String>,
     #[serde(default)]
     pub env: std::collections::BTreeMap<String, String>,
+    /// Optional fixed subprocess working directory. Relative values resolve
+    /// under ~/.clat, never under the untrusted project. Installed packages
+    /// use their immutable artifact root so bundled resources are reachable.
+    #[serde(default)]
+    pub cwd: Option<String>,
 }
 
 impl McpServerConfig {
@@ -1322,7 +1327,8 @@ mod tests {
                 },
                 "memory": {
                     "command": "mcp-memory",
-                    "env": {"STORE": "/data"}
+                    "env": {"STORE": "/data"},
+                    "cwd": "mcp-work"
                 }
             }"#,
         )
@@ -1332,6 +1338,7 @@ mod tests {
         assert_eq!(config["filesystem"].args.len(), 3);
         assert!(config["filesystem"].env.is_empty());
         assert_eq!(config["memory"].env["STORE"], "/data");
+        assert_eq!(config["memory"].cwd.as_deref(), Some("mcp-work"));
 
         // 空文档与坏文档。
         assert!(parse_mcp_config("").unwrap().is_empty());

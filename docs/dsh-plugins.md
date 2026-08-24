@@ -189,7 +189,10 @@ npm test
 
 ## 兼容性扫描器
 
-Adapter 包含保守的源码扫描器。它按 package 报告使用的 `ctx.*` seam，并把
+Adapter 的 v2 扫描器使用 TypeScript AST、`apply`/可信 `Context` 参数、
+Cordis `Service` 来源与静态 `inject` 证明真正的 DSH context 绑定，不再把
+任意局部变量 `ctx` 当作插件证据。它还区分 `sessions.get` 与
+`sessions.create` 等成员级语义。扫描器按 package 报告使用的 seam，并把
 结果分成 `portable`、`host-bridged`、`partial`、`unsupported` 与
 `not-plugin`；结果按包名排序、携带 DSH Git revision，可作为后续逐包移植
 清单，但不能替代行为验收：
@@ -199,10 +202,42 @@ cd sdk/dsh-adapter
 npm run scan -- /path/to/deepseek-harness --output /tmp/dsh-compat.json
 ```
 
-对本页钉定的 `b150a551…` checkout，本阶段扫描到 249 个 package，其中
-234 个含插件候选证据：1 `portable`、188 `partial`、45 `unsupported`、
-15 `not-plugin`。这是刻意保守的静态结果：一个未知 service 就不会被算作
-完全兼容；它也没有把 Web preset 的 147 个配置行冒充 147 个已验收包。
+对本页钉定的 `b150a551…` checkout，v2 扫描到 249 个 package，其中
+234 个含插件候选证据：2 `portable`、171 `partial`、61 `unsupported`、
+15 `not-plugin`。完整矩阵的稳定 SHA-256 为
+`0328b3b3eea092d261df1f93b7bd9185dcf42a1ebbed76e1639cd37e21219d71`。
+成员级判断比 v1 更严格，所以 `unsupported` 增多不代表兼容性倒退。
+
+主插件移植只分析 package 默认入口及其相对 import graph，不会因为独立的
+`./invariant` companion export 把主入口误判为 partial。钉定的 12 包代表
+cohort 覆盖 web、LLM、用户提问、todo、fs、agent loop、shell、subagent、
+skill 与 storage，证据位于 `sdk/dsh-adapter/compat/official-cohort.json`。
+
+## 转换、测试与打包
+
+作者侧工具需要 TypeScript 5.7+；它不进入 CLAT 核心，也不是 adapter
+server 的运行时依赖：
+
+```bash
+clat-dsh inspect /path/to/dsh-plugin
+clat-dsh port /path/to/dsh-plugin --out ./clat-port
+clat-dsh test ./clat-port
+clat-dsh package ./clat-port --out ./clat-package
+clat plugin install ./clat-package --accept-capabilities
+```
+
+`port` 保留原 DSH 入口并生成独立 MCP wrapper、逐 seam 报告和 TODO。
+`package` 默认拒绝存在 unsupported seam 的报告；人工审查后只能显式使用
+`--allow-partial`。它通过 Bun 生成单一可执行文件，因此最终用户不需要
+Node.js。`test` 和 `package` 都会进行真实 MCP initialize/tools-list smoke。
+
+可选的 `--publisher`、`--publisher-key`、`--minisign-key` 会生成
+Minisign companion 文件。CLAT 安装器重新计算完整包树并验签，但
+`publisher/verified` 只证明同一自声明 publisher key 签过该包，不代表未来
+市场已经审核该作者。
+
+这是刻意保守的证据：未知/可变 service 不会被算作完全兼容，也没有把 Web
+preset 的 147 个配置行冒充 147 个已行为验收包。
 
 CLAT 插件包、Rust/WASM 原生插件与未来市场的统一身份模型见
 [CLAT 插件与包格式](plugins.md)。
