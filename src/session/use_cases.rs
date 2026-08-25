@@ -33,6 +33,12 @@ pub struct SessionSummary {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ApprovedPlanWrite {
+    pub(crate) text: String,
+    pub(crate) digest: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TranscriptLine {
     pub kind: String,
     pub text: String,
@@ -202,6 +208,8 @@ pub(crate) struct SessionService {
     backend: Arc<JsonlBackend>,
     checkpoints: CheckpointStore,
     active: Mutex<Option<ActiveSession>>,
+    #[cfg(test)]
+    fail_next_plan_checkpoint: std::sync::atomic::AtomicBool,
 }
 
 impl SessionService {
@@ -220,6 +228,8 @@ impl SessionService {
             )),
             checkpoints: CheckpointStore::new(root),
             active: Mutex::new(None),
+            #[cfg(test)]
+            fail_next_plan_checkpoint: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -645,6 +655,98 @@ impl SessionService {
         journal.flush().map_err(SessionError::Corruption)?;
         checkpoint_active(active, &self.checkpoints)?;
         Ok(true)
+    }
+
+    /// Active session Plan Mode projection. Missing state is inactive.
+    pub(crate) fn plan_mode_state(&self) -> crate::plan_mode::PlanModeState {
+        let guard = self.active.lock().expect("active");
+        let Some(active) = guard.as_ref() else {
+            return crate::plan_mode::PlanModeState::default();
+        };
+        let projections = active.projections.lock().expect("projections");
+        let state = projections.state_snapshot("plan-mode").unwrap_or_default();
+        crate::plan_mode::PlanModeState {
+            active: state
+                .get("active")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            approved: state.get("approved").and_then(|approved| {
+                Some(crate::plan_mode::ApprovedPlan {
+                    text: approved.get("text")?.as_str()?.to_owned(),
+                    digest: approved.get("digest")?.as_str()?.to_owned(),
+                    event_seq: approved.get("eventSeq")?.as_u64()?,
+                })
+            }),
+        }
+    }
+
+    /// Append+flush a DSH `plan/mode` fact. The append+flush is the commit
+    /// point; a checkpoint refresh failure is rebuildable and does not roll
+    /// back a user-approved plan that is already durable.
+    pub(crate) fn record_plan_mode(
+        &self,
+        active_mode: bool,
+        approved: Option<ApprovedPlanWrite>,
+    ) -> Result<Option<u64>, SessionError> {
+        if active_mode && approved.is_some() {
+            return Err(SessionError::Corruption(
+                "approved plan is valid only when plan mode becomes inactive".into(),
+            ));
+        }
+        let guard = self.active.lock().expect("active");
+        let Some(active) = guard.as_ref() else {
+            return Ok(None);
+        };
+        let current = {
+            let projections = active.projections.lock().expect("projections");
+            projections.state_snapshot("plan-mode").unwrap_or_default()
+        };
+        if approved.is_none()
+            && current
+                .get("active")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+                == active_mode
+            && current.get("approved").is_none()
+        {
+            return Ok(None);
+        }
+        let mut data = serde_json::json!({ "active": active_mode });
+        if let Some(approved) = approved {
+            data.as_object_mut().expect("plan payload object").insert(
+                "approved".into(),
+                serde_json::json!({ "text": approved.text, "digest": approved.digest }),
+            );
+        }
+        let mut journal_slot = active.journal.lock().expect("session journal");
+        if journal_slot.is_none() {
+            *journal_slot = Some(journal_with_projection_fold(active, &self.backend));
+        }
+        let journal = Arc::clone(journal_slot.as_ref().expect("just initialized"));
+        drop(journal_slot);
+        let seq = journal
+            .append(crate::session::run_journal::NewSessionEvent::new(
+                "plan/mode",
+                data,
+            ))
+            .map_err(SessionError::Corruption)?;
+        journal.flush().map_err(SessionError::Corruption)?;
+        #[cfg(test)]
+        let checkpoint = if self.fail_next_plan_checkpoint.swap(false, Ordering::AcqRel) {
+            Err(SessionError::Io(
+                "intentional plan-mode checkpoint failure".into(),
+            ))
+        } else {
+            checkpoint_active(active, &self.checkpoints)
+        };
+        #[cfg(not(test))]
+        let checkpoint = checkpoint_active(active, &self.checkpoints);
+        if let Err(error) = checkpoint {
+            eprintln!(
+                "clat: warning: plan-mode checkpoint refresh failed after durable commit: {error}"
+            );
+        }
+        Ok(Some(seq))
     }
 
     /// The first user message text of the active session (transcript
@@ -1211,6 +1313,142 @@ mod tests {
             .map_err(SessionError::Corruption)?;
         journal.flush().map_err(SessionError::Corruption)?;
         Ok(())
+    }
+
+    struct FailingPlanJournal {
+        append_error: bool,
+        flush_error: bool,
+    }
+
+    impl crate::session::run_journal::RunJournal for FailingPlanJournal {
+        fn append_atomic(
+            &self,
+            _events: &[crate::session::run_journal::NewSessionEvent],
+        ) -> Result<crate::session::run_journal::SeqRange, String> {
+            if self.append_error {
+                Err("intentional plan append failure".into())
+            } else {
+                Ok(crate::session::run_journal::SeqRange {
+                    start: 99,
+                    end_inclusive: 99,
+                })
+            }
+        }
+
+        fn flush(&self) -> Result<(), String> {
+            if self.flush_error {
+                Err("intentional plan flush failure".into())
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn plan_mode_append_and_flush_failures_never_publish_approval() {
+        let (service, root) = service("plan-commit-failures");
+        service.new_session(&project()).expect("session");
+        service
+            .record_plan_mode(true, None)
+            .expect("enter plan mode");
+        assert!(service.plan_mode_state().active);
+
+        let replace_journal = |journal: Arc<dyn crate::session::run_journal::RunJournal>| {
+            let guard = service.active.lock().expect("active");
+            let active = guard.as_ref().expect("active session");
+            *active.journal.lock().expect("journal") = Some(journal);
+        };
+
+        replace_journal(Arc::new(FailingPlanJournal {
+            append_error: true,
+            flush_error: false,
+        }));
+        let approved = ApprovedPlanWrite {
+            text: "approved only after durable commit".into(),
+            digest: crate::plan_mode::plan_digest("approved only after durable commit"),
+        };
+        assert!(
+            service
+                .record_plan_mode(false, Some(approved.clone()))
+                .is_err()
+        );
+        assert!(service.plan_mode_state().active);
+        assert!(service.plan_mode_state().approved.is_none());
+
+        replace_journal(Arc::new(FailingPlanJournal {
+            append_error: false,
+            flush_error: true,
+        }));
+        assert!(service.record_plan_mode(false, Some(approved)).is_err());
+        assert!(service.plan_mode_state().active);
+        assert!(service.plan_mode_state().approved.is_none());
+
+        // Restore the real folding journal so normal teardown can flush/close.
+        {
+            let guard = service.active.lock().expect("active");
+            let active = guard.as_ref().expect("active session");
+            *active.journal.lock().expect("journal") =
+                Some(journal_with_projection_fold(active, &service.backend));
+        }
+        service.quiesce_active().expect("quiesce");
+        crate::test_support::cleanup_tree(&root);
+    }
+
+    #[test]
+    fn plan_mode_checkpoint_failure_after_commit_is_rebuildable_degradation() {
+        let (service, root) = service("plan-checkpoint-degradation");
+        let project = project();
+        let summary = service.new_session(&project).expect("session");
+        let key = SessionKey {
+            project: project.clone(),
+            id: summary.id,
+        };
+        service
+            .record_plan_mode(true, None)
+            .expect("enter plan mode");
+        service
+            .fail_next_plan_checkpoint
+            .store(true, Ordering::Release);
+        let text = "checkpoint failure must not undo a durable approval";
+        let seq = service
+            .record_plan_mode(
+                false,
+                Some(ApprovedPlanWrite {
+                    text: text.into(),
+                    digest: crate::plan_mode::plan_digest(text),
+                }),
+            )
+            .expect("checkpoint failure is non-fatal")
+            .expect("durable approval seq");
+        let state = service.plan_mode_state();
+        assert!(!state.active);
+        assert_eq!(
+            state.approved.as_ref().map(|plan| plan.event_seq),
+            Some(seq)
+        );
+        assert_eq!(
+            state.approved.as_ref().map(|plan| plan.text.as_str()),
+            Some(text)
+        );
+        service.quiesce_active().expect("quiesce");
+        drop(service);
+
+        let reopened = SessionService::new(root.clone(), JsonlCompression::Zstd).expect("reopen");
+        reopened
+            .resume(&key)
+            .expect("resume from stale checkpoint + journal tail");
+        let rebuilt = reopened.plan_mode_state();
+        assert!(!rebuilt.active);
+        assert_eq!(
+            rebuilt.approved.as_ref().map(|plan| plan.event_seq),
+            Some(seq)
+        );
+        assert_eq!(
+            rebuilt.approved.as_ref().map(|plan| plan.text.as_str()),
+            Some(text)
+        );
+        reopened.quiesce_active().expect("reopen quiesce");
+        crate::test_support::cleanup_tree(&root);
     }
 
     /// 启动加载的分阶段计时（诊断用，`--ignored` 运行）。模拟一个真实

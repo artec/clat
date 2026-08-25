@@ -75,6 +75,8 @@ pub fn run_demo(
             steering: crate::run::SteeringQueue::new(),
             approver: Arc::new(demo_approver),
             events,
+            tool_access: crate::tool::ToolAccessPolicy::all(),
+            workflow_instructions: None,
             permission_mode: None,
         })
         .map_err(|failure| failure.error);

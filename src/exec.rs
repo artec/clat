@@ -810,6 +810,45 @@ fn run_headless_command(
                 usage: Usage::default(),
             }
         }
+        Ok(CommandOutcome::ShowContext(snapshot)) => {
+            let mut text = format!(
+                "context estimate ({})\nbase prompt: {}\nproject instructions: {}\nplan policy: {}\nskill catalog: {}\ntool schemas: {}\nhistory/compaction view: {}\noutput reserve: {}\ninput estimate: {}\ntotal estimate: {}\n",
+                snapshot.unit,
+                snapshot.base_prompt_estimate,
+                snapshot.project_instructions_estimate,
+                snapshot.plan_policy_estimate,
+                snapshot.skill_catalog_estimate,
+                snapshot.tool_schemas_estimate,
+                snapshot.history_estimate,
+                snapshot.output_reserve_estimate,
+                snapshot.input_estimate,
+                snapshot.total_estimate,
+            );
+            text.push_str(&format!("tools: {}\n", snapshot.tool_names.join(", ")));
+            text.push_str(&format!("skills: {}\n", snapshot.skill_names.join(", ")));
+            if snapshot.skill_diagnostics.is_empty() {
+                text.push_str("skill diagnostics: none\n");
+            } else {
+                text.push_str("skill diagnostics:\n");
+                for diagnostic in &snapshot.skill_diagnostics {
+                    let name = diagnostic.name.as_deref().unwrap_or("-");
+                    text.push_str(&format!(
+                        "! {} / {} / {}: {}\n",
+                        diagnostic.source, name, diagnostic.kind, diagnostic.message
+                    ));
+                }
+            }
+            let write = stream_write(&io.output, format_args!("{text}"))
+                .and_then(|()| stream_flush(&io.output));
+            if let Err(error) = write {
+                io_state.note("stdout", error);
+            }
+            ExecOutcome::Success {
+                output: text,
+                turns: 0,
+                usage: Usage::default(),
+            }
+        }
         Ok(CommandOutcome::Status(message)) => {
             if !args.quiet {
                 write_status(&io.error, io_state, format_args!("{message}\n"));

@@ -6,6 +6,32 @@ use crate::session::replay::ReplayEvent;
 use crate::session::use_cases::TranscriptLine;
 use std::path::PathBuf;
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContextEstimateSnapshot {
+    pub estimator: String,
+    pub unit: String,
+    pub base_prompt_estimate: u64,
+    pub project_instructions_estimate: u64,
+    pub plan_policy_estimate: u64,
+    pub skill_catalog_estimate: u64,
+    pub tool_schemas_estimate: u64,
+    pub history_estimate: u64,
+    pub output_reserve_estimate: u64,
+    pub input_estimate: u64,
+    pub total_estimate: u64,
+    pub tool_names: Vec<String>,
+    pub skill_names: Vec<String>,
+    pub skill_diagnostics: Vec<ContextSkillDiagnostic>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContextSkillDiagnostic {
+    pub source: String,
+    pub name: Option<String>,
+    pub kind: String,
+    pub message: String,
+}
+
 /// 轻量、前端中立的工作台读模型。
 ///
 /// 与 [`ProjectSnapshot`] 的边界刻意不同：这里不读 transcript/replay，

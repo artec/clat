@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "servers": {
+    "rust": {
+      "command": "__CLAT_TEST_FAKE_LSP__",
+      "args": ["normal"],
+      "extensions": {".rs": "rust"}
+    }
+  }
+}

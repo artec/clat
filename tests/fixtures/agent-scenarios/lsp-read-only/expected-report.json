@@ -1,0 +1,99 @@
+{
+  "schema_version": 1,
+  "scenario_id": "lsp-read-only",
+  "gate": "matched",
+  "expected": {
+    "outcome": "success",
+    "event_kinds": [
+      "run_started",
+      "model_requested",
+      "model_responded",
+      "tool_requested",
+      "permission_checked",
+      "tool_started",
+      "tool_finished",
+      "model_requested",
+      "model_stream",
+      "model_responded",
+      "run_completed"
+    ],
+    "durable_event_kinds": [
+      "turn/start",
+      "user/message",
+      "step/start",
+      "request/header",
+      "assistant/message",
+      "approval/asked",
+      "approval/decided",
+      "tool/call",
+      "tool/result",
+      "step/end",
+      "step/start",
+      "assistant/chunk",
+      "assistant/message",
+      "step/end",
+      "turn/end"
+    ],
+    "permission_checks": [
+      {
+        "tool": "lsp",
+        "decision": "allow"
+      }
+    ]
+  },
+  "observed": {
+    "status": "success",
+    "output": "definition resolved through read-only LSP",
+    "turns": 2
+  },
+  "model_steps": {
+    "expected": 2,
+    "observed": 2,
+    "violations": []
+  },
+  "event_kinds": [
+    "run_started",
+    "model_requested",
+    "model_responded",
+    "tool_requested",
+    "permission_checked",
+    "tool_started",
+    "tool_finished",
+    "model_requested",
+    "model_stream",
+    "model_responded",
+    "run_completed"
+  ],
+  "durable_event_kinds": [
+    "turn/start",
+    "user/message",
+    "step/start",
+    "request/header",
+    "assistant/message",
+    "approval/asked",
+    "approval/decided",
+    "tool/call",
+    "tool/result",
+    "step/end",
+    "step/start",
+    "assistant/chunk",
+    "assistant/message",
+    "step/end",
+    "turn/end"
+  ],
+  "permission_checks": [
+    {
+      "tool": "lsp",
+      "decision": "allow"
+    }
+  ],
+  "files": [
+    {
+      "path": "src/lib.rs",
+      "bytes": 34,
+      "sha256": "a39be25cb7e57b5cbc17de00157a42dd64bf7a4ba83d2bbb52aa9a40658e2544"
+    }
+  ],
+  "files_match": true,
+  "application_close": "clean"
+}

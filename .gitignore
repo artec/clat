@@ -10,6 +10,7 @@ sdk/dsh-adapter/dist/
 .DS_Store
 
 # Editors and IDEs
+.ai-bridge/
 .idea/
 .vscode/
 .zcode/

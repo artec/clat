@@ -184,6 +184,8 @@ fn agent_command_spawning_is_owned_only_by_process_service() {
     for name in [
         "src/native_tools.rs",
         "src/plugins/process.rs",
+        "src/plugins/language_intelligence.rs",
+        "src/language_intelligence.rs",
         "src/application/run_lifecycle.rs",
         "src/run.rs",
         "src/sandbox.rs",

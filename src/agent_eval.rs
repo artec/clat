@@ -51,6 +51,7 @@ enum ScenarioOs {
     #[default]
     Any,
     Unix,
+    Macos,
 }
 
 impl ScenarioOs {
@@ -58,6 +59,7 @@ impl ScenarioOs {
         match self {
             Self::Any => true,
             Self::Unix => cfg!(unix),
+            Self::Macos => cfg!(target_os = "macos"),
         }
     }
 }
@@ -486,10 +488,19 @@ fn run_fixture(fixture: &Path) -> Result<ScenarioReport, String> {
     let _temp = TempTree(base);
     std::fs::create_dir_all(&project_root).map_err(|error| error.to_string())?;
     copy_fixture_tree(&fixture.join("input"), &project_root)?;
-
     let script = Arc::new(ScenarioScript::new(definition.model_steps.clone()));
     let bootstrap = BootstrapApplication::open(Project::new(&project_root), storage_root.clone())
         .map_err(|error| error.to_string())?;
+    let storage_input = fixture.join("storage-input");
+    if storage_input.exists() {
+        copy_fixture_tree(&storage_input, &storage_root)?;
+    }
+    // Backward-compatible shorthand used by the 3-B layering fixture.
+    let user_input = fixture.join("user-input");
+    if user_input.exists() {
+        copy_fixture_tree(&user_input, &storage_root.join("skills"))?;
+    }
+    materialize_fake_lsp_command(&storage_root)?;
     let mut application = bootstrap
         .authorize_and_mount_with_provider(Arc::new(TestProviderPlugin {
             behavior: TestBehavior::Scripted(script.clone()),
@@ -899,6 +910,31 @@ fn copy_fixture_tree(source: &Path, destination: &Path) -> Result<(), String> {
         std::fs::write(target, bytes).map_err(|error| error.to_string())?;
     }
     Ok(())
+}
+
+fn materialize_fake_lsp_command(storage_root: &Path) -> Result<(), String> {
+    let path = storage_root.join("lsp.json");
+    if !path.is_file() {
+        return Ok(());
+    }
+    let text = std::fs::read_to_string(&path).map_err(|error| error.to_string())?;
+    if !text.contains("__CLAT_TEST_FAKE_LSP__") {
+        return Ok(());
+    }
+    let helper = storage_root.join(format!("fake-lsp-server{}", std::env::consts::EXE_SUFFIX));
+    crate::process::compile_rust_test_helper(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/lsp/fake_lsp_server.rs"),
+        &helper,
+    )?;
+    let mut value: serde_json::Value =
+        serde_json::from_str(&text).map_err(|error| error.to_string())?;
+    let command = value
+        .pointer_mut("/servers/rust/command")
+        .ok_or_else(|| "fake LSP fixture is missing servers.rust.command".to_owned())?;
+    *command = serde_json::Value::String(helper.to_string_lossy().into_owned());
+    let mut rendered = serde_json::to_string_pretty(&value).map_err(|error| error.to_string())?;
+    rendered.push('\n');
+    std::fs::write(path, rendered).map_err(|error| error.to_string())
 }
 
 fn collect_files(root: &Path) -> Result<BTreeMap<String, Vec<u8>>, String> {

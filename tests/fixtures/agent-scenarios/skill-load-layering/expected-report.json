@@ -1,0 +1,95 @@
+{
+  "schema_version": 1,
+  "scenario_id": "skill-load-layering",
+  "gate": "matched",
+  "expected": {
+    "outcome": "success",
+    "event_kinds": [
+      "run_started",
+      "model_requested",
+      "model_responded",
+      "tool_requested",
+      "permission_checked",
+      "tool_started",
+      "tool_finished",
+      "model_requested",
+      "model_stream",
+      "model_responded",
+      "run_completed"
+    ],
+    "durable_event_kinds": [
+      "turn/start",
+      "user/message",
+      "step/start",
+      "request/header",
+      "assistant/message",
+      "tool/call",
+      "tool/result",
+      "step/end",
+      "step/start",
+      "assistant/chunk",
+      "assistant/message",
+      "step/end",
+      "turn/end"
+    ],
+    "permission_checks": [
+      {
+        "tool": "skill",
+        "decision": "allow"
+      }
+    ]
+  },
+  "observed": {
+    "status": "success",
+    "output": "project skill wins",
+    "turns": 2
+  },
+  "model_steps": {
+    "expected": 2,
+    "observed": 2,
+    "violations": []
+  },
+  "event_kinds": [
+    "run_started",
+    "model_requested",
+    "model_responded",
+    "tool_requested",
+    "permission_checked",
+    "tool_started",
+    "tool_finished",
+    "model_requested",
+    "model_stream",
+    "model_responded",
+    "run_completed"
+  ],
+  "durable_event_kinds": [
+    "turn/start",
+    "user/message",
+    "step/start",
+    "request/header",
+    "assistant/message",
+    "tool/call",
+    "tool/result",
+    "step/end",
+    "step/start",
+    "assistant/chunk",
+    "assistant/message",
+    "step/end",
+    "turn/end"
+  ],
+  "permission_checks": [
+    {
+      "tool": "skill",
+      "decision": "allow"
+    }
+  ],
+  "files": [
+    {
+      "path": ".clat/skills/code-review/SKILL.md",
+      "bytes": 146,
+      "sha256": "3d1201d26fc08c085ab6d61dc2759525ee4e762e33c89135dd542f21414cfc6d"
+    }
+  ],
+  "files_match": true,
+  "application_close": "clean"
+}

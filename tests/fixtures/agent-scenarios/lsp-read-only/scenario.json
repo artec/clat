@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "id": "lsp-read-only",
+  "os": "macos",
+  "prompt": "Use read-only language intelligence to find the definition of answer in src/lib.rs.",
+  "model_steps": [
+    {
+      "expect": {
+        "available_tools_include": ["lsp"]
+      },
+      "response": {
+        "tool_calls": [
+          {
+            "id": "call-lsp-definition",
+            "name": "lsp",
+            "arguments": {
+              "operation": "definition",
+              "file_path": "src/lib.rs",
+              "line": 1,
+              "character": 8
+            }
+          }
+        ],
+        "finish_reason": "tool_calls"
+      }
+    },
+    {
+      "expect": {
+        "required_tool_results": ["lsp"],
+        "required_tool_result_contains": [
+          {
+            "tool": "lsp",
+            "text": "\"path\":\"src/lib.rs\""
+          },
+          {
+            "tool": "lsp",
+            "text": "\"mode\":\"project-read-temp-write\""
+          },
+          {
+            "tool": "lsp",
+            "text": "\"provider\":\"seatbelt\""
+          }
+        ]
+      },
+      "response": {
+        "text": "definition resolved through read-only LSP",
+        "finish_reason": "completed"
+      }
+    }
+  ],
+  "expected": {
+    "outcome": "success",
+    "event_kinds": [
+      "run_started",
+      "model_requested",
+      "model_responded",
+      "tool_requested",
+      "permission_checked",
+      "tool_started",
+      "tool_finished",
+      "model_requested",
+      "model_stream",
+      "model_responded",
+      "run_completed"
+    ],
+    "durable_event_kinds": [
+      "turn/start",
+      "user/message",
+      "step/start",
+      "request/header",
+      "assistant/message",
+      "approval/asked",
+      "approval/decided",
+      "tool/call",
+      "tool/result",
+      "step/end",
+      "step/start",
+      "assistant/chunk",
+      "assistant/message",
+      "step/end",
+      "turn/end"
+    ],
+    "permission_checks": [
+      {
+        "tool": "lsp",
+        "decision": "allow"
+      }
+    ]
+  }
+}

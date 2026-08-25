@@ -31,6 +31,12 @@ pub(crate) const DYNAMIC_INSTRUCTIONS_SERVICE_ID: ServiceId =
     ServiceId::new("core.dynamic_instructions");
 pub(crate) const SANDBOX_SERVICE_ID: ServiceId = ServiceId::new("core.sandbox");
 pub(crate) const PROCESS_SERVICE_ID: ServiceId = ServiceId::new("core.process");
+pub(crate) const PLAN_MODE_SERVICE_ID: ServiceId = ServiceId::new("core.plan_mode");
+pub(crate) const TOOL_ACCESS_SERVICE_ID: ServiceId = ServiceId::new("core.tool_access");
+pub(crate) const SKILLS_SERVICE_ID: ServiceId = ServiceId::new("core.skills");
+pub(crate) const SKILL_CATALOG_SERVICE_ID: ServiceId = ServiceId::new("core.skill_catalog");
+pub(crate) const LANGUAGE_INTELLIGENCE_SERVICE_ID: ServiceId =
+    ServiceId::new("core.language_intelligence");
 
 pub(crate) const SESSION_SERVICE: ServiceKey<crate::session::use_cases::SessionService> =
     ServiceKey::new(SESSION_SERVICE_ID);
@@ -59,6 +65,17 @@ pub(crate) const SANDBOX_SERVICE: ServiceKey<crate::sandbox::SandboxService> =
     ServiceKey::new(SANDBOX_SERVICE_ID);
 pub(crate) const PROCESS_SERVICE: ServiceKey<crate::process::ProcessService> =
     ServiceKey::new(PROCESS_SERVICE_ID);
+pub(crate) const PLAN_MODE_SERVICE: ServiceKey<crate::plan_mode::PlanModeService> =
+    ServiceKey::new(PLAN_MODE_SERVICE_ID);
+pub(crate) const TOOL_ACCESS_SERVICE: ServiceKey<crate::tool::ToolAccessSlot> =
+    ServiceKey::new(TOOL_ACCESS_SERVICE_ID);
+pub(crate) const SKILLS_SERVICE: ServiceKey<crate::skills::SkillsService> =
+    ServiceKey::new(SKILLS_SERVICE_ID);
+pub(crate) const SKILL_CATALOG_SERVICE: ServiceKey<crate::skills::SkillCatalogSlot> =
+    ServiceKey::new(SKILL_CATALOG_SERVICE_ID);
+pub(crate) const LANGUAGE_INTELLIGENCE_SERVICE: ServiceKey<
+    crate::language_intelligence::LanguageIntelligenceService,
+> = ServiceKey::new(LANGUAGE_INTELLIGENCE_SERVICE_ID);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct InstructionSourceInfo {
@@ -673,6 +690,8 @@ pub(crate) struct AgentRequest {
     pub steering: crate::run::SteeringQueue,
     pub approver: Arc<dyn PermissionApprover>,
     pub events: Box<dyn EventSink + Send>,
+    pub tool_access: crate::tool::ToolAccessPolicy,
+    pub workflow_instructions: Option<String>,
     /// run 起点的权限档位快照——仅供系统指令注入说明；权限决策读共
     /// 享 cell，不受此快照限制。None = Classic（exec）——不注入。
     pub permission_mode: Option<crate::permission::PermissionMode>,

@@ -90,7 +90,7 @@ execution path.
 | Scope | Lifetime | Owns |
 |---|---|---|
 | Bootstrap | process open → trust decision | control-format classification and read-only trust lookup |
-| Trusted Project | trust accepted → project close | storage lease, sessions, providers, tools, prompts, commands, MCP/WASM adapters, monitors, compaction, titles, todos |
+| Trusted Project | trust accepted → project close | storage lease, sessions, providers, tools, prompts, commands, Plan/Skills/LSP/Context services, MCP/WASM adapters, monitors, compaction, titles, todos |
 | Run | one active agent run | cancel token, permission approver, user asker, plugin-host context, model/tool worker |
 
 Bootstrap deliberately has no plugin scope. A catalog is validated before any
@@ -306,6 +306,29 @@ approved successful file tools through a post-tool observer, and adds nested
 `AGENTS.md`/`CLAUDE.md` scopes before the next model request. The complete
 system snapshot and source path/scope/digest metadata travel in
 `request/header`; resume restores the active scopes from that durable fact.
+
+### Workflow and intelligence plugins
+
+Agent phase 3 is four removable Trusted Project catalog entries rather than one
+new runtime layer:
+
+- `builtin.plan_mode` owns durable plan state, `/plan`, `exit_plan_mode`, and the
+  per-run `ToolAccessPolicy`;
+- `builtin.skills` scans bundled/user/project `SKILL.md` layers and installs one
+  run-bound frozen catalog plus the read-only `skill` loader;
+- `builtin.language_intelligence` reads user-level `lsp.json`, exposes one
+  `ExternalRead` `lsp` tool, and borrows project-owned managed stdio from
+  `ProcessService`; it does not add a second spawn seam;
+- `builtin.context_inspector` registers `/context` only. The Application derives
+  its snapshot from the same prompt, project-instruction, plan, skill, tool and
+  model-history readers used by the next request.
+
+At each run start one `RunContextSnapshot` freezes Plan tool access and the skill
+catalog. The same objects drive model-visible schemas, workflow instructions,
+`request/header`, forged-call admission, permission/plugin-host gating, and
+budget estimation. `/context` is outside a Run and takes a fresh read-only
+snapshot; its component estimates are incremental calls to the same
+`model::estimate_request_tokens` function, with output reserve added separately.
 
 Writes are project-relative in Read Only, Project Write, and headless runs;
 Full Access can unlock absolute writes. Command execution remains rooted in the

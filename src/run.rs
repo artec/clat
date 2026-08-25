@@ -128,6 +128,7 @@ pub(crate) struct Run<'a> {
     cancel: CancelToken,
     steering: SteeringQueue,
     tool_pipeline: Option<&'a ToolExecutionPipeline>,
+    tool_access: crate::tool::ToolAccessPolicy,
     /// B1 花费护栏（F-1：与 recorder 预警同一账本——含插件采样归并，
     /// 预警数字与终止文案同源）。每轮模型请求前读；越顶以三要素错误
     /// 终止（教学式文案）。
@@ -152,6 +153,7 @@ impl<'a> Run<'a> {
             cancel: CancelToken::new(),
             steering: SteeringQueue::new(),
             tool_pipeline: None,
+            tool_access: crate::tool::ToolAccessPolicy::all(),
             spend_ledger: None,
         }
     }
@@ -200,6 +202,11 @@ impl<'a> Run<'a> {
 
     pub(crate) fn with_tool_pipeline(mut self, pipeline: &'a ToolExecutionPipeline) -> Self {
         self.tool_pipeline = Some(pipeline);
+        self
+    }
+
+    pub(crate) fn with_tool_access(mut self, access: crate::tool::ToolAccessPolicy) -> Self {
+        self.tool_access = access;
         self
     }
 
@@ -315,7 +322,7 @@ impl<'a> Run<'a> {
                         items,
                     ));
                 }
-                let definitions = self.tools.definitions();
+                let definitions = self.tools.definitions_for(&self.tool_access);
                 let output_limit = u64::from(self.model_options.output_limit.unwrap_or(4096));
                 ledger.reserve(
                     crate::model::estimate_request_tokens(
@@ -333,7 +340,7 @@ impl<'a> Run<'a> {
                 model: self.model.model_id().to_owned(),
             });
 
-            let definitions = self.tools.definitions();
+            let definitions = self.tools.definitions_for(&self.tool_access);
             let request = ModelRequest {
                 instructions: instructions.as_deref(),
                 items: &items,
@@ -482,6 +489,31 @@ impl<'a> Run<'a> {
                     ));
                 };
                 let definition = tool.definition();
+                if !self.tool_access.allows(&definition) {
+                    let reason = self.tool_access.denial_reason().to_owned();
+                    let decision = PermissionDecision::Deny {
+                        reason: reason.clone(),
+                    };
+                    events.emit(RunEvent::PermissionChecked {
+                        tool: definition.name.clone(),
+                        decision,
+                    });
+                    let mut result = ToolResult {
+                        call_id: call.id.clone(),
+                        tool_name: call.name.clone(),
+                        output: serde_json::json!({ "error": reason }),
+                        is_error: true,
+                    };
+                    if let Some(pipeline) = self.tool_pipeline {
+                        pipeline.transform_result(&mut result);
+                    }
+                    items.push(ModelItem::ToolResult(result));
+                    events.emit(RunEvent::PermissionDenied {
+                        tool: call.name,
+                        reason: self.tool_access.denial_reason().into(),
+                    });
+                    continue;
+                }
                 let decision = self.permissions.check(self.project, &definition, &call);
 
                 events.emit(RunEvent::PermissionChecked {
@@ -567,6 +599,9 @@ impl<'a> Run<'a> {
                         true,
                     ),
                 };
+                let approved_plan_exit = call.name == "exit_plan_mode"
+                    && !is_error
+                    && output.get("approved").and_then(serde_json::Value::as_bool) == Some(true);
                 let mut result = ToolResult {
                     call_id: call.id,
                     tool_name: call.name,
@@ -579,6 +614,25 @@ impl<'a> Run<'a> {
 
                 items.push(ModelItem::ToolResult(result.clone()));
                 events.emit(RunEvent::ToolFinished { result });
+                if approved_plan_exit {
+                    self.steering.seal();
+                    let output = if response.text.trim().is_empty() {
+                        "Plan approved. Implementation is enabled for the next run.".to_owned()
+                    } else {
+                        response.text.clone()
+                    };
+                    events.emit(RunEvent::RunCompleted {
+                        output: output.clone(),
+                        turns: turn,
+                        usage: total_usage.clone(),
+                    });
+                    return Ok(RunOutput {
+                        text: output,
+                        turns: turn,
+                        items,
+                        usage: total_usage,
+                    });
+                }
             }
         }
     }
@@ -1601,6 +1655,121 @@ mod tests {
         ) -> Result<Value, ToolError> {
             panic!("write tool must not execute before permission is granted")
         }
+    }
+
+    struct CountingAllowPolicy(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+    impl PermissionPolicy for CountingAllowPolicy {
+        fn check(
+            &self,
+            _project: &Project,
+            _tool: &ToolDefinition,
+            _call: &ToolCall,
+        ) -> PermissionDecision {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            PermissionDecision::Allow
+        }
+    }
+
+    struct PlanForgedWriteModel {
+        calls: usize,
+    }
+
+    impl Model for PlanForgedWriteModel {
+        fn provider(&self) -> &str {
+            "test"
+        }
+
+        fn model_id(&self) -> &str {
+            "plan-forged-write"
+        }
+
+        fn stream(
+            &mut self,
+            request: ModelRequest<'_>,
+            _events: &mut dyn ModelEventSink,
+        ) -> Result<ModelResponse, ModelError> {
+            self.calls += 1;
+            assert!(
+                request
+                    .tools
+                    .iter()
+                    .any(|definition| definition.name == "echo"),
+                "Pure tools remain visible in Plan Mode"
+            );
+            assert!(
+                request
+                    .tools
+                    .iter()
+                    .all(|definition| definition.name != "write"),
+                "Write tools must be structurally absent from the model catalog"
+            );
+            if self.calls == 1 {
+                return Ok(ModelResponse {
+                    text: String::new(),
+                    tool_calls: vec![ToolCall {
+                        id: "forged-write".into(),
+                        name: "write".into(),
+                        arguments: json!({}),
+                    }],
+                    finish_reason: FinishReason::ToolCalls,
+                    usage: None,
+                    provider_response_id: None,
+                    provider_state: vec![],
+                    reasoning: None,
+                });
+            }
+            let Some(ModelItem::ToolResult(result)) = request.items.last() else {
+                panic!("the forged call must return a recoverable tool result");
+            };
+            assert!(result.is_error);
+            assert_eq!(result.output["error"], "tool unavailable in plan mode");
+            Ok(ModelResponse {
+                text: "continued planning".into(),
+                tool_calls: vec![],
+                finish_reason: FinishReason::Completed,
+                usage: None,
+                provider_response_id: None,
+                provider_state: vec![],
+                reasoning: None,
+            })
+        }
+    }
+
+    #[test]
+    fn plan_mode_blocks_mutation_catalog_and_forged_dispatch_before_permission() {
+        let project = Project::new(".");
+        let tools = ToolRegistry::new();
+        register_test_tool(&tools, EchoTool);
+        register_test_tool(&tools, WriteTool);
+        let permission_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let permissions = CountingAllowPolicy(std::sync::Arc::clone(&permission_calls));
+        let mut model = PlanForgedWriteModel { calls: 0 };
+        let mut events = Vec::new();
+
+        let output = Run::new(&mut model, &tools, &permissions, &project)
+            .with_tool_access(crate::tool::ToolAccessPolicy::plan_mode())
+            .execute("investigate only", &mut events)
+            .expect("the model can recover and continue planning");
+
+        assert_eq!(output.text, "continued planning");
+        assert_eq!(model.calls, 2);
+        assert_eq!(
+            permission_calls.load(std::sync::atomic::Ordering::Acquire),
+            0,
+            "Plan Mode guard must reject hidden tools before the approver/policy path"
+        );
+        assert!(events.iter().any(|event| matches!(
+            event,
+            RunEvent::PermissionDenied { tool, reason }
+                if tool == "write" && reason == "tool unavailable in plan mode"
+        )));
+        assert!(
+            !events.iter().any(
+                |event| matches!(event, RunEvent::ToolStarted { tool, .. } if tool == "write")
+            ),
+            "the forged write must never reach invocation"
+        );
     }
 
     struct WriteRequestModel;

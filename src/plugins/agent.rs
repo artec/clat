@@ -164,8 +164,10 @@ impl AgentRuntime for DefaultAgentRuntime {
         // 档位说明注入系统指令（DSH renderPolicyContext 对应物）：让模
         // 型在尝试前知道审批边界。快照于 run 起点；运行中切档只改决策
         // （cell），说明下一 run 更新。Classic（exec）不注入。
-        let instructions =
-            super::services::base_model_instructions(&self.prompts, request.permission_mode);
+        let instructions = crate::plan_mode::compose_workflow_instructions(
+            super::services::base_model_instructions(&self.prompts, request.permission_mode),
+            request.workflow_instructions.as_deref(),
+        );
         let run = Run::new(
             model.as_mut(),
             &self.tools,
@@ -177,6 +179,7 @@ impl AgentRuntime for DefaultAgentRuntime {
         .with_cancel_token(request.cancel)
         .with_steering(request.steering)
         .with_tool_pipeline(&self.pipeline)
+        .with_tool_access(request.tool_access)
         .with_instructions(instructions);
         let mut run = match &self.dynamic_instructions {
             Some(source) => run.with_dynamic_instructions(Arc::clone(source)),

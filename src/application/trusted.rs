@@ -9,6 +9,7 @@ use crate::plugins::services::{
     PROCESS_SERVICE, PROMPT_SERVICE, PROVIDER_SERVICE, SESSION_SERVICE, SESSION_TITLE_SERVICE,
     TODO_SERVICE, TOOL_PIPELINE_SERVICE, TOOL_SERVICE,
 };
+use crate::plugins::services::{PLAN_MODE_SERVICE, TOOL_ACCESS_SERVICE};
 use crate::plugins::{ProjectControlStoragePlugin, SessionPersistencePlugin};
 use crate::presets::preset_by_id;
 use crate::session::id::SessionId;
@@ -204,6 +205,15 @@ impl TrustedProjectApplication {
                     None
                 },
             )) as Arc<dyn Plugin>,
+            Arc::new(crate::plugins::PlanModePlugin::new(Arc::clone(&asker_slot))),
+            Arc::new(crate::plugins::SkillsPlugin::new(
+                project.root().to_owned(),
+                storage_root.clone(),
+            )),
+            Arc::new(crate::plugins::LanguageIntelligencePlugin::new(
+                project.root().to_owned(),
+                storage_root.clone(),
+            )),
             Arc::new(crate::plugins::DefaultPermissionPlugin::new(
                 permission_source,
             )),
@@ -211,6 +221,7 @@ impl TrustedProjectApplication {
             Arc::new(crate::plugins::DefaultPromptPlugin),
             Arc::new(crate::plugins::CommandsPlugin),
             Arc::new(crate::plugins::BuiltinCommandsPlugin),
+            Arc::new(crate::plugins::ContextInspectorPlugin),
             Arc::new(crate::plugins::ProjectInstructionsPlugin::new(
                 project.clone(),
             )),
@@ -248,9 +259,27 @@ impl TrustedProjectApplication {
         let dynamic_instructions = project_manager
             .require(DYNAMIC_INSTRUCTIONS_SERVICE)
             .map_err(|error| ApplicationError::new(error.to_string()))?;
+        let plan_mode = project_manager
+            .require(PLAN_MODE_SERVICE)
+            .map_err(|error| ApplicationError::new(error.to_string()))?;
+        let tool_access = project_manager
+            .require(TOOL_ACCESS_SERVICE)
+            .map_err(|error| ApplicationError::new(error.to_string()))?;
+        let skills = project_manager
+            .require(crate::plugins::services::SKILLS_SERVICE)
+            .map_err(|error| ApplicationError::new(error.to_string()))?;
+        let skill_catalog = project_manager
+            .require(crate::plugins::services::SKILL_CATALOG_SERVICE)
+            .map_err(|error| ApplicationError::new(error.to_string()))?;
         let process_service = project_manager
             .require(PROCESS_SERVICE)
             .map_err(|error| ApplicationError::new(error.to_string()))?;
+        let language_intelligence = project_manager
+            .require(crate::plugins::services::LANGUAGE_INTELLIGENCE_SERVICE)
+            .map_err(|error| ApplicationError::new(error.to_string()))?;
+        let language_startup_notice = Arc::new(Mutex::new(
+            language_intelligence.diagnostics().first().cloned(),
+        ));
         // 命令注册表与工具/厂商/提示词同点冻结：贡献只发生在挂载期，
         // 冻结后挡注册不挡撤销（INV-C3）。
         let commands = project_manager
@@ -302,6 +331,10 @@ impl TrustedProjectApplication {
             prompts,
             dynamic_instructions,
             process_service,
+            plan_mode,
+            tool_access,
+            skills,
+            skill_catalog,
             commands,
             agent,
             mcp_status,
@@ -312,6 +345,7 @@ impl TrustedProjectApplication {
             title_worker: None,
             mounted_replay: None,
             subscribers: Arc::new(Mutex::new(Vec::new())),
+            language_startup_notice,
             canonical_root: project
                 .root()
                 .canonicalize()
@@ -490,14 +524,54 @@ impl TrustedProjectApplication {
         }
     }
 
+    pub(super) fn run_context_snapshot(
+        &self,
+        skills: Arc<crate::skills::SkillCatalogSnapshot>,
+    ) -> RunContextSnapshot {
+        let state = self.plan_mode.state();
+        let (tool_access, plan_instructions, plan_header) = if state.active {
+            (
+                crate::tool::ToolAccessPolicy::plan_mode(),
+                Some(crate::plan_mode::PLAN_POLICY.to_owned()),
+                Some(json!({ "active": true })),
+            )
+        } else if let Some(approved) = state.approved {
+            (
+                crate::tool::ToolAccessPolicy::all(),
+                Some(crate::plan_mode::approved_plan_instructions(&approved)),
+                Some(json!({
+                    "active": false,
+                    "approved": {
+                        "digest": approved.digest,
+                        "eventSeq": approved.event_seq,
+                    }
+                })),
+            )
+        } else {
+            (crate::tool::ToolAccessPolicy::all(), None, None)
+        };
+        let workflow = crate::plan_mode::compose_workflow_instructions(
+            plan_instructions.unwrap_or_default(),
+            skills.instructions(),
+        );
+        RunContextSnapshot {
+            tool_access,
+            workflow_instructions: (!workflow.is_empty()).then_some(workflow),
+            plan_header,
+            skills,
+        }
+    }
+
     /// The canonical `request/header` body (audit P1-14): what the model
-    /// actually sees — provider/model, sampling/thinking config, the
-    /// resolved system prompt, and the tool definitions. Endpoints and
-    /// credentials are control-plane data and never enter the event.
+    /// actually sees — provider/model, sampling/thinking config, the resolved
+    /// run-context system prompt, and the filtered tool definitions. Endpoints
+    /// and credentials are control-plane data and never enter the event.
     pub(super) fn request_header_data(
         &self,
         config: &ModelConfig,
-    ) -> Result<crate::session::recorder::RequestHeaderData, ApplicationError> {
+        context: &RunContextSnapshot,
+        instruction_snapshot: Option<&crate::plugins::services::InstructionSnapshot>,
+    ) -> crate::session::recorder::RequestHeaderData {
         let mut header = serde_json::Map::new();
         let mut config_json = serde_json::Map::new();
         config_json.insert("provider".into(), json!(config.protocol.to_string()));
@@ -512,14 +586,21 @@ impl TrustedProjectApplication {
             config_json.insert("thinking".into(), json!(level.label().to_lowercase()));
         }
         header.insert("config".into(), Value::Object(config_json));
-        let base_system = crate::plugins::services::base_model_instructions(
-            &self.prompts,
-            self.permission_modes_enabled
-                .then(|| self.permission_mode()),
+        if let Some(plan) = &context.plan_header {
+            header.insert("plan".into(), plan.clone());
+        }
+        header.insert("skills".into(), context.skills.header_json());
+        let base_system = crate::plan_mode::compose_workflow_instructions(
+            crate::plugins::services::base_model_instructions(
+                &self.prompts,
+                self.permission_modes_enabled
+                    .then(|| self.permission_mode()),
+            ),
+            context.workflow_instructions.as_deref(),
         );
         let tools: Vec<Value> = self
             .tools
-            .definitions()
+            .definitions_for(&context.tool_access)
             .iter()
             .map(|definition| {
                 json!({
@@ -532,22 +613,18 @@ impl TrustedProjectApplication {
         if !tools.is_empty() {
             header.insert("tools".into(), Value::Array(tools));
         }
-        let snapshot = self
-            .dynamic_instructions
-            .snapshot()
-            .map_err(ApplicationError::new)?;
         let mut header = Value::Object(header);
         crate::plugins::services::apply_instructions_to_header(
             &mut header,
             &base_system,
-            snapshot.as_ref(),
+            instruction_snapshot,
         );
-        Ok(crate::session::recorder::RequestHeaderData {
+        crate::session::recorder::RequestHeaderData {
             header,
             base_system,
             dynamic_instructions: Some(Arc::clone(&self.dynamic_instructions)),
             tool_registry: Some(Arc::clone(&self.tools)),
-        })
+        }
     }
 
     pub(super) fn project_key(&self) -> ProjectKey {
@@ -631,6 +708,42 @@ impl TrustedProjectApplication {
             Ok(_) => Ok(()),
             Err(error) => Err(session_error(error)),
         }
+    }
+
+    /// Enter or leave Plan Mode at an idle application boundary.
+    pub fn set_plan_mode(&mut self, active: bool) -> Result<(), ApplicationError> {
+        if self
+            .active_run
+            .as_ref()
+            .is_some_and(|handle| !handle.is_finished())
+        {
+            return Err(ApplicationError::new(
+                "cannot change Plan Mode while a run is active",
+            ));
+        }
+        if self
+            .active_compaction
+            .as_ref()
+            .is_some_and(|handle| !handle.is_finished())
+        {
+            return Err(ApplicationError::new(
+                "cannot change Plan Mode while a compaction is active",
+            ));
+        }
+        if self.sessions.active_id().is_some() {
+            self.plan_mode.set_pending_birth(false);
+            return self
+                .plan_mode
+                .set_durable(active)
+                .map_err(ApplicationError::new);
+        }
+        if !self.permission_modes_enabled {
+            return Err(ApplicationError::new(
+                "Plan Mode needs an active session in headless mode",
+            ));
+        }
+        self.plan_mode.set_pending_birth(active);
+        Ok(())
     }
 
     /// 把档位 cell 对齐到活跃会话自己的 journal fold；无活跃会话或该
@@ -856,6 +969,7 @@ impl TrustedProjectApplication {
         self.fresh_session_open = true;
         self.emitted_request_header = None;
         self.restore_instruction_sources();
+        self.plan_mode.reset_for_new();
         // 新会话从默认档起步：上一个会话的档位绝不跨 /new 携带（PS1
         // 的进程内变体）；物化前 /perm 的选择仍是出生档（PS7）。
         if self.permission_modes_enabled {
@@ -991,6 +1105,7 @@ impl TrustedProjectApplication {
         // Dedupe authority: whatever the log already holds.
         self.emitted_request_header = self.sessions.last_request_header();
         self.restore_instruction_sources();
+        self.plan_mode.materialized();
         self.restore_todo_from(&view);
         let input_history = self.sessions.recent_inputs(500).map_err(session_error)?;
         quiesce?;
@@ -1169,6 +1284,11 @@ impl TrustedProjectApplication {
     pub fn subscribe(&self, sender: mpsc::Sender<ApplicationEvent>) {
         if let Ok(mut subscribers) = self.subscribers.lock() {
             subscribers.push(sender.clone());
+        }
+        if let Ok(mut pending) = self.language_startup_notice.lock()
+            && let Some(message) = pending.take()
+        {
+            let _ = sender.send(ApplicationEvent::LanguageIntelligenceNotice { message });
         }
         self.monitor.subscribe(sender);
     }

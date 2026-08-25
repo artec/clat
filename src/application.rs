@@ -24,8 +24,17 @@ use std::sync::{Arc, Mutex, mpsc};
 
 mod bootstrap;
 mod compaction;
+mod context;
+#[cfg(test)]
+mod context_tests;
 mod dto;
+#[cfg(test)]
+mod language_intelligence_tests;
+#[cfg(test)]
+mod plan_mode_tests;
 mod run_lifecycle;
+#[cfg(test)]
+mod skills_tests;
 #[cfg(test)]
 mod tests;
 mod threads;
@@ -35,8 +44,9 @@ mod trusted;
 pub use bootstrap::{BootstrapApplication, ProjectAuthorization};
 pub use compaction::{CompactHandle, CompactReport};
 pub use dto::{
-    McpServerInfoDto, McpStatusDto, ProjectSnapshot, SessionSnapshot, WorkbenchModelSnapshot,
-    WorkbenchProjectSnapshot, WorkbenchSessionSnapshot, WorkbenchSnapshot, WorkspaceInfo,
+    ContextEstimateSnapshot, ContextSkillDiagnostic, McpServerInfoDto, McpStatusDto,
+    ProjectSnapshot, SessionSnapshot, WorkbenchModelSnapshot, WorkbenchProjectSnapshot,
+    WorkbenchSessionSnapshot, WorkbenchSnapshot, WorkspaceInfo,
 };
 pub use run_lifecycle::{
     ApplicationRunDone, ApplicationRunFailure, ApplicationRunRequest, ApplicationRunResult,
@@ -88,6 +98,11 @@ pub enum ApplicationEvent {
     McpStartupNotice {
         failures: usize,
     },
+    /// User-level LSP configuration was invalid at project mount. This is a
+    /// one-shot frontend notice; diagnostics remain available from the service.
+    LanguageIntelligenceNotice {
+        message: String,
+    },
     /// A run-owned background process settled. Raw process output and command
     /// text stay in ProcessService/tool results; this notice is metadata only.
     ProcessFinished {
@@ -98,6 +113,18 @@ pub enum ApplicationEvent {
         cancelled: bool,
         terminated: bool,
     },
+}
+
+/// One immutable request-bound view of workflow state. Every consumer that
+/// can affect what the model is told or allowed to call must use this same
+/// snapshot for the lifetime of the run; durable state changes only affect
+/// the next run.
+#[derive(Clone)]
+struct RunContextSnapshot {
+    tool_access: crate::tool::ToolAccessPolicy,
+    workflow_instructions: Option<String>,
+    plan_header: Option<Value>,
+    skills: Arc<crate::skills::SkillCatalogSnapshot>,
 }
 
 pub struct TrustedProjectApplication {
@@ -118,6 +145,10 @@ pub struct TrustedProjectApplication {
     /// durable request/header when sessions change.
     dynamic_instructions: Arc<dyn DynamicInstructions>,
     process_service: Arc<crate::process::ProcessService>,
+    plan_mode: Arc<crate::plan_mode::PlanModeService>,
+    tool_access: Arc<crate::tool::ToolAccessSlot>,
+    skills: Arc<crate::skills::SkillsService>,
+    skill_catalog: Arc<crate::skills::SkillCatalogSlot>,
     /// Frozen command registry（`core.commands`）：斜杠命令的唯一语义
     /// 源，前端经 `dispatch_command` 触达（INV-C1）。
     commands: Arc<crate::command::CommandRegistry>,
@@ -151,6 +182,10 @@ pub struct TrustedProjectApplication {
         crate::session::use_cases::UsageStats,
     )>,
     subscribers: Arc<Mutex<Vec<mpsc::Sender<ApplicationEvent>>>>,
+    /// Invalid user-level LSP configuration notice, delivered to the first
+    /// frontend subscriber after mount instead of being broadcast before any
+    /// subscriber exists. Config is not watched in v1, so this is one-shot.
+    language_startup_notice: Arc<Mutex<Option<String>>>,
     /// 当前工作区（MP-1）：realpath 规范形——workspace 身份、会话 bucket
     /// （project_key 正向编码）与信任键的统一推导源。
     canonical_root: PathBuf,

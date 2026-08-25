@@ -33,6 +33,7 @@ pub(super) struct PendingAskUser {
 pub(super) enum InfoDialogKind {
     Help,
     Mcp,
+    Context,
 }
 
 /// 打开中的信息弹窗：种类 + 当前滚动位（绘制期钳制在
@@ -214,6 +215,81 @@ pub(super) fn mcp_dialog_lines(view: &McpStatusDto, width: usize) -> Vec<Line<'s
         )));
         for failure in &view.failures {
             for wrapped in wrap_text(&format!("  {failure}"), width) {
+                lines.push(Line::from(Span::styled(
+                    wrapped,
+                    theme::style(theme::Role::Dim),
+                )));
+            }
+        }
+    }
+    lines
+}
+
+pub(super) fn context_dialog_lines(
+    view: &ContextEstimateSnapshot,
+    width: usize,
+) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::from(Span::styled(
+        format!("Context estimate · {}", view.unit),
+        theme::style(theme::Role::Bold),
+    ))];
+    let rows = [
+        ("Base prompt", view.base_prompt_estimate),
+        ("Project instructions", view.project_instructions_estimate),
+        ("Plan policy", view.plan_policy_estimate),
+        ("Skill catalog", view.skill_catalog_estimate),
+        ("Tool schemas", view.tool_schemas_estimate),
+        ("History / compaction view", view.history_estimate),
+        ("Output reserve", view.output_reserve_estimate),
+        ("Input estimate", view.input_estimate),
+        ("Total estimate", view.total_estimate),
+    ];
+    lines.push(Line::from(""));
+    for (label, value) in rows {
+        lines.push(Line::from(vec![
+            Span::raw(format!("{label}: ")),
+            Span::styled(value.to_string(), theme::style(theme::Role::Dim)),
+        ]));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        format!("Estimator: {}", view.estimator),
+        theme::style(theme::Role::Faint),
+    )));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "Tools",
+        theme::style(theme::Role::Bold),
+    )));
+    for wrapped in wrap_text(&format!("  {}", view.tool_names.join(", ")), width) {
+        lines.push(Line::from(wrapped));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "Skills",
+        theme::style(theme::Role::Bold),
+    )));
+    for wrapped in wrap_text(&format!("  {}", view.skill_names.join(", ")), width) {
+        lines.push(Line::from(wrapped));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "Skill diagnostics",
+        theme::style(theme::Role::Bold),
+    )));
+    if view.skill_diagnostics.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  none",
+            theme::style(theme::Role::Dim),
+        )));
+    } else {
+        for diagnostic in &view.skill_diagnostics {
+            let name = diagnostic.name.as_deref().unwrap_or("-");
+            let text = format!(
+                "  {} / {} / {}: {}",
+                diagnostic.source, name, diagnostic.kind, diagnostic.message
+            );
+            for wrapped in wrap_text(&text, width) {
                 lines.push(Line::from(Span::styled(
                     wrapped,
                     theme::style(theme::Role::Dim),

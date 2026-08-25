@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "id": "skill-load-layering",
+  "prompt": "Load the code-review skill and report which layer won.",
+  "model_steps": [
+    {
+      "expect": {
+        "available_tools_include": ["skill"],
+        "instructions_include": [
+          "code-review",
+          "Project override for the layered skill Stage-0 fixture.",
+          "source=project"
+        ]
+      },
+      "response": {
+        "tool_calls": [
+          {
+            "id": "call-load-code-review",
+            "name": "skill",
+            "arguments": {
+              "name": "code-review"
+            }
+          }
+        ],
+        "finish_reason": "tool_calls"
+      }
+    },
+    {
+      "expect": {
+        "required_tool_results": ["skill"],
+        "required_tool_result_contains": [
+          {
+            "tool": "skill",
+            "text": "\"source\":\"project\""
+          },
+          {
+            "tool": "skill",
+            "text": "PROJECT LAYER SKILL BODY"
+          }
+        ]
+      },
+      "response": {
+        "text": "project skill wins",
+        "finish_reason": "completed"
+      }
+    }
+  ],
+  "expected": {
+    "outcome": "success",
+    "event_kinds": [
+      "run_started",
+      "model_requested",
+      "model_responded",
+      "tool_requested",
+      "permission_checked",
+      "tool_started",
+      "tool_finished",
+      "model_requested",
+      "model_stream",
+      "model_responded",
+      "run_completed"
+    ],
+    "durable_event_kinds": [
+      "turn/start",
+      "user/message",
+      "step/start",
+      "request/header",
+      "assistant/message",
+      "tool/call",
+      "tool/result",
+      "step/end",
+      "step/start",
+      "assistant/chunk",
+      "assistant/message",
+      "step/end",
+      "turn/end"
+    ],
+    "permission_checks": [
+      {
+        "tool": "skill",
+        "decision": "allow"
+      }
+    ]
+  }
+}

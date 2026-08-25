@@ -18,6 +18,8 @@ Files appear lazily, so a fresh installation may contain only a subset.
 ├── web-token                    # clat serve Bearer credential (0600)
 ├── dsh-last-session             # last session id opened by clat dsh
 ├── mcp.json                     # optional, user-managed MCP servers
+├── lsp.json                     # optional, user-managed read-only LSP servers
+├── skills/<name>/SKILL.md       # optional user-layer instruction bundles
 ├── plugins.json                 # optional, user-managed WASM components
 ├── plugin-grants.json           # hash- and directory-bound WASM write grants
 ├── plugin-store/
@@ -208,6 +210,23 @@ Project paths are canonical real paths. On mount, reconciliation:
 
 Each project remembers its own active session. Switching projects therefore
 restores the conversation last selected in that project.
+
+### Workflow and intelligence state
+
+Plan Mode is session state, not a separate control-plane file. DSH-compatible
+`plan/mode` events record active/inactive state; an approved plan is also bound
+to its durable event sequence and digest so the next run can consume it.
+
+A run's selected skill catalog is recorded in `request/header.skills` for
+explainable live/replay parity. User skills live under `~/.clat/skills`; project
+skills live under `<project>/.clat/skills` and override the user layer. Their
+bodies/resources remain ordinary user/project files rather than session state.
+
+`lsp.json` is a user-managed configuration input and never enters a session
+journal. LSP processes and protocol buffers are transient project-owned state.
+
+`/context` is wholly derived: it writes no file or journal event and keeps no
+background monitor after returning its snapshot.
 
 ### Model settings and credentials
 

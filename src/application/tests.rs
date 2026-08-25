@@ -1574,6 +1574,7 @@ fn rename_facade_gates_journals_and_broadcasts() {
                     | ApplicationEvent::CompactionUpdated(_)
                     | ApplicationEvent::TitleUpdated { .. }
                     | ApplicationEvent::McpStartupNotice { .. }
+                    | ApplicationEvent::LanguageIntelligenceNotice { .. }
                     | ApplicationEvent::ProcessFinished { .. },
                 ) => {}
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -3131,6 +3132,8 @@ fn failed_run_spawn_does_not_mark_the_request_header_emitted() {
             "exec_command",
             "write_stdin",
             "ask_user",
+            "skill",
+            "exit_plan_mode",
             "todo_write",
         ],
         "request/header freezes the complete model-visible native catalog order"

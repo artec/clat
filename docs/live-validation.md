@@ -104,6 +104,28 @@ Run only those relevant to the change:
   Seatbelt/full plus a policy digest, while the second must fail without
   creating the target. Repeat network-disabled against a controlled listener.
 
+## Workflow/intelligence live spot-checks
+
+These checks do not replace the deterministic scenario suite:
+
+- enter `/plan`, ask for an implementation, and confirm the model can investigate
+  but cannot call write/execute/external-read tools; submit a plan, approve it,
+  and confirm full tools return only on the next run;
+- create a project skill that shadows a user skill, load it with `skill`, then
+  remove the project copy and confirm the next run falls back to the user digest;
+- run `/context` before/after Plan Mode or a skill change and confirm only the
+  expected estimate components/tool list move; the command itself must not add a
+  conversation event;
+- on macOS with real servers installed, configure `rust-analyzer` for `.rs` and
+  `typescript-language-server` for `.ts`/`.tsx`, then exercise definition,
+  references and hover against small Rust and TypeScript fixtures. Kill each
+  server once and confirm the next query performs one clean restart. Close CLAT
+  and confirm no managed LSP process survives.
+
+A fake JSON-RPC server proves protocol conformance only. Do not record the
+Rust/TypeScript live LSP gate as passed unless those real servers were actually
+installed and exercised on the recorded machine.
+
 ## Headless parity spot-check
 
 After the TUI gates, the same saved model can be checked through the headless

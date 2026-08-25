@@ -26,11 +26,12 @@ mod worker;
 
 use crate::{
     ApplicationEvent, ApplicationRunRequest, BootstrapApplication, CommandError, CommandInfo,
-    CommandOutcome, CompactHandle, CompactionStatus, McpStatusDto, ModelConfig, ModelEvent,
-    ModelVendor, PermissionDecision, PermissionMode, PermissionRequest, Project,
-    ProjectAuthorization, ProviderCredentials, ProviderDescriptor, RenameOutcome, RunEvent,
-    RunHandle, SteerOutcome, ThinkingLevel, TrustedProjectApplication, Usage, apply_thinking_level,
-    effective_thinking_level, escalation_targets, next_thinking_level, thinking_levels,
+    CommandOutcome, CompactHandle, CompactionStatus, ContextEstimateSnapshot, McpStatusDto,
+    ModelConfig, ModelEvent, ModelVendor, PermissionDecision, PermissionMode, PermissionRequest,
+    Project, ProjectAuthorization, ProviderCredentials, ProviderDescriptor, RenameOutcome,
+    RunEvent, RunHandle, SteerOutcome, ThinkingLevel, TrustedProjectApplication, Usage,
+    apply_thinking_level, effective_thinking_level, escalation_targets, next_thinking_level,
+    thinking_levels,
 };
 use crossterm::event::{
     self, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, Event, KeyCode, KeyEvent,
@@ -298,6 +299,8 @@ struct App {
     info_page: usize,
     /// /mcp 打开时缓存的 MCP 状态（DTO）；弹窗内 `r` 向 Application 重取。
     mcp_view: Option<McpStatusDto>,
+    /// /context 打开时缓存的一次性估算快照；没有后台刷新或 watcher。
+    context_view: Option<ContextEstimateSnapshot>,
     /// /help 打开时缓存的命令目录（`ShowHelp` 载荷，INV-C4）：帮助表
     /// 行从它派生，新增命令不改前端。
     help_commands: Vec<CommandInfo>,
@@ -466,6 +469,7 @@ impl App {
             info_scroll_max: 0,
             info_page: 1,
             mcp_view: None,
+            context_view: None,
             help_commands: Vec::new(),
             balance: None,
             session_usage: Usage::default(),
@@ -554,6 +558,7 @@ impl App {
             info_scroll_max: 0,
             info_page: 1,
             mcp_view: None,
+            context_view: None,
             help_commands: Vec::new(),
             balance: None,
             session_usage: Usage::default(),

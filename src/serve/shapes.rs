@@ -509,6 +509,13 @@ pub(crate) fn notice_ctl(event: &ApplicationEvent) -> Value {
             ("kind", Value::String("mcp_startup".into())),
             ("payload", object(vec![("failures", json!(failures))])),
         ]),
+        ApplicationEvent::LanguageIntelligenceNotice { message } => object(vec![
+            ("kind", Value::String("language_intelligence".into())),
+            (
+                "payload",
+                object(vec![("message", Value::String(message.clone()))]),
+            ),
+        ]),
         ApplicationEvent::ProcessFinished {
             session_id,
             exit_code,

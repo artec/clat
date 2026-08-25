@@ -9,11 +9,13 @@ pub mod dsh;
 pub mod event;
 pub mod exec;
 mod interaction;
+mod language_intelligence;
 mod mcp;
 pub mod media;
 pub mod model;
 mod native_tools;
 mod permission;
+mod plan_mode;
 mod plugin;
 pub mod plugin_cli;
 mod plugin_host;
@@ -28,6 +30,7 @@ pub mod run;
 mod sandbox;
 mod search;
 pub mod serve;
+mod skills;
 // DSH-compatible session stack (docs/todo/dsh-session-persistence.md):
 // session facts live exclusively in these logs since the stage-5 cutover.
 // Format-documentation items (catalog constants, layout helpers) exceed the
@@ -44,10 +47,10 @@ mod wire;
 pub use application::{
     ApplicationError, ApplicationEvent, ApplicationRunDone, ApplicationRunFailure,
     ApplicationRunRequest, ApplicationRunResult, BootstrapApplication, CompactHandle,
-    CompactReport, CompactionStatus, McpServerInfoDto, McpStatusDto, ProjectAuthorization,
-    ProjectSnapshot, RenameOutcome, RunHandle, SessionSnapshot, SteerOutcome,
-    TrustedProjectApplication, WorkbenchModelSnapshot, WorkbenchProjectSnapshot,
-    WorkbenchSessionSnapshot, WorkbenchSnapshot,
+    CompactReport, CompactionStatus, ContextEstimateSnapshot, ContextSkillDiagnostic,
+    McpServerInfoDto, McpStatusDto, ProjectAuthorization, ProjectSnapshot, RenameOutcome,
+    RunHandle, SessionSnapshot, SteerOutcome, TrustedProjectApplication, WorkbenchModelSnapshot,
+    WorkbenchProjectSnapshot, WorkbenchSessionSnapshot, WorkbenchSnapshot,
 };
 pub use command::{CommandError, CommandInfo, CommandOutcome};
 pub use control_storage::ModelProfileSummary;

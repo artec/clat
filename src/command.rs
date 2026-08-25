@@ -17,7 +17,9 @@
 //!   不可伪造的 `PluginOwner`，lease 可在逆序拆解时撤销，mount 后 freeze
 //!   挡注册不挡撤销（INV-C3）。
 
-use crate::application::{CompactHandle, McpStatusDto, TrustedProjectApplication};
+use crate::application::{
+    CompactHandle, ContextEstimateSnapshot, McpStatusDto, TrustedProjectApplication,
+};
 use crate::permission::PermissionMode;
 use crate::session::use_cases::SessionSummary;
 use std::fmt;
@@ -40,6 +42,8 @@ pub enum CommandOutcome {
     ShowHelp { commands: Vec<CommandInfo> },
     /// `/mcp`：MCP 状态快照。
     ShowMcpStatus(McpStatusDto),
+    /// `/context`：一次性的前端中立上下文估算快照；不启动模型、不写会话。
+    ShowContext(ContextEstimateSnapshot),
     /// `/model`：延续是模型选择交互（前端开各自的选择器）。
     StartModelSelection,
     /// `/resume`：延续是会话选择交互，携带候选列表。
@@ -64,6 +68,7 @@ impl fmt::Debug for CommandOutcome {
             Self::Status(_) => "Status(..)",
             Self::ShowHelp { .. } => "ShowHelp { .. }",
             Self::ShowMcpStatus(_) => "ShowMcpStatus(..)",
+            Self::ShowContext(_) => "ShowContext(..)",
             Self::StartModelSelection => "StartModelSelection",
             Self::StartSessionSelection { .. } => "StartSessionSelection { .. }",
             Self::StartPermissionModeSelection { .. } => "StartPermissionModeSelection { .. }",

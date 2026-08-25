@@ -229,6 +229,37 @@ fn validate_payload(event: &SessionEvent) -> Result<(), String> {
             require_str(&event.data, "mode")?;
             Ok(())
         }
+        "plan/mode" => {
+            let active = event
+                .data
+                .get("active")
+                .and_then(serde_json::Value::as_bool)
+                .ok_or("plan/mode active must be a boolean")?;
+            match event.data.get("approved") {
+                None => Ok(()),
+                Some(_) if active => {
+                    Err("plan/mode approved is valid only when active=false".into())
+                }
+                Some(approved) => {
+                    let approved = approved
+                        .as_object()
+                        .ok_or("plan/mode approved must be an object")?;
+                    let text = approved
+                        .get("text")
+                        .and_then(serde_json::Value::as_str)
+                        .ok_or("plan/mode approved.text must be a string")?;
+                    crate::plan_mode::validate_plan_text(text)?;
+                    let digest = approved
+                        .get("digest")
+                        .and_then(serde_json::Value::as_str)
+                        .ok_or("plan/mode approved.digest must be a string")?;
+                    if digest != crate::plan_mode::plan_digest(text) {
+                        return Err("plan/mode approved.digest does not match approved.text".into());
+                    }
+                    Ok(())
+                }
+            }
+        }
         "approval/asked" | "approval/decided" => {
             require_str(&event.data, "id")?;
             if event.event_type == "approval/decided"
@@ -485,6 +516,32 @@ mod tests {
             SessionEvent::new("session/end-seed", 11, 12, payloads::end_seed()).log_only(),
         ];
         assert_eq!(admit_events(&events), Ok(()));
+    }
+
+    #[test]
+    fn plan_mode_admission_enforces_bounded_approved_extension() {
+        let plan = "inspect, decide, validate";
+        let digest = crate::plan_mode::plan_digest(plan);
+        let valid = SessionEvent::new(
+            "plan/mode",
+            0,
+            1,
+            json!({"active": false, "approved": {"text": plan, "digest": digest}}),
+        );
+        assert_eq!(admit_events(&[valid]), Ok(()));
+
+        for data in [
+            json!({"active": "yes"}),
+            json!({"active": true, "approved": {"text": plan, "digest": crate::plan_mode::plan_digest(plan)}}),
+            json!({"active": false, "approved": {"text": "", "digest": crate::plan_mode::plan_digest("")}}),
+            json!({"active": false, "approved": {"text": plan, "digest": "wrong"}}),
+            json!({"active": false, "approved": {"text": "x".repeat(crate::plan_mode::MAX_PLAN_BYTES + 1), "digest": "irrelevant"}}),
+        ] {
+            assert!(
+                admit_events(&[SessionEvent::new("plan/mode", 0, 1, data)]).is_err(),
+                "invalid plan/mode payload must fail closed"
+            );
+        }
     }
 
     /// B3（W2 re-pin / D2）：DSH 0.1.1-rc.1 新增的 4 个 `team/*` 是已知

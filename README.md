@@ -54,6 +54,11 @@ the URL. The same binary serves the responsive three-panel PWA.
 - **Agent workflow** — an unbounded model → tool → model loop, in-run
   steering, user questions, per-session todos, automatic titles, and context
   compaction that preserves the original journal.
+- **Workflow intelligence** — durable Plan Mode with structurally filtered tool
+  access; bundled/user/project Markdown skills with lazy bounded loading;
+  optional user-configured read-only LSP navigation (`definition`, `references`,
+  `implementation`, `hover`) through CLAT-managed sandboxed stdio; and `/context`
+  for a one-shot estimate of the model-facing context breakdown.
 - **Models** — built-in DeepSeek, GLM, Qwen, and Kimi presets; named custom
   profiles; OpenAI Responses and OpenAI-compatible protocols; reasoning,
   usage, cache, context, and quota telemetry.

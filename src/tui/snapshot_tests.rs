@@ -82,6 +82,7 @@ const SCENARIOS: &[&str] = &[
     "ask-dialog-options",
     "ask-dialog-custom",
     "help-dialog",
+    "context-dialog",
     "mcp-dialog",
     "permission-picker",
     "permission-confirm-full",
@@ -1415,6 +1416,34 @@ fn help_dialog_snapshot_and_paging() {
         harness.app.input.visual_rows(60).join("").contains("hi"),
         "input unlocks after the dialog closes"
     );
+}
+
+/// `/context` 走真实 core command → 前端中立 DTO → TUI modal；
+/// snapshot 锁定分项/工具/skills 的只读呈现，并验证模态输入门控。
+#[test]
+fn context_dialog_snapshot_and_modal_gate() {
+    let mut harness = Harness::trusted("snap-context", 80, 24);
+    harness.type_text("/context");
+    harness.key(KeyCode::Enter);
+    assert!(
+        harness
+            .app
+            .info_dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.kind == super::InfoDialogKind::Context),
+        "the /context command opens the Context dialog"
+    );
+    let view = harness.app.context_view.as_ref().expect("context view");
+    assert_eq!(
+        view.input_estimate + view.output_reserve_estimate,
+        view.total_estimate
+    );
+    harness.project();
+    harness.snapshot("context-dialog");
+    harness.type_text("x");
+    assert!(!harness.app.input.visual_rows(60).join("").contains('x'));
+    harness.key(KeyCode::Esc);
+    assert!(harness.app.info_dialog.is_none(), "Esc closes the dialog");
 }
 
 /// /mcp 状态弹窗（2026-08-19）：命令打开 → 弹窗渲染挂载期的

@@ -1,0 +1,139 @@
+{
+  "schema_version": 1,
+  "scenario_id": "skill-exec-required-sandbox",
+  "gate": "matched",
+  "expected": {
+    "outcome": "success",
+    "event_kinds": [
+      "run_started",
+      "model_requested",
+      "model_responded",
+      "tool_requested",
+      "permission_checked",
+      "tool_started",
+      "tool_finished",
+      "model_requested",
+      "model_responded",
+      "tool_requested",
+      "permission_checked",
+      "tool_started",
+      "tool_finished",
+      "model_requested",
+      "model_stream",
+      "model_responded",
+      "run_completed"
+    ],
+    "durable_event_kinds": [
+      "turn/start",
+      "user/message",
+      "step/start",
+      "request/header",
+      "assistant/message",
+      "tool/call",
+      "tool/result",
+      "step/end",
+      "step/start",
+      "assistant/message",
+      "approval/asked",
+      "approval/decided",
+      "tool/call",
+      "tool/result",
+      "step/end",
+      "step/start",
+      "assistant/chunk",
+      "assistant/message",
+      "step/end",
+      "turn/end"
+    ],
+    "permission_checks": [
+      {
+        "tool": "skill",
+        "decision": "allow"
+      },
+      {
+        "tool": "exec_command",
+        "decision": "allow"
+      }
+    ]
+  },
+  "observed": {
+    "status": "success",
+    "output": "required sandbox skill execution complete",
+    "turns": 3
+  },
+  "model_steps": {
+    "expected": 3,
+    "observed": 3,
+    "violations": []
+  },
+  "event_kinds": [
+    "run_started",
+    "model_requested",
+    "model_responded",
+    "tool_requested",
+    "permission_checked",
+    "tool_started",
+    "tool_finished",
+    "model_requested",
+    "model_responded",
+    "tool_requested",
+    "permission_checked",
+    "tool_started",
+    "tool_finished",
+    "model_requested",
+    "model_stream",
+    "model_responded",
+    "run_completed"
+  ],
+  "durable_event_kinds": [
+    "turn/start",
+    "user/message",
+    "step/start",
+    "request/header",
+    "assistant/message",
+    "tool/call",
+    "tool/result",
+    "step/end",
+    "step/start",
+    "assistant/message",
+    "approval/asked",
+    "approval/decided",
+    "tool/call",
+    "tool/result",
+    "step/end",
+    "step/start",
+    "assistant/chunk",
+    "assistant/message",
+    "step/end",
+    "turn/end"
+  ],
+  "permission_checks": [
+    {
+      "tool": "skill",
+      "decision": "allow"
+    },
+    {
+      "tool": "exec_command",
+      "decision": "allow"
+    }
+  ],
+  "files": [
+    {
+      "path": ".clat/skills/exec-fixture/SKILL.md",
+      "bytes": 229,
+      "sha256": "7dac4d5a0c45bb820064c3adb360a58782e21b78a892c6cad69f7c3eddcd3faf"
+    },
+    {
+      "path": ".clat/skills/exec-fixture/scripts/run.sh",
+      "bytes": 55,
+      "sha256": "0c49fba79cca90b4e0227f7bc2ea23a1676f2fabf112a5ad2d1f36ffe40377d7"
+    },
+    {
+      "path": "skill-output.txt",
+      "bytes": 15,
+      "sha256": "c330abcd8a980aa04f45b3712c6ce133b2f3f9be2d30084f79291060666ea967"
+    }
+  ],
+  "files_match": true,
+  "application_close": "clean"
+}

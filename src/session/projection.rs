@@ -38,6 +38,7 @@ impl ProjectionRegistry {
                 Box::new(TranscriptUnit::default()),
                 Box::new(TitleUnit::default()),
                 Box::new(PermissionModeUnit::default()),
+                Box::new(PlanModeUnit::default()),
                 Box::new(TodoUnit::default()),
                 Box::new(StatsUnit::default()),
                 Box::new(CompactionUnit::default()),
@@ -1261,5 +1262,151 @@ mod tests {
             created_at: 0,
             cwd: None,
         }
+    }
+}
+/// Durable Plan Mode state. `plan/mode` is latest-wins for the active bit.
+/// CLAT's bounded `approved` extension is retained only on an inactive event;
+/// every direct on/off event clears an older approved plan.
+struct PlanModeUnit {
+    active: bool,
+    approved: Option<crate::plan_mode::ApprovedPlan>,
+    as_of: i64,
+}
+
+impl Default for PlanModeUnit {
+    fn default() -> Self {
+        Self {
+            active: false,
+            approved: None,
+            as_of: -1,
+        }
+    }
+}
+
+impl ProjectionUnit for PlanModeUnit {
+    fn key(&self) -> &'static str {
+        "plan-mode"
+    }
+
+    fn state_version(&self) -> u64 {
+        1
+    }
+
+    fn as_of(&self) -> i64 {
+        self.as_of
+    }
+
+    fn fold(&mut self, event: &SessionEvent) -> Result<(), String> {
+        if event.event_type == "plan/mode" {
+            let active = event
+                .data
+                .get("active")
+                .and_then(Value::as_bool)
+                .ok_or_else(|| "plan/mode active missing after admission".to_owned())?;
+            self.active = active;
+            self.approved = if !active {
+                event.data.get("approved").and_then(|approved| {
+                    Some(crate::plan_mode::ApprovedPlan {
+                        text: approved.get("text")?.as_str()?.to_owned(),
+                        digest: approved.get("digest")?.as_str()?.to_owned(),
+                        event_seq: event.seq,
+                    })
+                })
+            } else {
+                None
+            };
+        }
+        self.as_of = event.seq as i64;
+        Ok(())
+    }
+
+    fn snapshot(&self) -> Value {
+        json!({
+            "active": self.active,
+            "approved": self.approved.as_ref().map(|approved| json!({
+                "text": approved.text,
+                "digest": approved.digest,
+                "eventSeq": approved.event_seq,
+            })),
+        })
+    }
+
+    fn restore(&mut self, row: &CheckpointRow) -> Result<(), String> {
+        self.active = row
+            .val
+            .get("active")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        self.approved = row.val.get("approved").and_then(|approved| {
+            Some(crate::plan_mode::ApprovedPlan {
+                text: approved.get("text")?.as_str()?.to_owned(),
+                digest: approved.get("digest")?.as_str()?.to_owned(),
+                event_seq: approved.get("eventSeq")?.as_u64()?,
+            })
+        });
+        if self.active {
+            self.approved = None;
+        }
+        self.as_of = row.seq;
+        Ok(())
+    }
+}
+#[cfg(test)]
+mod plan_mode_projection_tests {
+    use super::*;
+
+    #[test]
+    fn approved_plan_round_trips_checkpoint_and_survives_unrelated_events() {
+        let text = "approved plan survives compaction";
+        let mut registry = ProjectionRegistry::clat();
+        registry
+            .fold_all(&[
+                SessionEvent::new(
+                    "plan/mode",
+                    0,
+                    1,
+                    json!({
+                        "active": false,
+                        "approved": {
+                            "text": text,
+                            "digest": crate::plan_mode::plan_digest(text),
+                        }
+                    }),
+                ),
+                SessionEvent::new(
+                    "compaction/start",
+                    1,
+                    2,
+                    json!({"compactionId": "c", "turn": 1}),
+                ),
+            ])
+            .expect("fold");
+        let before = registry.state_snapshot("plan-mode").unwrap();
+        assert_eq!(before["approved"]["text"], text);
+        assert_eq!(before["approved"]["eventSeq"], 0);
+
+        let checkpoint = registry.checkpoint(
+            CheckpointIdentity {
+                created_at: 0,
+                cwd: None,
+            },
+            1,
+        );
+        let mut restored = ProjectionRegistry::clat();
+        restored
+            .restore(&checkpoint, &[], 2)
+            .expect("checkpoint restore");
+        assert_eq!(restored.state_snapshot("plan-mode").unwrap(), before);
+
+        restored
+            .fold_one(&SessionEvent::new(
+                "plan/mode",
+                2,
+                3,
+                json!({"active": false}),
+            ))
+            .expect("direct off");
+        let cleared = restored.state_snapshot("plan-mode").unwrap();
+        assert!(cleared["approved"].is_null());
     }
 }

@@ -146,14 +146,72 @@ selection behavior instead of CLAT's mouse handling.
 | `/resume` | switch to a prior conversation in this project |
 | `/rename` | replace the current conversation title |
 | `/compact` | summarize older context in the background; original history remains on disk |
+| `/plan`, `/plan off` | enter or leave durable Plan Mode at an idle boundary |
 | `/perm`, `/permission` | switch Read Only, Project Write, or Full Access |
 | `/mcp` | inspect MCP/WASM connection state, tools, and isolated failures |
+| `/context` | inspect a one-shot estimated model-context breakdown |
 | `/help` | open the command and key reference |
 | `/quit`, `/exit` | close CLAT cleanly |
 
 The command catalog is shared with `clat exec --command`. Commands that require
 an interactive picker, such as `/model`, `/resume`, and `/perm`, report a usage
 error in headless mode instead of inventing a selection.
+
+### Plan Mode, skills, LSP, and context inspection
+
+`/plan` enters durable Plan Mode. The next run receives a planning policy and a
+filtered tool catalog: only `Pure`/`Read` tools plus `exit_plan_mode` remain
+model-callable. The same frozen policy guards the model schema, durable
+`request/header`, direct dispatch, permission construction, and plugin-host
+tool calls. When the model submits `exit_plan_mode`, approval saves the plan and
+ends that run; implementation tools return only on the next user run. `/plan
+off` leaves the mode at an idle boundary. Plan Mode is an agent authority guard,
+not an operating-system sandbox.
+
+Skills are instruction bundles discovered one directory deep from three layers:
+
+```text
+<project>/.clat/skills/<name>/SKILL.md   # highest priority
+~/.clat/skills/<name>/SKILL.md           # user layer
+compiled-in skills                        # fallback
+```
+
+Each run freezes one deterministic catalog. The model sees lightweight skill
+metadata and can use `skill(name, resource?)` to load the selected instructions
+or an explicitly referenced file under `references/`, `scripts/`, or `assets/`.
+Loading never executes code. A skill marked `requires-execution: true` is exposed
+only where CLAT has graduated `sandbox="required"` enforcement; any script still
+runs only through the ordinary Execute tools, approvals, ProcessService, and
+sandbox policy.
+
+Optional read-only language intelligence is configured only by the user-level
+`~/.clat/lsp.json`, for example:
+
+```json
+{
+  "version": 1,
+  "servers": {
+    "rust": {
+      "command": "rust-analyzer",
+      "args": [],
+      "extensions": { ".rs": "rust" }
+    }
+  }
+}
+```
+
+The `lsp` tool supports `definition`, `references`, `implementation`, and
+`hover`. It is `ExternalRead`, disappears from Plan Mode, and starts configured
+servers only on demand through CLAT's managed stdio path with
+`sandbox="required"` and `network=false`. Project files cannot choose the
+server executable. Platforms without the required sandbox fail before spawn.
+
+`/context` takes one read-only snapshot of the next model-facing context and
+reports conservative estimates for base prompt, project instructions, plan
+policy, skill catalog, tool schemas, history/compaction view, output reserve,
+and total, plus skill discovery diagnostics. The numbers are estimates from the
+same estimator used by model-request budgeting; the command does not call a
+model, write a session event, or start a live monitor.
 
 ### Steering, cancellation, and long runs
 

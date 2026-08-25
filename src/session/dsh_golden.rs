@@ -5,7 +5,7 @@
 //! 常跑、零 Node 依赖；再生脚本见同目录 `gen-dsh-fixtures.mts`
 //!（dev 侧，含 DSH 读 CLAT 产物的反向腿）。
 //!
-//! 两条腿分别钉住：
+//! 三条腿分别钉住：
 //! - **interrupted 前缀定稿**：流中取消的会话，`assistant/message`
 //!   携带 `interrupted: true`（DSH agent.ts:352-368 的取消分支），
 //!   未派发的 tool calls 不出现；CLAT 的完整 load → 准入 → 重放
@@ -14,6 +14,9 @@
 //!   zstd 帧字节中随会话落盘；CLAT 准入放行、重放跳过不重建、会话
 //!   其余部分正常还原（CLAT 自产日志不含 team/* 的断言在 catalog
 //!   测试中另行钉住）。
+//! - **Plan Mode approved 扩展**：DSH 真实 writer 写入并由 DSH 真实 reader
+//!   读回 `plan/mode {active:false,approved:{text,digest}}`；提交进库的同一
+//!   zstd golden 再由 CLAT load → admission → projection 常跑消费。
 
 #[cfg(test)]
 mod tests {
@@ -30,6 +33,9 @@ mod tests {
     const FIXTURE_CWD: &str = "/Users/deng/Documents/GitHub/clat";
     const INTERRUPTED_ID: &str = "018f2a64-9d3f-7cde-8123-9a4f2b6c0b01";
     const TEAM_ID: &str = "018f2a64-9d3f-7cde-8123-9a4f2b6c0b02";
+    const PLAN_ID: &str = "018f2a64-9d3f-7cde-8123-9a4f2b6c0b03";
+    const APPROVED_PLAN: &str =
+        "Inspect the project, preserve invariants, implement the change, then run focused tests.";
 
     fn fixture_dir() -> std::path::PathBuf {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dsh-session")
@@ -207,6 +213,39 @@ mod tests {
             3,
             "user + assistant + turn/end only — team events are skipped without rebuilding: {replay:?}"
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// AG-3/3-A：钉靶 DSH writer+reader 生成的 approved Plan Mode 扩展，
+    /// CLAT 的 load/admission/projection 也必须零适配接受同一字节。生成脚本
+    /// 在复制 golden 前已通过 DSH `JsonlSessionPersistence.load` 读回并校验
+    /// text+digest；这里把反方向变成主套件常跑腿。
+    #[test]
+    fn dsh_plan_mode_approved_extension_admits_and_projects() {
+        let (root, backend) = mount_fixture("plan-mode-approved-session.jsonl.zstd", PLAN_ID);
+        let events = load_golden(&backend, PLAN_ID);
+        let plan_events = events
+            .iter()
+            .filter(|event| event.event_type == "plan/mode")
+            .collect::<Vec<_>>();
+        assert_eq!(plan_events.len(), 2, "active birth + approved exit");
+        assert_eq!(plan_events[0].data, serde_json::json!({"active": true}));
+        let digest = crate::plan_mode::plan_digest(APPROVED_PLAN);
+        assert_eq!(plan_events[1].data["active"], false);
+        assert_eq!(plan_events[1].data["approved"]["text"], APPROVED_PLAN);
+        assert_eq!(plan_events[1].data["approved"]["digest"], digest);
+
+        let mut projections = crate::session::projection::ProjectionRegistry::clat();
+        projections
+            .fold_all(&events)
+            .expect("fold DSH Plan Mode golden");
+        let state = projections
+            .state_snapshot("plan-mode")
+            .expect("plan projection registered");
+        assert_eq!(state["active"], false);
+        assert_eq!(state["approved"]["text"], APPROVED_PLAN);
+        assert_eq!(state["approved"]["digest"], digest);
+        assert_eq!(state["approved"]["eventSeq"], plan_events[1].seq);
         let _ = std::fs::remove_dir_all(root);
     }
 

@@ -1,0 +1,27 @@
+size 80x24
+cursor 3,21
+scroll 0
+000| ┌──────────────────────────────────────────────────────────────────────────────┐  ⟦0..79 DIM⟧
+001| │ CLA                                                                          │  ⟦0..1 DIM · 2..4 BOLD+DIM · 75..79 DIM⟧
+002| └──── ┌ /context ────────────────────────────────────────────────────────┐ ────┘  ⟦0..4 DIM · 6..6 fg=Yellow · 7..16 fg=Yellow+BOLD · 17..73 fg=Yellow · 75..79 DIM⟧
+003| ┌ Con │ Context estimate · tokens                                        │ ────┐  ⟦0..4 DIM · 6..6 fg=Yellow · 8..32 BOLD · 73..73 fg=Yellow · 75..79 DIM⟧
+004| │     │                                                                  │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+005| │     │ Base prompt: 135                                                 │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 21..23 DIM · 73..73 fg=Yellow · 75..79 DIM⟧
+006| │     │ Project instructions: 0                                          │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 30..30 DIM · 73..73 fg=Yellow · 75..79 DIM⟧
+007| │     │ Plan policy: 0                                                   │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 21..21 DIM · 73..73 fg=Yellow · 75..79 DIM⟧
+008| │     │ Skill catalog: 201                                               │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 23..25 DIM · 73..73 fg=Yellow · 75..79 DIM⟧
+009| │     │ Tool schemas: 2350                                               │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 22..25 DIM · 73..73 fg=Yellow · 75..79 DIM⟧
+010| │     │ History / compaction view: 0                                     │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 35..35 DIM · 73..73 fg=Yellow · 75..79 DIM⟧
+011| │     │ Output reserve: 4096                                             │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 24..27 DIM · 73..73 fg=Yellow · 75..79 DIM⟧
+012| │     │ Input estimate: 2686                                             │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 24..27 DIM · 73..73 fg=Yellow · 75..79 DIM⟧
+013| │     │ Total estimate: 6782                                             │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 24..27 DIM · 73..73 fg=Yellow · 75..79 DIM⟧
+014| │     │                                                                  │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+015| │     │ Estimator: model::estimate_request_tokens conservative estimate  │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 8..70 fg=DarkGray · 73..73 fg=Yellow · 75..79 DIM⟧
+016| │     │                                                                  │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+017| │     │ Tools                                                            │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 8..12 BOLD · 73..73 fg=Yellow · 75..79 DIM⟧
+018| │     │   list_files, read_file, search, write_file, edit_file, apply_pa │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+019| └──── │                                                                  │ ────┘  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+020| ┌ Mes │ ↑↓/PgUp/PgDn scroll · more below · Esc close                     │ ite ┐  ⟦0..4 DIM · 6..6 fg=Yellow · 8..51 fg=DarkGray · 73..73 fg=Yellow · 75..78 fg=DarkGray+DIM · 79..79 DIM⟧
+021| │❯    └──────────────────────────────────────────────────────────────────┘     │  ⟦0..4 DIM · 6..73 fg=Yellow · 75..79 DIM⟧
+022| └────                                                                      ────┘  ⟦0..4 DIM · 75..79 DIM⟧
+023|  <STORAGE-ROOT>  ⟦0..14 DIM · 15..79 PAD:65 DIM⟧

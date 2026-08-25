@@ -95,12 +95,16 @@ impl TrustedProjectApplication {
         // user/message。DSH pinInitialPermission 在会话创建期 pin 档位，
         // 对应物即出生事件排在首个 turn 之前（PS2）——回放从第一条
         // 事件起就有确定的档位。Classic（exec）不落此事件（PS4）。
+        let plan_birth = materialized.is_some() && self.plan_mode.pending_birth();
         let mut first_batch = Vec::new();
         if materialized.is_some() && self.permission_modes_enabled {
             first_batch.push(NewSessionEvent::new(
                 "sandbox/mode",
                 payloads::sandbox_mode(&self.permission_mode()),
             ));
+        }
+        if plan_birth {
+            first_batch.push(NewSessionEvent::new("plan/mode", json!({ "active": true })));
         }
         first_batch.push(NewSessionEvent::new(
             "turn/start",
@@ -119,6 +123,9 @@ impl TrustedProjectApplication {
         journal
             .flush()
             .map_err(|error| ApplicationError::new(format!("session flush failed: {error}")))?;
+        if plan_birth {
+            self.plan_mode.materialized();
+        }
         // 事实已耐久：投影随后（注册工作区 + 账本 + 指针）。两者之间的
         // 崩溃由挂载期对账收编自愈（会话日志永远赢）。
         if let Some(id) = materialized {
@@ -131,20 +138,10 @@ impl TrustedProjectApplication {
             self.selection = Some(id.clone());
             self.persist_selection(Some(&id))?;
         }
-        let history_nodes = self.sessions.surface_nodes().map_err(session_error)?;
-        let mut history: Vec<crate::model::ModelItem> =
-            history_nodes.into_iter().map(|(_, item)| item).collect();
-        // todo 运行时上下文（CB1-05）：非耐久请求组装，不进事件日志。
-        if let Some(todo_service) = &self.todo
-            && let Some(context) = todo_service.model_context()
-        {
-            history.insert(
-                0,
-                crate::model::ModelItem::user_text(format!(
-                    "CLAT runtime context (not a new user command):\n{context}"
-                )),
-            );
-        }
+        // The model-facing history is shared with `/context`: compaction surface
+        // plus the same non-durable todo runtime item, so inspection cannot drift
+        // from the next real request.
+        let history = self.current_model_history()?;
         Ok(PreparedRun {
             session_id: id,
             turn,
@@ -186,14 +183,6 @@ impl TrustedProjectApplication {
             // durable projection instead of the start-time snapshot.
             self.emitted_request_header = Some(header);
         }
-        if !self.fresh_session_open
-            && let Some(header) = self.sessions.last_request_header()
-        {
-            // A dynamic project-instruction change may have appended a
-            // request/header after the run started. Re-seed dedupe from the
-            // durable projection instead of the start-time snapshot.
-            self.emitted_request_header = Some(header);
-        }
         if self
             .active_compaction
             .as_ref()
@@ -220,6 +209,11 @@ impl TrustedProjectApplication {
             .freeze()
             .map_err(|error| ApplicationError::new(error.to_string()))?;
         self.prompts.freeze();
+        let instruction_snapshot = self
+            .dynamic_instructions
+            .snapshot()
+            .map_err(ApplicationError::new)?;
+        let skill_snapshot = self.skills.snapshot().map_err(ApplicationError::new)?;
         let ApplicationRunRequest {
             attachments,
             prompt,
@@ -233,16 +227,12 @@ impl TrustedProjectApplication {
         // 的 elicitation 与它共享同一前端实现。
         let asker_for_host = asker.clone();
         self.asker_slot.install(asker);
-        // 标题生成需要 config/credentials，而它们随后被 move 进
-        // AgentRequest；提前克隆。request/header 在 spawn 前从真实的
-        // 请求输入构建（审计 P1-14）。
+        // 标题生成与 worker 各自持有模型配置副本；原值留在主线程，
+        // 等 session birth state 耐久后再构造 request/header 与宿主上下文。
         let title_config = config.clone();
         let title_credentials = credentials.clone();
-        let request_header = self.request_header_data(&config)?;
-        let header_reason = self.request_header_reason(&request_header.header);
-        let emitted_header_value = header_reason
-            .is_some()
-            .then(|| request_header.header.clone());
+        let worker_config = config.clone();
+        let worker_credentials = credentials.clone();
         let mut run_scope = self
             .project_manager
             .as_mut()
@@ -264,22 +254,6 @@ impl TrustedProjectApplication {
         // 门，跨 WASM/MCP/DSH 三种传输共用，run 结束即随上下文丢弃。
         let sampling_usage = Arc::new(Mutex::new(Usage::default()));
         let sampling_budget = Arc::new(Mutex::new(crate::plugin_host::SamplingBudget::per_run()));
-        self.plugin_host
-            .install(crate::plugin_host::RunHostContext {
-                providers: Arc::clone(&self.providers),
-                model_config: config.clone(),
-                credentials: credentials.clone(),
-                approver: Arc::clone(&approver),
-                // 档位 cell 仅 Shared（TUI）模式传入：FA 档 sampling 免
-                // 弹框；Classic（exec）的审批语义由 ExecApprover 表达。
-                permission_mode: self
-                    .permission_modes_enabled
-                    .then(|| Arc::clone(&self.permission_mode)),
-                asker: asker_for_host,
-                cancel: cancel.clone(),
-                usage_cell: Arc::clone(&sampling_usage),
-                budget: sampling_budget,
-            });
         let busy = Arc::new(AtomicBool::new(true));
         let join_slot = Arc::new(Mutex::new(None));
         // In-run steering: the same queue is shared by the frontend
@@ -307,7 +281,11 @@ impl TrustedProjectApplication {
         let worker_prompt = prompt.clone();
         let steering_for_worker = steering.clone();
         let plugin_host_worker = Arc::clone(&self.plugin_host);
+        let tool_access_worker = Arc::clone(&self.tool_access);
+        let skill_catalog_worker = Arc::clone(&self.skill_catalog);
         let sampling_usage_worker = Arc::clone(&sampling_usage);
+        let cancel_worker = cancel.clone();
+        let approver_worker = Arc::clone(&approver);
         // 档位快照（run 起点）：仅进系统指令说明。决策读共享 cell，
         // 运行中切档即时生效（P3）。
         let permission_mode_snapshot = self
@@ -317,7 +295,7 @@ impl TrustedProjectApplication {
         // 在 spawn 之后才发生——mount/spawn 失败不可能留下一条已落盘、
         // 却永远得不到回答的 user 消息；预备失败则撤掉发送端，worker
         // 干净退出，同样不留半份状态。用户消息在模型执行前已耐久。
-        let (start_sender, start_receiver) = mpsc::sync_channel::<PreparedRun>(1);
+        let (start_sender, start_receiver) = mpsc::sync_channel::<WorkerStart>(1);
         #[cfg(test)]
         if std::mem::take(&mut self.fail_next_run_spawn) {
             return Err(ApplicationError::new(
@@ -327,17 +305,27 @@ impl TrustedProjectApplication {
         let worker = std::thread::Builder::new()
             .name("clat-run".into())
             .spawn(move || {
-                let prepared = match start_receiver.recv() {
-                    Ok(prepared) => prepared,
+                let cancel = cancel_worker;
+                let request_approver = approver_worker;
+                let start = match start_receiver.recv() {
+                    Ok(start) => start,
                     Err(_) => {
                         // 发送端被撤（预备失败）：持久层无状态可清理，但
                         // 宿主桥上下文是 run 启动路径上装的——卸掉。
                         let _ = run_scope.close();
                         plugin_host_worker.clear();
+                        tool_access_worker.clear();
+                        skill_catalog_worker.clear();
                         busy.store(false, Ordering::Release);
                         return;
                     }
                 };
+                let WorkerStart {
+                    prepared,
+                    request_header,
+                    header_reason,
+                    context,
+                } = start;
                 let PreparedRun {
                     session_id,
                     turn,
@@ -359,8 +347,8 @@ impl TrustedProjectApplication {
                         compactor.as_ref(),
                         sessions.as_ref(),
                         journal.as_ref(),
-                        &config,
-                        &credentials,
+                        &worker_config,
+                        &worker_credentials,
                         &cancel,
                         turn,
                     );
@@ -386,7 +374,7 @@ impl TrustedProjectApplication {
                 });
                 let (mut recorder_core, journaling_approver) = SessionRecorder::with_approver(
                     Arc::clone(&journal),
-                    Arc::clone(&approver),
+                    request_approver,
                     request_header,
                     &title_config.protocol.to_string(),
                     &title_config.model,
@@ -399,7 +387,7 @@ impl TrustedProjectApplication {
                 // B1 + F-1（审计）：唯一花费仪表——recorder 落账充值
                 //（INV-S6 口径，含插件采样），run.rs 检查点读同一实例。
                 let spend_ledger = Arc::new(crate::model::RunSpendLedger::new(
-                    config.effective_run_token_budget(),
+                    worker_config.effective_run_token_budget(),
                 ));
                 recorder_core.set_run_ledger(Arc::clone(&spend_ledger));
                 let recorder = Arc::new(Mutex::new(recorder_core));
@@ -423,15 +411,17 @@ impl TrustedProjectApplication {
                         )),
                     })?;
                     agent.execute(AgentRequest {
-                        config,
+                        config: worker_config,
                         spend_ledger: Some(Arc::clone(&spend_ledger)),
-                        credentials,
+                        credentials: worker_credentials,
                         history_items: history,
                         prompt: prompt_for_request,
                         cancel: cancel.clone(),
                         steering: steering_for_worker,
                         approver,
                         events: recorder_sink,
+                        tool_access: context.tool_access,
+                        workflow_instructions: context.workflow_instructions,
                         permission_mode: permission_mode_for_request,
                     })
                 }));
@@ -595,6 +585,8 @@ impl TrustedProjectApplication {
                 // 只补取消/失败路径的尾巴；桥先 clear 再取余量，杜绝迟
                 // 到加账。
                 plugin_host_worker.clear();
+                tool_access_worker.clear();
+                skill_catalog_worker.clear();
                 let sampled = sampling_usage_worker
                     .lock()
                     .map(|mut cell| std::mem::take(&mut *cell))
@@ -641,8 +633,9 @@ impl TrustedProjectApplication {
             .lock()
             .map_err(|_| ApplicationError::new("run join lock poisoned"))? = Some(worker);
 
-        // 预备（CAS + 首批耐久批）发生在 worker 就位之后：失败时撤掉
-        // 发送端并 join，持久层不留任何本轮痕迹。
+        // 预备（CAS + 首批耐久批）发生在 worker 就位之后。Fresh Plan
+        // birth 已在这里 append+flush；只有此后才冻结本 run 的工作流视图，
+        // 因而 request/header、模型工具目录与宿主硬门消费同一状态事实。
         let prepared = match self.prepare_run(&prompt, &attachments) {
             Ok(prepared) => prepared,
             Err(error) => {
@@ -651,7 +644,40 @@ impl TrustedProjectApplication {
                 return Err(error);
             }
         };
-        if start_sender.send(prepared).is_err() {
+        let context = self.run_context_snapshot(skill_snapshot);
+        let request_header =
+            self.request_header_data(&config, &context, instruction_snapshot.as_ref());
+        let header_reason = self.request_header_reason(&request_header.header);
+        let emitted_header_value = header_reason
+            .is_some()
+            .then(|| request_header.header.clone());
+
+        self.tool_access.install(context.tool_access.clone());
+        self.skill_catalog.install(Arc::clone(&context.skills));
+        self.plugin_host
+            .install(crate::plugin_host::RunHostContext {
+                providers: Arc::clone(&self.providers),
+                model_config: config.clone(),
+                credentials: credentials.clone(),
+                approver: Arc::clone(&approver),
+                permission_mode: self
+                    .permission_modes_enabled
+                    .then(|| Arc::clone(&self.permission_mode)),
+                asker: asker_for_host,
+                cancel: cancel.clone(),
+                usage_cell: Arc::clone(&sampling_usage),
+                budget: sampling_budget,
+            });
+        let start = WorkerStart {
+            prepared,
+            request_header,
+            header_reason,
+            context,
+        };
+        if start_sender.send(start).is_err() {
+            self.plugin_host.clear();
+            self.tool_access.clear();
+            self.skill_catalog.clear();
             handle.join()?;
             return Err(ApplicationError::new(
                 "run worker stopped before execution started",
@@ -726,6 +752,13 @@ struct PreparedRun {
     turn: u64,
     history: Vec<crate::model::ModelItem>,
     journal: Arc<dyn RunJournal>,
+}
+
+struct WorkerStart {
+    prepared: PreparedRun,
+    request_header: crate::session::recorder::RequestHeaderData,
+    header_reason: Option<&'static str>,
+    context: RunContextSnapshot,
 }
 
 pub type ApplicationRunResult = Result<ApplicationRunDone, ApplicationRunFailure>;

@@ -15,8 +15,12 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 const STREAM_RING_BYTES: usize = 256 * 1024;
+const MANAGED_STDOUT_RING_BYTES: usize = 4 * 1024 * 1024 + 64 * 1024;
+const MANAGED_STDERR_RING_BYTES: usize = 256 * 1024;
+const MAX_MANAGED_STDIN_WRITE_BYTES: usize = 4 * 1024 * 1024 + 64 * 1024;
 const MAX_ACTIVE_PROCESSES: usize = 8;
 const MAX_COMPLETED_PROCESSES: usize = 64;
+const MAX_MANAGED_STDIO_PROCESSES: usize = 2;
 pub(crate) const MAX_STDIN_WRITE_BYTES: usize = 256 * 1024;
 const DRAIN_GRACE: Duration = Duration::from_secs(1);
 const KILL_GRACE: Duration = Duration::from_millis(500);
@@ -60,6 +64,37 @@ pub(crate) fn probe_command(
     }
 }
 
+#[cfg(test)]
+pub(crate) fn compile_rust_test_helper(source: &Path, output: &Path) -> Result<(), String> {
+    if let Some(parent) = output.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("create Rust test-helper output directory: {error}"))?;
+    }
+    let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| OsString::from("rustc"));
+    let result = std::process::Command::new(rustc)
+        .arg("--edition=2024")
+        .arg(source)
+        .arg("-o")
+        .arg(output)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .map_err(|error| format!("compile Rust test helper: {error}"))?;
+    if result.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    let mut detail = stderr.chars().take(4096).collect::<String>();
+    if stderr.chars().count() > 4096 {
+        detail.push('…');
+    }
+    Err(format!(
+        "compile Rust test helper failed with {}: {detail}",
+        result.status
+    ))
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct ProcessLimits {
     pub max_lifetime: Duration,
@@ -77,6 +112,25 @@ impl Default for ProcessLimits {
     }
 }
 
+#[derive(Clone, Copy)]
+struct PipedSpawnOptions {
+    limits: ProcessLimits,
+    stdout_capacity: usize,
+    stderr_capacity: usize,
+    strip_credential_env: bool,
+}
+
+impl Default for PipedSpawnOptions {
+    fn default() -> Self {
+        Self {
+            limits: ProcessLimits::default(),
+            stdout_capacity: STREAM_RING_BYTES,
+            stderr_capacity: STREAM_RING_BYTES,
+            strip_credential_env: false,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct ProcessStart {
     pub command: String,
@@ -84,6 +138,57 @@ pub(crate) struct ProcessStart {
     pub tty: bool,
     pub network: bool,
     pub sandbox: SandboxRequest,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ManagedStdioStart {
+    pub server_id: String,
+    pub program: OsString,
+    pub args: Vec<OsString>,
+}
+
+#[derive(Clone)]
+pub(crate) struct ManagedStdioLease {
+    key: String,
+    shared: Arc<ManagedStdioShared>,
+}
+
+struct ManagedStdioShared {
+    entry: Arc<ProcessEntry>,
+    stdout_cursor: Mutex<u64>,
+}
+
+impl ManagedStdioLease {
+    pub(crate) fn write_all(&self, bytes: &[u8]) -> Result<(), String> {
+        self.shared
+            .entry
+            .write_stdin_bounded(bytes, MAX_MANAGED_STDIN_WRITE_BYTES)
+            .map_err(|_| "managed stdio write failed".to_owned())
+    }
+
+    pub(crate) fn read_stdout(&self, wait: Duration, max_bytes: usize) -> Result<Vec<u8>, String> {
+        let mut cursor = self
+            .shared
+            .stdout_cursor
+            .lock()
+            .expect("managed stdout cursor");
+        self.shared
+            .entry
+            .read_stdout_raw(&mut cursor, wait, max_bytes)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn stderr_tail(&self) -> Vec<u8> {
+        self.shared.entry.stderr_snapshot_raw()
+    }
+
+    pub(crate) fn sandbox_facts(&self) -> SandboxFacts {
+        self.shared.entry.sandbox.clone()
+    }
+
+    pub(crate) fn is_terminal(&self) -> bool {
+        self.shared.entry.is_terminal()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -139,6 +244,7 @@ struct ServiceState {
     next_process_id: u64,
     owner: Option<RunOwner>,
     entries: HashMap<u64, Arc<ProcessEntry>>,
+    managed: HashMap<String, Arc<ManagedStdioShared>>,
     closed: bool,
 }
 
@@ -165,6 +271,7 @@ impl ProcessService {
                 next_process_id: 1,
                 owner: None,
                 entries: HashMap::new(),
+                managed: HashMap::new(),
                 closed: false,
             }),
             notice_sink: Mutex::new(None),
@@ -213,6 +320,95 @@ impl ProcessService {
                 .collect::<Vec<_>>()
         };
         close_entries(entries)
+    }
+
+    pub(crate) fn acquire_managed_stdio(
+        &self,
+        request: ManagedStdioStart,
+    ) -> Result<ManagedStdioLease, String> {
+        let server_id = request.server_id.trim();
+        if server_id.is_empty() || server_id.len() > 64 {
+            return Err("managed stdio server id must contain 1..=64 bytes".into());
+        }
+        let planned = self
+            .sandbox
+            .plan_project_read_temp_write(request.program, request.args)?;
+        let mut state = self.state.lock().expect("process service lock");
+        if state.closed {
+            return Err("process service is closed".into());
+        }
+        let completed = state
+            .managed
+            .iter()
+            .filter_map(|(key, shared)| shared.entry.is_terminal().then_some(key.clone()))
+            .collect::<Vec<_>>();
+        for key in completed {
+            if let Some(shared) = state.managed.remove(&key)
+                && !shared.entry.join_monitor()
+            {
+                return Err(format!("managed stdio `{key}` did not join after exit"));
+            }
+        }
+        if let Some(shared) = state.managed.get(server_id) {
+            return Ok(ManagedStdioLease {
+                key: server_id.to_owned(),
+                shared: Arc::clone(shared),
+            });
+        }
+        if state.managed.len() >= MAX_MANAGED_STDIO_PROCESSES {
+            return Err(format!(
+                "managed stdio process limit reached ({MAX_MANAGED_STDIO_PROCESSES})"
+            ));
+        }
+        let id = state.next_process_id;
+        state.next_process_id = state.next_process_id.wrapping_add(1).max(1);
+        let owner = RunOwner {
+            generation: u64::MAX,
+            session_id: format!("managed:{server_id}"),
+            cancel: CancelToken::new(),
+        };
+        let entry = spawn_piped(
+            id,
+            &owner,
+            format!("managed stdio `{server_id}`"),
+            self.project.root().to_path_buf(),
+            planned,
+            None,
+            PipedSpawnOptions {
+                limits: self.limits,
+                stdout_capacity: MANAGED_STDOUT_RING_BYTES,
+                stderr_capacity: MANAGED_STDERR_RING_BYTES,
+                strip_credential_env: true,
+            },
+        )?;
+        let shared = Arc::new(ManagedStdioShared {
+            entry,
+            stdout_cursor: Mutex::new(0),
+        });
+        state
+            .managed
+            .insert(server_id.to_owned(), Arc::clone(&shared));
+        Ok(ManagedStdioLease {
+            key: server_id.to_owned(),
+            shared,
+        })
+    }
+
+    pub(crate) fn close_managed_stdio(&self, lease: &ManagedStdioLease) -> Result<(), String> {
+        let shared = {
+            let mut state = self.state.lock().expect("process service lock");
+            let Some(current) = state.managed.get(&lease.key) else {
+                return Ok(());
+            };
+            if !Arc::ptr_eq(current, &lease.shared) {
+                return Err("managed stdio lease no longer owns this server".into());
+            }
+            state.managed.remove(&lease.key)
+        };
+        match shared {
+            Some(shared) => close_entries(vec![Arc::clone(&shared.entry)]),
+            None => Ok(()),
+        }
     }
 
     pub(crate) fn start(&self, request: ProcessStart) -> Result<u64, String> {
@@ -294,8 +490,11 @@ impl ProcessService {
                 request.command,
                 workdir,
                 planned,
-                self.limits,
                 notice_sink,
+                PipedSpawnOptions {
+                    limits: self.limits,
+                    ..PipedSpawnOptions::default()
+                },
             )?
         };
         state.entries.insert(id, entry);
@@ -381,7 +580,18 @@ impl ProcessService {
             }
             state.closed = true;
             state.owner = None;
-            state.entries.drain().map(|(_, entry)| entry).collect()
+            let mut entries = state
+                .entries
+                .drain()
+                .map(|(_, entry)| entry)
+                .collect::<Vec<_>>();
+            entries.extend(
+                state
+                    .managed
+                    .drain()
+                    .map(|(_, shared)| Arc::clone(&shared.entry)),
+            );
+            entries
         };
         close_entries(entries)
     }
@@ -480,6 +690,9 @@ struct ProcessEntryInit {
     sandbox: SandboxFacts,
     limits: ProcessLimits,
     stdin: Box<dyn Write + Send>,
+    stdout_capacity: usize,
+    stderr_capacity: usize,
+    pty_capacity: usize,
     notice_sink: Option<NoticeSink>,
 }
 
@@ -524,9 +737,9 @@ impl ProcessEntry {
             owner_cancel: owner.cancel.clone(),
             stdin: Mutex::new(Some(init.stdin)),
             state: Mutex::new(EntryState {
-                stdout: ByteRing::new(STREAM_RING_BYTES),
-                stderr: ByteRing::new(STREAM_RING_BYTES),
-                pty: ByteRing::new(STREAM_RING_BYTES),
+                stdout: ByteRing::new(init.stdout_capacity),
+                stderr: ByteRing::new(init.stderr_capacity),
+                pty: ByteRing::new(init.pty_capacity),
                 cursors: OutputCursors::default(),
                 last_activity: Instant::now(),
                 call_deadline: None,
@@ -555,11 +768,56 @@ impl ProcessEntry {
         self.changed.notify_all();
     }
 
+    fn read_stdout_raw(
+        &self,
+        cursor: &mut u64,
+        wait: Duration,
+        max_bytes: usize,
+    ) -> Result<Vec<u8>, String> {
+        if max_bytes == 0 {
+            return Ok(Vec::new());
+        }
+        let deadline = Instant::now() + wait;
+        let mut state = self.state.lock().expect("process entry lock");
+        loop {
+            let (bytes, next, lossy, _) = state.stdout.read_from(*cursor, max_bytes);
+            if lossy {
+                return Err("managed stdio stdout exceeded its bounded buffer".into());
+            }
+            if !bytes.is_empty() {
+                *cursor = next;
+                return Ok(bytes);
+            }
+            if state.terminal.is_some() || Instant::now() >= deadline {
+                return Ok(Vec::new());
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let (next_state, _) = self
+                .changed
+                .wait_timeout(state, remaining)
+                .expect("managed stdout wait");
+            state = next_state;
+        }
+    }
+
+    #[cfg(test)]
+    fn stderr_snapshot_raw(&self) -> Vec<u8> {
+        self.state
+            .lock()
+            .expect("process entry lock")
+            .stderr
+            .snapshot()
+    }
+
     fn write_stdin(&self, bytes: &[u8]) -> Result<(), String> {
-        if bytes.len() > MAX_STDIN_WRITE_BYTES {
+        self.write_stdin_bounded(bytes, MAX_STDIN_WRITE_BYTES)
+    }
+
+    fn write_stdin_bounded(&self, bytes: &[u8], max_bytes: usize) -> Result<(), String> {
+        if bytes.len() > max_bytes {
             return Err(format!(
                 "process session {} stdin write exceeds {} bytes",
-                self.id, MAX_STDIN_WRITE_BYTES
+                self.id, max_bytes
             ));
         }
         let mut slot = match self.stdin.try_lock() {
@@ -939,14 +1197,29 @@ impl ChildHandle {
     }
 }
 
+fn strip_credential_shaped_env(process: &mut std::process::Command) {
+    for (key, _) in std::env::vars_os() {
+        if credential_shaped_env_key(&key) {
+            process.env_remove(key);
+        }
+    }
+}
+
+fn credential_shaped_env_key(key: &std::ffi::OsStr) -> bool {
+    let upper = key.to_string_lossy().to_ascii_uppercase();
+    ["KEY", "PASSWORD", "SECRET", "TOKEN"]
+        .iter()
+        .any(|needle| upper.contains(needle))
+}
+
 fn spawn_piped(
     id: u64,
     owner: &RunOwner,
     command: String,
     workdir: PathBuf,
     planned: crate::sandbox::PlannedCommand,
-    limits: ProcessLimits,
     notice_sink: Option<NoticeSink>,
+    options: PipedSpawnOptions,
 ) -> Result<Arc<ProcessEntry>, String> {
     let mut process = std::process::Command::new(&planned.program);
     process
@@ -955,6 +1228,9 @@ fn spawn_piped(
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
+    if options.strip_credential_env {
+        strip_credential_shaped_env(&mut process);
+    }
     let mut child = process
         .group_spawn()
         .map_err(|error| format!("process spawn failed: {error}"))?;
@@ -974,8 +1250,11 @@ fn spawn_piped(
             command,
             tty: false,
             sandbox: planned.facts,
-            limits,
+            limits: options.limits,
             stdin: Box::new(stdin),
+            stdout_capacity: options.stdout_capacity,
+            stderr_capacity: options.stderr_capacity,
+            pty_capacity: 0,
             notice_sink,
         },
     );
@@ -1117,6 +1396,9 @@ fn spawn_pty(
                 sandbox: planned.facts,
                 limits,
                 stdin: writer,
+                stdout_capacity: 0,
+                stderr_capacity: 0,
+                pty_capacity: STREAM_RING_BYTES,
                 notice_sink,
             },
         );
@@ -1396,6 +1678,198 @@ mod tests {
 
     fn bind(service: &ProcessService) -> u64 {
         service.bind_run("session", CancelToken::new()).unwrap()
+    }
+
+    #[test]
+    fn credential_shaped_environment_keys_are_filtered() {
+        for key in [
+            "OPENAI_API_KEY",
+            "DB_PASSWORD",
+            "CLIENT_SECRET",
+            "AUTH_TOKEN",
+        ] {
+            assert!(
+                credential_shaped_env_key(std::ffi::OsStr::new(key)),
+                "{key}"
+            );
+        }
+        for key in ["PATH", "HOME", "RUST_LOG", "CLAT_MODEL"] {
+            assert!(
+                !credential_shaped_env_key(std::ffi::OsStr::new(key)),
+                "{key}"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn managed_stdio_required_policy_fails_before_spawn_on_unsupported_platforms() {
+        let (root, service) = fixture("managed-unsupported", ProcessLimits::default());
+        let error = service
+            .acquire_managed_stdio(ManagedStdioStart {
+                server_id: "rust".into(),
+                program: OsString::from("definitely-not-a-real-clat-test-binary"),
+                args: Vec::new(),
+            })
+            .err()
+            .expect("unsupported platform must fail closed");
+        assert!(error.contains("graduated provider"), "{error}");
+        assert!(
+            !error.contains("spawn failed"),
+            "planning must precede spawn: {error}"
+        );
+        service.close().unwrap();
+        crate::test_support::cleanup_tree(&root);
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn managed_stdio_is_single_flight_project_owned_and_raw() {
+        let (root, service) = fixture("managed-raw", ProcessLimits::default());
+        let start = |server_id: &str| ManagedStdioStart {
+            server_id: server_id.to_owned(),
+            program: OsString::from("/bin/cat"),
+            args: Vec::new(),
+        };
+        let first = service.acquire_managed_stdio(start("rust")).unwrap();
+        let same = service.acquire_managed_stdio(start("rust")).unwrap();
+        assert!(Arc::ptr_eq(&first.shared, &same.shared));
+        let facts = first.sandbox_facts();
+        assert_eq!(facts.mode.as_str(), "project-read-temp-write");
+        assert_eq!(facts.provider, "seatbelt");
+        assert_eq!(facts.enforcement, "full");
+        assert!(facts.policy_digest.is_some());
+
+        let generation = bind(&service);
+        service.unbind_run(generation).unwrap();
+        first.write_all(b"raw-ping\n").unwrap();
+        assert_eq!(
+            first.read_stdout(Duration::from_secs(3), 1024).unwrap(),
+            b"raw-ping\n"
+        );
+
+        let second = service.acquire_managed_stdio(start("typescript")).unwrap();
+        let limit = service
+            .acquire_managed_stdio(start("third"))
+            .err()
+            .expect("managed stdio limit");
+        assert!(limit.contains("limit reached"), "{limit}");
+        service.close_managed_stdio(&first).unwrap();
+        service.close_managed_stdio(&same).unwrap();
+        service.close_managed_stdio(&second).unwrap();
+        service.close().unwrap();
+        crate::test_support::cleanup_tree(&root);
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn managed_stdio_project_read_temp_write_policy_has_real_world_effects() {
+        let (root, service) = fixture("managed-world", ProcessLimits::default());
+        std::fs::write(root.join("readable.txt"), "project-readable").unwrap();
+        let outside = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!(
+                "clat-managed-outside-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+        std::fs::create_dir_all(&outside).unwrap();
+        let shell_quote =
+            |path: &Path| format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"));
+        let run = |server_id: &str, command: String| {
+            let lease = service
+                .acquire_managed_stdio(ManagedStdioStart {
+                    server_id: server_id.to_owned(),
+                    program: OsString::from("/bin/sh"),
+                    args: vec![OsString::from("-c"), OsString::from(command)],
+                })
+                .unwrap();
+            let facts = lease.sandbox_facts();
+            let mut stdout = Vec::new();
+            for _ in 0..100 {
+                let chunk = lease
+                    .read_stdout(Duration::from_millis(50), 64 * 1024)
+                    .unwrap();
+                let empty = chunk.is_empty();
+                stdout.extend(chunk);
+                if lease.is_terminal() && empty {
+                    break;
+                }
+            }
+            assert!(lease.is_terminal(), "managed command did not terminate");
+            let stderr = lease.stderr_tail();
+            service.close_managed_stdio(&lease).unwrap();
+            (stdout, stderr, facts)
+        };
+
+        let (read, _, managed_facts) = run("read", "cat readable.txt".into());
+        assert_eq!(read, b"project-readable");
+        assert_eq!(managed_facts.mode.as_str(), "project-read-temp-write");
+        let normal = service
+            .sandbox
+            .plan(
+                OsString::from("/usr/bin/true"),
+                Vec::new(),
+                SandboxRequest::Required,
+                false,
+            )
+            .unwrap();
+        assert_ne!(managed_facts.policy_digest, normal.facts.policy_digest);
+
+        let (_, project_write_stderr, _) =
+            run("project-write", "printf denied > denied.txt".into());
+        assert!(!root.join("denied.txt").exists());
+        assert!(!project_write_stderr.is_empty());
+
+        let outside_file = outside.join("denied.txt");
+        let (_, _, _) = run(
+            "outside-write",
+            format!("printf denied > {}", shell_quote(&outside_file)),
+        );
+        assert!(!outside_file.exists());
+
+        std::os::unix::fs::symlink(&outside, root.join("escape")).unwrap();
+        let (_, _, _) = run("symlink-write", "printf denied > escape/symlink.txt".into());
+        assert!(!outside.join("symlink.txt").exists());
+
+        let temp_file = std::env::temp_dir().join(format!(
+            "clat-managed-temp-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let (_, temp_stderr, _) = run(
+            "temp-write",
+            format!("printf temp-ok > {}", shell_quote(&temp_file)),
+        );
+        assert!(
+            temp_stderr.is_empty(),
+            "{}",
+            String::from_utf8_lossy(&temp_stderr)
+        );
+        assert_eq!(std::fs::read_to_string(&temp_file).unwrap(), "temp-ok");
+        std::fs::remove_file(&temp_file).unwrap();
+
+        if Path::new("/usr/bin/nc").is_file() {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let (_, _, _) = run("network", format!("/usr/bin/nc -z 127.0.0.1 {port}"));
+            assert!(
+                listener.accept().is_err(),
+                "managed policy must deny network"
+            );
+        }
+
+        service.close().unwrap();
+        crate::test_support::cleanup_tree(&outside);
+        crate::test_support::cleanup_tree(&root);
     }
 
     #[test]

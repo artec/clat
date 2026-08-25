@@ -63,6 +63,9 @@ impl App {
                     "mcp: {failures} tool/server registration issue(s) — /mcp for detail"
                 ));
             }
+            UiEvent::Application(ApplicationEvent::LanguageIntelligenceNotice { message }) => {
+                self.flash_status(message);
+            }
             // N2：自动命名/改名落盘成功——右标题即时更新，无需重拉快照。
             UiEvent::Application(ApplicationEvent::TitleUpdated { title }) => {
                 self.session_title = Some(title);

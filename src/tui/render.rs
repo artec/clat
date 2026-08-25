@@ -189,6 +189,7 @@ impl App {
             match dialog.kind {
                 InfoDialogKind::Help => self.draw_help_dialog(frame),
                 InfoDialogKind::Mcp => self.draw_mcp_dialog(frame),
+                InfoDialogKind::Context => self.draw_context_dialog(frame),
             }
         }
         if let Some(picker) = &self.permission_picker {
@@ -305,6 +306,43 @@ impl App {
         )));
         clear_popup_with_guards(frame, dialog);
         frame.render_widget(Paragraph::new(body).block(popup_block("/mcp")), dialog);
+    }
+
+    pub(super) fn draw_context_dialog(&mut self, frame: &mut Frame) {
+        let area = frame.area();
+        let inner_width = popup_inner_width(84, area);
+        let Some(view) = self.context_view.as_ref() else {
+            return;
+        };
+        let lines = context_dialog_lines(view, inner_width);
+        let dialog = centered_rect(84, content_dialog_height(lines.len(), area), area);
+        let visible = (dialog.height.saturating_sub(2 + 2)) as usize;
+        let max_scroll = lines.len().saturating_sub(visible);
+        self.info_scroll_max = max_scroll;
+        self.info_page = visible.max(1);
+        let offset = self
+            .info_dialog
+            .as_ref()
+            .map(|dialog| dialog.offset)
+            .unwrap_or(0)
+            .min(max_scroll);
+        let mut body: Vec<Line<'static>> = lines.into_iter().skip(offset).take(visible).collect();
+        let footer = if max_scroll > 0 {
+            if offset < max_scroll {
+                " ↑↓/PgUp/PgDn scroll · more below · Esc close "
+            } else {
+                " ↑↓/PgUp/PgDn scroll · end · Esc close "
+            }
+        } else {
+            " Esc close "
+        };
+        body.push(Line::from(""));
+        body.push(Line::from(Span::styled(
+            footer.trim(),
+            theme::style(theme::Role::Faint),
+        )));
+        clear_popup_with_guards(frame, dialog);
+        frame.render_widget(Paragraph::new(body).block(popup_block("/context")), dialog);
     }
 
     /// ask-user 对话框：问题原文（按实际宽度换行）+ 选项列表（选择行

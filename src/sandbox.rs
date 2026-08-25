@@ -33,6 +33,7 @@ impl SandboxRequest {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SandboxLevel {
     ReadOnly,
+    ProjectReadTempWrite,
     WorkspaceWrite,
     FullAccess,
 }
@@ -41,6 +42,7 @@ impl SandboxLevel {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::ReadOnly => "read-only",
+            Self::ProjectReadTempWrite => "project-read-temp-write",
             Self::WorkspaceWrite => "workspace-write",
             Self::FullAccess => "full-access",
         }
@@ -199,6 +201,47 @@ impl SandboxService {
             ))
         }
     }
+
+    pub(crate) fn plan_project_read_temp_write(
+        &self,
+        program: OsString,
+        args: Vec<OsString>,
+    ) -> Result<PlannedCommand, String> {
+        #[cfg(target_os = "macos")]
+        {
+            let executable = Path::new("/usr/bin/sandbox-exec");
+            probe_seatbelt(executable)?;
+            let profile = project_read_temp_write_profile(&self.project_root)?;
+            let digest = format!("{:x}", Sha256::digest(profile.as_bytes()));
+            let mut wrapped = vec![
+                OsString::from("-p"),
+                OsString::from(profile),
+                OsString::from("--"),
+            ];
+            wrapped.push(program);
+            wrapped.extend(args);
+            Ok(PlannedCommand {
+                program: executable.as_os_str().to_owned(),
+                args: wrapped,
+                facts: SandboxFacts {
+                    provider: "seatbelt".into(),
+                    mode: SandboxLevel::ProjectReadTempWrite,
+                    enforcement: "full".into(),
+                    policy_digest: Some(digest),
+                    fallback_reason: None,
+                },
+            })
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (program, args);
+            Err(format!(
+                "sandbox: project-read-temp-write requires a graduated provider on {}",
+                std::env::consts::OS
+            ))
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -247,6 +290,39 @@ fn raw_plan(
             fallback_reason: reason.map(str::to_owned),
         },
     }
+}
+
+#[cfg(target_os = "macos")]
+fn project_read_temp_write_profile(project_root: &Path) -> Result<String, String> {
+    let mut roots = vec![PathBuf::from("/tmp"), std::env::temp_dir()];
+    let mut canonical = Vec::new();
+    for root in roots.drain(..) {
+        let root = root.canonicalize().unwrap_or(root);
+        if !canonical.contains(&root) {
+            canonical.push(root);
+        }
+    }
+    let clauses = canonical
+        .iter()
+        .map(|root| format!("(subpath {})", sbpl_string(root)))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let project_root = project_root
+        .canonicalize()
+        .unwrap_or_else(|_| project_root.to_path_buf());
+    Ok([
+        "(version 1)".to_owned(),
+        "(allow default)".to_owned(),
+        "(deny file-write*)".to_owned(),
+        "(allow file-write* (literal \"/dev/null\"))".to_owned(),
+        "(deny network*)".to_owned(),
+        format!("(allow file-write* {clauses})"),
+        format!(
+            "(deny file-write* (subpath {}))",
+            sbpl_string(&project_root)
+        ),
+    ]
+    .join(" "))
 }
 
 #[cfg(target_os = "macos")]

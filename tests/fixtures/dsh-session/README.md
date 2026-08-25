@@ -14,15 +14,19 @@ supersedes these primitives-only bytes when the Node+DSH toolchain lands.
 
 ## B8 golden fixtures (2026-08-22, pinned 0.1.1-rc.2 = `b150a551b8`)
 
-`interrupted-session.jsonl.zstd` and `team-events-session.jsonl.zstd` are
-committed golden logs produced by the **real DSH write path** (Cordis
-`Context` + `SessionStore` + `JsonlSessionPersistence`, compression zstd).
-They are consumed by the always-on main test suite
-(`src/session/dsh_golden.rs` — no Node dependency):
+`interrupted-session.jsonl.zstd`, `team-events-session.jsonl.zstd`, and
+`plan-mode-approved-session.jsonl.zstd` are committed golden logs produced by
+the **real DSH write path** (Cordis `Context` + `SessionStore` +
+`JsonlSessionPersistence`, compression zstd). They are consumed by the
+always-on main test suite (`src/session/dsh_golden.rs` — no Node dependency):
 
 - interrupted: a mid-stream-cancelled turn whose `assistant/message`
   carries `interrupted: true` (mirrors DSH `agent.ts:352-368`);
-- team: the four `team/*` known types riding in required envelopes.
+- team: the four `team/*` known types riding in required envelopes;
+- plan-mode-approved: `plan/mode` active birth followed by CLAT's bounded
+  `approved {text,digest}` extension. The generator reads this session back
+  through pinned DSH `JsonlSessionPersistence.load` before copying the golden;
+  CLAT then consumes the committed bytes in `src/session/dsh_golden.rs`.
 
 Regenerate (dev side; also runs the DSH read leg over a CLAT-produced
 interrupted log when `CLAT_CLAT_LOG` is set):

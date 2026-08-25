@@ -53,6 +53,10 @@ clat upgrade --check
 
 - **智能体工作流**——无固定轮次上限的 模型 → 工具 → 模型 循环、运行中
   插话、向用户提问、每会话 todo、自动标题，以及保留原始日志的上下文压缩。
+- **工作流智能**——持久化 Plan Mode 与结构化工具过滤，bundled/user/project
+  三层 Markdown skills 的惰性有界加载，可选的用户级只读 LSP 导航
+  （definition/references/implementation/hover，经 CLAT 管理的沙箱 stdio），
+  以及 `/context` 一次性解释模型实际可见上下文的估算分项。
 - **模型**——DeepSeek、GLM、Qwen、Kimi 内置预设，命名自定义档案，
   OpenAI Responses 与 OpenAI 兼容协议，思考/用量/缓存/上下文/配额遥测。
 - **原生工具**——有界且理解 gitignore 的字面量/正则/glob 搜索、文件列表与

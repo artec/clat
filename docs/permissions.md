@@ -163,6 +163,25 @@ from acquiring trusted services accidentally.
 Trust does not mean every future tool call is approved. After mount, the active
 permission mode and path scope still apply.
 
+## Workflow and language-intelligence boundaries
+
+Plan Mode is stricter than a prompt convention but narrower than an OS
+sandbox. One frozen `ToolAccessPolicy` removes side-effecting schemas from the
+model and also rejects forged/direct/plugin-host calls. It does not terminate or
+re-sandbox already mounted extension code; those components keep their own
+runtime boundaries.
+
+The native `skill` loader is `Read`. Loading a `SKILL.md` body or referenced
+resource never inherits Execute authority. A `requires-execution: true` skill is
+model-visible only after the platform's required sandbox capability has
+graduated, and its script still runs only through normal `exec_command` or
+`run_command` as `Execute`, with the ordinary approval and ProcessService path.
+
+The optional `lsp` tool is always `ExternalRead`. It is absent from Plan Mode and
+may spawn only the executable chosen in the user-level `lsp.json`; the spawn
+requires the project-read/temp-write OS sandbox with network disabled. If that
+required provider is unavailable, CLAT fails before spawning the server.
+
 ## Read and write scope
 
 Permission decides whether a call asks. Path scope independently decides what

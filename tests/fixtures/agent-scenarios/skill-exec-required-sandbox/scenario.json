@@ -1,0 +1,132 @@
+{
+  "schema_version": 1,
+  "id": "skill-exec-required-sandbox",
+  "os": "macos",
+  "prompt": "Load the executable skill and run its script through the required sandbox.",
+  "model_steps": [
+    {
+      "expect": {
+        "available_tools_include": ["skill", "exec_command"],
+        "instructions_include": [
+          "exec-fixture",
+          "requires-execution=true"
+        ]
+      },
+      "response": {
+        "tool_calls": [
+          {
+            "id": "call-load-exec-skill",
+            "name": "skill",
+            "arguments": {
+              "name": "exec-fixture"
+            }
+          }
+        ],
+        "finish_reason": "tool_calls"
+      }
+    },
+    {
+      "expect": {
+        "required_tool_results": ["skill"],
+        "required_tool_result_contains": [
+          {
+            "tool": "skill",
+            "text": "\"requires_execution\":true"
+          },
+          {
+            "tool": "skill",
+            "text": "scripts/run.sh"
+          }
+        ]
+      },
+      "response": {
+        "tool_calls": [
+          {
+            "id": "call-ordinary-required-exec",
+            "name": "exec_command",
+            "arguments": {
+              "cmd": "sh .clat/skills/exec-fixture/scripts/run.sh",
+              "sandbox": "required",
+              "network": false,
+              "yield_time_ms": 5000
+            }
+          }
+        ],
+        "finish_reason": "tool_calls"
+      }
+    },
+    {
+      "expect": {
+        "required_tool_results": ["exec_command"],
+        "required_tool_result_contains": [
+          {
+            "tool": "exec_command",
+            "text": "\"provider\":\"seatbelt\""
+          },
+          {
+            "tool": "exec_command",
+            "text": "\"enforcement\":\"full\""
+          }
+        ]
+      },
+      "response": {
+        "text": "required sandbox skill execution complete",
+        "finish_reason": "completed"
+      }
+    }
+  ],
+  "expected": {
+    "outcome": "success",
+    "event_kinds": [
+      "run_started",
+      "model_requested",
+      "model_responded",
+      "tool_requested",
+      "permission_checked",
+      "tool_started",
+      "tool_finished",
+      "model_requested",
+      "model_responded",
+      "tool_requested",
+      "permission_checked",
+      "tool_started",
+      "tool_finished",
+      "model_requested",
+      "model_stream",
+      "model_responded",
+      "run_completed"
+    ],
+    "durable_event_kinds": [
+      "turn/start",
+      "user/message",
+      "step/start",
+      "request/header",
+      "assistant/message",
+      "tool/call",
+      "tool/result",
+      "step/end",
+      "step/start",
+      "assistant/message",
+      "approval/asked",
+      "approval/decided",
+      "tool/call",
+      "tool/result",
+      "step/end",
+      "step/start",
+      "assistant/chunk",
+      "assistant/message",
+      "step/end",
+      "turn/end"
+    ],
+    "permission_checks": [
+      {
+        "tool": "skill",
+        "decision": "allow"
+      },
+      {
+        "tool": "exec_command",
+        "decision": "allow"
+      }
+    ]
+  }
+}

@@ -45,6 +45,75 @@ impl fmt::Display for ToolEffect {
     }
 }
 
+/// Immutable per-run view over the project tool registry. Plan Mode uses the
+/// same value for model schemas, request/header, forged-call admission, and
+/// permission/PluginHost gating; changing the durable plan state mid-run never
+/// mutates this snapshot.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ToolAccessPolicy {
+    plan_mode: bool,
+}
+
+impl ToolAccessPolicy {
+    pub(crate) fn all() -> Self {
+        Self { plan_mode: false }
+    }
+
+    pub(crate) fn plan_mode() -> Self {
+        Self { plan_mode: true }
+    }
+
+    pub(crate) fn allows(&self, definition: &ToolDefinition) -> bool {
+        if !self.plan_mode {
+            return true;
+        }
+        matches!(definition.effect, ToolEffect::Pure | ToolEffect::Read)
+            || (definition.effect == ToolEffect::SessionWrite
+                && definition.name == "exit_plan_mode")
+    }
+
+    pub(crate) fn denial_reason(&self) -> &'static str {
+        "tool unavailable in plan mode"
+    }
+}
+
+impl Default for ToolAccessPolicy {
+    fn default() -> Self {
+        Self::all()
+    }
+}
+
+/// Project-owned slot read by permission policies and the PluginHost bridge.
+/// Application writes one immutable snapshot at run start and resets it after
+/// teardown. The slot is not a second registry and cannot add authority.
+#[derive(Default)]
+pub(crate) struct ToolAccessSlot {
+    current: RwLock<ToolAccessPolicy>,
+}
+
+impl ToolAccessSlot {
+    pub(crate) fn shared() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+
+    pub(crate) fn install(&self, policy: ToolAccessPolicy) {
+        if let Ok(mut current) = self.current.write() {
+            *current = policy;
+        }
+    }
+
+    pub(crate) fn clear(&self) {
+        self.install(ToolAccessPolicy::all());
+    }
+
+    pub(crate) fn snapshot(&self) -> ToolAccessPolicy {
+        self.current
+            .read()
+            .map(|value| value.clone())
+            .unwrap_or_default()
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ToolDefinition {
     pub name: String,
@@ -478,6 +547,13 @@ impl ToolRegistry {
             .iter()
             .filter_map(|name| state.by_name.get(name))
             .map(|entry| entry.tool.definition())
+            .collect()
+    }
+
+    pub(crate) fn definitions_for(&self, access: &ToolAccessPolicy) -> Vec<ToolDefinition> {
+        self.definitions()
+            .into_iter()
+            .filter(|definition| access.allows(definition))
             .collect()
     }
 

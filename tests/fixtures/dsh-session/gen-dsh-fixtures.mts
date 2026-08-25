@@ -18,6 +18,7 @@
 // DSH 真实读取器（JsonlSessionPersistence.load）接受并语义一致——
 // 互证方向与 2026-08-18 原语级互证相同，这次走完整 load 路径。
 
+import { createHash } from 'node:crypto'
 import { copyFile, mkdir, mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -158,6 +159,38 @@ async function generateTeamEvents(ctx: any, root: string): Promise<string> {
   return logPath(root, cwd, SessionId(TEAM_ID), 'zstd')
 }
 
+// ---- fixture 3：plan/mode approved 扩展（DSH reader 兼容性）----
+
+const PLAN_ID = '018f2a64-9d3f-7cde-8123-9a4f2b6c0b03'
+const APPROVED_PLAN = 'Inspect the project, preserve invariants, implement the change, then run focused tests.'
+
+async function generatePlanModeApproved(ctx: any, root: string): Promise<string> {
+  const session = ctx.sessions.create(SessionId(PLAN_ID), {
+    meta: { cwd, createdAt: Date.UTC(2026, 7, 25, 7, 0, 0) },
+  })
+  session.append('plan/mode', { active: true })
+  const digest = createHash('sha256').update(APPROVED_PLAN, 'utf8').digest('hex')
+  session.append('plan/mode', {
+    active: false,
+    approved: { text: APPROVED_PLAN, digest },
+  })
+  await ctx.sessions.flush(session)
+
+  // This is the decisive compatibility leg: the pinned DSH reader must accept
+  // CLAT's extra approved field and return it intact. If DSH rejects/strips it,
+  // fixture generation fails instead of silently changing CLAT's event shape.
+  const loaded = await ctx.sessionPersistence.load(SessionId(PLAN_ID)) as {
+    events: Array<{ type: string; data: any }>
+  }
+  const approved = loaded.events.find(
+    (event) => event.type === 'plan/mode' && event.data?.approved?.text === APPROVED_PLAN,
+  )
+  if (!approved || approved.data.approved.digest !== digest) {
+    throw new Error('[plan-mode-fixture] pinned DSH reader did not preserve the approved extension')
+  }
+  return logPath(root, cwd, SessionId(PLAN_ID), 'zstd')
+}
+
 // ---- 第二阶段：DSH 读腿（CLAT 自产 interrupted 日志）----
 
 async function crossReadClatLog(): Promise<void> {
@@ -197,10 +230,18 @@ async function crossReadClatLog(): Promise<void> {
 
 const interrupted = await withPersistence(generateInterrupted)
 const team = await withPersistence(generateTeamEvents)
+const plan = await withPersistence(generatePlanModeApproved)
 await copyFile(interrupted.value, join(outDir, 'interrupted-session.jsonl.zstd'))
 await copyFile(team.value, join(outDir, 'team-events-session.jsonl.zstd'))
+await copyFile(plan.value, join(outDir, 'plan-mode-approved-session.jsonl.zstd'))
 await rm(interrupted.root, { recursive: true, force: true })
 await rm(team.root, { recursive: true, force: true })
-console.log('fixtures written:', join(outDir, 'interrupted-session.jsonl.zstd'), join(outDir, 'team-events-session.jsonl.zstd'))
+await rm(plan.root, { recursive: true, force: true })
+console.log(
+  'fixtures written:',
+  join(outDir, 'interrupted-session.jsonl.zstd'),
+  join(outDir, 'team-events-session.jsonl.zstd'),
+  join(outDir, 'plan-mode-approved-session.jsonl.zstd'),
+)
 
 await crossReadClatLog()
