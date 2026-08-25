@@ -32,7 +32,15 @@ impl TrustedProjectApplication {
             .snapshot()
             .map_err(ApplicationError::new)?;
         let skills = self.skills.snapshot().map_err(ApplicationError::new)?;
-        let run_context = self.run_context_snapshot(std::sync::Arc::clone(&skills));
+        // `/context` has no next user prompt yet, so it reports a zero actual
+        // memory injection rather than guessing which records a future query
+        // would retrieve. The fixed budget remains visible in the DTO.
+        let goal = self.goal.injection().map_err(ApplicationError::new)?;
+        let run_context = self.run_context_snapshot(
+            std::sync::Arc::clone(&skills),
+            crate::memory::MemoryInjection::default(),
+            goal.clone(),
+        );
         let plan_state = self.plan_mode.state();
         let plan_instructions = if plan_state.active {
             Some(crate::plan_mode::PLAN_POLICY.to_owned())
@@ -56,8 +64,12 @@ impl TrustedProjectApplication {
             with_plan.clone(),
             skills.instructions(),
         );
+        let with_goal = crate::plan_mode::compose_workflow_instructions(
+            with_skills.clone(),
+            (!goal.instructions.is_empty()).then_some(goal.instructions.as_str()),
+        );
         let final_system = crate::plugins::services::compose_instructions(
-            &with_skills,
+            &with_goal,
             instruction_snapshot.as_ref(),
         );
         let history = self.current_model_history()?;
@@ -69,6 +81,7 @@ impl TrustedProjectApplication {
         let base_total = estimate_instructions(&base);
         let plan_total = estimate_instructions(&with_plan);
         let skills_total = estimate_instructions(&with_skills);
+        let goal_total = estimate_instructions(&with_goal);
         let system_total = estimate_instructions(&final_system);
         let with_history = crate::model::estimate_request_tokens(
             (!final_system.is_empty()).then_some(final_system.as_str()),
@@ -86,9 +99,12 @@ impl TrustedProjectApplication {
             estimator: "model::estimate_request_tokens conservative estimate".into(),
             unit: "tokens".into(),
             base_prompt_estimate: base_total,
-            project_instructions_estimate: system_total.saturating_sub(skills_total),
+            project_instructions_estimate: system_total.saturating_sub(goal_total),
             plan_policy_estimate: plan_total.saturating_sub(base_total),
             skill_catalog_estimate: skills_total.saturating_sub(plan_total),
+            goal_policy_estimate: goal_total.saturating_sub(skills_total),
+            memory_estimate: run_context.memory_bytes as u64,
+            memory_budget_bytes: crate::memory::MAX_INJECTION_BYTES as u64,
             tool_schemas_estimate: input_total.saturating_sub(with_history),
             history_estimate: with_history.saturating_sub(system_total),
             output_reserve_estimate: output_reserve,

@@ -14,6 +14,7 @@ Files appear lazily, so a fresh installation may contain only a subset.
 ├── config.json                  # control-plane version sentinel
 ├── settings.json                # active model state and named profiles
 ├── credentials.json             # remembered per-vendor API keys (0600)
+├── memory.json                  # explicit user/project knowledge (0600)
 ├── trust.json                   # canonical project path -> trusted timestamp
 ├── web-token                    # clat serve Bearer credential (0600)
 ├── dsh-last-session             # last session id opened by clat dsh
@@ -57,6 +58,7 @@ installation and never participates in runtime discovery.
 | settings, credentials, trust, workspace tables | control-plane facts | preserve torn remnant and start an empty replacement with a diagnostic |
 | projection checkpoint/cache | derived | drop and rebuild from facts |
 | `web-token` | local API credential | validate regular 0600 file; create/rotate atomically |
+| `memory.json` | authoritative explicit knowledge | version/CAS/path validation fail closed; never inferred from model output |
 | extension manifests | user input | isolate configuration/plugin failure where possible |
 | plugin registry | authoritative activation pointers | version/digest/signature mismatch fails closed; never reset or guess |
 | plugin artifacts/staging | immutable code / uncommitted transaction bytes | verify complete tree before activation; stale staging is never executable |
@@ -227,6 +229,28 @@ journal. LSP processes and protocol buffers are transient project-owned state.
 
 `/context` is wholly derived: it writes no file or journal event and keeps no
 background monitor after returning its snapshot.
+
+`memory.json` is a separate versioned unit because user memory spans sessions.
+Project records carry the canonical project key; user records do not. Every
+record has a stable id, revision, source, timestamps, digest, and optional
+source-file digest. The core writer uses a regular-file/no-symlink check,
+0600 temporary file, rename, and parent-directory fsync. Add/edit/delete are
+explicit user operations with revision CAS. Searches and run injection are
+read-only and never append a session event.
+
+Goal state is session-local. A complete `goal/change` snapshot records each
+revision, transition, budget counter, acceptance result, and terminal/blocked
+reason. The goal projection participates in admission, checkpoint restore, and
+tail replay. The armed bit is intentionally absent from the durable snapshot:
+restart and session switch require the user to arm again.
+
+Subagent activation is likewise process-local and defaults off. Each actual
+child writes a DSH v2 `subagent/descriptor` plus CLAT `clat/subagent` start/end
+facts to the parent journal before/after execution. The latter is ignorable to
+older consumers but still has strict admission and a checkpointed lifecycle
+projection. Child prompts, transient tool traces, and independent histories do
+not create resumable session directories; bounded output returns only as the
+parent tool result.
 
 ### Model settings and credentials
 

@@ -58,6 +58,7 @@ fn assert_estimate_identity(snapshot: &ContextEstimateSnapshot) {
         .saturating_add(snapshot.project_instructions_estimate)
         .saturating_add(snapshot.plan_policy_estimate)
         .saturating_add(snapshot.skill_catalog_estimate)
+        .saturating_add(snapshot.goal_policy_estimate)
         .saturating_add(snapshot.tool_schemas_estimate)
         .saturating_add(snapshot.history_estimate);
     assert_eq!(parts, snapshot.input_estimate);
@@ -99,6 +100,7 @@ fn context_estimate_is_additive_and_plan_skills_and_tool_view_are_live() {
     assert!(baseline.project_instructions_estimate > 0);
     assert!(baseline.tool_names.contains(&"lsp".to_owned()));
     assert_eq!(baseline.plan_policy_estimate, 0);
+    assert_eq!(baseline.goal_policy_estimate, 0);
 
     let good = project_root.join(".clat/skills/context-probe");
     std::fs::create_dir_all(&good).unwrap();
@@ -135,6 +137,18 @@ fn context_estimate_is_additive_and_plan_skills_and_tool_view_are_live() {
         in_plan.skill_catalog_estimate,
         with_skills.skill_catalog_estimate
     );
+
+    application
+        .goal_create(
+            "explain goal context",
+            crate::goal::GoalAcceptance::User,
+            crate::goal::GoalLimits::default(),
+            false,
+        )
+        .unwrap();
+    let with_goal = application.context_snapshot().unwrap();
+    assert_estimate_identity(&with_goal);
+    assert!(with_goal.goal_policy_estimate > 0);
 
     application.close().unwrap();
     crate::test_support::cleanup_tree(storage_root.parent().unwrap());

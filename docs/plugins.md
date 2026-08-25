@@ -20,6 +20,21 @@ implement the TypeScript `apply(ctx)` source ABI. A portable Rust marketplace
 package should compile to WASM/WIT; CLAT does not expose a dynamic-library ABI,
 because Rust compiler ABIs are not stable enough for a durable plugin market.
 
+### Built-in agent capability plugins
+
+First-party agent capabilities use the same static `Plugin`/service/lease
+lifecycle as other built-ins. They are independently removable catalog entries,
+not UI special cases. The current workflow/intelligence set is
+`builtin.plan_mode`, `builtin.skills`, `builtin.language_intelligence`,
+`builtin.context_inspector`, `builtin.memory`, `builtin.goal`, and
+`builtin.subagent`. Omitting one removes its commands/tools/service; closing the
+Trusted Project scope revokes its leases and joins owned workers.
+
+This internal packaging does not make a capability a downloadable marketplace
+package. Memory, goal, and subagent currently depend on CLAT-owned Rust runtime
+interfaces and durable-event gates; they may become portable only after those
+contracts have an interoperable external ABI.
+
 ## One semantic host
 
 MCP server requests and WIT imports terminate in `PluginHostBridge`. Transport

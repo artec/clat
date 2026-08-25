@@ -477,6 +477,35 @@ mod tests {
     }
 
     #[test]
+    fn pinned_workspace_oracle_fields_round_trip_without_adaptation() {
+        let oracle: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/dsh-oracle/workspace-model.json"
+        ))
+        .expect("workspace oracle");
+        let sections = &oracle["sections"];
+        assert_eq!(
+            sections["domain"],
+            serde_json::json!({"name": "workspace", "version": 2})
+        );
+        let mut record: WorkspaceRecord =
+            serde_json::from_value(sections["record"].clone()).expect("DSH record shape");
+        assert_eq!(record.path, "/oracle/project");
+        assert_eq!(record.session_ids.len(), 1);
+        assert_eq!(record.active_session_id, None);
+        record.active_session_id = Some("clat-local-pointer".into());
+        let encoded = serde_json::to_value(&record).expect("serialize CLAT extension");
+        assert_eq!(encoded["path"], sections["record"]["path"]);
+        assert_eq!(encoded["sessionIds"], sections["record"]["sessionIds"]);
+
+        let state: GlobalState =
+            serde_json::from_value(sections["stateDefaulting"].clone()).expect("DSH global shape");
+        assert!(state.initialized);
+        assert_eq!(state.workspace_ids, vec!["workspace-1"]);
+        assert!(state.archived_session_ids.is_empty());
+        assert_eq!(state.active_workspace_id, None);
+    }
+
+    #[test]
     fn register_enter_and_selection_round_trip() {
         let mut registry = WorkspaceRegistry::empty();
         let id = registry.register("/proj/a", "a", vec!["session-1".into()]);

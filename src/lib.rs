@@ -8,10 +8,12 @@ pub mod demo;
 pub mod dsh;
 pub mod event;
 pub mod exec;
+pub mod goal;
 mod interaction;
 mod language_intelligence;
 mod mcp;
 pub mod media;
+pub mod memory;
 pub mod model;
 mod native_tools;
 mod permission;
@@ -31,6 +33,7 @@ mod sandbox;
 mod search;
 pub mod serve;
 mod skills;
+pub mod subagent;
 // DSH-compatible session stack (docs/todo/dsh-session-persistence.md):
 // session facts live exclusively in these logs since the stage-5 cutover.
 // Format-documentation items (catalog constants, layout helpers) exceed the

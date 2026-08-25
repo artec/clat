@@ -195,6 +195,9 @@ fn validate_payload(event: &SessionEvent) -> Result<(), String> {
             }
             Ok(())
         }
+        "goal/change" => crate::goal::validate_change_payload(&event.data),
+        "subagent/descriptor" => crate::subagent::validate_descriptor(&event.data),
+        "clat/subagent" => crate::subagent::validate_lifecycle(&event.data),
         "compaction/start" | "compaction/end" => {
             require_str(&event.data, "compactionId")?;
             Ok(())
@@ -365,7 +368,7 @@ fn require_content_array(
     Ok(content)
 }
 
-/// All 44 known types are covered by the dispatch above or fall through
+/// All known types are covered by the dispatch above or fall through
 /// to envelope-only checks; retired types never appear in the known set.
 #[cfg(test)]
 mod tests {
@@ -613,6 +616,43 @@ mod tests {
     }
 
     #[test]
+    fn phase_four_durable_events_fail_closed_on_malformed_payloads() {
+        let malformed_goal = SessionEvent::new(
+            "goal/change",
+            0,
+            1,
+            json!({"operation": "create", "goal": {}, "unexpected": true}),
+        );
+        let malformed_descriptor = SessionEvent::new(
+            "subagent/descriptor",
+            0,
+            1,
+            json!({"version": 2, "role": "explorer", "provider": "p", "extra": true}),
+        );
+        let malformed_lifecycle = SessionEvent::new(
+            "clat/subagent",
+            0,
+            1,
+            json!({
+                "version": 1,
+                "phase": "end",
+                "id": "not-a-uuid",
+                "role": "explorer",
+                "inputDigest": "bad",
+                "outputDigest": "bad",
+                "usage": {"tokens": u64::MAX, "wallMs": u64::MAX},
+                "provenance": {"provider": "p", "model": "m", "tools": ["execute"]}
+            }),
+        );
+        for event in [malformed_goal, malformed_descriptor, malformed_lifecycle] {
+            assert!(matches!(
+                admit_events(&[event]),
+                Err(AdmissionError::MalformedPayload { .. })
+            ));
+        }
+    }
+
+    #[test]
     fn subagent_and_delegated_headers_are_rejected_for_resume() {
         let mut subagent = header();
         subagent.origin = Some(crate::session::header::SessionOrigin::Subagent);
@@ -637,6 +677,6 @@ mod tests {
     /// The catalog constants stay honest against the dispatch above.
     #[test]
     fn known_catalog_is_consistent() {
-        assert_eq!(crate::session::catalog::KNOWN_EVENT_TYPES.len(), 49);
+        assert_eq!(crate::session::catalog::KNOWN_EVENT_TYPES.len(), 50);
     }
 }

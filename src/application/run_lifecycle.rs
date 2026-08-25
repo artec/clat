@@ -27,9 +27,47 @@ impl TrustedProjectApplication {
         &mut self,
         request: ApplicationRunRequest,
     ) -> Result<RunHandle, ApplicationError> {
+        // An ordinary human prompt competes with any previously armed goal.
+        // Preserve durable phase, remove only process-local continuation
+        // authority, matching DSH goal-round-driver's competing prompt fence.
+        self.goal.disarm();
         let cancel = CancelToken::new();
         let catalog = run_catalog(cancel.clone(), Arc::clone(&request.approver));
-        self.start_run_with_catalog(request, catalog)
+        self.start_run_with_catalog(request, catalog, None)
+    }
+
+    /// Start the explicitly armed bounded goal driver. The caller supplies
+    /// normal frontend channels, but core owns the exact synthetic prompt and
+    /// its durable `source.kind=goal` admission record.
+    pub fn start_goal_run(
+        &mut self,
+        mut request: ApplicationRunRequest,
+    ) -> Result<(RunHandle, String), ApplicationError> {
+        if !request.attachments.is_empty() {
+            return Err(ApplicationError::new(
+                "goal continuation rounds do not accept attachments",
+            ));
+        }
+        let round = self.goal.next_round().map_err(ApplicationError::new)?;
+        request.prompt = round.prompt.clone();
+        let visible_prompt = round.prompt.clone();
+        let remaining = self
+            .goal
+            .remaining_time()
+            .ok_or_else(|| ApplicationError::new("no current goal time budget"))?;
+        if remaining.is_zero() {
+            self.goal.disarm();
+            return Err(ApplicationError::new("goal time budget is exhausted"));
+        }
+        let cancel = CancelToken::with_deadline(std::time::Instant::now() + remaining);
+        let catalog = run_catalog(cancel, Arc::clone(&request.approver));
+        match self.start_run_with_catalog(request, catalog, Some(round)) {
+            Ok(handle) => Ok((handle, visible_prompt)),
+            Err(error) => {
+                self.goal.disarm();
+                Err(error)
+            }
+        }
     }
 
     /// The durable prelude of a run: ensure a session with a live writer,
@@ -42,7 +80,12 @@ impl TrustedProjectApplication {
         &mut self,
         prompt: &str,
         attachments: &[std::path::PathBuf],
+        goal_round: Option<&crate::goal::GoalRound>,
     ) -> Result<PreparedRun, ApplicationError> {
+        let pending_goal_birth = self
+            .goal
+            .pending_birth_event()
+            .map_err(ApplicationError::new)?;
         let mut materialized: Option<SessionId> = None;
         match self.selection.clone() {
             None => {
@@ -106,6 +149,11 @@ impl TrustedProjectApplication {
         if plan_birth {
             first_batch.push(NewSessionEvent::new("plan/mode", json!({ "active": true })));
         }
+        if materialized.is_some()
+            && let Some(event) = pending_goal_birth
+        {
+            first_batch.push(event);
+        }
         first_batch.push(NewSessionEvent::new(
             "turn/start",
             payloads::turn_start(turn),
@@ -113,7 +161,9 @@ impl TrustedProjectApplication {
         first_batch.push(
             NewSessionEvent::new(
                 "user/message",
-                payloads::user_message_with_images(prompt, &images),
+                goal_round
+                    .map(|round| round.message.clone())
+                    .unwrap_or_else(|| payloads::user_message_with_images(prompt, &images)),
             )
             .append(Vec::new()),
         );
@@ -125,6 +175,10 @@ impl TrustedProjectApplication {
             .map_err(|error| ApplicationError::new(format!("session flush failed: {error}")))?;
         if plan_birth {
             self.plan_mode.materialized();
+        }
+        if materialized.is_some() {
+            self.goal.materialized(&id).map_err(ApplicationError::new)?;
+            self.subagents.materialized(&id);
         }
         // 事实已耐久：投影随后（注册工作区 + 账本 + 指针）。两者之间的
         // 崩溃由挂载期对账收编自愈（会话日志永远赢）。
@@ -147,6 +201,7 @@ impl TrustedProjectApplication {
             turn,
             history,
             journal,
+            goal_round_started: goal_round.map(|round| round.started_at),
         })
     }
 
@@ -154,6 +209,7 @@ impl TrustedProjectApplication {
         &mut self,
         request: ApplicationRunRequest,
         run_plugins: Vec<Arc<dyn Plugin>>,
+        goal_round: Option<crate::goal::GoalRound>,
     ) -> Result<RunHandle, ApplicationError> {
         if let Some(previous) = self
             .active_run
@@ -214,6 +270,10 @@ impl TrustedProjectApplication {
             .snapshot()
             .map_err(ApplicationError::new)?;
         let skill_snapshot = self.skills.snapshot().map_err(ApplicationError::new)?;
+        let memory_injection = self
+            .memory
+            .injection(&request.prompt)
+            .map_err(ApplicationError::new)?;
         let ApplicationRunRequest {
             attachments,
             prompt,
@@ -272,6 +332,8 @@ impl TrustedProjectApplication {
         let monitor = Arc::clone(&self.monitor);
         let compactor = self.compactor.clone();
         let todo_service = self.todo.clone();
+        let goal_service = Arc::clone(&self.goal);
+        let subagent_service = Arc::clone(&self.subagents);
         let titler = self.titler.clone();
         let title_sender = self
             .title_worker
@@ -331,239 +393,486 @@ impl TrustedProjectApplication {
                     turn,
                     mut history,
                     journal,
+                    goal_round_started,
                 } = prepared;
-                let process_generation = process_service
-                    .bind_run(session_id.as_str(), cancel.clone());
                 // todo（INV-T3）：事件直达日志——write 在绑定 journal 上
                 // 追加 todo/write，恢复走 todo 投影。
                 if let Some(todo_service) = &todo_service {
                     todo_service.bind_run(&session_id, Arc::clone(&journal));
                 }
-                // 自动压缩（INV-C6/C11）：surface 节点重建后按预算压缩；
-                // 事件族 + replace 原子落盘。网络摘要只发生在 worker
-                // 内；失败降级绝不 fail run。
-                if let Some(compactor) = &compactor {
-                    let note = run_auto_compaction(
-                        compactor.as_ref(),
-                        sessions.as_ref(),
-                        journal.as_ref(),
-                        &worker_config,
-                        &worker_credentials,
-                        &cancel,
+                let subagent_bind_error = subagent_service
+                    .bind_run(
+                        &session_id,
                         turn,
-                    );
-                    if let Some(note) = note {
-                        broadcast_to(
-                            &subscribers,
-                            ApplicationEvent::CompactionUpdated(CompactionStatus::Finished {
-                                note: note.0,
-                                succeeded: note.1,
-                            }),
-                        );
-                    }
-                    // Post-replace surface is the model history now.
-                    if let Ok(nodes) = sessions.surface_nodes() {
-                        history = nodes.into_iter().map(|(_, item)| item).collect();
-                    }
-                }
-                plugin_host_worker.update_run_metadata(&session_id.to_string(), &history);
+                        Arc::clone(&journal),
+                        worker_config.clone(),
+                        worker_credentials.clone(),
+                    )
+                    .err();
                 let captured_text = Arc::new(Mutex::new(String::new()));
                 let ui_events: Box<dyn EventSink + Send> = Box::new(CapturingEventSink {
                     inner: events,
                     text: Arc::clone(&captured_text),
                 });
-                let (mut recorder_core, journaling_approver) = SessionRecorder::with_approver(
-                    Arc::clone(&journal),
-                    request_approver,
-                    request_header,
-                    &title_config.protocol.to_string(),
-                    &title_config.model,
-                    turn,
-                    header_reason,
-                );
-                // INV-S6：recorder 在 ModelResponded 落账点归并 sampling
-                // usage（journal 侧唯一记账点）。
-                recorder_core.attach_aux_usage(Arc::clone(&sampling_usage_worker));
-                // B1 + F-1（审计）：唯一花费仪表——recorder 落账充值
-                //（INV-S6 口径，含插件采样），run.rs 检查点读同一实例。
-                let spend_ledger = Arc::new(crate::model::RunSpendLedger::new(
-                    worker_config.effective_run_token_budget(),
-                ));
-                recorder_core.set_run_ledger(Arc::clone(&spend_ledger));
-                let recorder = Arc::new(Mutex::new(recorder_core));
-                // FP-09（架构层）：frontend sink 移出 recorder——
-                // RecorderHandle 在 recorder 锁**外**转发事件；终态在
-                // finish 后由 worker 经同一 sink 发布（journal 已闭合，
-                // frontend 故障不再能毒化持久化临界区）。
                 let ui_sink = Arc::new(Mutex::new(ui_events));
-                let recorder_sink: Box<dyn EventSink + Send> = Box::new(RecorderHandle {
-                    recorder: Arc::clone(&recorder),
-                    sink: Arc::clone(&ui_sink),
-                });
-                let approver: Arc<dyn PermissionApprover> = Arc::new(journaling_approver);
-                let panic_text_slot = Arc::clone(&captured_text);
-                let prompt_for_request = worker_prompt.clone();
-                let permission_mode_for_request = permission_mode_snapshot;
-                let execution = catch_unwind(AssertUnwindSafe(|| {
-                    process_generation.as_ref().map_err(|error| AgentFailure {
-                        error: crate::RunError::new(format!(
-                            "process service could not bind this run: {error}"
-                        )),
-                    })?;
-                    agent.execute(AgentRequest {
-                        config: worker_config,
-                        spend_ledger: Some(Arc::clone(&spend_ledger)),
-                        credentials: worker_credentials,
-                        history_items: history,
-                        prompt: prompt_for_request,
-                        cancel: cancel.clone(),
-                        steering: steering_for_worker,
-                        approver,
-                        events: recorder_sink,
-                        tool_access: context.tool_access,
-                        workflow_instructions: context.workflow_instructions,
-                        permission_mode: permission_mode_for_request,
-                    })
-                }));
-                let process_bind_error = process_generation.as_ref().err().cloned();
-                let process_cleanup_error = process_generation
-                    .as_ref()
-                    .ok()
-                    .and_then(|generation| process_service.unbind_run(*generation).err());
-                if let Some(error) = process_bind_error
-                    .as_ref()
-                    .or(process_cleanup_error.as_ref())
-                {
-                    recorder
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .force_terminal_failure(format!(
-                            "process lifecycle failed before run completion: {error}"
-                        ));
-                }
-                let (outcome, panic_text) = match execution {
-                    Ok(outcome) => (Some(outcome), None),
-                    Err(payload) => (
-                        None,
-                        Some(format!(
-                            "{}\npartial output: {}",
-                            panic_message(payload),
-                            panic_text_slot
-                                .lock()
-                                .map(|text| text.clone())
-                                .unwrap_or_default()
-                        )),
-                    ),
-                };
-                let was_cancelled = cancel.is_cancelled();
-                let reason = match (&outcome, &process_bind_error, &process_cleanup_error) {
-                    (_, Some(error), _) => TurnEndReason::Error {
-                        error: json!({ "message": format!("process bind failed: {error}") }),
-                    },
-                    (_, None, Some(error)) => TurnEndReason::Error {
-                        error: json!({ "message": format!("process cleanup failed: {error}") }),
-                    },
-                    (Some(Ok(_)), None, None) if was_cancelled => TurnEndReason::Aborted {
-                        reason: TurnEndCancelCause::User,
-                    },
-                    (Some(Ok(_)), None, None) => TurnEndReason::Completed,
-                    (Some(Err(failure)), None, None) => TurnEndReason::Error {
-                        error: json!({ "message": failure.error.to_string() }),
-                    },
-                    (None, None, None) => TurnEndReason::Error {
-                        error: json!({ "message": "run worker panicked" }),
-                    },
-                };
-                // FP-09：毒锁恢复（防御）+ finish 返回待发布终态。
-                // recorder 锁在 finish 后立即释放——终态转发在锁外执行：
-                // frontend 故障（panic）不能反噬已闭合的 journal 与 run
-                // 结果上报（P1-09 顺序不变量：journal 闭合先于发布）。
-                let (finish_error, published) = {
-                    let mut recorder = recorder
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    recorder.finish(reason)
-                };
-                let journal_error =
-                    finish_error.map(|error| format!("session journal failed: {error}"));
-                for event in published {
-                    let mut sink = ui_sink
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    let forwarded =
-                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sink.emit(event)));
-                    if forwarded.is_err() {
-                        eprintln!(
-                            "clat: warning: frontend event sink panicked while publishing the terminal event"
+                let goal_service = Arc::clone(&goal_service);
+                let mut current_turn = turn;
+                let mut current_prompt = worker_prompt.clone();
+                let goal_mode = goal_round_started.is_some();
+                let mut round_started =
+                    goal_round_started.unwrap_or_else(std::time::Instant::now);
+                let mut first_round = true;
+                let mut durable_request_header = request_header;
+                let mut aggregate_usage = Usage::default();
+                let mut aggregate_turns = 0usize;
+                let result = loop {
+                    subagent_service.update_turn(current_turn);
+                    // Every round starts from a durable user/message and may
+                    // compact only the already-committed surface before it.
+                    if let Some(compactor) = &compactor {
+                        let note = run_auto_compaction(
+                            compactor.as_ref(),
+                            sessions.as_ref(),
+                            journal.as_ref(),
+                            &worker_config,
+                            &worker_credentials,
+                            &cancel,
+                            current_turn,
                         );
+                        if let Some(note) = note {
+                            broadcast_to(
+                                &subscribers,
+                                ApplicationEvent::CompactionUpdated(CompactionStatus::Finished {
+                                    note: note.0,
+                                    succeeded: note.1,
+                                }),
+                            );
+                        }
+                        if let Ok(nodes) = sessions.surface_nodes() {
+                            history = nodes.into_iter().map(|(_, item)| item).collect();
+                        }
                     }
-                }
-                let _ = sessions.sync_active();
+                    plugin_host_worker.update_run_metadata(&session_id.to_string(), &history);
+                    let mut round_request_header = durable_request_header.clone();
+                    let mut round_workflow_instructions = context.workflow_instructions.clone();
+                    let mut round_header_reason = first_round.then_some(header_reason).flatten();
+                    let goal_refresh_error = if goal_mode {
+                        match goal_service.injection() {
+                            Ok(goal) => {
+                                let workflow = crate::plan_mode::compose_workflow_instructions(
+                                    context.workflow_base.clone(),
+                                    (!goal.instructions.is_empty())
+                                        .then_some(goal.instructions.as_str()),
+                                );
+                                round_workflow_instructions =
+                                    (!workflow.is_empty()).then_some(workflow.clone());
+                                if let Some(header) = round_request_header.header.as_object_mut() {
+                                    if goal.header.is_null() {
+                                        header.remove("goal");
+                                    } else {
+                                        header.insert("goal".into(), goal.header);
+                                    }
+                                }
+                                round_request_header.base_system =
+                                    crate::plan_mode::compose_workflow_instructions(
+                                        context.base_instructions.clone(),
+                                        round_workflow_instructions.as_deref(),
+                                    );
+                                match round_request_header
+                                    .dynamic_instructions
+                                    .as_ref()
+                                    .map(|source| source.snapshot())
+                                    .transpose()
+                                {
+                                    Ok(snapshot) => {
+                                        crate::plugins::services::apply_instructions_to_header(
+                                            &mut round_request_header.header,
+                                            &round_request_header.base_system,
+                                            snapshot.flatten().as_ref(),
+                                        );
+                                        if !first_round
+                                            && round_request_header.header
+                                                != durable_request_header.header
+                                        {
+                                            round_header_reason = Some("change");
+                                        }
+                                        None
+                                    }
+                                    Err(error) => Some(format!(
+                                        "goal round could not refresh project instructions: {error}"
+                                    )),
+                                }
+                            }
+                            Err(error) => Some(format!(
+                                "goal round could not refresh durable goal context: {error}"
+                            )),
+                        }
+                    } else {
+                        None
+                    };
+                    durable_request_header = round_request_header.clone();
+                    let process_generation =
+                        process_service.bind_run(session_id.as_str(), cancel.clone());
+                    let (mut recorder_core, journaling_approver) =
+                        SessionRecorder::with_approver(
+                            Arc::clone(&journal),
+                            Arc::clone(&request_approver),
+                            round_request_header,
+                            &title_config.protocol.to_string(),
+                            &title_config.model,
+                            current_turn,
+                            round_header_reason,
+                        );
+                    recorder_core.attach_aux_usage(Arc::clone(&sampling_usage_worker));
+                    let configured_budget = worker_config.effective_run_token_budget();
+                    let round_budget = if goal_mode {
+                        let remaining = goal_service.remaining_tokens().unwrap_or(1);
+                        Some(configured_budget.map_or(remaining, |cap| cap.min(remaining)))
+                    } else {
+                        configured_budget
+                    };
+                    let spend_ledger =
+                        Arc::new(crate::model::RunSpendLedger::new(round_budget));
+                    let subagent_round_error = subagent_service
+                        .begin_round(Arc::clone(&spend_ledger))
+                        .err();
+                    recorder_core.set_run_ledger(Arc::clone(&spend_ledger));
+                    let recorder = Arc::new(Mutex::new(recorder_core));
+                    let recorder_sink: Box<dyn EventSink + Send> = Box::new(RecorderHandle {
+                        recorder: Arc::clone(&recorder),
+                        sink: Arc::clone(&ui_sink),
+                    });
+                    let approver: Arc<dyn PermissionApprover> = Arc::new(journaling_approver);
+                    let panic_text_slot = Arc::clone(&captured_text);
+                    let execution = catch_unwind(AssertUnwindSafe(|| {
+                        if let Some(error) = &goal_refresh_error {
+                            return Err(AgentFailure {
+                                error: crate::RunError::new(error.clone()),
+                            });
+                        }
+                        if let Some(error) = &subagent_bind_error {
+                            return Err(AgentFailure {
+                                error: crate::RunError::new(format!(
+                                    "subagent service could not bind this run: {error}"
+                                )),
+                            });
+                        }
+                        if let Some(error) = &subagent_round_error {
+                            return Err(AgentFailure {
+                                error: crate::RunError::new(format!(
+                                    "subagent accounting could not bind this round: {error}"
+                                )),
+                            });
+                        }
+                        process_generation.as_ref().map_err(|error| AgentFailure {
+                            error: crate::RunError::new(format!(
+                                "process service could not bind this run: {error}"
+                            )),
+                        })?;
+                        agent.execute(AgentRequest {
+                            config: worker_config.clone(),
+                            spend_ledger: Some(Arc::clone(&spend_ledger)),
+                            credentials: worker_credentials.clone(),
+                            history_items: history.clone(),
+                            prompt: current_prompt.clone(),
+                            cancel: cancel.clone(),
+                            steering: steering_for_worker.clone(),
+                            approver,
+                            events: recorder_sink,
+                            tool_access: context.tool_access.clone(),
+                            workflow_instructions: round_workflow_instructions,
+                            permission_mode: permission_mode_snapshot,
+                        })
+                    }));
+                    let process_bind_error = process_generation.as_ref().err().cloned();
+                    let process_cleanup_error = process_generation
+                        .as_ref()
+                        .ok()
+                        .and_then(|generation| process_service.unbind_run(*generation).err());
+                    if let Some(error) = process_bind_error
+                        .as_ref()
+                        .or(process_cleanup_error.as_ref())
+                    {
+                        recorder
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .force_terminal_failure(format!(
+                                "process lifecycle failed before run completion: {error}"
+                            ));
+                    }
+                    let (outcome, panic_text) = match execution {
+                        Ok(outcome) => (Some(outcome), None),
+                        Err(payload) => (
+                            None,
+                            Some(format!(
+                                "{}\npartial output: {}",
+                                panic_message(payload),
+                                panic_text_slot
+                                    .lock()
+                                    .map(|text| text.clone())
+                                    .unwrap_or_default()
+                            )),
+                        ),
+                    };
+                    let was_cancelled = cancel.is_cancelled()
+                        || outcome
+                            .as_ref()
+                            .is_some_and(|result| result.as_ref().is_ok_and(|done| done.cancelled));
+                    let reason = match (&outcome, &process_bind_error, &process_cleanup_error) {
+                        (_, Some(error), _) => TurnEndReason::Error {
+                            error: json!({ "message": format!("process bind failed: {error}") }),
+                        },
+                        (_, None, Some(error)) => TurnEndReason::Error {
+                            error: json!({ "message": format!("process cleanup failed: {error}") }),
+                        },
+                        (Some(Ok(_)), None, None) if was_cancelled => TurnEndReason::Aborted {
+                            reason: TurnEndCancelCause::User,
+                        },
+                        (Some(Ok(_)), None, None) => TurnEndReason::Completed,
+                        (Some(Err(failure)), None, None) => TurnEndReason::Error {
+                            error: json!({ "message": failure.error.to_string() }),
+                        },
+                        (None, None, None) => TurnEndReason::Error {
+                            error: json!({ "message": "run worker panicked" }),
+                        },
+                    };
+                    let (finish_error, published) = {
+                        let mut recorder = recorder
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        recorder.finish(reason)
+                    };
+                    let journal_error =
+                        finish_error.map(|error| format!("session journal failed: {error}"));
+                    for event in published {
+                        let mut sink = ui_sink
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        let forwarded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                            || sink.emit(event),
+                        ));
+                        if forwarded.is_err() {
+                            eprintln!(
+                                "clat: warning: frontend event sink panicked while publishing the terminal event"
+                            );
+                        }
+                    }
+                    let _ = sessions.sync_active();
+                    // SessionRecorder may have refreshed project instructions
+                    // between model steps. Seed the next synthetic round from
+                    // the actual durable header so only a real goal/context
+                    // change emits another `request/header` fact.
+                    if let Some(header) = sessions.last_request_header() {
+                        durable_request_header.header = header;
+                    }
+                    let mut round_result = match (
+                        outcome,
+                        journal_error,
+                        panic_text,
+                        process_cleanup_error,
+                    ) {
+                        (Some(result), journal_error, panic_text, process_cleanup_error) => {
+                            let base = result
+                                .map(|done| ApplicationRunDone {
+                                    output: done.text,
+                                    turns: done.turns,
+                                    usage: done.usage,
+                                    cancelled: was_cancelled,
+                                })
+                                .map_err(|failure| {
+                                    let (message, turns, usage, _) = failure.error.into_parts();
+                                    ApplicationRunFailure {
+                                        error: message,
+                                        turns,
+                                        usage,
+                                    }
+                                });
+                            let base = match (base, process_cleanup_error) {
+                                (Ok(done), Some(error)) => Err(ApplicationRunFailure {
+                                    error: format!("process cleanup failed: {error}"),
+                                    turns: done.turns,
+                                    usage: done.usage,
+                                }),
+                                (base, _) => base,
+                            };
+                            match (base, journal_error, panic_text) {
+                                (base, None, None) => base,
+                                (Ok(done), Some(error), _) => Err(ApplicationRunFailure {
+                                    error,
+                                    turns: done.turns,
+                                    usage: done.usage,
+                                }),
+                                (Ok(done), None, Some(text)) => Err(ApplicationRunFailure {
+                                    error: format!(
+                                        "{text} (run had completed: {})",
+                                        done.output
+                                    ),
+                                    turns: done.turns,
+                                    usage: done.usage,
+                                }),
+                                (Err(failure), Some(error), _) => Err(ApplicationRunFailure {
+                                    error: format!("{}; {error}", failure.error),
+                                    turns: failure.turns,
+                                    usage: failure.usage,
+                                }),
+                                (Err(failure), None, Some(text)) => Err(ApplicationRunFailure {
+                                    error: format!("{text}; {}", failure.error),
+                                    turns: failure.turns,
+                                    usage: failure.usage,
+                                }),
+                            }
+                        }
+                        (None, journal_error, panic_text, process_cleanup_error) => {
+                            Err(ApplicationRunFailure {
+                                error: match (panic_text, journal_error) {
+                                    (Some(text), Some(error)) => format!("{text}; {error}"),
+                                    (Some(text), None) => text,
+                                    (None, Some(error)) => error,
+                                    (None, None) => process_cleanup_error
+                                        .map(|error| {
+                                            format!("process cleanup failed: {error}")
+                                        })
+                                        .unwrap_or_else(|| "run worker panicked".into()),
+                                },
+                                turns: 0,
+                                usage: Usage::default(),
+                            })
+                        }
+                    };
+                    let (mut round_usage, round_turns, round_text, succeeded) = match &round_result {
+                        Ok(done) => (
+                            done.usage.clone(),
+                            done.turns,
+                            done.output.clone(),
+                            !done.cancelled,
+                        ),
+                        Err(failure) => (
+                            failure.usage.clone(),
+                            failure.turns,
+                            failure.error.clone(),
+                            false,
+                        ),
+                    };
+                    round_usage.add_assign(&subagent_service.take_round_usage());
+                    let round_cancelled = was_cancelled
+                        || matches!(&round_result, Ok(done) if done.cancelled);
+                    // The shared ledger is the billing guard's sole meter. It
+                    // includes provider retry reservations, plugin sampling,
+                    // and read-only child calls that are not all represented
+                    // in the parent RunOutput usage fields.
+                    let accounted_round_tokens = spend_ledger.used();
+                    aggregate_usage.add_assign(&round_usage);
+                    aggregate_turns = aggregate_turns.saturating_add(round_turns);
+                    if goal_mode {
+                        match goal_service.finish_round(
+                            accounted_round_tokens,
+                            round_started.elapsed(),
+                            succeeded,
+                            round_cancelled,
+                            &round_text,
+                        ) {
+                            Ok(crate::goal::GoalContinuation::Continue) if !round_cancelled => {
+                                let next = match goal_service.next_round() {
+                                    Ok(next) => next,
+                                    Err(error) => {
+                                        round_result = Err(ApplicationRunFailure {
+                                            error: format!(
+                                                "goal continuation reservation failed: {error}"
+                                            ),
+                                            turns: round_turns,
+                                            usage: round_usage,
+                                        });
+                                        goal_service.disarm();
+                                        break round_result;
+                                    }
+                                };
+                                let next_turn = match sessions.active_turns() {
+                                    Ok(turns) => turns.saturating_add(1),
+                                    Err(error) => {
+                                        goal_service.disarm();
+                                        break Err(ApplicationRunFailure {
+                                            error: format!(
+                                                "goal continuation could not read turn state: {error}"
+                                            ),
+                                            turns: aggregate_turns,
+                                            usage: aggregate_usage.clone(),
+                                        });
+                                    }
+                                };
+                                let batch = [
+                                    NewSessionEvent::new(
+                                        "turn/start",
+                                        payloads::turn_start(next_turn),
+                                    ),
+                                    NewSessionEvent::new("user/message", next.message)
+                                        .append(Vec::new()),
+                                ];
+                                round_started = next.started_at;
+                                if let Err(error) = journal
+                                    .append_atomic(&batch)
+                                    .and_then(|_| journal.flush())
+                                {
+                                    goal_service.disarm();
+                                    break Err(ApplicationRunFailure {
+                                        error: format!(
+                                            "goal continuation durable prelude failed: {error}"
+                                        ),
+                                        turns: aggregate_turns,
+                                        usage: aggregate_usage.clone(),
+                                    });
+                                }
+                                let _ = sessions.sync_active();
+                                history = match sessions.surface_nodes() {
+                                    Ok(nodes) => {
+                                        nodes.into_iter().map(|(_, item)| item).collect()
+                                    }
+                                    Err(error) => {
+                                        goal_service.disarm();
+                                        break Err(ApplicationRunFailure {
+                                            error: format!(
+                                                "goal continuation history rebuild failed: {error}"
+                                            ),
+                                            turns: aggregate_turns,
+                                            usage: aggregate_usage.clone(),
+                                        });
+                                    }
+                                };
+                                current_turn = next_turn;
+                                current_prompt = next.prompt;
+                                first_round = false;
+                                continue;
+                            }
+                            Ok(crate::goal::GoalContinuation::Stop) => {}
+                            Ok(crate::goal::GoalContinuation::Continue) => {}
+                            Err(error) => {
+                                goal_service.disarm();
+                                round_result = Err(ApplicationRunFailure {
+                                    error: format!(
+                                        "goal progress could not commit after the round: {error}"
+                                    ),
+                                    turns: round_turns,
+                                    usage: round_usage,
+                                });
+                            }
+                        }
+                    }
+                    match round_result {
+                        Ok(mut done) => {
+                            done.turns = aggregate_turns;
+                            done.usage = aggregate_usage.clone();
+                            break Ok(done);
+                        }
+                        Err(mut failure) => {
+                            failure.turns = aggregate_turns;
+                            failure.usage = aggregate_usage.clone();
+                            break Err(failure);
+                        }
+                    }
+                };
                 if let Some(todo_service) = &todo_service {
                     todo_service.unbind();
                 }
-                let result = match (outcome, journal_error, panic_text, process_cleanup_error) {
-                    (Some(result), journal_error, panic_text, process_cleanup_error) => {
-                        let base = result
-                            .map(|done| ApplicationRunDone {
-                                output: done.text,
-                                turns: done.turns,
-                                usage: done.usage,
-                                cancelled: was_cancelled,
-                            })
-                            .map_err(|failure| {
-                                let (message, turns, usage, _) = failure.error.into_parts();
-                                ApplicationRunFailure {
-                                    error: message,
-                                    turns,
-                                    usage,
-                                }
-                            });
-                        let base = match (base, process_cleanup_error) {
-                            (Ok(done), Some(error)) => Err(ApplicationRunFailure {
-                                error: format!("process cleanup failed: {error}"),
-                                turns: done.turns,
-                                usage: done.usage,
-                            }),
-                            (base, _) => base,
-                        };
-                        match (base, journal_error, panic_text) {
-                            (base, None, None) => base,
-                            (Ok(done), Some(error), _) => Err(ApplicationRunFailure {
-                                error,
-                                turns: done.turns,
-                                usage: done.usage,
-                            }),
-                            (Ok(done), None, Some(text)) => Err(ApplicationRunFailure {
-                                error: format!("{text} (run had completed: {})", done.output),
-                                turns: done.turns,
-                                usage: done.usage,
-                            }),
-                            (Err(failure), Some(error), _) => Err(ApplicationRunFailure {
-                                error: format!("{}; {error}", failure.error),
-                                turns: failure.turns,
-                                usage: failure.usage,
-                            }),
-                            (Err(failure), None, Some(text)) => Err(ApplicationRunFailure {
-                                error: format!("{text}; {}", failure.error),
-                                turns: failure.turns,
-                                usage: failure.usage,
-                            }),
-                        }
-                    }
-                    (None, journal_error, panic_text, process_cleanup_error) => Err(ApplicationRunFailure {
-                        error: match (panic_text, journal_error) {
-                            (Some(text), Some(error)) => format!("{text}; {error}"),
-                            (Some(text), None) => text,
-                            (None, Some(error)) => error,
-                            (None, None) => process_cleanup_error
-                                .map(|error| format!("process cleanup failed: {error}"))
-                                .unwrap_or_else(|| "run worker panicked".into()),
-                        },
-                        turns: 0,
-                        usage: Usage::default(),
-                    }),
-                };
+                subagent_service.unbind();
                 let close_result = run_scope.close();
                 monitor.refresh();
                 let result = match (result, close_result) {
@@ -636,7 +945,7 @@ impl TrustedProjectApplication {
         // 预备（CAS + 首批耐久批）发生在 worker 就位之后。Fresh Plan
         // birth 已在这里 append+flush；只有此后才冻结本 run 的工作流视图，
         // 因而 request/header、模型工具目录与宿主硬门消费同一状态事实。
-        let prepared = match self.prepare_run(&prompt, &attachments) {
+        let prepared = match self.prepare_run(&prompt, &attachments, goal_round.as_ref()) {
             Ok(prepared) => prepared,
             Err(error) => {
                 drop(start_sender);
@@ -644,7 +953,8 @@ impl TrustedProjectApplication {
                 return Err(error);
             }
         };
-        let context = self.run_context_snapshot(skill_snapshot);
+        let goal_injection = self.goal.injection().map_err(ApplicationError::new)?;
+        let context = self.run_context_snapshot(skill_snapshot, memory_injection, goal_injection);
         let request_header =
             self.request_header_data(&config, &context, instruction_snapshot.as_ref());
         let header_reason = self.request_header_reason(&request_header.header);
@@ -716,7 +1026,13 @@ impl TrustedProjectApplication {
         // 入队与终态封口同一把锁（W1-04）：Sealed 意味着 run 已判定
         // 结束、消息永远无人 claim——绝不能当 Queued 返回。
         match handle.steering.try_push(text) {
-            crate::run::PushOutcome::Accepted => SteerOutcome::Queued,
+            crate::run::PushOutcome::Accepted => {
+                // A human interjection wins over unattended continuation. It
+                // still enters the current Run normally, while subsequent
+                // synthetic rounds are disarmed at the next boundary.
+                self.goal.disarm();
+                SteerOutcome::Queued
+            }
             crate::run::PushOutcome::Sealed => SteerOutcome::NotRunning,
         }
     }
@@ -752,6 +1068,7 @@ struct PreparedRun {
     turn: u64,
     history: Vec<crate::model::ModelItem>,
     journal: Arc<dyn RunJournal>,
+    goal_round_started: Option<std::time::Instant>,
 }
 
 struct WorkerStart {

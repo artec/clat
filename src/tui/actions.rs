@@ -535,6 +535,9 @@ impl App {
                 // 完成/失败时结果文本）；Esc 取消。
                 self.compact_handle = Some(handle);
             }
+            CommandOutcome::StartGoalRun => {
+                self.start_goal_run();
+            }
             CommandOutcome::SessionReset => {
                 // /new 成功后的前端视图清空：用量指标归属会话（TUI-L04），
                 // 新会话从零累计；路由桶同清（INV-C1 随会话归属）。
@@ -654,6 +657,58 @@ impl App {
 
         // Completion is already post-persistence and post-scope-cleanup; this
         // tiny frontend bridge only multiplexes it into the terminal channel.
+        thread::spawn(move || {
+            if let Ok(result) = completed.recv() {
+                let _ = sender.send(UiEvent::Worker(WorkerMessage::Done { epoch, result }));
+            }
+        });
+        true
+    }
+
+    fn start_goal_run(&mut self) -> bool {
+        if !self.config.is_configured() {
+            self.flash_status("model is not configured — run /model first");
+            return false;
+        }
+        let sender = self
+            .event_sender
+            .clone()
+            .expect("event channel is installed by run()");
+        let (completion, completed) = mpsc::channel();
+        let request = ApplicationRunRequest {
+            attachments: Vec::new(),
+            asker: Some(Arc::new(ChannelUserAsker::new(sender.clone()))),
+            prompt: String::new(),
+            approver: Arc::new(ChannelApprover::new(sender.clone())),
+            events: Box::new(ChannelEventSink(sender.clone())),
+            completion,
+        };
+        let (handle, prompt) = match self
+            .application
+            .as_mut()
+            .ok_or_else(|| "project application is unavailable".to_owned())
+            .and_then(|application| {
+                application
+                    .start_goal_run(request)
+                    .map_err(|error| error.to_string())
+            }) {
+            Ok(started) => started,
+            Err(error) => {
+                self.flash_status(format!("failed to start goal: {error}"));
+                return false;
+            }
+        };
+        self.run_epoch += 1;
+        let epoch = self.run_epoch;
+        self.conversation.push_user(prompt);
+        self.conversation_scroll_from_bottom = 0;
+        self.run_handle = Some(handle);
+        self.running = true;
+        self.run_usage_base = Some(self.session_usage.clone());
+        self.run_usage_acc = Usage::default();
+        self.run_routes_base = Some(self.usage_routes.clone());
+        self.run_route = None;
+        self.flash_status("starting bounded goal…");
         thread::spawn(move || {
             if let Ok(result) = completed.recv() {
                 let _ = sender.send(UiEvent::Worker(WorkerMessage::Done { epoch, result }));

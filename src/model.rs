@@ -23,9 +23,9 @@ pub struct CancelToken {
     /// 内部短任务可附带绝对 deadline。普通 Run 为 None；provider 用剩余
     /// 时间配置请求级 HTTP global/header timeout，使 deadline 覆盖 send。
     deadline: Option<Instant>,
-    /// 派生 token（[`Self::child_with_deadline`]）观察的父标志：父取消
-    /// 等价于子取消。普通 token 为 None。
-    parent: Option<Arc<AtomicBool>>,
+    /// 派生 token（[`Self::child_with_deadline`]）观察完整父 token：父的
+    /// 显式取消、祖先取消或更早 deadline 都等价于子取消。
+    parent: Option<Arc<CancelToken>>,
 }
 
 impl CancelToken {
@@ -36,13 +36,13 @@ impl CancelToken {
     /// 派生一个带绝对 deadline 的子 token：父取消或 deadline 到期都
     /// 视为取消。用途（自动标题）：worker 的取消令牌本身无 deadline，
     /// 单次请求的 connect/响应头阶段不会被合作式轮询打断——派生后
-    /// provider 的 `remaining()` 有值，请求级 timeout 全阶段有界。
-    /// `remaining()` 只报 deadline 剩余（父 token 没有 deadline 可报）。
+    /// provider 的 `remaining()` 有值，请求级 timeout 全阶段有界。若
+    /// 父/祖先已有更早 deadline，`remaining()` 继承其中最短者。
     pub(crate) fn child_with_deadline(&self, deadline: Instant) -> CancelToken {
         CancelToken {
             cancelled: Arc::new(AtomicBool::new(false)),
             deadline: Some(deadline),
-            parent: Some(Arc::clone(&self.cancelled)),
+            parent: Some(Arc::new(self.clone())),
         }
     }
 
@@ -63,15 +63,22 @@ impl CancelToken {
             || self
                 .parent
                 .as_ref()
-                .is_some_and(|parent| parent.load(Ordering::Relaxed))
+                .is_some_and(|parent| parent.is_cancelled())
             || self
                 .deadline
                 .is_some_and(|deadline| Instant::now() >= deadline)
     }
 
     pub(crate) fn remaining(&self) -> Option<Duration> {
-        self.deadline
-            .map(|deadline| deadline.saturating_duration_since(Instant::now()))
+        let own = self
+            .deadline
+            .map(|deadline| deadline.saturating_duration_since(Instant::now()));
+        let parent = self.parent.as_ref().and_then(|parent| parent.remaining());
+        match (own, parent) {
+            (Some(own), Some(parent)) => Some(own.min(parent)),
+            (Some(remaining), None) | (None, Some(remaining)) => Some(remaining),
+            (None, None) => None,
+        }
     }
 }
 
@@ -1058,6 +1065,16 @@ mod tests {
         assert!(
             strict.is_cancelled(),
             "an expired deadline cancels on its own"
+        );
+
+        let parent_deadline = CancelToken::with_deadline(Instant::now() + Duration::from_secs(1));
+        let child = parent_deadline.child_with_deadline(Instant::now() + Duration::from_secs(15));
+        let grandchild = child.child_with_deadline(Instant::now() + Duration::from_secs(30));
+        assert!(
+            grandchild
+                .remaining()
+                .is_some_and(|remaining| remaining <= Duration::from_secs(1)),
+            "the shortest ancestor deadline constrains every descendant"
         );
     }
 

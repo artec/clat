@@ -59,6 +59,10 @@ the URL. The same binary serves the responsive three-panel PWA.
   optional user-configured read-only LSP navigation (`definition`, `references`,
   `implementation`, `hover`) through CLAT-managed sandboxed stdio; and `/context`
   for a one-shot estimate of the model-facing context breakdown.
+- **Bounded agent intelligence** — explicit local project/user memory with no
+  model writes; one durable CAS goal per session with user-armed, capped
+  continuation; and a default-off, depth-1 explorer/reviewer experiment whose
+  children are confined to three project-relative read tools.
 - **Models** — built-in DeepSeek, GLM, Qwen, and Kimi presets; named custom
   profiles; OpenAI Responses and OpenAI-compatible protocols; reasoning,
   usage, cache, context, and quota telemetry.
@@ -121,6 +125,7 @@ Start with the document that matches your task:
 | Understand plugin runtimes, packages, and the signed market | [CLAT plugins](docs/plugins.md) |
 | Install or author a WASM component | [WASM plugins](docs/wasm.md) |
 | Port a DSH/Cordis plugin | [DSH plugin compatibility guide](docs/dsh-plugins.md) |
+| Audit evidence-backed DSH compatibility claims | [DSH compatibility matrix](docs/dsh-compat.md) |
 | Understand core boundaries and lifecycle | [Architecture](docs/architecture.md) |
 | Understand provider adapters and retry behavior | [Providers](docs/providers.md) |
 | Understand files, journals, and recovery | [Persistent state](docs/storage.md) |

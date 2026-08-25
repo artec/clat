@@ -1,0 +1,37 @@
+{
+  "pinnedRevision": "b150a551b8",
+  "entries": {
+    "cordis-events": {
+      "fixture": "cordis-events.json",
+      "fixtureSha256": "f4df539bfcc6a7edbb1db8369be55a6d3593c3068e299e51ff3f8247cbd5acdb",
+      "generator": "gen-cordis-events.mts",
+      "generatorSha256": "8bbeeeff19f201a3a8405f69247f39baf144f9cd6573ea91070b6efde0e362e6",
+      "checker": "check-cordis-events.mjs",
+      "checkerSha256": "fb1279d88410771c451a530f32b5a67769f5f42e711d800afee9a5d30e50cd76"
+    },
+    "system-prompt": {
+      "fixture": "system-prompt.json",
+      "fixtureSha256": "cfe9bdb86e2284b27865db88aaa4efb36c3a20955077089b199f85507e3eea59",
+      "generator": "gen-system-prompt.mts",
+      "generatorSha256": "6a65c1ff814f07094ffb953a833c0630ec86b4230fe2466ade54ce3673aaa7b2",
+      "checker": "check-system-prompt.mjs",
+      "checkerSha256": "cec8ef1ff6b8ed909060fc8c332c6690dbf256df48ec4edf21ddc12766c4fd45"
+    },
+    "session-jsonl": {
+      "fixture": "session-jsonl.json",
+      "fixtureSha256": "849966ebba79f12a0159b8b134b7bc39e12961b844bd97124a3a5e114ed7dae7",
+      "generator": "gen-session-jsonl.mts",
+      "generatorSha256": "ea6d1ad3aed5df825e7aaba111e21cbe3bf1300b70a675de2030e7e78e508f6d",
+      "checker": "check-session-jsonl.mjs",
+      "checkerSha256": "f1062240df4d9a27e6905ef690f179d240e042923df42e3137373b02d9187514"
+    },
+    "workspace-model": {
+      "fixture": "workspace-model.json",
+      "fixtureSha256": "ed22f9e2ce6360fd7df43e94ab8c37282457dce53d2c67839bd5467a97d58ae8",
+      "generator": "gen-workspace-model.mts",
+      "generatorSha256": "5f9dcbdc7f1c82156719d219eeab6db137258d1f8eabad63e2fc870bed9f8949",
+      "checker": "check-workspace-model.mjs",
+      "checkerSha256": "861e135e46e6752de9c56d0c9791fc16f06bdda8aac98df8a14e2010f848d613"
+    }
+  }
+}

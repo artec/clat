@@ -739,17 +739,131 @@ fn run_headless_command(
             Arc::clone(io_state),
         ));
     }
-    let outcome = match application.dispatch_command(command) {
-        Ok(CommandOutcome::StartCompaction(handle)) => match handle.join_report() {
-            // 外层 Err = join 失败（worker 崩溃）；内层 Err = 压缩自身的
-            // 失败报告。
-            Ok(Ok(report)) => {
+    let goal_words = command.split_whitespace().collect::<Vec<_>>();
+    let interactive_goal_run = goal_words.first().copied() == Some("/goal")
+        && (goal_words.get(1).copied() == Some("run")
+            || (goal_words.get(1).copied() == Some("create") && goal_words.contains(&"--run")));
+    let outcome = if interactive_goal_run {
+        ExecOutcome::UsageError(format!(
+            "{command} requires an interactive frontend — run `clat` or `clat serve`"
+        ))
+    } else {
+        match application.dispatch_command(command) {
+            Ok(CommandOutcome::StartCompaction(handle)) => match handle.join_report() {
+                // 外层 Err = join 失败（worker 崩溃）；内层 Err = 压缩自身的
+                // 失败报告。
+                Ok(Ok(report)) => {
+                    if !args.quiet {
+                        write_status(
+                            &io.error,
+                            io_state,
+                            format_args!("● {}\n", report.status_text()),
+                        );
+                    }
+                    ExecOutcome::Success {
+                        output: String::new(),
+                        turns: 0,
+                        usage: Usage::default(),
+                    }
+                }
+                Ok(Err(message)) => ExecOutcome::Failure(message),
+                Err(error) => ExecOutcome::Failure(error.to_string()),
+            },
+            Ok(CommandOutcome::ShowHelp { commands }) => {
+                let mut text = String::new();
+                for info in &commands {
+                    let mut names = format!("/{}", info.name);
+                    for alias in &info.aliases {
+                        names.push_str(&format!(", /{alias}"));
+                    }
+                    text.push_str(&format!("{names} — {}\n", info.description));
+                }
+                let write = stream_write(&io.output, format_args!("{text}"))
+                    .and_then(|()| stream_flush(&io.output));
+                if let Err(error) = write {
+                    io_state.note("stdout", error);
+                }
+                ExecOutcome::Success {
+                    output: text,
+                    turns: 0,
+                    usage: Usage::default(),
+                }
+            }
+            Ok(CommandOutcome::ShowMcpStatus(status)) => {
+                let connecting = if status.connecting > 0 {
+                    format!(" · {} connecting", status.connecting)
+                } else {
+                    String::new()
+                };
+                let mut text = format!(
+                    "mcp: {}/{} connected{connecting}\n",
+                    status.connected, status.configured
+                );
+                for server in &status.servers {
+                    text.push_str(&format!(
+                        "● {}  {} · {} · {} tools\n",
+                        server.name, server.transport, server.protocol_version, server.tools
+                    ));
+                }
+                for failure in &status.failures {
+                    text.push_str(&format!("! {failure}\n"));
+                }
+                let write = stream_write(&io.output, format_args!("{text}"))
+                    .and_then(|()| stream_flush(&io.output));
+                if let Err(error) = write {
+                    io_state.note("stdout", error);
+                }
+                ExecOutcome::Success {
+                    output: text,
+                    turns: 0,
+                    usage: Usage::default(),
+                }
+            }
+            Ok(CommandOutcome::ShowContext(snapshot)) => {
+                let mut text = format!(
+                    "context estimate ({})\nbase prompt: {}\nproject instructions: {}\nplan policy: {}\nskill catalog: {}\ngoal policy: {}\nmemory injection: {}/{} bytes\ntool schemas: {}\nhistory/compaction view: {}\noutput reserve: {}\ninput estimate: {}\ntotal estimate: {}\n",
+                    snapshot.unit,
+                    snapshot.base_prompt_estimate,
+                    snapshot.project_instructions_estimate,
+                    snapshot.plan_policy_estimate,
+                    snapshot.skill_catalog_estimate,
+                    snapshot.goal_policy_estimate,
+                    snapshot.memory_estimate,
+                    snapshot.memory_budget_bytes,
+                    snapshot.tool_schemas_estimate,
+                    snapshot.history_estimate,
+                    snapshot.output_reserve_estimate,
+                    snapshot.input_estimate,
+                    snapshot.total_estimate,
+                );
+                text.push_str(&format!("tools: {}\n", snapshot.tool_names.join(", ")));
+                text.push_str(&format!("skills: {}\n", snapshot.skill_names.join(", ")));
+                if snapshot.skill_diagnostics.is_empty() {
+                    text.push_str("skill diagnostics: none\n");
+                } else {
+                    text.push_str("skill diagnostics:\n");
+                    for diagnostic in &snapshot.skill_diagnostics {
+                        let name = diagnostic.name.as_deref().unwrap_or("-");
+                        text.push_str(&format!(
+                            "! {} / {} / {}: {}\n",
+                            diagnostic.source, name, diagnostic.kind, diagnostic.message
+                        ));
+                    }
+                }
+                let write = stream_write(&io.output, format_args!("{text}"))
+                    .and_then(|()| stream_flush(&io.output));
+                if let Err(error) = write {
+                    io_state.note("stdout", error);
+                }
+                ExecOutcome::Success {
+                    output: text,
+                    turns: 0,
+                    usage: Usage::default(),
+                }
+            }
+            Ok(CommandOutcome::Status(message)) => {
                 if !args.quiet {
-                    write_status(
-                        &io.error,
-                        io_state,
-                        format_args!("● {}\n", report.status_text()),
-                    );
+                    write_status(&io.error, io_state, format_args!("{message}\n"));
                 }
                 ExecOutcome::Success {
                     output: String::new(),
@@ -757,133 +871,33 @@ fn run_headless_command(
                     usage: Usage::default(),
                 }
             }
-            Ok(Err(message)) => ExecOutcome::Failure(message),
+            Ok(CommandOutcome::SessionReset) => {
+                if !args.quiet {
+                    write_status(&io.error, io_state, format_args!("new conversation\n"));
+                }
+                ExecOutcome::Success {
+                    output: String::new(),
+                    turns: 0,
+                    usage: Usage::default(),
+                }
+            }
+            // headless 无应用生命周期概念：/quit 等价无操作（正常退出）。
+            Ok(CommandOutcome::QuitRequested) => ExecOutcome::Success {
+                output: String::new(),
+                turns: 0,
+                usage: Usage::default(),
+            },
+            Ok(
+                CommandOutcome::StartModelSelection
+                | CommandOutcome::StartSessionSelection { .. }
+                | CommandOutcome::StartPermissionModeSelection { .. }
+                | CommandOutcome::StartTitleEdit { .. }
+                | CommandOutcome::StartGoalRun,
+            ) => ExecOutcome::UsageError(format!(
+                "{command} requires an interactive frontend — run `clat` and use it there"
+            )),
             Err(error) => ExecOutcome::Failure(error.to_string()),
-        },
-        Ok(CommandOutcome::ShowHelp { commands }) => {
-            let mut text = String::new();
-            for info in &commands {
-                let mut names = format!("/{}", info.name);
-                for alias in &info.aliases {
-                    names.push_str(&format!(", /{alias}"));
-                }
-                text.push_str(&format!("{names} — {}\n", info.description));
-            }
-            let write = stream_write(&io.output, format_args!("{text}"))
-                .and_then(|()| stream_flush(&io.output));
-            if let Err(error) = write {
-                io_state.note("stdout", error);
-            }
-            ExecOutcome::Success {
-                output: text,
-                turns: 0,
-                usage: Usage::default(),
-            }
         }
-        Ok(CommandOutcome::ShowMcpStatus(status)) => {
-            let connecting = if status.connecting > 0 {
-                format!(" · {} connecting", status.connecting)
-            } else {
-                String::new()
-            };
-            let mut text = format!(
-                "mcp: {}/{} connected{connecting}\n",
-                status.connected, status.configured
-            );
-            for server in &status.servers {
-                text.push_str(&format!(
-                    "● {}  {} · {} · {} tools\n",
-                    server.name, server.transport, server.protocol_version, server.tools
-                ));
-            }
-            for failure in &status.failures {
-                text.push_str(&format!("! {failure}\n"));
-            }
-            let write = stream_write(&io.output, format_args!("{text}"))
-                .and_then(|()| stream_flush(&io.output));
-            if let Err(error) = write {
-                io_state.note("stdout", error);
-            }
-            ExecOutcome::Success {
-                output: text,
-                turns: 0,
-                usage: Usage::default(),
-            }
-        }
-        Ok(CommandOutcome::ShowContext(snapshot)) => {
-            let mut text = format!(
-                "context estimate ({})\nbase prompt: {}\nproject instructions: {}\nplan policy: {}\nskill catalog: {}\ntool schemas: {}\nhistory/compaction view: {}\noutput reserve: {}\ninput estimate: {}\ntotal estimate: {}\n",
-                snapshot.unit,
-                snapshot.base_prompt_estimate,
-                snapshot.project_instructions_estimate,
-                snapshot.plan_policy_estimate,
-                snapshot.skill_catalog_estimate,
-                snapshot.tool_schemas_estimate,
-                snapshot.history_estimate,
-                snapshot.output_reserve_estimate,
-                snapshot.input_estimate,
-                snapshot.total_estimate,
-            );
-            text.push_str(&format!("tools: {}\n", snapshot.tool_names.join(", ")));
-            text.push_str(&format!("skills: {}\n", snapshot.skill_names.join(", ")));
-            if snapshot.skill_diagnostics.is_empty() {
-                text.push_str("skill diagnostics: none\n");
-            } else {
-                text.push_str("skill diagnostics:\n");
-                for diagnostic in &snapshot.skill_diagnostics {
-                    let name = diagnostic.name.as_deref().unwrap_or("-");
-                    text.push_str(&format!(
-                        "! {} / {} / {}: {}\n",
-                        diagnostic.source, name, diagnostic.kind, diagnostic.message
-                    ));
-                }
-            }
-            let write = stream_write(&io.output, format_args!("{text}"))
-                .and_then(|()| stream_flush(&io.output));
-            if let Err(error) = write {
-                io_state.note("stdout", error);
-            }
-            ExecOutcome::Success {
-                output: text,
-                turns: 0,
-                usage: Usage::default(),
-            }
-        }
-        Ok(CommandOutcome::Status(message)) => {
-            if !args.quiet {
-                write_status(&io.error, io_state, format_args!("{message}\n"));
-            }
-            ExecOutcome::Success {
-                output: String::new(),
-                turns: 0,
-                usage: Usage::default(),
-            }
-        }
-        Ok(CommandOutcome::SessionReset) => {
-            if !args.quiet {
-                write_status(&io.error, io_state, format_args!("new conversation\n"));
-            }
-            ExecOutcome::Success {
-                output: String::new(),
-                turns: 0,
-                usage: Usage::default(),
-            }
-        }
-        // headless 无应用生命周期概念：/quit 等价无操作（正常退出）。
-        Ok(CommandOutcome::QuitRequested) => ExecOutcome::Success {
-            output: String::new(),
-            turns: 0,
-            usage: Usage::default(),
-        },
-        Ok(
-            CommandOutcome::StartModelSelection
-            | CommandOutcome::StartSessionSelection { .. }
-            | CommandOutcome::StartPermissionModeSelection { .. }
-            | CommandOutcome::StartTitleEdit { .. },
-        ) => ExecOutcome::UsageError(format!(
-            "{command} requires an interactive frontend — run `clat` and use it there"
-        )),
-        Err(error) => ExecOutcome::Failure(error.to_string()),
     };
     // HL-04 同款：stdout 写失败不得伪装成功。
     let outcome = match (io_state.take_first_error(), outcome) {
@@ -1565,6 +1579,44 @@ mod tests {
                 other => panic!("{command}: expected usage error, got {other:?}"),
             }
         }
+        fs::remove_dir_all(storage_root).ok();
+        fs::remove_dir_all(project_root).ok();
+    }
+
+    #[test]
+    fn headless_goal_continuation_rejection_commits_no_goal_mutation() {
+        let (storage_root, project_root, project) = setup("exec-goal-run-no-mutation");
+        prepare_storage(&project, &storage_root, TestBehavior::Success);
+        let (io, _) = ExecIo::capture(&[]);
+        assert!(matches!(
+            exec(
+                &project,
+                &storage_root,
+                TestBehavior::Success,
+                args(Some("seed session")),
+                io,
+            ),
+            ExecOutcome::Success { .. }
+        ));
+
+        let mut options = args(None);
+        options.continue_session = true;
+        options.command = Some("/goal create must-not-commit --run".into());
+        let (io, _) = ExecIo::capture(&[]);
+        assert!(matches!(
+            exec(&project, &storage_root, TestBehavior::Success, options, io,),
+            ExecOutcome::UsageError(_)
+        ));
+
+        let application = BootstrapApplication::open(project.clone(), storage_root.clone())
+            .unwrap()
+            .authorize_and_mount_with_provider(Arc::new(TestProviderPlugin {
+                behavior: TestBehavior::Success,
+            }))
+            .unwrap();
+        assert!(application.current_session_id().is_some());
+        assert!(application.goal().unwrap().is_none());
+        application.close().unwrap();
         fs::remove_dir_all(storage_root).ok();
         fs::remove_dir_all(project_root).ok();
     }

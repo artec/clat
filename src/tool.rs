@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fmt;
+use std::path::Path;
 use std::sync::{Arc, RwLock, Weak};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -52,18 +53,56 @@ impl fmt::Display for ToolEffect {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ToolAccessPolicy {
     plan_mode: bool,
+    subagents_enabled: bool,
+    readonly_child: bool,
 }
 
 impl ToolAccessPolicy {
     pub(crate) fn all() -> Self {
-        Self { plan_mode: false }
+        Self {
+            plan_mode: false,
+            subagents_enabled: false,
+            readonly_child: false,
+        }
     }
 
     pub(crate) fn plan_mode() -> Self {
-        Self { plan_mode: true }
+        Self {
+            plan_mode: true,
+            subagents_enabled: false,
+            readonly_child: false,
+        }
+    }
+
+    pub(crate) fn with_subagents(mut self, enabled: bool) -> Self {
+        self.subagents_enabled = enabled;
+        self
+    }
+
+    /// Fixed authority for AG-4 one-shot children. This is an allowlist, not
+    /// merely an effect filter: a third-party tool may honestly be `Read` yet
+    /// still expose ambient state outside the delegated repository scope.
+    /// A child cannot ask for approval because no non-Read effect reaches its
+    /// model schema or forged-call path.
+    pub(crate) fn readonly_child() -> Self {
+        Self {
+            plan_mode: false,
+            subagents_enabled: false,
+            readonly_child: true,
+        }
     }
 
     pub(crate) fn allows(&self, definition: &ToolDefinition) -> bool {
+        if self.readonly_child {
+            return definition.effect == ToolEffect::Read
+                && matches!(
+                    definition.name.as_str(),
+                    "list_files" | "read_file" | "search"
+                );
+        }
+        if definition.name == "delegate_readonly" && !self.subagents_enabled {
+            return false;
+        }
         if !self.plan_mode {
             return true;
         }
@@ -73,7 +112,54 @@ impl ToolAccessPolicy {
     }
 
     pub(crate) fn denial_reason(&self) -> &'static str {
-        "tool unavailable in plan mode"
+        if self.readonly_child {
+            "tool unavailable to a read-only subagent"
+        } else {
+            "tool unavailable in plan mode"
+        }
+    }
+
+    /// Argument-level half of the child capability fence. The three allowed
+    /// native tools deliberately accept absolute paths for normal parent runs;
+    /// delegated children do not inherit that ambient-read escape hatch.
+    pub(crate) fn validate_call(
+        &self,
+        definition: &ToolDefinition,
+        arguments: &Value,
+    ) -> Result<(), &'static str> {
+        if !self.readonly_child {
+            return Ok(());
+        }
+        if let Some(path) = arguments.get("path").and_then(Value::as_str)
+            && Path::new(path).is_absolute()
+        {
+            return Err("read-only subagent paths must be project-relative");
+        }
+        if !matches!(
+            definition.name.as_str(),
+            "list_files" | "read_file" | "search"
+        ) {
+            return Err("tool unavailable to a read-only subagent");
+        }
+        Ok(())
+    }
+
+    fn model_definition(&self, mut definition: ToolDefinition) -> ToolDefinition {
+        if self.readonly_child {
+            definition.description = format!(
+                "{} In a delegated child, every path must be project-relative and remain inside the project root.",
+                definition.description
+            );
+            if let Some(path) = definition
+                .input_schema
+                .pointer_mut("/properties/path/description")
+            {
+                *path = Value::String(
+                    "Project-relative path contained by the delegated project root".into(),
+                );
+            }
+        }
+        definition
     }
 }
 
@@ -554,6 +640,7 @@ impl ToolRegistry {
         self.definitions()
             .into_iter()
             .filter(|definition| access.allows(definition))
+            .map(|definition| access.model_definition(definition))
             .collect()
     }
 

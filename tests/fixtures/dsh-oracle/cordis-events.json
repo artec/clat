@@ -1,0 +1,104 @@
+{
+  "pinnedRevision": "b150a551b8",
+  "pinnedCommit": "b150a551b8d465e31e418e1b2eaf5e79bbb7d28e",
+  "generatedAt": "2026-08-21T20:03:37+08:00",
+  "toolVersions": {
+    "node": "24.3.0"
+  },
+  "sections": {
+    "registration": {
+      "order": [
+        "prepended",
+        "normal",
+        "once",
+        "prepended",
+        "normal",
+        "prepended"
+      ]
+    },
+    "receiver": {
+      "sameObject": true,
+      "marker": "explicit-receiver",
+      "argument": 7
+    },
+    "bail": {
+      "matrix": [
+        {
+          "label": "undefined",
+          "bailed": false
+        },
+        {
+          "label": "null",
+          "bailed": false
+        },
+        {
+          "label": "false",
+          "bailed": false
+        },
+        {
+          "label": "true",
+          "bailed": true
+        },
+        {
+          "label": "0",
+          "bailed": true
+        },
+        {
+          "label": "\"\"",
+          "bailed": true
+        },
+        {
+          "label": "[]",
+          "bailed": true
+        },
+        {
+          "label": "{}",
+          "bailed": true
+        }
+      ],
+      "trace": [
+        "undefined",
+        "false",
+        "zero"
+      ],
+      "result": 0
+    },
+    "serial": {
+      "trace": [
+        "a",
+        "b"
+      ],
+      "result": "stop"
+    },
+    "parallel": {
+      "trace": [
+        "a",
+        "b",
+        "c"
+      ],
+      "error": {
+        "name": "AggregateError",
+        "message": "",
+        "errors": [
+          {
+            "name": "Error",
+            "message": "first"
+          },
+          {
+            "name": "TypeError",
+            "message": "second"
+          }
+        ]
+      }
+    },
+    "waterfall": {
+      "trace": [
+        "a-before:input",
+        "b-before:input",
+        "inner",
+        "a-after:B(base)"
+      ],
+      "result": "A(B(base))"
+    }
+  }
+}

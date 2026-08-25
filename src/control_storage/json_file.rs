@@ -4,7 +4,7 @@
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -86,19 +86,89 @@ pub(crate) fn load<T: DeserializeOwned>(
     name: &str,
     expected_unit: (&str, u64),
 ) -> Result<Loaded<T>, LoadError> {
+    load_inner(dir, parent, name, expected_unit, None)
+}
+
+/// The same unit/version/torn-remnant discipline as [`load`], with a true
+/// cap+1 read bound for stores whose valid maximum size is known.
+pub(crate) fn load_limited<T: DeserializeOwned>(
+    dir: &cap_std::fs::Dir,
+    parent: &Path,
+    name: &str,
+    expected_unit: (&str, u64),
+    max_bytes: usize,
+) -> Result<Loaded<T>, LoadError> {
+    load_inner(dir, parent, name, expected_unit, Some(max_bytes))
+}
+
+fn load_inner<T: DeserializeOwned>(
+    dir: &cap_std::fs::Dir,
+    parent: &Path,
+    name: &str,
+    expected_unit: (&str, u64),
+    max_bytes: Option<usize>,
+) -> Result<Loaded<T>, LoadError> {
     if dir
         .symlink_metadata(name)
         .is_ok_and(|meta| meta.file_type().is_symlink())
     {
         return Err(LoadError::Io(format!("{name} must not be a symbolic link")));
     }
-    let text = match dir.read(name) {
-        Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+    let mut options = cap_std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use cap_std::fs::OpenOptionsExt as _;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    #[cfg(windows)]
+    {
+        use cap_std::fs::OpenOptionsExt as _;
+        use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    let mut file = match dir.open_with(name, &options) {
+        Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok(Loaded::Missing);
         }
-        Err(error) => return Err(LoadError::Io(format!("cannot read {name}: {error}"))),
+        Err(error) => return Err(LoadError::Io(format!("cannot open {name}: {error}"))),
     };
+    let metadata = file
+        .metadata()
+        .map_err(|error| LoadError::Io(format!("cannot inspect {name}: {error}")))?;
+    if !metadata.is_file() {
+        return Err(LoadError::Io(format!("{name} must be a regular file")));
+    }
+    if let Some(max_bytes) = max_bytes
+        && metadata.len() > max_bytes as u64
+    {
+        return Err(LoadError::Io(format!(
+            "{name} exceeds the {max_bytes}-byte read limit"
+        )));
+    }
+    let mut bytes = Vec::new();
+    match max_bytes {
+        Some(max_bytes) => {
+            std::io::Read::by_ref(&mut file)
+                .take(max_bytes.saturating_add(1) as u64)
+                .read_to_end(&mut bytes)
+                .map_err(|error| LoadError::Io(format!("cannot read {name}: {error}")))?;
+            if bytes.len() > max_bytes {
+                return Err(LoadError::Io(format!(
+                    "{name} exceeds the {max_bytes}-byte read limit"
+                )));
+            }
+        }
+        None => {
+            file.read_to_end(&mut bytes)
+                .map_err(|error| LoadError::Io(format!("cannot read {name}: {error}")))?;
+        }
+    }
+    // Windows does not permit the torn-remnant rename while this read handle
+    // is still open. Close it before parsing can enter the salvage path.
+    drop(file);
+    let text = String::from_utf8_lossy(&bytes).into_owned();
     // 先按无类型 JSON 解析：失败 = 撕裂（抢救路径）；成功后再过 unit
     // 门与结构门（fail-closed）。
     let value: serde_json::Value = match serde_json::from_str(&text) {

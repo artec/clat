@@ -9,7 +9,9 @@ use crate::plugins::services::{
     PROCESS_SERVICE, PROMPT_SERVICE, PROVIDER_SERVICE, SESSION_SERVICE, SESSION_TITLE_SERVICE,
     TODO_SERVICE, TOOL_PIPELINE_SERVICE, TOOL_SERVICE,
 };
-use crate::plugins::services::{PLAN_MODE_SERVICE, TOOL_ACCESS_SERVICE};
+use crate::plugins::services::{
+    GOAL_SERVICE, MEMORY_SERVICE, PLAN_MODE_SERVICE, SUBAGENT_SERVICE, TOOL_ACCESS_SERVICE,
+};
 use crate::plugins::{ProjectControlStoragePlugin, SessionPersistencePlugin};
 use crate::presets::preset_by_id;
 use crate::session::id::SessionId;
@@ -214,12 +216,18 @@ impl TrustedProjectApplication {
                 project.root().to_owned(),
                 storage_root.clone(),
             )),
+            Arc::new(crate::plugins::MemoryPlugin::new(
+                storage_root.clone(),
+                project.root().to_owned(),
+            )),
             Arc::new(crate::plugins::DefaultPermissionPlugin::new(
                 permission_source,
             )),
             Arc::new(crate::plugins::PromptRegistryPlugin),
             Arc::new(crate::plugins::DefaultPromptPlugin),
             Arc::new(crate::plugins::CommandsPlugin),
+            Arc::new(crate::plugins::GoalPlugin::new(project.root().to_owned())),
+            Arc::new(crate::plugins::SubagentPlugin::new(project.clone())),
             Arc::new(crate::plugins::BuiltinCommandsPlugin),
             Arc::new(crate::plugins::ContextInspectorPlugin),
             Arc::new(crate::plugins::ProjectInstructionsPlugin::new(
@@ -270,6 +278,15 @@ impl TrustedProjectApplication {
             .map_err(|error| ApplicationError::new(error.to_string()))?;
         let skill_catalog = project_manager
             .require(crate::plugins::services::SKILL_CATALOG_SERVICE)
+            .map_err(|error| ApplicationError::new(error.to_string()))?;
+        let memory = project_manager
+            .require(MEMORY_SERVICE)
+            .map_err(|error| ApplicationError::new(error.to_string()))?;
+        let goal = project_manager
+            .require(GOAL_SERVICE)
+            .map_err(|error| ApplicationError::new(error.to_string()))?;
+        let subagents = project_manager
+            .require(SUBAGENT_SERVICE)
             .map_err(|error| ApplicationError::new(error.to_string()))?;
         let process_service = project_manager
             .require(PROCESS_SERVICE)
@@ -335,6 +352,9 @@ impl TrustedProjectApplication {
             tool_access,
             skills,
             skill_catalog,
+            memory,
+            goal,
+            subagents,
             commands,
             agent,
             mcp_status,
@@ -368,6 +388,12 @@ impl TrustedProjectApplication {
         // 5. 进入工作区（§4.4）：realpath 命中注册表 → 恢复该工作区自己
         //    的当前会话；未命中 = 待注册（首条耐久会话落盘时惰性建区）。
         application.load_workspace_selection()?;
+        if let Some(diagnostic) = application.memory.take_diagnostic() {
+            application.startup_diagnostic = match application.startup_diagnostic.take() {
+                Some(existing) => Some(format!("{existing}; {diagnostic}")),
+                None => Some(diagnostic),
+            };
+        }
         // 会话边界（mount 恢复）之后对齐档位 cell：恢复的会话用自己的
         // fold，Fresh 回落默认——绝不携带上一个进程的任何档位。
         application.reseed_permission_mode_from_session();
@@ -527,8 +553,11 @@ impl TrustedProjectApplication {
     pub(super) fn run_context_snapshot(
         &self,
         skills: Arc<crate::skills::SkillCatalogSnapshot>,
+        memory: crate::memory::MemoryInjection,
+        goal: crate::goal::GoalInjection,
     ) -> RunContextSnapshot {
         let state = self.plan_mode.state();
+        let subagents_enabled = self.subagents.enabled(self.sessions.active_id().as_ref());
         let (tool_access, plan_instructions, plan_header) = if state.active {
             (
                 crate::tool::ToolAccessPolicy::plan_mode(),
@@ -548,16 +577,39 @@ impl TrustedProjectApplication {
                 })),
             )
         } else {
-            (crate::tool::ToolAccessPolicy::all(), None, None)
+            (
+                crate::tool::ToolAccessPolicy::all().with_subagents(subagents_enabled),
+                None,
+                None,
+            )
         };
-        let workflow = crate::plan_mode::compose_workflow_instructions(
+        let plan_and_skills = crate::plan_mode::compose_workflow_instructions(
             plan_instructions.unwrap_or_default(),
             skills.instructions(),
         );
+        let with_memory = crate::plan_mode::compose_workflow_instructions(
+            plan_and_skills,
+            (!memory.instructions.is_empty()).then_some(memory.instructions.as_str()),
+        );
+        let workflow_base = with_memory;
+        let workflow = crate::plan_mode::compose_workflow_instructions(
+            workflow_base.clone(),
+            (!goal.instructions.is_empty()).then_some(goal.instructions.as_str()),
+        );
+        let base_instructions = crate::plugins::services::base_model_instructions(
+            &self.prompts,
+            self.permission_modes_enabled
+                .then(|| self.permission_mode()),
+        );
         RunContextSnapshot {
-            tool_access,
+            tool_access: tool_access.with_subagents(subagents_enabled),
+            base_instructions,
+            workflow_base,
             workflow_instructions: (!workflow.is_empty()).then_some(workflow),
             plan_header,
+            memory_header: memory.header,
+            memory_bytes: memory.bytes,
+            goal_header: goal.header,
             skills,
         }
     }
@@ -589,13 +641,22 @@ impl TrustedProjectApplication {
         if let Some(plan) = &context.plan_header {
             header.insert("plan".into(), plan.clone());
         }
+        header.insert("memory".into(), context.memory_header.clone());
+        if !context.goal_header.is_null() {
+            header.insert("goal".into(), context.goal_header.clone());
+        }
+        header.insert(
+            "subagents".into(),
+            json!({
+                "enabled": self.subagents.enabled(self.sessions.active_id().as_ref()),
+                "roles": ["explorer", "reviewer"],
+                "depth": 1,
+                "mode": "read-only-one-shot",
+            }),
+        );
         header.insert("skills".into(), context.skills.header_json());
         let base_system = crate::plan_mode::compose_workflow_instructions(
-            crate::plugins::services::base_model_instructions(
-                &self.prompts,
-                self.permission_modes_enabled
-                    .then(|| self.permission_mode()),
-            ),
+            context.base_instructions.clone(),
             context.workflow_instructions.as_deref(),
         );
         let tools: Vec<Value> = self
@@ -632,6 +693,128 @@ impl TrustedProjectApplication {
         // path 的编码是同一函数（收编反查的正向匹配面）。
         let cwd = self.canonical_root.to_string_lossy().into_owned();
         ProjectKey::from_cwd(&cwd)
+    }
+
+    pub fn memory_add(
+        &self,
+        scope: crate::memory::MemoryScope,
+        content: &str,
+        source: Option<&str>,
+    ) -> Result<crate::memory::MemoryRecord, ApplicationError> {
+        self.memory
+            .add(scope, content, source)
+            .map_err(ApplicationError::new)
+    }
+
+    pub fn memory_update(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        content: &str,
+    ) -> Result<crate::memory::MemoryRecord, ApplicationError> {
+        self.memory
+            .update(id, expected_revision, content)
+            .map_err(ApplicationError::new)
+    }
+
+    pub fn memory_delete(
+        &self,
+        id: &str,
+        expected_revision: u64,
+    ) -> Result<crate::memory::MemoryRecord, ApplicationError> {
+        self.memory
+            .delete(id, expected_revision)
+            .map_err(ApplicationError::new)
+    }
+
+    pub fn memory_get(
+        &self,
+        id: &str,
+    ) -> Result<Option<crate::memory::MemoryHit>, ApplicationError> {
+        self.memory.get(id).map_err(ApplicationError::new)
+    }
+
+    pub fn memory_list(
+        &self,
+        scope: Option<crate::memory::MemoryScope>,
+    ) -> Result<Vec<crate::memory::MemoryHit>, ApplicationError> {
+        self.memory.list(scope).map_err(ApplicationError::new)
+    }
+
+    pub fn goal(&self) -> Result<Option<crate::goal::GoalView>, ApplicationError> {
+        self.goal.current().map_err(ApplicationError::new)
+    }
+
+    pub fn goal_create(
+        &self,
+        objective: &str,
+        acceptance: crate::goal::GoalAcceptance,
+        limits: crate::goal::GoalLimits,
+        arm: bool,
+    ) -> Result<crate::goal::GoalView, ApplicationError> {
+        self.reject_session_switch_while_busy()?;
+        self.goal
+            .create(objective, acceptance, limits, arm)
+            .map_err(ApplicationError::new)
+    }
+
+    pub fn goal_arm(
+        &self,
+        expected_revision: u64,
+    ) -> Result<crate::goal::GoalView, ApplicationError> {
+        self.reject_session_switch_while_busy()?;
+        self.goal
+            .arm(expected_revision)
+            .map_err(ApplicationError::new)
+    }
+
+    pub fn goal_pause(
+        &self,
+        expected_revision: u64,
+    ) -> Result<crate::goal::GoalView, ApplicationError> {
+        self.reject_session_switch_while_busy()?;
+        self.goal
+            .pause(expected_revision)
+            .map_err(ApplicationError::new)
+    }
+
+    pub fn goal_resume(
+        &self,
+        expected_revision: u64,
+    ) -> Result<crate::goal::GoalView, ApplicationError> {
+        self.reject_session_switch_while_busy()?;
+        self.goal
+            .resume(expected_revision)
+            .map_err(ApplicationError::new)
+    }
+
+    pub fn goal_complete(
+        &self,
+        expected_revision: u64,
+        summary: &str,
+    ) -> Result<crate::goal::GoalView, ApplicationError> {
+        self.reject_session_switch_while_busy()?;
+        self.goal
+            .complete_human(expected_revision, summary)
+            .map_err(ApplicationError::new)
+    }
+
+    pub fn goal_clear(&self, expected_revision: u64) -> Result<(), ApplicationError> {
+        self.reject_session_switch_while_busy()?;
+        self.goal
+            .clear(expected_revision)
+            .map_err(ApplicationError::new)
+    }
+
+    pub fn subagents_enabled(&self) -> bool {
+        self.subagents.enabled(self.sessions.active_id().as_ref())
+    }
+
+    pub fn set_subagents_enabled(&self, enabled: bool) -> Result<(), ApplicationError> {
+        self.reject_session_switch_while_busy()?;
+        self.subagents
+            .set_enabled(self.sessions.active_id().as_ref(), enabled)
+            .map_err(ApplicationError::new)
     }
 
     fn restore_todo_from(&mut self, view: &SessionView) {
@@ -970,6 +1153,8 @@ impl TrustedProjectApplication {
         self.emitted_request_header = None;
         self.restore_instruction_sources();
         self.plan_mode.reset_for_new();
+        self.goal.reset_for_new();
+        self.subagents.session_boundary();
         // 新会话从默认档起步：上一个会话的档位绝不跨 /new 携带（PS1
         // 的进程内变体）；物化前 /perm 的选择仍是出生档（PS7）。
         if self.permission_modes_enabled {
@@ -1106,6 +1291,8 @@ impl TrustedProjectApplication {
         self.emitted_request_header = self.sessions.last_request_header();
         self.restore_instruction_sources();
         self.plan_mode.materialized();
+        self.goal.session_boundary();
+        self.subagents.session_boundary();
         self.restore_todo_from(&view);
         let input_history = self.sessions.recent_inputs(500).map_err(session_error)?;
         quiesce?;

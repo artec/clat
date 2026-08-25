@@ -1161,6 +1161,17 @@ async function submitPrompt() {
     if (state.runActive) {
       const value = await rpc('steer.send', { text });
       addNoticeLine('steering ' + (value && value.outcome === 'queued' ? 'queued' : 'not running'));
+    } else if (text.startsWith('/')) {
+      const value = await rpc('command.run', { command: text });
+      if (value && value.kind === 'status') {
+        addNoticeLine(value.message || 'command completed');
+      } else if (value && value.kind === 'context') {
+        addNoticeLine(JSON.stringify(value.context));
+      } else if (value && value.kind === 'session_reset') {
+        addNoticeLine('new conversation');
+        await loadSessions();
+        resubscribe();
+      }
     } else {
       await rpc('prompt.send', { text });
     }

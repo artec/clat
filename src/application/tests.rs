@@ -3134,6 +3134,8 @@ fn failed_run_spawn_does_not_mark_the_request_header_emitted() {
             "ask_user",
             "skill",
             "exit_plan_mode",
+            "memory_search",
+            "update_goal",
             "todo_write",
         ],
         "request/header freezes the complete model-visible native catalog order"

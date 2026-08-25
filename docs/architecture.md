@@ -330,6 +330,36 @@ budget estimation. `/context` is outside a Run and takes a fresh read-only
 snapshot; its component estimates are incremental calls to the same
 `model::estimate_request_tokens` function, with output reserve added separately.
 
+Agent phase 4 adds three more removable Trusted Project entries:
+
+- `builtin.memory` owns the versioned local memory store, `/memory`, bounded
+  run injection, and the read-only `memory_search` tool. Human control-plane
+  calls are its only writers;
+- `builtin.goal` owns the one-goal-per-session state machine, `goal/change`
+  projection, `/goal`, verifier-gated `update_goal`, and the explicitly armed
+  bounded continuation driver;
+- `builtin.subagent` owns the default-off `/subagents` experiment and
+  `delegate_readonly`. A child is a scoped `Run` over a fixed three-tool
+  project-confined registry view, independent history/model instance, child
+  cancellation token, hard budgets, joined worker, and parent-journal
+  provenance. Child reservation/usage is charged to the same per-round spend
+  ledger as the parent model, so ordinary run and Goal caps cover both.
+
+The shipped HTTP provider adapters turn child deadlines into request deadlines
+and consume the cancellation token. `ModelProvider` cancellation remains a
+cooperative contract for in-process adapters; the runtime joins children and
+rejects new work while closing, but it does not pretend it can safely kill an
+arbitrary third-party provider implementation inside the process.
+
+Goal continuation remains one core run worker: every round closes its durable
+turn before the next user/goal message is appended. Subagent workers belong to
+one tool invocation and are joined before it returns; Application close first
+marks the service closing, cancels registered children, and waits with a bound.
+Neither frontend owns state transitions, model factories, journals, budgets,
+or worker threads. TUI and local web only supply their normal event/approval
+ports; headless control commands cannot silently invent an interactive goal
+continuation.
+
 Writes are project-relative in Read Only, Project Write, and headless runs;
 Full Access can unlock absolute writes. Command execution remains rooted in the
 project. Every call flows through:

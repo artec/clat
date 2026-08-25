@@ -5,6 +5,7 @@
 # 防止任何换行归一化碰它。
 tests/fixtures/tui-snapshots/** text eol=lf
 tests/fixtures/dsh-session/** -text
+tests/fixtures/dsh-oracle/** -text
 tests/fixtures/release-manifest.sha256* -text
 tests/fixtures/wasm/** -text
 # 同类第三次（CI，2026-08-24）：market 签名 fixture 被 windows 检出

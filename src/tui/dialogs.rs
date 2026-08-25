@@ -238,6 +238,7 @@ pub(super) fn context_dialog_lines(
         ("Project instructions", view.project_instructions_estimate),
         ("Plan policy", view.plan_policy_estimate),
         ("Skill catalog", view.skill_catalog_estimate),
+        ("Goal policy", view.goal_policy_estimate),
         ("Tool schemas", view.tool_schemas_estimate),
         ("History / compaction view", view.history_estimate),
         ("Output reserve", view.output_reserve_estimate),
@@ -251,6 +252,16 @@ pub(super) fn context_dialog_lines(
             Span::styled(value.to_string(), theme::style(theme::Role::Dim)),
         ]));
     }
+    lines.push(Line::from(vec![
+        Span::raw("Memory injection: "),
+        Span::styled(
+            format!(
+                "{} / {} bytes",
+                view.memory_estimate, view.memory_budget_bytes
+            ),
+            theme::style(theme::Role::Dim),
+        ),
+    ]));
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         format!("Estimator: {}", view.estimator),

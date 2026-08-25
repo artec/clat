@@ -37,6 +37,9 @@ pub(crate) const SKILLS_SERVICE_ID: ServiceId = ServiceId::new("core.skills");
 pub(crate) const SKILL_CATALOG_SERVICE_ID: ServiceId = ServiceId::new("core.skill_catalog");
 pub(crate) const LANGUAGE_INTELLIGENCE_SERVICE_ID: ServiceId =
     ServiceId::new("core.language_intelligence");
+pub(crate) const MEMORY_SERVICE_ID: ServiceId = ServiceId::new("core.memory");
+pub(crate) const GOAL_SERVICE_ID: ServiceId = ServiceId::new("core.goal");
+pub(crate) const SUBAGENT_SERVICE_ID: ServiceId = ServiceId::new("core.subagent");
 
 pub(crate) const SESSION_SERVICE: ServiceKey<crate::session::use_cases::SessionService> =
     ServiceKey::new(SESSION_SERVICE_ID);
@@ -76,6 +79,12 @@ pub(crate) const SKILL_CATALOG_SERVICE: ServiceKey<crate::skills::SkillCatalogSl
 pub(crate) const LANGUAGE_INTELLIGENCE_SERVICE: ServiceKey<
     crate::language_intelligence::LanguageIntelligenceService,
 > = ServiceKey::new(LANGUAGE_INTELLIGENCE_SERVICE_ID);
+pub(crate) const MEMORY_SERVICE: ServiceKey<crate::memory::MemoryService> =
+    ServiceKey::new(MEMORY_SERVICE_ID);
+pub(crate) const GOAL_SERVICE: ServiceKey<crate::goal::GoalService> =
+    ServiceKey::new(GOAL_SERVICE_ID);
+pub(crate) const SUBAGENT_SERVICE: ServiceKey<crate::subagent::SubagentService> =
+    ServiceKey::new(SUBAGENT_SERVICE_ID);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct InstructionSourceInfo {

@@ -749,6 +749,49 @@ impl SessionService {
         Ok(Some(seq))
     }
 
+    /// Current whole-value goal projection. `None` means no active session or
+    /// no current goal (before create / after clear). The projection is the
+    /// only durable reader; GoalService keeps only process-local activation.
+    pub(crate) fn goal_state_json(&self) -> Result<Option<Value>, SessionError> {
+        let guard = self.active.lock().expect("active");
+        let Some(active) = guard.as_ref() else {
+            return Ok(None);
+        };
+        let projections = active.projections.lock().expect("projections");
+        Ok(projections
+            .state_snapshot("goal")
+            .filter(|value| !value.is_null()))
+    }
+
+    /// Commit one already-CAS-validated whole-value `goal/change` fact.
+    /// GoalService serializes every writer through its write lane; this method
+    /// owns append -> flush -> projection checkpoint and never publishes a
+    /// speculative in-memory state ahead of the log.
+    pub(crate) fn record_goal_change(&self, data: Value) -> Result<u64, SessionError> {
+        crate::goal::validate_change_payload(&data).map_err(SessionError::Corruption)?;
+        let guard = self.active.lock().expect("active");
+        let active = guard.as_ref().ok_or_else(|| {
+            SessionError::Corruption("goal mutation requires an active session".into())
+        })?;
+        let mut journal_slot = active.journal.lock().expect("session journal");
+        if journal_slot.is_none() {
+            *journal_slot = Some(journal_with_projection_fold(active, &self.backend));
+        }
+        let journal = Arc::clone(journal_slot.as_ref().expect("just initialized"));
+        drop(journal_slot);
+        let seq = journal
+            .append(crate::session::run_journal::NewSessionEvent::new(
+                "goal/change",
+                data,
+            ))
+            .map_err(SessionError::Corruption)?;
+        journal.flush().map_err(SessionError::Corruption)?;
+        // Checkpoints are disposable caches. A failure does not roll back a
+        // durable goal mutation, mirroring record_plan_mode.
+        let _ = checkpoint_active(active, &self.checkpoints);
+        Ok(seq)
+    }
+
     /// The first user message text of the active session (transcript
     /// projection, compaction-safe) — autotitle input.
     pub(crate) fn first_user_text(&self) -> Option<String> {

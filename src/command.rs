@@ -54,6 +54,9 @@ pub enum CommandOutcome {
     StartTitleEdit { prefill: String },
     /// `/compact`：压缩已启动，携带可取消/可 join 的句柄。
     StartCompaction(CompactHandle),
+    /// `/goal ... --run` or `/goal run`: the frontend supplies its normal
+    /// event/approval channels while core owns the admitted goal-round prompt.
+    StartGoalRun,
     /// `/new`：会话已重置，前端清空自己的视图状态。
     SessionReset,
     /// `/quit`：请求退出应用（前端生命周期概念，headless 为无操作）。
@@ -74,6 +77,7 @@ impl fmt::Debug for CommandOutcome {
             Self::StartPermissionModeSelection { .. } => "StartPermissionModeSelection { .. }",
             Self::StartTitleEdit { .. } => "StartTitleEdit { .. }",
             Self::StartCompaction(_) => "StartCompaction(..)",
+            Self::StartGoalRun => "StartGoalRun",
             Self::SessionReset => "SessionReset",
             Self::QuitRequested => "QuitRequested",
         })

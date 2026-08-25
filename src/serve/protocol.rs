@@ -27,6 +27,7 @@ pub(crate) const RPC_METHODS: &[&str] = &[
     "session.switch",
     "session.rename",
     "permission.set",
+    "command.run",
     "prompt.send",
     "steer.send",
     "run.cancel",
@@ -321,6 +322,7 @@ pub(crate) fn dispatch(
             with_app(shared, |app| app.set_permission_mode(mode)).map_err(app_error)?;
             Ok(json!({ "mode": mode.journal_value(), "label": mode.to_string() }))
         }
+        "command.run" => command_run(params, shared),
         "prompt.send" => prompt_send(params, shared),
         "steer.send" => {
             let text = required_str(params, "text")?;
@@ -339,6 +341,168 @@ pub(crate) fn dispatch(
         }
         "approval.respond" => approver::respond(shared, params),
         other => Err(RpcError::bad_request(format!("unknown method: {other}"))),
+    }
+}
+
+/// Browser-thin slash-command bridge. Commands with an existing dedicated PWA
+/// interaction (model/session/permission/title), compaction ownership, or app
+/// shutdown are rejected before dispatch; all informational commands and the
+/// phase-4 goal continuation remain core-owned.
+fn command_run(params: &Map<String, Value>, shared: &Arc<ServeShared>) -> Result<Value, RpcError> {
+    let command = required_str(params, "command")?;
+    let trimmed = command.trim();
+    let token = trimmed
+        .strip_prefix('/')
+        .and_then(|tail| tail.split_whitespace().next())
+        .unwrap_or_default();
+    if token.is_empty() {
+        return Err(RpcError::bad_request("command must start with /"));
+    }
+    if matches!(
+        token,
+        "model" | "resume" | "perm" | "permission" | "rename" | "compact" | "quit" | "exit"
+    ) {
+        return Err(RpcError::bad_request(format!(
+            "/{token} uses a dedicated interactive frontend surface"
+        )));
+    }
+    let words = trimmed.split_whitespace().collect::<Vec<_>>();
+    let wants_goal_run = words.first().copied() == Some("/goal")
+        && (words.get(1).copied() == Some("run")
+            || (words.get(1).copied() == Some("create") && words.contains(&"--run")));
+    let claimed_goal_run = wants_goal_run.then(|| uuid::Uuid::new_v4().to_string());
+    if let Some(rpc_id) = &claimed_goal_run
+        && !shared.try_claim_run(rpc_id, super::state::now_ms())
+    {
+        return Err(RpcError::busy("another run is already active"));
+    }
+    let outcome = match with_app(shared, |app| app.dispatch_command(trimmed)) {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            if claimed_goal_run.is_some() {
+                shared.release_run_claim();
+            }
+            return Err(RpcError::bad_request(error.to_string()));
+        }
+    };
+    if !matches!(&outcome, crate::CommandOutcome::StartGoalRun) && claimed_goal_run.is_some() {
+        shared.release_run_claim();
+    }
+    match outcome {
+        crate::CommandOutcome::Status(message) => {
+            Ok(json!({ "kind": "status", "message": message }))
+        }
+        crate::CommandOutcome::ShowHelp { commands } => {
+            let message = commands
+                .iter()
+                .map(|info| {
+                    let aliases = info
+                        .aliases
+                        .iter()
+                        .map(|alias| format!("/{alias}"))
+                        .collect::<Vec<_>>();
+                    let names = if aliases.is_empty() {
+                        format!("/{}", info.name)
+                    } else {
+                        format!("/{} ({})", info.name, aliases.join(", "))
+                    };
+                    format!("{names} — {}", info.description)
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            Ok(json!({ "kind": "status", "message": message }))
+        }
+        crate::CommandOutcome::ShowMcpStatus(status) => {
+            let mut lines = vec![format!(
+                "mcp: {}/{} connected · {} connecting",
+                status.connected, status.configured, status.connecting
+            )];
+            lines.extend(status.servers.iter().map(|server| {
+                format!(
+                    "{} · {} · {} · {} tools",
+                    server.name, server.transport, server.protocol_version, server.tools
+                )
+            }));
+            lines.extend(
+                status
+                    .failures
+                    .iter()
+                    .map(|failure| format!("failure: {failure}")),
+            );
+            Ok(json!({ "kind": "status", "message": lines.join("\n") }))
+        }
+        crate::CommandOutcome::ShowContext(snapshot) => Ok(json!({
+            "kind": "context",
+            "context": {
+                "estimator": snapshot.estimator,
+                "unit": snapshot.unit,
+                "base_prompt": snapshot.base_prompt_estimate,
+                "project_instructions": snapshot.project_instructions_estimate,
+                "plan_policy": snapshot.plan_policy_estimate,
+                "skill_catalog": snapshot.skill_catalog_estimate,
+                "goal_policy": snapshot.goal_policy_estimate,
+                "memory": snapshot.memory_estimate,
+                "memory_budget_bytes": snapshot.memory_budget_bytes,
+                "tool_schemas": snapshot.tool_schemas_estimate,
+                "history": snapshot.history_estimate,
+                "output_reserve": snapshot.output_reserve_estimate,
+                "input": snapshot.input_estimate,
+                "total": snapshot.total_estimate,
+                "tools": snapshot.tool_names,
+                "skills": snapshot.skill_names,
+                "skill_diagnostics": snapshot.skill_diagnostics.iter().map(|item| json!({
+                    "source": item.source,
+                    "name": item.name,
+                    "kind": item.kind,
+                    "message": item.message,
+                })).collect::<Vec<_>>(),
+            }
+        })),
+        crate::CommandOutcome::StartGoalRun => {
+            let rpc_id = claimed_goal_run.ok_or_else(|| {
+                RpcError::internal("goal run command reached execution without a run claim")
+            })?;
+            start_goal_run(shared, rpc_id)
+        }
+        crate::CommandOutcome::SessionReset => Ok(json!({ "kind": "session_reset" })),
+        crate::CommandOutcome::StartModelSelection
+        | crate::CommandOutcome::StartSessionSelection { .. }
+        | crate::CommandOutcome::StartPermissionModeSelection { .. }
+        | crate::CommandOutcome::StartTitleEdit { .. }
+        | crate::CommandOutcome::StartCompaction(_)
+        | crate::CommandOutcome::QuitRequested => Err(RpcError::bad_request(
+            "command requires a dedicated interactive frontend surface",
+        )),
+    }
+}
+
+fn start_goal_run(shared: &Arc<ServeShared>, rpc_id: String) -> Result<Value, RpcError> {
+    let (completion_tx, completion_rx) =
+        mpsc::channel::<Result<ApplicationRunDone, ApplicationRunFailure>>();
+    let started = {
+        let mut app = shared.app.lock().expect("application lock");
+        app.start_goal_run(ApplicationRunRequest {
+            attachments: Vec::new(),
+            asker: None,
+            prompt: String::new(),
+            approver: Arc::new(approver::ServeApprover::new(Arc::clone(shared))),
+            events: Box::new(FanoutSink {
+                shared: Arc::clone(shared),
+            }),
+            completion: completion_tx,
+        })
+    };
+    match started {
+        Ok((handle, _)) => {
+            shared.spawn_settler(rpc_id.clone(), completion_rx, handle);
+            Ok(json!({ "kind": "goal_run", "prompt_rpc_id": rpc_id }))
+        }
+        Err(error) => {
+            shared.release_run_claim();
+            Err(RpcError::internal(format!(
+                "could not start goal run: {error}"
+            )))
+        }
     }
 }
 

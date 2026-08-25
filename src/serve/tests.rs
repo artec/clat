@@ -480,6 +480,52 @@ fn dispatch_covers_the_full_method_set() {
         "danger-full-access"
     );
 
+    let command = protocol::dispatch(
+        "command.run",
+        &serde_json::json!({"command": "/subagents on"}),
+        &shared,
+    )
+    .unwrap();
+    assert_eq!(command["kind"], "status");
+    assert!(command["message"].as_str().unwrap().contains("enabled"));
+    let context = protocol::dispatch(
+        "command.run",
+        &serde_json::json!({"command": "/context"}),
+        &shared,
+    )
+    .unwrap();
+    assert_eq!(context["kind"], "context");
+    assert!(context["context"]["memory_budget_bytes"].as_u64().unwrap() > 0);
+    assert_eq!(
+        protocol::dispatch(
+            "command.run",
+            &serde_json::json!({"command": "/model"}),
+            &shared,
+        )
+        .unwrap_err()
+        .code,
+        ErrorCode::BadRequest
+    );
+    assert!(shared.try_claim_run("held-by-another-client", super::state::now_ms()));
+    assert_eq!(
+        protocol::dispatch(
+            "command.run",
+            &serde_json::json!({"command": "/goal create must-not-exist --run"}),
+            &shared,
+        )
+        .unwrap_err()
+        .code,
+        ErrorCode::Busy
+    );
+    shared.release_run_claim();
+    let goal = protocol::dispatch(
+        "command.run",
+        &serde_json::json!({"command": "/goal show"}),
+        &shared,
+    )
+    .unwrap();
+    assert_eq!(goal["message"], "No current goal.");
+
     let rename = protocol::dispatch(
         "session.rename",
         &serde_json::json!({"id": "whatever", "title": "t"}),
@@ -518,6 +564,34 @@ fn dispatch_covers_the_full_method_set() {
 
     std::fs::remove_dir_all(storage_root).ok();
     std::fs::remove_dir_all(project_root).ok();
+}
+
+#[test]
+fn command_run_starts_and_settles_an_explicit_web_goal_continuation() {
+    let (handle, storage_root, project_root) =
+        spawn_serve("serve-goal-command", TestBehavior::Success);
+    let mut client = SseClient::connect(handle.addr);
+    let (status, result) = post(
+        handle.addr,
+        TEST_TOKEN,
+        "command.run",
+        r#"{"command":"/goal create web-goal --run --rounds 1 --accept user"}"#,
+    );
+    assert_eq!(status, 200);
+    let result = result.unwrap();
+    assert_eq!(result["kind"], "goal_run");
+    client.wait_settled();
+    let (status, shown) = post(
+        handle.addr,
+        TEST_TOKEN,
+        "command.run",
+        r#"{"command":"/goal show"}"#,
+    );
+    assert_eq!(status, 200);
+    let shown = shown.unwrap();
+    assert_eq!(shown["kind"], "status");
+    assert!(shown["message"].as_str().unwrap().contains("phase=paused"));
+    cleanup(handle, &storage_root, &project_root);
 }
 
 // ---- 零转译（验收 5，INV-S2）----

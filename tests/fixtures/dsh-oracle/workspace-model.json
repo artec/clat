@@ -1,0 +1,55 @@
+{
+  "pinnedRevision": "b150a551b8",
+  "pinnedCommit": "b150a551b8d465e31e418e1b2eaf5e79bbb7d28e",
+  "generatedAt": "2026-08-21T20:03:37+08:00",
+  "toolVersions": {
+    "node": "24.3.0"
+  },
+  "sections": {
+    "domain": {
+      "name": "workspace",
+      "version": 2
+    },
+    "record": {
+      "path": "/oracle/project",
+      "title": "Oracle",
+      "sessionIds": [
+        "018f2a64-9d3f-7cde-8123-9a4f2b6c0f01"
+      ],
+      "createdAt": "2026-08-25T00:00:00.000Z",
+      "updatedAt": "2026-08-25T00:00:01.000Z"
+    },
+    "stateDefaulting": {
+      "initialized": true,
+      "workspaceIds": [
+        "workspace-1"
+      ],
+      "archivedSessionIds": []
+    },
+    "pendingMutation": {
+      "initialized": true,
+      "workspaceIds": [
+        "workspace-1"
+      ],
+      "archivedSessionIds": [
+        "018f2a64-9d3f-7cde-8123-9a4f2b6c0f01"
+      ],
+      "pendingMutation": {
+        "operation": "delete",
+        "workspaceId": "workspace-1"
+      }
+    },
+    "invalidRecord": {
+      "name": "ZodError",
+      "rejected": true
+    },
+    "pathIdentity": {
+      "dotdotEqualsCanonical": true,
+      "symlinkEqualsCanonical": true,
+      "missing": {
+        "code": "ENOENT",
+        "rejected": true
+      }
+    }
+  }
+}

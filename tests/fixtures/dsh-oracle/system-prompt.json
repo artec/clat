@@ -1,0 +1,100 @@
+{
+  "pinnedRevision": "b150a551b8",
+  "pinnedCommit": "b150a551b8d465e31e418e1b2eaf5e79bbb7d28e",
+  "generatedAt": "2026-08-21T20:03:37+08:00",
+  "toolVersions": {
+    "node": "24.3.0"
+  },
+  "sections": {
+    "orderedAssembly": {
+      "sections": [
+        {
+          "name": "harness:identity",
+          "text": "You are an AI agent powered by DeepSeek Harness."
+        },
+        {
+          "name": "deployment:persona",
+          "text": "Oracle persona."
+        },
+        {
+          "name": "earlier",
+          "text": "Earlier."
+        },
+        {
+          "name": "later",
+          "text": "Later {{subject}}."
+        },
+        {
+          "name": "waterfall",
+          "text": "Waterfall."
+        }
+      ],
+      "contexts": [
+        {
+          "name": "ctx-earlier",
+          "text": "Context earlier."
+        },
+        {
+          "name": "ctx-later",
+          "text": "Context later."
+        }
+      ],
+      "tools": [
+        {
+          "name": "alpha",
+          "description": "a",
+          "parameters": {
+            "type": "object"
+          }
+        },
+        {
+          "name": "zeta",
+          "description": "z",
+          "parameters": {
+            "type": "object"
+          }
+        }
+      ],
+      "variables": {
+        "subject": "fixture"
+      }
+    },
+    "rendered": {
+      "prompt": "You are an AI agent powered by DeepSeek Harness.\n\nOracle persona.\n\nEarlier.\n\nLater fixture.\n\nWaterfall.",
+      "context": "Current runtime context. This snapshot supersedes earlier runtime-context snapshots.\n\nContext earlier.\n\nContext later."
+    },
+    "changeCount": 6,
+    "complete": {
+      "assembly": {
+        "sections": [
+          {
+            "name": "complete",
+            "text": "complete"
+          }
+        ],
+        "contexts": [],
+        "tools": [],
+        "variables": {}
+      },
+      "conflict": {
+        "name": "Error",
+        "message": "multiple complete prompt sections are active: \"complete\", \"complete-2\""
+      }
+    },
+    "suppression": {
+      "suppressedContexts": [],
+      "providerCallsWhileSuppressed": 0,
+      "actualCallsAfterRestore": 1,
+      "restoredContexts": [
+        {
+          "name": "secret",
+          "text": "called-1"
+        }
+      ]
+    },
+    "badVariable": {
+      "name": "Error",
+      "message": "unknown prompt variable \"{{missing}}\" in section \"bad\"; registered variables: (none)"
+    }
+  }
+}

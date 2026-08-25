@@ -39,6 +39,8 @@ impl ProjectionRegistry {
                 Box::new(TitleUnit::default()),
                 Box::new(PermissionModeUnit::default()),
                 Box::new(PlanModeUnit::default()),
+                Box::new(GoalUnit::default()),
+                Box::new(SubagentUnit::default()),
                 Box::new(TodoUnit::default()),
                 Box::new(StatsUnit::default()),
                 Box::new(CompactionUnit::default()),
@@ -200,6 +202,213 @@ impl ProjectionRegistry {
                 }
             }
         }
+        Ok(())
+    }
+}
+
+/// Current durable goal. Goal changes are whole-value facts; automatic
+/// continuation rounds are admitted `user/message` facts whose source
+/// advances `roundsStarted` exactly once. The strict transition function is
+/// shared with admission-facing goal code so live folding and replay cannot
+/// drift.
+struct GoalUnit {
+    state: Option<crate::goal::GoalState>,
+    as_of: i64,
+}
+
+impl Default for GoalUnit {
+    fn default() -> Self {
+        Self {
+            state: None,
+            as_of: -1,
+        }
+    }
+}
+
+impl ProjectionUnit for GoalUnit {
+    fn key(&self) -> &'static str {
+        "goal"
+    }
+
+    fn state_version(&self) -> u64 {
+        1
+    }
+
+    fn as_of(&self) -> i64 {
+        self.as_of
+    }
+
+    fn fold(&mut self, event: &SessionEvent) -> Result<(), String> {
+        crate::goal::fold_goal_event(&mut self.state, &event.event_type, &event.data)?;
+        self.as_of = event.seq as i64;
+        Ok(())
+    }
+
+    fn snapshot(&self) -> Value {
+        self.state
+            .as_ref()
+            .map(|state| serde_json::to_value(state).expect("goal state serializes"))
+            .unwrap_or(Value::Null)
+    }
+
+    fn restore(&mut self, row: &CheckpointRow) -> Result<(), String> {
+        self.state = if row.val.is_null() {
+            None
+        } else {
+            Some(crate::goal::decode_state(row.val.clone())?)
+        };
+        self.as_of = row.seq;
+        Ok(())
+    }
+}
+
+/// Bounded durable subagent activity summary. Detailed provenance remains in
+/// log-only lifecycle facts; the projection proves the same live/replay cut
+/// and makes descriptor/start/end counts checkpoint-restorable without
+/// retaining unbounded task text.
+struct SubagentUnit {
+    descriptor: Option<Value>,
+    started: u64,
+    finished: u64,
+    /// Exact unmatched lifecycle identities. Counts alone would let a forged
+    /// end for child B close child A and make replay look healthy.
+    outstanding: std::collections::BTreeSet<String>,
+    as_of: i64,
+}
+
+const MAX_OUTSTANDING_SUBAGENTS: usize = 4_096;
+
+impl Default for SubagentUnit {
+    fn default() -> Self {
+        Self {
+            descriptor: None,
+            started: 0,
+            finished: 0,
+            outstanding: std::collections::BTreeSet::new(),
+            as_of: -1,
+        }
+    }
+}
+
+impl ProjectionUnit for SubagentUnit {
+    fn key(&self) -> &'static str {
+        "subagent"
+    }
+
+    fn state_version(&self) -> u64 {
+        2
+    }
+
+    fn as_of(&self) -> i64 {
+        self.as_of
+    }
+
+    fn fold(&mut self, event: &SessionEvent) -> Result<(), String> {
+        match event.event_type.as_str() {
+            "subagent/descriptor" => {
+                crate::subagent::validate_descriptor(&event.data)?;
+                self.descriptor = Some(event.data.clone());
+            }
+            "clat/subagent" => {
+                crate::subagent::validate_lifecycle(&event.data)?;
+                match event.data.get("phase").and_then(Value::as_str) {
+                    Some("start") => {
+                        let id = event.data["id"]
+                            .as_str()
+                            .expect("validated subagent id")
+                            .to_owned();
+                        if self.outstanding.len() >= MAX_OUTSTANDING_SUBAGENTS {
+                            return Err("too many unmatched durable subagent starts".into());
+                        }
+                        if !self.outstanding.insert(id) {
+                            return Err("subagent start id is already outstanding".into());
+                        }
+                        self.started = self
+                            .started
+                            .checked_add(1)
+                            .ok_or("subagent start counter exhausted")?;
+                    }
+                    Some("end") => {
+                        let id = event.data["id"].as_str().expect("validated subagent id");
+                        if !self.outstanding.remove(id) {
+                            return Err("subagent end has no matching durable start".into());
+                        }
+                        self.finished = self
+                            .finished
+                            .checked_add(1)
+                            .ok_or("subagent finish counter exhausted")?;
+                    }
+                    _ => unreachable!("validated subagent phase"),
+                }
+            }
+            _ => {}
+        }
+        self.as_of = event.seq as i64;
+        Ok(())
+    }
+
+    fn snapshot(&self) -> Value {
+        json!({
+            "descriptor": self.descriptor,
+            "started": self.started,
+            "finished": self.finished,
+            "outstanding": self.outstanding,
+        })
+    }
+
+    fn restore(&mut self, row: &CheckpointRow) -> Result<(), String> {
+        let value = row
+            .val
+            .as_object()
+            .ok_or("subagent checkpoint must be an object")?;
+        let keys = ["descriptor", "finished", "outstanding", "started"];
+        if value.len() != keys.len() || keys.iter().any(|key| !value.contains_key(*key)) {
+            return Err("subagent checkpoint must contain exactly its canonical fields".into());
+        }
+        self.descriptor = row
+            .val
+            .get("descriptor")
+            .filter(|value| !value.is_null())
+            .cloned();
+        if let Some(descriptor) = &self.descriptor {
+            crate::subagent::validate_descriptor(descriptor)?;
+        }
+        self.started = row
+            .val
+            .get("started")
+            .and_then(Value::as_u64)
+            .ok_or("subagent checkpoint started missing")?;
+        self.finished = row
+            .val
+            .get("finished")
+            .and_then(Value::as_u64)
+            .ok_or("subagent checkpoint finished missing")?;
+        let outstanding = row
+            .val
+            .get("outstanding")
+            .and_then(Value::as_array)
+            .ok_or("subagent checkpoint outstanding ids missing")?;
+        if outstanding.len() > MAX_OUTSTANDING_SUBAGENTS {
+            return Err("subagent checkpoint has too many outstanding ids".into());
+        }
+        self.outstanding.clear();
+        for id in outstanding {
+            let id = id
+                .as_str()
+                .ok_or("subagent checkpoint outstanding id must be a string")?;
+            let valid = id
+                .strip_prefix("subagent-")
+                .is_some_and(|value| uuid::Uuid::parse_str(value).is_ok());
+            if !valid || !self.outstanding.insert(id.to_owned()) {
+                return Err("subagent checkpoint outstanding ids are invalid".into());
+            }
+        }
+        if self.finished > self.started
+            || self.started.saturating_sub(self.finished) != self.outstanding.len() as u64
+        {
+            return Err("subagent checkpoint lifecycle accounting is inconsistent".into());
+        }
+        self.as_of = row.seq;
         Ok(())
     }
 }
@@ -1408,5 +1617,102 @@ mod plan_mode_projection_tests {
             .expect("direct off");
         let cleared = restored.state_snapshot("plan-mode").unwrap();
         assert!(cleared["approved"].is_null());
+    }
+}
+
+#[cfg(test)]
+mod phase4_projection_tests {
+    use super::*;
+    use crate::session::event::payloads;
+
+    fn phase4_events() -> Vec<SessionEvent> {
+        let goal_id = "goal-00000000-0000-4000-8000-000000000004";
+        let mut created = crate::goal::GoalState {
+            id: goal_id.into(),
+            objective: "prove phase four restore".into(),
+            acceptance: crate::goal::GoalAcceptance::User,
+            phase: crate::goal::GoalPhase::Active,
+            revision: 1,
+            rounds_started: 0,
+            failures: 0,
+            tokens_used: 0,
+            elapsed_ms: 0,
+            limits: crate::goal::GoalLimits::default(),
+            created_at: 1,
+            updated_at: 1,
+            blocked_reason: None,
+            last_result: None,
+        };
+        let mut round = payloads::user_message("continue");
+        round["source"] = json!({
+            "kind": "goal", "goalId": goal_id, "revision": 1, "round": 1
+        });
+        let create = json!({
+            "kind": "goal/change", "version": 1, "operation": "create", "goal": created
+        });
+        created.rounds_started = 1;
+        created.revision = 2;
+        created.updated_at = 2;
+        created.tokens_used = 3;
+        created.last_result = Some("round complete".into());
+        let progress = json!({
+            "kind": "goal/change", "version": 1, "operation": "progress", "goal": created
+        });
+        let descriptor = json!({
+            "version": 2, "mode": "one-shot", "provider": "clat-readonly", "label": "explorer"
+        });
+        let id = "subagent-00000000-0000-4000-8000-000000000005";
+        let digest = "sha256:0000000000000000000000000000000000000000000000000000000000000000";
+        let start = json!({
+            "version": 1, "phase": "start", "id": id, "role": "explorer",
+            "parentSessionId": "session-1", "parentTurn": 1,
+            "inputDigest": digest, "taskBytes": 4,
+            "limits": {"maxTokens": 10, "timeoutMs": 1000, "maxOutputBytes": 32768, "depth": 1}
+        });
+        let end = json!({
+            "version": 1, "phase": "end", "id": id, "role": "explorer",
+            "parentSessionId": "session-1", "parentTurn": 1,
+            "inputDigest": digest, "outputDigest": digest, "outputBytes": 2,
+            "elapsedMs": 1, "stopReason": "completed",
+            "usage": {"inputTokens": 1, "outputTokens": 1, "cacheReadTokens": null, "reasoningTokens": null},
+            "provenance": {"provider": "test", "model": "test", "tools": ["read_file"], "depth": 1, "references": ["src/lib.rs"]}
+        });
+        vec![
+            SessionEvent::new("goal/change", 0, 1, create),
+            SessionEvent::new("user/message", 1, 2, round).append(Vec::new()),
+            SessionEvent::new("goal/change", 2, 3, progress),
+            SessionEvent::new("subagent/descriptor", 3, 4, descriptor),
+            SessionEvent::new("clat/subagent", 4, 5, start),
+            SessionEvent::new("clat/subagent", 5, 6, end),
+        ]
+    }
+
+    #[test]
+    fn goal_and_subagent_checkpoint_plus_tail_equal_full_fold() {
+        let events = phase4_events();
+        let mut orphan = ProjectionRegistry::clat();
+        assert!(orphan.fold_one(events.last().unwrap()).is_err());
+        let mut full = ProjectionRegistry::clat();
+        full.fold_all(&events).unwrap();
+        let mut prefix = ProjectionRegistry::clat();
+        prefix.fold_all(&events[..5]).unwrap();
+        let mut wrong_end = events[5].clone();
+        wrong_end.data["id"] = json!("subagent-00000000-0000-4000-8000-000000000006");
+        assert!(prefix.fold_one(&wrong_end).is_err());
+        let identity = CheckpointIdentity {
+            created_at: 1,
+            cwd: Some("/project".into()),
+        };
+        let checkpoint = prefix.checkpoint(identity.clone(), 1);
+        let mut restored = ProjectionRegistry::clat();
+        restored.restore(&checkpoint, &events[5..], 5).unwrap();
+        assert_eq!(
+            restored.checkpoint(identity.clone(), 2).rows["goal"],
+            full.checkpoint(identity.clone(), 3).rows["goal"]
+        );
+        assert_eq!(
+            restored.checkpoint(identity.clone(), 2).rows["subagent"],
+            full.checkpoint(identity, 3).rows["subagent"]
+        );
     }
 }

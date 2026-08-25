@@ -37,6 +37,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "npm run build && node --test dist/test/*.test.js",
+    "oracle:regen": "node scripts/oracle/regen.mjs",
     "scan": "npm run build && node dist/src/dsh-cli.js scan",
     "inspect": "npm run build && node dist/src/dsh-cli.js inspect"
   },

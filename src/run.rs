@@ -353,6 +353,7 @@ impl<'a> Run<'a> {
                 turn,
                 events,
                 partial_text: &mut partial_text,
+                usage_seen: false,
             };
             let response = match self.model.stream(request, &mut model_events) {
                 Ok(response) => response,
@@ -372,6 +373,13 @@ impl<'a> Run<'a> {
             };
 
             if let Some(usage) = &response.usage {
+                // Provider adapters normally stream the final usage event,
+                // but the Model contract also permits response-only usage.
+                // Synthesize the missing stream fact so SessionRecorder can
+                // reconcile the conservative reservation to the known bill.
+                if !model_events.usage_seen {
+                    model_events.emit(ModelEvent::Usage(usage.clone()));
+                }
                 total_usage.add_assign(usage);
             }
 
@@ -436,6 +444,7 @@ impl<'a> Run<'a> {
                             turns: turn,
                             items,
                             usage: total_usage,
+                            cancelled: false,
                         });
                     }
                     FinishReason::Cancelled => {
@@ -511,6 +520,30 @@ impl<'a> Run<'a> {
                     events.emit(RunEvent::PermissionDenied {
                         tool: call.name,
                         reason: self.tool_access.denial_reason().into(),
+                    });
+                    continue;
+                }
+                if let Err(reason) = self.tool_access.validate_call(&definition, &call.arguments) {
+                    let reason = reason.to_owned();
+                    events.emit(RunEvent::PermissionChecked {
+                        tool: definition.name.clone(),
+                        decision: PermissionDecision::Deny {
+                            reason: reason.clone(),
+                        },
+                    });
+                    let mut result = ToolResult {
+                        call_id: call.id.clone(),
+                        tool_name: call.name.clone(),
+                        output: serde_json::json!({ "error": reason }),
+                        is_error: true,
+                    };
+                    if let Some(pipeline) = self.tool_pipeline {
+                        pipeline.transform_result(&mut result);
+                    }
+                    items.push(ModelItem::ToolResult(result));
+                    events.emit(RunEvent::PermissionDenied {
+                        tool: call.name,
+                        reason: "read-only subagent path fence".into(),
                     });
                     continue;
                 }
@@ -631,6 +664,7 @@ impl<'a> Run<'a> {
                         turns: turn,
                         items,
                         usage: total_usage,
+                        cancelled: false,
                     });
                 }
             }
@@ -656,12 +690,16 @@ struct RunModelEventForwarder<'a> {
     turn: usize,
     events: &'a mut dyn EventSink,
     partial_text: &'a mut String,
+    usage_seen: bool,
 }
 
 impl ModelEventSink for RunModelEventForwarder<'_> {
     fn emit(&mut self, event: ModelEvent) {
         if let ModelEvent::TextDelta { delta } | ModelEvent::RefusalDelta { delta } = &event {
             self.partial_text.push_str(delta);
+        }
+        if matches!(event, ModelEvent::Usage(_)) {
+            self.usage_seen = true;
         }
         self.events.emit(RunEvent::ModelStream {
             turn: self.turn,
@@ -711,6 +749,7 @@ fn cancelled(
         turns,
         items,
         usage: usage.clone(),
+        cancelled: true,
     }
 }
 
@@ -720,6 +759,9 @@ pub struct RunOutput {
     pub turns: usize,
     pub items: Vec<ModelItem>,
     pub usage: Usage,
+    /// True when the provider or the shared cancellation token ended the run
+    /// before a normal completion. Partial output remains available in `text`.
+    pub cancelled: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1395,12 +1437,14 @@ mod tests {
                 "ModelRequested",
                 "ModelStream",
                 "ModelStream",
+                "ModelStream",
                 "ModelResponded",
                 "ToolRequested",
                 "PermissionChecked",
                 "ToolStarted",
                 "ToolFinished",
                 "ModelRequested",
+                "ModelStream",
                 "ModelStream",
                 "ModelStream",
                 "ModelResponded",
@@ -1419,13 +1463,13 @@ mod tests {
                 if provider == "test" && model == "scripted"
         ));
         assert!(matches!(
-            &events[5],
+            &events[6],
             RunEvent::ToolRequested { call }
                 if call.id == "call-1" && call.name == "echo"
                     && call.arguments == json!({"text": "hello"})
         ));
         assert!(matches!(
-            &events[6],
+            &events[7],
             RunEvent::PermissionChecked {
                 tool,
                 decision: PermissionDecision::Allow,

@@ -147,6 +147,9 @@ selection behavior instead of CLAT's mouse handling.
 | `/rename` | replace the current conversation title |
 | `/compact` | summarize older context in the background; original history remains on disk |
 | `/plan`, `/plan off` | enter or leave durable Plan Mode at an idle boundary |
+| `/memory ...` | explicitly list, add, edit, or delete local memory records |
+| `/goal ...` | inspect or control one bounded goal for the current session |
+| `/subagents on|off` | opt into or leave the read-only subagent experiment |
 | `/perm`, `/permission` | switch Read Only, Project Write, or Full Access |
 | `/mcp` | inspect MCP/WASM connection state, tools, and isolated failures |
 | `/context` | inspect a one-shot estimated model-context breakdown |
@@ -212,6 +215,67 @@ policy, skill catalog, tool schemas, history/compaction view, output reserve,
 and total, plus skill discovery diagnostics. The numbers are estimates from the
 same estimator used by model-request budgeting; the command does not call a
 model, write a session event, or start a live monitor.
+
+### Memory, goals, and read-only subagents
+
+Memory is explicit local knowledge, not an automatic transcript extractor.
+Only the user-facing command/Application control plane can write it:
+
+```text
+/memory list [all|project|user]
+/memory show <id>
+/memory add <project|user> <content> [--source file:path]
+/memory edit <id> <revision> <content>
+/memory delete <id> <revision>
+```
+
+Project records are visible only in the matching canonical project. User
+records are global to this CLAT storage root. Updates and deletes require the
+displayed revision, so a stale editor cannot overwrite a concurrent change.
+The model receives only bounded run-start injection and the read-only
+`memory_search` tool. CLAT never turns model output into memory automatically.
+`/context` reports the actual injected byte count (zero when no future prompt is
+known) and the fixed 8 KiB injection budget.
+
+Each session may have one current goal:
+
+```text
+/goal show
+/goal create <objective> [--run] [--rounds N] [--tokens N]
+             [--seconds N] [--failures N]
+             [--accept user|file-exists:path|file-contains:path:text]
+/goal run | pause | resume | complete [summary] | cancel
+```
+
+`--run` and `/goal run` are the only operations that arm continuation. Restart,
+session switch, an ordinary user prompt, cancellation, or a terminal goal state
+removes that process-local authority. Goal state itself is durable and uses
+revision/CAS transitions. V1 is capped at 8 rounds, 1,000,000 input+output
+tokens, one hour, and 3 failed rounds or rejected completion candidates;
+user-supplied limits can only narrow those caps. V1 has no monetary-price
+guard: the token cap is the effective cost boundary, and CLAT does not claim a
+micro-USD limit without provider pricing evidence. `user` acceptance can only
+be completed by `/goal complete`.
+File acceptance is project-relative and may be proposed by the model through
+`update_goal`, but CLAT verifies it before committing completion.
+
+`/subagents on` exposes `delegate_readonly` for the current session and process;
+the default and every restart are off. One call may launch one or two fixed
+`explorer`/`reviewer` children. Children have independent empty history, depth
+1, only project-confined `list_files`, `read_file`, and `search`, and no memory,
+interaction, delegation, LSP, write, execute, network, or session-write tools.
+Child count, token, wall-time, task, reference, and output sizes are hard-capped;
+parent cancellation propagates to children, and start/end provenance is written
+to the parent journal. Child usage is included in the parent run result and
+spend ledger; a child reservation that cannot fit the remaining parent/Goal
+token budget is rejected before launch. This remains an experiment:
+deterministic conformance is not evidence that it improves real-model task
+completion.
+
+The shipped HTTP provider adapters consume the child deadline and cancellation
+token. The provider interface is cooperative, so a future third-party adapter
+must poll the token and honor the deadline; CLAT does not claim that arbitrary
+adapter code can be forcibly killed inside the process.
 
 ### Steering, cancellation, and long runs
 
@@ -345,6 +409,10 @@ clat exec --continue --command /compact
 ```
 
 Query results use stdout. Interactive-only continuations exit with code 2.
+Memory, goal-state, and subagent enable/disable commands use this same registry;
+an armed goal continuation itself requires the TUI or local web workbench so it
+has normal approval/event channels. The web workbench routes slash commands
+through `command.run`; it never sends them to the model as ordinary prompts.
 
 ## Command sessions and sandbox controls
 

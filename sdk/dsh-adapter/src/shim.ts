@@ -115,7 +115,14 @@ export class Shim {
     this.#web = new WebSeam(host.log)
     const trackCleanup = (cleanup: () => unknown) => this.#trackCleanup(cleanup)
     this.#events = new EventBus(trackCleanup)
-    this.#systemPrompt = new SystemPromptSeam(this.#events, trackCleanup)
+    // DSH's agent-loop registers these three variables around SystemPrompt;
+    // keep that runtime layer outside the registry seam so the seam itself
+    // remains oracle-identical to @deepseek-ai/dsh-system-prompt.
+    this.#systemPrompt = new SystemPromptSeam(this.#events, trackCleanup, {
+      cwd: context => typeof context.cwd === 'string' ? context.cwd : process.cwd(),
+      provider: context => typeof context.provider === 'string' ? context.provider : undefined,
+      model: context => typeof context.model === 'string' ? context.model : undefined,
+    })
     this.#hostServices = new HostServicesSeam(host)
   }
 

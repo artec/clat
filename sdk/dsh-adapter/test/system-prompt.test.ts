@@ -6,7 +6,14 @@ import { SystemPromptSeam } from '../src/system-prompt.js'
 function seam(): { prompt: SystemPromptSeam; events: EventBus } {
   const cleanups: (() => unknown)[] = []
   const events = new EventBus(cleanup => cleanups.push(cleanup))
-  return { prompt: new SystemPromptSeam(events, cleanup => cleanups.push(cleanup)), events }
+  return {
+    prompt: new SystemPromptSeam(events, cleanup => cleanups.push(cleanup), {
+      cwd: context => typeof context.cwd === 'string' ? context.cwd : process.cwd(),
+      provider: context => typeof context.provider === 'string' ? context.provider : undefined,
+      model: context => typeof context.model === 'string' ? context.model : undefined,
+    }),
+    events,
+  }
 }
 
 test('systemPrompt orders sections and contexts and interpolates strict variables', async () => {

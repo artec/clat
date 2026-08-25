@@ -30,11 +30,17 @@ export class SystemPromptSeam implements SystemPromptLike {
   readonly #contexts = new Map<string, PromptContextLike>()
   readonly #toolProviders: ToolProvider[] = []
   readonly #variables = new Map<string, VariableProvider>()
+  readonly #baseVariables: Readonly<Record<string, VariableProvider>>
   #runtimeContextSuppressors = 0
 
-  constructor(events: EventBus, trackCleanup: (cleanup: () => unknown) => void) {
+  constructor(
+    events: EventBus,
+    trackCleanup: (cleanup: () => unknown) => void,
+    baseVariables: Readonly<Record<string, VariableProvider>> = {},
+  ) {
     this.#events = events
     this.#trackCleanup = trackCleanup
+    this.#baseVariables = baseVariables
   }
 
   section(section: PromptSectionLike): () => void {
@@ -92,11 +98,9 @@ export class SystemPromptSeam implements SystemPromptLike {
   }
 
   async assemble(context: AssembleContextLike = {}): Promise<PromptAssemblyLike> {
-    const variables: Record<string, string | undefined> = {
-      cwd: typeof context.cwd === 'string' ? context.cwd : process.cwd(),
-      provider: typeof context.provider === 'string' ? context.provider : undefined,
-      model: typeof context.model === 'string' ? context.model : undefined,
-      ...(context.variables ?? {}),
+    const variables: Record<string, string | undefined> = { ...(context.variables ?? {}) }
+    for (const [name, provider] of Object.entries(this.#baseVariables)) {
+      variables[name] = provider(context)
     }
     for (const [name, provider] of this.#variables) variables[name] = provider(context)
 

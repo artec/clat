@@ -126,6 +126,26 @@ A fake JSON-RPC server proves protocol conformance only. Do not record the
 Rust/TypeScript live LSP gate as passed unless those real servers were actually
 installed and exercised on the recorded machine.
 
+For agent phase 4, keep correctness gates separate from effectiveness claims:
+
+- add one project and one user memory, restart, verify project isolation and
+  stale-source display, and confirm no model answer creates a new record;
+- create a two-round file-acceptance goal with narrow limits, arm it explicitly,
+  cancel once, restart, and confirm the durable counters restore while the arm
+  remains off;
+- with `/subagents on`, delegate one explorer read, confirm the child sees only
+  the three project-confined read tools, cancel the parent once, and verify the
+  durable start/end provenance and zero surviving workers; restart and confirm
+  the tool is hidden again.
+
+The default-off subagent effectiveness campaign is a separate paid experiment:
+two cross-directory location tasks and two review tasks, single-agent versus
+subagent, five repetitions each. Pre-register verifiers and require at least a
+20 percentage-point correct-task improvement, no error-rate increase, zero
+write/execute/out-of-project events, no more than 2.0x total tokens, and no more
+than 2.0x p50 latency. Do not enable the experiment by default or claim an
+improvement until that campaign is explicitly authorized and recorded.
+
 ## Headless parity spot-check
 
 After the TUI gates, the same saved model can be checked through the headless

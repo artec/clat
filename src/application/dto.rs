@@ -14,6 +14,11 @@ pub struct ContextEstimateSnapshot {
     pub project_instructions_estimate: u64,
     pub plan_policy_estimate: u64,
     pub skill_catalog_estimate: u64,
+    pub goal_policy_estimate: u64,
+    /// Actual memory bytes injected for the inspected request (zero when
+    /// `/context` has no future prompt to search with).
+    pub memory_estimate: u64,
+    pub memory_budget_bytes: u64,
     pub tool_schemas_estimate: u64,
     pub history_estimate: u64,
     pub output_reserve_estimate: u64,

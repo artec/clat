@@ -182,6 +182,30 @@ may spawn only the executable chosen in the user-level `lsp.json`; the spawn
 requires the project-read/temp-write OS sandbox with network disabled. If that
 required provider is unavailable, CLAT fails before spawning the server.
 
+Memory, goals, and subagents narrow authority independently of the current
+permission mode:
+
+- only direct user commands/Application APIs write `memory.json`; the model's
+  `memory_search` surface is `Read`, bounded, and cannot promote project memory
+  into user scope;
+- `update_goal` is `SessionWrite`, uses expected-revision CAS, and cannot bypass
+  a registered acceptance verifier. Arming continuation is user-only and
+  process-local; each continued tool call still passes through the original
+  run permission policy. The verifier constrains only model completion
+  candidates submitted through `update_goal`. `/goal complete` is the user's
+  explicit final authority: it may complete any non-complete current goal
+  without satisfying the verifier, while still using the current revision/CAS
+  transition and durable `goal/change` commit;
+- `delegate_readonly` is `SessionWrite` because it spends model tokens and
+  records parent-session provenance. It is absent until `/subagents on`.
+  Children use a separate fixed access snapshot containing only
+  project-relative `list_files`, `read_file`, and `search`; absolute paths,
+  third-party `Read` tools, host sampling, approval, write, execute, network,
+  interaction, LSP, memory, and recursive delegation are structurally absent.
+
+The ordinary parent read tools still accept absolute paths as described below.
+That ambient-read behavior is deliberately **not** inherited by a child.
+
 ## Read and write scope
 
 Permission decides whether a call asks. Path scope independently decides what

@@ -57,6 +57,9 @@ clat upgrade --check
   三层 Markdown skills 的惰性有界加载，可选的用户级只读 LSP 导航
   （definition/references/implementation/hover，经 CLAT 管理的沙箱 stdio），
   以及 `/context` 一次性解释模型实际可见上下文的估算分项。
+- **有界 Agent 智能**——不允许模型写入的显式 project/user 本地记忆；
+  每会话一个带 CAS 的持久 goal 及仅由用户显式开启的有界续跑；默认关闭、
+  深度 1 的 explorer/reviewer 实验，子 Agent 只拥有三个项目相对只读工具。
 - **模型**——DeepSeek、GLM、Qwen、Kimi 内置预设，命名自定义档案，
   OpenAI Responses 与 OpenAI 兼容协议，思考/用量/缓存/上下文/配额遥测。
 - **原生工具**——有界且理解 gitignore 的字面量/正则/glob 搜索、文件列表与
@@ -112,6 +115,7 @@ irm https://raw.githubusercontent.com/artec/clat/main/install.ps1 | iex
 | 理解插件运行时、包格式与签名市场 | [CLAT 插件](docs/plugins.md) |
 | 安装或编写 WASM 组件 | [WASM 插件](docs/wasm.md) |
 | 移植 DSH/Cordis 插件 | [DSH 插件兼容指南](docs/dsh-plugins.md) |
+| 审核有运行时证据的 DSH 兼容声明 | [DSH 兼容证据矩阵](docs/dsh-compat.md) |
 | 理解核心边界与生命周期 | [架构](docs/architecture.md) |
 | 理解 Provider 适配与重试 | [Providers](docs/providers.md) |
 | 理解文件、会话日志与恢复 | [持久化状态](docs/storage.md) |

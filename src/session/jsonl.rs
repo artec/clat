@@ -239,6 +239,92 @@ mod tests {
         SessionHeader::new(SessionId::new("test-session"), Some("/tmp/p".into()), 1000)
     }
 
+    #[test]
+    fn matches_pinned_dsh_session_oracle_for_packing_lone_surrogate_and_torn_tail() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/dsh-oracle/session-jsonl.json"
+        ))
+        .expect("oracle fixture");
+        let sections = &fixture["sections"];
+        let chunks = ["a", "b", "c"]
+            .into_iter()
+            .enumerate()
+            .map(|(seq, text)| {
+                SessionEvent::new(
+                    "assistant/chunk",
+                    seq as u64,
+                    1000 + seq as i64 * 10,
+                    payloads::assistant_chunk(
+                        1,
+                        1,
+                        json!({"type": "text-delta", "index": 0, "text": text}),
+                    ),
+                )
+            })
+            .collect::<Vec<_>>();
+        let packed_two = pack_chunk_runs(&chunks[..2])
+            .iter()
+            .map(storage_record_value)
+            .collect::<Vec<_>>();
+        let packed_three = pack_chunk_runs(&chunks)
+            .iter()
+            .map(storage_record_value)
+            .collect::<Vec<_>>();
+        assert_eq!(json!(packed_two), sections["packing"]["two"]);
+        assert_eq!(json!(packed_three), sections["packing"]["three"]);
+        let decoded = packed_three
+            .into_iter()
+            .flat_map(|record| decode_storage_record(record).expect("decode packed oracle row"))
+            .map(|event| serde_json::to_value(event).expect("serialize decoded event"))
+            .collect::<Vec<_>>();
+        assert_eq!(json!(decoded), sections["packing"]["decodedThree"]);
+
+        // JavaScript strings can retain a lone UTF-16 surrogate; Rust strings
+        // cannot represent one. The oracle pins DSH's `\\ud800` bytes and the
+        // compatibility matrix records CLAT's intentional U+FFFD boundary.
+        assert!(
+            sections["loneSurrogate"]["jsonLine"]
+                .as_str()
+                .expect("lone JSON line")
+                .contains("\\ud800")
+        );
+        let lone = SessionEvent::new(
+            "assistant/chunk",
+            0,
+            1000,
+            payloads::assistant_chunk(
+                1,
+                1,
+                json!({"type": "text-delta", "index": 0, "text": "\u{fffd}"}),
+            ),
+        );
+        assert!(event_lines(&[lone], true).contains('�'));
+
+        let safe = sections["tornTail"]["safePrefix"]
+            .as_str()
+            .expect("safe prefix");
+        let input = format!("{safe}{{\"type\":\"assistant/chunk\",\"seq\":1");
+        let scan = scan_raw(input.as_bytes()).expect("torn final record is recoverable");
+        assert_eq!(
+            scan.events
+                .iter()
+                .map(|event| event.event_type.as_str())
+                .collect::<Vec<_>>(),
+            vec!["turn/start"]
+        );
+        assert_eq!(scan.committed_plain_bytes, safe.len());
+
+        let open = vec![
+            SessionEvent::new("turn/start", 0, 0, payloads::turn_start(1)),
+            SessionEvent::new("step/start", 1, 1, payloads::step_start(1, 1)),
+        ];
+        let closers = crate::session::recovery::interrupted_turn_closers(&open)
+            .into_iter()
+            .map(|event| serde_json::to_value(event).expect("serialize recovery closer"))
+            .collect::<Vec<_>>();
+        assert_eq!(json!(closers), sections["repair"]["closers"]);
+    }
+
     fn sample_events() -> Vec<SessionEvent> {
         vec![
             SessionEvent::new("turn/start", 0, 1001, payloads::turn_start(1)),

@@ -29,12 +29,18 @@ mod context;
 mod context_tests;
 mod dto;
 #[cfg(test)]
+mod goal_tests;
+#[cfg(test)]
 mod language_intelligence_tests;
+#[cfg(test)]
+mod memory_tests;
 #[cfg(test)]
 mod plan_mode_tests;
 mod run_lifecycle;
 #[cfg(test)]
 mod skills_tests;
+#[cfg(test)]
+mod subagent_tests;
 #[cfg(test)]
 mod tests;
 mod threads;
@@ -115,15 +121,19 @@ pub enum ApplicationEvent {
     },
 }
 
-/// One immutable request-bound view of workflow state. Every consumer that
-/// can affect what the model is told or allowed to call must use this same
-/// snapshot for the lifetime of the run; durable state changes only affect
-/// the next run.
+/// One request-bound view of workflow state. Plan, skills, memory, and tool
+/// authority are immutable for the run. Goal continuation refreshes only its
+/// revision/counters at each durable synthetic-round boundary.
 #[derive(Clone)]
 struct RunContextSnapshot {
     tool_access: crate::tool::ToolAccessPolicy,
+    base_instructions: String,
+    workflow_base: String,
     workflow_instructions: Option<String>,
     plan_header: Option<Value>,
+    memory_header: Value,
+    memory_bytes: usize,
+    goal_header: Value,
     skills: Arc<crate::skills::SkillCatalogSnapshot>,
 }
 
@@ -149,6 +159,15 @@ pub struct TrustedProjectApplication {
     tool_access: Arc<crate::tool::ToolAccessSlot>,
     skills: Arc<crate::skills::SkillsService>,
     skill_catalog: Arc<crate::skills::SkillCatalogSlot>,
+    /// Explicit, local knowledge service. Mutations are user-only Application
+    /// APIs; runs consume immutable bounded injections.
+    memory: Arc<crate::memory::MemoryService>,
+    /// Event-sourced same-session goal state. Only the activation bit is
+    /// process-local and is reset on every session boundary.
+    goal: Arc<crate::goal::GoalService>,
+    /// Default-off, process-local gate and bounded run binding for fixed-role
+    /// read-only children.
+    subagents: Arc<crate::subagent::SubagentService>,
     /// Frozen command registry（`core.commands`）：斜杠命令的唯一语义
     /// 源，前端经 `dispatch_command` 触达（INV-C1）。
     commands: Arc<crate::command::CommandRegistry>,

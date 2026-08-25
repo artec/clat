@@ -8,11 +8,13 @@ pub(crate) const SURFACE_EVENT_TYPES: [&str; 3] =
 
 /// Every `SessionEventMap` member declared in the pinned upstream revision,
 /// plus DSH 0.1.1-rc.1's four `team/*` types (B3 re-pin) and CLAT's own
-/// `clat/budget` spend-guardrail event (B1 — written with `ignorable: true`,
-/// skipped by DSH readers per the envelope contract).
-pub(crate) const KNOWN_EVENT_TYPES: [&str; 49] = [
+/// `clat/budget` spend guardrail and `clat/subagent` provenance
+/// events (both written with `ignorable: true`, so older readers may skip
+/// them per the envelope contract).
+pub(crate) const KNOWN_EVENT_TYPES: [&str; 50] = [
     "agent-preset/selected",
     "clat/budget",
+    "clat/subagent",
     "agent/inbox/spliced",
     "approval/asked",
     "approval/decided",
@@ -82,7 +84,7 @@ mod tests {
     fn catalog_covers_the_pinned_vocabulary_and_surface_subset() {
         // The upstream set is sorted; every entry is known and the surface
         // subset is exactly the three message types.
-        assert_eq!(KNOWN_EVENT_TYPES.len(), 49);
+        assert_eq!(KNOWN_EVENT_TYPES.len(), 50);
         assert!(is_known_type("user/message"));
         assert!(is_known_type("compaction/summary"));
         assert!(!is_known_type("future/thing"));
