@@ -84,6 +84,10 @@ fn marker_for_mode(mode: &str) -> Option<PathBuf> {
     mode.strip_prefix("crash-once=").map(PathBuf::from)
 }
 
+fn didopen_counter(mode: &str) -> Option<PathBuf> {
+    mode.strip_prefix("count-didopen=").map(PathBuf::from)
+}
+
 fn main() {
     let mode = std::env::args().nth(1).unwrap_or_else(|| "normal".into());
     if mode == "stderr-flood" {
@@ -100,6 +104,7 @@ fn main() {
     let mut buffer = Vec::new();
     let mut open_uri = None::<String>;
     let mut server_request_id = 9000u64;
+    let mut errored_once = false;
 
     while let Some(body) = read_frame(&mut reader, &mut buffer) {
         match method(&body) {
@@ -113,6 +118,13 @@ fn main() {
             }
             Some("initialized") => {}
             Some("textDocument/didOpen") => {
+                if let Some(counter) = didopen_counter(&mode) {
+                    let count = fs::read_to_string(&counter)
+                        .ok()
+                        .and_then(|text| text.trim().parse::<u32>().ok())
+                        .unwrap_or(0);
+                    fs::write(&counter, format!("{}", count + 1)).unwrap();
+                }
                 open_uri = did_open_uri(&body);
             }
             Some("textDocument/didClose") => {
@@ -153,6 +165,17 @@ fn main() {
                 );
                 let rejection = read_frame(&mut reader, &mut buffer).expect("client applyEdit rejection");
                 assert!(rejection.contains("\"error\""));
+                // 判别模式：首答 LSP ContentModified（-32804）——客户端
+                // 应按规范有界重发，第二次以正常结果应答。
+                if mode == "content-modified-once" && !errored_once {
+                    errored_once = true;
+                    let response = format!(
+                        "{{\"jsonrpc\":\"2.0\",\"id\":{},\"error\":{{\"code\":-32804,\"message\":\"content modified\"}}}}",
+                        id(&body).unwrap()
+                    );
+                    write_frame(&mut writer, &response, false);
+                    continue;
+                }
                 let uri = open_uri.clone().expect("didOpen before query");
                 let location = format!(
                     "{{\"uri\":\"{uri}\",\"range\":{{\"start\":{{\"line\":0,\"character\":7}},\"end\":{{\"line\":0,\"character\":13}}}}}}"

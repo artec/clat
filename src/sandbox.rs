@@ -33,6 +33,10 @@ impl SandboxRequest {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SandboxLevel {
     ReadOnly,
+    /// LSP 服务器专用级别：项目只读 + 临时目录可写。仅 macOS 的
+    /// `plan_project_read_temp_write`（seatbelt）构造；其他平台无
+    /// graduated provider，计划时显式报错而非降级。
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     ProjectReadTempWrite,
     WorkspaceWrite,
     FullAccess,

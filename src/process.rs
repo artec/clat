@@ -177,7 +177,8 @@ impl ManagedStdioLease {
             .read_stdout_raw(&mut cursor, wait, max_bytes)
     }
 
-    #[cfg(test)]
+    // 仅 macOS 门控的 seatbelt/LSP 测试读取 stderr 快照。
+    #[cfg(all(test, target_os = "macos"))]
     pub(crate) fn stderr_tail(&self) -> Vec<u8> {
         self.shared.entry.stderr_snapshot_raw()
     }
@@ -800,7 +801,7 @@ impl ProcessEntry {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "macos"))]
     fn stderr_snapshot_raw(&self) -> Vec<u8> {
         self.state
             .lock()

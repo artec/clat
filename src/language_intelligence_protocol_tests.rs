@@ -1,5 +1,8 @@
 use super::*;
+// 这两个导入只被 macOS 门控的 fake_service（seatbelt 计划腿）使用。
+#[cfg(target_os = "macos")]
 use crate::Project;
+#[cfg(target_os = "macos")]
 use crate::sandbox::{SandboxModeSource, SandboxService};
 
 #[test]
@@ -245,6 +248,8 @@ fn fake_service(
     .unwrap();
     let mode = if mode == "crash-once" {
         format!("crash-once={}", storage.join("crash-marker").display())
+    } else if mode == "count-didopen" {
+        format!("count-didopen={}", storage.join("didopen-count").display())
     } else {
         mode.to_owned()
     };
@@ -436,6 +441,313 @@ fn shutdown_escalates_through_process_service_when_server_ignores_exit() {
     let started = Instant::now();
     service.close().unwrap();
     assert!(started.elapsed() < Duration::from_secs(3));
+    process.close().unwrap();
+    crate::test_support::cleanup_tree(storage.parent().unwrap());
+}
+
+/// AG-3 3-C 真实语言现场验收——Rust 腿：真实 rust-analyzer 经
+/// project-read/temp-write Seatbelt 策略（读全局放行、写仅临时目录、
+/// 项目写真实拒绝）服务全部四种只读查询。门控：CLAT_LSP_LIVE=1 +
+/// 本机 rust-analyzer/cargo；按 worklist 条款不得以 fake server 冒充。
+/// TypeScript 腿待 typescript-language-server 安装后另行验收。
+#[cfg(target_os = "macos")]
+#[test]
+#[ignore = "live rust-analyzer acceptance (armed with CLAT_LSP_LIVE=1; needs rust-analyzer + cargo)"]
+fn live_rust_analyzer_serves_read_only_queries_under_seatbelt() {
+    if std::env::var("CLAT_LSP_LIVE").ok().as_deref() != Some("1") {
+        eprintln!("live lsp acceptance: not armed (set CLAT_LSP_LIVE=1)");
+        return;
+    }
+    const LIB: &str = "pub fn fixture_target() -> u32 {\n    41 + 1\n}\n\npub fn fixture_caller() -> u32 {\n    fixture_target()\n}\n";
+    let (storage, project) = crate::test_support::roots("lsp-live-rust");
+    std::fs::create_dir_all(project.join("src")).unwrap();
+    std::fs::create_dir_all(&storage).unwrap();
+    std::fs::write(
+        project.join("Cargo.toml"),
+        "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    std::fs::write(project.join("src/lib.rs"), LIB).unwrap();
+    // 沙箱按设计拒绝项目写（含 Cargo.lock）——一致的锁文件让
+    // cargo metadata 无需在受限会话里落笔。
+    let lock = std::process::Command::new("cargo")
+        .args(["generate-lockfile", "--offline"])
+        .current_dir(&project)
+        .output()
+        .expect("cargo");
+    assert!(
+        lock.status.success(),
+        "setup cargo generate-lockfile: {}",
+        String::from_utf8_lossy(&lock.stderr)
+    );
+    std::fs::write(
+        storage.join("lsp.json"),
+        serde_json::to_vec(&json!({
+            "version":1,
+            "servers":{
+                "rust-analyzer":{
+                    "command":"rust-analyzer",
+                    "args":[],
+                    "extensions":{".rs":"rust"}
+                }
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let sandbox =
+        Arc::new(SandboxService::new(project.clone(), SandboxModeSource::Classic).unwrap());
+    let process = Arc::new(ProcessService::new(Project::new(&project), sandbox));
+    let service =
+        LanguageIntelligenceService::load(project.clone(), storage.clone(), Arc::clone(&process));
+    let cancel = CancelToken::new();
+
+    // 坐标为 1 基（查询入参与结果归一化都是 1 基）。真实服务器需要
+    // 预热——有界重试到 definition 就绪。
+    let definition = query_until_resolved(
+        &service,
+        "rust-analyzer",
+        "definition",
+        "src/lib.rs",
+        6,
+        5,
+        &cancel,
+    );
+    assert_eq!(definition["sandbox"]["mode"], "project-read-temp-write");
+    assert_eq!(definition["sandbox"]["provider"], "seatbelt");
+    assert_eq!(definition["sandbox"]["enforcement"], "full");
+    let hit = definition["locations"]
+        .as_array()
+        .expect("definition locations")
+        .iter()
+        .find(|location| {
+            location["path"] == "src/lib.rs"
+                && location["range"]["start"]["line"].as_u64() == Some(1)
+        })
+        .unwrap_or_else(|| {
+            if let Some(client) = service.clients.lock().unwrap().get("rust-analyzer") {
+                eprintln!(
+                    "rust-analyzer stderr tail:\n{}",
+                    String::from_utf8_lossy(&client.lock().unwrap().lease.stderr_tail())
+                );
+            }
+            panic!("definition must resolve to the declaration: {definition}")
+        });
+    assert_eq!(hit["range"]["start"]["character"].as_u64(), Some(8));
+
+    // references：声明处（1:8）→ 覆盖调用行（6 行）。
+    let references = service
+        .query("references", "src/lib.rs", 1, 8, &cancel)
+        .unwrap();
+    assert!(
+        references["locations"]
+            .as_array()
+            .expect("reference locations")
+            .iter()
+            .any(|location| {
+                location["path"] == "src/lib.rs"
+                    && location["range"]["start"]["line"].as_u64() == Some(6)
+            }),
+        "references must include the call site: {references}"
+    );
+
+    // hover：声明处（1:8）→ 签名含 u32。
+    let hover = service.query("hover", "src/lib.rs", 1, 8, &cancel).unwrap();
+    let text = hover["hover"]["contents"].to_string();
+    assert!(text.contains("u32"), "hover shows the signature: {text}");
+
+    service.close().unwrap();
+    process.close().unwrap();
+    crate::test_support::cleanup_tree(storage.parent().unwrap());
+}
+
+/// 判别（2026-08-25 真实现场验收发现）：旧实现对已打开文档每次
+/// 查询都重发 didOpen——真实服务器（rust-analyzer）把文档重开视为
+/// 内容变更，以 ContentModified 作废请求。删修复即红：计数器会从 1
+/// 变成查询次数。
+#[cfg(target_os = "macos")]
+#[test]
+fn repeated_queries_open_the_document_once() {
+    let (storage, _project, process, service) = fake_service("lsp-didopen-once", "count-didopen");
+    let cancel = CancelToken::new();
+    for _ in 0..3 {
+        service
+            .query("definition", "src/lib.rs", 1, 8, &cancel)
+            .unwrap();
+    }
+    let counter = storage.join("didopen-count");
+    assert_eq!(
+        std::fs::read_to_string(&counter).unwrap(),
+        "1",
+        "didOpen must fire exactly once for a document reused across queries"
+    );
+    service.close().unwrap();
+    process.close().unwrap();
+    crate::test_support::cleanup_tree(storage.parent().unwrap());
+}
+
+/// 判别（rust-analyzer 现场行为）：ContentModified（-32804）表示请求
+/// 被内容变更作废、客户端应重发。fake 首答该错误码——旧实现把错误
+/// 直传给调用方（红），修复后有界重发并拿到真实结果。
+#[cfg(target_os = "macos")]
+#[test]
+fn content_modified_errors_are_retried() {
+    let (storage, _project, process, service) =
+        fake_service("lsp-content-modified", "content-modified-once");
+    let definition = service
+        .query("definition", "src/lib.rs", 1, 8, &CancelToken::new())
+        .unwrap();
+    assert_eq!(definition["locations"][0]["path"], "src/lib.rs");
+    service.close().unwrap();
+    process.close().unwrap();
+    crate::test_support::cleanup_tree(storage.parent().unwrap());
+}
+
+/// 真实服务器需要预热（fake 即时应答）：工作区加载完成前查询可能
+/// 权威地返回空或暂态错误——有界重试到 definition 就绪，失败时打
+/// stderr 尾部辅助诊断。两条真实语言现场验收腿共用。
+#[cfg(target_os = "macos")]
+fn query_until_resolved(
+    service: &LanguageIntelligenceService,
+    server_id: &str,
+    operation: &str,
+    file_path: &str,
+    line: u64,
+    character: u64,
+    cancel: &CancelToken,
+) -> serde_json::Value {
+    let mut last_failure = String::new();
+    for attempt in 0..30 {
+        match service.query(operation, file_path, line, character, cancel) {
+            Ok(result) => {
+                if result["locations"]
+                    .as_array()
+                    .is_some_and(|list| !list.is_empty())
+                {
+                    return result;
+                }
+                last_failure = "empty locations".into();
+                eprintln!("{server_id} warm-up attempt {attempt}: empty locations");
+            }
+            Err(error) => {
+                last_failure = error.clone();
+                eprintln!("{server_id} warm-up attempt {attempt}: {error}");
+            }
+        }
+        std::thread::sleep(Duration::from_millis(1_000));
+    }
+    if let Some(client) = service.clients.lock().unwrap().get(server_id) {
+        eprintln!(
+            "{server_id} stderr tail:\n{}",
+            String::from_utf8_lossy(&client.lock().unwrap().lease.stderr_tail())
+        );
+    }
+    panic!("{server_id} never resolved the query: {last_failure}");
+}
+
+/// AG-3 3-C 真实语言现场验收——TypeScript 腿：真实
+/// typescript-language-server（tsserver 子进程）经 project-read/
+/// temp-write Seatbelt 策略服务只读查询。门控：CLAT_LSP_LIVE=1 +
+/// 本机 `npm install -g typescript-language-server typescript`；
+/// 按工作清单条款不得以 fake server 冒充真实毕业。
+#[cfg(target_os = "macos")]
+#[test]
+#[ignore = "live typescript-language-server acceptance (armed with CLAT_LSP_LIVE=1; needs npm -g typescript-language-server)"]
+fn live_typescript_language_server_serves_read_only_queries_under_seatbelt() {
+    if std::env::var("CLAT_LSP_LIVE").ok().as_deref() != Some("1") {
+        eprintln!("live lsp acceptance: not armed (set CLAT_LSP_LIVE=1)");
+        return;
+    }
+    const TSLIB: &str = "export function fixtureTarget(): number {\n    return 41 + 1;\n}\n\nexport function fixtureCaller(): number {\n    return fixtureTarget();\n}\n";
+    let (storage, project) = crate::test_support::roots("lsp-live-typescript");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::create_dir_all(&storage).unwrap();
+    std::fs::write(
+        project.join("package.json"),
+        "{\n  \"name\": \"fixture\",\n  \"version\": \"0.1.0\"\n}\n",
+    )
+    .unwrap();
+    std::fs::write(project.join("index.ts"), TSLIB).unwrap();
+    // typescript-language-server 6.x 只认 workspace 内的 typescript
+    // 安装（无全局兜底、tsserver.path 不在产品 lsp.json 配置面）——
+    // 真实 TS 项目本就有 node_modules，fixture 在沙箱外一次性安装。
+    // 固定 5.x：typescript-language-server 6.0.0 只认经典 lib/tsserver.js
+    // 布局，npm latest 的 TypeScript 7（Go 原生重写）不再提供它。
+    let install = std::process::Command::new("npm")
+        .args(["install", "typescript@5", "--no-save", "--loglevel=error"])
+        .current_dir(&project)
+        .output()
+        .expect("npm (install typescript in the workspace first)");
+    assert!(
+        install.status.success(),
+        "setup npm install typescript: {}",
+        String::from_utf8_lossy(&install.stderr)
+    );
+    std::fs::write(
+        storage.join("lsp.json"),
+        serde_json::to_vec(&json!({
+            "version":1,
+            "servers":{
+                "typescript-language-server":{
+                    "command":"typescript-language-server",
+                    "args":["--stdio"],
+                    "extensions":{".ts":"typescript"}
+                }
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let sandbox =
+        Arc::new(SandboxService::new(project.clone(), SandboxModeSource::Classic).unwrap());
+    let process = Arc::new(ProcessService::new(Project::new(&project), sandbox));
+    let service =
+        LanguageIntelligenceService::load(project.clone(), storage.clone(), Arc::clone(&process));
+    let cancel = CancelToken::new();
+
+    // 坐标 1 基：调用处 6:12，声明 1:17（"export function " 之后）。
+    let definition = query_until_resolved(
+        &service,
+        "typescript-language-server",
+        "definition",
+        "index.ts",
+        6,
+        12,
+        &cancel,
+    );
+    assert_eq!(definition["sandbox"]["mode"], "project-read-temp-write");
+    assert_eq!(definition["sandbox"]["provider"], "seatbelt");
+    assert_eq!(definition["sandbox"]["enforcement"], "full");
+    let hit = definition["locations"]
+        .as_array()
+        .expect("definition locations")
+        .iter()
+        .find(|location| {
+            location["path"] == "index.ts" && location["range"]["start"]["line"].as_u64() == Some(1)
+        })
+        .unwrap_or_else(|| panic!("definition must resolve to the declaration: {definition}"));
+    assert_eq!(hit["range"]["start"]["character"].as_u64(), Some(17));
+
+    let references = service
+        .query("references", "index.ts", 1, 17, &cancel)
+        .unwrap();
+    assert!(
+        references["locations"]
+            .as_array()
+            .expect("reference locations")
+            .iter()
+            .any(|location| {
+                location["path"] == "index.ts"
+                    && location["range"]["start"]["line"].as_u64() == Some(6)
+            }),
+        "references must include the call site: {references}"
+    );
+
+    let hover = service.query("hover", "index.ts", 1, 17, &cancel).unwrap();
+    let text = hover["hover"]["contents"].to_string();
+    assert!(text.contains("number"), "hover shows the signature: {text}");
+
+    service.close().unwrap();
     process.close().unwrap();
     crate::test_support::cleanup_tree(storage.parent().unwrap());
 }

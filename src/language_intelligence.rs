@@ -10,6 +10,7 @@ use cap_std::ambient_authority;
 use cap_std::fs::{Dir, OpenOptions};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io::Read;
@@ -119,6 +120,14 @@ struct LspClient {
     buffer: Vec<u8>,
     initialized: bool,
     next_id: u64,
+    open_documents: BTreeMap<String, OpenDocumentState>,
+}
+
+/// 已打开文档的客户端侧状态。LSP 文档只能 didOpen 一次；内容变化经
+/// didChange 递增 version 同步；关停时统一 didClose。
+struct OpenDocumentState {
+    version: i64,
+    sha256: String,
 }
 
 impl LspClient {
@@ -128,6 +137,7 @@ impl LspClient {
             buffer: Vec::new(),
             initialized: false,
             next_id: 1,
+            open_documents: BTreeMap::new(),
         }
     }
 
@@ -463,21 +473,7 @@ fn run_query(
 ) -> Result<Value, LspFailure> {
     let deadline = Instant::now() + timeout;
     ensure_initialized(client, query.project_root, deadline, cancel)?;
-    write_message(
-        client,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": query.source.uri,
-                    "languageId": query.language_id,
-                    "version": 1,
-                    "text": query.source.text,
-                }
-            }
-        }),
-    )?;
+    sync_open_document(client, query.source, query.language_id)?;
 
     let id = client.next_request_id();
     let mut params = json!({
@@ -500,14 +496,34 @@ fn run_query(
         }),
     )?;
     let response = await_response(client, id, query.project_root, deadline, cancel);
-    let _ = write_message(
-        client,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didClose",
-            "params": {"textDocument": {"uri": query.source.uri}}
-        }),
-    );
+    // LSP 语义：ContentModified 表示请求被内容变更作废、客户端应
+    // 重发。rust-analyzer 在预热/分析失效窗口会把内部取消映射成该
+    // 错误（2026-08-25 真实现场验收实证）——文档已同步、服务器健
+    // 康，同参数有界重发即可，不重建客户端。
+    let mut response = response;
+    for _ in 0..4 {
+        let retryable = matches!(&response, Err(failure)
+            if failure.message.to_lowercase().contains("content modified"));
+        if !retryable || Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(300));
+        let retry_id = client.next_request_id();
+        params["position"] = json!({
+            "line": query.source.line_zero,
+            "character": query.source.character_zero,
+        });
+        write_message(
+            client,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": retry_id,
+                "method": query.operation.method(),
+                "params": params,
+            }),
+        )?;
+        response = await_response(client, retry_id, query.project_root, deadline, cancel);
+    }
     let result = response?;
     normalize_result(
         query.project_root,
@@ -516,6 +532,57 @@ fn run_query(
         result,
         client.lease.sandbox_facts(),
     )
+}
+
+/// LSP 文档生命周期同步：didOpen 仅首次；内容未变不重复通知；
+/// 内容变化经全量 didChange（version 单调递增）同步。此前实现每次
+/// 查询都重发 didOpen 并在应答后 didClose——真实服务器（rust-
+/// analyzer）把文档重开视为内容变更，以 ContentModified 作废第二
+/// 个请求（2026-08-25 真实现场验收实证；fake 服务器容忍重发，所以
+/// deterministic 门禁未暴露）。
+fn sync_open_document(
+    client: &mut LspClient,
+    source: &SourceDocument,
+    language_id: &str,
+) -> Result<(), LspFailure> {
+    let digest = format!("{:x}", Sha256::digest(source.text.as_bytes()));
+    let next_version = match client.open_documents.get(&source.uri) {
+        Some(state) if state.sha256 == digest => return Ok(()),
+        Some(state) => state.version + 1,
+        None => 1,
+    };
+    let notification = if next_version == 1 {
+        json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": source.uri,
+                    "languageId": language_id,
+                    "version": 1,
+                    "text": source.text,
+                }
+            }
+        })
+    } else {
+        json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didChange",
+            "params": {
+                "textDocument": {"uri": source.uri, "version": next_version},
+                "contentChanges": [{"text": source.text}],
+            }
+        })
+    };
+    write_message(client, &notification)?;
+    client.open_documents.insert(
+        source.uri.clone(),
+        OpenDocumentState {
+            version: next_version,
+            sha256: digest,
+        },
+    );
+    Ok(())
 }
 
 fn ensure_initialized(
@@ -597,6 +664,16 @@ fn ensure_initialized(
 fn shutdown_client(client: &mut LspClient, project_root: &Path) -> Result<(), LspFailure> {
     if !client.initialized || client.lease.is_terminal() {
         return Ok(());
+    }
+    for uri in std::mem::take(&mut client.open_documents).into_keys() {
+        let _ = write_message(
+            client,
+            &json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didClose",
+                "params": {"textDocument": {"uri": uri}}
+            }),
+        );
     }
     let id = client.next_request_id();
     let _ = write_message(
