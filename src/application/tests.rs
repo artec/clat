@@ -105,9 +105,8 @@ fn run_with_attachments(
     let (completion, receiver) = mpsc::channel();
     let handle = application
         .start_run(ApplicationRunRequest {
-            attachments,
+            message: crate::message::PendingMessage::from_front_end(prompt, None, attachments),
             asker: None,
-            prompt: prompt.into(),
             approver: allow_all_approver(),
             events: Box::new(SharedEvents(Arc::new(Mutex::new(Vec::new())))),
             completion,
@@ -150,9 +149,8 @@ fn sink_panic_does_not_swallow_the_terminal_closure() {
     let (completion, receiver) = mpsc::channel();
     let handle = application
         .start_run(ApplicationRunRequest {
-            attachments: Vec::new(),
+            message: crate::message::PendingMessage::text("say something"),
             asker: None,
-            prompt: "say something".into(),
             approver: allow_all_approver(),
             events: Box::new(PanicOnDeltaSink),
             completion,
@@ -548,6 +546,30 @@ fn load_events(storage_root: &std::path::Path) -> Vec<crate::session::event::Ses
     backend.load(&key, false).unwrap().events
 }
 
+/// INV-MM2-6 测试辅助：按 attachmentId 在 storage root 的会话附件域
+/// 里定位内容寻址 blob（store 布局
+/// `sessions/<project>/<session>/attachments/blobs/<id>`，递归查找）。
+fn find_blob(storage_root: &std::path::Path, attachment_id: &str) -> std::path::PathBuf {
+    fn walk(dir: &std::path::Path, attachment_id: &str) -> Option<std::path::PathBuf> {
+        for entry in std::fs::read_dir(dir).ok()? {
+            let path = entry.ok()?.path();
+            if path.is_dir() {
+                if path.file_name()?.to_str()? == "blobs" {
+                    let candidate = path.join(attachment_id);
+                    if candidate.is_file() {
+                        return Some(candidate);
+                    }
+                } else if let Some(found) = walk(&path, attachment_id) {
+                    return Some(found);
+                }
+            }
+        }
+        None
+    }
+    walk(&storage_root.join("sessions"), attachment_id)
+        .unwrap_or_else(|| panic!("blob {attachment_id} not found under the storage root"))
+}
+
 /// Load the durable events of one specific session by id.
 fn load_events_for(
     storage_root: &std::path::Path,
@@ -741,7 +763,7 @@ fn canon_live(events: &[crate::RunEvent]) -> Vec<Canon> {
     let mut last_call_id = String::new();
     for event in events {
         match event {
-            RunEvent::RunStarted { prompt, .. } => out.push(Canon::User(prompt.clone())),
+            RunEvent::RunStarted { message, .. } => out.push(Canon::User(message.plain_text())),
             RunEvent::ModelRequested {
                 provider: p,
                 model: m,
@@ -809,7 +831,9 @@ fn canon_live(events: &[crate::RunEvent]) -> Vec<Canon> {
                 });
             }
             RunEvent::ToolStarted { .. } => {}
-            RunEvent::SteeringApplied { text } => out.push(Canon::User(text.clone())),
+            RunEvent::SteeringApplied { message, .. } => {
+                out.push(Canon::User(message.plain_text()))
+            }
             RunEvent::ToolFinished { result } => out.push(Canon::ToolDone {
                 call_id: result.call_id.clone(),
                 tool: result.tool_name.clone(),
@@ -999,9 +1023,8 @@ fn assert_replay_parity_with_approver(
     let (completion, receiver) = mpsc::channel();
     let handle = application
         .start_run(ApplicationRunRequest {
-            attachments: Vec::new(),
+            message: crate::message::PendingMessage::text(prompt),
             asker: None,
-            prompt: prompt.into(),
             approver,
             events: Box::new(SharedEvents(std::sync::Arc::clone(&live))),
             completion,
@@ -1085,9 +1108,8 @@ fn run_with_approver(
     let (completion, receiver) = mpsc::channel();
     let handle = application
         .start_run(ApplicationRunRequest {
-            attachments: Vec::new(),
+            message: crate::message::PendingMessage::text(prompt),
             asker: None,
-            prompt: prompt.into(),
             approver,
             events: Box::new(SharedEvents(Arc::new(Mutex::new(Vec::new())))),
             completion,
@@ -1425,9 +1447,8 @@ fn mode_switches_replay_identically() {
         let (completion, receiver) = mpsc::channel();
         let handle = application
             .start_run(ApplicationRunRequest {
-                attachments: Vec::new(),
+                message: crate::message::PendingMessage::text(prompt),
                 asker: None,
-                prompt: prompt.into(),
                 approver,
                 events: Box::new(SharedEvents(live)),
                 completion,
@@ -1500,9 +1521,8 @@ fn mode_driven_decisions_replay_identically() {
     let (completion, receiver) = mpsc::channel();
     let handle = application
         .start_run(ApplicationRunRequest {
-            attachments: Vec::new(),
+            message: crate::message::PendingMessage::text("please write the file"),
             asker: None,
-            prompt: "please write the file".into(),
             approver: allow_all_approver(),
             events: Box::new(SharedEvents(std::sync::Arc::clone(&live))),
             completion,
@@ -1664,30 +1684,35 @@ fn image_attachments_journal_references_and_survive_resume() {
     let mut application = mount(&project, &storage_root, TestBehavior::Success);
     configure_test_model(&application);
 
-    // 原件：一个带合法 PNG 头的小文件（journal 不读字节，头只为
-    // 让 token 估算走真实尺寸路径）。
-    let source = std::env::temp_dir().join(format!(
-        "clat-source-{}.png",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    let mut bytes = vec![
-        0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n', 0, 0, 0, 13, b'I', b'H', b'D', b'R',
-    ];
-    bytes.extend_from_slice(&1024u32.to_be_bytes());
-    bytes.extend_from_slice(&768u32.to_be_bytes());
-    bytes.extend_from_slice(&[8, 6, 0, 0, 0]);
-    bytes.extend_from_slice(b"trailing-pixels");
-    std::fs::write(&source, &bytes).unwrap();
+    // 原件：真实可解码的 1024×768 PNG（MM-1 起接纳做完整解码，
+    // 头件不再能过闸）。
+    let source = {
+        let canvas = image::RgbImage::from_pixel(1024, 768, image::Rgb([255, 0, 0]));
+        let mut encoded = Vec::new();
+        image::DynamicImage::ImageRgb8(canvas)
+            .write_to(
+                &mut std::io::Cursor::new(&mut encoded),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+        let source = std::env::temp_dir().join(format!(
+            "clat-source-{}.png",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&source, &encoded).unwrap();
+        source
+    };
 
     let done = run_with_attachments(&mut application, "look at this", vec![source.clone()])
         .expect("run completes");
     assert_eq!(done.output, "done");
 
-    // journal 形状：文本 part + image part；引用指向副本且副本
-    // 内容与原件一致。
+    // journal 形状：文本 part + image part。MM-1 S2/S3 后引用指向
+    // 内容寻址 blob（attachments/blobs/<digest>），存放规范化
+    // 字节（同像素、合法 PNG、非逐字节恒等——原 assert 作废）。
     let events = load_events(&storage_root);
     let user_event = events
         .iter()
@@ -1699,19 +1724,33 @@ fn image_attachments_journal_references_and_survive_resume() {
     assert_eq!(content[0]["text"], json!("look at this"));
     assert_eq!(content[1]["type"], json!("image"));
     assert_eq!(content[1]["mediaType"], json!("image/png"));
-    let referenced = content[1]["path"].as_str().unwrap();
+    // INV-MM2-6：journal 图块 ref-only——不持久化绝对 path；身份是
+    // attachmentId（规范化字节 sha256），blob 按 store 布局解析。
     assert!(
-        referenced.contains("attachments"),
-        "the reference points into the session attachments dir: {referenced}"
+        content[1].get("path").is_none(),
+        "the durable image block carries no absolute path"
     );
+    let attachment_id = content[1]["attachmentId"].as_str().unwrap();
+    assert_eq!(attachment_id.len(), 64, "sha256 hex id");
+    let blob_path = find_blob(&storage_root, attachment_id);
+    let blob = std::fs::read(&blob_path).unwrap();
+    // 规范化不变量：blob 是可解码的合法 PNG，尺寸与源一致（≤2048 不缩）。
+    {
+        let decoded = image::ImageReader::new(std::io::Cursor::new(&blob))
+            .with_guessed_format()
+            .unwrap()
+            .decode()
+            .expect("the stored blob is a decodable image");
+        assert_eq!((decoded.width(), decoded.height()), (1024, 768));
+    }
     assert_eq!(
-        std::fs::read(referenced).unwrap(),
-        bytes,
-        "the attachment copy is byte-identical"
+        content[1]["bytes"].as_u64().unwrap(),
+        blob.len() as u64,
+        "descriptor byte count matches the normalized blob"
     );
 
     // 原件删除后 resume：重放整条日志（含 image part）无错——
-    // 会话自包含。
+    // 会话自包含（blob 独立于原件）。
     std::fs::remove_file(&source).unwrap();
     let summary = application.list_sessions().unwrap();
     let target = summary.first().expect("session").id.clone();
@@ -1721,6 +1760,584 @@ fn image_attachments_journal_references_and_survive_resume() {
         !resumed.replay.is_empty(),
         "the replay of the resumed session carries its events (incl. the image part)"
     );
+    application.close().unwrap();
+    std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
+}
+
+/// INV-MM2-3（MM-2 W2 红测）：model_state 全链路——旧配置 load 即
+/// 迁移（版本门）→ preset stamp → typed overrides 合并；
+/// apply→persist→reload 的 effective 值稳定；DeepSeek→GLM 的预设
+/// 切换不留 stale 键（stream_options 随预设整体重置消失），Set
+/// override 在切换后存活；run_token_budget 不受任何一层影响。
+/// pre-fix（无 overrides 层）Set-存活腿红。
+#[test]
+fn model_state_migrates_merges_and_survives_reload_and_switches() {
+    use crate::model::ProviderCredentials;
+
+    let (storage_root, project_root) = roots("mm2-merge");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let project = Project::new(&project_root);
+    let application = mount(&project, &storage_root, TestBehavior::Success);
+
+    // 旧 schema 配置（无 overrides 字段）：DeepSeek 预设 + 用户值。
+    let legacy = serde_json::json!({
+        "preset": "deepseek-v4-pro",
+        "protocol": "open_ai_compatible",
+        "model": "deepseek-v4-pro",
+        "endpoint": "https://api.deepseek.com",
+        "request_path": "/chat/completions",
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "extra_headers": {},
+        "extra_body": {},
+        "output_limit": 100_000,
+        "parallel_tool_calls": true,
+        "run_token_budget": 777_777,
+    });
+    let config: crate::model::ModelConfig =
+        serde_json::from_value(legacy).expect("legacy config parses");
+    let credentials = ProviderCredentials::for_protocol(config.protocol);
+    application
+        .save_model_state(&config, &credentials)
+        .expect("save legacy");
+
+    // load → 迁移 → stamp → merge。
+    let (effective, _) = application.model_state().expect("state");
+    assert_eq!(
+        effective.overrides.output_limit,
+        crate::Override::Set(100_000),
+        "user value != preset 384K migrates to Set"
+    );
+    assert_eq!(effective.output_limit, Some(100_000));
+    assert_eq!(
+        effective.overrides.max_context_tokens,
+        crate::Override::Inherit,
+        "unset window inherits (apply seeded 1M)"
+    );
+    assert_eq!(effective.max_context_tokens, Some(1_000_000));
+    assert_eq!(effective.run_token_budget, Some(777_777));
+    assert_eq!(
+        effective.extra_body["stream_options"]["include_usage"], true,
+        "DeepSeek preset carries its streaming usage switch"
+    );
+
+    // 持久化迁移产物 → reload：effective 稳定（版本门 + 同一合并）。
+    application
+        .save_model_state(&effective, &credentials)
+        .expect("save migrated");
+    let (reloaded, _) = application.model_state().expect("reload");
+    assert_eq!(reloaded.output_limit, effective.output_limit);
+    assert_eq!(reloaded.overrides, effective.overrides);
+    assert_eq!(reloaded.overrides_version, Some(1));
+
+    // A→B：换 GLM 预设（保留 Set override 与 budget）——DeepSeek 的
+    // stream_options 不残留；Set(output_limit) 存活。
+    let mut switched = reloaded.clone();
+    switched.preset = Some("glm-5.3".into());
+    application
+        .save_model_state(&switched, &credentials)
+        .expect("save switched");
+    let (on_glm, _) = application.model_state().expect("state");
+    assert!(
+        on_glm.extra_body.get("stream_options").is_none(),
+        "no stale DeepSeek keys on GLM"
+    );
+    assert_eq!(
+        on_glm.extra_body["thinking"]["clear_thinking"], false,
+        "GLM preset shape applied"
+    );
+    assert_eq!(
+        on_glm.output_limit,
+        Some(100_000),
+        "the user's Set override survives the preset switch"
+    );
+    assert_eq!(on_glm.overrides.output_limit, crate::Override::Set(100_000));
+    assert_eq!(on_glm.run_token_budget, Some(777_777));
+
+    application.close().unwrap();
+    std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
+}
+
+/// INV-MM2-2（MM-2 W1 attach 门，红测——pre-fix 无门全绿）：
+/// - fail-closed 文本模型（无 preset 的 custom 配置）+ 图片 → 整轮
+///   失败，错误可行动（点名换视觉模型 GLM 5.3 Flash / 移除图片），
+///   且**任何 journal 写入之前**失败（load_events 为空——零痕迹）；
+/// - unverified 的 doc 声明视觉（kimi-k3 预设）同样拒绝；
+/// - probe-verified 的 glm-5.3-flash 放行（run 完成且 journal 带图）。
+///
+/// 删 prepare_run 的能力门即红（前两腿变成功）。
+#[test]
+fn image_attachments_are_gated_by_verified_model_capability() {
+    use crate::model::ProviderCredentials;
+
+    let (storage_root, project_root) = roots("mm2-attach-gate");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let project = Project::new(&project_root);
+    let mut application = mount(&project, &storage_root, TestBehavior::Success);
+
+    // 可解码的真实 PNG 源。
+    let source = std::env::temp_dir().join(format!(
+        "clat-mm2-gate-{}.png",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    {
+        let canvas = image::RgbImage::from_pixel(32, 32, image::Rgb([0, 120, 240]));
+        let mut encoded = Vec::new();
+        image::DynamicImage::ImageRgb8(canvas)
+            .write_to(
+                &mut std::io::Cursor::new(&mut encoded),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+        std::fs::write(&source, &encoded).unwrap();
+    }
+
+    let save_config = |application: &mut crate::TrustedProjectApplication,
+                       config: crate::model::ModelConfig| {
+        let credentials = ProviderCredentials::for_protocol(config.protocol);
+        application
+            .save_model_state(&config, &credentials)
+            .expect("save model");
+    };
+
+    // —— 1. fail-closed 文本（custom 无能力选择 = 缺省纯文本）。——
+    // 能力门在 prepare_run 最前（start_run 同步返回 Err——任何会话
+    // 物化/spawn 之前）。
+    let session_count = |storage_root: &std::path::Path| {
+        let backend = crate::session::persistence::JsonlBackend::new(
+            storage_root.join("sessions"),
+            crate::session::persistence::JsonlCompression::Zstd,
+            false,
+        );
+        backend.list_headers().unwrap().len()
+    };
+    let attempt = |application: &mut crate::TrustedProjectApplication, prompt: &str| {
+        let (completion, _receiver) = std::sync::mpsc::channel();
+        application.start_run(crate::ApplicationRunRequest {
+            message: crate::message::PendingMessage::from_front_end(
+                prompt,
+                None,
+                vec![source.clone()],
+            ),
+            asker: None,
+            approver: allow_all_approver(),
+            events: Box::new(SharedEvents(Arc::new(Mutex::new(Vec::new())))),
+            completion,
+        })
+    };
+    save_config(
+        &mut application,
+        crate::model::ModelConfig {
+            model: "text-only".into(),
+            endpoint: "https://application-test.invalid".into(),
+            ..crate::model::ModelConfig::default()
+        },
+    );
+    let error = match attempt(&mut application, "look") {
+        Ok(_) => panic!("text-capability model rejects image attachments"),
+        Err(error) => error.to_string(),
+    };
+    assert!(
+        error.contains("does not accept image input"),
+        "actionable gate reason: {error}"
+    );
+    assert!(
+        error.contains("GLM 5.3 Flash"),
+        "the error names a vision alternative: {error}"
+    );
+    // 零痕迹：能力拒绝发生在任何会话物化/journal 写入之前——连
+    // session header 都不存在。
+    assert_eq!(
+        session_count(&storage_root),
+        0,
+        "the rejected round materializes no session at all"
+    );
+
+    // —— 2. unverified 视觉声明（kimi-k3：doc-only）同样拒绝。——
+    save_config(
+        &mut application,
+        crate::model::ModelConfig {
+            preset: Some("kimi-k3".into()),
+            ..crate::model::ModelConfig::default()
+        },
+    );
+    let error = match attempt(&mut application, "look") {
+        Ok(_) => panic!("unverified (doc-only) vision capability stays closed"),
+        Err(error) => error.to_string(),
+    };
+    assert!(error.contains("does not accept image input"));
+    assert_eq!(session_count(&storage_root), 0, "still zero sessions");
+
+    // —— 3. verified（glm-5.3-flash，MM-0 探针）放行。 ——
+    save_config(
+        &mut application,
+        crate::model::ModelConfig {
+            preset: Some("glm-5.3-flash".into()),
+            ..crate::model::ModelConfig::default()
+        },
+    );
+    let done = run_with_attachments(&mut application, "look at this", vec![source.clone()])
+        .expect("the probe-verified vision preset admits images");
+    assert_eq!(done.output, "done");
+    let events = load_events(&storage_root);
+    let user_event = events
+        .iter()
+        .find(|event| event.event_type == "user/message")
+        .expect("the admitted round journals the user message");
+    assert_eq!(
+        user_event.data["content"].as_array().unwrap()[1]["type"],
+        json!("image")
+    );
+
+    std::fs::remove_file(&source).ok();
+    application.close().unwrap();
+    std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
+}
+
+/// MM-1A 判别测试簇（不变量见 `src/message.rs` 模块文档；断言从
+/// 不变量推导，pre-fix——无 descriptor 元数据/无幂等键/无回执——
+/// 全部红）：
+/// 1. journal image block 携带耐久 descriptor 元数据（attachmentId =
+///    副本文件名主干、宽高/字节 = 导入实测、displayName = 原件名）与
+///    `clientMessageId`/`requestDigest`（提交幂等 digest：文本 + staged
+///    引用，不掺导入后重铸的 attachmentId）。
+/// 2. live `RunStarted.message.blocks` 与回放 `UserMessage.content_blocks`
+///    逐字段相等。**两条构造路径不同**（live 由 prepare_run 从导入结果
+///    构造、回放由 adapter::content_blocks 解析 journal 词汇），本测试
+///    用同一份 journal 把两份实现证等——是测试维持的等价，不是单一
+///    实现的结构性保证；改任一侧都必须在此对拍（M-05，审查
+///    2026-08-27）。
+/// 3. completion 携带 `Committed` 回执；`committed_receipt` 在
+///    **close → 重挂 → 冷恢复**之后给出同一答案（journal 投影重建，
+///    非进程内状态——INV-M1A-4）。
+/// 4. wire v1 additive：live `run_started` 行携带 content_blocks +
+///    client_message_id；纯文本 run 的行与旧字节完全一致。
+#[test]
+fn admitted_images_carry_durable_metadata_and_rebuild_receipts_after_restart() {
+    let (storage_root, project_root) = roots("mm1a-parity");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let project = Project::new(&project_root);
+    let mut application = mount(&project, &storage_root, TestBehavior::Success);
+    configure_test_model(&application);
+
+    // 原件：真实可解码的 1024×768 PNG（MM-1 起接纳做完整解码）。
+    let source = std::env::temp_dir().join(format!(
+        "clat-mm1a-{}.png",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let bytes = {
+        let canvas = image::RgbImage::from_pixel(1024, 768, image::Rgb([255, 0, 0]));
+        let mut encoded = Vec::new();
+        image::DynamicImage::ImageRgb8(canvas)
+            .write_to(
+                &mut std::io::Cursor::new(&mut encoded),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+        std::fs::write(&source, &encoded).unwrap();
+        encoded
+    };
+
+    let client_message_id = "mm1a-client-1".to_owned();
+    let submission = crate::message::PendingMessage::from_front_end(
+        "look at this",
+        Some(client_message_id.clone()),
+        vec![source.clone()],
+    );
+    let expected_digest = submission.request_digest();
+
+    let live = Arc::new(Mutex::new(Vec::new()));
+    let (completion, receiver) = mpsc::channel();
+    let handle = application
+        .start_run(ApplicationRunRequest {
+            message: submission,
+            asker: None,
+            approver: allow_all_approver(),
+            events: Box::new(SharedEvents(Arc::clone(&live))),
+            completion,
+        })
+        .unwrap();
+    handle.join().unwrap();
+    let done = receiver.recv().unwrap().expect("run completes");
+
+    // —— 1. journal 事实 ——
+    let events = load_events(&storage_root);
+    let user_event = events
+        .iter()
+        .find(|event| event.event_type == "user/message")
+        .expect("user message");
+    assert_eq!(
+        user_event.data["clientMessageId"].as_str(),
+        Some(client_message_id.as_str()),
+        "the client id rides the durable user/message event"
+    );
+    assert_eq!(
+        user_event.data["requestDigest"].as_str(),
+        Some(expected_digest.as_str()),
+        "the journal digest is the submission (pre-admission) digest"
+    );
+    let image_block = &user_event.data["content"].as_array().unwrap()[1];
+    assert_eq!(image_block["type"], json!("image"));
+    // INV-MM2-6：ref-only——journal 不携带 path，blob 按 id 经 store
+    // 布局解析，id 与 blob 文件名主干一致（内容寻址）。
+    assert!(image_block.get("path").is_none());
+    let attachment_id = image_block["attachmentId"].as_str().unwrap().to_owned();
+    let blob_path = find_blob(&storage_root, &attachment_id);
+    assert_eq!(
+        attachment_id,
+        blob_path.file_stem().unwrap().to_str().unwrap(),
+        "the durable attachmentId is the blob's content-address id (blobs/<sha256> stem)"
+    );
+    assert_eq!(image_block["width"], json!(1024));
+    assert_eq!(image_block["height"], json!(768));
+    assert_eq!(
+        image_block["bytes"],
+        json!(bytes.len() as u64),
+        "byte count is the normalized blob's length (the fixture re-encodes to identical bytes — byte-identity with the source is not an invariant)"
+    );
+    assert_eq!(
+        image_block["displayName"].as_str(),
+        source.file_name().unwrap().to_str(),
+        "displayName is the original file name (no path semantics)"
+    );
+    let journal_message_id = user_event.data["id"].as_str().unwrap().to_owned();
+
+    // —— 2. live / replay 逐字段相同 ——
+    let live_blocks = {
+        let guard = live.lock().unwrap();
+        guard
+            .iter()
+            .find_map(|event| match event {
+                RunEvent::RunStarted { message, .. } => Some(message.blocks.clone()),
+                _ => None,
+            })
+            .expect("RunStarted was emitted")
+    };
+    assert_eq!(
+        live_blocks.len(),
+        2,
+        "admitted content = text block + image block"
+    );
+    let replay = {
+        let mut adapter = crate::session::replay::ReplayAdapter::new();
+        let mut out = Vec::new();
+        for event in &events {
+            adapter.push(event, &mut out);
+        }
+        out
+    };
+    let replay_blocks = replay
+        .iter()
+        .find_map(|event| match event {
+            crate::session::replay::ReplayEvent::UserMessage {
+                content_blocks,
+                client_message_id: replayed_id,
+                ..
+            } => {
+                assert_eq!(
+                    replayed_id.as_deref(),
+                    Some(client_message_id.as_str()),
+                    "the replayed user message carries the same client id"
+                );
+                Some(content_blocks.clone())
+            }
+            _ => None,
+        })
+        .expect("replayed UserMessage");
+    assert_eq!(
+        live_blocks, replay_blocks,
+        "live RunStarted blocks and replayed blocks are field-for-field identical"
+    );
+    assert!(matches!(
+        &live_blocks[1],
+        crate::message::ContentBlock::Image { attachment }
+            if attachment.attachment_id == attachment_id
+                && attachment.width == 1024
+                && attachment.height == 768
+                && attachment.bytes == bytes.len() as u64
+    ));
+
+    // —— 3. 回执：完成携带 Committed；重启后同答案 ——
+    let receipt = done
+        .receipt
+        .as_ref()
+        .expect("a client-keyed run carries its committed receipt");
+    assert_eq!(receipt.state, crate::message::AdmissionState::Committed);
+    assert_eq!(
+        receipt.committed_message_id.as_deref(),
+        Some(journal_message_id.as_str())
+    );
+    assert_eq!(receipt.attachment_ids, vec![attachment_id.clone()]);
+    let before_restart = application
+        .committed_receipt(&client_message_id)
+        .expect("receipt is queryable before restart");
+    assert_eq!(&before_restart, receipt.as_ref());
+    assert!(
+        application.committed_receipt("never-submitted").is_none(),
+        "an unknown key has no receipt"
+    );
+
+    application.close().unwrap();
+    // 冷重启：同一 storage root 全新进程语义（重挂 + 冷恢复整条日志）。
+    let mut reopened = mount(&project, &storage_root, TestBehavior::Success);
+    configure_test_model(&reopened);
+    let summary = reopened.list_sessions().unwrap();
+    let target = summary.first().expect("session survives").id.clone();
+    let snapshot = reopened.switch_session(target).expect("resume");
+    assert!(!snapshot.replay.is_empty());
+    let after_restart = reopened
+        .committed_receipt(&client_message_id)
+        .expect("the journal projection rebuilds the committed receipt");
+    assert_eq!(
+        after_restart, before_restart,
+        "the receipt answer is identical after a cold restart (journal is the authority)"
+    );
+    reopened.close().unwrap();
+    std::fs::remove_file(&source).ok();
+    std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
+}
+
+/// MM-1A：commit point 之后的 run 失败仍携带 `Committed` 回执——
+/// run 失败 ≠ 消息未送达，前端不得重新入箱（MM-I11）。同时锁定纯文本
+/// wire 的字节稳定（INV-M1A-6：无 content_blocks 字段）。
+#[test]
+fn failed_run_after_commit_still_carries_the_committed_receipt() {
+    let (storage_root, project_root) = roots("mm1a-failure-receipt");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let project = Project::new(&project_root);
+    let mut application = mount(&project, &storage_root, TestBehavior::Failure);
+    configure_test_model(&application);
+
+    let client_message_id = "mm1a-fail-1".to_owned();
+    let (completion, receiver) = mpsc::channel();
+    let handle = application
+        .start_run(ApplicationRunRequest {
+            message: crate::message::PendingMessage::from_front_end(
+                "try and fail",
+                Some(client_message_id.clone()),
+                Vec::new(),
+            ),
+            asker: None,
+            approver: allow_all_approver(),
+            events: Box::new(SharedEvents(Arc::new(Mutex::new(Vec::new())))),
+            completion,
+        })
+        .unwrap();
+    handle.join().unwrap();
+    let failure = receiver.recv().unwrap().expect_err("the run fails");
+
+    let receipt = failure
+        .receipt
+        .expect("a post-commit failure carries the receipt");
+    assert_eq!(receipt.state, crate::message::AdmissionState::Committed);
+    assert!(
+        !receipt.retryable,
+        "the message is durable; resending would duplicate it"
+    );
+    assert_eq!(
+        &application
+            .committed_receipt(&client_message_id)
+            .expect("queryable"),
+        receipt.as_ref(),
+        "the completion receipt and the journal projection agree"
+    );
+    application.close().unwrap();
+    std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
+}
+
+/// MM-1A fail-closed：图片/附件 steering 被 `Refused` 拒绝（不冒充
+/// NotRunning）；纯文本 steering 携带幂等键落 journal，回执可查。
+/// pre-fix：无 Refused 分支（图片消息被静默当文本/或直接入队）。
+#[test]
+fn image_steering_is_refused_and_text_steering_journals_idempotency_metadata() {
+    let (storage_root, project_root) = roots("mm1a-steer");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let project = Project::new(&project_root);
+    let mut application = mount(&project, &storage_root, TestBehavior::Success);
+    configure_test_model(&application);
+
+    // 附件 steering：Refused（此时甚至没有活动 run——拒绝先于队列判定，
+    // 类型语义优先）。
+    let staged = crate::message::PendingMessage::from_front_end(
+        "look",
+        None,
+        vec![std::path::PathBuf::from("/nonexistent/probe.png")],
+    );
+    assert!(matches!(
+        application.steer(staged),
+        SteerOutcome::Refused { .. }
+    ));
+    // 图片内容块（无 staged）同样拒绝。
+    let with_image_block = crate::message::PendingMessage {
+        client_message_id: None,
+        content: crate::message::MessageContent::from_blocks(vec![
+            crate::message::ContentBlock::Image {
+                attachment: crate::message::AttachmentDescriptor {
+                    attachment_id: "img".into(),
+                    media_type: "image/png".into(),
+                    width: 1,
+                    height: 1,
+                    bytes: 1,
+                    display_name: None,
+                    original_width: None,
+                    original_height: None,
+                },
+            },
+        ]),
+        staged_attachments: Vec::new(),
+    };
+    assert!(matches!(
+        application.steer(with_image_block),
+        SteerOutcome::Refused { .. }
+    ));
+
+    // 纯文本 steering：幂等键随 mid-turn user/message 落盘。
+    let handle = {
+        let (completion, _receiver) = mpsc::channel();
+        application
+            .start_run(ApplicationRunRequest {
+                message: crate::message::PendingMessage::text("start work"),
+                asker: None,
+                approver: allow_all_approver(),
+                events: Box::new(SharedEvents(Arc::new(Mutex::new(Vec::new())))),
+                completion,
+            })
+            .unwrap()
+    };
+    let steered = crate::message::PendingMessage::from_front_end(
+        "also run the tests",
+        Some("mm1a-steer-1".into()),
+        Vec::new(),
+    );
+    let digest = steered.request_digest();
+    assert_eq!(application.steer(steered), SteerOutcome::Queued);
+    handle.join().unwrap();
+
+    let events = load_events(&storage_root);
+    let steered_event = events
+        .iter()
+        .find(|event| {
+            event.event_type == "user/message"
+                && event.data["clientMessageId"].as_str() == Some("mm1a-steer-1")
+        })
+        .expect("the steering message is journaled with its client id");
+    assert_eq!(
+        steered_event.data["requestDigest"].as_str(),
+        Some(digest.as_str()),
+        "the steered message's digest covers its text payload"
+    );
+    assert!(matches!(
+        application
+            .committed_receipt("mm1a-steer-1")
+            .map(|receipt| receipt.state),
+        Some(crate::message::AdmissionState::Committed)
+    ));
     application.close().unwrap();
     std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
 }
@@ -1736,9 +2353,12 @@ fn invalid_attachments_fail_before_any_journal_write() {
     configure_test_model(&application);
 
     let result = application.start_run(ApplicationRunRequest {
-        attachments: vec![std::path::PathBuf::from("/nonexistent/probe.png")],
+        message: crate::message::PendingMessage::from_front_end(
+            "look",
+            None,
+            vec![std::path::PathBuf::from("/nonexistent/probe.png")],
+        ),
         asker: None,
-        prompt: "look".into(),
         approver: allow_all_approver(),
         events: Box::new(SharedEvents(Arc::new(Mutex::new(Vec::new())))),
         completion: mpsc::channel().0,
@@ -1750,6 +2370,66 @@ fn invalid_attachments_fail_before_any_journal_write() {
         "no journal trace of the refused run"
     );
     application.close().unwrap();
+    std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
+}
+
+/// MM-1 S1（INV-MM1-1/2，应用级红测——pre-fix 的 import 只查扩展名，
+/// 伪扩展/超像素文件通过并复制进会话目录，本测试红）：magic 不符与
+/// 超像素头在任何复制之前整体拒绝，零 journal 痕迹、零附件目录残留。
+#[test]
+fn forged_and_superpixel_attachments_fail_before_any_copy() {
+    let (storage_root, project_root) = roots("mm1-s1-validate");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let project = Project::new(&project_root);
+    let mut application = mount(&project, &storage_root, TestBehavior::Success);
+    configure_test_model(&application);
+
+    // 伪扩展：JPEG SOI 挂 .png 后缀。
+    let forged = std::env::temp_dir().join(format!(
+        "clat-mm1-forged-{}.png",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::write(&forged, [0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10]).unwrap();
+    // 超像素：合法 PNG 头声明 5000×5000（25M px > 16M 上限）。
+    let superpixel = std::env::temp_dir().join(format!(
+        "clat-mm1-huge-{}.png",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let mut huge = vec![
+        0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n', 0, 0, 0, 13, b'I', b'H', b'D', b'R',
+    ];
+    huge.extend_from_slice(&5000u32.to_be_bytes());
+    huge.extend_from_slice(&5000u32.to_be_bytes());
+    huge.extend_from_slice(&[8, 6, 0, 0, 0]);
+    std::fs::write(&superpixel, &huge).unwrap();
+
+    for source in [&forged, &superpixel] {
+        let result = application.start_run(ApplicationRunRequest {
+            message: crate::message::PendingMessage::from_front_end(
+                "look",
+                None,
+                vec![source.clone()],
+            ),
+            asker: None,
+            approver: allow_all_approver(),
+            events: Box::new(SharedEvents(Arc::new(Mutex::new(Vec::new())))),
+            completion: mpsc::channel().0,
+        });
+        assert!(result.is_err(), "{} must be refused", source.display());
+    }
+    assert!(
+        application.list_sessions().unwrap().is_empty(),
+        "no journal trace of the refused runs"
+    );
+    application.close().unwrap();
+    std::fs::remove_file(&forged).ok();
+    std::fs::remove_file(&superpixel).ok();
     std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
 }
 
@@ -1773,9 +2453,8 @@ fn steered_run_replays_identically() {
     let (completion, receiver) = mpsc::channel();
     let handle = application
         .start_run(ApplicationRunRequest {
-            attachments: Vec::new(),
+            message: crate::message::PendingMessage::text("start work"),
             asker: None,
-            prompt: "start work".into(),
             approver: allow_all_approver(),
             events: Box::new(SharedEvents(Arc::clone(&live))),
             completion,
@@ -1784,7 +2463,7 @@ fn steered_run_replays_identically() {
 
     gate.wait_entered();
     assert_eq!(
-        application.steer("also run the tests"),
+        application.steer(crate::message::PendingMessage::text("also run the tests")),
         SteerOutcome::Queued
     );
     gate.release();
@@ -1875,9 +2554,8 @@ fn steer_at_the_terminal_boundary_never_queues_an_orphan_message() {
     let (completion, receiver) = mpsc::channel();
     let handle = application
         .start_run(ApplicationRunRequest {
-            attachments: Vec::new(),
+            message: crate::message::PendingMessage::text("quick question"),
             asker: None,
-            prompt: "quick question".into(),
             approver: allow_all_approver(),
             events: Box::new(TerminalGateSink {
                 events: Arc::clone(&shared),
@@ -1900,7 +2578,7 @@ fn steer_at_the_terminal_boundary_never_queues_an_orphan_message() {
         std::thread::sleep(std::time::Duration::from_millis(2));
     }
     assert_eq!(
-        application.steer("important addendum"),
+        application.steer(crate::message::PendingMessage::text("important addendum")),
         SteerOutcome::NotRunning,
         "a run past its terminal decision must not accept steering"
     );
@@ -1930,9 +2608,8 @@ fn steering_recall_is_lifo_silent_and_never_cancels() {
     let (completion, receiver) = mpsc::channel();
     let handle = application
         .start_run(ApplicationRunRequest {
-            attachments: Vec::new(),
+            message: crate::message::PendingMessage::text("start work"),
             asker: None,
-            prompt: "start work".into(),
             approver: allow_all_approver(),
             events: Box::new(SharedEvents(Arc::new(Mutex::new(Vec::new())))),
             completion,
@@ -1942,12 +2619,18 @@ fn steering_recall_is_lifo_silent_and_never_cancels() {
     gate.wait_entered();
     // 空队列召回 → None（前端 ESC 此时回落到取消语义）。
     assert_eq!(application.recall_pending_steering(), None);
-    assert_eq!(application.steer("kept message"), SteerOutcome::Queued);
-    assert_eq!(application.steer("recalled message"), SteerOutcome::Queued);
+    assert_eq!(
+        application.steer(crate::message::PendingMessage::text("kept message")),
+        SteerOutcome::Queued
+    );
+    assert_eq!(
+        application.steer(crate::message::PendingMessage::text("recalled message")),
+        SteerOutcome::Queued
+    );
     // LIFO：召回最后一条。
     assert_eq!(
         application.recall_pending_steering(),
-        Some("recalled message".to_owned())
+        Some(crate::message::PendingMessage::text("recalled message"))
     );
     // 召回不取消 run：放行后 run 继续，claim 的是剩余那条。
     gate.release();
@@ -2001,9 +2684,8 @@ fn steering_during_a_cancelled_run_leaves_no_durable_trace() {
     let (completion, receiver) = mpsc::channel();
     let handle = application
         .start_run(ApplicationRunRequest {
-            attachments: Vec::new(),
+            message: crate::message::PendingMessage::text("start work"),
             asker: None,
-            prompt: "start work".into(),
             approver: allow_all_approver(),
             events: Box::new(SharedEvents(Arc::clone(&live))),
             completion,
@@ -2011,7 +2693,10 @@ fn steering_during_a_cancelled_run_leaves_no_durable_trace() {
         .unwrap();
 
     gate.wait_entered();
-    assert_eq!(application.steer("too late"), SteerOutcome::Queued);
+    assert_eq!(
+        application.steer(crate::message::PendingMessage::text("too late")),
+        SteerOutcome::Queued
+    );
     application.cancel_active_run();
     gate.release();
     handle.join().unwrap();
@@ -2041,7 +2726,10 @@ fn steer_without_an_active_run_reports_not_running() {
     let application = mount(&project, &storage_root, TestBehavior::Success);
     configure_test_model(&application);
 
-    assert_eq!(application.steer("anyone there?"), SteerOutcome::NotRunning);
+    assert_eq!(
+        application.steer(crate::message::PendingMessage::text("anyone there?")),
+        SteerOutcome::NotRunning
+    );
     application.close().unwrap();
     std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
 }
@@ -2069,8 +2757,7 @@ fn ask_user_tool_round_trips_through_the_journal() {
     let (completion, receiver) = mpsc::channel();
     let handle = application
         .start_run(ApplicationRunRequest {
-            attachments: Vec::new(),
-            prompt: "pick a channel".into(),
+            message: crate::message::PendingMessage::text("pick a channel"),
             approver: allow_all_approver(),
             asker: Some(Arc::clone(&asker) as Arc<dyn crate::interaction::UserAsker>),
             events: Box::new(SharedEvents(Arc::clone(&live))),
@@ -2148,8 +2835,7 @@ fn ask_user_without_a_frontend_degrades_to_an_error_result() {
     let (completion, receiver) = mpsc::channel();
     let handle = application
         .start_run(ApplicationRunRequest {
-            attachments: Vec::new(),
-            prompt: "pick a channel".into(),
+            message: crate::message::PendingMessage::text("pick a channel"),
             approver: allow_all_approver(),
             asker: None,
             events: Box::new(SharedEvents(Arc::new(Mutex::new(Vec::new())))),
@@ -2212,9 +2898,8 @@ fn long_tool_loops_run_uninterrupted_without_a_turn_budget() {
     let (completion, receiver) = mpsc::channel();
     let handle = application
         .start_run(ApplicationRunRequest {
-            attachments: Vec::new(),
+            message: crate::message::PendingMessage::text("work far past the old 32-turn cap"),
             asker: None,
-            prompt: "work far past the old 32-turn cap".into(),
             approver: allow_all_approver(),
             events: Box::new(SharedEvents(Arc::clone(&live))),
             completion,
@@ -2893,9 +3578,8 @@ fn cancelled_run_closes_the_turn_as_aborted_by_user() {
     let (completion, receiver) = mpsc::channel();
     let handle = application
         .start_run(ApplicationRunRequest {
-            attachments: Vec::new(),
+            message: crate::message::PendingMessage::text("cancel me"),
             asker: None,
-            prompt: "cancel me".into(),
             approver: allow_all_approver(),
             events: Box::new(SharedEvents(Arc::new(Mutex::new(Vec::new())))),
             completion,
@@ -3092,9 +3776,8 @@ fn failed_run_spawn_does_not_mark_the_request_header_emitted() {
     application.fail_next_run_spawn_for_test();
     let (completion, _receiver) = mpsc::channel();
     let error = match application.start_run(ApplicationRunRequest {
-        attachments: Vec::new(),
+        message: crate::message::PendingMessage::text("doomed run"),
         asker: None,
-        prompt: "doomed run".into(),
         approver: allow_all_approver(),
         events: Box::new(SharedEvents(Arc::new(Mutex::new(Vec::new())))),
         completion,
@@ -3364,8 +4047,7 @@ fn process_bind_failure_still_closes_the_turn_and_publishes_one_terminal() {
     let (completion, receiver) = mpsc::channel();
     let handle = application
         .start_run(ApplicationRunRequest {
-            prompt: "bind must fail".into(),
-            attachments: Vec::new(),
+            message: crate::message::PendingMessage::text("bind must fail"),
             approver: allow_all_approver(),
             asker: None,
             events: Box::new(SharedEvents(Arc::clone(&events))),
@@ -3567,9 +4249,8 @@ fn worker_spawn_failure_leaves_no_durable_trace() {
     let (completion, _receiver) = mpsc::channel();
     let error = application
         .start_run(ApplicationRunRequest {
-            attachments: Vec::new(),
+            message: crate::message::PendingMessage::text("never persisted"),
             asker: None,
-            prompt: "never persisted".into(),
             approver: allow_all_approver(),
             events: Box::new(SharedEvents(Arc::new(Mutex::new(Vec::new())))),
             completion,
@@ -3600,9 +4281,8 @@ fn todo_write_lands_as_an_event_and_restores_on_reopen() {
     let (completion, receiver) = mpsc::channel();
     let handle = application
         .start_run(ApplicationRunRequest {
-            attachments: Vec::new(),
+            message: crate::message::PendingMessage::text("track the work"),
             asker: None,
-            prompt: "track the work".into(),
             approver: Arc::new(CountingApprover(Arc::clone(&calls))),
             events: Box::new(SharedEvents(Arc::new(Mutex::new(Vec::new())))),
             completion,

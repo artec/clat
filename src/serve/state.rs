@@ -319,17 +319,29 @@ impl ServeShared {
         let worker = std::thread::Builder::new()
             .name("clat-serve-settle".into())
             .spawn(move || {
-                let settled = match completion.recv() {
-                    Ok(Ok(done)) if done.cancelled => {
-                        super::shapes::settled_cancelled(done.turns, &done.usage)
-                    }
-                    Ok(Ok(done)) => {
-                        super::shapes::settled_completed(&done.output, done.turns, &done.usage)
-                    }
-                    Ok(Err(failure)) => super::shapes::settled_failed(&failure.error),
-                    Err(_) => super::shapes::settled_failed("run worker exited without a result"),
+                // M-03（审查 2026-08-27）：settled 帧携带 committed 回执
+                //（完成/取消/失败三态同源——MM-I11：跨过 commit point 的
+                // 任何终态都证明消息已耐久；无客户端键的 run 不加字段）。
+                let (receipt, settled) = match completion.recv() {
+                    Ok(Ok(done)) if done.cancelled => (
+                        done.receipt.clone(),
+                        super::shapes::settled_cancelled(done.turns, &done.usage),
+                    ),
+                    Ok(Ok(done)) => (
+                        done.receipt.clone(),
+                        super::shapes::settled_completed(&done.output, done.turns, &done.usage),
+                    ),
+                    Ok(Err(failure)) => (
+                        failure.receipt.clone(),
+                        super::shapes::settled_failed(&failure.error),
+                    ),
+                    Err(_) => (
+                        None,
+                        super::shapes::settled_failed("run worker exited without a result"),
+                    ),
                 };
                 let settled = super::shapes::with_prompt_rpc_id(settled, &rpc_id);
+                let settled = super::shapes::with_admission_receipt(settled, receipt.as_deref());
                 shared.finish_run(super::shapes::ctl_data(&settled));
                 let _ = handle.join();
             })

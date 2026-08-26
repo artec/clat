@@ -36,8 +36,7 @@ fn run_request(
     let (completion, receiver) = mpsc::channel();
     let handle = application
         .start_run(ApplicationRunRequest {
-            attachments: Vec::new(),
-            prompt: prompt.into(),
+            message: crate::message::PendingMessage::text(prompt),
             approver,
             asker: None,
             events: Box::new(SharedEvents(Arc::new(Mutex::new(Vec::new())))),

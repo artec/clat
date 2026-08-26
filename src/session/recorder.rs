@@ -983,15 +983,30 @@ impl SessionRecorder {
                 .append(Vec::new());
                 self.append_quietly(event);
             }
-            RunEvent::SteeringApplied { text } => {
+            RunEvent::SteeringApplied {
+                message,
+                client_message_id,
+            } => {
                 // In-run steering claimed into the transcript (DSH: plain
                 // user/message, no catalog extension). Durability barrier:
                 // durable before the consuming model request, and between
                 // steps — close the open step so the message lands after the
                 // previous step's events and before the next step/start.
+                // MM-1A：steering admission 只放行纯文本，`plain_text`
+                // 无损；客户端幂等键与 digest 随同一条事件落盘（commit
+                // point 证据）。
                 self.close_open_step();
-                let event = NewSessionEvent::new("user/message", payloads::user_message(text))
-                    .append(Vec::new());
+                // digest 只随客户端幂等键落盘——无键的合成消息没有
+                // "同 key 不同 payload" 的判别对象。
+                let digest = client_message_id.as_ref().map(|_| message.request_digest());
+                let payload = payloads::admitted_user_message(
+                    &uuid::Uuid::new_v4().to_string(),
+                    &message.plain_text(),
+                    &[],
+                    client_message_id.as_deref(),
+                    digest.as_deref(),
+                );
+                let event = NewSessionEvent::new("user/message", payload).append(Vec::new());
                 self.append_quietly(event);
                 self.flush_quietly();
             }
@@ -1159,7 +1174,8 @@ mod tests {
             provider_replay: None,
         });
         recorder.emit(RunEvent::SteeringApplied {
-            text: "also run the tests".into(),
+            message: crate::message::MessageContent::text("also run the tests"),
+            client_message_id: None,
         });
         recorder.emit(RunEvent::ModelRequested {
             turn: 2,
@@ -1627,6 +1643,7 @@ mod tests {
         });
         recorder.emit(RunEvent::ToolFinished {
             result: ToolResult {
+                blocks: Vec::new(),
                 call_id: "call-1".into(),
                 tool_name: "read_file".into(),
                 output: json!("body"),
@@ -2103,7 +2120,8 @@ mod tests {
         let (mut recorder, journal, _seen) = recorder();
         recorder.emit(RunEvent::RunStarted {
             project: "/proj".into(),
-            prompt: "hi".into(),
+            message: crate::message::MessageContent::text("hi"),
+            client_message_id: None,
         });
         recorder.emit(RunEvent::ModelRequested {
             turn: 1,

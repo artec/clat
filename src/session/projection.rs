@@ -41,6 +41,7 @@ impl ProjectionRegistry {
                 Box::new(PlanModeUnit::default()),
                 Box::new(GoalUnit::default()),
                 Box::new(SubagentUnit::default()),
+                Box::new(ReceiptUnit::default()),
                 Box::new(TodoUnit::default()),
                 Box::new(StatsUnit::default()),
                 Box::new(CompactionUnit::default()),
@@ -410,6 +411,172 @@ impl ProjectionUnit for SubagentUnit {
         }
         self.as_of = row.seq;
         Ok(())
+    }
+}
+
+/// MM-1A 已接纳消息的幂等回执投影（INV-M1A-4）：fold 每条携带
+/// `clientMessageId` 的 `user/message` 事实，重启/重放后据此重建
+/// `Committed` 回执（"committed 重试返回原 receipt 而不重复 append
+/// journal" 的权威来源是 journal，不是进程内 HashMap）。
+///
+/// 不变量（测试据此推导）：
+/// - 只收带非空 `clientMessageId` 的事件；合成消息不入账。
+/// - 同一 clientMessageId 只保留**最早** seq 的条目（重复 append 是
+///   违反幂等键的写入事故，fold 不为后者翻案）。
+/// - 有界：最多 [`RECEIPT_CAPACITY`] 条，按 seq 淘汰最旧——幂等键是
+///   近窗口语义，投影不随会话长度无界增长。
+/// - 附件 id 列表与 journal content 的 image blocks 一致（有耐久
+///   attachmentId 用之；旧块按路径确定性派生，与 adapter 同规则）。
+struct ReceiptUnit {
+    /// 按 seq 升序；插入保序，淘汰只动头部。
+    entries: Vec<ReceiptEntry>,
+    as_of: i64,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct ReceiptEntry {
+    client_message_id: String,
+    message_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    request_digest: Option<String>,
+    #[serde(default)]
+    attachment_ids: Vec<String>,
+    seq: u64,
+}
+
+/// 回执窗口：1024 条 ≈ 远超任何合理的前端重试跨度；超窗淘汰最旧。
+const RECEIPT_CAPACITY: usize = 1024;
+
+impl Default for ReceiptUnit {
+    fn default() -> Self {
+        Self {
+            entries: Vec::new(),
+            as_of: -1,
+        }
+    }
+}
+
+impl ProjectionUnit for ReceiptUnit {
+    fn key(&self) -> &'static str {
+        "receipts"
+    }
+    fn state_version(&self) -> u64 {
+        1
+    }
+    fn as_of(&self) -> i64 {
+        self.as_of
+    }
+    fn fold(&mut self, event: &SessionEvent) -> Result<(), String> {
+        if event.event_type == "user/message" {
+            let Some(client_message_id) = event
+                .data
+                .get("clientMessageId")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+            else {
+                self.as_of = event.seq as i64;
+                return Ok(());
+            };
+            // journal seq 单调（fold 契约），同 key 只保留最早条目：
+            // 重复 append 是违反幂等键的写入事故，fold 不为后者翻案。
+            if !self
+                .entries
+                .iter()
+                .any(|entry| entry.client_message_id == client_message_id)
+            {
+                let attachment_ids = event
+                    .data
+                    .get("content")
+                    .and_then(Value::as_array)
+                    .map(|blocks| {
+                        blocks
+                            .iter()
+                            .filter(|block| {
+                                block.get("type").and_then(Value::as_str) == Some("image")
+                            })
+                            .filter_map(|block| {
+                                block
+                                    .get("attachmentId")
+                                    .and_then(Value::as_str)
+                                    .map(str::to_owned)
+                                    .or_else(|| {
+                                        block
+                                            .get("path")
+                                            .and_then(Value::as_str)
+                                            .map(crate::message::legacy_attachment_id)
+                                    })
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                let entry = ReceiptEntry {
+                    client_message_id: client_message_id.to_owned(),
+                    message_id: event
+                        .data
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                    request_digest: event
+                        .data
+                        .get("requestDigest")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                    attachment_ids,
+                    seq: event.seq,
+                };
+                self.entries.push(entry);
+                if self.entries.len() > RECEIPT_CAPACITY {
+                    self.entries.remove(0);
+                }
+            }
+        }
+        self.as_of = event.seq as i64;
+        Ok(())
+    }
+    fn snapshot(&self) -> Value {
+        json!({ "entries": self.entries })
+    }
+    fn restore(&mut self, row: &CheckpointRow) -> Result<(), String> {
+        #[derive(Deserialize)]
+        struct State {
+            entries: Vec<ReceiptEntry>,
+        }
+        let state: State =
+            serde_json::from_value(row.val.clone()).map_err(|error| error.to_string())?;
+        if state.entries.len() > RECEIPT_CAPACITY {
+            return Err("receipts checkpoint exceeds the bounded window".into());
+        }
+        self.entries = state.entries;
+        self.as_of = row.seq;
+        Ok(())
+    }
+}
+
+impl ReceiptUnit {
+    /// 按客户端幂等键查询 committed 回执（live 与 restore 后同一答案）。
+    fn receipt(&self, client_message_id: &str) -> Option<crate::message::AdmissionReceipt> {
+        self.entries
+            .iter()
+            .find(|entry| entry.client_message_id == client_message_id)
+            .map(|entry| {
+                crate::message::AdmissionReceipt::committed(
+                    entry.client_message_id.clone(),
+                    entry.message_id.clone(),
+                    entry.attachment_ids.clone(),
+                )
+            })
+    }
+
+    /// 已落盘的请求 digest（M-02：同 key 异 payload → conflict 的判别
+    /// 值）。生产消费走 `SessionService::committed_admission` 的投影
+    /// 快照读取，不在 serve 复刻投影逻辑；本助手只服务本模块单测。
+    #[cfg(test)]
+    fn request_digest(&self, client_message_id: &str) -> Option<&str> {
+        self.entries
+            .iter()
+            .find(|entry| entry.client_message_id == client_message_id)
+            .and_then(|entry| entry.request_digest.as_deref())
     }
 }
 
@@ -1714,5 +1881,98 @@ mod phase4_projection_tests {
             restored.checkpoint(identity.clone(), 2).rows["subagent"],
             full.checkpoint(identity, 3).rows["subagent"]
         );
+    }
+    /// MM-1A（ReceiptUnit 不变量，断言从不变量推导不从实现反抄）：
+    /// - 只收带非空 clientMessageId 的 user/message；合成消息不入账；
+    /// - 同 key 重复 append 保留最早 seq 的条目（不为后者翻案）；
+    /// - 附件 id 与 journal content 的 image blocks 一致（有耐久 id 用
+    ///   之，旧块按路径派生）；
+    /// - snapshot/restore 往返后查询同一答案（重启重建路径）。
+    #[test]
+    fn receipt_unit_folds_bounded_idempotent_and_restores() {
+        let mut unit = ReceiptUnit::default();
+        let user_message = |seq: u64, data: serde_json::Value| {
+            SessionEvent::new("user/message", seq, 1, data).append(Vec::new())
+        };
+        // 合成消息（无键）：不入账，as_of 推进。
+        unit.fold(&user_message(0, payloads::user_message("plain")))
+            .unwrap();
+        assert!(unit.receipt("missing").is_none());
+        // 带键消息：入账，附件 id 来自 image blocks。
+        unit.fold(&user_message(
+            1,
+            json!({
+                "id": "m-1", "role": "user",
+                "content": [
+                    { "type": "text", "text": "look" },
+                    { "type": "image", "path": "/a/att-1.png", "mediaType": "image/png",
+                      "attachmentId": "att-1" },
+                    { "type": "image", "path": "/old/x.png", "mediaType": "image/png" },
+                ],
+                "source": { "kind": "user" },
+                "clientMessageId": "client-1",
+                "requestDigest": "digest-1",
+            }),
+        ))
+        .unwrap();
+        let receipt = unit.receipt("client-1").expect("committed receipt");
+        assert_eq!(receipt.state, crate::message::AdmissionState::Committed);
+        assert_eq!(receipt.committed_message_id.as_deref(), Some("m-1"));
+        assert_eq!(
+            receipt.attachment_ids,
+            vec![
+                "att-1".to_owned(),
+                crate::message::legacy_attachment_id("/old/x.png"),
+            ]
+        );
+        assert_eq!(unit.request_digest("client-1"), Some("digest-1"));
+        // 同 key 重复 append：保留最早条目。
+        unit.fold(&user_message(
+            2,
+            json!({
+                "id": "m-2", "role": "user",
+                "content": [{ "type": "text", "text": "again" }],
+                "source": { "kind": "user" },
+                "clientMessageId": "client-1",
+            }),
+        ))
+        .unwrap();
+        assert_eq!(
+            unit.receipt("client-1").unwrap().committed_message_id,
+            Some("m-1".into())
+        );
+        // 空键字符串视为无键。
+        unit.fold(&user_message(
+            3,
+            json!({
+                "id": "m-3", "role": "user",
+                "content": [{ "type": "text", "text": "x" }],
+                "source": { "kind": "user" },
+                "clientMessageId": "",
+            }),
+        ))
+        .unwrap();
+        assert!(unit.receipt("").is_none());
+        // 非本类型事件：不产账，as_of 推进（与其它 unit 同纪律）。
+        unit.fold(&SessionEvent::new(
+            "turn/start",
+            4,
+            1,
+            payloads::turn_start(2),
+        ))
+        .unwrap();
+        // snapshot/restore 往返。
+        let snapshot = unit.snapshot();
+        let mut restored = ReceiptUnit::default();
+        restored
+            .restore(&CheckpointRow {
+                ver: unit.state_version(),
+                seq: unit.as_of(),
+                val: snapshot,
+            })
+            .unwrap();
+        assert_eq!(restored.receipt("client-1"), Some(receipt.clone()));
+        // 容量上界：超窗淘汰最旧（容量常量钉 1024——幂等是近窗口语义）。
+        assert_eq!(RECEIPT_CAPACITY, 1024);
     }
 }

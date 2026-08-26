@@ -47,6 +47,7 @@
 //! escape sequence into a TTY displaying the stream.
 
 use crate::event::{ModelOutcome, RunEvent};
+use crate::message::{AttachmentDescriptor, ClientMessageId, ContentBlock, MessageContent};
 use crate::model::{FinishReason, ModelEvent, RetryFailure, Usage};
 use crate::permission::PermissionDecision;
 use crate::tool::{ToolCall, ToolResult};
@@ -54,6 +55,167 @@ use serde_json::{Map, Value, json};
 use std::path::PathBuf;
 
 pub(crate) const WIRE_VERSION: u64 = 1;
+
+// —— MM-1A 冻结内容块：wire 拥有的显式映射（PWA1-03 纪律同 ToolCall/
+// ToolResult——DTO 的 serde 不是 wire 形状，字段名由本模块钉住并配
+// golden）。图片只出现 descriptor，永不出现字节/路径/base64。
+// 字段大小写：snake_case（与 v1 词汇一一对应）——2026-08-27 审查
+// M-01 裁定 A 追认，勘误记档于方案 §MM-1A。
+
+pub(crate) fn content_block_to_json(block: &ContentBlock) -> Value {
+    match block {
+        ContentBlock::Text { text } => object(vec![
+            ("type", Value::String("text".into())),
+            ("text", Value::String(text.clone())),
+        ]),
+        ContentBlock::Image { attachment } => object(vec![
+            ("type", Value::String("image".into())),
+            ("attachment", attachment_to_json(attachment)),
+        ]),
+    }
+}
+
+pub(crate) fn attachment_to_json(attachment: &AttachmentDescriptor) -> Value {
+    let mut fields = vec![
+        (
+            "attachment_id",
+            Value::String(attachment.attachment_id.clone()),
+        ),
+        ("media_type", Value::String(attachment.media_type.clone())),
+        ("width", json!(attachment.width)),
+        ("height", json!(attachment.height)),
+        ("bytes", json!(attachment.bytes)),
+    ];
+    if let Some(name) = &attachment.display_name {
+        fields.push(("display_name", Value::String(name.clone())));
+    }
+    if let Some(width) = attachment.original_width {
+        fields.push(("original_width", json!(width)));
+    }
+    if let Some(height) = attachment.original_height {
+        fields.push(("original_height", json!(height)));
+    }
+    object(fields)
+}
+
+pub(crate) fn content_blocks_to_json(blocks: &[ContentBlock]) -> Value {
+    Value::Array(blocks.iter().map(content_block_to_json).collect())
+}
+
+/// M-03（审查 2026-08-27）：回执的 serve 投影——字段名按 M-01 裁定 A
+///（snake_case，与 v1 词汇一一对应），状态值沿用 DTO serde 词汇
+///（committed/rolled-back/…）。
+pub(crate) fn admission_receipt_to_json(receipt: &crate::message::AdmissionReceipt) -> Value {
+    let state = match receipt.state {
+        crate::message::AdmissionState::Uploaded => "uploaded",
+        crate::message::AdmissionState::Reserved => "reserved",
+        crate::message::AdmissionState::Committed => "committed",
+        crate::message::AdmissionState::RolledBack => "rolled-back",
+    };
+    let mut fields = vec![
+        (
+            "client_message_id",
+            Value::String(receipt.client_message_id.clone()),
+        ),
+        ("state", Value::String(state.into())),
+    ];
+    if let Some(message_id) = &receipt.committed_message_id {
+        fields.push(("committed_message_id", Value::String(message_id.clone())));
+    }
+    fields.push((
+        "attachment_ids",
+        Value::Array(
+            receipt
+                .attachment_ids
+                .iter()
+                .cloned()
+                .map(Value::String)
+                .collect(),
+        ),
+    ));
+    fields.push(("retryable", Value::Bool(receipt.retryable)));
+    if let Some(phase) = &receipt.failure_phase {
+        fields.push(("failure_phase", Value::String(phase.clone())));
+    }
+    object(fields)
+}
+
+/// 消息内容的 wire 投影：文本字段 + 可选 `content_blocks`（仅当存在
+/// 图片块时才出现——纯文本消息与 v1 旧字节逐位相同，INV-M1A-6）。
+fn message_text_fields(
+    message: &MessageContent,
+    text_field: &'static str,
+) -> Vec<(&'static str, Value)> {
+    let mut fields = vec![(text_field, Value::String(message.plain_text()))];
+    if message.has_images() {
+        fields.push(("content_blocks", content_blocks_to_json(&message.blocks)));
+    }
+    fields
+}
+
+fn content_block_from_json(value: &Value, event: &'static str) -> Result<ContentBlock, WireError> {
+    let object = value.as_object().ok_or(WireError::Field {
+        event,
+        field: "content_blocks",
+    })?;
+    match tag_of(object)? {
+        "text" => Ok(ContentBlock::Text {
+            text: string_field(object, event, "text")?,
+        }),
+        "image" => {
+            let attachment = required(object, event, "attachment")?;
+            let attachment = attachment.as_object().ok_or(WireError::Field {
+                event,
+                field: "attachment",
+            })?;
+            let opt_u64 = |field: &'static str| attachment.get(field).and_then(Value::as_u64);
+            Ok(ContentBlock::Image {
+                attachment: AttachmentDescriptor {
+                    attachment_id: string_field(attachment, event, "attachment_id")?,
+                    media_type: string_field(attachment, event, "media_type")?,
+                    width: opt_u64("width").unwrap_or(0),
+                    height: opt_u64("height").unwrap_or(0),
+                    bytes: opt_u64("bytes").unwrap_or(0),
+                    display_name: opt_string_field(attachment, event, "display_name")?,
+                    original_width: opt_u64("original_width"),
+                    original_height: opt_u64("original_height"),
+                },
+            })
+        }
+        other => Err(WireError::UnknownType(other.to_owned())),
+    }
+}
+
+/// 读回可选 `content_blocks`；缺席 = 纯文本消息，从旧文本字段重建
+///（INV-M1A-6：新 consumer 优先 blocks，旧字段是文本投影）。
+fn message_from_wire(
+    object: &Map<String, Value>,
+    event: &'static str,
+    text_field: &'static str,
+) -> Result<MessageContent, WireError> {
+    let text = string_field(object, event, text_field)?;
+    match object.get("content_blocks") {
+        None | Some(Value::Null) => Ok(MessageContent::text(text)),
+        Some(Value::Array(blocks)) => {
+            let mut parsed = Vec::with_capacity(blocks.len());
+            for block in blocks {
+                parsed.push(content_block_from_json(block, event)?);
+            }
+            Ok(MessageContent::from_blocks(parsed))
+        }
+        Some(_) => Err(WireError::Field {
+            event,
+            field: "content_blocks",
+        }),
+    }
+}
+
+fn client_message_id_from_wire(
+    object: &Map<String, Value>,
+    event: &'static str,
+) -> Result<Option<ClientMessageId>, WireError> {
+    opt_string_field(object, event, "client_message_id")
+}
 
 /// Why a line could not be read back as a v1 event envelope.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -223,7 +385,11 @@ fn event_object(tag: &str, fields: Vec<(&str, Value)>) -> Value {
 
 fn run_event_to_json(event: &RunEvent) -> Value {
     match event {
-        RunEvent::RunStarted { project, prompt } => {
+        RunEvent::RunStarted {
+            project,
+            message,
+            client_message_id,
+        } => {
             let mut fields = Vec::new();
             match project.to_str() {
                 Some(path) => fields.push(("project", Value::String(path.to_owned()))),
@@ -238,7 +404,15 @@ fn run_event_to_json(event: &RunEvent) -> Value {
                     fields.push(("project_utf8_lossy", Value::Bool(true)));
                 }
             }
-            fields.push(("prompt", Value::String(prompt.clone())));
+            // MM-1A：`prompt` 保持文本投影语义；图片存在时附加
+            // content_blocks 与客户端幂等键（additive，INV-M1A-6）。
+            fields.extend(message_text_fields(message, "prompt"));
+            if let Some(client_message_id) = client_message_id {
+                fields.push((
+                    "client_message_id",
+                    Value::String(client_message_id.clone()),
+                ));
+            }
             event_object("run_started", fields)
         }
         RunEvent::ModelRequested {
@@ -301,10 +475,19 @@ fn run_event_to_json(event: &RunEvent) -> Value {
             "tool_finished",
             vec![("result", tool_result_to_json(result))],
         ),
-        RunEvent::SteeringApplied { text } => event_object(
-            "steering_applied",
-            vec![("text", Value::String(text.clone()))],
-        ),
+        RunEvent::SteeringApplied {
+            message,
+            client_message_id,
+        } => {
+            let mut fields = message_text_fields(message, "text");
+            if let Some(client_message_id) = client_message_id {
+                fields.push((
+                    "client_message_id",
+                    Value::String(client_message_id.clone()),
+                ));
+            }
+            event_object("steering_applied", fields)
+        }
         RunEvent::RunCompleted {
             output,
             turns,
@@ -597,12 +780,18 @@ pub(crate) fn tool_call_to_json(call: &ToolCall) -> Value {
 }
 
 fn tool_result_to_json(result: &ToolResult) -> Value {
-    object(vec![
+    // MM-1A additive：blocks 非空时上网（`output` 保持 JSON 摘要语义，
+    // 是冻结 `ToolResultContent.legacy_output` 的 wire 面）。
+    let mut fields = vec![
         ("call_id", Value::String(result.call_id.clone())),
         ("tool_name", Value::String(result.tool_name.clone())),
         ("output", result.output.clone()),
         ("is_error", Value::Bool(result.is_error)),
-    ])
+    ];
+    if !result.blocks.is_empty() {
+        fields.push(("content_blocks", content_blocks_to_json(&result.blocks)));
+    }
+    object(fields)
 }
 
 fn tool_call_from_json(value: &Value, event: &'static str) -> Result<ToolCall, WireError> {
@@ -622,11 +811,28 @@ fn tool_result_from_json(value: &Value, event: &'static str) -> Result<ToolResul
         event,
         field: "result",
     })?;
+    let blocks = match object.get("content_blocks") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(blocks)) => {
+            let mut parsed = Vec::with_capacity(blocks.len());
+            for block in blocks {
+                parsed.push(content_block_from_json(block, event)?);
+            }
+            parsed
+        }
+        Some(_) => {
+            return Err(WireError::Field {
+                event,
+                field: "content_blocks",
+            });
+        }
+    };
     Ok(ToolResult {
         call_id: string_field(object, event, "call_id")?,
         tool_name: string_field(object, event, "tool_name")?,
         output: required(object, event, "output")?.clone(),
         is_error: bool_field(object, event, "is_error")?,
+        blocks,
     })
 }
 
@@ -774,7 +980,8 @@ fn run_event_from_json(value: &Value) -> Result<RunEvent, WireError> {
             // 读侧按未知可选字段容忍（RunEvent 无处安放；无损往返的
             // 域是 UTF-8 路径）。
             project: PathBuf::from(string_field(object, "run_started", "project")?),
-            prompt: string_field(object, "run_started", "prompt")?,
+            message: message_from_wire(object, "run_started", "prompt")?,
+            client_message_id: client_message_id_from_wire(object, "run_started")?,
         }),
         "model_requested" => Ok(RunEvent::ModelRequested {
             turn: usize_field(object, "model_requested", "turn")?,
@@ -825,7 +1032,8 @@ fn run_event_from_json(value: &Value) -> Result<RunEvent, WireError> {
             )?,
         }),
         "steering_applied" => Ok(RunEvent::SteeringApplied {
-            text: string_field(object, "steering_applied", "text")?,
+            message: message_from_wire(object, "steering_applied", "text")?,
+            client_message_id: client_message_id_from_wire(object, "steering_applied")?,
         }),
         "run_completed" => Ok(RunEvent::RunCompleted {
             output: string_field(object, "run_completed", "output")?,
@@ -914,8 +1122,26 @@ mod tests {
         }
     }
 
+    /// MM-1A：样例 descriptor——宽高/字节/显示名齐全，进 golden 的
+    /// 唯一图片形状（INV-M1A-2：descriptor 之外无字节/路径字段）。
+    fn sample_image_block() -> crate::message::ContentBlock {
+        crate::message::ContentBlock::Image {
+            attachment: crate::message::AttachmentDescriptor {
+                attachment_id: "0f8c2a4e11112222".into(),
+                media_type: "image/png".into(),
+                width: 1024,
+                height: 768,
+                bytes: 2048,
+                display_name: Some("shot.png".into()),
+                original_width: None,
+                original_height: None,
+            },
+        }
+    }
+
     fn sample_tool_result() -> ToolResult {
         ToolResult {
+            blocks: Vec::new(),
             call_id: "call-1".into(),
             tool_name: "write_file".into(),
             output: json!({"ok": true}),
@@ -945,7 +1171,8 @@ mod tests {
         vec![
             RunEvent::RunStarted {
                 project: PathBuf::from("/tmp/repo"),
-                prompt: "do it".into(),
+                message: crate::message::MessageContent::text("do it"),
+                client_message_id: None,
             },
             RunEvent::ModelRequested {
                 turn: 1,
@@ -988,7 +1215,13 @@ mod tests {
                 result: sample_tool_result(),
             },
             RunEvent::SteeringApplied {
-                text: "steer mid-run".into(),
+                message: crate::message::MessageContent::from_blocks(vec![
+                    crate::message::ContentBlock::Text {
+                        text: "steer mid-run".into(),
+                    },
+                    sample_image_block(),
+                ]),
+                client_message_id: Some("client-7".into()),
             },
             RunEvent::RunCompleted {
                 output: "done".into(),
@@ -1143,7 +1376,8 @@ mod tests {
         // FP-10：字符串载荷里的 C0/DEL 经 serde 转义，结构性字节全为
         // 可打印 ASCII——事件行不能把终端转义序列带进显示流。
         let event = RunEvent::SteeringApplied {
-            text: "x\u{1b}]52;c;base64\u{7f}y".into(),
+            message: crate::message::MessageContent::text("x\u{1b}]52;c;base64\u{7f}y"),
+            client_message_id: None,
         };
         let line = envelope_line(&event);
         assert!(
@@ -1298,7 +1532,8 @@ mod tests {
                 r#"{"v":1,"event":{"type":"run_started","project":"/repo","prompt":"hi"}}"#,
                 WireEvent::Run(RunEvent::RunStarted {
                     project: PathBuf::from("/repo"),
-                    prompt: "hi".into(),
+                    message: crate::message::MessageContent::text("hi"),
+                    client_message_id: None,
                 }),
             ),
             (
@@ -1533,6 +1768,7 @@ mod tests {
                 r#"{"v":1,"event":{"type":"tool_finished","result":{"call_id":"c1","tool_name":"read_file","output":{"ok":true},"is_error":false}}}"#,
                 WireEvent::Run(RunEvent::ToolFinished {
                     result: ToolResult {
+                        blocks: Vec::new(),
                         call_id: "c1".into(),
                         tool_name: "read_file".into(),
                         output: json!({"ok": true}),
@@ -1543,7 +1779,8 @@ mod tests {
             (
                 r#"{"v":1,"event":{"type":"steering_applied","text":"steer"}}"#,
                 WireEvent::Run(RunEvent::SteeringApplied {
-                    text: "steer".into(),
+                    message: crate::message::MessageContent::text("steer"),
+                    client_message_id: None,
                 }),
             ),
             (
@@ -1615,7 +1852,8 @@ mod tests {
         use std::os::unix::ffi::OsStringExt;
         let event = RunEvent::RunStarted {
             project: PathBuf::from(OsString::from_vec(b"/tmp/\xffbad".to_vec())),
-            prompt: "hi".into(),
+            message: crate::message::MessageContent::text("hi"),
+            client_message_id: None,
         };
         let line = envelope_line(&event);
         assert!(
@@ -1632,6 +1870,130 @@ mod tests {
                 assert_eq!(project, PathBuf::from("/tmp/\u{fffd}bad"));
             }
             other => panic!("expected run_started, got {other:?}"),
+        }
+    }
+
+    /// MM-1A（INV-M1A-1/2/6）：含图消息的固定 JSON golden——
+    /// `content_blocks` 的字段名/顺序/省略形态、descriptor 的 wire 面
+    ///（snake_case、无字节/路径字段）、`client_message_id` 的位置都是
+    /// v1 契约本身。pre-fix（无 content_blocks 投影）本测试红。
+    #[test]
+    fn mm1a_content_blocks_golden_lines_never_drift() {
+        let image = sample_image_block();
+        let descriptor_json = r#"{"attachment_id":"0f8c2a4e11112222","media_type":"image/png","width":1024,"height":768,"bytes":2048,"display_name":"shot.png"}"#;
+        // run_started：prompt 保持文本投影，blocks 追加，幂等键在尾。
+        let run_started = RunEvent::RunStarted {
+            project: PathBuf::from("/repo"),
+            message: crate::message::MessageContent::from_blocks(vec![
+                crate::message::ContentBlock::Text {
+                    text: "look".into(),
+                },
+                image.clone(),
+            ]),
+            client_message_id: Some("client-1".into()),
+        };
+        let line = envelope_line(&run_started);
+        assert_eq!(
+            line,
+            format!(
+                "{{\"v\":1,\"event\":{{\"type\":\"run_started\",\"project\":\"/repo\",\"prompt\":\"look\",\"content_blocks\":[{{\"type\":\"text\",\"text\":\"look\"}},{{\"type\":\"image\",\"attachment\":{descriptor_json}}}],\"client_message_id\":\"client-1\"}}}}\n"
+            )
+        );
+        assert_eq!(parse_run(&line), run_started);
+        // steering_applied：同构。
+        let steering = RunEvent::SteeringApplied {
+            message: crate::message::MessageContent::from_blocks(vec![
+                crate::message::ContentBlock::Text {
+                    text: "and this".into(),
+                },
+                image.clone(),
+            ]),
+            client_message_id: Some("client-2".into()),
+        };
+        let line = envelope_line(&steering);
+        assert_eq!(
+            line,
+            format!(
+                "{{\"v\":1,\"event\":{{\"type\":\"steering_applied\",\"text\":\"and this\",\"content_blocks\":[{{\"type\":\"text\",\"text\":\"and this\"}},{{\"type\":\"image\",\"attachment\":{descriptor_json}}}],\"client_message_id\":\"client-2\"}}}}\n"
+            )
+        );
+        assert_eq!(parse_run(&line), steering);
+        // tool_finished：result 内的 content_blocks（blocks 空则省略——
+        // 既有 golden 已钉纯文本形状）。
+        let tool_finished = RunEvent::ToolFinished {
+            result: ToolResult {
+                call_id: "c1".into(),
+                tool_name: "view_image".into(),
+                output: json!({"noted": true}),
+                is_error: false,
+                blocks: vec![image],
+            },
+        };
+        let line = envelope_line(&tool_finished);
+        assert_eq!(
+            line,
+            format!(
+                "{{\"v\":1,\"event\":{{\"type\":\"tool_finished\",\"result\":{{\"call_id\":\"c1\",\"tool_name\":\"view_image\",\"output\":{{\"noted\":true}},\"is_error\":false,\"content_blocks\":[{{\"type\":\"image\",\"attachment\":{descriptor_json}}}]}}}}}}\n"
+            )
+        );
+        assert_eq!(parse_run(&line), tool_finished);
+    }
+
+    /// MM-1A（INV-M1A-6）：纯文本消息的 wire 字节与 v1 完全一致——
+    /// `content_blocks`/`client_message_id` 缺省省略；descriptor 的
+    /// 可选字段（original_*）省略形态由 golden 上面的样本锁定。
+    #[test]
+    fn mm1a_text_only_messages_omit_the_additive_fields_entirely() {
+        for event in [
+            RunEvent::RunStarted {
+                project: PathBuf::from("/repo"),
+                message: crate::message::MessageContent::text("plain"),
+                client_message_id: None,
+            },
+            RunEvent::SteeringApplied {
+                message: crate::message::MessageContent::text("plain"),
+                client_message_id: None,
+            },
+        ] {
+            let line = envelope_line(&event);
+            assert!(!line.contains("content_blocks"), "no blocks field: {line}");
+            assert!(!line.contains("client_message_id"), "no id field: {line}");
+        }
+        let tool = RunEvent::ToolFinished {
+            result: ToolResult {
+                call_id: "c1".into(),
+                tool_name: "read_file".into(),
+                output: json!("ok"),
+                is_error: false,
+                blocks: Vec::new(),
+            },
+        };
+        let line = envelope_line(&tool);
+        assert!(!line.contains("content_blocks"), "no blocks field: {line}");
+    }
+
+    /// MM-1A：读回的 fail-closed 面——坏 block 形状/未知 block type/
+    /// 坏幂等键类型按 v1 政策拒绝（新 type = 未知 type fail-closed 的
+    /// 既有纪律延伸到嵌套 blocks 词汇）。
+    #[test]
+    fn mm1a_malformed_content_blocks_fail_closed() {
+        let cases = [
+            // content_blocks 非数组。
+            r#"{"v":1,"event":{"type":"run_started","project":"/repo","prompt":"x","content_blocks":"nope"}}"#,
+            // 未知 block type。
+            r#"{"v":1,"event":{"type":"run_started","project":"/repo","prompt":"x","content_blocks":[{"type":"video","attachment":{}}]}}"#,
+            // 缺 text 字段。
+            r#"{"v":1,"event":{"type":"steering_applied","text":"x","content_blocks":[{"type":"text"}]}}"#,
+            // descriptor 缺 attachment_id。
+            r#"{"v":1,"event":{"type":"run_started","project":"/repo","prompt":"x","content_blocks":[{"type":"image","attachment":{"media_type":"image/png","width":1,"height":1,"bytes":1}}]}}"#,
+            // client_message_id 类型错误。
+            r#"{"v":1,"event":{"type":"run_started","project":"/repo","prompt":"x","client_message_id":7}}"#,
+        ];
+        for line in cases {
+            assert!(
+                parse_envelope_line(line).is_err(),
+                "malformed content must fail closed: {line}"
+            );
         }
     }
 }

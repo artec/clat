@@ -228,14 +228,39 @@ pub(crate) fn replay_event_json(event: &ReplayEvent) -> Value {
             turn,
             time_ms,
             text,
-        } => event_object(
-            "user_message",
-            vec![
+            content_blocks,
+            client_message_id,
+        } => {
+            // MM-1A additive：blocks 携带图片时才上网（纯文本消息的
+            // wire 字节与 v1 完全一致——`text` 语义不变，仍是文本
+            // blocks 拼接）。SSE 只带 descriptor，永不带字节。
+            let has_images = content_blocks
+                .iter()
+                .any(|block| matches!(block, crate::message::ContentBlock::Image { .. }));
+            let mut fields = vec![
                 ("turn", json!(turn)),
                 ("time_ms", json!(time_ms)),
                 ("text", Value::String(text.clone())),
-            ],
-        ),
+            ];
+            if has_images {
+                fields.push((
+                    "content_blocks",
+                    Value::Array(
+                        content_blocks
+                            .iter()
+                            .map(crate::wire::content_block_to_json)
+                            .collect(),
+                    ),
+                ));
+            }
+            if let Some(client_message_id) = client_message_id {
+                fields.push((
+                    "client_message_id",
+                    Value::String(client_message_id.clone()),
+                ));
+            }
+            event_object("user_message", fields)
+        }
         ReplayEvent::AssistantMessage {
             turn,
             step,
@@ -453,6 +478,24 @@ pub(crate) fn settled_failed(error: &str) -> Value {
 pub(crate) fn with_prompt_rpc_id(mut settled: Value, rpc_id: &str) -> Value {
     if let Some(map) = settled.as_object_mut() {
         map.insert("prompt_rpc_id".into(), Value::String(rpc_id.to_owned()));
+    }
+    settled
+}
+
+/// M-03（审查 2026-08-27）：settled 帧 / prompt.send 响应附带的
+/// committed 回执投影（additive：无客户端键的消息不出现该字段）。
+pub(crate) fn admission_receipt_value(receipt: &crate::message::AdmissionReceipt) -> Value {
+    crate::wire::admission_receipt_to_json(receipt)
+}
+
+/// settled 载荷附加回执（settler 的统一出口——完成/取消/失败三态
+/// 共用；`None` 不加字段，纯文本无键 run 的 settled 字节不变）。
+pub(crate) fn with_admission_receipt(
+    mut settled: Value,
+    receipt: Option<&crate::message::AdmissionReceipt>,
+) -> Value {
+    if let (Some(map), Some(receipt)) = (settled.as_object_mut(), receipt) {
+        map.insert("receipt".into(), admission_receipt_value(receipt));
     }
     settled
 }
@@ -699,12 +742,21 @@ mod tests {
                 "compaction",
                 r#"{"type":"compaction","time_ms":4000,"summary_text":"earlier turns summarized"}"#,
             ),
+            // MM-1A additive：含图 user 消息的 golden——blocks 只带
+            // descriptor（无字节/路径），幂等键随行；纯文本形态见
+            // 上面 "user" 行（零新字段）。
+            (
+                "user_image",
+                r#"{"type":"user_message","turn":5,"time_ms":5000,"text":"look","content_blocks":[{"type":"text","text":"look"},{"type":"image","attachment":{"attachment_id":"0f8c2a4e11112222","media_type":"image/png","width":1024,"height":768,"bytes":2048,"display_name":"shot.png"}}],"client_message_id":"client-9"}"#,
+            ),
         ];
         let samples: Vec<ReplayEvent> = vec![
             ReplayEvent::UserMessage {
                 turn: 1,
                 time_ms: 1000,
                 text: "hi".into(),
+                content_blocks: Vec::new(),
+                client_message_id: None,
             },
             ReplayEvent::AssistantMessage {
                 turn: 1,
@@ -789,6 +841,29 @@ mod tests {
             ReplayEvent::Compaction {
                 time_ms: 4000,
                 summary_text: "earlier turns summarized".into(),
+            },
+            ReplayEvent::UserMessage {
+                turn: 5,
+                time_ms: 5000,
+                text: "look".into(),
+                content_blocks: vec![
+                    crate::message::ContentBlock::Text {
+                        text: "look".into(),
+                    },
+                    crate::message::ContentBlock::Image {
+                        attachment: crate::message::AttachmentDescriptor {
+                            attachment_id: "0f8c2a4e11112222".into(),
+                            media_type: "image/png".into(),
+                            width: 1024,
+                            height: 768,
+                            bytes: 2048,
+                            display_name: Some("shot.png".into()),
+                            original_width: None,
+                            original_height: None,
+                        },
+                    },
+                ],
+                client_message_id: Some("client-9".into()),
             },
         ];
         for ((label, golden), sample) in replay.iter().zip(samples) {

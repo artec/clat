@@ -633,6 +633,7 @@ fn session_usage_accumulates_live_during_a_run() {
     harness.event(UiEvent::Worker(WorkerMessage::Done {
         epoch: harness.app.run_epoch,
         result: Ok(crate::ApplicationRunDone {
+            receipt: None,
             output: "done".into(),
             turns: 2,
             usage: usage(200, Some(170)),
@@ -661,6 +662,7 @@ fn stale_run_completion_does_not_finalize_the_newer_run() {
     harness.event(UiEvent::Worker(WorkerMessage::Done {
         epoch: 1,
         result: Ok(crate::ApplicationRunDone {
+            receipt: None,
             output: "run-1 output".into(),
             turns: 1,
             usage: crate::model::Usage {
@@ -1320,7 +1322,8 @@ fn steered_transcript_snapshot() {
         .push_assistant_for_test("会话是 append-only 日志：先写后做，崩溃恢复到上一个完整批次。");
     harness.app.conversation = conversation;
     harness.run_event(RunEvent::SteeringApplied {
-        text: "也讲讲投影 checkpoint".into(),
+        message: crate::message::MessageContent::text("也讲讲投影 checkpoint"),
+        client_message_id: None,
     });
     harness.run_event(RunEvent::ModelRequested {
         turn: 2,

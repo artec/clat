@@ -232,6 +232,8 @@ button:disabled { cursor: default; opacity: .45; }
 .verdict.cancelled, .verdict.failed { border-color: var(--danger); }
 .notice-line { display: flex; align-items: center; gap: 7px; margin: 6px 0 12px 44px; color: var(--text-muted); font: 11px/1.5 var(--font-mono); }
 .notice-line svg { width: 13px; color: var(--signal); }
+.context-notice { align-items: flex-start; }
+.context-notice > span { white-space: pre-wrap; }
 .trace-event { margin-block: 8px; }
 .trace-event b { color: var(--text-soft); font-weight: 550; }
 .trace-event small { margin-left: 2px; color: var(--text-muted); }
@@ -250,6 +252,7 @@ button:disabled { cursor: default; opacity: .45; }
 .context-pill { display: flex; align-items: center; gap: 7px; padding: 3px 7px; border-radius: 99px; color: var(--text-muted); font: 11px var(--font-mono); }
 .context-pill:hover { color: var(--text); background: var(--surface-raised); }
 .context-pill svg { width: 14px; color: var(--signal); }
+.plan-mode-badge { margin-left: 7px; padding: 2px 7px; border: 1px solid color-mix(in srgb, var(--warning) 66%, var(--line)); border-radius: 99px; color: var(--warning); background: color-mix(in srgb, var(--warning) 8%, transparent); font: 700 10px/1.5 var(--font-mono); letter-spacing: .08em; text-transform: uppercase; }
 .run-state { min-width: 0; flex: 1; overflow: hidden; color: var(--text-muted); font: 11px var(--font-mono); text-align: right; text-overflow: ellipsis; white-space: nowrap; }
 #prompt { display: block; width: 100%; min-height: 58px; max-height: 220px; resize: none; padding: 8px 7px; color: var(--text); background: transparent; border: 0; outline: 0; line-height: 1.55; }
 #prompt::placeholder { color: var(--text-muted); }

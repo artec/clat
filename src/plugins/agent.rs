@@ -187,7 +187,8 @@ impl AgentRuntime for DefaultAgentRuntime {
         };
         run.execute_with_items(
             request.history_items,
-            request.prompt,
+            request.message,
+            request.client_message_id,
             request.events.as_mut(),
         )
         .map_err(|error| AgentFailure { error })

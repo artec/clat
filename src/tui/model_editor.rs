@@ -1,5 +1,8 @@
 use crate::presets::{MODEL_PRESETS, ModelPreset, preset_by_id, preset_vendors, presets_by_vendor};
-use crate::{ModelConfig, ModelProtocol, ProviderCredentials, ProviderDescriptor, ThinkingLevel};
+use crate::{
+    ImageRequestPolicy, ModelCapabilities, ModelConfig, ModelProtocol, ProviderCredentials,
+    ProviderDescriptor, ThinkingLevel,
+};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -115,6 +118,12 @@ pub(crate) struct ModelEditor {
     /// 必须原样带回用户已选档位；切换预设时归位 `None`（新模型跟随
     /// 预设默认）。
     thinking_level: Option<ThinkingLevel>,
+    /// INV-MM2-1：能力快照与图片策略不设编辑行（W2 的 text/image/auto
+    /// 选择 UI 归下一切片）——跟随来源配置原样带回；选预设时随
+    /// preset-managed 默认切换（model_state 加载时 apply 再 stamp，
+    /// 这里带回只为 custom 配置不失持久值）。
+    capabilities: ModelCapabilities,
+    image_policy: ImageRequestPolicy,
     parallel_tool_calls: bool,
     credentials: ProviderCredentials,
     provider_descriptors: Vec<ProviderDescriptor>,
@@ -163,6 +172,8 @@ impl ModelEditor {
                 .map(|value| value.to_string())
                 .unwrap_or_default(),
             thinking_level: config.thinking_level,
+            capabilities: config.capabilities.clone(),
+            image_policy: config.image_policy.clone(),
             parallel_tool_calls: config.parallel_tool_calls,
             credentials,
             provider_descriptors,
@@ -962,6 +973,9 @@ impl ModelEditor {
         // 换模型不携带旧档位：归位 None，新模型跟随预设默认
         // （extra_body 已被下一行整体替换为预设官方参数）。
         self.thinking_level = None;
+        // INV-MM2-1：能力是 preset-managed——选预设即随预设矩阵切换。
+        self.capabilities = preset.owned_capabilities();
+        self.image_policy = preset.owned_image_policy();
         // 与 presets::apply 共用同一构造，避免两处字段漂移。
         self.extra_body = json_text(&preset.extra_body());
         self.error = None;
@@ -1079,6 +1093,44 @@ impl ModelEditor {
         if temperature.is_some_and(|value| !value.is_finite() || value < 0.0) {
             return Err("Temperature must be a finite non-negative number".into());
         }
+        // INV-MM2-3：编辑器写 typed overrides——缓冲值与 preset-managed
+        // 默认**精确相等** → Inherit（不粘滞：预设将来改默认值不被旧
+        // 保存屏蔽）；不等 → Set。编辑器无 Clear 入口（空缓冲 = 跟随
+        // 预设；不可见的 Clear 保存时归位 Inherit——记档，Clear 入口
+        // 归 W2b/serve DTO）。
+        let numeric_override = |managed: Option<u32>, buffer: Option<u32>| match buffer {
+            Some(value) if Some(value) != managed => crate::Override::Set(value),
+            _ => crate::Override::Inherit,
+        };
+        let temperature_override = |buffer: Option<f64>| match buffer {
+            Some(value) => crate::Override::Set(value),
+            None => crate::Override::Inherit,
+        };
+        let preset_ref = self.preset;
+        let bool_override = |managed: Option<bool>, buffer: bool| match Some(buffer) {
+            value if value != managed => crate::Override::Set(buffer),
+            _ => crate::Override::Inherit,
+        };
+        let overrides = crate::ModelOverrides {
+            output_limit: numeric_override(
+                preset_ref.map(|preset| preset.output_limit),
+                output_limit,
+            ),
+            temperature: temperature_override(temperature),
+            parallel_tool_calls: bool_override(
+                preset_ref
+                    .map(|preset| preset.parallel_managed_default())
+                    .or(Some(true)),
+                self.parallel_tool_calls,
+            ),
+            thinking_level: self
+                .thinking_level
+                .map_or(crate::Override::Inherit, crate::Override::Set),
+            max_context_tokens: numeric_override(
+                preset_ref.map(|preset| preset.context_window),
+                max_context_tokens,
+            ),
+        };
         Ok((
             ModelConfig {
                 run_token_budget,
@@ -1102,6 +1154,15 @@ impl ModelEditor {
                 // INV-M6：档案携带思考档位（枚举行的持久事实源）；预设
                 // 态维持既有语义（隐藏一等字段，TUI-L01 纪律照旧）。
                 thinking_level: self.thinking_level,
+                // INV-MM2-1：能力快照原样带回（无编辑行；预设态在
+                // model_state 加载时被 apply 再 stamp，custom 态保留
+                // 持久值）。
+                capabilities: self.capabilities.clone(),
+                image_policy: self.image_policy.clone(),
+                // INV-MM2-3：typed overrides + 迁移版本（编辑器产物
+                // 即已迁移态）。
+                overrides,
+                overrides_version: Some(1),
             },
             self.credentials.clone(),
         ))
@@ -2238,6 +2299,52 @@ mod tests {
         assert_eq!(built.thinking_level, None);
     }
 
+    /// INV-MM2-3（MM-2 W2 红测）：编辑器保存写 typed overrides——
+    /// 缓冲值与 preset-managed 默认精确相等 → Inherit（不粘滞），
+    /// 不等 → Set；thinking 档位 Some → Set。pre-fix（无 overrides
+    /// 推导）编译级红。
+    #[test]
+    fn editor_build_derives_non_sticky_overrides() {
+        // 生产路径：编辑器拿 model_state 的 effective 配置（preset 已
+        // stamp）——缓冲显示 128K/1M。
+        let mut config = ModelConfig {
+            preset: Some("glm-5.3".into()),
+            model: "glm-5.3".into(),
+            endpoint: "https://open.bigmodel.cn/api/coding/paas/v4".into(),
+            ..ModelConfig::default()
+        };
+        crate::presets::preset_by_id("glm-5.3")
+            .unwrap()
+            .apply(&mut config);
+        let credentials = ProviderCredentials::for_protocol(config.protocol);
+        let mut editor = ModelEditor::new_with_descriptors(&config, credentials, Vec::new());
+        // 编辑器从 effective 值构造：预设 stamp 后 output=128K、
+        // 窗口=1M。原样保存 → Inherit（跟随预设，不粘滞）。
+        let (built, _) = editor.build().unwrap();
+        assert_eq!(built.overrides.output_limit, crate::Override::Inherit);
+        assert_eq!(built.overrides.max_context_tokens, crate::Override::Inherit);
+        assert_eq!(
+            built.overrides.parallel_tool_calls,
+            crate::Override::Inherit
+        );
+        assert_eq!(built.overrides.thinking_level, crate::Override::Inherit);
+        assert_eq!(built.overrides_version, Some(1));
+
+        // 用户改 output 缓冲 → Set（预设切换后仍存活）。
+        editor.output_limit = "100000".into();
+        let (built, _) = editor.build().unwrap();
+        assert_eq!(built.overrides.output_limit, crate::Override::Set(100_000));
+        assert_eq!(built.overrides.max_context_tokens, crate::Override::Inherit);
+
+        // thinking 档位（Shift+Tab 隐藏字段）→ Set。
+        editor.thinking_level = Some(ThinkingLevel::Max);
+        let (built, _) = editor.build().unwrap();
+        assert_eq!(
+            built.overrides.thinking_level,
+            crate::Override::Set(ThinkingLevel::Max)
+        );
+    }
+
     /// TUI-L01：Extra Body 是思考参数的原始事实源。手工提交新 JSON
     /// 必须废除隐藏的档位字段——否则 model_state 的二次应用会在下一
     /// 次 run 静默否决用户刚保存的内容（如手工 disabled）。
@@ -2420,6 +2527,8 @@ mod tests {
         );
         assert_eq!(config.extra_body["thinking"]["clear_thinking"], false);
         editor.handle_key(key(KeyCode::Right));
+        assert_eq!(editor.preset.map(|preset| preset.id), Some("glm-5.3-flash"));
+        editor.handle_key(key(KeyCode::Right));
         assert_eq!(editor.preset.map(|preset| preset.id), Some("qwen3.8-max"));
         editor.handle_key(key(KeyCode::Right));
         assert_eq!(editor.preset.map(|preset| preset.id), Some("kimi-k3"));
@@ -2510,7 +2619,8 @@ mod tests {
         let mut picker = new_picker();
         picker.handle_key(picker_key(KeyCode::Down));
         picker.handle_key(picker_key(KeyCode::Enter));
-        assert_eq!(picker.row_count(), 1); // GLM Coding Plan 下只有一个模型
+        // MM-2：GLM Coding Plan 下有两个模型。
+        assert_eq!(picker.row_count(), 2);
 
         // 二级 Esc 返回一级。
         assert!(matches!(
@@ -2629,8 +2739,9 @@ mod tests {
             picker.handle_key(picker_key(KeyCode::Char('2'))),
             PickerAction::Continue
         ));
-        assert_eq!(picker.row_count(), 1);
-        // 数字 1 确认其唯一模型。
+        // MM-2：GLM Coding Plan 下有两个模型（5.3 与 5.3 Flash）。
+        assert_eq!(picker.row_count(), 2);
+        // 数字 1 确认第一个模型，数字 2 选 Flash。
         let PickerAction::SelectPreset(preset) = picker.handle_key(picker_key(KeyCode::Char('1')))
         else {
             panic!("expected SelectPreset");

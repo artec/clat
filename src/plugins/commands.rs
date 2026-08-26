@@ -243,9 +243,8 @@ mod tests {
         let (completion, receiver) = std::sync::mpsc::channel();
         let handle = application
             .start_run(ApplicationRunRequest {
-                attachments: Vec::new(),
+                message: crate::message::PendingMessage::text(prompt),
                 asker: None,
-                prompt: prompt.into(),
                 approver: Arc::new(
                     |_request: PermissionRequest, _cancel: &crate::model::CancelToken| {
                         PermissionDecision::Allow

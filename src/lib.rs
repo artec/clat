@@ -14,6 +14,7 @@ mod language_intelligence;
 mod mcp;
 pub mod media;
 pub mod memory;
+pub mod message;
 pub mod model;
 mod native_tools;
 mod permission;
@@ -59,12 +60,17 @@ pub use command::{CommandError, CommandInfo, CommandOutcome};
 pub use control_storage::ModelProfileSummary;
 pub use event::{EventSink, ModelOutcome, RunEvent};
 pub use interaction::{AskAnswer, AskOption, AskQuestion, UserAsker};
+pub use message::{
+    AdmissionReceipt, AdmissionState, AttachmentDescriptor, ClientMessageId, CommittedAdmission,
+    ContentBlock, DraftScope, DraftTarget, MessageContent, PendingMessage, ToolResultContent,
+};
 pub use model::{
-    CancelToken, ContentPart, FinishReason, Model, ModelConfig, ModelError, ModelErrorKind,
-    ModelEvent, ModelEventSink, ModelFactory, ModelItem, ModelOptions, ModelProtocol, ModelRequest,
-    ModelResponse, ModelVendor, ProviderCredentials, ProviderDescriptor, ProviderFieldDescriptor,
-    ProviderFieldKind, ProviderState, RetryHint, ThinkingLevel, Usage, apply_thinking_level,
-    effective_thinking_level, endpoint_vendor, next_thinking_level, thinking_levels,
+    CancelToken, ContentPart, FinishReason, ImageRequestPolicy, Modality, Model, ModelCapabilities,
+    ModelConfig, ModelError, ModelErrorKind, ModelEvent, ModelEventSink, ModelFactory, ModelItem,
+    ModelOptions, ModelOverrides, ModelProtocol, ModelRequest, ModelResponse, ModelVendor,
+    Override, ProviderCredentials, ProviderDescriptor, ProviderFieldDescriptor, ProviderFieldKind,
+    ProviderState, RetryHint, ThinkingLevel, Usage, apply_thinking_level, effective_thinking_level,
+    endpoint_vendor, next_thinking_level, thinking_levels,
 };
 pub use permission::{
     AllowAll, InteractivePermissionPolicy, ModePolicy, PermissionApprover, PermissionDecision,

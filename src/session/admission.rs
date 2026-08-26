@@ -123,6 +123,7 @@ fn validate_payload(event: &SessionEvent) -> Result<(), String> {
         }
         "user/message" => {
             require_message(&event.data)?;
+            require_admission_metadata(&event.data)?;
             if !is_surface_type(&event.event_type) || event.surface_op.is_none() {
                 return Err("surface event lacks surfaceOp".into());
             }
@@ -350,11 +351,13 @@ fn require_content_array(
         if block.get("type").and_then(|value| value.as_str()).is_none() {
             return Err("content block lacks a type".into());
         }
-        // image part 的引用不变量（2026-08-19）：path 与 mediaType 都是
-        // 非空字符串——缺引用的图片 part 会在回放侧静默变成空气。
+        // image part 的引用不变量：mediaType 非空 + **attachmentId**
+        // 非空（INV-MM2-6：journal 图块 ref-only，path 不再持久化——
+        // MM-1 桥接期的旧事件带 path，但那是既有日志，不进本校验）。
+        // 缺 id 的图片 part 会在回放侧静默变成空气。
         if block.get("type").and_then(|value| value.as_str()) == Some("image")
             && (block
-                .get("path")
+                .get("attachmentId")
                 .and_then(|value| value.as_str())
                 .is_none_or(str::is_empty)
                 || block
@@ -362,10 +365,58 @@ fn require_content_array(
                     .and_then(|value| value.as_str())
                     .is_none_or(str::is_empty))
         {
-            return Err("image content block needs non-empty path and mediaType".into());
+            return Err("image content block needs non-empty attachmentId and mediaType".into());
+        }
+        // MM-1A 元数据不变量：attachmentId/宽高/字节是可选的耐久事实，
+        // 一旦出现必须类型正确（attachmentId 非空字符串，数值非负），
+        // 否则回放侧会静默把坏元数据当 0/派生值吞掉。
+        if block.get("type").and_then(|value| value.as_str()) == Some("image")
+            && let Some(id) = block.get("attachmentId")
+            && id.as_str().is_none_or(str::is_empty)
+        {
+            return Err("image attachmentId must be a non-empty string".into());
+        }
+        if block.get("type").and_then(|value| value.as_str()) == Some("image") {
+            for field in [
+                "width",
+                "height",
+                "bytes",
+                "originalWidth",
+                "originalHeight",
+            ] {
+                if let Some(value) = block.get(field)
+                    && value.as_u64().is_none()
+                {
+                    return Err(format!("image {field} must be a non-negative integer"));
+                }
+            }
         }
     }
     Ok(content)
+}
+
+/// MM-1A 幂等元数据校验：`clientMessageId`/`requestDigest` 可选，出现
+/// 时必须是有界非空字符串（幂等键无界会让 receipts 投影被恶意/事故
+/// 载荷撑爆）。有键无 digest 合法（合成回执场景）；digest 的精确形状
+///（64 hex）不在此强校——版本演进留余地，长度仍需有界。
+fn require_admission_metadata(data: &serde_json::Value) -> Result<(), String> {
+    let Some(fields) = data.as_object() else {
+        return Ok(());
+    };
+    for (field, bound) in [("clientMessageId", 256), ("requestDigest", 128)] {
+        if let Some(value) = fields.get(field) {
+            let text = value
+                .as_str()
+                .filter(|text| !text.is_empty() && text.len() <= bound)
+                .ok_or_else(|| {
+                    format!("{field} must be a non-empty string of at most {bound} bytes")
+                })?;
+            if text.chars().any(char::is_whitespace) {
+                return Err(format!("{field} must not contain whitespace"));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// All known types are covered by the dispatch above or fall through
@@ -398,22 +449,39 @@ mod tests {
     /// M2：image content block 的引用不变量——path 与 mediaType 缺一
     ///（或为空）即拒绝；合法 image part 与既有 user/message 一起通过。
     #[test]
-    fn image_content_blocks_require_path_and_media_type() {
+    fn image_content_blocks_require_attachment_id_and_media_type() {
+        // INV-MM2-6：journal 图块 ref-only——attachmentId + mediaType
+        // 必填（path 不再持久化也不再要求）。
         let mut events = known_turn();
         let good = SessionEvent::new(
             "user/message",
             3,
             4,
-            payloads::user_message_with_images(
+            payloads::admitted_user_message(
+                "m-1",
                 "look",
-                &[("/ attachments/x.png".into(), "image/png".into())],
+                &[crate::message::JournalImage {
+                    descriptor: crate::message::AttachmentDescriptor {
+                        attachment_id: "abc123".into(),
+                        media_type: "image/png".into(),
+                        width: 4,
+                        height: 4,
+                        bytes: 64,
+                        display_name: None,
+                        original_width: None,
+                        original_height: None,
+                    },
+                    path: String::new(),
+                }],
+                None,
+                None,
             ),
         )
         .append(Vec::new());
         events.push(good);
         assert_eq!(admit_events(&events), Ok(()));
 
-        // 缺 path / 空 mediaType：拒绝。
+        // 缺 attachmentId / 空 mediaType：拒绝。
         let bad = SessionEvent::new(
             "user/message",
             3,
@@ -439,7 +507,7 @@ mod tests {
             json!({
                 "role": "user",
                 "content": [
-                    {"type": "image", "path": "/a.png", "mediaType": ""},
+                    {"type": "image", "attachmentId": "abc123", "mediaType": ""},
                 ],
                 "source": {"kind": "user"},
             }),
@@ -678,5 +746,85 @@ mod tests {
     #[test]
     fn known_catalog_is_consistent() {
         assert_eq!(crate::session::catalog::KNOWN_EVENT_TYPES.len(), 50);
+    }
+    /// MM-1A：幂等/元数据字段的 admission 校验——可选字段一旦出现
+    /// 必须类型正确且有界（坏 attachmentId/宽高/clientMessageId/
+    /// requestDigest 拒绝；字段缺席的旧式载荷照常通过）。pre-fix
+    ///（无 require_admission_metadata、无元数据校验）全部红。
+    #[test]
+    fn mm1a_admission_metadata_is_optional_but_validated() {
+        let base = |extra: serde_json::Value| {
+            let mut payload = payloads::user_message("hi");
+            if let (Some(payload), Some(extra)) = (payload.as_object_mut(), extra.as_object()) {
+                for (key, value) in extra {
+                    payload.insert(key.clone(), value.clone());
+                }
+            }
+            payload
+        };
+        let admit = |data: serde_json::Value| {
+            let mut events = known_turn();
+            events.push(SessionEvent::new("user/message", 3, 4, data).append(Vec::new()));
+            admit_events(&events)
+        };
+        // 合法：键 + digest。
+        assert_eq!(
+            admit(base(json!({
+                "clientMessageId": "client-1",
+                "requestDigest": "a".repeat(64),
+            }))),
+            Ok(())
+        );
+        // 合法：图块元数据齐全。
+        assert_eq!(
+            admit(json!({
+                "id": "m1", "role": "user",
+                "content": [
+                    { "type": "text", "text": "look" },
+                    { "type": "image", "path": "/a/x.png", "mediaType": "image/png",
+                      "attachmentId": "att-1", "width": 10, "height": 10, "bytes": 20,
+                      "displayName": "x.png" },
+                ],
+                "source": { "kind": "user" },
+            })),
+            Ok(())
+        );
+        // 拒绝：空/超长 clientMessageId、含空白、类型错误。
+        assert!(admit(base(json!({ "clientMessageId": "" }))).is_err());
+        assert!(admit(base(json!({ "clientMessageId": "x".repeat(257) }))).is_err());
+        assert!(admit(base(json!({ "clientMessageId": "a b" }))).is_err());
+        assert!(admit(base(json!({ "clientMessageId": 7 }))).is_err());
+        assert!(admit(base(json!({ "requestDigest": "x".repeat(129) }))).is_err());
+        // 拒绝：坏图块元数据。
+        let bad_id = json!({
+            "id": "m1", "role": "user",
+            "content": [
+                { "type": "text", "text": "look" },
+                { "type": "image", "path": "/a/x.png", "mediaType": "image/png",
+                  "attachmentId": "" },
+            ],
+            "source": { "kind": "user" },
+        });
+        assert!(admit(bad_id).is_err());
+        let bad_width = json!({
+            "id": "m1", "role": "user",
+            "content": [
+                { "type": "text", "text": "look" },
+                { "type": "image", "path": "/a/x.png", "mediaType": "image/png",
+                  "width": -3 },
+            ],
+            "source": { "kind": "user" },
+        });
+        assert!(admit(bad_width).is_err());
+        let bad_bytes = json!({
+            "id": "m1", "role": "user",
+            "content": [
+                { "type": "text", "text": "look" },
+                { "type": "image", "path": "/a/x.png", "mediaType": "image/png",
+                  "bytes": "lots" },
+            ],
+            "source": { "kind": "user" },
+        });
+        assert!(admit(bad_bytes).is_err());
     }
 }

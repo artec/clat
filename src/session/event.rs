@@ -271,6 +271,64 @@ pub(crate) mod payloads {
         })
     }
 
+    /// MM-1A 被接纳用户消息：在 [`Self::user_message_with_images`] 之上
+    /// 追加两类**耐久**事实——① 每个 image block 的 descriptor 元数据
+    ///（attachmentId/宽高/字节/显示名；回放重建 descriptor 不做文件
+    /// I/O，附件文件丢失也不破坏 live/replay 逐字段相同）；② 客户端
+    /// 幂等键与请求 digest（commit point 的投影证据，重启后据此重建
+    /// committed receipt）。`message_id` 由调用方铸出（prepare 需要它
+    /// 构造回执）。旧读取方按未知字段容忍；新字段全部可选。
+    pub(crate) fn admitted_user_message(
+        message_id: &str,
+        text: &str,
+        images: &[crate::message::JournalImage],
+        client_message_id: Option<&str>,
+        request_digest: Option<&str>,
+    ) -> Value {
+        let mut content = vec![json!({ "type": "text", "text": text })];
+        for image in images {
+            let descriptor = &image.descriptor;
+            // INV-MM2-6（MM-2 W6）：journal 图块 **ref-only**——不再持久
+            // 化 blob 绝对路径（拆 MM-1 偏离 1 的桥接）。attachmentId
+            //（规范化字节 sha256）是唯一身份；读取方（adapter）按
+            // `blobs/<attachmentId>` 相对 ref 投影，会话根由栅栏解析。
+            // 旧事件里的 path 块由读取方按 legacy 兼容继续接受。
+            let mut block = json!({
+                "type": "image",
+                "mediaType": descriptor.media_type,
+                "attachmentId": descriptor.attachment_id,
+                "width": descriptor.width,
+                "height": descriptor.height,
+                "bytes": descriptor.bytes,
+            });
+            if let Some(name) = &descriptor.display_name {
+                block["displayName"] = json!(name);
+            }
+            // 规范化前的源尺寸（MM-1 S3）：descriptor 的完整耐久面，
+            // live 与回放对拍必须逐字段一致。
+            if let Some(width) = descriptor.original_width {
+                block["originalWidth"] = json!(width);
+            }
+            if let Some(height) = descriptor.original_height {
+                block["originalHeight"] = json!(height);
+            }
+            content.push(block);
+        }
+        let mut payload = json!({
+            "id": message_id,
+            "role": "user",
+            "content": content,
+            "source": { "kind": "user" },
+        });
+        if let Some(client_message_id) = client_message_id {
+            payload["clientMessageId"] = json!(client_message_id);
+        }
+        if let Some(request_digest) = request_digest {
+            payload["requestDigest"] = json!(request_digest);
+        }
+        payload
+    }
+
     /// The compaction-replace carrier: same summary text as the
     /// `compaction/summary` event, as a plugin user message.
     pub(crate) fn compaction_user_message(summary: &str) -> Value {

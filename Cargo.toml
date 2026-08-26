@@ -84,6 +84,12 @@ wasmtime-wasi = "48.0.0"
 # 其中 wasi:io/error 的绑定只由这个伴生 crate 导出（同版本对、
 # wasmtime-wasi 未转出）。已在依赖树内，非新增传递依赖。
 wasmtime-wasi-io = "48.0.0"
+# MM-1 S3 解码库。2026-08-27 负责人裁定（审计 M1-F）：只采购
+# png+jpeg 两 feature——gif/webp 解码器不为全员买单（体积 + 攻击面）；
+# S1 四族 magic 识别保留，接纳侧以点名格式的可行动错误拒绝。
+# 重新加回 webp 的触发条件与体积实测见
+# docs/todo/mm1-attachment-domain.md S3 采购记录。
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
 
 # flock-based storage-root lease (Unix); a build-only C dependency at most.
 [target.'cfg(unix)'.dependencies]

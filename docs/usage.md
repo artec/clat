@@ -514,6 +514,13 @@ rename session actions, permission-mode changes, cancellation, and in-run
 steering. Full Access requires both a UI warning acknowledgement and the
 protocol confirmation described in [Permissions](permissions.md).
 
+Informational slash commands use the same core command catalog. `/context`
+renders its estimate as a readable multi-line breakdown, including plan, goal,
+and memory injection state. After `/plan` succeeds, a persistent composer badge
+marks Plan Mode until `/plan off` succeeds or an `exit_plan_mode` tool call
+finishes successfully; the browser does not persist that workflow authority in
+localStorage.
+
 Model lifecycle and reasoning traces use human-readable labels in the visual
 surface (`Model request started`, `Reasoning summary`, and so on). The stable
 wire event id remains available as diagnostic metadata; the frontend does not

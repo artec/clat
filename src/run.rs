@@ -21,6 +21,11 @@ use std::sync::{Arc, Mutex};
 /// the model still owes the user a response. Messages that were never
 /// claimed (cancel, race at the end) leave no durable trace.
 ///
+/// MM-1A：队列元素是 typed [`PendingMessage`]（客户端幂等键随消息
+/// travel，claim 后随 `SteeringApplied` 进 journal）。图片 steering 的
+/// admission 属 MM-1/MM-2——`Application::steer` 在此之前只放行纯文本
+/// 消息（fail-closed），类型已就位、语义不越前开放。
+///
 /// 终态封口（W1-04，2026-08-22）：`sealed` 与 deque 同锁。"队列是否仍
 /// 接受新消息"与"终态空队列判定"必须在同一临界区内完成——否则
 /// check-then-act 窗口里，worker 已决定结束而 `busy` 尚未落 false，前端
@@ -34,7 +39,7 @@ pub(crate) struct SteeringQueue {
 
 #[derive(Default)]
 struct SteeringState {
-    queue: VecDeque<String>,
+    queue: VecDeque<crate::message::PendingMessage>,
     sealed: bool,
 }
 
@@ -62,17 +67,17 @@ impl SteeringQueue {
     }
 
     /// 前端入队：open 时入队并返回 `Accepted`；sealed 时绝不接受。
-    pub(crate) fn try_push(&self, text: impl Into<String>) -> PushOutcome {
+    pub(crate) fn try_push(&self, message: crate::message::PendingMessage) -> PushOutcome {
         match self.pending.lock() {
             Ok(mut state) if !state.sealed => {
-                state.queue.push_back(text.into());
+                state.queue.push_back(message);
                 PushOutcome::Accepted
             }
             _ => PushOutcome::Sealed,
         }
     }
 
-    pub(crate) fn pop(&self) -> Option<String> {
+    pub(crate) fn pop(&self) -> Option<crate::message::PendingMessage> {
         self.pending
             .lock()
             .ok()
@@ -84,7 +89,9 @@ impl SteeringQueue {
     /// 该消息已生效、不可召回（返回更晚的或 None）——召回永远不可能
     /// 撤回已被 claim 的消息（docs/todo/steering-visibility-recall.md
     /// INV-SV3）。封口不影响召回：终态后未 claim 的消息正应退还前端。
-    pub(crate) fn recall_last(&self) -> Option<String> {
+    /// MM-1A：返回完整 typed 消息（内容 + 客户端幂等键），前端可原样
+    /// 重发（MM-I11 recall 语义）。
+    pub(crate) fn recall_last(&self) -> Option<crate::message::PendingMessage> {
         self.pending
             .lock()
             .ok()
@@ -216,35 +223,57 @@ impl<'a> Run<'a> {
         prompt: impl Into<String>,
         events: &mut dyn EventSink,
     ) -> Result<RunOutput, RunError> {
-        let prompt = prompt.into();
-        self.execute_with_items(vec![ModelItem::user_text(prompt.clone())], prompt, events)
+        self.execute_with_message(crate::message::MessageContent::text(prompt), None, events)
     }
 
+    /// 纯文本便捷入口（demo/测试）：初始 user item 由文本构造。
+    #[cfg(test)]
+    fn execute_with_message(
+        &mut self,
+        message: crate::message::MessageContent,
+        client_message_id: Option<crate::message::ClientMessageId>,
+        events: &mut dyn EventSink,
+    ) -> Result<RunOutput, RunError> {
+        let text = message.plain_text();
+        self.execute_with_items(
+            vec![ModelItem::user_text(text)],
+            message,
+            client_message_id,
+            events,
+        )
+    }
+
+    /// 模型内容以 `items` 为准（journal 是唯一事实源，含图 user 消息由
+    /// application 层从 journal 投影构造 `ContentPart`）；`message` 只承载
+    /// 事件/回执语义（descriptor 投影 + 客户端幂等键）。图片内容不得经
+    /// 本入口的 items 旁路 —— 见 MM-1A 模块文档。
     pub(crate) fn execute_with_items(
         &mut self,
         items: Vec<ModelItem>,
-        prompt: impl Into<String>,
+        message: crate::message::MessageContent,
+        client_message_id: Option<crate::message::ClientMessageId>,
         events: &mut dyn EventSink,
     ) -> Result<RunOutput, RunError> {
         // W1-04：RAII 兜底覆盖所有出口，包含 panic unwind。正常终态仍
         // 在发 RunCompleted/RunFailed/RunCancelled 前主动封口；guard
         // 防的是未来 early-return 或下层 panic 绕过那些显式路径。
         let _seal_guard = SteeringSealGuard(self.steering.clone());
-        self.drive(items, prompt, events)
+        self.drive(items, message, client_message_id, events)
     }
 
     fn drive(
         &mut self,
         mut items: Vec<ModelItem>,
-        prompt: impl Into<String>,
+        message: crate::message::MessageContent,
+        client_message_id: Option<crate::message::ClientMessageId>,
         events: &mut dyn EventSink,
     ) -> Result<RunOutput, RunError> {
-        let prompt = prompt.into();
         let mut total_usage = Usage::default();
 
         events.emit(RunEvent::RunStarted {
             project: self.project.root().to_path_buf(),
-            prompt,
+            message,
+            client_message_id,
         });
 
         // 无轮次预算（DSH 范式，2026-08-19）：agent 循环只被四类终态
@@ -271,10 +300,14 @@ impl<'a> Run<'a> {
             // Claim queued steering at the next-step boundary (DSH
             // semantics): never interrupts the in-flight request; the
             // recorder makes each message durable before the model request
-            // that consumes it.
-            while let Some(text) = self.steering.pop() {
-                events.emit(RunEvent::SteeringApplied { text: text.clone() });
-                items.push(ModelItem::user_text(text));
+            // that consumes it. MM-1A：steering admission 只放行纯文本
+            //（`Application::steer` fail-closed），`plain_text` 无损。
+            while let Some(pending) = self.steering.pop() {
+                events.emit(RunEvent::SteeringApplied {
+                    message: pending.content.clone(),
+                    client_message_id: pending.client_message_id.clone(),
+                });
+                items.push(ModelItem::user_text(pending.content.plain_text()));
             }
 
             let dynamic_snapshot = match &self.dynamic_instructions {
@@ -508,6 +541,7 @@ impl<'a> Run<'a> {
                         decision,
                     });
                     let mut result = ToolResult {
+                        blocks: Vec::new(),
                         call_id: call.id.clone(),
                         tool_name: call.name.clone(),
                         output: serde_json::json!({ "error": reason }),
@@ -532,6 +566,7 @@ impl<'a> Run<'a> {
                         },
                     });
                     let mut result = ToolResult {
+                        blocks: Vec::new(),
                         call_id: call.id.clone(),
                         tool_name: call.name.clone(),
                         output: serde_json::json!({ "error": reason }),
@@ -577,6 +612,7 @@ impl<'a> Run<'a> {
                         // `Unavailable` (fail-closed, no approver) shares the
                         // run semantics; the journal maps the distinction.
                         let mut result = ToolResult {
+                            blocks: Vec::new(),
                             call_id: call.id.clone(),
                             tool_name: call.name.clone(),
                             output: serde_json::json!({
@@ -636,6 +672,7 @@ impl<'a> Run<'a> {
                     && !is_error
                     && output.get("approved").and_then(serde_json::Value::as_bool) == Some(true);
                 let mut result = ToolResult {
+                    blocks: Vec::new(),
                     call_id: call.id,
                     tool_name: call.name,
                     output,
@@ -1089,7 +1126,8 @@ mod tests {
                 // 模拟前端在第一个请求进行中 steer()：此刻 turn-1 顶部的
                 // drain 已过，消息只能被下一轮 claim。
                 assert_eq!(
-                    self.steering.try_push("also run the tests"),
+                    self.steering
+                        .try_push(crate::message::PendingMessage::text("also run the tests")),
                     PushOutcome::Accepted,
                     "the queue is open while the run is executing"
                 );
@@ -1189,7 +1227,10 @@ mod tests {
         };
         let applied = events
             .iter()
-            .position(|event| matches!(event, RunEvent::SteeringApplied { text } if text == "also run the tests"))
+            .position(|event| matches!(
+            event,
+            RunEvent::SteeringApplied { message, .. } if message.plain_text() == "also run the tests"
+        ))
             .expect("SteeringApplied must be emitted");
         assert!(applied > position("ModelResponded"));
         let second_request = events
@@ -1223,7 +1264,8 @@ mod tests {
         ) -> Result<ModelResponse, ModelError> {
             request.cancel.cancel();
             assert_eq!(
-                self.steering.try_push("too late"),
+                self.steering
+                    .try_push(crate::message::PendingMessage::text("too late")),
                 PushOutcome::Accepted,
                 "cancel sets the flag but does not seal the queue"
             );
@@ -1254,7 +1296,10 @@ mod tests {
                 event,
                 RunEvent::RunCancelled { .. } | RunEvent::RunFailed { .. }
             ) {
-                self.terminal_push = Some(self.steering.try_push("after terminal event"));
+                self.terminal_push = Some(
+                    self.steering
+                        .try_push(crate::message::PendingMessage::text("after terminal event")),
+                );
             }
             self.events.push(event);
         }
@@ -1296,7 +1341,12 @@ mod tests {
         );
         // 消息未被 claim（可召回），且队列已封口：run 结束后迟到的
         // steer 必须得到 Sealed 而不是 Accepted（W1-04）。
-        assert_eq!(steering.recall_last().as_deref(), Some("too late"));
+        assert_eq!(
+            steering
+                .recall_last()
+                .map(|message| message.content.plain_text()),
+            Some("too late".to_owned())
+        );
         assert!(steering.is_sealed(), "a finished run must seal its queue");
     }
 
@@ -1337,7 +1387,7 @@ mod tests {
         }));
         assert!(unwind.is_err(), "the fake model must panic");
         assert_eq!(
-            steering.try_push("late"),
+            steering.try_push(crate::message::PendingMessage::text("late")),
             PushOutcome::Sealed,
             "panic unwind must seal steering before Application cleanup"
         );
@@ -1346,28 +1396,51 @@ mod tests {
     #[test]
     fn steering_queue_seals_atomically_against_push() {
         let queue = SteeringQueue::new();
-        assert_eq!(queue.try_push("a"), PushOutcome::Accepted);
+        assert_eq!(
+            queue.try_push(crate::message::PendingMessage::text("a")),
+            PushOutcome::Accepted
+        );
         // 非空 → 终态判定放行失败（消息待 claim）。
         assert!(
             !queue.seal_if_empty(),
             "pending messages must extend the run"
         );
-        assert_eq!(queue.try_push("b"), PushOutcome::Accepted);
-        assert_eq!(queue.pop().as_deref(), Some("a"));
-        assert_eq!(queue.pop().as_deref(), Some("b"));
+        assert_eq!(
+            queue.try_push(crate::message::PendingMessage::text("b")),
+            PushOutcome::Accepted
+        );
+        assert_eq!(
+            queue.pop().map(|message| message.content.plain_text()),
+            Some("a".to_owned())
+        );
+        assert_eq!(
+            queue.pop().map(|message| message.content.plain_text()),
+            Some("b".to_owned())
+        );
         // 空 → 当场封口放行终态。
         assert!(queue.seal_if_empty());
         assert_eq!(
-            queue.try_push("late"),
+            queue.try_push(crate::message::PendingMessage::text("late")),
             PushOutcome::Sealed,
             "a sealed queue must never accept new steering"
         );
         // 无条件封口同样拒绝后续入队，但不影响召回已入队消息。
         let queue = SteeringQueue::new();
-        assert_eq!(queue.try_push("kept"), PushOutcome::Accepted);
+        assert_eq!(
+            queue.try_push(crate::message::PendingMessage::text("kept")),
+            PushOutcome::Accepted
+        );
         queue.seal();
-        assert_eq!(queue.try_push("late"), PushOutcome::Sealed);
-        assert_eq!(queue.recall_last().as_deref(), Some("kept"));
+        assert_eq!(
+            queue.try_push(crate::message::PendingMessage::text("late")),
+            PushOutcome::Sealed
+        );
+        assert_eq!(
+            queue
+                .recall_last()
+                .map(|message| message.content.plain_text()),
+            Some("kept".to_owned())
+        );
     }
 
     #[test]
@@ -1453,9 +1526,9 @@ mod tests {
         );
         assert!(matches!(
             &events[0],
-            RunEvent::RunStarted { project, prompt }
+            RunEvent::RunStarted { project, message, .. }
                 if project == std::path::Path::new("/tmp/clat-event-baseline")
-                    && prompt == "use echo"
+                    && message.plain_text() == "use echo"
         ));
         assert!(matches!(
             &events[1],

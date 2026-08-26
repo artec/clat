@@ -5,8 +5,8 @@
 //! 帮手。集中在此，避免复制维护两份行为脚本。
 
 use crate::model::{
-    FinishReason, Model, ModelConfig, ModelError, ModelEvent, ModelFactory, ModelProtocol,
-    ModelRequest, ModelResponse, ProviderCredentials, Usage,
+    FinishReason, Modality, Model, ModelCapabilities, ModelConfig, ModelError, ModelEvent,
+    ModelFactory, ModelProtocol, ModelRequest, ModelResponse, ProviderCredentials, Usage,
 };
 use crate::plugin::{
     DisposeError, PluginContext, PluginDescriptor, PluginError, PluginId, ServiceId,
@@ -554,6 +554,14 @@ pub(crate) fn configure_test_model(application: &TrustedProjectApplication) {
     let config = ModelConfig {
         model: "deterministic".into(),
         endpoint: "https://application-test.invalid".into(),
+        // MM-2 W1：attach 门只放行 verified 视觉能力——附件路径的
+        // 应用测试统一用已验证视觉的测试模型（等价 GLM flash 探针
+        // 证据位），文本路径的拒绝语义由专门红测覆盖。
+        capabilities: ModelCapabilities {
+            input_modalities: vec![Modality::Text, Modality::Image],
+            tool_result_modalities: vec![Modality::Text, Modality::Image],
+            image_input_verified: true,
+        },
         ..ModelConfig::default()
     };
     let credentials = ProviderCredentials::for_protocol(config.protocol);

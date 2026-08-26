@@ -692,7 +692,10 @@ pub(crate) struct AgentRequest {
     pub spend_ledger: Option<Arc<crate::model::RunSpendLedger>>,
     pub credentials: ProviderCredentials,
     pub history_items: Vec<ModelItem>,
-    pub prompt: String,
+    /// MM-1A typed 初始消息：事件/回执语义（descriptor + 客户端幂等
+    /// 键）由它承载；模型内容以 `history_items` 为准（journal 权威）。
+    pub message: crate::message::MessageContent,
+    pub client_message_id: Option<crate::message::ClientMessageId>,
     pub cancel: CancelToken,
     /// In-run steering queue shared with the frontend; the run claims
     /// pending messages at the next model-request boundary.

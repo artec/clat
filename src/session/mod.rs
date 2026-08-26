@@ -7,6 +7,7 @@
 
 pub(crate) mod adapter;
 pub(crate) mod admission;
+pub(crate) mod attachments;
 pub(crate) mod catalog;
 pub(crate) mod checkpoint;
 pub(crate) mod chunk_packing;

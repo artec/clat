@@ -584,14 +584,19 @@ impl App {
             return;
         }
         self.input.remember(value.clone());
-        let outcome = self
-            .application
-            .as_ref()
-            .map(|application| application.steer(value.clone()));
+        // MM-1A：typed steering——TUI 只产生纯文本消息（附件 steering
+        // 的 admission 属 MM-1/MM-2；Refused 在此不可达，仍如实闪屏）。
+        let outcome = self.application.as_ref().map(|application| {
+            application.steer(crate::message::PendingMessage::text(value.clone()))
+        });
         match outcome {
             Some(SteerOutcome::Queued) => {
                 self.conversation.push_pending_steering(value);
                 self.flash_status("steering queued — applies at the next model step");
+            }
+            Some(SteerOutcome::Refused { reason }) => {
+                self.input.insert_str(&value);
+                self.flash_status(format!("steering refused: {reason}"));
             }
             // 回退普通提交——steering 不携带附件（M6：附件只能随空闲
             // 态的新消息走）。提交失败（前一个 run 收尾尚未完成）时把
@@ -618,9 +623,12 @@ impl App {
             .expect("event channel is installed by run()");
         let (completion, completed) = mpsc::channel();
         let request = ApplicationRunRequest {
-            attachments,
+            message: crate::message::PendingMessage::from_front_end(
+                prompt.clone(),
+                None,
+                attachments,
+            ),
             asker: Some(Arc::new(ChannelUserAsker::new(sender.clone()))),
-            prompt: prompt.clone(),
             approver: Arc::new(ChannelApprover::new(sender.clone())),
             events: Box::new(ChannelEventSink(sender.clone())),
             completion,
@@ -676,9 +684,8 @@ impl App {
             .expect("event channel is installed by run()");
         let (completion, completed) = mpsc::channel();
         let request = ApplicationRunRequest {
-            attachments: Vec::new(),
+            message: crate::message::PendingMessage::text(String::new()),
             asker: Some(Arc::new(ChannelUserAsker::new(sender.clone()))),
-            prompt: String::new(),
             approver: Arc::new(ChannelApprover::new(sender.clone())),
             events: Box::new(ChannelEventSink(sender.clone())),
             completion,

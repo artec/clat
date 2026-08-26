@@ -1332,20 +1332,16 @@ impl TrustedProjectApplication {
                 let credentials = ProviderCredentials::for_protocol(config.protocol);
                 (config, credentials)
             });
+        // INV-MM2-3 冻结合并序：①旧配置迁移（版本门，只在首次 load
+        // 逐字段生成 overrides）→ ②preset-managed 默认 stamp →
+        // ③typed 显式 overrides（含 thinking_level 的厂商映射——
+        // 在这**一次**完成，此后不得再改 extra_body）。④allowlisted
+        // extra 层在 provider 请求构造时合并（null = tombstone）。
+        config.migrate_legacy_overrides();
         if let Some(preset) = config.preset.as_deref().and_then(preset_by_id) {
             preset.apply(&mut config);
         }
-        // `preset.apply` 会整体重置 `extra_body`，用户显式选择的思考
-        // 档位存成一等字段、在回填之后二次应用，否则每次加载都被清回
-        // 预设默认。仅 DeepSeek/GLM 端点参与：字段可能在用户改端点前
-        // 设置，注入到其它厂商的请求体会被严格网关拒绝（与
-        // `effective_thinking_level` 的 Other→None 口径一致）。
-        if let Some(level) = config.thinking_level {
-            let vendor = crate::model::endpoint_vendor(&config.endpoint);
-            if vendor != crate::model::ModelVendor::Other {
-                crate::model::apply_thinking_level(&mut config.extra_body, vendor, level);
-            }
-        }
+        config.apply_overrides();
         Ok((config, credentials))
     }
 

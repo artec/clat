@@ -628,11 +628,12 @@ mod tests {
             ],
         };
         let difference = estimate_item(&with_image) - estimate_item(&plain);
-        // 1024×768 → 2×2 tile = 4 → 100 + 4×350 = 1500（允许序列化噪声
-        // 的少量出入，锁量级）。
+        // 1024×768 → 2×2 tile = 4 → (100 + 4×350) × 2.0 = 3000（MM-2
+        // INV-MM2-4 无 cap ×2.0 口径；允许序列化噪声的少量出入，锁
+        // 量级）。
         assert!(
-            (1400..=1600).contains(&difference),
-            "an image counts its vision tiles, got +{difference}"
+            (2800..=3200).contains(&difference),
+            "an image counts its uncapped doubled vision tiles, got +{difference}"
         );
         let _ = std::fs::remove_file(&path);
     }

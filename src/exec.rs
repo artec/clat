@@ -594,10 +594,11 @@ where
     };
 
     let (completion_tx, completion_rx) = mpsc::channel();
+    // MM-1A：typed 初始消息（headless 不接受附件——首期边界，方案
+    // §范围裁定；无客户端幂等键）。
     let handle = match application.start_run(ApplicationRunRequest {
-        attachments: Vec::new(),
+        message: crate::message::PendingMessage::text(prompt),
         asker: None,
-        prompt,
         approver,
         events: Box::new(sink),
         completion: completion_tx,

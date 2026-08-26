@@ -200,6 +200,69 @@ pub(crate) fn model_route_key(protocol: &str, model: &str) -> String {
     format!("{protocol}/{model}")
 }
 
+/// INV-MM2-1：模型输入模态词表（能力快照的原子）。
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Modality {
+    Text,
+    Image,
+}
+
+/// INV-MM2-1/2：模型输入能力的冻结快照——attach admission、serve、
+/// tool catalog（view_image 门控）、provider 投影消费同一份。内置
+/// 预设在 `apply` 时 stamp；custom 配置持久化自己的值（编辑器显式
+/// 选择归 MM-2 W2 切片，此前默认 fail-closed 纯文本）。禁止按模型
+/// 名猜能力、禁止 paid 400 探测。
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ModelCapabilities {
+    pub input_modalities: Vec<Modality>,
+    pub tool_result_modalities: Vec<Modality>,
+    /// 图片输入能力是否有**自有 live 探针证据**（INV-MM2-2：仅厂商
+    /// 文档声明 → false，attach 拒绝并给可行动错误——不给全员为
+    /// 未验证能力买单）。
+    pub image_input_verified: bool,
+}
+
+impl Default for ModelCapabilities {
+    fn default() -> Self {
+        // fail-closed：custom/旧配置一律纯文本。
+        Self {
+            input_modalities: vec![Modality::Text],
+            tool_result_modalities: vec![Modality::Text],
+            image_input_verified: false,
+        }
+    }
+}
+
+impl ModelCapabilities {
+    /// attach admission 的唯一判据（INV-MM2-2）。
+    pub fn accepts_image_input(&self) -> bool {
+        self.input_modalities.contains(&Modality::Image) && self.image_input_verified
+    }
+}
+
+/// 请求侧图片策略（F-2/F-3/F-5 的词表冻结；MM-2 W6 请求投影消费并
+/// 强制）。custom 配置默认 = CLAT 全局 admission 口径。
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ImageRequestPolicy {
+    /// 发给该通道的 media type 白名单。
+    pub media_types: Vec<String>,
+    pub max_images: usize,
+    pub max_bytes: u64,
+}
+
+impl Default for ImageRequestPolicy {
+    fn default() -> Self {
+        Self {
+            media_types: vec!["image/png".into(), "image/jpeg".into()],
+            max_images: 8,
+            max_bytes: 4 * 1024 * 1024,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ModelConfig {
     /// Identifier of the built-in preset this configuration came from, if any.
@@ -235,6 +298,157 @@ pub struct ModelConfig {
     /// 50%/90% 各一次持久化预警（`clat/budget`，ignorable 事件）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_token_budget: Option<u64>,
+    /// INV-MM2-1：模型输入能力快照。内置预设 `apply` 时 stamp；旧
+    /// 配置/未选择能力的 custom 配置反序列化为 fail-closed 纯文本。
+    #[serde(default)]
+    pub capabilities: ModelCapabilities,
+    /// INV-MM2-6 词表（F-2/F-3/F-5）：请求侧图片策略。预设 stamp；
+    /// custom 默认 = CLAT 全局 admission 口径（W6 起强制）。
+    #[serde(default)]
+    pub image_policy: ImageRequestPolicy,
+    /// INV-MM2-3（MM-2 W2）：typed 显式 overrides——preset 切换不
+    /// 碰它（用户真正的 override 存活），merge 在
+    /// [`ModelConfig::apply_overrides`]。
+    #[serde(default)]
+    pub overrides: ModelOverrides,
+    /// INV-MM2-3 迁移版本：`None` = 旧配置未迁移（load 时按字段
+    /// 精确相等语义生成 overrides 并写 1，见
+    /// [`ModelConfig::migrate_legacy_overrides`]）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overrides_version: Option<u32>,
+}
+
+/// INV-MM2-3：一等字段的三态 override。`Inherit` 跟随 preset-managed
+/// 默认；`Set` 显式用户值（预设切换存活）；`Clear` 是 suppress/
+/// tombstone——字段完全不发（如 output_limit Clear → 请求不带
+/// `max_tokens`）。
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Override<T> {
+    #[default]
+    Inherit,
+    Set(T),
+    Clear,
+}
+
+impl<T> Override<T> {
+    pub fn is_inherit(&self) -> bool {
+        matches!(self, Self::Inherit)
+    }
+}
+
+/// INV-MM2-3：typed overrides 词表（冻结面）。`run_token_budget` 是
+/// 纯用户 run policy，**不在** preset/override 词表内——预设与
+/// overrides 都不重置它。受控 extra body/header 的 allowlist 层走
+/// `extra_body`/`extra_headers`（值 `null` = tombstone，W2 起
+/// provider 侧抑制该键）。
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Default)]
+pub struct ModelOverrides {
+    #[serde(default, skip_serializing_if = "Override::is_inherit")]
+    pub output_limit: Override<u32>,
+    #[serde(default, skip_serializing_if = "Override::is_inherit")]
+    pub temperature: Override<f64>,
+    #[serde(default, skip_serializing_if = "Override::is_inherit")]
+    pub parallel_tool_calls: Override<bool>,
+    #[serde(default, skip_serializing_if = "Override::is_inherit")]
+    pub thinking_level: Override<ThinkingLevel>,
+    #[serde(default, skip_serializing_if = "Override::is_inherit")]
+    pub max_context_tokens: Override<u32>,
+}
+
+impl ModelConfig {
+    /// INV-MM2-3 冻结合并序的第三步：preset-managed 默认（apply 已
+    /// stamp）之上应用 typed 显式 overrides。**thinking_level 的厂商
+    /// 映射在本函数内一次完成**——`model_state()` 之后不得再二次改
+    /// `extra_body`。allowlisted extra 层（第四步）在 provider 请求
+    /// 构造时合并（`merge_extra_body`，null = tombstone）。
+    pub fn apply_overrides(&mut self) {
+        match self.overrides.output_limit {
+            Override::Inherit => {}
+            Override::Set(value) => self.output_limit = Some(value),
+            Override::Clear => self.output_limit = None,
+        }
+        match self.overrides.temperature {
+            Override::Inherit => {}
+            Override::Set(value) => self.temperature = Some(value),
+            Override::Clear => self.temperature = None,
+        }
+        match self.overrides.parallel_tool_calls {
+            Override::Inherit => {}
+            Override::Set(value) => self.parallel_tool_calls = value,
+            // Clear：请求不携带 parallel_tool_calls（provider 侧按
+            // Option<bool>=None 处理——由 build_request_options 消费
+            // config 的 None 语义；这里保持 true/false 一等字段在
+            // Clear 时回落端点默认）。
+            Override::Clear => self.parallel_tool_calls = true,
+        }
+        match self.overrides.max_context_tokens {
+            Override::Inherit => {}
+            Override::Set(value) => self.max_context_tokens = Some(value),
+            Override::Clear => self.max_context_tokens = None,
+        }
+        match self.overrides.thinking_level {
+            Override::Inherit => {}
+            Override::Set(level) => {
+                let vendor = endpoint_vendor(&self.endpoint);
+                if vendor != ModelVendor::Other {
+                    // 一次成型：apply stamp 的预设 effort 被用户档位
+                    // 覆盖；unknown vendor 不注入（严格网关拒未定义
+                    // 参数——与 effective_thinking_level 口径一致）。
+                    apply_thinking_level(&mut self.extra_body, vendor, level);
+                }
+                // 一等字段回填（UI/持久层继续读它；merge 的唯一事实
+                // 源是 overrides）。
+                self.thinking_level = Some(level);
+            }
+            Override::Clear => {
+                if let Some(map) = self.extra_body.as_object_mut() {
+                    map.remove("reasoning_effort");
+                }
+                self.thinking_level = None;
+            }
+        }
+    }
+
+    /// INV-MM2-3 旧配置迁移（版本门 + 幂等）：与**当时 preset-managed
+    /// key/value 精确相等**的值归 Inherit；不相等归显式 Set。旧 schema
+    /// 无 Clear 表达（None 即跟随预设 = Inherit），如实记档。无预设的
+    /// custom 配置按 ModelConfig 缺省为 managed 基线同律比较。
+    pub fn migrate_legacy_overrides(&mut self) {
+        if self.overrides_version.is_some() {
+            return;
+        }
+        let preset = self
+            .preset
+            .as_deref()
+            .and_then(crate::presets::preset_by_id);
+        let managed_output = preset.map(|preset| preset.output_limit);
+        let managed_window = preset.map(|preset| preset.context_window);
+        let managed_parallel = preset.is_none_or(|preset| preset.parallel_managed_default());
+
+        self.overrides.output_limit = match self.output_limit {
+            Some(value) if Some(value) != managed_output => Override::Set(value),
+            _ => Override::Inherit,
+        };
+        self.overrides.temperature = match self.temperature {
+            Some(value) => Override::Set(value),
+            None => Override::Inherit,
+        };
+        self.overrides.parallel_tool_calls = if self.parallel_tool_calls == managed_parallel {
+            Override::Inherit
+        } else {
+            Override::Set(self.parallel_tool_calls)
+        };
+        self.overrides.thinking_level = match self.thinking_level {
+            Some(level) => Override::Set(level),
+            None => Override::Inherit,
+        };
+        self.overrides.max_context_tokens = match self.max_context_tokens {
+            Some(value) if Some(value) != managed_window => Override::Set(value),
+            _ => Override::Inherit,
+        };
+        self.overrides_version = Some(1);
+    }
 }
 
 /// 花费护栏缺省硬顶（定案：10M——误报在 ~p99.9 之外，漏报封顶贵模型
@@ -429,6 +643,10 @@ impl Default for ModelConfig {
             max_context_tokens: None,
             run_token_budget: None,
             thinking_level: None,
+            capabilities: ModelCapabilities::default(),
+            image_policy: ImageRequestPolicy::default(),
+            overrides: ModelOverrides::default(),
+            overrides_version: None,
         }
     }
 }
@@ -1086,6 +1304,112 @@ mod tests {
             assert_eq!(credentials.value(0), Some("legacy-secret"));
             assert_eq!(credentials.to_json(), legacy);
         }
+    }
+
+    /// INV-MM2-3（MM-2 W2 红测）：typed overrides 三态——Set 覆盖
+    /// preset-managed 默认、Clear 抑制字段、Inherit 跟随；thinking_level
+    /// 的厂商映射在 `apply_overrides` 内一次完成（Qwen Max→xhigh），
+    /// Clear 连 reasoning_effort 一起摘除。pre-fix（无 overrides 层）
+    /// 本测试编译级红。
+    #[test]
+    fn overrides_merge_tri_state_with_vendor_mapping_inside() {
+        let glm = crate::presets::preset_by_id("glm-5.3").unwrap();
+        let mut config = ModelConfig::default();
+        glm.apply(&mut config);
+        assert_eq!(config.output_limit, Some(128 * 1024), "preset default");
+
+        // Set 覆盖预设。
+        config.overrides.output_limit = Override::Set(65_536);
+        config.overrides.temperature = Override::Set(0.2);
+        config.apply_overrides();
+        assert_eq!(config.output_limit, Some(65_536));
+        assert_eq!(config.temperature, Some(0.2));
+
+        // Clear 抑制：max_tokens 完全不发（None）、温度不发。
+        config.overrides.output_limit = Override::Clear;
+        config.overrides.temperature = Override::Clear;
+        config.apply_overrides();
+        assert_eq!(config.output_limit, None);
+        assert_eq!(config.temperature, None);
+
+        // thinking_level Set：厂商映射在 merge 内完成（Qwen 端点）。
+        let qwen = crate::presets::preset_by_id("qwen3.8-max").unwrap();
+        let mut config = ModelConfig::default();
+        qwen.apply(&mut config);
+        assert_eq!(
+            config.extra_body["reasoning_effort"], "medium",
+            "preset pin"
+        );
+        config.overrides.thinking_level = Override::Set(ThinkingLevel::Max);
+        config.apply_overrides();
+        assert_eq!(config.extra_body["reasoning_effort"], "xhigh");
+        assert_eq!(config.thinking_level, Some(ThinkingLevel::Max));
+
+        // thinking Clear：reasoning_effort 从 extra_body 摘除。
+        config.overrides.thinking_level = Override::Clear;
+        config.apply_overrides();
+        assert!(config.extra_body.get("reasoning_effort").is_none());
+        assert_eq!(config.thinking_level, None);
+
+        // run_token_budget 是纯用户 run policy：merge 与预设都不碰。
+        config.overrides.output_limit = Override::Set(1_000);
+        config.run_token_budget = Some(123_456);
+        config.apply_overrides();
+        assert_eq!(config.run_token_budget, Some(123_456));
+    }
+
+    /// INV-MM2-3 迁移（W2 红测）：旧配置逐字段——与当时 preset-managed
+    /// 值精确相等 → Inherit；不等 → Set；版本写 1 且幂等。
+    #[test]
+    fn legacy_overrides_migration_is_field_wise_and_idempotent() {
+        let glm = crate::presets::preset_by_id("glm-5.3").unwrap();
+        let mut config = ModelConfig {
+            preset: Some("glm-5.3".into()),
+            ..ModelConfig::default()
+        };
+        // 预设 stamp 的等值（Inherit 候选）与用户值（Set 候选）混排。
+        config.output_limit = Some(glm.output_limit);
+        config.temperature = Some(0.3);
+        config.parallel_tool_calls = true;
+        config.thinking_level = Some(ThinkingLevel::Max);
+        config.max_context_tokens = Some(glm.context_window);
+        config.migrate_legacy_overrides();
+        assert_eq!(config.overrides.output_limit, Override::Inherit);
+        assert_eq!(config.overrides.temperature, Override::Set(0.3));
+        assert_eq!(config.overrides.parallel_tool_calls, Override::Inherit);
+        assert_eq!(
+            config.overrides.thinking_level,
+            Override::Set(ThinkingLevel::Max)
+        );
+        assert_eq!(config.overrides.max_context_tokens, Override::Inherit);
+        assert_eq!(config.overrides_version, Some(1));
+
+        // 幂等：再次迁移不改动（版本门）。
+        config.temperature = Some(0.9); // 迁移后被（模拟的）后续编辑改值
+        config.migrate_legacy_overrides();
+        assert_eq!(
+            config.overrides.temperature,
+            Override::Set(0.3),
+            "version gate: the second migration must not run"
+        );
+
+        // 等值上下文窗口的种子值（apply 语义种入 1M）→ Inherit；
+        // 手填 500K → Set。
+        let mut config = ModelConfig {
+            preset: Some("glm-5.3".into()),
+            max_context_tokens: Some(500_000),
+            ..ModelConfig::default()
+        };
+        config.migrate_legacy_overrides();
+        assert_eq!(config.overrides.max_context_tokens, Override::Set(500_000));
+
+        // 无预设的 custom：false（异于缺省 true）→ Set，true → Inherit。
+        let mut config = ModelConfig {
+            parallel_tool_calls: false,
+            ..ModelConfig::default()
+        };
+        config.migrate_legacy_overrides();
+        assert_eq!(config.overrides.parallel_tool_calls, Override::Set(false));
     }
 
     /// INV-B：`apply_thinking_level` 是线上思考参数的唯一写入口，

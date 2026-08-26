@@ -188,8 +188,7 @@ fn explicit_goal_run_continues_durably_until_the_registered_verifier_completes()
     let (completion, receiver) = mpsc::channel();
     let (handle, visible_prompt) = application
         .start_goal_run(ApplicationRunRequest {
-            attachments: Vec::new(),
-            prompt: String::new(),
+            message: crate::message::PendingMessage::text(String::new()),
             approver: Arc::new(CountingApprover(Arc::clone(&approvals))),
             asker: None,
             events: Box::new(SharedEvents(Arc::clone(&events))),
@@ -335,8 +334,7 @@ fn resuming_a_blocked_goal_never_arms_continuation_implicitly() {
     assert!(
         application
             .start_goal_run(ApplicationRunRequest {
-                attachments: Vec::new(),
-                prompt: String::new(),
+                message: crate::message::PendingMessage::text(String::new()),
                 approver: Arc::new(CountingApprover(Arc::new(AtomicUsize::new(0)))),
                 asker: None,
                 events: Box::new(SharedEvents(Arc::new(Mutex::new(Vec::new())))),
@@ -378,8 +376,7 @@ fn provider_cancelled_round_disarms_without_starting_another_round() {
     let (completion, receiver) = mpsc::channel();
     let (handle, _) = application
         .start_goal_run(ApplicationRunRequest {
-            attachments: Vec::new(),
-            prompt: String::new(),
+            message: crate::message::PendingMessage::text(String::new()),
             approver: Arc::new(CountingApprover(Arc::new(AtomicUsize::new(0)))),
             asker: None,
             events: Box::new(SharedEvents(Arc::new(Mutex::new(Vec::new())))),

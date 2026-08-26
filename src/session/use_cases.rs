@@ -303,11 +303,19 @@ impl SessionService {
         let arm_header = SessionHeader::new(key.id.clone(), key.project.header_cwd.clone(), 0);
         let mut registry = ProjectionRegistry::clat();
         let mut sink = ResumeSink::new();
+        // INV-MM1-4：单遍 visitor 顺路收集 attachment 引用 id——
+        // 会话打开时的有界 orphan 回收输入（见 arm 尾部 sweep）。
+        let mut referenced_attachments = std::collections::HashSet::new();
         let (coordinator, visitor_applied) = SessionCoordinator::start_unseeded_with_visitor(
             Arc::clone(&self.backend),
             key.clone(),
             arm_header,
-            &mut |event| sink.push(event, &mut registry),
+            &mut |event| {
+                if event.event_type == "user/message" {
+                    collect_attachment_ids(&event.data, &mut referenced_attachments);
+                }
+                sink.push(event, &mut registry)
+            },
         )?;
         if !visitor_applied {
             // 撕裂尾部在 prepare 内修复：visitor 的部分输出跨过了截断
@@ -316,6 +324,9 @@ impl SessionService {
             let mut repaired_registry = ProjectionRegistry::clat();
             let mut repaired = ResumeSink::new();
             if let Err(error) = self.backend.visit_from(&key, 0, &mut |event| {
+                if event.event_type == "user/message" {
+                    collect_attachment_ids(&event.data, &mut referenced_attachments);
+                }
                 repaired.push(event, &mut repaired_registry)
             }) {
                 let _ = coordinator.close();
@@ -362,6 +373,20 @@ impl SessionService {
                 }
             };
         view.usage = usage;
+        // INV-MM1-4：会话打开时的有界 orphan 回收（引用集合来自上方
+        // 单遍收集；附件域不存在则跳过——全新会话无附件；失败静默：
+        // 回收是增益，不得阻塞会话打开）。
+        let attachments_root = crate::session::path_layout::session_dir(
+            self.backend.root_path(),
+            key.project.header_cwd.as_deref(),
+            &key.id,
+        )
+        .join("attachments");
+        if attachments_root.is_dir()
+            && let Ok(store) = crate::session::attachments::AttachmentStore::open(attachments_root)
+        {
+            let _ = store.sweep_orphans(&referenced_attachments, std::time::SystemTime::now());
+        }
         Ok(ArmedSession { active, view })
     }
 
@@ -473,34 +498,19 @@ impl SessionService {
     /// 保留原扩展名）。返回 (绝对路径, MIME) 列表——绝对引用随后进
     /// journal，回放零换算；原件此后可删可改，会话自包含。
     /// 校验失败在任何复制之前返回错误（不留半套附件）。
+    /// 导入图片附件（M4 → MM-1A 元数据化 → MM-1 S2/S3 接线 store）：
+    /// [`crate::session::attachments::AttachmentStore::admit`] 完成
+    /// S1 校验 + 批次上限 + 完整解码规范化 + 内容寻址发布——返回
+    /// [`JournalImage`]：attachmentId = 规范化字节的 sha256（opaque）、
+    /// 宽高 = 规范化后值（original_* 记源尺寸）、字节 = 规范化计数，
+    /// 全部随 journal 落盘（回放重建 descriptor 零文件 I/O）。批次
+    /// 失败在任何 journal 写入之前整体失败（零可达半成品，INV-MM1-3）。
     pub(crate) fn import_attachments(
         &self,
         sources: &[std::path::PathBuf],
-    ) -> Result<Vec<(String, String)>, SessionError> {
+    ) -> Result<Vec<crate::message::JournalImage>, SessionError> {
         if sources.is_empty() {
             return Ok(Vec::new());
-        }
-        // 预检：全部合法才动手。
-        for source in sources {
-            crate::media::media_type_for_path(source).ok_or_else(|| {
-                SessionError::Io(format!("unsupported image type: {}", source.display()))
-            })?;
-            let metadata = std::fs::metadata(source)
-                .map_err(|error| SessionError::Io(format!("{}: {error}", source.display())))?;
-            if !metadata.is_file() {
-                return Err(SessionError::Io(format!(
-                    "not a file: {}",
-                    source.display()
-                )));
-            }
-            if metadata.len() > crate::media::MAX_ATTACHMENT_BYTES {
-                return Err(SessionError::Io(format!(
-                    "image too large ({} bytes > {}): {}",
-                    metadata.len(),
-                    crate::media::MAX_ATTACHMENT_BYTES,
-                    source.display()
-                )));
-            }
         }
         let attachments_dir = {
             let active = self.active.lock().expect("active");
@@ -514,26 +524,27 @@ impl SessionService {
             )
             .join("attachments")
         };
-        std::fs::create_dir_all(&attachments_dir)
-            .map_err(|error| SessionError::Io(format!("create attachments dir: {error}")))?;
-        let mut imported = Vec::new();
-        for source in sources {
-            let media_type =
-                crate::media::media_type_for_path(source).unwrap_or("application/octet-stream");
-            let extension = source
-                .extension()
-                .and_then(|extension| extension.to_str())
-                .unwrap_or("png");
-            let name = format!("{}.{extension}", uuid::Uuid::new_v4().simple());
-            let destination = attachments_dir.join(&name);
-            std::fs::copy(source, &destination)
-                .map_err(|error| SessionError::Io(format!("copy {}: {error}", source.display())))?;
-            imported.push((
-                destination.to_string_lossy().into_owned(),
-                media_type.to_owned(),
-            ));
-        }
-        Ok(imported)
+        let store = crate::session::attachments::AttachmentStore::open(attachments_dir)
+            .map_err(|error| SessionError::Io(format!("open attachment store: {error}")))?;
+        let stored = store
+            .admit(sources)
+            .map_err(|error| SessionError::Io(error.to_string()))?;
+        Ok(stored
+            .into_iter()
+            .map(|stored| crate::message::JournalImage {
+                descriptor: crate::message::AttachmentDescriptor {
+                    attachment_id: stored.id,
+                    media_type: stored.media_type.to_owned(),
+                    width: stored.width,
+                    height: stored.height,
+                    bytes: stored.bytes,
+                    display_name: stored.display_name,
+                    original_width: Some(stored.original_width),
+                    original_height: Some(stored.original_height),
+                },
+                path: stored.blob_path,
+            })
+            .collect())
     }
 
     /// Whether a session log is materialized on disk (Materializing
@@ -812,15 +823,86 @@ impl SessionService {
     /// their seqs (surface projection → ModelItem adapter). The first
     /// element of each pair is the durable event seq, which compaction
     /// needs for `shadowedRange`/`shadowedSeqs`.
+    /// INV-MM1-5（legacy reader 围栏）：journal 投影出的模型项里，
+    /// Image part 的路径必须落在本会话 attachments root 内且路径上
+    /// 无 symlink——越界/篡改路径原位替换为稳定占位（诊断不回显路径），
+    /// journal 不动、不崩溃。这是模型内容的唯一入口栅栏（run 历史
+    /// 与 `/context` 同走 `surface_nodes`）。
     pub(crate) fn surface_nodes(&self) -> Result<Vec<(u64, ModelItem)>, SessionError> {
-        let guard = self.active.lock().expect("active");
-        let Some(active) = guard.as_ref() else {
-            return Ok(Vec::new());
+        let (nodes, attachments_root) = {
+            let guard = self.active.lock().expect("active");
+            let Some(active) = guard.as_ref() else {
+                return Ok(Vec::new());
+            };
+            let projections = active.projections.lock().expect("projections");
+            let nodes = projections
+                .surface_nodes()
+                .map_err(SessionError::Corruption)?;
+            let root = crate::session::path_layout::session_dir(
+                self.backend.root_path(),
+                active.key.project.header_cwd.as_deref(),
+                &active.key.id,
+            )
+            .join("attachments");
+            (nodes, root)
         };
+        let mut nodes = nodes;
+        for (_, item) in &mut nodes {
+            fence_attachment_parts(item, &attachments_root);
+        }
+        Ok(nodes)
+    }
+
+    /// MM-1A：committed 回执门面（application/run_lifecycle 消费——
+    /// serve 幂等重试与 completion outcome 附带）。
+    pub(crate) fn committed_receipt(
+        &self,
+        client_message_id: &str,
+    ) -> Option<crate::message::AdmissionReceipt> {
+        self.committed_admission(client_message_id)
+            .map(|admission| admission.receipt)
+    }
+
+    /// MM-1A：按客户端幂等键查询 committed 回执 + 落盘 digest（M-02
+    /// 的生产判别路径——serve 幂等重试经 `Application::committed_admission`
+    /// 消费，不得在 serve 复刻投影逻辑）。journal 投影是权威（INV-M1A-4
+    /// 的重启重建路径），进程内状态不参与。无活动会话或键不在回执
+    /// 窗口内返回 None。
+    pub(crate) fn committed_admission(
+        &self,
+        client_message_id: &str,
+    ) -> Option<crate::message::CommittedAdmission> {
+        let guard = self.active.lock().expect("active");
+        let active = guard.as_ref()?;
         let projections = active.projections.lock().expect("projections");
-        projections
-            .surface_nodes()
-            .map_err(SessionError::Corruption)
+        let state = projections.state_snapshot("receipts")?;
+        let entries = state.get("entries")?.as_array()?;
+        let entry = entries.iter().find(|entry| {
+            entry.get("client_message_id").and_then(Value::as_str) == Some(client_message_id)
+        })?;
+        Some(crate::message::CommittedAdmission {
+            receipt: crate::message::AdmissionReceipt::committed(
+                client_message_id.to_owned(),
+                entry
+                    .get("message_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                entry
+                    .get("attachment_ids")
+                    .and_then(Value::as_array)
+                    .map(|ids| {
+                        ids.iter()
+                            .filter_map(|id| id.as_str().map(str::to_owned))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            ),
+            request_digest: entry
+                .get("request_digest")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        })
     }
 
     /// Fold everything durably committed into the active projections and
@@ -1115,6 +1197,11 @@ impl SessionService {
             .and_then(Value::as_u64)
             .unwrap_or(0);
         // Model history from the surface projection only.
+        // INV-MM1-5 记档（2026-08-27 审计 M1-E）：这里直读投影的
+        // surface_nodes，**未过附件栅栏**（fence_attachment_parts）。
+        // 当前无生产消费者；任何消费者接入前必须改走带栅栏的
+        // SessionService::surface_nodes（模型内容的唯一入口栅栏，
+        // run 历史与 /context 同源）——届时本注释必须随之删除。
         let model_items = projections
             .surface_nodes()
             .map_err(SessionError::Corruption)?
@@ -1137,6 +1224,119 @@ impl SessionService {
 fn active_floor(active: &ActiveSession) -> u64 {
     let projections = active.projections.lock().expect("projections");
     projections.live_floor()
+}
+
+/// INV-MM1-5 + INV-MM2-6：模型项里的 Image part 围栏与 ref 解析点。
+/// 新图块来自 adapter 的**相对 ref** `blobs/<attachmentId>`（journal
+/// 不持久化绝对路径）——这里先验证 ref 形状（`blobs/` 下恰好一个
+/// 十六进制组件，无穿越面），重写为会话 attachments root 内的绝对
+/// 路径，再走既有围栏（词法位于 root 内 + 祖先组件无 symlink）。
+/// legacy 绝对路径（MM-1 桥接期/平铺时代）直接走围栏。越界/篡改 →
+/// 原位替换为稳定占位（不回显路径）。User/Assistant 之外的 item
+/// 不携带内容，跳过。
+fn fence_attachment_parts(item: &mut ModelItem, attachments_root: &std::path::Path) {
+    let parts = match item {
+        ModelItem::User { content } | ModelItem::Assistant { content, .. } => content,
+        _ => return,
+    };
+    for part in parts.iter_mut() {
+        if let crate::model::ContentPart::Image { path, .. } = part {
+            if let Some(resolved) = resolve_blob_reference(path, attachments_root) {
+                *path = resolved;
+            }
+            if !path_is_within_attachment_root(path, attachments_root) {
+                *part = crate::model::ContentPart::Text(
+                    "[image unavailable: the referenced attachment is outside this session's \
+                     attachment store]"
+                        .into(),
+                );
+            }
+        }
+    }
+}
+
+/// 相对 ref `blobs/<hex-id>` → root 内绝对路径；非该形状（legacy
+/// 绝对路径/已被解析过）返回 None 交由围栏按原语义处理。id 限定
+/// 十六进制字符——词法上无 `..`/分隔符/空件的穿越面。
+fn resolve_blob_reference(path: &str, root: &std::path::Path) -> Option<String> {
+    let rest = path.strip_prefix("blobs/")?;
+    if rest.is_empty()
+        || !rest.bytes().all(|byte| byte.is_ascii_hexdigit())
+        || std::path::Path::new(rest).components().count() != 1
+    {
+        return None;
+    }
+    Some(root.join("blobs").join(rest).to_string_lossy().into_owned())
+}
+
+/// user/message payload 的 content image blocks → 引用 id 集合
+///（INV-MM1-4 sweep 的输入；与 attachments.rs 的词汇同源）。
+fn collect_attachment_ids(
+    user_message: &Value,
+    referenced: &mut std::collections::HashSet<String>,
+) {
+    let Some(blocks) = user_message.get("content").and_then(Value::as_array) else {
+        return;
+    };
+    for block in blocks
+        .iter()
+        .filter(|block| block.get("type").and_then(Value::as_str) == Some("image"))
+    {
+        if let Some(id) = block.get("attachmentId").and_then(Value::as_str) {
+            referenced.insert(id.to_owned());
+        }
+    }
+}
+
+/// 词法归一化（组件级处理 `.`/`..`）后判断是否位于 root 前缀内；
+/// 再对已存在的祖先组件做 symlink 检查（缺失组件留给读取端按既有
+/// 降级语义处理——栅栏管授权形状，不管存在性）。
+fn path_is_within_attachment_root(path: &str, root: &std::path::Path) -> bool {
+    let path = std::path::Path::new(path);
+    let Some(normalized) = lexically_within(path, root) else {
+        return false;
+    };
+    // root 之下逐级检查（root 自身由 store 建权，不必复查）。
+    let root_len = root.components().count();
+    let mut ancestor = root.to_path_buf();
+    for component in normalized.components().skip(root_len) {
+        ancestor.push(component.as_os_str());
+        if let Ok(metadata) = std::fs::symlink_metadata(&ancestor)
+            && metadata.file_type().is_symlink()
+        {
+            return false;
+        }
+    }
+    true
+}
+
+/// 词法归一化：把 `path` 的组件逐个压栈（`.` 跳过、`..` 弹栈，下溢
+/// 即失败）。返回的路径以 `root` 的组件为前缀（否则 None）。
+fn lexically_within(path: &std::path::Path, root: &std::path::Path) -> Option<std::path::PathBuf> {
+    let root_components: Vec<_> = root.components().collect();
+    let mut stack: Vec<std::path::Component> = Vec::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                stack.pop()?;
+            }
+            other => stack.push(other),
+        }
+    }
+    if stack.len() < root_components.len() {
+        return None;
+    }
+    for (have, want) in stack.iter().zip(root_components.iter()) {
+        if have != want {
+            return None;
+        }
+    }
+    let mut normalized = std::path::PathBuf::new();
+    for component in &stack {
+        normalized.push(component.as_os_str());
+    }
+    Some(normalized)
 }
 
 /// Fold only when the projections lag the durable cursor: explicit journal
@@ -1329,6 +1529,149 @@ mod tests {
             SessionService::new(root.clone(), JsonlCompression::Zstd).expect("service"),
             root,
         )
+    }
+
+    /// INV-MM2-6（MM-2 W6 红测）：相对 ref `blobs/<hex>` 在栅栏处
+    /// 解析为会话 root 内绝对路径；畸形 ref（空 id/非十六进制/多
+    /// 组件）不解析且按围栏语义占位。删 resolve_blob_reference 即红
+    ///（合法 ref 无法解析 → 围栏拒绝 → 占位）。
+    #[test]
+    fn fence_resolves_blob_references_within_the_root() {
+        let root = std::path::PathBuf::from("/store/sessions/p/s/attachments");
+        let mut item = crate::model::ModelItem::User {
+            content: vec![
+                crate::model::ContentPart::Text("look".into()),
+                crate::model::ContentPart::Image {
+                    path: "blobs/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                        .into(),
+                    media_type: "image/png".into(),
+                },
+            ],
+        };
+        fence_attachment_parts(&mut item, &root);
+        let crate::model::ModelItem::User { content } = &item else {
+            panic!("user item");
+        };
+        let crate::model::ContentPart::Image { path, .. } = &content[1] else {
+            panic!("the valid ref must resolve, not placeholder");
+        };
+        assert_eq!(
+            path,
+            &root
+                .join("blobs")
+                .join("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+                .to_string_lossy()
+                .into_owned()
+        );
+
+        // 畸形 ref：非十六进制 id / 多组件 / 绝对越界路径 → 占位。
+        for malformed in ["blobs/not-hex!", "blobs/aaaa/bbbb", "blobs/", "/etc/passwd"] {
+            let mut item = crate::model::ModelItem::User {
+                content: vec![crate::model::ContentPart::Image {
+                    path: malformed.into(),
+                    media_type: "image/png".into(),
+                }],
+            };
+            fence_attachment_parts(&mut item, &root);
+            let crate::model::ModelItem::User { content } = &item else {
+                panic!("user item");
+            };
+            assert!(
+                matches!(content[0], crate::model::ContentPart::Text(ref note) if note.contains("image unavailable")),
+                "malformed reference {malformed} degrades to a stable placeholder"
+            );
+        }
+    }
+
+    /// MM-1 围栏五腿判别（git checkout 事故丢失，2026-08-27 研究员
+    /// 按 MM-1 审查记录还原；规格见 mm2 实施计划 §事故记档）：
+    /// ①root 内 legacy 平铺文件保留 ②blobs/ 内合法引用保留
+    /// ③`..` 词法逃逸占位 ④root 内 symlink 绝不跟随 ⑤界外绝对
+    /// 路径占位。删 path_is_within_attachment_root 任一闸即红。
+    #[test]
+    fn fence_rejects_paths_outside_the_session_store() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("clat-fence-{unique}"));
+        std::fs::create_dir_all(root.join("blobs")).expect("blobs dir");
+
+        std::fs::write(root.join("flat.png"), b"legacy").expect("flat file");
+        std::fs::write(root.join("blobs").join("deadbeef"), b"blob").expect("blob file");
+
+        let fenced = |path: String| -> crate::model::ContentPart {
+            let mut item = crate::model::ModelItem::User {
+                content: vec![crate::model::ContentPart::Image {
+                    path,
+                    media_type: "image/png".into(),
+                }],
+            };
+            fence_attachment_parts(&mut item, &root);
+            let crate::model::ModelItem::User { content } = &item else {
+                panic!("user item");
+            };
+            content.first().expect("one part").clone()
+        };
+
+        // 腿 ①②：root 内平铺（legacy）与 blobs/ 内引用照常保留。
+        for keep in [
+            root.join("flat.png").to_string_lossy().into_owned(),
+            root.join("blobs")
+                .join("deadbeef")
+                .to_string_lossy()
+                .into_owned(),
+        ] {
+            match fenced(keep.clone()) {
+                crate::model::ContentPart::Image { path, .. } => {
+                    assert_eq!(path, keep, "in-root references must stay readable");
+                }
+                other => panic!("in-root reference must stay an image part, got {other:?}"),
+            }
+        }
+
+        // 腿 ③：`..` 组件词法逃逸（下溢 / 弹出 root）→ 稳定占位。
+        for escape in [
+            root.join("..")
+                .join("secret.png")
+                .to_string_lossy()
+                .into_owned(),
+            root.join("blobs")
+                .join("..")
+                .join("..")
+                .join("x.png")
+                .to_string_lossy()
+                .into_owned(),
+        ] {
+            assert!(
+                matches!(fenced(escape), crate::model::ContentPart::Text(ref note) if note.contains("image unavailable")),
+                "a `..` escape must degrade to a stable placeholder"
+            );
+        }
+
+        // 腿 ④：root 内 symlink 指向界外 → 拒绝（词法在界内也不跟随）。
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(std::env::temp_dir(), root.join("link")).expect("symlink");
+            let linked = root
+                .join("link")
+                .join("outside.png")
+                .to_string_lossy()
+                .into_owned();
+            assert!(
+                matches!(fenced(linked), crate::model::ContentPart::Text(ref note) if note.contains("image unavailable")),
+                "a symlink inside the root must never be followed"
+            );
+            let _ = std::fs::remove_file(root.join("link"));
+        }
+
+        // 腿 ⑤：界外绝对路径 → 占位（词法栅栏，无需目标存在）。
+        assert!(
+            matches!(fenced("/etc/passwd".into()), crate::model::ContentPart::Text(ref note) if note.contains("image unavailable")),
+            "an absolute path outside the store must degrade to a stable placeholder"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     fn project() -> ProjectKey {

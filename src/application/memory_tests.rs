@@ -108,8 +108,7 @@ fn user_command_is_the_only_writer_and_run_header_explains_bounded_injection() {
     let (completion, receiver) = mpsc::channel();
     let handle = application
         .start_run(ApplicationRunRequest {
-            attachments: Vec::new(),
-            prompt: "use the architecture oracle token".into(),
+            message: crate::message::PendingMessage::text("use the architecture oracle token"),
             approver: Arc::new(CountingApprover(Arc::clone(&approvals))),
             asker: None,
             events: Box::new(SharedEvents(Arc::new(Mutex::new(Vec::new())))),

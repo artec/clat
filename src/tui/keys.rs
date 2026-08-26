@@ -550,13 +550,16 @@ impl App {
                         .as_ref()
                         .and_then(|application| application.recall_pending_steering());
                     match recalled {
-                        Some(text) => {
+                        Some(message) => {
                             // core 召回成功 ⇒ pending 区必含对应回显
                             //（入队与回显同路径）；区侧同步弹出最后一条。
                             // 回填按发送顺序排列、换行分隔（多次召回时
                             // 先发的想法靠前——见 prepend_recalled_line）。
+                            // MM-1A：召回的是 typed 消息；TUI steering 只
+                            // 有文本（admission fail-closed），取文本投影。
                             self.conversation.recall_pending_steering();
-                            self.input.prepend_recalled_line(&text);
+                            self.input
+                                .prepend_recalled_line(&message.content.plain_text());
                             self.flash_status("steering recalled — edit it, Enter requeues");
                         }
                         None => {

@@ -415,7 +415,8 @@ impl SubagentService {
             let mut run = run;
             run.execute_with_items(
                 vec![ModelItem::user_text(prompt)],
-                task.task.clone(),
+                crate::message::MessageContent::text(task.task.clone()),
+                None,
                 &mut events,
             )
         }));

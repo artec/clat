@@ -367,11 +367,12 @@ impl ConversationModel {
                     );
                 }
             }
-            RunEvent::SteeringApplied { text } => {
+            RunEvent::SteeringApplied { message, .. } => {
                 // 与 replay 侧的 UserMessage 同一位点：claim 发生在上一步
                 // assistant/工具卡之后、下一步模型请求之前。pending 回显
-                // 升级为正式用户项（INV-SV2）。
-                self.confirm_pending_steering(text.clone());
+                // 升级为正式用户项（INV-SV2）。steering admission 只放行
+                // 纯文本（MM-1A fail-closed），plain_text 即完整内容。
+                self.confirm_pending_steering(message.plain_text());
             }
             _ => {}
         }
@@ -1025,7 +1026,8 @@ mod tests {
         // claim 升级（INV-SV2）：front 出区、落为正式用户项——无 queued
         // 标记，且位置在 assistant 之后（journal/回放同序）。
         model.apply_run_event(&RunEvent::SteeringApplied {
-            text: "first".into(),
+            message: crate::message::MessageContent::text("first"),
+            client_message_id: None,
         });
         assert_eq!(model.pending_steering_count(), 0);
         let joined = plain(&mut model);
@@ -1036,7 +1038,8 @@ mod tests {
 
         // 区为空时直灌事件（向后兼容：不 panic，直接 push_user）。
         model.apply_run_event(&RunEvent::SteeringApplied {
-            text: "direct".into(),
+            message: crate::message::MessageContent::text("direct"),
+            client_message_id: None,
         });
         assert!(plain(&mut model).contains("❯ direct"));
 
@@ -1331,9 +1334,8 @@ mod tests {
         };
         let handle = application
             .start_run(crate::ApplicationRunRequest {
-                attachments: Vec::new(),
+                message: crate::message::PendingMessage::text(prompt),
                 asker: None,
-                prompt: prompt.into(),
                 approver,
                 events: Box::new(SharedEvents(Arc::clone(&live))),
                 completion,

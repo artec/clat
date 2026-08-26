@@ -515,8 +515,7 @@ fn run_fixture(fixture: &Path) -> Result<ScenarioReport, String> {
         let (completion, receiver) = mpsc::channel();
         let handle = application
             .start_run(ApplicationRunRequest {
-                prompt: definition.prompt.clone(),
-                attachments: Vec::new(),
+                message: crate::message::PendingMessage::text(definition.prompt.clone()),
                 approver: Arc::new(AllowAllApprover),
                 asker: None,
                 events: Box::new(SharedEvents(Arc::clone(&live_events))),

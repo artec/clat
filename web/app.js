@@ -127,6 +127,10 @@ const state = {
   marketLoaded: false,
   marketFallback: false,
   workbenchRequest: 0,
+  // Browser-local projection only. Durable Plan Mode remains core-owned; this
+  // set lets session switches in the current page restore the marker without
+  // persisting workflow authority in localStorage.
+  planModeSessions: new Set(),
 };
 
 const dom = {};
@@ -137,7 +141,7 @@ for (const id of [
   'header-model', 'header-permission', 'new-session', 'session-search', 'session-count',
   'session-list', 'session-empty', 'transcript-scroll', 'empty-state', 'transcript',
   'prompt', 'send', 'cancel', 'run-state', 'composer-permission',
-  'composer-permission-label', 'inspector', 'inspector-toggle', 'inspector-close',
+  'composer-permission-label', 'plan-mode-badge', 'inspector', 'inspector-toggle', 'inspector-close',
   'detail-run', 'detail-seq', 'detail-session', 'detail-model', 'detail-protocol',
   'detail-context', 'detail-budget', 'capability-list', 'detail-mcp', 'mcp-servers',
   'settings-open', 'settings-dialog', 'theme-options', 'permission-options',
@@ -387,6 +391,9 @@ function handleLive(event) {
     case 'tool_finished': {
       const result = event.result || {};
       addToolCard(result.tool_name, '← ' + jsonText(result.output), null, result.is_error);
+      if (result.tool_name === 'exit_plan_mode' && !result.is_error) {
+        setCurrentSessionPlanMode(false);
+      }
       break;
     }
     case 'steering_applied': addNoticeLine('', event.type); break;
@@ -417,7 +424,10 @@ function onSubscribed(ctl) {
   state.reconnectDelayMs = 1000;
   setConnStatus('live', 'live');
   setSwitching(false);
-  if (ctl && ctl.session_id) state.sessionId = ctl.session_id;
+  if (ctl && Object.prototype.hasOwnProperty.call(ctl, 'session_id')) {
+    state.sessionId = ctl.session_id || null;
+  }
+  syncPlanModeBadge();
   refreshWorkbench();
   refreshSessions();
 }
@@ -617,6 +627,83 @@ function addNoticeLine(text, eventId) {
   }
   line.appendChild(copy);
   appendTranscript(line);
+  return line;
+}
+
+function contextAmount(value) {
+  return Number.isFinite(Number(value)) ? String(value) : '—';
+}
+
+function injectionState(value) {
+  return Number(value) > 0 ? 'injected' : 'not injected';
+}
+
+function formatContextSnapshot(snapshot) {
+  const context = snapshot && typeof snapshot === 'object' ? snapshot : {};
+  const unit = typeof context.unit === 'string' && context.unit ? context.unit : 'units';
+  const estimate = (label, key) => `${label}: ${contextAmount(context[key])} ${unit}`;
+  const tools = Array.isArray(context.tools) && context.tools.length > 0
+    ? context.tools.join(', ') : 'none';
+  const skills = Array.isArray(context.skills) && context.skills.length > 0
+    ? context.skills.join(', ') : 'none';
+  const diagnostics = Array.isArray(context.skill_diagnostics)
+    ? context.skill_diagnostics : [];
+  const lines = [
+    `Context estimate · ${unit}`,
+    estimate('Base prompt', 'base_prompt'),
+    estimate('Project instructions', 'project_instructions'),
+    `${estimate('Plan policy', 'plan_policy')} · ${injectionState(context.plan_policy)}`,
+    estimate('Skill catalog', 'skill_catalog'),
+    `${estimate('Goal policy', 'goal_policy')} · ${injectionState(context.goal_policy)}`,
+    `Memory injection: ${contextAmount(context.memory)} / ${contextAmount(context.memory_budget_bytes)} bytes · ${injectionState(context.memory)}`,
+    estimate('Tool schemas', 'tool_schemas'),
+    estimate('History / compaction view', 'history'),
+    estimate('Output reserve', 'output_reserve'),
+    estimate('Input estimate', 'input'),
+    estimate('Total estimate', 'total'),
+    `Tools: ${tools}`,
+    `Skills: ${skills}`,
+  ];
+  if (diagnostics.length === 0) {
+    lines.push('Skill diagnostics: none');
+  } else {
+    lines.push('Skill diagnostics:');
+    for (const diagnostic of diagnostics) {
+      const source = diagnostic && diagnostic.source ? diagnostic.source : '-';
+      const name = diagnostic && diagnostic.name ? diagnostic.name : '-';
+      const kind = diagnostic && diagnostic.kind ? diagnostic.kind : '-';
+      const message = diagnostic && diagnostic.message ? diagnostic.message : '-';
+      lines.push(`! ${source} / ${name} / ${kind}: ${message}`);
+    }
+  }
+  if (context.estimator) lines.push(`Estimator: ${context.estimator}`);
+  return lines.join('\n');
+}
+
+function addContextSnapshot(snapshot) {
+  const line = addNoticeLine(formatContextSnapshot(snapshot));
+  line.classList.add('context-notice');
+  line.setAttribute('aria-label', 'Context estimate');
+}
+
+function syncPlanModeBadge() {
+  const active = Boolean(state.sessionId && state.planModeSessions.has(state.sessionId));
+  dom['plan-mode-badge'].classList.toggle('hidden', !active);
+}
+
+function setCurrentSessionPlanMode(active) {
+  if (state.sessionId) {
+    if (active) state.planModeSessions.add(state.sessionId);
+    else state.planModeSessions.delete(state.sessionId);
+  }
+  syncPlanModeBadge();
+}
+
+function planModeCommandState(command) {
+  const words = String(command || '').trim().split(/\s+/);
+  if (words.length === 1 && words[0] === '/plan') return true;
+  if (words.length === 2 && words[0] === '/plan' && words[1] === 'off') return false;
+  return null;
 }
 
 function addTraceEvent(eventId, detail) {
@@ -698,6 +785,7 @@ async function refreshWorkbench() {
     const model = info.model || {};
     const permission = info.permission || {};
     state.sessionId = session.id || null;
+    syncPlanModeBadge();
 
     dom['project-name'].textContent = project.name || 'Current project';
     dom['project-root'].textContent = project.root || '';
@@ -1165,8 +1253,10 @@ async function submitPrompt() {
       const value = await rpc('command.run', { command: text });
       if (value && value.kind === 'status') {
         addNoticeLine(value.message || 'command completed');
+        const planMode = planModeCommandState(text);
+        if (planMode !== null) setCurrentSessionPlanMode(planMode);
       } else if (value && value.kind === 'context') {
-        addNoticeLine(JSON.stringify(value.context));
+        addContextSnapshot(value.context);
       } else if (value && value.kind === 'session_reset') {
         addNoticeLine('new conversation');
         await loadSessions();

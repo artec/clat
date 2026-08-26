@@ -329,9 +329,16 @@ pub(crate) fn dispatch(
             if text.trim().is_empty() {
                 return Err(RpcError::bad_request("text must not be empty"));
             }
-            match with_app(shared, |app| app.steer(text)) {
+            // MM-1A additive：可选客户端幂等键（additive 可选参数；缺省
+            // = 无键提交）。图片 steering 被 core admission fail-closed，
+            // `Refused` 如实回 bad-request，不冒充 not_running。
+            let client_message_id = optional_str(params, "clientMessageId")?;
+            let message =
+                crate::message::PendingMessage::from_front_end(text, client_message_id, Vec::new());
+            match with_app(shared, |app| app.steer(message)) {
                 SteerOutcome::Queued => Ok(json!({ "outcome": "queued" })),
                 SteerOutcome::NotRunning => Ok(json!({ "outcome": "not_running" })),
+                SteerOutcome::Refused { reason } => Err(RpcError::bad_request(reason)),
             }
         }
         "run.cancel" => {
@@ -482,9 +489,8 @@ fn start_goal_run(shared: &Arc<ServeShared>, rpc_id: String) -> Result<Value, Rp
     let started = {
         let mut app = shared.app.lock().expect("application lock");
         app.start_goal_run(ApplicationRunRequest {
-            attachments: Vec::new(),
+            message: crate::message::PendingMessage::text(String::new()),
             asker: None,
-            prompt: String::new(),
             approver: Arc::new(approver::ServeApprover::new(Arc::clone(shared))),
             events: Box::new(FanoutSink {
                 shared: Arc::clone(shared),
@@ -527,6 +533,18 @@ fn prompt_send(params: &Map<String, Value>, shared: &Arc<ServeShared>) -> Result
         }
         Some(_) => return Err(RpcError::bad_request("attachments must be an array")),
     };
+    // MM-1A additive：可选客户端幂等键——durable user 事件与 receipts
+    // 投影携带它。M-02（审查 2026-08-27）：committed 重试在 append 前
+    // 拦截——同 key 同 digest 幂等成功（不重复 append，返回原回执）、
+    // 同 key 异 digest conflict（bad-request）；判别走 core 的
+    // `committed_admission` 生产查询，不在 serve 复刻投影逻辑。
+    let client_message_id = optional_str(params, "clientMessageId")?;
+    let message =
+        crate::message::PendingMessage::from_front_end(text, client_message_id, attachments);
+    // 第一道（claim 前）：挡住绝大多数已完成的重复提交。
+    if let Some(outcome) = committed_retry_check(shared, &message) {
+        return outcome;
+    }
 
     let rpc_id = uuid::Uuid::new_v4().to_string();
     // 先占 run 槽再锁应用（锁纪律：Inner 锁内不调门面；busy 判定与
@@ -534,14 +552,21 @@ fn prompt_send(params: &Map<String, Value>, shared: &Arc<ServeShared>) -> Result
     if !shared.try_claim_run(&rpc_id, super::state::now_ms()) {
         return Err(RpcError::busy("another run is already active"));
     }
+    // 第二道（claim 后复查）：关掉「检查与 append 之间上一个同键 run
+    // 恰好完成落盘」的竞态窗口——claim 是串行点，复查之后不再可能
+    // 有并发同键 append。
+    if let Some(outcome) = committed_retry_check(shared, &message) {
+        shared.release_run_claim();
+        return outcome;
+    }
     let (completion_tx, completion_rx) =
         mpsc::channel::<Result<ApplicationRunDone, ApplicationRunFailure>>();
+    let client_key = message.client_message_id.clone();
     let started = {
         let mut app = shared.app.lock().expect("application lock");
         app.start_run(ApplicationRunRequest {
-            attachments,
+            message,
             asker: None,
-            prompt: text,
             approver: Arc::new(approver::ServeApprover::new(Arc::clone(shared))),
             events: Box::new(FanoutSink {
                 shared: Arc::clone(shared),
@@ -552,13 +577,51 @@ fn prompt_send(params: &Map<String, Value>, shared: &Arc<ServeShared>) -> Result
     match started {
         Ok(handle) => {
             shared.spawn_settler(rpc_id.clone(), completion_rx, handle);
-            Ok(json!({ "prompt_rpc_id": rpc_id }))
+            // M-03：受理即应答携带 committed 回执——start_run 返回时
+            // user/message 已 append+flush（prepare 在调用线程执行）、
+            // 投影已 fold（flush 同步 fold），此刻 journal 即权威。
+            let mut response = json!({ "prompt_rpc_id": rpc_id });
+            if let Some(id) = &client_key
+                && let Some(record) = with_app(shared, |app| app.committed_admission(id))
+            {
+                response["receipt"] = super::shapes::admission_receipt_value(&record.receipt);
+            }
+            Ok(response)
         }
         Err(error) => {
             shared.release_run_claim();
             Err(RpcError::internal(format!("could not start run: {error}")))
         }
     }
+}
+
+/// M-02：committed 重试的幂等/conflict 判定。返回 `Some(outcome)` =
+/// 命中已提交键（调用方直接应答，不再 append）；`None` = 正常接纳。
+/// digest 缺失（本仓库写入方在有键时恒写 digest；缺失只可能来自
+/// 篡改/异常日志）按"无法证伪即同一提交"处理——键归属客户端，威胁
+/// 模型是事故性重试而非键盗用。
+fn committed_retry_check(
+    shared: &Arc<ServeShared>,
+    message: &crate::message::PendingMessage,
+) -> Option<Result<Value, RpcError>> {
+    let client_message_id = message.client_message_id.as_ref()?;
+    let record = {
+        let app = shared.app.lock().expect("application lock");
+        app.committed_admission(client_message_id)
+    }?;
+    let incoming = message.request_digest();
+    if let Some(recorded) = record.request_digest.as_deref()
+        && recorded != incoming
+    {
+        return Some(Err(RpcError::bad_request(
+            "clientMessageId is already committed with a different payload",
+        )));
+    }
+    Some(Ok(json!({
+        "kind": "receipt",
+        "duplicate": true,
+        "receipt": super::shapes::admission_receipt_value(&record.receipt),
+    })))
 }
 
 fn with_app<T>(
@@ -593,6 +656,20 @@ fn required_str(params: &Map<String, Value>, field: &str) -> Result<String, RpcE
         .ok_or_else(|| RpcError::bad_request(format!("missing field: {field}")))
 }
 
+/// MM-1A：可选字符串参数——缺席/Null = None；出现但非字符串/空/
+/// 超界 = bad-request（幂等键不吞畸形值）。
+fn optional_str(params: &Map<String, Value>, field: &str) -> Result<Option<String>, RpcError> {
+    match params.get(field) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) if !value.is_empty() && value.len() <= 256 => {
+            Ok(Some(value.clone()))
+        }
+        Some(_) => Err(RpcError::bad_request(format!(
+            "field `{field}` must be a non-empty string of at most 256 bytes"
+        ))),
+    }
+}
+
 /// 实时族 sink（§5.2）：emit → 零转译过线。挂在 run worker 上，
 /// `try_send` 非阻塞（INV-S7）。
 struct FanoutSink {
@@ -608,6 +685,51 @@ impl EventSink for FanoutSink {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// M-04（审查 2026-08-27）：`optional_str` 解析层的直接判别——
+    /// 缺省/Null 合法放行，非字符串/空串/超长 fail-closed（幂等键
+    /// 不吞畸形值；admission 侧的等价校验是第二道，不是替身）。
+    #[test]
+    fn optional_str_admits_absent_and_rejects_malformed_values() {
+        let params = |value: Option<Value>| {
+            let mut map = serde_json::Map::new();
+            if let Some(value) = value {
+                map.insert("clientMessageId".into(), value);
+            }
+            map
+        };
+        // 缺席 / Null：None。
+        assert_eq!(
+            optional_str(&params(None), "clientMessageId").expect("absent is fine"),
+            None
+        );
+        assert_eq!(
+            optional_str(&params(Some(Value::Null)), "clientMessageId").expect("null is fine"),
+            None
+        );
+        // 合法值：Some。
+        assert_eq!(
+            optional_str(
+                &params(Some(Value::String("key-1".into()))),
+                "clientMessageId"
+            )
+            .expect("valid id"),
+            Some("key-1".to_owned())
+        );
+        // 畸形：非字符串 / 空串 / 超过 256 字节。
+        assert!(optional_str(&params(Some(json!(7))), "clientMessageId").is_err());
+        assert!(optional_str(&params(Some(json!(""))), "clientMessageId").is_err());
+        assert!(
+            optional_str(&params(Some(json!("x".repeat(257)))), "clientMessageId").is_err(),
+            "an over-long id must be rejected at the parse layer"
+        );
+        // 边界值本身合法。
+        assert_eq!(
+            optional_str(&params(Some(json!("x".repeat(256)))), "clientMessageId")
+                .expect("the bound itself is valid"),
+            Some("x".repeat(256))
+        );
+    }
 
     #[test]
     fn rpc_result_roundtrips_and_unknown_codes_fold_to_internal() {

@@ -172,6 +172,51 @@ fn prompt_send(addr: SocketAddr, text: &str) -> serde_json::Value {
     }
 }
 
+/// M-02：带客户端幂等键的 prompt.send（原始 body 直发）。
+fn prompt_send_keyed(
+    addr: SocketAddr,
+    text: &str,
+    client_message_id: &str,
+) -> (u16, Result<serde_json::Value, ErrorCode>) {
+    post(
+        addr,
+        TEST_TOKEN,
+        "prompt.send",
+        &format!(r#"{{"text":"{text}","clientMessageId":"{client_message_id}"}}"#),
+    )
+}
+
+/// M-02：数 journal 里携带指定客户端键的 user/message 条数（幂等重试
+/// 不得重复 append 的直接证据——读物理日志，不依赖进程内状态）。
+fn count_keyed_user_messages(storage_root: &Path, client_message_id: &str) -> usize {
+    let backend = crate::session::persistence::JsonlBackend::new(
+        storage_root.join("sessions"),
+        crate::session::persistence::JsonlCompression::Zstd,
+        false,
+    );
+    backend
+        .list_headers()
+        .unwrap()
+        .iter()
+        .filter_map(|header| {
+            let cwd = header.cwd.clone().expect("header carries the project cwd");
+            let key = crate::session::key::SessionKey {
+                project: crate::session::key::ProjectKey::from_cwd(&cwd),
+                id: header.id.clone(),
+            };
+            backend.load(&key, false).ok().map(|loaded| loaded.events)
+        })
+        .flat_map(|events| {
+            events
+                .into_iter()
+                .filter(|event| event.event_type == "user/message")
+        })
+        .filter(|event| {
+            event.data.get("clientMessageId").and_then(|v| v.as_str()) == Some(client_message_id)
+        })
+        .count()
+}
+
 // —— SSE 客户端助手 ————————————————————————————————————————————————
 
 /// 只握手不读（慢消费者腿）：订阅已在服务端注册，客户端零消费。
@@ -1046,6 +1091,81 @@ fn prompt_send_is_busy_while_a_run_is_active() {
     cleanup(handle, &storage_root, &project_root);
 }
 
+// ---- M-02/M-03（审查 2026-08-27）：committed 幂等重试的执行侧闭环 ----
+
+/// 不变量（MM-I11 执行侧，删掉 `committed_retry_check` 拦截即红）：
+/// - 同 key 同 payload 重试 → **不重复 append**（物理日志里该键的
+///   user/message 恒为 1 条），返回原 committed 回执（duplicate 应答）；
+/// - 同 key 异 payload → conflict（bad-request），journal 不新增；
+/// - 异 key → 照常接纳；
+/// - M-03：prompt.send 受理响应与 `prompt.settled` 帧均携带回执
+///   （受理时点 user/message 已 append+flush，journal 即权威）。
+#[test]
+fn prompt_send_committed_retry_is_idempotent_and_conflicts_on_divergence() {
+    let (handle, storage_root, project_root) =
+        spawn_serve("serve-mm1a-idempotent", TestBehavior::Success);
+    let mut client = SseClient::connect(handle.addr);
+
+    // 首次提交：受理响应已携带 committed 回执。
+    let (status, result) = prompt_send_keyed(handle.addr, "do it once", "mm1a-key-1");
+    assert_eq!(status, 200, "{result:?}");
+    let accepted = result.expect("accepted");
+    assert_eq!(
+        accepted["receipt"]["state"], "committed",
+        "the acceptance answer carries the committed receipt: {accepted}"
+    );
+    assert_eq!(accepted["receipt"]["client_message_id"], "mm1a-key-1");
+    let first_message_id = accepted["receipt"]["committed_message_id"]
+        .as_str()
+        .expect("committed message id")
+        .to_owned();
+    // settled 帧同样携带回执（完成态）。
+    let settled = client.wait_settled();
+    let settled_ctl = ctl_of(&settled);
+    assert_eq!(settled_ctl["receipt"]["state"], "committed");
+    assert_eq!(
+        settled_ctl["receipt"]["committed_message_id"].as_str(),
+        Some(first_message_id.as_str())
+    );
+
+    // 同 key 同 payload 重试：幂等成功，journal 不重复。
+    let (status, result) = prompt_send_keyed(handle.addr, "do it once", "mm1a-key-1");
+    assert_eq!(status, 200, "{result:?}");
+    let replayed = result.expect("idempotent success");
+    assert_eq!(replayed["kind"], "receipt");
+    assert_eq!(replayed["duplicate"], true);
+    assert_eq!(
+        replayed["receipt"]["committed_message_id"].as_str(),
+        Some(first_message_id.as_str()),
+        "the retry returns the ORIGINAL receipt"
+    );
+    assert_eq!(
+        count_keyed_user_messages(&storage_root, "mm1a-key-1"),
+        1,
+        "an idempotent retry must not append a second user/message"
+    );
+
+    // 同 key 异 payload：conflict，journal 不新增。
+    let (status, result) = prompt_send_keyed(handle.addr, "different payload", "mm1a-key-1");
+    assert_eq!(status, 200, "{result:?}");
+    assert_eq!(result.unwrap_err(), ErrorCode::BadRequest);
+    assert_eq!(
+        count_keyed_user_messages(&storage_root, "mm1a-key-1"),
+        1,
+        "a conflicting retry must not append"
+    );
+
+    // 异 key：照常接纳（受理响应照常可用）。
+    let (status, result) = prompt_send_keyed(handle.addr, "another", "mm1a-key-2");
+    assert_eq!(status, 200, "{result:?}");
+    assert!(result.expect("accepted").get("prompt_rpc_id").is_some());
+    client.wait_settled();
+    assert_eq!(count_keyed_user_messages(&storage_root, "mm1a-key-2"), 1);
+    assert_eq!(count_keyed_user_messages(&storage_root, "mm1a-key-1"), 1);
+
+    cleanup(handle, &storage_root, &project_root);
+}
+
 // ---- 审批穿网（验收 12，INV-S3）----
 
 #[test]
@@ -1302,7 +1422,8 @@ fn slow_subscriber_overflow_is_dropped_and_run_buffer_is_intact() {
 
     // run 缓冲经 fanout_run_event 记账（实时族才进缓冲）。
     shared.fanout_run_event(&crate::RunEvent::SteeringApplied {
-        text: "steer".into(),
+        message: crate::message::MessageContent::text("steer"),
+        client_message_id: None,
     });
     assert_eq!(shared.run_buffer_prefix(usize::MAX).len(), 1);
     shared.release_run_claim();

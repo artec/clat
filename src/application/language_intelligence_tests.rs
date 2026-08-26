@@ -22,8 +22,7 @@ fn run_request(application: &mut TrustedProjectApplication, prompt: &str) -> App
     let (completion, receiver) = mpsc::channel();
     let handle = application
         .start_run(ApplicationRunRequest {
-            attachments: Vec::new(),
-            prompt: prompt.into(),
+            message: crate::message::PendingMessage::text(prompt),
             approver: Arc::new(CountingApprover(Arc::new(AtomicUsize::new(0)))),
             asker: None,
             events: Box::new(SharedEvents(Arc::new(Mutex::new(Vec::new())))),

@@ -237,4 +237,69 @@ test('model trace renders human-readable event names instead of raw protocol ids
   await expect(trace).toBeVisible(LIVE);
   await expect(trace).toHaveAttribute('title', 'Event ID: model_requested');
   await expect(trace).not.toContainText('model_requested');
+  const approval = page.locator('.approval-card').first();
+  await expect(approval).toBeVisible(LIVE);
+  await approval.locator('button.ghost').click();
+  await expect(page.locator('.verdict.completed')).toBeVisible(LIVE);
+});
+
+// FE-1：斜杠桥仍只返回 core 事实；PWA 负责格式化 context，并让 Plan Mode
+// 在普通 notice 退场后仍有持续、可撤销的视觉状态。
+test('context is readable and the plan-mode marker appears and clears', async ({ page }) => {
+  const entry = hostInfo('run-command');
+  await openWorkbench(page, entry);
+
+  // /context 可在 Fresh 状态读取，但 durable Plan Mode 需要已物化会话。
+  // 新建后跑一轮并拒绝 Execute，既得到真实 session，也不产生命令副作用。
+  await expect(page.locator('#detail-run')).toHaveText('Idle', LIVE);
+  await page.click('#new-session');
+  await expect(page.locator('.msg.user')).toHaveCount(0, LIVE);
+  await expect(page.locator('#send')).toBeEnabled(LIVE);
+  await page.fill('#prompt', 'materialize a session for plan mode');
+  await page.click('#send');
+  const approval = page.locator('.approval-card').first();
+  await expect(approval).toBeVisible(LIVE);
+  await approval.locator('button.ghost').click();
+  await expect(page.locator('.verdict.completed')).toBeVisible(LIVE);
+  await expect(page.locator('#detail-session')).not.toHaveText('Fresh', LIVE);
+
+  await page.fill('#prompt', '/context');
+  await page.click('#send');
+  const context = page.locator('.context-notice').last();
+  await expect(context).toBeVisible(LIVE);
+  await expect(context).toContainText('Context estimate · tokens');
+  for (const label of [
+    'Base prompt:',
+    'Project instructions:',
+    'Plan policy:',
+    'Skill catalog:',
+    'Goal policy:',
+    'Memory injection:',
+    'Tool schemas:',
+    'History / compaction view:',
+    'Output reserve:',
+    'Input estimate:',
+    'Total estimate:',
+  ]) {
+    await expect(context).toContainText(label);
+  }
+  await expect(context).toContainText(/Goal policy: \d+ tokens · (injected|not injected)/);
+  await expect(context).toContainText(/Memory injection: \d+ \/ \d+ bytes · (injected|not injected)/);
+  await expect(context).not.toContainText('{"estimator"');
+
+  await page.fill('#prompt', '/plan');
+  await page.click('#send');
+  const badge = page.locator('#plan-mode-badge');
+  await expect(badge).toBeVisible(LIVE);
+  await expect(badge).toHaveText('Plan mode');
+
+  // 另一条命令完成后仍常显，不是转录区里一闪而过的 status notice。
+  await page.fill('#prompt', '/context');
+  await page.click('#send');
+  await expect(page.locator('.context-notice')).toHaveCount(2, LIVE);
+  await expect(badge).toBeVisible();
+
+  await page.fill('#prompt', '/plan off');
+  await page.click('#send');
+  await expect(badge).toBeHidden(LIVE);
 });

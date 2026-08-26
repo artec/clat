@@ -60,7 +60,11 @@ impl OpenAiCompatibleModel {
         // 默认携带。由各厂商预设的 extra_body 提供，通用通道不注入。
         body.insert(
             "messages".into(),
-            Value::Array(map_messages(request.instructions, request.items)?),
+            Value::Array(map_messages(
+                request.instructions,
+                request.items,
+                &self.config.image_policy,
+            )?),
         );
 
         if !request.tools.is_empty() {
@@ -212,7 +216,11 @@ impl Model for OpenAiCompatibleModel {
 /// followed by the turn's tool results — even though the item stream
 /// interleaves them. The turn is emitted when it ends (a new user or
 /// assistant item, or the end of the list).
-fn map_messages(instructions: Option<&str>, items: &[ModelItem]) -> Result<Vec<Value>, ModelError> {
+fn map_messages(
+    instructions: Option<&str>,
+    items: &[ModelItem],
+    policy: &crate::model::ImageRequestPolicy,
+) -> Result<Vec<Value>, ModelError> {
     /// An assistant turn that is still collecting tool calls and results.
     struct PendingAssistant {
         /// `None` means the turn had no `Assistant` item (a bare tool-call
@@ -260,7 +268,7 @@ fn map_messages(instructions: Option<&str>, items: &[ModelItem]) -> Result<Vec<V
                 flush(&mut messages, &mut pending);
                 messages.push(json!({
                     "role": "user",
-                    "content": user_content(content)?,
+                    "content": user_content(content, policy)?,
                 }));
             }
             ModelItem::Assistant { content, reasoning } => {
@@ -328,7 +336,13 @@ fn content_text(content: &[ContentPart]) -> String {
 /// 为 OpenAI chat 的多 part 数组——图片读文件转 base64 data URL
 ///（`image_url`）。文件读失败的 part 降级为文本注记：一次会话里删
 /// 掉附件文件不该把整个 run 打死（M3 降级语义）。
-fn user_content(content: &[ContentPart]) -> Result<Value, ModelError> {
+/// INV-MM2-6（MM-2 W6）：请求侧图片策略在此强制——media 白名单
+///（F-2）、单图字节上限（F-3）、单消息张数上限（F-5）与累计
+/// base64 预算；被策略拒绝的图降级为可行动注记而非失败整轮。
+fn user_content(
+    content: &[ContentPart],
+    policy: &crate::model::ImageRequestPolicy,
+) -> Result<Value, ModelError> {
     let has_image = content
         .iter()
         .any(|part| matches!(part, ContentPart::Image { .. }));
@@ -336,37 +350,120 @@ fn user_content(content: &[ContentPart]) -> Result<Value, ModelError> {
         return Ok(Value::String(content_text(content)));
     }
     let mut parts = Vec::new();
+    let mut images_sent = 0usize;
+    let mut base64_total = 0usize;
     for part in content {
         match part {
             ContentPart::Text(text) => parts.push(json!({
                 "type": "text",
                 "text": text,
             })),
-            ContentPart::Image { path, media_type } => match image_data_url_for(path, media_type) {
-                Some(url) => parts.push(json!({
-                    "type": "image_url",
-                    "image_url": { "url": url },
-                })),
-                None => parts.push(json!({
-                    "type": "text",
-                    "text": format!("[image unavailable: {path}]"),
-                })),
-            },
+            ContentPart::Image { path, media_type } => {
+                if images_sent >= policy.max_images {
+                    parts.push(json!({
+                        "type": "text",
+                        "text": format!(
+                            "[image unavailable: this provider accepts at most {} images per \
+                             message]",
+                            policy.max_images
+                        ),
+                    }));
+                    continue;
+                }
+                match image_data_url_for(path, media_type, policy) {
+                    Some(url) => {
+                        base64_total = base64_total.saturating_add(url.len());
+                        if base64_total > MAX_REQUEST_IMAGE_BUDGET_BYTES {
+                            // 累计预算前置：不再继续放大请求体。
+                            parts.push(json!({
+                                "type": "text",
+                                "text": "[image unavailable: the message's images exceed the \
+                                         request image budget]",
+                            }));
+                        } else {
+                            images_sent += 1;
+                            parts.push(json!({
+                                "type": "image_url",
+                                "image_url": { "url": url },
+                            }));
+                        }
+                    }
+                    None => parts.push(json!({
+                        "type": "text",
+                        "text": format!("[image unavailable: {path}]"),
+                    })),
+                }
+            }
         }
     }
     Ok(Value::Array(parts))
 }
 
-/// 读附件文件 → `data:<media>;base64,…`。任何失败（缺失/超大/读错）
+/// 单消息图片 base64 累计预算（防御性总闸：per-image 上限 × 张数上限
+/// 已按策略约束总量，这里是请求体构造前的最后有界保证）。
+const MAX_REQUEST_IMAGE_BUDGET_BYTES: usize = 64 * 1024 * 1024;
+
+/// 读附件文件 → `data:<media>;base64,…`。任何失败（缺失/超大/读错/
+/// 符号链接替换/**策略拒绝**——media 不在白名单、字节超通道上限）
 /// 返回 None，调用方降级。两个协议共用（chat 的 `image_url.url` 与
 /// Responses 的 `input_image.image_url`）。
-pub(crate) fn image_data_url_for(path: &str, media_type: &str) -> Option<String> {
-    let bytes = std::fs::read(path).ok()?;
-    if bytes.len() as u64 > crate::media::MAX_ATTACHMENT_BYTES * 2 {
-        // base64 膨胀 ~4/3：源头 4MB 上限 + 少量余量；超限视为异常。
+///
+/// INV-MM1-5 读侧加固：no-follow 打开（Unix `O_NOFOLLOW`；Windows
+/// 打开 reparse 点后按类型拒绝——比 Unix 弱一档，记档）+ 打开后按
+/// 句柄读（栅栏检查与读取之间的最终组件替换不再被跟随）。
+/// INV-MM2-6：读取**有界**（take 上限+1，超限即拒）——不在无界
+/// read_to_end 之后才发现超限。
+pub(crate) fn image_data_url_for(
+    path: &str,
+    media_type: &str,
+    policy: &crate::model::ImageRequestPolicy,
+) -> Option<String> {
+    if !policy
+        .media_types
+        .iter()
+        .any(|allowed| allowed == media_type)
+    {
+        return None;
+    }
+    let bytes = read_attachment_nofollow(path, policy.max_bytes)?;
+    if bytes.len() as u64 > policy.max_bytes {
         return None;
     }
     Some(format!("data:{media_type};base64,{}", base64_bytes(&bytes)))
+}
+
+/// 打开最终组件不跟随符号链接，再从句柄**有界**读取（上限 +1 字节：
+/// 读满即超限）。中间组件的 symlink 由会话层栅栏
+///（`fence_attachment_parts`）先行拒绝；这里是最终组件的 TOCTOU
+/// 收口。
+fn read_attachment_nofollow(path: &str, max_bytes: u64) -> Option<Vec<u8>> {
+    use std::io::Read as _;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    let file = options.open(path).ok()?;
+    #[cfg(windows)]
+    {
+        // 打开了 reparse 点本身：symlink/挂接点按拒绝处理。
+        if file.metadata().ok()?.file_type().is_symlink() {
+            return None;
+        }
+    }
+    let mut bytes = Vec::new();
+    file.take(max_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .ok()?;
+    Some(bytes)
 }
 
 fn base64_bytes(bytes: &[u8]) -> String {
@@ -425,6 +522,14 @@ fn merge_extra_body(body: &mut Map<String, Value>, extra: &Value) -> Result<(), 
             return Err(ModelError::request(format!(
                 "extra body key `{key}` conflicts with a CLAT-managed request field"
             )));
+        }
+        if value.is_null() {
+            // INV-MM2-3（MM-2 W2）：JSON null 是 suppress/tombstone——
+            // 抑制此前层（preset-managed 默认/thinking merge）写入的
+            // 同名键，而不是发送字面 null。core-owned 键仍在上面的
+            // 保留键防线拒绝。
+            body.remove(key);
+            continue;
         }
         body.insert(key.clone(), value.clone());
     }
@@ -798,18 +903,25 @@ mod tests {
     fn user_content_serializes_images_as_data_urls() {
         // 纯文本：字符串（既有行为不变）。
         assert_eq!(
-            user_content(&[ContentPart::Text("hi".into())]).unwrap(),
+            user_content(
+                &[ContentPart::Text("hi".into())],
+                &crate::model::ImageRequestPolicy::default()
+            )
+            .unwrap(),
             json!("hi")
         );
         // 带图：多 part 数组，图片是 base64 data URL。
         let image = temp_attachment("chat", b"hello world", "png");
-        let content = user_content(&[
-            ContentPart::Text("look".into()),
-            ContentPart::Image {
-                path: image.display().to_string(),
-                media_type: "image/png".into(),
-            },
-        ])
+        let content = user_content(
+            &[
+                ContentPart::Text("look".into()),
+                ContentPart::Image {
+                    path: image.display().to_string(),
+                    media_type: "image/png".into(),
+                },
+            ],
+            &crate::model::ImageRequestPolicy::default(),
+        )
         .unwrap();
         let parts = content.as_array().unwrap();
         assert_eq!(parts.len(), 2);
@@ -821,13 +933,16 @@ mod tests {
         let _ = std::fs::remove_file(&image);
 
         // 文件缺失：图片 part 降级为可读注记（run 不崩）。
-        let content = user_content(&[
-            ContentPart::Text("look".into()),
-            ContentPart::Image {
-                path: "/nonexistent/probe.png".into(),
-                media_type: "image/png".into(),
-            },
-        ])
+        let content = user_content(
+            &[
+                ContentPart::Text("look".into()),
+                ContentPart::Image {
+                    path: "/nonexistent/probe.png".into(),
+                    media_type: "image/png".into(),
+                },
+            ],
+            &crate::model::ImageRequestPolicy::default(),
+        )
         .unwrap();
         let parts = content.as_array().unwrap();
         assert_eq!(parts[1]["type"], json!("text"));
@@ -983,6 +1098,152 @@ mod tests {
         assert_eq!(body["tools"][0]["type"], "function");
     }
 
+    /// INV-MM2-3（MM-2 W2 红测）：extra_body 的 JSON null 是
+    /// suppress/tombstone——抑制此前层（preset 默认/thinking merge）
+    /// 写入的同名键，而不是发送字面 null。pre-fix（null 原样插入）
+    /// 红：body 里出现字面 null。core-owned 键照旧拒绝。
+    /// INV-MM2-6（MM-2 W6 红测）：请求侧图片策略强制——media 白名单
+    ///（F-2，非白名单降级注记）、张数上限（F-5，超额降级）、单图字节
+    /// 上限（F-3，有界读拒绝）。删任一分支对应腿红。
+    #[test]
+    fn image_policy_is_enforced_at_request_projection() {
+        let glp = crate::model::ImageRequestPolicy {
+            media_types: vec!["image/png".into(), "image/jpeg".into()],
+            max_images: 2,
+            max_bytes: 4 * 1024 * 1024,
+        };
+        let png = temp_attachment("policy-ok", b"policy-ok-bytes", "png");
+
+        // F-2：gif media 不在白名单 → 降级注记（非 image part）。
+        let content = user_content(
+            &[
+                ContentPart::Text("look".into()),
+                ContentPart::Image {
+                    path: png.display().to_string(),
+                    media_type: "image/gif".into(),
+                },
+            ],
+            &glp,
+        )
+        .unwrap();
+        let parts = content.as_array().unwrap();
+        assert_eq!(
+            parts[1]["type"],
+            json!("text"),
+            "non-whitelisted media degrades"
+        );
+        assert!(
+            parts[1]["text"]
+                .as_str()
+                .unwrap()
+                .contains("image unavailable"),
+            "the degradation note is actionable"
+        );
+
+        // F-5：第 3 张起降级（max_images=2），前两张照发。
+        let content = user_content(
+            &[
+                ContentPart::Image {
+                    path: png.display().to_string(),
+                    media_type: "image/png".into(),
+                },
+                ContentPart::Image {
+                    path: png.display().to_string(),
+                    media_type: "image/png".into(),
+                },
+                ContentPart::Image {
+                    path: png.display().to_string(),
+                    media_type: "image/png".into(),
+                },
+            ],
+            &glp,
+        )
+        .unwrap();
+        let parts = content.as_array().unwrap();
+        assert_eq!(parts[0]["type"], json!("image_url"));
+        assert_eq!(parts[1]["type"], json!("image_url"));
+        assert_eq!(parts[2]["type"], json!("text"));
+        assert!(
+            parts[2]["text"]
+                .as_str()
+                .unwrap()
+                .contains("at most 2 images"),
+            "the count-cap note names the limit"
+        );
+
+        // F-3：字节上限——tiny policy（16B）下 15B 文件过、17B 拒。
+        let tiny = crate::model::ImageRequestPolicy {
+            media_types: vec!["image/png".into()],
+            max_images: 8,
+            max_bytes: 16,
+        };
+        let small = temp_attachment("tiny-ok", b"123456789012345", "png");
+        let big = temp_attachment("tiny-bad", b"12345678901234567", "png");
+        let content = user_content(
+            &[
+                ContentPart::Image {
+                    path: small.display().to_string(),
+                    media_type: "image/png".into(),
+                },
+                ContentPart::Image {
+                    path: big.display().to_string(),
+                    media_type: "image/png".into(),
+                },
+            ],
+            &tiny,
+        )
+        .unwrap();
+        let parts = content.as_array().unwrap();
+        assert_eq!(parts[0]["type"], json!("image_url"), "within cap passes");
+        assert_eq!(parts[1]["type"], json!("text"), "over cap degrades");
+
+        let _ = std::fs::remove_file(&png);
+        let _ = std::fs::remove_file(&small);
+        let _ = std::fs::remove_file(&big);
+    }
+
+    #[test]
+    fn extra_body_null_is_a_tombstone_not_a_literal() {
+        let config = ModelConfig {
+            protocol: crate::ModelProtocol::OpenAiCompatible,
+            model: "custom".into(),
+            endpoint: "http://localhost:9000/v1".into(),
+            request_path: "/chat/completions".into(),
+            // 模拟 preset/thinking 层已写入 reasoning_effort 与 top_p，
+            // 用户 extra 层以 null 摘除两者。
+            extra_body: json!({"reasoning_effort": null, "top_p": null, "custom_key": 7}),
+            ..ModelConfig::default()
+        };
+        let model =
+            OpenAiCompatibleModel::from_runtime_fields(vec![String::new()], &config).unwrap();
+        let items = vec![ModelItem::user_text("hello")];
+        let body = model
+            .request_body(ModelRequest {
+                instructions: None,
+                items: &items,
+                tools: &[],
+                options: &ModelOptions::default(),
+                cancel: &CancelToken::new(),
+            })
+            .unwrap();
+        assert!(
+            body.get("reasoning_effort").is_none(),
+            "suppressed key absent"
+        );
+        assert!(body.get("top_p").is_none(), "suppressed key absent");
+        assert_eq!(body["custom_key"], 7, "non-null extras still merge");
+
+        // 直接单测合并函数：null 摘除既有键。
+        let mut body = serde_json::Map::new();
+        body.insert("reasoning_effort".into(), json!("high"));
+        merge_extra_body(&mut body, &json!({"reasoning_effort": null})).unwrap();
+        assert!(body.get("reasoning_effort").is_none());
+
+        // core-owned 键仍然拒绝（即使以 null 形式）。
+        let mut body = serde_json::Map::new();
+        assert!(merge_extra_body(&mut body, &json!({"model": null})).is_err());
+    }
+
     #[test]
     fn parses_streaming_text_and_tool_calls() {
         let stream = concat!(
@@ -1135,6 +1396,7 @@ mod tests {
                 arguments: json!({}),
             }),
             ModelItem::ToolResult(ToolResult {
+                blocks: Vec::new(),
                 call_id: "call-1".into(),
                 tool_name: "get_date".into(),
                 output: json!("2026-08-14"),
@@ -1146,6 +1408,7 @@ mod tests {
                 arguments: json!({"location": "Hangzhou"}),
             }),
             ModelItem::ToolResult(ToolResult {
+                blocks: Vec::new(),
                 call_id: "call-2".into(),
                 tool_name: "get_weather".into(),
                 output: json!("cloudy"),
@@ -1154,7 +1417,12 @@ mod tests {
             ModelItem::assistant_text("It will be cloudy."),
         ];
 
-        let messages = map_messages(Some("system"), &items).expect("messages");
+        let messages = map_messages(
+            Some("system"),
+            &items,
+            &crate::model::ImageRequestPolicy::default(),
+        )
+        .expect("messages");
 
         // system, user, assistant(tool_calls c1+c2, reasoning), tool, tool, assistant
         assert_eq!(messages.len(), 6);
@@ -1178,7 +1446,8 @@ mod tests {
             ModelItem::assistant_with_reasoning("hello", Some("no tools needed".into())),
             ModelItem::user_text("next"),
         ];
-        let messages = map_messages(None, &items).expect("messages");
+        let messages = map_messages(None, &items, &crate::model::ImageRequestPolicy::default())
+            .expect("messages");
         assert_eq!(messages.len(), 3);
         assert_eq!(messages[1]["role"], "assistant");
         assert!(messages[1].get("reasoning_content").is_none());
@@ -1194,13 +1463,15 @@ mod tests {
                 arguments: json!({}),
             }),
             ModelItem::ToolResult(ToolResult {
+                blocks: Vec::new(),
                 call_id: "call-1".into(),
                 tool_name: "echo".into(),
                 output: json!("ok"),
                 is_error: false,
             }),
         ];
-        let messages = map_messages(None, &items).expect("messages");
+        let messages = map_messages(None, &items, &crate::model::ImageRequestPolicy::default())
+            .expect("messages");
         assert_eq!(messages.len(), 3);
         assert_eq!(messages[1]["role"], "assistant");
         // 官方 harness 规则：无文本的工具轮回传 ""，绝不为 null。

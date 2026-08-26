@@ -222,6 +222,11 @@ pub struct ToolResult {
     pub tool_name: String,
     pub output: Value,
     pub is_error: bool,
+    /// MM-1A 冻结形状：工具结果的多模态内容块（图片以 attachment
+    /// descriptor 表达，永不内联字节）。MM-1 的 attachment admission
+    /// 落地前恒为空；wire 只在非空时投影 `content_blocks`。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocks: Vec<crate::message::ContentBlock>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

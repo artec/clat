@@ -69,9 +69,14 @@ impl OpenAiModel {
         let mut body = Map::new();
         body.insert("model".into(), Value::String(self.model.clone()));
         body.insert("stream".into(), Value::Bool(true));
+        // OpenAI 协议模型不经 ModelConfig 构造（api_key 直连），图片
+        // 策略取缺省口径（png/jpeg × 8 × 4MiB——与全局 admission 同律）。
         body.insert(
             "input".into(),
-            Value::Array(map_input_items(request.items)?),
+            Value::Array(map_input_items(
+                request.items,
+                &crate::model::ImageRequestPolicy::default(),
+            )?),
         );
 
         if let Some(instructions) = request.instructions {
@@ -202,14 +207,17 @@ impl Model for OpenAiModel {
     }
 }
 
-fn map_input_items(items: &[ModelItem]) -> Result<Vec<Value>, ModelError> {
+fn map_input_items(
+    items: &[ModelItem],
+    policy: &crate::model::ImageRequestPolicy,
+) -> Result<Vec<Value>, ModelError> {
     let mut input = Vec::new();
 
     for item in items {
         match item {
             ModelItem::User { content } => input.push(json!({
                 "role": "user",
-                "content": user_content(content)?,
+                "content": user_content(content, policy)?,
             })),
             ModelItem::Assistant { content, .. } => input.push(json!({
                 "role": "assistant",
@@ -251,7 +259,10 @@ fn content_text(content: &[ContentPart]) -> String {
 /// user content（Responses 协议）：纯文本保持字符串；含图片时升级为
 /// 多 part 数组——`input_text` + `input_image`（data URL）。读文件
 /// 失败的图片降级为文本注记（M3，与 chat 协议同语义）。
-fn user_content(content: &[ContentPart]) -> Result<Value, ModelError> {
+fn user_content(
+    content: &[ContentPart],
+    policy: &crate::model::ImageRequestPolicy,
+) -> Result<Value, ModelError> {
     let has_image = content
         .iter()
         .any(|part| matches!(part, ContentPart::Image { .. }));
@@ -266,7 +277,7 @@ fn user_content(content: &[ContentPart]) -> Result<Value, ModelError> {
                 "text": text,
             })),
             ContentPart::Image { path, media_type } => {
-                match super::openai_compatible::image_data_url_for(path, media_type) {
+                match super::openai_compatible::image_data_url_for(path, media_type, policy) {
                     Some(url) => parts.push(json!({
                         "type": "input_image",
                         "image_url": url,
@@ -801,13 +812,16 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::write(&path, b"hello world").unwrap();
-        let content = user_content(&[
-            ContentPart::Text("look".into()),
-            ContentPart::Image {
-                path: path.display().to_string(),
-                media_type: "image/png".into(),
-            },
-        ])
+        let content = user_content(
+            &[
+                ContentPart::Text("look".into()),
+                ContentPart::Image {
+                    path: path.display().to_string(),
+                    media_type: "image/png".into(),
+                },
+            ],
+            &crate::model::ImageRequestPolicy::default(),
+        )
         .unwrap();
         let parts = content.as_array().unwrap();
         assert_eq!(parts.len(), 2);
@@ -819,7 +833,11 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         // 纯文本仍是字符串。
         assert_eq!(
-            user_content(&[ContentPart::Text("hi".into())]).unwrap(),
+            user_content(
+                &[ContentPart::Text("hi".into())],
+                &crate::model::ImageRequestPolicy::default()
+            )
+            .unwrap(),
             json!("hi")
         );
     }

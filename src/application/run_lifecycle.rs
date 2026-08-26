@@ -43,13 +43,14 @@ impl TrustedProjectApplication {
         &mut self,
         mut request: ApplicationRunRequest,
     ) -> Result<(RunHandle, String), ApplicationError> {
-        if !request.attachments.is_empty() {
+        if !request.message.staged_attachments.is_empty() {
             return Err(ApplicationError::new(
                 "goal continuation rounds do not accept attachments",
             ));
         }
         let round = self.goal.next_round().map_err(ApplicationError::new)?;
-        request.prompt = round.prompt.clone();
+        // goal 续轮是 core 合成消息：覆盖客户端载荷，无幂等键。
+        request.message = crate::message::PendingMessage::text(round.prompt.clone());
         let visible_prompt = round.prompt.clone();
         let remaining = self
             .goal
@@ -76,12 +77,39 @@ impl TrustedProjectApplication {
     /// fresh session the fact lands FIRST (MP-1 §4.3); workspace
     /// registration and the selection pointer follow as projections, so a
     /// crash between them is healed by mount-time reconciliation.
+    ///
+    /// MM-1A：typed 消息在这里完成接纳——附件导入（复制 + 元数据实
+    /// 测）、`admitted_user_message` 载荷（descriptor 元数据 + 幂等键 +
+    /// digest 随事件耐久）、committed 回执构造。commit point 即
+    /// append+flush：此后的一切失败都带着 `Committed` 回执返回
+    ///（INV-M1A-4）。
     fn prepare_run(
         &mut self,
-        prompt: &str,
-        attachments: &[std::path::PathBuf],
+        message: &crate::message::PendingMessage,
         goal_round: Option<&crate::goal::GoalRound>,
     ) -> Result<PreparedRun, ApplicationError> {
+        let prompt = message.content.plain_text();
+        let attachments = &message.staged_attachments;
+        // INV-MM2-2（MM-2 W1 attach 门）：模型能力不收图 → 整轮拒绝，
+        // 且必须发生在任何会话物化/journal 写入**之前**（零痕迹）。
+        // 错误可行动：点名「换视觉模型（如 GLM 5.3 Flash）/移除图片」。
+        // 能力快照来自 model_state（preset stamp 或 custom 持久值），
+        // unverified 的视觉声明（仅厂商文档）同样拒绝——无第一方
+        // 证据不开图。
+        if !attachments.is_empty() {
+            let (config, _) = self.model_state()?;
+            if !config.capabilities.accepts_image_input() {
+                let names = attachments
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Err(ApplicationError::new(format!(
+                    "this model ({}) does not accept image input; switch to a vision model (e.g. GLM 5.3 Flash) or remove the image(s): {names}",
+                    config.model
+                )));
+            }
+        }
         let pending_goal_birth = self
             .goal
             .pending_birth_event()
@@ -127,9 +155,10 @@ impl TrustedProjectApplication {
         }
         let turn = self.sessions.active_turns().map_err(session_error)? + 1;
         let journal = self.sessions.journal().map_err(session_error)?;
-        // 附件导入（M4）：会话目录已物化，先复制、后落盘——journal 拿到
-        // 的是会话附件目录内的绝对引用。校验失败（不存在/类型/超大）
-        // 发生在任何 journal 写入之前，本轮不留任何痕迹。
+        // 附件导入（M4；MM-1A 元数据化）：会话目录已物化，先复制、后
+        // 落盘——journal 拿到的是会话附件目录内的绝对引用 + descriptor
+        // 元数据。校验失败（不存在/类型/超大）发生在任何 journal 写入
+        // 之前，本轮不留任何痕迹。
         let images = self
             .sessions
             .import_attachments(attachments)
@@ -158,15 +187,27 @@ impl TrustedProjectApplication {
             "turn/start",
             payloads::turn_start(turn),
         ));
-        first_batch.push(
-            NewSessionEvent::new(
-                "user/message",
-                goal_round
-                    .map(|round| round.message.clone())
-                    .unwrap_or_else(|| payloads::user_message_with_images(prompt, &images)),
-            )
-            .append(Vec::new()),
-        );
+        // MM-1A：普通消息走 admitted 载荷（幂等键 + 提交 digest + 图块
+        // 元数据；message id 由回执持有）。digest 是**提交幂等**身份
+        //（文本 + staged 引用），不掺导入后重铸的 attachmentId——
+        // 崩溃重试不得翻案。goal 轮是 core 合成消息，沿用 GoalRound
+        // 预构造载荷（无客户端键）。
+        let message_id = uuid::Uuid::new_v4().to_string();
+        let request_digest = message
+            .client_message_id
+            .as_ref()
+            .map(|_| message.request_digest());
+        let user_payload = match goal_round {
+            Some(round) => round.message.clone(),
+            None => payloads::admitted_user_message(
+                &message_id,
+                prompt.as_str(),
+                &images,
+                message.client_message_id.as_deref(),
+                request_digest.as_deref(),
+            ),
+        };
+        first_batch.push(NewSessionEvent::new("user/message", user_payload).append(Vec::new()));
         journal
             .append_atomic(&first_batch)
             .map_err(|error| ApplicationError::new(format!("session append failed: {error}")))?;
@@ -196,12 +237,37 @@ impl TrustedProjectApplication {
         // plus the same non-durable todo runtime item, so inspection cannot drift
         // from the next real request.
         let history = self.current_model_history()?;
+        // MM-1A：被接纳内容 = 提交文本块 + 依序追加的图块（descriptor
+        // 投影，与 journal 载荷同源——live 事件与回放逐字段相同的写侧
+        // 起点）。committed 回执只在客户端幂等键存在时构造。
+        let mut admitted_blocks = message.content.blocks.clone();
+        admitted_blocks.extend(
+            images
+                .iter()
+                .map(|image| crate::message::ContentBlock::Image {
+                    attachment: image.descriptor.clone(),
+                }),
+        );
+        let admitted = crate::message::MessageContent::from_blocks(admitted_blocks);
+        let receipt = message.client_message_id.clone().map(|client_message_id| {
+            Box::new(crate::message::AdmissionReceipt::committed(
+                client_message_id,
+                message_id,
+                images
+                    .iter()
+                    .map(|image| image.descriptor.attachment_id.clone())
+                    .collect(),
+            ))
+        });
         Ok(PreparedRun {
             session_id: id,
             turn,
             history,
             journal,
             goal_round_started: goal_round.map(|round| round.started_at),
+            message: admitted,
+            client_message_id: message.client_message_id.clone(),
+            receipt,
         })
     }
 
@@ -272,11 +338,10 @@ impl TrustedProjectApplication {
         let skill_snapshot = self.skills.snapshot().map_err(ApplicationError::new)?;
         let memory_injection = self
             .memory
-            .injection(&request.prompt)
+            .injection(&request.message.content.plain_text())
             .map_err(ApplicationError::new)?;
         let ApplicationRunRequest {
-            attachments,
-            prompt,
+            message: request_message,
             approver,
             asker,
             events,
@@ -340,7 +405,6 @@ impl TrustedProjectApplication {
             .as_ref()
             .map(|worker| worker.sender.clone());
         let subscribers = Arc::clone(&self.subscribers);
-        let worker_prompt = prompt.clone();
         let steering_for_worker = steering.clone();
         let plugin_host_worker = Arc::clone(&self.plugin_host);
         let tool_access_worker = Arc::clone(&self.tool_access);
@@ -394,6 +458,9 @@ impl TrustedProjectApplication {
                     mut history,
                     journal,
                     goal_round_started,
+                    message: mut current_message,
+                    client_message_id: mut current_client_id,
+                    receipt: run_receipt,
                 } = prepared;
                 // todo（INV-T3）：事件直达日志——write 在绑定 journal 上
                 // 追加 todo/write，恢复走 todo 投影。
@@ -417,7 +484,6 @@ impl TrustedProjectApplication {
                 let ui_sink = Arc::new(Mutex::new(ui_events));
                 let goal_service = Arc::clone(&goal_service);
                 let mut current_turn = turn;
-                let mut current_prompt = worker_prompt.clone();
                 let goal_mode = goal_round_started.is_some();
                 let mut round_started =
                     goal_round_started.unwrap_or_else(std::time::Instant::now);
@@ -574,7 +640,8 @@ impl TrustedProjectApplication {
                             spend_ledger: Some(Arc::clone(&spend_ledger)),
                             credentials: worker_credentials.clone(),
                             history_items: history.clone(),
-                            prompt: current_prompt.clone(),
+                            message: current_message.clone(),
+                            client_message_id: current_client_id.clone(),
                             cancel: cancel.clone(),
                             steering: steering_for_worker.clone(),
                             approver,
@@ -674,6 +741,7 @@ impl TrustedProjectApplication {
                         (Some(result), journal_error, panic_text, process_cleanup_error) => {
                             let base = result
                                 .map(|done| ApplicationRunDone {
+                                    receipt: None,
                                     output: done.text,
                                     turns: done.turns,
                                     usage: done.usage,
@@ -682,6 +750,7 @@ impl TrustedProjectApplication {
                                 .map_err(|failure| {
                                     let (message, turns, usage, _) = failure.error.into_parts();
                                     ApplicationRunFailure {
+                                        receipt: None,
                                         error: message,
                                         turns,
                                         usage,
@@ -689,6 +758,7 @@ impl TrustedProjectApplication {
                                 });
                             let base = match (base, process_cleanup_error) {
                                 (Ok(done), Some(error)) => Err(ApplicationRunFailure {
+                                    receipt: None,
                                     error: format!("process cleanup failed: {error}"),
                                     turns: done.turns,
                                     usage: done.usage,
@@ -698,11 +768,13 @@ impl TrustedProjectApplication {
                             match (base, journal_error, panic_text) {
                                 (base, None, None) => base,
                                 (Ok(done), Some(error), _) => Err(ApplicationRunFailure {
+                                    receipt: None,
                                     error,
                                     turns: done.turns,
                                     usage: done.usage,
                                 }),
                                 (Ok(done), None, Some(text)) => Err(ApplicationRunFailure {
+                                    receipt: None,
                                     error: format!(
                                         "{text} (run had completed: {})",
                                         done.output
@@ -711,11 +783,13 @@ impl TrustedProjectApplication {
                                     usage: done.usage,
                                 }),
                                 (Err(failure), Some(error), _) => Err(ApplicationRunFailure {
+                                    receipt: None,
                                     error: format!("{}; {error}", failure.error),
                                     turns: failure.turns,
                                     usage: failure.usage,
                                 }),
                                 (Err(failure), None, Some(text)) => Err(ApplicationRunFailure {
+                                    receipt: None,
                                     error: format!("{text}; {}", failure.error),
                                     turns: failure.turns,
                                     usage: failure.usage,
@@ -724,6 +798,7 @@ impl TrustedProjectApplication {
                         }
                         (None, journal_error, panic_text, process_cleanup_error) => {
                             Err(ApplicationRunFailure {
+                                receipt: None,
                                 error: match (panic_text, journal_error) {
                                     (Some(text), Some(error)) => format!("{text}; {error}"),
                                     (Some(text), None) => text,
@@ -776,6 +851,7 @@ impl TrustedProjectApplication {
                                     Ok(next) => next,
                                     Err(error) => {
                                         round_result = Err(ApplicationRunFailure {
+                                            receipt: None,
                                             error: format!(
                                                 "goal continuation reservation failed: {error}"
                                             ),
@@ -791,6 +867,7 @@ impl TrustedProjectApplication {
                                     Err(error) => {
                                         goal_service.disarm();
                                         break Err(ApplicationRunFailure {
+                                            receipt: None,
                                             error: format!(
                                                 "goal continuation could not read turn state: {error}"
                                             ),
@@ -814,6 +891,7 @@ impl TrustedProjectApplication {
                                 {
                                     goal_service.disarm();
                                     break Err(ApplicationRunFailure {
+                                        receipt: None,
                                         error: format!(
                                             "goal continuation durable prelude failed: {error}"
                                         ),
@@ -829,6 +907,7 @@ impl TrustedProjectApplication {
                                     Err(error) => {
                                         goal_service.disarm();
                                         break Err(ApplicationRunFailure {
+                                            receipt: None,
                                             error: format!(
                                                 "goal continuation history rebuild failed: {error}"
                                             ),
@@ -838,7 +917,10 @@ impl TrustedProjectApplication {
                                     }
                                 };
                                 current_turn = next_turn;
-                                current_prompt = next.prompt;
+                                // goal 续轮是 core 合成消息：无客户端幂等键。
+                                current_message =
+                                    crate::message::MessageContent::text(next.prompt);
+                                current_client_id = None;
                                 first_round = false;
                                 continue;
                             }
@@ -847,6 +929,7 @@ impl TrustedProjectApplication {
                             Err(error) => {
                                 goal_service.disarm();
                                 round_result = Err(ApplicationRunFailure {
+                                    receipt: None,
                                     error: format!(
                                         "goal progress could not commit after the round: {error}"
                                     ),
@@ -878,6 +961,7 @@ impl TrustedProjectApplication {
                 let result = match (result, close_result) {
                     (result, Ok(())) => result,
                     (Ok(done), Err(error)) => Err(ApplicationRunFailure {
+                        receipt: None,
                         error: format!("run scope cleanup failed: {error}"),
                         turns: done.turns,
                         usage: done.usage,
@@ -934,6 +1018,18 @@ impl TrustedProjectApplication {
                         expectation,
                     });
                 }
+                // MM-1A（MM-I11）：commit point 之后的任何结果都携带
+                // committed 回执——run 失败时前端知道消息已耐久、不得
+                // 重发。回执在这里统一附着，round 内部的构造点不感知。
+                let result = result
+                    .map(|mut done| {
+                        done.receipt = run_receipt.clone();
+                        done
+                    })
+                    .map_err(|mut failure| {
+                        failure.receipt = run_receipt.clone();
+                        failure
+                    });
                 busy.store(false, Ordering::Release);
                 let _ = completion.send(result);
             })
@@ -945,7 +1041,7 @@ impl TrustedProjectApplication {
         // 预备（CAS + 首批耐久批）发生在 worker 就位之后。Fresh Plan
         // birth 已在这里 append+flush；只有此后才冻结本 run 的工作流视图，
         // 因而 request/header、模型工具目录与宿主硬门消费同一状态事实。
-        let prepared = match self.prepare_run(&prompt, &attachments, goal_round.as_ref()) {
+        let prepared = match self.prepare_run(&request_message, goal_round.as_ref()) {
             Ok(prepared) => prepared,
             Err(error) => {
                 drop(start_sender);
@@ -1012,11 +1108,26 @@ impl TrustedProjectApplication {
         }
     }
 
-    /// 运行中插话（DSH `steer()`）：消息进入活动 run 的队列，在下一次
-    /// 模型请求边界并入对话（不打断在途请求）。run 不在执行、或已到
-    /// 终态（队列封口，W1-04）时返回 `NotRunning`，调用方回退为普通
-    /// 提交。未被 claim 的消息不落盘。
-    pub fn steer(&self, text: impl Into<String>) -> SteerOutcome {
+    /// 运行中插话（DSH `steer()`）：typed 消息进入活动 run 的队列，在
+    /// 下一次模型请求边界并入对话（不打断在途请求）。run 不在执行、或
+    /// 已到终态（队列封口，W1-04）时返回 `NotRunning`，调用方回退为普
+    /// 通提交。未被 claim 的消息不落盘。
+    ///
+    /// MM-1A fail-closed：带 staged 附件或图片内容块的 steering 被
+    /// `Refused` 拒绝——run 中途没有附件接纳路径（journal 只认 prepare
+    /// 阶段导入的引用），MM-1/MM-2 的 admission 落地前不开放（MM-I12
+    /// 的契约就位、语义不越前）。纯文本语义与既有 String 版本一致。
+    pub fn steer(&self, message: crate::message::PendingMessage) -> SteerOutcome {
+        if !message.staged_attachments.is_empty() {
+            return SteerOutcome::Refused {
+                reason: "image steering is not admitted mid-run yet".into(),
+            };
+        }
+        if message.content.has_images() {
+            return SteerOutcome::Refused {
+                reason: "image steering is not admitted mid-run yet".into(),
+            };
+        }
         let Some(handle) = &self.active_run else {
             return SteerOutcome::NotRunning;
         };
@@ -1025,7 +1136,7 @@ impl TrustedProjectApplication {
         }
         // 入队与终态封口同一把锁（W1-04）：Sealed 意味着 run 已判定
         // 结束、消息永远无人 claim——绝不能当 Queued 返回。
-        match handle.steering.try_push(text) {
+        match handle.steering.try_push(message) {
             crate::run::PushOutcome::Accepted => {
                 // A human interjection wins over unattended continuation. It
                 // still enters the current Run normally, while subsequent
@@ -1037,24 +1148,47 @@ impl TrustedProjectApplication {
         }
     }
 
-    /// 召回最后一条未 claim 的插话（ESC 栈式语义的第一优先级）：
-    /// 文本退回调用方（前端放回编辑框，可改可重发）。无活动 run、run
-    /// 已结束、或消息已被 claim（进入 journal、不可撤回）时返回
-    /// `None`——此时前端的 ESC 应回落到取消 run。召回不触碰 journal。
-    pub fn recall_pending_steering(&self) -> Option<String> {
+    /// 召回最后一条未 claim 的插话（ESC 栈式语义的第一优先级）：完整
+    /// typed 消息（内容 + 客户端幂等键）退回调用方，前端可原样重发
+    ///（MM-I11 recall 语义；图片草稿不被静默丢成纯文本——虽然当前
+    /// admission 只放行文本，召回仍走类型化通道）。无活动 run、run 已
+    /// 结束、或消息已被 claim（进入 journal、不可撤回）时返回 `None`
+    ///——此时前端的 ESC 应回落到取消 run。召回不触碰 journal。
+    pub fn recall_pending_steering(&self) -> Option<crate::message::PendingMessage> {
         let handle = self.active_run.as_ref()?;
         if handle.is_finished() {
             return None;
         }
         handle.steering.recall_last()
     }
+
+    /// MM-1A：按客户端幂等键查询 committed 回执。权威来源是 journal
+    /// 投影（重启/重放后同一答案）；进程内状态不参与——"committed 重
+    /// 试返回原 receipt" 的判定基础。无活动会话或键不在回执窗口返回
+    /// None（调用方按新消息走正常接纳）。
+    pub fn committed_receipt(
+        &self,
+        client_message_id: &str,
+    ) -> Option<crate::message::AdmissionReceipt> {
+        self.sessions.committed_receipt(client_message_id)
+    }
+
+    /// M-02（审查 2026-08-27）：回执 + 落盘 digest 的生产判别查询——
+    /// serve 的幂等重试拦截经此消费（同 key 同 digest 幂等成功、异
+    /// digest conflict），不在 serve 复刻投影逻辑。
+    pub fn committed_admission(
+        &self,
+        client_message_id: &str,
+    ) -> Option<crate::message::CommittedAdmission> {
+        self.sessions.committed_admission(client_message_id)
+    }
 }
 
 pub struct ApplicationRunRequest {
-    pub prompt: String,
-    /// 随本次消息附加的本地图片（用户绝对路径）。prepare 阶段复制进
-    /// 会话附件目录、以绝对引用落 journal（M4）；空 = 纯文本消息。
-    pub attachments: Vec<std::path::PathBuf>,
+    /// MM-1A typed 初始消息：内容块 + 可选客户端幂等键 + pre-admission
+    /// 附件来源（旧 `prompt`+`attachments` 的合一表示）。prepare 阶段
+    /// 导入附件、以 descriptor 元数据 + 会话内引用落 journal。
+    pub message: crate::message::PendingMessage,
     pub approver: Arc<dyn PermissionApprover>,
     /// 本次 run 的 ask-user 前端实现；`None`（headless）时 `ask_user`
     /// 工具返回结构化错误。TUI 的实现是无状态的通道包装，随请求安装。
@@ -1069,6 +1203,11 @@ struct PreparedRun {
     history: Vec<crate::model::ModelItem>,
     journal: Arc<dyn RunJournal>,
     goal_round_started: Option<std::time::Instant>,
+    /// MM-1A：被接纳的初始消息（descriptor 投影）与客户端幂等键——
+    /// worker 用它发 `RunStarted`，完成/失败结果携带 committed 回执。
+    message: crate::message::MessageContent,
+    client_message_id: Option<crate::message::ClientMessageId>,
+    receipt: Option<Box<crate::message::AdmissionReceipt>>,
 }
 
 struct WorkerStart {
@@ -1082,6 +1221,11 @@ pub type ApplicationRunResult = Result<ApplicationRunDone, ApplicationRunFailure
 
 #[derive(Clone, Debug)]
 pub struct ApplicationRunDone {
+    /// MM-1A：本次初始消息的接纳回执。commit point（user event
+    /// append+flush）跨过之后的一切完成/失败都携带 `Committed`——
+    /// run 失败 ≠ 消息未送达（MM-I11）。core 合成消息（goal 轮）无
+    /// 客户端键，为 None。装箱保持 Err 变体精瘦（result_large_err）。
+    pub receipt: Option<Box<crate::message::AdmissionReceipt>>,
     pub output: String,
     pub turns: usize,
     pub usage: Usage,
@@ -1090,16 +1234,22 @@ pub struct ApplicationRunDone {
 
 #[derive(Clone, Debug)]
 pub struct ApplicationRunFailure {
+    /// 同 [`ApplicationRunDone::receipt`]：Committed 回执 + run 失败，
+    /// 前端不得把消息重新入箱。
+    pub receipt: Option<Box<crate::message::AdmissionReceipt>>,
     pub error: String,
     pub turns: usize,
     pub usage: Usage,
 }
 
-/// `Application::steer` 的结果：入队成功，或当前没有可插话的活动 run。
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// `Application::steer` 的结果：入队成功、当前没有可插话的活动 run、
+/// 或消息被 admission 拒绝（MM-1A：图片/附件 steering fail-closed——
+/// 不冒充 NotRunning，调用方如实向用户报告原因）。
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SteerOutcome {
     Queued,
     NotRunning,
+    Refused { reason: String },
 }
 
 /// `/rename` 的语义结果（内部 I/O 失败走 `Err`）。

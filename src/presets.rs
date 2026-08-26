@@ -4,8 +4,56 @@
 //! hand-editing protocol, model id, endpoint, and request parameters. The
 //! values here come from the providers' official API documentation.
 
-use crate::{ModelConfig, ModelProtocol};
+use crate::{ImageRequestPolicy, Modality, ModelCapabilities, ModelConfig, ModelProtocol};
 use serde_json::{Value, json};
+
+/// INV-MM2-1 预设侧能力矩阵（const 友好的静态切片；`apply` 时转入
+/// owned `ModelCapabilities` 持久化）。`image_input_verified` 依据
+/// INV-MM2-2：仅自有 live 探针证据才置 true。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PresetCapabilities {
+    pub input_modalities: &'static [Modality],
+    pub tool_result_modalities: &'static [Modality],
+    pub image_input_verified: bool,
+    /// F-2/F-3/F-5：该通道的请求侧图片策略（W6 消费）。
+    pub image_media_types: &'static [&'static str],
+    pub image_max_per_message: usize,
+    pub image_max_bytes: u64,
+}
+
+const TEXT_CAPS: PresetCapabilities = PresetCapabilities {
+    input_modalities: &[Modality::Text],
+    tool_result_modalities: &[Modality::Text],
+    image_input_verified: false,
+    image_media_types: &["image/png", "image/jpeg"],
+    image_max_per_message: 8,
+    image_max_bytes: 4 * 1024 * 1024,
+};
+
+/// 厂商文档声明视觉、但无自有 live 探针证据 → unverified（attach
+/// 拒绝，INV-MM2-2）。tool result 图无文档证据 → 仍 [Text]。
+const UNVERIFIED_VISION_CAPS: PresetCapabilities = PresetCapabilities {
+    input_modalities: &[Modality::Text, Modality::Image],
+    tool_result_modalities: &[Modality::Text],
+    image_input_verified: false,
+    image_media_types: &["image/png", "image/jpeg"],
+    image_max_per_message: 8,
+    image_max_bytes: 4 * 1024 * 1024,
+};
+
+/// glm-5.3-flash（MM-0 round-1/round-2 探针实证，2026-08-27）：
+/// 单图/多图序/image-only/Base64（U-3）、流式工具携图（U-5）、
+/// **tool role 直接携图被接受**（U-6 反转）→ input 与 tool_result
+/// 均 [Text, Image]，verified。图片策略 = F-2（仅 JPEG/PNG）/
+/// F-3（≤5,000,000B，十进制 MB 保守口径）/ F-5（≤5 张）。
+const GLM_FLASH_VERIFIED_CAPS: PresetCapabilities = PresetCapabilities {
+    input_modalities: &[Modality::Text, Modality::Image],
+    tool_result_modalities: &[Modality::Text, Modality::Image],
+    image_input_verified: true,
+    image_media_types: &["image/png", "image/jpeg"],
+    image_max_per_message: 5,
+    image_max_bytes: 5_000_000,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ModelPreset {
@@ -50,6 +98,8 @@ pub struct ModelPreset {
     /// Kilo Code…），其它客户端一律 403（社区多方验证，见 Kimi
     /// 预设注释）。None = 使用默认 UA。
     pub user_agent: Option<&'static str>,
+    /// INV-MM2-1：能力矩阵（sourced，见 PresetCapabilities 常量注释）。
+    pub capabilities: PresetCapabilities,
 }
 
 /// Kimi Coding 端点要求的白名单 UA（cc-switch PR #3671 的回退常量，
@@ -149,6 +199,7 @@ const KIMI_WHITELIST_UA: &str = "claude-cli/2.1.161";
 pub const MODEL_PRESETS: &[ModelPreset] = &[
     ModelPreset {
         id: "deepseek-v4-flash",
+        capabilities: TEXT_CAPS,
         name: "DeepSeek V4.0 Flash",
         description: "Fast, cost-effective DeepSeek V4 for everyday agent work",
         vendor: "DeepSeek",
@@ -166,6 +217,7 @@ pub const MODEL_PRESETS: &[ModelPreset] = &[
     },
     ModelPreset {
         id: "deepseek-v4-pro",
+        capabilities: TEXT_CAPS,
         name: "DeepSeek V4.0 Pro",
         description: "DeepSeek V4 Pro for the most complex agent tasks",
         vendor: "DeepSeek",
@@ -183,6 +235,7 @@ pub const MODEL_PRESETS: &[ModelPreset] = &[
     },
     ModelPreset {
         id: "deepseek-v4-flash-vision-exp",
+        capabilities: UNVERIFIED_VISION_CAPS,
         name: "DeepSeek V4.0 Flash Vision (Exp)",
         description: "Experimental multimodal DeepSeek V4 Flash — reads image input",
         vendor: "DeepSeek",
@@ -200,6 +253,7 @@ pub const MODEL_PRESETS: &[ModelPreset] = &[
     },
     ModelPreset {
         id: "glm-5.3",
+        capabilities: TEXT_CAPS,
         name: "GLM 5.3",
         description: "Zhipu flagship coding model via GLM Coding Plan",
         vendor: "GLM Coding Plan",
@@ -215,8 +269,42 @@ pub const MODEL_PRESETS: &[ModelPreset] = &[
         include_usage: false,
         user_agent: None,
     },
+    // GLM 5.3 Flash（MM-2 发布，2026-08-27）：多模态视觉理解模型。
+    // 全部参数以 MM-0 live probe + 双源文档核验为准
+    // （docs/research/glm-5.3-flash-multimodal-external-spec.md
+    // F-1..F-6）：
+    // - coding 端点（U-1：同 key 双端点可用，预设取 coding 腿）；
+    // - output_limit 131,072（F-1：schema maximum 与描述双证据；
+    //   round-2 正向受理 + 131073→400 双侧验证）；
+    // - 1M context（双源核验一致）；
+    // - thinking 不可关（round-1 附带观察：disabled 静默忽略），
+    //   对象形状与 glm-5.3 同构（F-6：enabled + clear_thinking:
+    //   false）；reasoning_effort 官方默认 max，按 pin-中档政策
+    //   pin high；
+    // - GLM 流式默认携带 usage（include_usage=false，同 glm-5.3）；
+    // - 能力 verified（GLM_FLASH_VERIFIED_CAPS）：input/tool_result
+    //   均 [Text, Image]，图片策略 F-2/F-3/F-5。
+    ModelPreset {
+        id: "glm-5.3-flash",
+        capabilities: GLM_FLASH_VERIFIED_CAPS,
+        name: "GLM 5.3 Flash",
+        description: "Zhipu multimodal vision model via GLM Coding Plan (reads images)",
+        vendor: "GLM Coding Plan",
+        protocol: ModelProtocol::OpenAiCompatible,
+        model: "glm-5.3-flash",
+        endpoint: "https://open.bigmodel.cn/api/coding/paas/v4",
+        request_path: "/chat/completions",
+        output_limit: 131_072,
+        context_window: 1_000_000,
+        reasoning_effort: Some("high"),
+        preserve_thinking: true,
+        thinking_object: true,
+        include_usage: false,
+        user_agent: None,
+    },
     ModelPreset {
         id: "qwen3.8-max",
+        capabilities: TEXT_CAPS,
         name: "Qwen3.8 Max",
         description: "Alibaba flagship via Qwen Token Plan (implicit context cache)",
         vendor: "Qwen Token Plan",
@@ -234,6 +322,7 @@ pub const MODEL_PRESETS: &[ModelPreset] = &[
     },
     ModelPreset {
         id: "kimi-k3",
+        capabilities: UNVERIFIED_VISION_CAPS,
         name: "Kimi K3",
         description: "Moonshot flagship via Kimi Coding membership (auto context cache)",
         vendor: "Kimi Coding Plan",
@@ -275,6 +364,36 @@ pub fn presets_by_vendor(vendor: &str) -> Vec<&'static ModelPreset> {
 }
 
 impl ModelPreset {
+    /// INV-MM2-3：preset-managed `parallel_tool_calls` 默认值（当前
+    /// 全体预设统一 true——收口成方法，apply 与迁移同源）。
+    pub fn parallel_managed_default(&self) -> bool {
+        true
+    }
+
+    /// INV-MM2-1：静态能力矩阵 → owned 持久化快照（apply 与模型
+    /// 编辑器共用，两处构造永不漂移）。
+    pub fn owned_capabilities(&self) -> ModelCapabilities {
+        ModelCapabilities {
+            input_modalities: self.capabilities.input_modalities.to_vec(),
+            tool_result_modalities: self.capabilities.tool_result_modalities.to_vec(),
+            image_input_verified: self.capabilities.image_input_verified,
+        }
+    }
+
+    /// F-2/F-3/F-5：预设图片策略 → owned 持久化（同上共用）。
+    pub fn owned_image_policy(&self) -> ImageRequestPolicy {
+        ImageRequestPolicy {
+            media_types: self
+                .capabilities
+                .image_media_types
+                .iter()
+                .map(|media| (*media).to_owned())
+                .collect(),
+            max_images: self.capabilities.image_max_per_message,
+            max_bytes: self.capabilities.image_max_bytes,
+        }
+    }
+
     /// 该预设官方推荐的 `extra_body`：思考开关、reasoning_effort 与
     /// 厂商特有的流式 usage 开关。`apply` 与模型编辑器共用此方法，
     /// 两处构造永不漂移。
@@ -328,8 +447,12 @@ impl ModelPreset {
         config.request_path = self.request_path.to_owned();
         config.output_limit = Some(self.output_limit);
         config.temperature = None;
-        config.parallel_tool_calls = true;
+        config.parallel_tool_calls = self.parallel_managed_default();
         config.extra_body = self.extra_body();
+        // INV-MM2-1：能力快照是 preset-managed 默认——切换预设即切换
+        // 能力（custom 配置的显式选择归 W2 的 overrides 词表）。
+        config.capabilities = self.owned_capabilities();
+        config.image_policy = self.owned_image_policy();
         // 自动压缩预算（DSH thresholdRatio 语义的预算来源，2026-08-19）：
         // 预设窗口默认种入 `max_context_tokens`，预置用户拎包入住即有
         // 自动压缩。种入语义与 User-Agent 相同的已知值碰撞：
@@ -645,9 +768,125 @@ mod tests {
             ]
         );
         assert_eq!(presets_by_vendor("DeepSeek").len(), 3);
-        assert_eq!(presets_by_vendor("GLM Coding Plan").len(), 1);
+        // MM-2：GLM 5.3 Flash 与 glm-5.3 同 vendor（共享 key 槽/额度
+        // 监控接线）。
+        assert_eq!(presets_by_vendor("GLM Coding Plan").len(), 2);
         assert_eq!(presets_by_vendor("Qwen Token Plan")[0].id, "qwen3.8-max");
         assert_eq!(presets_by_vendor("Kimi Coding Plan")[0].id, "kimi-k3");
+    }
+
+    /// INV-MM2-1/2（MM-2 W1 红测）：全预设 capability matrix 完备且
+    /// sourced——每个内置预设有明确能力矩阵；**唯一** verified 开图
+    /// 的是 glm-5.3-flash（MM-0 探针）；doc 声明视觉但无第一方证据
+    /// 的（vision-exp、kimi-k3）标 unverified → attach 关闭；纯文本
+    /// 预设不含 Image 模态。漏配新预设时哨兵断言红。
+    #[test]
+    fn capability_matrix_is_complete_sourced_and_fail_closed() {
+        for preset in MODEL_PRESETS {
+            let caps = preset.owned_capabilities();
+            // 完备性哨兵：模态非空且含 Text（缺省哨兵 = 全空 Vec）。
+            assert!(
+                caps.input_modalities.contains(&Modality::Text),
+                "{}: input modalities must at least carry Text",
+                preset.id
+            );
+            assert!(
+                !caps.tool_result_modalities.is_empty(),
+                "{}: tool-result modalities must be explicit",
+                preset.id
+            );
+            // INV-MM2-2 的唯一放行位。
+            let expects_images = preset.id == "glm-5.3-flash";
+            assert_eq!(
+                caps.accepts_image_input(),
+                expects_images,
+                "{}: only the probe-verified preset accepts image input",
+                preset.id
+            );
+        }
+        // doc 声明视觉（unverified）与纯文本的具体落位。
+        for id in ["deepseek-v4-flash-vision-exp", "kimi-k3"] {
+            let caps = preset_by_id(id).unwrap().owned_capabilities();
+            assert!(caps.input_modalities.contains(&Modality::Image), "{id}");
+            assert!(
+                !caps.image_input_verified,
+                "{id}: doc-only claim stays unverified"
+            );
+        }
+        for id in [
+            "deepseek-v4-flash",
+            "deepseek-v4-pro",
+            "glm-5.3",
+            "qwen3.8-max",
+        ] {
+            let caps = preset_by_id(id).unwrap().owned_capabilities();
+            assert_eq!(caps.input_modalities, vec![Modality::Text], "{id}");
+        }
+    }
+
+    /// MM-2 W3：GLM 5.3 Flash 预设参数金测——全部字段以 MM-0
+    /// round-1/round-2 探针与 F-1..F-6 裁定钉死。
+    #[test]
+    fn glm_flash_preset_matches_probe_verified_parameters() {
+        let preset = preset_by_id("glm-5.3-flash").expect("preset exists");
+        assert_eq!(preset.model, "glm-5.3-flash");
+        // U-1：coding 专用端点（同 key 双端点，预设取 coding 腿）。
+        assert_eq!(
+            preset.endpoint,
+            "https://open.bigmodel.cn/api/coding/paas/v4"
+        );
+        assert_eq!(preset.request_path, "/chat/completions");
+        // F-1：131,072（round-2 正向受理 + 131073→400 双侧）。
+        assert_eq!(preset.output_limit, 131_072);
+        assert_eq!(preset.context_window, 1_000_000);
+        // F-6：thinking 对象与 glm-5.3 同构，pin-中档政策。
+        assert_eq!(preset.reasoning_effort, Some("high"));
+        assert!(preset.preserve_thinking);
+        assert!(preset.thinking_object);
+        assert!(!preset.include_usage);
+        assert_eq!(preset.vendor, "GLM Coding Plan");
+
+        let mut config = ModelConfig::default();
+        preset.apply(&mut config);
+        assert_eq!(config.extra_body["thinking"]["type"], "enabled");
+        assert_eq!(config.extra_body["thinking"]["clear_thinking"], false);
+        assert_eq!(config.extra_body["reasoning_effort"], "high");
+        // 能力：verified 双模态（U-3/U-5/U-6 + round-2 真 JPEG/5 图）。
+        let caps = config.capabilities;
+        assert!(caps.accepts_image_input());
+        assert!(caps.image_input_verified);
+        assert!(caps.input_modalities.contains(&Modality::Image));
+        assert!(caps.tool_result_modalities.contains(&Modality::Image));
+        // 图片策略：F-2（JPEG/PNG 白名单）/ F-3（5,000,000B 十进制
+        // 保守）/ F-5（5 张）。
+        let policy = config.image_policy;
+        assert_eq!(policy.media_types, vec!["image/png", "image/jpeg"]);
+        assert_eq!(policy.max_images, 5);
+        assert_eq!(policy.max_bytes, 5_000_000);
+    }
+
+    /// INV-MM2-1 旧配置兼容：capabilities/image_policy 缺失的旧持久化
+    /// 反序列化为 fail-closed 纯文本（serde default）。
+    #[test]
+    fn legacy_config_without_capabilities_deserializes_fail_closed() {
+        let legacy = serde_json::json!({
+            "protocol": "open_ai_compatible",
+            "model": "custom-model",
+            "endpoint": "https://example.test",
+            "request_path": "/chat/completions",
+            "auth_header": "Authorization",
+            "auth_prefix": "Bearer ",
+            "extra_headers": {},
+            "extra_body": {},
+            "parallel_tool_calls": true,
+        });
+        let config: ModelConfig = serde_json::from_value(legacy).expect("legacy config parses");
+        assert!(!config.capabilities.accepts_image_input());
+        assert_eq!(config.capabilities.input_modalities, vec![Modality::Text]);
+        assert_eq!(
+            config.image_policy.max_images,
+            ImageRequestPolicy::default().max_images
+        );
     }
 
     /// Vision-Exp 预设：核验过的官方参数落位（1M/384K），model id 与

@@ -63,6 +63,12 @@ pub enum ReplayEvent {
         turn: u64,
         time_ms: i64,
         text: String,
+        /// MM-1A：与 live `RunEvent::RunStarted`/`SteeringApplied` 同源的
+        /// 内容块（图片以 descriptor 表达）。与 `text` 的关系见
+        /// `MessageContent::plain_text`。
+        content_blocks: Vec<crate::message::ContentBlock>,
+        /// 客户端幂等键（journal `clientMessageId`）；core 合成消息为 None。
+        client_message_id: Option<String>,
     },
     AssistantMessage {
         turn: u64,
@@ -202,10 +208,21 @@ impl ReplayAdapter {
                     .and_then(Value::as_array)
                     .map(|blocks| blocks_text(blocks))
                     .unwrap_or_default();
+                // MM-1A：content blocks 与客户端幂等键从 journal 词汇经
+                // adapter 的统一解析产出（live 同源，逐字段相同）。
+                let content_blocks =
+                    crate::session::adapter::content_blocks(&event.data["content"]);
+                let client_message_id = event
+                    .data
+                    .get("clientMessageId")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
                 out.push(ReplayEvent::UserMessage {
                     turn: self.turn,
                     time_ms: event.time,
                     text,
+                    content_blocks,
+                    client_message_id,
                 });
             }
             "assistant/message" => {
@@ -557,12 +574,18 @@ mod tests {
             &event("user/message", 1, payloads::user_message("hello")).append(Vec::new()),
             &mut out,
         );
+        // MM-1A：replay 的 content_blocks 与 live 同构（完整内容，文本
+        // 块在内）；wire 只在 has_images 时投影 blocks（纯文本字节不动）。
         assert_eq!(
             out,
             vec![ReplayEvent::UserMessage {
                 turn: 3,
                 time_ms: 1001,
                 text: "hello".into(),
+                content_blocks: vec![crate::message::ContentBlock::Text {
+                    text: "hello".into()
+                }],
+                client_message_id: None,
             }]
         );
     }
