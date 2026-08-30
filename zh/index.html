@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>CLAT — command-line agent</title>
-  <meta name="description" content="CLAT：稳如磐石的 Agent 底座，DSH 的 TUI 客户端。Rust 单文件，DeepSeek / GLM / Qwen / Kimi 开箱即用，签名插件市场 + WASM / MCP 扩展。">
+  <meta name="description" content="CLAT：稳如磐石的 Agent 底座，DSH 的 TUI 客户端。Rust 单文件，DeepSeek / GLM / Qwen / Kimi 开箱即用，多模态看图，签名插件市场 + WASM / MCP 扩展。">
   <link rel="alternate" hreflang="en" href="https://cl.at.cn/">
   <link rel="alternate" hreflang="zh" href="https://cl.at.cn/zh/">
   <link rel="alternate" hreflang="x-default" href="https://cl.at.cn/">
@@ -361,7 +361,7 @@
     <header class="hero">
       <img class="big" src="../logo.png" alt="CLAT logo">
       <h1>CLAT</h1>
-      <div><a class="release-pill" href="https://github.com/artec/clat/releases/latest" data-release>v0.9.3 — 最新版本</a></div>
+      <div><a class="release-pill" href="https://github.com/artec/clat/releases/latest" data-release>v1.1.0 — 最新版本</a></div>
       <p class="tagline">稳如磐石的 Agent 底座 · DSH 的 TUI 客户端 · Rust 单文件</p>
       <div class="term">
         <div class="row"><span class="p">❯</span><span>clat</span></div>
@@ -377,11 +377,11 @@
         <a class="btn" href="#install">安装</a>
         <a class="btn" href="https://github.com/artec/clat">View on GitHub</a>
       </div>
-      <!-- 数据带：数字须真实。下载体积 = macOS tar.gz 压缩包大小（v0.9.3 实测 7.0 MiB），
-           解压后磁盘体积约 16 MiB；发布时复核压缩包即可。 -->
+      <!-- 数据带：数字须真实。下载体积 = macOS tar.gz 压缩包大小（v1.1.0 实测 8.8 MiB），
+           发布时复核压缩包即可。 -->
       <div class="stats">
         <div class="stat">
-          <div class="stat-number">7.0 MB</div>
+          <div class="stat-number">8.8 MB</div>
           <div class="stat-label">下载体积：单二进制，无需 Node / Python</div>
         </div>
         <div class="stat">
@@ -446,9 +446,9 @@
           <p>DeepSeek、GLM、Qwen、Kimi 官方预设内置，任意 OpenAI 兼容端点同样能用。<code>/model</code> 打开两级选择器：先选厂商，再选模型，密钥按厂商分槽保存。</p>
         </div>
         <div class="feature-cell">
-          <p class="feature-label">02 — 输入</p>
-          <h3>图片附件与输入召回</h3>
-          <p>把本地图片拖进终端即成为会话附件，随消息一起发送给视觉模型；输入历史支持 ↑/↓ 召回，按项目隔离。</p>
+          <p class="feature-label">02 — 多模态</p>
+          <h3>多模态图片交互</h3>
+          <p>粘贴或拖入图片路径、<code>/paste-image</code> 直读剪贴板，图片以结构化附件进入消息，TUI 与 Web 工作台同步展示；内置 <code>view_image</code> 工具让模型自己查看项目里的图片。GLM 5.3 Flash 与 DeepSeek Vision 预设原生看图，模型能力不符时明确报错，绝不静默降级。</p>
         </div>
         <div class="feature-cell">
           <p class="feature-label">03 — 交互</p>
@@ -471,9 +471,9 @@
           <p>MCP 服务器支持 stdio 与 Streamable HTTP 远程传输；GLM Coding Plan 自动挂载官方四台 MCP 服务器，<code>/mcp</code> 查看连接状态与已注册工具。</p>
         </div>
         <div class="feature-cell">
-          <p class="feature-label">07 — 遥测</p>
-          <h3>状态栏实时反馈</h3>
-          <p>DeepSeek 余额、GLM 5 小时窗口额度、Kimi 额度、KV 缓存命中百分比、上下文占用与思考强度常驻底部；统计从会话日志还原，重启不归零。</p>
+          <p class="feature-label">07 — 智能体</p>
+          <h3>记忆、目标与子代理</h3>
+          <p>记忆由你显式管理：<code>/memory</code> 按项目或全局存放知识，模型只读检索，绝不自动把对话写成记忆；<code>/goal</code> 为会话设定带轮数、令牌、时长硬上限的目标，可指定验收条件自动完成；<code>/subagents on</code> 派出只读子代理并行探索代码，用量全额计入父会话。</p>
         </div>
         <div class="feature-cell">
           <p class="feature-label">08 — 持久化</p>
@@ -481,9 +481,9 @@
           <p>完整对话写入 append-only 日志，先落盘再调用模型，崩溃后自动恢复到最近的完整批次；日志为 DSH 兼容格式，可被兼容工具直接读取。模型自动起标题，<code>/rename</code> 随时改。</p>
         </div>
         <div class="feature-cell">
-          <p class="feature-label">09 — 升级</p>
-          <h3>自更新</h3>
-          <p><code>clat upgrade</code> 从 GitHub Releases 拉取当前平台的最新二进制并原子替换自身，一条命令升级。</p>
+          <p class="feature-label">09 — 技能</p>
+          <h3>分层技能与 LSP 导航</h3>
+          <p>技能分项目 <code>.clat/skills/</code>、用户、内置三层，模型按名加载技能说明与参考资源，加载只读、绝不执行代码；配置 <code>~/.clat/lsp.json</code> 后，模型获得只读 LSP 能力——定义、引用、实现、悬停精确导航。</p>
         </div>
         <div class="feature-cell">
           <p class="feature-label">10 — 插件</p>
