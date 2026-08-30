@@ -11,6 +11,7 @@ use crate::plugins::services::{
 };
 use crate::plugins::services::{
     GOAL_SERVICE, MEMORY_SERVICE, PLAN_MODE_SERVICE, SUBAGENT_SERVICE, TOOL_ACCESS_SERVICE,
+    VIEW_IMAGE_SERVICE,
 };
 use crate::plugins::{ProjectControlStoragePlugin, SessionPersistencePlugin};
 use crate::presets::preset_by_id;
@@ -26,6 +27,10 @@ use std::sync::{Arc, Mutex, mpsc};
 use super::*;
 
 impl TrustedProjectApplication {
+    pub(crate) fn draft_image_store(&self) -> Arc<crate::draft::DraftImageStore> {
+        Arc::clone(&self.draft_images)
+    }
+
     pub(super) fn mount(
         project: Project,
         storage_root: PathBuf,
@@ -234,6 +239,7 @@ impl TrustedProjectApplication {
                 project.clone(),
             )),
             Arc::new(crate::plugins::ToolPipelinePlugin),
+            Arc::new(crate::plugins::ViewImagePlugin),
             Arc::new(crate::plugins::ToolResultPrunerPlugin),
             Arc::new(crate::plugins::CompactionPlugin),
             Arc::new(crate::plugins::TodoPlugin),
@@ -272,6 +278,9 @@ impl TrustedProjectApplication {
             .map_err(|error| ApplicationError::new(error.to_string()))?;
         let tool_access = project_manager
             .require(TOOL_ACCESS_SERVICE)
+            .map_err(|error| ApplicationError::new(error.to_string()))?;
+        let view_image = project_manager
+            .require(VIEW_IMAGE_SERVICE)
             .map_err(|error| ApplicationError::new(error.to_string()))?;
         let skills = project_manager
             .require(crate::plugins::services::SKILLS_SERVICE)
@@ -337,11 +346,13 @@ impl TrustedProjectApplication {
         let todo_service = project_manager.require(TODO_SERVICE).ok();
         let titler = project_manager.require(SESSION_TITLE_SERVICE).ok();
 
+        let draft_images = Arc::new(crate::draft::DraftImageStore::new(control.root_path()));
         let mut application = Self {
             project: project.clone(),
             project_manager: Some(project_manager),
             sessions,
             control,
+            draft_images,
             config,
             providers,
             tools,
@@ -350,6 +361,7 @@ impl TrustedProjectApplication {
             process_service,
             plan_mode,
             tool_access,
+            view_image,
             skills,
             skill_catalog,
             memory,
@@ -384,6 +396,8 @@ impl TrustedProjectApplication {
             lease,
             #[cfg(test)]
             fail_next_run_spawn: false,
+            #[cfg(test)]
+            fail_next_run_start_receive: false,
         };
         // 5. 进入工作区（§4.4）：realpath 命中注册表 → 恢复该工作区自己
         //    的当前会话；未命中 = 待注册（首条耐久会话落盘时惰性建区）。
@@ -552,6 +566,7 @@ impl TrustedProjectApplication {
 
     pub(super) fn run_context_snapshot(
         &self,
+        config: &ModelConfig,
         skills: Arc<crate::skills::SkillCatalogSnapshot>,
         memory: crate::memory::MemoryInjection,
         goal: crate::goal::GoalInjection,
@@ -601,8 +616,12 @@ impl TrustedProjectApplication {
             self.permission_modes_enabled
                 .then(|| self.permission_mode()),
         );
+        let visual_tool_enabled = config.capabilities.accepts_image_input()
+            && config.capabilities.accepts_image_tool_results();
         RunContextSnapshot {
-            tool_access: tool_access.with_subagents(subagents_enabled),
+            tool_access: tool_access
+                .with_subagents(subagents_enabled)
+                .with_view_image(visual_tool_enabled),
             base_instructions,
             workflow_base,
             workflow_instructions: (!workflow.is_empty()).then_some(workflow),
@@ -638,6 +657,23 @@ impl TrustedProjectApplication {
             config_json.insert("thinking".into(), json!(level.label().to_lowercase()));
         }
         header.insert("config".into(), Value::Object(config_json));
+        header.insert(
+            "imageProjection".into(),
+            json!({
+                "route": crate::model::model_route_key(
+                    &config.protocol.to_string(),
+                    &config.model,
+                ),
+                "policy": {
+                    "mediaTypes": config.image_policy.media_types,
+                    "maxImages": config.image_policy.max_images,
+                    "maxBytes": config.image_policy.max_bytes,
+                },
+                "estimatorVersion": crate::media::IMAGE_TOKEN_ESTIMATOR_VERSION,
+                "calibrationVersion": crate::media::IMAGE_TOKEN_CALIBRATION_VERSION,
+                "encoderVersion": crate::session::attachments::ATTACHMENT_ENCODER_VERSION,
+            }),
+        );
         if let Some(plan) = &context.plan_header {
             header.insert("plan".into(), plan.clone());
         }
@@ -989,6 +1025,19 @@ impl TrustedProjectApplication {
         self.sessions.active_id()
     }
 
+    /// 前端图片读取的唯一应用边界：附件 id 必须先由当前会话的耐久
+    /// 内容块证明可达，SessionService 再 no-follow 打开固定长度 reader。
+    /// 这里不接收或返回路径，因此 serve/PWA 无法借该接口扩大本机文件
+    /// 读取权限。
+    pub(crate) fn open_current_attachment(
+        &self,
+        attachment_id: &str,
+    ) -> Result<crate::session::use_cases::ActiveAttachmentReader, ApplicationError> {
+        self.sessions
+            .open_active_attachment(attachment_id)
+            .map_err(session_error)
+    }
+
     /// 当前会话的 effective 标题（title 投影：显式标题事件，否则首条
     /// 用户消息派生）。`ProjectSnapshot::session_title` 的即时版——
     /// fallback 标题是投影派生、不产生事件，前端在 run 结束等时机
@@ -1033,6 +1082,7 @@ impl TrustedProjectApplication {
                 active_profile: self.active_model_profile()?,
                 thinking_level: crate::effective_thinking_level(&config),
                 max_context_tokens: config.max_context_tokens,
+                overrides: config.overrides,
                 run_token_budget: config
                     .run_token_budget
                     .unwrap_or(crate::model::RUN_TOKEN_BUDGET_DEFAULT),
@@ -1046,6 +1096,14 @@ impl TrustedProjectApplication {
     #[cfg(test)]
     pub(crate) fn fail_next_run_spawn_for_test(&mut self) {
         self.fail_next_run_spawn = true;
+    }
+
+    /// Close the worker-start receiver after the worker has spawned but
+    /// before the durable prelude is delivered. This deterministically
+    /// exercises the post-commit channel-failure contract.
+    #[cfg(test)]
+    pub(crate) fn fail_next_run_start_receive_for_test(&mut self) {
+        self.fail_next_run_start_receive = true;
     }
 
     #[cfg(test)]

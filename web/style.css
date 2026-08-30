@@ -211,7 +211,20 @@ button:disabled { cursor: default; opacity: .45; }
 .msg.user .marker { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); color: var(--accent); }
 .msg .body { min-width: 0; padding-top: 4px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .msg.user .body { font-weight: 560; }
+.msg.user .body.image-only { display: none; }
 .msg.assistant .body { color: var(--text-soft); }
+.message-attachments { grid-column: 2; display: flex; flex-wrap: wrap; gap: 8px; margin-top: 9px; }
+.message-attachment { position: relative; display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 8px; align-items: center; max-width: min(360px, 100%); padding: 5px; overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius-sm); color: var(--text-soft); background: var(--surface-raised); text-align: left; }
+.message-attachment:hover { border-color: var(--signal); }
+.message-attachment-preview { display: block; width: 92px; height: 66px; object-fit: cover; border: 1px solid var(--line-strong); border-radius: 2px; background: var(--surface-input); }
+.message-attachment-preview.is-loading { opacity: .38; }
+.message-attachment-label { overflow: hidden; font: 11px/1.4 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.message-attachment.is-unavailable { border-color: color-mix(in srgb, var(--danger) 58%, var(--line)); }
+.message-attachment.is-unavailable .message-attachment-label::after { content: " · unavailable"; color: var(--danger); }
+.image-lightbox { width: min(960px, calc(100% - 32px)); max-width: none; max-height: calc(100% - 32px); padding: 42px 12px 12px; overflow: hidden; border: 1px solid var(--line-strong); border-radius: var(--radius-lg); background: var(--surface); box-shadow: var(--shadow); }
+.image-lightbox::backdrop { background: rgb(0 0 0 / 72%); backdrop-filter: blur(3px); }
+.image-lightbox-image { display: block; max-width: 100%; max-height: calc(100vh - 88px); margin: 0 auto; object-fit: contain; }
+.image-lightbox-close { position: absolute; top: 8px; right: 8px; color: var(--text-soft); font: 22px/1 var(--font-mono); }
 .msg.assistant .reasoning { grid-column: 2; margin: 0 0 10px; overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius-sm); color: var(--text-muted); background: color-mix(in srgb, var(--surface-raised) 55%, transparent); font: 12px/1.55 var(--font-mono); }
 .msg.assistant .reasoning summary { display: flex; align-items: center; gap: 8px; padding: 7px 10px; cursor: pointer; list-style: none; }
 .msg.assistant .reasoning summary::-webkit-details-marker { display: none; }
@@ -246,8 +259,12 @@ button:disabled { cursor: default; opacity: .45; }
 
 /* Composer */
 .composer { padding: 0 24px 20px; background: linear-gradient(transparent, var(--surface) 18%); }
-.composer-shell { width: min(100%, var(--content-width)); margin: 0 auto; padding: 10px 12px 9px; border: 1px solid var(--line-strong); border-radius: var(--radius-lg); background: var(--surface-input); box-shadow: 0 16px 46px rgb(0 0 0 / 16%); }
+.composer-shell { position: relative; width: min(100%, var(--content-width)); margin: 0 auto; padding: 10px 12px 9px; border: 1px solid var(--line-strong); border-radius: var(--radius-lg); background: var(--surface-input); box-shadow: 0 16px 46px rgb(0 0 0 / 16%); }
 .composer-shell:focus-within { border-color: color-mix(in srgb, var(--signal) 60%, var(--line)); box-shadow: 0 0 0 3px color-mix(in srgb, var(--signal) 8%, transparent), 0 16px 46px rgb(0 0 0 / 16%); }
+.visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+.drop-overlay { position: absolute; z-index: 3; inset: 6px; display: grid; place-content: center; min-height: 120px; border: 1px dashed var(--signal); border-radius: calc(var(--radius-lg) - 4px); color: var(--signal); background: color-mix(in srgb, var(--surface) 88%, var(--signal)); text-align: center; pointer-events: none; }
+.drop-overlay strong { font: 700 12px var(--font-mono); letter-spacing: .14em; }
+.drop-overlay span { margin-top: 5px; color: var(--text-soft); font: 11px var(--font-mono); }
 .composer-context { display: flex; align-items: center; min-height: 26px; }
 .context-pill { display: flex; align-items: center; gap: 7px; padding: 3px 7px; border-radius: 99px; color: var(--text-muted); font: 11px var(--font-mono); }
 .context-pill:hover { color: var(--text); background: var(--surface-raised); }
@@ -256,6 +273,27 @@ button:disabled { cursor: default; opacity: .45; }
 .run-state { min-width: 0; flex: 1; overflow: hidden; color: var(--text-muted); font: 11px var(--font-mono); text-align: right; text-overflow: ellipsis; white-space: nowrap; }
 #prompt { display: block; width: 100%; min-height: 58px; max-height: 220px; resize: none; padding: 8px 7px; color: var(--text); background: transparent; border: 0; outline: 0; line-height: 1.55; }
 #prompt::placeholder { color: var(--text-muted); }
+.attachment-rail { display: grid; grid-template-columns: repeat(auto-fit, minmax(198px, 1fr)); gap: 7px; margin: 5px 0 2px; padding: 7px 0 8px; border-bottom: 1px solid var(--line); }
+.attachment-chip { position: relative; display: grid; grid-template-columns: 42px minmax(0, 1fr) auto; gap: 8px; align-items: center; min-width: 0; padding: 6px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: color-mix(in srgb, var(--surface-raised) 76%, transparent); }
+.attachment-chip.is-uploading { border-color: color-mix(in srgb, var(--signal) 58%, var(--line)); }
+.attachment-chip.is-failed { border-color: color-mix(in srgb, var(--danger) 68%, var(--line)); }
+.attachment-thumb { display: block; width: 42px; height: 42px; object-fit: cover; border: 1px solid var(--line-strong); border-radius: 2px; background: var(--surface); }
+.attachment-index { position: absolute; top: -1px; left: -1px; min-width: 17px; padding: 1px 3px; border-radius: 0 0 3px; color: var(--surface); background: var(--signal); font: 700 8px var(--font-mono); text-align: center; }
+.attachment-copy { min-width: 0; }
+.attachment-copy strong, .attachment-copy small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attachment-copy strong { color: var(--text-soft); font: 600 11px var(--font-ui); }
+.attachment-copy small { margin-top: 2px; color: var(--text-muted); font: 10px/1.25 var(--font-mono); }
+.attachment-copy .attachment-state { color: var(--success); }
+.attachment-chip.is-uploading .attachment-state { color: var(--signal); }
+.attachment-chip.is-failed .attachment-state { color: var(--danger); }
+.attachment-controls { display: grid; grid-template-columns: repeat(2, 19px); gap: 2px; }
+.attachment-controls button { display: grid; place-items: center; width: 19px; height: 19px; padding: 0; border: 1px solid transparent; border-radius: 2px; color: var(--text-muted); background: transparent; font: 12px/1 var(--font-mono); }
+.attachment-controls button:hover:not(:disabled) { border-color: var(--line-strong); color: var(--text); background: var(--surface); }
+.attachment-controls .attachment-remove { color: color-mix(in srgb, var(--danger) 80%, var(--text-muted)); }
+.attachment-open { display: inline-flex; align-items: center; gap: 5px; padding: 3px 4px; color: var(--text-muted); font: 11px var(--font-mono); }
+.attachment-open:hover { color: var(--signal); }
+.attachment-open svg { width: 14px; }
+.attachment-summary { min-width: 0; max-width: 280px; overflow: hidden; color: var(--text-muted); font: 10px var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
 .composer-row { display: flex; align-items: center; gap: 10px; padding-left: 7px; }
 .composer-hint { min-width: 0; flex: 1; color: var(--text-muted); font-size: 11px; }
 .composer-actions { display: flex; align-items: center; gap: 7px; }
@@ -276,6 +314,7 @@ button:disabled { cursor: default; opacity: .45; }
 .inspector-section dl div { display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: 8px; margin: 9px 0; }
 .inspector-section dt { color: var(--text-muted); font-size: 12px; }
 .inspector-section dd { margin: 0; overflow: hidden; color: var(--text-soft); font-size: 12px; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
+.inspector-action { width: 100%; margin-top: 14px; justify-content: center; }
 .metric-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 14px; }
 .metric-grid div { padding: 9px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-input); }
 .metric-grid span, .metric-grid strong { display: block; }

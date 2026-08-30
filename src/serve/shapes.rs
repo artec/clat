@@ -42,6 +42,7 @@ pub(crate) fn session_summary_json(summary: &SessionSummary) -> Value {
 pub(crate) fn workbench_snapshot_json(
     snapshot: &WorkbenchSnapshot,
     active_run: Value,
+    active_compaction: Value,
     methods: &[&str],
 ) -> Value {
     let model_protocol = match snapshot.model.protocol {
@@ -157,6 +158,10 @@ pub(crate) fn workbench_snapshot_json(
                         .max_context_tokens
                         .map_or(Value::Null, |tokens| json!(tokens)),
                 ),
+                (
+                    "overrides",
+                    model_overrides_value(&snapshot.model.overrides),
+                ),
                 ("run_token_budget", json!(snapshot.model.run_token_budget)),
             ]),
         ),
@@ -192,6 +197,7 @@ pub(crate) fn workbench_snapshot_json(
             ]),
         ),
         ("active_run", active_run),
+        ("active_compaction", active_compaction),
         (
             "methods",
             Value::Array(
@@ -209,6 +215,7 @@ pub(crate) fn workbench_snapshot_json(
                     "in-run-steering",
                     "permission-modes",
                     "approval-bridge",
+                    "session-compaction",
                     "model-summary",
                     "mcp-status",
                 ]
@@ -230,6 +237,7 @@ pub(crate) fn replay_event_json(event: &ReplayEvent) -> Value {
             text,
             content_blocks,
             client_message_id,
+            receipt,
         } => {
             // MM-1A additive：blocks 携带图片时才上网（纯文本消息的
             // wire 字节与 v1 完全一致——`text` 语义不变，仍是文本
@@ -258,6 +266,9 @@ pub(crate) fn replay_event_json(event: &ReplayEvent) -> Value {
                     "client_message_id",
                     Value::String(client_message_id.clone()),
                 ));
+            }
+            if let Some(receipt) = receipt {
+                fields.push(("receipt", admission_receipt_value(receipt)));
             }
             event_object("user_message", fields)
         }
@@ -325,16 +336,23 @@ pub(crate) fn replay_event_json(event: &ReplayEvent) -> Value {
             tool,
             output,
             is_error,
-        } => event_object(
-            "tool_finished",
-            vec![
+            content_blocks,
+        } => {
+            let mut fields = vec![
                 ("time_ms", json!(time_ms)),
                 ("call_id", Value::String(call_id.clone())),
                 ("tool", Value::String(tool.clone())),
                 ("output", output.clone()),
                 ("is_error", Value::Bool(*is_error)),
-            ],
-        ),
+            ];
+            if !content_blocks.is_empty() {
+                fields.push((
+                    "content_blocks",
+                    crate::wire::content_blocks_to_json(content_blocks),
+                ));
+            }
+            event_object("tool_finished", fields)
+        }
         ReplayEvent::RetryScheduled {
             turn,
             step,
@@ -593,6 +611,36 @@ fn object(fields: Vec<(&str, Value)>) -> Value {
     Value::Object(map)
 }
 
+pub(crate) fn override_value<T: serde::Serialize>(value: &crate::Override<T>) -> Value {
+    match value {
+        crate::Override::Inherit => object(vec![("state", Value::String("inherit".into()))]),
+        crate::Override::Clear => object(vec![("state", Value::String("clear".into()))]),
+        crate::Override::Set(value) => object(vec![
+            ("state", Value::String("set".into())),
+            (
+                "value",
+                serde_json::to_value(value).expect("typed model override is serializable"),
+            ),
+        ]),
+    }
+}
+
+fn model_overrides_value(overrides: &crate::ModelOverrides) -> Value {
+    object(vec![
+        ("output_limit", override_value(&overrides.output_limit)),
+        ("temperature", override_value(&overrides.temperature)),
+        (
+            "parallel_tool_calls",
+            override_value(&overrides.parallel_tool_calls),
+        ),
+        ("thinking_level", override_value(&overrides.thinking_level)),
+        (
+            "max_context_tokens",
+            override_value(&overrides.max_context_tokens),
+        ),
+    ])
+}
+
 fn event_object(tag: &str, fields: Vec<(&str, Value)>) -> Value {
     object(
         std::iter::once(("type", Value::String(tag.to_string())))
@@ -670,6 +718,13 @@ mod tests {
                 active_profile: Some("daily".into()),
                 thinking_level: Some(crate::ThinkingLevel::High),
                 max_context_tokens: Some(128_000),
+                overrides: crate::ModelOverrides {
+                    output_limit: crate::Override::Clear,
+                    temperature: crate::Override::Set(0.2),
+                    parallel_tool_calls: crate::Override::Inherit,
+                    thinking_level: crate::Override::Set(crate::ThinkingLevel::High),
+                    max_context_tokens: crate::Override::Inherit,
+                },
                 run_token_budget: 10_000_000,
             },
             permission_mode: crate::PermissionMode::ReadOnly,
@@ -691,10 +746,11 @@ mod tests {
             workbench_snapshot_json(
                 &workbench,
                 json!({"prompt_rpc_id": "prompt-1", "started": 99}),
+                json!({"started": 98}),
                 &["workbench.info", "permission.set"],
             )
             .to_string(),
-            r#"{"project":{"root":"/work/repo","name":"repo","workspace_id":"workspace-1"},"session":{"id":"session-1","title":"active work","committed_seq":42},"model":{"protocol":"open_ai_responses","model":"deepseek-v3","preset":"deepseek","active_profile":"daily","thinking_level":"high","max_context_tokens":128000,"run_token_budget":10000000},"permission":{"mode":"read-only","label":"Read Only"},"mcp":{"configured":1,"connected":1,"connecting":0,"failures":["stale server warning"],"servers":[{"name":"repo-tools","server_version":"1.2.3","protocol_version":"2025-06-18","tools":4,"transport":"stdio"}]},"active_run":{"prompt_rpc_id":"prompt-1","started":99},"methods":["workbench.info","permission.set"],"capabilities":["session-history","in-run-steering","permission-modes","approval-bridge","model-summary","mcp-status"]}"#
+            r#"{"project":{"root":"/work/repo","name":"repo","workspace_id":"workspace-1"},"session":{"id":"session-1","title":"active work","committed_seq":42},"model":{"protocol":"open_ai_responses","model":"deepseek-v3","preset":"deepseek","active_profile":"daily","thinking_level":"high","max_context_tokens":128000,"overrides":{"output_limit":{"state":"clear"},"temperature":{"state":"set","value":0.2},"parallel_tool_calls":{"state":"inherit"},"thinking_level":{"state":"set","value":"high"},"max_context_tokens":{"state":"inherit"}},"run_token_budget":10000000},"permission":{"mode":"read-only","label":"Read Only"},"mcp":{"configured":1,"connected":1,"connecting":0,"failures":["stale server warning"],"servers":[{"name":"repo-tools","server_version":"1.2.3","protocol_version":"2025-06-18","tools":4,"transport":"stdio"}]},"active_run":{"prompt_rpc_id":"prompt-1","started":99},"active_compaction":{"started":98},"methods":["workbench.info","permission.set"],"capabilities":["session-history","in-run-steering","permission-modes","approval-bridge","session-compaction","model-summary","mcp-status"]}"#
         );
 
         let replay: Vec<(&str, &str)> = vec![
@@ -747,7 +803,7 @@ mod tests {
             // 上面 "user" 行（零新字段）。
             (
                 "user_image",
-                r#"{"type":"user_message","turn":5,"time_ms":5000,"text":"look","content_blocks":[{"type":"text","text":"look"},{"type":"image","attachment":{"attachment_id":"0f8c2a4e11112222","media_type":"image/png","width":1024,"height":768,"bytes":2048,"display_name":"shot.png"}}],"client_message_id":"client-9"}"#,
+                r#"{"type":"user_message","turn":5,"time_ms":5000,"text":"look","content_blocks":[{"type":"text","text":"look"},{"type":"image","attachment":{"attachment_id":"0f8c2a4e11112222","media_type":"image/png","width":1024,"height":768,"bytes":2048,"display_name":"shot.png"}}],"client_message_id":"client-9","receipt":{"client_message_id":"client-9","state":"committed","committed_message_id":"message-9","attachment_ids":["0f8c2a4e11112222"],"retryable":false}}"#,
             ),
         ];
         let samples: Vec<ReplayEvent> = vec![
@@ -757,6 +813,7 @@ mod tests {
                 text: "hi".into(),
                 content_blocks: Vec::new(),
                 client_message_id: None,
+                receipt: None,
             },
             ReplayEvent::AssistantMessage {
                 turn: 1,
@@ -805,6 +862,7 @@ mod tests {
                 tool: "write_file".into(),
                 output: json!({"ok": true}),
                 is_error: false,
+                content_blocks: Vec::new(),
             },
             ReplayEvent::RetryScheduled {
                 turn: 2,
@@ -864,6 +922,11 @@ mod tests {
                     },
                 ],
                 client_message_id: Some("client-9".into()),
+                receipt: Some(Box::new(crate::message::AdmissionReceipt::committed(
+                    "client-9".into(),
+                    "message-9".into(),
+                    vec!["0f8c2a4e11112222".into()],
+                ))),
             },
         ];
         for ((label, golden), sample) in replay.iter().zip(samples) {

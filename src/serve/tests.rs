@@ -7,8 +7,11 @@ use super::ServeArgs;
 use super::protocol::{self, ErrorCode, ParsedSseFrame};
 use super::state::ServeShared;
 use crate::serve::ServeHandle;
-use crate::test_support::{TestBehavior, TestProviderPlugin, roots};
+use crate::test_support::{
+    LiveGlmProviderPlugin, SteerGate, TestBehavior, TestProviderPlugin, roots,
+};
 use crate::{BootstrapApplication, Project};
+use image::GenericImageView;
 use std::collections::BTreeSet;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
@@ -68,6 +71,32 @@ fn spawn_serve_with_queue(
     (handle, storage_root, project_root)
 }
 
+fn spawn_serve_with_start_receive_failure(name: &str) -> (ServeHandle, PathBuf, PathBuf) {
+    let behavior = TestBehavior::Success;
+    let (storage_root, project_root, project) = setup(name);
+    prepare_storage(&project, &storage_root, behavior.clone());
+    let handle = crate::serve::serve_with_with_queue(
+        project,
+        Some(storage_root.clone()),
+        ServeArgs {
+            port: 0,
+            token: Some(TEST_TOKEN.into()),
+            rotate_token: false,
+        },
+        |bootstrap| {
+            let mut application = bootstrap
+                .with_permission_modes()
+                .authorize_and_mount_with_provider(Arc::new(TestProviderPlugin { behavior }))?;
+            application.fail_next_run_start_receive_for_test();
+            Ok(application)
+        },
+        Arc::new(AtomicBool::new(false)),
+        super::state::SUBSCRIBER_QUEUE_FRAMES,
+    )
+    .expect("serve_with fault seam");
+    (handle, storage_root, project_root)
+}
+
 fn cleanup(handle: ServeHandle, storage_root: &Path, project_root: &Path) {
     handle.shutdown();
     handle.join();
@@ -91,7 +120,7 @@ fn post(
 ) -> (u16, Result<serde_json::Value, ErrorCode>) {
     let mut stream = connect(addr);
     let request = format!(
-        "POST /api/{method} HTTP/1.1\r\nHost: clat\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "POST /api/{method} HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
     stream.write_all(request.as_bytes()).expect("write request");
@@ -105,10 +134,27 @@ fn post(
     }
 }
 
+fn post_rpc_json(
+    addr: SocketAddr,
+    token: &str,
+    method: &str,
+    body: &str,
+) -> (u16, serde_json::Value) {
+    let mut stream = connect(addr);
+    let request = format!(
+        "POST /api/{method} HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(request.as_bytes()).expect("write request");
+    let (status, response_body) = read_response(&mut stream);
+    let value = serde_json::from_str(&response_body).expect("rpc json body");
+    (status, value)
+}
+
 fn validate_pairing(addr: SocketAddr, token: &str) -> u16 {
     let mut stream = connect(addr);
     let request = format!(
-        "POST /auth HTTP/1.1\r\nHost: clat\r\nAuthorization: Bearer {token}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        "POST /auth HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {token}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
     );
     stream.write_all(request.as_bytes()).expect("write auth");
     let raw = read_raw_response(&mut stream);
@@ -125,7 +171,7 @@ fn validate_pairing(addr: SocketAddr, token: &str) -> u16 {
 
 fn get(addr: SocketAddr, target: &str, headers: &[(&str, &str)]) -> (u16, String) {
     let mut stream = connect(addr);
-    let mut request = format!("GET {target} HTTP/1.1\r\nHost: clat\r\n");
+    let mut request = format!("GET {target} HTTP/1.1\r\nHost: {addr}\r\n");
     for (name, value) in headers {
         request.push_str(&format!("{name}: {value}\r\n"));
     }
@@ -143,6 +189,33 @@ fn read_raw_response(stream: &mut TcpStream) -> String {
     let mut bytes = Vec::new();
     stream.read_to_end(&mut bytes).expect("read to end");
     String::from_utf8_lossy(&bytes).into_owned()
+}
+
+fn get_raw_response(addr: SocketAddr, target: &str, token: &str) -> Vec<u8> {
+    let mut stream = connect(addr);
+    let request = format!(
+        "GET {target} HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {token}\r\nConnection: close\r\n\r\n"
+    );
+    stream.write_all(request.as_bytes()).expect("write raw GET");
+    let mut response = Vec::new();
+    stream
+        .read_to_end(&mut response)
+        .expect("read raw response");
+    response
+}
+
+fn parse_raw_response_bytes(response: &[u8]) -> (u16, String, &[u8]) {
+    let split = response
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .expect("response head terminator");
+    let head = std::str::from_utf8(&response[..split]).expect("ASCII response head");
+    let status = head
+        .split_once(' ')
+        .and_then(|(_, rest)| rest.split_whitespace().next())
+        .and_then(|code| code.parse().ok())
+        .expect("status code");
+    (status, head.to_owned(), &response[split + 4..])
 }
 
 fn parse_response(text: &str) -> (u16, String) {
@@ -223,7 +296,7 @@ fn count_keyed_user_messages(storage_root: &Path, client_message_id: &str) -> us
 fn sse_connect_raw(addr: SocketAddr) -> TcpStream {
     let mut stream = connect(addr);
     let request = format!(
-        "GET /api/events HTTP/1.1\r\nHost: clat\r\nAuthorization: Bearer {TEST_TOKEN}\r\nConnection: close\r\n\r\n"
+        "GET /api/events HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {TEST_TOKEN}\r\nConnection: close\r\n\r\n"
     );
     stream
         .write_all(request.as_bytes())
@@ -250,7 +323,7 @@ impl SseClient {
     fn connect(addr: SocketAddr) -> Self {
         let mut stream = connect(addr);
         let request = format!(
-            "GET /api/events HTTP/1.1\r\nHost: clat\r\nAuthorization: Bearer {TEST_TOKEN}\r\nConnection: close\r\n\r\n"
+            "GET /api/events HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {TEST_TOKEN}\r\nConnection: close\r\n\r\n"
         );
         stream
             .write_all(request.as_bytes())
@@ -366,6 +439,16 @@ fn ctl_of(frame: &ParsedSseFrame) -> serde_json::Value {
     data.get("ctl").cloned().unwrap_or(data)
 }
 
+fn wait_for_compaction_notice(client: &mut SseClient, status: &str) -> serde_json::Value {
+    for _ in 0..64 {
+        let ctl = ctl_of(&client.wait_for("notice", WAIT));
+        if ctl["kind"] == "compaction" && ctl["payload"]["status"] == status {
+            return ctl;
+        }
+    }
+    panic!("did not receive compaction notice with status `{status}`");
+}
+
 /// 重放族帧的 replay.type 标签。
 fn replay_kind_of(frame: &ParsedSseFrame) -> String {
     serde_json::from_str::<serde_json::Value>(&frame.data)
@@ -472,6 +555,55 @@ fn dispatch_covers_the_full_method_set() {
     let encoded_workbench = workbench.to_string();
     assert!(!encoded_workbench.contains("test-key"));
     assert!(!encoded_workbench.contains("credentials"));
+    assert!(
+        workbench["model"]["overrides"]["output_limit"]["state"].is_string(),
+        "serve exposes the typed override state"
+    );
+
+    let cleared = protocol::dispatch(
+        "model.overrides.set",
+        &serde_json::json!({"field": "output_limit", "state": "clear"}),
+        &shared,
+    )
+    .unwrap();
+    assert_eq!(cleared["override"]["state"], "clear");
+    let after_clear = protocol::dispatch("workbench.info", &serde_json::json!({}), &shared)
+        .expect("workbench after clear");
+    assert_eq!(
+        after_clear["model"]["overrides"]["output_limit"]["state"],
+        "clear"
+    );
+    assert!(
+        shared
+            .app
+            .lock()
+            .unwrap()
+            .model_state()
+            .unwrap()
+            .0
+            .output_limit
+            .is_none(),
+        "Clear is applied, not merely projected"
+    );
+    let set = protocol::dispatch(
+        "model.overrides.set",
+        &serde_json::json!({
+            "field": "output_limit",
+            "state": "set",
+            "value": 65536
+        }),
+        &shared,
+    )
+    .unwrap();
+    assert_eq!(set["override"]["state"], "set");
+    assert_eq!(set["override"]["value"], 65_536);
+    let invalid = protocol::dispatch(
+        "model.overrides.set",
+        &serde_json::json!({"field": "output_limit", "state": "set", "value": 0}),
+        &shared,
+    )
+    .unwrap_err();
+    assert_eq!(invalid.code, ErrorCode::BadRequest);
 
     let info = protocol::dispatch("session.info", &serde_json::json!({}), &shared).unwrap();
     assert!(info.get("session_id").is_some());
@@ -489,9 +621,19 @@ fn dispatch_covers_the_full_method_set() {
     .unwrap_err();
     assert_eq!(switch.code, ErrorCode::NotFound, "{switch:?}");
 
-    let steer =
-        protocol::dispatch("steer.send", &serde_json::json!({"text": "hello"}), &shared).unwrap();
+    let steer = protocol::dispatch(
+        "steer.send",
+        &serde_json::json!({
+            "text": "hello",
+            "clientMessageId": "mm2-w7-not-running"
+        }),
+        &shared,
+    )
+    .unwrap();
     assert_eq!(steer.get("outcome").unwrap(), "not_running");
+    assert_eq!(steer["receipt"]["state"], "rolled-back");
+    assert_eq!(steer["receipt"]["retryable"], true);
+    assert_eq!(steer["receipt"]["failure_phase"], "steering-not-running");
 
     protocol::dispatch("run.cancel", &serde_json::json!({}), &shared).unwrap();
 
@@ -734,7 +876,7 @@ fn post_with_headers(
 ) -> (u16, Result<serde_json::Value, ErrorCode>) {
     let mut stream = connect(addr);
     let mut request = format!(
-        "POST /api/{method} HTTP/1.1\r\nHost: clat\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n",
+        "POST /api/{method} HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n",
         body.len()
     );
     for (name, value) in headers {
@@ -756,7 +898,7 @@ fn post_with_headers(
 fn post_query_token(addr: SocketAddr) -> (u16, Result<serde_json::Value, ErrorCode>) {
     let mut stream = connect(addr);
     let request = format!(
-        "POST /api/session.list?t={TEST_TOKEN} HTTP/1.1\r\nHost: clat\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
+        "POST /api/session.list?t={TEST_TOKEN} HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
     );
     stream.write_all(request.as_bytes()).unwrap();
     let (status, body) = read_response(&mut stream);
@@ -772,10 +914,448 @@ fn post_query_token(addr: SocketAddr) -> (u16, Result<serde_json::Value, ErrorCo
 fn post_error_origin(addr: SocketAddr) -> (u16, String) {
     let mut stream = connect(addr);
     let request = format!(
-        "POST /api/session.list HTTP/1.1\r\nHost: clat\r\nOrigin: http://evil.example\r\nAuthorization: Bearer {TEST_TOKEN}\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
+        "POST /api/session.list HTTP/1.1\r\nHost: {addr}\r\nOrigin: http://evil.example\r\nAuthorization: Bearer {TEST_TOKEN}\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
     );
     stream.write_all(request.as_bytes()).unwrap();
     read_response(&mut stream)
+}
+
+#[test]
+fn security_gates_reject_before_reading_a_declared_large_body() {
+    let (handle, storage_root, project_root) =
+        spawn_serve("serve-auth-before-body", TestBehavior::Success);
+
+    // Deliberately send headers only and keep the write side open. The old
+    // parser waited for the declared body before checking auth; this request
+    // would time out instead of producing an immediate 401.
+    let mut stream = connect(handle.addr);
+    let request = format!(
+        "POST /api/session.list HTTP/1.1\r\nHost: {}\r\nAuthorization: Bearer wrong\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        handle.addr,
+        super::http::MAX_BODY_BYTES
+    );
+    stream.write_all(request.as_bytes()).unwrap();
+    assert_eq!(read_response(&mut stream).0, 401);
+
+    // Host is checked even before Bearer and likewise does not consume body.
+    let mut stream = connect(handle.addr);
+    let request = format!(
+        "POST /api/session.list HTTP/1.1\r\nHost: attacker.example\r\nAuthorization: Bearer {TEST_TOKEN}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        super::http::MAX_BODY_BYTES
+    );
+    stream.write_all(request.as_bytes()).unwrap();
+    assert_eq!(read_response(&mut stream).0, 403);
+
+    // Route-specific Content-Type rejection also precedes body consumption.
+    let mut stream = connect(handle.addr);
+    let request = format!(
+        "POST /api/session.list HTTP/1.1\r\nHost: {}\r\nAuthorization: Bearer {TEST_TOKEN}\r\nContent-Type: application/octet-stream\r\nContent-Length: 1024\r\nConnection: close\r\n\r\n",
+        handle.addr
+    );
+    stream.write_all(request.as_bytes()).unwrap();
+    assert_eq!(read_response(&mut stream).0, 400);
+
+    cleanup(handle, &storage_root, &project_root);
+}
+
+#[test]
+fn json_body_split_across_tcp_writes_is_reassembled_without_losing_prefix() {
+    let (handle, storage_root, project_root) =
+        spawn_serve("serve-body-fragmentation", TestBehavior::Success);
+    let body = br#"{"text":"cross packet body"}"#;
+    let mut stream = connect(handle.addr);
+    let head = format!(
+        "POST /api/prompt.send HTTP/1.1\r\nHost: {}\r\nAuthorization: Bearer {TEST_TOKEN}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        handle.addr,
+        body.len()
+    );
+    // Put a body prefix in the same write as the header, then fragment every
+    // remaining byte. `read_body` must preserve both sides of the boundary.
+    let split = 7;
+    stream.write_all(head.as_bytes()).unwrap();
+    stream.write_all(&body[..split]).unwrap();
+    for byte in &body[split..] {
+        stream.write_all(std::slice::from_ref(byte)).unwrap();
+    }
+    let (status, response) = read_response(&mut stream);
+    assert_eq!(status, 200, "{response}");
+    let parsed = protocol::parse_rpc_result(&response).expect("rpc result");
+    assert!(parsed.ok, "fragmented body must dispatch successfully");
+
+    cleanup(handle, &storage_root, &project_root);
+}
+
+fn open_draft(addr: SocketAddr, client_draft_id: &str) -> serde_json::Value {
+    let (status, result) = post(
+        addr,
+        TEST_TOKEN,
+        "draft.open",
+        &format!(r#"{{"clientDraftId":"{client_draft_id}"}}"#),
+    );
+    assert_eq!(status, 200, "{result:?}");
+    result.expect("draft.open result")
+}
+
+fn upload_image(
+    addr: SocketAddr,
+    scope_id: &str,
+    content_type: &str,
+    display_name: &str,
+    body: &[u8],
+) -> (u16, serde_json::Value) {
+    let mut stream = connect(addr);
+    let head = format!(
+        "POST /api/drafts/{scope_id}/images HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {TEST_TOKEN}\r\nContent-Type: {content_type}\r\nX-CLAT-Display-Name: {display_name}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    stream.write_all(head.as_bytes()).unwrap();
+    for chunk in body.chunks(5) {
+        stream.write_all(chunk).unwrap();
+    }
+    let (status, response) = read_response(&mut stream);
+    (
+        status,
+        serde_json::from_str(&response).expect("upload RPC result"),
+    )
+}
+
+fn png_bytes(width: u32, height: u32) -> Vec<u8> {
+    let image = image::RgbaImage::from_pixel(width, height, image::Rgba([8, 15, 42, 255]));
+    let mut bytes = Vec::new();
+    image::DynamicImage::ImageRgba8(image)
+        .write_to(
+            &mut std::io::Cursor::new(&mut bytes),
+            image::ImageFormat::Png,
+        )
+        .unwrap();
+    bytes
+}
+
+#[test]
+fn opaque_upload_id_supports_image_only_prompt_and_committed_retry() {
+    let (handle, storage_root, project_root) =
+        spawn_serve("serve-image-upload-prompt", TestBehavior::Success);
+    let draft = open_draft(handle.addr, "draft-image-only-1");
+    let scope = draft["draftScopeId"].as_str().unwrap();
+    let second = open_draft(handle.addr, "draft-image-only-1");
+    assert_eq!(second["draftScopeId"], draft["draftScopeId"]);
+
+    let (status, uploaded) = upload_image(
+        handle.addr,
+        scope,
+        "image/png",
+        "browser-shot.png",
+        &png_bytes(24, 16),
+    );
+    assert_eq!(status, 200, "{uploaded}");
+    let upload_id = uploaded["value"]["uploadId"].as_str().unwrap();
+    assert!(!upload_id.contains('/') && !upload_id.contains("browser-shot"));
+
+    let body = serde_json::json!({
+        "text": "",
+        "draftScopeId": scope,
+        "attachments": [upload_id],
+        "clientMessageId": "web-image-message-1",
+    })
+    .to_string();
+    let (status, accepted) = post_rpc_json(handle.addr, TEST_TOKEN, "prompt.send", &body);
+    assert_eq!(status, 200, "{accepted}");
+    assert_eq!(accepted["ok"], true);
+    assert_eq!(accepted["value"]["receipt"]["state"], "committed");
+    let attachment_id = accepted["value"]["receipt"]["attachment_ids"][0]
+        .as_str()
+        .unwrap();
+    assert_ne!(attachment_id, upload_id, "commit mints durable identity");
+
+    // Raw upload staging is gone, yet a same-key retry is answered from the
+    // durable receipt before attempting to resolve the now-consumed id.
+    let (status, retried) = post_rpc_json(handle.addr, TEST_TOKEN, "prompt.send", &body);
+    assert_eq!(status, 200, "{retried}");
+    assert_eq!(retried["value"]["receipt"], accepted["value"]["receipt"]);
+    assert_eq!(
+        count_keyed_user_messages(&storage_root, "web-image-message-1"),
+        1
+    );
+
+    cleanup(handle, &storage_root, &project_root);
+}
+
+#[test]
+fn attachment_bytes_are_readable_only_by_opaque_reachable_id_in_active_session() {
+    let (handle, storage_root, project_root) =
+        spawn_serve("serve-attachment-read-fence", TestBehavior::Success);
+    let draft = open_draft(handle.addr, "draft-read-image-1");
+    let scope = draft["draftScopeId"].as_str().unwrap();
+    let source = png_bytes(24, 16);
+    let (status, uploaded) = upload_image(
+        handle.addr,
+        scope,
+        "image/png",
+        "private-browser-shot.png",
+        &source,
+    );
+    assert_eq!(status, 200, "{uploaded}");
+    let upload_id = uploaded["value"]["uploadId"].as_str().unwrap();
+    let request = serde_json::json!({
+        "text": "",
+        "draftScopeId": scope,
+        "attachments": [upload_id],
+        "clientMessageId": "web-image-read-message-1",
+    })
+    .to_string();
+    let (_, accepted) = post_rpc_json(handle.addr, TEST_TOKEN, "prompt.send", &request);
+    let attachment_id = accepted["value"]["receipt"]["attachment_ids"][0]
+        .as_str()
+        .unwrap();
+
+    let raw = get_raw_response(
+        handle.addr,
+        &format!("/api/attachments/{attachment_id}"),
+        TEST_TOKEN,
+    );
+    let (status, headers, body) = parse_raw_response_bytes(&raw);
+    assert_eq!(status, 200, "{headers}\n{}", String::from_utf8_lossy(body));
+    assert!(headers.contains("Content-Type: image/png"));
+    assert!(headers.contains("Cache-Control: no-store"));
+    let image = image::load_from_memory(body).expect("returned image bytes");
+    assert_eq!(image.dimensions(), (24, 16));
+    assert!(
+        !String::from_utf8_lossy(&raw).contains("private-browser-shot"),
+        "read response never echoes a host staging name"
+    );
+
+    let guessed = get_raw_response(
+        handle.addr,
+        "/api/attachments/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        TEST_TOKEN,
+    );
+    assert_eq!(parse_raw_response_bytes(&guessed).0, 404);
+    let anonymous = get_raw_response(
+        handle.addr,
+        &format!("/api/attachments/{attachment_id}"),
+        "wrong-token",
+    );
+    assert_eq!(parse_raw_response_bytes(&anonymous).0, 401);
+
+    cleanup(handle, &storage_root, &project_root);
+}
+
+#[test]
+fn opaque_image_draft_can_be_queued_as_active_run_steering() {
+    let (handle, storage_root, project_root) =
+        spawn_serve("serve-image-steering", TestBehavior::RunCommand);
+    let mut client = SseClient::connect(handle.addr);
+    prompt_send(handle.addr, "hold at an approval boundary");
+    client.wait_for("approval.requested", WAIT);
+    let draft = open_draft(handle.addr, "draft-steering-image-1");
+    let scope = draft["draftScopeId"].as_str().unwrap();
+    let (status, uploaded) = upload_image(
+        handle.addr,
+        scope,
+        "image/png",
+        "steering-shot.png",
+        &png_bytes(9, 7),
+    );
+    assert_eq!(status, 200, "{uploaded}");
+    let upload_id = uploaded["value"]["uploadId"].as_str().unwrap();
+    let body = serde_json::json!({
+        "text": "inspect this while you work",
+        "draftScopeId": scope,
+        "attachments": [upload_id],
+        "clientMessageId": "web-image-steering-1",
+    })
+    .to_string();
+    let missing_key = serde_json::json!({
+        "text": "inspect this while you work",
+        "draftScopeId": scope,
+        "attachments": [upload_id],
+    })
+    .to_string();
+    let (_, unkeyed) = post_rpc_json(handle.addr, TEST_TOKEN, "steer.send", &missing_key);
+    assert_eq!(unkeyed["ok"], false);
+    assert_eq!(unkeyed["error"]["code"], "bad-request");
+
+    let (status, queued) = post_rpc_json(handle.addr, TEST_TOKEN, "steer.send", &body);
+    assert_eq!(status, 200, "{queued}");
+    assert_eq!(queued["ok"], true);
+    assert_eq!(queued["value"]["outcome"], "queued");
+    assert_eq!(queued["value"]["receipt"]["state"], "reserved");
+    assert_eq!(
+        queued["value"]["receipt"]["attachment_ids"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    // HTTP 应答在浏览器收到前丢失时，同 key/same digest 的 steer 重试
+    // 只能取回同一 Reserved receipt，绝不再把 opaque id 当作新的文件
+    // 能力接纳一次。
+    let (status, replay) = post_rpc_json(handle.addr, TEST_TOKEN, "steer.send", &body);
+    assert_eq!(status, 200, "{replay}");
+    assert_eq!(replay["ok"], true);
+    assert_eq!(replay["value"]["receipt"], queued["value"]["receipt"]);
+
+    let conflicting = serde_json::json!({
+        "text": "different payload",
+        "draftScopeId": scope,
+        "attachments": [upload_id],
+        "clientMessageId": "web-image-steering-1",
+    })
+    .to_string();
+    let (_, conflict) = post_rpc_json(handle.addr, TEST_TOKEN, "steer.send", &conflicting);
+    assert_eq!(conflict["ok"], false);
+    assert_eq!(conflict["error"]["code"], "bad-request");
+
+    // 尚未在下一轮被 claim 的 steering 被取消时，raw upload 不能随
+    // Reserved receipt 一起丢掉。浏览器保留草稿后以同一 opaque upload
+    // id / client key 作为普通 prompt 重发，必须仍能完成受理。
+    let (status, cancelled) = post(handle.addr, TEST_TOKEN, "run.cancel", "{}");
+    assert_eq!(status, 200, "{cancelled:?}");
+    client.wait_settled();
+    let (status, restored) = post_rpc_json(handle.addr, TEST_TOKEN, "prompt.send", &body);
+    assert_eq!(status, 200, "{restored}");
+    assert_eq!(restored["ok"], true, "{restored}");
+    assert_eq!(restored["value"]["receipt"]["state"], "committed");
+
+    cleanup(handle, &storage_root, &project_root);
+}
+
+#[test]
+fn claimed_image_steering_is_immediately_readable_as_a_session_attachment() {
+    let gate = Arc::new(SteerGate::default());
+    let (handle, storage_root, project_root) = spawn_serve(
+        "serve-claimed-image-steering-read",
+        TestBehavior::Steer(Arc::clone(&gate)),
+    );
+    prompt_send(handle.addr, "begin work");
+    gate.wait_entered();
+    let draft = open_draft(handle.addr, "draft-claimed-steering-image-1");
+    let scope = draft["draftScopeId"].as_str().unwrap();
+    let (status, uploaded) = upload_image(
+        handle.addr,
+        scope,
+        "image/png",
+        "claimed-shot.png",
+        &png_bytes(6, 5),
+    );
+    assert_eq!(status, 200, "{uploaded}");
+    let upload_id = uploaded["value"]["uploadId"].as_str().unwrap();
+    let request = serde_json::json!({
+        "text": "also run the tests",
+        "draftScopeId": scope,
+        "attachments": [upload_id],
+        "clientMessageId": "claimed-image-steering-1",
+    })
+    .to_string();
+    let (_, queued) = post_rpc_json(handle.addr, TEST_TOKEN, "steer.send", &request);
+    let attachment_id = queued["value"]["receipt"]["attachment_ids"][0]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    gate.release();
+
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let raw = get_raw_response(
+            handle.addr,
+            &format!("/api/attachments/{attachment_id}"),
+            TEST_TOKEN,
+        );
+        let (status, _, body) = parse_raw_response_bytes(&raw);
+        if status == 200 {
+            assert_eq!(image::load_from_memory(body).unwrap().dimensions(), (6, 5));
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "claimed image never became readable"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // Reachability is published at the recorder's durable claim point,
+    // before the run necessarily enters its next provider call. The HTTP
+    // read becoming 200 therefore cannot be used as a timing witness for
+    // `saw_steering`; under the full parallel suite that assertion raced the
+    // second request. Wait for the independent provider witness explicitly.
+    let provider_deadline = Instant::now() + WAIT;
+    while !gate.saw_steering.load(std::sync::atomic::Ordering::Acquire) {
+        assert!(
+            Instant::now() < provider_deadline,
+            "the claimed steering image never reached the next model request"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    cleanup(handle, &storage_root, &project_root);
+}
+
+#[test]
+fn upload_scope_and_image_validation_fail_closed_without_host_paths() {
+    let (handle, storage_root, project_root) =
+        spawn_serve("serve-image-upload-fences", TestBehavior::Success);
+    let first = open_draft(handle.addr, "draft-fence-1");
+    let second = open_draft(handle.addr, "draft-fence-2");
+    let first_scope = first["draftScopeId"].as_str().unwrap();
+    let second_scope = second["draftScopeId"].as_str().unwrap();
+
+    let (status, bad) = upload_image(
+        handle.addr,
+        first_scope,
+        "image/png",
+        "broken.png",
+        b"not a png",
+    );
+    assert_eq!(status, 400, "{bad}");
+
+    let (status, uploaded) = upload_image(
+        handle.addr,
+        first_scope,
+        "image/png",
+        "valid.png",
+        &png_bytes(2, 2),
+    );
+    assert_eq!(status, 200, "{uploaded}");
+    let upload_id = uploaded["value"]["uploadId"].as_str().unwrap();
+
+    let cross_scope = serde_json::json!({
+        "text": "cross scope",
+        "draftScopeId": second_scope,
+        "attachments": [upload_id],
+    })
+    .to_string();
+    let (status, rejected) = post_rpc_json(handle.addr, TEST_TOKEN, "prompt.send", &cross_scope);
+    assert_eq!(status, 200);
+    assert_eq!(rejected["ok"], false);
+
+    let forged_path = serde_json::json!({
+        "text": "forged",
+        "draftScopeId": first_scope,
+        "attachments": [project_root.join("secret.png").display().to_string()],
+    })
+    .to_string();
+    let (_, rejected) = post_rpc_json(handle.addr, TEST_TOKEN, "prompt.send", &forged_path);
+    assert_eq!(rejected["ok"], false);
+    assert!(
+        !rejected
+            .to_string()
+            .contains(project_root.to_string_lossy().as_ref()),
+        "error response must not echo a forged host path"
+    );
+
+    // Selection changes invalidate every prior scope even if its id leaks.
+    let (status, result) = post(handle.addr, TEST_TOKEN, "session.new", "{}");
+    assert_eq!(status, 200, "{result:?}");
+    let (status, stale) = upload_image(
+        handle.addr,
+        first_scope,
+        "image/png",
+        "stale.png",
+        &png_bytes(1, 1),
+    );
+    assert_eq!(status, 400, "{stale}");
+
+    cleanup(handle, &storage_root, &project_root);
 }
 
 // ---- 显式 --token 只属本次进程，不污染持久 token/journal ----
@@ -1074,6 +1654,14 @@ fn prompt_send_is_busy_while_a_run_is_active() {
     );
     assert_eq!(status, 200);
     assert_eq!(result.unwrap_err(), ErrorCode::Busy);
+    let (status, result) = post(
+        handle.addr,
+        TEST_TOKEN,
+        "model.overrides.set",
+        r#"{"field":"output_limit","state":"clear"}"#,
+    );
+    assert_eq!(status, 200);
+    assert_eq!(result.unwrap_err(), ErrorCode::Busy);
 
     // 收尾：取消活跃 run，第二次受理恢复可用（Cancel 行为会再次阻塞
     // 直到取消——发完 prompt 后再取消一次）。
@@ -1087,6 +1675,89 @@ fn prompt_send_is_busy_while_a_run_is_active() {
         .1
         .expect("cancel ok");
     client.wait_settled();
+
+    cleanup(handle, &storage_root, &project_root);
+}
+
+#[test]
+fn session_compact_rpc_is_durable_replayable_and_releases_the_frontend_slot() {
+    let (handle, storage_root, project_root) =
+        spawn_serve("serve-session-compact", TestBehavior::Success);
+    let mut client = SseClient::connect(handle.addr);
+
+    let (_, no_session) = post(
+        handle.addr,
+        TEST_TOKEN,
+        "session.compact",
+        r#"{"action":"start"}"#,
+    );
+    assert_eq!(no_session.unwrap_err(), ErrorCode::BadRequest);
+
+    for turn in 0..5 {
+        prompt_send(handle.addr, &format!("history turn {turn}"));
+        assert_eq!(settled_outcome_type(&client.wait_settled()), "completed");
+    }
+
+    let (status, started) = post(
+        handle.addr,
+        TEST_TOKEN,
+        "session.compact",
+        r#"{"action":"start"}"#,
+    );
+    assert_eq!(status, 200, "{started:?}");
+    assert_eq!(started.expect("compaction starts")["status"], "started");
+    let (_, duplicate) = post(
+        handle.addr,
+        TEST_TOKEN,
+        "session.compact",
+        r#"{"action":"start"}"#,
+    );
+    assert_eq!(duplicate.unwrap_err(), ErrorCode::Busy);
+
+    let started_notice = wait_for_compaction_notice(&mut client, "started");
+    assert_eq!(started_notice["kind"], "compaction");
+    assert_eq!(started_notice["payload"]["status"], "started");
+    let finished_notice = wait_for_compaction_notice(&mut client, "finished");
+    assert_eq!(finished_notice["kind"], "compaction");
+    assert_eq!(finished_notice["payload"]["status"], "finished");
+    assert_eq!(finished_notice["payload"]["succeeded"], true);
+
+    let (_, snapshot) = post(handle.addr, TEST_TOKEN, "workbench.info", "{}");
+    let snapshot = snapshot.expect("workbench snapshot");
+    assert!(snapshot["active_compaction"].is_null());
+    assert!(
+        snapshot["capabilities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|capability| capability == "session-compaction")
+    );
+    let (_, idle_cancel) = post(
+        handle.addr,
+        TEST_TOKEN,
+        "session.compact",
+        r#"{"action":"cancel"}"#,
+    );
+    assert_eq!(idle_cancel.expect("idle cancellation")["status"], "idle");
+
+    // A cold SSE projection must recover the durable compaction event, then a
+    // subsequent run must still use the folded history successfully.
+    drop(client);
+    let mut reconnected = SseClient::connect(handle.addr);
+    let mut saw_compaction = false;
+    for _ in 0..64 {
+        let frame = reconnected.wait_for("replay", WAIT);
+        if replay_kind_of(&frame) == "compaction" {
+            saw_compaction = true;
+            break;
+        }
+    }
+    assert!(saw_compaction, "cold replay must expose durable compaction");
+    prompt_send(handle.addr, "after compact");
+    assert_eq!(
+        settled_outcome_type(&reconnected.wait_settled()),
+        "completed"
+    );
 
     cleanup(handle, &storage_root, &project_root);
 }
@@ -1162,6 +1833,46 @@ fn prompt_send_committed_retry_is_idempotent_and_conflicts_on_divergence() {
     client.wait_settled();
     assert_eq!(count_keyed_user_messages(&storage_root, "mm1a-key-2"), 1);
     assert_eq!(count_keyed_user_messages(&storage_root, "mm1a-key-1"), 1);
+
+    cleanup(handle, &storage_root, &project_root);
+}
+
+/// W7 end-to-end contract: an injected worker-start channel loss occurs after
+/// user/message append+flush. The RPC error carries the authoritative
+/// Committed/non-retryable receipt; replaying the same client key is then an
+/// idempotent success and does not append a second message.
+#[test]
+fn mm2_w7_post_commit_start_failure_projects_receipt_and_retry_is_idempotent() {
+    let (handle, storage_root, project_root) =
+        spawn_serve_with_start_receive_failure("serve-mm2-w7-postcommit");
+    let body = r#"{"text":"land exactly once","clientMessageId":"mm2-w7-rpc"}"#;
+
+    let (status, failed) = post_rpc_json(handle.addr, TEST_TOKEN, "prompt.send", body);
+    assert_eq!(status, 200, "{failed}");
+    assert_eq!(failed["ok"], false);
+    assert_eq!(failed["error"]["code"], "internal");
+    assert_eq!(failed["error"]["receipt"]["state"], "committed");
+    assert_eq!(failed["error"]["receipt"]["retryable"], false);
+    assert_eq!(
+        failed["error"]["receipt"]["failure_phase"],
+        "worker-start-send"
+    );
+    let committed_message_id = failed["error"]["receipt"]["committed_message_id"]
+        .as_str()
+        .expect("committed message id")
+        .to_owned();
+    assert_eq!(count_keyed_user_messages(&storage_root, "mm2-w7-rpc"), 1);
+
+    let (status, retried) = prompt_send_keyed(handle.addr, "land exactly once", "mm2-w7-rpc");
+    assert_eq!(status, 200, "{retried:?}");
+    let retried = retried.expect("committed retry is success");
+    assert_eq!(retried["kind"], "receipt");
+    assert_eq!(retried["duplicate"], true);
+    assert_eq!(
+        retried["receipt"]["committed_message_id"].as_str(),
+        Some(committed_message_id.as_str())
+    );
+    assert_eq!(count_keyed_user_messages(&storage_root, "mm2-w7-rpc"), 1);
 
     cleanup(handle, &storage_root, &project_root);
 }
@@ -1424,6 +2135,8 @@ fn slow_subscriber_overflow_is_dropped_and_run_buffer_is_intact() {
     shared.fanout_run_event(&crate::RunEvent::SteeringApplied {
         message: crate::message::MessageContent::text("steer"),
         client_message_id: None,
+        request_digest: None,
+        receipt: None,
     });
     assert_eq!(shared.run_buffer_prefix(usize::MAX).len(), 1);
     shared.release_run_claim();
@@ -1495,13 +2208,94 @@ fn web_assets_are_public_but_contain_no_credentials() {
     cleanup(handle, &storage_root, &project_root);
 }
 
+/// 图片下载有独立于连接总数的 slow-reader 预算：四条挂起传输不能让
+/// 第五条继续占用文件句柄/连接 worker；permit Drop 后必须即时归还。
+#[test]
+fn attachment_download_permit_is_bounded_and_releases_on_drop() {
+    let (storage_root, project_root, project) = setup("serve-attachment-download-permit");
+    prepare_storage(&project, &storage_root, TestBehavior::Success);
+    let bootstrap = BootstrapApplication::open(project, storage_root.clone()).unwrap();
+    let application = bootstrap
+        .into_trusted_with_provider(Arc::new(TestProviderPlugin {
+            behavior: TestBehavior::Success,
+        }))
+        .unwrap();
+    let shared = Arc::new(ServeShared::new(
+        Arc::new(Mutex::new(application)),
+        "unit".into(),
+        0,
+    ));
+
+    let mut permits = (0..super::state::MAX_CONCURRENT_ATTACHMENT_DOWNLOADS)
+        .map(|_| {
+            shared
+                .try_attachment_download_permit()
+                .expect("each budgeted download gets a permit")
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        shared.try_attachment_download_permit().is_none(),
+        "the slow-reader budget must reject one over capacity"
+    );
+    drop(permits.pop());
+    assert!(
+        shared.try_attachment_download_permit().is_some(),
+        "closing one download must release exactly one slot"
+    );
+    drop(permits);
+    drop(shared);
+    std::fs::remove_dir_all(storage_root).ok();
+    std::fs::remove_dir_all(project_root).ok();
+}
+
+/// Raw ingress 与下载同样独立限流：慢上传不能无界占用 writer/connection；
+/// permit drop 后下一条上传才能进入。这一层不读取 HTTP body，故能稳定
+/// 钉住路由在读 body 前使用的同一个 permit 原语。
+#[test]
+fn raw_upload_permit_is_bounded_and_releases_on_drop() {
+    let (storage_root, project_root, project) = setup("serve-raw-upload-permit");
+    prepare_storage(&project, &storage_root, TestBehavior::Success);
+    let bootstrap = BootstrapApplication::open(project, storage_root.clone()).unwrap();
+    let application = bootstrap
+        .into_trusted_with_provider(Arc::new(TestProviderPlugin {
+            behavior: TestBehavior::Success,
+        }))
+        .unwrap();
+    let shared = Arc::new(ServeShared::new(
+        Arc::new(Mutex::new(application)),
+        "unit".into(),
+        0,
+    ));
+
+    let mut permits = (0..super::state::MAX_CONCURRENT_UPLOADS)
+        .map(|_| {
+            shared
+                .try_upload_permit()
+                .expect("each upload gets a permit")
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        shared.try_upload_permit().is_none(),
+        "the fifth concurrent raw upload must be rejected"
+    );
+    drop(permits.pop());
+    assert!(
+        shared.try_upload_permit().is_some(),
+        "closing one raw upload must release exactly one slot"
+    );
+    drop(permits);
+    drop(shared);
+    std::fs::remove_dir_all(storage_root).ok();
+    std::fs::remove_dir_all(project_root).ok();
+}
+
 fn get_response_content_type(addr: SocketAddr, target: &str) -> String {
     get_response_header(addr, target, "content-type")
 }
 
 fn get_response_header(addr: SocketAddr, target: &str, wanted: &str) -> String {
     let mut stream = connect(addr);
-    let request = format!("GET {target} HTTP/1.1\r\nHost: clat\r\nConnection: close\r\n\r\n");
+    let request = format!("GET {target} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n");
     stream.write_all(request.as_bytes()).expect("write");
     let mut bytes = Vec::new();
     stream.read_to_end(&mut bytes).expect("read");
@@ -1593,8 +2387,9 @@ fn urls_in_line(line: &str) -> Vec<String> {
 // 由 web/e2e/global-setup.js 以
 // `cargo test --lib -- --ignored serve_e2e_host --nocapture` 拉起：
 // 进程内 serve_with + TestProvider（真协议、真 socket、脚本模型——
-// 二进制零测试钩子），写 web/e2e/.serve-<key>.json 握手文件后驻留，
-// 直到 Playwright teardown 写 .stop-<key> 或 10 分钟超时。
+// 二进制零测试钩子），写 Playwright 为本次运行专设的临时
+// `.serve-<key>.json` 握手文件后驻留，直到 teardown 写 `.stop-<key>`
+// 或 10 分钟超时。
 
 const E2E_HOST_TIMEOUT: Duration = Duration::from_secs(600);
 
@@ -1625,7 +2420,14 @@ fn host_serve_for_playwright(key: &str, behavior: TestBehavior) {
     )
     .expect("serve_with");
 
-    let e2e_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("web/e2e");
+    // The Playwright setup mints a private per-invocation handshake directory.
+    // Falling back preserves the explicit manual-host workflow, while the
+    // normal path prevents concurrent test invocations from deleting each
+    // other's live host metadata.
+    let e2e_dir = std::env::var_os("CLAT_E2E_RUN_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("web/e2e"));
+    std::fs::create_dir_all(&e2e_dir).expect("create e2e handshake directory");
     let info_path = e2e_dir.join(format!(".serve-{key}.json"));
     let stop_path = e2e_dir.join(format!(".stop-{key}"));
     std::fs::write(
@@ -1633,10 +2435,88 @@ fn host_serve_for_playwright(key: &str, behavior: TestBehavior) {
         serde_json::json!({
             "origin": format!("http://{}", handle.addr),
             "token": token,
+            "pid": std::process::id(),
         })
         .to_string(),
     )
     .expect("write e2e info");
+
+    let deadline = Instant::now() + E2E_HOST_TIMEOUT;
+    while !stop_path.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    let _ = std::fs::remove_file(&stop_path);
+    cleanup(handle, &storage_root, &project_root);
+    let _ = std::fs::remove_file(&info_path);
+}
+
+fn host_live_glm_for_playwright() {
+    if std::env::var("CLAT_E2E_HOST").ok().as_deref() != Some("1")
+        || std::env::var("CLAT_LIVE_GLM_E2E").ok().as_deref() != Some("1")
+    {
+        eprintln!("serve_e2e_host[live-glm]: not armed");
+        return;
+    }
+    assert!(
+        std::env::var_os("CLAT_GLM_CODING_PLAN_KEY").is_some(),
+        "CLAT_GLM_CODING_PLAN_KEY must be set explicitly"
+    );
+    let (storage_root, project_root, project) = setup("serve-e2e-live-glm");
+    let config = crate::model::ModelConfig {
+        preset: Some("glm-5.3-flash".into()),
+        overrides: crate::model::ModelOverrides {
+            output_limit: crate::Override::Set(4_096),
+            ..crate::model::ModelOverrides::default()
+        },
+        overrides_version: Some(1),
+        ..crate::model::ModelConfig::default()
+    };
+    let bootstrap = BootstrapApplication::open(project.clone(), storage_root.clone()).unwrap();
+    let application = bootstrap
+        .authorize_and_mount_with_provider(Arc::new(LiveGlmProviderPlugin))
+        .unwrap();
+    application
+        .save_model_state(
+            &config,
+            &crate::model::ProviderCredentials::for_protocol(config.protocol),
+        )
+        .unwrap();
+    application.close().unwrap();
+
+    let token = format!("e2e-live-glm-{}", uuid::Uuid::new_v4().simple());
+    let handle = crate::serve::serve_with_with_queue(
+        project,
+        Some(storage_root.clone()),
+        ServeArgs {
+            port: 0,
+            token: Some(token.clone()),
+            rotate_token: false,
+        },
+        |bootstrap| {
+            bootstrap
+                .with_permission_modes()
+                .authorize_and_mount_with_provider(Arc::new(LiveGlmProviderPlugin))
+        },
+        Arc::new(AtomicBool::new(false)),
+        super::state::SUBSCRIBER_QUEUE_FRAMES,
+    )
+    .expect("serve_with live GLM");
+    let e2e_dir = std::env::var_os("CLAT_E2E_RUN_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("web/e2e"));
+    std::fs::create_dir_all(&e2e_dir).expect("create live e2e handshake directory");
+    let info_path = e2e_dir.join(".serve-live-glm.json");
+    let stop_path = e2e_dir.join(".stop-live-glm");
+    std::fs::write(
+        &info_path,
+        serde_json::json!({
+            "origin": format!("http://{}", handle.addr),
+            "token": token,
+            "pid": std::process::id(),
+        })
+        .to_string(),
+    )
+    .expect("write live e2e info");
 
     let deadline = Instant::now() + E2E_HOST_TIMEOUT;
     while !stop_path.exists() && Instant::now() < deadline {
@@ -1663,6 +2543,24 @@ fn serve_e2e_host_long_stream() {
             interval_ms: 50,
         },
     );
+}
+
+#[test]
+#[ignore = "Playwright e2e host (needs CLAT_E2E_HOST=1, set by web/e2e/global-setup.js)"]
+fn serve_e2e_host_success() {
+    host_serve_for_playwright("success", TestBehavior::Success);
+}
+
+#[test]
+#[ignore = "Playwright e2e host (needs CLAT_E2E_HOST=1, set by web/e2e/global-setup.js)"]
+fn serve_e2e_host_compact_slow() {
+    host_serve_for_playwright("compact-slow", TestBehavior::SlowCompaction);
+}
+
+#[test]
+#[ignore = "paid live GLM Playwright host (needs explicit env arm and process-local key)"]
+fn serve_e2e_host_live_glm() {
+    host_live_glm_for_playwright();
 }
 
 // ---- 依赖零新增（验收 14，INV-S8）----

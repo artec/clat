@@ -152,7 +152,7 @@ have at most one active run.
 
 ```text
 user prompt
-  → validate/prepare attachments
+  → validate/prepare attachments (clipboard bytes first enter core draft staging)
   → journal turn/start + user/message durably
   → freeze extension registries
   → create Run Scope
@@ -222,6 +222,17 @@ summary marker and shadows older surface ranges without deleting original
 events. Preset context windows seed automatic compaction; manual configuration
 remains authoritative.
 
+Immediately before each agent request, core derives a detached image projection
+from that surface. It counts user, assistant, and typed tool-result images in
+provider order, enforces the independent 12-block/20,000,000-byte request
+bounds, and compares the full estimated input plus output reserve with a
+1024-token-quantized 80% pressure line. If necessary, older images become one
+fixed path-free notice in oldest-first order. Images at and after the latest
+user turn are protected; if that turn still cannot fit, the run fails before
+provider I/O. The journal and transcript retain the original image blocks.
+`/context`, spend reservation, compaction, and the actual `ModelRequest` share
+this estimator/projection rather than maintaining frontend-specific counts.
+
 Provider-specific replay stays opaque to `Run`. For example, OpenAI Responses
 reasoning items travel through `provider_state`, while DeepSeek-compatible
 `reasoning_content` is attached only to assistant messages that made tool calls.
@@ -249,8 +260,18 @@ Model::stream
 Provider factories create a fresh adapter for each retry attempt. The two
 built-in protocol families are OpenAI Responses and streaming
 `/chat/completions`-compatible APIs. Managed request fields cannot be
-overridden by user-provided extra body data. See [Providers](providers.md) for
-preset and retry details.
+overridden by user-provided extra body data. Attachment admission, route image
+policy, and final JSON body bytes are independent gates; both adapters stream
+their final JSON into one buffer capped at 32 MiB before HTTP send. See
+[Providers](providers.md) for preset and retry details.
+
+Each durable `request/header` freezes the model route, complete image policy,
+and estimator, calibration, and normalized-encoder versions. A route or version
+change therefore produces a new header only at a run boundary. The normalized
+content-addressed blob is the first-release provider variant: CLAT performs no
+route-specific silent resize, so a second disk variant cache would only
+duplicate identical bytes. If route-specific encoding is introduced later,
+that header identity becomes the required cache key prefix.
 
 ## Native tools and permission pipeline
 
@@ -264,6 +285,14 @@ absolute reads remain allowed by CLAT's current permission contract.
 
 Trusted projects also receive:
 
+- `view_image` — a per-run, visual-capability-gated read tool for reachable
+  session attachment IDs, project-relative no-follow reads, and core-minted
+  run scratch references. It is absent from text-model and read-only child
+  catalogs; Full Access never widens it to arbitrary absolute paths. Live
+  provider requests use transient fenced paths, while wire and journal
+  surfaces carry descriptor-only content blocks. Its invoke-to-result
+  authority cache is bounded to one model step and consumes an entry for each
+  transformed result, so a long tool loop cannot retain historic references;
 - `write_file` — bounded atomic replacement with permission preservation;
 - `edit_file` — one exact unique replacement plus conflict revalidation;
 - `apply_patch` — one existing UTF-8 file, multiple exact hunks, complete
@@ -462,11 +491,28 @@ bridges permission requests to `approval.requested` events and
 `approval.respond` RPC calls, exposes core command/session/run use cases, and
 uses the same event envelopes as headless JSON output.
 
+Manual PWA compaction is exposed as `session.compact`. Serve owns only a clone
+of the core `CompactHandle` so it can report an `active_compaction` snapshot and
+route cancellation; summary generation, journal replacement and replay folding
+remain Application/session responsibilities. `CompactionUpdated` notices clear
+the frontend slot and drive the browser projection, including recovery after a
+reload. A run and manual compaction remain mutually exclusive at the core
+boundary.
+
 The embedded `web/` workbench is a projection client. Static assets and pairing
 shell contain no credential. Authenticated API calls carry the persistent
 `~/.clat/web-token` as Bearer; no URL or Cookie token path exists. Browser
 storage contains only UI preferences and the origin-scoped paired token, never
 conversation facts.
+
+Image drafts remain frontend presentation state until the server admits them:
+the workbench sends one bounded PNG/JPEG stream into a server-minted, selection-
+bound draft scope, then references only opaque upload IDs in `prompt.send` or
+`steer.send`. Core imports a queued steering image before it can be claimed,
+but its descriptor is durable only at the recorder's append-and-flush point.
+History metadata travels through replay/SSE; image bytes are loaded later from
+an authenticated active-session reachability endpoint into revocable browser
+blob URLs. Thus neither a host path nor a bearer token becomes image authority.
 
 The read-only Plugin Index panel is a special public-data projection: it fetches
 `https://pi.at.cn/catalog.json` with credentials omitted and never sends the
@@ -494,13 +540,14 @@ read-only and used only to populate session selection.
 | `src/permission.rs` | effects, modes, policies, approver port, write scope |
 | `src/event.rs` | RunEvent vocabulary and EventSink |
 | `src/interaction.rs`, `src/media.rs` | user-question port and image preparation |
+| `src/draft.rs` | process-local, core-owned pre-admission image staging |
 | `src/plugin/`, `src/plugins/` | plugin kernel and built-in catalogs/adapters |
 | `src/plugin_host.rs` | extension sampling and elicitation semantics |
 | `src/mcp.rs`, `src/mcp/` | MCP config, transport, client, and tool mapping |
 | `src/session/` | journals, projections, recovery, checkpoints |
 | `src/control_storage/` | JSON control plane and workspace registry |
 | `src/command.rs` | frontend-neutral slash-command contract |
-| `src/tui.rs`, `src/tui/` | terminal frontend |
+| `src/tui.rs`, `src/tui/` | terminal frontend and structured image-draft presentation |
 | `src/exec.rs` | headless frontend |
 | `src/serve.rs`, `src/serve/`, `web/` | local API, SSE, and embedded PWA |
 | `src/dsh/` | DSH client protocol and host lifecycle |
@@ -508,6 +555,16 @@ read-only and used only to populate session selection.
 | `src/upgrade.rs` | authenticated self-update |
 | `wit/`, `sdk/clat-plugin/` | WASM contract and author SDK |
 | `sdk/dsh-adapter/` | static Cordis/DSH compatibility adapter package |
+
+Image-bearing TUI starts use an ownership handoff rather than decoding on the
+terminal thread: a bounded frontend worker temporarily owns
+`TrustedProjectApplication`, performs core admission, and returns it in a
+`RunStartFinished` message. A one-shot event barrier blocks the core run at its
+first event until the TUI has restored the application, installed the run
+handle and usage baselines, and cleared the accepted draft. Pre-commit failure
+returns the same application and leaves the ordered draft untouched. This is
+frontend scheduling only; validation, normalization, persistence, spawning,
+and the commit point remain core-owned.
 
 ## Adding a core capability
 

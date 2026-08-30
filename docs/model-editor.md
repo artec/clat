@@ -29,6 +29,7 @@ The shipped catalog is the source used by both the picker and runtime:
 | DeepSeek V4.0 Pro | `deepseek-v4-pro` | `https://api.deepseek.com` | 1M | 384K |
 | DeepSeek V4.0 Flash Vision (Exp) | `deepseek-v4-flash-vision-exp` | `https://api.deepseek.com` | 1M | 384K |
 | GLM 5.3 | `glm-5.3` | `https://open.bigmodel.cn/api/coding/paas/v4` | 1M | 128K |
+| GLM 5.3 Flash | `glm-5.3-flash` | `https://open.bigmodel.cn/api/coding/paas/v4` | 1M | 128K |
 | Qwen3.8 Max | `qwen3.8-max` | `https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1` | 1M | 128K |
 | Kimi K3 | `kimi-k3` | `https://api.kimi.com/coding/v1` | 1M | 128K |
 
@@ -39,9 +40,12 @@ headers. For example, GLM preserves thinking, Qwen uses its
 whitelisted coding-agent User-Agent. See [Providers](providers.md#built-in-presets)
 before overriding those fields.
 
-The DeepSeek Vision preset accepts the image attachments described in
-[Using CLAT](usage.md#image-attachments). Other endpoints may still process
-images through configured MCP vision tools.
+GLM 5.3 Flash is currently the only built-in preset with probe-verified native
+image input, and therefore the only picker route that enables the image
+attachments described in [Using CLAT](usage.md#image-attachments). The
+DeepSeek Vision experimental preset and all other presets remain text-only in
+CLAT until their exact route has equivalent evidence. This does not restrict
+images handled wholly inside configured MCP tools.
 
 ## Custom profiles
 
@@ -74,6 +78,10 @@ dialog chain.
 
 Press `Enter`, click, or type on a text field to open its input. `Enter`
 confirms the field, `Esc` cancels it. `Ctrl+S` saves the whole editor.
+On Max Output, Context Window, Temperature, Parallel Tool Calls, and the
+profile Thinking row, `Ctrl+D` toggles an explicit `Clear` tombstone. A
+cleared row says `cleared (field omitted)`; this differs from an empty value,
+which means `Inherit`. Editing or cycling the row replaces the tombstone.
 
 Numeric settings use bounded choice rows before a custom input:
 

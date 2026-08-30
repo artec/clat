@@ -10,13 +10,13 @@
 use super::App;
 use super::{conversation_wrap_width, slice_by_columns};
 use crate::dsh::backend::{DshEvent, DshTask, TaskReply};
-use crate::test_support::{TestBehavior, TestProviderPlugin, roots};
+use crate::test_support::{LiveGlmProviderPlugin, TestBehavior, TestProviderPlugin, roots};
 use crate::tui::conversation::{CardState, ConversationModel, ToolCardVisibility};
 use crate::tui::dialogs::RenameDialog;
 use crate::tui::dsh_events::DshState;
 use crate::tui::permission_picker::PermissionPicker;
 use crate::tui::session_picker::SessionPicker;
-use crate::tui::worker::{UiEvent, WorkerMessage};
+use crate::tui::worker::{SteeringAdmissionFinished, UiEvent, WorkerMessage};
 use crate::{BootstrapApplication, ModelEvent, PermissionRequest, Project, RunEvent, ToolEffect};
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
@@ -25,7 +25,7 @@ use ratatui::Terminal;
 use ratatui::backend::{Backend, TestBackend};
 use serde_json::json;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 use std::time::Duration;
 use unicode_width::UnicodeWidthStr;
 
@@ -91,6 +91,9 @@ const SCENARIOS: &[&str] = &[
     "rename-dialog",
     "rename-not-named",
     "attachment-chip",
+    "attachment-multi",
+    "attachment-steering",
+    "attachment-failure-restore",
     // D-2 §7.2：dsh 快照族（App 单壳——同一 draw 管线，事件/状态注入）。
     "dsh-connecting",
     "dsh-idle",
@@ -139,6 +142,125 @@ thread_local! {
 fn recording_clipboard_sink(bytes: &[u8]) -> bool {
     CLIPBOARD_BYTES.with(|cell| cell.borrow_mut().extend_from_slice(bytes));
     true
+}
+
+fn test_png(width: u32, height: u32) -> Vec<u8> {
+    let image = image::RgbaImage::from_pixel(width, height, image::Rgba([4, 8, 15, 255]));
+    let mut bytes = Vec::new();
+    image::DynamicImage::ImageRgba8(image)
+        .write_to(
+            &mut std::io::Cursor::new(&mut bytes),
+            image::ImageFormat::Png,
+        )
+        .expect("encode test png");
+    bytes
+}
+
+#[test]
+fn core_staged_clipboard_drafts_release_on_remove_clear_and_durable_claim_only() {
+    let mut harness = Harness::trusted("clipboard-draft-lifecycle", 80, 24);
+    let store = harness
+        .app
+        .application
+        .as_ref()
+        .expect("trusted application")
+        .draft_image_store();
+    let bytes = test_png(8, 6);
+
+    let removed = store
+        .stage_png(&bytes)
+        .expect("stage removable clipboard image");
+    harness
+        .app
+        .attachments
+        .add_paths(&harness.project_root, [removed.clone()])
+        .unwrap();
+    assert!(harness.app.handle_attachment_command("/image remove 1"));
+    assert!(!removed.exists(), "remove reclaims a core-staged raw image");
+
+    let cleared = store
+        .stage_png(&bytes)
+        .expect("stage clearable clipboard image");
+    harness
+        .app
+        .attachments
+        .add_paths(&harness.project_root, [cleared.clone()])
+        .unwrap();
+    assert!(harness.app.handle_attachment_command("/attachments clear"));
+    assert!(!cleared.exists(), "clear reclaims a core-staged raw image");
+
+    let user_source = harness.project_root.join("user-owned.png");
+    std::fs::write(&user_source, &bytes).unwrap();
+    harness
+        .app
+        .attachments
+        .add_paths(&harness.project_root, [user_source.clone()])
+        .unwrap();
+    harness.app.clear_attachment_draft();
+    assert!(
+        user_source.exists(),
+        "composer cleanup must never delete a user-selected /attach source"
+    );
+
+    let unclaimed = store
+        .stage_png(&bytes)
+        .expect("stage queued clipboard image");
+    harness
+        .app
+        .remember_native_steering("not claimed".into(), vec![unclaimed.clone()]);
+    assert!(
+        unclaimed.exists(),
+        "queue acknowledgement is not the durable claim point"
+    );
+
+    let claimed = store
+        .stage_png(&bytes)
+        .expect("stage claimed clipboard image");
+    harness
+        .app
+        .remember_native_steering("claimed".into(), vec![claimed.clone()]);
+    harness.run_event(RunEvent::SteeringApplied {
+        message: crate::message::MessageContent::text("claimed"),
+        client_message_id: None,
+        request_digest: None,
+        receipt: None,
+    });
+    assert!(
+        !claimed.exists(),
+        "durable SteeringApplied releases its raw clipboard source"
+    );
+    assert!(
+        unclaimed.exists(),
+        "a different unclaimed draft remains retryable"
+    );
+
+    // A claim can arrive while the admission worker temporarily owns the
+    // Application facade. Presentation authority is removed immediately, but
+    // physical cleanup waits for that exact owner to return.
+    let deferred = store
+        .stage_png(&bytes)
+        .expect("stage deferred clipboard image");
+    harness
+        .app
+        .remember_native_steering("deferred".into(), vec![deferred.clone()]);
+    let application = harness.app.application.take().expect("move application");
+    harness.run_event(RunEvent::SteeringApplied {
+        message: crate::message::MessageContent::text("deferred"),
+        client_message_id: None,
+        request_digest: None,
+        receipt: None,
+    });
+    assert!(deferred.exists());
+    assert_eq!(
+        harness.app.deferred_core_staged_releases.as_slice(),
+        std::slice::from_ref(&deferred)
+    );
+    harness.app.application = Some(application);
+    harness
+        .app
+        .release_core_staged_attachment_paths(std::iter::empty());
+    assert!(!deferred.exists());
+    assert!(harness.app.deferred_core_staged_releases.is_empty());
 }
 
 fn harness(tag: &str, width: u16, height: u16, trusted: bool) -> Harness {
@@ -1324,6 +1446,8 @@ fn steered_transcript_snapshot() {
     harness.run_event(RunEvent::SteeringApplied {
         message: crate::message::MessageContent::text("也讲讲投影 checkpoint"),
         client_message_id: None,
+        request_digest: None,
+        receipt: None,
     });
     harness.run_event(RunEvent::ModelRequested {
         turn: 2,
@@ -2016,13 +2140,13 @@ fn finishing_a_drag_copies_the_selection_immediately() {
     );
 }
 
-/// 图片附件徽标（M6）：拖图进终端 = 粘贴整条绝对路径 → 输入框顶部
-/// 出现附件行（📷 文件名），不进文本；Esc 连同输入一起清空。
+/// MM-3 结构化附件 rail：绝对路径粘贴生成稳定 Image #N、元数据与总
+/// 预算，不进文本；Esc 连同输入一起清空。
 #[test]
 fn attachment_chip_snapshot() {
     let mut harness = Harness::trusted("snap-attach", 80, 24);
     let image = harness.project_root.join("probe-shot.png");
-    std::fs::write(&image, b"png").unwrap();
+    std::fs::write(&image, test_png(32, 24)).unwrap();
     harness.event(UiEvent::Terminal(Event::Paste(image.display().to_string())));
     assert_eq!(
         harness.app.attachments.len(),
@@ -2041,6 +2165,998 @@ fn attachment_chip_snapshot() {
         harness.app.attachments.is_empty(),
         "Esc drops the attachment"
     );
+}
+
+/// MM-3 keyboard-only multi-select/reorder/remove path. Quoted project-relative
+/// paths are parsed literally; stable ids survive reordering.
+#[test]
+fn attachment_multi_reorder_remove_snapshot_and_behavior() {
+    let mut harness = Harness::trusted("snap-attach-multi", 100, 28);
+    std::fs::write(
+        harness.project_root.join("first shot.png"),
+        test_png(64, 32),
+    )
+    .unwrap();
+    std::fs::write(harness.project_root.join("second.png"), test_png(16, 48)).unwrap();
+
+    harness.type_text("/attach \"first shot.png\" second.png");
+    harness.key(KeyCode::Enter);
+    assert_eq!(harness.app.attachments.len(), 2);
+    harness.type_text("/image move 2 1");
+    harness.key(KeyCode::Enter);
+    let rows = harness.app.attachments.rows().collect::<Vec<_>>();
+    assert!(rows[0].starts_with("[Image #2]"));
+    assert!(rows[1].starts_with("[Image #1]"));
+    harness.type_text("describe both");
+    harness.snapshot("attachment-multi");
+
+    // Remove by stable id, not current visual position.
+    harness.app.input.clear();
+    harness.type_text("/image remove #1");
+    harness.key(KeyCode::Enter);
+    let rows = harness.app.attachments.rows().collect::<Vec<_>>();
+    assert_eq!(rows.len(), 1);
+    assert!(rows[0].starts_with("[Image #2]"));
+
+    // The default test route is text-only/unconfigured. A send attempt keeps
+    // both text and the remaining structured image draft.
+    harness.type_text("please inspect");
+    harness.key(KeyCode::Enter);
+    assert!(harness.app.input.text().contains("please inspect"));
+    assert_eq!(harness.app.attachments.len(), 1);
+    assert!(harness.app.status.contains("cannot send images"));
+}
+
+/// The pending steering zone must make an image-bearing follow-up visible
+/// without exposing its source path. Core/application tests separately lock
+/// Reserved→Committed admission and provider delivery; this snapshot owns the
+/// TUI presentation boundary.
+#[test]
+fn attachment_steering_pending_snapshot_is_path_free() {
+    let mut harness = Harness::trusted("snap-attach-steering", 90, 25);
+    harness
+        .app
+        .conversation
+        .push_user("first request is still running".into());
+    harness
+        .app
+        .conversation
+        .push_pending_steering("inspect the new screenshots\n[2 image(s)]".into());
+    harness.app.running = true;
+    let projection = harness.draw_projection();
+    check_or_refresh("attachment-steering", &projection);
+    assert!(projection.contains("[2 image(s)]"));
+    assert!(!projection.contains("/tmp/"));
+}
+
+/// An asynchronous pre-commit startup failure must leave both the text and
+/// ordered structured image draft visible for a lossless retry.
+#[test]
+fn attachment_start_failure_restores_the_complete_draft_snapshot() {
+    let mut harness = Harness::trusted("snap-attach-failure", 90, 25);
+    let image = harness.project_root.join("retry.png");
+    std::fs::write(&image, test_png(20, 10)).unwrap();
+    harness.event(UiEvent::Terminal(Event::Paste(image.display().to_string())));
+
+    let application = harness.app.application.as_mut().expect("application");
+    crate::test_support::configure_test_model(application);
+    let (config, credentials) = application.model_state().unwrap();
+    harness.app.config = config;
+    harness.app.credentials = credentials;
+    application.fail_next_run_spawn_for_test();
+    let (sender, events) = super::ui_event_channel();
+    harness.app.event_sender = Some(sender);
+
+    harness.type_text("retry this exact draft");
+    harness.key(KeyCode::Enter);
+    assert!(harness.app.run_start_pending);
+    assert!(harness.app.application.is_none());
+    let finished = events
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("background admission failure");
+    harness.event(finished);
+    assert_eq!(harness.app.input.text(), "retry this exact draft");
+    assert_eq!(harness.app.attachments.len(), 1);
+    assert!(harness.app.status.contains("failed to start run"));
+    harness.snapshot("attachment-failure-restore");
+}
+
+#[test]
+fn failed_initial_admission_keeps_core_staged_clipboard_source_retryable() {
+    let mut harness = Harness::trusted("clipboard-start-failure", 90, 25);
+    let image = harness
+        .app
+        .application
+        .as_ref()
+        .expect("application")
+        .draft_image_store()
+        .stage_png(&test_png(20, 10))
+        .expect("core-staged retry image");
+    harness.event(UiEvent::Terminal(Event::Paste(image.display().to_string())));
+
+    let application = harness.app.application.as_mut().expect("application");
+    crate::test_support::configure_test_model(application);
+    let (config, credentials) = application.model_state().unwrap();
+    harness.app.config = config;
+    harness.app.credentials = credentials;
+    application.fail_next_run_spawn_for_test();
+    let (sender, events) = super::ui_event_channel();
+    harness.app.event_sender = Some(sender);
+
+    harness.type_text("retry this staged clipboard image");
+    harness.key(KeyCode::Enter);
+    let finished = events
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("background admission failure");
+    harness.event(finished);
+
+    assert_eq!(harness.app.attachments.len(), 1);
+    assert!(
+        image.exists(),
+        "failed admission keeps the core-staged raw image retryable"
+    );
+}
+
+#[test]
+fn attachment_admission_handoff_restores_app_before_first_run_event() {
+    let mut harness = Harness::trusted("attach-admission-handoff", 90, 25);
+    let image = harness
+        .app
+        .application
+        .as_ref()
+        .expect("application")
+        .draft_image_store()
+        .stage_png(&test_png(40, 30))
+        .expect("core-staged handoff image");
+    harness.event(UiEvent::Terminal(Event::Paste(image.display().to_string())));
+
+    let application = harness.app.application.as_ref().expect("application");
+    crate::test_support::configure_test_model(application);
+    let (config, credentials) = application.model_state().unwrap();
+    harness.app.config = config;
+    harness.app.credentials = credentials;
+    let (sender, events) = super::ui_event_channel();
+    harness.app.event_sender = Some(sender);
+
+    harness.type_text("inspect without blocking input");
+    harness.key(KeyCode::Enter);
+    assert!(harness.app.run_start_pending);
+    assert!(harness.app.application.is_none());
+    // Terminal edits are gated while the worker owns the application.
+    harness.key(KeyCode::Char('x'));
+    assert!(harness.app.input.text().is_empty());
+    assert_eq!(harness.app.attachments.len(), 1);
+    assert!(
+        image.exists(),
+        "pre-commit handoff cannot reclaim the retry source"
+    );
+
+    let prepared = events
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("background admission success");
+    assert!(matches!(
+        prepared,
+        UiEvent::Worker(WorkerMessage::RunStartFinished(_))
+    ));
+    harness.event(prepared);
+    assert!(harness.app.application.is_some());
+    assert!(!harness.app.run_start_pending);
+    assert!(harness.app.running);
+    assert!(harness.app.attachments.is_empty());
+    assert!(
+        !image.exists(),
+        "successful durable admission reclaims the core-staged raw source"
+    );
+    harness
+        .app
+        .run_handle
+        .as_ref()
+        .expect("run handle")
+        .cancel();
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while harness.app.running && std::time::Instant::now() < deadline {
+        match events.recv_timeout(std::time::Duration::from_millis(200)) {
+            Ok(event) => harness.event(event),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                panic!("run event channel disconnected after handoff")
+            }
+        }
+    }
+    assert!(
+        !harness.app.running,
+        "test run must finish after gate opens"
+    );
+}
+
+/// Image-bearing steering must not decode/normalize on the terminal thread.
+/// While that admission worker owns the facade, the already-running model
+/// keeps its event stream and no second input can observe the handoff. Once
+/// restored, the ordinary DSH-style pending queue still reaches the next
+/// model boundary with the original image draft committed exactly once.
+#[test]
+fn attachment_steering_admission_handoff_keeps_active_run_live() {
+    let mut harness = Harness::trusted("attach-steering-admission", 90, 25);
+    // This test needs a deliberately blocked first model call so `steer()`
+    // is guaranteed to target an active run rather than exercise the
+    // NotRunning fallback. Replace the harness's default deterministic
+    // provider while preserving its trusted storage/project pair.
+    harness
+        .app
+        .application
+        .take()
+        .expect("default application")
+        .close()
+        .expect("close default application");
+    let gate = Arc::new(crate::test_support::SteerGate::default());
+    let application = BootstrapApplication::open(
+        Project::new(&harness.project_root),
+        harness.storage_root.clone(),
+    )
+    .expect("reopen trusted bootstrap")
+    .into_trusted_with_provider(Arc::new(TestProviderPlugin {
+        behavior: TestBehavior::Steer(Arc::clone(&gate)),
+    }))
+    .expect("mount steering provider");
+    crate::test_support::configure_test_model(&application);
+    let (config, credentials) = application.model_state().expect("model state");
+    harness.app.config = config;
+    harness.app.credentials = credentials;
+    harness.app.application = Some(application);
+
+    let (sender, events) = super::ui_event_channel();
+    harness.app.event_sender = Some(sender);
+    harness.type_text("start work");
+    harness.key(KeyCode::Enter);
+    gate.wait_entered();
+    assert!(harness.app.running);
+
+    let image = harness.project_root.join("steering-handoff.png");
+    std::fs::write(&image, test_png(40, 30)).unwrap();
+    harness.event(UiEvent::Terminal(Event::Paste(image.display().to_string())));
+    harness.type_text("also run the tests");
+    harness.key(KeyCode::Enter);
+    assert!(harness.app.run_start_pending);
+    assert!(harness.app.application.is_none());
+    // The existing run stays active, but the temporary owner handoff gates
+    // all interactive mutation until admission returns.
+    assert!(harness.app.running);
+    harness.key(KeyCode::Char('x'));
+    assert!(harness.app.input.text().is_empty());
+
+    let admitted = loop {
+        let event = events
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("steering admission result");
+        if matches!(
+            event,
+            UiEvent::Worker(WorkerMessage::SteeringAdmissionFinished(_))
+        ) {
+            break event;
+        }
+        harness.event(event);
+    };
+    harness.event(admitted);
+    assert!(harness.app.application.is_some());
+    assert!(!harness.app.run_start_pending);
+    assert!(harness.app.running);
+    assert!(harness.app.attachments.is_empty());
+    assert_eq!(harness.app.conversation.pending_steering_count(), 1);
+
+    gate.release();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while harness.app.running && std::time::Instant::now() < deadline {
+        match events.recv_timeout(std::time::Duration::from_millis(200)) {
+            Ok(event) => harness.event(event),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                panic!("run event channel disconnected after steering handoff")
+            }
+        }
+    }
+    assert!(!harness.app.running, "steered test run must finish");
+    assert!(gate.saw_steering.load(std::sync::atomic::Ordering::Acquire));
+}
+
+/// INV-MM-I11/TUI: accepting a steering draft is not ownership transfer to
+/// durable history. If cancellation seals the run before `SteeringApplied`,
+/// the exact text and ordered source images return to the composer. This test
+/// is red on the old `discard_pending_steering()`-only finish path.
+#[test]
+fn cancelled_unclaimed_image_steering_restores_the_exact_retry_draft() {
+    let mut harness = Harness::trusted("attach-steering-cancel-retry", 90, 25);
+    harness
+        .app
+        .application
+        .take()
+        .expect("default application")
+        .close()
+        .expect("close default application");
+    let gate = Arc::new(crate::test_support::SteerGate::default());
+    let application = BootstrapApplication::open(
+        Project::new(&harness.project_root),
+        harness.storage_root.clone(),
+    )
+    .expect("reopen trusted bootstrap")
+    .into_trusted_with_provider(Arc::new(TestProviderPlugin {
+        behavior: TestBehavior::Steer(Arc::clone(&gate)),
+    }))
+    .expect("mount steering provider");
+    crate::test_support::configure_test_model(&application);
+    let (config, credentials) = application.model_state().expect("model state");
+    harness.app.config = config;
+    harness.app.credentials = credentials;
+    harness.app.application = Some(application);
+
+    let (sender, events) = super::ui_event_channel();
+    harness.app.event_sender = Some(sender);
+    harness.type_text("start cancellable work");
+    harness.key(KeyCode::Enter);
+    gate.wait_entered();
+
+    let first = harness.project_root.join("cancel-retry-first.png");
+    let second = harness.project_root.join("cancel-retry-second.png");
+    std::fs::write(&first, test_png(40, 30)).unwrap();
+    std::fs::write(&second, test_png(30, 40)).unwrap();
+    harness.event(UiEvent::Terminal(Event::Paste(first.display().to_string())));
+    // Add the second file through the same validated composer surface.
+    harness
+        .app
+        .attachments
+        .add_paths(&harness.project_root, [second.clone()])
+        .unwrap();
+    harness.type_text("retry these images after cancellation");
+    harness.key(KeyCode::Enter);
+
+    let admitted = loop {
+        let event = events
+            .recv_timeout(Duration::from_secs(2))
+            .expect("steering admission result");
+        if matches!(
+            event,
+            UiEvent::Worker(WorkerMessage::SteeringAdmissionFinished(_))
+        ) {
+            break event;
+        }
+        harness.event(event);
+    };
+    harness.event(admitted);
+    assert_eq!(harness.app.pending_native_steering.len(), 1);
+    assert!(harness.app.attachments.is_empty());
+
+    harness
+        .app
+        .run_handle
+        .as_ref()
+        .expect("active run")
+        .cancel();
+    gate.release();
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while harness.app.running && std::time::Instant::now() < deadline {
+        match events.recv_timeout(Duration::from_millis(200)) {
+            Ok(event) => harness.event(event),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                panic!("run event channel disconnected before cancellation settled")
+            }
+        }
+    }
+
+    assert!(!harness.app.running, "cancelled run must settle");
+    assert_eq!(
+        harness.app.input.text(),
+        "retry these images after cancellation"
+    );
+    assert_eq!(
+        harness.app.attachments.paths(),
+        vec![
+            first.canonicalize().unwrap(),
+            second.canonicalize().unwrap()
+        ]
+    );
+    assert!(harness.app.pending_native_steering.is_empty());
+    assert!(harness.app.recovered_native_steering.is_empty());
+    assert!(harness.app.status.contains("restored"));
+    assert_eq!(harness.app.conversation.pending_steering_count(), 0);
+    assert!(!gate.saw_steering.load(std::sync::atomic::Ordering::Acquire));
+}
+
+/// The run worker and the admission worker are distinct UI-event producers.
+/// A very fast claim may therefore arrive before the frontend receives the
+/// `Queued` acknowledgement. Pairing that early claim must not leave a stale
+/// draft that is resurrected when the run later finishes.
+#[test]
+fn steering_claim_racing_ahead_of_admission_ack_consumes_the_local_draft() {
+    let mut harness = Harness::trusted("attach-steering-early-claim", 80, 24);
+    harness.app.run_start_pending = true;
+    harness.app.steering_admission_pending = true;
+    harness.run_event(RunEvent::SteeringApplied {
+        message: crate::message::MessageContent::text("claimed before ack"),
+        client_message_id: None,
+        request_digest: None,
+        receipt: None,
+    });
+    assert_eq!(harness.app.native_steering_claim_credits.len(), 1);
+    assert_eq!(
+        harness.app.native_steering_claim_credits.front(),
+        Some(&"claimed before ack".to_owned())
+    );
+
+    harness.app.remember_native_steering(
+        "claimed before ack".into(),
+        vec![harness.project_root.join("already-claimed.png")],
+    );
+    harness.app.run_start_pending = false;
+    harness.app.steering_admission_pending = false;
+    assert!(harness.app.native_steering_claim_credits.is_empty());
+    assert!(harness.app.pending_native_steering.is_empty());
+
+    harness
+        .app
+        .remember_native_steering("current run draft".into(), Vec::new());
+    harness.app.run_start_pending = true;
+    harness.app.steering_admission_pending = false;
+    harness.run_event(RunEvent::SteeringApplied {
+        message: crate::message::MessageContent::text("stale previous run claim"),
+        client_message_id: None,
+        request_digest: None,
+        receipt: None,
+    });
+    assert_eq!(harness.app.pending_native_steering.len(), 1);
+    assert_eq!(
+        harness.app.pending_native_steering.front().unwrap().prompt,
+        "current run draft"
+    );
+    assert!(harness.app.native_steering_claim_credits.is_empty());
+}
+
+/// MM-5 paid TUI product gate: crossterm paste/input handlers → TUI async
+/// admission handoff → real Application/provider → rendered transcript. The
+/// credential remains process-local through `LiveGlmProviderPlugin`.
+#[test]
+#[ignore = "paid GLM TUI attachment/history check; set CLAT_GLM_CODING_PLAN_KEY explicitly"]
+fn live_glm_tui_multi_image_and_image_only_history() {
+    if std::env::var_os("CLAT_GLM_CODING_PLAN_KEY").is_none() {
+        eprintln!("live GLM TUI image gate not armed; skipping");
+        return;
+    }
+    let mut harness = Harness::trusted("mm5-live-tui-images", 100, 30);
+    harness
+        .app
+        .application
+        .take()
+        .expect("default application")
+        .close()
+        .expect("close default application");
+    let application = BootstrapApplication::open(
+        Project::new(&harness.project_root),
+        harness.storage_root.clone(),
+    )
+    .expect("reopen trusted bootstrap")
+    .into_trusted_with_provider(Arc::new(LiveGlmProviderPlugin))
+    .expect("mount live GLM provider");
+    let config = crate::ModelConfig {
+        preset: Some("glm-5.3-flash".into()),
+        overrides: crate::model::ModelOverrides {
+            // This campaign accumulates several thinking/tool/image turns.
+            // Pin a real override version and leave enough room for reasoning
+            // before the exact-answer sentinel; 512 can end at `length` with
+            // an empty visible answer even though the request is valid.
+            output_limit: crate::Override::Set(4_096),
+            ..crate::model::ModelOverrides::default()
+        },
+        overrides_version: Some(1),
+        ..crate::ModelConfig::default()
+    };
+    application
+        .save_model_state(
+            &config,
+            &crate::ProviderCredentials::for_protocol(config.protocol),
+        )
+        .expect("save GLM preset without persisted key");
+    let (config, credentials) = application.model_state().expect("effective model state");
+    harness.app.config = config;
+    harness.app.credentials = credentials;
+    harness.app.application = Some(application);
+    let (sender, events) = super::ui_event_channel();
+    harness.app.event_sender = Some(sender);
+
+    let green = harness.project_root.join("tui-live-green.png");
+    let yellow = harness.project_root.join("tui-live-yellow.png");
+    image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+        128,
+        128,
+        image::Rgb([0, 200, 0]),
+    ))
+    .save_with_format(&green, image::ImageFormat::Png)
+    .unwrap();
+    image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+        128,
+        128,
+        image::Rgb([250, 220, 0]),
+    ))
+    .save_with_format(&yellow, image::ImageFormat::Png)
+    .unwrap();
+
+    let wait_until_idle = |harness: &mut Harness| {
+        let deadline = std::time::Instant::now() + Duration::from_secs(180);
+        let mut steering_applied = 0usize;
+        while (harness.app.run_start_pending || harness.app.running)
+            && std::time::Instant::now() < deadline
+        {
+            match events.recv_timeout(Duration::from_millis(500)) {
+                Ok(event) => {
+                    if matches!(
+                        &event,
+                        UiEvent::Worker(WorkerMessage::Event(RunEvent::SteeringApplied { .. }))
+                    ) {
+                        steering_applied += 1;
+                    }
+                    harness.event(event);
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    panic!("live TUI event channel disconnected")
+                }
+            }
+        }
+        assert!(
+            !harness.app.run_start_pending && !harness.app.running,
+            "live TUI run must settle within the campaign deadline"
+        );
+        steering_applied
+    };
+
+    harness.event(UiEvent::Terminal(Event::Paste(green.display().to_string())));
+    harness
+        .app
+        .attachments
+        .add_paths(&harness.project_root, [yellow.clone()])
+        .unwrap();
+    harness
+        .type_text("Two solid-color images are attached in order. Reply exactly 1=green;2=yellow.");
+    harness.key(KeyCode::Enter);
+    let _ = wait_until_idle(&mut harness);
+    let projection = harness.draw_projection().to_ascii_lowercase();
+    assert!(projection.contains("1=green"), "projection: {projection}");
+    assert!(projection.contains("2=yellow"), "projection: {projection}");
+
+    harness.event(UiEvent::Terminal(Event::Paste(green.display().to_string())));
+    harness.key(KeyCode::Enter);
+    let _ = wait_until_idle(&mut harness);
+    harness.type_text(
+        "What solid color filled my immediately previous image-only message? Reply exactly HISTORY_OK_GREEN.",
+    );
+    harness.key(KeyCode::Enter);
+    let _ = wait_until_idle(&mut harness);
+    let projection = harness.draw_projection().to_ascii_uppercase();
+    assert!(
+        projection.contains("HISTORY_OK_GREEN"),
+        "image-only history must survive the TUI pipeline: {projection}"
+    );
+
+    harness.type_text(
+        "Call view_image exactly once with project_relative_path tui-live-green.png. A queued steering image will arrive before the next model step. After observing both, reply exactly TUI_STEER_OK_GREEN_YELLOW.",
+    );
+    harness.key(KeyCode::Enter);
+    assert!(harness.app.running);
+    harness.event(UiEvent::Terminal(Event::Paste(
+        yellow.display().to_string(),
+    )));
+    harness.type_text(
+        "The queued steering image is yellow. Incorporate it with the green view_image result and reply exactly TUI_STEER_OK_GREEN_YELLOW.",
+    );
+    harness.key(KeyCode::Enter);
+    let steering_applied = wait_until_idle(&mut harness);
+    assert_eq!(
+        steering_applied, 1,
+        "steering must cross the durable claim point"
+    );
+    let projection = harness.draw_projection().to_ascii_uppercase();
+    assert!(
+        projection.contains("TUI_STEER_OK_GREEN_YELLOW"),
+        "live TUI steering/tool loop must complete: {projection}"
+    );
+
+    harness.type_text(
+        "Call view_image with project_relative_path tui-live-green.png, then produce a long analysis. Do not finish before using the tool.",
+    );
+    harness.key(KeyCode::Enter);
+    assert!(harness.app.running);
+    harness.event(UiEvent::Terminal(Event::Paste(green.display().to_string())));
+    harness.type_text(
+        "If cancellation returns this green image draft, retry it and reply exactly TUI_CANCEL_RETRY_GREEN.",
+    );
+    harness.key(KeyCode::Enter);
+    let admission_deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while harness.app.run_start_pending && std::time::Instant::now() < admission_deadline {
+        match events.recv_timeout(Duration::from_millis(250)) {
+            Ok(event) => harness.event(event),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                panic!("live TUI event channel disconnected during steering admission")
+            }
+        }
+    }
+    assert!(
+        !harness.app.run_start_pending,
+        "steering admission must settle"
+    );
+    assert_eq!(
+        harness.app.pending_native_steering.len(),
+        1,
+        "the draft must still be unclaimed at the cancellation point"
+    );
+    harness
+        .app
+        .run_handle
+        .as_ref()
+        .expect("live cancellable run")
+        .cancel();
+    let _ = wait_until_idle(&mut harness);
+    assert_eq!(
+        harness.app.input.text(),
+        "If cancellation returns this green image draft, retry it and reply exactly TUI_CANCEL_RETRY_GREEN."
+    );
+    assert_eq!(harness.app.attachments.len(), 1);
+    assert!(harness.app.status.contains("restored"));
+
+    harness.key(KeyCode::Enter);
+    let _ = wait_until_idle(&mut harness);
+    let assistant = harness
+        .app
+        .conversation
+        .last_assistant_text()
+        .unwrap_or_default()
+        .to_ascii_uppercase();
+    assert!(
+        assistant.contains("TUI_CANCEL_RETRY_GREEN"),
+        "retried image draft must complete through the real model: {assistant}"
+    );
+}
+
+/// MM-5 manual physical-terminal gate. Unlike the TestBackend campaigns, this
+/// enters the real ratatui/crossterm lifecycle, reads keys from the process
+/// PTY, enables raw/bracketed-paste/mouse modes, and restores the terminal on
+/// exit. Run with `--ignored --exact --nocapture` in a real terminal, type
+/// `/attach physical.png`, visually confirm the `[Image #1]` rail, then press
+/// Ctrl+C. It deliberately uses a generated non-sensitive fixture and an
+/// isolated storage root; it neither reads the OS clipboard nor persists a
+/// provider credential.
+#[test]
+#[ignore = "manual physical PTY TUI attachment composer gate"]
+fn physical_pty_tui_attachment_composer_smoke() {
+    use std::io::IsTerminal as _;
+
+    if std::env::var_os("CLAT_PHYSICAL_PTY").as_deref() != Some(std::ffi::OsStr::new("1")) {
+        eprintln!("physical PTY gate not armed; set CLAT_PHYSICAL_PTY=1");
+        return;
+    }
+    assert!(
+        std::io::stdin().is_terminal() && std::io::stdout().is_terminal(),
+        "run this ignored gate from a real terminal/PTY with --nocapture"
+    );
+    let (storage_root, project_root) = roots("mm5-physical-pty");
+    std::fs::create_dir_all(&project_root).expect("project dir");
+    image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+        96,
+        64,
+        image::Rgb([20, 180, 80]),
+    ))
+    .save_with_format(project_root.join("physical.png"), image::ImageFormat::Png)
+    .expect("physical PTY fixture");
+
+    let project = Project::new(&project_root);
+    BootstrapApplication::open(project.clone(), storage_root.clone())
+        .expect("bootstrap")
+        .authorize_and_mount_with_provider(std::sync::Arc::new(TestProviderPlugin {
+            behavior: TestBehavior::Success,
+        }))
+        .expect("authorize isolated project")
+        .close()
+        .expect("close authorizer");
+    let mut app = App::open(project, Some(storage_root.clone())).expect("open physical PTY app");
+    app.test_freeze_tick = false;
+
+    eprintln!("MM5_PHYSICAL_PTY: type /attach physical.png, verify [Image #1], then Ctrl+C");
+    let result = super::run_frontend(app);
+    crate::test_support::cleanup_tree(storage_root.parent().expect("isolated base"));
+    result.expect("physical PTY frontend lifecycle");
+}
+
+/// Paid TUI compaction leg kept separate from the larger image campaign so a
+/// transient visual-model miss does not hide whether the `/compact` command,
+/// application notice lane, durable replay, and cold-remount continuation work.
+/// Seed turns use the deterministic provider; only summary + post-reopen run
+/// consume the process-local live credential.
+#[test]
+#[ignore = "paid GLM TUI compaction/cold-reopen check; set CLAT_GLM_CODING_PLAN_KEY explicitly"]
+fn live_glm_tui_manual_compaction_cold_reopen_and_continue() {
+    if std::env::var_os("CLAT_GLM_CODING_PLAN_KEY").is_none() {
+        eprintln!("live GLM TUI compaction gate not armed; skipping");
+        return;
+    }
+    let mut harness = Harness::trusted("mm5-live-tui-compact", 100, 30);
+    let application = harness.app.application.as_ref().expect("application");
+    crate::test_support::configure_test_model(application);
+    let (config, credentials) = application.model_state().expect("test model state");
+    harness.app.config = config;
+    harness.app.credentials = credentials;
+    let (sender, events) = super::ui_event_channel();
+    harness.app.event_sender = Some(sender);
+    harness.app.wire_application_events();
+
+    let wait_until_idle = |harness: &mut Harness| {
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while (harness.app.run_start_pending || harness.app.running)
+            && std::time::Instant::now() < deadline
+        {
+            match events.recv_timeout(Duration::from_millis(250)) {
+                Ok(event) => harness.event(event),
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    panic!("TUI event channel disconnected")
+                }
+            }
+        }
+        assert!(!harness.app.run_start_pending && !harness.app.running);
+    };
+
+    for turn in 0..5 {
+        harness.type_text(&format!("deterministic history seed {turn}"));
+        harness.key(KeyCode::Enter);
+        wait_until_idle(&mut harness);
+    }
+    harness
+        .app
+        .application
+        .take()
+        .expect("deterministic application")
+        .close()
+        .expect("close deterministic seed application");
+
+    let application = BootstrapApplication::open(
+        Project::new(&harness.project_root),
+        harness.storage_root.clone(),
+    )
+    .expect("reopen live bootstrap")
+    .into_trusted_with_provider(Arc::new(LiveGlmProviderPlugin))
+    .expect("mount live GLM provider");
+    let config = crate::ModelConfig {
+        preset: Some("glm-5.3-flash".into()),
+        overrides: crate::model::ModelOverrides {
+            output_limit: crate::Override::Set(512),
+            ..crate::model::ModelOverrides::default()
+        },
+        overrides_version: Some(1),
+        ..crate::ModelConfig::default()
+    };
+    application
+        .save_model_state(
+            &config,
+            &crate::ProviderCredentials::for_protocol(config.protocol),
+        )
+        .expect("save live model state without a key");
+    harness.app.application = Some(application);
+    harness.app.wire_application_events();
+    harness
+        .app
+        .adopt_snapshot()
+        .expect("adopt seeded session before compact");
+
+    harness.type_text("/compact");
+    harness.key(KeyCode::Enter);
+    let compact = harness
+        .app
+        .compact_handle
+        .as_ref()
+        .expect("/compact returns a cancellable handle")
+        .clone();
+    let deadline = std::time::Instant::now() + Duration::from_secs(180);
+    while !compact.is_finished() && std::time::Instant::now() < deadline {
+        match events.recv_timeout(Duration::from_millis(500)) {
+            Ok(event) => harness.event(event),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                panic!("TUI event channel disconnected during live compaction")
+            }
+        }
+    }
+    let report = compact
+        .join_report()
+        .expect("join live compaction")
+        .expect("live GLM compaction succeeds");
+    assert!(
+        report.shadowed_count > 0,
+        "manual compaction shrinks history"
+    );
+    while let Ok(event) = events.try_recv() {
+        harness.event(event);
+    }
+
+    harness
+        .app
+        .application
+        .take()
+        .expect("live application before cold remount")
+        .close()
+        .expect("close after live compaction");
+    harness.app.compact_handle = None;
+    let mut reopened = BootstrapApplication::open(
+        Project::new(&harness.project_root),
+        harness.storage_root.clone(),
+    )
+    .expect("cold reopen trusted bootstrap")
+    .into_trusted_with_provider(Arc::new(LiveGlmProviderPlugin))
+    .expect("cold remount live GLM provider");
+    let snapshot = reopened.snapshot().expect("cold replay snapshot");
+    assert!(
+        snapshot.replay.iter().any(|event| matches!(
+            event,
+            crate::session::replay::ReplayEvent::Compaction { .. }
+        )),
+        "cold TUI replay contains the durable compaction summary"
+    );
+    assert!(
+        snapshot
+            .credentials
+            .values()
+            .iter()
+            .all(|value| value.is_empty()),
+        "the process-local live key never enters persisted credentials"
+    );
+    harness.app.application = Some(reopened);
+    harness.app.wire_application_events();
+    harness
+        .app
+        .adopt_snapshot()
+        .expect("adopt cold TUI snapshot");
+
+    harness.type_text("Reply exactly TUI_COMPACT_REOPEN_OK.");
+    harness.key(KeyCode::Enter);
+    wait_until_idle(&mut harness);
+    let assistant = harness
+        .app
+        .conversation
+        .last_assistant_text()
+        .unwrap_or_default()
+        .to_ascii_uppercase();
+    assert!(
+        assistant.contains("TUI_COMPACT_REOPEN_OK"),
+        "cold-remounted compacted TUI session continues: {assistant}; status={}",
+        harness.app.status
+    );
+}
+
+/// The asynchronous steering worker must preserve the exact structured draft
+/// when core refuses admission. This is a distinct outcome from an ended run:
+/// no ordinary fallback may consume the images, and the user gets a lossless
+/// retry in the composer.
+#[test]
+fn refused_image_steering_admission_restores_text_and_draft() {
+    let mut harness = Harness::trusted("attach-steering-refused", 90, 25);
+    let image = harness.project_root.join("refused.png");
+    std::fs::write(&image, test_png(12, 12)).unwrap();
+    harness.event(UiEvent::Terminal(Event::Paste(image.display().to_string())));
+    let application = harness.app.application.take().expect("application");
+    harness.app.run_start_pending = true;
+
+    harness.event(UiEvent::Worker(WorkerMessage::SteeringAdmissionFinished(
+        Box::new(SteeringAdmissionFinished {
+            application,
+            prompt: "keep this exact image draft".into(),
+            outcome: crate::SteerOutcome::Refused {
+                reason: "image is no longer admissible".into(),
+                receipt: None,
+            },
+        }),
+    )));
+
+    assert!(harness.app.application.is_some());
+    assert!(!harness.app.run_start_pending);
+    assert_eq!(harness.app.input.text(), "keep this exact image draft");
+    assert_eq!(harness.app.attachments.len(), 1);
+    assert!(harness.app.status.contains("steering refused"));
+}
+
+/// A run can seal while an image steering worker is decoding. `NotRunning`
+/// must therefore restore the owner and start an ordinary image run, rather
+/// than dropping the draft or leaving the UI permanently admission-gated.
+#[test]
+fn sealed_image_steering_admission_falls_back_to_an_ordinary_run() {
+    let mut harness = Harness::trusted("attach-steering-sealed", 90, 25);
+    let image = harness.project_root.join("sealed.png");
+    std::fs::write(&image, test_png(24, 16)).unwrap();
+    harness.event(UiEvent::Terminal(Event::Paste(image.display().to_string())));
+    let application = harness.app.application.as_ref().expect("application");
+    crate::test_support::configure_test_model(application);
+    let (config, credentials) = application.model_state().expect("model state");
+    harness.app.config = config;
+    harness.app.credentials = credentials;
+    let application = harness.app.application.take().expect("application");
+    harness.app.run_start_pending = true;
+    let (sender, events) = super::ui_event_channel();
+    harness.app.event_sender = Some(sender);
+
+    harness.event(UiEvent::Worker(WorkerMessage::SteeringAdmissionFinished(
+        Box::new(SteeringAdmissionFinished {
+            application,
+            prompt: "send after the previous run sealed".into(),
+            outcome: crate::SteerOutcome::NotRunning { receipt: None },
+        }),
+    )));
+    // Image-bearing ordinary fallback itself uses the bounded admission path.
+    assert!(harness.app.run_start_pending);
+    assert!(harness.app.application.is_none());
+    assert_eq!(harness.app.attachments.len(), 1);
+
+    let prepared = events
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("fallback admission result");
+    assert!(matches!(
+        prepared,
+        UiEvent::Worker(WorkerMessage::RunStartFinished(_))
+    ));
+    harness.event(prepared);
+    assert!(harness.app.application.is_some());
+    assert!(!harness.app.run_start_pending);
+    assert!(harness.app.running);
+    assert!(harness.app.attachments.is_empty());
+    harness
+        .app
+        .run_handle
+        .as_ref()
+        .expect("fallback run handle")
+        .cancel();
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while harness.app.running && std::time::Instant::now() < deadline {
+        match events.recv_timeout(std::time::Duration::from_millis(200)) {
+            Ok(event) => harness.event(event),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                panic!("run event channel disconnected after fallback admission")
+            }
+        }
+    }
+    assert!(
+        !harness.app.running,
+        "fallback run must finish after cancellation"
+    );
+}
+
+#[test]
+fn ctrl_c_during_admission_waits_to_recover_application_before_exit() {
+    let mut harness = Harness::trusted("attach-admission-exit", 80, 24);
+    let image = harness.project_root.join("exit.png");
+    std::fs::write(&image, test_png(12, 12)).unwrap();
+    harness.event(UiEvent::Terminal(Event::Paste(image.display().to_string())));
+    let application = harness.app.application.as_mut().expect("application");
+    crate::test_support::configure_test_model(application);
+    let (config, credentials) = application.model_state().unwrap();
+    harness.app.config = config;
+    harness.app.credentials = credentials;
+    application.fail_next_run_spawn_for_test();
+    let (sender, events) = super::ui_event_channel();
+    harness.app.event_sender = Some(sender);
+
+    harness.type_text("recover owner before exit");
+    harness.key(KeyCode::Enter);
+    harness.event(UiEvent::Terminal(Event::Key(KeyEvent::new(
+        KeyCode::Char('c'),
+        KeyModifiers::CONTROL,
+    ))));
+    assert!(!harness.app.should_quit);
+    assert!(harness.app.quit_after_run_start);
+
+    let finished = events
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("background admission result");
+    harness.event(finished);
+    assert!(harness.app.application.is_some());
+    assert!(harness.app.should_quit);
+    assert!(!harness.app.quit_after_run_start);
 }
 
 // ---- D-2：dsh 快照族（§7.2） ----

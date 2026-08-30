@@ -86,6 +86,35 @@ struct ProfileContext {
     name: String,
 }
 
+fn clear_only<T>(value: crate::Override<T>) -> crate::Override<T> {
+    if matches!(value, crate::Override::Clear) {
+        crate::Override::Clear
+    } else {
+        crate::Override::Inherit
+    }
+}
+
+fn clear_only_overrides(overrides: crate::ModelOverrides) -> crate::ModelOverrides {
+    crate::ModelOverrides {
+        output_limit: clear_only(overrides.output_limit),
+        temperature: clear_only(overrides.temperature),
+        parallel_tool_calls: clear_only(overrides.parallel_tool_calls),
+        thinking_level: clear_only(overrides.thinking_level),
+        max_context_tokens: clear_only(overrides.max_context_tokens),
+    }
+}
+
+fn override_or_clear<T>(
+    clear_marker: crate::Override<T>,
+    derived: crate::Override<T>,
+) -> crate::Override<T> {
+    if matches!(clear_marker, crate::Override::Clear) {
+        crate::Override::Clear
+    } else {
+        derived
+    }
+}
+
 /// 枚举档位（INV-M4）。usize::MAX = Custom… 位（自由数字输入）。
 /// 排序约定（用户反馈 2026-08-22）：数值从小到大；缺省位在序中不抢
 /// 首位；Off/Custom… 等特殊位殿后。
@@ -125,6 +154,10 @@ pub(crate) struct ModelEditor {
     capabilities: ModelCapabilities,
     image_policy: ImageRequestPolicy,
     parallel_tool_calls: bool,
+    /// W2b tombstones are UI state in their own right. Buffers continue to
+    /// show the last/effective value, while Ctrl+D marks a managed field as
+    /// Clear so save suppresses it rather than conflating empty with Inherit.
+    clear_overrides: crate::ModelOverrides,
     credentials: ProviderCredentials,
     provider_descriptors: Vec<ProviderDescriptor>,
     preset: Option<&'static ModelPreset>,
@@ -175,6 +208,7 @@ impl ModelEditor {
             capabilities: config.capabilities.clone(),
             image_policy: config.image_policy.clone(),
             parallel_tool_calls: config.parallel_tool_calls,
+            clear_overrides: clear_only_overrides(config.overrides),
             credentials,
             provider_descriptors,
             preset: config.preset.as_deref().and_then(preset_by_id),
@@ -278,6 +312,10 @@ impl ModelEditor {
         }
         if self.editing.is_some() {
             return self.handle_edit_key(key);
+        }
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('d') {
+            self.toggle_selected_clear();
+            return EditorAction::Continue;
         }
         match key.code {
             KeyCode::Esc => EditorAction::Cancel,
@@ -391,7 +429,7 @@ impl ModelEditor {
                 crate::tui::theme::style(crate::tui::theme::Role::Error),
             )),
             None => Line::from(Span::styled(
-                "↑↓ select · Enter edit · ←/→ cycle · Ctrl+S save · Esc cancel",
+                "↑↓ select · Enter edit · ←/→ cycle · Ctrl+D clear · Ctrl+S save · Esc cancel",
                 crate::tui::theme::style(crate::tui::theme::Role::Faint),
             )),
         };
@@ -446,14 +484,28 @@ impl ModelEditor {
             AuthPrefix => ("Auth Prefix".into(), display_spaces(&self.auth_prefix)),
             ExtraHeaders => ("Extra Headers JSON".into(), self.extra_headers.clone()),
             ExtraBody => ("Extra Body JSON".into(), self.extra_body.clone()),
-            OutputLimit => ("Max Output Tokens".into(), self.output_row_value()),
-            ContextWindow => ("Context Window".into(), self.context_row_value()),
+            OutputLimit => (
+                "Max Output Tokens".into(),
+                self.override_row_value(OutputLimit, self.output_row_value()),
+            ),
+            ContextWindow => (
+                "Context Window".into(),
+                self.override_row_value(ContextWindow, self.context_row_value()),
+            ),
             SpendBudget => ("Spend Budget".into(), self.budget_row_value()),
-            Thinking => ("Thinking".into(), self.thinking_row_value()),
-            Temperature => ("Temperature".into(), self.temperature.clone()),
+            Thinking => (
+                "Thinking".into(),
+                self.override_row_value(Thinking, self.thinking_row_value()),
+            ),
+            Temperature => (
+                "Temperature".into(),
+                self.override_row_value(Temperature, self.temperature.clone()),
+            ),
             Parallel => (
                 "Parallel Tool Calls".into(),
-                if self.parallel_tool_calls {
+                if self.override_is_clear(Parallel) {
+                    "cleared (field omitted)".into()
+                } else if self.parallel_tool_calls {
                     "on".into()
                 } else {
                     "off".into()
@@ -461,6 +513,87 @@ impl ModelEditor {
             ),
             Save => ("[ Save ]".into(), "Ctrl+S".into()),
             Cancel => ("[ Cancel ]".into(), "Esc".into()),
+        }
+    }
+
+    fn override_row_value(&self, kind: RowKind, value: String) -> String {
+        if self.override_is_clear(kind) {
+            "cleared (field omitted)".into()
+        } else {
+            value
+        }
+    }
+
+    fn override_is_clear(&self, kind: RowKind) -> bool {
+        match kind {
+            RowKind::OutputLimit => {
+                matches!(self.clear_overrides.output_limit, crate::Override::Clear)
+            }
+            RowKind::ContextWindow => matches!(
+                self.clear_overrides.max_context_tokens,
+                crate::Override::Clear
+            ),
+            RowKind::Temperature => {
+                matches!(self.clear_overrides.temperature, crate::Override::Clear)
+            }
+            RowKind::Parallel => matches!(
+                self.clear_overrides.parallel_tool_calls,
+                crate::Override::Clear
+            ),
+            RowKind::Thinking => {
+                matches!(self.clear_overrides.thinking_level, crate::Override::Clear)
+            }
+            _ => false,
+        }
+    }
+
+    fn set_override_clear(&mut self, kind: RowKind, clear: bool) -> bool {
+        match kind {
+            RowKind::OutputLimit => {
+                self.clear_overrides.output_limit = if clear {
+                    crate::Override::Clear
+                } else {
+                    crate::Override::Inherit
+                }
+            }
+            RowKind::ContextWindow => {
+                self.clear_overrides.max_context_tokens = if clear {
+                    crate::Override::Clear
+                } else {
+                    crate::Override::Inherit
+                }
+            }
+            RowKind::Temperature => {
+                self.clear_overrides.temperature = if clear {
+                    crate::Override::Clear
+                } else {
+                    crate::Override::Inherit
+                }
+            }
+            RowKind::Parallel => {
+                self.clear_overrides.parallel_tool_calls = if clear {
+                    crate::Override::Clear
+                } else {
+                    crate::Override::Inherit
+                }
+            }
+            RowKind::Thinking => {
+                self.clear_overrides.thinking_level = if clear {
+                    crate::Override::Clear
+                } else {
+                    crate::Override::Inherit
+                }
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    fn toggle_selected_clear(&mut self) {
+        let kind = self.selected_row();
+        let clear = !self.override_is_clear(kind);
+        if self.set_override_clear(kind, clear) {
+            self.error = None;
         }
     }
 
@@ -606,6 +739,15 @@ impl ModelEditor {
     }
 
     fn commit_edit(&mut self, target: EditTarget, buffer: String) {
+        let override_row = match target {
+            EditTarget::OutputLimit => Some(RowKind::OutputLimit),
+            EditTarget::ContextWindow => Some(RowKind::ContextWindow),
+            EditTarget::Temperature => Some(RowKind::Temperature),
+            _ => None,
+        };
+        if let Some(kind) = override_row {
+            self.set_override_clear(kind, false);
+        }
         match target {
             EditTarget::Name => {
                 if let Some(profile) = &mut self.profile {
@@ -799,6 +941,7 @@ impl ModelEditor {
                 EditorAction::Continue
             }
             RowKind::Parallel => {
+                self.set_override_clear(RowKind::Parallel, false);
                 self.parallel_tool_calls = !self.parallel_tool_calls;
                 self.preset = None;
                 EditorAction::Continue
@@ -816,6 +959,7 @@ impl ModelEditor {
         match self.selected_row() {
             RowKind::Advanced => self.toggle_advanced(),
             RowKind::Parallel => {
+                self.set_override_clear(RowKind::Parallel, false);
                 self.parallel_tool_calls = !self.parallel_tool_calls;
                 self.preset = None;
             }
@@ -870,6 +1014,7 @@ impl ModelEditor {
     /// B9：枚举档位循环（档案模式）。循环只换档位不开弹窗；停在
     /// Custom… 位后直接打字才打开数字弹窗（缓冲预填当前值）。
     fn cycle_context_choice(&mut self, direction: i8) {
+        self.set_override_clear(RowKind::ContextWindow, false);
         let len = CONTEXT_CHOICES.len() + 1;
         let current = if self.context_choice == CHOICE_CUSTOM {
             len - 1
@@ -886,6 +1031,7 @@ impl ModelEditor {
     }
 
     fn cycle_output_choice(&mut self, direction: i8) {
+        self.set_override_clear(RowKind::OutputLimit, false);
         let len = OUTPUT_CHOICES.len() + 1;
         let current = if self.output_choice == CHOICE_CUSTOM {
             len - 1
@@ -922,6 +1068,7 @@ impl ModelEditor {
     /// U2（INV-M6）：思考档位四档循环 Low → High → Max → Off → Low。
     /// Off = None = 不注入 = 跟随厂商缺省。
     fn cycle_thinking_choice(&mut self, direction: i8) {
+        self.set_override_clear(RowKind::Thinking, false);
         let current = match self.thinking_level {
             Some(ThinkingLevel::Low) => 0,
             Some(ThinkingLevel::High) => 1,
@@ -970,6 +1117,7 @@ impl ModelEditor {
         self.output_limit = preset.output_limit.to_string();
         self.temperature = String::new();
         self.parallel_tool_calls = true;
+        self.clear_overrides = crate::ModelOverrides::default();
         // 换模型不携带旧档位：归位 None，新模型跟随预设默认
         // （extra_body 已被下一行整体替换为预设官方参数）。
         self.thinking_level = None;
@@ -1093,11 +1241,9 @@ impl ModelEditor {
         if temperature.is_some_and(|value| !value.is_finite() || value < 0.0) {
             return Err("Temperature must be a finite non-negative number".into());
         }
-        // INV-MM2-3：编辑器写 typed overrides——缓冲值与 preset-managed
-        // 默认**精确相等** → Inherit（不粘滞：预设将来改默认值不被旧
-        // 保存屏蔽）；不等 → Set。编辑器无 Clear 入口（空缓冲 = 跟随
-        // 预设；不可见的 Clear 保存时归位 Inherit——记档，Clear 入口
-        // 归 W2b/serve DTO）。
+        // INV-MM2-3/W2b：缓冲值与 preset-managed 默认精确相等 →
+        // Inherit，不等 → Set；Ctrl+D 的独立 tombstone 状态优先生成
+        // Clear。空缓冲仍是 Inherit，绝不再把“空”偷当 Clear。
         let numeric_override = |managed: Option<u32>, buffer: Option<u32>| match buffer {
             Some(value) if Some(value) != managed => crate::Override::Set(value),
             _ => crate::Override::Inherit,
@@ -1112,23 +1258,34 @@ impl ModelEditor {
             _ => crate::Override::Inherit,
         };
         let overrides = crate::ModelOverrides {
-            output_limit: numeric_override(
-                preset_ref.map(|preset| preset.output_limit),
-                output_limit,
+            output_limit: override_or_clear(
+                self.clear_overrides.output_limit,
+                numeric_override(preset_ref.map(|preset| preset.output_limit), output_limit),
             ),
-            temperature: temperature_override(temperature),
-            parallel_tool_calls: bool_override(
-                preset_ref
-                    .map(|preset| preset.parallel_managed_default())
-                    .or(Some(true)),
-                self.parallel_tool_calls,
+            temperature: override_or_clear(
+                self.clear_overrides.temperature,
+                temperature_override(temperature),
             ),
-            thinking_level: self
-                .thinking_level
-                .map_or(crate::Override::Inherit, crate::Override::Set),
-            max_context_tokens: numeric_override(
-                preset_ref.map(|preset| preset.context_window),
-                max_context_tokens,
+            parallel_tool_calls: override_or_clear(
+                self.clear_overrides.parallel_tool_calls,
+                bool_override(
+                    preset_ref
+                        .map(|preset| preset.parallel_managed_default())
+                        .or(Some(true)),
+                    self.parallel_tool_calls,
+                ),
+            ),
+            thinking_level: override_or_clear(
+                self.clear_overrides.thinking_level,
+                self.thinking_level
+                    .map_or(crate::Override::Inherit, crate::Override::Set),
+            ),
+            max_context_tokens: override_or_clear(
+                self.clear_overrides.max_context_tokens,
+                numeric_override(
+                    preset_ref.map(|preset| preset.context_window),
+                    max_context_tokens,
+                ),
             ),
         };
         Ok((
@@ -2343,6 +2500,73 @@ mod tests {
             built.overrides.thinking_level,
             crate::Override::Set(ThinkingLevel::Max)
         );
+    }
+
+    /// W2b：Clear 有独立可见入口，不能再与空缓冲/Inherit 混同。
+    /// Ctrl+D 在受控字段上切换 tombstone；重新编辑/循环该字段会解除
+    /// Clear。profile 的 Thinking 行覆盖隐藏 thinking override 的入口。
+    #[test]
+    fn editor_ctrl_d_roundtrips_clear_overrides() {
+        let mut config = ModelConfig {
+            preset: Some("glm-5.3".into()),
+            model: "glm-5.3".into(),
+            endpoint: "https://open.bigmodel.cn/api/coding/paas/v4".into(),
+            ..ModelConfig::default()
+        };
+        crate::presets::preset_by_id("glm-5.3")
+            .unwrap()
+            .apply(&mut config);
+        let credentials = ProviderCredentials::for_protocol(config.protocol);
+        let mut editor = ModelEditor::new_with_descriptors(&config, credentials, Vec::new());
+        select(&mut editor, RowKind::Advanced);
+        editor.handle_key(key(KeyCode::Enter));
+
+        let clear = KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL);
+        for kind in [
+            RowKind::OutputLimit,
+            RowKind::ContextWindow,
+            RowKind::Temperature,
+            RowKind::Parallel,
+        ] {
+            select(&mut editor, kind);
+            editor.handle_key(clear);
+            assert!(
+                editor.row_label(kind).1.contains("cleared"),
+                "{kind:?} exposes the tombstone state"
+            );
+        }
+        let (built, _) = editor.build().unwrap();
+        assert_eq!(built.overrides.output_limit, crate::Override::Clear);
+        assert_eq!(built.overrides.max_context_tokens, crate::Override::Clear);
+        assert_eq!(built.overrides.temperature, crate::Override::Clear);
+        assert_eq!(built.overrides.parallel_tool_calls, crate::Override::Clear);
+
+        // Editing a cleared field is an explicit replacement, not a sticky
+        // tombstone. This existing editor path leaves the preset, therefore
+        // the numeric value is an explicit Set.
+        commit_popup_on(&mut editor, RowKind::OutputLimit, "131072");
+        let (built, _) = editor.build().unwrap();
+        assert_eq!(built.overrides.output_limit, crate::Override::Set(131_072));
+
+        let profile_config = ModelConfig {
+            model: "custom-model".into(),
+            endpoint: "https://api.deepseek.com".into(),
+            thinking_level: Some(ThinkingLevel::High),
+            output_limit: Some(32 * 1024),
+            max_context_tokens: Some(128 * 1024),
+            ..ModelConfig::default()
+        };
+        let mut profile = ModelEditor::for_profile(
+            "daily",
+            &profile_config,
+            ProviderCredentials::for_protocol(profile_config.protocol),
+            Vec::new(),
+        );
+        select(&mut profile, RowKind::Thinking);
+        profile.handle_key(clear);
+        assert!(profile.row_label(RowKind::Thinking).1.contains("cleared"));
+        let (built, _) = profile.build().unwrap();
+        assert_eq!(built.overrides.thinking_level, crate::Override::Clear);
     }
 
     /// TUI-L01：Extra Body 是思考参数的原始事实源。手工提交新 JSON

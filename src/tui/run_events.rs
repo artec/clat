@@ -49,6 +49,140 @@ impl App {
                 self.notify();
                 self.flash_status("the model asks a question — answer or Esc to decline");
             }
+            WorkerMessage::ClipboardImagePrepared(result) => {
+                self.clipboard_image_pending = false;
+                match result {
+                    Ok(path) => {
+                        let root = self.project.root().to_path_buf();
+                        match self.attachments.add_paths(&root, [path.clone()]) {
+                            Ok(_) => self.flash_status(format!(
+                                "clipboard image attached ({}) — Enter sends · Esc drops draft",
+                                self.attachments.len()
+                            )),
+                            Err(error) => {
+                                self.release_core_staged_attachment_paths([path]);
+                                self.flash_status(format!(
+                                    "clipboard image staging failed: {error}"
+                                ));
+                            }
+                        }
+                    }
+                    Err(error) => self.flash_status(error),
+                }
+            }
+            WorkerMessage::RunStartFinished(finished) => {
+                let RunStartFinished {
+                    application,
+                    prompt,
+                    outcome,
+                } = *finished;
+                self.application = Some(application);
+                self.release_core_staged_attachment_paths(std::iter::empty());
+                self.run_start_pending = false;
+                self.steering_admission_pending = false;
+                let exit_after_start = std::mem::take(&mut self.quit_after_run_start);
+                match outcome {
+                    Ok(started) => {
+                        // W1-13：纪元与全部本地 run 状态必须先于 gate
+                        // 开放；这样首个 RunStarted 不可能被当成空闲态
+                        // 或累加到上一 run 的用量基线。
+                        self.run_epoch += 1;
+                        let epoch = self.run_epoch;
+                        self.conversation.push_user(prompt);
+                        self.conversation_scroll_from_bottom = 0;
+                        self.run_handle = Some(started.handle);
+                        self.running = true;
+                        if exit_after_start && let Some(handle) = &self.run_handle {
+                            handle.cancel();
+                        }
+                        self.run_usage_base = Some(self.session_usage.clone());
+                        self.run_usage_acc = Usage::default();
+                        self.run_routes_base = Some(self.usage_routes.clone());
+                        self.run_route = None;
+                        self.clear_attachment_draft();
+                        self.flash_status("starting model…");
+                        self.restore_next_recovered_steering();
+
+                        let sender = self
+                            .event_sender
+                            .clone()
+                            .expect("event channel is installed by run()");
+                        let completed = started.completed;
+                        // State is now coherent. Release the run worker's
+                        // first event, then bridge its post-persistence result.
+                        started.gate.open();
+                        thread::spawn(move || {
+                            if let Ok(result) = completed.recv() {
+                                let _ = sender
+                                    .send(UiEvent::Worker(WorkerMessage::Done { epoch, result }));
+                            }
+                        });
+                    }
+                    Err(error) => {
+                        // The composer was never mutated during handoff.
+                        // Restore only text; image IDs/order and staged files
+                        // remain byte-for-byte the same for a lossless retry.
+                        self.input.insert_str(&prompt);
+                        self.flash_status(format!("failed to start run: {error}"));
+                    }
+                }
+                if exit_after_start {
+                    self.should_quit = true;
+                }
+            }
+            WorkerMessage::SteeringAdmissionFinished(finished) => {
+                let SteeringAdmissionFinished {
+                    application,
+                    prompt,
+                    outcome,
+                } = *finished;
+                self.application = Some(application);
+                self.release_core_staged_attachment_paths(std::iter::empty());
+                self.run_start_pending = false;
+                self.steering_admission_pending = false;
+                let exit_after_admission = std::mem::take(&mut self.quit_after_run_start);
+                let draft_count = self.attachments.len();
+                match outcome {
+                    SteerOutcome::Queued { .. } => {
+                        let pending = if prompt.is_empty() {
+                            format!("[{draft_count} image(s)]")
+                        } else {
+                            format!("{prompt}\n[{draft_count} image(s)]")
+                        };
+                        self.conversation.push_pending_steering(pending);
+                        self.remember_native_steering(prompt, self.attachments.paths());
+                        self.attachments.clear();
+                        self.flash_status("steering queued — applies at the next model step");
+                    }
+                    SteerOutcome::Refused { reason, .. } => {
+                        self.input.insert_str(&prompt);
+                        self.flash_status(format!("steering refused: {reason}"));
+                    }
+                    // The run sealed while decode/admission was in flight.
+                    // Restore the sole application owner first, then take the
+                    // same ordinary-submit fallback as the synchronous path.
+                    SteerOutcome::NotRunning { .. } => {
+                        if exit_after_admission {
+                            self.input.insert_str(&prompt);
+                        } else {
+                            let fallback = prompt.clone();
+                            let paths = self.attachments.paths();
+                            if !self.start_run(prompt, paths) {
+                                self.input.insert_str(&fallback);
+                            }
+                        }
+                    }
+                }
+                if exit_after_admission {
+                    // Unlike initial admission, an existing run may still be
+                    // live. Cancel it before the normal close path so the
+                    // application cannot retain a detached model worker.
+                    if let Some(handle) = &self.run_handle {
+                        handle.cancel();
+                    }
+                    self.should_quit = true;
+                }
+            }
             WorkerMessage::Done { epoch, result } => {
                 self.finish_run(epoch, result);
             }
@@ -141,10 +275,23 @@ impl App {
                     self.flash_status(format!("tool ✓ {}", result.tool_name));
                 }
             }
-            RunEvent::SteeringApplied { .. } => {
+            RunEvent::SteeringApplied { message, .. } => {
                 // 转录用户块与 pending 区升级都由会话模型负责
                 //（apply_run_event 已处理）；徽标计数派生自 pending 区，
-                // 无独立状态可回收。
+                // 无独立状态可回收。事件若抢在 admission ack 前到达，
+                // 先记 credit，由稍后注册的本地草稿消费。
+                let prompt = message.plain_text();
+                if let Some(position) = self
+                    .pending_native_steering
+                    .iter()
+                    .position(|draft| draft.prompt == prompt)
+                {
+                    if let Some(draft) = self.pending_native_steering.remove(position) {
+                        self.release_core_staged_attachment_paths(draft.attachments);
+                    }
+                } else if self.steering_admission_pending {
+                    self.native_steering_claim_credits.push_back(prompt);
+                }
             }
             _ => {}
         }
@@ -265,10 +412,15 @@ impl App {
         }
         let discarded = self.conversation.discard_pending_steering();
         if discarded > 0 {
-            // 未经 claim 的插话不落盘（S4）；显式告知而不是静默吞掉。
-            self.flash_status(format!(
-                "{discarded} steering discarded — run ended before it applied"
-            ));
+            // 未经 claim 的插话不落盘（S4），但 frontend-owned 原始草稿
+            // 必须继续可重试。逐条恢复，不合并独立消息的图片预算。
+            self.recovered_native_steering
+                .extend(self.pending_native_steering.drain(..));
+            if !self.restore_next_recovered_steering() {
+                self.flash_status(format!(
+                    "{discarded} unclaimed steering draft(s) retained for retry"
+                ));
+            }
         }
         self.conversation_scroll_from_bottom = 0;
     }

@@ -418,7 +418,7 @@ struct WalkLimits {
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct RunCommandTool;
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 const MAX_COMMAND_OUTPUT_BYTES: usize = 32 * 1024;
 
 #[cfg(test)]

@@ -37,7 +37,10 @@ Files appear lazily, so a fresh installation may contain only a subset.
         └── <encoded-session-id>/
             ├── session.jsonl.zstd   # authoritative DSH-compatible log
             ├── clat-checkpoint.json # bounded derived projection cache
-            └── attachments/         # copied local image attachments
+            └── attachments/
+                ├── .orphan-sweep-cursor-v1 # private bounded-GC progress
+                ├── blobs/<sha256>   # immutable normalized PNG/JPEG bytes
+                └── staging/         # unpublished admission transactions
 ```
 
 `mcp.json` and `plugins.json` are legacy declarative inputs written by the
@@ -133,9 +136,11 @@ while the surface shadows compacted ranges for the next model request.
 `request/header` is also the durable model-input witness. Besides provider,
 model, system text and tool schemas, CLAT records
 `clatInstructionContext` with the active project-instruction digest and bounded
-source path/scope/digest rows. A successful file tool can cause a `change`
-header before the next model request; resume restores those scopes and rereads
-the current files instead of trusting cached repository text.
+source path/scope/digest rows. Its `imageProjection` section freezes the model
+route, image policy, and estimator/calibration/encoder versions used for the
+run. A successful file tool can cause a `change` header before the next model
+request; resume restores those scopes and rereads the current files instead of
+trusting cached repository text.
 
 Process stdout/stderr/PTY rings and stdin are intentionally not durable state.
 Process `tool/result` events retain only byte counts, terminal/truncation and
@@ -163,13 +168,98 @@ silently rebuilt when stale or torn.
 
 ## Attachments
 
-Before the first journal batch of a prompt, CLAT validates each local image and
-copies it into that session's `attachments/` directory. The journal contains an
-absolute attachment reference, not image bytes.
+Before the first journal batch of an image-bearing prompt, core admission
+validates magic bytes and decoded dimensions, fully decodes the source, applies
+orientation, strips metadata, bounds the long edge, and deterministically
+normalizes it to PNG or JPEG. Every admission source is opened final-component
+no-follow, proved to be a single-link regular file from that descriptor, and
+held open from batch preflight through bounded read and normalization; path
+replacement cannot change which inode is committed. Browser raw-staging
+prevalidation uses that same descriptor for metadata, header policy, and full
+decode instead of splitting a path check from a later decoder open. Inputs
+already read through a project/scratch capability enter the shared
+normalize/publish transaction directly; they are never written out and then
+reopened through an ambient display path. New bytes are published under
+`attachments/blobs/<sha256>` through a 0600 staging file, file sync, atomic
+rename, and directory sync. Existing digest targets are accepted only after a
+no-follow descriptor check of regular-file type, single-link ownership,
+length, and bytes; a symlink, multiply-linked file, or conflicting target is
+never followed or overwritten. Production opens the attachment domain relative
+to the already-held session-directory capability, then retains handles for the
+attachment, blob, and staging directories. Publication, rollback, GC, and
+cursor updates are relative to those handles; replacing an ambient
+session/root spelling cannot redirect a write. The bridge-era absolute
+provider path is checked again before and after admission, so a namespace
+replacement fails the batch and capability-relative rollback removes its
+unpublished artifacts. Opening a store likewise rejects a pre-existing
+symlink/non-directory at the attachment root or either core-owned child before
+creating later namespace entries through it.
 
-Because the copy happens before the durable user event, a failed import cannot
-leave a journal entry referring to an attachment CLAT never stored. Deleting an
-attachment later degrades replay/model input to a visible missing-file note.
+The durable content block stores an opaque attachment id plus MIME, dimensions,
+byte count, and display metadata. It stores neither image bytes nor a host
+path. Provider projection resolves that id through the current session's store
+and uses no-follow reads; session-blob paths open the platform/storage prefix
+once, then walk every session-owned component from `sessions` downward with
+held no-follow directory handles, closing subtree replacement between the
+surface fence and provider projection. The PWA download path opens the blob by
+id through the active session/store capabilities. Deleting or corrupting the
+blob therefore fails closed instead of falling back to the original user path.
+Reads also require a single-link file so a second hardlink name cannot mutate
+the inode behind a durable attachment id. For a new `blobs/<sha256>` entry,
+provider projection hashes the bounded bytes before constructing a data URL.
+The PWA reader copies
+the no-follow source once into a bounded immutable snapshot and authenticates
+that exact snapshot before emitting headers or body bytes; mutation of the
+store inode after verification cannot alter the response. It still writes the
+snapshot to the socket in 64 KiB chunks, and the four-download permit caps
+concurrent snapshot ownership. Both paths also compare the durable MIME claim
+with image magic before constructing a Data URL or emitting `Content-Type`; a
+valid digest can never relabel PNG bytes as JPEG (or vice versa). A same-length
+in-place mutation therefore fails closed. Before the PWA reader is exposed,
+new content-addressed descriptors also bind their durable byte count to the
+verified file length and their width/height to dimensions parsed from that same
+bounded authenticated snapshot. Tool-result metadata therefore cannot drift
+from the blob that the browser receives. Pre-MM-2 flat
+filenames do not claim a digest and retain their fenced compatibility behavior.
+Those flat files remain readable only through the fenced legacy bridge and are
+never new-write targets.
+
+The whole batch is validated before publication. A failure removes this
+batch's staging files and only blobs newly published by this batch, so the
+journal cannot refer to a half-admitted image and deduplicated historical blobs
+survive rollback. All attachment-store handles for one session share a single
+admission publication lane: a successful concurrent batch cannot observe a
+blob that another batch still owns and may remove during rollback. Session open
+performs a bounded sweep: unreferenced staging or blob entries older than 24
+hours may be reclaimed, while referenced blobs and legacy flat files are
+preserved. The mark pass covers direct user/assistant image blocks and images
+nested in durable tool results, so `view_image` output
+does not age into an apparent orphan after cold reopen. Each sweep inspects at
+most 256 directory entries; fresh or referenced entries consume that work
+budget too, so cold open cannot scan an unbounded directory merely because
+nothing is eligible for deletion. A private atomic cursor records phase and
+logical offset, survives a newly constructed store handle, advances from
+staging to blobs, and resets after a complete cycle; retained entries at the
+front of one directory therefore cannot permanently starve later expired
+orphans. Cursor corruption or a failed cursor write only repeats bounded work
+and never authorizes deletion. One message is limited independently to
+8 images, 32 MiB of raw source bytes, and 16 MiB of normalized bytes.
+
+PWA browser files first enter a separate short-lived raw draft scope. These
+uploads are not session attachment identity and are not journal facts. Only a
+successful core admission can publish normalized blobs and commit their opaque
+ids with the user message; abandoned draft uploads expire independently. The
+process-random draft tree and its fixed `drafts`/`web` components are created
+one level at a time and opened without following links; a pre-existing symlink
+is rejected before clipboard or browser bytes can be written outside the
+core-owned staging domain.
+
+TUI clipboard PNGs use a separate process-local registry in that same private
+draft tree. The registry has a 128 MiB aggregate bound and a one-hour TTL.
+Removing or clearing a composer entry, completing initial-message admission, or
+receiving the durable steering claim releases the exact core-minted raw file.
+Physical deletion failures remain registered for a later sweep, while arbitrary
+user-selected `/attach` paths are never deletion authority.
 
 ## Control plane
 
@@ -228,7 +318,9 @@ bodies/resources remain ordinary user/project files rather than session state.
 journal. LSP processes and protocol buffers are transient project-owned state.
 
 `/context` is wholly derived: it writes no file or journal event and keeps no
-background monitor after returning its snapshot.
+background monitor after returning its snapshot. Its image count, normalized
+bytes, visual estimate, safety factor, and older-image omission count come from
+the same detached request projection used by the agent run.
 
 `memory.json` is a separate versioned unit because user memory spans sessions.
 Project records carry the canonical project key; user records do not. Every

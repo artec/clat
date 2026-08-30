@@ -7,10 +7,11 @@ use crate::model::ModelConfig;
 use crate::permission::PermissionApprover;
 use crate::presets::preset_by_id;
 use crate::session::key::{ProjectKey, SessionKey};
+#[cfg(unix)]
 use crate::session::persistence::JsonlCompression;
 use crate::test_support::{
-    CountingApprover, SharedEvents, TestBehavior, TestModelScript, TestProviderPlugin,
-    configure_test_model, roots,
+    CountingApprover, LiveGlmProviderPlugin, SharedEvents, TestBehavior, TestModelScript,
+    TestProviderPlugin, configure_test_model, configure_test_model_with_budget, roots,
 };
 use serde_json::json;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1764,6 +1765,89 @@ fn image_attachments_journal_references_and_survive_resume() {
     std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
 }
 
+struct RejectVisualPayloadScript {
+    calls: AtomicUsize,
+}
+
+impl TestModelScript for RejectVisualPayloadScript {
+    fn stream(
+        &self,
+        request: crate::ModelRequest<'_>,
+        events: &mut dyn crate::ModelEventSink,
+    ) -> Result<crate::ModelResponse, crate::ModelError> {
+        if request
+            .instructions
+            .is_some_and(|text| text.starts_with("Generate a concise title (at most 8 words)"))
+        {
+            events.emit(crate::ModelEvent::TextDelta {
+                delta: "visual test".into(),
+            });
+            return Ok(crate::ModelResponse {
+                text: "visual test".into(),
+                tool_calls: Vec::new(),
+                finish_reason: crate::FinishReason::Completed,
+                usage: None,
+                provider_response_id: None,
+                provider_state: Vec::new(),
+                reasoning: None,
+            });
+        }
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        assert!(
+            request
+                .items
+                .iter()
+                .any(|item| { crate::model::model_item_image_parts(item).next().is_some() }),
+            "the configured visual route receives the admitted image once"
+        );
+        Err(crate::ModelError::with_kind(
+            crate::model::ModelErrorKind::Client,
+            "compatible API returned 400 Bad Request: image_url is unsupported",
+        ))
+    }
+}
+
+/// MM-I1/MM-I3 adversarial regression: explicit capabilities replace the old
+/// paid 400 probe. If a supposedly visual endpoint rejects the payload, the
+/// client error surfaces after exactly one request. In particular there is no
+/// second request whose text contains CLAT's local attachment path.
+#[test]
+fn visual_provider_400_fails_closed_without_path_bearing_retry() {
+    let (storage_root, project_root) = roots("visual-400-fail-closed");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let source = project_root.join("source.png");
+    let canvas = image::RgbImage::from_pixel(8, 6, image::Rgb([20, 120, 220]));
+    image::DynamicImage::ImageRgb8(canvas)
+        .save_with_format(&source, image::ImageFormat::Png)
+        .unwrap();
+    let script = Arc::new(RejectVisualPayloadScript {
+        calls: AtomicUsize::new(0),
+    });
+    let project = Project::new(&project_root);
+    let mut application = mount(
+        &project,
+        &storage_root,
+        TestBehavior::Scripted(script.clone()),
+    );
+    configure_test_model(&application);
+
+    let failure = run_with_attachments(&mut application, "inspect", vec![source])
+        .expect_err("the provider rejection must surface");
+    assert_eq!(
+        script.calls.load(Ordering::SeqCst),
+        1,
+        "client errors are never retried through a text/path downgrade"
+    );
+    assert!(failure.error.contains("image_url is unsupported"));
+    assert!(!failure.error.contains("attachments"));
+    let journal = serde_json::to_string(&load_events(&storage_root)).unwrap();
+    assert!(!journal.contains("image attachment:"));
+    assert!(!journal.contains(project_root.to_string_lossy().as_ref()));
+
+    application.close().unwrap();
+    crate::test_support::cleanup_tree(storage_root.parent().unwrap());
+}
+
 /// INV-MM2-3（MM-2 W2 红测）：model_state 全链路——旧配置 load 即
 /// 迁移（版本门）→ preset stamp → typed overrides 合并；
 /// apply→persist→reload 的 effective 值稳定；DeepSeek→GLM 的预设
@@ -1979,9 +2063,33 @@ fn image_attachments_are_gated_by_verified_model_capability() {
             ..crate::model::ModelConfig::default()
         },
     );
+    let (completion, _receiver) = std::sync::mpsc::channel();
+    let too_many = match application.start_run(crate::ApplicationRunRequest {
+        message: crate::message::PendingMessage::from_front_end(
+            "six images exceed the frozen route policy",
+            None,
+            vec![source.clone(); 6],
+        ),
+        asker: None,
+        approver: allow_all_approver(),
+        events: Box::new(SharedEvents(Arc::new(Mutex::new(Vec::new())))),
+        completion,
+    }) {
+        Ok(_) => panic!("GLM's five-image route limit must fail before provider I/O"),
+        Err(error) => error,
+    };
+    assert!(too_many.to_string().contains("at most 5 images"));
+    assert_eq!(
+        session_count(&storage_root),
+        0,
+        "route-count rejection happens before session materialization"
+    );
     let done = run_with_attachments(&mut application, "look at this", vec![source.clone()])
         .expect("the probe-verified vision preset admits images");
     assert_eq!(done.output, "done");
+    let image_only = run_with_attachments(&mut application, "", vec![source.clone()])
+        .expect("image-only prompts are valid once the route admits images");
+    assert_eq!(image_only.output, "done");
     let events = load_events(&storage_root);
     let user_event = events
         .iter()
@@ -2138,12 +2246,21 @@ fn admitted_images_carry_durable_metadata_and_rebuild_receipts_after_restart() {
             crate::session::replay::ReplayEvent::UserMessage {
                 content_blocks,
                 client_message_id: replayed_id,
+                receipt,
                 ..
             } => {
                 assert_eq!(
                     replayed_id.as_deref(),
                     Some(client_message_id.as_str()),
                     "the replayed user message carries the same client id"
+                );
+                let receipt = receipt
+                    .as_deref()
+                    .expect("keyed replay user message carries committed receipt");
+                assert_eq!(receipt.state, crate::message::AdmissionState::Committed);
+                assert_eq!(
+                    receipt.committed_message_id.as_deref(),
+                    Some(journal_message_id.as_str())
                 );
                 Some(content_blocks.clone())
             }
@@ -2251,29 +2368,22 @@ fn failed_run_after_commit_still_carries_the_committed_receipt() {
     std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
 }
 
-/// MM-1A fail-closed：图片/附件 steering 被 `Refused` 拒绝（不冒充
-/// NotRunning）；纯文本 steering 携带幂等键落 journal，回执可查。
-/// pre-fix：无 Refused 分支（图片消息被静默当文本/或直接入队）。
+/// MM-3：staged 图片 steering 由 core 规范化后与文本走同一
+/// Reserved → claim-time Committed 状态机；伪造 descriptor 仍 fail closed。
 #[test]
-fn image_steering_is_refused_and_text_steering_journals_idempotency_metadata() {
+fn image_and_text_steering_share_durable_admission_and_forged_blocks_are_refused() {
     let (storage_root, project_root) = roots("mm1a-steer");
     std::fs::create_dir_all(&project_root).unwrap();
     let project = Project::new(&project_root);
-    let mut application = mount(&project, &storage_root, TestBehavior::Success);
+    let gate = Arc::new(crate::test_support::SteerGate::default());
+    let mut application = mount(
+        &project,
+        &storage_root,
+        TestBehavior::Steer(Arc::clone(&gate)),
+    );
     configure_test_model(&application);
 
-    // 附件 steering：Refused（此时甚至没有活动 run——拒绝先于队列判定，
-    // 类型语义优先）。
-    let staged = crate::message::PendingMessage::from_front_end(
-        "look",
-        None,
-        vec![std::path::PathBuf::from("/nonexistent/probe.png")],
-    );
-    assert!(matches!(
-        application.steer(staged),
-        SteerOutcome::Refused { .. }
-    ));
-    // 图片内容块（无 staged）同样拒绝。
+    // 图片 descriptor 不接受前端自铸；必须有 core 的 staged admission。
     let with_image_block = crate::message::PendingMessage {
         client_message_id: None,
         content: crate::message::MessageContent::from_blocks(vec![
@@ -2291,13 +2401,27 @@ fn image_steering_is_refused_and_text_steering_journals_idempotency_metadata() {
             },
         ]),
         staged_attachments: Vec::new(),
+        admitted_images: Vec::new(),
+        submission_digest: None,
     };
     assert!(matches!(
         application.steer(with_image_block),
         SteerOutcome::Refused { .. }
     ));
 
-    // 纯文本 steering：幂等键随 mid-turn user/message 落盘。
+    let source = project_root.join("steering.png");
+    let canvas = image::RgbImage::from_pixel(24, 12, image::Rgb([20, 80, 160]));
+    let mut encoded = Vec::new();
+    image::DynamicImage::ImageRgb8(canvas)
+        .write_to(
+            &mut std::io::Cursor::new(&mut encoded),
+            image::ImageFormat::Png,
+        )
+        .unwrap();
+    std::fs::write(&source, encoded).unwrap();
+
+    // 图片与纯文本 steering：幂等键随 mid-turn user/message 落盘。
+    let live = Arc::new(Mutex::new(Vec::new()));
     let handle = {
         let (completion, _receiver) = mpsc::channel();
         application
@@ -2305,19 +2429,84 @@ fn image_steering_is_refused_and_text_steering_journals_idempotency_metadata() {
                 message: crate::message::PendingMessage::text("start work"),
                 asker: None,
                 approver: allow_all_approver(),
-                events: Box::new(SharedEvents(Arc::new(Mutex::new(Vec::new())))),
+                events: Box::new(SharedEvents(Arc::clone(&live))),
                 completion,
             })
             .unwrap()
     };
+    gate.wait_entered();
+    let image_steered = crate::message::PendingMessage::from_front_end(
+        "inspect this",
+        Some("mm3-image-steer-1".into()),
+        vec![source],
+    );
+    let image_digest = image_steered.request_digest();
+    let image_reserved = match application.steer(image_steered) {
+        SteerOutcome::Queued {
+            receipt: Some(receipt),
+        } => receipt,
+        outcome => panic!("image steering must reserve queue ownership: {outcome:?}"),
+    };
+    assert_eq!(
+        image_reserved.state,
+        crate::message::AdmissionState::Reserved
+    );
+    assert_eq!(image_reserved.attachment_ids.len(), 1);
+
     let steered = crate::message::PendingMessage::from_front_end(
         "also run the tests",
         Some("mm1a-steer-1".into()),
         Vec::new(),
     );
     let digest = steered.request_digest();
-    assert_eq!(application.steer(steered), SteerOutcome::Queued);
+    let reserved = match application.steer(steered) {
+        SteerOutcome::Queued {
+            receipt: Some(receipt),
+        } => receipt,
+        outcome => panic!("client-keyed steering must return Reserved: {outcome:?}"),
+    };
+    assert_eq!(reserved.state, crate::message::AdmissionState::Reserved);
+    assert!(!reserved.retryable, "the queued draft is owned by the run");
+    gate.release();
     handle.join().unwrap();
+
+    let image_live = live
+        .lock()
+        .unwrap()
+        .iter()
+        .find_map(|event| match event {
+            RunEvent::SteeringApplied {
+                message,
+                receipt: Some(receipt),
+                ..
+            } if message.has_images() => Some((message.clone(), receipt.clone())),
+            _ => None,
+        })
+        .expect("claimed image steering emits descriptor content and receipt");
+    assert_eq!(image_live.0.attachment_ids(), image_live.1.attachment_ids);
+    assert_eq!(
+        image_live.1.state,
+        crate::message::AdmissionState::Committed
+    );
+
+    let committed_live = live
+        .lock()
+        .unwrap()
+        .iter()
+        .find_map(|event| match event {
+            RunEvent::SteeringApplied {
+                receipt: Some(receipt),
+                ..
+            } if receipt.client_message_id == "mm1a-steer-1" => Some(receipt.clone()),
+            _ => None,
+        })
+        .expect("claimed steering emits its committed receipt after journal flush");
+    assert_eq!(
+        committed_live.state,
+        crate::message::AdmissionState::Committed
+    );
+    assert_eq!(committed_live.client_message_id, "mm1a-steer-1");
+    assert!(!committed_live.retryable);
 
     let events = load_events(&storage_root);
     let steered_event = events
@@ -2332,6 +2521,19 @@ fn image_steering_is_refused_and_text_steering_journals_idempotency_metadata() {
         Some(digest.as_str()),
         "the steered message's digest covers its text payload"
     );
+    let image_event = events
+        .iter()
+        .find(|event| {
+            event.event_type == "user/message"
+                && event.data["clientMessageId"].as_str() == Some("mm3-image-steer-1")
+        })
+        .expect("image steering is durable");
+    assert_eq!(
+        image_event.data["requestDigest"].as_str(),
+        Some(image_digest.as_str()),
+        "claim preserves the pre-normalization submission digest"
+    );
+    assert_eq!(image_event.data["content"][1]["type"], json!("image"));
     assert!(matches!(
         application
             .committed_receipt("mm1a-steer-1")
@@ -2462,10 +2664,10 @@ fn steered_run_replays_identically() {
         .unwrap();
 
     gate.wait_entered();
-    assert_eq!(
+    assert!(matches!(
         application.steer(crate::message::PendingMessage::text("also run the tests")),
-        SteerOutcome::Queued
-    );
+        SteerOutcome::Queued { receipt: None }
+    ));
     gate.release();
     handle.join().unwrap();
     let done = receiver.recv().unwrap().unwrap();
@@ -2577,9 +2779,11 @@ fn steer_at_the_terminal_boundary_never_queues_an_orphan_message() {
         assert!(std::time::Instant::now() < deadline, "run never completed");
         std::thread::sleep(std::time::Duration::from_millis(2));
     }
-    assert_eq!(
-        application.steer(crate::message::PendingMessage::text("important addendum")),
-        SteerOutcome::NotRunning,
+    assert!(
+        matches!(
+            application.steer(crate::message::PendingMessage::text("important addendum")),
+            SteerOutcome::NotRunning { receipt: None }
+        ),
         "a run past its terminal decision must not accept steering"
     );
     release.store(true, std::sync::atomic::Ordering::Release);
@@ -2619,18 +2823,33 @@ fn steering_recall_is_lifo_silent_and_never_cancels() {
     gate.wait_entered();
     // 空队列召回 → None（前端 ESC 此时回落到取消语义）。
     assert_eq!(application.recall_pending_steering(), None);
-    assert_eq!(
+    assert!(matches!(
         application.steer(crate::message::PendingMessage::text("kept message")),
-        SteerOutcome::Queued
+        SteerOutcome::Queued { receipt: None }
+    ));
+    let recalled_pending = crate::message::PendingMessage::from_front_end(
+        "recalled message",
+        Some("mm2-w7-recalled-steer".into()),
+        Vec::new(),
     );
-    assert_eq!(
-        application.steer(crate::message::PendingMessage::text("recalled message")),
-        SteerOutcome::Queued
-    );
+    assert!(matches!(
+        application.steer(recalled_pending.clone()),
+        SteerOutcome::Queued {
+            receipt: Some(receipt)
+        } if receipt.state == crate::message::AdmissionState::Reserved
+            && !receipt.retryable
+    ));
     // LIFO：召回最后一条。
     assert_eq!(
         application.recall_pending_steering(),
-        Some(crate::message::PendingMessage::text("recalled message"))
+        Some(crate::RecalledSteering {
+            message: recalled_pending,
+            receipt: Some(Box::new(crate::message::AdmissionReceipt::rolled_back(
+                "mm2-w7-recalled-steer".into(),
+                Vec::new(),
+                "steering-recall",
+            ))),
+        })
     );
     // 召回不取消 run：放行后 run 继续，claim 的是剩余那条。
     gate.release();
@@ -2693,10 +2912,10 @@ fn steering_during_a_cancelled_run_leaves_no_durable_trace() {
         .unwrap();
 
     gate.wait_entered();
-    assert_eq!(
+    assert!(matches!(
         application.steer(crate::message::PendingMessage::text("too late")),
-        SteerOutcome::Queued
-    );
+        SteerOutcome::Queued { receipt: None }
+    ));
     application.cancel_active_run();
     gate.release();
     handle.join().unwrap();
@@ -2726,10 +2945,10 @@ fn steer_without_an_active_run_reports_not_running() {
     let application = mount(&project, &storage_root, TestBehavior::Success);
     configure_test_model(&application);
 
-    assert_eq!(
+    assert!(matches!(
         application.steer(crate::message::PendingMessage::text("anyone there?")),
-        SteerOutcome::NotRunning
-    );
+        SteerOutcome::NotRunning { receipt: None }
+    ));
     application.close().unwrap();
     std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
 }
@@ -2942,6 +3161,87 @@ fn long_tool_loops_run_uninterrupted_without_a_turn_budget() {
         }),
         "no synthetic continuation note may appear in the journal"
     );
+    std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
+}
+
+/// 自动压缩的 Application 级回归：历史跨过模型窗口的 80% 水位后，
+/// worker 必须经真实 compactor/provider 接缝生成摘要，把四事件族原子
+/// 落盘，并让 replace surface 在冷重启后继续可用。纯 `choose_cut`
+/// 单测无法覆盖 run_lifecycle 接线、flush 或恢复投影中的任一断路。
+#[test]
+fn automatic_compaction_is_durable_and_survives_cold_reopen() {
+    let (storage_root, project_root) = roots("automatic-compaction");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let project = Project::new(&project_root);
+    let mut application = mount(&project, &storage_root, TestBehavior::Success);
+    // 12k window leaves enough room for the fixed summary reserves while a
+    // handful of deliberately long turns deterministically cross 80%.
+    configure_test_model_with_budget(&application, 12_000);
+
+    let mut submitted = 0usize;
+    for turn in 0..12 {
+        let prompt = format!(
+            "AUTO_COMPACT_SENTINEL_{turn}: {}",
+            char::from(b'a' + (turn % 26) as u8)
+                .to_string()
+                .repeat(3_800)
+        );
+        run(&mut application, &prompt).expect("long-history turn completes");
+        submitted += 1;
+        if load_events(&storage_root)
+            .iter()
+            .any(|event| event.event_type == "compaction/summary")
+        {
+            break;
+        }
+    }
+    assert!(
+        submitted < 12,
+        "the configured context pressure must trigger automatic compaction"
+    );
+    application.close().unwrap();
+
+    let events = load_events(&storage_root);
+    let family = events
+        .windows(4)
+        .find(|window| {
+            window[0].event_type == "compaction/start"
+                && window[1].event_type == "compaction/summary"
+                && window[2].event_type == "user/message"
+                && window[3].event_type == "compaction/end"
+        })
+        .expect("compaction family is contiguous and durable");
+    assert!(
+        family[2].data["source"]["plugin"] == json!("compaction"),
+        "the replace carrier is distinguishable from a human message"
+    );
+    assert!(
+        family[2].surface_op.is_some(),
+        "the carrier replaces a prefix"
+    );
+    assert!(
+        family[2]
+            .source_event_seqs
+            .as_ref()
+            .is_some_and(|seqs| !seqs.is_empty()),
+        "the replacement names every shadowed source event"
+    );
+
+    // A cold mount must restore the replacement surface and still accept a
+    // normal next turn. The human transcript remains an audit view, so the
+    // original sentinels stay visible rather than being destructively erased.
+    let mut reopened = mount(&project, &storage_root, TestBehavior::Success);
+    let snapshot = reopened.snapshot().expect("cold snapshot");
+    assert!(
+        snapshot
+            .transcript
+            .iter()
+            .any(|line| { line.text.contains("AUTO_COMPACT_SENTINEL_0") }),
+        "compaction never deletes the auditable human transcript"
+    );
+    run(&mut reopened, "continue after the durable summary")
+        .expect("the compacted surface remains runnable after cold reopen");
+    reopened.close().unwrap();
     std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
 }
 
@@ -3819,6 +4119,7 @@ fn failed_run_spawn_does_not_mark_the_request_header_emitted() {
             "exit_plan_mode",
             "memory_search",
             "update_goal",
+            "view_image",
             "todo_write",
         ],
         "request/header freezes the complete model-visible native catalog order"
@@ -3851,6 +4152,21 @@ fn request_header_appends_once_and_only_again_on_change() {
         "an unchanged header appends nothing further"
     );
     assert_eq!(headers[0].data["reason"], json!("initial"));
+    assert_eq!(
+        headers[0].data["header"]["imageProjection"],
+        json!({
+            "route": "OpenAI Compatible/deterministic",
+            "policy": {
+                "mediaTypes": ["image/png", "image/jpeg"],
+                "maxImages": 8,
+                "maxBytes": 4 * 1024 * 1024,
+            },
+            "estimatorVersion": crate::media::IMAGE_TOKEN_ESTIMATOR_VERSION,
+            "calibrationVersion": crate::media::IMAGE_TOKEN_CALIBRATION_VERSION,
+            "encoderVersion": crate::session::attachments::ATTACHMENT_ENCODER_VERSION,
+        }),
+        "request/header freezes route, policy, estimator, calibration, and encoder identity"
+    );
 
     // Change the model: the next run appends exactly one "change".
     let (mut config, credentials) = application.model_state().unwrap();
@@ -4269,6 +4585,109 @@ fn worker_spawn_failure_leaves_no_durable_trace() {
     std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
 }
 
+/// W7 receipt state machine: failure before the durable prelude returns a
+/// retryable RolledBack receipt for a client-keyed message and leaves no
+/// committed projection behind.
+#[test]
+fn mm2_w7_worker_spawn_failure_rolls_back_client_keyed_admission() {
+    let (storage_root, project_root) = roots("mm2-w7-spawn-rollback");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let project = Project::new(&project_root);
+    let mut application = mount(&project, &storage_root, TestBehavior::Success);
+    configure_test_model(&application);
+    application.fail_next_run_spawn_for_test();
+
+    let (completion, _receiver) = mpsc::channel();
+    let error = application
+        .start_run(ApplicationRunRequest {
+            message: crate::message::PendingMessage::from_front_end(
+                "retry me",
+                Some("mm2-w7-precommit".into()),
+                Vec::new(),
+            ),
+            asker: None,
+            approver: allow_all_approver(),
+            events: Box::new(SharedEvents(Arc::new(Mutex::new(Vec::new())))),
+            completion,
+        })
+        .err()
+        .expect("injected spawn failure");
+    let receipt = error
+        .admission_receipt()
+        .expect("client-keyed startup failure has a receipt");
+    assert_eq!(receipt.state, crate::message::AdmissionState::RolledBack);
+    assert!(receipt.retryable);
+    assert_eq!(
+        receipt.failure_phase.as_deref(),
+        Some("run-start-pre-commit")
+    );
+    assert!(
+        application.committed_receipt("mm2-w7-precommit").is_none(),
+        "pre-commit failure must not manufacture a committed projection"
+    );
+
+    application.close().unwrap();
+    std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
+}
+
+/// W7 channel-close fault: the worker receiver disappears only after it has
+/// spawned; the user event is then appended+flushed and delivery fails. The
+/// error must say Committed/non-retryable and the journal projection must
+/// agree, otherwise a frontend would duplicate the message on retry.
+#[test]
+fn mm2_w7_worker_start_channel_failure_after_commit_returns_committed_receipt() {
+    let (storage_root, project_root) = roots("mm2-w7-channel-committed");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let project = Project::new(&project_root);
+    let mut application = mount(&project, &storage_root, TestBehavior::Success);
+    configure_test_model(&application);
+    application.fail_next_run_start_receive_for_test();
+
+    let client_message_id = "mm2-w7-postcommit";
+    let (completion, _receiver) = mpsc::channel();
+    let error = application
+        .start_run(ApplicationRunRequest {
+            message: crate::message::PendingMessage::from_front_end(
+                "land exactly once",
+                Some(client_message_id.into()),
+                Vec::new(),
+            ),
+            asker: None,
+            approver: allow_all_approver(),
+            events: Box::new(SharedEvents(Arc::new(Mutex::new(Vec::new())))),
+            completion,
+        })
+        .err()
+        .expect("closed start receiver must fail startup");
+    let receipt = error
+        .admission_receipt()
+        .expect("post-commit startup failure has a receipt");
+    assert_eq!(receipt.state, crate::message::AdmissionState::Committed);
+    assert!(!receipt.retryable);
+    assert_eq!(receipt.failure_phase.as_deref(), Some("worker-start-send"));
+    let projected = application
+        .committed_receipt(client_message_id)
+        .expect("journal projection");
+    assert_eq!(projected.state, receipt.state);
+    assert_eq!(projected.committed_message_id, receipt.committed_message_id);
+    assert_eq!(projected.attachment_ids, receipt.attachment_ids);
+    assert_eq!(projected.retryable, receipt.retryable);
+    assert_eq!(projected.failure_phase, None);
+    assert_eq!(
+        load_events(&storage_root)
+            .iter()
+            .filter(|event| {
+                event.event_type == "user/message"
+                    && event.data["clientMessageId"].as_str() == Some(client_message_id)
+            })
+            .count(),
+        1
+    );
+
+    application.close().unwrap();
+    std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
+}
+
 #[test]
 fn todo_write_lands_as_an_event_and_restores_on_reopen() {
     let (storage_root, project_root) = roots("cutover-todo");
@@ -4319,5 +4738,509 @@ fn todo_write_lands_as_an_event_and_restores_on_reopen() {
             .any(|event| event.event_type == "approval/asked"),
         "SessionWrite tools never hit the approval barrier"
     );
+    std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
+}
+
+/// MM-2/W5 production-path harness: catalog gate → native invocation →
+/// transient provider image → ref-only journal → cold replay. The adversarial
+/// legs prove that FullAccess cannot turn the tool into an ambient file reader
+/// and that a guessed attachment digest is not authority.
+struct ViewImageLoopScript {
+    step: AtomicUsize,
+    attachment_id: Mutex<Option<String>>,
+}
+
+impl ViewImageLoopScript {
+    fn completed(
+        text: &str,
+        events: &mut dyn crate::model::ModelEventSink,
+    ) -> crate::ModelResponse {
+        events.emit(crate::ModelEvent::TextDelta { delta: text.into() });
+        crate::ModelResponse {
+            text: text.into(),
+            tool_calls: Vec::new(),
+            finish_reason: crate::FinishReason::Completed,
+            usage: None,
+            provider_response_id: None,
+            provider_state: Vec::new(),
+            reasoning: None,
+        }
+    }
+
+    fn tool_call(id: &str, arguments: Value) -> crate::ModelResponse {
+        crate::ModelResponse {
+            text: String::new(),
+            tool_calls: vec![crate::ToolCall {
+                id: id.into(),
+                name: "view_image".into(),
+                arguments,
+            }],
+            finish_reason: crate::FinishReason::ToolCalls,
+            usage: None,
+            provider_response_id: None,
+            provider_state: Vec::new(),
+            reasoning: None,
+        }
+    }
+}
+
+impl TestModelScript for ViewImageLoopScript {
+    fn stream(
+        &self,
+        request: crate::ModelRequest<'_>,
+        events: &mut dyn crate::ModelEventSink,
+    ) -> Result<crate::ModelResponse, crate::ModelError> {
+        if request.tools.is_empty()
+            && request
+                .instructions
+                .is_some_and(|text| text.starts_with("Generate a concise title (at most 8 words)"))
+        {
+            return Ok(Self::completed("visual test", events));
+        }
+        let step = self.step.fetch_add(1, Ordering::SeqCst);
+        assert!(
+            request.tools.iter().any(|tool| tool.name == "view_image"),
+            "verified visual runs expose view_image in the per-run catalog"
+        );
+        Ok(match step {
+            0 => Self::tool_call("view-project", json!({"project_relative_path": "shot.png"})),
+            1 => {
+                let result = request
+                    .items
+                    .iter()
+                    .find_map(|item| match item {
+                        crate::ModelItem::ToolResult(result)
+                            if result.call_id == "view-project" =>
+                        {
+                            Some(result)
+                        }
+                        _ => None,
+                    })
+                    .expect("project image result reaches the next model request");
+                assert!(!result.is_error);
+                assert_eq!(result.blocks.len(), 1);
+                assert!(matches!(
+                    result.image_parts.as_slice(),
+                    [crate::model::ContentPart::Image { path, media_type }]
+                        if std::path::Path::new(path).is_file() && media_type == "image/png"
+                ));
+                let crate::message::ContentBlock::Image { attachment } = &result.blocks[0] else {
+                    panic!("view_image must produce an image descriptor")
+                };
+                *self.attachment_id.lock().unwrap() = Some(attachment.attachment_id.clone());
+                Self::tool_call(
+                    "view-authorized-id",
+                    json!({"attachment_id": attachment.attachment_id}),
+                )
+            }
+            2 => {
+                let result = request
+                    .items
+                    .iter()
+                    .find_map(|item| match item {
+                        crate::ModelItem::ToolResult(result)
+                            if result.call_id == "view-authorized-id" =>
+                        {
+                            Some(result)
+                        }
+                        _ => None,
+                    })
+                    .expect("reachable attachment id result");
+                assert!(!result.is_error);
+                assert_eq!(result.image_parts.len(), 1);
+                Self::tool_call(
+                    "view-absolute",
+                    json!({"project_relative_path": "/tmp/forbidden.png"}),
+                )
+            }
+            3 => {
+                let result = request
+                    .items
+                    .iter()
+                    .find_map(|item| match item {
+                        crate::ModelItem::ToolResult(result)
+                            if result.call_id == "view-absolute" =>
+                        {
+                            Some(result)
+                        }
+                        _ => None,
+                    })
+                    .expect("absolute path result");
+                assert!(result.is_error);
+                assert!(
+                    result
+                        .output
+                        .to_string()
+                        .contains("must be project-relative")
+                );
+                Self::tool_call(
+                    "view-orphan",
+                    json!({"attachment_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}),
+                )
+            }
+            4 => {
+                let result = request
+                    .items
+                    .iter()
+                    .find_map(|item| match item {
+                        crate::ModelItem::ToolResult(result) if result.call_id == "view-orphan" => {
+                            Some(result)
+                        }
+                        _ => None,
+                    })
+                    .expect("orphan id result");
+                assert!(result.is_error);
+                assert!(result.output.to_string().contains("not reachable"));
+                Self::completed("visual loop complete", events)
+            }
+            5 => {
+                let replayed = request.items.iter().find_map(|item| match item {
+                    crate::ModelItem::ToolResult(result) if result.call_id == "view-project" => {
+                        Some(result)
+                    }
+                    _ => None,
+                });
+                let replayed = replayed.expect("cold resume restores the visual tool result");
+                assert_eq!(replayed.blocks.len(), 1);
+                assert!(matches!(
+                    replayed.image_parts.as_slice(),
+                    [crate::model::ContentPart::Image { path, media_type }]
+                        if std::path::Path::new(path).is_file() && media_type == "image/png"
+                ));
+                Self::completed("cold replay complete", events)
+            }
+            _ => return Err(crate::ModelError::request("unexpected visual-loop step")),
+        })
+    }
+}
+
+#[test]
+fn view_image_is_fenced_provider_visible_and_cold_replayable() {
+    let (storage_root, project_root) = roots("mm2-view-image-loop");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let image_path = project_root.join("shot.png");
+    let canvas = image::RgbImage::from_pixel(8, 6, image::Rgb([20, 120, 220]));
+    image::DynamicImage::ImageRgb8(canvas)
+        .save_with_format(&image_path, image::ImageFormat::Png)
+        .unwrap();
+    let project = Project::new(&project_root);
+    let script = Arc::new(ViewImageLoopScript {
+        step: AtomicUsize::new(0),
+        attachment_id: Mutex::new(None),
+    });
+    let mut application = mount_with_permission_modes(
+        &project,
+        &storage_root,
+        TestBehavior::Scripted(script.clone()),
+        crate::permission::PermissionMode::FullAccess,
+    );
+    configure_test_model(&application);
+    run(&mut application, "inspect the project image").expect("visual loop");
+    let live_context = application.context_snapshot().unwrap();
+    assert_eq!(
+        live_context.image_count, 2,
+        "both successful typed tool-result images are counted in request order"
+    );
+    assert!(live_context.image_bytes > 0);
+    assert!(live_context.image_token_estimate > 0);
+    application.close().unwrap();
+
+    let events = load_events(&storage_root);
+    let result_event = events
+        .iter()
+        .find(|event| {
+            event.event_type == "tool/result"
+                && event
+                    .data
+                    .pointer("/message/source/callId")
+                    .and_then(Value::as_str)
+                    == Some("view-project")
+        })
+        .expect("successful visual result journaled");
+    let durable = &result_event.data["message"]["content"][0]["content"];
+    let image = durable
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|block| block["type"] == json!("image"))
+        .expect("descriptor image block");
+    assert_eq!(
+        image["attachmentId"].as_str(),
+        script.attachment_id.lock().unwrap().as_deref()
+    );
+    assert!(image.get("path").is_none(), "journal is ref-only");
+    assert!(
+        !serde_json::to_string(result_event)
+            .unwrap()
+            .contains(project_root.to_string_lossy().as_ref()),
+        "tool result journal never exposes a host path"
+    );
+    let replay = crate::session::replay::ReplayAdapter::fold(&events);
+    assert!(replay.iter().any(|event| matches!(
+        event,
+        crate::session::replay::ReplayEvent::ToolFinished {
+            call_id,
+            content_blocks,
+            ..
+        } if call_id == "view-project" && content_blocks.len() == 1
+    )));
+
+    let mut reopened = mount_modes_from_storage(
+        &project,
+        &storage_root,
+        TestBehavior::Scripted(script.clone()),
+    );
+    configure_test_model(&reopened);
+    let cold_context = reopened.context_snapshot().unwrap();
+    assert_eq!(
+        (
+            cold_context.image_count,
+            cold_context.image_bytes,
+            cold_context.image_token_estimate,
+        ),
+        (
+            live_context.image_count,
+            live_context.image_bytes,
+            live_context.image_token_estimate,
+        ),
+        "cold replay reconstructs the same recursive image budget"
+    );
+    run(&mut reopened, "continue from the image").expect("cold visual replay");
+    reopened.close().unwrap();
+    assert_eq!(script.step.load(Ordering::SeqCst), 6);
+    std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
+}
+
+/// MM-5 paid product-chain gate: real Application/agent catalog → model-chosen
+/// `view_image` call → native fenced import → typed image tool result → second
+/// live GLM request. The key is supplied only to LiveGlmProviderPlugin through
+/// the process environment; persisted credentials stay empty.
+#[test]
+#[ignore = "paid GLM Application/view_image loop; set CLAT_GLM_CODING_PLAN_KEY explicitly"]
+fn live_glm_application_calls_view_image_and_consumes_its_typed_result() {
+    if std::env::var_os("CLAT_GLM_CODING_PLAN_KEY").is_none() {
+        eprintln!("live GLM Application/view_image gate not armed; skipping");
+        return;
+    }
+    let (storage_root, project_root) = roots("mm5-live-view-image-loop");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let image_path = project_root.join("live-green.png");
+    image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+        128,
+        128,
+        image::Rgb([0, 220, 0]),
+    ))
+    .save_with_format(&image_path, image::ImageFormat::Png)
+    .unwrap();
+    let project = Project::new(&project_root);
+    let bootstrap = BootstrapApplication::open(project, storage_root.clone()).unwrap();
+    let mut application = bootstrap
+        .authorize_and_mount_with_provider(Arc::new(LiveGlmProviderPlugin))
+        .unwrap();
+    let config = ModelConfig {
+        preset: Some("glm-5.3-flash".into()),
+        overrides: crate::model::ModelOverrides {
+            output_limit: crate::Override::Set(512),
+            ..crate::model::ModelOverrides::default()
+        },
+        overrides_version: Some(1),
+        ..ModelConfig::default()
+    };
+    application
+        .save_model_state(
+            &config,
+            &crate::model::ProviderCredentials::for_protocol(config.protocol),
+        )
+        .unwrap();
+
+    let result = run(
+        &mut application,
+        "You must call view_image exactly once with project_relative_path set to live-green.png. Inspect the returned image, then reply exactly VIEW_IMAGE_OK_GREEN and nothing else.",
+    )
+    .expect("real GLM completes the typed view_image loop");
+    assert!(
+        result.output.contains("VIEW_IMAGE_OK_GREEN"),
+        "live model must ground its final answer in the viewed image: {}",
+        result.output
+    );
+    application.close().unwrap();
+
+    let events = load_events(&storage_root);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.event_type == "tool/call" && event.data["name"] == "view_image")
+            .count(),
+        1,
+        "the live model must choose exactly one view_image call"
+    );
+    let result_event = events
+        .iter()
+        .find(|event| {
+            event.event_type == "tool/result" && !event.data["isError"].as_bool().unwrap_or(false)
+        })
+        .expect("successful live view_image result is durable");
+    let durable = serde_json::to_string(result_event).unwrap();
+    assert!(durable.contains("\"type\":\"image\""));
+    assert!(!durable.contains(project_root.to_string_lossy().as_ref()));
+    assert!(
+        result_event.data["message"]["content"][0]["content"]
+            .as_array()
+            .is_some_and(|blocks| blocks.iter().all(|block| block.get("path").is_none())),
+        "typed result blocks remain ref-only even though the user-visible display name is durable"
+    );
+    std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
+}
+
+/// MM-5 paid long-history gate: seed an auditable journal through the normal
+/// Application path, cold-remount it with the process-local GLM provider, and
+/// force the next image turn across a deliberately small context window. The
+/// same run must persist a real-model compaction family before GLM consumes
+/// the retained image-bearing surface.
+#[test]
+#[ignore = "paid GLM auto-compaction/image run; set CLAT_GLM_CODING_PLAN_KEY explicitly"]
+fn live_glm_auto_compacts_long_history_before_an_image_turn() {
+    if std::env::var_os("CLAT_GLM_CODING_PLAN_KEY").is_none() {
+        eprintln!("live GLM auto-compaction gate not armed; skipping");
+        return;
+    }
+    let (storage_root, project_root) = roots("mm5-live-auto-compaction");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let project = Project::new(&project_root);
+
+    // Seed through admission + Run + journal, but without paid requests. No
+    // max-context value means the deterministic phase cannot compact early.
+    let mut seeder = mount(&project, &storage_root, TestBehavior::Success);
+    configure_test_model(&seeder);
+    for turn in 0..10 {
+        let prompt = format!(
+            "LIVE_COMPACTION_SEED_{turn}: {}",
+            char::from(b'a' + (turn % 26) as u8)
+                .to_string()
+                .repeat(3_800)
+        );
+        run(&mut seeder, &prompt).expect("seed turn");
+    }
+    seeder.close().unwrap();
+    assert!(
+        !load_events(&storage_root)
+            .iter()
+            .any(|event| event.event_type == "compaction/summary"),
+        "the seed phase must leave uncompacted source history"
+    );
+
+    let bootstrap = BootstrapApplication::open(project, storage_root.clone()).unwrap();
+    let mut application = bootstrap
+        .authorize_and_mount_with_provider(Arc::new(LiveGlmProviderPlugin))
+        .unwrap();
+    let config = ModelConfig {
+        preset: Some("glm-5.3-flash".into()),
+        output_limit: Some(512),
+        max_context_tokens: Some(12_000),
+        overrides: crate::model::ModelOverrides {
+            output_limit: crate::Override::Set(512),
+            max_context_tokens: crate::Override::Set(12_000),
+            ..crate::model::ModelOverrides::default()
+        },
+        overrides_version: Some(1),
+        ..ModelConfig::default()
+    };
+    application
+        .save_model_state(
+            &config,
+            &crate::model::ProviderCredentials::for_protocol(config.protocol),
+        )
+        .unwrap();
+    let (effective, persisted_credentials) = application.model_state().unwrap();
+    assert_eq!(effective.max_context_tokens, Some(12_000));
+    assert!(
+        persisted_credentials
+            .values()
+            .iter()
+            .all(|value| value.is_empty()),
+        "the paid test key remains process-local"
+    );
+
+    let green = project_root.join("post-compaction-green.png");
+    image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+        128,
+        128,
+        image::Rgb([0, 220, 0]),
+    ))
+    .save_with_format(&green, image::ImageFormat::Png)
+    .unwrap();
+    let done = run_with_attachments(
+        &mut application,
+        "Inspect the newest attached solid-color image. Reply exactly LIVE_COMPACTION_OK_GREEN and nothing else.",
+        vec![green],
+    )
+    .expect("real GLM run after automatic compaction");
+    assert!(
+        done.output
+            .to_ascii_uppercase()
+            .contains("LIVE_COMPACTION_OK_GREEN"),
+        "the retained image turn reaches the live provider after compaction: {}",
+        done.output
+    );
+    application.close().unwrap();
+
+    let events = load_events(&storage_root);
+    let family = events
+        .windows(4)
+        .find(|window| {
+            window[0].event_type == "compaction/start"
+                && window[1].event_type == "compaction/summary"
+                && window[2].event_type == "user/message"
+                && window[3].event_type == "compaction/end"
+        })
+        .expect("real GLM compaction family is durable and contiguous");
+    assert_eq!(family[1].data["provider"], json!("OpenAI Compatible"));
+    assert_eq!(family[1].data["model"], json!("glm-5.3-flash"));
+    assert!(
+        family[2].surface_op.is_some(),
+        "the live summary replaces the selected source prefix"
+    );
+    std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
+}
+
+struct TextCatalogScript;
+
+impl TestModelScript for TextCatalogScript {
+    fn stream(
+        &self,
+        request: crate::ModelRequest<'_>,
+        events: &mut dyn crate::ModelEventSink,
+    ) -> Result<crate::ModelResponse, crate::ModelError> {
+        assert!(
+            request.tools.iter().all(|tool| tool.name != "view_image"),
+            "text-only model catalogs must not mention view_image"
+        );
+        Ok(ViewImageLoopScript::completed("text only", events))
+    }
+}
+
+#[test]
+fn text_only_model_catalog_hides_view_image() {
+    let (storage_root, project_root) = roots("mm2-view-image-text-gate");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let project = Project::new(&project_root);
+    let mut application = mount(
+        &project,
+        &storage_root,
+        TestBehavior::Scripted(Arc::new(TextCatalogScript)),
+    );
+    let config = ModelConfig {
+        model: "deterministic".into(),
+        endpoint: "https://application-test.invalid".into(),
+        ..ModelConfig::default()
+    };
+    application
+        .save_model_state(
+            &config,
+            &crate::model::ProviderCredentials::for_protocol(config.protocol),
+        )
+        .unwrap();
+    run(&mut application, "text request").expect("text-only run");
+    application.close().unwrap();
     std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
 }

@@ -70,7 +70,8 @@ impl OpenAiModel {
         body.insert("model".into(), Value::String(self.model.clone()));
         body.insert("stream".into(), Value::Bool(true));
         // OpenAI 协议模型不经 ModelConfig 构造（api_key 直连），图片
-        // 策略取缺省口径（png/jpeg × 8 × 4MiB——与全局 admission 同律）。
+        // 策略取规范化请求口径（png/jpeg × 8 × 4MiB）；MM-3 的 8MiB
+        // 仅是 pre-normalization 源图上限，不放宽 provider 出口。
         body.insert(
             "input".into(),
             Value::Array(map_input_items(
@@ -129,9 +130,7 @@ impl OpenAiModel {
 
     fn send(&self, body: &Value, cancel: &CancelToken) -> Result<Response<Body>, ModelError> {
         let url = format!("{}/responses", self.base_url);
-        let body = serde_json::to_string(body).map_err(|error| {
-            ModelError::request(format!("failed to serialize OpenAI request: {error}"))
-        })?;
+        let body = super::serialize_request_body(body, "OpenAI")?;
         let mut request = self
             .agent
             .post(url)
@@ -212,12 +211,21 @@ fn map_input_items(
     policy: &crate::model::ImageRequestPolicy,
 ) -> Result<Vec<Value>, ModelError> {
     let mut input = Vec::new();
+    let protected_start = items
+        .iter()
+        .rposition(|item| matches!(item, ModelItem::User { .. }))
+        .unwrap_or(items.len());
 
-    for item in items {
+    for (index, item) in items.iter().enumerate() {
+        let image_failure = if index >= protected_start {
+            ImageFailureMode::RejectCurrent
+        } else {
+            ImageFailureMode::DegradeHistory
+        };
         match item {
             ModelItem::User { content } => input.push(json!({
                 "role": "user",
-                "content": user_content(content, policy)?,
+                "content": user_content_with_mode(content, policy, image_failure)?,
             })),
             ModelItem::Assistant { content, .. } => input.push(json!({
                 "role": "assistant",
@@ -230,11 +238,22 @@ fn map_input_items(
                 "arguments": serde_json::to_string(&call.arguments)
                     .map_err(|error| ModelError::request(format!("invalid tool arguments: {error}")))?,
             })),
-            ModelItem::ToolResult(result) => input.push(json!({
-                "type": "function_call_output",
-                "call_id": result.call_id,
-                "output": tool_output_text(result),
-            })),
+            ModelItem::ToolResult(result) => {
+                input.push(json!({
+                    "type": "function_call_output",
+                    "call_id": result.call_id,
+                    "output": tool_output_text(result),
+                }));
+                // Responses has no image-bearing function_call_output item.
+                // Project the typed result image as the immediately following
+                // user input item while retaining the paired textual output.
+                if !result.image_parts.is_empty() {
+                    input.push(json!({
+                        "role": "user",
+                        "content": user_content_with_mode(&result.image_parts, policy, image_failure)?,
+                    }));
+                }
+            }
             ModelItem::ProviderState(state) if state.provider == "openai" => {
                 input.push(state.data.clone())
             }
@@ -257,11 +276,42 @@ fn content_text(content: &[ContentPart]) -> String {
 }
 
 /// user content（Responses 协议）：纯文本保持字符串；含图片时升级为
-/// 多 part 数组——`input_text` + `input_image`（data URL）。读文件
-/// 失败的图片降级为文本注记（M3，与 chat 协议同语义）。
+/// 多 part 数组——`input_text` + `input_image`（data URL）。历史读失败
+/// 图片降级为文本注记；最新 user 及其后的 tool-result 图片 fail closed
+///（与 chat 协议同语义）。
+#[cfg(test)]
 fn user_content(
     content: &[ContentPart],
     policy: &crate::model::ImageRequestPolicy,
+) -> Result<Value, ModelError> {
+    user_content_with_mode(content, policy, ImageFailureMode::DegradeHistory)
+}
+
+#[derive(Clone, Copy)]
+enum ImageFailureMode {
+    DegradeHistory,
+    RejectCurrent,
+}
+
+fn unavailable_image_part(
+    parts: &mut Vec<Value>,
+    note: impl Into<String>,
+    failure: ImageFailureMode,
+) -> Result<(), ModelError> {
+    let note = note.into();
+    if matches!(failure, ImageFailureMode::RejectCurrent) {
+        return Err(ModelError::request(format!(
+            "current request image was not projected: {note}"
+        )));
+    }
+    parts.push(json!({ "type": "input_text", "text": note }));
+    Ok(())
+}
+
+fn user_content_with_mode(
+    content: &[ContentPart],
+    policy: &crate::model::ImageRequestPolicy,
+    image_failure: ImageFailureMode,
 ) -> Result<Value, ModelError> {
     let has_image = content
         .iter()
@@ -270,22 +320,43 @@ fn user_content(
         return Ok(Value::String(content_text(content)));
     }
     let mut parts = Vec::new();
+    let mut images_sent = 0usize;
     for part in content {
         match part {
+            // Application replay preserves the legacy empty text block for
+            // image-only messages. It carries no semantics and some provider
+            // validators reject an empty `input_text`, so omit it only after
+            // the message has been classified as multimodal.
+            ContentPart::Text(text) if text.is_empty() => {}
             ContentPart::Text(text) => parts.push(json!({
                 "type": "input_text",
                 "text": text,
             })),
             ContentPart::Image { path, media_type } => {
+                if images_sent >= policy.max_images {
+                    unavailable_image_part(
+                        &mut parts,
+                        format!(
+                            "[image unavailable: this provider accepts at most {} images per message]",
+                            policy.max_images
+                        ),
+                        image_failure,
+                    )?;
+                    continue;
+                }
                 match super::openai_compatible::image_data_url_for(path, media_type, policy) {
-                    Some(url) => parts.push(json!({
-                        "type": "input_image",
-                        "image_url": url,
-                    })),
-                    None => parts.push(json!({
-                        "type": "input_text",
-                        "text": format!("[image unavailable: {path}]"),
-                    })),
+                    Some(url) => {
+                        images_sent += 1;
+                        parts.push(json!({
+                            "type": "input_image",
+                            "image_url": url,
+                        }));
+                    }
+                    None => unavailable_image_part(
+                        &mut parts,
+                        "[image unavailable: the referenced attachment could not be read]",
+                        image_failure,
+                    )?,
                 }
             }
         }
@@ -811,7 +882,7 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        std::fs::write(&path, b"hello world").unwrap();
+        std::fs::write(&path, crate::test_support::png_bytes(2, 2, [1, 2, 3])).unwrap();
         let content = user_content(
             &[
                 ContentPart::Text("look".into()),
@@ -826,9 +897,11 @@ mod tests {
         let parts = content.as_array().unwrap();
         assert_eq!(parts.len(), 2);
         assert_eq!(parts[0], json!({"type": "input_text", "text": "look"}));
-        assert_eq!(
-            parts[1],
-            json!({"type": "input_image", "image_url": "data:image/png;base64,aGVsbG8gd29ybGQ="})
+        assert_eq!(parts[1]["type"], json!("input_image"));
+        assert!(
+            parts[1]["image_url"]
+                .as_str()
+                .is_some_and(|url| url.starts_with("data:image/png;base64,"))
         );
         let _ = std::fs::remove_file(&path);
         // 纯文本仍是字符串。
@@ -840,6 +913,169 @@ mod tests {
             .unwrap(),
             json!("hi")
         );
+
+        // Image-only replay carries an empty compatibility text block; the
+        // provider projection must not turn it into an invalid empty part.
+        let path = std::env::temp_dir().join(format!(
+            "clat-img-resp-image-only-{}.png",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&path, crate::test_support::png_bytes(2, 2, [4, 5, 6])).unwrap();
+        let content = user_content(
+            &[
+                ContentPart::Text(String::new()),
+                ContentPart::Image {
+                    path: path.display().to_string(),
+                    media_type: "image/png".into(),
+                },
+            ],
+            &crate::model::ImageRequestPolicy::default(),
+        )
+        .unwrap();
+        let parts = content.as_array().unwrap();
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0]["type"], json!("input_image"));
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// Responses must preserve the same latest-turn fail-closed boundary as
+    /// the compatible adapter; historical damage remains a visible note.
+    #[test]
+    fn latest_user_image_read_failure_is_rejected_while_history_degrades() {
+        let missing = || ContentPart::Image {
+            path: "/nonexistent/current-image.png".into(),
+            media_type: "image/png".into(),
+        };
+        let history = map_input_items(
+            &[
+                ModelItem::User {
+                    content: vec![missing()],
+                },
+                ModelItem::user_text("continue"),
+            ],
+            &crate::model::ImageRequestPolicy::default(),
+        )
+        .expect("an older missing image degrades visibly");
+        assert!(
+            history[0]["content"][0]["text"]
+                .as_str()
+                .is_some_and(|text| text.contains("image unavailable"))
+        );
+
+        let error = map_input_items(
+            &[ModelItem::User {
+                content: vec![ContentPart::Text("inspect".into()), missing()],
+            }],
+            &crate::model::ImageRequestPolicy::default(),
+        )
+        .expect_err("the latest user image must fail before provider I/O");
+        assert!(error.to_string().contains("current request image"));
+        assert!(!error.to_string().contains("/nonexistent"));
+
+        let error = map_input_items(
+            &[
+                ModelItem::user_text("inspect with the tool"),
+                ModelItem::ToolResult(ToolResult {
+                    call_id: "view-missing".into(),
+                    tool_name: "view_image".into(),
+                    output: json!({"viewed": false}),
+                    is_error: false,
+                    blocks: Vec::new(),
+                    image_parts: vec![missing()],
+                }),
+            ],
+            &crate::model::ImageRequestPolicy::default(),
+        )
+        .expect_err("a current-turn tool image must also fail before provider I/O");
+        assert!(error.to_string().contains("current request image"));
+    }
+
+    /// INV-MM2-6：Responses 与 OpenAI-compatible 必须消费同一图片
+    /// 策略。此前只有后者执行 F-5 张数闸，Responses 会静默越过模型
+    /// 上限；删掉计数分支时第三个 part 会重新成为 input_image。
+    #[test]
+    fn responses_image_policy_enforces_the_per_message_count_cap() {
+        let path = std::env::temp_dir().join(format!(
+            "clat-responses-policy-count-{}.png",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&path, crate::test_support::png_bytes(2, 2, [7, 8, 9])).unwrap();
+        let policy = crate::model::ImageRequestPolicy {
+            media_types: vec!["image/png".into()],
+            max_images: 2,
+            max_bytes: 1024,
+        };
+        let content = user_content(
+            &[
+                ContentPart::Image {
+                    path: path.display().to_string(),
+                    media_type: "image/png".into(),
+                },
+                ContentPart::Image {
+                    path: path.display().to_string(),
+                    media_type: "image/png".into(),
+                },
+                ContentPart::Image {
+                    path: path.display().to_string(),
+                    media_type: "image/png".into(),
+                },
+            ],
+            &policy,
+        )
+        .unwrap();
+        let parts = content.as_array().expect("multi-part input");
+        assert_eq!(parts[0]["type"], json!("input_image"));
+        assert_eq!(parts[1]["type"], json!("input_image"));
+        assert_eq!(parts[2]["type"], json!("input_text"));
+        assert!(
+            parts[2]["text"]
+                .as_str()
+                .expect("degradation text")
+                .contains("at most 2 images")
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn responses_projects_tool_images_after_the_paired_output() {
+        let path = std::env::temp_dir().join(format!(
+            "clat-tool-response-{}.png",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&path, crate::test_support::png_bytes(2, 2, [10, 11, 12])).unwrap();
+        let items = vec![ModelItem::ToolResult(ToolResult {
+            call_id: "view-1".into(),
+            tool_name: "view_image".into(),
+            output: json!({"viewed": true}),
+            is_error: false,
+            blocks: Vec::new(),
+            image_parts: vec![ContentPart::Image {
+                path: path.display().to_string(),
+                media_type: "image/png".into(),
+            }],
+        })];
+        let input =
+            map_input_items(&items, &crate::model::ImageRequestPolicy::default()).expect("input");
+        assert_eq!(input.len(), 2);
+        assert_eq!(input[0]["type"], json!("function_call_output"));
+        assert_eq!(input[1]["role"], json!("user"));
+        assert_eq!(input[1]["content"][0]["type"], json!("input_image"));
+        assert!(
+            !serde_json::to_string(&input)
+                .unwrap()
+                .contains(path.to_string_lossy().as_ref()),
+            "provider payload must not expose the local path"
+        );
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

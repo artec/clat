@@ -241,6 +241,11 @@ pub(super) fn context_dialog_lines(
         ("Goal policy", view.goal_policy_estimate),
         ("Tool schemas", view.tool_schemas_estimate),
         ("History / compaction view", view.history_estimate),
+        ("Images", view.image_count),
+        ("Images before projection", view.image_original_count),
+        ("Older images omitted", view.image_offloaded_count),
+        ("Image bytes", view.image_bytes),
+        ("Visual token estimate", view.image_token_estimate),
         ("Output reserve", view.output_reserve_estimate),
         ("Input estimate", view.input_estimate),
         ("Total estimate", view.total_estimate),
@@ -252,6 +257,13 @@ pub(super) fn context_dialog_lines(
             Span::styled(value.to_string(), theme::style(theme::Role::Dim)),
         ]));
     }
+    lines.push(Line::from(vec![
+        Span::raw("Visual safety factor: "),
+        Span::styled(
+            format!("{}.0x", view.image_token_safety_factor),
+            theme::style(theme::Role::Dim),
+        ),
+    ]));
     lines.push(Line::from(vec![
         Span::raw("Memory injection: "),
         Span::styled(

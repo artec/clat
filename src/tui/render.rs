@@ -49,9 +49,12 @@ impl App {
             .saturating_sub(2)
             .saturating_sub(INPUT_MARKER_WIDTH as u16)
             .max(1) as usize;
-        let input_rows =
-            (self.input.line_count(input_width) + 2 + usize::from(!self.attachments.is_empty()))
-                .clamp(3, 10);
+        let attachment_rows = if self.attachments.is_empty() {
+            0
+        } else {
+            self.attachments.len() + 1
+        };
+        let input_rows = (self.input.line_count(input_width) + 2 + attachment_rows).clamp(3, 14);
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -171,7 +174,11 @@ impl App {
                 let visible_rows = self.input_area.height.saturating_sub(2) as usize;
                 let row = row.min(visible_rows.saturating_sub(1));
                 // 光标跳过行首箭头前缀（`❯ ` / 两个空格）与附件徽标行。
-                let attachment_offset = usize::from(!self.attachments.is_empty());
+                let attachment_offset = if self.attachments.is_empty() {
+                    0
+                } else {
+                    self.attachments.len() + 1
+                };
                 frame.set_cursor_position((
                     self.input_area.x + 1 + INPUT_MARKER_WIDTH as u16 + column as u16,
                     self.input_area.y + 1 + (row + attachment_offset) as u16,
@@ -625,7 +632,7 @@ impl App {
         // 前缀：local 裸 `CLAT`；dsh `CLAT ●/○ dsh`（绿实心/红空心在线
         // 点——◆ 菱形方案 2026-08-23 负责人 dogfood 后撤下，仅留 ●）。
         let connecting = self.dsh.is_none() && self.dsh_connect.is_some();
-        let loading = self.loading.is_some() || connecting;
+        let loading = self.loading.is_some() || self.run_start_pending || connecting;
         let state = if loading {
             "loading"
         } else if self.running {
@@ -915,25 +922,25 @@ impl App {
                 Line::from(vec![Span::raw(prefix), Span::raw(row)])
             })
             .collect();
-        // 附件徽标行（M6）：插在最前，占一个内容行（input_rows 与光标
-        // 行号都随之 +1）。超长截断保文件名尾部（文件名语义在后段）。
+        // 结构化附件 rail：稳定 [Image #N] 身份与顺序独立于可编辑文本，
+        // 因此删改正文不会悄悄重绑图片。每图一行，末行给批次预算。
         if !self.attachments.is_empty() {
-            let chips = self
+            let mut rail = self
                 .attachments
-                .iter()
-                .map(|path| {
-                    let name = path
-                        .file_name()
-                        .map(|name| name.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| path.to_string_lossy().into_owned());
-                    format!("📷 {name}")
-                })
-                .collect::<Vec<_>>()
-                .join("  ");
-            lines.insert(
-                0,
-                Line::from(Span::styled(chips, theme::style(theme::Role::Faint))),
-            );
+                .rows()
+                .map(|row| Line::from(Span::styled(row, theme::style(theme::Role::Faint))))
+                .collect::<Vec<_>>();
+            rail.push(Line::from(Span::styled(
+                format!(
+                    "{} image(s) · {} source · ~{} visual tokens · /image remove|move",
+                    self.attachments.len(),
+                    crate::tui::attachments::human_bytes(self.attachments.total_source_bytes()),
+                    self.attachments.total_estimated_tokens()
+                ),
+                theme::style(theme::Role::Faint),
+            )));
+            rail.extend(lines);
+            lines = rail;
         }
         if let Some((from, to)) = self
             .selection

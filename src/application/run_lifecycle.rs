@@ -31,9 +31,13 @@ impl TrustedProjectApplication {
         // Preserve durable phase, remove only process-local continuation
         // authority, matching DSH goal-round-driver's competing prompt fence.
         self.goal.disarm();
+        let client_message_id = request.message.client_message_id.clone();
         let cancel = CancelToken::new();
         let catalog = run_catalog(cancel.clone(), Arc::clone(&request.approver));
         self.start_run_with_catalog(request, catalog, None)
+            .map_err(|error| {
+                error.with_rollback_if_unclassified(client_message_id, "run-start-pre-commit")
+            })
     }
 
     /// Start the explicitly armed bounded goal driver. The caller supplies
@@ -109,6 +113,14 @@ impl TrustedProjectApplication {
                     config.model
                 )));
             }
+            if attachments.len() > config.image_policy.max_images {
+                return Err(ApplicationError::new(format!(
+                    "this model ({}) accepts at most {} images per message; remove {} image(s) before sending",
+                    config.model,
+                    config.image_policy.max_images,
+                    attachments.len() - config.image_policy.max_images,
+                )));
+            }
         }
         let pending_goal_birth = self
             .goal
@@ -163,6 +175,10 @@ impl TrustedProjectApplication {
             .sessions
             .import_attachments(attachments)
             .map_err(session_error)?;
+        if !images.is_empty() {
+            let (config, _) = self.model_state()?;
+            validate_route_images(&config, &images).map_err(ApplicationError::new)?;
+        }
         // 首个耐久批：出生档（仅新物化的会话）→ turn/start →
         // user/message。DSH pinInitialPermission 在会话创建期 pin 档位，
         // 对应物即出生事件排在首个 turn 之前（PS2）——回放从第一条
@@ -214,32 +230,11 @@ impl TrustedProjectApplication {
         journal
             .flush()
             .map_err(|error| ApplicationError::new(format!("session flush failed: {error}")))?;
-        if plan_birth {
-            self.plan_mode.materialized();
-        }
-        if materialized.is_some() {
-            self.goal.materialized(&id).map_err(ApplicationError::new)?;
-            self.subagents.materialized(&id);
-        }
-        // 事实已耐久：投影随后（注册工作区 + 账本 + 指针）。两者之间的
-        // 崩溃由挂载期对账收编自愈（会话日志永远赢）。
-        if let Some(id) = materialized {
-            self.ensure_registered()?;
-            if let Some(workspace_id) = self.workspace_id.clone() {
-                self.control
-                    .append_session_to_workspace(&workspace_id, id.as_str())
-                    .map_err(|error| ApplicationError::new(error.to_string()))?;
-            }
-            self.selection = Some(id.clone());
-            self.persist_selection(Some(&id))?;
-        }
-        // The model-facing history is shared with `/context`: compaction surface
-        // plus the same non-durable todo runtime item, so inspection cannot drift
-        // from the next real request.
-        let history = self.current_model_history()?;
-        // MM-1A：被接纳内容 = 提交文本块 + 依序追加的图块（descriptor
-        // 投影，与 journal 载荷同源——live 事件与回放逐字段相同的写侧
-        // 起点）。committed 回执只在客户端幂等键存在时构造。
+
+        // The append+flush above is the sole admission commit point. Build
+        // the receipt immediately: every fallible projection below must
+        // preserve this committed fact instead of returning an ambiguous
+        // plain startup error.
         let mut admitted_blocks = message.content.blocks.clone();
         admitted_blocks.extend(
             images
@@ -259,6 +254,43 @@ impl TrustedProjectApplication {
                     .collect(),
             ))
         });
+        let post_commit_error = |error: ApplicationError, phase: &'static str| {
+            let failed_receipt = receipt
+                .clone()
+                .map(|receipt| Box::new((*receipt).with_failure_phase(phase)));
+            error.with_receipt(failed_receipt)
+        };
+        if plan_birth {
+            self.plan_mode.materialized();
+        }
+        if materialized.is_some() {
+            self.goal
+                .materialized(&id)
+                .map_err(ApplicationError::new)
+                .map_err(|error| post_commit_error(error, "goal-materialize"))?;
+            self.subagents.materialized(&id);
+        }
+        // 事实已耐久：投影随后（注册工作区 + 账本 + 指针）。两者之间的
+        // 崩溃由挂载期对账收编自愈（会话日志永远赢）。
+        if let Some(id) = materialized {
+            self.ensure_registered()
+                .map_err(|error| post_commit_error(error, "workspace-register"))?;
+            if let Some(workspace_id) = self.workspace_id.clone() {
+                self.control
+                    .append_session_to_workspace(&workspace_id, id.as_str())
+                    .map_err(|error| ApplicationError::new(error.to_string()))
+                    .map_err(|error| post_commit_error(error, "workspace-ledger"))?;
+            }
+            self.selection = Some(id.clone());
+            self.persist_selection(Some(&id))
+                .map_err(|error| post_commit_error(error, "selection-pointer"))?;
+        }
+        // The model-facing history is shared with `/context`: compaction surface
+        // plus the same non-durable todo runtime item, so inspection cannot drift
+        // from the next real request.
+        let history = self
+            .current_model_history()
+            .map_err(|error| post_commit_error(error, "history-rebuild"))?;
         Ok(PreparedRun {
             session_id: id,
             turn,
@@ -336,9 +368,21 @@ impl TrustedProjectApplication {
             .snapshot()
             .map_err(ApplicationError::new)?;
         let skill_snapshot = self.skills.snapshot().map_err(ApplicationError::new)?;
+        let memory_query = request.message.content.plain_text();
+        // Image-only is a valid multimodal user message. Memory retrieval is
+        // text-indexed, so use a stable semantic sentinel rather than letting
+        // its non-empty query guard reject the entire run before admission.
+        let memory_query = if memory_query.is_empty()
+            && (!request.message.staged_attachments.is_empty()
+                || request.message.content.has_images())
+        {
+            "[image-only user message]"
+        } else {
+            memory_query.as_str()
+        };
         let memory_injection = self
             .memory
-            .injection(&request.message.content.plain_text())
+            .injection(memory_query)
             .map_err(ApplicationError::new)?;
         let ApplicationRunRequest {
             message: request_message,
@@ -409,6 +453,7 @@ impl TrustedProjectApplication {
         let plugin_host_worker = Arc::clone(&self.plugin_host);
         let tool_access_worker = Arc::clone(&self.tool_access);
         let skill_catalog_worker = Arc::clone(&self.skill_catalog);
+        let view_image_worker = Arc::clone(&self.view_image);
         let sampling_usage_worker = Arc::clone(&sampling_usage);
         let cancel_worker = cancel.clone();
         let approver_worker = Arc::clone(&approver);
@@ -422,6 +467,17 @@ impl TrustedProjectApplication {
         // 却永远得不到回答的 user 消息；预备失败则撤掉发送端，worker
         // 干净退出，同样不留半份状态。用户消息在模型执行前已耐久。
         let (start_sender, start_receiver) = mpsc::sync_channel::<WorkerStart>(1);
+        let fail_run_start_receive = {
+            #[cfg(test)]
+            {
+                std::mem::take(&mut self.fail_next_run_start_receive)
+            }
+            #[cfg(not(test))]
+            {
+                false
+            }
+        };
+        let (receiver_closed_sender, receiver_closed_receiver) = mpsc::sync_channel::<()>(0);
         #[cfg(test)]
         if std::mem::take(&mut self.fail_next_run_spawn) {
             return Err(ApplicationError::new(
@@ -433,6 +489,20 @@ impl TrustedProjectApplication {
             .spawn(move || {
                 let cancel = cancel_worker;
                 let request_approver = approver_worker;
+                if fail_run_start_receive {
+                    // W7 fault seam: prove that a worker-start channel loss
+                    // after durable admission reports Committed rather than
+                    // inviting a duplicate resend.
+                    drop(start_receiver);
+                    let _ = receiver_closed_sender.send(());
+                    let _ = run_scope.close();
+                    plugin_host_worker.clear();
+                    tool_access_worker.clear();
+                    skill_catalog_worker.clear();
+                    view_image_worker.clear();
+                    busy.store(false, Ordering::Release);
+                    return;
+                }
                 let start = match start_receiver.recv() {
                     Ok(start) => start,
                     Err(_) => {
@@ -442,6 +512,7 @@ impl TrustedProjectApplication {
                         plugin_host_worker.clear();
                         tool_access_worker.clear();
                         skill_catalog_worker.clear();
+                        view_image_worker.clear();
                         busy.store(false, Ordering::Release);
                         return;
                     }
@@ -980,6 +1051,7 @@ impl TrustedProjectApplication {
                 plugin_host_worker.clear();
                 tool_access_worker.clear();
                 skill_catalog_worker.clear();
+                view_image_worker.clear();
                 let sampled = sampling_usage_worker
                     .lock()
                     .map(|mut cell| std::mem::take(&mut *cell))
@@ -1037,6 +1109,11 @@ impl TrustedProjectApplication {
         *join_slot
             .lock()
             .map_err(|_| ApplicationError::new("run join lock poisoned"))? = Some(worker);
+        if fail_run_start_receive {
+            receiver_closed_receiver.recv().map_err(|_| {
+                ApplicationError::new("run worker fault seam failed before admission")
+            })?;
+        }
 
         // 预备（CAS + 首批耐久批）发生在 worker 就位之后。Fresh Plan
         // birth 已在这里 append+flush；只有此后才冻结本 run 的工作流视图，
@@ -1049,8 +1126,25 @@ impl TrustedProjectApplication {
                 return Err(error);
             }
         };
-        let goal_injection = self.goal.injection().map_err(ApplicationError::new)?;
-        let context = self.run_context_snapshot(skill_snapshot, memory_injection, goal_injection);
+        let committed_receipt = prepared.receipt.clone();
+        let post_commit_start_error = |error: ApplicationError, phase: &'static str| {
+            let failed_receipt = committed_receipt
+                .clone()
+                .map(|receipt| Box::new((*receipt).with_failure_phase(phase)));
+            error.with_receipt(failed_receipt)
+        };
+        let goal_injection = match self.goal.injection().map_err(ApplicationError::new) {
+            Ok(injection) => injection,
+            Err(error) => {
+                drop(start_sender);
+                handle.join().map_err(|join_error| {
+                    post_commit_start_error(join_error, "worker-start-cleanup")
+                })?;
+                return Err(post_commit_start_error(error, "goal-injection"));
+            }
+        };
+        let context =
+            self.run_context_snapshot(&config, skill_snapshot, memory_injection, goal_injection);
         let request_header =
             self.request_header_data(&config, &context, instruction_snapshot.as_ref());
         let header_reason = self.request_header_reason(&request_header.header);
@@ -1060,6 +1154,7 @@ impl TrustedProjectApplication {
 
         self.tool_access.install(context.tool_access.clone());
         self.skill_catalog.install(Arc::clone(&context.skills));
+        self.view_image.begin_run();
         self.plugin_host
             .install(crate::plugin_host::RunHostContext {
                 providers: Arc::clone(&self.providers),
@@ -1084,9 +1179,13 @@ impl TrustedProjectApplication {
             self.plugin_host.clear();
             self.tool_access.clear();
             self.skill_catalog.clear();
-            handle.join()?;
-            return Err(ApplicationError::new(
-                "run worker stopped before execution started",
+            self.view_image.clear();
+            handle
+                .join()
+                .map_err(|error| post_commit_start_error(error, "worker-start-cleanup"))?;
+            return Err(post_commit_start_error(
+                ApplicationError::new("run worker stopped before execution started"),
+                "worker-start-send",
             ));
         }
         // The run is committed to execute: only now does the header count
@@ -1113,27 +1212,90 @@ impl TrustedProjectApplication {
     /// 已到终态（队列封口，W1-04）时返回 `NotRunning`，调用方回退为普
     /// 通提交。未被 claim 的消息不落盘。
     ///
-    /// MM-1A fail-closed：带 staged 附件或图片内容块的 steering 被
-    /// `Refused` 拒绝——run 中途没有附件接纳路径（journal 只认 prepare
-    /// 阶段导入的引用），MM-1/MM-2 的 admission 落地前不开放（MM-I12
-    /// 的契约就位、语义不越前）。纯文本语义与既有 String 版本一致。
-    pub fn steer(&self, message: crate::message::PendingMessage) -> SteerOutcome {
-        if !message.staged_attachments.is_empty() {
+    /// MM-3 image steering follows the same two-phase ownership as text:
+    /// sources are normalized into unreachable session blobs before queueing,
+    /// then the recorder makes descriptor refs reachable only when the run
+    /// claims and append+flush commits the user event. A sealed/not-running
+    /// queue is checked first, so rejected drafts do not create orphan work.
+    pub fn steer(&self, mut message: crate::message::PendingMessage) -> SteerOutcome {
+        if message.content.has_images() && message.admitted_images.is_empty() {
             return SteerOutcome::Refused {
-                reason: "image steering is not admitted mid-run yet".into(),
-            };
-        }
-        if message.content.has_images() {
-            return SteerOutcome::Refused {
-                reason: "image steering is not admitted mid-run yet".into(),
+                reason: "image content must be admitted from staged sources by core".into(),
+                receipt: steering_rollback_receipt(&message, "steering-admission"),
             };
         }
         let Some(handle) = &self.active_run else {
-            return SteerOutcome::NotRunning;
+            return SteerOutcome::NotRunning {
+                receipt: steering_rollback_receipt(&message, "steering-not-running"),
+            };
         };
         if handle.is_finished() {
-            return SteerOutcome::NotRunning;
+            return SteerOutcome::NotRunning {
+                receipt: steering_rollback_receipt(&message, "steering-not-running"),
+            };
         }
+        if !message.staged_attachments.is_empty() {
+            message.freeze_request_digest();
+            let (config, _) = match self.model_state() {
+                Ok(state) => state,
+                Err(error) => {
+                    return SteerOutcome::Refused {
+                        reason: error.to_string(),
+                        receipt: steering_rollback_receipt(&message, "steering-model-state"),
+                    };
+                }
+            };
+            if !config.capabilities.accepts_image_input() {
+                return SteerOutcome::Refused {
+                    reason: format!(
+                        "this model ({}) does not accept image input; switch to a verified vision model or remove the image(s)",
+                        config.model
+                    ),
+                    receipt: steering_rollback_receipt(&message, "steering-capability"),
+                };
+            }
+            if message.staged_attachments.len() > config.image_policy.max_images {
+                return SteerOutcome::Refused {
+                    reason: format!(
+                        "this model ({}) accepts at most {} images per message; remove {} image(s) before sending",
+                        config.model,
+                        config.image_policy.max_images,
+                        message.staged_attachments.len() - config.image_policy.max_images,
+                    ),
+                    receipt: steering_rollback_receipt(&message, "steering-route-policy"),
+                };
+            }
+            let images = match self
+                .sessions
+                .import_attachments(&message.staged_attachments)
+            {
+                Ok(images) => images,
+                Err(error) => {
+                    return SteerOutcome::Refused {
+                        reason: error.to_string(),
+                        receipt: steering_rollback_receipt(&message, "steering-import"),
+                    };
+                }
+            };
+            if let Err(reason) = validate_route_images(&config, &images) {
+                return SteerOutcome::Refused {
+                    reason,
+                    receipt: steering_rollback_receipt(&message, "steering-route-policy"),
+                };
+            }
+            message.content.blocks.extend(images.iter().map(|image| {
+                crate::message::ContentBlock::Image {
+                    attachment: image.descriptor.clone(),
+                }
+            }));
+            message.admitted_images = images;
+        }
+        let reserved_receipt = message.client_message_id.clone().map(|client_message_id| {
+            Box::new(crate::message::AdmissionReceipt::reserved(
+                client_message_id,
+                message.content.attachment_ids(),
+            ))
+        });
         // 入队与终态封口同一把锁（W1-04）：Sealed 意味着 run 已判定
         // 结束、消息永远无人 claim——绝不能当 Queued 返回。
         match handle.steering.try_push(message) {
@@ -1142,9 +1304,19 @@ impl TrustedProjectApplication {
                 // still enters the current Run normally, while subsequent
                 // synthetic rounds are disarmed at the next boundary.
                 self.goal.disarm();
-                SteerOutcome::Queued
+                SteerOutcome::Queued {
+                    receipt: reserved_receipt,
+                }
             }
-            crate::run::PushOutcome::Sealed => SteerOutcome::NotRunning,
+            crate::run::PushOutcome::Sealed => SteerOutcome::NotRunning {
+                receipt: reserved_receipt.map(|receipt| {
+                    Box::new(crate::message::AdmissionReceipt::rolled_back(
+                        receipt.client_message_id.clone(),
+                        receipt.attachment_ids.clone(),
+                        "steering-not-running",
+                    ))
+                }),
+            },
         }
     }
 
@@ -1154,12 +1326,18 @@ impl TrustedProjectApplication {
     /// admission 只放行文本，召回仍走类型化通道）。无活动 run、run 已
     /// 结束、或消息已被 claim（进入 journal、不可撤回）时返回 `None`
     ///——此时前端的 ESC 应回落到取消 run。召回不触碰 journal。
-    pub fn recall_pending_steering(&self) -> Option<crate::message::PendingMessage> {
+    pub fn recall_pending_steering(&self) -> Option<RecalledSteering> {
         let handle = self.active_run.as_ref()?;
         if handle.is_finished() {
             return None;
         }
-        handle.steering.recall_last()
+        handle
+            .steering
+            .recall_last()
+            .map(|message| RecalledSteering {
+                receipt: steering_rollback_receipt(&message, "steering-recall"),
+                message,
+            })
     }
 
     /// MM-1A：按客户端幂等键查询 committed 回执。权威来源是 journal
@@ -1247,9 +1425,76 @@ pub struct ApplicationRunFailure {
 /// 不冒充 NotRunning，调用方如实向用户报告原因）。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SteerOutcome {
-    Queued,
-    NotRunning,
-    Refused { reason: String },
+    Queued {
+        /// `Reserved` until the run claims and durably journals the message.
+        receipt: Option<Box<crate::message::AdmissionReceipt>>,
+    },
+    NotRunning {
+        /// Client-keyed drafts are rolled back and remain safe to submit as
+        /// an ordinary prompt.
+        receipt: Option<Box<crate::message::AdmissionReceipt>>,
+    },
+    Refused {
+        reason: String,
+        receipt: Option<Box<crate::message::AdmissionReceipt>>,
+    },
+}
+
+/// A steering draft recalled before claim. The typed message is returned
+/// intact and a client-keyed draft carries its authoritative rollback.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecalledSteering {
+    pub message: crate::message::PendingMessage,
+    pub receipt: Option<Box<crate::message::AdmissionReceipt>>,
+}
+
+fn validate_route_images(
+    config: &crate::model::ModelConfig,
+    images: &[crate::message::JournalImage],
+) -> Result<(), String> {
+    if images.len() > config.image_policy.max_images {
+        return Err(format!(
+            "this model ({}) accepts at most {} images per message; remove {} image(s) before sending",
+            config.model,
+            config.image_policy.max_images,
+            images.len() - config.image_policy.max_images,
+        ));
+    }
+    for image in images {
+        if !config
+            .image_policy
+            .media_types
+            .iter()
+            .any(|allowed| allowed == &image.descriptor.media_type)
+        {
+            return Err(format!(
+                "this model ({}) does not accept normalized {}; use a route-supported image format",
+                config.model, image.descriptor.media_type,
+            ));
+        }
+        if image.descriptor.bytes > config.image_policy.max_bytes {
+            return Err(format!(
+                "the normalized image `{}` is {} bytes, above this model's {}-byte per-image limit; resize it before sending",
+                image.descriptor.display_name.as_deref().unwrap_or("image"),
+                image.descriptor.bytes,
+                config.image_policy.max_bytes,
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn steering_rollback_receipt(
+    message: &crate::message::PendingMessage,
+    phase: &'static str,
+) -> Option<Box<crate::message::AdmissionReceipt>> {
+    message.client_message_id.clone().map(|client_message_id| {
+        Box::new(crate::message::AdmissionReceipt::rolled_back(
+            client_message_id,
+            message.content.attachment_ids(),
+            phase,
+        ))
+    })
 }
 
 /// `/rename` 的语义结果（内部 I/O 失败走 `Err`）。

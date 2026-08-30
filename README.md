@@ -65,9 +65,12 @@ the URL. The same binary serves the responsive three-panel PWA.
   children are confined to three project-relative read tools.
 - **Models** — built-in DeepSeek, GLM, Qwen, and Kimi presets; named custom
   profiles; OpenAI Responses and OpenAI-compatible protocols; reasoning,
-  usage, cache, context, and quota telemetry.
+  usage, cache, context, and quota telemetry. Probe-verified vision routes use
+  a structured TUI image draft with multi-path selection, explicit clipboard
+  import, image-only prompts, and in-run image steering.
 - **Native tools** — bounded Git-aware literal/regex/glob search, file listing
-  and reading, atomic writes, exact edits, single-file multi-hunk patches, and
+  and reading, capability-gated visual inspection, atomic writes, exact edits,
+  single-file multi-hunk patches, and
   run-owned command sessions with incremental output, stdin, PTY and owned
   process-group cleanup. macOS commands use functionally probed Seatbelt write/network
   confinement outside Full Access; other platforms report supervised fallback

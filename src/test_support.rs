@@ -22,6 +22,21 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// Small fully decodable PNG for provider/session tests. Image projection now
+/// verifies MIME against magic, so tests that claim `image/png` must use an
+/// image fixture instead of arbitrary text bytes.
+pub(crate) fn png_bytes(width: u32, height: u32, color: [u8; 3]) -> Vec<u8> {
+    let mut output = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+        width,
+        height,
+        image::Rgb(color),
+    ))
+    .write_to(&mut output, image::ImageFormat::Png)
+    .expect("encode test PNG");
+    output.into_inner()
+}
+
 const TEST_PROVIDER_ID: PluginId = PluginId::new("test.application_provider");
 const TEST_PROVIDER_REQUIRES: &[ServiceId] = &[PROVIDER_SERVICE_ID];
 const TEST_PROVIDER_DESCRIPTOR: PluginDescriptor = PluginDescriptor {
@@ -32,9 +47,75 @@ const TEST_PROVIDER_DESCRIPTOR: PluginDescriptor = PluginDescriptor {
     optional: &[],
 };
 
+const LIVE_GLM_PROVIDER_ID: PluginId = PluginId::new("test.live_glm_provider");
+const LIVE_GLM_PROVIDER_DESCRIPTOR: PluginDescriptor = PluginDescriptor {
+    id: LIVE_GLM_PROVIDER_ID,
+    scope: crate::plugin::ScopeKind::TrustedProject,
+    provides: &[],
+    requires: TEST_PROVIDER_REQUIRES,
+    optional: &[],
+};
+
 /// 注册脚本化 TestModel 的 provider 插件。
 pub(crate) struct TestProviderPlugin {
     pub(crate) behavior: TestBehavior,
+}
+
+/// Explicitly armed paid-test provider. The Coding Plan key is read only when
+/// a model instance is built and never enters persisted ProviderCredentials.
+/// Tests using this plugin must remain ignored by default.
+pub(crate) struct LiveGlmProviderPlugin;
+
+impl crate::plugin::Plugin for LiveGlmProviderPlugin {
+    fn descriptor(&self) -> &'static PluginDescriptor {
+        &LIVE_GLM_PROVIDER_DESCRIPTOR
+    }
+
+    fn mount(&self, context: &mut PluginContext<'_>) -> Result<(), PluginError> {
+        let providers = context
+            .require(PROVIDER_SERVICE)
+            .map_err(|error| PluginError::new(error.to_string()))?;
+        let lease = providers
+            .register(context.owner(), Arc::new(LiveGlmFactory))
+            .map_err(|error| PluginError::new(error.to_string()))?;
+        context.defer(move || {
+            lease
+                .revoke()
+                .map_err(|error| DisposeError::new(error.to_string()))
+        });
+        Ok(())
+    }
+}
+
+struct LiveGlmFactory;
+
+impl ModelFactory for LiveGlmFactory {
+    fn protocol(&self) -> ModelProtocol {
+        ModelProtocol::OpenAiCompatible
+    }
+
+    fn describe(&self, _credentials: &ProviderCredentials) -> ProviderDescriptor {
+        ProviderDescriptor {
+            protocol: self.protocol(),
+            display_name: "GLM live test (process-local credential)".into(),
+            fields: Vec::new(),
+        }
+    }
+
+    fn build(
+        &self,
+        config: &ModelConfig,
+        _credentials: &ProviderCredentials,
+    ) -> Result<Box<dyn Model>, ModelError> {
+        let key = std::env::var("CLAT_GLM_CODING_PLAN_KEY")
+            .map_err(|_| ModelError::request("CLAT_GLM_CODING_PLAN_KEY is not set"))?;
+        if key.is_empty() {
+            return Err(ModelError::request("CLAT_GLM_CODING_PLAN_KEY is empty"));
+        }
+        Ok(Box::new(
+            crate::providers::OpenAiCompatibleModel::from_runtime_fields(vec![key], config)?,
+        ))
+    }
 }
 
 /// 可组合 scripted model 接缝：Scenario Harness 经生产 Provider/Run
@@ -79,6 +160,9 @@ impl crate::plugin::Plugin for TestProviderPlugin {
 #[allow(dead_code)]
 pub(crate) enum TestBehavior {
     Success,
+    /// 普通对话快速完成；compaction summary 持续到取消或 3 秒，用于
+    /// 浏览器 F5 恢复活动压缩槽与取消控制的确定性验收。
+    SlowCompaction,
     /// 标题请求慢 3s、普通对话快返回（验证旁路命名不阻塞 run）。
     SlowTitle,
     Failure,
@@ -240,6 +324,28 @@ impl Model for TestModel {
                     reasoning_tokens: None,
                 }));
                 Ok(response("done", FinishReason::Completed))
+            }
+            TestBehavior::SlowCompaction => {
+                let is_summary = request
+                    .instructions
+                    .is_some_and(|text| text.contains("summarizing a coding-agent conversation"));
+                if is_summary {
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+                    while std::time::Instant::now() < deadline && !request.cancel.is_cancelled() {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                    if request.cancel.is_cancelled() {
+                        Ok(response("", FinishReason::Cancelled))
+                    } else {
+                        Ok(response("slow compacted history", FinishReason::Completed))
+                    }
+                } else {
+                    std::thread::sleep(std::time::Duration::from_millis(30));
+                    events.emit(ModelEvent::TextDelta {
+                        delta: "done".into(),
+                    });
+                    Ok(response("done", FinishReason::Completed))
+                }
             }
             TestBehavior::SlowTitle => {
                 // 标题请求（由 instructions 识别）慢 3s；普通对话快返回。

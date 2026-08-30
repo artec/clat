@@ -4,7 +4,8 @@ use crate::{
     ApplicationEvent, ApplicationRunResult, EventSink, PermissionApprover, PermissionDecision,
     PermissionRequest, RunEvent,
 };
-use std::sync::mpsc::{self, Sender, SyncSender};
+use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 /// TUI-local event multiplexing. It carries core facts and terminal input;
@@ -29,6 +30,20 @@ pub(crate) enum WorkerMessage {
         question: AskQuestion,
         answer_tx: Sender<AskAnswer>,
     },
+    /// Result of the single bounded clipboard-image worker. The path, when
+    /// present, was minted by core draft staging rather than the frontend.
+    ClipboardImagePrepared(Result<std::path::PathBuf, String>),
+    /// Initial attachment admission can decode and normalize up to eight
+    /// images. The whole application is temporarily handed to a bounded
+    /// worker so none of that filesystem/codec work runs on the render/input
+    /// thread. The first run event is held behind `gate` until the frontend
+    /// has restored the application and installed its run state.
+    RunStartFinished(Box<RunStartFinished>),
+    /// An image-bearing steering message needs the same bounded decode and
+    /// admission work as an initial send. The existing run may keep emitting
+    /// events while the application is temporarily owned by this worker; the
+    /// frontend gates new input until this message restores that sole owner.
+    SteeringAdmissionFinished(Box<SteeringAdmissionFinished>),
     /// W1-13：完成消息携带 run 纪元（TUI 本地单调计数）。收尾窗口里
     /// 陈旧的上一 run 完成会晚于新 run 启动送达——无身份时 finish_run
     /// 会 take/join **新** run 的句柄（UI 冻结至新 run 结束、产出错档）。
@@ -36,6 +51,73 @@ pub(crate) enum WorkerMessage {
         epoch: u64,
         result: ApplicationRunResult,
     },
+}
+
+pub(crate) struct RunStartFinished {
+    pub(crate) application: crate::TrustedProjectApplication,
+    pub(crate) prompt: String,
+    pub(crate) outcome: Result<PreparedTuiRun, String>,
+}
+
+pub(crate) struct SteeringAdmissionFinished {
+    pub(crate) application: crate::TrustedProjectApplication,
+    pub(crate) prompt: String,
+    pub(crate) outcome: crate::SteerOutcome,
+}
+
+pub(crate) struct PreparedTuiRun {
+    pub(crate) handle: crate::RunHandle,
+    pub(crate) completed: Receiver<crate::ApplicationRunResult>,
+    pub(crate) gate: RunStartGate,
+}
+
+/// One-shot barrier between core run startup and frontend event delivery.
+/// The run worker blocks at its first event rather than letting RunStarted,
+/// provider deltas, or permission requests race ahead of RunStartFinished.
+#[derive(Clone)]
+pub(crate) struct RunStartGate(Arc<(Mutex<bool>, Condvar)>);
+
+impl RunStartGate {
+    pub(crate) fn closed() -> Self {
+        Self(Arc::new((Mutex::new(false), Condvar::new())))
+    }
+
+    pub(crate) fn open(&self) {
+        let (lock, ready) = &*self.0;
+        let mut open = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        *open = true;
+        ready.notify_all();
+    }
+
+    fn wait(&self) {
+        let (lock, ready) = &*self.0;
+        let mut open = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        while !*open {
+            open = ready
+                .wait(open)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+    }
+}
+
+pub(crate) struct DeferredChannelEventSink {
+    sender: SyncSender<UiEvent>,
+    gate: RunStartGate,
+}
+
+impl DeferredChannelEventSink {
+    pub(crate) fn new(sender: SyncSender<UiEvent>, gate: RunStartGate) -> Self {
+        Self { sender, gate }
+    }
+}
+
+impl EventSink for DeferredChannelEventSink {
+    fn emit(&mut self, event: RunEvent) {
+        self.gate.wait();
+        let _ = self
+            .sender
+            .send(UiEvent::Worker(WorkerMessage::Event(event)));
+    }
 }
 
 pub(crate) struct ChannelEventSink(pub(crate) SyncSender<UiEvent>);
@@ -167,6 +249,36 @@ mod tests {
             })),
             Err(TrySendError::Full(_))
         ));
+    }
+
+    #[test]
+    fn deferred_run_sink_cannot_race_events_ahead_of_frontend_handoff() {
+        let (sender, receiver) = crate::tui::ui_event_channel();
+        let gate = RunStartGate::closed();
+        let worker_gate = gate.clone();
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let mut sink = DeferredChannelEventSink::new(sender, worker_gate);
+            entered_tx.send(()).expect("test barrier");
+            sink.emit(RunEvent::RunFailed {
+                message: "sent only after handoff".into(),
+            });
+        });
+
+        entered_rx.recv().expect("producer reached emit");
+        assert!(
+            receiver.try_recv().is_err(),
+            "closed gate leaked a run event"
+        );
+        assert!(!worker.is_finished(), "producer must wait at the gate");
+
+        gate.open();
+        assert!(matches!(
+            receiver.recv_timeout(Duration::from_secs(1)),
+            Ok(UiEvent::Worker(WorkerMessage::Event(RunEvent::RunFailed { message })))
+                if message == "sent only after handoff"
+        ));
+        worker.join().expect("event producer");
     }
 
     #[test]

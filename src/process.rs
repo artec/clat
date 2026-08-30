@@ -763,6 +763,7 @@ impl ProcessEntry {
         match stream {
             StreamKind::Stdout => state.stdout.append(bytes),
             StreamKind::Stderr => state.stderr.append(bytes),
+            #[cfg(not(windows))]
             StreamKind::Pty => state.pty.append(bytes),
         }
         state.last_activity = Instant::now();
@@ -1132,11 +1133,13 @@ fn json_encoded_char_bytes(ch: char) -> usize {
 enum StreamKind {
     Stdout,
     Stderr,
+    #[cfg(not(windows))]
     Pty,
 }
 
 enum ChildHandle {
     Group(command_group::GroupChild),
+    #[cfg(not(windows))]
     Pty {
         child: Box<dyn portable_pty::Child + Send + Sync>,
         #[cfg(unix)]
@@ -1148,6 +1151,7 @@ impl ChildHandle {
     fn try_wait(&mut self) -> std::io::Result<Option<TerminalStatus>> {
         match self {
             Self::Group(child) => child.try_wait().map(|status| status.map(group_status)),
+            #[cfg(not(windows))]
             Self::Pty { child, .. } => child.try_wait().map(|status| status.map(pty_status)),
         }
     }
@@ -1155,6 +1159,7 @@ impl ChildHandle {
     fn terminate_tree(&mut self) -> TerminalStatus {
         match self {
             Self::Group(child) => terminate_group(child),
+            #[cfg(not(windows))]
             Self::Pty {
                 child,
                 #[cfg(unix)]
@@ -1336,9 +1341,7 @@ fn spawn_pty(
     #[cfg(windows)]
     {
         let _ = (id, owner, command, workdir, planned, limits, notice_sink);
-        return Err(
-            "PTY sessions are unavailable on Windows until process-tree isolation graduates".into(),
-        );
+        Err("PTY sessions are unavailable on Windows until process-tree isolation graduates".into())
     }
     #[cfg(not(windows))]
     {
@@ -1617,6 +1620,7 @@ fn group_status(status: std::process::ExitStatus) -> TerminalStatus {
     }
 }
 
+#[cfg(not(windows))]
 fn pty_status(status: portable_pty::ExitStatus) -> TerminalStatus {
     TerminalStatus {
         exit_code: Some(status.exit_code() as i32),

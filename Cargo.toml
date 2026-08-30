@@ -90,6 +90,11 @@ wasmtime-wasi-io = "48.0.0"
 # 重新加回 webp 的触发条件与体积实测见
 # docs/todo/mm1-attachment-domain.md S3 采购记录。
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
+# MM-3 explicit `/paste-image`: OS clipboard access is performed only on a
+# bounded background worker. Default image-data supports macOS/Windows/X11;
+# Wayland data-control is enabled explicitly (unsupported compositors fail with
+# a user-facing message, never a shell fallback).
+arboard = { version = "=3.6.1", features = ["wayland-data-control"] }
 
 # flock-based storage-root lease (Unix); a build-only C dependency at most.
 [target.'cfg(unix)'.dependencies]

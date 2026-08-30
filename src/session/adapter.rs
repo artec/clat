@@ -87,10 +87,19 @@ pub(crate) fn surface_to_model_items_with_seq(
             }
             "tool/result" => {
                 let block = &event.data["message"]["content"][0];
+                let blocks = content_blocks(&block["content"])
+                    .into_iter()
+                    .filter(|block| matches!(block, crate::message::ContentBlock::Image { .. }))
+                    .collect();
+                let image_parts = content_parts(&block["content"])
+                    .into_iter()
+                    .filter(|part| matches!(part, crate::model::ContentPart::Image { .. }))
+                    .collect();
                 items.push((
                     *seq,
                     ModelItem::ToolResult(crate::tool::ToolResult {
-                        blocks: Vec::new(),
+                        blocks,
+                        image_parts,
                         call_id: block
                             .get("toolCallId")
                             .and_then(Value::as_str)

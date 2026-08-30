@@ -78,6 +78,10 @@ impl SessionRootDir {
     pub(crate) fn open_child(parent: &Dir, name: &Path) -> io::Result<Dir> {
         open_dir_nofollow(parent, name)
     }
+
+    pub(crate) fn open_or_create_child(parent: &Dir, name: &Path) -> io::Result<Dir> {
+        open_or_create_child(parent, name)
+    }
 }
 
 fn open_or_create_child(parent: &Dir, name: &Path) -> io::Result<Dir> {

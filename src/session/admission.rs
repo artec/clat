@@ -158,6 +158,21 @@ fn validate_payload(event: &SessionEvent) -> Result<(), String> {
             if first.get("toolCallId").and_then(|v| v.as_str()).is_none() {
                 return Err("tool/result block lacks toolCallId".into());
             }
+            let first = first
+                .as_object()
+                .ok_or("tool/result block must be an object")?;
+            // W5 adds descriptor-only images to the nested tool-result
+            // content. Apply the same typed-block/ref validation as ordinary
+            // messages so malformed producers cannot create a durable image
+            // authority that the adapter later interprets differently.
+            require_content_array(first)?;
+            if first
+                .get("isError")
+                .and_then(|value| value.as_bool())
+                .is_none()
+            {
+                return Err("tool/result block lacks boolean isError".into());
+            }
             require_u64(&event.data, "turn")?;
             require_u64(&event.data, "step")?;
             Ok(())

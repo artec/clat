@@ -124,8 +124,10 @@ impl Project {
     }
 
     /// 相对已打开的项目根 capability 读取普通文件。不存在返回 None；
-    /// symlink（含 broken link）和非普通文件显式失败。最终 open 仍由
-    /// cap-std 的目录句柄解析，检查后目录项替换不能把读取重定向到根外。
+    /// symlink（含 broken link）和非普通文件显式失败。最终组件通过
+    /// OS no-follow 标志直接打开，再从同一句柄验类型并有界读取；不存在
+    /// 检查后再 open 的替换窗口。中间组件仍由 cap-std 的项目根能力
+    /// 解析，不能逃出根目录。
     pub(crate) fn read_file_limited(
         &self,
         relative: impl AsRef<Path>,
@@ -135,11 +137,42 @@ impl Project {
         validate_relative_path(relative)?;
         let root = self.root.canonicalize()?;
         let root_dir = Dir::open_ambient_dir(root, ambient_authority())?;
-        let metadata = match root_dir.symlink_metadata(relative) {
-            Ok(metadata) => metadata,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(error),
+        let mut options = OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use cap_std::fs::OpenOptionsExt as _;
+            options.custom_flags(libc::O_NOFOLLOW);
+        }
+        #[cfg(windows)]
+        {
+            use cap_std::fs::OpenOptionsExt as _;
+            const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+            options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+        }
+        let file = match root_dir.open_with(relative, &options) {
+            Ok(file) => file,
+            Err(error) => {
+                // Normalize platform-specific O_NOFOLLOW errors (macOS EPERM,
+                // Linux ELOOP) and broken-link behavior without introducing a
+                // check-then-open authority decision: this metadata lookup is
+                // diagnostic only, after the read has already failed closed.
+                if root_dir
+                    .symlink_metadata(relative)
+                    .is_ok_and(|metadata| metadata.file_type().is_symlink())
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "read target must not be a symbolic link",
+                    ));
+                }
+                if error.kind() == io::ErrorKind::NotFound {
+                    return Ok(None);
+                }
+                return Err(error);
+            }
         };
+        let metadata = file.metadata()?;
         if metadata.file_type().is_symlink() {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
@@ -153,10 +186,7 @@ impl Project {
             ));
         }
         let mut bytes = Vec::new();
-        root_dir
-            .open(relative)?
-            .take(max_bytes as u64)
-            .read_to_end(&mut bytes)?;
+        file.take(max_bytes as u64).read_to_end(&mut bytes)?;
         Ok(Some(bytes))
     }
 
@@ -551,6 +581,30 @@ mod tests {
             "unexpected error for no-follow refusal: {error}"
         );
         assert_eq!(fs::read_to_string(&victim).unwrap(), "secret");
+        crate::test_support::cleanup_tree(&root);
+    }
+
+    /// MM-2/W5: project-relative visual reads use the shared bounded reader;
+    /// a final-component replacement with a symlink must fail at open time and
+    /// never expose the victim bytes.
+    #[cfg(unix)]
+    #[test]
+    fn limited_project_reads_never_follow_the_final_symlink() {
+        let root = temp_dir();
+        let victim = root.join("victim.png");
+        fs::write(&victim, b"secret").unwrap();
+        let alias = root.join("shot.png");
+        std::os::unix::fs::symlink(&victim, &alias).unwrap();
+        let error = Project::new(&root)
+            .read_file_limited("shot.png", 1024)
+            .expect_err("final symlink is refused by the open itself");
+        assert!(
+            error.raw_os_error() == Some(libc::ELOOP)
+                || error.raw_os_error() == Some(libc::EPERM)
+                || error.kind() == io::ErrorKind::PermissionDenied,
+            "unexpected error for no-follow refusal: {error}"
+        );
+        assert_eq!(fs::read(&victim).unwrap(), b"secret");
         crate::test_support::cleanup_tree(&root);
     }
 

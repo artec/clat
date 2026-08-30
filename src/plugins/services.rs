@@ -40,6 +40,7 @@ pub(crate) const LANGUAGE_INTELLIGENCE_SERVICE_ID: ServiceId =
 pub(crate) const MEMORY_SERVICE_ID: ServiceId = ServiceId::new("core.memory");
 pub(crate) const GOAL_SERVICE_ID: ServiceId = ServiceId::new("core.goal");
 pub(crate) const SUBAGENT_SERVICE_ID: ServiceId = ServiceId::new("core.subagent");
+pub(crate) const VIEW_IMAGE_SERVICE_ID: ServiceId = ServiceId::new("core.view_image");
 
 pub(crate) const SESSION_SERVICE: ServiceKey<crate::session::use_cases::SessionService> =
     ServiceKey::new(SESSION_SERVICE_ID);
@@ -85,6 +86,8 @@ pub(crate) const GOAL_SERVICE: ServiceKey<crate::goal::GoalService> =
     ServiceKey::new(GOAL_SERVICE_ID);
 pub(crate) const SUBAGENT_SERVICE: ServiceKey<crate::subagent::SubagentService> =
     ServiceKey::new(SUBAGENT_SERVICE_ID);
+pub(crate) const VIEW_IMAGE_SERVICE: ServiceKey<crate::view_image::ViewImageState> =
+    ServiceKey::new(VIEW_IMAGE_SERVICE_ID);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct InstructionSourceInfo {

@@ -69,6 +69,10 @@ pub enum ReplayEvent {
         content_blocks: Vec<crate::message::ContentBlock>,
         /// 客户端幂等键（journal `clientMessageId`）；core 合成消息为 None。
         client_message_id: Option<String>,
+        /// Rebuilt from the same durable user/message payload. Keyed user
+        /// messages are necessarily Committed by the time replay can see
+        /// them; unkeyed/core messages omit the receipt.
+        receipt: Option<Box<crate::message::AdmissionReceipt>>,
     },
     AssistantMessage {
         turn: u64,
@@ -96,6 +100,9 @@ pub enum ReplayEvent {
         tool: String,
         output: Value,
         is_error: bool,
+        /// Descriptor-only durable result blocks. Bytes and local paths are
+        /// intentionally absent from replay/UI protocol surfaces.
+        content_blocks: Vec<crate::message::ContentBlock>,
     },
     RetryScheduled {
         turn: u64,
@@ -217,12 +224,24 @@ impl ReplayAdapter {
                     .get("clientMessageId")
                     .and_then(Value::as_str)
                     .map(str::to_owned);
+                let receipt = client_message_id.clone().and_then(|client_message_id| {
+                    let message_id = event.data.get("id")?.as_str()?.to_owned();
+                    let attachment_ids =
+                        crate::message::MessageContent::from_blocks(content_blocks.clone())
+                            .attachment_ids();
+                    Some(Box::new(crate::message::AdmissionReceipt::committed(
+                        client_message_id,
+                        message_id,
+                        attachment_ids,
+                    )))
+                });
                 out.push(ReplayEvent::UserMessage {
                     turn: self.turn,
                     time_ms: event.time,
                     text,
                     content_blocks,
                     client_message_id,
+                    receipt,
                 });
             }
             "assistant/message" => {
@@ -398,12 +417,17 @@ impl ReplayAdapter {
             .and_then(Value::as_bool)
             .unwrap_or(false);
         let tool = self.calls.remove(&call_id).unwrap_or_default();
+        let content_blocks = crate::session::adapter::content_blocks(&block["content"])
+            .into_iter()
+            .filter(|block| matches!(block, crate::message::ContentBlock::Image { .. }))
+            .collect();
         Some(ReplayEvent::ToolFinished {
             time_ms: event.time,
             call_id,
             tool,
             output: parse_json_or_string(&text),
             is_error,
+            content_blocks,
         })
     }
 }
@@ -586,6 +610,7 @@ mod tests {
                     text: "hello".into()
                 }],
                 client_message_id: None,
+                receipt: None,
             }]
         );
     }
@@ -795,6 +820,7 @@ mod tests {
                     tool: "read_file".into(),
                     output: json!({"lines": 42}),
                     is_error: false,
+                    content_blocks: Vec::new(),
                 },
             ]
         );
@@ -821,6 +847,7 @@ mod tests {
                 tool: String::new(),
                 output: json!("permission denied for tool `write_file`"),
                 is_error: true,
+                content_blocks: Vec::new(),
             }]
         );
     }

@@ -17,9 +17,10 @@
 use std::path::Path;
 
 /// 单个附件的字节上限：入口拒绝，不进会话目录（M7 防线三）。
-/// MM-1 方案的 8 MiB 源上限在 S3 规范化落地前不放宽——没有 resize
-/// 就放宽等于把超大原图直发 provider（实施计划 S1 裁定）。
-pub(crate) const MAX_ATTACHMENT_BYTES: u64 = 4 * 1024 * 1024;
+/// MM-3 入口启用后的源图上限。S3 已保证完整解码、长边 2048 resize 与
+/// 单图规范化 ≤4,000,000 bytes，因此源可放宽到冻结方案的 8 MiB；
+/// provider 请求仍只看到规范化后的更窄预算。
+pub(crate) const MAX_ATTACHMENT_BYTES: u64 = 8 * 1024 * 1024;
 
 /// INV-MM1-2：单图解码像素上限（16M px）。读头阶段先判（方案 MM-1
 /// 硬默认）——这是权威闸。S3 解码器的 Limits 是更宽的内存兜底而非
@@ -38,7 +39,13 @@ const FALLBACK_TOKENS: u64 = 1600;
 /// INV-MM2-4 保护系数：基线公式之上 ×2.0（首版保守口径，MM-0 实测
 /// token 随像素扩张方向一致但样本不足以去系数）。下调只允许依据
 /// 留档 campaign 的 observed upper error + 20% margin。
-const SAFETY_FACTOR: u64 = 2;
+pub(crate) const IMAGE_TOKEN_SAFETY_FACTOR: u64 = 2;
+/// Durable request/header identity for the visual token formula. Changing the
+/// formula or its safety factor requires a new value so replay diagnostics do
+/// not compare unlike estimates.
+pub(crate) const IMAGE_TOKEN_ESTIMATOR_VERSION: &str = "tile-512-v1-sf2";
+/// MM-0 live calibration set used to justify the current conservative factor.
+pub(crate) const IMAGE_TOKEN_CALIBRATION_VERSION: &str = "glm-mm0-2026-08-27-v1";
 
 /// 扩展名 → MIME；不认识的扩展名返回 None（附加入口拒绝）。
 pub(crate) fn media_type_for_path(path: &Path) -> Option<&'static str> {
@@ -73,8 +80,10 @@ impl ImageFamily {
     }
 }
 
-/// 读文件头部若干字节做 magic 嗅探（PNG 签名 / JPEG SOI / GIF87a、
-/// GIF89a / RIFF…WEBP）。任何读失败返回 None。
+/// Read only the magic prefix needed to classify a path. Production
+/// attachment admission uses `validate_source_header` on a held descriptor;
+/// this path helper remains for diagnostics/tests that do not mint authority.
+#[cfg(all(test, unix))]
 pub(crate) fn sniff_image_family(path: &Path) -> Option<ImageFamily> {
     use std::io::Read as _;
     let mut file = std::fs::File::open(path).ok()?;
@@ -103,14 +112,46 @@ fn sniff_image_family_bytes(header: &[u8]) -> Option<ImageFamily> {
     None
 }
 
+/// Verify a durable MIME claim against image magic already read through the
+/// caller's authority. Content-address verification proves byte identity but
+/// does not bind descriptor metadata to those bytes; provider/PWA exposure
+/// must therefore perform this independent check.
+pub(crate) fn media_type_matches_bytes(media_type: &str, bytes: &[u8]) -> bool {
+    matches!(
+        (media_type, sniff_image_family_bytes(bytes)),
+        ("image/png", Some(ImageFamily::Png))
+            | ("image/jpeg", Some(ImageFamily::Jpeg))
+            | ("image/gif", Some(ImageFamily::Gif))
+            | ("image/webp", Some(ImageFamily::Webp))
+    )
+}
+
 /// INV-MM1-1/2 的接纳校验（S1 生产路径）：扩展名声明的字节族必须与
 /// magic 嗅探一致（伪扩展/polyglot 拒），头部可得的像素尺寸不得超过
 /// [`MAX_DECODED_PIXELS`]（解码炸弹在读头阶段先挡）。成功返回实测
 /// 字节族与可得尺寸（None = 头部无尺寸信息，S3 全解码后该档关闭）。
 pub(crate) fn validate_source(path: &Path) -> Result<(ImageFamily, Option<(u64, u64)>), String> {
+    use std::io::Read as _;
+    let file = std::fs::File::open(path)
+        .map_err(|error| format!("cannot open image {}: {error}", path.display()))?;
+    let mut header = Vec::new();
+    file.take(256 * 1024)
+        .read_to_end(&mut header)
+        .map_err(|error| format!("cannot read image {}: {error}", path.display()))?;
+    validate_source_header(path, &header)
+}
+
+/// Validate an image from bytes read through a caller-owned descriptor. This
+/// is the TOCTOU-safe entrypoint for private staging and attachment admission:
+/// extension policy still comes from the display path, while magic and
+/// dimensions come only from the already-open file.
+pub(crate) fn validate_source_header(
+    path: &Path,
+    header: &[u8],
+) -> Result<(ImageFamily, Option<(u64, u64)>), String> {
     let declared = ImageFamily::from_extension(path)
         .ok_or_else(|| format!("unsupported image type: {}", path.display()))?;
-    let sniffed = sniff_image_family(path).ok_or_else(|| {
+    let sniffed = sniff_image_family_bytes(header).ok_or_else(|| {
         format!(
             "not a recognizable PNG/JPEG/GIF/WebP image: {}",
             path.display()
@@ -127,9 +168,9 @@ pub(crate) fn validate_source(path: &Path) -> Result<(ImageFamily, Option<(u64, 
         ));
     }
     let dimensions = match sniffed {
-        ImageFamily::Png | ImageFamily::Jpeg => image_dimensions(path),
-        ImageFamily::Gif => gif_dimensions(path),
-        ImageFamily::Webp => webp_dimensions(path),
+        ImageFamily::Png | ImageFamily::Jpeg => image_dimensions_bytes(header),
+        ImageFamily::Gif => gif_dimensions_bytes(header),
+        ImageFamily::Webp => webp_dimensions_bytes(header),
     };
     if let Some((width, height)) = dimensions
         && width
@@ -145,12 +186,8 @@ pub(crate) fn validate_source(path: &Path) -> Result<(ImageFamily, Option<(u64, 
 }
 
 /// GIF logical screen descriptor：头 6 字节版本 + LE u16 宽高。
-fn gif_dimensions(path: &Path) -> Option<(u64, u64)> {
-    use std::io::Read as _;
-    let mut file = std::fs::File::open(path).ok()?;
-    let mut header = [0u8; 10];
-    let read = file.read(&mut header).ok()?;
-    if read < 10 {
+fn gif_dimensions_bytes(header: &[u8]) -> Option<(u64, u64)> {
+    if header.len() < 10 {
         return None;
     }
     let width = u16::from_le_bytes([header[6], header[7]]) as u64;
@@ -159,14 +196,9 @@ fn gif_dimensions(path: &Path) -> Option<(u64, u64)> {
 }
 
 /// WebP 帧尺寸：VP8L（无损，14bit 打包）/ VP8X（扩展，24bit canvas）
-/// / VP8（有损 keyframe，14bit）。读头 64 字节内判别；不认识的
-/// chunk 布局返回 None（unknown-dims 档，S3 关闭）。
-fn webp_dimensions(path: &Path) -> Option<(u64, u64)> {
-    use std::io::Read as _;
-    let mut file = std::fs::File::open(path).ok()?;
-    let mut header = [0u8; 64];
-    let read = file.read(&mut header).ok()?;
-    let header = &header[..read];
+/// / VP8（有损 keyframe）。读头 64 字节内判别；不认识的 chunk 布局
+/// 返回 None（unknown-dims 档，S3 关闭）。
+fn webp_dimensions_bytes(header: &[u8]) -> Option<(u64, u64)> {
     if header.len() < 12 || &header[0..4] != b"RIFF" || &header[8..12] != b"WEBP" {
         return None;
     }
@@ -208,13 +240,24 @@ pub(crate) fn image_dimensions(path: &Path) -> Option<(u64, u64)> {
     if header.len() >= 24
         && header.starts_with(&[0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n'])
     {
-        // IHDR 的宽高是大端 u32，位于签名 + 长度 + 类型之后。
+        return image_dimensions_bytes(header);
+    }
+    if header.len() >= 4 && header[0] == 0xFF && header[1] == 0xD8 {
+        return jpeg_dimensions(path);
+    }
+    None
+}
+
+pub(crate) fn image_dimensions_bytes(header: &[u8]) -> Option<(u64, u64)> {
+    if header.len() >= 24
+        && header.starts_with(&[0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n'])
+    {
         let width = u32::from_be_bytes([header[16], header[17], header[18], header[19]]);
         let height = u32::from_be_bytes([header[20], header[21], header[22], header[23]]);
         return Some((width as u64, height as u64));
     }
     if header.len() >= 4 && header[0] == 0xFF && header[1] == 0xD8 {
-        return jpeg_dimensions(path);
+        return jpeg_dimensions_bytes(header);
     }
     None
 }
@@ -225,6 +268,10 @@ fn jpeg_dimensions(path: &Path) -> Option<(u64, u64)> {
     let file = std::fs::File::open(path).ok()?;
     let mut data = Vec::new();
     file.take(256 * 1024).read_to_end(&mut data).ok()?;
+    jpeg_dimensions_bytes(&data)
+}
+
+fn jpeg_dimensions_bytes(data: &[u8]) -> Option<(u64, u64)> {
     let mut offset = 2usize; // 跳过 SOI
     while offset + 9 < data.len() {
         if data[offset] != 0xFF {
@@ -271,14 +318,14 @@ fn jpeg_dimensions(path: &Path) -> Option<(u64, u64)> {
 /// image walker 的当前形态）。
 pub(crate) fn estimate_image_tokens(path: &Path) -> u64 {
     let Some((width, height)) = image_dimensions(path) else {
-        return FALLBACK_TOKENS * SAFETY_FACTOR;
+        return FALLBACK_TOKENS * IMAGE_TOKEN_SAFETY_FACTOR;
     };
     if width == 0 || height == 0 {
-        return FALLBACK_TOKENS * SAFETY_FACTOR;
+        return FALLBACK_TOKENS * IMAGE_TOKEN_SAFETY_FACTOR;
     }
     let tiles_x = width.div_ceil(TILE_PIXELS);
     let tiles_y = height.div_ceil(TILE_PIXELS);
-    (BASE_TOKENS + tiles_x * tiles_y * TOKENS_PER_TILE) * SAFETY_FACTOR
+    (BASE_TOKENS + tiles_x * tiles_y * TOKENS_PER_TILE) * IMAGE_TOKEN_SAFETY_FACTOR
 }
 
 #[cfg(test)]

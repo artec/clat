@@ -191,6 +191,7 @@ mod tests {
         let text = "x".repeat(chars);
         ToolResult {
             blocks: Vec::new(),
+            image_parts: Vec::new(),
             call_id: "call-1".into(),
             tool_name: "run_command".into(),
             output: json!({ "stdout": text }),
@@ -227,6 +228,7 @@ mod tests {
         let (pipeline, mut manager) = pipeline_with_pruner();
         let mut result = ToolResult {
             blocks: Vec::new(),
+            image_parts: Vec::new(),
             call_id: "call-1".into(),
             tool_name: "run_command".into(),
             output: json!({ "stdout": "\"\\".repeat(12_000) }),
@@ -237,6 +239,7 @@ mod tests {
         // 精确边界：恰好 8192 通过、8193 被裁——先量出包装开销再定内容长度。
         let probe = ToolResult {
             blocks: Vec::new(),
+            image_parts: Vec::new(),
             call_id: "call-1".into(),
             tool_name: "run_command".into(),
             output: json!({ "stdout": "" }),
@@ -245,6 +248,7 @@ mod tests {
         let overhead = serialized_len(&probe);
         let mut at_threshold = ToolResult {
             blocks: Vec::new(),
+            image_parts: Vec::new(),
             call_id: "call-1".into(),
             tool_name: "run_command".into(),
             output: json!({ "stdout": "a".repeat(THRESHOLD_CHARS - overhead) }),
@@ -259,6 +263,7 @@ mod tests {
         );
         let mut over = ToolResult {
             blocks: Vec::new(),
+            image_parts: Vec::new(),
             call_id: "call-1".into(),
             tool_name: "run_command".into(),
             output: json!({ "stdout": "a".repeat(THRESHOLD_CHARS - overhead + 1) }),
@@ -275,6 +280,7 @@ mod tests {
         let (pipeline, mut manager) = pipeline_with_pruner();
         let mut result = ToolResult {
             blocks: Vec::new(),
+            image_parts: Vec::new(),
             call_id: "call-control".into(),
             tool_name: "run_command".into(),
             output: json!({ "error": "\0".repeat(9_000) }),
@@ -318,6 +324,7 @@ mod tests {
         let message = "E".repeat(9_000);
         let mut result = ToolResult {
             blocks: Vec::new(),
+            image_parts: Vec::new(),
             call_id: "call-2".into(),
             tool_name: "run_command".into(),
             output: json!({ "error": format!("command failed: {message}") }),

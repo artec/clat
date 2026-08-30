@@ -328,12 +328,24 @@ fn accept_loop(
             break;
         }
         match listener.accept() {
-            Ok((stream, _)) => {
+            Ok((mut stream, _)) => {
                 let _ = stream.set_nonblocking(false);
+                let Some(connection_permit) = shared.try_connection_permit() else {
+                    let _ = http::write_response(
+                        &mut stream,
+                        503,
+                        "application/json",
+                        br#"{"ok":false,"error":{"code":"busy","message":"server connection limit reached"}}"#,
+                    );
+                    continue;
+                };
                 let conn_shared = Arc::clone(&shared);
                 if let Ok(handle) = std::thread::Builder::new()
                     .name("clat-serve-conn".into())
-                    .spawn(move || handle_connection(stream, conn_shared))
+                    .spawn(move || {
+                        let _permit = connection_permit;
+                        handle_connection(stream, conn_shared);
+                    })
                 {
                     shared.register_connection(handle);
                 }
@@ -387,7 +399,7 @@ fn accept_loop(
 /// 每连接处理：读请求 → 三闸 → 路由。任何错误路径都写一个 4xx/5xx
 /// JSON 应答再断连（fail-closed，不静默）。
 fn handle_connection(mut stream: TcpStream, shared: Arc<state::ServeShared>) {
-    let request = match http::read_request(&mut stream) {
+    let mut request = match http::read_request_head(&mut stream) {
         Ok(request) => request,
         Err(http::HttpReadError::TooLarge(part)) => {
             let _ = write_json(
@@ -411,6 +423,26 @@ fn handle_connection(mut stream: TcpStream, shared: Arc<state::ServeShared>) {
         Err(http::HttpReadError::Io) => return,
     };
 
+    // DNS-rebinding fence: loopback bind alone is not enough when a hostile
+    // hostname resolves to 127.0.0.1. The browser-visible authority must be
+    // one of the two exact origins we advertise, including the bound port.
+    let allowed_hosts = [
+        format!("localhost:{}", shared.port),
+        format!("127.0.0.1:{}", shared.port),
+    ];
+    if !allowed_hosts.contains(&request.host.to_ascii_lowercase()) {
+        let _ = write_json(
+            &mut stream,
+            403,
+            protocol::rpc_result_json(&Err(protocol::RpcError {
+                code: protocol::ErrorCode::Forbidden,
+                message: "host is not allowed".into(),
+                receipt: None,
+            })),
+        );
+        return;
+    }
+
     // INV-S1c Origin 闸：带头必属允许集（跨站 fetch/form 必带 Origin
     // 且为外域值——此闸对浏览器内恶意页成立）；不带（curl/同源导航）
     // 放行至 token 闸。
@@ -426,6 +458,7 @@ fn handle_connection(mut stream: TcpStream, shared: Arc<state::ServeShared>) {
                 protocol::rpc_result_json(&Err(protocol::RpcError {
                     code: protocol::ErrorCode::Forbidden,
                     message: "origin is not allowed".into(),
+                    receipt: None,
                 })),
             );
             return;
@@ -445,7 +478,7 @@ fn handle_connection(mut stream: TcpStream, shared: Arc<state::ServeShared>) {
             &[
                 (
                     "Content-Security-Policy",
-                    "default-src 'self'; connect-src 'self' https://pi.at.cn; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'",
+                    "default-src 'self'; img-src 'self' blob:; connect-src 'self' https://pi.at.cn; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'",
                 ),
                 ("Cache-Control", "no-store"),
                 ("Referrer-Policy", "no-referrer"),
@@ -463,6 +496,16 @@ fn handle_connection(mut stream: TcpStream, shared: Arc<state::ServeShared>) {
             != Some(shared.token.as_str())
         {
             write_unauthorized(&mut stream);
+            return;
+        }
+        if request.content_length != 0 {
+            let _ = write_json(
+                &mut stream,
+                400,
+                protocol::rpc_result_json(&Err(protocol::RpcError::bad_request(
+                    "auth request body must be empty",
+                ))),
+            );
             return;
         }
         let body = br#"{"ok":true}"#;
@@ -484,6 +527,180 @@ fn handle_connection(mut stream: TcpStream, shared: Arc<state::ServeShared>) {
         return;
     }
 
+    // Image bytes never travel in the replay/SSE protocol. The sole browser
+    // read route accepts an opaque attachment id, resolves it through the
+    // active session's durable content reachability fence, then streams a
+    // no-follow bounded core reader in 64KiB pieces. No filesystem path is a
+    // web capability.
+    if request.method == "GET"
+        && let Some(attachment_id) = attachment_read_id(&request.path)
+    {
+        let Some(_download_permit) = shared.try_attachment_download_permit() else {
+            let _ = write_json(
+                &mut stream,
+                503,
+                protocol::rpc_result_json(&Err(protocol::RpcError::busy(
+                    "attachment download limit reached",
+                ))),
+            );
+            return;
+        };
+        let result = {
+            let app = shared.app.lock().expect("application lock");
+            app.open_current_attachment(attachment_id)
+        };
+        match result {
+            Ok(mut image)
+                if matches!(
+                    image.descriptor.media_type.as_str(),
+                    "image/png" | "image/jpeg"
+                ) =>
+            {
+                let _ = stream.set_write_timeout(Some(Duration::from_secs(15)));
+                let _ = http::write_file_response_with_headers(
+                    &mut stream,
+                    200,
+                    &image.descriptor.media_type,
+                    &mut image.file,
+                    image.bytes,
+                    &[
+                        ("Cache-Control", "no-store"),
+                        ("X-Content-Type-Options", "nosniff"),
+                        ("Referrer-Policy", "no-referrer"),
+                    ],
+                );
+            }
+            _ => {
+                let _ = write_json(
+                    &mut stream,
+                    404,
+                    protocol::rpc_result_json(&Err(protocol::RpcError::not_found(
+                        "image is unavailable in the active session",
+                    ))),
+                );
+            }
+        }
+        return;
+    }
+
+    // Raw single-image ingress is deliberately outside JSON RPC: no Base64
+    // expansion and no whole-body Vec allocation. Only a server-minted scope
+    // id is accepted, then core owns the private create-new staging writer.
+    if request.method == "POST"
+        && let Some(scope_id) = draft_upload_scope(&request.path)
+    {
+        let Some(media_type) = request.content_type.as_deref().map(str::trim) else {
+            let _ = write_json(
+                &mut stream,
+                400,
+                protocol::rpc_result_json(&Err(protocol::RpcError::bad_request(
+                    "image upload requires Content-Type: image/png or image/jpeg",
+                ))),
+            );
+            return;
+        };
+        if !matches!(media_type, "image/png" | "image/jpeg") {
+            let _ = write_json(
+                &mut stream,
+                400,
+                protocol::rpc_result_json(&Err(protocol::RpcError::bad_request(
+                    "image upload requires Content-Type: image/png or image/jpeg",
+                ))),
+            );
+            return;
+        }
+        if request.content_length == 0
+            || request.content_length as u64 > crate::media::MAX_ATTACHMENT_BYTES
+        {
+            let _ = write_json(
+                &mut stream,
+                413,
+                protocol::rpc_result_json(&Err(protocol::RpcError::bad_request(format!(
+                    "image upload must be 1..={} bytes",
+                    crate::media::MAX_ATTACHMENT_BYTES
+                )))),
+            );
+            return;
+        }
+        let Some(_permit) = shared.try_upload_permit() else {
+            let _ = write_json(
+                &mut stream,
+                429,
+                protocol::rpc_result_json(&Err(protocol::RpcError::busy(
+                    "too many image uploads are active",
+                ))),
+            );
+            return;
+        };
+        let mut writer = match shared.drafts.begin_upload(
+            scope_id,
+            shared.selection_generation(),
+            shared.token_generation(),
+            request.content_length as u64,
+            media_type,
+            request.display_name.as_deref(),
+        ) {
+            Ok(writer) => writer,
+            Err(error) => {
+                let _ = write_json(
+                    &mut stream,
+                    400,
+                    protocol::rpc_result_json(&Err(protocol::RpcError::bad_request(error))),
+                );
+                return;
+            }
+        };
+        match http::read_body_into(
+            &mut stream,
+            &mut request,
+            crate::media::MAX_ATTACHMENT_BYTES as usize,
+            &mut writer,
+        ) {
+            Ok(()) => {}
+            Err(http::HttpReadError::TooLarge(_)) => {
+                let _ = write_json(
+                    &mut stream,
+                    413,
+                    protocol::rpc_result_json(&Err(protocol::RpcError::bad_request(
+                        "image upload exceeds the size limit",
+                    ))),
+                );
+                return;
+            }
+            Err(http::HttpReadError::BadRequest(reason)) => {
+                let _ = write_json(
+                    &mut stream,
+                    400,
+                    protocol::rpc_result_json(&Err(protocol::RpcError::bad_request(reason))),
+                );
+                return;
+            }
+            Err(http::HttpReadError::TimedOut | http::HttpReadError::Closed) => return,
+            Err(http::HttpReadError::Io) => return,
+        }
+        match writer.finish() {
+            Ok(uploaded) => {
+                let _ = write_json(
+                    &mut stream,
+                    200,
+                    protocol::rpc_result_json(&Ok(serde_json::json!({
+                        "uploadId": uploaded.upload_id,
+                        "bytes": uploaded.bytes,
+                    }))),
+                );
+            }
+            Err(error) => {
+                let _ = write_json(
+                    &mut stream,
+                    400,
+                    protocol::rpc_result_json(&Err(protocol::RpcError::bad_request(error))),
+                );
+            }
+        }
+        return;
+    }
+
+    let rpc_method = request.path.strip_prefix("/api/").map(str::to_owned);
     match request.method.as_str() {
         "GET" => match request.path.as_str() {
             "/api/events" => sse::handle(&mut stream, &shared),
@@ -497,12 +714,52 @@ fn handle_connection(mut stream: TcpStream, shared: Arc<state::ServeShared>) {
                 );
             }
         },
-        "POST" => match request.path.strip_prefix("/api/") {
-            Some(method) if !method.is_empty() => {
-                let params: serde_json::Value = if request.body.is_empty() {
+        "POST" => match rpc_method.as_deref() {
+            Some(method) if protocol::RPC_METHODS.contains(&method) => {
+                if !request.content_type.as_deref().is_some_and(|content_type| {
+                    content_type
+                        .split(';')
+                        .next()
+                        .is_some_and(|value| value.trim().eq_ignore_ascii_case("application/json"))
+                }) {
+                    let _ = write_json(
+                        &mut stream,
+                        400,
+                        protocol::rpc_result_json(&Err(protocol::RpcError::bad_request(
+                            "RPC requests require Content-Type: application/json",
+                        ))),
+                    );
+                    return;
+                }
+                let body = match http::read_body(&mut stream, &mut request, http::MAX_BODY_BYTES) {
+                    Ok(body) => body,
+                    Err(http::HttpReadError::TooLarge(part)) => {
+                        let _ = write_json(
+                            &mut stream,
+                            413,
+                            protocol::rpc_result_json(&Err(protocol::RpcError::bad_request(
+                                format!("{part} exceeds the size limit"),
+                            ))),
+                        );
+                        return;
+                    }
+                    Err(http::HttpReadError::BadRequest(reason)) => {
+                        let _ = write_json(
+                            &mut stream,
+                            400,
+                            protocol::rpc_result_json(&Err(protocol::RpcError::bad_request(
+                                reason,
+                            ))),
+                        );
+                        return;
+                    }
+                    Err(http::HttpReadError::TimedOut | http::HttpReadError::Closed) => return,
+                    Err(http::HttpReadError::Io) => return,
+                };
+                let params: serde_json::Value = if body.is_empty() {
                     serde_json::json!({})
                 } else {
-                    match serde_json::from_slice(&request.body) {
+                    match serde_json::from_slice(&body) {
                         Ok(value) => value,
                         Err(error) => {
                             let _ = write_json(
@@ -518,6 +775,15 @@ fn handle_connection(mut stream: TcpStream, shared: Arc<state::ServeShared>) {
                 };
                 let outcome = protocol::dispatch(method, &params, &shared);
                 let _ = write_json(&mut stream, 200, protocol::rpc_result_json(&outcome));
+            }
+            Some(method) if !method.is_empty() => {
+                let _ = write_json(
+                    &mut stream,
+                    200,
+                    protocol::rpc_result_json(&Err(protocol::RpcError::bad_request(format!(
+                        "unknown RPC method: {method}"
+                    )))),
+                );
             }
             _ => {
                 let _ = write_json(
@@ -542,6 +808,17 @@ fn handle_connection(mut stream: TcpStream, shared: Arc<state::ServeShared>) {
     }
 }
 
+fn draft_upload_scope(path: &str) -> Option<&str> {
+    let rest = path.strip_prefix("/api/drafts/")?;
+    let scope_id = rest.strip_suffix("/images")?;
+    (!scope_id.is_empty() && !scope_id.contains('/')).then_some(scope_id)
+}
+
+fn attachment_read_id(path: &str) -> Option<&str> {
+    let attachment_id = path.strip_prefix("/api/attachments/")?;
+    (!attachment_id.is_empty() && !attachment_id.contains('/')).then_some(attachment_id)
+}
+
 fn write_unauthorized(stream: &mut TcpStream) {
     let _ = write_json(
         stream,
@@ -549,6 +826,7 @@ fn write_unauthorized(stream: &mut TcpStream) {
         protocol::rpc_result_json(&Err(protocol::RpcError {
             code: protocol::ErrorCode::Unauthorized,
             message: "missing or invalid authentication".into(),
+            receipt: None,
         })),
     );
 }

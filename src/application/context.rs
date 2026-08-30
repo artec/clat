@@ -37,6 +37,7 @@ impl TrustedProjectApplication {
         // would retrieve. The fixed budget remains visible in the DTO.
         let goal = self.goal.injection().map_err(ApplicationError::new)?;
         let run_context = self.run_context_snapshot(
+            &config,
             std::sync::Arc::clone(&skills),
             crate::memory::MemoryInjection::default(),
             goal.clone(),
@@ -83,20 +84,37 @@ impl TrustedProjectApplication {
         let skills_total = estimate_instructions(&with_skills);
         let goal_total = estimate_instructions(&with_goal);
         let system_total = estimate_instructions(&final_system);
+        let model_options = crate::model::ModelOptions {
+            output_limit: config.output_limit,
+            temperature: config.temperature,
+            parallel_tool_calls: config.request_parallel_tool_calls(),
+            image_projection: Some(crate::model::ImageProjectionBudget::for_config(&config)),
+            ..crate::model::ModelOptions::default()
+        };
+        let (projected_history, image_projection) = crate::model::project_items_for_image_budget(
+            &history,
+            (!final_system.is_empty()).then_some(final_system.as_str()),
+            &tools,
+            &model_options,
+        )
+        .map_err(ApplicationError::new)?;
         let with_history = crate::model::estimate_request_tokens(
             (!final_system.is_empty()).then_some(final_system.as_str()),
-            &history,
+            &projected_history,
             &[],
         );
         let input_total = crate::model::estimate_request_tokens(
             (!final_system.is_empty()).then_some(final_system.as_str()),
-            &history,
+            &projected_history,
             &tools,
         );
         let output_reserve = u64::from(config.output_limit.unwrap_or(4096));
 
         Ok(super::ContextEstimateSnapshot {
-            estimator: "model::estimate_request_tokens conservative estimate".into(),
+            estimator: format!(
+                "model::estimate_request_tokens conservative estimate ({})",
+                crate::media::IMAGE_TOKEN_ESTIMATOR_VERSION
+            ),
             unit: "tokens".into(),
             base_prompt_estimate: base_total,
             project_instructions_estimate: system_total.saturating_sub(goal_total),
@@ -107,6 +125,12 @@ impl TrustedProjectApplication {
             memory_budget_bytes: crate::memory::MAX_INJECTION_BYTES as u64,
             tool_schemas_estimate: input_total.saturating_sub(with_history),
             history_estimate: with_history.saturating_sub(system_total),
+            image_count: image_projection.retained_images,
+            image_original_count: image_projection.original_images,
+            image_offloaded_count: image_projection.offloaded_images,
+            image_bytes: image_projection.retained_bytes,
+            image_token_estimate: image_projection.retained_tokens,
+            image_token_safety_factor: crate::media::IMAGE_TOKEN_SAFETY_FACTOR,
             output_reserve_estimate: output_reserve,
             input_estimate: input_total,
             total_estimate: input_total.saturating_add(output_reserve),

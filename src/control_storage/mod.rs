@@ -73,6 +73,10 @@ pub(crate) struct ControlStorage {
 }
 
 impl ControlStorage {
+    pub(crate) fn root_path(&self) -> &Path {
+        &self.root
+    }
+
     /// Open a Ready control plane read-write: load the file family under
     /// the atomic/salvage/version-gate discipline, then reconcile the
     /// workspace registry against the session directory (facts win).

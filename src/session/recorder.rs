@@ -803,6 +803,69 @@ impl SessionRecorder {
     }
 
     fn record(&mut self, event: RunEvent) {
+        let event = match event {
+            RunEvent::SteeringApplied {
+                message,
+                client_message_id,
+                request_digest,
+                ..
+            } => {
+                // Claim is committed here, not in the queue or Run. Close the
+                // prior step, append+flush the typed user event, then upgrade the
+                // forwarded event from Reserved to Committed. If durability
+                // fails no receipt is emitted; recorder.finish turns the run into
+                // the authoritative failure.
+                self.close_open_step();
+                let message_id = uuid::Uuid::new_v4().to_string();
+                let digest = client_message_id
+                    .as_ref()
+                    .map(|_| request_digest.unwrap_or_else(|| message.request_digest()));
+                // RunEvent intentionally carries descriptors only. The
+                // journal payload helper ignores `path`; rebuild its internal
+                // adapter shape without letting provider-visible absolute
+                // paths escape the queued PendingMessage.
+                let images = message
+                    .image_descriptors()
+                    .into_iter()
+                    .map(|descriptor| crate::message::JournalImage {
+                        descriptor: descriptor.clone(),
+                        path: String::new(),
+                    })
+                    .collect::<Vec<_>>();
+                let payload = payloads::admitted_user_message(
+                    &message_id,
+                    &message.plain_text(),
+                    &images,
+                    client_message_id.as_deref(),
+                    digest.as_deref(),
+                );
+                let appended = self
+                    .append_quietly(
+                        NewSessionEvent::new("user/message", payload).append(Vec::new()),
+                    )
+                    .is_some();
+                self.flush_quietly();
+                let receipt = (appended && self.journal_error.is_none())
+                    .then(|| {
+                        client_message_id.clone().map(|client_message_id| {
+                            Box::new(crate::message::AdmissionReceipt::committed(
+                                client_message_id,
+                                message_id,
+                                message.attachment_ids(),
+                            ))
+                        })
+                    })
+                    .flatten();
+                self.forwarded.push(RunEvent::SteeringApplied {
+                    message,
+                    client_message_id,
+                    request_digest: digest,
+                    receipt,
+                });
+                return;
+            }
+            event => event,
+        };
         match &event {
             // turn/start + user/message are the application's first durable
             // atomic batch, already written before the run started.
@@ -976,40 +1039,14 @@ impl SessionRecorder {
                         turn,
                         step,
                         &result.call_id,
-                        payloads::tool_result_content(&output),
+                        payloads::tool_result_content_with_blocks(&output, &result.blocks),
                         result.is_error,
                     ),
                 )
                 .append(Vec::new());
                 self.append_quietly(event);
             }
-            RunEvent::SteeringApplied {
-                message,
-                client_message_id,
-            } => {
-                // In-run steering claimed into the transcript (DSH: plain
-                // user/message, no catalog extension). Durability barrier:
-                // durable before the consuming model request, and between
-                // steps — close the open step so the message lands after the
-                // previous step's events and before the next step/start.
-                // MM-1A：steering admission 只放行纯文本，`plain_text`
-                // 无损；客户端幂等键与 digest 随同一条事件落盘（commit
-                // point 证据）。
-                self.close_open_step();
-                // digest 只随客户端幂等键落盘——无键的合成消息没有
-                // "同 key 不同 payload" 的判别对象。
-                let digest = client_message_id.as_ref().map(|_| message.request_digest());
-                let payload = payloads::admitted_user_message(
-                    &uuid::Uuid::new_v4().to_string(),
-                    &message.plain_text(),
-                    &[],
-                    client_message_id.as_deref(),
-                    digest.as_deref(),
-                );
-                let event = NewSessionEvent::new("user/message", payload).append(Vec::new());
-                self.append_quietly(event);
-                self.flush_quietly();
-            }
+            RunEvent::SteeringApplied { .. } => unreachable!("handled above"),
             RunEvent::RunCompleted { .. } | RunEvent::RunCancelled { .. } => {
                 self.terminal = Some(event);
                 return;
@@ -1173,9 +1210,11 @@ mod tests {
             finish_reason: crate::model::FinishReason::Completed,
             provider_replay: None,
         });
-        recorder.emit(RunEvent::SteeringApplied {
+        let forwarded = recorder.emit_and_forward(RunEvent::SteeringApplied {
             message: crate::message::MessageContent::text("also run the tests"),
-            client_message_id: None,
+            client_message_id: Some("mm2-w7-steering".into()),
+            request_digest: None,
+            receipt: None,
         });
         recorder.emit(RunEvent::ModelRequested {
             turn: 2,
@@ -1224,6 +1263,20 @@ mod tests {
         assert_eq!(payload["role"], "user");
         assert_eq!(payload["source"]["kind"], "user");
         assert_eq!(payload["content"][0]["text"], "also run the tests");
+        let receipt = forwarded
+            .iter()
+            .find_map(|event| match event {
+                RunEvent::SteeringApplied { receipt, .. } => receipt.as_deref(),
+                _ => None,
+            })
+            .expect("durable steering is forwarded with its committed receipt");
+        assert_eq!(receipt.state, crate::message::AdmissionState::Committed);
+        assert_eq!(receipt.client_message_id, "mm2-w7-steering");
+        assert_eq!(
+            receipt.committed_message_id.as_deref(),
+            payload["id"].as_str()
+        );
+        assert!(!receipt.retryable);
     }
 
     #[test]
@@ -1644,6 +1697,7 @@ mod tests {
         recorder.emit(RunEvent::ToolFinished {
             result: ToolResult {
                 blocks: Vec::new(),
+                image_parts: Vec::new(),
                 call_id: "call-1".into(),
                 tool_name: "read_file".into(),
                 output: json!("body"),

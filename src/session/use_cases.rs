@@ -64,6 +64,16 @@ pub struct SessionView {
     pub usage: UsageStats,
 }
 
+/// 已通过当前会话可达性与 no-follow 文件栅栏的不可变附件快照。它只在
+/// 受信应用壳与同进程前端之间流转；绝不投影到 journal、SSE 或模型请求，
+/// 也不暴露任何路径。serve 只能按已验证的固定长度分块读取该快照，底层
+/// store inode 在验证后被改写也不会改变已经授权的响应字节。
+pub(crate) struct ActiveAttachmentReader {
+    pub(crate) descriptor: crate::message::AttachmentDescriptor,
+    pub(crate) bytes: u64,
+    pub(crate) file: std::io::Cursor<Vec<u8>>,
+}
+
 /// Usage stats folded from one journal pass: the session aggregate (cache
 /// ratio numerator/denominator), the most recent report (the current
 /// context watermark), and per-route aggregates (INV-C1: the status-bar
@@ -311,9 +321,7 @@ impl SessionService {
             key.clone(),
             arm_header,
             &mut |event| {
-                if event.event_type == "user/message" {
-                    collect_attachment_ids(&event.data, &mut referenced_attachments);
-                }
+                collect_event_attachment_ids(event, &mut referenced_attachments);
                 sink.push(event, &mut registry)
             },
         )?;
@@ -324,9 +332,7 @@ impl SessionService {
             let mut repaired_registry = ProjectionRegistry::clat();
             let mut repaired = ResumeSink::new();
             if let Err(error) = self.backend.visit_from(&key, 0, &mut |event| {
-                if event.event_type == "user/message" {
-                    collect_attachment_ids(&event.data, &mut referenced_attachments);
-                }
+                collect_event_attachment_ids(event, &mut referenced_attachments);
                 repaired.push(event, &mut repaired_registry)
             }) {
                 let _ = coordinator.close();
@@ -354,9 +360,10 @@ impl SessionService {
             .is_some_and(|committed| floor <= committed)
         {
             let mut guard = projections.lock().expect("projections");
-            let tail = self
-                .backend
-                .visit_from(&key, floor, &mut |event| sink.push(event, &mut guard));
+            let tail = self.backend.visit_from(&key, floor, &mut |event| {
+                collect_event_attachment_ids(event, &mut referenced_attachments);
+                sink.push(event, &mut guard)
+            });
             drop(guard);
             if let Err(error) = tail {
                 let _ = coordinator.close();
@@ -382,8 +389,12 @@ impl SessionService {
             &key.id,
         )
         .join("attachments");
-        if attachments_root.is_dir()
-            && let Ok(store) = crate::session::attachments::AttachmentStore::open(attachments_root)
+        if let Ok(session_dir) = self.backend.open_session_dir(&key)
+            && session_dir.symlink_metadata("attachments").is_ok()
+            && let Ok(store) = crate::session::attachments::AttachmentStore::open_in_session(
+                &session_dir,
+                attachments_root,
+            )
         {
             let _ = store.sweep_orphans(&referenced_attachments, std::time::SystemTime::now());
         }
@@ -494,7 +505,7 @@ impl SessionService {
     }
 
     /// 导入图片附件（M4，2026-08-19）：先整体校验（存在、扩展名合法、
-    /// ≤4MB），再复制进会话目录的 `attachments/` 子目录（uuid 文件名
+    /// ≤8MiB），再复制进会话目录的 `attachments/` 子目录（uuid 文件名
     /// 保留原扩展名）。返回 (绝对路径, MIME) 列表——绝对引用随后进
     /// journal，回放零换算；原件此后可删可改，会话自包含。
     /// 校验失败在任何复制之前返回错误（不留半套附件）。
@@ -512,20 +523,27 @@ impl SessionService {
         if sources.is_empty() {
             return Ok(Vec::new());
         }
-        let attachments_dir = {
+        let (key, attachments_dir) = {
             let active = self.active.lock().expect("active");
             let session = active
                 .as_ref()
                 .ok_or_else(|| SessionError::NotFound("no active session".into()))?;
-            crate::session::path_layout::session_dir(
-                self.backend.root_path(),
-                session.key.project.header_cwd.as_deref(),
-                &session.key.id,
+            (
+                session.key.clone(),
+                crate::session::path_layout::session_dir(
+                    self.backend.root_path(),
+                    session.key.project.header_cwd.as_deref(),
+                    &session.key.id,
+                )
+                .join("attachments"),
             )
-            .join("attachments")
         };
-        let store = crate::session::attachments::AttachmentStore::open(attachments_dir)
-            .map_err(|error| SessionError::Io(format!("open attachment store: {error}")))?;
+        let session_dir = self.backend.create_session_dir(&key)?;
+        let store = crate::session::attachments::AttachmentStore::open_in_session(
+            &session_dir,
+            attachments_dir,
+        )
+        .map_err(|error| SessionError::Io(format!("open attachment store: {error}")))?;
         let stored = store
             .admit(sources)
             .map_err(|error| SessionError::Io(error.to_string()))?;
@@ -545,6 +563,164 @@ impl SessionService {
                 path: stored.blob_path,
             })
             .collect())
+    }
+
+    /// MM-2/W5 byte admission for sources already read through a narrower
+    /// capability (project-relative no-follow reads or core-minted run
+    /// scratch). It deliberately reuses AttachmentStore normalization and
+    /// content-addressed publication; callers never get to mint an arbitrary
+    /// descriptor/path pair.
+    pub(crate) fn import_attachment_bytes(
+        &self,
+        bytes: &[u8],
+        display_name: &str,
+    ) -> Result<crate::message::JournalImage, SessionError> {
+        let store = self.active_attachment_store()?;
+        let stored = store
+            .admit_bytes(bytes, display_name)
+            .map_err(|error| SessionError::Io(error.to_string()))?;
+        Ok(journal_image(stored))
+    }
+
+    /// Resolve an attachment id only when it is reachable from the active
+    /// model surface. An orphan blob whose digest is guessed is not authority.
+    /// The returned path has already crossed the session fence; provider reads
+    /// still use their final no-follow open to close replacement races.
+    pub(crate) fn resolve_active_attachment(
+        &self,
+        attachment_id: &str,
+    ) -> Result<crate::message::JournalImage, SessionError> {
+        if attachment_id.is_empty()
+            || attachment_id.len() > 128
+            || !attachment_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        {
+            return Err(SessionError::NotFound("invalid attachment id".into()));
+        }
+        for (_, item) in self.surface_nodes()? {
+            match item {
+                ModelItem::User { content } | ModelItem::Assistant { content, .. } => {
+                    for part in content {
+                        if let crate::model::ContentPart::Image { path, media_type } = part
+                            && attachment_path_matches(&path, attachment_id)
+                        {
+                            return journal_image_from_path(
+                                attachment_id,
+                                &path,
+                                &media_type,
+                                None,
+                            );
+                        }
+                    }
+                }
+                ModelItem::ToolResult(result) => {
+                    let image_blocks = result.blocks.iter().filter_map(|block| match block {
+                        crate::message::ContentBlock::Image { attachment } => Some(attachment),
+                        crate::message::ContentBlock::Text { .. } => None,
+                    });
+                    let image_parts = result.image_parts.iter().filter_map(|part| match part {
+                        crate::model::ContentPart::Image { path, .. } => Some(path),
+                        crate::model::ContentPart::Text(_) => None,
+                    });
+                    if image_blocks.clone().count() != image_parts.clone().count() {
+                        // Descriptor authority and fenced paths are parallel
+                        // projections of one ordered durable content array.
+                        // A cardinality drift means their pairing is no longer
+                        // provable, so fail closed for the whole tool result.
+                        continue;
+                    }
+                    for (attachment, path) in image_blocks.zip(image_parts) {
+                        if attachment.attachment_id == attachment_id {
+                            return Ok(crate::message::JournalImage {
+                                descriptor: attachment.clone(),
+                                path: path.clone(),
+                            });
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        Err(SessionError::NotFound(format!(
+            "attachment `{attachment_id}` is not reachable from the active session"
+        )))
+    }
+
+    /// 读取当前会话中**可达**的图片内容。先走同一 reachability 判定，
+    /// 再以 no-follow 打开并生成有界、摘要已验证的不可变快照，避免
+    /// guessed blob id、软链、前端传入路径或 verify→stream 原位改写成为
+    /// 读取权限。返回的 reader 不带路径，调用方只能以受限块大小消费它。
+    pub(crate) fn open_active_attachment(
+        &self,
+        attachment_id: &str,
+    ) -> Result<ActiveAttachmentReader, SessionError> {
+        let image = self.resolve_active_attachment(attachment_id)?;
+        let content_addressed = image.descriptor.attachment_id.len() == 64
+            && image
+                .descriptor
+                .attachment_id
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase());
+        let (snapshot, bytes) = if content_addressed {
+            self.active_attachment_store()?
+                .open_blob_verified(&image.descriptor.attachment_id)
+                .map_err(|error| {
+                    SessionError::NotFound(format!(
+                        "attachment integrity verification failed: {error}"
+                    ))
+                })?
+        } else {
+            open_attachment_file(&image.path)?
+        };
+        if !crate::media::media_type_matches_bytes(&image.descriptor.media_type, &snapshot) {
+            return Err(SessionError::NotFound(
+                "attachment media type verification failed: attachment media type does not match its bytes".into(),
+            ));
+        }
+        // New durable descriptors are minted from normalized content and must
+        // describe those exact bytes. Legacy ids may legitimately carry
+        // bytes=0 (unknown), but a content-addressed descriptor has no such
+        // compatibility allowance: bind its count to the same verified file
+        // handle before any frontend can consume it.
+        if content_addressed && image.descriptor.bytes != bytes {
+            return Err(SessionError::NotFound(
+                "attachment descriptor byte count does not match its bytes".into(),
+            ));
+        }
+        if content_addressed {
+            let expected = (image.descriptor.width, image.descriptor.height);
+            if crate::media::image_dimensions_bytes(&snapshot) != Some(expected) {
+                return Err(SessionError::NotFound(
+                    "attachment dimension verification failed: attachment dimensions do not match its bytes".into(),
+                ));
+            }
+        }
+        Ok(ActiveAttachmentReader {
+            descriptor: image.descriptor,
+            bytes,
+            file: std::io::Cursor::new(snapshot),
+        })
+    }
+
+    fn active_attachment_store(
+        &self,
+    ) -> Result<crate::session::attachments::AttachmentStore, SessionError> {
+        let active = self.active.lock().expect("active");
+        let session = active
+            .as_ref()
+            .ok_or_else(|| SessionError::NotFound("no active session".into()))?;
+        let key = session.key.clone();
+        let attachments_dir = crate::session::path_layout::session_dir(
+            self.backend.root_path(),
+            session.key.project.header_cwd.as_deref(),
+            &session.key.id,
+        )
+        .join("attachments");
+        drop(active);
+        let session_dir = self.backend.create_session_dir(&key)?;
+        crate::session::attachments::AttachmentStore::open_in_session(&session_dir, attachments_dir)
+            .map_err(|error| SessionError::Io(format!("open attachment store: {error}")))
     }
 
     /// Whether a session log is materialized on disk (Materializing
@@ -1237,6 +1413,7 @@ fn active_floor(active: &ActiveSession) -> u64 {
 fn fence_attachment_parts(item: &mut ModelItem, attachments_root: &std::path::Path) {
     let parts = match item {
         ModelItem::User { content } | ModelItem::Assistant { content, .. } => content,
+        ModelItem::ToolResult(result) => &mut result.image_parts,
         _ => return,
     };
     for part in parts.iter_mut() {
@@ -1255,6 +1432,81 @@ fn fence_attachment_parts(item: &mut ModelItem, attachments_root: &std::path::Pa
     }
 }
 
+fn journal_image(
+    stored: crate::session::attachments::StoredAttachment,
+) -> crate::message::JournalImage {
+    crate::message::JournalImage {
+        descriptor: crate::message::AttachmentDescriptor {
+            attachment_id: stored.id,
+            media_type: stored.media_type.to_owned(),
+            width: stored.width,
+            height: stored.height,
+            bytes: stored.bytes,
+            display_name: stored.display_name,
+            original_width: Some(stored.original_width),
+            original_height: Some(stored.original_height),
+        },
+        path: stored.blob_path,
+    }
+}
+
+fn attachment_path_matches(path: &str, attachment_id: &str) -> bool {
+    let path = std::path::Path::new(path);
+    path.file_name().and_then(|name| name.to_str()) == Some(attachment_id)
+        || crate::message::legacy_attachment_id(path.to_string_lossy().as_ref()) == attachment_id
+}
+
+fn journal_image_from_path(
+    attachment_id: &str,
+    path: &str,
+    media_type: &str,
+    display_name: Option<String>,
+) -> Result<crate::message::JournalImage, SessionError> {
+    let bytes = read_attachment_bytes(path)?;
+    let decoded = image::load_from_memory(&bytes)
+        .map_err(|_| SessionError::NotFound("attachment dimensions are unavailable".into()))?;
+    let (width, height) = (u64::from(decoded.width()), u64::from(decoded.height()));
+    Ok(crate::message::JournalImage {
+        descriptor: crate::message::AttachmentDescriptor {
+            attachment_id: attachment_id.to_owned(),
+            media_type: media_type.to_owned(),
+            width,
+            height,
+            bytes: bytes.len() as u64,
+            display_name,
+            original_width: None,
+            original_height: None,
+        },
+        path: path.to_owned(),
+    })
+}
+
+fn open_attachment_file(path: &str) -> Result<(Vec<u8>, u64), SessionError> {
+    let path = std::path::Path::new(path);
+    let (mut file, metadata) =
+        crate::session::attachments::open_private_regular_file_no_follow(path)
+            .map_err(|error| SessionError::Io(format!("open attachment no-follow: {error}")))?;
+    let bytes = metadata.len();
+    if bytes > crate::media::MAX_ATTACHMENT_BYTES {
+        return Err(SessionError::NotFound(
+            "attachment exceeds the image byte limit".into(),
+        ));
+    }
+    let snapshot =
+        crate::session::attachments::read_open_file_verified_snapshot(&mut file, path, bytes)
+            .map_err(|error| {
+                SessionError::NotFound(format!("attachment integrity verification failed: {error}"))
+            })?;
+    Ok((snapshot, bytes))
+}
+
+/// Legacy attachment metadata reconstruction still needs bytes for image
+/// decoding; it reuses the same no-follow/length fence as the streaming web
+/// reader rather than re-opening an unconstrained path.
+fn read_attachment_bytes(path: &str) -> Result<Vec<u8>, SessionError> {
+    open_attachment_file(path).map(|(snapshot, _)| snapshot)
+}
+
 /// 相对 ref `blobs/<hex-id>` → root 内绝对路径；非该形状（legacy
 /// 绝对路径/已被解析过）返回 None 交由围栏按原语义处理。id 限定
 /// 十六进制字符——词法上无 `..`/分隔符/空件的穿越面。
@@ -1269,13 +1521,43 @@ fn resolve_blob_reference(path: &str, root: &std::path::Path) -> Option<String> 
     Some(root.join("blobs").join(rest).to_string_lossy().into_owned())
 }
 
-/// user/message payload 的 content image blocks → 引用 id 集合
-///（INV-MM1-4 sweep 的输入；与 attachments.rs 的词汇同源）。
-fn collect_attachment_ids(
-    user_message: &Value,
+/// Durable image-bearing event → referenced attachment ids for the orphan
+/// mark phase. User and assistant messages carry blocks directly; tool
+/// results nest their typed blocks inside the DSH `tool-result` message part.
+/// All three are durable attachment authority and must survive cold-open GC.
+fn collect_event_attachment_ids(
+    event: &SessionEvent,
     referenced: &mut std::collections::HashSet<String>,
 ) {
-    let Some(blocks) = user_message.get("content").and_then(Value::as_array) else {
+    match event.event_type.as_str() {
+        "user/message" => collect_content_attachment_ids(event.data.get("content"), referenced),
+        "assistant/message" => {
+            collect_content_attachment_ids(event.data.pointer("/message/content"), referenced)
+        }
+        "tool/result" => {
+            let Some(parts) = event
+                .data
+                .pointer("/message/content")
+                .and_then(Value::as_array)
+            else {
+                return;
+            };
+            for part in parts
+                .iter()
+                .filter(|part| part.get("type").and_then(Value::as_str) == Some("tool-result"))
+            {
+                collect_content_attachment_ids(part.get("content"), referenced);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_content_attachment_ids(
+    content: Option<&Value>,
+    referenced: &mut std::collections::HashSet<String>,
+) {
+    let Some(blocks) = content.and_then(Value::as_array) else {
         return;
     };
     for block in blocks
@@ -1517,9 +1799,9 @@ mod tests {
     use crate::session::event::payloads;
     use crate::session::replay::ReplayTurnEnd;
 
-    fn service(_tag: &str) -> (SessionService, std::path::PathBuf) {
+    fn service(tag: &str) -> (SessionService, std::path::PathBuf) {
         let root = std::env::temp_dir().join(format!(
-            "clat-usecases-{}",
+            "clat-usecases-{tag}-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -1529,6 +1811,414 @@ mod tests {
             SessionService::new(root.clone(), JsonlCompression::Zstd).expect("service"),
             root,
         )
+    }
+
+    /// MM-I9 / attachment reachability: durable tool results may carry more
+    /// than one image. Descriptor authority and provider-facing paths are two
+    /// parallel projections of the same ordered content, so resolving the
+    /// second opaque id must return the second path, never the first image in
+    /// the result. The pre-fix implementation searched `image_parts` from the
+    /// beginning for every descriptor and therefore aliased every id to image
+    /// zero.
+    #[test]
+    fn tool_result_attachment_resolution_preserves_multi_image_pairing() {
+        let (service, root) = service("tool-result-image-pairing");
+        service.new_session(&project()).expect("session");
+        let make_source = |name: &str, color: [u8; 3]| {
+            let path = root.join(format!("{name}.png"));
+            let image = image::RgbImage::from_pixel(8, 8, image::Rgb(color));
+            image::DynamicImage::ImageRgb8(image)
+                .save_with_format(&path, image::ImageFormat::Png)
+                .expect("write image fixture");
+            path
+        };
+        let images = service
+            .import_attachments(&[
+                make_source("first", [10, 20, 30]),
+                make_source("second", [40, 50, 60]),
+            ])
+            .expect("admit image pair");
+        let blocks = images
+            .iter()
+            .map(|image| crate::message::ContentBlock::Image {
+                attachment: image.descriptor.clone(),
+            })
+            .collect::<Vec<_>>();
+        let journal = service.journal().expect("journal");
+        journal
+            .append(
+                crate::session::run_journal::NewSessionEvent::new(
+                    "tool/result",
+                    payloads::tool_result(
+                        1,
+                        1,
+                        "multi-image-call",
+                        payloads::tool_result_content_with_blocks(
+                            &serde_json::json!("two images"),
+                            &blocks,
+                        ),
+                        false,
+                    ),
+                )
+                .append(Vec::new()),
+            )
+            .expect("append tool result");
+        journal.flush().expect("flush tool result");
+
+        let second = service
+            .resolve_active_attachment(&images[1].descriptor.attachment_id)
+            .expect("resolve second image");
+        assert_eq!(second.descriptor, images[1].descriptor);
+        assert_eq!(
+            second.path, images[1].path,
+            "the second opaque id must not alias the first tool image path"
+        );
+        assert_ne!(second.path, images[0].path);
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    /// INV-MM1-3/5: no-follow prevents a final symlink, but a second hardlink
+    /// name can still mutate the same inode after publication. Provider/PWA
+    /// reads must therefore reject multiply-linked attachment files instead
+    /// of treating their regular-file type as sufficient authority.
+    #[cfg(unix)]
+    #[test]
+    fn attachment_reader_rejects_a_multiply_linked_blob() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("clat-attachment-read-link-{unique}"));
+        std::fs::create_dir_all(&root).expect("root");
+        let blob = root.join("blob");
+        let alias = root.join("alias");
+        std::fs::write(&blob, b"normalized image bytes").expect("blob");
+        std::fs::hard_link(&blob, &alias).expect("hardlink alias");
+
+        assert!(
+            open_attachment_file(blob.to_str().expect("utf8 path")).is_err(),
+            "a multiply-linked attachment must fail before any bytes are exposed"
+        );
+        assert_eq!(
+            std::fs::read(alias).expect("alias remains intact"),
+            b"normalized image bytes"
+        );
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    /// The PWA/session reader must enforce the same content-address integrity
+    /// as provider projection. A writable same-user process can alter a 0600
+    /// inode in place without adding a link or changing its length.
+    #[test]
+    fn attachment_reader_rejects_a_content_address_mismatch() {
+        use sha2::Digest as _;
+
+        let original = b"original-image";
+        let tampered = b"tampered-image";
+        assert_eq!(original.len(), tampered.len(), "same-length attack fixture");
+        let name = sha2::Sha256::digest(original)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let root = std::env::temp_dir().join(format!(
+            "clat-attachment-read-digest-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&root).expect("root");
+        let blob = root.join(name);
+        std::fs::write(&blob, tampered).expect("write corrupted blob");
+
+        assert!(
+            open_attachment_file(blob.to_str().expect("utf8 path")).is_err(),
+            "content-address mismatch must fail before any bytes are exposed"
+        );
+
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    /// PWA headers are derived from durable descriptor metadata. Before a
+    /// blob reader is exposed, that MIME claim must match the normalized blob
+    /// magic; a content-address match alone cannot authorize relabeling PNG
+    /// bytes as JPEG.
+    #[test]
+    fn active_attachment_reader_rejects_a_media_type_magic_mismatch() {
+        let (service, root) = service("attachment-media-mismatch");
+        service.new_session(&project()).expect("session");
+        let source = root.join("source.png");
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(8, 8, image::Rgb([7, 8, 9])))
+            .save_with_format(&source, image::ImageFormat::Png)
+            .expect("write PNG fixture");
+        let mut image = service
+            .import_attachments(&[source])
+            .expect("admit image")
+            .pop()
+            .expect("stored image");
+        image.descriptor.media_type = "image/jpeg".into();
+        let attachment_id = image.descriptor.attachment_id.clone();
+        let journal = service.journal().expect("journal");
+        journal
+            .append(
+                crate::session::run_journal::NewSessionEvent::new(
+                    "user/message",
+                    payloads::admitted_user_message("m-mime", "", &[image], None, None),
+                )
+                .append(Vec::new()),
+            )
+            .expect("append forged durable descriptor");
+        journal.flush().expect("flush descriptor");
+
+        let error = match service.open_active_attachment(&attachment_id) {
+            Ok(_) => panic!("reader must reject a durable MIME/blob mismatch"),
+            Err(error) => error,
+        };
+        assert!(
+            error.to_string().contains("media type"),
+            "failure identifies the descriptor/blob mismatch: {error}"
+        );
+
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    /// Durable tool-result descriptors are paired with provider-facing paths
+    /// during replay, but their byte count is still untrusted journal
+    /// metadata. The PWA reader must compare it with the already-open blob so
+    /// a forged descriptor cannot make UI/policy consumers under-report the
+    /// normalized image while serving different bytes.
+    #[test]
+    fn active_attachment_reader_rejects_a_descriptor_byte_count_mismatch() {
+        let (service, root) = service("attachment-byte-count-mismatch");
+        service.new_session(&project()).expect("session");
+        let source = root.join("source.png");
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(8, 8, image::Rgb([7, 8, 9])))
+            .save_with_format(&source, image::ImageFormat::Png)
+            .expect("write PNG fixture");
+        let image = service
+            .import_attachments(&[source])
+            .expect("admit image")
+            .pop()
+            .expect("stored image");
+        let attachment_id = image.descriptor.attachment_id.clone();
+        let mut forged = image.descriptor.clone();
+        forged.bytes = forged.bytes.saturating_sub(1);
+        let journal = service.journal().expect("journal");
+        journal
+            .append(
+                crate::session::run_journal::NewSessionEvent::new(
+                    "tool/result",
+                    payloads::tool_result(
+                        1,
+                        1,
+                        "forged-image-metadata",
+                        payloads::tool_result_content_with_blocks(
+                            &serde_json::json!("image"),
+                            &[crate::message::ContentBlock::Image { attachment: forged }],
+                        ),
+                        false,
+                    ),
+                )
+                .append(Vec::new()),
+            )
+            .expect("append forged durable descriptor");
+        journal.flush().expect("flush descriptor");
+
+        let error = match service.open_active_attachment(&attachment_id) {
+            Ok(_) => panic!("reader must reject a durable descriptor/blob byte mismatch"),
+            Err(error) => error,
+        };
+        assert!(
+            error.to_string().contains("byte count"),
+            "failure identifies the descriptor/blob mismatch: {error}"
+        );
+
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    /// Width and height are also durable facts for new content-addressed
+    /// attachments. A tool-result producer drift must not let the transcript
+    /// advertise dimensions that do not describe the bytes served by PWA.
+    #[test]
+    fn active_attachment_reader_rejects_a_descriptor_dimension_mismatch() {
+        let (service, root) = service("attachment-dimension-mismatch");
+        service.new_session(&project()).expect("session");
+        let source = root.join("source.png");
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(8, 8, image::Rgb([7, 8, 9])))
+            .save_with_format(&source, image::ImageFormat::Png)
+            .expect("write PNG fixture");
+        let image = service
+            .import_attachments(&[source])
+            .expect("admit image")
+            .pop()
+            .expect("stored image");
+        let attachment_id = image.descriptor.attachment_id.clone();
+        let mut forged = image.descriptor.clone();
+        forged.width = forged.width.saturating_add(1);
+        let journal = service.journal().expect("journal");
+        journal
+            .append(
+                crate::session::run_journal::NewSessionEvent::new(
+                    "tool/result",
+                    payloads::tool_result(
+                        1,
+                        1,
+                        "forged-image-dimensions",
+                        payloads::tool_result_content_with_blocks(
+                            &serde_json::json!("image"),
+                            &[crate::message::ContentBlock::Image { attachment: forged }],
+                        ),
+                        false,
+                    ),
+                )
+                .append(Vec::new()),
+            )
+            .expect("append forged durable descriptor");
+        journal.flush().expect("flush descriptor");
+
+        let error = match service.open_active_attachment(&attachment_id) {
+            Ok(_) => panic!("reader must reject a durable descriptor/blob dimension mismatch"),
+            Err(error) => error,
+        };
+        assert!(
+            error.to_string().contains("dimensions"),
+            "failure identifies the descriptor/blob mismatch: {error}"
+        );
+
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    /// Digest verification and HTTP streaming cannot be two reads of a
+    /// writable inode: a same-user process can change that inode after the
+    /// first pass and make the browser receive bytes that were never
+    /// verified. The application boundary therefore returns an immutable,
+    /// bounded snapshot rather than the live store descriptor.
+    #[test]
+    fn active_attachment_reader_streams_the_verified_snapshot_after_blob_mutation() {
+        use std::io::Read as _;
+
+        let (service, root) = service("attachment-immutable-snapshot");
+        service.new_session(&project()).expect("session");
+        let source = root.join("source.png");
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(8, 8, image::Rgb([7, 8, 9])))
+            .save_with_format(&source, image::ImageFormat::Png)
+            .expect("write PNG fixture");
+        let image = service
+            .import_attachments(&[source])
+            .expect("admit image")
+            .pop()
+            .expect("stored image");
+        let attachment_id = image.descriptor.attachment_id.clone();
+        let journal = service.journal().expect("journal");
+        journal
+            .append(
+                crate::session::run_journal::NewSessionEvent::new(
+                    "user/message",
+                    payloads::admitted_user_message(
+                        "m-snapshot",
+                        "",
+                        std::slice::from_ref(&image),
+                        None,
+                        None,
+                    ),
+                )
+                .append(Vec::new()),
+            )
+            .expect("append durable descriptor");
+        journal.flush().expect("flush descriptor");
+        let original = std::fs::read(&image.path).expect("read admitted blob");
+
+        let mut reader = service
+            .open_active_attachment(&attachment_id)
+            .expect("open verified attachment snapshot");
+        let mut mutated = original.clone();
+        let last = mutated.last_mut().expect("non-empty PNG");
+        *last ^= 0xff;
+        std::fs::write(&image.path, &mutated).expect("mutate store inode after verification");
+
+        let mut exposed = Vec::new();
+        reader
+            .file
+            .read_to_end(&mut exposed)
+            .expect("consume application reader");
+        assert_eq!(
+            exposed, original,
+            "browser bytes must be the exact snapshot that passed digest verification"
+        );
+
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    /// INV-MM1-4 + MM-I9: `view_image` stores its descriptor inside the
+    /// nested DSH tool-result content, not a top-level user message. The cold
+    /// orphan mark must protect that blob while still reclaiming a genuinely
+    /// unreferenced peer. Removing the `tool/result` collector makes the
+    /// referenced blob disappear in this test.
+    #[test]
+    fn orphan_mark_preserves_tool_result_image_attachments() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("clat-tool-image-gc-{unique}"));
+        let store = crate::session::attachments::AttachmentStore::open(root.clone())
+            .expect("open attachment store");
+        let make_source = |name: &str, color: [u8; 3]| {
+            let path = root.join(format!("{name}.png"));
+            let image = image::RgbImage::from_pixel(8, 8, image::Rgb(color));
+            image::DynamicImage::ImageRgb8(image)
+                .save_with_format(&path, image::ImageFormat::Png)
+                .expect("write image fixture");
+            path
+        };
+        let referenced_source = make_source("referenced", [10, 20, 30]);
+        let orphan_source = make_source("orphan", [40, 50, 60]);
+        let stored = store
+            .admit(&[referenced_source, orphan_source])
+            .expect("admit image pair");
+        let referenced_image = crate::message::AttachmentDescriptor {
+            attachment_id: stored[0].id.clone(),
+            media_type: stored[0].media_type.to_owned(),
+            width: stored[0].width,
+            height: stored[0].height,
+            bytes: stored[0].bytes,
+            display_name: stored[0].display_name.clone(),
+            original_width: Some(stored[0].original_width),
+            original_height: Some(stored[0].original_height),
+        };
+        let event = SessionEvent::new(
+            "tool/result",
+            0,
+            0,
+            payloads::tool_result(
+                1,
+                1,
+                "view-image-call",
+                payloads::tool_result_content_with_blocks(
+                    &serde_json::json!("ok"),
+                    &[crate::message::ContentBlock::Image {
+                        attachment: referenced_image,
+                    }],
+                ),
+                false,
+            ),
+        );
+        let mut referenced = std::collections::HashSet::new();
+        collect_event_attachment_ids(&event, &mut referenced);
+        assert_eq!(
+            referenced,
+            std::collections::HashSet::from([stored[0].id.clone()])
+        );
+
+        let future = std::time::SystemTime::now() + std::time::Duration::from_secs(48 * 60 * 60);
+        let sweep = store.sweep_orphans(&referenced, future);
+        assert_eq!(sweep.removed_blobs, 1, "the unrelated orphan is reclaimed");
+        assert!(
+            std::path::Path::new(&stored[0].blob_path).is_file(),
+            "the durable tool-result image remains readable"
+        );
+        assert!(
+            !std::path::Path::new(&stored[1].blob_path).exists(),
+            "the unreferenced control blob proves the sweep actually ran"
+        );
+        std::fs::remove_dir_all(root).ok();
     }
 
     /// INV-MM2-6（MM-2 W6 红测）：相对 ref `blobs/<hex>` 在栅栏处

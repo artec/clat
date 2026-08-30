@@ -11,7 +11,8 @@ use crate::tui::session_picker::{ResumeAction, SessionPicker};
 
 use crate::dsh::backend::DshEvent;
 use crate::tui::worker::{
-    ChannelApprover, ChannelEventSink, ChannelUserAsker, UiEvent, WorkerMessage,
+    ChannelApprover, ChannelEventSink, ChannelUserAsker, DeferredChannelEventSink, PreparedTuiRun,
+    RunStartFinished, RunStartGate, SteeringAdmissionFinished, UiEvent, WorkerMessage,
 };
 pub(crate) mod conversation;
 mod dsh_events;
@@ -47,7 +48,7 @@ use ratatui::widgets::{
     Wrap,
 };
 use ratatui::{DefaultTerminal, Frame};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::env;
 use std::io::{self, Write, stdout};
 use std::path::{Path, PathBuf};
@@ -67,6 +68,7 @@ fn ui_event_channel() -> (SyncSender<UiEvent>, Receiver<UiEvent>) {
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 mod actions;
+mod attachments;
 mod bell;
 mod dialogs;
 mod keys;
@@ -106,6 +108,17 @@ const SPINNER_FRAME: Duration = Duration::from_millis(80);
 /// 到期回落为默认的当前目录显示——与 Claude Code 等终端工具一致：
 /// 提示是瞬态的，目录才是常驻信息。
 const STATUS_TTL: Duration = Duration::from_secs(4);
+
+/// Frontend-owned copy of a native steering draft until the core confirms its
+/// durable claim with `SteeringApplied`. The core queue intentionally drops
+/// unclaimed messages when a run seals; retaining the original source paths
+/// here is what makes cancel/failure a lossless, user-visible retry rather
+/// than silent data loss.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct NativeSteeringDraft {
+    prompt: String,
+    attachments: Vec<PathBuf>,
+}
 
 pub fn run(project: Project) -> io::Result<()> {
     let app = match App::open_deferred(project, None) {
@@ -249,6 +262,19 @@ struct App {
     /// /resume 会话选择器；打开期间独占按键与鼠标。
     session_picker: Option<SessionPicker>,
     running: bool,
+    /// A local run's pre-commit attachment admission is executing off the
+    /// terminal thread. During this short handoff `application` is owned by
+    /// the worker and terminal input is gated; the structured draft remains
+    /// untouched until startup has actually succeeded.
+    run_start_pending: bool,
+    /// Narrows `run_start_pending` to the one handoff that can race a native
+    /// `SteeringApplied` event. Ordinary initial attachment admission must not
+    /// turn a stale prior-run event into an early-claim credit.
+    steering_admission_pending: bool,
+    /// Ctrl+C during asynchronous admission cannot drop the only application
+    /// owner. Defer process exit until RunStartFinished restores that owner;
+    /// a successfully created run is cancelled before normal close/join.
+    quit_after_run_start: bool,
     /// 统一事件通道：输入线程、余额监控、worker 的消息都汇到这里。
     /// `None` 表示尚未启动（run() 建立通道后填充）。
     events: Option<Receiver<UiEvent>>,
@@ -260,9 +286,26 @@ struct App {
     permission_picker: Option<crate::tui::permission_picker::PermissionPicker>,
     /// `/rename` 会话改名弹框（显式标题存在时才可打开，N4）。
     rename_dialog: Option<RenameDialog>,
-    /// 待随下一条消息发送的图片附件（用户路径；提交时复制进会话附件
-    /// 目录，见 M4）。仅空闲态可附加；Esc 清空输入时一并清空。
-    attachments: Vec<std::path::PathBuf>,
+    /// 待随下一条消息发送的结构化图片草稿。稳定 Image #N 身份与文本
+    /// 缓冲分离；提交时路径交 core 接纳，成功才清空，失败原样保留。
+    attachments: crate::tui::attachments::AttachmentComposer,
+    /// A durable steering claim can arrive while the sole Application facade
+    /// is temporarily owned by the image-admission worker. Paths already
+    /// removed from presentation wait here until that owner returns; only the
+    /// core registry decides whether a path is a deletable clipboard draft.
+    deferred_core_staged_releases: Vec<PathBuf>,
+    /// Drafts accepted by the current native run but not yet confirmed by a
+    /// durable `SteeringApplied` event (FIFO, matching the core queue).
+    pending_native_steering: VecDeque<NativeSteeringDraft>,
+    /// A claimed event may race ahead of the admission worker's frontend
+    /// acknowledgement because they are different producers on the shared UI
+    /// channel. Credits pair those early durable claims with the later local
+    /// draft registration instead of resurrecting an already-committed draft.
+    native_steering_claim_credits: VecDeque<String>,
+    /// Unclaimed drafts recovered from a sealed/cancelled run. One exact draft
+    /// is restored to the composer at a time; the rest remain ordered here so
+    /// the eight-image per-message bound is never weakened by merging drafts.
+    recovered_native_steering: VecDeque<NativeSteeringDraft>,
     run_handle: Option<RunHandle>,
     /// 当前 run 的本地纪元（W1-13）：start_run 成功即自增；完成消息
     /// 携带启动时的纪元，失配 = 上一 run 的陈旧完成，收尾动作跳过。
@@ -365,6 +408,9 @@ struct App {
     /// stdout（生产行为零变化）；测试 = 记录 sink——单元/快照测试不
     /// 写真实终端或系统剪贴板。接收**已编码**字节。
     clipboard_writer: fn(&[u8]) -> bool,
+    /// At most one explicit `/paste-image` clipboard read/PNG encode may run.
+    /// Ordinary bracketed paste never touches the system clipboard.
+    clipboard_image_pending: bool,
 }
 
 impl App {
@@ -445,13 +491,20 @@ impl App {
             picker_return: None,
             session_picker: None,
             running: false,
+            run_start_pending: false,
+            steering_admission_pending: false,
+            quit_after_run_start: false,
             events: None,
             event_sender: None,
             pending_permission: None,
             pending_ask_user: None,
             permission_picker: None,
             rename_dialog: None,
-            attachments: Vec::new(),
+            attachments: crate::tui::attachments::AttachmentComposer::default(),
+            deferred_core_staged_releases: Vec::new(),
+            pending_native_steering: VecDeque::new(),
+            native_steering_claim_credits: VecDeque::new(),
+            recovered_native_steering: VecDeque::new(),
             run_handle: None,
             run_epoch: 0,
             compact_handle: None,
@@ -496,6 +549,7 @@ impl App {
             dsh_connect_rx: None,
             dsh_memory_path: crate::control_storage::dsh_last_session::last_session_path(),
             clipboard_writer: write_osc52_to_stdout,
+            clipboard_image_pending: false,
         };
         Ok(app)
     }
@@ -534,13 +588,20 @@ impl App {
             picker_return: None,
             session_picker: None,
             running: false,
+            run_start_pending: false,
+            steering_admission_pending: false,
+            quit_after_run_start: false,
             events: None,
             event_sender: None,
             pending_permission: None,
             pending_ask_user: None,
             permission_picker: None,
             rename_dialog: None,
-            attachments: Vec::new(),
+            attachments: crate::tui::attachments::AttachmentComposer::default(),
+            deferred_core_staged_releases: Vec::new(),
+            pending_native_steering: VecDeque::new(),
+            native_steering_claim_credits: VecDeque::new(),
+            recovered_native_steering: VecDeque::new(),
             run_handle: None,
             run_epoch: 0,
             compact_handle: None,
@@ -585,6 +646,7 @@ impl App {
             dsh_connect_rx: Some(dsh_rx),
             dsh_memory_path: crate::control_storage::dsh_last_session::last_session_path(),
             clipboard_writer: write_osc52_to_stdout,
+            clipboard_image_pending: false,
         })
     }
 
@@ -895,7 +957,7 @@ mod tests {
     use ratatui::style::Color;
 
     /// M6：粘贴的图片附件判定。防误判优先：整条 == 存在的图片路径才
-    /// 附加；混合文本、不存在、非图片扩展名、超 4MB 一律当文本。
+    /// 附加；混合文本、不存在、非图片扩展名、超源图上限一律当文本。
     #[test]
     fn pasted_image_path_only_matches_whole_existing_image_paths() {
         let dir = std::env::temp_dir().join(format!(
@@ -939,7 +1001,7 @@ mod tests {
         std::fs::write(&text, b"txt").unwrap();
         assert_eq!(pasted_image_path(&text.display().to_string()), None);
 
-        // 超过 4MB：None（入口封顶）。
+        // 超过源图上限：None（入口封顶）。
         let big = dir.join("big.png");
         let sparse = std::fs::File::create(&big).unwrap();
         sparse

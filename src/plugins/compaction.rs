@@ -334,31 +334,7 @@ fn estimate_tokens_str(text: &str) -> usize {
 }
 
 fn estimate_item(item: &ModelItem) -> usize {
-    // 图片按视觉 tile 估算（M5）——JSON 序列化只会数到路径字符串
-    //（~20 token），把一张上千 token 的图当一行文本，预算触发必然
-    // 滞后。文本按 part 直接估算（旧实现的 JSON 序列化同理）。
-    let mut tokens = 16usize;
-    match item {
-        ModelItem::User { content } | ModelItem::Assistant { content, .. } => {
-            for part in content {
-                match part {
-                    crate::model::ContentPart::Text(text) => {
-                        tokens += estimate_tokens_str(text);
-                    }
-                    crate::model::ContentPart::Image { path, .. } => {
-                        tokens += crate::media::estimate_image_tokens(std::path::Path::new(path))
-                            as usize;
-                    }
-                }
-            }
-        }
-        _ => {
-            tokens += serde_json::to_string(item)
-                .map(|text| estimate_tokens_str(&text))
-                .unwrap_or(64);
-        }
-    }
-    tokens
+    crate::model::estimate_model_item_tokens(item) as usize
 }
 
 fn estimate_tool_definition(definition: &crate::tool::ToolDefinition) -> usize {

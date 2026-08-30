@@ -300,14 +300,23 @@ impl<'a> Run<'a> {
             // Claim queued steering at the next-step boundary (DSH
             // semantics): never interrupts the in-flight request; the
             // recorder makes each message durable before the model request
-            // that consumes it. MM-1A：steering admission 只放行纯文本
-            //（`Application::steer` fail-closed），`plain_text` 无损。
+            // that consumes it. MM-3 image steering reaches this queue only
+            // after core admission; the transient provider paths never enter
+            // RunEvent/wire/journal and are consumed here exactly once.
             while let Some(pending) = self.steering.pop() {
+                let request_digest = pending
+                    .client_message_id
+                    .as_ref()
+                    .map(|_| pending.request_digest());
                 events.emit(RunEvent::SteeringApplied {
                     message: pending.content.clone(),
                     client_message_id: pending.client_message_id.clone(),
+                    request_digest,
+                    receipt: None,
                 });
-                items.push(ModelItem::user_text(pending.content.plain_text()));
+                items.push(ModelItem::User {
+                    content: pending.model_parts(),
+                });
             }
 
             let dynamic_snapshot = match &self.dynamic_instructions {
@@ -331,6 +340,26 @@ impl<'a> Run<'a> {
                 dynamic_snapshot.as_ref(),
             );
             let instructions = (!instructions.is_empty()).then_some(instructions);
+            let definitions = self.tools.definitions_for(&self.tool_access);
+            let (request_items, _image_projection) =
+                match crate::model::project_items_for_image_budget(
+                    &items,
+                    instructions.as_deref(),
+                    &definitions,
+                    &self.model_options,
+                ) {
+                    Ok(projected) => projected,
+                    Err(error) => {
+                        return Err(fail(
+                            events,
+                            &self.steering,
+                            error,
+                            turn,
+                            total_usage,
+                            items,
+                        ));
+                    }
+                };
 
             // B1 花费护栏（每轮模型请求前比对；steering 延长的同一 run
             // 继续累计）。FP-01（预留制）：检查通过后先预留保守用量
@@ -355,12 +384,11 @@ impl<'a> Run<'a> {
                         items,
                     ));
                 }
-                let definitions = self.tools.definitions_for(&self.tool_access);
                 let output_limit = u64::from(self.model_options.output_limit.unwrap_or(4096));
                 ledger.reserve(
                     crate::model::estimate_request_tokens(
                         instructions.as_deref(),
-                        &items,
+                        &request_items,
                         &definitions,
                     )
                     .saturating_add(output_limit),
@@ -373,10 +401,9 @@ impl<'a> Run<'a> {
                 model: self.model.model_id().to_owned(),
             });
 
-            let definitions = self.tools.definitions_for(&self.tool_access);
             let request = ModelRequest {
                 instructions: instructions.as_deref(),
-                items: &items,
+                items: &request_items,
                 tools: &definitions,
                 options: &self.model_options,
                 cancel: &self.cancel,
@@ -532,7 +559,7 @@ impl<'a> Run<'a> {
                 };
                 let definition = tool.definition();
                 if !self.tool_access.allows(&definition) {
-                    let reason = self.tool_access.denial_reason().to_owned();
+                    let reason = self.tool_access.denial_reason(&definition).to_owned();
                     let decision = PermissionDecision::Deny {
                         reason: reason.clone(),
                     };
@@ -542,6 +569,7 @@ impl<'a> Run<'a> {
                     });
                     let mut result = ToolResult {
                         blocks: Vec::new(),
+                        image_parts: Vec::new(),
                         call_id: call.id.clone(),
                         tool_name: call.name.clone(),
                         output: serde_json::json!({ "error": reason }),
@@ -553,7 +581,7 @@ impl<'a> Run<'a> {
                     items.push(ModelItem::ToolResult(result));
                     events.emit(RunEvent::PermissionDenied {
                         tool: call.name,
-                        reason: self.tool_access.denial_reason().into(),
+                        reason: self.tool_access.denial_reason(&definition).into(),
                     });
                     continue;
                 }
@@ -567,6 +595,7 @@ impl<'a> Run<'a> {
                     });
                     let mut result = ToolResult {
                         blocks: Vec::new(),
+                        image_parts: Vec::new(),
                         call_id: call.id.clone(),
                         tool_name: call.name.clone(),
                         output: serde_json::json!({ "error": reason }),
@@ -613,6 +642,7 @@ impl<'a> Run<'a> {
                         // run semantics; the journal maps the distinction.
                         let mut result = ToolResult {
                             blocks: Vec::new(),
+                            image_parts: Vec::new(),
                             call_id: call.id.clone(),
                             tool_name: call.name.clone(),
                             output: serde_json::json!({
@@ -672,7 +702,12 @@ impl<'a> Run<'a> {
                     && !is_error
                     && output.get("approved").and_then(serde_json::Value::as_bool) == Some(true);
                 let mut result = ToolResult {
-                    blocks: Vec::new(),
+                    blocks: if is_error {
+                        Vec::new()
+                    } else {
+                        tool.result_blocks(&output)
+                    },
+                    image_parts: Vec::new(),
                     call_id: call.id,
                     tool_name: call.name,
                     output,
@@ -1469,6 +1504,120 @@ mod tests {
             } if delta == "tool said: hello"
         )));
         assert!(matches!(events.last(), Some(RunEvent::RunCompleted { .. })));
+    }
+
+    struct ImageProjectionModel {
+        calls: usize,
+    }
+
+    impl Model for ImageProjectionModel {
+        fn provider(&self) -> &str {
+            "test"
+        }
+
+        fn model_id(&self) -> &str {
+            "image-projection"
+        }
+
+        fn stream(
+            &mut self,
+            request: ModelRequest<'_>,
+            _events: &mut dyn ModelEventSink,
+        ) -> Result<ModelResponse, ModelError> {
+            self.calls += 1;
+            assert_eq!(
+                request
+                    .items
+                    .iter()
+                    .flat_map(crate::model::model_item_image_parts)
+                    .count(),
+                1,
+                "the provider sees only the protected latest-turn image"
+            );
+            assert!(matches!(
+                &request.items[0],
+                ModelItem::User { content }
+                    if content == &[ContentPart::Text(crate::model::IMAGE_OFFLOAD_PLACEHOLDER.into())]
+            ));
+            Ok(ModelResponse {
+                text: "done".into(),
+                tool_calls: Vec::new(),
+                finish_reason: FinishReason::Completed,
+                usage: None,
+                provider_response_id: None,
+                provider_state: Vec::new(),
+                reasoning: None,
+            })
+        }
+    }
+
+    #[test]
+    fn run_applies_image_projection_before_model_io_and_fails_closed_for_latest_turn() {
+        let dir = std::env::temp_dir().join(format!(
+            "clat-run-image-projection-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let image = dir.join("image.png");
+        let mut header = vec![
+            0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n', 0, 0, 0, 13, b'I', b'H', b'D', b'R',
+        ];
+        header.extend_from_slice(&500u32.to_be_bytes());
+        header.extend_from_slice(&500u32.to_be_bytes());
+        header.extend_from_slice(&[8, 6, 0, 0, 0]);
+        std::fs::write(&image, header).unwrap();
+        let part = || ContentPart::Image {
+            path: image.to_string_lossy().into_owned(),
+            media_type: "image/png".into(),
+        };
+        let options = ModelOptions {
+            image_projection: Some(crate::model::ImageProjectionBudget {
+                max_context_tokens: None,
+                max_request_images: 1,
+                max_request_image_bytes: u64::MAX,
+            }),
+            ..ModelOptions::default()
+        };
+        let project = Project::new(&dir);
+        let tools = ToolRegistry::new();
+        let mut model = ImageProjectionModel { calls: 0 };
+        let mut events = Vec::new();
+        Run::new(&mut model, &tools, &AllowAll, &project)
+            .with_model_options(options.clone())
+            .execute_with_items(
+                vec![
+                    ModelItem::User {
+                        content: vec![part()],
+                    },
+                    ModelItem::User {
+                        content: vec![ContentPart::Text("latest".into()), part()],
+                    },
+                ],
+                crate::message::MessageContent::text("latest"),
+                None,
+                &mut events,
+            )
+            .expect("old image is deterministically omitted");
+        assert_eq!(model.calls, 1);
+
+        let mut never_called = ImageProjectionModel { calls: 0 };
+        let error = Run::new(&mut never_called, &tools, &AllowAll, &project)
+            .with_model_options(options)
+            .execute_with_items(
+                vec![ModelItem::User {
+                    content: vec![part(), part()],
+                }],
+                crate::message::MessageContent::text("two new images"),
+                None,
+                &mut Vec::new(),
+            )
+            .expect_err("latest-turn images cannot be silently omitted");
+        assert_eq!(never_called.calls, 0, "failure happens before model I/O");
+        assert!(error.to_string().contains("current turn: 2 images"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Stage-0 protocol characterization. This deliberately locks complete

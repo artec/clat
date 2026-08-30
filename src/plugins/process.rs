@@ -566,7 +566,7 @@ fn bounded_u64(
     Ok(value)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::plugin::PluginManager;

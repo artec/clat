@@ -104,7 +104,7 @@ impl PermissionPolicy for ToolAccessGuardPolicy {
         let policy = self.access.snapshot();
         if !policy.allows(tool) {
             return crate::PermissionDecision::Deny {
-                reason: policy.denial_reason().into(),
+                reason: policy.denial_reason(tool).into(),
             };
         }
         self.inner.check(project, tool, call)

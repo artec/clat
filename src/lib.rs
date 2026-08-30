@@ -5,6 +5,7 @@ mod apply_patch;
 mod command;
 pub(crate) mod control_storage;
 pub mod demo;
+mod draft;
 pub mod dsh;
 pub mod event;
 pub mod exec;
@@ -46,15 +47,16 @@ pub(crate) mod test_support;
 mod tool;
 pub mod tui;
 pub mod upgrade;
+mod view_image;
 mod wire;
 
 pub use application::{
     ApplicationError, ApplicationEvent, ApplicationRunDone, ApplicationRunFailure,
     ApplicationRunRequest, ApplicationRunResult, BootstrapApplication, CompactHandle,
     CompactReport, CompactionStatus, ContextEstimateSnapshot, ContextSkillDiagnostic,
-    McpServerInfoDto, McpStatusDto, ProjectAuthorization, ProjectSnapshot, RenameOutcome,
-    RunHandle, SessionSnapshot, SteerOutcome, TrustedProjectApplication, WorkbenchModelSnapshot,
-    WorkbenchProjectSnapshot, WorkbenchSessionSnapshot, WorkbenchSnapshot,
+    McpServerInfoDto, McpStatusDto, ProjectAuthorization, ProjectSnapshot, RecalledSteering,
+    RenameOutcome, RunHandle, SessionSnapshot, SteerOutcome, TrustedProjectApplication,
+    WorkbenchModelSnapshot, WorkbenchProjectSnapshot, WorkbenchSessionSnapshot, WorkbenchSnapshot,
 };
 pub use command::{CommandError, CommandInfo, CommandOutcome};
 pub use control_storage::ModelProfileSummary;

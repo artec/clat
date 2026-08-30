@@ -55,6 +55,7 @@ pub(crate) struct ToolAccessPolicy {
     plan_mode: bool,
     subagents_enabled: bool,
     readonly_child: bool,
+    view_image_enabled: bool,
 }
 
 impl ToolAccessPolicy {
@@ -63,6 +64,7 @@ impl ToolAccessPolicy {
             plan_mode: false,
             subagents_enabled: false,
             readonly_child: false,
+            view_image_enabled: false,
         }
     }
 
@@ -71,11 +73,21 @@ impl ToolAccessPolicy {
             plan_mode: true,
             subagents_enabled: false,
             readonly_child: false,
+            view_image_enabled: false,
         }
     }
 
     pub(crate) fn with_subagents(mut self, enabled: bool) -> Self {
         self.subagents_enabled = enabled;
+        self
+    }
+
+    /// MM-2/W5: `view_image` is a per-run visual capability, not a model-name
+    /// heuristic. The Application sets this bit from the frozen effective
+    /// `ModelCapabilities`; text-only and unverified routes never receive the
+    /// schema and forged calls hit the same policy below.
+    pub(crate) fn with_view_image(mut self, enabled: bool) -> Self {
+        self.view_image_enabled = enabled;
         self
     }
 
@@ -89,10 +101,14 @@ impl ToolAccessPolicy {
             plan_mode: false,
             subagents_enabled: false,
             readonly_child: true,
+            view_image_enabled: false,
         }
     }
 
     pub(crate) fn allows(&self, definition: &ToolDefinition) -> bool {
+        if definition.name == "view_image" && !self.view_image_enabled {
+            return false;
+        }
         if self.readonly_child {
             return definition.effect == ToolEffect::Read
                 && matches!(
@@ -111,9 +127,11 @@ impl ToolAccessPolicy {
                 && definition.name == "exit_plan_mode")
     }
 
-    pub(crate) fn denial_reason(&self) -> &'static str {
+    pub(crate) fn denial_reason(&self, definition: &ToolDefinition) -> &'static str {
         if self.readonly_child {
             "tool unavailable to a read-only subagent"
+        } else if definition.name == "view_image" && !self.view_image_enabled {
+            "view_image is unavailable because the active model has no verified image capability"
         } else {
             "tool unavailable in plan mode"
         }
@@ -227,6 +245,12 @@ pub struct ToolResult {
     /// 落地前恒为空；wire 只在非空时投影 `content_blocks`。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub blocks: Vec<crate::message::ContentBlock>,
+    /// Provider-facing image parts resolved inside the current session/run.
+    /// Paths are deliberately transient: wire/SSE and the durable journal use
+    /// `blocks` descriptors only. Replay rebuilds these parts from attachment
+    /// refs through the session fence before the next provider request.
+    #[serde(default, skip_serializing, skip_deserializing)]
+    pub image_parts: Vec<crate::model::ContentPart>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -269,6 +293,14 @@ pub trait Tool: Send + Sync {
     /// their bounded result. The default remains lossless.
     fn journal_output(&self, output: &Value) -> Value {
         output.clone()
+    }
+
+    /// Optional typed result blocks. The default keeps existing text/JSON
+    /// tools byte-for-byte unchanged; visual tools return descriptors here
+    /// while session-owned result transformers attach transient provider
+    /// paths after authorization and invocation.
+    fn result_blocks(&self, _output: &Value) -> Vec<crate::message::ContentBlock> {
+        Vec::new()
     }
 
     fn invoke(
@@ -780,5 +812,34 @@ mod tests {
         ));
         lease.revoke().unwrap();
         assert!(registry.is_empty());
+    }
+
+    #[test]
+    fn view_image_is_visual_run_gated_and_never_reaches_readonly_children() {
+        let definition = ToolDefinition {
+            name: "view_image".into(),
+            description: String::new(),
+            input_schema: json!({}),
+            effect: ToolEffect::Read,
+            strict: false,
+        };
+        assert!(!ToolAccessPolicy::all().allows(&definition));
+        assert!(
+            ToolAccessPolicy::all()
+                .with_view_image(true)
+                .allows(&definition)
+        );
+        assert!(
+            ToolAccessPolicy::plan_mode()
+                .with_view_image(true)
+                .allows(&definition),
+            "Plan Mode may inspect only the sources already fenced by the tool"
+        );
+        assert!(
+            !ToolAccessPolicy::readonly_child()
+                .with_view_image(true)
+                .allows(&definition),
+            "AG-4 children retain their exact three-tool allowlist"
+        );
     }
 }

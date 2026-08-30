@@ -5,6 +5,63 @@ use crate::tui::model_editor::{
 };
 
 impl App {
+    /// Retain retry material until `SteeringApplied` confirms that the core
+    /// crossed the durable claim point. The transcript's dim pending row is
+    /// presentation only and cannot reconstruct image source paths.
+    pub(super) fn remember_native_steering(
+        &mut self,
+        prompt: String,
+        attachments: Vec<std::path::PathBuf>,
+    ) {
+        if let Some(position) = self
+            .native_steering_claim_credits
+            .iter()
+            .position(|claimed| claimed == &prompt)
+        {
+            self.native_steering_claim_credits.remove(position);
+            self.release_core_staged_attachment_paths(attachments);
+            return;
+        }
+        self.pending_native_steering
+            .push_back(super::NativeSteeringDraft {
+                prompt,
+                attachments,
+            });
+    }
+
+    /// Restore one exact unclaimed draft without merging message boundaries.
+    /// Additional drafts remain ordered for subsequent retries, so several
+    /// individually valid eight-image messages never become one invalid one.
+    pub(super) fn restore_next_recovered_steering(&mut self) -> bool {
+        if !self.input.text().is_empty() || !self.attachments.is_empty() {
+            return false;
+        }
+        let Some(draft) = self.recovered_native_steering.pop_front() else {
+            return false;
+        };
+        if !draft.attachments.is_empty()
+            && let Err(error) = self
+                .attachments
+                .add_paths(self.project.root(), draft.attachments.clone())
+        {
+            self.recovered_native_steering.push_front(draft);
+            self.flash_status(format!(
+                "steering recovery is waiting — source image is unavailable: {error}"
+            ));
+            return false;
+        }
+        self.input.insert_str(&draft.prompt);
+        let remaining = self.recovered_native_steering.len();
+        self.flash_status(if remaining == 0 {
+            "unclaimed steering restored — edit or Enter to retry".into()
+        } else {
+            format!(
+                "unclaimed steering restored — {remaining} more draft(s) remain queued for retry"
+            )
+        });
+        true
+    }
+
     /// 写入一条瞬时提示：显示 `STATUS_TTL` 后自动回落到常驻状态
     /// （当前目录）。
     pub(super) fn flash_status(&mut self, message: impl Into<String>) {
@@ -74,6 +131,19 @@ impl App {
         self.session_usage = snapshot.session_usage;
         self.usage_routes = snapshot.usage_routes;
         self.last_turn_usage = snapshot.last_request_usage;
+        // Drafts are session-local UI state. Never carry an unsent image into
+        // a resumed conversation where its identity would be misleading.
+        self.clear_attachment_draft();
+        let pending_paths = self
+            .pending_native_steering
+            .iter()
+            .chain(self.recovered_native_steering.iter())
+            .flat_map(|draft| draft.attachments.iter().cloned())
+            .collect::<Vec<_>>();
+        self.release_core_staged_attachment_paths(pending_paths);
+        self.pending_native_steering.clear();
+        self.native_steering_claim_credits.clear();
+        self.recovered_native_steering.clear();
         Ok(())
     }
 
@@ -440,19 +510,21 @@ impl App {
     }
 
     pub(super) fn submit_input(&mut self) {
+        if self.clipboard_image_pending {
+            self.flash_status("wait for clipboard image preparation before sending");
+            return;
+        }
         let value = self.input.take();
         let value = value.trim().to_owned();
+        if self.handle_attachment_command(&value) {
+            return;
+        }
         // 附件只随对话消息走：slash 命令不携带、也不清空（留待下一
         // 条消息）；纯附件（空文本）允许提交。
         let is_command = value.starts_with('/');
         if value.is_empty() && (self.attachments.is_empty() || is_command) {
             return;
         }
-        let attachments = if is_command {
-            Vec::new()
-        } else {
-            std::mem::take(&mut self.attachments)
-        };
         // 输入历史是进程内的（↑/↓ 召回）；跨重启的回忆来自会话的
         // transcript 投影（recent_inputs），命令输入永不落盘。
         self.input.remember(value.clone());
@@ -462,13 +534,15 @@ impl App {
         //（审计 P2-3：此前的 `self.attachments` 检查永远落在 mem::take
         // 之后，恒为空——附件被静默吞掉且提示永不出现）。
         if self.dsh.is_some() || self.dsh_connect.is_some() {
+            if !is_command && !self.attachments.is_empty() {
+                self.input.insert_str(&value);
+                self.flash_status("attachments are not supported in clat dsh mode — draft kept");
+                return;
+            }
             self.submit_dsh(value);
             // 提交后置位提示：submit_dsh 自己会 flash（sending…），警告
             // 必须是留在状态栏上的那条——附件没发出去，这比 sending 更
             // 重要。
-            if !attachments.is_empty() {
-                self.flash_status("attachments are not supported in clat dsh mode");
-            }
             return;
         }
 
@@ -486,7 +560,19 @@ impl App {
                 Err(error) => self.flash_status(error.to_string()),
             }
         } else {
-            self.start_run(value.clone(), attachments);
+            if !self.attachments.is_empty() && !self.config.capabilities.accepts_image_input() {
+                self.input.insert_str(&value);
+                self.flash_status(
+                    "this model cannot send images — switch to a verified vision model or remove the draft",
+                );
+                return;
+            }
+            let paths = self.attachments.paths();
+            if !self.start_run(value.clone(), paths) {
+                // Admission/startup failures preserve the complete structured
+                // draft and text so Enter is a lossless retry.
+                self.input.insert_str(&value);
+            }
         }
     }
 
@@ -553,6 +639,17 @@ impl App {
                 self.run_routes_base = None;
                 self.run_route = None;
                 self.run_usage_acc = Usage::default();
+                self.clear_attachment_draft();
+                let pending_paths = self
+                    .pending_native_steering
+                    .iter()
+                    .chain(self.recovered_native_steering.iter())
+                    .flat_map(|draft| draft.attachments.iter().cloned())
+                    .collect::<Vec<_>>();
+                self.release_core_staged_attachment_paths(pending_paths);
+                self.pending_native_steering.clear();
+                self.native_steering_claim_credits.clear();
+                self.recovered_native_steering.clear();
                 self.flash_status("new conversation");
             }
             CommandOutcome::QuitRequested => self.should_quit = true,
@@ -565,9 +662,20 @@ impl App {
     /// （NotRunning，W1-04 封口语义）时回退普通提交；回退提交若撞上
     /// 收尾窗口失败，文本退还编辑框——绝不丢用户输入。
     pub(super) fn steer_input(&mut self) {
+        if self.run_start_pending {
+            self.flash_status("attachment admission is already in progress");
+            return;
+        }
+        if self.clipboard_image_pending {
+            self.flash_status("wait for clipboard image preparation before sending");
+            return;
+        }
         let value = self.input.take();
         let value = value.trim().to_owned();
-        if value.is_empty() {
+        if self.handle_attachment_command(&value) {
+            return;
+        }
+        if value.is_empty() && self.attachments.is_empty() {
             return;
         }
         if value.starts_with('/') {
@@ -579,55 +687,256 @@ impl App {
         // dsh 分流：running 态 Enter = steer（session.prompt mode:"steer"），
         // 回显与队列校正见 dsh_events（§2.3）。
         if self.dsh.is_some() || self.dsh_connect.is_some() {
+            if !self.attachments.is_empty() {
+                self.input.insert_str(&value);
+                self.flash_status("attachments are not supported in clat dsh mode — draft kept");
+                return;
+            }
             self.input.remember(value.clone());
             self.submit_dsh(value);
             return;
         }
+        if !self.attachments.is_empty() && !self.config.capabilities.accepts_image_input() {
+            self.input.insert_str(&value);
+            self.flash_status(
+                "this model cannot send images — switch to a verified vision model or remove the draft",
+            );
+            return;
+        }
         self.input.remember(value.clone());
-        // MM-1A：typed steering——TUI 只产生纯文本消息（附件 steering
-        // 的 admission 属 MM-1/MM-2；Refused 在此不可达，仍如实闪屏）。
+        let paths = self.attachments.paths();
+        if !paths.is_empty() {
+            // `steer` admits staged images before pushing the pending message.
+            // That can decode/normalize up to eight inputs, so use the same
+            // sole-owner handoff as initial attachment admission instead of
+            // blocking crossterm's render/input loop.
+            if !self.start_image_steering_admission(value.clone(), paths) {
+                self.input.insert_str(&value);
+            }
+            return;
+        }
+        let draft_count = paths.len();
         let outcome = self.application.as_ref().map(|application| {
-            application.steer(crate::message::PendingMessage::text(value.clone()))
+            application.steer(crate::message::PendingMessage::from_front_end(
+                value.clone(),
+                None,
+                paths.clone(),
+            ))
         });
         match outcome {
-            Some(SteerOutcome::Queued) => {
-                self.conversation.push_pending_steering(value);
+            Some(SteerOutcome::Queued { .. }) => {
+                let pending = if value.is_empty() {
+                    format!("[{draft_count} image(s)]")
+                } else if draft_count == 0 {
+                    value.clone()
+                } else {
+                    format!("{value}\n[{draft_count} image(s)]")
+                };
+                self.conversation.push_pending_steering(pending);
+                self.remember_native_steering(value, paths);
+                self.attachments.clear();
                 self.flash_status("steering queued — applies at the next model step");
             }
-            Some(SteerOutcome::Refused { reason }) => {
+            Some(SteerOutcome::Refused { reason, .. }) => {
                 self.input.insert_str(&value);
                 self.flash_status(format!("steering refused: {reason}"));
             }
-            // 回退普通提交——steering 不携带附件（M6：附件只能随空闲
-            // 态的新消息走）。提交失败（前一个 run 收尾尚未完成）时把
-            // 文本退回编辑框，用户重按 Enter 即可。
+            // Run already sealed: fall back to an ordinary submission with
+            // the exact same image draft. Success transfers ownership;
+            // startup failure preserves both text and ordered attachments.
             _ => {
                 let fallback = value.clone();
-                if !self.start_run(value, Vec::new()) {
+                if !self.start_run(value, paths) {
                     self.input.insert_str(&fallback);
                 }
             }
         }
     }
 
-    /// 启动一次 run；返回是否成功（失败已 flash 原因——steer 回退
-    /// 路径据此把文本退还编辑框）。
-    fn start_run(&mut self, prompt: String, attachments: Vec<std::path::PathBuf>) -> bool {
+    /// Run image-steering admission off the terminal thread. The active run
+    /// intentionally remains live: only the `TrustedProjectApplication`
+    /// facade moves briefly, and ordinary run events continue through the
+    /// frontend-local channel. No draft is cleared until the worker returns a
+    /// durable `Queued` outcome.
+    fn start_image_steering_admission(
+        &mut self,
+        prompt: String,
+        attachments: Vec<std::path::PathBuf>,
+    ) -> bool {
+        let sender = self
+            .event_sender
+            .clone()
+            .expect("event channel is installed by run()");
+        let Some(application) = self.application.take() else {
+            self.flash_status("project application is unavailable");
+            return false;
+        };
+        let (handoff, received) = mpsc::sync_channel::<TrustedProjectApplication>(0);
+        let worker_sender = sender.clone();
+        let spawn = thread::Builder::new()
+            .name("clat-steering-admission".into())
+            .spawn(move || {
+                let Ok(application) = received.recv() else {
+                    return;
+                };
+                let outcome = application.steer(crate::message::PendingMessage::from_front_end(
+                    prompt.clone(),
+                    None,
+                    attachments,
+                ));
+                let message = UiEvent::Worker(WorkerMessage::SteeringAdmissionFinished(Box::new(
+                    SteeringAdmissionFinished {
+                        application,
+                        prompt,
+                        outcome,
+                    },
+                )));
+                if let Err(error) = worker_sender.send(message)
+                    && let UiEvent::Worker(WorkerMessage::SteeringAdmissionFinished(finished)) =
+                        error.0
+                {
+                    // The terminal disappeared while it was the only holder
+                    // of the facade. Close explicitly so an active run cannot
+                    // outlive the UI process through a detached owner.
+                    let _ = finished.application.close();
+                }
+            });
+        if let Err(error) = spawn {
+            self.application = Some(application);
+            self.flash_status(format!(
+                "failed to start steering admission worker: {error}"
+            ));
+            return false;
+        }
+        if let Err(error) = handoff.send(application) {
+            self.application = Some(error.0);
+            self.flash_status("steering admission worker terminated before handoff");
+            return false;
+        }
+        self.run_start_pending = true;
+        self.steering_admission_pending = true;
+        self.flash_status("preparing steering images…");
+        true
+    }
+
+    /// 把一次普通 run 的完整 pre-commit admission 交给有界 worker。
+    ///
+    /// 返回 true 只表示 handoff 已建立；附件在 RunStartFinished 成功时
+    /// 才清空，异步失败则由该消息处理器恢复原文本。线程创建/移交失败
+    /// 会同步返回 false，调用方据此立即恢复文本。
+    pub(super) fn start_run(
+        &mut self,
+        prompt: String,
+        attachments: Vec<std::path::PathBuf>,
+    ) -> bool {
         if !self.config.is_configured() {
             self.flash_status("model is not configured — run /model first");
+            return false;
+        }
+        if attachments.is_empty() {
+            return self.start_text_run(prompt);
+        }
+        if self.run_start_pending {
+            self.flash_status("run startup is already preparing attachments");
             return false;
         }
         let sender = self
             .event_sender
             .clone()
             .expect("event channel is installed by run()");
+        let Some(application) = self.application.take() else {
+            self.flash_status("project application is unavailable");
+            return false;
+        };
+        // Spawn before moving the application. If the OS refuses the thread,
+        // the frontend still owns the exact live application and can retry.
+        let (handoff, received) = mpsc::sync_channel::<TrustedProjectApplication>(0);
+        let worker_sender = sender.clone();
+        let spawn = thread::Builder::new()
+            .name("clat-run-admission".into())
+            .spawn(move || {
+                let Ok(mut application) = received.recv() else {
+                    return;
+                };
+                let (completion, completed) = mpsc::channel();
+                let gate = RunStartGate::closed();
+                let request = ApplicationRunRequest {
+                    message: crate::message::PendingMessage::from_front_end(
+                        prompt.clone(),
+                        None,
+                        attachments,
+                    ),
+                    asker: Some(Arc::new(ChannelUserAsker::new(worker_sender.clone()))),
+                    approver: Arc::new(ChannelApprover::new(worker_sender.clone())),
+                    events: Box::new(DeferredChannelEventSink::new(
+                        worker_sender.clone(),
+                        gate.clone(),
+                    )),
+                    completion,
+                };
+                let outcome = application.start_run(request).map_or_else(
+                    |error| Err(error.to_string()),
+                    |handle| {
+                        Ok(PreparedTuiRun {
+                            handle,
+                            completed,
+                            gate,
+                        })
+                    },
+                );
+                let message = UiEvent::Worker(WorkerMessage::RunStartFinished(Box::new(
+                    RunStartFinished {
+                        application,
+                        prompt,
+                        outcome,
+                    },
+                )));
+                if let Err(error) = worker_sender.send(message) {
+                    // The terminal went away during admission. Never leave a
+                    // core run blocked on the first-event gate, and close the
+                    // recovered application explicitly after cancellation.
+                    if let UiEvent::Worker(WorkerMessage::RunStartFinished(finished)) = error.0 {
+                        let RunStartFinished {
+                            application,
+                            outcome,
+                            ..
+                        } = *finished;
+                        if let Ok(started) = outcome {
+                            started.handle.cancel();
+                            started.gate.open();
+                            let _ = started.handle.join();
+                        }
+                        let _ = application.close();
+                    }
+                }
+            });
+        if let Err(error) = spawn {
+            self.application = Some(application);
+            self.flash_status(format!("failed to start admission worker: {error}"));
+            return false;
+        }
+        if let Err(error) = handoff.send(application) {
+            self.application = Some(error.0);
+            self.flash_status("admission worker terminated before handoff");
+            return false;
+        }
+        self.run_start_pending = true;
+        self.steering_admission_pending = false;
+        self.flash_status("preparing attachments…");
+        true
+    }
+
+    /// Text-only startup has no image decode/normalization work and retains
+    /// the established synchronous handoff. This keeps the application
+    /// continuously available for the overwhelmingly common fast path.
+    fn start_text_run(&mut self, prompt: String) -> bool {
+        let sender = self
+            .event_sender
+            .clone()
+            .expect("event channel is installed by run()");
         let (completion, completed) = mpsc::channel();
         let request = ApplicationRunRequest {
-            message: crate::message::PendingMessage::from_front_end(
-                prompt.clone(),
-                None,
-                attachments,
-            ),
+            message: crate::message::PendingMessage::text(prompt.clone()),
             asker: Some(Arc::new(ChannelUserAsker::new(sender.clone()))),
             approver: Arc::new(ChannelApprover::new(sender.clone())),
             events: Box::new(ChannelEventSink(sender.clone())),
@@ -648,23 +957,18 @@ impl App {
                 return false;
             }
         };
-        // W1-13：纪元先于任何收尾可见性落地——完成消息将携带它。
         self.run_epoch += 1;
         let epoch = self.run_epoch;
         self.conversation.push_user(prompt);
         self.conversation_scroll_from_bottom = 0;
         self.run_handle = Some(handle);
         self.running = true;
-        // 实时用量基线：流式 Usage 在其上累加，结束以 RunOutput 权威替换。
         self.run_usage_base = Some(self.session_usage.clone());
         self.run_usage_acc = Usage::default();
-        // 路由桶基线同律（INV-C1）：run 期间只动本次 run 的路由桶。
         self.run_routes_base = Some(self.usage_routes.clone());
         self.run_route = None;
         self.flash_status("starting model…");
-
-        // Completion is already post-persistence and post-scope-cleanup; this
-        // tiny frontend bridge only multiplexes it into the terminal channel.
+        self.restore_next_recovered_steering();
         thread::spawn(move || {
             if let Ok(result) = completed.recv() {
                 let _ = sender.send(UiEvent::Worker(WorkerMessage::Done { epoch, result }));

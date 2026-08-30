@@ -56,24 +56,60 @@ pub use dto::{
 };
 pub use run_lifecycle::{
     ApplicationRunDone, ApplicationRunFailure, ApplicationRunRequest, ApplicationRunResult,
-    RenameOutcome, RunHandle, SteerOutcome,
+    RecalledSteering, RenameOutcome, RunHandle, SteerOutcome,
 };
 pub(crate) use threads::{EXIT_JOIN_GRACE, join_with_grace};
 
 use title::TitleWorker;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ApplicationError(String);
+pub struct ApplicationError {
+    message: String,
+    receipt: Option<Box<crate::message::AdmissionReceipt>>,
+}
 
 impl ApplicationError {
     fn new(message: impl Into<String>) -> Self {
-        Self(message.into())
+        Self {
+            message: message.into(),
+            receipt: None,
+        }
+    }
+
+    fn with_receipt(mut self, receipt: Option<Box<crate::message::AdmissionReceipt>>) -> Self {
+        if receipt.is_some() {
+            self.receipt = receipt;
+        }
+        self
+    }
+
+    fn with_rollback_if_unclassified(
+        mut self,
+        client_message_id: Option<crate::message::ClientMessageId>,
+        phase: &'static str,
+    ) -> Self {
+        if self.receipt.is_none()
+            && let Some(client_message_id) = client_message_id
+        {
+            self.receipt = Some(Box::new(crate::message::AdmissionReceipt::rolled_back(
+                client_message_id,
+                Vec::new(),
+                phase,
+            )));
+        }
+        self
+    }
+
+    /// Authoritative admission state for a client-keyed request, when the
+    /// error occurred inside message admission/run startup.
+    pub fn admission_receipt(&self) -> Option<&crate::message::AdmissionReceipt> {
+        self.receipt.as_deref()
     }
 }
 
 impl fmt::Display for ApplicationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
+        formatter.write_str(&self.message)
     }
 }
 
@@ -142,6 +178,9 @@ pub struct TrustedProjectApplication {
     project_manager: Option<PluginManager>,
     sessions: Arc<SessionService>,
     control: Arc<ControlStorage>,
+    /// Process-local, core-owned pre-admission image staging. Clipboard bytes
+    /// never become frontend-owned temp paths outside this scope.
+    draft_images: Arc<crate::draft::DraftImageStore>,
     config: Arc<dyn ConfigStore>,
     providers: Arc<ProviderRegistry>,
     /// Frozen tool registry: `request/header.tools` reads what the model
@@ -157,6 +196,9 @@ pub struct TrustedProjectApplication {
     process_service: Arc<crate::process::ProcessService>,
     plan_mode: Arc<crate::plan_mode::PlanModeService>,
     tool_access: Arc<crate::tool::ToolAccessSlot>,
+    /// Current-run visual attachment/scratch authority. The tool registry is
+    /// project-owned, while this slot is reset at every run boundary.
+    view_image: Arc<crate::view_image::ViewImageState>,
     skills: Arc<crate::skills::SkillsService>,
     skill_catalog: Arc<crate::skills::SkillCatalogSlot>,
     /// Explicit, local knowledge service. Mutations are user-only Application
@@ -247,6 +289,8 @@ pub struct TrustedProjectApplication {
     lease: StorageRootLease,
     #[cfg(test)]
     fail_next_run_spawn: bool,
+    #[cfg(test)]
+    fail_next_run_start_receive: bool,
 }
 
 fn broadcast_to(

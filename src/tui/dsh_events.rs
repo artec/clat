@@ -2899,13 +2899,13 @@ mod tests {
         );
     }
 
-    /// 审计 P2-3 判别：dsh 态带附件提交——必须可见提示（此前的检查
-    /// 落在 mem::take 之后恒空，附件被静默吞掉），文本照常发宿主。
+    /// MM-3 失败恢复判别：dsh 不支持附件时，文本与结构化草稿都保留，
+    /// 且不得只把文本发给宿主造成一次不可逆的半提交。
     #[test]
-    fn dsh_submit_with_attachments_warns_instead_of_silently_dropping() {
+    fn dsh_submit_with_attachments_preserves_the_complete_draft() {
         let (mut app, task_rx) = dsh_app();
         app.attachments
-            .push(std::path::PathBuf::from("/tmp/evidence.png"));
+            .add_unchecked_for_test(std::path::PathBuf::from("/tmp/evidence.png"));
         app.input.insert_str("look at this");
         app.submit_input();
         assert!(
@@ -2913,14 +2913,9 @@ mod tests {
             "the warning must actually fire, status: {}",
             app.status
         );
-        assert!(matches!(
-            task_rx.try_recv(),
-            Ok(DshTask::Prompt {
-                steer: false,
-                text,
-                ..
-            }) if text == "look at this"
-        ));
+        assert_eq!(app.input.text(), "look at this");
+        assert_eq!(app.attachments.len(), 1);
+        assert!(task_rx.try_recv().is_err(), "no partial prompt is sent");
     }
 
     /// B-4（2026-08-24 负责人对齐：clat dsh 是宿主的终端客户端）判别：

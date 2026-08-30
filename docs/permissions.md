@@ -217,6 +217,25 @@ Native read tools accept absolute paths in every mode. This follows the current
 DSH-aligned rule that reading is not project-confined. Project-relative paths
 still reject `..` traversal and use symlink-aware capability resolution.
 
+Image authority is deliberately narrower than this ambient read rule.
+`view_image` is a `Read` tool, but it is registered in a run's model-facing
+catalog only when the frozen model route has a probe-verified image-input and
+tool-result policy. Its argument must resolve through exactly one of three
+authorities: an attachment id reachable from the active session, a
+project-relative no-follow path, or an unforgeable current-run scratch ref
+minted by core. Absolute host paths are rejected even in Full Access, and Full
+Access does not widen the visual catalog. A successful invocation returns a
+typed image tool result to the provider; journal and client events retain only
+the fenced reference and metadata, never the host path or image bytes.
+
+PWA draft upload ids follow a different boundary. They are random, short-lived,
+Bearer- and selection-generation-bound capabilities for pre-admission raw
+files. `prompt.send` and `steer.send` may reference those ids, but the browser
+cannot name a server path or turn an upload id into a durable attachment
+without core validation and the journal commit point. Session/project switch,
+token rotation, expiry, rollback, and unclaimed steering invalidate or release
+the corresponding authority.
+
 The consequence is intentional and important: Read Only means "ask before
 side effects," not "the agent can read only this repository." Do not start CLAT
 with a model or extension you would not trust with local readable data.

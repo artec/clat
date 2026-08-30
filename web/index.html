@@ -144,7 +144,13 @@
     </div>
 
     <section class="composer" aria-label="Message composer">
-      <div class="composer-shell">
+      <div id="composer-shell" class="composer-shell">
+        <input id="attachment-input" class="visually-hidden" type="file" multiple
+               accept="image/png,image/jpeg" aria-label="Choose PNG or JPEG images">
+        <div id="drop-overlay" class="drop-overlay hidden" aria-hidden="true">
+          <strong>DROP IMAGES TO STAGE</strong>
+          <span>PNG or JPEG · up to 8 images</span>
+        </div>
         <div class="composer-context">
           <button id="composer-permission" class="context-pill" type="button" title="Change permission mode">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 20 7v5c0 5-3.4 8-8 10-4.6-2-8-5-8-10V7z"/></svg>
@@ -153,8 +159,14 @@
           <span id="plan-mode-badge" class="plan-mode-badge hidden" role="status">Plan mode</span>
           <span id="run-state" class="run-state" role="status"></span>
         </div>
+        <div id="attachment-rail" class="attachment-rail hidden" aria-label="Staged images"></div>
         <textarea id="prompt" rows="2" placeholder="Describe the outcome you want…" aria-label="Message CLAT"></textarea>
         <div class="composer-row">
+          <button id="attachment-open" class="attachment-open" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+            <span>Add images</span>
+          </button>
+          <span id="attachment-summary" class="attachment-summary" role="status"></span>
           <span class="composer-hint"><kbd>Enter</kbd> send · <kbd>Shift Enter</kbd> newline</span>
           <div class="composer-actions">
             <button id="cancel" class="ghost hidden" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10"/></svg> Stop</button>
@@ -183,6 +195,7 @@
           <div><dt>Journal seq</dt><dd id="detail-seq">—</dd></div>
           <div><dt>Session ID</dt><dd id="detail-session" class="mono-detail">Fresh</dd></div>
         </dl>
+        <button id="compact-session" class="ghost inspector-action" type="button">Compact history</button>
       </section>
       <section class="inspector-section">
         <h2>Model route</h2>

@@ -487,6 +487,48 @@ pub(crate) mod payloads {
         }
     }
 
+    /// Durable tool-result content. Typed image blocks are projected as
+    /// attachment descriptors only: no absolute path and no inline bytes ever
+    /// cross the journal boundary. The text-only shape remains byte-for-byte
+    /// identical because the image suffix is empty for every legacy tool.
+    pub(crate) fn tool_result_content_with_blocks(
+        output: &Value,
+        blocks: &[crate::message::ContentBlock],
+    ) -> Value {
+        let mut content = tool_result_content(output)
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        for block in blocks {
+            match block {
+                crate::message::ContentBlock::Text { text } => {
+                    content.push(json!({ "type": "text", "text": text }));
+                }
+                crate::message::ContentBlock::Image { attachment } => {
+                    let mut image = json!({
+                        "type": "image",
+                        "mediaType": attachment.media_type,
+                        "attachmentId": attachment.attachment_id,
+                        "width": attachment.width,
+                        "height": attachment.height,
+                        "bytes": attachment.bytes,
+                    });
+                    if let Some(name) = &attachment.display_name {
+                        image["displayName"] = json!(name);
+                    }
+                    if let Some(width) = attachment.original_width {
+                        image["originalWidth"] = json!(width);
+                    }
+                    if let Some(height) = attachment.original_height {
+                        image["originalHeight"] = json!(height);
+                    }
+                    content.push(image);
+                }
+            }
+        }
+        Value::Array(content)
+    }
+
     pub(crate) fn compaction_start(compaction_id: &str, turn: u64) -> Value {
         json!({ "compactionId": compaction_id, "turn": turn })
     }

@@ -21,6 +21,17 @@ pub struct ContextEstimateSnapshot {
     pub memory_budget_bytes: u64,
     pub tool_schemas_estimate: u64,
     pub history_estimate: u64,
+    /// Images in the effective model history, including typed tool results,
+    /// in provider projection order.
+    pub image_count: u64,
+    pub image_original_count: u64,
+    pub image_offloaded_count: u64,
+    /// Sum of currently reachable normalized attachment bytes.
+    pub image_bytes: u64,
+    /// Visual-token component from the same estimator used by request
+    /// preflight and compaction. It is included in `history_estimate`.
+    pub image_token_estimate: u64,
+    pub image_token_safety_factor: u64,
     pub output_reserve_estimate: u64,
     pub input_estimate: u64,
     pub total_estimate: u64,
@@ -42,7 +53,7 @@ pub struct ContextSkillDiagnostic {
 /// 与 [`ProjectSnapshot`] 的边界刻意不同：这里不读 transcript/replay，
 /// 不携带 credentials，也不触发 monitor 配置。PWA、未来桌面端和 IDE
 /// 可用它绘制应用壳；会话正文仍只从 journal replay / RunEvent 获得。
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct WorkbenchSnapshot {
     pub project: WorkbenchProjectSnapshot,
     pub session: WorkbenchSessionSnapshot,
@@ -67,7 +78,7 @@ pub struct WorkbenchSessionSnapshot {
     pub committed_seq: Option<u64>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct WorkbenchModelSnapshot {
     pub protocol: crate::model::ModelProtocol,
     pub model: String,
@@ -75,6 +86,9 @@ pub struct WorkbenchModelSnapshot {
     pub active_profile: Option<String>,
     pub thinking_level: Option<crate::model::ThinkingLevel>,
     pub max_context_tokens: Option<u32>,
+    /// W2b frontend-neutral tri-state source. Credentials and unrestricted
+    /// provider JSON remain excluded from this lightweight snapshot.
+    pub overrides: crate::model::ModelOverrides,
     /// 已解析缺省值后的单次 run token 花费护栏；0 表示关闭。
     pub run_token_budget: u64,
 }
@@ -95,7 +109,7 @@ pub struct ProjectSnapshot {
     /// Journal-derived session usage aggregate (status-bar Cache ratio).
     pub session_usage: crate::model::Usage,
     /// Journal-derived per-route usage buckets (INV-C1：Cache 段按当前
-    /// 模型路由取桶，键见 [`crate::model::model_route_key`]）。
+    /// 模型路由取桶，键由内部 `model_route_key` 规则生成）。
     pub usage_routes: std::collections::BTreeMap<String, crate::model::Usage>,
     /// Journal-derived most recent request usage (status-bar Context).
     pub last_request_usage: Option<crate::model::Usage>,

@@ -215,6 +215,14 @@ impl ConversationModel {
         });
     }
 
+    #[cfg(test)]
+    pub(crate) fn last_assistant_text(&self) -> Option<&str> {
+        self.items.iter().rev().find_map(|(item, _)| match item {
+            ConversationItem::Assistant { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+    }
+
     fn open_assistant(&mut self, provider: String, model: String) {
         self.assistant_open = true;
         self.items.push((
@@ -1028,6 +1036,8 @@ mod tests {
         model.apply_run_event(&RunEvent::SteeringApplied {
             message: crate::message::MessageContent::text("first"),
             client_message_id: None,
+            request_digest: None,
+            receipt: None,
         });
         assert_eq!(model.pending_steering_count(), 0);
         let joined = plain(&mut model);
@@ -1040,6 +1050,8 @@ mod tests {
         model.apply_run_event(&RunEvent::SteeringApplied {
             message: crate::message::MessageContent::text("direct"),
             client_message_id: None,
+            request_digest: None,
+            receipt: None,
         });
         assert!(plain(&mut model).contains("❯ direct"));
 

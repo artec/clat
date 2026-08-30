@@ -26,7 +26,10 @@ pub(crate) const RPC_METHODS: &[&str] = &[
     "session.new",
     "session.switch",
     "session.rename",
+    "session.compact",
+    "model.overrides.set",
     "permission.set",
+    "draft.open",
     "command.run",
     "prompt.send",
     "steer.send",
@@ -77,6 +80,7 @@ impl ErrorCode {
 pub(crate) struct RpcError {
     pub code: ErrorCode,
     pub message: String,
+    pub receipt: Option<Box<crate::message::AdmissionReceipt>>,
 }
 
 impl RpcError {
@@ -84,31 +88,44 @@ impl RpcError {
         Self {
             code: ErrorCode::BadRequest,
             message: message.into(),
+            receipt: None,
         }
     }
     pub(crate) fn not_found(message: impl Into<String>) -> Self {
         Self {
             code: ErrorCode::NotFound,
             message: message.into(),
+            receipt: None,
         }
     }
     pub(crate) fn busy(message: impl Into<String>) -> Self {
         Self {
             code: ErrorCode::Busy,
             message: message.into(),
+            receipt: None,
         }
     }
     pub(crate) fn not_pending(message: impl Into<String>) -> Self {
         Self {
             code: ErrorCode::NotPending,
             message: message.into(),
+            receipt: None,
         }
     }
     pub(crate) fn internal(message: impl Into<String>) -> Self {
         Self {
             code: ErrorCode::Internal,
             message: message.into(),
+            receipt: None,
         }
+    }
+
+    pub(crate) fn with_receipt(
+        mut self,
+        receipt: Option<Box<crate::message::AdmissionReceipt>>,
+    ) -> Self {
+        self.receipt = receipt;
+        self
     }
 }
 
@@ -116,11 +133,16 @@ impl RpcError {
 pub(crate) fn rpc_result_json(result: &Result<Value, RpcError>) -> String {
     match result {
         Ok(value) => json!({ "ok": true, "value": value }).to_string(),
-        Err(error) => json!({
-            "ok": false,
-            "error": { "code": error.code.as_str(), "message": error.message },
-        })
-        .to_string(),
+        Err(error) => {
+            let mut body = json!({
+                "ok": false,
+                "error": { "code": error.code.as_str(), "message": error.message },
+            });
+            if let Some(receipt) = &error.receipt {
+                body["error"]["receipt"] = crate::wire::admission_receipt_to_json(receipt);
+            }
+            body.to_string()
+        }
     }
 }
 
@@ -250,6 +272,7 @@ pub(crate) fn dispatch(
             Ok(super::shapes::workbench_snapshot_json(
                 &snapshot,
                 shared.active_run_info(),
+                shared.active_compaction_info(),
                 RPC_METHODS,
             ))
         }
@@ -275,6 +298,7 @@ pub(crate) fn dispatch(
         }
         "session.new" => {
             with_app(shared, |app| app.new_session()).map_err(app_error)?;
+            shared.advance_selection_generation();
             // 惰性会话（core 事实）：id 在首条 prompt 落 journal 时物化，
             // 详情经 session.info 读取（对账偏差，见 worklist 交付注记）。
             Ok(json!({}))
@@ -283,6 +307,7 @@ pub(crate) fn dispatch(
             let id = required_str(params, "id")?;
             with_app(shared, |app| app.switch_session(SessionId::new(id)))
                 .map_err(session_error)?;
+            shared.advance_selection_generation();
             Ok(json!({}))
         }
         "session.rename" => {
@@ -304,6 +329,38 @@ pub(crate) fn dispatch(
                 )),
             }
         }
+        "session.compact" => {
+            let action = params
+                .get("action")
+                .and_then(Value::as_str)
+                .unwrap_or("start");
+            match action {
+                "start" => {
+                    if !shared.active_run_info().is_null() {
+                        return Err(RpcError::busy(
+                            "history cannot be compacted while a run is active",
+                        ));
+                    }
+                    if with_app(shared, |app| app.current_session_id()).is_none() {
+                        return Err(RpcError::bad_request("no conversation to compact"));
+                    }
+                    let started = shared.start_compaction().map_err(|error| match error {
+                        super::state::StartCompactionError::AlreadyActive => {
+                            RpcError::busy("a compaction is already active")
+                        }
+                        super::state::StartCompactionError::Application(error) => app_error(error),
+                    })?;
+                    Ok(json!({ "status": "started", "started": started }))
+                }
+                "cancel" => Ok(json!({
+                    "status": if shared.cancel_compaction() { "cancelling" } else { "idle" }
+                })),
+                _ => Err(RpcError::bad_request(
+                    "session.compact action must be start or cancel",
+                )),
+            }
+        }
+        "model.overrides.set" => model_overrides_set(params, shared),
         "permission.set" => {
             let raw_mode = required_str(params, "mode")?;
             let mode = crate::PermissionMode::from_journal_value(&raw_mode).ok_or_else(|| {
@@ -322,25 +379,44 @@ pub(crate) fn dispatch(
             with_app(shared, |app| app.set_permission_mode(mode)).map_err(app_error)?;
             Ok(json!({ "mode": mode.journal_value(), "label": mode.to_string() }))
         }
+        "draft.open" => {
+            let client_draft_id = required_str(params, "clientDraftId")?;
+            let selection_generation = shared.selection_generation();
+            let target = with_app(shared, |app| app.current_session_id()).map_or_else(
+                || crate::DraftTarget::PendingSession {
+                    nonce: uuid::Uuid::new_v4().to_string(),
+                },
+                |session_id| crate::DraftTarget::ExistingSession {
+                    session_id: session_id.as_str().to_owned(),
+                },
+            );
+            let scope = shared
+                .drafts
+                .open_scope(
+                    &client_draft_id,
+                    selection_generation,
+                    shared.token_generation(),
+                    target,
+                )
+                .map_err(RpcError::bad_request)?;
+            let target = match scope.target {
+                crate::DraftTarget::ExistingSession { session_id } => {
+                    json!({ "kind": "existing_session", "sessionId": session_id })
+                }
+                crate::DraftTarget::PendingSession { nonce } => {
+                    json!({ "kind": "pending_session", "nonce": nonce })
+                }
+            };
+            Ok(json!({
+                "draftScopeId": scope.draft_scope_id,
+                "selectionGeneration": scope.selection_generation,
+                "target": target,
+                "expiresAt": scope.expires_at,
+            }))
+        }
         "command.run" => command_run(params, shared),
         "prompt.send" => prompt_send(params, shared),
-        "steer.send" => {
-            let text = required_str(params, "text")?;
-            if text.trim().is_empty() {
-                return Err(RpcError::bad_request("text must not be empty"));
-            }
-            // MM-1A additive：可选客户端幂等键（additive 可选参数；缺省
-            // = 无键提交）。图片 steering 被 core admission fail-closed，
-            // `Refused` 如实回 bad-request，不冒充 not_running。
-            let client_message_id = optional_str(params, "clientMessageId")?;
-            let message =
-                crate::message::PendingMessage::from_front_end(text, client_message_id, Vec::new());
-            match with_app(shared, |app| app.steer(message)) {
-                SteerOutcome::Queued => Ok(json!({ "outcome": "queued" })),
-                SteerOutcome::NotRunning => Ok(json!({ "outcome": "not_running" })),
-                SteerOutcome::Refused { reason } => Err(RpcError::bad_request(reason)),
-            }
-        }
+        "steer.send" => steer_send(params, shared),
         "run.cancel" => {
             // 幂等：无 active run 也 ok（§4）。
             with_app(shared, |app| app.cancel_active_run());
@@ -348,6 +424,155 @@ pub(crate) fn dispatch(
         }
         "approval.respond" => approver::respond(shared, params),
         other => Err(RpcError::bad_request(format!("unknown method: {other}"))),
+    }
+}
+
+/// W2b's deliberately narrow model mutation surface. It changes one typed
+/// preset override at a time, never accepts or returns credentials, and is
+/// unavailable while a run owns the model snapshot.
+fn model_overrides_set(
+    params: &Map<String, Value>,
+    shared: &Arc<ServeShared>,
+) -> Result<Value, RpcError> {
+    if !shared.active_run_info().is_null() {
+        return Err(RpcError::busy(
+            "model overrides cannot change while a run is active",
+        ));
+    }
+    let field = required_str(params, "field")?;
+    let state = required_str(params, "state")?;
+    if !matches!(state.as_str(), "inherit" | "set" | "clear") {
+        return Err(RpcError::bad_request(
+            "state must be inherit, set, or clear",
+        ));
+    }
+    let value = params.get("value");
+    if state == "set" && value.is_none() {
+        return Err(RpcError::bad_request("set requires value"));
+    }
+    if state != "set" && value.is_some_and(|value| !value.is_null()) {
+        return Err(RpcError::bad_request(
+            "value is only allowed when state is set",
+        ));
+    }
+
+    let app = shared.app.lock().expect("application lock");
+    let (mut config, credentials) = app.model_state().map_err(app_error)?;
+    let preset = config
+        .preset
+        .as_deref()
+        .and_then(crate::presets::preset_by_id);
+    let response_override = match field.as_str() {
+        "output_limit" => {
+            config.overrides.output_limit = match state.as_str() {
+                "inherit" => {
+                    config.output_limit = preset.map(|preset| preset.output_limit);
+                    crate::Override::Inherit
+                }
+                "clear" => crate::Override::Clear,
+                "set" => crate::Override::Set(parse_override_u32(value, field.as_str(), 1)?),
+                _ => unreachable!(),
+            };
+            super::shapes::override_value(&config.overrides.output_limit)
+        }
+        "temperature" => {
+            config.overrides.temperature = match state.as_str() {
+                "inherit" => {
+                    config.temperature = None;
+                    crate::Override::Inherit
+                }
+                "clear" => crate::Override::Clear,
+                "set" => {
+                    let value = value
+                        .and_then(Value::as_f64)
+                        .filter(|value| value.is_finite() && *value >= 0.0)
+                        .ok_or_else(|| {
+                            RpcError::bad_request(
+                                "temperature set value must be a finite non-negative number",
+                            )
+                        })?;
+                    crate::Override::Set(value)
+                }
+                _ => unreachable!(),
+            };
+            super::shapes::override_value(&config.overrides.temperature)
+        }
+        "parallel_tool_calls" => {
+            config.overrides.parallel_tool_calls = match state.as_str() {
+                "inherit" => {
+                    config.parallel_tool_calls =
+                        preset.is_none_or(|preset| preset.parallel_managed_default());
+                    crate::Override::Inherit
+                }
+                "clear" => crate::Override::Clear,
+                "set" => crate::Override::Set(value.and_then(Value::as_bool).ok_or_else(|| {
+                    RpcError::bad_request("parallel_tool_calls set value must be boolean")
+                })?),
+                _ => unreachable!(),
+            };
+            super::shapes::override_value(&config.overrides.parallel_tool_calls)
+        }
+        "thinking_level" => {
+            config.overrides.thinking_level = match state.as_str() {
+                "inherit" => {
+                    config.thinking_level = None;
+                    if let Some(preset) = preset {
+                        config.extra_body = preset.extra_body();
+                    } else if let Some(body) = config.extra_body.as_object_mut() {
+                        body.remove("reasoning_effort");
+                    }
+                    crate::Override::Inherit
+                }
+                "clear" => crate::Override::Clear,
+                "set" => crate::Override::Set(parse_thinking_override(value)?),
+                _ => unreachable!(),
+            };
+            super::shapes::override_value(&config.overrides.thinking_level)
+        }
+        "max_context_tokens" => {
+            config.overrides.max_context_tokens = match state.as_str() {
+                "inherit" => {
+                    config.max_context_tokens = preset.map(|preset| preset.context_window);
+                    crate::Override::Inherit
+                }
+                "clear" => crate::Override::Clear,
+                "set" => crate::Override::Set(parse_override_u32(value, field.as_str(), 4_096)?),
+                _ => unreachable!(),
+            };
+            super::shapes::override_value(&config.overrides.max_context_tokens)
+        }
+        _ => {
+            return Err(RpcError::bad_request(
+                "field must be output_limit, temperature, parallel_tool_calls, thinking_level, or max_context_tokens",
+            ));
+        }
+    };
+    config.overrides_version = Some(1);
+    config.apply_overrides();
+    app.save_model_state(&config, &credentials)
+        .map_err(app_error)?;
+    Ok(json!({ "field": field, "override": response_override }))
+}
+
+fn parse_override_u32(value: Option<&Value>, field: &str, minimum: u32) -> Result<u32, RpcError> {
+    let value = value
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|value| *value >= minimum)
+        .ok_or_else(|| {
+            RpcError::bad_request(format!("{field} set value must be an integer >= {minimum}"))
+        })?;
+    Ok(value)
+}
+
+fn parse_thinking_override(value: Option<&Value>) -> Result<crate::ThinkingLevel, RpcError> {
+    match value.and_then(Value::as_str) {
+        Some("low") => Ok(crate::ThinkingLevel::Low),
+        Some("high") => Ok(crate::ThinkingLevel::High),
+        Some("max") => Ok(crate::ThinkingLevel::Max),
+        _ => Err(RpcError::bad_request(
+            "thinking_level set value must be low, high, or max",
+        )),
     }
 }
 
@@ -452,6 +677,12 @@ fn command_run(params: &Map<String, Value>, shared: &Arc<ServeShared>) -> Result
                 "memory_budget_bytes": snapshot.memory_budget_bytes,
                 "tool_schemas": snapshot.tool_schemas_estimate,
                 "history": snapshot.history_estimate,
+                "image_count": snapshot.image_count,
+                "image_original_count": snapshot.image_original_count,
+                "image_offloaded_count": snapshot.image_offloaded_count,
+                "image_bytes": snapshot.image_bytes,
+                "image_tokens": snapshot.image_token_estimate,
+                "image_safety_factor": snapshot.image_token_safety_factor,
                 "output_reserve": snapshot.output_reserve_estimate,
                 "input": snapshot.input_estimate,
                 "total": snapshot.total_estimate,
@@ -516,22 +747,29 @@ fn start_goal_run(shared: &Arc<ServeShared>, rpc_id: String) -> Result<Value, Rp
 /// run 队列是产品语义，无病历不立（§4/§11-6）。
 fn prompt_send(params: &Map<String, Value>, shared: &Arc<ServeShared>) -> Result<Value, RpcError> {
     let text = required_str(params, "text")?;
-    if text.trim().is_empty() {
-        return Err(RpcError::bad_request("text must not be empty"));
-    }
-    let attachments = match params.get("attachments") {
+    let upload_ids = match params.get("attachments") {
         None | Some(Value::Null) => Vec::new(),
         Some(Value::Array(items)) => {
-            let mut paths = Vec::new();
+            let mut ids = Vec::new();
             for item in items {
-                let path = item
+                let id = item
                     .as_str()
                     .ok_or_else(|| RpcError::bad_request("attachments must be strings"))?;
-                paths.push(PathBuf::from(path));
+                ids.push(id.to_owned());
             }
-            paths
+            ids
         }
         Some(_) => return Err(RpcError::bad_request("attachments must be an array")),
+    };
+    if text.trim().is_empty() && upload_ids.is_empty() {
+        return Err(RpcError::bad_request(
+            "text or at least one attachment is required",
+        ));
+    }
+    let draft_scope_id = if upload_ids.is_empty() {
+        None
+    } else {
+        Some(required_str(params, "draftScopeId")?)
     };
     // MM-1A additive：可选客户端幂等键——durable user 事件与 receipts
     // 投影携带它。M-02（审查 2026-08-27）：committed 重试在 append 前
@@ -539,8 +777,14 @@ fn prompt_send(params: &Map<String, Value>, shared: &Arc<ServeShared>) -> Result
     // 同 key 异 digest conflict（bad-request）；判别走 core 的
     // `committed_admission` 生产查询，不在 serve 复刻投影逻辑。
     let client_message_id = optional_str(params, "clientMessageId")?;
-    let message =
-        crate::message::PendingMessage::from_front_end(text, client_message_id, attachments);
+    // Build retry identity over opaque upload ids before resolving them to
+    // private core paths. Committed retries therefore succeed even after raw
+    // staging has been reclaimed, and host paths never become client input.
+    let mut message = crate::message::PendingMessage::from_front_end(
+        text,
+        client_message_id,
+        upload_ids.iter().map(PathBuf::from).collect(),
+    );
     // 第一道（claim 前）：挡住绝大多数已完成的重复提交。
     if let Some(outcome) = committed_retry_check(shared, &message) {
         return outcome;
@@ -550,7 +794,8 @@ fn prompt_send(params: &Map<String, Value>, shared: &Arc<ServeShared>) -> Result
     // 先占 run 槽再锁应用（锁纪律：Inner 锁内不调门面；busy 判定与
     // 缓冲归属之间无窗口）。
     if !shared.try_claim_run(&rpc_id, super::state::now_ms()) {
-        return Err(RpcError::busy("another run is already active"));
+        return Err(RpcError::busy("another run is already active")
+            .with_receipt(rolled_back_receipt(&message, "run-busy")));
     }
     // 第二道（claim 后复查）：关掉「检查与 append 之间上一个同键 run
     // 恰好完成落盘」的竞态窗口——claim 是串行点，复查之后不再可能
@@ -558,6 +803,21 @@ fn prompt_send(params: &Map<String, Value>, shared: &Arc<ServeShared>) -> Result
     if let Some(outcome) = committed_retry_check(shared, &message) {
         shared.release_run_claim();
         return outcome;
+    }
+    if let Some(scope_id) = draft_scope_id.as_deref() {
+        let paths = shared
+            .drafts
+            .reserve_uploads(
+                scope_id,
+                shared.selection_generation(),
+                shared.token_generation(),
+                &upload_ids,
+            )
+            .map_err(|error| {
+                shared.release_run_claim();
+                RpcError::bad_request(error)
+            })?;
+        message.resolve_staged_attachments(paths);
     }
     let (completion_tx, completion_rx) =
         mpsc::channel::<Result<ApplicationRunDone, ApplicationRunFailure>>();
@@ -576,6 +836,9 @@ fn prompt_send(params: &Map<String, Value>, shared: &Arc<ServeShared>) -> Result
     };
     match started {
         Ok(handle) => {
+            if let Some(scope_id) = draft_scope_id.as_deref() {
+                shared.drafts.commit_uploads(scope_id, &upload_ids);
+            }
             shared.spawn_settler(rpc_id.clone(), completion_rx, handle);
             // M-03：受理即应答携带 committed 回执——start_run 返回时
             // user/message 已 append+flush（prepare 在调用线程执行）、
@@ -590,9 +853,155 @@ fn prompt_send(params: &Map<String, Value>, shared: &Arc<ServeShared>) -> Result
         }
         Err(error) => {
             shared.release_run_claim();
-            Err(RpcError::internal(format!("could not start run: {error}")))
+            let receipt = error.admission_receipt().cloned().map(Box::new);
+            if let Some(scope_id) = draft_scope_id.as_deref() {
+                if receipt.as_deref().is_some_and(|receipt| {
+                    receipt.state == crate::message::AdmissionState::Committed
+                }) {
+                    shared.drafts.commit_uploads(scope_id, &upload_ids);
+                } else {
+                    shared.drafts.rollback_uploads(scope_id, &upload_ids);
+                }
+            }
+            Err(RpcError::internal(format!("could not start run: {error}")).with_receipt(receipt))
         }
     }
+}
+
+/// `steer.send` 的附件版与 prompt 采用同一 opaque draft 协议，但 commit
+/// 点不同：core 在 `Application::steer` 内先把 source 导入会话私有 blob，
+/// 但 raw upload 必须保留到下一请求边界 claim 并 flush：若 run 在此前
+/// cancel，浏览器还能把同一草稿作为普通 prompt 重试。NotRunning/Refused
+/// 均立即回滚 raw reservation。
+fn steer_send(params: &Map<String, Value>, shared: &Arc<ServeShared>) -> Result<Value, RpcError> {
+    let text = required_str(params, "text")?;
+    let upload_ids = match params.get("attachments") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|item| {
+                item.as_str()
+                    .map(str::to_owned)
+                    .ok_or_else(|| RpcError::bad_request("attachments must be strings"))
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+        Some(_) => return Err(RpcError::bad_request("attachments must be an array")),
+    };
+    if text.trim().is_empty() && upload_ids.is_empty() {
+        return Err(RpcError::bad_request(
+            "text or at least one attachment is required",
+        ));
+    }
+    let draft_scope_id = if upload_ids.is_empty() {
+        None
+    } else {
+        Some(required_str(params, "draftScopeId")?)
+    };
+    let client_message_id = optional_str(params, "clientMessageId")?;
+    if !upload_ids.is_empty() && client_message_id.is_none() {
+        return Err(RpcError::bad_request(
+            "image steering requires clientMessageId for claim-time recovery",
+        ));
+    }
+    let mut message = crate::message::PendingMessage::from_front_end(
+        text,
+        client_message_id,
+        upload_ids.iter().map(PathBuf::from).collect(),
+    );
+    let request_digest = message.request_digest();
+    if let Some(client_message_id) = message.client_message_id.as_deref() {
+        if let Some(record) = with_app(shared, |app| app.committed_admission(client_message_id)) {
+            if record
+                .request_digest
+                .as_deref()
+                .is_some_and(|recorded| recorded != request_digest)
+            {
+                return Err(RpcError::bad_request(
+                    "clientMessageId is already committed with a different payload",
+                )
+                .with_receipt(Some(Box::new(
+                    record.receipt.with_failure_phase("idempotency-conflict"),
+                ))));
+            }
+            return Ok(steer_outcome_value("queued", Some(&record.receipt)));
+        }
+        match shared.pending_steering_retry(client_message_id, &request_digest) {
+            Ok(Some(receipt)) => return Ok(steer_outcome_value("queued", Some(&receipt))),
+            Ok(None) => {}
+            Err(receipt) => {
+                return Err(RpcError::bad_request(
+                    "clientMessageId is already queued with a different payload",
+                )
+                .with_receipt(Some(Box::new(receipt))));
+            }
+        }
+    }
+    if let Some(scope_id) = draft_scope_id.as_deref() {
+        let paths = shared
+            .drafts
+            .reserve_uploads(
+                scope_id,
+                shared.selection_generation(),
+                shared.token_generation(),
+                &upload_ids,
+            )
+            .map_err(RpcError::bad_request)?;
+        message.resolve_staged_attachments(paths);
+    }
+    let outcome = with_app(shared, |app| app.steer(message));
+    match outcome {
+        SteerOutcome::Queued { receipt } => {
+            if let (Some(client_message_id), Some(receipt)) = (
+                params.get("clientMessageId").and_then(Value::as_str),
+                receipt.as_deref(),
+            ) {
+                shared.remember_pending_steering(
+                    client_message_id.to_owned(),
+                    request_digest,
+                    (*receipt).clone(),
+                    draft_scope_id.clone(),
+                    upload_ids.clone(),
+                );
+            }
+            Ok(steer_outcome_value("queued", receipt.as_deref()))
+        }
+        SteerOutcome::NotRunning { receipt } => {
+            if let Some(scope_id) = draft_scope_id.as_deref() {
+                shared.drafts.rollback_uploads(scope_id, &upload_ids);
+            }
+            Ok(steer_outcome_value("not_running", receipt.as_deref()))
+        }
+        SteerOutcome::Refused { reason, receipt } => {
+            if let Some(scope_id) = draft_scope_id.as_deref() {
+                shared.drafts.rollback_uploads(scope_id, &upload_ids);
+            }
+            Err(RpcError::bad_request(reason).with_receipt(receipt))
+        }
+    }
+}
+
+fn rolled_back_receipt(
+    message: &crate::message::PendingMessage,
+    phase: &'static str,
+) -> Option<Box<crate::message::AdmissionReceipt>> {
+    message.client_message_id.clone().map(|client_message_id| {
+        Box::new(crate::message::AdmissionReceipt::rolled_back(
+            client_message_id,
+            message.content.attachment_ids(),
+            phase,
+        ))
+    })
+}
+
+fn steer_outcome_value(
+    outcome: &'static str,
+    receipt: Option<&crate::message::AdmissionReceipt>,
+) -> Value {
+    let mut value = json!({ "outcome": outcome });
+    if let Some(receipt) = receipt {
+        value["receipt"] = super::shapes::admission_receipt_value(receipt);
+    }
+    value
 }
 
 /// M-02：committed 重试的幂等/conflict 判定。返回 `Some(outcome)` =
@@ -613,9 +1022,16 @@ fn committed_retry_check(
     if let Some(recorded) = record.request_digest.as_deref()
         && recorded != incoming
     {
+        let receipt = Box::new(
+            record
+                .receipt
+                .clone()
+                .with_failure_phase("idempotency-conflict"),
+        );
         return Some(Err(RpcError::bad_request(
             "clientMessageId is already committed with a different payload",
-        )));
+        )
+        .with_receipt(Some(receipt))));
     }
     Some(Ok(json!({
         "kind": "receipt",
@@ -633,7 +1049,8 @@ fn with_app<T>(
 }
 
 fn app_error(error: ApplicationError) -> RpcError {
-    RpcError::internal(error.to_string())
+    let receipt = error.admission_receipt().cloned().map(Box::new);
+    RpcError::internal(error.to_string()).with_receipt(receipt)
 }
 
 /// 会话类操作：不存在的会话 id → `not-found`（§3 错误模型）。core 的
@@ -751,6 +1168,7 @@ mod tests {
             let body = rpc_result_json(&Err(RpcError {
                 code: ErrorCode::parse(code),
                 message: format!("{code} message"),
+                receipt: None,
             }));
             let parsed = parse_rpc_result(&body).expect("parse");
             assert!(!parsed.ok);

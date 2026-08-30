@@ -42,6 +42,7 @@ The preset catalog configures the OpenAI-compatible adapter:
 | DeepSeek V4.0 Pro | `deepseek-v4-pro` | 1M | 384K | `high` |
 | DeepSeek V4.0 Flash Vision (Exp) | `deepseek-v4-flash-vision-exp` | 1M | 384K | `high` |
 | GLM 5.3 Coding Plan | `glm-5.3` | 1M | 128K | `high` |
+| GLM 5.3 Flash | `glm-5.3-flash` | 1M | 128K | `high` |
 | Qwen3.8 Max Token Plan | `qwen3.8-max` | 1M | 128K | `medium` |
 | Kimi K3 Coding Plan | `kimi-k3` | 1M | 128K | `high` |
 
@@ -86,6 +87,22 @@ sends enabled preserved thinking:
 
 GLM 5.3 does not accept disabled reasoning. The status monitor reports Coding
 Plan quota when the provider endpoint makes it available.
+
+The GLM 5.3 Flash preset uses the same Coding endpoint with the
+probe-verified text+image route, a 131,072-token output limit, and a 1M context
+window. Its request policy sends at most five PNG/JPEG images of at most
+5,000,000 bytes each. A newly submitted message outside that frozen policy is
+rejected before provider I/O rather than partially sending its images. Across
+history, core also limits one request to 12 image blocks and 20,000,000
+normalized image bytes. When context pressure requires it, only older images
+are replaced, in stable oldest-first order, with a fixed path-free notice; the
+latest user turn is never silently degraded. Final adapter projection applies
+the same boundary to storage/integrity failures: an unavailable current image
+or current-turn tool image fails before network I/O with a path-free error,
+while an unavailable historical image remains a visible path-free notice so a
+damaged old session can still continue. Because this route also verified
+direct image tool results, visual runs expose CLAT's fenced `view_image` tool;
+text-only and unverified presets do not.
 
 When this preset and its API key are active at project mount, the MCP adapter
 also prepares the GLM Coding Plan server pack. See

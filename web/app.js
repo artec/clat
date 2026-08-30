@@ -111,6 +111,8 @@ const state = {
   token: '',
   connected: false,
   runActive: false,
+  compactionActive: false,
+  switching: false,
   sessionId: null,
   sessions: [],
   workbench: null,
@@ -127,6 +129,17 @@ const state = {
   marketLoaded: false,
   marketFallback: false,
   workbenchRequest: 0,
+  transcriptAttachmentUrls: new Set(),
+  draft: {
+    clientDraftId: newOpaqueClientId('draft'),
+    clientMessageId: newOpaqueClientId('message'),
+    scope: null,
+    images: [],
+    epoch: 0,
+    sending: false,
+    queuedClientMessageId: null,
+    notice: '',
+  },
   // Browser-local projection only. Durable Plan Mode remains core-owned; this
   // set lets session switches in the current page restore the marker without
   // persisting workflow authority in localStorage.
@@ -140,10 +153,11 @@ for (const id of [
   'project-name', 'project-root', 'session-title', 'conn-status', 'sidebar-connection',
   'header-model', 'header-permission', 'new-session', 'session-search', 'session-count',
   'session-list', 'session-empty', 'transcript-scroll', 'empty-state', 'transcript',
-  'prompt', 'send', 'cancel', 'run-state', 'composer-permission',
+  'prompt', 'send', 'cancel', 'run-state', 'composer-permission', 'composer-shell',
+  'attachment-input', 'attachment-open', 'attachment-rail', 'attachment-summary', 'drop-overlay',
   'composer-permission-label', 'plan-mode-badge', 'inspector', 'inspector-toggle', 'inspector-close',
   'detail-run', 'detail-seq', 'detail-session', 'detail-model', 'detail-protocol',
-  'detail-context', 'detail-budget', 'capability-list', 'detail-mcp', 'mcp-servers',
+  'detail-context', 'detail-budget', 'compact-session', 'capability-list', 'detail-mcp', 'mcp-servers',
   'settings-open', 'settings-dialog', 'theme-options', 'permission-options',
   'full-access-confirm-row', 'full-access-confirm', 'settings-error', 'settings-saved',
   'permission-save', 'market-open', 'market-dialog', 'market-close', 'market-search',
@@ -273,6 +287,7 @@ async function connect() {
 
 function stopApp() {
   if (state.stream) state.stream.abort();
+  clearTranscriptAttachmentUrls();
   hide(dom.app);
   show(dom.landing);
   dom['connect-token'].focus();
@@ -300,6 +315,7 @@ function handleFrame(frame) {
     case 'prompt.settled': onSettled(payload.ctl); break;
     case 'notice': onNotice(payload.ctl); break;
     case 'replay.begin':
+      clearTranscriptAttachmentUrls();
       dom.transcript.replaceChildren();
       show(dom['empty-state']);
       state.run = null;
@@ -318,7 +334,10 @@ function handleFrame(frame) {
 function handleReplay(event) {
   if (!event || !event.type) return;
   switch (event.type) {
-    case 'user_message': addUserMessage(event.text); break;
+    case 'user_message':
+      settleQueuedDraft(event.client_message_id);
+      addUserMessage(event.text, event.content_blocks);
+      break;
     case 'assistant_message': {
       const bubble = addAssistantMessage();
       if (event.reasoning) bubble.setReasoning(event.reasoning);
@@ -355,9 +374,10 @@ function handleLive(event) {
       state.runActive = true;
       updateRunState('running');
       updateRunDetail();
+      syncInteractionControls();
       show(dom.cancel);
       state.run = null;
-      if (!lastUserMessageIs(event.prompt)) addUserMessage(event.prompt);
+      if (!lastUserMessageIs(event.prompt)) addUserMessage(event.prompt, event.content_blocks);
       break;
     case 'model_requested':
       addTraceEvent(event.type, [event.provider, event.model].filter(Boolean).join(' · '));
@@ -396,7 +416,11 @@ function handleLive(event) {
       }
       break;
     }
-    case 'steering_applied': addNoticeLine('', event.type); break;
+    case 'steering_applied':
+      settleQueuedDraft(event.client_message_id);
+      addUserMessage(event.text || '', event.content_blocks);
+      addNoticeLine('', event.type);
+      break;
     case 'run_completed':
     case 'run_cancelled':
     case 'run_failed':
@@ -411,9 +435,11 @@ function handleLive(event) {
 function finishRun(event) {
   state.runActive = false;
   state.run = null;
-  updateRunState('');
+  const restoredDraft = restoreQueuedDraft();
+  updateRunState(restoredDraft ? 'run ended before steering was applied; draft restored' : '');
   updateRunDetail();
   hide(dom.cancel);
+  syncInteractionControls();
   if (event.type === 'run_failed') {
     addVerdict('failed', 'run failed — ' + (event.message || 'unknown error'));
   }
@@ -494,8 +520,20 @@ function onNotice(ctl) {
   switch (ctl && ctl.kind) {
     case 'monitor': updateRunState(typeof payload === 'string' ? payload : ''); break;
     case 'compaction':
-      addNoticeLine(payload && payload.note ? String(payload.note) : 'compaction updated');
-      refreshWorkbench();
+      if (payload && payload.status === 'started') {
+        state.compactionActive = true;
+        updateRunState('compacting history');
+      } else if (payload && payload.status === 'finished') {
+        state.compactionActive = false;
+        updateRunState(payload.note ? String(payload.note) : 'compaction finished');
+        if (payload.succeeded) {
+          addNoticeLine(payload.note ? String(payload.note) : 'compaction finished', 'compaction');
+        } else {
+          addNoticeLine(payload.note ? String(payload.note) : 'compaction did not change history');
+        }
+        refreshWorkbench();
+      }
+      syncInteractionControls();
       break;
     case 'title':
       if (payload && payload.title) {
@@ -546,11 +584,104 @@ function lastUserMessageIs(text) {
   return messages.length > 0 && messages[messages.length - 1].textContent === text;
 }
 
-function addUserMessage(text) {
+function attachmentBlocks(blocks) {
+  if (!Array.isArray(blocks)) return [];
+  return blocks
+    .filter((block) => block && block.type === 'image' && block.attachment)
+    .map((block) => block.attachment)
+    .filter((attachment) => attachment && typeof attachment.attachment_id === 'string'
+      && ['image/png', 'image/jpeg'].includes(attachment.media_type));
+}
+
+function clearTranscriptAttachmentUrls() {
+  for (const url of state.transcriptAttachmentUrls) URL.revokeObjectURL(url);
+  state.transcriptAttachmentUrls.clear();
+}
+
+async function loadTranscriptImage(img, attachment) {
+  try {
+    let response;
+    // A steering descriptor is forwarded only after its journal flush. The
+    // projection fold is normally in that same call, but retry a tiny bounded
+    // window so an independently scheduled reader never turns that handoff
+    // race into a permanent “unavailable” thumbnail.
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      response = await fetch(`/api/attachments/${encodeURIComponent(attachment.attachment_id)}`, {
+        headers: { Authorization: 'Bearer ' + state.token },
+        cache: 'no-store',
+      });
+      if (response.ok || (response.status !== 404 && response.status !== 503)) break;
+      await new Promise((resolve) => setTimeout(resolve, 80 * (attempt + 1)));
+    }
+    if (!response || !response.ok) throw new Error(`HTTP ${response && response.status}`);
+    const blob = await response.blob();
+    if (!['image/png', 'image/jpeg'].includes(blob.type)) throw new Error('unexpected image type');
+    const url = URL.createObjectURL(blob);
+    if (!img.isConnected) {
+      URL.revokeObjectURL(url);
+      return;
+    }
+    state.transcriptAttachmentUrls.add(url);
+    img.src = url;
+    img.classList.remove('is-loading');
+    img.closest('.message-attachment')?.classList.remove('is-unavailable');
+  } catch (_) {
+    img.alt = `${attachment.display_name || 'image'} unavailable`;
+    img.closest('.message-attachment')?.classList.add('is-unavailable');
+  }
+}
+
+function addMessageAttachments(attachments) {
+  if (attachments.length === 0) return null;
+  const rail = el('div', 'message-attachments');
+  for (const attachment of attachments) {
+    const card = el('button', 'message-attachment');
+    card.type = 'button';
+    const image = el('img', 'message-attachment-preview is-loading');
+    image.alt = `${attachment.display_name || 'attached image'} loading`;
+    const label = el('span', 'message-attachment-label');
+    const name = attachment.display_name || 'image';
+    const dimensions = attachment.width && attachment.height ? `${attachment.width} × ${attachment.height}` : 'image';
+    label.textContent = `${name} · ${dimensions}`;
+    card.append(image, label);
+    card.addEventListener('click', () => {
+      if (image.src) openImageLightbox(image.src, image.alt);
+    });
+    rail.appendChild(card);
+    void loadTranscriptImage(image, attachment);
+  }
+  return rail;
+}
+
+function openImageLightbox(src, label) {
+  let dialog = document.getElementById('image-lightbox');
+  if (!dialog) {
+    dialog = document.createElement('dialog');
+    dialog.id = 'image-lightbox';
+    dialog.className = 'image-lightbox';
+    const close = el('button', 'icon-button image-lightbox-close', '×');
+    close.type = 'button';
+    close.title = 'Close image preview';
+    close.addEventListener('click', () => dialog.close());
+    const image = el('img', 'image-lightbox-image');
+    dialog.append(close, image);
+    dialog.addEventListener('click', (event) => { if (event.target === dialog) dialog.close(); });
+    document.body.appendChild(dialog);
+  }
+  const image = dialog.querySelector('img');
+  image.src = src;
+  image.alt = label;
+  if (!dialog.open) dialog.showModal();
+}
+
+function addUserMessage(text, blocks) {
   const msg = el('div', 'msg user');
   const marker = el('span', 'marker');
   marker.appendChild(svgIcon('user'));
-  msg.append(marker, el('div', 'body', text));
+  const body = el('div', 'body' + (text ? '' : ' image-only'), text);
+  const attachments = addMessageAttachments(attachmentBlocks(blocks));
+  msg.append(marker, body);
+  if (attachments) msg.appendChild(attachments);
   return appendTranscript(msg);
 }
 
@@ -560,22 +691,29 @@ function addAssistantMessage() {
   marker.appendChild(svgIcon('agent'));
   msg.append(marker);
   const body = el('div', 'body');
+  const bodyText = document.createTextNode('');
+  body.appendChild(bodyText);
   const reasoning = el('details', 'reasoning hidden');
   const reasoningSummary = el('summary');
   reasoningSummary.append(svgIcon('trace'), el('span', null, humanEventName('reasoning_delta')));
   const reasoningCopy = el('pre', 'reasoning-copy');
+  const reasoningText = document.createTextNode('');
+  reasoningCopy.appendChild(reasoningText);
   reasoning.append(reasoningSummary, reasoningCopy);
   msg.append(reasoning, body);
   appendTranscript(msg);
   return {
-    appendBody(text) { body.textContent += text; },
+    // `textContent += delta` serializes and reparses the entire growing
+    // transcript on every stream chunk. Native Text append keeps long local
+    // streams linear, so attachment fetch completion and input remain live.
+    appendBody(text) { bodyText.appendData(text); },
     appendReasoning(text) {
       show(reasoning);
-      reasoningCopy.textContent += text;
+      reasoningText.appendData(text);
     },
     setReasoning(text) {
       show(reasoning);
-      reasoningCopy.textContent = text;
+      reasoningText.data = text;
     },
     setTraceKind(eventId) {
       reasoningSummary.querySelector('span').textContent = humanEventName(eventId);
@@ -658,6 +796,12 @@ function formatContextSnapshot(snapshot) {
     `Memory injection: ${contextAmount(context.memory)} / ${contextAmount(context.memory_budget_bytes)} bytes · ${injectionState(context.memory)}`,
     estimate('Tool schemas', 'tool_schemas'),
     estimate('History / compaction view', 'history'),
+    `Images: ${contextAmount(context.image_count)}`,
+    `Images before projection: ${contextAmount(context.image_original_count)}`,
+    `Older images omitted: ${contextAmount(context.image_offloaded_count)}`,
+    `Image bytes: ${contextAmount(context.image_bytes)} bytes`,
+    estimate('Visual token estimate', 'image_tokens'),
+    `Visual safety factor: ${contextAmount(context.image_safety_factor)}.0x`,
     estimate('Output reserve', 'output_reserve'),
     estimate('Input estimate', 'input'),
     estimate('Total estimate', 'total'),
@@ -785,6 +929,8 @@ async function refreshWorkbench() {
     const model = info.model || {};
     const permission = info.permission || {};
     state.sessionId = session.id || null;
+    state.runActive = Boolean(info.active_run);
+    state.compactionActive = Boolean(info.active_compaction);
     syncPlanModeBadge();
 
     dom['project-name'].textContent = project.name || 'Current project';
@@ -813,6 +959,7 @@ async function refreshWorkbench() {
     renderMcp(info.mcp || {});
     selectPermissionMode(permission.mode || 'workspace-write');
     updateRunDetail(Boolean(info.active_run));
+    syncInteractionControls();
     renderSessions();
   } catch (error) {
     console.warn('[clat] workbench.info failed:', error.message);
@@ -851,7 +998,9 @@ function renderMcp(mcp) {
 
 function updateRunDetail(serverActive) {
   const active = serverActive === undefined ? state.runActive : serverActive;
-  dom['detail-run'].textContent = active ? 'Running' : (state.connected ? 'Idle' : 'Disconnected');
+  dom['detail-run'].textContent = state.compactionActive
+    ? 'Compacting'
+    : active ? 'Running' : (state.connected ? 'Idle' : 'Disconnected');
 }
 
 async function refreshSessions() {
@@ -876,6 +1025,7 @@ function renderSessions() {
     const item = el('li', session.id === state.sessionId ? 'active' : '');
     const button = el('button', 'session-item');
     button.type = 'button';
+    button.disabled = state.switching || state.compactionActive;
     button.title = session.title || 'Untitled session';
     const title = session.title || 'Untitled session';
     const glyph = el('span', 'session-glyph', title.trim().slice(0, 1).toLocaleUpperCase() || '·');
@@ -894,10 +1044,26 @@ function renderSessions() {
 }
 
 function setSwitching(active) {
-  dom.send.disabled = active;
-  dom.prompt.disabled = active;
-  dom['new-session'].disabled = active;
+  state.switching = active;
+  syncInteractionControls();
+  renderSessions();
   if (active) updateRunState('switching session');
+}
+
+function syncInteractionControls() {
+  const locked = state.switching || state.compactionActive;
+  dom.send.disabled = locked;
+  dom.prompt.disabled = locked;
+  dom['attachment-open'].disabled = locked;
+  dom['new-session'].disabled = locked;
+  dom['session-title'].disabled = locked || !state.sessionId;
+  dom['compact-session'].textContent = state.compactionActive
+    ? 'Cancel compaction'
+    : 'Compact history';
+  dom['compact-session'].disabled = state.switching
+    || !state.sessionId
+    || (state.runActive && !state.compactionActive);
+  renderDraft();
 }
 
 async function switchSession(id) {
@@ -908,6 +1074,7 @@ async function switchSession(id) {
   setSwitching(true);
   try {
     await rpc('session.switch', { id });
+    clearDraft();
     closeMobileSidebar();
     resubscribe();
   } catch (error) {
@@ -920,6 +1087,7 @@ dom['new-session'].addEventListener('click', async () => {
   setSwitching(true);
   try {
     await rpc('session.new', {});
+    clearDraft();
     closeMobileSidebar();
     resubscribe();
   } catch (error) {
@@ -929,7 +1097,7 @@ dom['new-session'].addEventListener('click', async () => {
 });
 
 dom['session-title'].addEventListener('click', async () => {
-  if (!state.sessionId) return;
+  if (!state.sessionId || state.switching || state.compactionActive) return;
   const title = window.prompt('Session title', dom['session-title'].textContent || '');
   if (title === null || title.trim() === '') return;
   try {
@@ -944,6 +1112,32 @@ dom['session-title'].addEventListener('click', async () => {
 });
 
 dom['session-search'].addEventListener('input', renderSessions);
+
+dom['compact-session'].addEventListener('click', async () => {
+  const action = state.compactionActive ? 'cancel' : 'start';
+  dom['compact-session'].disabled = true;
+  try {
+    const value = await rpc('session.compact', { action });
+    if (action === 'start') {
+      // HTTP and SSE are independent lanes: a very fast compaction may finish
+      // before this response is observed. Re-read the server-owned slot rather
+      // than resurrecting stale local "active" state after a finished notice.
+      await refreshWorkbench();
+      if (state.compactionActive) updateRunState('compacting history');
+    } else if (value && value.status === 'cancelling') {
+      updateRunState('cancelling compaction');
+    } else {
+      state.compactionActive = false;
+      updateRunState('');
+    }
+  } catch (error) {
+    updateRunState('compaction failed: ' + error.message);
+    await refreshWorkbench();
+  } finally {
+    syncInteractionControls();
+    renderSessions();
+  }
+});
 
 /* —— Layout and settings —————————————————————————————————— */
 
@@ -1231,6 +1425,263 @@ window.addEventListener('resize', () => {
 
 /* —— Composer ————————————————————————————————————————————— */
 
+const MAX_DRAFT_IMAGES = 8;
+const MAX_DRAFT_IMAGE_BYTES = 8 * 1024 * 1024;
+const MAX_DRAFT_BATCH_BYTES = 32 * 1024 * 1024;
+const MAX_DRAFT_PIXELS = 16 * 1024 * 1024;
+
+function newOpaqueClientId(prefix) {
+  if (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function') {
+    return `${prefix}-${globalThis.crypto.randomUUID()}`;
+  }
+  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 14)}`;
+}
+
+function formatBytes(bytes) {
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.ceil(bytes / 1024))} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(bytes >= 10 * 1024 * 1024 ? 0 : 1)} MB`;
+}
+
+function imageLabel(image) {
+  const dimensions = image.width && image.height ? `${image.width} × ${image.height}` : 'checking dimensions';
+  return `${image.name} · ${dimensions} · ${formatBytes(image.bytes)}`;
+}
+
+function uploadDisplayName(file, index) {
+  const extension = file.type === 'image/jpeg' ? 'jpg' : 'png';
+  const original = String(file.name || '').replace(/[^\x20-\x7e]/g, '_').replace(/[\\/\r\n]/g, '_');
+  const stem = original.replace(/\.[^.]*$/, '').replace(/[^A-Za-z0-9._ -]/g, '_').slice(0, 170) || `image-${index + 1}`;
+  return `${stem}.${extension}`;
+}
+
+async function imageDimensions(file) {
+  if (typeof createImageBitmap === 'function') {
+    const bitmap = await createImageBitmap(file);
+    try { return { width: bitmap.width, height: bitmap.height }; }
+    finally { bitmap.close(); }
+  }
+  const url = URL.createObjectURL(file);
+  try {
+    const image = new Image();
+    image.src = url;
+    await image.decode();
+    return { width: image.naturalWidth, height: image.naturalHeight };
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+function totalDraftBytes() {
+  return state.draft.images.reduce((total, image) => total + image.bytes, 0);
+}
+
+function renderDraft() {
+  const images = state.draft.images;
+  dom['attachment-rail'].replaceChildren();
+  if (images.length === 0) {
+    hide(dom['attachment-rail']);
+    dom['attachment-summary'].textContent = state.draft.notice;
+    return;
+  }
+  show(dom['attachment-rail']);
+  for (const [index, image] of images.entries()) {
+    const chip = el('article', `attachment-chip is-${image.status}`);
+    chip.dataset.imageId = image.id;
+    const thumb = el('img', 'attachment-thumb');
+    thumb.src = image.url;
+    thumb.alt = `${image.name} preview`;
+    const indexMark = el('span', 'attachment-index', String(index + 1).padStart(2, '0'));
+    const copy = el('div', 'attachment-copy');
+    copy.append(
+      el('strong', null, image.name),
+      el('small', null, imageLabel(image)),
+      el('small', 'attachment-state', image.status === 'uploaded'
+        ? 'staged locally'
+        : image.status === 'queued'
+          ? 'steering queued · held for recovery'
+        : image.status === 'uploading'
+          ? 'staging…'
+          : image.status === 'failed'
+            ? `not staged · ${image.error || 'retry required'}`
+            : 'ready to stage'),
+    );
+    const controls = el('div', 'attachment-controls');
+    const moveEarlier = el('button', 'attachment-order', '↑');
+    moveEarlier.type = 'button';
+    moveEarlier.title = 'Move image earlier';
+    moveEarlier.disabled = state.compactionActive || index === 0 || state.draft.sending || state.draft.queuedClientMessageId !== null;
+    moveEarlier.addEventListener('click', () => moveDraftImage(index, index - 1));
+    const moveLater = el('button', 'attachment-order', '↓');
+    moveLater.type = 'button';
+    moveLater.title = 'Move image later';
+    moveLater.disabled = state.compactionActive || index === images.length - 1 || state.draft.sending || state.draft.queuedClientMessageId !== null;
+    moveLater.addEventListener('click', () => moveDraftImage(index, index + 1));
+    if (image.status === 'failed') {
+      const retry = el('button', 'attachment-retry', '↻');
+      retry.type = 'button';
+      retry.title = `Retry staging ${image.name}`;
+      retry.disabled = state.compactionActive;
+      retry.addEventListener('click', () => retryDraftImage(image));
+      controls.appendChild(retry);
+    }
+    const remove = el('button', 'attachment-remove', '×');
+    remove.type = 'button';
+    remove.title = `Remove ${image.name}`;
+    remove.disabled = state.compactionActive || state.draft.sending || state.draft.queuedClientMessageId !== null;
+    remove.addEventListener('click', () => removeDraftImage(image.id));
+    controls.append(moveEarlier, moveLater, remove);
+    chip.append(thumb, indexMark, copy, controls);
+    dom['attachment-rail'].appendChild(chip);
+  }
+  const staged = images.filter((image) => image.status === 'uploaded').length;
+  const failed = images.filter((image) => image.status === 'failed').length;
+  let summary = failed
+    ? `${failed} image${failed === 1 ? '' : 's'} need attention`
+    : state.draft.queuedClientMessageId !== null
+      ? `${images.length} image${images.length === 1 ? '' : 's'} queued with the active run · draft held until claimed`
+    : staged === images.length
+      ? `${staged} image${staged === 1 ? '' : 's'} ready · ${formatBytes(totalDraftBytes())}`
+      : `${staged}/${images.length} images staged`;
+  if (state.draft.notice) summary += ` · ${state.draft.notice}`;
+  dom['attachment-summary'].textContent = summary;
+}
+
+function clearDraft() {
+  state.draft.epoch += 1;
+  for (const image of state.draft.images) URL.revokeObjectURL(image.url);
+  state.draft.clientDraftId = newOpaqueClientId('draft');
+  state.draft.clientMessageId = newOpaqueClientId('message');
+  state.draft.scope = null;
+  state.draft.images = [];
+  state.draft.sending = false;
+  state.draft.queuedClientMessageId = null;
+  state.draft.notice = '';
+  dom['attachment-input'].value = '';
+  renderDraft();
+}
+
+function removeDraftImage(id) {
+  if (state.draft.queuedClientMessageId !== null) return;
+  const index = state.draft.images.findIndex((image) => image.id === id);
+  if (index < 0) return;
+  const [image] = state.draft.images.splice(index, 1);
+  URL.revokeObjectURL(image.url);
+  if (state.draft.images.length === 0) state.draft.scope = null;
+  renderDraft();
+}
+
+function moveDraftImage(from, to) {
+  if (to < 0 || to >= state.draft.images.length || state.draft.sending || state.draft.queuedClientMessageId !== null) return;
+  const [image] = state.draft.images.splice(from, 1);
+  state.draft.images.splice(to, 0, image);
+  renderDraft();
+}
+
+async function ensureDraftScope() {
+  if (state.draft.scope) return state.draft.scope;
+  const scope = await rpc('draft.open', { clientDraftId: state.draft.clientDraftId });
+  if (!scope || typeof scope.draftScopeId !== 'string') throw new Error('invalid draft scope response');
+  state.draft.scope = scope;
+  return scope;
+}
+
+async function uploadDraftImage(image, epoch) {
+  image.status = 'uploading';
+  image.error = '';
+  renderDraft();
+  try {
+    const scope = await ensureDraftScope();
+    const response = await fetch(`/api/drafts/${encodeURIComponent(scope.draftScopeId)}/images`, {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer ' + state.token,
+        'Content-Type': image.type,
+        'X-CLAT-Display-Name': image.uploadName,
+      },
+      body: image.file,
+    });
+    const body = await response.json().catch(() => null);
+    if (!response.ok || !body || !body.ok || !body.value || typeof body.value.uploadId !== 'string') {
+      const message = body && body.error && body.error.message ? body.error.message : `upload rejected (HTTP ${response.status})`;
+      throw new Error(message);
+    }
+    if (epoch !== state.draft.epoch || !state.draft.images.includes(image)) return;
+    image.uploadId = body.value.uploadId;
+    image.status = 'uploaded';
+  } catch (error) {
+    if (epoch !== state.draft.epoch || !state.draft.images.includes(image)) return;
+    image.status = 'failed';
+    image.error = error.message || 'upload failed';
+  }
+  renderDraft();
+}
+
+async function addDraftFiles(files) {
+  if (state.compactionActive || state.switching) {
+    updateRunState('wait for history compaction to finish');
+    return;
+  }
+  if (state.draft.queuedClientMessageId !== null) {
+    updateRunState('waiting for queued steering to be claimed or the run to end');
+    return;
+  }
+  const list = Array.from(files || []);
+  if (list.length === 0) return;
+  const issues = [];
+  const available = MAX_DRAFT_IMAGES - state.draft.images.length;
+  const accepted = [];
+  let nextBytes = totalDraftBytes();
+  for (const file of list) {
+    if (accepted.length >= available) { issues.push(`at most ${MAX_DRAFT_IMAGES} images per message`); break; }
+    if (!(file instanceof File) || !['image/png', 'image/jpeg'].includes(file.type)) {
+      issues.push(`${file && file.name ? file.name : 'file'} is not a PNG or JPEG`);
+      continue;
+    }
+    if (file.size === 0 || file.size > MAX_DRAFT_IMAGE_BYTES) {
+      issues.push(`${file.name} must be 1..${formatBytes(MAX_DRAFT_IMAGE_BYTES)}`);
+      continue;
+    }
+    if (nextBytes + file.size > MAX_DRAFT_BATCH_BYTES) {
+      issues.push(`all images together may use at most ${formatBytes(MAX_DRAFT_BATCH_BYTES)}`);
+      continue;
+    }
+    nextBytes += file.size;
+    accepted.push(file);
+  }
+  state.draft.notice = issues.join(' · ');
+  const epoch = state.draft.epoch;
+  const added = accepted.map((file, offset) => ({
+    id: newOpaqueClientId('image'), file, name: file.name || `image-${state.draft.images.length + offset + 1}`,
+    uploadName: uploadDisplayName(file, state.draft.images.length + offset), type: file.type,
+    bytes: file.size, width: 0, height: 0, url: URL.createObjectURL(file),
+    status: 'ready', uploadId: null, error: '',
+  }));
+  state.draft.images.push(...added);
+  renderDraft();
+  for (const image of added) {
+    try {
+      const dimensions = await imageDimensions(image.file);
+      if (dimensions.width * dimensions.height > MAX_DRAFT_PIXELS) throw new Error(`exceeds the ${MAX_DRAFT_PIXELS}-pixel limit`);
+      if (epoch !== state.draft.epoch || !state.draft.images.includes(image)) continue;
+      image.width = dimensions.width;
+      image.height = dimensions.height;
+      renderDraft();
+      await uploadDraftImage(image, epoch);
+    } catch (error) {
+      if (epoch !== state.draft.epoch || !state.draft.images.includes(image)) continue;
+      image.status = 'failed';
+      image.error = error.message || 'image validation failed';
+      renderDraft();
+    }
+  }
+}
+
+async function retryDraftImage(image) {
+  if (!image || state.draft.sending || state.draft.queuedClientMessageId !== null) return;
+  image.uploadId = null;
+  await uploadDraftImage(image, state.draft.epoch);
+}
+
 function updateRunState(text) {
   dom['run-state'].textContent = text;
 }
@@ -1241,14 +1692,56 @@ function resizePrompt() {
 }
 
 async function submitPrompt() {
+  if (state.compactionActive || state.switching) {
+    updateRunState('wait for history compaction to finish');
+    return;
+  }
   const text = dom.prompt.value.trim();
-  if (!text) return;
-  dom.prompt.value = '';
-  resizePrompt();
+  const images = state.draft.images;
+  if (!text && images.length === 0) return;
+  if (state.draft.queuedClientMessageId !== null) {
+    updateRunState('steering is queued; waiting for the active run');
+    return;
+  }
+  if (images.some((image) => image.status === 'uploading' || image.status === 'ready')) {
+    updateRunState('waiting for images to stage');
+    return;
+  }
+  if (images.some((image) => image.status !== 'uploaded')) {
+    updateRunState('resolve image staging failures before sending');
+    return;
+  }
+  if (text.startsWith('/') && images.length > 0) {
+    updateRunState('commands do not accept draft images; draft retained');
+    return;
+  }
+  state.draft.sending = images.length > 0;
+  renderDraft();
   try {
     if (state.runActive) {
-      const value = await rpc('steer.send', { text });
-      addNoticeLine('steering ' + (value && value.outcome === 'queued' ? 'queued' : 'not running'));
+      const clientMessageId = state.draft.clientMessageId;
+      const params = images.length === 0
+        ? { text }
+        : {
+          text,
+          draftScopeId: state.draft.scope && state.draft.scope.draftScopeId,
+          attachments: images.map((image) => image.uploadId),
+          clientMessageId: state.draft.clientMessageId,
+        };
+      const value = await rpc('steer.send', params);
+      if (!value || value.outcome !== 'queued') {
+        updateRunState('run ended before steering was accepted; draft retained');
+        return;
+      }
+      addNoticeLine('steering queued');
+      dom.prompt.value = '';
+      resizePrompt();
+      if (images.length > 0 && state.draft.clientMessageId === clientMessageId) {
+        state.draft.queuedClientMessageId = clientMessageId;
+        for (const image of images) image.status = 'queued';
+        state.draft.notice = 'steering accepted; holding the local draft until durable claim';
+      }
+      return;
     } else if (text.startsWith('/')) {
       const value = await rpc('command.run', { command: text });
       if (value && value.kind === 'status') {
@@ -1263,10 +1756,24 @@ async function submitPrompt() {
         resubscribe();
       }
     } else {
-      await rpc('prompt.send', { text });
+      const params = images.length === 0
+        ? { text }
+        : {
+          text,
+          draftScopeId: state.draft.scope && state.draft.scope.draftScopeId,
+          attachments: images.map((image) => image.uploadId),
+          clientMessageId: state.draft.clientMessageId,
+        };
+      await rpc('prompt.send', params);
+      dom.prompt.value = '';
+      resizePrompt();
+      if (images.length > 0) clearDraft();
+      return;
     }
+    dom.prompt.value = '';
+    resizePrompt();
   } catch (error) {
-    if (error.code === 'busy') {
+    if (error.code === 'busy' && images.length === 0) {
       updateRunState('run active · sending as steering');
       try {
         const value = await rpc('steer.send', { text });
@@ -1276,10 +1783,39 @@ async function submitPrompt() {
       }
     } else {
       updateRunState('send failed: ' + error.message);
-      dom.prompt.value = text;
-      resizePrompt();
     }
+  } finally {
+    state.draft.sending = false;
+    renderDraft();
   }
+}
+
+function settleQueuedDraft(clientMessageId) {
+  if (!clientMessageId) return false;
+  const queuedClaim = state.draft.queuedClientMessageId === clientMessageId;
+  // The durable steering event and the RPC response travel over independent
+  // connections. A fast run may claim/flush the message and deliver SSE while
+  // `steer.send` is still awaiting its HTTP response. In that window the local
+  // draft is still marked `sending`, not `queued`; the durable event is already
+  // authoritative and must retire the matching draft instead of letting the
+  // later acknowledgement resurrect it as unclaimed.
+  const inFlightClaim = state.draft.sending
+    && state.draft.images.length > 0
+    && state.draft.clientMessageId === clientMessageId;
+  if (!queuedClaim && !inFlightClaim) return false;
+  clearDraft();
+  return true;
+}
+
+function restoreQueuedDraft() {
+  if (state.draft.queuedClientMessageId === null) return false;
+  state.draft.queuedClientMessageId = null;
+  for (const image of state.draft.images) {
+    if (image.status === 'queued') image.status = 'uploaded';
+  }
+  state.draft.notice = 'the run ended before this steering was claimed; draft restored';
+  renderDraft();
+  return true;
 }
 
 dom.send.addEventListener('click', submitPrompt);
@@ -1289,6 +1825,36 @@ dom.prompt.addEventListener('keydown', (event) => {
     event.preventDefault();
     submitPrompt();
   }
+});
+
+dom['attachment-open'].addEventListener('click', () => dom['attachment-input'].click());
+dom['attachment-input'].addEventListener('change', async () => {
+  await addDraftFiles(dom['attachment-input'].files);
+  dom['attachment-input'].value = '';
+});
+
+for (const eventName of ['dragenter', 'dragover']) {
+  dom['composer-shell'].addEventListener(eventName, (event) => {
+    if (!event.dataTransfer || !Array.from(event.dataTransfer.types || []).includes('Files')) return;
+    event.preventDefault();
+    show(dom['drop-overlay']);
+  });
+}
+for (const eventName of ['dragleave', 'dragend']) {
+  dom['composer-shell'].addEventListener(eventName, () => hide(dom['drop-overlay']));
+}
+dom['composer-shell'].addEventListener('drop', async (event) => {
+  hide(dom['drop-overlay']);
+  if (!event.dataTransfer || !event.dataTransfer.files.length) return;
+  event.preventDefault();
+  await addDraftFiles(event.dataTransfer.files);
+});
+dom.prompt.addEventListener('paste', async (event) => {
+  const items = Array.from(event.clipboardData ? event.clipboardData.items : []);
+  const files = items.filter((item) => item.kind === 'file').map((item) => item.getAsFile()).filter(Boolean);
+  if (files.length === 0) return;
+  event.preventDefault();
+  await addDraftFiles(files);
 });
 
 dom.cancel.addEventListener('click', async () => {

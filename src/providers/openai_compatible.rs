@@ -112,9 +112,7 @@ impl OpenAiCompatibleModel {
 
     fn send(&self, body: &Value, cancel: &CancelToken) -> Result<Response<Body>, ModelError> {
         let url = join_endpoint(&self.config.endpoint, &self.config.request_path);
-        let encoded = serde_json::to_string(body).map_err(|error| {
-            ModelError::request(format!("failed to serialize request: {error}"))
-        })?;
+        let encoded = super::serialize_request_body(body, "OpenAI-compatible")?;
         let mut request = self
             .agent
             .post(url)
@@ -262,13 +260,22 @@ fn map_messages(
         messages.push(json!({"role": "system", "content": instructions}));
     }
     let mut pending: Option<PendingAssistant> = None;
-    for item in items {
+    let protected_start = items
+        .iter()
+        .rposition(|item| matches!(item, ModelItem::User { .. }))
+        .unwrap_or(items.len());
+    for (index, item) in items.iter().enumerate() {
+        let image_failure = if index >= protected_start {
+            ImageFailureMode::RejectCurrent
+        } else {
+            ImageFailureMode::DegradeHistory
+        };
         match item {
             ModelItem::User { content } => {
                 flush(&mut messages, &mut pending);
                 messages.push(json!({
                     "role": "user",
-                    "content": user_content(content, policy)?,
+                    "content": user_content_with_mode(content, policy, image_failure)?,
                 }));
             }
             ModelItem::Assistant { content, reasoning } => {
@@ -303,7 +310,7 @@ fn map_messages(
                 let result_message = json!({
                     "role": "tool",
                     "tool_call_id": result.call_id,
-                    "content": tool_output_text(result),
+                    "content": tool_result_content(result, policy, image_failure)?,
                 });
                 match &mut pending {
                     // The result belongs to the turn that is still open; it
@@ -321,6 +328,23 @@ fn map_messages(
     Ok(messages)
 }
 
+/// Chat-completions tool results may carry the same direct image parts as a
+/// user message. Pure-text results deliberately remain a string to preserve
+/// every existing request golden.
+fn tool_result_content(
+    result: &crate::tool::ToolResult,
+    policy: &crate::model::ImageRequestPolicy,
+    image_failure: ImageFailureMode,
+) -> Result<Value, ModelError> {
+    if result.image_parts.is_empty() {
+        return Ok(Value::String(tool_output_text(result)));
+    }
+    let mut content = Vec::with_capacity(result.image_parts.len() + 1);
+    content.push(ContentPart::Text(tool_output_text(result)));
+    content.extend(result.image_parts.iter().cloned());
+    user_content_with_mode(&content, policy, image_failure)
+}
+
 fn content_text(content: &[ContentPart]) -> String {
     content
         .iter()
@@ -334,14 +358,45 @@ fn content_text(content: &[ContentPart]) -> String {
 
 /// user 消息的 content：纯文本保持字符串（向后兼容），含图片时升级
 /// 为 OpenAI chat 的多 part 数组——图片读文件转 base64 data URL
-///（`image_url`）。文件读失败的 part 降级为文本注记：一次会话里删
-/// 掉附件文件不该把整个 run 打死（M3 降级语义）。
+///（`image_url`）。历史文件读失败的 part 降级为文本注记：一次会话里
+/// 删掉旧附件文件不该把整个 run 打死；最新 user 及其后的 tool result
+/// 则 fail closed，不能把刚提交的视觉请求静默改写成文本。
 /// INV-MM2-6（MM-2 W6）：请求侧图片策略在此强制——media 白名单
 ///（F-2）、单图字节上限（F-3）、单消息张数上限（F-5）与累计
-/// base64 预算；被策略拒绝的图降级为可行动注记而非失败整轮。
+/// base64 预算；历史拒绝图降级为可行动注记，当前轮拒绝图失败整轮。
+#[cfg(test)]
 fn user_content(
     content: &[ContentPart],
     policy: &crate::model::ImageRequestPolicy,
+) -> Result<Value, ModelError> {
+    user_content_with_mode(content, policy, ImageFailureMode::DegradeHistory)
+}
+
+#[derive(Clone, Copy)]
+enum ImageFailureMode {
+    DegradeHistory,
+    RejectCurrent,
+}
+
+fn unavailable_image_part(
+    parts: &mut Vec<Value>,
+    note: impl Into<String>,
+    failure: ImageFailureMode,
+) -> Result<(), ModelError> {
+    let note = note.into();
+    if matches!(failure, ImageFailureMode::RejectCurrent) {
+        return Err(ModelError::request(format!(
+            "current request image was not projected: {note}"
+        )));
+    }
+    parts.push(json!({ "type": "text", "text": note }));
+    Ok(())
+}
+
+fn user_content_with_mode(
+    content: &[ContentPart],
+    policy: &crate::model::ImageRequestPolicy,
+    image_failure: ImageFailureMode,
 ) -> Result<Value, ModelError> {
     let has_image = content
         .iter()
@@ -354,20 +409,26 @@ fn user_content(
     let mut base64_total = 0usize;
     for part in content {
         match part {
+            // Frontends preserve the legacy empty text block for an
+            // image-only submission. Empty multipart text is semantically
+            // inert, but some compatible APIs reject it as an invalid
+            // parameter, so omit it at the provider boundary.
+            ContentPart::Text(text) if text.is_empty() => {}
             ContentPart::Text(text) => parts.push(json!({
                 "type": "text",
                 "text": text,
             })),
             ContentPart::Image { path, media_type } => {
                 if images_sent >= policy.max_images {
-                    parts.push(json!({
-                        "type": "text",
-                        "text": format!(
+                    unavailable_image_part(
+                        &mut parts,
+                        format!(
                             "[image unavailable: this provider accepts at most {} images per \
                              message]",
                             policy.max_images
                         ),
-                    }));
+                        image_failure,
+                    )?;
                     continue;
                 }
                 match image_data_url_for(path, media_type, policy) {
@@ -375,11 +436,11 @@ fn user_content(
                         base64_total = base64_total.saturating_add(url.len());
                         if base64_total > MAX_REQUEST_IMAGE_BUDGET_BYTES {
                             // 累计预算前置：不再继续放大请求体。
-                            parts.push(json!({
-                                "type": "text",
-                                "text": "[image unavailable: the message's images exceed the \
-                                         request image budget]",
-                            }));
+                            unavailable_image_part(
+                                &mut parts,
+                                "[image unavailable: the message's images exceed the request image budget]",
+                                image_failure,
+                            )?;
                         } else {
                             images_sent += 1;
                             parts.push(json!({
@@ -388,10 +449,11 @@ fn user_content(
                             }));
                         }
                     }
-                    None => parts.push(json!({
-                        "type": "text",
-                        "text": format!("[image unavailable: {path}]"),
-                    })),
+                    None => unavailable_image_part(
+                        &mut parts,
+                        "[image unavailable: the referenced attachment could not be read]",
+                        image_failure,
+                    )?,
                 }
             }
         }
@@ -429,6 +491,9 @@ pub(crate) fn image_data_url_for(
     if bytes.len() as u64 > policy.max_bytes {
         return None;
     }
+    if !crate::media::media_type_matches_bytes(media_type, &bytes) {
+        return None;
+    }
     Some(format!("data:{media_type};base64,{}", base64_bytes(&bytes)))
 }
 
@@ -438,32 +503,19 @@ pub(crate) fn image_data_url_for(
 /// 收口。
 fn read_attachment_nofollow(path: &str, max_bytes: u64) -> Option<Vec<u8>> {
     use std::io::Read as _;
-    let mut options = std::fs::OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        options.custom_flags(libc::O_NOFOLLOW);
+    let path = std::path::Path::new(path);
+    let (file, metadata) =
+        crate::session::attachments::open_private_regular_file_no_follow(path).ok()?;
+    if metadata.len() > max_bytes {
+        return None;
     }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt as _;
-        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
-        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
-    }
-    let file = options.open(path).ok()?;
-    #[cfg(windows)]
-    {
-        // 打开了 reparse 点本身：symlink/挂接点按拒绝处理。
-        if file.metadata().ok()?.file_type().is_symlink() {
-            return None;
-        }
-    }
-    let mut bytes = Vec::new();
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
     file.take(max_bytes.saturating_add(1))
         .read_to_end(&mut bytes)
         .ok()?;
-    Some(bytes)
+    (bytes.len() as u64 == metadata.len()
+        && crate::session::attachments::content_address_matches(path, &bytes))
+    .then_some(bytes)
 }
 
 fn base64_bytes(bytes: &[u8]) -> String {
@@ -885,6 +937,459 @@ mod tests {
         path
     }
 
+    /// Paid provider evidence stays opt-in: a caller must explicitly arm this
+    /// ignored test and supply the credential only in the process environment.
+    /// It exercises CLAT's real OpenAI-compatible streaming adapter rather
+    /// than a hand-written HTTP request, while deliberately keeping both the
+    /// fixture and all credential material out of the journal/control plane.
+    #[test]
+    #[ignore = "paid GLM live check; set CLAT_GLM_CODING_PLAN_KEY explicitly"]
+    fn live_glm_flash_adapter_preserves_two_image_order() {
+        let key = match std::env::var("CLAT_GLM_CODING_PLAN_KEY") {
+            Ok(key) => key,
+            Err(std::env::VarError::NotPresent) => {
+                eprintln!("live GLM adapter gate not armed; skipping");
+                return;
+            }
+            Err(error) => panic!("read CLAT_GLM_CODING_PLAN_KEY: {error}"),
+        };
+        assert!(
+            !key.trim().is_empty(),
+            "CLAT_GLM_CODING_PLAN_KEY must not be empty when explicitly set"
+        );
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("clat-live-glm-{unique}"));
+        std::fs::create_dir_all(&root).expect("live fixture directory");
+        let green = root.join("green.png");
+        let yellow = root.join("yellow.png");
+        image::RgbImage::from_pixel(256, 256, image::Rgb([0, 180, 0]))
+            .save(&green)
+            .expect("write green fixture");
+        image::RgbImage::from_pixel(256, 256, image::Rgb([255, 220, 0]))
+            .save(&yellow)
+            .expect("write yellow fixture");
+
+        let result = (|| {
+            let preset = crate::preset_by_id("glm-5.3-flash").expect("built-in GLM Flash");
+            let mut config = ModelConfig::default();
+            preset.apply(&mut config);
+            let mut model = OpenAiCompatibleModel::from_runtime_fields(vec![key], &config)
+                .expect("build GLM-compatible adapter");
+            // Keep a substantial byte-identical system prefix across both
+            // requests. This makes the same live gate an honest observation
+            // point for provider-reported prompt-cache usage while the first
+            // multimodal user turn (including its data URL) is replayed.
+            let shared_instructions = format!(
+                "Follow the exact response requested by each user message. The newest user \
+                 message may be image-only; if it contains one solid green image and no text, \
+                 reply exactly HISTORY_OK_GREEN. Treat that as valid multimodal input. Stable cache \
+                 probe context follows and is inert: {}",
+                "clat-mm-cache-prefix-0123456789;".repeat(256)
+            );
+            let items = vec![ModelItem::User {
+                content: vec![
+                    ContentPart::Text(
+                        "These are two solid-color images. Reply exactly: 1=green;2=yellow.".into(),
+                    ),
+                    ContentPart::Image {
+                        path: green.display().to_string(),
+                        media_type: "image/png".into(),
+                    },
+                    ContentPart::Image {
+                        path: yellow.display().to_string(),
+                        media_type: "image/png".into(),
+                    },
+                ],
+            }];
+            let options = ModelOptions {
+                output_limit: Some(512),
+                ..ModelOptions::default()
+            };
+            let tools = vec![ToolDefinition {
+                name: "diagnostic_noop".into(),
+                description: "Unused compatibility probe tool".into(),
+                input_schema: json!({"type": "object", "properties": {}}),
+                effect: ToolEffect::Pure,
+                strict: true,
+            }];
+            let first_estimate =
+                crate::model::estimate_request_tokens(Some(&shared_instructions), &items, &tools);
+            let mut events = Vec::new();
+            let response = model.stream(
+                ModelRequest {
+                    instructions: Some(&shared_instructions),
+                    items: &items,
+                    tools: &tools,
+                    options: &options,
+                    cancel: &CancelToken::new(),
+                },
+                &mut events,
+            )?;
+            let follow_up_items = vec![
+                items[0].clone(),
+                ModelItem::assistant_with_reasoning(
+                    response.text.clone(),
+                    response.reasoning.clone(),
+                ),
+                ModelItem::User {
+                    content: vec![
+                        ContentPart::Text(String::new()),
+                        ContentPart::Image {
+                            path: green.display().to_string(),
+                            media_type: "image/png".into(),
+                        },
+                    ],
+                },
+            ];
+            let mut follow_up_events = Vec::new();
+            let follow_up_estimate = crate::model::estimate_request_tokens(
+                Some(&shared_instructions),
+                &follow_up_items,
+                &tools,
+            );
+            let follow_up = model.stream(
+                ModelRequest {
+                    instructions: Some(&shared_instructions),
+                    items: &follow_up_items,
+                    tools: &tools,
+                    options: &options,
+                    cancel: &CancelToken::new(),
+                },
+                &mut follow_up_events,
+            )?;
+            Ok::<_, ModelError>((
+                response,
+                events,
+                follow_up,
+                follow_up_events,
+                first_estimate,
+                follow_up_estimate,
+            ))
+        })();
+        let _ = std::fs::remove_dir_all(&root);
+
+        let (response, events, follow_up, follow_up_events, first_estimate, follow_up_estimate) =
+            result.expect("GLM Flash stream through CLAT adapter");
+        assert_eq!(response.finish_reason, FinishReason::Completed);
+        let reply = response.text.to_ascii_lowercase();
+        assert!(
+            reply.contains("1=green") && reply.contains("2=yellow"),
+            "two images must remain in content-part order: {reply}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, ModelEvent::ResponseStarted { .. })),
+            "adapter must project stream start"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, ModelEvent::ResponseCompleted { .. })),
+            "adapter must project stream completion"
+        );
+        assert_eq!(follow_up.finish_reason, FinishReason::Completed);
+        assert!(
+            follow_up
+                .text
+                .to_ascii_uppercase()
+                .contains("HISTORY_OK_GREEN"),
+            "image-only follow-up must remain valid after multimodal history: {}",
+            follow_up.text
+        );
+        assert!(
+            follow_up_events
+                .iter()
+                .any(|event| matches!(event, ModelEvent::ResponseCompleted { .. })),
+            "follow-up adapter stream must complete"
+        );
+        let first_usage = response
+            .usage
+            .as_ref()
+            .expect("GLM live stream reports first-request usage");
+        let follow_up_usage = follow_up
+            .usage
+            .as_ref()
+            .expect("GLM live stream reports follow-up usage");
+        assert!(
+            follow_up_usage.cached_input_tokens.unwrap_or(0) <= follow_up_usage.input_tokens,
+            "cached input is a subset of total input"
+        );
+        eprintln!(
+            "GLM MM cache/estimate observation: first_estimate={}, first_input={}, first_cached={:?}, follow_up_estimate={}, follow_up_input={}, follow_up_cached={:?}",
+            first_estimate,
+            first_usage.input_tokens,
+            first_usage.cached_input_tokens,
+            follow_up_estimate,
+            follow_up_usage.input_tokens,
+            follow_up_usage.cached_input_tokens
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[allow(deprecated)] // libc exposes the stable Mach API needed by this test-only sampler.
+    fn current_rss_bytes() -> u64 {
+        let mut info = std::mem::MaybeUninit::<libc::mach_task_basic_info>::zeroed();
+        let mut count = libc::MACH_TASK_BASIC_INFO_COUNT;
+        // SAFETY: the task port is the current process and `info` provides the
+        // exact writable layout/count requested by MACH_TASK_BASIC_INFO.
+        let status = unsafe {
+            libc::task_info(
+                libc::mach_task_self(),
+                libc::MACH_TASK_BASIC_INFO,
+                info.as_mut_ptr().cast::<libc::integer_t>(),
+                &mut count,
+            )
+        };
+        assert_eq!(status, 0, "task_info(MACH_TASK_BASIC_INFO) failed");
+        assert_eq!(count, libc::MACH_TASK_BASIC_INFO_COUNT);
+        // SAFETY: task_info returned success and initialized the structure.
+        unsafe { info.assume_init() }.resident_size
+    }
+
+    #[cfg(target_os = "linux")]
+    fn current_rss_bytes() -> u64 {
+        let resident_pages = std::fs::read_to_string("/proc/self/statm")
+            .expect("read /proc/self/statm")
+            .split_whitespace()
+            .nth(1)
+            .expect("statm resident pages")
+            .parse::<u64>()
+            .expect("statm resident pages are numeric");
+        // SAFETY: sysconf is read-only and _SC_PAGESIZE has no pointer arguments.
+        let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+        assert!(page_size > 0, "sysconf(_SC_PAGESIZE) failed");
+        resident_pages.saturating_mul(page_size as u64)
+    }
+
+    #[cfg(all(unix, not(any(target_os = "macos", target_os = "linux"))))]
+    fn current_rss_bytes() -> u64 {
+        peak_rss_bytes()
+    }
+
+    #[cfg(unix)]
+    fn peak_rss_bytes() -> u64 {
+        let mut usage = std::mem::MaybeUninit::<libc::rusage>::zeroed();
+        // SAFETY: `usage` points to writable storage for exactly one rusage;
+        // getrusage initializes it on the asserted-success path below.
+        let status = unsafe { libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr()) };
+        assert_eq!(status, 0, "getrusage failed");
+        // SAFETY: getrusage returned success and initialized the structure.
+        let raw = unsafe { usage.assume_init() }.ru_maxrss.max(0) as u64;
+        #[cfg(target_os = "macos")]
+        {
+            raw
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            raw.saturating_mul(1024)
+        }
+    }
+
+    #[cfg(unix)]
+    fn mm5_perf_sources(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+        let mut sources = std::fs::read_dir(root.join("sources"))
+            .expect("read MM-5 sources")
+            .map(|entry| entry.expect("source entry").path())
+            .collect::<Vec<_>>();
+        sources.sort();
+        sources
+    }
+
+    /// Child-process phase for the manual MM-5 profile below. Each phase gets
+    /// a fresh process so allocator high-water from fixture generation or a
+    /// previous phase cannot masquerade as admission/provider RSS.
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "helper for mm5_near_limit_multimodal_profile"]
+    fn mm5_near_limit_multimodal_profile_helper() {
+        let Some(mode) = std::env::var_os("CLAT_MM5_PERF_MODE") else {
+            return;
+        };
+        let root = std::path::PathBuf::from(
+            std::env::var_os("CLAT_MM5_PERF_ROOT").expect("MM-5 profile root"),
+        );
+        let mode = mode.to_string_lossy();
+        let idle_rss = current_rss_bytes();
+        let idle_peak_rss = peak_rss_bytes();
+        let started = std::time::Instant::now();
+
+        let metrics = match mode.as_ref() {
+            "admission" => {
+                let sources = mm5_perf_sources(&root);
+                let source_bytes = sources
+                    .iter()
+                    .map(|path| std::fs::metadata(path).expect("source metadata").len())
+                    .sum::<u64>();
+                let store_root = root.join("store");
+                let store = crate::session::attachments::AttachmentStore::open(store_root.clone())
+                    .expect("open MM-5 attachment store");
+                let stored = store.admit(&sources).expect("near-limit batch admission");
+                let normalized_bytes = stored.iter().map(|item| item.bytes).sum::<u64>();
+                let staging_entries = std::fs::read_dir(store_root.join("staging"))
+                    .expect("read staging after admission")
+                    .count();
+                assert_eq!(stored.len(), 4);
+                assert_eq!(staging_entries, 0, "successful batch leaves no staging");
+                assert!(
+                    normalized_bytes <= crate::session::attachments::MAX_NORMALIZED_BATCH_BYTES,
+                    "normalized batch remains inside its independent budget"
+                );
+                json!({
+                    "phase": "admission",
+                    "images": stored.len(),
+                    "source_bytes": source_bytes,
+                    "normalized_bytes": normalized_bytes,
+                    "staging_entries": staging_entries,
+                })
+            }
+            "provider" => {
+                let mut blobs = std::fs::read_dir(root.join("store/blobs"))
+                    .expect("read normalized blobs")
+                    .map(|entry| entry.expect("blob entry").path())
+                    .collect::<Vec<_>>();
+                blobs.sort();
+                assert_eq!(blobs.len(), 4, "admission phase publishes four blobs");
+                let mut content = vec![ContentPart::Text(
+                    "Compare these four benchmark images in order.".into(),
+                )];
+                for path in &blobs {
+                    let family = crate::media::sniff_image_family(path)
+                        .expect("normalized provider image remains recognizable");
+                    let media_type = match family {
+                        crate::media::ImageFamily::Png => "image/png",
+                        crate::media::ImageFamily::Jpeg => "image/jpeg",
+                        _ => panic!("normalization emitted an unsupported provider family"),
+                    };
+                    content.push(ContentPart::Image {
+                        path: path.display().to_string(),
+                        media_type: media_type.into(),
+                    });
+                }
+                let preset = crate::preset_by_id("glm-5.3-flash").expect("GLM Flash preset");
+                let mut config = ModelConfig::default();
+                preset.apply(&mut config);
+                let model = OpenAiCompatibleModel::from_runtime_fields(Vec::new(), &config)
+                    .expect("build adapter");
+                let items = vec![ModelItem::User { content }];
+                let options = ModelOptions {
+                    output_limit: Some(64),
+                    ..ModelOptions::default()
+                };
+                let request = ModelRequest {
+                    instructions: None,
+                    items: &items,
+                    tools: &[],
+                    options: &options,
+                    cancel: &CancelToken::new(),
+                };
+                let body = model.request_body(request).expect("project provider body");
+                let encoded = crate::providers::serialize_request_body(
+                    &body,
+                    "MM-5 OpenAI-compatible profile",
+                )
+                .expect("serialize provider body inside hard cap");
+                assert!(
+                    encoded.len() <= crate::providers::MAX_PROVIDER_REQUEST_BODY_BYTES,
+                    "serialized body stays inside final request budget"
+                );
+                json!({
+                    "phase": "provider",
+                    "images": blobs.len(),
+                    "body_bytes": encoded.len(),
+                })
+            }
+            other => panic!("unknown MM-5 performance phase: {other}"),
+        };
+
+        let mut metrics = metrics;
+        metrics["elapsed_ms"] = json!(started.elapsed().as_millis());
+        metrics["idle_rss_bytes"] = json!(idle_rss);
+        metrics["idle_peak_rss_bytes"] = json!(idle_peak_rss);
+        metrics["peak_rss_bytes"] = json!(peak_rss_bytes());
+        println!("MM5_PERF {}", serde_json::to_string(&metrics).unwrap());
+    }
+
+    /// Manual evidence harness for MM-5's no-universal-threshold performance
+    /// gate. Four deterministic high-entropy 1536px PNGs put raw admission
+    /// above 24 MiB while remaining below the independent 32 MiB batch cap.
+    /// Fresh child processes report idle/current and high-water RSS for the
+    /// admission and provider-body phases separately. Structural budgets and
+    /// staging cleanup remain assertions; the printed RSS establishes a dated
+    /// platform baseline rather than claiming a timeless pass number.
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "manual MM-5 near-limit RSS profile; run alone with --nocapture"]
+    fn mm5_near_limit_multimodal_profile() {
+        if std::env::var_os("CLAT_MM5_PERF").as_deref() != Some(std::ffi::OsStr::new("1")) {
+            eprintln!("MM-5 near-limit profile not armed; set CLAT_MM5_PERF=1");
+            return;
+        }
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("clat-mm5-profile-{unique}"));
+        let sources_root = root.join("sources");
+        std::fs::create_dir_all(&sources_root).expect("create MM-5 source directory");
+        for index in 0..4_u32 {
+            let image = image::RgbImage::from_fn(1536, 1536, |x, y| {
+                let mut value = u64::from(y)
+                    .wrapping_mul(1536)
+                    .wrapping_add(u64::from(x))
+                    .wrapping_add(u64::from(index) << 32)
+                    .wrapping_mul(0x9E37_79B9_7F4A_7C15);
+                value ^= value >> 30;
+                value = value.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                value ^= value >> 27;
+                value = value.wrapping_mul(0x94D0_49BB_1331_11EB);
+                value ^= value >> 31;
+                image::Rgb([value as u8, (value >> 8) as u8, (value >> 16) as u8])
+            });
+            image
+                .save(sources_root.join(format!("image-{index}.png")))
+                .expect("write deterministic near-limit PNG");
+        }
+        let source_bytes = mm5_perf_sources(&root)
+            .iter()
+            .map(|path| std::fs::metadata(path).expect("source metadata").len())
+            .sum::<u64>();
+        assert!(
+            source_bytes > 24 * 1024 * 1024
+                && source_bytes <= crate::session::attachments::MAX_RAW_BATCH_BYTES,
+            "fixture must be near the batch ceiling, got {source_bytes} bytes"
+        );
+
+        let helper = format!(
+            "{}::mm5_near_limit_multimodal_profile_helper",
+            module_path!().trim_start_matches("clat::")
+        );
+        for mode in ["admission", "provider"] {
+            let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+                .args(["--exact", &helper, "--ignored", "--nocapture"])
+                .env("CLAT_MM5_PERF_MODE", mode)
+                .env("CLAT_MM5_PERF_ROOT", &root)
+                .output()
+                .expect("spawn fresh MM-5 phase");
+            assert!(
+                output.status.success(),
+                "MM-5 {mode} phase failed:\n{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let stdout = String::from_utf8(output.stdout).expect("phase output is UTF-8");
+            let metric = stdout
+                .lines()
+                .find(|line| line.starts_with("MM5_PERF "))
+                .expect("phase emits one machine-readable metric");
+            println!("{metric}");
+        }
+        std::fs::remove_dir_all(&root).expect("remove MM-5 profile artifacts");
+    }
+
     /// M3：手写 base64 的已知向量（无第三方依赖的代价——正确性必须
     /// 由 RFC 4648 向量锁死）。
     #[test]
@@ -894,6 +1399,156 @@ mod tests {
         assert_eq!(base64_bytes(b"M"), "TQ==");
         assert_eq!(base64_bytes(b"hello world"), "aGVsbG8gd29ybGQ=");
         assert_eq!(base64_bytes(b""), "");
+    }
+
+    /// Provider projection is a byte-exposure boundary just like the PWA
+    /// reader. A second hardlink name defeats final-component no-follow and
+    /// lets another path mutate the same inode, so it must be rejected before
+    /// a data URL is constructed.
+    #[cfg(unix)]
+    #[test]
+    fn provider_projection_rejects_a_multiply_linked_attachment() {
+        let image = temp_attachment("provider-hardlink", b"image bytes", "png");
+        let alias = image.with_extension("alias");
+        std::fs::hard_link(&image, &alias).expect("create hardlink alias");
+
+        assert!(
+            image_data_url_for(
+                image.to_str().expect("utf8 path"),
+                "image/png",
+                &crate::model::ImageRequestPolicy::default(),
+            )
+            .is_none(),
+            "provider must reject a multiply-linked attachment before reading bytes"
+        );
+
+        std::fs::remove_file(alias).ok();
+        std::fs::remove_file(image).ok();
+    }
+
+    /// A content-addressed blob name is an integrity claim, not merely an
+    /// opaque filename. Same-length in-place corruption must fail closed even
+    /// when type, link count, and byte budget still look valid.
+    #[test]
+    fn provider_projection_rejects_a_content_address_mismatch() {
+        use sha2::Digest as _;
+
+        let original = crate::test_support::png_bytes(2, 2, [1, 2, 3]);
+        let mut tampered = original.clone();
+        *tampered.last_mut().expect("non-empty PNG") ^= 0x01;
+        assert_eq!(original.len(), tampered.len(), "same-length attack fixture");
+        let digest = sha2::Sha256::digest(&original);
+        let name = digest
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let root = std::env::temp_dir().join(format!(
+            "clat-provider-digest-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&root).expect("create digest fixture root");
+        let image = root.join(name);
+        std::fs::write(&image, &original).expect("write matching blob bytes");
+        assert!(
+            image_data_url_for(
+                image.to_str().expect("utf8 path"),
+                "image/png",
+                &crate::model::ImageRequestPolicy::default(),
+            )
+            .is_some(),
+            "matching content-addressed bytes remain readable"
+        );
+        std::fs::write(&image, &tampered).expect("write corrupted blob bytes");
+
+        assert!(
+            image_data_url_for(
+                image.to_str().expect("utf8 path"),
+                "image/png",
+                &crate::model::ImageRequestPolicy::default(),
+            )
+            .is_none(),
+            "provider must verify the digest encoded by a blob filename"
+        );
+
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    /// Durable metadata is not allowed to relabel normalized bytes. A valid
+    /// content address proves byte identity but does not by itself prove that
+    /// the journal's media type matches the blob magic; sending PNG bytes as
+    /// `data:image/jpeg` is a corrupt provider request, not compatibility.
+    #[test]
+    fn provider_projection_rejects_a_media_type_magic_mismatch() {
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(2, 2, image::Rgb([1, 2, 3])))
+            .write_to(&mut png, image::ImageFormat::Png)
+            .expect("encode PNG fixture");
+        let image = temp_attachment("provider-media-mismatch", png.get_ref(), "png");
+        let policy = crate::model::ImageRequestPolicy {
+            media_types: vec!["image/png".into(), "image/jpeg".into()],
+            ..crate::model::ImageRequestPolicy::default()
+        };
+
+        assert!(
+            image_data_url_for(image.to_str().expect("utf8 path"), "image/png", &policy,).is_some(),
+            "matching durable media type remains readable"
+        );
+        assert!(
+            image_data_url_for(image.to_str().expect("utf8 path"), "image/jpeg", &policy,)
+                .is_none(),
+            "provider must reject a durable media type that contradicts blob magic"
+        );
+
+        std::fs::remove_file(image).ok();
+    }
+
+    /// The provider runs after the session surface fence. Replacing a session
+    /// directory in that interval must not redirect the later path open into
+    /// an attacker-controlled tree, even when the final blob name and digest
+    /// bytes there are internally consistent.
+    #[cfg(unix)]
+    #[test]
+    fn provider_projection_rejects_a_replaced_session_ancestor() {
+        use sha2::Digest as _;
+        use std::os::unix::fs::symlink;
+
+        let bytes = b"attacker-controlled-image";
+        let name = sha2::Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let base = std::fs::canonicalize(std::env::temp_dir())
+            .expect("canonical temp root")
+            .join(format!(
+                "clat-provider-ancestor-{}",
+                uuid::Uuid::new_v4().simple()
+            ));
+        let session = base.join("sessions/project/session");
+        let original = session.join("attachments/blobs");
+        std::fs::create_dir_all(&original).expect("create original store");
+        let image = original.join(&name);
+        std::fs::write(&image, b"original-unread-by-attack").expect("write original");
+
+        let parked = base.join("parked-session");
+        std::fs::rename(&session, &parked).expect("park session directory");
+        let outside = base.join("outside-session");
+        std::fs::create_dir_all(outside.join("attachments/blobs")).expect("outside store");
+        std::fs::write(outside.join("attachments/blobs").join(&name), bytes)
+            .expect("write matching attacker blob");
+        symlink(&outside, &session).expect("replace session with symlink");
+
+        assert!(
+            image_data_url_for(
+                image.to_str().expect("utf8 path"),
+                "image/png",
+                &crate::model::ImageRequestPolicy::default(),
+            )
+            .is_none(),
+            "provider must reject a symlink in any session-blob ancestor"
+        );
+
+        std::fs::remove_file(session).ok();
+        std::fs::remove_dir_all(base).ok();
     }
 
     /// M3：图片消息的 chat 序列化——纯文本保持字符串（向后兼容），
@@ -911,7 +1566,11 @@ mod tests {
             json!("hi")
         );
         // 带图：多 part 数组，图片是 base64 data URL。
-        let image = temp_attachment("chat", b"hello world", "png");
+        let image = temp_attachment(
+            "chat",
+            &crate::test_support::png_bytes(2, 2, [1, 2, 3]),
+            "png",
+        );
         let content = user_content(
             &[
                 ContentPart::Text("look".into()),
@@ -926,10 +1585,36 @@ mod tests {
         let parts = content.as_array().unwrap();
         assert_eq!(parts.len(), 2);
         assert_eq!(parts[0], json!({"type": "text", "text": "look"}));
-        assert_eq!(
-            parts[1]["image_url"]["url"],
-            json!("data:image/png;base64,aGVsbG8gd29ybGQ=")
+        assert!(
+            parts[1]["image_url"]["url"]
+                .as_str()
+                .is_some_and(|url| url.starts_with("data:image/png;base64,"))
         );
+        let _ = std::fs::remove_file(&image);
+
+        // Image-only messages stay image-only at the provider boundary.
+        // Application replay retains an empty legacy text block; emitting it
+        // as a multipart text item makes GLM reject the otherwise valid
+        // request with HTTP 400.
+        let image = temp_attachment(
+            "chat-image-only",
+            &crate::test_support::png_bytes(2, 2, [4, 5, 6]),
+            "png",
+        );
+        let content = user_content(
+            &[
+                ContentPart::Text(String::new()),
+                ContentPart::Image {
+                    path: image.display().to_string(),
+                    media_type: "image/png".into(),
+                },
+            ],
+            &crate::model::ImageRequestPolicy::default(),
+        )
+        .unwrap();
+        let parts = content.as_array().unwrap();
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0]["type"], json!("image_url"));
         let _ = std::fs::remove_file(&image);
 
         // 文件缺失：图片 part 降级为可读注记（run 不崩）。
@@ -954,6 +1639,120 @@ mod tests {
             "degradation is visible to the model: {}",
             parts[1]["text"]
         );
+    }
+
+    /// Older missing attachments retain the documented path-free degradation
+    /// so a damaged historical session remains usable. The newest user turn
+    /// is different: silently replacing its just-submitted image would let the
+    /// provider answer a materially different request.
+    #[test]
+    fn latest_user_image_read_failure_is_rejected_while_history_degrades() {
+        let missing = || ContentPart::Image {
+            path: "/nonexistent/current-image.png".into(),
+            media_type: "image/png".into(),
+        };
+        let history = map_messages(
+            None,
+            &[
+                ModelItem::User {
+                    content: vec![missing()],
+                },
+                ModelItem::user_text("continue"),
+            ],
+            &crate::model::ImageRequestPolicy::default(),
+        )
+        .expect("an older missing image degrades visibly");
+        assert!(
+            history[0]["content"][0]["text"]
+                .as_str()
+                .is_some_and(|text| text.contains("image unavailable"))
+        );
+
+        let error = map_messages(
+            None,
+            &[ModelItem::User {
+                content: vec![ContentPart::Text("inspect".into()), missing()],
+            }],
+            &crate::model::ImageRequestPolicy::default(),
+        )
+        .expect_err("the latest user image must fail before provider I/O");
+        assert!(error.to_string().contains("current request image"));
+        assert!(!error.to_string().contains("/nonexistent"));
+
+        let error = map_messages(
+            None,
+            &[
+                ModelItem::user_text("inspect with the tool"),
+                ModelItem::assistant_text(""),
+                ModelItem::ToolCall(ToolCall {
+                    id: "view-missing".into(),
+                    name: "view_image".into(),
+                    arguments: json!({}),
+                }),
+                ModelItem::ToolResult(ToolResult {
+                    call_id: "view-missing".into(),
+                    tool_name: "view_image".into(),
+                    output: json!({"viewed": false}),
+                    is_error: false,
+                    blocks: Vec::new(),
+                    image_parts: vec![missing()],
+                }),
+            ],
+            &crate::model::ImageRequestPolicy::default(),
+        )
+        .expect_err("a current-turn tool image must also fail before provider I/O");
+        assert!(error.to_string().contains("current request image"));
+    }
+
+    /// MM-2/W5: the verified Chat-Completions route accepts an image directly
+    /// on the `tool` role. Text-only results keep their historical string
+    /// shape; a visual result upgrades only that result to multipart content.
+    #[test]
+    fn tool_result_projects_typed_images_on_the_tool_role() {
+        let image = temp_attachment(
+            "tool-result",
+            &crate::test_support::png_bytes(2, 2, [7, 8, 9]),
+            "png",
+        );
+        let result = ToolResult {
+            call_id: "view-1".into(),
+            tool_name: "view_image".into(),
+            output: json!({"viewed": true}),
+            is_error: false,
+            blocks: Vec::new(),
+            image_parts: vec![ContentPart::Image {
+                path: image.display().to_string(),
+                media_type: "image/png".into(),
+            }],
+        };
+        let items = vec![
+            ModelItem::assistant_text(""),
+            ModelItem::ToolCall(ToolCall {
+                id: "view-1".into(),
+                name: "view_image".into(),
+                arguments: json!({"project_relative_path": "shot.png"}),
+            }),
+            ModelItem::ToolResult(result),
+        ];
+        let messages = map_messages(None, &items, &crate::model::ImageRequestPolicy::default())
+            .expect("messages");
+        let tool = &messages[1];
+        assert_eq!(tool["role"], json!("tool"));
+        let content = tool["content"].as_array().expect("multipart tool result");
+        assert_eq!(content[0]["type"], json!("text"));
+        assert_eq!(content[1]["type"], json!("image_url"));
+        assert!(
+            content[1]["image_url"]["url"]
+                .as_str()
+                .is_some_and(|url| url.starts_with("data:image/png;base64,"))
+        );
+        assert!(
+            !serde_json::to_string(tool)
+                .unwrap()
+                .contains(image.to_string_lossy().as_ref()),
+            "provider payload must not expose the local path"
+        );
+        let _ = std::fs::remove_file(image);
     }
 
     #[test]
@@ -1112,7 +1911,11 @@ mod tests {
             max_images: 2,
             max_bytes: 4 * 1024 * 1024,
         };
-        let png = temp_attachment("policy-ok", b"policy-ok-bytes", "png");
+        let png = temp_attachment(
+            "policy-ok",
+            &crate::test_support::png_bytes(2, 2, [10, 11, 12]),
+            "png",
+        );
 
         // F-2：gif media 不在白名单 → 降级注记（非 image part）。
         let content = user_content(
@@ -1177,8 +1980,12 @@ mod tests {
             max_images: 8,
             max_bytes: 16,
         };
-        let small = temp_attachment("tiny-ok", b"123456789012345", "png");
-        let big = temp_attachment("tiny-bad", b"12345678901234567", "png");
+        let mut small_bytes = b"\x89PNG\r\n\x1a\n".to_vec();
+        small_bytes.resize(15, 0);
+        let mut big_bytes = b"\x89PNG\r\n\x1a\n".to_vec();
+        big_bytes.resize(17, 0);
+        let small = temp_attachment("tiny-ok", &small_bytes, "png");
+        let big = temp_attachment("tiny-bad", &big_bytes, "png");
         let content = user_content(
             &[
                 ContentPart::Image {
@@ -1397,6 +2204,7 @@ mod tests {
             }),
             ModelItem::ToolResult(ToolResult {
                 blocks: Vec::new(),
+                image_parts: Vec::new(),
                 call_id: "call-1".into(),
                 tool_name: "get_date".into(),
                 output: json!("2026-08-14"),
@@ -1409,6 +2217,7 @@ mod tests {
             }),
             ModelItem::ToolResult(ToolResult {
                 blocks: Vec::new(),
+                image_parts: Vec::new(),
                 call_id: "call-2".into(),
                 tool_name: "get_weather".into(),
                 output: json!("cloudy"),
@@ -1464,6 +2273,7 @@ mod tests {
             }),
             ModelItem::ToolResult(ToolResult {
                 blocks: Vec::new(),
+                image_parts: Vec::new(),
                 call_id: "call-1".into(),
                 tool_name: "echo".into(),
                 output: json!("ok"),

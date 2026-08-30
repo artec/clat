@@ -28,6 +28,7 @@ mod subagent;
 mod title;
 mod todo;
 mod tools;
+mod view_image;
 mod wasm;
 mod wasm_grants;
 
@@ -67,6 +68,7 @@ pub(crate) use todo::TodoPlugin;
 pub(crate) use tools::{
     NativeInteractionToolsPlugin, NativeReadToolsPlugin, NativeWriteToolsPlugin, ToolRegistryPlugin,
 };
+pub(crate) use view_image::ViewImagePlugin;
 pub(crate) use wasm::WasmAdapterPlugin;
 
 use crate::plugin::Plugin;

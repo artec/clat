@@ -217,6 +217,22 @@ fn client_message_id_from_wire(
     opt_string_field(object, event, "client_message_id")
 }
 
+fn admission_receipt_from_wire(
+    object: &Map<String, Value>,
+    event: &'static str,
+) -> Result<Option<Box<crate::message::AdmissionReceipt>>, WireError> {
+    match object.get("receipt") {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => serde_json::from_value(value.clone())
+            .map(Box::new)
+            .map(Some)
+            .map_err(|_| WireError::Field {
+                event,
+                field: "receipt",
+            }),
+    }
+}
+
 /// Why a line could not be read back as a v1 event envelope.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum WireError {
@@ -478,6 +494,8 @@ fn run_event_to_json(event: &RunEvent) -> Value {
         RunEvent::SteeringApplied {
             message,
             client_message_id,
+            request_digest,
+            receipt,
         } => {
             let mut fields = message_text_fields(message, "text");
             if let Some(client_message_id) = client_message_id {
@@ -485,6 +503,12 @@ fn run_event_to_json(event: &RunEvent) -> Value {
                     "client_message_id",
                     Value::String(client_message_id.clone()),
                 ));
+            }
+            if let Some(request_digest) = request_digest {
+                fields.push(("request_digest", Value::String(request_digest.clone())));
+            }
+            if let Some(receipt) = receipt {
+                fields.push(("receipt", admission_receipt_to_json(receipt)));
             }
             event_object("steering_applied", fields)
         }
@@ -833,6 +857,7 @@ fn tool_result_from_json(value: &Value, event: &'static str) -> Result<ToolResul
         output: required(object, event, "output")?.clone(),
         is_error: bool_field(object, event, "is_error")?,
         blocks,
+        image_parts: Vec::new(),
     })
 }
 
@@ -1034,6 +1059,8 @@ fn run_event_from_json(value: &Value) -> Result<RunEvent, WireError> {
         "steering_applied" => Ok(RunEvent::SteeringApplied {
             message: message_from_wire(object, "steering_applied", "text")?,
             client_message_id: client_message_id_from_wire(object, "steering_applied")?,
+            request_digest: opt_string_field(object, "steering_applied", "request_digest")?,
+            receipt: admission_receipt_from_wire(object, "steering_applied")?,
         }),
         "run_completed" => Ok(RunEvent::RunCompleted {
             output: string_field(object, "run_completed", "output")?,
@@ -1142,6 +1169,7 @@ mod tests {
     fn sample_tool_result() -> ToolResult {
         ToolResult {
             blocks: Vec::new(),
+            image_parts: Vec::new(),
             call_id: "call-1".into(),
             tool_name: "write_file".into(),
             output: json!({"ok": true}),
@@ -1222,6 +1250,8 @@ mod tests {
                     sample_image_block(),
                 ]),
                 client_message_id: Some("client-7".into()),
+                request_digest: None,
+                receipt: None,
             },
             RunEvent::RunCompleted {
                 output: "done".into(),
@@ -1378,6 +1408,8 @@ mod tests {
         let event = RunEvent::SteeringApplied {
             message: crate::message::MessageContent::text("x\u{1b}]52;c;base64\u{7f}y"),
             client_message_id: None,
+            request_digest: None,
+            receipt: None,
         };
         let line = envelope_line(&event);
         assert!(
@@ -1769,6 +1801,7 @@ mod tests {
                 WireEvent::Run(RunEvent::ToolFinished {
                     result: ToolResult {
                         blocks: Vec::new(),
+                        image_parts: Vec::new(),
                         call_id: "c1".into(),
                         tool_name: "read_file".into(),
                         output: json!({"ok": true}),
@@ -1781,6 +1814,8 @@ mod tests {
                 WireEvent::Run(RunEvent::SteeringApplied {
                     message: crate::message::MessageContent::text("steer"),
                     client_message_id: None,
+                    request_digest: None,
+                    receipt: None,
                 }),
             ),
             (
@@ -1909,12 +1944,18 @@ mod tests {
                 image.clone(),
             ]),
             client_message_id: Some("client-2".into()),
+            request_digest: Some("digest-2".into()),
+            receipt: Some(Box::new(crate::message::AdmissionReceipt::committed(
+                "client-2".into(),
+                "message-2".into(),
+                vec!["attachment-1".into()],
+            ))),
         };
         let line = envelope_line(&steering);
         assert_eq!(
             line,
             format!(
-                "{{\"v\":1,\"event\":{{\"type\":\"steering_applied\",\"text\":\"and this\",\"content_blocks\":[{{\"type\":\"text\",\"text\":\"and this\"}},{{\"type\":\"image\",\"attachment\":{descriptor_json}}}],\"client_message_id\":\"client-2\"}}}}\n"
+                "{{\"v\":1,\"event\":{{\"type\":\"steering_applied\",\"text\":\"and this\",\"content_blocks\":[{{\"type\":\"text\",\"text\":\"and this\"}},{{\"type\":\"image\",\"attachment\":{descriptor_json}}}],\"client_message_id\":\"client-2\",\"request_digest\":\"digest-2\",\"receipt\":{{\"client_message_id\":\"client-2\",\"state\":\"committed\",\"committed_message_id\":\"message-2\",\"attachment_ids\":[\"attachment-1\"],\"retryable\":false}}}}}}\n"
             )
         );
         assert_eq!(parse_run(&line), steering);
@@ -1927,6 +1968,7 @@ mod tests {
                 output: json!({"noted": true}),
                 is_error: false,
                 blocks: vec![image],
+                image_parts: Vec::new(),
             },
         };
         let line = envelope_line(&tool_finished);
@@ -1953,6 +1995,8 @@ mod tests {
             RunEvent::SteeringApplied {
                 message: crate::message::MessageContent::text("plain"),
                 client_message_id: None,
+                request_digest: None,
+                receipt: None,
             },
         ] {
             let line = envelope_line(&event);
@@ -1966,6 +2010,7 @@ mod tests {
                 output: json!("ok"),
                 is_error: false,
                 blocks: Vec::new(),
+                image_parts: Vec::new(),
             },
         };
         let line = envelope_line(&tool);

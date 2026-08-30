@@ -4,7 +4,7 @@ use crate::dsh::backend::DshTask;
 /// 粘贴的图片附件判定（M6，纯函数可测）：**整条**粘贴（trim 后）恰好
 /// 是一个存在的图片文件**绝对路径**时返回它（`~` 展开；Windows 盘符
 /// 路径同放行）。防误判优先：相对路径、含空白/换行、扩展名不认识、
-/// 文件不存在、超过 4MB 一律 None——宁可漏判当文本插入，不可把用户
+/// 文件不存在、超过源图上限一律 None——宁可漏判当文本插入，不可把用户
 /// 的文字吞成附件。相对路径被排除是刻意的：存在性检查相对进程 cwd
 /// 解析，裸文件名（"logo.png"）碰巧同名就会被误判。
 pub(super) fn pasted_image_path(text: &str) -> Option<std::path::PathBuf> {
@@ -130,6 +130,22 @@ impl App {
             }
             return;
         }
+        // Image admission owns the application on a bounded worker. Keep the
+        // terminal responsive (draws continue) but do not let commands,
+        // session switches, or a second submission observe the temporary
+        // handoff. Ctrl+C defers exit only until the worker returns the sole
+        // application owner, so normal close/join still runs.
+        if self.run_start_pending {
+            if let Event::Key(key) = event
+                && key.kind == KeyEventKind::Press
+                && key.modifiers.contains(KeyModifiers::CONTROL)
+                && matches!(key.code, KeyCode::Char('c' | 'C'))
+            {
+                self.quit_after_run_start = true;
+                self.flash_status("finishing attachment admission before exit…");
+            }
+            return;
+        }
         match event {
             Event::Key(key) if key.kind == KeyEventKind::Press => self.handle_key(key),
             Event::Paste(text) => self.handle_paste(&text),
@@ -153,6 +169,10 @@ impl App {
         // 无限挂起在 recv 上，交接永远不被发现。
         if self.loading.is_some() {
             let poll = now + Duration::from_millis(50);
+            deadline = Some(deadline.map_or(poll, |current| current.min(poll)));
+        }
+        if self.run_start_pending {
+            let poll = now + Duration::from_millis(80);
             deadline = Some(deadline.map_or(poll, |current| current.min(poll)));
         }
         // dsh 断线自动重连（§0-2）：到点必须唤醒，否则无事件时主循环
@@ -555,12 +575,25 @@ impl App {
                             //（入队与回显同路径）；区侧同步弹出最后一条。
                             // 回填按发送顺序排列、换行分隔（多次召回时
                             // 先发的想法靠前——见 prepend_recalled_line）。
-                            // MM-1A：召回的是 typed 消息；TUI steering 只
-                            // 有文本（admission fail-closed），取文本投影。
                             self.conversation.recall_pending_steering();
+                            self.pending_native_steering.pop_back();
                             self.input
-                                .prepend_recalled_line(&message.content.plain_text());
-                            self.flash_status("steering recalled — edit it, Enter requeues");
+                                .prepend_recalled_line(&message.message.content.plain_text());
+                            let roots = self.project.root().to_path_buf();
+                            let restored = message.message.staged_attachments.len();
+                            let restore = self
+                                .attachments
+                                .add_paths(&roots, message.message.staged_attachments);
+                            match restore {
+                                Ok(_) if restored > 0 => self.flash_status(format!(
+                                    "steering recalled — restored {restored} image(s), edit then Enter requeues"
+                                )),
+                                Ok(_) => self
+                                    .flash_status("steering recalled — edit it, Enter requeues"),
+                                Err(error) => self.flash_status(format!(
+                                    "steering text recalled; image draft restore failed: {error}"
+                                )),
+                            }
                         }
                         None => {
                             if let Some(handle) = &self.run_handle {
@@ -582,7 +615,7 @@ impl App {
                 } else {
                     // 空闲 Esc：清输入连同未发送的附件。
                     self.input.clear();
-                    self.attachments.clear();
+                    self.clear_attachment_draft();
                 }
             }
             KeyCode::Char(ch) => self.input.insert_char(ch),
@@ -602,18 +635,20 @@ impl App {
                 dialog.buffer.insert_str(text);
             } else if let Some(editor) = &mut self.editor {
                 editor.handle_paste(text);
-            } else if !self.running
-                && let Some(image) = pasted_image_path(text)
-            {
-                // 拖图进终端 = 粘贴绝对路径：识别为附件而非文本。仅
-                // 空闲态——运行中的粘贴是 steering 文本（附件只能随
-                // 新消息走）。判定失败（混合文本/不存在/超大）回落为
-                // 普通文本插入。
-                self.attachments.push(image);
-                let count = self.attachments.len();
-                self.flash_status(format!(
-                    "image attached ({count}) — Enter sends it with your message · Esc drops it"
-                ));
+            } else if let Some(image) = pasted_image_path(text) {
+                // 拖图进终端 = 粘贴绝对路径：识别为结构化附件而非文本。
+                // 空闲消息与运行中 steering 共用同一份草稿。判定失败
+                //（混合文本/不存在/超大）回落为普通文本插入。
+                let root = self.project.root().to_path_buf();
+                match self.attachments.add_paths(&root, [image]) {
+                    Ok(_) => {
+                        let count = self.attachments.len();
+                        self.flash_status(format!(
+                            "image attached ({count}) — Enter sends it with your message · Esc drops it"
+                        ));
+                    }
+                    Err(error) => self.flash_status(format!("attach failed: {error}")),
+                }
             } else {
                 self.input.insert_str(text);
             }

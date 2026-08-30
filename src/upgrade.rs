@@ -1446,7 +1446,7 @@ mod tests {
             all(target_os = "windows", target_arch = "x86_64"),
             allow(unused_variables)
         )]
-        let others = vec![
+        let others = [
             ReleaseAsset {
                 name: "clat-v0.2.0-x86_64-pc-windows-msvc.zip".into(),
                 url: "u".into(),

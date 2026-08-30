@@ -396,7 +396,9 @@ impl SubagentService {
             config.model.clone(),
             Box::new(move || providers.build(&factory_config, &factory_credentials)),
         );
-        let mut model = crate::providers::image_degrade_model(model);
+        // Subagents share the same fail-closed capability contract as the
+        // primary runtime: no paid 400 probe and no path-bearing fallback.
+        let mut model = model;
         let ledger = Arc::new(crate::model::RunSpendLedger::new(Some(task.max_tokens)));
         let options = ModelOptions {
             output_limit: config.output_limit,

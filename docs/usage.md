@@ -153,10 +153,18 @@ selection behavior instead of CLAT's mouse handling.
 | `/perm`, `/permission` | switch Read Only, Project Write, or Full Access |
 | `/mcp` | inspect MCP/WASM connection state, tools, and isolated failures |
 | `/context` | inspect a one-shot estimated model-context breakdown |
+| `/attach PATH...` | add project-relative or absolute image paths; quotes group paths with spaces |
+| `@ PATH...` | keyboard-short alias for `/attach` (the required space avoids consuming `@mentions`) |
+| `/paste-image` | explicitly read one image from the system clipboard on a bounded worker |
+| `/image remove ID` | remove a stable `[Image #ID]` from the current draft |
+| `/image move ID POSITION` | move that stable image to a one-based position |
+| `/attachments clear` | clear the current structured image draft |
 | `/help` | open the command and key reference |
 | `/quit`, `/exit` | close CLAT cleanly |
 
-The command catalog is shared with `clat exec --command`. Commands that require
+The core command catalog is shared with `clat exec --command`. The image-draft
+commands above are TUI-local because they edit the terminal composer without
+touching a session or model. Commands that require
 an interactive picker, such as `/model`, `/resume`, and `/perm`, report a usage
 error in headless mode instead of inventing a selection.
 
@@ -212,9 +220,14 @@ server executable. Platforms without the required sandbox fail before spawn.
 `/context` takes one read-only snapshot of the next model-facing context and
 reports conservative estimates for base prompt, project instructions, plan
 policy, skill catalog, tool schemas, history/compaction view, output reserve,
-and total, plus skill discovery diagnostics. The numbers are estimates from the
-same estimator used by model-request budgeting; the command does not call a
-model, write a session event, or start a live monitor.
+and total, plus skill discovery diagnostics. For multimodal history it also
+reports the image count, normalized image bytes, visual-token estimate, and the
+explicit safety factor. Typed tool-result images are counted in provider
+projection order, not only images attached to user messages. Visual tokens are
+a conservative local estimate included in the history total, not a claim about
+exact provider billing. The numbers come from the same estimator used by
+model-request budgeting and compaction; the command does not call a model,
+write a session event, or start a live monitor.
 
 ### Memory, goals, and read-only subagents
 
@@ -298,15 +311,78 @@ transcript or the authoritative journal.
 
 ### Image attachments
 
-Pasting or dragging exactly one existing absolute image path turns it into an
-attachment chip. `~` is accepted; bare relative names and mixed text are not
-auto-detected. Supported formats are PNG, JPEG, WebP, and GIF up to 4 MiB.
+Pasting or dragging exactly one existing absolute image path turns it into a
+structured draft entry. `~` is accepted; bare relative names and mixed text are
+not auto-detected. For explicit selection, `/attach` (or `@ `) accepts
+project-relative and absolute paths, quoted paths with spaces, and multiple
+paths in one command. PNG and JPEG sources may be up to 8 MiB each; one message
+is capped at 8 images, 32 MiB of source bytes, and 16 MiB after normalization.
 
-On send, CLAT copies the image into the session attachment directory before
-journaling the turn. The journal stores a reference rather than image bytes.
-Vision-capable endpoints receive native image input. If an OpenAI-compatible
-endpoint rejects the image, CLAT retries with a text note that names the local
-attachment path so a configured vision tool can inspect it instead.
+Each image has a stable `[Image #N]` label independent of editable message text.
+The rail shows its filename, measured dimensions, source size, estimated visual
+tokens, and draft totals. `/image remove` and `/image move` operate on that
+stable id. Text-only model routes keep the draft visible but block sending;
+switch to a probe-verified vision route or remove the images. Image-only prompts
+are valid. Startup/admission failures restore the text and ordered draft, and
+`Esc` recalls queued image steering with its original sources. If cancellation
+or failure seals the run before a queued steering message is claimed, its exact
+text and ordered images return to the composer; multiple recovered messages
+surface one at a time so their individual image budgets are preserved.
+Successful session switches and `/new` clear unsent images so drafts never
+cross sessions.
+For an initial image-bearing message, source reads, full decode, normalization,
+and durable admission run on a bounded background worker. The terminal remains
+repaintable while input is briefly gated; the first run event cannot pass its
+handoff barrier until the application and run state are back on the frontend.
+Text-only startup keeps its existing fast path.
+
+`/paste-image` is explicit: ordinary bracketed paste never probes the system
+clipboard. CLAT reads RGBA dimensions and enforces the 16M-pixel/byte-layout
+guard immediately, encodes PNG on a single bounded worker, and places the result
+in core-owned process-local staging before the TUI receives a path. Clipboard
+staging is capped at 128 MiB in aggregate and swept after one hour. Removing or
+clearing a draft, completing initial-message admission, or durably claiming an
+image steering message reclaims its raw staged PNG; CLAT never deletes a
+user-selected `/attach` source. macOS uses
+the native pasteboard, Windows uses the Win32 clipboard, and Linux supports X11
+plus compatible Wayland data-control compositors. WSLg can use those Linux
+paths; WSL without a graphical clipboard, Android, and Termux report an
+actionable unsupported error. CLAT deliberately does not concatenate or run a
+PowerShell/shell fallback.
+
+On send (including steering during an active run), CLAT normalizes the image
+into the content-addressed attachment store before journaling the turn. The
+journal stores an opaque attachment reference and metadata rather than image
+bytes or a host path. Only routes with a
+probe-verified image capability receive native image input; unreadable or
+route-rejected parts degrade to a path-free notice.
+
+On a route whose frozen capabilities also permit image tool results, the agent
+receives the read-only `view_image` tool. It accepts one of an attachment ID
+already reachable from the active session, a project-relative PNG/JPEG path,
+or a core-minted current-run scratch reference. It never accepts an absolute
+path, including in Full Access, and read-only subagents do not receive it. A
+successful call sends the admitted image to the configured model provider,
+then journals only the descriptor so the result remains replayable after a
+restart.
+
+In the local web workbench, use **Add images**, paste an image into the
+composer, or drop PNG/JPEG files onto it. The rail supports multiple images,
+ordering, removal, image-only messages, and retry after an upload failure.
+Browser files first enter a short-lived server-minted draft scope; the browser
+sends only opaque upload IDs, never a local path or Base64 body. A successful
+send clears the browser draft; switching or creating a session clears and
+revokes it as well. While a run is active, an image draft is queued as steering
+and becomes durable only when that run claims it.
+
+History thumbnails are fetched on demand through the authenticated local
+attachment endpoint and displayed with temporary `blob:` URLs. Attachment IDs
+must be reachable from the active session; the endpoint never reveals a disk
+path, and the pairing token is never placed in an image URL. The response is
+fixed-length and streams from a verified no-follow file handle in 64KiB chunks;
+at most four attachment downloads may occupy the slow-reader budget at once.
+Each write may idle for at most 15 seconds and the full response is capped at
+60 seconds.
 
 ### Rendering, copy, and notifications
 
@@ -510,9 +586,13 @@ and MCP facts are rebuilt from authenticated snapshots, journal replay, and
 live events.
 
 The workbench supports streaming responses, tool cards, approvals, new/switch/
-rename session actions, permission-mode changes, cancellation, and in-run
-steering. Full Access requires both a UI warning acknowledgement and the
-protocol confirmation described in [Permissions](permissions.md).
+rename session actions, permission-mode changes, cancellation, in-run steering,
+and manual history compaction. The Session inspector's **Compact history**
+button starts the same core compactor as `/compact`; while it is active the
+composer and session mutations are locked, and the button becomes a cancellation
+control. Completion is journal-backed and therefore visible again after reload.
+Full Access requires both a UI warning acknowledgement and the protocol
+confirmation described in [Permissions](permissions.md).
 
 Informational slash commands use the same core command catalog. `/context`
 renders its estimate as a readable multi-line breakdown, including plan, goal,
@@ -551,21 +631,47 @@ old app can then be removed independently.
 
 RPC uses `POST /api/<method>` and returns either
 `{"ok":true,"value":...}` or
-`{"ok":false,"error":{"code":"...","message":"..."}}`.
+`{"ok":false,"error":{"code":"...","message":"..."}}`. Admission
+errors for client-keyed messages add `error.receipt`; clients must follow its
+`state` and `retryable` fields instead of guessing whether to resend.
 
 Current methods are:
 
 - `workbench.info`
 - `session.list`, `session.info`, `session.new`, `session.switch`,
-  `session.rename`
+  `session.rename`, `session.compact`
+- `model.overrides.set`
+- `draft.open`
 - `prompt.send`, `steer.send`, `run.cancel`
 - `permission.set`
 - `approval.respond`
 
-`workbench.info` is lightweight: it returns project, active-session, model,
-permission, MCP, capability, and active-run summaries without loading a
-transcript or returning credentials. Only one run is active at a time;
-`prompt.send` reports `busy` rather than queueing another.
+`workbench.info` is lightweight: it returns project, active-session, model
+(including all five typed override states), permission, MCP, capability,
+active-run, and active-compaction summaries without loading a transcript or
+returning credentials. `session.compact` accepts `{"action":"start"}` (the
+default) or `{"action":"cancel"}`. It is mutually exclusive with a run and a
+second compaction, and reports progress through `notice` frames rather than
+holding the RPC request open.
+`model.overrides.set` changes exactly one allowlisted override with
+`{"field":"output_limit","state":"inherit|set|clear","value":...}`;
+`value` is required only for `set`, credentials are never accepted, and an
+active run returns `busy`. Only one run is active at a time; `prompt.send`
+reports `busy` rather than queueing another.
+
+A client-keyed `prompt.send` acceptance and its `prompt.settled` frame carry a
+Committed receipt. `steer.send` returns Reserved while queued, the live
+`steering_applied` event upgrades it to Committed after journal flush, and a
+recall/not-running result is RolledBack and retryable. Reconnect replay of a
+keyed user message also carries the rebuilt Committed receipt.
+
+`draft.open` returns a random, short-lived scope bound to the current session
+selection. Raw `POST /api/drafts/<scope>/images` accepts one bounded PNG or
+JPEG after Bearer authentication; `prompt.send` and `steer.send` reference its
+opaque upload IDs. `GET /api/attachments/<attachment-id>` is likewise Bearer
+protected and reads only a descriptor reachable from the active session through
+a fixed-length 64KiB stream (with a separate four-download slow-reader limit,
+15-second write-idle timeout, and 60-second whole-response timeout).
 
 Stable v1 error codes are `bad-request`, `unauthorized`, `forbidden`,
 `not-found`, `busy`, `not-pending`, and `internal`. Clients should preserve an

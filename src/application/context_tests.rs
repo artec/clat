@@ -22,10 +22,18 @@ fn mount(
 }
 
 fn run_request(application: &mut TrustedProjectApplication, prompt: &str) -> ApplicationRunResult {
+    run_request_with_attachments(application, prompt, Vec::new())
+}
+
+fn run_request_with_attachments(
+    application: &mut TrustedProjectApplication,
+    prompt: &str,
+    attachments: Vec<std::path::PathBuf>,
+) -> ApplicationRunResult {
     let (completion, receiver) = mpsc::channel();
     let handle = application
         .start_run(ApplicationRunRequest {
-            message: crate::message::PendingMessage::text(prompt),
+            message: crate::message::PendingMessage::from_front_end(prompt, None, attachments),
             approver: Arc::new(CountingApprover(Arc::new(AtomicUsize::new(0)))),
             asker: None,
             events: Box::new(SharedEvents(Arc::new(Mutex::new(Vec::new())))),
@@ -34,6 +42,152 @@ fn run_request(application: &mut TrustedProjectApplication, prompt: &str) -> App
         .expect("start run");
     handle.join().expect("join run");
     receiver.recv().expect("run result")
+}
+
+#[test]
+fn context_reports_normalized_image_count_bytes_tokens_and_survives_cold_replay() {
+    let (storage_root, project_root) = roots("context-images");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let source = project_root.join("source.png");
+    let canvas = image::RgbImage::from_pixel(8, 6, image::Rgb([20, 120, 220]));
+    image::DynamicImage::ImageRgb8(canvas)
+        .save_with_format(&source, image::ImageFormat::Png)
+        .unwrap();
+
+    let project = Project::new(&project_root);
+    let mut application = mount(&project, &storage_root, TestBehavior::Success);
+    configure_test_model(&application);
+    run_request_with_attachments(&mut application, "inspect the attached image", vec![source])
+        .expect("image run");
+
+    let live = application.context_snapshot().unwrap();
+    assert_estimate_identity(&live);
+    assert_eq!(live.image_count, 1);
+    assert_eq!(live.image_original_count, 1);
+    assert_eq!(live.image_offloaded_count, 0);
+    assert!(live.image_bytes > 0, "normalized blob bytes are visible");
+    assert_eq!(live.image_token_estimate, (100 + 350) * 2);
+    assert_eq!(live.image_token_safety_factor, 2);
+    assert!(live.history_estimate >= live.image_token_estimate);
+    let expected = (
+        live.image_count,
+        live.image_original_count,
+        live.image_offloaded_count,
+        live.image_bytes,
+        live.image_token_estimate,
+        live.image_token_safety_factor,
+    );
+
+    application.close().unwrap();
+    let application = mount(&project, &storage_root, TestBehavior::Panic);
+    let cold = application.context_snapshot().unwrap();
+    assert_estimate_identity(&cold);
+    assert_eq!(
+        (
+            cold.image_count,
+            cold.image_original_count,
+            cold.image_offloaded_count,
+            cold.image_bytes,
+            cold.image_token_estimate,
+            cold.image_token_safety_factor,
+        ),
+        expected,
+        "cold replay resolves the same normalized image identity and budget"
+    );
+    application.close().unwrap();
+    crate::test_support::cleanup_tree(storage_root.parent().unwrap());
+}
+
+#[test]
+fn context_uses_the_exact_oldest_first_image_projection_across_cold_replay() {
+    let (storage_root, project_root) = roots("context-image-offload");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let source = project_root.join("source.png");
+    image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+        512,
+        512,
+        image::Rgb([40, 160, 80]),
+    ))
+    .save_with_format(&source, image::ImageFormat::Png)
+    .unwrap();
+
+    let project = Project::new(&project_root);
+    let mut application = mount(&project, &storage_root, TestBehavior::Success);
+    configure_test_model(&application);
+    for turn in 0..5 {
+        run_request_with_attachments(
+            &mut application,
+            &format!("inspect retained image {turn}"),
+            vec![source.clone()],
+        )
+        .expect("image run");
+    }
+
+    let unbounded = application.context_snapshot().unwrap();
+    assert_eq!(unbounded.image_count, 5);
+    let output_limit = 256u64;
+    let pressure_quantum = 1_024u64;
+    // Pick the largest quantized pressure line still below the current
+    // request. The shared projector must therefore omit at least one old
+    // image while keeping the newest user turn protected.
+    let quantized_pressure = unbounded
+        .input_estimate
+        .saturating_add(output_limit)
+        .saturating_sub(1)
+        / pressure_quantum
+        * pressure_quantum;
+    assert!(quantized_pressure >= pressure_quantum);
+    let max_context_tokens = u32::try_from(quantized_pressure * 10 / 8).unwrap();
+    let (mut config, credentials) = application.model_state().unwrap();
+    config.output_limit = Some(output_limit as u32);
+    config.max_context_tokens = Some(max_context_tokens);
+    config.overrides.output_limit = crate::Override::Set(output_limit as u32);
+    config.overrides.max_context_tokens = crate::Override::Set(max_context_tokens);
+    config.overrides_version = Some(1);
+    application
+        .save_model_state(&config, &credentials)
+        .expect("save bounded projection config");
+
+    let live = application.context_snapshot().unwrap();
+    assert_estimate_identity(&live);
+    assert_eq!(live.image_original_count, 5);
+    assert!(
+        (1..5).contains(&live.image_count),
+        "the newest image stays visible while one or more old images are omitted"
+    );
+    assert_eq!(
+        live.image_offloaded_count,
+        live.image_original_count - live.image_count
+    );
+    assert!(live.input_estimate < unbounded.input_estimate);
+    let expected = (
+        live.input_estimate,
+        live.history_estimate,
+        live.image_count,
+        live.image_original_count,
+        live.image_offloaded_count,
+        live.image_bytes,
+        live.image_token_estimate,
+    );
+
+    application.close().unwrap();
+    let application = mount(&project, &storage_root, TestBehavior::Panic);
+    let cold = application.context_snapshot().unwrap();
+    assert_eq!(
+        (
+            cold.input_estimate,
+            cold.history_estimate,
+            cold.image_count,
+            cold.image_original_count,
+            cold.image_offloaded_count,
+            cold.image_bytes,
+            cold.image_token_estimate,
+        ),
+        expected,
+        "cold replay must reproduce the exact provider-facing projection"
+    );
+    application.close().unwrap();
+    crate::test_support::cleanup_tree(storage_root.parent().unwrap());
 }
 
 fn durable_event_count(storage_root: &std::path::Path, id: &crate::SessionId) -> usize {

@@ -61,9 +61,12 @@ clat upgrade --check
   每会话一个带 CAS 的持久 goal 及仅由用户显式开启的有界续跑；默认关闭、
   深度 1 的 explorer/reviewer 实验，子 Agent 只拥有三个项目相对只读工具。
 - **模型**——DeepSeek、GLM、Qwen、Kimi 内置预设，命名自定义档案，
-  OpenAI Responses 与 OpenAI 兼容协议，思考/用量/缓存/上下文/配额遥测。
+  OpenAI Responses 与 OpenAI 兼容协议，思考/用量/缓存/上下文/配额遥测；
+  经探针验证的视觉路由支持结构化 TUI 图片草稿、多路径选择、显式剪贴板
+  导入、纯图片消息与运行中图片插话。
 - **原生工具**——有界且理解 gitignore 的字面量/正则/glob 搜索、文件列表与
-  读取、原子写入、精确编辑、单文件多 hunk 补丁，以及支持增量输出、stdin、
+  读取、按模型能力门控的视觉检查、原子写入、精确编辑、单文件多 hunk
+  补丁，以及支持增量输出、stdin、
   PTY 和受管进程组清理的 run 级命令会话。macOS 在 Full Access 之外使用功能
   探测过的 Seatbelt 写入/网络强制隔离，其他平台如实报告受监督 fallback；
   成功文件工具触及嵌套路径后，会刷新对应作用域的项目指令。

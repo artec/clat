@@ -85,11 +85,12 @@ impl CancelToken {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ContentPart {
     Text(String),
-    /// 用户附加的本地图片。`path` 是**会话附件目录内的绝对路径**
-    ///（附加时复制，journal 落同一引用——回放零换算）；`media_type`
-    /// 如 "image/png"。图片字节只存在于该文件：不进 journal、不进
-    /// 事件流；请求序列化时才读文件转 base64 data URL，上下文计量
-    /// 按视觉 tile 估算（`crate::media`）。
+    /// Provider-facing local image. Before the session fence this may be a
+    /// durable relative `blobs/<attachmentId>` ref; afterward it is an
+    /// absolute path inside the active session store. Live `view_image`
+    /// results use the same transient shape. The journal and event protocol
+    /// never serialize this path: they carry descriptor-only ContentBlocks.
+    /// Provider projection reads it no-follow and emits a bounded data URL.
     Image {
         path: String,
         media_type: String,
@@ -148,7 +149,46 @@ pub struct ModelOptions {
     pub temperature: Option<f64>,
     pub parallel_tool_calls: Option<bool>,
     pub provider_options: Value,
+    /// Agent-request image projection. Internal text-only requests (title,
+    /// compaction, MCP sampling) leave this disabled.
+    pub image_projection: Option<ImageProjectionBudget>,
 }
+
+/// Frozen per-run bounds for deterministic image offload. These are distinct
+/// from per-message admission and the final serialized HTTP-body fence.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ImageProjectionBudget {
+    pub max_context_tokens: Option<u32>,
+    pub max_request_images: usize,
+    pub max_request_image_bytes: u64,
+}
+
+impl ImageProjectionBudget {
+    pub const MAX_REQUEST_IMAGES: usize = 12;
+    pub const MAX_REQUEST_IMAGE_BYTES: u64 = 20_000_000;
+
+    pub fn for_config(config: &ModelConfig) -> Self {
+        Self {
+            max_context_tokens: config.max_context_tokens,
+            max_request_images: Self::MAX_REQUEST_IMAGES,
+            max_request_image_bytes: Self::MAX_REQUEST_IMAGE_BYTES,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct ImageProjectionReport {
+    pub original_images: u64,
+    pub retained_images: u64,
+    pub retained_bytes: u64,
+    pub retained_tokens: u64,
+    pub offloaded_images: u64,
+    pub first_offloaded_image: Option<u64>,
+}
+
+pub(crate) const IMAGE_OFFLOAD_PLACEHOLDER: &str =
+    "[older image omitted from this request: visual context budget exceeded]";
+const IMAGE_OFFLOAD_QUANTUM_TOKENS: u64 = 1024;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -239,6 +279,13 @@ impl ModelCapabilities {
     /// attach admission 的唯一判据（INV-MM2-2）。
     pub fn accepts_image_input(&self) -> bool {
         self.input_modalities.contains(&Modality::Image) && self.image_input_verified
+    }
+
+    /// Visual tool results are stricter than ordinary input: the route must
+    /// be probe-verified and explicitly accept image results as well as image
+    /// input. This single predicate drives the W5 catalog gate.
+    pub fn accepts_image_tool_results(&self) -> bool {
+        self.accepts_image_input() && self.tool_result_modalities.contains(&Modality::Image)
     }
 }
 
@@ -357,6 +404,16 @@ pub struct ModelOverrides {
 }
 
 impl ModelConfig {
+    /// Provider request projection for the tri-state parallel-tools field.
+    /// The legacy/effective bool remains available to UI code, while Clear
+    /// must omit the wire key entirely instead of silently sending `true`.
+    pub fn request_parallel_tool_calls(&self) -> Option<bool> {
+        match self.overrides.parallel_tool_calls {
+            Override::Clear => None,
+            Override::Inherit | Override::Set(_) => Some(self.parallel_tool_calls),
+        }
+    }
+
     /// INV-MM2-3 冻结合并序的第三步：preset-managed 默认（apply 已
     /// stamp）之上应用 typed 显式 overrides。**thinking_level 的厂商
     /// 映射在本函数内一次完成**——`model_state()` 之后不得再二次改
@@ -579,6 +636,65 @@ fn estimate_tokens_conservative(text: &str) -> usize {
     ascii / 4 + other + 8
 }
 
+/// Model-facing image parts in their provider projection order. Tool-result
+/// images are deliberately included: they are emitted as a following user
+/// image message by both provider adapters and must consume the same context
+/// budget as top-level user/assistant images.
+pub(crate) fn model_item_image_parts(item: &ModelItem) -> impl Iterator<Item = &ContentPart> {
+    let parts = match item {
+        ModelItem::User { content } | ModelItem::Assistant { content, .. } => content.as_slice(),
+        ModelItem::ToolResult(result) => result.image_parts.as_slice(),
+        ModelItem::ToolCall(_) | ModelItem::ProviderState(_) => &[],
+    };
+    parts
+        .iter()
+        .filter(|part| matches!(part, ContentPart::Image { .. }))
+}
+
+/// Conservative per-item estimate shared by request preflight, compaction,
+/// `/context`, steering, and goal continuation. Keeping ToolResult images in
+/// this walker closes the otherwise easy-to-miss recursive visual-cost gap.
+pub(crate) fn estimate_model_item_tokens(item: &ModelItem) -> u64 {
+    let mut tokens = 16usize;
+    match item {
+        ModelItem::User { content } | ModelItem::Assistant { content, .. } => {
+            for part in content {
+                match part {
+                    ContentPart::Text(text) => {
+                        tokens += estimate_tokens_conservative(text);
+                    }
+                    ContentPart::Image { path, .. } => {
+                        tokens += crate::media::estimate_image_tokens(std::path::Path::new(path))
+                            as usize;
+                    }
+                }
+            }
+        }
+        ModelItem::ToolResult(result) => {
+            tokens += serde_json::to_string(item)
+                .map(|text| estimate_tokens_conservative(&text))
+                .unwrap_or(64);
+            for part in &result.image_parts {
+                match part {
+                    ContentPart::Text(text) => {
+                        tokens += estimate_tokens_conservative(text);
+                    }
+                    ContentPart::Image { path, .. } => {
+                        tokens += crate::media::estimate_image_tokens(std::path::Path::new(path))
+                            as usize;
+                    }
+                }
+            }
+        }
+        ModelItem::ToolCall(_) | ModelItem::ProviderState(_) => {
+            tokens += serde_json::to_string(item)
+                .map(|text| estimate_tokens_conservative(&text))
+                .unwrap_or(64);
+        }
+    }
+    tokens as u64
+}
+
 /// FP-01 预留制的请求估算（非 tokenizer，宁可高估）：instructions +
 /// 对话 items + 工具定义全部计入——兼容端点每轮请求都会真实计费
 /// 这些 input（累计制账单的同构面）。
@@ -592,27 +708,7 @@ pub fn estimate_request_tokens(
         tokens += estimate_tokens_conservative(text);
     }
     for item in items {
-        tokens += match item {
-            ModelItem::User { content } | ModelItem::Assistant { content, .. } => {
-                let mut item_tokens = 16usize;
-                for part in content {
-                    match part {
-                        ContentPart::Text(text) => {
-                            item_tokens += estimate_tokens_conservative(text);
-                        }
-                        ContentPart::Image { path, .. } => {
-                            item_tokens +=
-                                crate::media::estimate_image_tokens(std::path::Path::new(path))
-                                    as usize;
-                        }
-                    }
-                }
-                item_tokens
-            }
-            other => serde_json::to_string(other)
-                .map(|text| estimate_tokens_conservative(&text))
-                .unwrap_or(64),
-        };
+        tokens = tokens.saturating_add(estimate_model_item_tokens(item) as usize);
     }
     for definition in tools {
         let schema = serde_json::to_string(&definition.input_schema)
@@ -623,6 +719,157 @@ pub fn estimate_request_tokens(
             + schema;
     }
     tokens as u64
+}
+
+fn image_projection_totals(items: &[ModelItem]) -> (u64, u64, u64) {
+    let mut images = 0u64;
+    let mut bytes = 0u64;
+    let mut tokens = 0u64;
+    for part in items.iter().flat_map(model_item_image_parts) {
+        let ContentPart::Image { path, .. } = part else {
+            unreachable!("image walker yields only image parts")
+        };
+        images = images.saturating_add(1);
+        tokens = tokens.saturating_add(crate::media::estimate_image_tokens(std::path::Path::new(
+            path,
+        )));
+        // An unreadable image is not credited with zero bytes. The adapter
+        // will turn it into a path-free unavailable notice, while projection
+        // treats it as over-budget and removes it when it is old.
+        bytes = bytes.saturating_add(
+            std::fs::symlink_metadata(path)
+                .ok()
+                .filter(|metadata| metadata.file_type().is_file())
+                .map_or(u64::MAX, |metadata| metadata.len()),
+        );
+    }
+    (images, bytes, tokens)
+}
+
+fn image_projection_token_limit(
+    budget: &ImageProjectionBudget,
+    output_limit: Option<u32>,
+) -> Option<u64> {
+    let window = u64::from(budget.max_context_tokens?);
+    // Quantize the 80% pressure line so small estimator/config changes do not
+    // churn the provider prefix. Output reserve belongs inside the same line.
+    let pressure = window.saturating_mul(8) / 10;
+    let quantized = pressure / IMAGE_OFFLOAD_QUANTUM_TOKENS * IMAGE_OFFLOAD_QUANTUM_TOKENS;
+    Some(quantized.saturating_sub(u64::from(output_limit.unwrap_or(4096))))
+}
+
+fn image_projection_is_over_budget(
+    items: &[ModelItem],
+    instructions: Option<&str>,
+    tools: &[crate::tool::ToolDefinition],
+    options: &ModelOptions,
+    budget: &ImageProjectionBudget,
+) -> bool {
+    let (images, bytes, _) = image_projection_totals(items);
+    if images > budget.max_request_images as u64 || bytes > budget.max_request_image_bytes {
+        return true;
+    }
+    image_projection_token_limit(budget, options.output_limit)
+        .is_some_and(|limit| estimate_request_tokens(instructions, items, tools) > limit)
+}
+
+fn replace_oldest_image(item: &mut ModelItem) -> bool {
+    let parts = match item {
+        ModelItem::User { content } | ModelItem::Assistant { content, .. } => content,
+        ModelItem::ToolResult(result) => &mut result.image_parts,
+        ModelItem::ToolCall(_) | ModelItem::ProviderState(_) => return false,
+    };
+    let Some(part) = parts
+        .iter_mut()
+        .find(|part| matches!(part, ContentPart::Image { .. }))
+    else {
+        return false;
+    };
+    *part = ContentPart::Text(IMAGE_OFFLOAD_PLACEHOLDER.into());
+    true
+}
+
+/// Produce the exact model-facing item view for a run boundary. Older images
+/// are replaced in recursive provider order until all three request budgets
+/// fit. Images at and after the latest user turn are protected: if that new
+/// turn cannot fit on its own, fail before provider I/O rather than silently
+/// degrading the user's just-submitted content.
+pub(crate) fn project_items_for_image_budget(
+    items: &[ModelItem],
+    instructions: Option<&str>,
+    tools: &[crate::tool::ToolDefinition],
+    options: &ModelOptions,
+) -> Result<(Vec<ModelItem>, ImageProjectionReport), String> {
+    let Some(budget) = options.image_projection.as_ref() else {
+        let (images, bytes, tokens) = image_projection_totals(items);
+        return Ok((
+            items.to_vec(),
+            ImageProjectionReport {
+                original_images: images,
+                retained_images: images,
+                retained_bytes: bytes,
+                retained_tokens: tokens,
+                ..ImageProjectionReport::default()
+            },
+        ));
+    };
+    let (original_images, _, _) = image_projection_totals(items);
+    let mut projected = items.to_vec();
+    let protected_start = projected
+        .iter()
+        .rposition(|item| matches!(item, ModelItem::User { .. }))
+        .unwrap_or(0);
+    let mut offloaded_images = 0u64;
+    let mut first_offloaded_image = None;
+    let mut ordinal = 0u64;
+
+    if image_projection_is_over_budget(&projected, instructions, tools, options, budget) {
+        for item_index in 0..protected_start {
+            loop {
+                let images_before = model_item_image_parts(&projected[item_index]).count() as u64;
+                if images_before == 0 {
+                    break;
+                }
+                ordinal = ordinal.saturating_add(1);
+                if !replace_oldest_image(&mut projected[item_index]) {
+                    break;
+                }
+                first_offloaded_image.get_or_insert(ordinal);
+                offloaded_images = offloaded_images.saturating_add(1);
+                if !image_projection_is_over_budget(
+                    &projected,
+                    instructions,
+                    tools,
+                    options,
+                    budget,
+                ) {
+                    break;
+                }
+            }
+            if !image_projection_is_over_budget(&projected, instructions, tools, options, budget) {
+                break;
+            }
+        }
+    }
+
+    if image_projection_is_over_budget(&projected, instructions, tools, options, budget) {
+        let (images, bytes, _) = image_projection_totals(&projected[protected_start..]);
+        return Err(format!(
+            "the current request remains above the frozen visual/context budget after all older images were omitted (current turn: {images} images, {bytes} bytes); remove images, reduce the prompt, or choose a model with a larger context window"
+        ));
+    }
+    let (retained_images, retained_bytes, retained_tokens) = image_projection_totals(&projected);
+    Ok((
+        projected,
+        ImageProjectionReport {
+            original_images,
+            retained_images,
+            retained_bytes,
+            retained_tokens,
+            offloaded_images,
+            first_offloaded_image,
+        },
+    ))
 }
 
 impl Default for ModelConfig {
@@ -819,7 +1066,7 @@ pub fn next_thinking_level(vendor: ModelVendor, current: ThinkingLevel) -> Optio
 }
 
 /// 把档位写进 `extra_body`（线上格式的唯一写入口）：`reasoning_effort`
-/// 按厂商映射（见 [`ThinkingLevel::wire_effort`]）；`thinking` 对象只
+/// 按厂商映射（见内部 `ThinkingLevel::wire_effort`）；`thinking` 对象只
 /// 写给使用 DeepSeek/GLM 风格开关的厂商——Kimi K3 与 Qwen3.8-Max 的
 /// 思考强度是顶层 `reasoning_effort`，不携带 `thinking` 对象（避免
 /// 未定义参数），对象内的其它键（GLM 的 `clear_thinking`）原样保留。
@@ -1258,6 +1505,194 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[test]
+    fn request_estimator_counts_tool_result_images_in_projection_order() {
+        let dir = std::env::temp_dir().join(format!(
+            "clat-model-image-walker-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let first = dir.join("first.png");
+        let second = dir.join("second.png");
+        let png_header = |width: u32, height: u32| {
+            let mut bytes = vec![
+                0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n', 0, 0, 0, 13, b'I', b'H', b'D',
+                b'R',
+            ];
+            bytes.extend_from_slice(&width.to_be_bytes());
+            bytes.extend_from_slice(&height.to_be_bytes());
+            bytes.extend_from_slice(&[8, 6, 0, 0, 0]);
+            bytes
+        };
+        std::fs::write(&first, png_header(500, 500)).unwrap();
+        std::fs::write(&second, png_header(513, 513)).unwrap();
+
+        let plain = ModelItem::ToolResult(crate::tool::ToolResult {
+            call_id: "call-1".into(),
+            tool_name: "view_image".into(),
+            output: json!({"ok": true}),
+            is_error: false,
+            blocks: Vec::new(),
+            image_parts: Vec::new(),
+        });
+        let mut visual = plain.clone();
+        let ModelItem::ToolResult(result) = &mut visual else {
+            unreachable!()
+        };
+        result.image_parts = vec![
+            ContentPart::Image {
+                path: first.to_string_lossy().into_owned(),
+                media_type: "image/png".into(),
+            },
+            ContentPart::Image {
+                path: second.to_string_lossy().into_owned(),
+                media_type: "image/png".into(),
+            },
+        ];
+
+        let walked = model_item_image_parts(&visual)
+            .map(|part| match part {
+                ContentPart::Image { path, .. } => path.as_str(),
+                ContentPart::Text(_) => unreachable!(),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            walked,
+            vec![first.to_str().unwrap(), second.to_str().unwrap()],
+            "typed tool-result images preserve recursive provider order"
+        );
+        let expected_visual = crate::media::estimate_image_tokens(&first)
+            + crate::media::estimate_image_tokens(&second);
+        assert_eq!(
+            estimate_model_item_tokens(&visual) - estimate_model_item_tokens(&plain),
+            expected_visual,
+            "tool-result images consume the same visual budget as top-level images"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn image_projection_offloads_oldest_recursively_and_protects_latest_turn() {
+        let dir = std::env::temp_dir().join(format!(
+            "clat-image-offload-order-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let image = dir.join("image.png");
+        let mut header = vec![
+            0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n', 0, 0, 0, 13, b'I', b'H', b'D', b'R',
+        ];
+        header.extend_from_slice(&500u32.to_be_bytes());
+        header.extend_from_slice(&500u32.to_be_bytes());
+        header.extend_from_slice(&[8, 6, 0, 0, 0]);
+        std::fs::write(&image, header).unwrap();
+        let image_part = || ContentPart::Image {
+            path: image.to_string_lossy().into_owned(),
+            media_type: "image/png".into(),
+        };
+        let items = vec![
+            ModelItem::User {
+                content: vec![image_part()],
+            },
+            ModelItem::ToolResult(crate::tool::ToolResult {
+                call_id: "view-1".into(),
+                tool_name: "view_image".into(),
+                output: json!({"ok": true}),
+                is_error: false,
+                blocks: Vec::new(),
+                image_parts: vec![image_part()],
+            }),
+            ModelItem::User {
+                content: vec![ContentPart::Text("latest".into()), image_part()],
+            },
+        ];
+        let options = ModelOptions {
+            image_projection: Some(ImageProjectionBudget {
+                max_context_tokens: None,
+                max_request_images: 1,
+                max_request_image_bytes: u64::MAX,
+            }),
+            ..ModelOptions::default()
+        };
+        let (projected, report) =
+            project_items_for_image_budget(&items, None, &[], &options).unwrap();
+        assert_eq!(report.original_images, 3);
+        assert_eq!(report.retained_images, 1);
+        assert_eq!(report.offloaded_images, 2);
+        assert_eq!(report.first_offloaded_image, Some(1));
+        assert!(matches!(
+            &projected[0],
+            ModelItem::User { content }
+                if content == &[ContentPart::Text(IMAGE_OFFLOAD_PLACEHOLDER.into())]
+        ));
+        assert!(matches!(
+            &projected[1],
+            ModelItem::ToolResult(result)
+                if result.image_parts == [ContentPart::Text(IMAGE_OFFLOAD_PLACEHOLDER.into())]
+        ));
+        assert_eq!(model_item_image_parts(&projected[2]).count(), 1);
+
+        let latest_only = vec![ModelItem::User {
+            content: vec![image_part(), image_part()],
+        }];
+        let error = project_items_for_image_budget(&latest_only, None, &[], &options)
+            .expect_err("the current turn is never silently degraded");
+        assert!(error.contains("current turn: 2 images"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn image_projection_quantizes_context_threshold_and_is_repeatable() {
+        let dir = std::env::temp_dir().join(format!(
+            "clat-image-offload-quantum-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let image = dir.join("image.png");
+        let mut header = vec![
+            0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n', 0, 0, 0, 13, b'I', b'H', b'D', b'R',
+        ];
+        header.extend_from_slice(&500u32.to_be_bytes());
+        header.extend_from_slice(&500u32.to_be_bytes());
+        header.extend_from_slice(&[8, 6, 0, 0, 0]);
+        std::fs::write(&image, header).unwrap();
+        let items = (0..5)
+            .map(|index| ModelItem::User {
+                content: vec![
+                    ContentPart::Text(format!("turn {index}")),
+                    ContentPart::Image {
+                        path: image.to_string_lossy().into_owned(),
+                        media_type: "image/png".into(),
+                    },
+                ],
+            })
+            .collect::<Vec<_>>();
+        let options = |window| ModelOptions {
+            output_limit: Some(256),
+            image_projection: Some(ImageProjectionBudget {
+                max_context_tokens: Some(window),
+                max_request_images: ImageProjectionBudget::MAX_REQUEST_IMAGES,
+                max_request_image_bytes: ImageProjectionBudget::MAX_REQUEST_IMAGE_BYTES,
+            }),
+            ..ModelOptions::default()
+        };
+        let first = project_items_for_image_budget(&items, None, &[], &options(5120)).unwrap();
+        let repeated = project_items_for_image_budget(&items, None, &[], &options(5200)).unwrap();
+        assert_eq!(first, repeated, "same 1024-token bucket has one identity");
+        assert_eq!(first.1.offloaded_images, 1);
+        assert_eq!(model_item_image_parts(first.0.last().unwrap()).count(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// 不变量（2026-08-19 退出延迟）：`child_with_deadline` 聚合父取消
     /// 与 deadline——父取消即时传播（退出/Esc 不被 deadline 挡住），
     /// deadline 到期独立生效，两者皆无时 token 干净。
@@ -1328,9 +1763,15 @@ mod tests {
         // Clear 抑制：max_tokens 完全不发（None）、温度不发。
         config.overrides.output_limit = Override::Clear;
         config.overrides.temperature = Override::Clear;
+        config.overrides.parallel_tool_calls = Override::Clear;
         config.apply_overrides();
         assert_eq!(config.output_limit, None);
         assert_eq!(config.temperature, None);
+        assert_eq!(
+            config.request_parallel_tool_calls(),
+            None,
+            "Clear omits parallel_tool_calls from provider options"
+        );
 
         // thinking_level Set：厂商映射在 merge 内完成（Qwen 端点）。
         let qwen = crate::presets::preset_by_id("qwen3.8-max").unwrap();

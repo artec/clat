@@ -12,11 +12,12 @@ use crate::application::join_with_grace;
 use crate::event::RunEvent;
 use crate::permission::PermissionDecision;
 use crate::{
-    ApplicationEvent, ApplicationRunDone, ApplicationRunFailure, TrustedProjectApplication,
+    ApplicationEvent, ApplicationRunDone, ApplicationRunFailure, CompactHandle,
+    TrustedProjectApplication,
 };
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, channel, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -27,6 +28,11 @@ pub(crate) const SUBSCRIBER_QUEUE_FRAMES: usize = 1024;
 
 /// SSE 空闲心跳间隔（§5.1）。
 pub(crate) const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
+pub(crate) const MAX_CONCURRENT_UPLOADS: usize = 4;
+/// 图片读取与普通连接分别计数：慢读者至多占住四条传输，不能耗尽全部
+/// 64 个本地 serve 连接槽。
+pub(crate) const MAX_CONCURRENT_ATTACHMENT_DOWNLOADS: usize = 4;
+pub(crate) const MAX_ACTIVE_CONNECTIONS: usize = 64;
 
 /// 一条下行帧：`event` 是 SSE frame-type，`data` 是单行 JSON 载荷。
 pub(crate) struct SseFrame {
@@ -53,12 +59,35 @@ struct ServeInner {
     active_run: Option<ActiveRun>,
 }
 
+struct ActiveCompaction {
+    handle: CompactHandle,
+    started_ms: i64,
+}
+
+pub(crate) enum StartCompactionError {
+    AlreadyActive,
+    Application(crate::ApplicationError),
+}
+
+/// 短命 steering 受理账本：只填补「队列 Accepted 但 HTTP 应答在浏览器
+/// 收到前丢失」的空隙。durable claim 后改由 session projection 的
+/// committed receipt 回答。带图片的记录还持有 raw upload reservation：
+/// claim 后才删除源文件，终态前未 claim 则释放 reservation 供原草稿重试。
+#[derive(Clone)]
+pub(crate) struct PendingSteeringReceipt {
+    pub(crate) request_digest: String,
+    pub(crate) receipt: crate::message::AdmissionReceipt,
+    scope_id: Option<String>,
+    upload_ids: Vec<String>,
+}
+
 pub(crate) struct PendingApproval {
     pub decision_tx: std::sync::mpsc::Sender<PermissionDecision>,
 }
 
 pub(crate) struct ServeShared {
     pub app: Arc<Mutex<TrustedProjectApplication>>,
+    pub(crate) drafts: Arc<crate::draft::DraftImageStore>,
     pub token: String,
     pub port: u16,
     /// 每订阅者队列容量（生产 = [`SUBSCRIBER_QUEUE_FRAMES`]；测试可
@@ -66,12 +95,22 @@ pub(crate) struct ServeShared {
     /// 流量，容量 1024 在网络层难以确定性打满）。
     pub(crate) queue_frames: usize,
     inner: Mutex<ServeInner>,
+    pending_steering: Mutex<HashMap<String, PendingSteeringReceipt>>,
     pub pending: Mutex<HashMap<String, PendingApproval>>,
+    /// Manual compaction is a serve-owned interaction just like an active
+    /// run. Keeping the cancellable handle here makes F5/reconnect and
+    /// duplicate-start behavior frontend-neutral rather than browser-local.
+    active_compaction: Mutex<Option<ActiveCompaction>>,
     shutting_down: AtomicBool,
     /// settler / notice 转发（关停时统一有界 join）。
     workers: Mutex<Vec<JoinHandle<()>>>,
     connections: Mutex<Vec<JoinHandle<()>>>,
     next_subscriber_id: AtomicU64,
+    selection_generation: AtomicU64,
+    token_generation: u64,
+    active_uploads: AtomicUsize,
+    active_attachment_downloads: AtomicUsize,
+    active_connections: AtomicUsize,
 }
 
 pub(crate) fn now_ms() -> i64 {
@@ -87,8 +126,10 @@ impl ServeShared {
         token: String,
         port: u16,
     ) -> Self {
+        let drafts = app.lock().expect("application lock").draft_image_store();
         Self {
             app,
+            drafts,
             token,
             port,
             queue_frames: SUBSCRIBER_QUEUE_FRAMES,
@@ -96,16 +137,78 @@ impl ServeShared {
                 subscribers: Vec::new(),
                 active_run: None,
             }),
+            pending_steering: Mutex::new(HashMap::new()),
             pending: Mutex::new(HashMap::new()),
+            active_compaction: Mutex::new(None),
             shutting_down: AtomicBool::new(false),
             workers: Mutex::new(Vec::new()),
             connections: Mutex::new(Vec::new()),
             next_subscriber_id: AtomicU64::new(1),
+            selection_generation: AtomicU64::new(1),
+            token_generation: uuid::Uuid::new_v4().as_u128() as u64,
+            active_uploads: AtomicUsize::new(0),
+            active_attachment_downloads: AtomicUsize::new(0),
+            active_connections: AtomicUsize::new(0),
         }
     }
 
     pub(crate) fn is_shutting_down(&self) -> bool {
         self.shutting_down.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn selection_generation(&self) -> u64 {
+        self.selection_generation.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn advance_selection_generation(&self) -> u64 {
+        self.rollback_pending_steering();
+        self.selection_generation.fetch_add(1, Ordering::AcqRel) + 1
+    }
+
+    pub(crate) fn token_generation(&self) -> u64 {
+        self.token_generation
+    }
+
+    pub(crate) fn try_upload_permit(self: &Arc<Self>) -> Option<UploadPermit> {
+        let mut current = self.active_uploads.load(Ordering::Acquire);
+        loop {
+            if current >= MAX_CONCURRENT_UPLOADS {
+                return None;
+            }
+            match self.active_uploads.compare_exchange_weak(
+                current,
+                current + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    return Some(UploadPermit {
+                        shared: Arc::clone(self),
+                    });
+                }
+                Err(observed) => current = observed,
+            }
+        }
+    }
+
+    pub(crate) fn try_connection_permit(self: &Arc<Self>) -> Option<ConnectionPermit> {
+        acquire_permit(
+            self,
+            &self.active_connections,
+            MAX_ACTIVE_CONNECTIONS,
+            |shared| ConnectionPermit { shared },
+        )
+    }
+
+    pub(crate) fn try_attachment_download_permit(
+        self: &Arc<Self>,
+    ) -> Option<AttachmentDownloadPermit> {
+        acquire_permit(
+            self,
+            &self.active_attachment_downloads,
+            MAX_CONCURRENT_ATTACHMENT_DOWNLOADS,
+            |shared| AttachmentDownloadPermit { shared },
+        )
     }
 
     // —— 订阅与 fanout ——————————————————————————————————————————————
@@ -171,6 +274,17 @@ impl ServeShared {
     /// 实时族（INV-S2 零转译）：`envelope_line` 去掉行尾换行的原文，
     /// 同一锁内追加 run 缓冲 + 广播。
     pub(crate) fn fanout_run_event(&self, event: &RunEvent) {
+        if let RunEvent::SteeringApplied {
+            client_message_id: Some(client_message_id),
+            ..
+        } = event
+        {
+            // `SteeringApplied` is emitted only after SessionRecorder append
+            // + flush; subsequent retries consult the durable projection. The
+            // browser raw upload is intentionally retained until this point:
+            // an unclaimed queue item must remain retryable after cancellation.
+            self.commit_pending_steering(client_message_id);
+        }
         let data = super::shapes::realtime_data(event);
         let mut inner = self.inner.lock().expect("serve inner lock");
         if let Some(run) = inner.active_run.as_mut() {
@@ -219,6 +333,117 @@ impl ServeShared {
     /// `start_run` 失败时回滚占位。
     pub(crate) fn release_run_claim(&self) {
         self.inner.lock().expect("serve inner lock").active_run = None;
+        self.rollback_pending_steering();
+    }
+
+    pub(crate) fn pending_steering_retry(
+        &self,
+        client_message_id: &str,
+        request_digest: &str,
+    ) -> Result<Option<crate::message::AdmissionReceipt>, crate::message::AdmissionReceipt> {
+        let pending = self.pending_steering.lock().expect("pending steering lock");
+        let Some(record) = pending.get(client_message_id) else {
+            return Ok(None);
+        };
+        if record.request_digest == request_digest {
+            Ok(Some(record.receipt.clone()))
+        } else {
+            Err(record
+                .receipt
+                .clone()
+                .with_failure_phase("idempotency-conflict"))
+        }
+    }
+
+    pub(crate) fn remember_pending_steering(
+        &self,
+        client_message_id: String,
+        request_digest: String,
+        receipt: crate::message::AdmissionReceipt,
+        scope_id: Option<String>,
+        upload_ids: Vec<String>,
+    ) {
+        let correlation_id = client_message_id.clone();
+        let digest_for_race = request_digest.clone();
+        let mut pending = self.pending_steering.lock().expect("pending steering lock");
+        // The UI has one active draft per message. Bound this emergency
+        // receipt cache anyway: it is process-local recovery state, never a
+        // durable history index.
+        let evicted = if pending.len() >= 256 && !pending.contains_key(&client_message_id) {
+            pending
+                .keys()
+                .next()
+                .cloned()
+                .and_then(|key| pending.remove(&key))
+        } else {
+            None
+        };
+        pending.insert(
+            client_message_id,
+            PendingSteeringReceipt {
+                request_digest,
+                receipt,
+                scope_id,
+                upload_ids,
+            },
+        );
+        drop(pending);
+        if let Some(PendingSteeringReceipt {
+            scope_id: Some(scope_id),
+            upload_ids,
+            ..
+        }) = evicted
+        {
+            // The cache is intentionally bounded. Eviction must not turn a
+            // still-visible browser draft into a permanently reserved upload.
+            self.drafts.rollback_uploads(&scope_id, &upload_ids);
+        }
+        // The run worker may claim and flush a very short steering message
+        // before its HTTP handler returns and registers this transient record.
+        // `fanout_run_event` cannot remove a record that does not yet exist;
+        // reconcile against the durable receipt after insertion so raw staging
+        // is still deleted at claim time rather than retained to TTL expiry.
+        let already_committed = self
+            .app
+            .lock()
+            .expect("application lock")
+            .committed_admission(&correlation_id)
+            .is_some_and(|record| {
+                record.request_digest.as_deref() == Some(digest_for_race.as_str())
+            });
+        if already_committed {
+            self.commit_pending_steering(&correlation_id);
+        }
+    }
+
+    fn commit_pending_steering(&self, client_message_id: &str) {
+        let record = self
+            .pending_steering
+            .lock()
+            .expect("pending steering lock")
+            .remove(client_message_id);
+        if let Some(PendingSteeringReceipt {
+            scope_id: Some(scope_id),
+            upload_ids,
+            ..
+        }) = record
+        {
+            self.drafts.commit_uploads(&scope_id, &upload_ids);
+        }
+    }
+
+    fn rollback_pending_steering(&self) {
+        let records: Vec<_> = self
+            .pending_steering
+            .lock()
+            .expect("pending steering lock")
+            .drain()
+            .collect();
+        for (_, record) in records {
+            if let Some(scope_id) = record.scope_id {
+                self.drafts.rollback_uploads(&scope_id, &record.upload_ids);
+            }
+        }
     }
 
     /// `session.info` 的 active_run 字段。
@@ -233,10 +458,81 @@ impl ServeShared {
         }
     }
 
+    pub(crate) fn active_compaction_info(&self) -> Value {
+        let mut active = self
+            .active_compaction
+            .lock()
+            .expect("serve compaction lock");
+        if active
+            .as_ref()
+            .is_some_and(|compaction| compaction.handle.is_finished())
+        {
+            active.take();
+        }
+        active.as_ref().map_or(
+            Value::Null,
+            |compaction| json!({ "started": compaction.started_ms }),
+        )
+    }
+
+    pub(crate) fn start_compaction(&self) -> Result<i64, StartCompactionError> {
+        let mut active = self
+            .active_compaction
+            .lock()
+            .expect("serve compaction lock");
+        if active
+            .as_ref()
+            .is_some_and(|compaction| !compaction.handle.is_finished())
+        {
+            return Err(StartCompactionError::AlreadyActive);
+        }
+        active.take();
+        let handle = self
+            .app
+            .lock()
+            .expect("application lock")
+            .compact_session()
+            .map_err(StartCompactionError::Application)?;
+        let started_ms = now_ms();
+        *active = Some(ActiveCompaction { handle, started_ms });
+        Ok(started_ms)
+    }
+
+    /// Idempotent cancellation: false means there was no unfinished manual
+    /// compaction. Completion still arrives through the ordinary notice lane.
+    pub(crate) fn cancel_compaction(&self) -> bool {
+        let mut active = self
+            .active_compaction
+            .lock()
+            .expect("serve compaction lock");
+        match active.as_ref() {
+            Some(compaction) if !compaction.handle.is_finished() => {
+                compaction.handle.cancel();
+                true
+            }
+            _ => {
+                active.take();
+                false
+            }
+        }
+    }
+
+    fn finish_compaction(&self) {
+        self.active_compaction
+            .lock()
+            .expect("serve compaction lock")
+            .take();
+    }
+
     /// settler 收尾：同一锁内广播 settled 帧（恰一）并释放 run 账目
     ///（INV-S6）。broadcast 之后再清——晚到的订阅者看到 journal 重放
     /// 而非半截 run，不会拿到 settled 却没有前文。
     fn finish_run(&self, settled_data: String) {
+        // A queued steering item that was never claimed has no durable user
+        // message. Restore its raw upload *before* the browser receives the
+        // terminal frame, so its still-visible draft can be sent as the next
+        // ordinary prompt without a re-upload.
+        self.rollback_pending_steering();
         let mut inner = self.inner.lock().expect("serve inner lock");
         Self::deliver(
             &mut inner,
@@ -287,6 +583,14 @@ impl ServeShared {
                     // 断开判断会永久挂起。
                     match rx.recv_timeout(Duration::from_millis(200)) {
                         Ok(event) => {
+                            if matches!(
+                                event,
+                                ApplicationEvent::CompactionUpdated(
+                                    crate::CompactionStatus::Finished { .. }
+                                )
+                            ) {
+                                shared.finish_compaction();
+                            }
                             let ctl = super::shapes::notice_ctl(&event);
                             shared.broadcast(SseFrame {
                                 event: "notice",
@@ -383,6 +687,63 @@ impl ServeShared {
             .collect::<Vec<_>>();
         for handle in handles.drain(..) {
             let _ = join_with_grace(handle, Duration::from_secs(5), "serve background worker");
+        }
+    }
+}
+
+pub(crate) struct UploadPermit {
+    shared: Arc<ServeShared>,
+}
+
+pub(crate) struct ConnectionPermit {
+    shared: Arc<ServeShared>,
+}
+
+pub(crate) struct AttachmentDownloadPermit {
+    shared: Arc<ServeShared>,
+}
+
+impl Drop for UploadPermit {
+    fn drop(&mut self) {
+        self.shared.active_uploads.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+impl Drop for ConnectionPermit {
+    fn drop(&mut self) {
+        self.shared
+            .active_connections
+            .fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+impl Drop for AttachmentDownloadPermit {
+    fn drop(&mut self) {
+        self.shared
+            .active_attachment_downloads
+            .fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+fn acquire_permit<T>(
+    shared: &Arc<ServeShared>,
+    counter: &AtomicUsize,
+    limit: usize,
+    build: impl FnOnce(Arc<ServeShared>) -> T,
+) -> Option<T> {
+    let mut current = counter.load(Ordering::Acquire);
+    loop {
+        if current >= limit {
+            return None;
+        }
+        match counter.compare_exchange_weak(
+            current,
+            current + 1,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => return Some(build(Arc::clone(shared))),
+            Err(observed) => current = observed,
         }
     }
 }

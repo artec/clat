@@ -27,7 +27,7 @@ impl OwnedDshHost {
         Self { child: Some(child) }
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn id(&self) -> u32 {
         self.child
             .as_ref()
@@ -229,6 +229,7 @@ fn append_cleanup_outcome(base: String, cleanup: Result<(), String>) -> String {
 ///（整树）。收割超限 → Err("cleanup incomplete")——如实上报，不无限
 /// 阻塞，不无条件承诺后代必然消失。
 pub(crate) fn terminate_dsh_host(child: &mut GroupChild) -> Result<(), String> {
+    #[cfg(unix)]
     const TERM_GRACE: Duration = Duration::from_secs(2);
     const REAP_LIMIT: Duration = Duration::from_secs(5);
     #[cfg(unix)]

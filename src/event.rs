@@ -70,11 +70,20 @@ pub enum RunEvent {
     /// in-flight request). The journal persists it as a plain `user/message`
     /// surface event; the catalog gains no new type. MM-1A: carries the
     /// typed `MessageContent` (+ optional client id) so the same journal
-    /// payload serves live and replay; steering images stay fail-closed
-    /// at admission until MM-1/MM-2 open them.
+    /// payload serves live and replay. MM-3 admits image sources in core before
+    /// queue ownership; the recorder publishes descriptor-only image blocks at
+    /// the same claim-time commit point as text.
     SteeringApplied {
         message: MessageContent,
         client_message_id: Option<ClientMessageId>,
+        /// Submission digest minted before staged sources become normalized
+        /// attachment ids. It is only meaningful with a client id and lets
+        /// claim-time persistence preserve retry identity for image steering.
+        request_digest: Option<String>,
+        /// Present only after the recorder has appended+flushed the claimed
+        /// message. A raw `Run` emits `None`; the recorder upgrades the live
+        /// event to the authoritative Committed receipt before forwarding.
+        receipt: Option<Box<crate::message::AdmissionReceipt>>,
     },
     RunCompleted {
         output: String,

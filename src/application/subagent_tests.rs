@@ -378,6 +378,7 @@ impl SubagentScript {
                 "skill",
                 "lsp",
                 "update_goal",
+                "view_image",
                 "todo_write",
                 "apply_patch",
             ]

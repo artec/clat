@@ -7,10 +7,11 @@ pub mod openai_compatible;
 
 use crate::CancelToken;
 use crate::model::{
-    FinishReason, Model, ModelError, ModelErrorKind, ModelEvent, ModelEventSink, ModelItem,
-    ModelRequest, ModelResponse,
+    FinishReason, Model, ModelError, ModelErrorKind, ModelEvent, ModelEventSink, ModelRequest,
+    ModelResponse,
 };
-use std::io::{self, Read};
+use serde_json::Value;
+use std::io::{self, Read, Write};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use ureq::Agent;
@@ -27,6 +28,10 @@ pub(super) const STREAM_BODY_POLL_TIMEOUT: Duration = Duration::from_millis(250)
 pub(crate) const MAX_SSE_LINE_BYTES: usize = 1024 * 1024;
 /// FP-02：错误响应体读取帽（诊断价值优先——截断保留 + 尾标）。
 pub(crate) const MAX_ERROR_BODY_BYTES: usize = 64 * 1024;
+/// Final serialized provider request cap. Image admission/token estimates and
+/// per-route image policies are earlier, independent budgets; this is the
+/// final byte fence before an adapter hands JSON to HTTP.
+pub(crate) const MAX_PROVIDER_REQUEST_BODY_BYTES: usize = 32 * 1024 * 1024;
 
 /// FIX-1/CA-01（2026-08-24 审计）：provider 自报 token 字段的 sane 域
 /// 上限（1 << 40 ≈ 1.1 万亿）。adapter admission 处按字段夹取：夹取值
@@ -48,6 +53,72 @@ pub(crate) fn read_error_body_capped(body: impl Read, cap: usize) -> String {
     } else {
         String::from_utf8_lossy(&bytes).into_owned()
     }
+}
+
+/// Serialize into the one outbound allocation without first materializing an
+/// unbounded JSON `String`. `String::from_utf8` reuses this `Vec` allocation,
+/// so a successful request has one final body buffer, while an oversized one
+/// never grows beyond the hard cap.
+pub(crate) fn serialize_request_body(body: &Value, adapter: &str) -> Result<String, ModelError> {
+    serialize_request_body_with_limit(body, adapter, MAX_PROVIDER_REQUEST_BODY_BYTES)
+}
+
+fn serialize_request_body_with_limit(
+    body: &Value,
+    adapter: &str,
+    limit: usize,
+) -> Result<String, ModelError> {
+    struct BoundedJsonWriter {
+        bytes: Vec<u8>,
+        limit: usize,
+        exceeded: bool,
+    }
+
+    impl Write for BoundedJsonWriter {
+        fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+            let remaining = self.limit.saturating_sub(self.bytes.len());
+            if buffer.len() > remaining {
+                self.bytes.extend_from_slice(&buffer[..remaining]);
+                self.exceeded = true;
+                return Err(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    "provider request body limit exceeded",
+                ));
+            }
+            self.bytes.extend_from_slice(buffer);
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let mut writer = BoundedJsonWriter {
+        bytes: Vec::new(),
+        limit,
+        exceeded: false,
+    };
+    if let Err(error) = serde_json::to_writer(&mut writer, body) {
+        if writer.exceeded {
+            let limit_label = if limit.is_multiple_of(1024 * 1024) {
+                format!("{} MiB", limit / (1024 * 1024))
+            } else {
+                format!("{limit} bytes")
+            };
+            return Err(ModelError::request(format!(
+                "{adapter} request exceeds the {limit_label} body limit"
+            )));
+        }
+        return Err(ModelError::request(format!(
+            "failed to serialize {adapter} request: {error}"
+        )));
+    }
+    String::from_utf8(writer.bytes).map_err(|error| {
+        ModelError::request(format!(
+            "failed to encode {adapter} request as UTF-8: {error}"
+        ))
+    })
 }
 
 /// FP-02：monitor 成功响应体的有界读取——超限视为无额度（fail-soft
@@ -754,128 +825,6 @@ fn cancelled_response() -> ModelResponse {
     }
 }
 
-/// 非视觉端点的图片降级（2026-08-19 用户实测：DeepSeek/GLM 聊天端点
-/// 对 image part 回 400 "messages.content.type 参数非法，取值范围
-/// ['text']"）。携带图片的请求命中"端点拒收图片内容"特征的 400 时，
-/// 把图片 part 原位替换为**文本注记**（附件绝对路径 + 指引模型用视觉
-/// 工具按路径分析——zai-mcp-server 一类工具收本地路径），重试一次；
-/// 同一 run 的后续请求直接降级，不再先撞一次 400。其余错误原样透
-/// 传；journal/历史里的 image part 保持原样——视觉端点下仍是原生
-/// 多模态，降级只发生在请求边界。
-pub(crate) fn image_degrade_model(inner: Box<dyn Model>) -> Box<dyn Model> {
-    Box::new(ImageDegradeModel {
-        inner,
-        degraded: std::sync::atomic::AtomicBool::new(false),
-    })
-}
-
-struct ImageDegradeModel {
-    inner: Box<dyn Model>,
-    degraded: std::sync::atomic::AtomicBool,
-}
-
-fn item_has_image(item: &ModelItem) -> bool {
-    match item {
-        ModelItem::User { content } | ModelItem::Assistant { content, .. } => content
-            .iter()
-            .any(|part| matches!(part, crate::model::ContentPart::Image { .. })),
-        _ => false,
-    }
-}
-
-/// 400 的报文特征因厂商而异，取可辨识的并集：content type 约束、
-/// image_url/input_image 字样、"不支持图片"类中文文案。未命中的 400
-/// 不降级（原错误透传——宁可明确失败，不做错误猜测）。
-fn is_unsupported_image_content_error(error: &ModelError) -> bool {
-    if error.kind() != ModelErrorKind::Client {
-        return false;
-    }
-    let message = error.to_string();
-    let english = message.contains("content.type")
-        || message.contains("content type")
-        || message.contains("image_url")
-        || message.contains("input_image");
-    let chinese =
-        message.contains("图片") && (message.contains("不支持") || message.contains("非法"));
-    english || chinese
-}
-
-/// 请求侧的降级视图：image part → 文本注记。User/Assistant 之外不动。
-fn degraded_items(items: &[ModelItem]) -> Vec<ModelItem> {
-    items
-        .iter()
-        .map(|item| match item {
-            ModelItem::User { content } => ModelItem::User {
-                content: degrade_parts(content),
-            },
-            ModelItem::Assistant { content, reasoning } => ModelItem::Assistant {
-                content: degrade_parts(content),
-                reasoning: reasoning.clone(),
-            },
-            other => other.clone(),
-        })
-        .collect()
-}
-
-fn degrade_parts(content: &[crate::model::ContentPart]) -> Vec<crate::model::ContentPart> {
-    content
-        .iter()
-        .map(|part| match part {
-            crate::model::ContentPart::Image { path, .. } => {
-                crate::model::ContentPart::Text(format!(
-                    "[image attachment: {path}] The endpoint rejected inline image content, \
-                     so the image bytes are not attached to this message. If an \
-                     image-analysis tool is available, call it with this exact file path \
-                     to view the image."
-                ))
-            }
-            text @ crate::model::ContentPart::Text(_) => text.clone(),
-        })
-        .collect()
-}
-
-impl Model for ImageDegradeModel {
-    fn provider(&self) -> &str {
-        self.inner.provider()
-    }
-
-    fn model_id(&self) -> &str {
-        self.inner.model_id()
-    }
-
-    fn stream(
-        &mut self,
-        request: ModelRequest<'_>,
-        events: &mut dyn ModelEventSink,
-    ) -> Result<ModelResponse, ModelError> {
-        use std::sync::atomic::Ordering;
-        let has_images = request.items.iter().any(item_has_image);
-        if !has_images || !self.degraded.load(Ordering::Acquire) {
-            match self.inner.stream(request, events) {
-                Ok(response) => return Ok(response),
-                Err(error)
-                    if has_images
-                        && !self.degraded.load(Ordering::Acquire)
-                        && is_unsupported_image_content_error(&error) =>
-                {
-                    self.degraded.store(true, Ordering::Release);
-                }
-                Err(error) => return Err(error),
-            }
-        }
-        // 降级路径：图片 part → 文本注记后重试/直发。
-        let items = degraded_items(request.items);
-        let degraded_request = ModelRequest {
-            instructions: request.instructions,
-            items: &items,
-            tools: request.tools,
-            options: request.options,
-            cancel: request.cancel,
-        };
-        self.inner.stream(degraded_request, events)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -907,164 +856,28 @@ mod tests {
         assert_eq!(small, "bad request", "small bodies pass through verbatim");
     }
 
-    /// 图片降级（2026-08-19，用户实测的 400 触发）不变量：
-    /// - D1 命中"拒收图片内容"特征的 400 → 图片 part 换成路径注记重试
-    ///   一次，重试成功则 run 继续；
-    /// - D2 降级有记忆：同 run 后续带图请求直接降级，不再先撞 400；
-    /// - D3 其他 400 原样透传（不做错误猜测）；
-    /// - D4 无图请求零开销直通。
-    struct ScriptedImageModel {
-        /// 每次调用压入收到的 items 快照。
-        seen: std::sync::Arc<std::sync::Mutex<Vec<Vec<ModelItem>>>>,
-        /// 第 1 次调用返回的错误（None = 直接成功）。
-        first_error: Option<ModelError>,
-    }
-
-    impl Model for ScriptedImageModel {
-        fn provider(&self) -> &str {
-            "scripted"
-        }
-        fn model_id(&self) -> &str {
-            "img-test"
-        }
-        fn stream(
-            &mut self,
-            request: ModelRequest<'_>,
-            _events: &mut dyn ModelEventSink,
-        ) -> Result<ModelResponse, ModelError> {
-            self.seen.lock().unwrap().push(request.items.to_vec());
-            if let Some(error) = self.first_error.take() {
-                return Err(error);
-            }
-            Ok(ModelResponse {
-                text: "ok".into(),
-                tool_calls: Vec::new(),
-                finish_reason: FinishReason::Completed,
-                usage: None,
-                provider_response_id: None,
-                provider_state: Vec::new(),
-                reasoning: None,
-            })
-        }
-    }
-
-    fn image_request<'a>(
-        items: &'a [ModelItem],
-        options: &'a ModelOptions,
-        cancel: &'a CancelToken,
-    ) -> ModelRequest<'a> {
-        ModelRequest {
-            instructions: None,
-            items,
-            tools: &[],
-            options,
-            cancel,
-        }
-    }
-
-    fn unsupported_400() -> ModelError {
-        // 用户实测的原始报文形态（DeepSeek/GLM 聊天端点）。
-        ModelError::with_kind(
-            ModelErrorKind::Client,
-            "compatible API returned 400 Bad Request: messages.content.type 参数非法，取值范围 ['text']",
+    /// Final request bytes are a separate budget from image admission and
+    /// provider policy. Use a tiny injected cap so this discriminates the
+    /// writer's stop-before-growth behavior without allocating a 32MiB fixture.
+    #[test]
+    fn provider_request_serialization_is_bounded_before_outbound_allocation() {
+        assert_eq!(
+            serialize_request_body_with_limit(&serde_json::json!({"ok": true}), "test", 32)
+                .expect("small body"),
+            r#"{"ok":true}"#
+        );
+        let error = serialize_request_body_with_limit(
+            &serde_json::json!({"payload": "this string cannot fit"}),
+            "test",
+            12,
         )
-    }
-
-    #[test]
-    fn image_degrade_retries_with_path_notes_on_unsupported_endpoints() {
-        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let options = ModelOptions::default();
-        let cancel = CancelToken::new();
-        let mut model = image_degrade_model(Box::new(ScriptedImageModel {
-            seen: std::sync::Arc::clone(&seen),
-            first_error: Some(unsupported_400()),
-        }));
-        let with_image = vec![ModelItem::User {
-            content: vec![
-                crate::model::ContentPart::Text("look".into()),
-                crate::model::ContentPart::Image {
-                    path: "/sessions/x/attachments/a.png".into(),
-                    media_type: "image/png".into(),
-                },
-            ],
-        }];
-        let response = model
-            .stream(
-                image_request(&with_image, &options, &cancel),
-                &mut Vec::new(),
-            )
-            .expect("the degraded retry succeeds");
-        assert_eq!(response.text, "ok");
-        let calls = seen.lock().unwrap();
-        assert_eq!(calls.len(), 2, "one failing attempt + one degraded retry");
-        // D1：重试的 items 不再含 Image part，注记携带原始路径。
-        assert!(!calls[1].iter().any(item_has_image));
-        let note = format!("{:?}", calls[1]);
+        .expect_err("body beyond the cap must not be serialized for transport");
         assert!(
-            note.contains("/sessions/x/attachments/a.png"),
-            "the note carries the attachment path: {note}"
+            error
+                .to_string()
+                .contains("exceeds the 12 bytes body limit"),
+            "error stays actionable: {error}"
         );
-        // 原始 items（第 1 次尝试）仍含图——journal/历史未被改写。
-        assert!(calls[0].iter().any(item_has_image));
-
-        // D2：后续带图请求直接降级（单次调用、无 400 前置）。
-        drop(calls);
-        let mut model = model;
-        model
-            .stream(
-                image_request(&with_image, &options, &cancel),
-                &mut Vec::new(),
-            )
-            .expect("subsequent requests degrade without the round trip");
-        assert_eq!(seen.lock().unwrap().len(), 3, "exactly one inner call");
-    }
-
-    #[test]
-    fn image_degrade_passes_other_errors_through() {
-        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let options = ModelOptions::default();
-        let cancel = CancelToken::new();
-        let mut model = image_degrade_model(Box::new(ScriptedImageModel {
-            seen: std::sync::Arc::clone(&seen),
-            first_error: Some(ModelError::with_kind(
-                ModelErrorKind::Client,
-                "400 Bad Request: unknown field 'foo'",
-            )),
-        }));
-        let with_image = vec![ModelItem::User {
-            content: vec![crate::model::ContentPart::Image {
-                path: "/a.png".into(),
-                media_type: "image/png".into(),
-            }],
-        }];
-        assert!(
-            model
-                .stream(
-                    image_request(&with_image, &options, &cancel),
-                    &mut Vec::new()
-                )
-                .is_err(),
-            "unrelated 400s pass through unchanged"
-        );
-        assert_eq!(seen.lock().unwrap().len(), 1, "no speculative retry");
-
-        // D4：无图请求直通（成功路径单次调用）。
-        let seen2 = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let options = ModelOptions::default();
-        let cancel = CancelToken::new();
-        let mut model = image_degrade_model(Box::new(ScriptedImageModel {
-            seen: std::sync::Arc::clone(&seen2),
-            first_error: Some(unsupported_400()),
-        }));
-        let plain = vec![ModelItem::user_text("hi")];
-        // 脚本模型照常返回该 400——无图请求不触发降级，错误原样浮出。
-        assert!(
-            model
-                .stream(image_request(&plain, &options, &cancel), &mut Vec::new())
-                .is_err(),
-            "plain text requests never degrade; the error surfaces unchanged"
-        );
-        assert_eq!(seen2.lock().unwrap().len(), 1);
     }
 
     use crate::{ModelProtocol, ProviderCredentials};

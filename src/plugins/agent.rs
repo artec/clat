@@ -150,15 +150,18 @@ impl AgentRuntime for DefaultAgentRuntime {
             request.config.model.clone(),
             Box::new(move || providers.build(&config, &credentials)),
         );
-        // 非视觉端点降级（2026-08-19）：带图请求撞"端点拒收图片"的
-        // 400 时自动把图片换成路径注记重试——zai-mcp-server 等视觉
-        // 工具收本地路径，非视觉主模型也能借工具看图。
-        let mut model = crate::providers::image_degrade_model(model);
+        // Image capability is resolved before provider I/O. A provider that
+        // contradicts its configured capability fails closed; CLAT never
+        // retries by turning a local attachment path into model-visible text.
+        let mut model = model;
         let permissions = self.permissions.create(request.approver, &request.cancel);
         let options = ModelOptions {
             output_limit: request.config.output_limit,
             temperature: request.config.temperature,
-            parallel_tool_calls: Some(request.config.parallel_tool_calls),
+            parallel_tool_calls: request.config.request_parallel_tool_calls(),
+            image_projection: Some(crate::model::ImageProjectionBudget::for_config(
+                &request.config,
+            )),
             ..ModelOptions::default()
         };
         // 档位说明注入系统指令（DSH renderPolicyContext 对应物）：让模

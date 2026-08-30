@@ -141,7 +141,7 @@ impl MessageContent {
                 .all(|b| matches!(b, ContentBlock::Text { .. }))
     }
 
-    /// 请求 digest（INV-M1A-3）：[`hash_message_payload`] over 本内容
+    /// 请求 digest（INV-M1A-3）：内部 `hash_message_payload` over 本内容
     ///（无 staged 引用）。这是**已接纳内容**的身份——与无 staged 附件
     /// 的 [`PendingMessage::request_digest`] 恒同值（同一逻辑提交的
     /// steering/journal 判别共用一个答案）。
@@ -212,6 +212,17 @@ pub struct PendingMessage {
     pub client_message_id: Option<ClientMessageId>,
     pub content: MessageContent,
     pub staged_attachments: Vec<std::path::PathBuf>,
+    /// Core-admitted transient images for an in-run steering draft. The
+    /// durable protocol never serializes their absolute paths: on claim the
+    /// recorder writes descriptor-only refs, while `Run` consumes the paths
+    /// only for the immediately following provider request. Ordinary initial
+    /// prompts leave this empty because their model history is rebuilt from
+    /// the committed journal through the session fence.
+    pub(crate) admitted_images: Vec<JournalImage>,
+    /// Frozen pre-admission digest for a steering message whose content is
+    /// later enriched with normalized descriptors. Initial submissions do
+    /// not need this because `prepare_run` computes before enrichment.
+    pub(crate) submission_digest: Option<String>,
 }
 
 impl PendingMessage {
@@ -221,6 +232,8 @@ impl PendingMessage {
             client_message_id: None,
             content: MessageContent::text(text),
             staged_attachments: Vec::new(),
+            admitted_images: Vec::new(),
+            submission_digest: None,
         }
     }
 
@@ -234,7 +247,38 @@ impl PendingMessage {
             client_message_id,
             content: MessageContent::text(text),
             staged_attachments,
+            admitted_images: Vec::new(),
+            submission_digest: None,
         }
+    }
+
+    pub(crate) fn model_parts(&self) -> Vec<crate::model::ContentPart> {
+        let mut parts = Vec::with_capacity(self.content.blocks.len());
+        for block in &self.content.blocks {
+            match block {
+                ContentBlock::Text { text } => {
+                    parts.push(crate::model::ContentPart::Text(text.clone()))
+                }
+                ContentBlock::Image { attachment } => {
+                    if let Some(image) = self
+                        .admitted_images
+                        .iter()
+                        .find(|image| image.descriptor.attachment_id == attachment.attachment_id)
+                    {
+                        parts.push(crate::model::ContentPart::Image {
+                            path: image.path.clone(),
+                            media_type: image.descriptor.media_type.clone(),
+                        });
+                    } else {
+                        parts.push(crate::model::ContentPart::Text(format!(
+                            "[image unavailable: attachment {} was not admitted]",
+                            attachment.attachment_id
+                        )));
+                    }
+                }
+            }
+        }
+        parts
     }
 
     /// **提交幂等 digest**（INV-M1A-3 的提交侧）：内容块 + staged 附件
@@ -243,7 +287,26 @@ impl PendingMessage {
     /// 不掺导入后重铸的 attachmentId——否则崩溃重试必然翻案，幂等失效。
     /// 纯文本且无 staged 时与 [`MessageContent::request_digest`] 同值。
     pub fn request_digest(&self) -> String {
-        hash_message_payload(&self.content.blocks, &self.staged_attachments)
+        self.submission_digest
+            .clone()
+            .unwrap_or_else(|| hash_message_payload(&self.content.blocks, &self.staged_attachments))
+    }
+
+    pub(crate) fn freeze_request_digest(&mut self) {
+        if self.submission_digest.is_none() {
+            self.submission_digest = Some(hash_message_payload(
+                &self.content.blocks,
+                &self.staged_attachments,
+            ));
+        }
+    }
+
+    /// Replace frontend opaque upload ids with core-owned staging paths while
+    /// preserving retry identity over the original ids. Only trusted ingress
+    /// adapters may call this; paths never enter wire/SSE payloads.
+    pub(crate) fn resolve_staged_attachments(&mut self, paths: Vec<std::path::PathBuf>) {
+        self.freeze_request_digest();
+        self.staged_attachments = paths;
     }
 }
 
@@ -278,6 +341,36 @@ pub struct AdmissionReceipt {
 }
 
 impl AdmissionReceipt {
+    /// A frontend-owned draft has been accepted into the active run queue but
+    /// has not crossed the durable user-event barrier yet.
+    pub fn reserved(client_message_id: ClientMessageId, attachment_ids: Vec<AttachmentId>) -> Self {
+        Self {
+            client_message_id,
+            state: AdmissionState::Reserved,
+            committed_message_id: None,
+            attachment_ids,
+            retryable: false,
+            failure_phase: None,
+        }
+    }
+
+    /// Admission failed before the durable commit point. The caller still
+    /// owns the draft and may submit it again after addressing `phase`.
+    pub fn rolled_back(
+        client_message_id: ClientMessageId,
+        attachment_ids: Vec<AttachmentId>,
+        phase: impl Into<String>,
+    ) -> Self {
+        Self {
+            client_message_id,
+            state: AdmissionState::RolledBack,
+            committed_message_id: None,
+            attachment_ids,
+            retryable: true,
+            failure_phase: Some(phase.into()),
+        }
+    }
+
     /// commit point（user/steering event append+flush）跨过之后的回执：
     /// 即使后续 worker/审批/run 失败，消息已耐久、不得重复发送。
     pub fn committed(
@@ -293,6 +386,14 @@ impl AdmissionReceipt {
             retryable: false,
             failure_phase: None,
         }
+    }
+
+    /// Preserve the authoritative admission state while explaining a later
+    /// failure. In particular, a post-commit worker failure remains
+    /// non-retryable and must never be rewritten as a rollback.
+    pub fn with_failure_phase(mut self, phase: impl Into<String>) -> Self {
+        self.failure_phase = Some(phase.into());
+        self
     }
 }
 

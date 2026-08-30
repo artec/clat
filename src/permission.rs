@@ -208,7 +208,7 @@ impl PermissionPolicy for SafeByDefault {
 ///
 /// 档位是**会话属性**：以 `sandbox/mode` journal 事件（DSH 词汇，
 /// latest-wins）随会话持久化，resume/重启随日志恢复；进程内的共享
-/// cell（[`ModeSource::Shared`]）只是活跃会话档位的镜像——切换在下
+/// cell（内部 `ModeSource::Shared`）只是活跃会话档位的镜像——切换在下
 /// 一次权限检查生效，会话边界（mount 恢复 / resume / /new）按目标
 /// 会话自己的 fold 重新对齐。从未记录过档位的遗留会话回落编译期默认
 /// `ProjectWrite`（恰同 DSH shipped 默认 workspace-write）。

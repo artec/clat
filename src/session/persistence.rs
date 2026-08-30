@@ -228,6 +228,16 @@ impl JsonlBackend {
     pub(crate) fn root_path(&self) -> &std::path::Path {
         &self.root
     }
+
+    pub(crate) fn open_session_dir(&self, key: &SessionKey) -> Result<Dir, SessionError> {
+        validate_key_witness(key)?;
+        self.root_dir.open_session(key).map_err(io)
+    }
+
+    pub(crate) fn create_session_dir(&self, key: &SessionKey) -> Result<Dir, SessionError> {
+        validate_key_witness(key)?;
+        self.root_dir.create_session(key).map_err(io)
+    }
 }
 
 impl JsonlBackend {
@@ -1315,7 +1325,7 @@ fn truncate_after_failed_append(
     }
     #[cfg(windows)]
     {
-        let mut truncate = open_repair_no_follow(dir, name)?;
+        let truncate = open_repair_no_follow(dir, name)?;
         let expected = LogRevision::of_metadata(&file.metadata()?);
         let current = LogRevision::of_metadata(&truncate.metadata()?);
         if current != expected {

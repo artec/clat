@@ -184,6 +184,7 @@ struct FilePlan {
     source: PathBuf,
     bytes: u64,
     sha256: String,
+    #[cfg(unix)]
     mode: u32,
 }
 
@@ -737,6 +738,8 @@ fn inspect_source(path: &Path) -> Result<PackageInspection, String> {
     reject_final_symlink(&manifest_path, "package manifest")?;
     let manifest = PluginPackageManifest::load(&manifest_path)?;
     let entry = manifest.verify_entry_digest(&manifest_path)?;
+    #[cfg(not(unix))]
+    let _ = &entry;
     #[cfg(unix)]
     if manifest.runtime.kind == PluginRuntimeKind::McpStdio {
         use std::os::unix::fs::PermissionsExt as _;
@@ -1172,13 +1175,12 @@ fn collect_files(
             use std::os::unix::fs::PermissionsExt as _;
             metadata.permissions().mode()
         };
-        #[cfg(not(unix))]
-        let mode = 0;
         files.push(FilePlan {
             relative,
             source: path,
             bytes: metadata.len(),
             sha256,
+            #[cfg(unix)]
             mode,
         });
     }
