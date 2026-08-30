@@ -171,7 +171,16 @@ impl ViewImageTool {
         }
         if let Some(relative) = project_path {
             let relative = Path::new(relative);
-            if relative.is_absolute() {
+            // `is_absolute()` alone accepts Windows' drive-less rooted form
+            // (`/tmp/x`) and drive-relative form (`C:x`); matching components
+            // the way `validate_relative_path` does keeps the fence meaning
+            // "purely relative" on every platform.
+            if relative.components().any(|component| {
+                matches!(
+                    component,
+                    std::path::Component::Prefix(_) | std::path::Component::RootDir
+                )
+            }) {
                 return Err(ToolError::new(
                     "view_image project_relative_path must be project-relative; Full Access does not permit absolute image reads",
                 ));
