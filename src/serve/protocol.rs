@@ -284,7 +284,9 @@ pub(crate) fn dispatch(
             ))
         }
         "wechat.binding.status" => {
-            let status = with_app(shared, |app| app.wechat_binding_status());
+            let status = with_app(shared, |app| app.wechat_binding())
+                .map_err(app_error)?
+                .status;
             Ok(json!({
                 "bound": status.bound,
                 "bound_at": status.bound_at,
@@ -298,7 +300,10 @@ pub(crate) fn dispatch(
             }))
         }
         "wechat.binding.start" => {
-            let bound = with_app(shared, |app| app.wechat_binding_status().bound);
+            let bound = with_app(shared, |app| app.wechat_binding())
+                .map_err(app_error)?
+                .status
+                .bound;
             let replace = params
                 .get("replace")
                 .and_then(Value::as_bool)
@@ -360,7 +365,7 @@ pub(crate) fn dispatch(
                 }
                 crate::im::BindingStep::Confirmed(credentials) => {
                     let _outbound = shared.wechat_outbound.lock().expect("wechat outbound gate");
-                    with_app(shared, |app| app.save_wechat_binding(&credentials))
+                    with_app(shared, |app| app.replace_wechat_binding(&credentials))
                         .map_err(app_error)?;
                     *slot = None;
                     Ok(json!({
@@ -382,14 +387,13 @@ pub(crate) fn dispatch(
             // cancellation, making an acknowledged unbind silently rebound.
             let mut slot = shared.wechat_binding.lock().expect("wechat binding lock");
             let _outbound = shared.wechat_outbound.lock().expect("wechat outbound gate");
-            shared.cancel_active_run();
             *slot = None;
-            with_app(shared, |app| app.clear_wechat_binding()).map_err(app_error)?;
+            with_app(shared, |app| app.revoke_wechat_binding()).map_err(app_error)?;
             Ok(json!({ "bound": false }))
         }
         "wechat.pairing.create" => {
             let challenge =
-                with_app(shared, |app| app.create_wechat_pairing_code()).map_err(app_error)?;
+                with_app(shared, |app| app.issue_wechat_pairing_code()).map_err(app_error)?;
             Ok(json!({
                 "code": challenge.code,
                 "expires_at_ms": challenge.expires_at_ms,
@@ -402,13 +406,13 @@ pub(crate) fn dispatch(
                 .get("allowed")
                 .and_then(Value::as_bool)
                 .ok_or_else(|| RpcError::bad_request("allowed must be a boolean"))?;
-            with_app(shared, |app| app.set_wechat_allowed_user(&user_id, allowed))
+            with_app(shared, |app| app.set_wechat_allowlist(&user_id, allowed))
                 .map_err(app_error)?;
             Ok(json!({ "allowed": allowed }))
         }
         "wechat.user.remove" => {
             let user_id = required_str(params, "userId")?;
-            with_app(shared, |app| app.remove_wechat_paired_user(&user_id)).map_err(app_error)?;
+            with_app(shared, |app| app.revoke_wechat_pairing(&user_id)).map_err(app_error)?;
             Ok(json!({ "paired": false }))
         }
         "session.list" => {

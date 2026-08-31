@@ -36,6 +36,7 @@ mod language_intelligence_tests;
 mod memory_tests;
 #[cfg(test)]
 mod plan_mode_tests;
+mod remote_control;
 mod run_context;
 mod run_execution;
 mod run_lifecycle;
@@ -55,6 +56,10 @@ pub use dto::{
     ContextEstimateSnapshot, ContextSkillDiagnostic, McpServerInfoDto, McpStatusDto,
     ProjectSnapshot, SessionSnapshot, WorkbenchModelSnapshot, WorkbenchProjectSnapshot,
     WorkbenchSessionSnapshot, WorkbenchSnapshot, WorkspaceInfo,
+};
+pub(crate) use remote_control::{
+    WechatChatReadiness, WechatChatStatus, WechatChatTicket, WechatDeliveryDisposition,
+    WechatNewChatOutcome, WechatPromptStartOutcome, WechatSteerOutcome,
 };
 pub use run_execution::RunHandle;
 pub use run_lifecycle::{

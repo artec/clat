@@ -87,24 +87,23 @@ where
         }
     };
     let result = match action {
-        "status" => {
-            let status = application.wechat_binding_status();
+        "status" => application.wechat_binding().map(|snapshot| {
+            let status = snapshot.status;
             println!(
                 "WeChat: {} · {} paired user(s) · {} mapped chat(s)",
                 if status.bound { "bound" } else { "not bound" },
                 status.paired_users,
                 status.mapped_chats
             );
-            Ok(())
-        }
-        "pair" => application.create_wechat_pairing_code().map(|challenge| {
+        }),
+        "pair" => application.issue_wechat_pairing_code().map(|challenge| {
             println!("WeChat pairing code: {}", challenge.code);
             println!("It expires in 60 minutes and can be used once.");
             println!(
                 "Binding does not authorize a user; send `/pair <code>` as a standalone message."
             );
         }),
-        "unbind" => application.clear_wechat_binding().map(|()| {
+        "unbind" => application.revoke_wechat_binding().map(|()| {
             println!("WeChat binding, paired users, and chat mappings were removed.");
         }),
         "bind" => run_terminal_wechat_binding(
@@ -134,7 +133,7 @@ fn run_terminal_wechat_binding(
     application: &TrustedProjectApplication,
     replace: bool,
 ) -> Result<(), crate::ApplicationError> {
-    if application.wechat_binding_status().bound && !replace {
+    if application.wechat_binding()?.status.bound && !replace {
         return Err(crate::ApplicationError::from_message(
             "WeChat is already bound; use `clat wechat bind --replace` to replace it only after a new QR is confirmed",
         ));
@@ -193,7 +192,7 @@ fn run_terminal_wechat_binding(
                 ));
             }
             crate::im::BindingStep::Confirmed(credentials) => {
-                application.save_wechat_binding(&credentials)?;
+                application.replace_wechat_binding(&credentials)?;
                 println!("WeChat bot binding confirmed.");
                 println!(
                     "Next, run `clat wechat pair` and send the one-time code from the user to authorize."
@@ -461,8 +460,9 @@ where
     let wechat_credentials = if matches!(args.im, Some(ImBackend::Wechat)) {
         Some(
             trusted
-                .wechat_credentials()
+                .wechat_binding()
                 .map_err(|error| error.to_string())?
+                .credentials
                 .ok_or_else(|| {
                     "WeChat IM is not configured yet; complete QR binding before starting with `--im wechat`"
                         .to_owned()

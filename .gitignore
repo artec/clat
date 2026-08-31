@@ -12,6 +12,7 @@ sdk/dsh-adapter/dist/
 # Editors and IDEs
 .ai-bridge/
 .idea/
+.trae/
 .vscode/
 .zcode/
 *.swp

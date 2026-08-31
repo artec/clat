@@ -585,7 +585,7 @@ fn wechat_unbind_serializes_after_inflight_binding_poll_before_clearing_storage(
         }))
         .unwrap();
     application
-        .save_wechat_binding(
+        .replace_wechat_binding(
             &crate::im::ilink::Credentials::new(
                 "old-token".into(),
                 "old-bot".into(),
@@ -616,12 +616,28 @@ fn wechat_unbind_serializes_after_inflight_binding_poll_before_clearing_storage(
     barrier.wait();
     std::thread::sleep(Duration::from_millis(50));
     assert!(
-        shared.app.lock().unwrap().wechat_binding_status().bound,
+        shared
+            .app
+            .lock()
+            .unwrap()
+            .wechat_binding()
+            .unwrap()
+            .status
+            .bound,
         "storage revocation must happen after the in-flight binding slot is acquired"
     );
     drop(slot_guard);
     unbind.join().unwrap().unwrap();
-    assert!(!shared.app.lock().unwrap().wechat_binding_status().bound);
+    assert!(
+        !shared
+            .app
+            .lock()
+            .unwrap()
+            .wechat_binding()
+            .unwrap()
+            .status
+            .bound
+    );
 
     let shared = Arc::try_unwrap(shared).ok().expect("sole shared owner");
     let application = Arc::try_unwrap(shared.app)
@@ -646,7 +662,7 @@ fn wechat_unbind_waits_for_inflight_outbound_before_revocation_ack() {
         }))
         .unwrap();
     application
-        .save_wechat_binding(
+        .replace_wechat_binding(
             &crate::im::ilink::Credentials::new(
                 "old-token".into(),
                 "old-bot".into(),
@@ -676,14 +692,32 @@ fn wechat_unbind_waits_for_inflight_outbound_before_revocation_ack() {
     });
     barrier.wait();
     std::thread::sleep(Duration::from_millis(50));
-    assert!(shared.app.lock().unwrap().wechat_binding_status().bound);
+    assert!(
+        shared
+            .app
+            .lock()
+            .unwrap()
+            .wechat_binding()
+            .unwrap()
+            .status
+            .bound
+    );
     assert!(
         !unbind.is_finished(),
         "unbind acknowledgement waits for the send"
     );
     drop(outbound_guard);
     unbind.join().unwrap().unwrap();
-    assert!(!shared.app.lock().unwrap().wechat_binding_status().bound);
+    assert!(
+        !shared
+            .app
+            .lock()
+            .unwrap()
+            .wechat_binding()
+            .unwrap()
+            .status
+            .bound
+    );
 
     let shared = Arc::try_unwrap(shared).ok().expect("sole shared owner");
     let application = Arc::try_unwrap(shared.app)
@@ -750,7 +784,7 @@ fn dispatch_covers_the_full_method_set() {
 
     {
         let app = shared.app.lock().unwrap();
-        app.save_wechat_binding(
+        app.replace_wechat_binding(
             &crate::im::ilink::Credentials::new(
                 "secret-wechat-token".into(),
                 "secret-wechat-bot".into(),
@@ -772,15 +806,15 @@ fn dispatch_covers_the_full_method_set() {
     {
         let app = shared.app.lock().unwrap();
         assert_eq!(
-            app.attempt_wechat_pairing("delivery-one", "remote-user", &code)
+            app.submit_wechat_pairing_code("delivery-one", "remote-user", &code)
                 .unwrap(),
             crate::im::PairingAttempt::Paired
         );
         let session = crate::SessionId::new("remote-session");
-        app.bind_wechat_chat("remote-user", "remote-chat", &session)
+        app.bind_wechat_chat_for_test("remote-user", "remote-chat", &session)
             .unwrap();
         assert_eq!(
-            app.wechat_chat_binding("remote-chat")
+            app.inspect_wechat_chat_binding("remote-chat")
                 .expect("mapping")
                 .session_id,
             session

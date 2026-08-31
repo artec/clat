@@ -321,20 +321,10 @@ enum PromptStartOutcome {
     Accepted,
     Duplicate,
     Revoked,
+    Unmapped,
+    Conflict,
     MappingPending { error: String, claim_active: bool },
-}
-
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum ChatMappingIntent {
-    None,
-    Fresh,
-    Recovery,
-}
-
-impl ChatMappingIntent {
-    fn is_some(self) -> bool {
-        self != Self::None
-    }
+    Failed { error: String, retry_delivery: bool },
 }
 
 enum PrepareMessageError {
@@ -414,24 +404,16 @@ impl WechatBridge {
         let Some(target) = ReplyTarget::from_message(message) else {
             return Ok(());
         };
-        if !self
-            .shared
-            .app
-            .lock()
-            .expect("application lock")
-            .is_wechat_user_authorized(&target.user_id)
-        {
-            return Ok(());
-        }
         let chat_id = target.user_id.clone(); // iLink v1 private-chat identity.
         let delivery_id = crate::im::delivery_id(message)?;
-        if self
-            .shared
-            .app
-            .lock()
-            .expect("application lock")
-            .is_wechat_delivery_handled(&delivery_id)
-        {
+        if !matches!(
+            self.shared
+                .app
+                .lock()
+                .expect("application lock")
+                .classify_wechat_delivery(&target.user_id, &delivery_id),
+            crate::application::WechatDeliveryDisposition::Accept
+        ) {
             return Ok(());
         }
         if let Some(text) = standalone_text(message) {
@@ -459,7 +441,7 @@ impl WechatBridge {
                     .app
                     .lock()
                     .expect("application lock")
-                    .mark_wechat_delivery_handled(&delivery_id)
+                    .commit_wechat_delivery(&delivery_id)
                     .map_err(|error| error.to_string())?;
                 return Ok(());
             }
@@ -469,7 +451,7 @@ impl WechatBridge {
             .app
             .lock()
             .expect("application lock")
-            .mark_wechat_delivery_handled(&delivery_id)
+            .commit_wechat_delivery(&delivery_id)
             .map_err(|error| error.to_string())
     }
 
@@ -484,7 +466,7 @@ impl WechatBridge {
             .app
             .lock()
             .expect("application lock")
-            .is_wechat_user_authorized(&target.user_id)
+            .wechat_user_is_authorized(&target.user_id)
         {
             return Ok(());
         }
@@ -505,21 +487,15 @@ impl WechatBridge {
 
     fn handle_status(&self, target: &ReplyTarget, chat_id: &str) -> Result<(), String> {
         let active = !self.shared.active_run_info().is_null();
-        let mapped = self.chat_binding(chat_id, &target.user_id)?;
-        let (current, title) = {
-            let app = self.shared.app.lock().expect("application lock");
-            if !app.is_wechat_user_authorized(&target.user_id) {
-                return Ok(());
-            }
-            let current = app.current_session_id();
-            let title = mapped
-                .as_ref()
-                .filter(|binding| current.as_ref() == Some(&binding.session_id))
-                .and_then(|_| app.session_title());
-            (current, title)
-        };
-        let state = match mapped {
-            Some(binding) if current.as_ref() == Some(&binding.session_id) => {
+        let fallback = self.volatile_chat_binding(chat_id, &target.user_id)?;
+        let status = self
+            .shared
+            .app
+            .lock()
+            .expect("application lock")
+            .wechat_chat_status(&target.user_id, chat_id, fallback.as_ref());
+        let state = match status {
+            crate::application::WechatChatStatus::MappedCurrent { title } => {
                 format!(
                     "已映射当前会话{}",
                     title
@@ -527,8 +503,11 @@ impl WechatBridge {
                         .unwrap_or_default()
                 )
             }
-            Some(_) => "已映射；下次消息会恢复该会话".into(),
-            None => "尚未映射；先发送 /new".into(),
+            crate::application::WechatChatStatus::MappedInactive => {
+                "已映射；下次消息会恢复该会话".into()
+            }
+            crate::application::WechatChatStatus::Unmapped => "尚未映射；先发送 /new".into(),
+            crate::application::WechatChatStatus::Revoked => return Ok(()),
         };
         self.outbound.text(
             target,
@@ -546,14 +525,15 @@ impl WechatBridge {
                 .text(target, "当前有运行进行中，请先 /stop 或等待完成。".into());
             return Ok(());
         }
-        {
-            let mut app = self.shared.app.lock().expect("application lock");
-            if !app.is_wechat_user_authorized(&target.user_id) {
-                return Ok(());
-            }
-            app.new_session().map_err(|error| error.to_string())?;
-            app.clear_wechat_chat_binding(&target.user_id, chat_id)
-                .map_err(|error| error.to_string())?;
+        let outcome = self
+            .shared
+            .app
+            .lock()
+            .expect("application lock")
+            .begin_new_wechat_chat(&target.user_id, chat_id)
+            .map_err(|error| error.to_string())?;
+        if matches!(outcome, crate::application::WechatNewChatOutcome::Revoked) {
+            return Ok(());
         }
         let mut armed = self
             .armed_new_chats
@@ -579,17 +559,13 @@ impl WechatBridge {
     }
 
     fn handle_stop(&self, target: &ReplyTarget, chat_id: &str) -> Result<(), String> {
-        let mapping = self.chat_binding(chat_id, &target.user_id)?;
-        let owns_active = {
-            let app = self.shared.app.lock().expect("application lock");
-            if !app.is_wechat_user_authorized(&target.user_id) {
-                return Ok(());
-            }
-            mapping.is_some_and(|binding| {
-                binding.user_id == target.user_id
-                    && app.current_session_id().as_ref() == Some(&binding.session_id)
-            })
-        };
+        let fallback = self.volatile_chat_binding(chat_id, &target.user_id)?;
+        let owns_active = self
+            .shared
+            .app
+            .lock()
+            .expect("application lock")
+            .wechat_chat_owns_current_session(&target.user_id, chat_id, fallback.as_ref());
         if owns_active && !self.shared.active_run_info().is_null() {
             self.shared.cancel_active_run();
             self.outbound.text(target, "已请求停止当前运行。".into());
@@ -600,21 +576,11 @@ impl WechatBridge {
         Ok(())
     }
 
-    fn chat_binding(
+    fn volatile_chat_binding(
         &self,
         chat_id: &str,
         user_id: &str,
     ) -> Result<Option<crate::im::WechatChatBinding>, String> {
-        let durable = self
-            .shared
-            .app
-            .lock()
-            .expect("application lock")
-            .wechat_chat_binding(chat_id)
-            .filter(|binding| binding.user_id == user_id);
-        if durable.is_some() {
-            return Ok(durable);
-        }
         Ok(self
             .volatile_chat_sessions
             .lock()
@@ -631,26 +597,30 @@ impl WechatBridge {
         chat_id: String,
         delivery_id: String,
     ) -> Result<(), String> {
-        let mapped = self.chat_binding(&chat_id, &target.user_id)?;
+        let fallback = self.volatile_chat_binding(&chat_id, &target.user_id)?;
         let armed = self
             .armed_new_chats
             .lock()
             .map_err(|_| "wechat new-chat state poisoned")?
             .get(&chat_id)
             .is_some_and(|user| user == &target.user_id);
-        let pending_mapping = self
+        let readiness = self
             .shared
             .app
             .lock()
             .expect("application lock")
-            .pending_wechat_chat_mapping(&delivery_id, &target.user_id, &chat_id);
-        if mapped.is_none() && !armed && pending_mapping.is_none() {
-            self.outbound.text(
-                &target,
-                "此聊天尚未映射会话。请先发送 /new，再发送任务。".into(),
-            );
-            return Ok(());
-        }
+            .prepare_wechat_chat(&target.user_id, &chat_id, &delivery_id, fallback, armed);
+        let ticket = match readiness {
+            crate::application::WechatChatReadiness::Ready(ticket) => ticket,
+            crate::application::WechatChatReadiness::Unmapped => {
+                self.outbound.text(
+                    &target,
+                    "此聊天尚未映射会话。请先发送 /new，再发送任务。".into(),
+                );
+                return Ok(());
+            }
+            crate::application::WechatChatReadiness::Revoked => return Ok(()),
+        };
 
         let (text, opaque_images, staged_images) = match self.prepare_message(message, &delivery_id)
         {
@@ -673,17 +643,13 @@ impl WechatBridge {
             PendingMessage::from_front_end(text, Some(delivery_id.clone()), opaque_images);
         pending.resolve_staged_attachments(staged_images.clone());
         let incoming_digest = pending.request_digest();
-        if pending_mapping
-            .as_ref()
-            .is_some_and(|mapping| mapping.request_digest != incoming_digest)
-        {
+        if !ticket.accepts_digest(&incoming_digest) {
             release_staged(&self.shared, &staged_images);
             self.outbound
                 .text(&target, "同一投递标识已用于不同消息，已拒绝。".into());
             return Ok(());
         }
-        let recovering_mapping_intent = pending_mapping.is_some();
-        let recovering_unmapped_delivery = recovering_mapping_intent && mapped.is_none();
+        let recovering_unmapped_delivery = ticket.recovery_waits_for_idle();
 
         if !self.shared.active_run_info().is_null() {
             if recovering_unmapped_delivery {
@@ -692,7 +658,7 @@ impl WechatBridge {
                     "durable chat-mapping recovery waits for the active run to finish".into(),
                 );
             }
-            return self.steer_or_busy(&target, mapped, pending, staged_images, &delivery_id);
+            return self.steer_or_busy(&target, &ticket, pending, staged_images, &delivery_id);
         }
 
         let rpc_id = format!("wechat-{}", uuid::Uuid::new_v4());
@@ -707,45 +673,26 @@ impl WechatBridge {
                 .text(&target, "当前有运行进行中，请稍后重试。".into());
             return Ok(());
         }
-        let mapping_intent = if recovering_mapping_intent {
-            ChatMappingIntent::Recovery
-        } else if mapped.is_none() {
-            ChatMappingIntent::Fresh
-        } else {
-            ChatMappingIntent::None
-        };
-        if mapping_intent == ChatMappingIntent::Fresh {
-            let arm_result = self
-                .shared
-                .app
-                .lock()
-                .expect("application lock")
-                .arm_wechat_chat_mapping(&delivery_id, &target.user_id, &chat_id, &incoming_digest);
-            if let Err(error) = arm_result {
-                self.shared.release_run_claim();
-                release_staged(&self.shared, &staged_images);
-                return Err(format!("could not persist chat-mapping intent: {error}"));
-            }
-        }
-        let result = self.start_prompt(
-            &target,
-            &chat_id,
-            mapped,
-            mapping_intent,
-            pending,
-            &delivery_id,
-        );
+        let result = self.start_prompt(&target, &chat_id, ticket, pending, &delivery_id);
         release_staged(&self.shared, &staged_images);
         match result {
             Ok(PromptStartOutcome::Accepted | PromptStartOutcome::Duplicate) => Ok(()),
             Ok(PromptStartOutcome::Revoked) => {
                 self.shared.release_run_claim();
-                self.shared
-                    .app
-                    .lock()
-                    .expect("application lock")
-                    .abort_wechat_chat_mapping(&delivery_id, &target.user_id, &chat_id)
-                    .map_err(|error| error.to_string())?;
+                Ok(())
+            }
+            Ok(PromptStartOutcome::Unmapped) => {
+                self.shared.release_run_claim();
+                self.outbound.text(
+                    &target,
+                    "此聊天尚未映射会话。请先发送 /new，再发送任务。".into(),
+                );
+                Ok(())
+            }
+            Ok(PromptStartOutcome::Conflict) => {
+                self.shared.release_run_claim();
+                self.outbound
+                    .text(&target, "同一投递标识已用于不同消息，已拒绝。".into());
                 Ok(())
             }
             Ok(PromptStartOutcome::MappingPending {
@@ -761,33 +708,20 @@ impl WechatBridge {
                 );
                 Err(error)
             }
-            Err(error) => {
+            Ok(PromptStartOutcome::Failed {
+                error,
+                retry_delivery,
+            }) => {
                 self.shared.release_run_claim();
-                let abort_error = {
-                    let app = self.shared.app.lock().expect("application lock");
-                    if !recovering_mapping_intent && app.committed_admission(&delivery_id).is_none()
-                    {
-                        app.abort_wechat_chat_mapping(&delivery_id, &target.user_id, &chat_id)
-                            .err()
-                            .map(|error| error.to_string())
-                    } else {
-                        None
-                    }
-                };
                 self.outbound.text(
                     &target,
                     format!("消息未启动：{}", bounded_summary(&error, 300)),
                 );
-                if let Some(abort_error) = abort_error {
-                    return Err(format!(
-                        "{error}; could not clear uncommitted chat-mapping intent: {abort_error}"
-                    ));
-                }
-                if recovering_mapping_intent {
-                    Err(error)
-                } else {
-                    Ok(())
-                }
+                if retry_delivery { Err(error) } else { Ok(()) }
+            }
+            Err(error) => {
+                self.shared.release_run_claim();
+                Err(error)
             }
         }
     }
@@ -796,12 +730,10 @@ impl WechatBridge {
         &self,
         target: &ReplyTarget,
         chat_id: &str,
-        mapped: Option<crate::im::WechatChatBinding>,
-        mapping_intent: ChatMappingIntent,
+        ticket: crate::application::WechatChatTicket,
         message: PendingMessage,
         delivery_id: &str,
     ) -> Result<PromptStartOutcome, String> {
-        let incoming_digest = message.request_digest();
         let (completion_tx, completion_rx) = std::sync::mpsc::channel();
         let approver: Arc<dyn PermissionApprover> = Arc::new(WechatApprover {
             shared: Arc::clone(&self.shared),
@@ -811,110 +743,9 @@ impl WechatBridge {
         });
         let started = {
             let mut app = self.shared.app.lock().expect("application lock");
-            if !app.is_wechat_user_authorized(&target.user_id) {
-                return Ok(PromptStartOutcome::Revoked);
-            }
-            if let Some(binding) = mapped {
-                if app.current_session_id().as_ref() != Some(&binding.session_id) {
-                    app.switch_session(binding.session_id.clone())
-                        .map_err(|error| error.to_string())?;
-                    self.shared.advance_selection_generation();
-                }
-                if app.wechat_chat_binding(chat_id).is_none()
-                    && let Err(error) = if mapping_intent.is_some() {
-                        app.complete_wechat_chat_mapping(
-                            delivery_id,
-                            &target.user_id,
-                            chat_id,
-                            &binding.session_id,
-                        )
-                    } else {
-                        app.bind_wechat_chat(&target.user_id, chat_id, &binding.session_id)
-                    }
-                {
-                    return Ok(PromptStartOutcome::MappingPending {
-                        error: error.to_string(),
-                        claim_active: false,
-                    });
-                }
-                self.volatile_chat_sessions
-                    .lock()
-                    .map_err(|_| "wechat volatile mapping state poisoned")?
-                    .remove(chat_id);
-            } else if mapping_intent.is_some() {
-                if mapping_intent == ChatMappingIntent::Recovery
-                    && let Some((session_id, record)) = app
-                        .find_committed_admission_session(delivery_id)
-                        .map_err(|error| error.to_string())?
-                {
-                    if record
-                        .request_digest
-                        .as_deref()
-                        .is_some_and(|digest| digest != incoming_digest)
-                    {
-                        return Err("同一投递标识已用于不同消息，已拒绝。".into());
-                    }
-                    if app.current_session_id().as_ref() != Some(&session_id) {
-                        app.switch_session(session_id.clone())
-                            .map_err(|error| error.to_string())?;
-                        self.shared.advance_selection_generation();
-                    }
-                    app.complete_wechat_chat_mapping(
-                        delivery_id,
-                        &target.user_id,
-                        chat_id,
-                        &session_id,
-                    )
-                    .map_err(|error| error.to_string())?;
-                    drop(app);
-                    self.shared.release_run_claim();
-                    self.outbound
-                        .text(target, "该消息已经处理，无需重复发送。".into());
-                    return Ok(PromptStartOutcome::Duplicate);
-                }
-                if let Some(record) = app.committed_admission(delivery_id) {
-                    if record
-                        .request_digest
-                        .as_deref()
-                        .is_some_and(|digest| digest != incoming_digest)
-                    {
-                        return Err("同一投递标识已用于不同消息，已拒绝。".into());
-                    }
-                    let session_id = app.current_session_id().ok_or_else(|| {
-                        "committed delivery has no restorable active session".to_owned()
-                    })?;
-                    app.complete_wechat_chat_mapping(
-                        delivery_id,
-                        &target.user_id,
-                        chat_id,
-                        &session_id,
-                    )
-                    .map_err(|error| error.to_string())?;
-                    drop(app);
-                    self.shared.release_run_claim();
-                    self.outbound
-                        .text(target, "该消息已经处理，无需重复发送。".into());
-                    return Ok(PromptStartOutcome::Duplicate);
-                }
-                app.new_session().map_err(|error| error.to_string())?;
-                self.shared.advance_selection_generation();
-            }
-            if let Some(record) = app.committed_admission(delivery_id) {
-                if record
-                    .request_digest
-                    .as_deref()
-                    .is_none_or(|digest| digest == incoming_digest)
-                {
-                    drop(app);
-                    self.shared.release_run_claim();
-                    self.outbound
-                        .text(target, "该消息已经处理，无需重复发送。".into());
-                    return Ok(PromptStartOutcome::Duplicate);
-                }
-                return Err("同一投递标识已用于不同消息，已拒绝。".into());
-            }
-            let handle = app
-                .start_run(ApplicationRunRequest {
+            app.start_wechat_prompt(
+                ticket,
+                ApplicationRunRequest {
                     message,
                     approver,
                     asker: None,
@@ -924,54 +755,80 @@ impl WechatBridge {
                         target: target.clone(),
                     }),
                     completion: completion_tx,
-                })
-                .map_err(|error| error.to_string())?;
-            let session_id = app
-                .current_session_id()
-                .ok_or_else(|| "run committed without an active session".to_owned())?;
-            let volatile = crate::im::WechatChatBinding {
-                user_id: target.user_id.clone(),
-                session_id: session_id.clone(),
-            };
-            let mapping = if mapping_intent.is_some() {
-                app.complete_wechat_chat_mapping(delivery_id, &target.user_id, chat_id, &session_id)
-            } else {
-                app.bind_wechat_chat(&target.user_id, chat_id, &session_id)
-            }
-            .map_err(|error| error.to_string());
-            (handle, mapping, volatile)
+                },
+            )
         };
-        self.outbound.typing(target, true);
-        self.shared
-            .spawn_settler(format!("wechat:{delivery_id}"), completion_rx, started.0);
-        if let Err(error) = started.1 {
-            self.volatile_chat_sessions
-                .lock()
-                .map_err(|_| "wechat volatile mapping state poisoned")?
-                .insert(chat_id.to_owned(), started.2);
-            // The user message is already committed. Retain the iLink cursor
-            // and let replay converge through the committed admission while
-            // the process-local active session is still recoverable.
-            return Ok(PromptStartOutcome::MappingPending {
-                error: format!("could not persist chat/session mapping: {error}"),
-                claim_active: true,
-            });
+        if started.selection_changed {
+            self.shared.advance_selection_generation();
         }
-        self.armed_new_chats
-            .lock()
-            .map_err(|_| "wechat new-chat state poisoned")?
-            .remove(chat_id);
-        self.volatile_chat_sessions
-            .lock()
-            .map_err(|_| "wechat volatile mapping state poisoned")?
-            .remove(chat_id);
-        Ok(PromptStartOutcome::Accepted)
+        match started.outcome {
+            crate::application::WechatPromptStartOutcome::Started {
+                handle,
+                binding,
+                mapping_error,
+            } => {
+                self.outbound.typing(target, true);
+                self.shared
+                    .spawn_settler(format!("wechat:{delivery_id}"), completion_rx, handle);
+                if let Some(error) = mapping_error {
+                    self.volatile_chat_sessions
+                        .lock()
+                        .map_err(|_| "wechat volatile mapping state poisoned")?
+                        .insert(chat_id.to_owned(), binding);
+                    return Ok(PromptStartOutcome::MappingPending {
+                        error: format!("could not persist chat/session mapping: {error}"),
+                        claim_active: true,
+                    });
+                }
+                self.armed_new_chats
+                    .lock()
+                    .map_err(|_| "wechat new-chat state poisoned")?
+                    .remove(chat_id);
+                self.volatile_chat_sessions
+                    .lock()
+                    .map_err(|_| "wechat volatile mapping state poisoned")?
+                    .remove(chat_id);
+                Ok(PromptStartOutcome::Accepted)
+            }
+            crate::application::WechatPromptStartOutcome::Duplicate => {
+                self.shared.release_run_claim();
+                self.volatile_chat_sessions
+                    .lock()
+                    .map_err(|_| "wechat volatile mapping state poisoned")?
+                    .remove(chat_id);
+                self.outbound
+                    .text(target, "该消息已经处理，无需重复发送。".into());
+                Ok(PromptStartOutcome::Duplicate)
+            }
+            crate::application::WechatPromptStartOutcome::Revoked => {
+                Ok(PromptStartOutcome::Revoked)
+            }
+            crate::application::WechatPromptStartOutcome::Unmapped => {
+                Ok(PromptStartOutcome::Unmapped)
+            }
+            crate::application::WechatPromptStartOutcome::Conflict => {
+                Ok(PromptStartOutcome::Conflict)
+            }
+            crate::application::WechatPromptStartOutcome::MappingPending { error } => {
+                Ok(PromptStartOutcome::MappingPending {
+                    error,
+                    claim_active: false,
+                })
+            }
+            crate::application::WechatPromptStartOutcome::Failed {
+                error,
+                retry_delivery,
+            } => Ok(PromptStartOutcome::Failed {
+                error,
+                retry_delivery,
+            }),
+        }
     }
 
     fn steer_or_busy(
         &self,
         target: &ReplyTarget,
-        mapped: Option<crate::im::WechatChatBinding>,
+        ticket: &crate::application::WechatChatTicket,
         message: PendingMessage,
         staged_images: Vec<std::path::PathBuf>,
         delivery_id: &str,
@@ -992,94 +849,68 @@ impl WechatBridge {
                 return Ok(());
             }
         }
-        let outcome = {
-            let app = self.shared.app.lock().expect("application lock");
-            if !app.is_wechat_user_authorized(&target.user_id) {
-                release_staged(&self.shared, &staged_images);
-                return Ok(());
-            }
-            let owns_current = mapped.as_ref().is_some_and(|binding| {
-                app.current_session_id().as_ref() == Some(&binding.session_id)
-                    && binding.user_id == target.user_id
-            });
-            if !owns_current {
-                release_staged(&self.shared, &staged_images);
+        let outcome = self
+            .shared
+            .app
+            .lock()
+            .expect("application lock")
+            .steer_wechat_prompt(ticket, message);
+        release_staged(&self.shared, &staged_images);
+        if outcome.durable_mapping_restored {
+            self.volatile_chat_sessions
+                .lock()
+                .map_err(|_| "wechat volatile mapping state poisoned")?
+                .remove(&target.user_id);
+        }
+        match outcome.outcome {
+            crate::application::WechatSteerOutcome::Revoked => Ok(()),
+            crate::application::WechatSteerOutcome::Busy => {
                 self.outbound
                     .text(target, "另一会话正在运行；请等待完成后再发送。".into());
-                return Ok(());
-            }
-            if let Some(binding) = mapped.as_ref()
-                && app.wechat_chat_binding(&target.user_id).is_none()
-            {
-                let pending_mapping =
-                    app.pending_wechat_chat_mapping(delivery_id, &target.user_id, &target.user_id);
-                let repair = if pending_mapping.is_some() {
-                    app.complete_wechat_chat_mapping(
-                        delivery_id,
-                        &target.user_id,
-                        &target.user_id,
-                        &binding.session_id,
-                    )
-                } else {
-                    app.bind_wechat_chat(&target.user_id, &target.user_id, &binding.session_id)
-                };
-                if let Err(error) = repair {
-                    release_staged(&self.shared, &staged_images);
-                    return Err(format!(
-                        "could not persist chat/session mapping before replay: {error}"
-                    ));
-                }
-                self.volatile_chat_sessions
-                    .lock()
-                    .map_err(|_| "wechat volatile mapping state poisoned")?
-                    .remove(&target.user_id);
-            }
-            if let Some(record) = app.committed_admission(delivery_id) {
-                release_staged(&self.shared, &staged_images);
-                if record
-                    .request_digest
-                    .as_deref()
-                    .is_none_or(|recorded| recorded == digest)
-                {
-                    self.outbound
-                        .text(target, "该消息已经处理，无需重复发送。".into());
-                } else {
-                    self.outbound
-                        .text(target, "同一投递标识已用于不同消息，已拒绝。".into());
-                }
-                return Ok(());
-            }
-            app.steer(message)
-        };
-        release_staged(&self.shared, &staged_images);
-        match outcome {
-            SteerOutcome::Queued {
-                receipt: Some(receipt),
-            } => {
-                self.shared.remember_pending_steering(
-                    delivery_id.to_owned(),
-                    digest,
-                    (*receipt).clone(),
-                    None,
-                    Vec::new(),
-                );
-                self.outbound
-                    .text(target, "消息已加入当前运行，等待下一轮处理。".into());
-                self.wait_for_steering_commit(delivery_id)
-            }
-            SteerOutcome::Queued { receipt: None } => {
-                Err("steering accepted without an idempotency receipt".into())
-            }
-            SteerOutcome::NotRunning { .. } => {
-                Err("active run sealed before the message was queued".into())
-            }
-            SteerOutcome::Refused { reason, .. } => {
-                self.outbound.text(
-                    target,
-                    format!("消息未加入运行：{}", bounded_summary(&reason, 300)),
-                );
                 Ok(())
             }
+            crate::application::WechatSteerOutcome::Duplicate => {
+                self.outbound
+                    .text(target, "该消息已经处理，无需重复发送。".into());
+                Ok(())
+            }
+            crate::application::WechatSteerOutcome::Conflict => {
+                self.outbound
+                    .text(target, "同一投递标识已用于不同消息，已拒绝。".into());
+                Ok(())
+            }
+            crate::application::WechatSteerOutcome::MappingPending(error) => Err(format!(
+                "could not persist chat/session mapping before replay: {error}"
+            )),
+            crate::application::WechatSteerOutcome::Steer(outcome) => match outcome {
+                SteerOutcome::Queued {
+                    receipt: Some(receipt),
+                } => {
+                    self.shared.remember_pending_steering(
+                        delivery_id.to_owned(),
+                        digest,
+                        (*receipt).clone(),
+                        None,
+                        Vec::new(),
+                    );
+                    self.outbound
+                        .text(target, "消息已加入当前运行，等待下一轮处理。".into());
+                    self.wait_for_steering_commit(delivery_id)
+                }
+                SteerOutcome::Queued { receipt: None } => {
+                    Err("steering accepted without an idempotency receipt".into())
+                }
+                SteerOutcome::NotRunning { .. } => {
+                    Err("active run sealed before the message was queued".into())
+                }
+                SteerOutcome::Refused { reason, .. } => {
+                    self.outbound.text(
+                        target,
+                        format!("消息未加入运行：{}", bounded_summary(&reason, 300)),
+                    );
+                    Ok(())
+                }
+            },
         }
     }
 
@@ -1094,8 +925,7 @@ impl WechatBridge {
                 .app
                 .lock()
                 .expect("application lock")
-                .committed_admission(delivery_id)
-                .is_some()
+                .wechat_message_is_committed(delivery_id)
             {
                 return Ok(());
             }
@@ -1201,8 +1031,8 @@ fn spawn_outbox_worker(
                     .app
                     .lock()
                     .expect("application lock")
-                    .wechat_credentials()
-                    .is_ok_and(|current| current.as_ref() == Some(&credentials));
+                    .wechat_binding()
+                    .is_ok_and(|snapshot| snapshot.credentials.as_ref() == Some(&credentials));
                 if !credential_is_current {
                     break;
                 }
@@ -1263,14 +1093,11 @@ fn handle_outbound_error(
     error: &crate::im::ilink::Error,
 ) {
     if matches!(error, crate::im::ilink::Error::InvalidCredential) {
-        let app = shared.app.lock().expect("application lock");
-        if app
-            .wechat_credentials()
-            .is_ok_and(|current| current.as_ref() == Some(expected))
-        {
-            app.cancel_active_run();
-            let _ = app.clear_wechat_binding();
-        }
+        let _ = shared
+            .app
+            .lock()
+            .expect("application lock")
+            .revoke_wechat_binding_if_current(expected);
     }
 }
 
@@ -1667,7 +1494,7 @@ mod tests {
             .unwrap();
         crate::test_support::configure_test_model(&application);
         application
-            .save_wechat_binding(
+            .replace_wechat_binding(
                 &Credentials::new(
                     "test-token".into(),
                     "test-bot".into(),
@@ -1677,7 +1504,7 @@ mod tests {
                 .unwrap(),
             )
             .unwrap();
-        application.set_wechat_allowed_user("user-a", true).unwrap();
+        application.set_wechat_allowlist("user-a", true).unwrap();
 
         let app = Arc::new(Mutex::new(application));
         let shared = Arc::new(ServeShared::new(Arc::clone(&app), "token".into(), 0));
@@ -1716,7 +1543,7 @@ mod tests {
                 "path-looking or ordinary text has no attachment authority"
             );
             let binding = application
-                .wechat_chat_binding("user-a")
+                .inspect_wechat_chat_binding("user-a")
                 .expect("durable chat mapping");
             assert_eq!(binding.user_id, "user-a");
         }
@@ -1730,12 +1557,15 @@ mod tests {
         );
         bridge.handle_authorized(&new_command).unwrap();
         assert!(
-            app.lock().unwrap().wechat_chat_binding("user-a").is_some(),
+            app.lock()
+                .unwrap()
+                .inspect_wechat_chat_binding("user-a")
+                .is_some(),
             "replayed /new must not clear the established mapping"
         );
         app.lock()
             .unwrap()
-            .set_wechat_allowed_user("user-a", false)
+            .set_wechat_allowlist("user-a", false)
             .unwrap();
         let revoked = message_with_id("still run this", "revoked-delivery");
         let projected_before_revoked = recording.texts.lock().unwrap().len();
@@ -1782,7 +1612,7 @@ mod tests {
             .unwrap();
         crate::test_support::configure_test_model(&application);
         application
-            .save_wechat_binding(
+            .replace_wechat_binding(
                 &Credentials::new(
                     "test-token".into(),
                     "test-bot".into(),
@@ -1792,7 +1622,7 @@ mod tests {
                 .unwrap(),
             )
             .unwrap();
-        application.set_wechat_allowed_user("user-a", true).unwrap();
+        application.set_wechat_allowlist("user-a", true).unwrap();
 
         let app = Arc::new(Mutex::new(application));
         let shared = Arc::new(ServeShared::new(Arc::clone(&app), "token".into(), 0));
@@ -1824,7 +1654,7 @@ mod tests {
         let committed_session = {
             let application = app.lock().unwrap();
             assert!(application.committed_admission(&delivery_id).is_some());
-            assert!(application.wechat_chat_binding("user-a").is_none());
+            assert!(application.inspect_wechat_chat_binding("user-a").is_none());
             application
                 .current_session_id()
                 .expect("materialized session")
@@ -1900,9 +1730,9 @@ mod tests {
         assert!(busy_error.contains("chat-mapping recovery"));
         {
             let application = app.lock().unwrap();
-            assert!(application.wechat_chat_binding("user-a").is_none());
+            assert!(application.inspect_wechat_chat_binding("user-a").is_none());
             assert!(
-                !application.is_wechat_delivery_handled(&delivery_id),
+                !application.inspect_wechat_delivery_handled(&delivery_id),
                 "busy recovery must not consume the durable delivery"
             );
         }
@@ -1917,15 +1747,15 @@ mod tests {
         assert!(scan_error.contains("intentional admission-owner scan failure"));
         {
             let application = app.lock().unwrap();
-            assert!(application.wechat_chat_binding("user-a").is_none());
+            assert!(application.inspect_wechat_chat_binding("user-a").is_none());
             assert!(
                 application
-                    .pending_wechat_chat_mapping(&delivery_id, "user-a", "user-a")
+                    .inspect_pending_wechat_chat_mapping(&delivery_id, "user-a", "user-a")
                     .is_some(),
                 "owner-resolution failure keeps the durable mapping intent"
             );
             assert!(
-                !application.is_wechat_delivery_handled(&delivery_id),
+                !application.inspect_wechat_delivery_handled(&delivery_id),
                 "owner-resolution failure must not consume the delivery"
             );
         }
@@ -1935,11 +1765,11 @@ mod tests {
             .expect("restart replay repairs the durable mapping");
         let application = app.lock().unwrap();
         let binding = application
-            .wechat_chat_binding("user-a")
+            .inspect_wechat_chat_binding("user-a")
             .expect("mapping repaired from the committed delivery");
         assert_eq!(binding.user_id, "user-a");
         assert_eq!(binding.session_id, committed_session);
-        assert!(application.is_wechat_delivery_handled(&delivery_id));
+        assert!(application.inspect_wechat_delivery_handled(&delivery_id));
         drop(application);
 
         let sessions = app.lock().unwrap().list_sessions().unwrap();
@@ -1986,7 +1816,7 @@ mod tests {
             .unwrap();
         crate::test_support::configure_test_model(&application);
         application
-            .save_wechat_binding(
+            .replace_wechat_binding(
                 &Credentials::new(
                     "test-token".into(),
                     "test-bot".into(),
@@ -1996,7 +1826,7 @@ mod tests {
                 .unwrap(),
             )
             .unwrap();
-        application.set_wechat_allowed_user("user-a", true).unwrap();
+        application.set_wechat_allowlist("user-a", true).unwrap();
 
         let app = Arc::new(Mutex::new(application));
         let shared = Arc::new(ServeShared::new(Arc::clone(&app), "token".into(), 0));
@@ -2092,7 +1922,7 @@ mod tests {
             .unwrap();
         crate::test_support::configure_test_model(&application);
         application
-            .save_wechat_binding(
+            .replace_wechat_binding(
                 &Credentials::new(
                     "test-token".into(),
                     "test-bot".into(),
@@ -2102,7 +1932,7 @@ mod tests {
                 .unwrap(),
             )
             .unwrap();
-        application.set_wechat_allowed_user("user-a", true).unwrap();
+        application.set_wechat_allowlist("user-a", true).unwrap();
 
         let app = Arc::new(Mutex::new(application));
         let shared = Arc::new(ServeShared::new(Arc::clone(&app), "token".into(), 0));
@@ -2207,7 +2037,7 @@ mod tests {
             .unwrap();
         crate::test_support::configure_test_model(&application);
         application
-            .save_wechat_binding(
+            .replace_wechat_binding(
                 &Credentials::new(
                     "test-token".into(),
                     "test-bot".into(),
@@ -2217,7 +2047,7 @@ mod tests {
                 .unwrap(),
             )
             .unwrap();
-        application.set_wechat_allowed_user("user-a", true).unwrap();
+        application.set_wechat_allowlist("user-a", true).unwrap();
 
         let app = Arc::new(Mutex::new(application));
         let shared = Arc::new(ServeShared::new(Arc::clone(&app), "token".into(), 0));
@@ -2292,7 +2122,7 @@ mod tests {
             .unwrap();
         crate::test_support::configure_test_model(&application);
         application
-            .save_wechat_binding(
+            .replace_wechat_binding(
                 &Credentials::new(
                     "test-token".into(),
                     "test-bot".into(),
@@ -2302,7 +2132,7 @@ mod tests {
                 .unwrap(),
             )
             .unwrap();
-        application.set_wechat_allowed_user("user-a", true).unwrap();
+        application.set_wechat_allowlist("user-a", true).unwrap();
 
         let app = Arc::new(Mutex::new(application));
         let shared = Arc::new(ServeShared::new(Arc::clone(&app), "token".into(), 0));

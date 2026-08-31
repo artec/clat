@@ -176,10 +176,25 @@ impl ControlStorage {
 
     // ----- WeChat binding / pairing / chat mappings (im.json) -----
 
+    #[cfg(test)]
     pub(crate) fn wechat_binding_status(&self) -> crate::im::WechatBindingStatus {
         im::binding_status(&self.lock().im)
     }
 
+    pub(crate) fn wechat_binding_snapshot(
+        &self,
+    ) -> Result<
+        (
+            crate::im::WechatBindingStatus,
+            Option<crate::im::ilink::Credentials>,
+        ),
+        ControlError,
+    > {
+        let state = self.lock();
+        Ok((im::binding_status(&state.im), im::credentials(&state.im)?))
+    }
+
+    #[cfg(test)]
     pub(crate) fn wechat_credentials(
         &self,
     ) -> Result<Option<crate::im::ilink::Credentials>, ControlError> {
@@ -203,6 +218,25 @@ impl ControlStorage {
             |state| self.save_im(state),
             |state| im::clear_binding(&mut state.im),
         )
+    }
+
+    pub(crate) fn clear_wechat_binding_if_current(
+        &self,
+        expected: &crate::im::ilink::Credentials,
+        before_clear: impl FnOnce(),
+    ) -> Result<bool, ControlError> {
+        let mut state = self.lock();
+        if im::credentials(&state.im)?.as_ref() != Some(expected) {
+            return Ok(false);
+        }
+        before_clear();
+        let backup = state.clone();
+        im::clear_binding(&mut state.im);
+        if let Err(error) = self.save_im(&state) {
+            *state = backup;
+            return Err(error);
+        }
+        Ok(true)
     }
 
     pub(crate) fn create_wechat_pairing_code(
@@ -255,23 +289,34 @@ impl ControlStorage {
         im::is_authorized(&self.lock().im, user_id)
     }
 
-    pub(crate) fn wechat_cursor(&self) -> String {
-        im::cursor(&self.lock().im)
+    pub(crate) fn wechat_poll_cursor_if_current(
+        &self,
+        expected: &crate::im::ilink::Credentials,
+    ) -> Result<Option<String>, ControlError> {
+        let state = self.lock();
+        if im::credentials(&state.im)?.as_ref() != Some(expected) {
+            return Ok(None);
+        }
+        Ok(Some(im::cursor(&state.im)))
     }
 
-    pub(crate) fn advance_wechat_cursor(
+    pub(crate) fn commit_wechat_poll_cursor(
         &self,
+        credentials: &crate::im::ilink::Credentials,
         expected: &str,
         next: &str,
-    ) -> Result<(), ControlError> {
+    ) -> Result<bool, ControlError> {
         let mut state = self.lock();
+        if im::credentials(&state.im)?.as_ref() != Some(credentials) {
+            return Ok(false);
+        }
         let backup = state.clone();
         im::advance_cursor(&mut state.im, expected, next)?;
         if let Err(error) = self.save_im(&state) {
             *state = backup;
             return Err(error);
         }
-        Ok(())
+        Ok(true)
     }
 
     pub(crate) fn remove_wechat_paired_user(&self, user_id: &str) -> Result<(), ControlError> {
@@ -404,8 +449,17 @@ impl ControlStorage {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn is_wechat_delivery_handled(&self, delivery_id: &str) -> bool {
         im::is_delivery_handled(&self.lock().im, delivery_id)
+    }
+
+    pub(crate) fn wechat_delivery_state(&self, user_id: &str, delivery_id: &str) -> (bool, bool) {
+        let state = self.lock();
+        (
+            im::is_authorized(&state.im, user_id),
+            im::is_delivery_handled(&state.im, delivery_id),
+        )
     }
 
     pub(crate) fn mark_wechat_delivery_handled(

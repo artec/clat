@@ -146,6 +146,7 @@ include:
 - `dispatch_command` for the shared slash-command catalog;
 - permission-mode get/set through the core mode cell;
 - `start_run`, steering, cancellation, and join;
+- remote-control binding, pairing, delivery admission, and chat/session routing;
 - lightweight frontend DTOs such as `WorkbenchSnapshot`.
 
 DTOs contain display-ready facts, not subsystem handles. The workbench
@@ -159,6 +160,16 @@ points, and wires project-owned notices. It also hides Run child creation and
 reverse project teardown. The Application keeps trust, session selection,
 admission, and active-worker policy; it cannot ask the manager for additional
 services after mount.
+
+`application/remote_control.rs` is the application owner for WeChat remote
+control. It exposes closed outcomes for machine binding and poll checkpoints,
+pairing and delivery admission, and chat/session start or steering. In
+particular, the frontend cannot compose pending mapping intents, admission
+owner scans, session switching, or mapping compensation itself.
+`control_storage/im.rs` remains the sole owner of the 0600 atomic `im.json`
+unit, while `im/ilink` owns the official wire and `serve/wechat` owns commands,
+approval presentation, media download, the bounded outbox, and process-local
+run claims. No transport or frontend lock enters the application port.
 
 ## Agent run lifecycle
 
@@ -564,6 +575,7 @@ read-only and used only to populate session selection.
 | `src/application/composition.rs` | Trusted Project catalog, typed port resolution, freeze/wiring, Run children, and teardown |
 | `src/application/run_context.rs` | request-bound workflow composition, tool view, and durable request-header assembly |
 | `src/application/run_execution.rs` | two-phase run worker activation, round execution, terminal merge, and run-resource cleanup |
+| `src/application/remote_control.rs` | remote binding/pairing/delivery use cases and durable chat-to-session recovery orchestration |
 | `src/run.rs` | agent loop |
 | `src/model.rs`, `src/providers/` | provider-neutral model contract and adapters |
 | `src/tool.rs`, `src/native_tools.rs`, `src/apply_patch.rs`, `src/search.rs` | tool contract and native coding tools |
@@ -577,7 +589,7 @@ read-only and used only to populate session selection.
 | `src/plugin_host.rs` | extension sampling and elicitation semantics |
 | `src/mcp.rs`, `src/mcp/` | MCP config, transport, client, and tool mapping |
 | `src/session/` | journals, projections, recovery, checkpoints |
-| `src/control_storage/` | JSON control plane and workspace registry |
+| `src/control_storage/` | JSON control plane, atomic IM state, and workspace registry |
 | `src/command.rs` | frontend-neutral slash-command contract |
 | `src/tui.rs`, `src/tui/` | terminal frontend and structured image-draft presentation |
 | `src/exec.rs` | headless frontend |

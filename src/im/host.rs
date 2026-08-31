@@ -66,11 +66,15 @@ fn run_host_with_client(
 
     let mut backoff = ilink::PollBackoff::new();
     'poll: while !shutdown.load(Ordering::Acquire) {
-        if !binding_is_current(&app, &credentials)? {
+        let Some(checkpoint) = app
+            .lock()
+            .expect("application lock")
+            .begin_wechat_poll(&credentials)
+            .map_err(|error| error.to_string())?
+        else {
             break;
-        }
-        let cursor = app.lock().expect("application lock").wechat_cursor();
-        match client.get_updates(&credentials, &cursor) {
+        };
+        match client.get_updates(&credentials, checkpoint.cursor()) {
             Ok(updates) => {
                 for message in &updates.messages {
                     if shutdown.load(Ordering::Acquire) {
@@ -80,7 +84,13 @@ fn run_host_with_client(
                     // A long poll may have started with the old credential;
                     // re-check before every delivery so its result cannot be
                     // admitted after local revocation.
-                    if !binding_is_current(&app, &credentials)? {
+                    if app
+                        .lock()
+                        .expect("application lock")
+                        .begin_wechat_poll(&credentials)
+                        .map_err(|error| error.to_string())?
+                        .is_none()
+                    {
                         break 'poll;
                     }
                     if let Err(error) = handle_pairing_delivery(
@@ -101,13 +111,14 @@ fn run_host_with_client(
                 if shutdown.load(Ordering::Acquire) {
                     break;
                 }
-                if !binding_is_current(&app, &credentials)? {
+                if !app
+                    .lock()
+                    .expect("application lock")
+                    .commit_wechat_poll(&checkpoint, &updates.cursor)
+                    .map_err(|error| error.to_string())?
+                {
                     break;
                 }
-                app.lock()
-                    .expect("application lock")
-                    .advance_wechat_cursor(&cursor, &updates.cursor)
-                    .map_err(|error| error.to_string())?;
                 backoff.reset();
             }
             Err(Error::PollBackoff) => {
@@ -140,27 +151,10 @@ fn invalidate_binding_if_current(
     app: &Arc<Mutex<TrustedProjectApplication>>,
     expected: &Credentials,
 ) -> Result<(), String> {
-    let application = app.lock().expect("application lock");
-    let current = application
-        .wechat_credentials()
-        .map_err(|error| error.to_string())?;
-    if current.as_ref() != Some(expected) {
-        return Ok(());
-    }
-    application.cancel_active_run();
-    application
-        .clear_wechat_binding()
-        .map_err(|error| error.to_string())
-}
-
-fn binding_is_current(
-    app: &Arc<Mutex<TrustedProjectApplication>>,
-    expected: &Credentials,
-) -> Result<bool, String> {
     app.lock()
         .expect("application lock")
-        .wechat_credentials()
-        .map(|current| current.as_ref() == Some(expected))
+        .revoke_wechat_binding_if_current(expected)
+        .map(|_| ())
         .map_err(|error| error.to_string())
 }
 
@@ -179,11 +173,13 @@ fn handle_pairing_delivery(
     let Some(code) = pairing_code(text) else {
         // MR-I3 default deny. Ordinary unpaired input receives no reflection,
         // avoiding an attacker-controlled reply oracle.
-        if app
-            .lock()
-            .expect("application lock")
-            .is_wechat_user_authorized(user_id)
-        {
+        let delivery_id = delivery_id(message)?;
+        if matches!(
+            app.lock()
+                .expect("application lock")
+                .classify_wechat_delivery(user_id, &delivery_id),
+            crate::application::WechatDeliveryDisposition::Accept
+        ) {
             handler.handle(message)?;
         }
         return Ok(());
@@ -192,7 +188,7 @@ fn handle_pairing_delivery(
     let outcome = app
         .lock()
         .expect("application lock")
-        .attempt_wechat_pairing(&delivery_id, user_id, code)
+        .submit_wechat_pairing_code(&delivery_id, user_id, code)
         .map_err(|error| error.to_string())?;
     let reply = match outcome {
         PairingAttempt::Paired => "配对成功。绑定只授权当前微信用户，不扩大 CLAT 工具权限。".into(),
@@ -395,9 +391,12 @@ mod tests {
         fn handle(&self, message: &InboundMessage) -> Result<(), String> {
             let delivery = delivery_id(message)?;
             let application = self.app.lock().expect("application lock");
-            if !application.is_wechat_delivery_handled(&delivery) {
+            if matches!(
+                application.classify_wechat_delivery(&message.from_user_id, &delivery),
+                crate::application::WechatDeliveryDisposition::Accept
+            ) {
                 application
-                    .mark_wechat_delivery_handled(&delivery)
+                    .commit_wechat_delivery(&delivery)
                     .map_err(|error| error.to_string())?;
                 self.commits.fetch_add(1, Ordering::AcqRel);
             }
@@ -446,7 +445,7 @@ mod tests {
             "https://ilinkai.weixin.qq.com".into(),
         )
         .unwrap();
-        application.save_wechat_binding(&credentials).unwrap();
+        application.replace_wechat_binding(&credentials).unwrap();
         let app = Arc::new(Mutex::new(application));
         let handler = CountingHandler(AtomicUsize::new(0));
         let ordinary = message("hello");
@@ -456,7 +455,7 @@ mod tests {
 
         app.lock()
             .unwrap()
-            .set_wechat_allowed_user("user-secret", true)
+            .set_wechat_allowlist("user-secret", true)
             .unwrap();
         handle_pairing_delivery(&app, &Client::new(), &credentials, &handler, &ordinary).unwrap();
         assert_eq!(handler.0.load(Ordering::Acquire), 1);
@@ -495,19 +494,26 @@ mod tests {
             "https://ilinkai.weixin.qq.com".into(),
         )
         .unwrap();
-        application.save_wechat_binding(&old).unwrap();
-        application.save_wechat_binding(&replacement).unwrap();
+        application.replace_wechat_binding(&old).unwrap();
+        application.replace_wechat_binding(&replacement).unwrap();
         let app = Arc::new(Mutex::new(application));
 
         invalidate_binding_if_current(&app, &old).unwrap();
         assert_eq!(
-            app.lock().unwrap().wechat_credentials().unwrap(),
+            app.lock().unwrap().wechat_binding().unwrap().credentials,
             Some(replacement.clone()),
             "a stale poller must not revoke the newly confirmed binding"
         );
 
         invalidate_binding_if_current(&app, &replacement).unwrap();
-        assert!(app.lock().unwrap().wechat_credentials().unwrap().is_none());
+        assert!(
+            app.lock()
+                .unwrap()
+                .wechat_binding()
+                .unwrap()
+                .credentials
+                .is_none()
+        );
 
         let application = Arc::try_unwrap(app)
             .ok()
@@ -535,9 +541,9 @@ mod tests {
             "https://ilinkai.weixin.qq.com".into(),
         )
         .unwrap();
-        application.save_wechat_binding(&credentials).unwrap();
+        application.replace_wechat_binding(&credentials).unwrap();
         application
-            .set_wechat_allowed_user("user-secret", true)
+            .set_wechat_allowlist("user-secret", true)
             .unwrap();
         let app = Arc::new(Mutex::new(application));
         let shutdown = Arc::new(AtomicBool::new(false));
@@ -569,7 +575,15 @@ mod tests {
         )
         .unwrap();
         assert_eq!(handler.commits.load(Ordering::Acquire), 1);
-        assert_eq!(app.lock().unwrap().wechat_cursor(), "");
+        assert_eq!(
+            app.lock()
+                .unwrap()
+                .begin_wechat_poll(&credentials)
+                .unwrap()
+                .unwrap()
+                .cursor(),
+            ""
+        );
 
         shutdown.store(false, Ordering::Release);
         run_host_with_client(
@@ -592,7 +606,23 @@ mod tests {
         )
         .unwrap();
         assert_eq!(handler.commits.load(Ordering::Acquire), 1);
-        assert_eq!(app.lock().unwrap().wechat_cursor(), "cursor-1");
+        assert_eq!(
+            app.lock()
+                .unwrap()
+                .begin_wechat_poll(
+                    &Credentials::new(
+                        "test-token".into(),
+                        "test-bot".into(),
+                        None,
+                        "https://ilinkai.weixin.qq.com".into(),
+                    )
+                    .unwrap()
+                )
+                .unwrap()
+                .unwrap()
+                .cursor(),
+            "cursor-1"
+        );
 
         drop(handler);
         let application = Arc::try_unwrap(app)
