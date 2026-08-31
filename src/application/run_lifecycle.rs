@@ -612,7 +612,7 @@ impl TrustedProjectApplication {
                                 }
                                 round_request_header.base_system =
                                     crate::plan_mode::compose_workflow_instructions(
-                                        context.base_instructions.clone(),
+                                        context.instructions.base.clone(),
                                         round_workflow_instructions.as_deref(),
                                     );
                                 match round_request_header

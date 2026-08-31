@@ -36,6 +36,7 @@ mod language_intelligence_tests;
 mod memory_tests;
 #[cfg(test)]
 mod plan_mode_tests;
+mod run_context;
 mod run_lifecycle;
 #[cfg(test)]
 mod skills_tests;
@@ -54,6 +55,7 @@ pub use dto::{
     ProjectSnapshot, SessionSnapshot, WorkbenchModelSnapshot, WorkbenchProjectSnapshot,
     WorkbenchSessionSnapshot, WorkbenchSnapshot, WorkspaceInfo,
 };
+use run_context::RunContextSnapshot;
 pub use run_lifecycle::{
     ApplicationRunDone, ApplicationRunFailure, ApplicationRunRequest, ApplicationRunResult,
     RecalledSteering, RenameOutcome, RunHandle, SteerOutcome,
@@ -159,22 +161,6 @@ pub enum ApplicationEvent {
         cancelled: bool,
         terminated: bool,
     },
-}
-
-/// One request-bound view of workflow state. Plan, skills, memory, and tool
-/// authority are immutable for the run. Goal continuation refreshes only its
-/// revision/counters at each durable synthetic-round boundary.
-#[derive(Clone)]
-struct RunContextSnapshot {
-    tool_access: crate::tool::ToolAccessPolicy,
-    base_instructions: String,
-    workflow_base: String,
-    workflow_instructions: Option<String>,
-    plan_header: Option<Value>,
-    memory_header: Value,
-    memory_bytes: usize,
-    goal_header: Value,
-    skills: Arc<crate::skills::SkillCatalogSnapshot>,
 }
 
 pub struct TrustedProjectApplication {

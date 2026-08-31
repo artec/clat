@@ -40,37 +40,10 @@ impl TrustedProjectApplication {
             &config,
             std::sync::Arc::clone(&skills),
             crate::memory::MemoryInjection::default(),
-            goal.clone(),
-        );
-        let plan_state = self.plan_mode.state();
-        let plan_instructions = if plan_state.active {
-            Some(crate::plan_mode::PLAN_POLICY.to_owned())
-        } else {
-            plan_state
-                .approved
-                .as_ref()
-                .map(crate::plan_mode::approved_plan_instructions)
-        };
-
-        let base = crate::plugins::services::base_model_instructions(
-            &self.prompts,
-            self.permission_modes_enabled
-                .then(|| self.permission_mode()),
-        );
-        let with_plan = crate::plan_mode::compose_workflow_instructions(
-            base.clone(),
-            plan_instructions.as_deref(),
-        );
-        let with_skills = crate::plan_mode::compose_workflow_instructions(
-            with_plan.clone(),
-            skills.instructions(),
-        );
-        let with_goal = crate::plan_mode::compose_workflow_instructions(
-            with_skills.clone(),
-            (!goal.instructions.is_empty()).then_some(goal.instructions.as_str()),
+            goal,
         );
         let final_system = crate::plugins::services::compose_instructions(
-            &with_goal,
+            &run_context.instructions.with_goal,
             instruction_snapshot.as_ref(),
         );
         let history = self.current_model_history()?;
@@ -79,10 +52,10 @@ impl TrustedProjectApplication {
         let estimate_instructions = |text: &str| {
             crate::model::estimate_request_tokens((!text.is_empty()).then_some(text), &[], &[])
         };
-        let base_total = estimate_instructions(&base);
-        let plan_total = estimate_instructions(&with_plan);
-        let skills_total = estimate_instructions(&with_skills);
-        let goal_total = estimate_instructions(&with_goal);
+        let base_total = estimate_instructions(&run_context.instructions.base);
+        let plan_total = estimate_instructions(&run_context.instructions.with_plan);
+        let skills_total = estimate_instructions(&run_context.instructions.with_skills);
+        let goal_total = estimate_instructions(&run_context.instructions.with_goal);
         let system_total = estimate_instructions(&final_system);
         let model_options = crate::model::ModelOptions {
             output_limit: config.output_limit,

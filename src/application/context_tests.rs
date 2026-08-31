@@ -307,6 +307,82 @@ fn context_estimate_is_additive_and_plan_skills_and_tool_view_are_live() {
     crate::test_support::cleanup_tree(storage_root.parent().unwrap());
 }
 
+#[test]
+fn run_header_and_context_inspector_share_authoritative_instruction_layers() {
+    let (storage_root, project_root) = roots("context-shared-layers");
+    std::fs::create_dir_all(project_root.join(".clat/skills/shared-layer")).unwrap();
+    std::fs::write(
+        project_root.join("AGENTS.md"),
+        "Shared project instruction.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        project_root.join(".clat/skills/shared-layer/SKILL.md"),
+        "---\nname: shared-layer\ndescription: Shared run context fixture.\n---\nApply shared-layer policy.\n",
+    )
+    .unwrap();
+
+    let project = Project::new(&project_root);
+    let mut application = mount(&project, &storage_root, TestBehavior::Panic);
+    configure_test_model(&application);
+    application.set_plan_mode(true).unwrap();
+    application
+        .goal_create(
+            "preserve shared run context",
+            crate::goal::GoalAcceptance::User,
+            crate::goal::GoalLimits::default(),
+            false,
+        )
+        .unwrap();
+
+    let (config, _) = application.model_state().unwrap();
+    let instruction_snapshot = application.dynamic_instructions.snapshot().unwrap();
+    let skills = application.skills.snapshot().unwrap();
+    let goal = application.goal.injection().unwrap();
+    let context = application.run_context_snapshot(
+        &config,
+        skills,
+        crate::memory::MemoryInjection::default(),
+        goal,
+    );
+    let header = application.request_header_data(&config, &context, instruction_snapshot.as_ref());
+
+    assert_eq!(header.base_system, context.instructions.with_goal);
+    let final_system = crate::plugins::services::compose_instructions(
+        &context.instructions.with_goal,
+        instruction_snapshot.as_ref(),
+    );
+    assert_eq!(header.header["system"], serde_json::json!(final_system));
+
+    let snapshot = application.context_snapshot().unwrap();
+    let estimate = |text: &str| {
+        crate::model::estimate_request_tokens((!text.is_empty()).then_some(text), &[], &[])
+    };
+    let base = estimate(&context.instructions.base);
+    let with_plan = estimate(&context.instructions.with_plan);
+    let with_skills = estimate(&context.instructions.with_skills);
+    let with_goal = estimate(&context.instructions.with_goal);
+    let with_project = estimate(&final_system);
+    assert_eq!(snapshot.base_prompt_estimate, base);
+    assert_eq!(snapshot.plan_policy_estimate, with_plan - base);
+    assert_eq!(snapshot.skill_catalog_estimate, with_skills - with_plan);
+    assert_eq!(snapshot.goal_policy_estimate, with_goal - with_skills);
+    assert_eq!(
+        snapshot.project_instructions_estimate,
+        with_project - with_goal
+    );
+    let header_tools = header.header["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| tool["name"].as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(snapshot.tool_names, header_tools);
+
+    application.close().unwrap();
+    crate::test_support::cleanup_tree(storage_root.parent().unwrap());
+}
+
 struct CountingScript(AtomicUsize);
 
 impl TestModelScript for CountingScript {

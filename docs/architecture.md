@@ -358,6 +358,9 @@ catalog. The same objects drive model-visible schemas, workflow instructions,
 budget estimation. `/context` is outside a Run and takes a fresh read-only
 snapshot; its component estimates are incremental calls to the same
 `model::estimate_request_tokens` function, with output reserve added separately.
+The snapshot's Plan → Skills → Memory → Goal instruction layers, tool view, and
+durable header assembly have one owner in `application/run_context.rs`;
+`/context` consumes those layers instead of reconstructing workflow policy.
 
 Agent phase 4 adds three more removable Trusted Project entries:
 
@@ -532,6 +535,7 @@ read-only and used only to populate session selection.
 | Path | Responsibility |
 |---|---|
 | `src/application.rs`, `src/application/` | client-neutral use-case facade, DTOs, run/session lifecycle |
+| `src/application/run_context.rs` | request-bound workflow composition, tool view, and durable request-header assembly |
 | `src/run.rs` | agent loop |
 | `src/model.rs`, `src/providers/` | provider-neutral model contract and adapters |
 | `src/tool.rs`, `src/native_tools.rs`, `src/apply_patch.rs`, `src/search.rs` | tool contract and native coding tools |
