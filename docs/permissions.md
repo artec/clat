@@ -146,6 +146,36 @@ client answers through `approval.respond`; the first answer wins and late
 answers receive `not-pending`. Cancellation, a ten-minute timeout, or losing
 all event subscribers while a request is pending resolves it as deny.
 
+### WeChat approval
+
+When `clat serve --im wechat` is enabled, an explicitly paired WeChat user can
+answer permission requests for that user's mapped session. The chat projection
+contains a random request ID, tool name, effect, and a bounded redacted reason.
+It intentionally does not send full tool arguments, command lines, or sensitive
+paths through the IM service. If that summary is insufficient, deny the request
+and review the complete arguments in the TUI or Workbench.
+
+Only one of these exact standalone messages is an answer:
+
+```text
+/allow <requestId>
+/deny <requestId>
+/always <requestId>
+```
+
+The request ID is scoped to the paired user; the first matching answer wins.
+An ID belonging to another user, an unknown or expired ID, extra words, an
+embedded command, or natural language such as “allow it” has no approval
+authority. Run cancellation and the ten-minute deadline both resolve the wait
+as deny.
+
+`/allow` affects one pending call. `/always` is an explicit escalation: before
+that call proceeds, CLAT switches the current session to Full Access through
+the same core session-mode setter and journal path used by local clients. It
+does not create a global allowlist. Removing the paired user or unbinding the
+bot prevents later messages from approving or starting work; unbinding also
+clears the old credential's replay and chat-mapping state.
+
 ## Project trust
 
 Trust controls whether a repository may activate project-aware capabilities at

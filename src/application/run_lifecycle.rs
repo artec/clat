@@ -1360,6 +1360,20 @@ impl TrustedProjectApplication {
     ) -> Option<crate::message::CommittedAdmission> {
         self.sessions.committed_admission(client_message_id)
     }
+
+    /// Locate the unique project session that durably admitted one client
+    /// message without changing the current selection. Recovery callers
+    /// must fail closed when the durable journals are unreadable or contain
+    /// more than one owner for the same idempotency key.
+    pub(crate) fn find_committed_admission_session(
+        &self,
+        client_message_id: &str,
+    ) -> Result<Option<(crate::SessionId, crate::message::CommittedAdmission)>, ApplicationError>
+    {
+        self.sessions
+            .find_committed_admission_session(&self.project_key(), client_message_id)
+            .map_err(session_error)
+    }
 }
 
 pub struct ApplicationRunRequest {

@@ -76,6 +76,10 @@ impl ApplicationError {
         }
     }
 
+    pub(crate) fn from_message(message: impl Into<String>) -> Self {
+        Self::new(message)
+    }
+
     fn with_receipt(mut self, receipt: Option<Box<crate::message::AdmissionReceipt>>) -> Self {
         if receipt.is_some() {
             self.receipt = receipt;

@@ -97,6 +97,13 @@ pub(crate) struct ServeShared {
     inner: Mutex<ServeInner>,
     pending_steering: Mutex<HashMap<String, PendingSteeringReceipt>>,
     pub pending: Mutex<HashMap<String, PendingApproval>>,
+    /// Process-local QR state. The core state machine owns all protocol
+    /// semantics; serve only serializes access for its authenticated clients.
+    pub(crate) wechat_binding: Mutex<Option<crate::im::BindingSession>>,
+    /// Serializes credential replacement/revocation with outbound iLink
+    /// requests. An acknowledged unbind cannot be followed by a queued send
+    /// using the revoked credential.
+    pub(crate) wechat_outbound: Mutex<()>,
     /// Manual compaction is a serve-owned interaction just like an active
     /// run. Keeping the cancellable handle here makes F5/reconnect and
     /// duplicate-start behavior frontend-neutral rather than browser-local.
@@ -139,6 +146,8 @@ impl ServeShared {
             }),
             pending_steering: Mutex::new(HashMap::new()),
             pending: Mutex::new(HashMap::new()),
+            wechat_binding: Mutex::new(None),
+            wechat_outbound: Mutex::new(()),
             active_compaction: Mutex::new(None),
             shutting_down: AtomicBool::new(false),
             workers: Mutex::new(Vec::new()),
@@ -546,7 +555,7 @@ impl ServeShared {
 
     // —— 后台线程 ————————————————————————————————————————————————————
 
-    fn register_worker(&self, handle: JoinHandle<()>) {
+    pub(crate) fn register_worker(&self, handle: JoinHandle<()>) {
         self.workers
             .lock()
             .expect("serve workers lock")

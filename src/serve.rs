@@ -28,6 +28,7 @@ mod state;
 mod tests;
 mod token;
 mod web_assets;
+mod wechat;
 
 use crate::{BootstrapApplication, Project, TrustedProjectApplication};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -40,6 +41,180 @@ use std::time::Duration;
 /// `clat serve` 的已解析参数。
 pub const DEFAULT_SERVE_PORT: u16 = 2691;
 
+/// Terminal control surface for the core-owned WeChat binding/pairing state.
+/// QR payloads are rendered directly and never printed as text or persisted.
+pub fn run_wechat_command<I>(project: Project, args: I) -> u8
+where
+    I: IntoIterator<Item = String>,
+{
+    let words = args.into_iter().collect::<Vec<_>>();
+    let action = match words.first().map(String::as_str) {
+        Some("bind") => "bind",
+        Some("status") => "status",
+        Some("pair") => "pair",
+        Some("unbind") => "unbind",
+        Some(other) => {
+            eprintln!("clat: unknown WeChat action: {other}");
+            eprintln!("Usage: clat wechat <bind [--replace] | status | pair | unbind --confirm>");
+            return 2;
+        }
+        None => {
+            eprintln!("Usage: clat wechat <bind [--replace] | status | pair | unbind --confirm>");
+            return 2;
+        }
+    };
+    let valid = match action {
+        "bind" => words.len() == 1 || words.as_slice() == ["bind", "--replace"],
+        "unbind" => words.as_slice() == ["unbind", "--confirm"],
+        _ => words.len() == 1,
+    };
+    if !valid {
+        eprintln!("clat: invalid arguments for `wechat {action}`");
+        return 2;
+    }
+    let bootstrap = match BootstrapApplication::open_default(project) {
+        Ok(bootstrap) => bootstrap.with_permission_modes(),
+        Err(error) => {
+            eprintln!("clat: {error}");
+            return 1;
+        }
+    };
+    let application = match bootstrap.into_trusted() {
+        Ok(application) => application,
+        Err(error) => {
+            eprintln!("clat: {error}");
+            return 1;
+        }
+    };
+    let result = match action {
+        "status" => {
+            let status = application.wechat_binding_status();
+            println!(
+                "WeChat: {} · {} paired user(s) · {} mapped chat(s)",
+                if status.bound { "bound" } else { "not bound" },
+                status.paired_users,
+                status.mapped_chats
+            );
+            Ok(())
+        }
+        "pair" => application.create_wechat_pairing_code().map(|challenge| {
+            println!("WeChat pairing code: {}", challenge.code);
+            println!("It expires in 60 minutes and can be used once.");
+            println!(
+                "Binding does not authorize a user; send `/pair <code>` as a standalone message."
+            );
+        }),
+        "unbind" => application.clear_wechat_binding().map(|()| {
+            println!("WeChat binding, paired users, and chat mappings were removed.");
+        }),
+        "bind" => run_terminal_wechat_binding(
+            &application,
+            words.get(1).is_some_and(|word| word == "--replace"),
+        ),
+        _ => unreachable!(),
+    };
+    let action_ok = match result {
+        Ok(()) => true,
+        Err(error) => {
+            eprintln!("clat: {error}");
+            false
+        }
+    };
+    let close_ok = match application.close() {
+        Ok(()) => true,
+        Err(error) => {
+            eprintln!("clat: could not close project state cleanly: {error}");
+            false
+        }
+    };
+    if action_ok && close_ok { 0 } else { 1 }
+}
+
+fn run_terminal_wechat_binding(
+    application: &TrustedProjectApplication,
+    replace: bool,
+) -> Result<(), crate::ApplicationError> {
+    if application.wechat_binding_status().bound && !replace {
+        return Err(crate::ApplicationError::from_message(
+            "WeChat is already bound; use `clat wechat bind --replace` to replace it only after a new QR is confirmed",
+        ));
+    }
+    let (mut binding, content) = crate::im::BindingSession::start()
+        .map_err(|error| crate::ApplicationError::from_message(error.to_string()))?;
+    let rendered =
+        crate::im::qr_terminal(&content).map_err(crate::ApplicationError::from_message)?;
+    println!("Scan this QR code in WeChat and confirm the binding:");
+    println!("{rendered}");
+    println!("Binding the bot does not authorize any WeChat user.");
+    let deadline = std::time::Instant::now() + Duration::from_secs(8 * 60);
+    let mut verify_code: Option<String> = None;
+    while std::time::Instant::now() < deadline {
+        let step = binding
+            .poll(verify_code.as_deref())
+            .map_err(|error| crate::ApplicationError::from_message(error.to_string()))?;
+        verify_code = None;
+        match step {
+            crate::im::BindingStep::Waiting => {}
+            crate::im::BindingStep::Scanned => println!("QR scanned; confirm on the phone."),
+            crate::im::BindingStep::NeedVerifyCode => {
+                use std::io::Write as _;
+                print!("Verification code shown by WeChat: ");
+                std::io::stdout()
+                    .flush()
+                    .map_err(|error| crate::ApplicationError::from_message(error.to_string()))?;
+                let mut input = String::new();
+                std::io::stdin()
+                    .read_line(&mut input)
+                    .map_err(|error| crate::ApplicationError::from_message(error.to_string()))?;
+                let input = input.trim();
+                if input.is_empty()
+                    || input.len() > 32
+                    || !input.bytes().all(|byte| byte.is_ascii_alphanumeric())
+                {
+                    return Err(crate::ApplicationError::from_message(
+                        "verification code must be 1..32 ASCII letters or digits",
+                    ));
+                }
+                verify_code = Some(input.to_owned());
+            }
+            crate::im::BindingStep::VerifyCodeBlocked => {
+                return Err(crate::ApplicationError::from_message(
+                    "WeChat blocked the verification code; wait before trying again",
+                ));
+            }
+            crate::im::BindingStep::Expired => {
+                return Err(crate::ApplicationError::from_message(
+                    "the WeChat QR code expired; run the bind command again",
+                ));
+            }
+            crate::im::BindingStep::AlreadyBound => {
+                return Err(crate::ApplicationError::from_message(
+                    "this account is already bound and did not return a new credential",
+                ));
+            }
+            crate::im::BindingStep::Confirmed(credentials) => {
+                application.save_wechat_binding(&credentials)?;
+                println!("WeChat bot binding confirmed.");
+                println!(
+                    "Next, run `clat wechat pair` and send the one-time code from the user to authorize."
+                );
+                return Ok(());
+            }
+        }
+    }
+    Err(crate::ApplicationError::from_message(
+        "WeChat binding exceeded the 8-minute deadline",
+    ))
+}
+
+/// Optional IM frontend hosted by the serve process. The enum is deliberately
+/// closed while WeChat is the only concrete dogfood backend; a second real
+/// backend is the trigger for a more general configuration surface.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ImBackend {
+    Wechat,
+}
+
 #[derive(Clone, Debug)]
 pub struct ServeArgs {
     /// 绑定端口；缺省 2691；0 = OS 自动分配（测试/显式多实例）。
@@ -48,6 +223,8 @@ pub struct ServeArgs {
     pub token: Option<String>,
     /// 显式轮换持久 token；与 `--token` 互斥。
     pub rotate_token: bool,
+    /// 显式启用的 IM 前端。缺省 None，保证普通 serve 零 IM 路径。
+    pub im: Option<ImBackend>,
 }
 
 impl Default for ServeArgs {
@@ -56,6 +233,7 @@ impl Default for ServeArgs {
             port: DEFAULT_SERVE_PORT,
             token: None,
             rotate_token: false,
+            im: None,
         }
     }
 }
@@ -87,6 +265,18 @@ where
                 parsed.token = Some(value);
             }
             "--rotate-token" => parsed.rotate_token = true,
+            "--im" => {
+                let value = iter
+                    .next()
+                    .ok_or_else(|| "--im requires a backend (wechat)".to_string())?;
+                let backend = match value.as_str() {
+                    "wechat" => ImBackend::Wechat,
+                    _ => return Err(format!("unsupported IM backend: {value}")),
+                };
+                if parsed.im.replace(backend).is_some() {
+                    return Err("--im may only be specified once".into());
+                }
+            }
             "--" => return Err("serve takes no positional arguments".into()),
             other => return Err(format!("unknown option: {other}")),
         }
@@ -268,6 +458,19 @@ where
         }
         Err(error) => return Err(error.to_string()),
     };
+    let wechat_credentials = if matches!(args.im, Some(ImBackend::Wechat)) {
+        Some(
+            trusted
+                .wechat_credentials()
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| {
+                    "WeChat IM is not configured yet; complete QR binding before starting with `--im wechat`"
+                        .to_owned()
+                })?,
+        )
+    } else {
+        None
+    };
     // INV-S1a：只绑 IPv4 loopback。
     let listener = TcpListener::bind(("127.0.0.1", args.port))
         .map_err(|error| format!("could not bind 127.0.0.1:{}: {error}", args.port))?;
@@ -288,6 +491,29 @@ where
     shared.queue_frames = queue_frames;
     let shared = Arc::new(shared);
     shared.spawn_notice_forwarder();
+    if let Some(credentials) = wechat_credentials {
+        let (bridge, outbox_worker) = wechat::WechatBridge::spawn(
+            Arc::clone(&shared),
+            credentials.clone(),
+            Arc::clone(&shutdown),
+        )?;
+        let handler: Arc<dyn crate::im::AuthorizedMessageHandler> = bridge;
+        let poller = match crate::im::spawn_wechat_host(
+            Arc::clone(&app),
+            credentials,
+            Arc::clone(&shutdown),
+            handler,
+        ) {
+            Ok(worker) => worker,
+            Err(error) => {
+                shutdown.store(true, Ordering::Release);
+                let _ = outbox_worker.join();
+                return Err(error);
+            }
+        };
+        shared.register_worker(outbox_worker);
+        shared.register_worker(poller);
+    }
 
     let accept_shared = Arc::clone(&shared);
     let accept_shutdown = Arc::clone(&shutdown);

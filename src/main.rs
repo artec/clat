@@ -29,6 +29,7 @@ where
         Some("exec") => run_exec_command(args),
         Some("dsh") => run_dsh_command(args),
         Some("serve") => run_serve_command(args),
+        Some("wechat") => run_wechat_command(args),
         Some("plugin") => run_plugin_command(args),
         Some("upgrade") => run_upgrade(args.next().as_deref() == Some("--check")),
         Some("-V" | "--version") => {
@@ -75,6 +76,7 @@ fn print_help() {
     println!("  exec [PROMPT]     Run one agent turn headlessly and print the reply on stdout");
     println!("  dsh              Open the TUI as a client of a local DSH web host");
     println!("  serve             Serve the local HTTP+SSE API on 127.0.0.1");
+    println!("  wechat           Bind, inspect, pair, or unbind the official WeChat channel");
     println!("  plugin            Inspect, install, update, roll back, or remove plugins");
     println!("  demo             Run the deterministic model → tool → model loop");
     println!("  upgrade          Upgrade to the latest GitHub release");
@@ -87,6 +89,7 @@ fn print_help() {
     println!("  --port <n>       Port to bind on 127.0.0.1 (default 2691; 0 = pick free)");
     println!("  --token <t>      Temporary auth token (default: ~/.clat/web-token)");
     println!("  --rotate-token   Replace the persistent web token and revoke old clients");
+    println!("  --im wechat      Host the explicitly configured WeChat IM frontend (default off)");
     println!();
     println!("Exec options:");
     println!("  --continue       Continue the project's most recent session");
@@ -97,6 +100,20 @@ fn print_help() {
     println!("  --quiet          Suppress stderr status output (assistant text only)");
     println!("  --json           Print the RunEvent stream as NDJSON on stdout instead of text");
     println!("  Piped stdin is used as the prompt, or as context when PROMPT is also present.");
+}
+
+fn run_wechat_command<I>(args: I) -> ExitCode
+where
+    I: Iterator<Item = String>,
+{
+    let project = match Project::current() {
+        Ok(project) => project,
+        Err(error) => {
+            eprintln!("clat: could not determine current project: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    ExitCode::from(clat::serve::run_wechat_command(project, args))
 }
 
 fn run_plugin_command<I>(args: I) -> ExitCode
@@ -115,8 +132,8 @@ where
 
 /// `clat serve [--port <n>] [--token <t> | --rotate-token]`：本地
 /// HTTP+SSE 前端。
-/// Ctrl-C 处理器在进程边界安装一次：第一次优雅关停（accept 循环
-/// 完整走关停序列），第二次强退（serve 同款纪律）。
+/// 信号处理器在进程边界安装一次：Ctrl-C 以及 Unix SIGTERM/SIGHUP
+/// 第一次触发优雅关停（accept 循环完整走关停序列），第二次强退。
 fn run_serve_command<I>(args: I) -> ExitCode
 where
     I: Iterator<Item = String>,
@@ -140,7 +157,7 @@ where
     })
     .is_err()
     {
-        eprintln!("clat: warning: Ctrl-C will not stop serve gracefully on this host");
+        eprintln!("clat: warning: process signals will not stop serve gracefully on this host");
     }
     match clat::serve::run_serve_with_shutdown(parsed, shutdown) {
         0 => ExitCode::SUCCESS,

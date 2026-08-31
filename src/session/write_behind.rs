@@ -158,6 +158,47 @@ impl SessionWriteBehind {
         }
     }
 
+    /// Remove one proven-not-committed tail range after a synchronous
+    /// transaction failed. The caller serializes every enqueue while this
+    /// runs, and `flush` has already waited for the worker to restore the
+    /// failed batch. Earlier events from other producers remain queued.
+    pub(crate) fn discard_pending_tail(
+        &self,
+        start_seq: u64,
+        end_inclusive: u64,
+    ) -> Result<(), String> {
+        let mut state = self.state.lock().expect("writer lock");
+        if state.active {
+            return Err("cannot discard a batch while a session write is active".into());
+        }
+        if state.pending.iter().any(|event| event.seq > end_inclusive) {
+            return Err("cannot discard a non-tail session event range".into());
+        }
+        let expected = end_inclusive
+            .checked_sub(start_seq)
+            .and_then(|width| width.checked_add(1))
+            .ok_or_else(|| "invalid session event range".to_owned())?
+            as usize;
+        let present = state
+            .pending
+            .iter()
+            .filter(|event| (start_seq..=end_inclusive).contains(&event.seq))
+            .count();
+        if present != expected {
+            return Err("failed session event range is not fully pending".into());
+        }
+        state
+            .pending
+            .retain(|event| event.seq < start_seq || event.seq > end_inclusive);
+        if state.pending.is_empty() {
+            state.deadline = None;
+            state.paused = false;
+            state.last_error = None;
+        }
+        self.signal.notify_all();
+        Ok(())
+    }
+
     /// Flush remaining work (propagating its error) and join the worker.
     /// Works through `&self`: the coordinator outlives its journal handles
     /// and must be able to retire the thread at session detach (audit
@@ -369,6 +410,35 @@ mod tests {
         // Batch retained: an explicit flush retries it and succeeds.
         behind.flush().expect("retry succeeds");
         assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        behind.close().expect("close");
+    }
+
+    #[test]
+    fn failed_transaction_can_discard_only_its_tail_and_keep_earlier_events() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let seen = Arc::new(Mutex::new(Vec::<Vec<u64>>::new()));
+        let behind = {
+            let attempts = Arc::clone(&attempts);
+            let seen = Arc::clone(&seen);
+            SessionWriteBehind::new(Duration::from_millis(10_000), move |batch| {
+                seen.lock()
+                    .expect("seen")
+                    .push(batch.iter().map(|event| event.seq).collect());
+                if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                    Err("disk full".into())
+                } else {
+                    Ok(())
+                }
+            })
+        };
+        behind.enqueue(vec![event(0), event(1)]).expect("prefix");
+        behind.enqueue(vec![event(2)]).expect("transaction tail");
+        assert_eq!(behind.flush().unwrap_err(), "disk full");
+        behind
+            .discard_pending_tail(2, 2)
+            .expect("discard only failed transaction tail");
+        behind.flush().expect("commit retained prefix");
+        assert_eq!(*seen.lock().expect("seen"), vec![vec![0, 1, 2], vec![0, 1]]);
         behind.close().expect("close");
     }
 

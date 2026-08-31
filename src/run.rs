@@ -304,6 +304,19 @@ impl<'a> Run<'a> {
             // after core admission; the transient provider paths never enter
             // RunEvent/wire/journal and are consumed here exactly once.
             while let Some(pending) = self.steering.pop() {
+                let model_parts = match pending.model_parts() {
+                    Ok(parts) => parts,
+                    Err(error) => {
+                        return Err(fail(
+                            events,
+                            &self.steering,
+                            format!("steering image projection failed: {error}"),
+                            turn,
+                            total_usage,
+                            items,
+                        ));
+                    }
+                };
                 let request_digest = pending
                     .client_message_id
                     .as_ref()
@@ -315,7 +328,7 @@ impl<'a> Run<'a> {
                     receipt: None,
                 });
                 items.push(ModelItem::User {
-                    content: pending.model_parts(),
+                    content: model_parts,
                 });
             }
 
@@ -1274,6 +1287,89 @@ mod tests {
             .expect("second request");
         assert!(applied < second_request);
         assert!(matches!(events.last(), Some(RunEvent::RunCompleted { .. })));
+    }
+
+    struct ProjectionMustFailBeforeModel {
+        calls: usize,
+    }
+
+    impl Model for ProjectionMustFailBeforeModel {
+        fn provider(&self) -> &str {
+            "test"
+        }
+
+        fn model_id(&self) -> &str {
+            "projection-must-fail"
+        }
+
+        fn stream(
+            &mut self,
+            _request: ModelRequest<'_>,
+            _events: &mut dyn ModelEventSink,
+        ) -> Result<ModelResponse, ModelError> {
+            self.calls += 1;
+            panic!("provider must not be called after an image admission mismatch")
+        }
+    }
+
+    /// MM-F01：descriptor 与 admitted source 不一致是 core invariant
+    /// failure，不能悄悄降级成文本占位符，更不能先持久化
+    /// `SteeringApplied` 或触发 provider I/O。
+    #[test]
+    fn steering_image_projection_mismatch_fails_before_commit_and_provider_io() {
+        use crate::message::{
+            AttachmentDescriptor, ContentBlock, JournalImage, MessageContent, PendingMessage,
+        };
+
+        let descriptor = |attachment_id: &str| AttachmentDescriptor {
+            attachment_id: attachment_id.to_owned(),
+            media_type: "image/png".into(),
+            width: 1,
+            height: 1,
+            bytes: 1,
+            display_name: None,
+            original_width: None,
+            original_height: None,
+        };
+        let steering = SteeringQueue::new();
+        assert_eq!(
+            steering.try_push(PendingMessage {
+                client_message_id: Some("client-mismatch".into()),
+                content: MessageContent::from_blocks(vec![ContentBlock::Image {
+                    attachment: descriptor("expected"),
+                }]),
+                staged_attachments: Vec::new(),
+                admitted_images: vec![JournalImage {
+                    descriptor: descriptor("other"),
+                    path: "/private/provider-source.png".into(),
+                }],
+                submission_digest: None,
+            }),
+            PushOutcome::Accepted
+        );
+
+        let project = Project::new(".");
+        let mut model = ProjectionMustFailBeforeModel { calls: 0 };
+        let mut events = Vec::new();
+        let error = Run::new(&mut model, &ToolRegistry::new(), &AllowAll, &project)
+            .with_steering(steering)
+            .execute("start", &mut events)
+            .expect_err("a mismatched admitted image must fail closed");
+
+        assert_eq!(model.calls, 0, "provider I/O must not begin");
+        assert!(
+            error
+                .to_string()
+                .contains("steering image projection failed: image attachment expected"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, RunEvent::SteeringApplied { .. })),
+            "an invalid steering message must not cross the durable commit point"
+        );
+        assert!(matches!(events.last(), Some(RunEvent::RunFailed { .. })));
     }
 
     /// S4：取消优先于延长。模型在流中先取消令牌、再模拟前端 steer()、

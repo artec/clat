@@ -144,6 +144,8 @@ const state = {
   // set lets session switches in the current page restore the marker without
   // persisting workflow authority in localStorage.
   planModeSessions: new Set(),
+  wechatBindingPoll: 0,
+  wechatQrUrl: null,
 };
 
 const dom = {};
@@ -160,6 +162,9 @@ for (const id of [
   'detail-context', 'detail-budget', 'compact-session', 'capability-list', 'detail-mcp', 'mcp-servers',
   'settings-open', 'settings-dialog', 'theme-options', 'permission-options',
   'full-access-confirm-row', 'full-access-confirm', 'settings-error', 'settings-saved',
+  'wechat-status', 'wechat-counts', 'wechat-qr', 'wechat-qr-image', 'wechat-qr-state',
+  'wechat-verify-row', 'wechat-verify-code', 'wechat-verify-submit', 'wechat-pairing',
+  'wechat-pairing-code', 'wechat-error', 'wechat-bind', 'wechat-pair', 'wechat-unbind',
   'permission-save', 'market-open', 'market-dialog', 'market-close', 'market-search',
   'market-status', 'market-list',
 ]) {
@@ -1351,6 +1356,7 @@ function openSettings() {
   dom['settings-error'].textContent = '';
   dom['settings-saved'].textContent = '';
   if (!dom['settings-dialog'].open) dom['settings-dialog'].showModal();
+  refreshWechatStatus();
 }
 
 dom['settings-open'].addEventListener('click', openSettings);
@@ -1383,6 +1389,121 @@ dom['permission-save'].addEventListener('click', async () => {
     dom['settings-error'].textContent = error.message;
   } finally {
     dom['permission-save'].disabled = false;
+  }
+});
+
+function clearWechatQr() {
+  if (state.wechatQrUrl) URL.revokeObjectURL(state.wechatQrUrl);
+  state.wechatQrUrl = null;
+  dom['wechat-qr-image'].removeAttribute('src');
+  hide(dom['wechat-qr']);
+  hide(dom['wechat-verify-row']);
+  dom['wechat-verify-code'].value = '';
+}
+
+async function refreshWechatStatus() {
+  dom['wechat-error'].textContent = '';
+  try {
+    const status = await rpc('wechat.binding.status', {});
+    dom['wechat-status'].textContent = status.bound ? 'Bound' : 'Not bound';
+    dom['wechat-counts'].textContent = `${status.paired_users || 0} paired · ${status.mapped_chats || 0} chats`;
+    dom['wechat-bind'].textContent = status.bound ? 'Replace binding' : 'Bind WeChat';
+    dom['wechat-pair'].disabled = !status.bound;
+    dom['wechat-unbind'].disabled = !status.bound;
+  } catch (error) {
+    dom['wechat-status'].textContent = 'Unavailable';
+    dom['wechat-error'].textContent = error.message;
+  }
+}
+
+async function pollWechatBinding(pollId, verifyCode) {
+  if (pollId !== state.wechatBindingPoll) return;
+  try {
+    const params = verifyCode ? { verifyCode } : {};
+    const value = await rpc('wechat.binding.poll', params);
+    if (pollId !== state.wechatBindingPoll) return;
+    const labels = {
+      waiting: 'Waiting for scan…',
+      scanned: 'Scanned; confirm on the phone…',
+      need_verify_code: 'Enter the verification code shown by WeChat.',
+      verify_code_blocked: 'Verification was blocked. Wait before trying again.',
+      expired: 'QR code expired. Start a new binding.',
+      already_bound: 'The account is already bound and returned no new credential.',
+      confirmed: 'Binding confirmed. Create a one-time user pairing code next.',
+    };
+    dom['wechat-qr-state'].textContent = labels[value.state] || value.state;
+    if (value.state === 'need_verify_code') {
+      show(dom['wechat-verify-row']);
+      dom['wechat-verify-code'].focus();
+      return;
+    }
+    hide(dom['wechat-verify-row']);
+    if (['confirmed', 'expired', 'verify_code_blocked', 'already_bound'].includes(value.state)) {
+      state.wechatBindingPoll += 1;
+      if (value.state === 'confirmed') await refreshWechatStatus();
+      return;
+    }
+    window.setTimeout(() => pollWechatBinding(pollId), 500);
+  } catch (error) {
+    if (pollId === state.wechatBindingPoll) dom['wechat-error'].textContent = error.message;
+  }
+}
+
+dom['wechat-bind'].addEventListener('click', async () => {
+  dom['wechat-error'].textContent = '';
+  hide(dom['wechat-pairing']);
+  const replacing = dom['wechat-bind'].textContent === 'Replace binding';
+  if (replacing && !window.confirm('Replace the current binding? Existing user grants are kept until the new QR is confirmed, then cleared.')) return;
+  dom['wechat-bind'].disabled = true;
+  try {
+    const value = await rpc('wechat.binding.start', { replace: replacing });
+    clearWechatQr();
+    const blob = new Blob([value.qr_svg], { type: 'image/svg+xml' });
+    state.wechatQrUrl = URL.createObjectURL(blob);
+    dom['wechat-qr-image'].src = state.wechatQrUrl;
+    dom['wechat-qr-state'].textContent = 'Waiting for scan…';
+    show(dom['wechat-qr']);
+    const pollId = ++state.wechatBindingPoll;
+    pollWechatBinding(pollId);
+  } catch (error) {
+    dom['wechat-error'].textContent = error.message;
+  } finally {
+    dom['wechat-bind'].disabled = false;
+  }
+});
+
+dom['wechat-verify-submit'].addEventListener('click', () => {
+  const code = dom['wechat-verify-code'].value.trim();
+  if (!/^[A-Za-z0-9]{1,32}$/.test(code)) {
+    dom['wechat-error'].textContent = 'Verification code must be 1–32 letters or digits.';
+    return;
+  }
+  hide(dom['wechat-verify-row']);
+  pollWechatBinding(state.wechatBindingPoll, code);
+});
+
+dom['wechat-pair'].addEventListener('click', async () => {
+  dom['wechat-error'].textContent = '';
+  try {
+    const value = await rpc('wechat.pairing.create', {});
+    dom['wechat-pairing-code'].textContent = value.code;
+    show(dom['wechat-pairing']);
+  } catch (error) {
+    dom['wechat-error'].textContent = error.message;
+  }
+});
+
+dom['wechat-unbind'].addEventListener('click', async () => {
+  if (!window.confirm('Remove the WeChat credential, paired users, and chat mappings?')) return;
+  dom['wechat-error'].textContent = '';
+  try {
+    await rpc('wechat.binding.unbind', { confirm: 'unbind-wechat' });
+    state.wechatBindingPoll += 1;
+    clearWechatQr();
+    hide(dom['wechat-pairing']);
+    await refreshWechatStatus();
+  } catch (error) {
+    dom['wechat-error'].textContent = error.message;
   }
 });
 

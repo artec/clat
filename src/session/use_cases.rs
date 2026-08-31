@@ -14,7 +14,9 @@ use crate::session::header::SessionHeader;
 use crate::session::id::SessionId;
 use crate::session::key::{ProjectKey, SessionKey};
 use crate::session::persistence::{JsonlBackend, JsonlCompression, SessionError};
-use crate::session::projection::{CheckpointIdentity, ProjectionRegistry};
+use crate::session::projection::{
+    CheckpointIdentity, ProjectionRegistry, committed_admission_from_event,
+};
 use crate::session::replay::{ReplayAdapter, ReplayEvent};
 use crate::session::root_dir::SessionRootDir;
 use crate::session::run_journal::{RunJournal, SessionCoordinator};
@@ -214,12 +216,50 @@ impl ResumeSink {
     }
 }
 
+fn committed_admission_from_projections(
+    projections: &ProjectionRegistry,
+    client_message_id: &str,
+) -> Option<crate::message::CommittedAdmission> {
+    let state = projections.state_snapshot("receipts")?;
+    let entries = state.get("entries")?.as_array()?;
+    let entry = entries.iter().find(|entry| {
+        entry.get("client_message_id").and_then(Value::as_str) == Some(client_message_id)
+    })?;
+    Some(crate::message::CommittedAdmission {
+        receipt: crate::message::AdmissionReceipt::committed(
+            client_message_id.to_owned(),
+            entry
+                .get("message_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            entry
+                .get("attachment_ids")
+                .and_then(Value::as_array)
+                .map(|ids| {
+                    ids.iter()
+                        .filter_map(|id| id.as_str().map(str::to_owned))
+                        .collect()
+                })
+                .unwrap_or_default(),
+        ),
+        request_digest: entry
+            .get("request_digest")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+    })
+}
+
 pub(crate) struct SessionService {
     backend: Arc<JsonlBackend>,
     checkpoints: CheckpointStore,
     active: Mutex<Option<ActiveSession>>,
     #[cfg(test)]
     fail_next_plan_checkpoint: std::sync::atomic::AtomicBool,
+    #[cfg(test)]
+    fail_next_permission_checkpoint: std::sync::atomic::AtomicBool,
+    #[cfg(test)]
+    fail_next_admission_owner_scan: std::sync::atomic::AtomicBool,
 }
 
 impl SessionService {
@@ -240,7 +280,22 @@ impl SessionService {
             active: Mutex::new(None),
             #[cfg(test)]
             fail_next_plan_checkpoint: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(test)]
+            fail_next_permission_checkpoint: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(test)]
+            fail_next_admission_owner_scan: std::sync::atomic::AtomicBool::new(false),
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inject_persistence_faults(&self, hooks: crate::session::persistence::FaultHooks) {
+        self.backend.inject_faults(hooks);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inject_next_admission_owner_scan_failure(&self) {
+        self.fail_next_admission_owner_scan
+            .store(true, Ordering::Release);
     }
 
     /// `/new`: a lazy session — nothing on disk until the first durable
@@ -805,7 +860,7 @@ impl SessionService {
     }
 
     /// 向活跃会话追加一条 `sandbox/mode` 事件（DSH setSandboxMode 形状：
-    /// append + flush + checkpoint，latest-wins，无 CAS——档位切换只有
+    /// append + flush 是事实提交点，checkpoint 是可重建缓存；latest-wins，无 CAS——档位切换只有
     /// UI 同步路径一个写者）。同值切换零事件（DSH apply() no-op 语义）。
     /// 无活跃会话返回 Ok(false)：不落任何 journal——内存 cell 继续作为
     /// 未物化会话的出生档（PS7）。
@@ -838,9 +893,27 @@ impl SessionService {
         }
         let journal = Arc::clone(journal_slot.as_ref().expect("just initialized"));
         drop(journal_slot);
-        journal.append(event).map_err(SessionError::Corruption)?;
-        journal.flush().map_err(SessionError::Corruption)?;
-        checkpoint_active(active, &self.checkpoints)?;
+        journal
+            .append_atomic_durable(&[event])
+            .map_err(SessionError::Corruption)?;
+        #[cfg(test)]
+        let checkpoint = if self
+            .fail_next_permission_checkpoint
+            .swap(false, Ordering::AcqRel)
+        {
+            Err(SessionError::Io(
+                "intentional permission-mode checkpoint failure".into(),
+            ))
+        } else {
+            checkpoint_active(active, &self.checkpoints)
+        };
+        #[cfg(not(test))]
+        let checkpoint = checkpoint_active(active, &self.checkpoints);
+        if let Err(error) = checkpoint {
+            eprintln!(
+                "clat: warning: permission-mode checkpoint refresh failed after durable commit: {error}"
+            );
+        }
         Ok(true)
     }
 
@@ -1051,34 +1124,56 @@ impl SessionService {
         let guard = self.active.lock().expect("active");
         let active = guard.as_ref()?;
         let projections = active.projections.lock().expect("projections");
-        let state = projections.state_snapshot("receipts")?;
-        let entries = state.get("entries")?.as_array()?;
-        let entry = entries.iter().find(|entry| {
-            entry.get("client_message_id").and_then(Value::as_str) == Some(client_message_id)
-        })?;
-        Some(crate::message::CommittedAdmission {
-            receipt: crate::message::AdmissionReceipt::committed(
-                client_message_id.to_owned(),
-                entry
-                    .get("message_id")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned(),
-                entry
-                    .get("attachment_ids")
-                    .and_then(Value::as_array)
-                    .map(|ids| {
-                        ids.iter()
-                            .filter_map(|id| id.as_str().map(str::to_owned))
-                            .collect()
-                    })
-                    .unwrap_or_default(),
-            ),
-            request_digest: entry
-                .get("request_digest")
-                .and_then(Value::as_str)
-                .map(str::to_owned),
-        })
+        committed_admission_from_projections(&projections, client_message_id)
+    }
+
+    /// Resolve a durable client admission across every materialized session
+    /// in one project without changing the active selection. Frontend
+    /// recovery uses this when its own mapping write can lag the session
+    /// journal: zero matches means no admission committed, one identifies
+    /// its owner, and multiple matches are corruption.
+    pub(crate) fn find_committed_admission_session(
+        &self,
+        project: &ProjectKey,
+        client_message_id: &str,
+    ) -> Result<Option<(SessionId, crate::message::CommittedAdmission)>, SessionError> {
+        #[cfg(test)]
+        if self
+            .fail_next_admission_owner_scan
+            .swap(false, Ordering::AcqRel)
+        {
+            return Err(SessionError::Io(
+                "intentional admission-owner scan failure".into(),
+            ));
+        }
+        let mut found = None;
+        for summary in self.list_sessions(project)? {
+            let key = SessionKey {
+                project: project.clone(),
+                id: summary.id,
+            };
+            let mut session_admission = None;
+            self.backend.visit_from(&key, 0, &mut |event| {
+                let Some(admission) = committed_admission_from_event(event, client_message_id)
+                else {
+                    return Ok(());
+                };
+                if session_admission.replace(admission).is_some() {
+                    return Err("client delivery is committed more than once in one session".into());
+                }
+                Ok(())
+            })?;
+            let Some(admission) = session_admission else {
+                continue;
+            };
+            if found.is_some() {
+                return Err(SessionError::Corruption(
+                    "client delivery is committed in multiple project sessions".into(),
+                ));
+            }
+            found = Some((key.id, admission));
+        }
+        Ok(found)
     }
 
     /// Fold everything durably committed into the active projections and
@@ -1716,34 +1811,11 @@ impl ProjectionFoldJournal {
             })
             .collect()
     }
-}
 
-impl RunJournal for ProjectionFoldJournal {
-    fn append_atomic(
-        &self,
-        events: &[crate::session::run_journal::NewSessionEvent],
-    ) -> Result<crate::session::run_journal::SeqRange, String> {
-        let _lane = self.lane.lock().expect("projection fold lane");
-        let range = self.inner.append_atomic(events)?;
-        if let Ok(mut built) = self.build_events(events) {
-            for (offset, event) in built.iter_mut().enumerate() {
-                event.seq = range.start + offset as u64;
-            }
-            self.pending.lock().expect("fold journal").extend(built);
-        }
-        Ok(range)
-    }
-    fn flush(&self) -> Result<(), String> {
-        let _lane = self.lane.lock().expect("projection fold lane");
-        self.inner.flush()?;
-        // Fold exactly what is durably committed since the last flush —
-        // the physical log is the authority, but re-reading it per flush
-        // made cost grow with total log size (P1-13). The lane prevents
-        // append/registration from interleaving with this flush; the
-        // committed-cursor cutoff still protects direct coordinator events
-        // and any future producer that bypasses this wrapper (folding an
-        // uncommitted event that later rolls back would push projections
-        // ahead of the log and open a seq hole).
+    /// Fold the already-durable subset of this shared handle's pending
+    /// projection copies. Caller holds `lane`, so append registration and
+    /// flush publication cannot interleave.
+    fn fold_committed_pending(&self) -> Result<(), String> {
         let mut pending = std::mem::take(&mut *self.pending.lock().expect("fold journal"));
         if pending.is_empty() {
             return Ok(());
@@ -1772,6 +1844,58 @@ impl RunJournal for ProjectionFoldJournal {
             .read_from(&self.active_key, floor)
             .map_err(|error| error.to_string())?;
         projections.fold_all(&tail)
+    }
+}
+
+impl RunJournal for ProjectionFoldJournal {
+    fn append_atomic(
+        &self,
+        events: &[crate::session::run_journal::NewSessionEvent],
+    ) -> Result<crate::session::run_journal::SeqRange, String> {
+        let _lane = self.lane.lock().expect("projection fold lane");
+        let range = self.inner.append_atomic(events)?;
+        if let Ok(mut built) = self.build_events(events) {
+            for (offset, event) in built.iter_mut().enumerate() {
+                event.seq = range.start + offset as u64;
+            }
+            self.pending.lock().expect("fold journal").extend(built);
+        }
+        Ok(range)
+    }
+    fn flush(&self) -> Result<(), String> {
+        let _lane = self.lane.lock().expect("projection fold lane");
+        self.inner.flush()?;
+        // Fold exactly what is durably committed since the last flush —
+        // the physical log is the authority, but re-reading it per flush
+        // made cost grow with total log size (P1-13). The lane prevents
+        // append/registration from interleaving with this flush; the
+        // committed-cursor cutoff still protects direct coordinator events
+        // and any future producer that bypasses this wrapper (folding an
+        // uncommitted event that later rolls back would push projections
+        // ahead of the log and open a seq hole).
+        self.fold_committed_pending()
+    }
+
+    fn append_atomic_durable(
+        &self,
+        events: &[crate::session::run_journal::NewSessionEvent],
+    ) -> Result<crate::session::run_journal::SeqRange, String> {
+        let _lane = self.lane.lock().expect("projection fold lane");
+        let mut built = self.build_events(events)?;
+        let range = self.inner.append_atomic_durable(events)?;
+        for (offset, event) in built.iter_mut().enumerate() {
+            event.seq = range.start + offset as u64;
+        }
+        self.pending.lock().expect("fold journal").extend(built);
+        // Durability is already decided. Projection/checkpoint state is a
+        // rebuildable cache, so a fold refresh failure must not turn a
+        // committed permission change into a reported denial.
+        if let Err(error) = self.fold_committed_pending() {
+            eprintln!(
+                "clat: warning: projection refresh failed after durable journal transaction: {error}"
+            );
+        }
+        Ok(range)
     }
 
     fn committed_seq(&self) -> Option<u64> {
@@ -2391,6 +2515,84 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn global_admission_owner_scan_outlives_receipt_window_and_rejects_duplicates() {
+        let (service, root) = service("global-admission-owner");
+        let project = project();
+        let first = service.new_session(&project).expect("first session");
+        let journal = service.journal().expect("journal");
+        let digest = "a".repeat(64);
+        let mut events = vec![
+            crate::session::run_journal::NewSessionEvent::new(
+                "user/message",
+                payloads::admitted_user_message(
+                    "message-target",
+                    "target",
+                    &[],
+                    Some("delivery-target"),
+                    Some(&digest),
+                ),
+            )
+            .append(Vec::new()),
+        ];
+        for index in 0..1024 {
+            events.push(
+                crate::session::run_journal::NewSessionEvent::new(
+                    "user/message",
+                    payloads::admitted_user_message(
+                        &format!("message-{index}"),
+                        "filler",
+                        &[],
+                        Some(&format!("delivery-{index}")),
+                        Some(&digest),
+                    ),
+                )
+                .append(Vec::new()),
+            );
+        }
+        journal
+            .append_atomic(&events)
+            .expect("append admission window");
+        journal.flush().expect("commit admission window");
+        assert!(
+            service.committed_admission("delivery-target").is_none(),
+            "the ordinary retry projection is intentionally bounded"
+        );
+        let owner = service
+            .find_committed_admission_session(&project, "delivery-target")
+            .expect("scan journals")
+            .expect("historical owner");
+        assert_eq!(owner.0, first.id);
+        assert_eq!(owner.1.request_digest.as_deref(), Some(digest.as_str()));
+
+        service.quiesce_active().expect("quiesce first");
+        service.new_session(&project).expect("second session");
+        let journal = service.journal().expect("second journal");
+        journal
+            .append(
+                crate::session::run_journal::NewSessionEvent::new(
+                    "user/message",
+                    payloads::admitted_user_message(
+                        "duplicate-message",
+                        "duplicate",
+                        &[],
+                        Some("delivery-target"),
+                        Some(&digest),
+                    ),
+                )
+                .append(Vec::new()),
+            )
+            .expect("append duplicate owner");
+        journal.flush().expect("commit duplicate owner");
+        let error = service
+            .find_committed_admission_session(&project, "delivery-target")
+            .expect_err("multiple durable owners must fail closed");
+        assert!(error.to_string().contains("multiple project sessions"));
+
+        service.quiesce_active().expect("cleanup");
+        crate::test_support::cleanup_tree(&root);
+    }
+
     struct FailingPlanJournal {
         append_error: bool,
         flush_error: bool,
@@ -2524,6 +2726,41 @@ mod tests {
             Some(text)
         );
         reopened.quiesce_active().expect("reopen quiesce");
+        crate::test_support::cleanup_tree(&root);
+    }
+
+    #[test]
+    fn permission_mode_checkpoint_failure_after_commit_rebuilds_from_journal() {
+        let (service, root) = service("permission-checkpoint-degradation");
+        let project = project();
+        let summary = service.new_session(&project).expect("session");
+        let key = SessionKey {
+            project,
+            id: summary.id,
+        };
+        service
+            .record_permission_mode(PermissionMode::ProjectWrite)
+            .expect("initial mode");
+        service
+            .fail_next_permission_checkpoint
+            .store(true, Ordering::Release);
+        service
+            .record_permission_mode(PermissionMode::FullAccess)
+            .expect("checkpoint failure is non-fatal after journal commit");
+        assert_eq!(
+            service.permission_mode_state(),
+            Some(PermissionMode::FullAccess)
+        );
+        service.quiesce_active().expect("quiesce");
+        drop(service);
+
+        let reopened = SessionService::new(root.clone(), JsonlCompression::Zstd).expect("reopen");
+        reopened.resume(&key).expect("rebuild from journal tail");
+        assert_eq!(
+            reopened.permission_mode_state(),
+            Some(PermissionMode::FullAccess)
+        );
+        reopened.quiesce_active().expect("quiesce reopened");
         crate::test_support::cleanup_tree(&root);
     }
 

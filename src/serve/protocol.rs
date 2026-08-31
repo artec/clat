@@ -29,6 +29,13 @@ pub(crate) const RPC_METHODS: &[&str] = &[
     "session.compact",
     "model.overrides.set",
     "permission.set",
+    "wechat.binding.status",
+    "wechat.binding.start",
+    "wechat.binding.poll",
+    "wechat.binding.unbind",
+    "wechat.pairing.create",
+    "wechat.user.allow",
+    "wechat.user.remove",
     "draft.open",
     "command.run",
     "prompt.send",
@@ -275,6 +282,134 @@ pub(crate) fn dispatch(
                 shared.active_compaction_info(),
                 RPC_METHODS,
             ))
+        }
+        "wechat.binding.status" => {
+            let status = with_app(shared, |app| app.wechat_binding_status());
+            Ok(json!({
+                "bound": status.bound,
+                "bound_at": status.bound_at,
+                "paired_users": status.paired_users,
+                "mapped_chats": status.mapped_chats,
+                "binding_active": shared
+                    .wechat_binding
+                    .lock()
+                    .expect("wechat binding lock")
+                    .is_some(),
+            }))
+        }
+        "wechat.binding.start" => {
+            let bound = with_app(shared, |app| app.wechat_binding_status().bound);
+            let replace = params
+                .get("replace")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            if bound && !replace {
+                return Err(RpcError::bad_request(
+                    "WeChat is already bound; set replace=true to start a replacement without revoking the current binding first",
+                ));
+            }
+            let mut slot = shared.wechat_binding.lock().expect("wechat binding lock");
+            if slot.is_some() {
+                return Err(RpcError::busy("a WeChat binding flow is already active"));
+            }
+            let (binding, qr_content) = crate::im::BindingSession::start()
+                .map_err(|error| RpcError::internal(error.to_string()))?;
+            let qr_svg = crate::im::qr_svg(&qr_content).map_err(RpcError::internal)?;
+            *slot = Some(binding);
+            Ok(json!({
+                "state": "waiting",
+                "qr_svg": qr_svg,
+                "notice": "Binding this bot does not authorize any WeChat user; create and enter a pairing code separately.",
+            }))
+        }
+        "wechat.binding.poll" => {
+            let verify_code = optional_str(params, "verifyCode")?;
+            if let Some(code) = verify_code.as_deref()
+                && (code.is_empty()
+                    || code.len() > 32
+                    || !code.bytes().all(|byte| byte.is_ascii_alphanumeric()))
+            {
+                return Err(RpcError::bad_request(
+                    "verifyCode must be 1..32 ASCII letters or digits",
+                ));
+            }
+            let mut slot = shared.wechat_binding.lock().expect("wechat binding lock");
+            let binding = slot
+                .as_mut()
+                .ok_or_else(|| RpcError::not_pending("no WeChat binding flow is active"))?;
+            let step = binding
+                .poll(verify_code.as_deref())
+                .map_err(|error| RpcError::internal(error.to_string()))?;
+            match step {
+                crate::im::BindingStep::Waiting => Ok(json!({ "state": "waiting" })),
+                crate::im::BindingStep::Scanned => Ok(json!({ "state": "scanned" })),
+                crate::im::BindingStep::NeedVerifyCode => {
+                    Ok(json!({ "state": "need_verify_code" }))
+                }
+                crate::im::BindingStep::VerifyCodeBlocked => {
+                    *slot = None;
+                    Ok(json!({ "state": "verify_code_blocked" }))
+                }
+                crate::im::BindingStep::Expired => {
+                    *slot = None;
+                    Ok(json!({ "state": "expired" }))
+                }
+                crate::im::BindingStep::AlreadyBound => {
+                    *slot = None;
+                    Ok(json!({ "state": "already_bound" }))
+                }
+                crate::im::BindingStep::Confirmed(credentials) => {
+                    let _outbound = shared.wechat_outbound.lock().expect("wechat outbound gate");
+                    with_app(shared, |app| app.save_wechat_binding(&credentials))
+                        .map_err(app_error)?;
+                    *slot = None;
+                    Ok(json!({
+                        "state": "confirmed",
+                        "notice": "Bot binding is complete, but all WeChat users remain denied until paired or explicitly allowlisted.",
+                    }))
+                }
+            }
+        }
+        "wechat.binding.unbind" => {
+            if params.get("confirm").and_then(Value::as_str) != Some("unbind-wechat") {
+                return Err(RpcError::bad_request(
+                    "unbind requires confirm=unbind-wechat",
+                ));
+            }
+            // Serialize behind an in-flight long poll, then revoke storage
+            // while still owning the binding slot. Otherwise a confirmed
+            // poll could re-save credentials between the clear and slot
+            // cancellation, making an acknowledged unbind silently rebound.
+            let mut slot = shared.wechat_binding.lock().expect("wechat binding lock");
+            let _outbound = shared.wechat_outbound.lock().expect("wechat outbound gate");
+            shared.cancel_active_run();
+            *slot = None;
+            with_app(shared, |app| app.clear_wechat_binding()).map_err(app_error)?;
+            Ok(json!({ "bound": false }))
+        }
+        "wechat.pairing.create" => {
+            let challenge =
+                with_app(shared, |app| app.create_wechat_pairing_code()).map_err(app_error)?;
+            Ok(json!({
+                "code": challenge.code,
+                "expires_at_ms": challenge.expires_at_ms,
+                "notice": "This one-time code authorizes the first WeChat user who submits it. Do not share it in an untrusted conversation.",
+            }))
+        }
+        "wechat.user.allow" => {
+            let user_id = required_str(params, "userId")?;
+            let allowed = params
+                .get("allowed")
+                .and_then(Value::as_bool)
+                .ok_or_else(|| RpcError::bad_request("allowed must be a boolean"))?;
+            with_app(shared, |app| app.set_wechat_allowed_user(&user_id, allowed))
+                .map_err(app_error)?;
+            Ok(json!({ "allowed": allowed }))
+        }
+        "wechat.user.remove" => {
+            let user_id = required_str(params, "userId")?;
+            with_app(shared, |app| app.remove_wechat_paired_user(&user_id)).map_err(app_error)?;
+            Ok(json!({ "paired": false }))
         }
         "session.list" => {
             let sessions = with_app(shared, |app| app.list_sessions()).map_err(app_error)?;

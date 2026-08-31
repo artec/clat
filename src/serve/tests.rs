@@ -58,6 +58,7 @@ fn spawn_serve_with_queue(
             port: 0,
             token: Some(TEST_TOKEN.into()),
             rotate_token: false,
+            im: None,
         },
         |bootstrap| {
             bootstrap
@@ -82,6 +83,7 @@ fn spawn_serve_with_start_receive_failure(name: &str) -> (ServeHandle, PathBuf, 
             port: 0,
             token: Some(TEST_TOKEN.into()),
             rotate_token: false,
+            im: None,
         },
         |bootstrap| {
             let mut application = bootstrap
@@ -478,6 +480,7 @@ fn parse_serve_args_defaults_to_2691_and_accepts_explicit_controls() {
     assert_eq!(defaults.port, 2691);
     assert_eq!(defaults.token, None);
     assert!(!defaults.rotate_token);
+    assert_eq!(defaults.im, None);
 
     let parsed = super::parse_serve_args([
         "--port".into(),
@@ -489,6 +492,13 @@ fn parse_serve_args_defaults_to_2691_and_accepts_explicit_controls() {
     assert_eq!(parsed.port, 8099);
     assert_eq!(parsed.token.as_deref(), Some("abc"));
     assert!(!parsed.rotate_token);
+    assert_eq!(parsed.im, None);
+    assert_eq!(
+        super::parse_serve_args(["--im".into(), "wechat".into()])
+            .unwrap()
+            .im,
+        Some(super::ImBackend::Wechat)
+    );
     assert!(
         super::parse_serve_args(["--rotate-token".into()])
             .unwrap()
@@ -505,7 +515,185 @@ fn parse_serve_args_defaults_to_2691_and_accepts_explicit_controls() {
     );
     assert!(super::parse_serve_args(["--port".into(), "not-a-number".into()]).is_err());
     assert!(super::parse_serve_args(["--token".into(), "unsafe token".into()]).is_err());
+    assert_eq!(
+        super::parse_serve_args(["--im".into(), "telegram".into()]).unwrap_err(),
+        "unsupported IM backend: telegram"
+    );
+    assert_eq!(
+        super::parse_serve_args([
+            "--im".into(),
+            "wechat".into(),
+            "--im".into(),
+            "wechat".into(),
+        ])
+        .unwrap_err(),
+        "--im may only be specified once"
+    );
     assert!(super::parse_serve_args(["positional".into()]).is_err());
+}
+
+#[test]
+fn wechat_switch_is_default_off_and_fails_closed_before_binding_exists() {
+    let behavior = TestBehavior::Success;
+    let (storage_root, project_root, project) = setup("serve-im-gate");
+    prepare_storage(&project, &storage_root, behavior.clone());
+    let error = match crate::serve::serve_with_with_queue(
+        project,
+        Some(storage_root.clone()),
+        ServeArgs {
+            port: 0,
+            token: None,
+            rotate_token: true,
+            im: Some(super::ImBackend::Wechat),
+        },
+        |bootstrap| {
+            bootstrap
+                .with_permission_modes()
+                .authorize_and_mount_with_provider(Arc::new(TestProviderPlugin { behavior }))
+        },
+        Arc::new(AtomicBool::new(false)),
+        super::state::SUBSCRIBER_QUEUE_FRAMES,
+    ) {
+        Ok(handle) => {
+            handle.shutdown();
+            let _ = handle.join();
+            panic!("unbound WeChat host unexpectedly started")
+        }
+        Err(error) => error,
+    };
+    assert_eq!(
+        error,
+        "WeChat IM is not configured yet; complete QR binding before starting with `--im wechat`"
+    );
+    assert!(
+        !storage_root.join(super::token::FILE_NAME).exists(),
+        "IM preflight must fail before listener/token side effects"
+    );
+    std::fs::remove_dir_all(storage_root).ok();
+    std::fs::remove_dir_all(project_root).ok();
+}
+
+#[test]
+fn wechat_unbind_serializes_after_inflight_binding_poll_before_clearing_storage() {
+    let (storage_root, project_root, project) = setup("serve-wechat-unbind-race");
+    prepare_storage(&project, &storage_root, TestBehavior::Success);
+    let application = BootstrapApplication::open(project, storage_root.clone())
+        .unwrap()
+        .with_permission_modes()
+        .into_trusted_with_provider(Arc::new(TestProviderPlugin {
+            behavior: TestBehavior::Success,
+        }))
+        .unwrap();
+    application
+        .save_wechat_binding(
+            &crate::im::ilink::Credentials::new(
+                "old-token".into(),
+                "old-bot".into(),
+                None,
+                "https://ilinkai.weixin.qq.com".into(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let shared = Arc::new(ServeShared::new(
+        Arc::new(Mutex::new(application)),
+        "unit".into(),
+        0,
+    ));
+
+    let slot_guard = shared.wechat_binding.lock().unwrap();
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    let unbind_shared = Arc::clone(&shared);
+    let unbind_barrier = Arc::clone(&barrier);
+    let unbind = std::thread::spawn(move || {
+        unbind_barrier.wait();
+        protocol::dispatch(
+            "wechat.binding.unbind",
+            &serde_json::json!({"confirm":"unbind-wechat"}),
+            &unbind_shared,
+        )
+    });
+    barrier.wait();
+    std::thread::sleep(Duration::from_millis(50));
+    assert!(
+        shared.app.lock().unwrap().wechat_binding_status().bound,
+        "storage revocation must happen after the in-flight binding slot is acquired"
+    );
+    drop(slot_guard);
+    unbind.join().unwrap().unwrap();
+    assert!(!shared.app.lock().unwrap().wechat_binding_status().bound);
+
+    let shared = Arc::try_unwrap(shared).ok().expect("sole shared owner");
+    let application = Arc::try_unwrap(shared.app)
+        .ok()
+        .expect("sole application owner")
+        .into_inner()
+        .unwrap();
+    application.close().unwrap();
+    std::fs::remove_dir_all(storage_root).ok();
+    std::fs::remove_dir_all(project_root).ok();
+}
+
+#[test]
+fn wechat_unbind_waits_for_inflight_outbound_before_revocation_ack() {
+    let (storage_root, project_root, project) = setup("serve-wechat-outbound-revoke");
+    prepare_storage(&project, &storage_root, TestBehavior::Success);
+    let application = BootstrapApplication::open(project, storage_root.clone())
+        .unwrap()
+        .with_permission_modes()
+        .into_trusted_with_provider(Arc::new(TestProviderPlugin {
+            behavior: TestBehavior::Success,
+        }))
+        .unwrap();
+    application
+        .save_wechat_binding(
+            &crate::im::ilink::Credentials::new(
+                "old-token".into(),
+                "old-bot".into(),
+                None,
+                "https://ilinkai.weixin.qq.com".into(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let shared = Arc::new(ServeShared::new(
+        Arc::new(Mutex::new(application)),
+        "unit".into(),
+        0,
+    ));
+
+    let outbound_guard = shared.wechat_outbound.lock().unwrap();
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    let unbind_shared = Arc::clone(&shared);
+    let unbind_barrier = Arc::clone(&barrier);
+    let unbind = std::thread::spawn(move || {
+        unbind_barrier.wait();
+        protocol::dispatch(
+            "wechat.binding.unbind",
+            &serde_json::json!({"confirm":"unbind-wechat"}),
+            &unbind_shared,
+        )
+    });
+    barrier.wait();
+    std::thread::sleep(Duration::from_millis(50));
+    assert!(shared.app.lock().unwrap().wechat_binding_status().bound);
+    assert!(
+        !unbind.is_finished(),
+        "unbind acknowledgement waits for the send"
+    );
+    drop(outbound_guard);
+    unbind.join().unwrap().unwrap();
+    assert!(!shared.app.lock().unwrap().wechat_binding_status().bound);
+
+    let shared = Arc::try_unwrap(shared).ok().expect("sole shared owner");
+    let application = Arc::try_unwrap(shared.app)
+        .ok()
+        .expect("sole application owner")
+        .into_inner()
+        .unwrap();
+    application.close().unwrap();
+    std::fs::remove_dir_all(storage_root).ok();
+    std::fs::remove_dir_all(project_root).ok();
 }
 
 // ---- 方法分派全集（验收 3，进程内直调：INV-S5）----
@@ -558,6 +746,69 @@ fn dispatch_covers_the_full_method_set() {
     assert!(
         workbench["model"]["overrides"]["output_limit"]["state"].is_string(),
         "serve exposes the typed override state"
+    );
+
+    {
+        let app = shared.app.lock().unwrap();
+        app.save_wechat_binding(
+            &crate::im::ilink::Credentials::new(
+                "secret-wechat-token".into(),
+                "secret-wechat-bot".into(),
+                None,
+                "https://ilinkai.weixin.qq.com".into(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    }
+    let wechat =
+        protocol::dispatch("wechat.binding.status", &serde_json::json!({}), &shared).unwrap();
+    assert_eq!(wechat["bound"], true);
+    assert!(!wechat.to_string().contains("secret-wechat"));
+    let pairing =
+        protocol::dispatch("wechat.pairing.create", &serde_json::json!({}), &shared).unwrap();
+    let code = pairing["code"].as_str().unwrap().to_owned();
+    assert_eq!(code.len(), 6);
+    {
+        let app = shared.app.lock().unwrap();
+        assert_eq!(
+            app.attempt_wechat_pairing("delivery-one", "remote-user", &code)
+                .unwrap(),
+            crate::im::PairingAttempt::Paired
+        );
+        let session = crate::SessionId::new("remote-session");
+        app.bind_wechat_chat("remote-user", "remote-chat", &session)
+            .unwrap();
+        assert_eq!(
+            app.wechat_chat_binding("remote-chat")
+                .expect("mapping")
+                .session_id,
+            session
+        );
+    }
+    let paired =
+        protocol::dispatch("wechat.binding.status", &serde_json::json!({}), &shared).unwrap();
+    assert_eq!(paired["paired_users"], 1);
+    assert_eq!(paired["mapped_chats"], 1);
+    assert_eq!(
+        protocol::dispatch(
+            "wechat.binding.unbind",
+            &serde_json::json!({"confirm":"wrong"}),
+            &shared,
+        )
+        .unwrap_err()
+        .code,
+        ErrorCode::BadRequest
+    );
+    protocol::dispatch(
+        "wechat.binding.unbind",
+        &serde_json::json!({"confirm":"unbind-wechat"}),
+        &shared,
+    )
+    .unwrap();
+    assert_eq!(
+        protocol::dispatch("wechat.binding.status", &serde_json::json!({}), &shared,).unwrap()["bound"],
+        false
     );
 
     let cleared = protocol::dispatch(
@@ -1390,6 +1641,7 @@ fn persistent_token_survives_restart_and_rotation_revokes_the_old_bearer() {
                 port,
                 token: None,
                 rotate_token,
+                im: None,
             },
             |bootstrap| {
                 bootstrap
@@ -2411,6 +2663,7 @@ fn host_serve_for_playwright(key: &str, behavior: TestBehavior) {
             port: 0,
             token: Some(token.clone()),
             rotate_token: false,
+            im: None,
         },
         |bootstrap| {
             bootstrap.authorize_and_mount_with_provider(Arc::new(TestProviderPlugin { behavior }))
@@ -2491,6 +2744,7 @@ fn host_live_glm_for_playwright() {
             port: 0,
             token: Some(token.clone()),
             rotate_token: false,
+            im: None,
         },
         |bootstrap| {
             bootstrap

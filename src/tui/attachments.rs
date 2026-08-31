@@ -21,21 +21,17 @@ pub(super) struct AttachmentDraft {
 
 impl AttachmentDraft {
     fn from_path(id: u64, path: PathBuf) -> Result<Self, String> {
-        let metadata = std::fs::metadata(&path)
-            .map_err(|error| format!("cannot read image {}: {error}", path.display()))?;
-        if !metadata.is_file() {
-            return Err(format!("not a file: {}", path.display()));
-        }
-        if metadata.len() > crate::media::MAX_ATTACHMENT_BYTES {
+        let source = crate::media::validate_source_nofollow(&path)?;
+        let source_bytes = source.bytes;
+        if source_bytes > crate::media::MAX_ATTACHMENT_BYTES {
             return Err(format!(
                 "image is too large ({} bytes > {}): {}",
-                metadata.len(),
+                source_bytes,
                 crate::media::MAX_ATTACHMENT_BYTES,
                 path.display()
             ));
         }
-        let (_, dimensions) = crate::media::validate_source(&path)?;
-        let (width, height) = dimensions.ok_or_else(|| {
+        let (width, height) = source.dimensions.ok_or_else(|| {
             format!(
                 "cannot determine image dimensions before admission: {}",
                 path.display()
@@ -45,14 +41,15 @@ impl AttachmentDraft {
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|| path.display().to_string());
-        let estimated_tokens = crate::media::estimate_image_tokens(&path);
+        let estimated_tokens =
+            crate::media::estimate_image_tokens_from_dimensions(Some((width, height)));
         Ok(Self {
             id,
             path,
             display_name,
             width,
             height,
-            source_bytes: metadata.len(),
+            source_bytes,
             estimated_tokens,
         })
     }
@@ -487,9 +484,22 @@ fn resolve_attachment_path(project_root: &Path, path: &Path) -> Result<PathBuf, 
     } else {
         project_root.join(path)
     };
-    expanded
+    // Preserve the final component so `AttachmentDraft::from_path` can open
+    // it with O_NOFOLLOW / FILE_FLAG_OPEN_REPARSE_POINT. Canonicalizing the
+    // whole path here would erase the evidence that the user selected a
+    // symlink before preview validation gets a chance to reject it.
+    std::fs::symlink_metadata(&expanded)
+        .map_err(|error| format!("cannot resolve {}: {error}", expanded.display()))?;
+    let file_name = expanded
+        .file_name()
+        .ok_or_else(|| format!("attachment path has no file name: {}", expanded.display()))?;
+    let parent = expanded
+        .parent()
+        .ok_or_else(|| format!("attachment path has no parent: {}", expanded.display()))?;
+    let parent = parent
         .canonicalize()
-        .map_err(|error| format!("cannot resolve {}: {error}", expanded.display()))
+        .map_err(|error| format!("cannot resolve {}: {error}", parent.display()))?;
+    Ok(parent.join(file_name))
 }
 
 pub(super) fn human_bytes(bytes: u64) -> String {
@@ -562,6 +572,37 @@ mod tests {
             .unwrap_err();
         assert!(error.contains("cannot resolve"));
         assert_eq!(composer, before, "failed multi-select is atomic");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// MM-F02：TUI preview is not the admission authority, but it still must
+    /// not follow a user-selected final symlink. The whole batch remains
+    /// atomic when this defense-in-depth preflight refuses the path.
+    #[cfg(unix)]
+    #[test]
+    fn attachment_preview_refuses_final_symlinks_without_mutating_the_draft() {
+        use std::os::unix::fs::symlink;
+
+        let root =
+            std::env::temp_dir().join(format!("clat-composer-symlink-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("real.png"), png(8, 4)).unwrap();
+        symlink("real.png", root.join("link.png")).unwrap();
+
+        let mut composer = AttachmentComposer::default();
+        composer
+            .add_paths(&root, [PathBuf::from("real.png")])
+            .unwrap();
+        let before = composer.clone();
+        let error = composer
+            .add_paths(&root, [PathBuf::from("link.png")])
+            .expect_err("a final symlink must not be followed for preview");
+
+        assert!(error.contains("refuses symbolic links"), "{error}");
+        assert_eq!(
+            composer, before,
+            "failed preview must leave the draft intact"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 

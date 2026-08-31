@@ -60,21 +60,48 @@ impl DraftImageStore {
     }
 
     pub(crate) fn stage_png(&self, bytes: &[u8]) -> Result<PathBuf, String> {
+        self.stage_image_bytes(bytes, image::ImageFormat::Png, "clipboard", "png")
+    }
+
+    /// Stage decrypted bytes from an authenticated IM transport as an
+    /// ordinary pre-admission source. This is deliberately not durable
+    /// attachment identity: the subsequent run/steering path repeats the
+    /// authoritative magic, decode, normalization, and route checks.
+    pub(crate) fn stage_remote_image(
+        &self,
+        bytes: &[u8],
+        extension: &str,
+    ) -> Result<PathBuf, String> {
+        let (format, extension) = match extension {
+            "png" => (image::ImageFormat::Png, "png"),
+            "jpg" | "jpeg" => (image::ImageFormat::Jpeg, "jpg"),
+            _ => return Err("remote image must be PNG or JPEG".into()),
+        };
+        self.stage_image_bytes(bytes, format, "wechat", extension)
+    }
+
+    fn stage_image_bytes(
+        &self,
+        bytes: &[u8],
+        format: image::ImageFormat,
+        label: &str,
+        extension: &str,
+    ) -> Result<PathBuf, String> {
         if bytes.is_empty() || bytes.len() as u64 > crate::media::MAX_ATTACHMENT_BYTES {
             return Err(format!(
-                "clipboard PNG must be 1..={} bytes (got {})",
+                "staged image must be 1..={} bytes (got {})",
                 crate::media::MAX_ATTACHMENT_BYTES,
                 bytes.len()
             ));
         }
-        let decoded = image::load_from_memory_with_format(bytes, image::ImageFormat::Png)
-            .map_err(|error| format!("clipboard PNG validation failed: {error}"))?;
+        let decoded = image::load_from_memory_with_format(bytes, format)
+            .map_err(|error| format!("staged image validation failed: {error}"))?;
         let pixels = u64::from(decoded.width())
             .checked_mul(u64::from(decoded.height()))
-            .ok_or_else(|| "clipboard image dimensions overflow".to_owned())?;
+            .ok_or_else(|| "staged image dimensions overflow".to_owned())?;
         if pixels > crate::media::MAX_DECODED_PIXELS {
             return Err(format!(
-                "clipboard image exceeds the {}-pixel limit",
+                "staged image exceeds the {}-pixel limit",
                 crate::media::MAX_DECODED_PIXELS
             ));
         }
@@ -82,7 +109,7 @@ impl DraftImageStore {
         ensure_private_draft_root(&self.storage_root, &self.root)?;
         let path = self
             .root
-            .join(format!("clipboard-{}.png", uuid::Uuid::new_v4()));
+            .join(format!("{label}-{}.{}", uuid::Uuid::new_v4(), extension));
         let now = now_ms();
         {
             let mut state = self.state.lock().map_err(|_| "draft state poisoned")?;
@@ -133,10 +160,10 @@ impl DraftImageStore {
         Ok(path)
     }
 
-    /// Release only a path minted by [`Self::stage_png`]. User-selected
-    /// `/attach` sources may pass through the same composer, so an arbitrary
-    /// path must never become deletion authority merely because the frontend
-    /// stopped displaying it.
+    /// Release only a path minted by [`Self::stage_png`] or
+    /// [`Self::stage_remote_image`]. User-selected `/attach` sources may pass
+    /// through the same composer, so an arbitrary path must never become
+    /// deletion authority merely because the frontend stopped displaying it.
     pub(crate) fn release_clipboard_path(&self, path: &Path) -> bool {
         let Ok(mut state) = self.state.lock() else {
             return false;

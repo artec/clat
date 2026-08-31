@@ -130,6 +130,7 @@ pub(crate) fn media_type_matches_bytes(media_type: &str, bytes: &[u8]) -> bool {
 /// magic 嗅探一致（伪扩展/polyglot 拒），头部可得的像素尺寸不得超过
 /// [`MAX_DECODED_PIXELS`]（解码炸弹在读头阶段先挡）。成功返回实测
 /// 字节族与可得尺寸（None = 头部无尺寸信息，S3 全解码后该档关闭）。
+#[cfg(test)]
 pub(crate) fn validate_source(path: &Path) -> Result<(ImageFamily, Option<(u64, u64)>), String> {
     use std::io::Read as _;
     let file = std::fs::File::open(path)
@@ -139,6 +140,71 @@ pub(crate) fn validate_source(path: &Path) -> Result<(ImageFamily, Option<(u64, 
         .read_to_end(&mut header)
         .map_err(|error| format!("cannot read image {}: {error}", path.display()))?;
     validate_source_header(path, &header)
+}
+
+pub(crate) struct ValidatedImageSource {
+    pub(crate) dimensions: Option<(u64, u64)>,
+    pub(crate) bytes: u64,
+}
+
+/// TUI preview preflight: open the final path component with OS no-follow,
+/// then derive file type, length, magic and dimensions from that one held
+/// descriptor. This is defense in depth only; core attachment admission
+/// remains the authority and repeats its own descriptor-based validation.
+pub(crate) fn validate_source_nofollow(path: &Path) -> Result<ValidatedImageSource, String> {
+    use std::io::Read as _;
+
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    let mut file = match options.open(path) {
+        Ok(file) => file,
+        Err(error) => {
+            // Diagnostic only after the authoritative open has failed. Do
+            // not use path metadata as permission to retry with following.
+            if std::fs::symlink_metadata(path)
+                .is_ok_and(|metadata| metadata.file_type().is_symlink())
+            {
+                return Err(format!(
+                    "image preview refuses symbolic links: {}",
+                    path.display()
+                ));
+            }
+            return Err(format!("cannot open image {}: {error}", path.display()));
+        }
+    };
+    let metadata = file
+        .metadata()
+        .map_err(|error| format!("cannot inspect image {}: {error}", path.display()))?;
+    if metadata.file_type().is_symlink() {
+        return Err(format!(
+            "image preview refuses symbolic links: {}",
+            path.display()
+        ));
+    }
+    if !metadata.is_file() {
+        return Err(format!("not a regular file: {}", path.display()));
+    }
+    let mut header = Vec::new();
+    file.by_ref()
+        .take(256 * 1024)
+        .read_to_end(&mut header)
+        .map_err(|error| format!("cannot read image {}: {error}", path.display()))?;
+    let (_, dimensions) = validate_source_header(path, &header)?;
+    Ok(ValidatedImageSource {
+        dimensions,
+        bytes: metadata.len(),
+    })
 }
 
 /// Validate an image from bytes read through a caller-owned descriptor. This
@@ -317,7 +383,13 @@ fn jpeg_dimensions_bytes(data: &[u8]) -> Option<(u64, u64)> {
 ///（撑爆窗口）。压缩/context 计量/steering 共用本函数（统一
 /// image walker 的当前形态）。
 pub(crate) fn estimate_image_tokens(path: &Path) -> u64 {
-    let Some((width, height)) = image_dimensions(path) else {
+    estimate_image_tokens_from_dimensions(image_dimensions(path))
+}
+
+/// Dimension-only form for callers that already parsed a held descriptor and
+/// must not reopen a mutable path between validation and presentation.
+pub(crate) fn estimate_image_tokens_from_dimensions(dimensions: Option<(u64, u64)>) -> u64 {
+    let Some((width, height)) = dimensions else {
         return FALLBACK_TOKENS * IMAGE_TOKEN_SAFETY_FACTOR;
     };
     if width == 0 || height == 0 {

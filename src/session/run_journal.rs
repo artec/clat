@@ -68,6 +68,14 @@ pub(crate) trait RunJournal: Send + Sync {
         Ok(range.start)
     }
     fn flush(&self) -> Result<(), String>;
+    /// Append one atomic group and synchronously decide its durability.
+    /// Production journals override this to remove a proven-not-committed
+    /// tail from write-behind; the default preserves simple test doubles.
+    fn append_atomic_durable(&self, events: &[NewSessionEvent]) -> Result<SeqRange, String> {
+        let range = self.append_atomic(events)?;
+        self.flush()?;
+        Ok(range)
+    }
     /// The last durably committed seq, when the journal can report it.
     /// Folding consumers use it to never fold an event ahead of its
     /// commit (fold-after-Committed, plan §11.2).
@@ -84,6 +92,9 @@ pub(crate) struct SessionCoordinator {
     header: SessionHeader,
     backend: Arc<JsonlBackend>,
     inner: Arc<Mutex<CoordinatorCore>>,
+    /// Serializes normal queue admission with synchronous reversible
+    /// transactions without blocking the worker's `CoordinatorCore` lock.
+    transaction: Mutex<()>,
     writer: SessionWriteBehind,
     needs_seed_marker: std::sync::atomic::AtomicBool,
 }
@@ -163,6 +174,7 @@ impl SessionCoordinator {
             header,
             backend,
             inner: core,
+            transaction: Mutex::new(()),
             writer,
             needs_seed_marker: std::sync::atomic::AtomicBool::new(needs_seed_marker),
         });
@@ -202,6 +214,11 @@ impl SessionCoordinator {
     }
 
     fn enqueue_atomic(&self, events: Vec<SessionEvent>) -> Result<SeqRange, String> {
+        let _transaction = self.transaction.lock().expect("journal transaction");
+        self.enqueue_atomic_locked(events)
+    }
+
+    fn enqueue_atomic_locked(&self, events: Vec<SessionEvent>) -> Result<SeqRange, String> {
         if events.is_empty() {
             return Err("cannot append an empty event group".into());
         }
@@ -227,6 +244,33 @@ impl SessionCoordinator {
                 end_inclusive,
             }
         };
+        Ok(range)
+    }
+
+    fn enqueue_atomic_durable(&self, events: Vec<SessionEvent>) -> Result<SeqRange, String> {
+        let _transaction = self.transaction.lock().expect("journal transaction");
+        let range = self.enqueue_atomic_locked(events)?;
+        if let Err(error) = self.writer.flush() {
+            let fatal = self.inner.lock().expect("coordinator lock").fatal.clone();
+            if fatal.is_none() {
+                {
+                    let core = self.inner.lock().expect("coordinator lock");
+                    if core.next_seq != range.end_inclusive.saturating_add(1) {
+                        return Err(format!(
+                            "cannot roll back a non-tail session transaction after: {error}"
+                        ));
+                    }
+                }
+                self.writer
+                    .discard_pending_tail(range.start, range.end_inclusive)?;
+                self.inner.lock().expect("coordinator lock").next_seq = range.start;
+            }
+            return Err(error);
+        }
+        let core = self.inner.lock().expect("coordinator lock");
+        if let Some(fatal) = &core.fatal {
+            return Err(fatal.clone());
+        }
         Ok(range)
     }
 
@@ -353,6 +397,27 @@ impl RunJournal for JournalAdapter {
 
     fn flush(&self) -> Result<(), String> {
         self.coordinator.flush()
+    }
+
+    fn append_atomic_durable(&self, events: &[NewSessionEvent]) -> Result<SeqRange, String> {
+        let time = crate::session::event::now_ms();
+        let built = events
+            .iter()
+            .map(|new_event| {
+                validate_new_event(new_event)?;
+                Ok(SessionEvent {
+                    event_type: new_event.event_type.clone(),
+                    seq: 0,
+                    time,
+                    data: new_event.data.clone(),
+                    ignorable: new_event.ignorable,
+                    surface_op: new_event.surface_op.clone(),
+                    source_event_seqs: new_event.source_event_seqs.clone(),
+                    extra: serde_json::Map::new(),
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        self.coordinator.enqueue_atomic_durable(built)
     }
 
     fn committed_seq(&self) -> Option<u64> {

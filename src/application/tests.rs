@@ -7,6 +7,7 @@ use crate::model::ModelConfig;
 use crate::permission::PermissionApprover;
 use crate::presets::preset_by_id;
 use crate::session::key::{ProjectKey, SessionKey};
+use crate::session::persistence::FaultHooks;
 #[cfg(unix)]
 use crate::session::persistence::JsonlCompression;
 use crate::test_support::{
@@ -1355,6 +1356,146 @@ fn permission_mode_birth_and_switch_journal_shape() {
         Some("danger-full-access")
     );
     application.close().unwrap();
+    std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
+}
+
+/// MR-I4 / FR-01: publishing a stronger in-memory permission mode before its
+/// journal event commits creates unrecorded authority. A failed durable switch
+/// must leave both the live cell and the replayed session at the old mode.
+#[test]
+fn permission_mode_persist_failure_does_not_publish_full_access() {
+    use crate::permission::PermissionMode;
+
+    let (storage_root, project_root) = roots("perm-persist-failure");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let project = Project::new(&project_root);
+    let mut application = mount_modes_from_storage(&project, &storage_root, TestBehavior::Success);
+    configure_test_model(&application);
+    run(&mut application, "materialize project-write session").expect("initial run");
+    assert_eq!(application.permission_mode(), PermissionMode::ProjectWrite);
+
+    application.sessions.inject_persistence_faults(FaultHooks {
+        fail_batch_write: true,
+        ..FaultHooks::default()
+    });
+    let error = application
+        .set_permission_mode(PermissionMode::FullAccess)
+        .expect_err("injected journal failure must reject the switch");
+    assert!(error.to_string().contains("injected batch write failure"));
+    assert_eq!(
+        application.permission_mode(),
+        PermissionMode::ProjectWrite,
+        "failed durable escalation must not publish Full Access"
+    );
+    assert!(
+        load_events(&storage_root).iter().all(|event| {
+            event.event_type != "sandbox/mode"
+                || event.data.get("mode").and_then(serde_json::Value::as_str)
+                    != Some("danger-full-access")
+        }),
+        "failed escalation must not leave a durable Full Access event"
+    );
+
+    application.close().unwrap();
+    std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
+}
+
+/// FR-01 follow-up: a proven-not-committed escalation must be removed from
+/// the write-behind lane, not merely hidden from the live permission cell.
+/// Later ordinary journal traffic and a cold reopen must never resurrect it.
+#[test]
+fn denied_permission_mode_batch_never_commits_late() {
+    use crate::permission::PermissionMode;
+
+    let (storage_root, project_root) = roots("perm-denied-late-commit");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let project = Project::new(&project_root);
+    let mut application = mount_modes_from_storage(&project, &storage_root, TestBehavior::Success);
+    configure_test_model(&application);
+    run(&mut application, "materialize project-write session").expect("initial run");
+
+    application.sessions.inject_persistence_faults(FaultHooks {
+        fail_batch_write: true,
+        ..FaultHooks::default()
+    });
+    application
+        .set_permission_mode(PermissionMode::FullAccess)
+        .expect_err("injected durable escalation failure");
+    assert_eq!(application.permission_mode(), PermissionMode::ProjectWrite);
+
+    run(
+        &mut application,
+        "unrelated journal traffic after denied escalation",
+    )
+    .expect("ordinary traffic commits");
+    assert_eq!(
+        application.permission_mode(),
+        PermissionMode::ProjectWrite,
+        "later traffic must not publish the rejected mode in-process"
+    );
+    application.close().expect("close");
+
+    let reopened = mount_modes_from_storage(&project, &storage_root, TestBehavior::Success);
+    assert_eq!(
+        reopened.permission_mode(),
+        PermissionMode::ProjectWrite,
+        "a denied Full Access event must not leak through the retained write-behind batch"
+    );
+    reopened.close().expect("close reopened");
+    std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
+}
+
+/// An indeterminate append outcome is not reversible. It must poison the
+/// live session so no later producer retries the escalation behind the
+/// user's Deny result; cold repair is the only path that may decide what
+/// reached disk.
+#[test]
+fn unknown_permission_mode_outcome_stops_future_writes_until_cold_repair() {
+    use crate::permission::PermissionMode;
+
+    let (storage_root, project_root) = roots("perm-unknown-outcome");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let project = Project::new(&project_root);
+    let mut application = mount_modes_from_storage(&project, &storage_root, TestBehavior::Success);
+    configure_test_model(&application);
+    run(&mut application, "materialize before unknown outcome").expect("initial run");
+
+    application.sessions.inject_persistence_faults(FaultHooks {
+        fail_batch_fsync: true,
+        fail_rollback_fsync: true,
+        ..FaultHooks::default()
+    });
+    let error = application
+        .set_permission_mode(PermissionMode::FullAccess)
+        .expect_err("unknown durable outcome must not publish live authority");
+    assert!(error.to_string().contains("outcome unknown"));
+    assert_eq!(application.permission_mode(), PermissionMode::ProjectWrite);
+
+    let (completion, _receiver) = mpsc::channel();
+    let later = application.start_run(ApplicationRunRequest {
+        message: crate::message::PendingMessage::text("must not retry poisoned permission event"),
+        asker: None,
+        approver: allow_all_approver(),
+        events: Box::new(SharedEvents(Arc::new(Mutex::new(Vec::new())))),
+        completion,
+    });
+    let later_error = match later {
+        Ok(_) => panic!("poisoned session must reject later journal traffic"),
+        Err(error) => error,
+    };
+    assert!(later_error.to_string().contains("outcome unknown"));
+
+    assert!(
+        application.close().is_err(),
+        "close reports the poisoned unknown outcome"
+    );
+    let reopened = mount_modes_from_storage(&project, &storage_root, TestBehavior::Success);
+    assert_eq!(
+        reopened.permission_mode(),
+        PermissionMode::ProjectWrite,
+        "the deterministic injected rollback leaves cold repair at the old mode"
+    );
+    reopened.close().expect("close reopened");
     std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
 }
 

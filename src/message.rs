@@ -252,7 +252,11 @@ impl PendingMessage {
         }
     }
 
-    pub(crate) fn model_parts(&self) -> Vec<crate::model::ContentPart> {
+    /// Project an admitted message into provider-facing parts. Every image
+    /// descriptor must have an exact admitted source match; substituting text
+    /// would silently change the user's message and conceal an internal
+    /// admission/projection invariant violation.
+    pub(crate) fn model_parts(&self) -> Result<Vec<crate::model::ContentPart>, String> {
         let mut parts = Vec::with_capacity(self.content.blocks.len());
         for block in &self.content.blocks {
             match block {
@@ -260,25 +264,24 @@ impl PendingMessage {
                     parts.push(crate::model::ContentPart::Text(text.clone()))
                 }
                 ContentBlock::Image { attachment } => {
-                    if let Some(image) = self
+                    let image = self
                         .admitted_images
                         .iter()
                         .find(|image| image.descriptor.attachment_id == attachment.attachment_id)
-                    {
-                        parts.push(crate::model::ContentPart::Image {
-                            path: image.path.clone(),
-                            media_type: image.descriptor.media_type.clone(),
-                        });
-                    } else {
-                        parts.push(crate::model::ContentPart::Text(format!(
-                            "[image unavailable: attachment {} was not admitted]",
-                            attachment.attachment_id
-                        )));
-                    }
+                        .ok_or_else(|| {
+                            format!(
+                                "image attachment {} has no admitted provider source",
+                                attachment.attachment_id
+                            )
+                        })?;
+                    parts.push(crate::model::ContentPart::Image {
+                        path: image.path.clone(),
+                        media_type: image.descriptor.media_type.clone(),
+                    });
                 }
             }
         }
-        parts
+        Ok(parts)
     }
 
     /// **提交幂等 digest**（INV-M1A-3 的提交侧）：内容块 + staged 附件

@@ -26,9 +26,200 @@ use std::sync::{Arc, Mutex, mpsc};
 
 use super::*;
 
+fn now_unix_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64)
+        .unwrap_or(0)
+}
+
 impl TrustedProjectApplication {
+    #[cfg(test)]
+    pub(crate) fn inject_session_persistence_faults(
+        &self,
+        hooks: crate::session::persistence::FaultHooks,
+    ) {
+        self.sessions.inject_persistence_faults(hooks);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inject_next_wechat_chat_mapping_save_failure(&self) {
+        self.control.inject_next_chat_mapping_save_failure();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inject_next_admission_owner_scan_failure(&self) {
+        self.sessions.inject_next_admission_owner_scan_failure();
+    }
+
     pub(crate) fn draft_image_store(&self) -> Arc<crate::draft::DraftImageStore> {
         Arc::clone(&self.draft_images)
+    }
+
+    pub(crate) fn wechat_binding_status(&self) -> crate::im::WechatBindingStatus {
+        self.control.wechat_binding_status()
+    }
+
+    pub(crate) fn wechat_credentials(
+        &self,
+    ) -> Result<Option<crate::im::ilink::Credentials>, ApplicationError> {
+        self.control
+            .wechat_credentials()
+            .map_err(|error| ApplicationError::new(error.to_string()))
+    }
+
+    pub(crate) fn save_wechat_binding(
+        &self,
+        credentials: &crate::im::ilink::Credentials,
+    ) -> Result<(), ApplicationError> {
+        self.control
+            .save_wechat_binding(credentials)
+            .map_err(|error| ApplicationError::new(error.to_string()))
+    }
+
+    pub(crate) fn clear_wechat_binding(&self) -> Result<(), ApplicationError> {
+        self.control
+            .clear_wechat_binding()
+            .map_err(|error| ApplicationError::new(error.to_string()))
+    }
+
+    pub(crate) fn create_wechat_pairing_code(
+        &self,
+    ) -> Result<crate::im::PairingChallenge, ApplicationError> {
+        self.control
+            .create_wechat_pairing_code(now_unix_ms())
+            .map_err(|error| ApplicationError::new(error.to_string()))
+    }
+
+    pub(crate) fn attempt_wechat_pairing(
+        &self,
+        delivery_id: &str,
+        user_id: &str,
+        code: &str,
+    ) -> Result<crate::im::PairingAttempt, ApplicationError> {
+        self.control
+            .attempt_wechat_pairing(delivery_id, user_id, code, now_unix_ms())
+            .map_err(|error| ApplicationError::new(error.to_string()))
+    }
+
+    pub(crate) fn set_wechat_allowed_user(
+        &self,
+        user_id: &str,
+        allowed: bool,
+    ) -> Result<(), ApplicationError> {
+        self.control
+            .set_wechat_allowed_user(user_id, allowed)
+            .map_err(|error| ApplicationError::new(error.to_string()))
+    }
+
+    pub(crate) fn is_wechat_user_authorized(&self, user_id: &str) -> bool {
+        self.control.is_wechat_user_authorized(user_id)
+    }
+
+    pub(crate) fn wechat_cursor(&self) -> String {
+        self.control.wechat_cursor()
+    }
+
+    pub(crate) fn advance_wechat_cursor(
+        &self,
+        expected: &str,
+        next: &str,
+    ) -> Result<(), ApplicationError> {
+        self.control
+            .advance_wechat_cursor(expected, next)
+            .map_err(|error| ApplicationError::new(error.to_string()))
+    }
+
+    pub(crate) fn remove_wechat_paired_user(&self, user_id: &str) -> Result<(), ApplicationError> {
+        self.control
+            .remove_wechat_paired_user(user_id)
+            .map_err(|error| ApplicationError::new(error.to_string()))
+    }
+
+    pub(crate) fn bind_wechat_chat(
+        &self,
+        user_id: &str,
+        chat_id: &str,
+        session_id: &SessionId,
+    ) -> Result<(), ApplicationError> {
+        self.control
+            .bind_wechat_chat(user_id, chat_id, session_id)
+            .map_err(|error| ApplicationError::new(error.to_string()))
+    }
+
+    pub(crate) fn pending_wechat_chat_mapping(
+        &self,
+        delivery_id: &str,
+        user_id: &str,
+        chat_id: &str,
+    ) -> Option<crate::control_storage::im::PendingWechatChatMapping> {
+        self.control
+            .pending_wechat_chat_mapping(delivery_id, user_id, chat_id)
+    }
+
+    pub(crate) fn arm_wechat_chat_mapping(
+        &self,
+        delivery_id: &str,
+        user_id: &str,
+        chat_id: &str,
+        request_digest: &str,
+    ) -> Result<(), ApplicationError> {
+        self.control
+            .arm_wechat_chat_mapping(delivery_id, user_id, chat_id, request_digest, now_unix_ms())
+            .map_err(|error| ApplicationError::new(error.to_string()))
+    }
+
+    pub(crate) fn complete_wechat_chat_mapping(
+        &self,
+        delivery_id: &str,
+        user_id: &str,
+        chat_id: &str,
+        session_id: &SessionId,
+    ) -> Result<(), ApplicationError> {
+        self.control
+            .complete_wechat_chat_mapping(delivery_id, user_id, chat_id, session_id)
+            .map_err(|error| ApplicationError::new(error.to_string()))
+    }
+
+    pub(crate) fn abort_wechat_chat_mapping(
+        &self,
+        delivery_id: &str,
+        user_id: &str,
+        chat_id: &str,
+    ) -> Result<(), ApplicationError> {
+        self.control
+            .abort_wechat_chat_mapping(delivery_id, user_id, chat_id)
+            .map_err(|error| ApplicationError::new(error.to_string()))
+    }
+
+    pub(crate) fn wechat_chat_binding(
+        &self,
+        chat_id: &str,
+    ) -> Option<crate::im::WechatChatBinding> {
+        self.control.wechat_chat_binding(chat_id)
+    }
+
+    pub(crate) fn clear_wechat_chat_binding(
+        &self,
+        user_id: &str,
+        chat_id: &str,
+    ) -> Result<(), ApplicationError> {
+        self.control
+            .clear_wechat_chat_binding(user_id, chat_id)
+            .map_err(|error| ApplicationError::new(error.to_string()))
+    }
+
+    pub(crate) fn is_wechat_delivery_handled(&self, delivery_id: &str) -> bool {
+        self.control.is_wechat_delivery_handled(delivery_id)
+    }
+
+    pub(crate) fn mark_wechat_delivery_handled(
+        &self,
+        delivery_id: &str,
+    ) -> Result<(), ApplicationError> {
+        self.control
+            .mark_wechat_delivery_handled(delivery_id, now_unix_ms())
+            .map_err(|error| ApplicationError::new(error.to_string()))
     }
 
     pub(super) fn mount(
@@ -910,21 +1101,25 @@ impl TrustedProjectApplication {
     }
 
     /// 切换权限档位：下一次权限检查生效（P3）。档位是会话属性——活跃
-    /// 会话存在时向其 journal 追加 `sandbox/mode` 事件（append + flush +
-    /// checkpoint，DSH setSandboxMode 对应物），resume/重启随日志恢复；
+    /// 会话存在时向其 journal 追加 `sandbox/mode` 事件（append + flush 为
+    /// commit point，checkpoint 仅为可重建缓存；DSH setSandboxMode 对应物），resume/重启随日志恢复；
     /// 同值切换零事件；无活跃会话（首条消息前）只改内存 cell，该值在
-    /// `prepare_run` 物化时落为出生档（PS7）。journal 失败返回 Err——
-    /// 内存 cell 已更新（本进程行为即时生效），不回滚。
+    /// `prepare_run` 物化时落为出生档（PS7）。有活跃会话时以 durable
+    /// journal commit 为发布点：append/flush 任一步失败都不改变内存 cell；
+    /// commit 后 checkpoint 刷新失败是可恢复降级，不能反报升级失败。
     pub fn set_permission_mode(
         &self,
         mode: crate::permission::PermissionMode,
     ) -> Result<(), ApplicationError> {
-        *self.permission_mode.write().expect("permission mode lock") = mode;
         if !self.permission_modes_enabled {
+            *self.permission_mode.write().expect("permission mode lock") = mode;
             return Ok(());
         }
         match self.sessions.record_permission_mode(mode) {
-            Ok(_) => Ok(()),
+            Ok(_) => {
+                *self.permission_mode.write().expect("permission mode lock") = mode;
+                Ok(())
+            }
             Err(error) => Err(session_error(error)),
         }
     }

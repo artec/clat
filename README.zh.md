@@ -41,6 +41,7 @@ clat upgrade --check
 | 终端 UI | 日常交互式仓库开发 | `clat` |
 | 无头运行器 | 脚本、CI、git hook、编辑器集成 | `clat exec` |
 | Web 工作台 | 可安装的本地 PWA 与 HTTP+SSE 客户端 | `clat serve` |
+| 微信远程控制 | 官方 iLink 文本、图片、插话与审批 | `clat serve --im wechat` |
 | DSH 客户端 | 用 CLAT TUI 连接本地 DeepSeek Harness 宿主 | `clat dsh` |
 | 插件管理器 | 浏览签名市场，安装、更新、审计或回滚插件包 | `clat plugin` / [pi.at.cn](https://pi.at.cn) |
 | 离线演示 | 无凭据验证核心循环 | `clat demo` |
@@ -48,6 +49,8 @@ clat upgrade --check
 `clat serve` 默认只绑定 `127.0.0.1:2691`。API 使用持久化的
 `~/.clat/web-token` Bearer 凭据，token 不进入 URL；同一个二进制还会
 直接服务响应式三栏 PWA。
+可选的微信前端只走官方 iLink；必须显式扫码绑定、配对用户，并以
+`clat serve --im wechat` 启动，否则保持关闭。
 
 ## 已包含的能力
 
@@ -78,8 +81,8 @@ clat upgrade --check
   以及面向 DSH 可移植插件能力的静态 Cordis 兼容适配器；同一个
   事务型插件管理器安装 WASM 与可执行 MCP 包，并提供签名市场发现、依赖求解、
   发布者/撤销校验、能力复审与回滚。
-- **前端中立核心**——TUI、无头运行器、本地服务和未来客户端共享同一个
-  Application 门面与事件词汇。
+- **前端中立核心**——TUI、无头运行器、本地服务和可选微信前端共享同一个
+  Application 门面、权限管道、附件 admission 与事件词汇。
 
 ## 安装
 

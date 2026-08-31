@@ -447,6 +447,61 @@ struct ReceiptEntry {
 /// 回执窗口：1024 条 ≈ 远超任何合理的前端重试跨度；超窗淘汰最旧。
 const RECEIPT_CAPACITY: usize = 1024;
 
+/// Decode the durable admission fact directly from one `user/message`
+/// event. Recovery scans use this instead of the bounded receipt projection:
+/// a frontend mapping intent may outlive the 1024-entry retry window, but its
+/// original journal event remains the authority for session ownership.
+pub(crate) fn committed_admission_from_event(
+    event: &SessionEvent,
+    client_message_id: &str,
+) -> Option<crate::message::CommittedAdmission> {
+    if event.event_type != "user/message"
+        || event.data.get("clientMessageId").and_then(Value::as_str) != Some(client_message_id)
+    {
+        return None;
+    }
+    let attachment_ids = event
+        .data
+        .get("content")
+        .and_then(Value::as_array)
+        .map(|blocks| {
+            blocks
+                .iter()
+                .filter(|block| block.get("type").and_then(Value::as_str) == Some("image"))
+                .filter_map(|block| {
+                    block
+                        .get("attachmentId")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                        .or_else(|| {
+                            block
+                                .get("path")
+                                .and_then(Value::as_str)
+                                .map(crate::message::legacy_attachment_id)
+                        })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    Some(crate::message::CommittedAdmission {
+        receipt: crate::message::AdmissionReceipt::committed(
+            client_message_id.to_owned(),
+            event
+                .data
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            attachment_ids,
+        ),
+        request_digest: event
+            .data
+            .get("requestDigest")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+    })
+}
+
 impl Default for ReceiptUnit {
     fn default() -> Self {
         Self {
@@ -484,45 +539,16 @@ impl ProjectionUnit for ReceiptUnit {
                 .iter()
                 .any(|entry| entry.client_message_id == client_message_id)
             {
-                let attachment_ids = event
-                    .data
-                    .get("content")
-                    .and_then(Value::as_array)
-                    .map(|blocks| {
-                        blocks
-                            .iter()
-                            .filter(|block| {
-                                block.get("type").and_then(Value::as_str) == Some("image")
-                            })
-                            .filter_map(|block| {
-                                block
-                                    .get("attachmentId")
-                                    .and_then(Value::as_str)
-                                    .map(str::to_owned)
-                                    .or_else(|| {
-                                        block
-                                            .get("path")
-                                            .and_then(Value::as_str)
-                                            .map(crate::message::legacy_attachment_id)
-                                    })
-                            })
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
+                let admission = committed_admission_from_event(event, client_message_id)
+                    .expect("matching user event is a committed admission");
                 let entry = ReceiptEntry {
                     client_message_id: client_message_id.to_owned(),
-                    message_id: event
-                        .data
-                        .get("id")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_owned(),
-                    request_digest: event
-                        .data
-                        .get("requestDigest")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned),
-                    attachment_ids,
+                    message_id: admission
+                        .receipt
+                        .committed_message_id
+                        .expect("committed receipt has message id"),
+                    request_digest: admission.request_digest,
+                    attachment_ids: admission.receipt.attachment_ids,
                     seq: event.seq,
                 };
                 self.entries.push(entry);

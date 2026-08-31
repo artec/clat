@@ -302,6 +302,37 @@
         <button id="permission-save" class="primary" type="button">Apply permission mode</button>
       </div>
     </section>
+
+    <section class="settings-section wechat-settings">
+      <div class="settings-copy">
+        <h3>WeChat remote control</h3>
+        <p>Uses the official iLink API. Bot binding and user authorization are separate; an empty authorization set denies everyone.</p>
+      </div>
+      <div class="wechat-status-row">
+        <strong id="wechat-status">Checking…</strong>
+        <span id="wechat-counts"></span>
+      </div>
+      <div id="wechat-qr" class="wechat-qr hidden">
+        <img id="wechat-qr-image" alt="WeChat binding QR code">
+        <p id="wechat-qr-state" role="status">Waiting for scan…</p>
+        <div id="wechat-verify-row" class="wechat-verify hidden">
+          <label for="wechat-verify-code">Verification code</label>
+          <input id="wechat-verify-code" type="text" maxlength="32" autocomplete="one-time-code">
+          <button id="wechat-verify-submit" class="secondary" type="button">Submit</button>
+        </div>
+      </div>
+      <div id="wechat-pairing" class="wechat-pairing hidden">
+        <span>One-time pairing code</span>
+        <code id="wechat-pairing-code"></code>
+        <small>Send <b>/pair &lt;code&gt;</b> as a standalone WeChat message within 60 minutes.</small>
+      </div>
+      <p id="wechat-error" class="error" role="alert"></p>
+      <div class="wechat-actions">
+        <button id="wechat-bind" class="secondary" type="button">Bind WeChat</button>
+        <button id="wechat-pair" class="secondary" type="button">Create pairing code</button>
+        <button id="wechat-unbind" class="danger-button" type="button">Unbind</button>
+      </div>
+    </section>
   </form>
 </dialog>
 

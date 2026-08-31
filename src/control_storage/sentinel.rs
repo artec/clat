@@ -123,6 +123,7 @@ pub(crate) fn classify(root: &Path) -> ControlPlaneStatus {
     let has_new_family = path_exists(root, super::settings::SETTINGS_NAME)
         || path_exists(root, super::settings::CREDENTIALS_NAME)
         || path_exists(root, super::settings::TRUST_NAME)
+        || path_exists(root, super::im::FILE_NAME)
         || path_exists(root, STORAGES_DIR_NAME);
     match config {
         ConfigPresence::Current(config) => {

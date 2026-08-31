@@ -215,6 +215,23 @@ test.describe('acceptance ① approval + run lifecycle', () => {
   });
 });
 
+test('settings expose the default-deny WeChat binding surface', async ({ page }) => {
+  const entry = hostInfo('success');
+  await openWorkbench(page, entry);
+
+  await page.click('#settings-open');
+  await expect(page.locator('#settings-dialog')).toBeVisible(LIVE);
+  await expect(page.locator('.wechat-settings h3')).toHaveText('WeChat remote control');
+  await expect(page.locator('#wechat-status')).toHaveText('Not bound', LIVE);
+  await expect(page.locator('#wechat-counts')).toHaveText('0 paired · 0 chats');
+  await expect(page.locator('#wechat-bind')).toHaveText('Bind WeChat');
+  await expect(page.locator('#wechat-bind')).toBeEnabled();
+  await expect(page.locator('#wechat-pair')).toBeDisabled();
+  await expect(page.locator('#wechat-unbind')).toBeDisabled();
+  await expect(page.locator('#wechat-qr')).toBeHidden();
+  await expect(page.locator('#wechat-pairing')).toBeHidden();
+});
+
 // —— 验收③：run 进行中 F5 → 视图完整恢复、流式继续（INV-W3）——
 test('refresh mid-run rebuilds the view and streaming continues', async ({ page }) => {
   const entry = hostInfo('long-stream');

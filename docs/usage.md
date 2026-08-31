@@ -552,6 +552,127 @@ clat serve --port 0 --token temporary-secret   # OS-assigned test port
 `--rotate-token` and `--token` are mutually exclusive. `--token` is a
 process-only override; it neither reads nor changes the persistent token.
 
+### WeChat remote control
+
+The optional WeChat frontend uses the official iLink bot API from the same
+`clat serve` process. It is disabled by default. Stop any running CLAT process,
+then bind the machine, authorize one WeChat user, and start the host explicitly:
+
+```bash
+clat wechat bind                 # scan and confirm the QR code in WeChat
+clat wechat pair                 # prints a one-time six-digit code
+# In the bot chat, send the standalone message: /pair <code>
+clat wechat status
+clat serve --im wechat
+```
+
+Binding stores the bot credential locally in `~/.clat/im.json` with private
+file permissions, but authorizes no sender. The pairing code expires after 60
+minutes, succeeds once, and rate-limits repeated failures. You can replace a
+confirmed binding with `clat wechat bind --replace`. To revoke the credential,
+every paired user, chat mapping, cursor, and delivery receipt together, stop
+serve and run `clat wechat unbind --confirm`. The Workbench settings surface
+offers the same binding, pairing, status, and unbind lifecycle.
+
+After pairing, use these standalone chat commands:
+
+- `/new` arms a new CLAT session; the following text or image message
+  materializes it and creates the durable chat-to-session mapping.
+- `/status` reports whether the chat is mapped and whether a run is active.
+- `/stop` cancels only the active run owned by this mapped chat.
+- `/help` lists the commands.
+
+Ordinary text enters the same typed prompt and journal-admission path as the
+TUI and Workbench. A message arriving during this chat's run uses the same
+in-run steering semantics. PNG and JPEG images are downloaded only from an
+official Weixin HTTPS media host, decrypted, validated, staged as short-lived
+input, and then pass through the normal attachment admission limits. Text that
+looks like a path or URL grants no file authority.
+
+Replies, selected run status, typing state, and permission requests are
+projected back to the paired chat. The queue retains at most 128 already
+Unicode-safe chunks; under backpressure it keeps the newest chunks and the next
+text reply reports how many older status chunks were dropped. Chat mappings,
+the poll cursor, and replay receipts survive a graceful restart. An invalid
+iLink credential cancels the active run, clears the binding fail-closed, and
+requires a new QR binding. See [Permissions](permissions.md#wechat-approval)
+before approving tools from a phone.
+
+### Running serve continuously
+
+`clat serve` owns one project and the local `~/.clat` storage root for its
+complete lifetime. A second CLAT process using that storage root fails with
+`another CLAT process holds this storage root; close it first`, even when the
+two processes request different ports. Keep the working directory and `HOME`
+stable across restarts so the process reopens the intended project, sessions,
+credentials, and browser token.
+
+Ctrl-C and, on Unix, SIGTERM/SIGHUP all enter the same graceful shutdown path:
+the server stops accepting requests, cancels the active run, drains bounded
+connection/work queues, closes the Application, and flushes its journal before
+exiting. A second signal is an emergency hard exit and does not promise those
+steps. Service managers should therefore send SIGTERM and allow a shutdown
+grace period instead of using SIGKILL.
+
+For a simple foreground session that survives a terminal disconnect:
+
+```bash
+tmux new-session -s clat-serve 'cd /absolute/project && exec clat serve'
+# Reattach later with: tmux attach -t clat-serve
+```
+
+Append `--im wechat` to the tmux, launchd, or systemd command only after the
+binding and user pairing above are complete.
+
+On macOS, save a user LaunchAgent such as
+`~/Library/LaunchAgents/io.artec.clat.serve.plist` with absolute paths:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>io.artec.clat.serve</string>
+  <key>ProgramArguments</key><array>
+    <string>/absolute/path/to/clat</string><string>serve</string>
+  </array>
+  <key>WorkingDirectory</key><string>/absolute/project</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
+  <key>StandardOutPath</key><string>/absolute/log/clat-serve.log</string>
+  <key>StandardErrorPath</key><string>/absolute/log/clat-serve.err</string>
+</dict></plist>
+```
+
+Load it with `launchctl bootstrap gui/$(id -u)
+~/Library/LaunchAgents/io.artec.clat.serve.plist`. Stop it gracefully with
+`launchctl kill SIGTERM gui/$(id -u)/io.artec.clat.serve` before changing the
+project or configuration.
+
+On Linux, a user service at `~/.config/systemd/user/clat-serve.service` can use:
+
+```ini
+[Unit]
+Description=CLAT local serve host
+
+[Service]
+Type=simple
+WorkingDirectory=/absolute/project
+ExecStart=/absolute/path/to/clat serve
+Restart=on-failure
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target
+```
+
+Run `systemctl --user daemon-reload && systemctl --user enable --now
+clat-serve.service`; inspect it with `systemctl --user status
+clat-serve.service`. These examples intentionally keep daemonization outside
+CLAT: the binary remains a foreground process with one explicit lifecycle
+owner.
+
 ### Security boundary
 
 - The listener is IPv4 loopback-only. There is no `--host` option.

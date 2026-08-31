@@ -10,6 +10,7 @@ pub mod dsh;
 pub mod event;
 pub mod exec;
 pub mod goal;
+pub(crate) mod im;
 mod interaction;
 mod language_intelligence;
 mod mcp;

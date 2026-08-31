@@ -22,6 +22,11 @@ name = "clat"
 path = "src/main.rs"
 
 [dependencies]
+# Official iLink media is AES-128-ECB encrypted. Decryption stays inside the
+# protocol adapter; decrypted bytes immediately enter the existing attachment
+# admission path and are never exposed as a host path.
+aes = "0.8.4"
+base64 = "0.22.1"
 # Capability-relative filesystem operations keep project writes bound to an
 # opened directory handle across symlink and directory-replacement races.
 cap-std = "4.0.2"
@@ -44,10 +49,16 @@ regex = "1.12"
 # `clat exec` turns Ctrl-C into a graceful CancelToken trip so partial output
 # still persists; a second press hard-exits 130. Installed once at the
 # process boundary in main.rs (the lib exposes ExecCancel instead).
-ctrlc = "3"
+# `termination` extends the same process-boundary handler to SIGTERM/SIGHUP on
+# Unix, so launchd/systemd stops take the identical graceful close path as
+# interactive Ctrl-C. No signal handling leaks into the library/frontend.
+ctrlc = { version = "3", features = ["termination"] }
 crossterm = "0.29"
 minisign-verify = "0.2.5"
 ratatui = "0.30.2"
+# Official iLink binding is presented by both the terminal and PWA. Only the
+# QR matrix/renderers are used; image codecs stay disabled.
+qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
 serde = { version = "1", features = ["derive"] }
 # preserve_order keeps json!-built payloads in insertion order, matching
 # DSH's JSON.stringify field order for byte-level wire compat.

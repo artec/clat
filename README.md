@@ -41,6 +41,7 @@ Run `clat --help` for the complete command-line surface.
 | Terminal UI | Daily interactive repository work | `clat` |
 | Headless runner | Scripts, CI, git hooks, editor integrations | `clat exec` |
 | Web workbench | An installable local PWA and HTTP+SSE clients | `clat serve` |
+| WeChat remote | Official iLink text, image, steering, and approvals | `clat serve --im wechat` |
 | DSH client | Using CLAT's TUI with a local DeepSeek Harness host | `clat dsh` |
 | Plugin manager | Browsing the signed market; installing, updating, auditing, or rolling back packages | `clat plugin` / [pi.at.cn](https://pi.at.cn) |
 | Offline demo | Verifying the core loop without credentials | `clat demo` |
@@ -48,6 +49,8 @@ Run `clat --help` for the complete command-line surface.
 `clat serve` binds only to `127.0.0.1:2691` by default. API access uses a
 persistent `~/.clat/web-token` Bearer credential; the token is never placed in
 the URL. The same binary serves the responsive three-panel PWA.
+An optional official-iLink WeChat frontend can be bound and paired explicitly;
+it remains off unless serve is started with `--im wechat`.
 
 ## What is included
 
@@ -85,8 +88,9 @@ the URL. The same binary serves the responsive three-panel PWA.
   plugin capabilities; one transactional package manager installs both WASM
   and executable MCP packages with signed market discovery, dependency solving,
   publisher/revocation checks, capability review and rollback.
-- **Client-neutral core** — the TUI, headless runner, local server, and future
-  clients consume the same Application facade and event vocabulary.
+- **Client-neutral core** — the TUI, headless runner, local server, and optional
+  WeChat frontend consume the same Application facade, permission pipeline,
+  attachment admission, and event vocabulary.
 
 ## Install
 
