@@ -16,8 +16,8 @@ use crate::CancelToken;
 use crate::event::{EventSink, RunEvent};
 use crate::model::{ModelConfig, ProviderCredentials, Usage};
 use crate::permission::PermissionApprover;
-use crate::plugin::{Plugin, PluginManager, ScopeKind};
-use crate::plugins::services::{AgentFailure, AgentRequest, RUN_SCOPE_SERVICE};
+use crate::plugin::Plugin;
+use crate::plugins::services::{AgentFailure, AgentRequest};
 use crate::session::event::{TurnEndCancelCause, TurnEndReason, payloads};
 use crate::session::recorder::{RequestHeaderData, SessionRecorder};
 use crate::session::run_journal::NewSessionEvent;
@@ -147,7 +147,7 @@ struct RunHostDeps {
 /// Stable dependencies owned by the worker for its entire lifetime. Keeping
 /// the scope and every run-local slot together makes cleanup knowledge local.
 struct RunWorkerDeps {
-    run_scope: PluginManager,
+    run_scope: super::composition::MountedRunScope,
     sessions: Arc<crate::session::use_cases::SessionService>,
     agent: Arc<dyn crate::plugins::services::AgentRuntime>,
     process_service: Arc<crate::process::ProcessService>,
@@ -177,19 +177,8 @@ impl RunExecutionEngine {
         application: &mut TrustedProjectApplication,
         spec: RunExecutionSpec,
     ) -> Result<WaitingRunExecution, ApplicationError> {
-        let mut run_scope = application
-            .project_manager
-            .as_mut()
-            .ok_or_else(|| ApplicationError::new("project scope is closed"))?
-            .child(ScopeKind::Run)
-            .map_err(|error| ApplicationError::new(error.to_string()))?;
-        run_scope
-            .mount_all(spec.run_plugins)
-            .map_err(|error| ApplicationError::new(error.to_string()))?;
-        let resources = run_scope
-            .require(RUN_SCOPE_SERVICE)
-            .map_err(|error| ApplicationError::new(error.to_string()))?;
-        let cancel = resources.cancel.clone();
+        let run_scope = application.composition.mount_run_scope(spec.run_plugins)?;
+        let cancel = run_scope.cancel_token();
         let sampling_usage = Arc::new(Mutex::new(Usage::default()));
         let sampling_budget = Arc::new(Mutex::new(crate::plugin_host::SamplingBudget::per_run()));
         let busy = Arc::new(AtomicBool::new(true));

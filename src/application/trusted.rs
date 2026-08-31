@@ -2,18 +2,7 @@ use crate::Project;
 use crate::control_storage::workspace::WorkspaceRecord;
 use crate::control_storage::{ControlStorage, sentinel};
 use crate::model::{ModelConfig, ProviderCredentials, ProviderDescriptor};
-use crate::plugin::{Plugin, PluginManager, ScopeKind};
-use crate::plugins::services::{
-    AGENT_SERVICE, COMMAND_SERVICE, COMPACTION_SERVICE, CONFIG_SERVICE,
-    DYNAMIC_INSTRUCTIONS_SERVICE, MCP_STATUS_SERVICE, MONITOR_SERVICE, PERMISSION_SERVICE,
-    PROCESS_SERVICE, PROMPT_SERVICE, PROVIDER_SERVICE, SESSION_SERVICE, SESSION_TITLE_SERVICE,
-    TODO_SERVICE, TOOL_PIPELINE_SERVICE, TOOL_SERVICE,
-};
-use crate::plugins::services::{
-    GOAL_SERVICE, MEMORY_SERVICE, PLAN_MODE_SERVICE, SUBAGENT_SERVICE, TOOL_ACCESS_SERVICE,
-    VIEW_IMAGE_SERVICE,
-};
-use crate::plugins::{ProjectControlStoragePlugin, SessionPersistencePlugin};
+use crate::plugin::Plugin;
 use crate::presets::preset_by_id;
 use crate::session::id::SessionId;
 use crate::session::key::{ProjectKey, SessionKey};
@@ -324,223 +313,61 @@ impl TrustedProjectApplication {
         let session_service = Arc::new(
             SessionService::new(session_root, JsonlCompression::Zstd).map_err(session_error)?,
         );
-        // ask-user 插槽：Application 持有克隆，每次 run 启动装入请求的
-        // 前端实现。
+        // ask-user 与 plugin-host 是 run 期间反复装/卸的项目级插槽；
+        // Application 持有 typed clone，Composition 负责把它们接入插件树。
         let asker_slot = crate::interaction::AskUserSlot::shared();
-        // 插件宿主桥：MCP（与将来的 WASM）插件 sampling/elicitation
-        // 的宿主侧（权限门/记账/问答），上下文按 run 安装。
         let plugin_host = crate::plugin_host::PluginHostBridge::shared();
-        // 权限档位 cell（P3）：挂载期创建、进程内常驻；工厂按
-        // `permission_modes` 决定委托是否读它。档位是**会话属性**
-        // （DSH `sandbox/mode` journal 事件，latest-wins）：mount 恢复
-        // 工作区会话后按该会话自己的 fold 对齐 cell（见
-        // `reseed_permission_mode_from_session`），未记录过的会话回落
-        // 编译期默认 ProjectWrite。Classic（exec）不参与档位系统——
-        // 其会话日志不含 `sandbox/mode` 事件（PS4）。
-        let initial_permission_mode = crate::permission::PermissionMode::default();
-        let permission_mode = Arc::new(std::sync::RwLock::new(initial_permission_mode));
-        let permission_source = if permission_modes {
-            crate::permission::ModeSource::Shared(Arc::clone(&permission_mode))
-        } else {
-            crate::permission::ModeSource::Classic
-        };
-        let mut catalog: Vec<Arc<dyn Plugin>> = vec![
-            Arc::new(ProjectControlStoragePlugin::new(Arc::clone(&control))),
-            Arc::new(SessionPersistencePlugin::new(Arc::clone(&session_service))),
-            Arc::new(crate::plugins::ToolRegistryPlugin),
-            Arc::new(crate::plugins::NativeReadToolsPlugin),
-            Arc::new(crate::plugins::SearchPlugin),
-            Arc::new(crate::plugins::NativeWriteToolsPlugin {
-                // 写入围栏来源与权限策略读同一个 cell（SR2）：切 FA 的
-                // 下一次写即开放绝对路径；exec（Classic）恒项目根。
-                scope: if permission_modes {
-                    crate::permission::WriteScopeSource::Shared(Arc::clone(&permission_mode))
-                } else {
-                    crate::permission::WriteScopeSource::ProjectRoot
-                },
-            }),
-            Arc::new(crate::plugins::ApplyPatchPlugin {
-                scope: if permission_modes {
-                    crate::permission::WriteScopeSource::Shared(Arc::clone(&permission_mode))
-                } else {
-                    crate::permission::WriteScopeSource::ProjectRoot
-                },
-            }),
-            Arc::new(crate::plugins::SandboxPlugin {
-                project_root: project.root().to_path_buf(),
-                permission_mode: permission_modes.then(|| Arc::clone(&permission_mode)),
-            }),
-            Arc::new(crate::plugins::ProcessServicePlugin {
-                project: project.clone(),
-            }),
-            Arc::new(crate::plugins::ExecToolsPlugin),
-            Arc::new(crate::plugins::NativeInteractionToolsPlugin {
-                slot: Arc::clone(&asker_slot),
-            }),
-            Arc::new(crate::plugins::ProviderRegistryPlugin),
-        ];
-        match provider_plugins {
-            Some(providers) => catalog.extend(providers),
-            None => catalog.extend([
-                Arc::new(crate::plugins::OpenAiResponsesPlugin) as Arc<dyn Plugin>,
-                Arc::new(crate::plugins::OpenAiCompatiblePlugin) as Arc<dyn Plugin>,
-            ]),
-        }
-        catalog.extend([
-            Arc::new(crate::plugins::McpAdapterPlugin::with_project_root(
-                storage_root.clone(),
-                project.root().to_owned(),
-                glm_mcp_pack_from_control(&control),
-                Arc::clone(&plugin_host),
-            )) as Arc<dyn Plugin>,
-            Arc::new(crate::plugins::WasmAdapterPlugin::new(
-                storage_root.clone(),
-                Arc::clone(&plugin_host),
-                project.root().to_owned(),
-                if permission_modes {
-                    Some(Arc::clone(&permission_mode))
-                } else {
-                    None
-                },
-            )) as Arc<dyn Plugin>,
-            Arc::new(crate::plugins::PlanModePlugin::new(Arc::clone(&asker_slot))),
-            Arc::new(crate::plugins::SkillsPlugin::new(
-                project.root().to_owned(),
-                storage_root.clone(),
-            )),
-            Arc::new(crate::plugins::LanguageIntelligencePlugin::new(
-                project.root().to_owned(),
-                storage_root.clone(),
-            )),
-            Arc::new(crate::plugins::MemoryPlugin::new(
-                storage_root.clone(),
-                project.root().to_owned(),
-            )),
-            Arc::new(crate::plugins::DefaultPermissionPlugin::new(
-                permission_source,
-            )),
-            Arc::new(crate::plugins::PromptRegistryPlugin),
-            Arc::new(crate::plugins::DefaultPromptPlugin),
-            Arc::new(crate::plugins::CommandsPlugin),
-            Arc::new(crate::plugins::GoalPlugin::new(project.root().to_owned())),
-            Arc::new(crate::plugins::SubagentPlugin::new(project.clone())),
-            Arc::new(crate::plugins::BuiltinCommandsPlugin),
-            Arc::new(crate::plugins::ContextInspectorPlugin),
-            Arc::new(crate::plugins::ProjectInstructionsPlugin::new(
-                project.clone(),
-            )),
-            Arc::new(crate::plugins::ToolPipelinePlugin),
-            Arc::new(crate::plugins::ViewImagePlugin),
-            Arc::new(crate::plugins::ToolResultPrunerPlugin),
-            Arc::new(crate::plugins::CompactionPlugin),
-            Arc::new(crate::plugins::TodoPlugin),
-            Arc::new(crate::plugins::SessionTitlePlugin),
-            Arc::new(crate::plugins::DefaultAgentPlugin::new(project.clone())),
-            Arc::new(crate::plugins::MonitorPlugin),
-        ]);
-        let mut project_manager = PluginManager::root(ScopeKind::TrustedProject);
-        project_manager
-            .mount_all(catalog)
-            .map_err(|error| ApplicationError::new(error.to_string()))?;
-        // 工具注册表**不在此冻结**：MCP 后台 worker 挂载后仍在注册工
-        // 具，冻结点后移到首次 `start_run`（先有界等待 MCP 落定，见
-        // `start_run_with_catalog`——architecture.md 的 "Registries
-        // freeze before a run" 语义，docs/todo/mcp-async-startup.md）。
-        // prompts 同样不在此冻结：DSH adapter 可在 MCP 后台启动期导入
-        // `ctx.systemPrompt`；首次 run 等 MCP 落定后与 tools 一起冻结。
-        // providers/commands 的贡献仍在挂载期完成，照旧冻结。
-        let tools = project_manager
-            .require(TOOL_SERVICE)
-            .map_err(|error| ApplicationError::new(error.to_string()))?;
-        let providers = project_manager
-            .require(PROVIDER_SERVICE)
-            .map_err(|error| ApplicationError::new(error.to_string()))?;
-        providers
-            .freeze()
-            .map_err(|error| ApplicationError::new(error.to_string()))?;
-        let prompts = project_manager
-            .require(PROMPT_SERVICE)
-            .map_err(|error| ApplicationError::new(error.to_string()))?;
-        let dynamic_instructions = project_manager
-            .require(DYNAMIC_INSTRUCTIONS_SERVICE)
-            .map_err(|error| ApplicationError::new(error.to_string()))?;
-        let plan_mode = project_manager
-            .require(PLAN_MODE_SERVICE)
-            .map_err(|error| ApplicationError::new(error.to_string()))?;
-        let tool_access = project_manager
-            .require(TOOL_ACCESS_SERVICE)
-            .map_err(|error| ApplicationError::new(error.to_string()))?;
-        let view_image = project_manager
-            .require(VIEW_IMAGE_SERVICE)
-            .map_err(|error| ApplicationError::new(error.to_string()))?;
-        let skills = project_manager
-            .require(crate::plugins::services::SKILLS_SERVICE)
-            .map_err(|error| ApplicationError::new(error.to_string()))?;
-        let skill_catalog = project_manager
-            .require(crate::plugins::services::SKILL_CATALOG_SERVICE)
-            .map_err(|error| ApplicationError::new(error.to_string()))?;
-        let memory = project_manager
-            .require(MEMORY_SERVICE)
-            .map_err(|error| ApplicationError::new(error.to_string()))?;
-        let goal = project_manager
-            .require(GOAL_SERVICE)
-            .map_err(|error| ApplicationError::new(error.to_string()))?;
-        let subagents = project_manager
-            .require(SUBAGENT_SERVICE)
-            .map_err(|error| ApplicationError::new(error.to_string()))?;
-        let process_service = project_manager
-            .require(PROCESS_SERVICE)
-            .map_err(|error| ApplicationError::new(error.to_string()))?;
-        let language_intelligence = project_manager
-            .require(crate::plugins::services::LANGUAGE_INTELLIGENCE_SERVICE)
-            .map_err(|error| ApplicationError::new(error.to_string()))?;
-        let language_startup_notice = Arc::new(Mutex::new(
-            language_intelligence.diagnostics().first().cloned(),
+        // 权限档位 cell 同时驱动策略和写围栏；Composition 只消费这一个
+        // typed source，不复制会话恢复/切换语义。
+        let permission_mode = Arc::new(std::sync::RwLock::new(
+            crate::permission::PermissionMode::default(),
         ));
-        // 命令注册表与工具/厂商/提示词同点冻结：贡献只发生在挂载期，
-        // 冻结后挡注册不挡撤销（INV-C3）。
-        let commands = project_manager
-            .require(COMMAND_SERVICE)
-            .map_err(|error| ApplicationError::new(error.to_string()))?;
-        commands.freeze();
-        let tool_pipeline = project_manager
-            .require(TOOL_PIPELINE_SERVICE)
-            .map_err(|error| ApplicationError::new(error.to_string()))?;
-        tool_pipeline
-            .freeze()
-            .map_err(|error| ApplicationError::new(error.to_string()))?;
-        let permissions = project_manager
-            .require(PERMISSION_SERVICE)
-            .map_err(|error| ApplicationError::new(error.to_string()))?;
-        plugin_host.configure_host_services(
-            project.clone(),
-            Arc::clone(&tools),
-            tool_pipeline,
-            permissions,
-        );
-        let sessions = project_manager
-            .require(SESSION_SERVICE)
-            .map_err(|error| ApplicationError::new(error.to_string()))?;
-        let config = project_manager
-            .require(CONFIG_SERVICE)
-            .map_err(|error| ApplicationError::new(error.to_string()))?;
-        let agent = project_manager
-            .require(AGENT_SERVICE)
-            .map_err(|error| ApplicationError::new(error.to_string()))?;
-        let mcp_status = project_manager
-            .require(MCP_STATUS_SERVICE)
-            .map_err(|error| ApplicationError::new(error.to_string()))?;
-        let monitor = project_manager
-            .require(MONITOR_SERVICE)
-            .map_err(|error| ApplicationError::new(error.to_string()))?;
-        let compactor = project_manager.require(COMPACTION_SERVICE).ok();
-        let todo_service = project_manager.require(TODO_SERVICE).ok();
-        let titler = project_manager.require(SESSION_TITLE_SERVICE).ok();
+        let subscribers = Arc::new(Mutex::new(Vec::new()));
+        let (composition, ports) = super::composition::TrustedProjectComposition::mount(
+            super::composition::CompositionInput {
+                project: project.clone(),
+                storage_root: storage_root.clone(),
+                control: Arc::clone(&control),
+                sessions: Arc::clone(&session_service),
+                provider_plugins,
+                permission_modes,
+                permission_mode: Arc::clone(&permission_mode),
+                asker_slot: Arc::clone(&asker_slot),
+                plugin_host: Arc::clone(&plugin_host),
+                subscribers: Arc::clone(&subscribers),
+            },
+        )?;
+        let super::composition::ProjectPorts {
+            sessions,
+            config,
+            providers,
+            tools,
+            prompts,
+            dynamic_instructions,
+            process_service,
+            plan_mode,
+            tool_access,
+            view_image,
+            skills,
+            skill_catalog,
+            memory,
+            goal,
+            subagents,
+            commands,
+            agent,
+            mcp_status,
+            monitor,
+            compactor,
+            todo: todo_service,
+            titler,
+            language_startup_diagnostic,
+        } = ports;
+        let language_startup_notice = Arc::new(Mutex::new(language_startup_diagnostic));
 
         let draft_images = Arc::new(crate::draft::DraftImageStore::new(control.root_path()));
         let mut application = Self {
             project: project.clone(),
-            project_manager: Some(project_manager),
+            composition,
             sessions,
             control,
             draft_images,
@@ -567,7 +394,7 @@ impl TrustedProjectApplication {
             titler,
             title_worker: None,
             mounted_replay: None,
-            subscribers: Arc::new(Mutex::new(Vec::new())),
+            subscribers,
             language_startup_notice,
             canonical_root: project
                 .root()
@@ -609,35 +436,6 @@ impl TrustedProjectApplication {
                 Arc::clone(&application.subscribers),
             )?);
         }
-        // A4-1（W1-21）：MCP/WASM 启动失败的一次性响亮通知——把状态
-        // 面板里的静默 failures 升级为用户可感知的 ApplicationEvent。
-        if let Some(manager) = &application.project_manager
-            && let Ok(status) = manager.require(MCP_STATUS_SERVICE)
-        {
-            let subscribers = Arc::clone(&application.subscribers);
-            status.set_notice_sink(Arc::new(move |failures| {
-                broadcast_to(
-                    &subscribers,
-                    ApplicationEvent::McpStartupNotice { failures },
-                );
-            }));
-        }
-        let process_subscribers = Arc::clone(&application.subscribers);
-        application
-            .process_service
-            .set_notice_sink(Arc::new(move |notice| {
-                broadcast_to(
-                    &process_subscribers,
-                    ApplicationEvent::ProcessFinished {
-                        session_id: notice.session_id,
-                        exit_code: notice.exit_code,
-                        signal: notice.signal,
-                        timed_out: notice.timed_out,
-                        cancelled: notice.cancelled,
-                        terminated: notice.terminated,
-                    },
-                );
-            }));
         // B9 迁移腿（INV-M3 升级腿）：旧世界的唯一自定义持久化形态是
         // 单槽 model_state——档案注册表出现前切走即丢。挂载时把
         // `preset=None 且 endpoint 非空` 的存量态自动转为第一个档案；
@@ -1688,9 +1486,7 @@ impl TrustedProjectApplication {
         if let Err(error) = self.sessions.quiesce_active() {
             errors.push(format!("session quiesce failed: {error}"));
         }
-        if let Some(mut manager) = self.project_manager.take()
-            && let Err(error) = manager.close()
-        {
+        if let Err(error) = self.composition.close() {
             errors.push(error.to_string());
         }
         if errors.is_empty() {

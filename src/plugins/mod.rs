@@ -76,9 +76,9 @@ use crate::{CancelToken, PermissionApprover};
 use std::sync::Arc;
 
 /// The run scope mounts a fixed catalog (cancel + approver resources). The
-/// Trusted Project catalog is assembled by `BootstrapApplication::mount`
-/// itself (application.rs) — it owns the control-plane and session-service
-/// handles created during `authorize_and_mount`.
+/// Trusted Project catalog is hidden behind `TrustedProjectComposition`,
+/// which consumes the control-plane and session-service handles created by
+/// `authorize_and_mount` and exposes only typed application ports.
 pub(crate) fn run_catalog(
     cancel: CancelToken,
     approver: Arc<dyn PermissionApprover>,

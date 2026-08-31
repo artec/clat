@@ -9,7 +9,6 @@
 
 use crate::Project;
 use crate::control_storage::ControlStorage;
-use crate::plugin::PluginManager;
 use crate::plugins::services::{
     ConfigStore, DynamicInstructions, HistoryCompactor, McpStatus, MonitorService,
     ProviderRegistry, SessionTitler, StoreError, TodoService,
@@ -24,6 +23,7 @@ use std::sync::{Arc, Mutex, mpsc};
 
 mod bootstrap;
 mod compaction;
+mod composition;
 mod context;
 #[cfg(test)]
 mod context_tests;
@@ -166,7 +166,7 @@ pub enum ApplicationEvent {
 
 pub struct TrustedProjectApplication {
     project: Project,
-    project_manager: Option<PluginManager>,
+    composition: composition::TrustedProjectComposition,
     sessions: Arc<SessionService>,
     control: Arc<ControlStorage>,
     /// Process-local, core-owned pre-admission image staging. Clipboard bytes

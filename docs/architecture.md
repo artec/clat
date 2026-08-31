@@ -42,7 +42,11 @@ CLAT is organized around a small set of non-negotiable boundaries:
                            │ trust transition
                            ▼
              TrustedProjectApplication
-       sessions · config · tools · providers · plugins
+              frontend-neutral use cases
+                           │ typed ports
+                           ▼
+          TrustedProjectComposition (internal)
+        catalog · resolve · freeze · wire · close
                            │ start_run
                            ▼
                       Run Scope
@@ -109,7 +113,10 @@ Mount and teardown are symmetric:
 Provider factories, tools, prompt fragments, command handlers, tool
 middleware, and post observers use domain registries. Registries freeze before
 a run, preventing mid-run additions from changing the model's tool surface.
-Teardown can still revoke existing leases.
+Providers, commands, and the tool pipeline freeze during project composition;
+tools and prompts freeze only after the first run's bounded MCP/DSH startup
+wait, so asynchronous contributions are complete. Teardown can still revoke
+existing leases.
 
 ## Application boundary
 
@@ -145,6 +152,14 @@ DTOs contain display-ready facts, not subsystem handles. The workbench
 snapshot deliberately excludes credentials and transcript replay; the server
 combines it with its active-run ledger at the wire boundary.
 
+`application/composition.rs` is the only owner of the Trusted Project
+`PluginManager`. Its narrow `mount` transition builds the static catalog,
+resolves the complete typed `ProjectPorts` set, applies the mount-time freeze
+points, and wires project-owned notices. It also hides Run child creation and
+reverse project teardown. The Application keeps trust, session selection,
+admission, and active-worker policy; it cannot ask the manager for additional
+services after mount.
+
 ## Agent run lifecycle
 
 The single-agent runtime is the daily-driver baseline. One trusted project can
@@ -173,12 +188,13 @@ adapt without aborting the whole run.
 
 `application/run_execution.rs` owns this two-phase worker boundary. Its
 crate-private `WaitingRunExecution` can only be aborted before admission or
-activated with committed input. The same module owns the Run Scope, start
-channel, process/subagent/todo bindings, terminal merge, plugin-host slots,
-completion signal, and join handle, so callers do not reproduce cleanup
-order. `TrustedProjectApplication` still owns active-run/compaction exclusion
-and the admission commit point; execution never decides whether a user fact
-may be made durable.
+activated with committed input. The execution worker owns the mounted Run
+Scope handle returned by project composition, plus the start channel,
+process/subagent/todo bindings, terminal merge, plugin-host slots, completion
+signal, and join handle, so callers do not reproduce cleanup order.
+`TrustedProjectApplication` still owns active-run/compaction exclusion and the
+admission commit point; execution never decides whether a user fact may be
+made durable.
 
 Steering is accepted at model-request boundaries. The queue is sealed
 atomically before a terminal event becomes visible, so a late message either
@@ -545,6 +561,7 @@ read-only and used only to populate session selection.
 | Path | Responsibility |
 |---|---|
 | `src/application.rs`, `src/application/` | client-neutral use-case facade, DTOs, run/session lifecycle |
+| `src/application/composition.rs` | Trusted Project catalog, typed port resolution, freeze/wiring, Run children, and teardown |
 | `src/application/run_context.rs` | request-bound workflow composition, tool view, and durable request-header assembly |
 | `src/application/run_execution.rs` | two-phase run worker activation, round execution, terminal merge, and run-resource cleanup |
 | `src/run.rs` | agent loop |
