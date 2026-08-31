@@ -1,7 +1,7 @@
 //! `clat serve` 的持久 Web token。
 //!
 //! 缺省 token 是 `~/.clat/web-token` 中的 0600 普通文件；写入复用
-//! control storage 的 tmp + fsync + rename 发布纪律。显式 `--token`
+//! 共享的私有文件 tmp + fsync + rename 发布纪律。显式 `--token`
 //! 是单进程覆盖，不触碰文件。
 
 use cap_std::fs::Dir;
@@ -121,18 +121,13 @@ fn read(path: &Path) -> Result<String, ReadError> {
 fn write(storage_root: &Path, value: &str) -> Result<(), String> {
     let dir = Dir::open_ambient_dir(storage_root, cap_std::ambient_authority())
         .map_err(|error| format!("cannot open {}: {error}", storage_root.display()))?;
-    crate::control_storage::json_file::write_text_atomic(
-        &dir,
-        storage_root,
-        FILE_NAME,
-        &format!("{value}\n"),
-    )
-    .map_err(|error| {
-        format!(
-            "cannot persist {}: {error}",
-            storage_root.join(FILE_NAME).display()
-        )
-    })
+    crate::private_fs::write_text_atomic(&dir, storage_root, FILE_NAME, &format!("{value}\n"))
+        .map_err(|error| {
+            format!(
+                "cannot persist {}: {error}",
+                storage_root.join(FILE_NAME).display()
+            )
+        })
 }
 
 #[cfg(test)]

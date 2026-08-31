@@ -5,7 +5,8 @@
 //! legacy user config remains an override at the adapter layer.
 
 use super::{PluginCapabilities, PluginPackageManifest, PluginRuntimeKind};
-use crate::control_storage::{json_file, sentinel};
+use crate::control_storage::json_file;
+use crate::private_fs;
 use crate::session::root_lease::{StorageRootLease, try_acquire};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -1382,7 +1383,7 @@ fn sync_tree_directories(root: &Path) -> Result<(), String> {
     }
     directories.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
     for directory in directories {
-        sentinel::sync_dir(&directory)
+        private_fs::sync_dir(&directory)
             .map_err(|error| format!("fsync {}: {error}", directory.display()))?;
     }
     Ok(())
@@ -1416,7 +1417,7 @@ fn publish_artifact(
             destination.display()
         )
     })?;
-    sentinel::sync_dir(parent)
+    private_fs::sync_dir(parent)
         .map_err(|error| format!("fsync artifact parent {}: {error}", parent.display()))
 }
 
@@ -1487,7 +1488,7 @@ fn cleanup_orphan_artifacts(store_root: &Path, registry: &PackageRegistry) -> Re
             })?;
         }
     }
-    sentinel::sync_dir(&artifacts)
+    private_fs::sync_dir(&artifacts)
         .map_err(|error| format!("fsync artifact store {}: {error}", artifacts.display()))
 }
 

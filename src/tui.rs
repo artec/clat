@@ -401,8 +401,8 @@ struct App {
     /// 连接期 DshEvent 通道接收端（`run` 起转发线程时消费）。
     dsh_connect_rx: Option<Receiver<DshEvent>>,
     /// dsh 客户端的「最后打开会话」记忆文件（拍板 A，2026-08-24：
-    /// web localStorage 的 CLAT 同款；读写归 core 的
-    /// control_storage::dsh_last_session，测试注入临时路径）。
+    /// web localStorage 的 CLAT 同款；读写归 DSH client 的
+    /// last-session owner，测试注入临时路径）。
     dsh_memory_path: PathBuf,
     /// FIX-5/CA-08：剪贴板写出口（fn 指针注入）。生产 = OSC 52 写
     /// stdout（生产行为零变化）；测试 = 记录 sink——单元/快照测试不
@@ -547,7 +547,7 @@ impl App {
             dsh: None,
             dsh_connect: None,
             dsh_connect_rx: None,
-            dsh_memory_path: crate::control_storage::dsh_last_session::last_session_path(),
+            dsh_memory_path: crate::dsh::last_session::last_session_path(),
             clipboard_writer: write_osc52_to_stdout,
             clipboard_image_pending: false,
         };
@@ -644,7 +644,7 @@ impl App {
             dsh: None,
             dsh_connect: Some((preferred_port, dsh_tx)),
             dsh_connect_rx: Some(dsh_rx),
-            dsh_memory_path: crate::control_storage::dsh_last_session::last_session_path(),
+            dsh_memory_path: crate::dsh::last_session::last_session_path(),
             clipboard_writer: write_osc52_to_stdout,
             clipboard_image_pending: false,
         })

@@ -62,7 +62,10 @@ events and commands from a DSH web host instead of mounting local core state.
 The Application facade is the only supported local-client entry point. It
 offers trust transition, session commands, snapshots, model state, permission
 mode, run lifecycle, and frontend-neutral command dispatch. Concrete storage,
-provider, MCP, plugin, and registry types remain crate-private.
+provider, MCP, plugin, composition, execution, and registry types remain
+crate-private. Frontend implementation trees are not library APIs; crate-root
+exports are limited to the Application facade and deliberately supported
+domain contracts.
 
 ## Lifetimes and static composition
 
@@ -564,8 +567,10 @@ vocabulary remains unchanged and available as diagnostic metadata.
 
 `dsh/` implements the HTTP/WebSocket client and host lifecycle for `clat dsh`.
 The TUI reducer maps DSH events into the same presentation state, but commands
-and persistence stay on the DSH host. Local access to `~/.dsh/storages` is
-read-only and used only to populate session selection.
+and session facts stay on the DSH host. Local access to `~/.dsh/storages` is
+read-only and used only to populate session selection. The sole client-local
+write is the bounded, fail-soft `~/.clat/dsh-last-session` presentation
+preference; it is owned by `dsh/last_session.rs`, not by control storage.
 
 ## Source map
 
@@ -590,11 +595,12 @@ read-only and used only to populate session selection.
 | `src/mcp.rs`, `src/mcp/` | MCP config, transport, client, and tool mapping |
 | `src/session/` | journals, projections, recovery, checkpoints |
 | `src/control_storage/` | JSON control plane, atomic IM state, and workspace registry |
+| `src/private_fs.rs` | 0600, symlink-safe atomic publication and platform fsync for CLAT-owned private files |
 | `src/command.rs` | frontend-neutral slash-command contract |
 | `src/tui.rs`, `src/tui/` | terminal frontend and structured image-draft presentation |
 | `src/exec.rs` | headless frontend |
 | `src/serve.rs`, `src/serve/`, `web/` | local API, SSE, and embedded PWA |
-| `src/dsh/` | DSH client protocol and host lifecycle |
+| `src/dsh/` | crate-private DSH client protocol, host lifecycle, and client-local last-session preference |
 | `src/demo.rs` | deterministic offline composition |
 | `src/upgrade.rs` | authenticated self-update |
 | `wit/`, `sdk/clat-plugin/` | WASM contract and author SDK |
@@ -628,6 +634,9 @@ Before adding code, identify its owner and contract:
 6. If it changes user-visible behavior or a public event shape, update the
    matching public document in the same change.
 
-The architecture test suite enforces the core-to-frontend dependency direction.
-Behavioral tests must also exercise lifecycle sequences—open, run, switch,
-close, reopen—because static boundaries alone cannot prove state correctness.
+The architecture test suite automatically classifies TUI, DSH, exec, and serve
+as local clients, enforces the core-to-frontend dependency direction, and
+rejects direct frontend references to storage/session/composition/context/
+execution owners. Behavioral tests must also exercise lifecycle sequences—
+open, run, switch, close, reopen—because static boundaries alone cannot prove
+state correctness.

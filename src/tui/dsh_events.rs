@@ -707,9 +707,7 @@ impl App {
             self.default_status = abbreviate_home(std::path::Path::new(&dsh.cwd()));
             // 拍板 A：优先恢复自己上次打开的会话（记忆缺席/已删回落
             // 宿主列表头）。
-            let prefer = crate::control_storage::dsh_last_session::read_last_session_at(
-                &self.dsh_memory_path,
-            );
+            let prefer = crate::dsh::last_session::read_last_session_at(&self.dsh_memory_path);
             dsh.send_task(DshTask::Restore { prefer });
             self.dsh = Some(dsh);
             self.status = self.default_status.clone();
@@ -1025,7 +1023,7 @@ impl App {
         // 拍板 A：切换即记住（下次启动优先回它；写失败 fail-soft，
         // 下次回落列表头）。restore/收养//new 全部经此，单点写入。
         let memory_path = self.dsh_memory_path.clone();
-        crate::control_storage::dsh_last_session::remember_last_session_at(&memory_path, &session);
+        crate::dsh::last_session::remember_last_session_at(&memory_path, &session);
         let Some(dsh) = self.dsh.as_mut() else {
             return;
         };
@@ -1429,9 +1427,7 @@ impl App {
                 self.session_picker = Some(SessionPicker::new_dsh(rows, current));
             }
             _ => {
-                let prefer = crate::control_storage::dsh_last_session::read_last_session_at(
-                    &self.dsh_memory_path,
-                );
+                let prefer = crate::dsh::last_session::read_last_session_at(&self.dsh_memory_path);
                 dsh.send_task(DshTask::Restore { prefer });
                 self.flash_status("listing sessions…");
             }
@@ -3131,7 +3127,7 @@ mod tests {
             }),
         );
         assert_eq!(
-            crate::control_storage::dsh_last_session::read_last_session_at(&memo),
+            crate::dsh::last_session::read_last_session_at(&memo),
             Some("session-aite".to_owned()),
             "a switch writes the client-side memory"
         );
@@ -3141,7 +3137,7 @@ mod tests {
             DshEvent::Reply(TaskReply::Created("session-clat".into())),
         );
         assert_eq!(
-            crate::control_storage::dsh_last_session::read_last_session_at(&memo),
+            crate::dsh::last_session::read_last_session_at(&memo),
             Some("session-clat".to_owned())
         );
         let _ = std::fs::remove_file(memo);

@@ -476,7 +476,7 @@ fn collect_directories(path: &Path, directories: &mut Vec<PathBuf>) -> Result<()
 }
 
 fn sync_dir(path: &Path) -> Result<(), String> {
-    crate::control_storage::sentinel::sync_dir(path)
+    crate::private_fs::sync_dir(path)
         .map_err(|error| format!("sync directory {}: {error}", path.display()))
 }
 

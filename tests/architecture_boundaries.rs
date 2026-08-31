@@ -22,22 +22,55 @@ fn rust_sources(root: &Path) -> Vec<PathBuf> {
     files
 }
 
-/// Terminal frontends: the CLAT TUI family (`tui*.rs` / `src/tui/`) and,
-/// since D-2, the `src/dsh/` protocol/backend tree — INV-U1 撤
-/// `is_dsh_frontend` 豁免，dsh 归入前端纪律（独立壳 `src/dsh/app.rs`
-/// 已拆除，dsh 渲染全部走 CLAT App 本体；协议文件不渲染，主题检查
-/// 天然绿并锁未来）。
-fn is_frontend(path: &Path) -> bool {
-    is_clat_tui_frontend(path)
+/// Whether a source is nested under one specific first-level `src/` tree.
+/// This keeps discovery automatic for future nested modules without relying
+/// on a hand-maintained file list.
+fn is_under_src_dir(path: &Path, directory: &str) -> bool {
+    path.ancestors().any(|ancestor| {
+        ancestor.file_name().and_then(|name| name.to_str()) == Some(directory)
+            && ancestor
+                .parent()
+                .and_then(|parent| parent.file_name())
+                .and_then(|name| name.to_str())
+                == Some("src")
+    })
 }
 
+fn is_src_root_file(path: &Path, file: &str) -> bool {
+    path.file_name().and_then(|name| name.to_str()) == Some(file)
+        && path
+            .parent()
+            .and_then(|parent| parent.file_name())
+            .and_then(|name| name.to_str())
+            == Some("src")
+}
+
+/// The CLAT TUI shell family (`tui*.rs` / `src/tui/`).
 fn is_clat_tui_frontend(path: &Path) -> bool {
     let name = path.file_name().and_then(|name| name.to_str());
-    let in_frontend_dir = path
-        .parent()
-        .and_then(|parent| parent.file_name())
-        .is_some_and(|dir| dir == "tui" || dir == "dsh");
-    name.is_some_and(|name| name == "tui.rs" || name.starts_with("tui_")) || in_frontend_dir
+    is_src_root_file(path, "tui.rs")
+        || (name.is_some_and(|name| name.starts_with("tui_"))
+            && path
+                .parent()
+                .and_then(|parent| parent.file_name())
+                .and_then(|name| name.to_str())
+                == Some("src"))
+        || is_under_src_dir(path, "tui")
+}
+
+/// Terminal clients are the CLAT TUI shell plus the DSH protocol/backend
+/// tree that feeds that shell.
+fn is_terminal_frontend(path: &Path) -> bool {
+    is_clat_tui_frontend(path) || is_under_src_dir(path, "dsh")
+}
+
+/// Every local client of the Application boundary. `main.rs` stays a
+/// composition root; these modules own presentation/transport only.
+fn is_local_frontend(path: &Path) -> bool {
+    is_terminal_frontend(path)
+        || is_src_root_file(path, "exec.rs")
+        || is_src_root_file(path, "serve.rs")
+        || is_under_src_dir(path, "serve")
 }
 
 fn relative<'a>(root: &'a Path, path: &'a Path) -> &'a Path {
@@ -45,23 +78,38 @@ fn relative<'a>(root: &'a Path, path: &'a Path) -> &'a Path {
         .expect("source under repository root")
 }
 
+fn without_line_comments(source: &str) -> String {
+    source
+        .lines()
+        .map(|line| line.split_once("//").map_or(line, |(code, _)| code))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Every Rust source below src is classified automatically. lib.rs and
-/// main.rs are composition roots; tui*.rs are terminal frontend files; every
+/// main.rs are composition roots; TUI/DSH/exec/serve are local clients; every
 /// other source is core, including newly added nested plugin/provider files.
 #[test]
-fn core_modules_do_not_depend_on_terminal_frontend_code() {
+fn core_modules_do_not_depend_on_local_frontend_code() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let sources = rust_sources(root);
     let mut checked = 0;
     for path in sources {
         let name = path.file_name().and_then(|name| name.to_str());
-        if is_frontend(&path) || matches!(name, Some("lib.rs" | "main.rs")) {
+        if is_local_frontend(&path) || matches!(name, Some("lib.rs" | "main.rs")) {
             continue;
         }
         checked += 1;
         let source = fs::read_to_string(&path).expect("read core source");
         let relative = relative(root, &path).display();
-        for forbidden in ["tui", "ratatui", "crossterm"] {
+        for forbidden in [
+            "crate::tui",
+            "crate::dsh",
+            "crate::exec",
+            "crate::serve",
+            "ratatui",
+            "crossterm",
+        ] {
             assert!(
                 !source.contains(forbidden),
                 "core module {relative} must not reference frontend token `{forbidden}`"
@@ -69,6 +117,99 @@ fn core_modules_do_not_depend_on_terminal_frontend_code() {
         }
     }
     assert!(checked > 0, "architecture guard discovered no core sources");
+}
+
+/// Local clients consume use cases, DTOs, and events. Internal storage,
+/// session, composition, context, and execution owners are not client ports;
+/// naming any of them from a frontend is a semantic boundary violation even
+/// if someone later loosens Rust visibility.
+#[test]
+fn local_frontends_do_not_reach_internal_core_owners() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let frontends = rust_sources(root)
+        .into_iter()
+        .filter(|path| is_local_frontend(path))
+        .collect::<Vec<_>>();
+    for (family, discovered) in [
+        (
+            "TUI",
+            frontends.iter().any(|path| is_clat_tui_frontend(path)),
+        ),
+        (
+            "DSH",
+            frontends.iter().any(|path| is_under_src_dir(path, "dsh")),
+        ),
+        (
+            "exec",
+            frontends
+                .iter()
+                .any(|path| is_src_root_file(path, "exec.rs")),
+        ),
+        (
+            "serve",
+            frontends
+                .iter()
+                .any(|path| is_src_root_file(path, "serve.rs") || is_under_src_dir(path, "serve")),
+        ),
+    ] {
+        assert!(
+            discovered,
+            "architecture guard failed to discover the {family} frontend family"
+        );
+    }
+    for path in frontends {
+        let source = fs::read_to_string(&path).expect("read frontend source");
+        let code = without_line_comments(&source);
+        let relative = relative(root, &path).display();
+        for owner in [
+            "ControlStorage",
+            "SessionService",
+            "TrustedProjectComposition",
+            "ProjectPorts",
+            "RunContextSnapshot",
+            "RunExecutionEngine",
+            "WaitingRunExecution",
+        ] {
+            assert!(
+                !code.contains(owner),
+                "local frontend {relative} must use the Application facade, not internal owner `{owner}`"
+            );
+        }
+    }
+}
+
+/// The crate root may re-export supported facade/domain contracts, but
+/// internal owners must remain impossible for downstream callers to name.
+#[test]
+fn crate_root_does_not_export_internal_core_owners() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let source = fs::read_to_string(root.join("src/lib.rs")).expect("read crate root");
+    for statement in source.split(';') {
+        let compact = statement.split_whitespace().collect::<String>();
+        let reexports = compact.contains("pubuse") || compact.contains("pub(crate)use");
+        for owner in [
+            "ControlStorage",
+            "SessionService",
+            "TrustedProjectComposition",
+            "ProjectPorts",
+            "RunContextSnapshot",
+            "RunExecutionEngine",
+            "WaitingRunExecution",
+        ] {
+            assert!(
+                !(reexports && compact.contains(owner)),
+                "src/lib.rs must not expose internal owner `{owner}` through `{compact}`"
+            );
+        }
+        assert!(
+            compact != "pubmoddsh" && compact != "pub(crate)moddsh",
+            "the DSH client implementation is frontend-internal, not a library API"
+        );
+        assert!(
+            compact != "pubmodcontrol_storage" && compact != "pub(crate)modcontrol_storage",
+            "the control-storage implementation must stay behind Application/domain DTOs"
+        );
+    }
 }
 
 /// The composition root may expose the frontend module itself, but it must not
@@ -138,13 +279,11 @@ fn terminal_frontend_has_no_core_assembly_or_persistence_entrypoints() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let frontends = rust_sources(root)
         .into_iter()
-        .filter(|path| is_frontend(path))
+        .filter(|path| is_terminal_frontend(path))
         .collect::<Vec<_>>();
     // dsh 前端无 CLAT 运行时可装配——但同样不得引用核心装配面。
-    assert!(
-        frontends.len() >= 6,
-        "architecture guard failed to discover the complete terminal frontend"
-    );
+    assert!(frontends.iter().any(|path| is_clat_tui_frontend(path)));
+    assert!(frontends.iter().any(|path| is_under_src_dir(path, "dsh")));
     for path in frontends {
         let source = fs::read_to_string(&path).expect("read frontend source");
         let relative = relative(root, &path).display();
@@ -225,8 +364,10 @@ fn terminal_frontend_does_not_own_slash_command_dispatch() {
         .filter(|path| is_clat_tui_frontend(path))
         .collect::<Vec<_>>();
     assert!(
-        frontends.len() >= 6,
-        "architecture guard failed to discover the complete terminal frontend"
+        frontends
+            .iter()
+            .any(|path| is_src_root_file(path, "tui.rs")),
+        "architecture guard failed to discover the CLAT TUI shell"
     );
     let commands = [
         "model",

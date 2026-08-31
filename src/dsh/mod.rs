@@ -13,6 +13,7 @@ pub(crate) mod client;
 pub(crate) mod connect;
 pub(crate) mod files;
 pub(crate) mod frames;
+pub(crate) mod last_session;
 pub(crate) mod transcript;
 pub(crate) mod ws;
 

@@ -111,7 +111,7 @@ fn open_dir_nofollow(parent: &Dir, name: &Path) -> io::Result<Dir> {
 /// Re-open `.` through the capability to obtain a regular read-only
 /// directory fd and fsync that.
 ///
-/// Windows 直接 no-op（与 `sentinel::sync_dir` 的既有决定一致）：
+/// Windows 直接 no-op（与 `private_fs::sync_dir` 的既有决定一致）：
 /// FlushFileBuffers 要求句柄带写访问，能力重开的只读目录 fd 会以
 /// ERROR_ACCESS_DENIED（os error 5）失败——Windows CI 腿首跑的
 /// session 侧病根；目录 fsync 的 dirent 落盘语义在 NTFS 上由元数据

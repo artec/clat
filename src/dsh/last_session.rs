@@ -59,9 +59,9 @@ pub(crate) fn read_last_session_at(path: &Path) -> Option<String> {
 }
 
 /// 记住最后打开的会话（fail-soft：写失败 = 下次启动回落列表头）。
-/// FIX-4/CA-07：写入复用 `control_storage::json_file::write_text_atomic`
-///（选型记档：不挂接 `ControlStorage`——dsh 模式不占项目 storage-root
-/// lease，而该原语本就独立可用），继承 0600 temp+fsync+rename+父目录
+/// FIX-4/CA-07：写入复用 frontend-neutral `private_fs` 原子发布端口
+///（不挂接 `ControlStorage`——dsh 模式不占项目 storage-root lease），
+/// 继承 0600 temp+fsync+rename+父目录
 /// fsync+前后双 symlink 拒绝的完整纪律；原子替换下并发读者只见旧
 /// 完整值或新完整值。任何失败（含路径围栏）只静默丢偏好，绝不动
 /// 被链接的外部目标。
@@ -81,7 +81,7 @@ pub(crate) fn remember_last_session_at(path: &Path, session: &str) {
     let Ok(dir) = cap_std::fs::Dir::open_ambient_dir(parent, cap_std::ambient_authority()) else {
         return;
     };
-    let _ = super::json_file::write_text_atomic(&dir, parent, name, session);
+    let _ = crate::private_fs::write_text_atomic(&dir, parent, name, session);
 }
 
 #[cfg(test)]

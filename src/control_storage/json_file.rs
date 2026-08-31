@@ -4,10 +4,8 @@
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::timestamp;
 
@@ -203,7 +201,7 @@ struct UnitTagShallow {
 
 /// 原子写一个 JSON 文件：tmp（create_new + 0600）→ fsync → rename →
 /// fsync 父目录。`parent` 是该文件的绝对父目录（用于目录 fsync——
-/// Windows 上为 no-op，见 sentinel::sync_dir）。
+/// Windows 上为 no-op，见 private_fs::sync_dir）。
 pub(crate) fn write(
     dir: &cap_std::fs::Dir,
     parent: &Path,
@@ -212,60 +210,7 @@ pub(crate) fn write(
 ) -> Result<(), String> {
     let text = serde_json::to_string_pretty(value)
         .map_err(|error| format!("cannot serialize {name}: {error}"))?;
-    write_text_atomic(dir, parent, name, &text)
-}
-
-pub(crate) fn write_text_atomic(
-    dir: &cap_std::fs::Dir,
-    parent: &Path,
-    name: &str,
-    text: &str,
-) -> Result<(), String> {
-    reject_symlink(dir, name)?;
-    let temp_name = temp_file_name(name);
-    let result = (|| -> Result<(), String> {
-        let mut options = cap_std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        let mut file = dir
-            .open_with(&temp_name, &options)
-            .map_err(|error| format!("cannot create {temp_name}: {error}"))?;
-        file.write_all(text.as_bytes())
-            .map_err(|error| format!("cannot write {temp_name}: {error}"))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            std::fs::set_permissions(
-                parent.join(&temp_name),
-                std::fs::Permissions::from_mode(0o600),
-            )
-            .map_err(|error| format!("cannot chmod {temp_name}: {error}"))?;
-        }
-        file.sync_all()
-            .map_err(|error| format!("cannot fsync {temp_name}: {error}"))?;
-        drop(file);
-        // rename 前最后一刻拒绝符号链接（project.rs 同款防御：即使非合作
-        // 进程随后插入链接，rename 也只替换目录项本身）。
-        reject_symlink(dir, name)?;
-        dir.rename(&temp_name, dir, name)
-            .map_err(|error| format!("cannot publish {name}: {error}"))
-    })();
-    if let Err(error) = result {
-        let _ = dir.remove_file(&temp_name);
-        return Err(error);
-    }
-    super::sentinel::sync_dir(parent)
-        .map_err(|error| format!("cannot fsync {}: {error}", parent.display()))
-}
-
-fn reject_symlink(dir: &cap_std::fs::Dir, name: &str) -> Result<(), String> {
-    match dir.symlink_metadata(name) {
-        Ok(metadata) if metadata.file_type().is_symlink() => {
-            Err(format!("{name} must not be a symbolic link"))
-        }
-        Ok(_) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!("cannot inspect {name}: {error}")),
-    }
+    crate::private_fs::write_text_atomic(dir, parent, name, &text)
 }
 
 /// 撕裂残件改名保留（`<name>.torn-<日期>`，重名加序号）。返回新名。
@@ -289,17 +234,6 @@ fn salvage_torn(dir: &cap_std::fs::Dir, parent: &Path, name: &str) -> Result<Str
     }
     dir.rename(name, dir, &candidate)
         .map_err(|error| LoadError::Io(format!("cannot preserve the torn {name}: {error}")))?;
-    super::sentinel::sync_dir(parent).ok();
+    crate::private_fs::sync_dir(parent).ok();
     Ok(candidate)
-}
-
-static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-fn temp_file_name(name: &str) -> String {
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or(0);
-    let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!(".{name}.tmp-{}-{unique}-{counter}", std::process::id())
 }
