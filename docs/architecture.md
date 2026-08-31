@@ -152,10 +152,11 @@ have at most one active run.
 
 ```text
 user prompt
-  → validate/prepare attachments (clipboard bytes first enter core draft staging)
-  → journal turn/start + user/message durably
-  → freeze extension registries
-  → create Run Scope
+  → reject active-run/compaction conflicts and validate the configured route
+  → settle/freeze extension registries and freeze request-bound inputs
+  → create Run Scope and spawn a waiting worker (no durable user fact yet)
+  → prepare attachments and append+flush turn/start + user/message
+  → assemble the Run Context and activate the waiting worker exactly once
   → request model stream
   → collect text/reasoning/tool calls/usage
   → permission check each tool call
@@ -169,6 +170,15 @@ The loop has no turn-count limit. It stops on model completion/refusal,
 cancellation, failure, or the per-run token spend guard. Tool failures and
 permission denials become structured `ToolResult` errors so the model can
 adapt without aborting the whole run.
+
+`application/run_execution.rs` owns this two-phase worker boundary. Its
+crate-private `WaitingRunExecution` can only be aborted before admission or
+activated with committed input. The same module owns the Run Scope, start
+channel, process/subagent/todo bindings, terminal merge, plugin-host slots,
+completion signal, and join handle, so callers do not reproduce cleanup
+order. `TrustedProjectApplication` still owns active-run/compaction exclusion
+and the admission commit point; execution never decides whether a user fact
+may be made durable.
 
 Steering is accepted at model-request boundaries. The queue is sealed
 atomically before a terminal event becomes visible, so a late message either
@@ -536,6 +546,7 @@ read-only and used only to populate session selection.
 |---|---|
 | `src/application.rs`, `src/application/` | client-neutral use-case facade, DTOs, run/session lifecycle |
 | `src/application/run_context.rs` | request-bound workflow composition, tool view, and durable request-header assembly |
+| `src/application/run_execution.rs` | two-phase run worker activation, round execution, terminal merge, and run-resource cleanup |
 | `src/run.rs` | agent loop |
 | `src/model.rs`, `src/providers/` | provider-neutral model contract and adapters |
 | `src/tool.rs`, `src/native_tools.rs`, `src/apply_patch.rs`, `src/search.rs` | tool contract and native coding tools |

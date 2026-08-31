@@ -2712,6 +2712,8 @@ fn invalid_attachments_fail_before_any_journal_write() {
         application.list_sessions().unwrap().is_empty(),
         "no journal trace of the refused run"
     );
+    run(&mut application, "worker cleanup stayed reusable")
+        .expect("pre-admission abort joins its waiting worker and releases the run scope");
     application.close().unwrap();
     std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
 }
@@ -4814,6 +4816,14 @@ fn mm2_w7_worker_start_channel_failure_after_commit_returns_committed_receipt() 
     assert_eq!(projected.attachment_ids, receipt.attachment_ids);
     assert_eq!(projected.retryable, receipt.retryable);
     assert_eq!(projected.failure_phase, None);
+    assert!(
+        application.plugin_host.context().is_none(),
+        "failed activation must revoke the just-installed plugin-host context"
+    );
+    assert!(
+        application.skill_catalog.snapshot().is_none(),
+        "failed activation must clear the run-local skill snapshot"
+    );
     assert_eq!(
         load_events(&storage_root)
             .iter()
@@ -4824,6 +4834,12 @@ fn mm2_w7_worker_start_channel_failure_after_commit_returns_committed_receipt() 
             .count(),
         1
     );
+
+    run(
+        &mut application,
+        "post-commit startup cleanup stayed reusable",
+    )
+    .expect("failed activation clears run-local slots and releases the run scope");
 
     application.close().unwrap();
     std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();

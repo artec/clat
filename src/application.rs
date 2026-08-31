@@ -37,6 +37,7 @@ mod memory_tests;
 #[cfg(test)]
 mod plan_mode_tests;
 mod run_context;
+mod run_execution;
 mod run_lifecycle;
 #[cfg(test)]
 mod skills_tests;
@@ -55,10 +56,10 @@ pub use dto::{
     ProjectSnapshot, SessionSnapshot, WorkbenchModelSnapshot, WorkbenchProjectSnapshot,
     WorkbenchSessionSnapshot, WorkbenchSnapshot, WorkspaceInfo,
 };
-use run_context::RunContextSnapshot;
+pub use run_execution::RunHandle;
 pub use run_lifecycle::{
     ApplicationRunDone, ApplicationRunFailure, ApplicationRunRequest, ApplicationRunResult,
-    RecalledSteering, RenameOutcome, RunHandle, SteerOutcome,
+    RecalledSteering, RenameOutcome, SteerOutcome,
 };
 pub(crate) use threads::{EXIT_JOIN_GRACE, join_with_grace};
 
