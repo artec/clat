@@ -47,7 +47,7 @@ impl TrustedProjectApplication {
             instruction_snapshot.as_ref(),
         );
         let history = self.current_model_history()?;
-        let tools = self.tools.definitions_for(&run_context.tool_access);
+        let tools = &run_context.tool_definitions;
 
         let estimate_instructions = |text: &str| {
             crate::model::estimate_request_tokens((!text.is_empty()).then_some(text), &[], &[])
@@ -67,7 +67,7 @@ impl TrustedProjectApplication {
         let (projected_history, image_projection) = crate::model::project_items_for_image_budget(
             &history,
             (!final_system.is_empty()).then_some(final_system.as_str()),
-            &tools,
+            tools,
             &model_options,
         )
         .map_err(ApplicationError::new)?;
@@ -79,7 +79,7 @@ impl TrustedProjectApplication {
         let input_total = crate::model::estimate_request_tokens(
             (!final_system.is_empty()).then_some(final_system.as_str()),
             &projected_history,
-            &tools,
+            tools,
         );
         let output_reserve = u64::from(config.output_limit.unwrap_or(4096));
 

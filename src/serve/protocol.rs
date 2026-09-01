@@ -436,17 +436,40 @@ pub(crate) fn dispatch(
             }))
         }
         "session.new" => {
-            with_app(shared, |app| app.new_session()).map_err(app_error)?;
-            shared.advance_selection_generation();
+            let outcome = with_app(shared, |app| {
+                let outcome = app.new_session();
+                if outcome.is_ok()
+                    || outcome
+                        .as_ref()
+                        .is_err_and(ApplicationError::selection_changed)
+                {
+                    // Publish the frontend generation while the Application
+                    // selection lock is still held. Prompt admission takes
+                    // this same lock before reserving a draft, so no old
+                    // scope can cross a committed selection boundary.
+                    shared.advance_selection_generation();
+                }
+                outcome
+            });
+            outcome.map_err(app_error)?;
             // 惰性会话（core 事实）：id 在首条 prompt 落 journal 时物化，
             // 详情经 session.info 读取（对账偏差，见 worklist 交付注记）。
             Ok(json!({}))
         }
         "session.switch" => {
             let id = required_str(params, "id")?;
-            with_app(shared, |app| app.switch_session(SessionId::new(id)))
-                .map_err(session_error)?;
-            shared.advance_selection_generation();
+            let outcome = with_app(shared, |app| {
+                let outcome = app.switch_session(SessionId::new(id));
+                if outcome.is_ok()
+                    || outcome
+                        .as_ref()
+                        .is_err_and(ApplicationError::selection_changed)
+                {
+                    shared.advance_selection_generation();
+                }
+                outcome
+            });
+            outcome.map_err(session_error)?;
             Ok(json!({}))
         }
         "session.rename" => {
@@ -731,7 +754,16 @@ fn command_run(params: &Map<String, Value>, shared: &Arc<ServeShared>) -> Result
     }
     if matches!(
         token,
-        "model" | "resume" | "perm" | "permission" | "rename" | "compact" | "quit" | "exit"
+        "model"
+            | "new"
+            | "clear"
+            | "resume"
+            | "perm"
+            | "permission"
+            | "rename"
+            | "compact"
+            | "quit"
+            | "exit"
     ) {
         return Err(RpcError::bad_request(format!(
             "/{token} uses a dedicated interactive frontend surface"
@@ -943,26 +975,32 @@ fn prompt_send(params: &Map<String, Value>, shared: &Arc<ServeShared>) -> Result
         shared.release_run_claim();
         return outcome;
     }
-    if let Some(scope_id) = draft_scope_id.as_deref() {
-        let paths = shared
-            .drafts
-            .reserve_uploads(
-                scope_id,
-                shared.selection_generation(),
-                shared.token_generation(),
-                &upload_ids,
-            )
-            .map_err(|error| {
-                shared.release_run_claim();
-                RpcError::bad_request(error)
-            })?;
-        message.resolve_staged_attachments(paths);
-    }
+    #[cfg(test)]
+    shared.wait_at_prompt_pre_admission_barrier();
     let (completion_tx, completion_rx) =
         mpsc::channel::<Result<ApplicationRunDone, ApplicationRunFailure>>();
     let client_key = message.client_message_id.clone();
     let started = {
         let mut app = shared.app.lock().expect("application lock");
+        if let Some(scope_id) = draft_scope_id.as_deref() {
+            // Selection commit + generation publication and draft
+            // reservation serialize on the Application lock. A reservation
+            // can therefore observe either the old selection/generation or
+            // the new pair, never old authority with the new session.
+            let paths = shared
+                .drafts
+                .reserve_uploads(
+                    scope_id,
+                    shared.selection_generation(),
+                    shared.token_generation(),
+                    &upload_ids,
+                )
+                .map_err(|error| {
+                    shared.release_run_claim();
+                    RpcError::bad_request(error)
+                })?;
+            message.resolve_staged_attachments(paths);
+        }
         app.start_run(ApplicationRunRequest {
             message,
             asker: None,

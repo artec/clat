@@ -441,6 +441,14 @@ impl ControlStorage {
         let mut state = self.lock();
         let backup = state.clone();
         im::clear_chat_binding(&mut state.im, user_id, chat_id)?;
+        #[cfg(test)]
+        if self
+            .fail_next_chat_mapping_save
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+        {
+            *state = backup;
+            return Err(control_error("injected im.json chat mapping write failure"));
+        }
         if let Err(error) = self.save_im(&state) {
             *state = backup;
             return Err(error);

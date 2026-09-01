@@ -70,10 +70,15 @@ pub(crate) use threads::{EXIT_JOIN_GRACE, join_with_grace};
 
 use title::TitleWorker;
 
+// Narrow compatibility DTO port for the read-only DSH projection. Frontends
+// name the Application boundary, never the control-storage owner module.
+pub(crate) use crate::control_storage::workspace::WorkspaceFile as DshWorkspaceFile;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ApplicationError {
     message: String,
     receipt: Option<Box<crate::message::AdmissionReceipt>>,
+    selection_changed: bool,
 }
 
 impl ApplicationError {
@@ -81,6 +86,7 @@ impl ApplicationError {
         Self {
             message: message.into(),
             receipt: None,
+            selection_changed: false,
         }
     }
 
@@ -93,6 +99,17 @@ impl ApplicationError {
             self.receipt = receipt;
         }
         self
+    }
+
+    fn with_selection_changed(mut self) -> Self {
+        self.selection_changed = true;
+        self
+    }
+
+    /// Whether the requested operation committed a new session selection
+    /// before reporting a later cleanup/persistence error.
+    pub(crate) fn selection_changed(&self) -> bool {
+        self.selection_changed
     }
 
     fn with_rollback_if_unclassified(

@@ -28,20 +28,16 @@ pub(crate) fn write_text_atomic(
     let result = (|| -> Result<(), String> {
         let mut options = cap_std::fs::OpenOptions::new();
         options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use cap_std::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
         let mut file = dir
             .open_with(&temp_name, &options)
             .map_err(|error| format!("cannot create {temp_name}: {error}"))?;
         file.write_all(text.as_bytes())
             .map_err(|error| format!("cannot write {temp_name}: {error}"))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            std::fs::set_permissions(
-                parent.join(&temp_name),
-                std::fs::Permissions::from_mode(0o600),
-            )
-            .map_err(|error| format!("cannot chmod {temp_name}: {error}"))?;
-        }
         file.sync_all()
             .map_err(|error| format!("cannot fsync {temp_name}: {error}"))?;
         drop(file);
@@ -112,5 +108,54 @@ pub(crate) fn sync_dir(path: &Path) -> Result<(), String> {
     {
         let _ = path;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_private_file_is_created_with_private_mode() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        const CHILD: &str = "CLAT_PRIVATE_FS_UMASK_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .arg("--exact")
+                .arg("private_fs::tests::atomic_private_file_is_created_with_private_mode")
+                .arg("--nocapture")
+                .env(CHILD, "1")
+                .status()
+                .expect("spawn isolated umask witness");
+            assert!(status.success(), "isolated umask witness failed");
+            return;
+        }
+
+        // The child runs only this exact test, so changing the process-global
+        // umask cannot interfere with the parallel parent test runner. Under
+        // 022, deleting OpenOptionsExt::mode(0600) creates 0644 and turns this
+        // assertion red.
+        unsafe {
+            libc::umask(0o022);
+        }
+        let parent = std::env::temp_dir().join(format!(
+            "clat-private-fs-mode-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&parent).unwrap();
+        let dir =
+            cap_std::fs::Dir::open_ambient_dir(&parent, cap_std::ambient_authority()).unwrap();
+
+        write_text_atomic(&dir, &parent, "secret", "sensitive").unwrap();
+        let mode = std::fs::metadata(parent.join("secret"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
+
+        crate::test_support::cleanup_tree(&parent);
     }
 }

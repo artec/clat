@@ -34,6 +34,11 @@ impl TrustedProjectApplication {
         self.sessions.inject_next_admission_owner_scan_failure();
     }
 
+    #[cfg(test)]
+    pub(crate) fn inject_next_session_quiesce_failure(&self) {
+        self.sessions.inject_next_quiesce_failure();
+    }
+
     pub(crate) fn draft_image_store(&self) -> Arc<crate::draft::DraftImageStore> {
         Arc::clone(&self.draft_images)
     }
@@ -882,7 +887,7 @@ impl TrustedProjectApplication {
         if let Some(todo_service) = &self.todo {
             todo_service.restore(None, &[]);
         }
-        quiesce
+        quiesce.map_err(ApplicationError::with_selection_changed)
     }
 
     pub fn list_sessions(&self) -> Result<Vec<SessionSummary>, ApplicationError> {
@@ -1012,8 +1017,12 @@ impl TrustedProjectApplication {
         self.goal.session_boundary();
         self.subagents.session_boundary();
         self.restore_todo_from(&view);
-        let input_history = self.sessions.recent_inputs(500).map_err(session_error)?;
-        quiesce?;
+        let input_history = self
+            .sessions
+            .recent_inputs(500)
+            .map_err(session_error)
+            .map_err(ApplicationError::with_selection_changed)?;
+        quiesce.map_err(ApplicationError::with_selection_changed)?;
         let usage = view.usage;
         Ok(SessionSnapshot {
             id,

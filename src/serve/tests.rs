@@ -978,6 +978,19 @@ fn dispatch_covers_the_full_method_set() {
         .code,
         ErrorCode::BadRequest
     );
+    for command in ["/new", "/clear"] {
+        assert_eq!(
+            protocol::dispatch(
+                "command.run",
+                &serde_json::json!({"command": command}),
+                &shared,
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::BadRequest,
+            "session selection commands must use session.new so generation publication cannot be bypassed"
+        );
+    }
     assert!(shared.try_claim_run("held-by-another-client", super::state::now_ms()));
     assert_eq!(
         protocol::dispatch(
@@ -1641,6 +1654,173 @@ fn upload_scope_and_image_validation_fail_closed_without_host_paths() {
     assert_eq!(status, 400, "{stale}");
 
     cleanup(handle, &storage_root, &project_root);
+}
+
+#[test]
+fn selection_commit_cannot_race_an_old_draft_reservation_into_the_new_session() {
+    let (storage_root, project_root, project) = setup("serve-selection-draft-linearization");
+    prepare_storage(&project, &storage_root, TestBehavior::Success);
+    let bootstrap = BootstrapApplication::open(project, storage_root.clone()).unwrap();
+    let application = bootstrap
+        .into_trusted_with_provider(Arc::new(TestProviderPlugin {
+            behavior: TestBehavior::Success,
+        }))
+        .unwrap();
+    crate::test_support::configure_test_model(&application);
+    let app = Arc::new(Mutex::new(application));
+    let shared = Arc::new(ServeShared::new(Arc::clone(&app), "unit".into(), 0));
+
+    let generation = shared.selection_generation();
+    let scope = shared
+        .drafts
+        .open_scope(
+            "selection-race-draft",
+            generation,
+            shared.token_generation(),
+            crate::DraftTarget::PendingSession {
+                nonce: "selection-race".into(),
+            },
+        )
+        .unwrap();
+    let bytes = png_bytes(1, 1);
+    let mut writer = shared
+        .drafts
+        .begin_upload(
+            &scope.draft_scope_id,
+            generation,
+            shared.token_generation(),
+            bytes.len() as u64,
+            "image/png",
+            Some("race.png"),
+        )
+        .unwrap();
+    writer.write_all(&bytes).unwrap();
+    let upload = writer.finish().unwrap();
+
+    // Stop prompt.send immediately before it acquires Application. The
+    // selection writer already owns that lock, so its commit + generation
+    // publication linearizes before draft reservation. Moving reservation
+    // back above the Application lock makes this test admit the stale upload.
+    let reached = Arc::new(std::sync::Barrier::new(2));
+    let release = Arc::new(std::sync::Barrier::new(2));
+    shared.inject_prompt_pre_admission_barriers(Arc::clone(&reached), Arc::clone(&release));
+    let prompt_shared = Arc::clone(&shared);
+    let scope_id = scope.draft_scope_id.clone();
+    let upload_id = upload.upload_id.clone();
+    let prompt = std::thread::spawn(move || {
+        protocol::dispatch(
+            "prompt.send",
+            &serde_json::json!({
+                "text": "must not cross selection",
+                "draftScopeId": scope_id,
+                "attachments": [upload_id],
+            }),
+            &prompt_shared,
+        )
+    });
+    reached.wait();
+    let mut application = shared.app.lock().unwrap();
+    release.wait();
+    application.new_session().unwrap();
+    shared.advance_selection_generation();
+    drop(application);
+
+    let error = prompt
+        .join()
+        .unwrap()
+        .expect_err("the old generation must fail before admission");
+    assert_eq!(error.code, ErrorCode::BadRequest);
+    assert!(shared.active_run_info().is_null());
+
+    shared.mark_shutting_down();
+    shared.drain_workers();
+    drop(app);
+    let shared = Arc::try_unwrap(shared).ok().expect("sole shared owner");
+    let application = Arc::try_unwrap(shared.app)
+        .ok()
+        .expect("sole application owner")
+        .into_inner()
+        .unwrap();
+    application.close().unwrap();
+    std::fs::remove_dir_all(storage_root).ok();
+    std::fs::remove_dir_all(project_root).ok();
+}
+
+#[test]
+fn rpc_selection_errors_publish_the_committed_generation_before_returning() {
+    let (storage_root, project_root, project) = setup("serve-selection-error-generation");
+    prepare_storage(&project, &storage_root, TestBehavior::Success);
+    let bootstrap = BootstrapApplication::open(project, storage_root.clone()).unwrap();
+    let application = bootstrap
+        .into_trusted_with_provider(Arc::new(TestProviderPlugin {
+            behavior: TestBehavior::Success,
+        }))
+        .unwrap();
+    crate::test_support::configure_test_model(&application);
+    let app = Arc::new(Mutex::new(application));
+
+    let materialize = |app: &Arc<Mutex<crate::TrustedProjectApplication>>, text: &str| {
+        fn allow_all(
+            _request: crate::PermissionRequest,
+            _cancel: &crate::model::CancelToken,
+        ) -> crate::PermissionDecision {
+            crate::PermissionDecision::Allow
+        }
+        let (completion_tx, completion_rx) = std::sync::mpsc::channel();
+        let handle = app
+            .lock()
+            .unwrap()
+            .start_run(crate::ApplicationRunRequest {
+                message: crate::message::PendingMessage::text(text),
+                approver: Arc::new(allow_all),
+                asker: None,
+                events: Box::new(crate::test_support::SharedEvents(Arc::new(Mutex::new(
+                    Vec::new(),
+                )))),
+                completion: completion_tx,
+            })
+            .unwrap();
+        handle.join().unwrap();
+        completion_rx.recv().unwrap().unwrap();
+    };
+
+    materialize(&app, "first session");
+    let first = app.lock().unwrap().current_session_id().unwrap();
+    let shared = Arc::new(ServeShared::new(Arc::clone(&app), "unit".into(), 0));
+
+    let generation = shared.selection_generation();
+    app.lock().unwrap().inject_next_session_quiesce_failure();
+    let error = protocol::dispatch("session.new", &serde_json::json!({}), &shared)
+        .expect_err("post-commit new cleanup failure remains visible");
+    assert_eq!(error.code, ErrorCode::Internal);
+    assert_eq!(app.lock().unwrap().current_session_id(), None);
+    assert_eq!(shared.selection_generation(), generation + 1);
+
+    materialize(&app, "second session");
+    let generation = shared.selection_generation();
+    app.lock().unwrap().inject_next_session_quiesce_failure();
+    let error = protocol::dispatch(
+        "session.switch",
+        &serde_json::json!({"id": first.as_str()}),
+        &shared,
+    )
+    .expect_err("post-commit switch cleanup failure remains visible");
+    assert_eq!(error.code, ErrorCode::Internal);
+    assert_eq!(app.lock().unwrap().current_session_id(), Some(first));
+    assert_eq!(shared.selection_generation(), generation + 1);
+
+    shared.mark_shutting_down();
+    shared.drain_workers();
+    drop(app);
+    let shared = Arc::try_unwrap(shared).ok().expect("sole shared owner");
+    let application = Arc::try_unwrap(shared.app)
+        .ok()
+        .expect("sole application owner")
+        .into_inner()
+        .unwrap();
+    application.close().unwrap();
+    std::fs::remove_dir_all(storage_root).ok();
+    std::fs::remove_dir_all(project_root).ok();
 }
 
 // ---- 显式 --token 只属本次进程，不污染持久 token/journal ----

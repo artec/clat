@@ -1863,6 +1863,11 @@ async function submitPrompt() {
         state.draft.notice = 'steering accepted; holding the local draft until durable claim';
       }
       return;
+    } else if (text === '/new' || text === '/clear') {
+      await rpc('session.new', {});
+      addNoticeLine('new conversation');
+      await loadSessions();
+      resubscribe();
     } else if (text.startsWith('/')) {
       const value = await rpc('command.run', { command: text });
       if (value && value.kind === 'status') {

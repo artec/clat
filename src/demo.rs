@@ -64,6 +64,12 @@ pub fn run_demo(
     let agent = manager
         .require(AGENT_SERVICE)
         .map_err(|error| RunError::new(error.to_string()))?;
+    let tool_access = crate::tool::ToolAccessPolicy::all();
+    let tool_definitions = manager
+        .require(TOOL_SERVICE)
+        .map_err(|error| RunError::new(error.to_string()))?
+        .definitions_for(&tool_access)
+        .into();
     let output = agent
         .execute(AgentRequest {
             credentials: ProviderCredentials::for_protocol(config.protocol),
@@ -76,7 +82,8 @@ pub fn run_demo(
             steering: crate::run::SteeringQueue::new(),
             approver: Arc::new(demo_approver),
             events,
-            tool_access: crate::tool::ToolAccessPolicy::all(),
+            tool_access,
+            tool_definitions,
             workflow_instructions: None,
             permission_mode: None,
         })

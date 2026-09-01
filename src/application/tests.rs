@@ -4154,6 +4154,57 @@ fn new_session_write_failure_keeps_the_old_session() {
     std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
 }
 
+#[test]
+fn post_commit_new_session_cleanup_error_reports_selection_change() {
+    let (storage_root, project_root) = roots("new-selection-witness");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let project = Project::new(&project_root);
+    let mut application = mount(&project, &storage_root, TestBehavior::Success);
+    configure_test_model(&application);
+    run(&mut application, "materialize old session").unwrap();
+    application.inject_next_session_quiesce_failure();
+
+    let error = application
+        .new_session()
+        .expect_err("retiring the corrupt old session must report an error");
+    assert!(error.selection_changed());
+    assert_eq!(
+        application.current_session_id(),
+        None,
+        "Fresh was already committed despite the cleanup error"
+    );
+
+    application.close().unwrap();
+    std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
+}
+
+#[test]
+fn post_commit_switch_cleanup_error_reports_selection_change() {
+    let (storage_root, project_root) = roots("switch-selection-witness");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let project = Project::new(&project_root);
+    let mut application = mount(&project, &storage_root, TestBehavior::Success);
+    configure_test_model(&application);
+    run(&mut application, "first session").unwrap();
+    let first = application.current_session_id().unwrap();
+    application.new_session().unwrap();
+    run(&mut application, "second session").unwrap();
+    application.inject_next_session_quiesce_failure();
+
+    let error = application
+        .switch_session(first.clone())
+        .expect_err("retiring the corrupt old session must report an error");
+    assert!(error.selection_changed());
+    assert_eq!(
+        application.current_session_id(),
+        Some(first),
+        "the target session was already installed despite the cleanup error"
+    );
+
+    application.close().unwrap();
+    std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
+}
+
 /// 复核 R5（MP-1 重述）：重新选择当前已活动的会话必须是无条件
 /// no-op——不 stage、不 arm 第二个同会话 writer、不发生任何持久化
 /// 写（双 writer 会打开同一日志的双写窗口）。指针写失败注入下对

@@ -6,7 +6,7 @@
 //! 以只读 fd 挂载目录（`Dir::from_std_file`），本模块不存在任何写
 //! 路径——「替补不竞争」的物理面。
 
-use crate::control_storage::workspace::WorkspaceFile;
+use crate::application::DshWorkspaceFile as WorkspaceFile;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 

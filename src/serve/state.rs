@@ -118,6 +118,9 @@ pub(crate) struct ServeShared {
     active_uploads: AtomicUsize,
     active_attachment_downloads: AtomicUsize,
     active_connections: AtomicUsize,
+    #[cfg(test)]
+    prompt_pre_admission_barriers:
+        Mutex<Option<(Arc<std::sync::Barrier>, Arc<std::sync::Barrier>)>>,
 }
 
 pub(crate) fn now_ms() -> i64 {
@@ -158,6 +161,26 @@ impl ServeShared {
             active_uploads: AtomicUsize::new(0),
             active_attachment_downloads: AtomicUsize::new(0),
             active_connections: AtomicUsize::new(0),
+            #[cfg(test)]
+            prompt_pre_admission_barriers: Mutex::new(None),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inject_prompt_pre_admission_barriers(
+        &self,
+        reached: Arc<std::sync::Barrier>,
+        release: Arc<std::sync::Barrier>,
+    ) {
+        *self.prompt_pre_admission_barriers.lock().unwrap() = Some((reached, release));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn wait_at_prompt_pre_admission_barrier(&self) {
+        let barriers = self.prompt_pre_admission_barriers.lock().unwrap().take();
+        if let Some((reached, release)) = barriers {
+            reached.wait();
+            release.wait();
         }
     }
 

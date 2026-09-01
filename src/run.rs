@@ -136,6 +136,7 @@ pub(crate) struct Run<'a> {
     steering: SteeringQueue,
     tool_pipeline: Option<&'a ToolExecutionPipeline>,
     tool_access: crate::tool::ToolAccessPolicy,
+    tool_definitions: Option<std::sync::Arc<[crate::tool::ToolDefinition]>>,
     /// B1 花费护栏（F-1：与 recorder 预警同一账本——含插件采样归并，
     /// 预警数字与终止文案同源）。每轮模型请求前读；越顶以三要素错误
     /// 终止（教学式文案）。
@@ -161,6 +162,7 @@ impl<'a> Run<'a> {
             steering: SteeringQueue::new(),
             tool_pipeline: None,
             tool_access: crate::tool::ToolAccessPolicy::all(),
+            tool_definitions: None,
             spend_ledger: None,
         }
     }
@@ -214,6 +216,14 @@ impl<'a> Run<'a> {
 
     pub(crate) fn with_tool_access(mut self, access: crate::tool::ToolAccessPolicy) -> Self {
         self.tool_access = access;
+        self
+    }
+
+    pub(crate) fn with_tool_definitions(
+        mut self,
+        definitions: std::sync::Arc<[crate::tool::ToolDefinition]>,
+    ) -> Self {
+        self.tool_definitions = Some(definitions);
         self
     }
 
@@ -353,7 +363,10 @@ impl<'a> Run<'a> {
                 dynamic_snapshot.as_ref(),
             );
             let instructions = (!instructions.is_empty()).then_some(instructions);
-            let definitions = self.tools.definitions_for(&self.tool_access);
+            let definitions = self.tool_definitions.as_deref().map_or_else(
+                || self.tools.definitions_for(&self.tool_access),
+                |definitions| definitions.to_vec(),
+            );
             let (request_items, _image_projection) =
                 match crate::model::project_items_for_image_budget(
                     &items,
@@ -2035,6 +2048,52 @@ mod tests {
 
     struct PlanForgedWriteModel {
         calls: usize,
+    }
+
+    struct EmptyCatalogModel;
+
+    impl Model for EmptyCatalogModel {
+        fn provider(&self) -> &str {
+            "test"
+        }
+
+        fn model_id(&self) -> &str {
+            "frozen-empty-catalog"
+        }
+
+        fn stream(
+            &mut self,
+            request: ModelRequest<'_>,
+            _events: &mut dyn ModelEventSink,
+        ) -> Result<ModelResponse, ModelError> {
+            assert!(
+                request.tools.is_empty(),
+                "the model request must consume the frozen definitions, not re-read the registry"
+            );
+            Ok(ModelResponse {
+                text: "done".into(),
+                tool_calls: vec![],
+                finish_reason: FinishReason::Completed,
+                usage: None,
+                provider_response_id: None,
+                provider_state: vec![],
+                reasoning: None,
+            })
+        }
+    }
+
+    #[test]
+    fn model_request_consumes_the_frozen_tool_definition_snapshot() {
+        let project = Project::new(".");
+        let tools = ToolRegistry::new();
+        register_test_tool(&tools, EchoTool);
+        let mut model = EmptyCatalogModel;
+        let mut events = Vec::new();
+
+        Run::new(&mut model, &tools, &AllowAll, &project)
+            .with_tool_definitions(Vec::<ToolDefinition>::new().into())
+            .execute("use frozen catalog", &mut events)
+            .expect("empty frozen catalog remains authoritative");
     }
 
     impl Model for PlanForgedWriteModel {

@@ -14,7 +14,7 @@ use crate::im::ilink::{Client, Credentials, InboundMessage};
 use crate::message::PendingMessage;
 use crate::model::CancelToken;
 use crate::permission::{PermissionApprover, PermissionDecision, PermissionRequest};
-use crate::{ApplicationRunRequest, PermissionMode, SteerOutcome};
+use crate::{ApplicationError, ApplicationRunRequest, PermissionMode, SteerOutcome};
 use sha2::{Digest as _, Sha256};
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -525,13 +525,20 @@ impl WechatBridge {
                 .text(target, "当前有运行进行中，请先 /stop 或等待完成。".into());
             return Ok(());
         }
-        let outcome = self
-            .shared
-            .app
-            .lock()
-            .expect("application lock")
-            .begin_new_wechat_chat(&target.user_id, chat_id)
-            .map_err(|error| error.to_string())?;
+        let outcome = {
+            let mut app = self.shared.app.lock().expect("application lock");
+            let outcome = app.begin_new_wechat_chat(&target.user_id, chat_id);
+            if outcome.as_ref().is_ok_and(|outcome| {
+                matches!(outcome, crate::application::WechatNewChatOutcome::Ready)
+            }) || outcome
+                .as_ref()
+                .is_err_and(ApplicationError::selection_changed)
+            {
+                self.shared.advance_selection_generation();
+            }
+            outcome
+        };
+        let outcome = outcome.map_err(|error| error.to_string())?;
         if matches!(outcome, crate::application::WechatNewChatOutcome::Revoked) {
             return Ok(());
         }
@@ -550,7 +557,6 @@ impl WechatBridge {
             .lock()
             .map_err(|_| "wechat volatile mapping state poisoned")?
             .remove(chat_id);
-        self.shared.advance_selection_generation();
         self.outbound.text(
             target,
             "已切换到新会话；发送下一条消息后才会物化并建立持久映射。".into(),
@@ -743,7 +749,7 @@ impl WechatBridge {
         });
         let started = {
             let mut app = self.shared.app.lock().expect("application lock");
-            app.start_wechat_prompt(
+            let started = app.start_wechat_prompt(
                 ticket,
                 ApplicationRunRequest {
                     message,
@@ -756,11 +762,12 @@ impl WechatBridge {
                     }),
                     completion: completion_tx,
                 },
-            )
+            );
+            if started.selection_changed {
+                self.shared.advance_selection_generation();
+            }
+            started
         };
-        if started.selection_changed {
-            self.shared.advance_selection_generation();
-        }
         match started.outcome {
             crate::application::WechatPromptStartOutcome::Started {
                 handle,
@@ -1785,6 +1792,189 @@ mod tests {
             admission_sessions,
             vec![committed_session],
             "the remote delivery must exist in exactly its original session"
+        );
+
+        shared.mark_shutting_down();
+        shared.drain_workers();
+        drop(bridge);
+        let shared = Arc::try_unwrap(shared).ok().expect("sole shared owner");
+        drop(shared);
+        let application = Arc::try_unwrap(app)
+            .ok()
+            .expect("sole application owner")
+            .into_inner()
+            .unwrap();
+        application.close().unwrap();
+        crate::test_support::cleanup_tree(&storage_root);
+        crate::test_support::cleanup_tree(&project_root);
+    }
+
+    #[test]
+    fn failed_new_mapping_clear_still_invalidates_selection_scopes() {
+        let (storage_root, project_root) = roots("wechat-new-selection-witness");
+        std::fs::create_dir_all(&project_root).unwrap();
+        let bootstrap =
+            BootstrapApplication::open(Project::new(&project_root), storage_root.clone()).unwrap();
+        let application = bootstrap
+            .with_permission_modes()
+            .authorize_and_mount_with_provider(Arc::new(TestProviderPlugin {
+                behavior: TestBehavior::Success,
+            }))
+            .unwrap();
+        crate::test_support::configure_test_model(&application);
+        application
+            .replace_wechat_binding(
+                &Credentials::new(
+                    "test-token".into(),
+                    "test-bot".into(),
+                    None,
+                    "https://ilinkai.weixin.qq.com".into(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        application.set_wechat_allowlist("user-a", true).unwrap();
+
+        let app = Arc::new(Mutex::new(application));
+        let shared = Arc::new(ServeShared::new(Arc::clone(&app), "token".into(), 0));
+        let bridge = WechatBridge {
+            shared: Arc::clone(&shared),
+            client: Client::new(),
+            shutdown: Arc::new(AtomicBool::new(false)),
+            outbound: Arc::new(RecordingOutbox::default()),
+            approvals: Arc::new(ApprovalRegistry::default()),
+            armed_new_chats: Mutex::new(HashMap::new()),
+            volatile_chat_sessions: Mutex::new(HashMap::new()),
+        };
+
+        bridge
+            .handle_authorized(&message_with_id("/new", "selection-new"))
+            .unwrap();
+        bridge
+            .handle_authorized(&message_with_id("materialize", "selection-prompt"))
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !shared.active_run_info().is_null() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            app.lock()
+                .unwrap()
+                .inspect_wechat_chat_binding("user-a")
+                .is_some()
+        );
+
+        let generation = shared.selection_generation();
+        app.lock()
+            .unwrap()
+            .inject_next_wechat_chat_mapping_save_failure();
+        let error = bridge
+            .handle_authorized(&message_with_id("/new", "selection-failed-new"))
+            .expect_err("mapping clear failure is reported after Fresh commits");
+        assert!(error.contains("injected im.json chat mapping write failure"));
+        assert_eq!(app.lock().unwrap().current_session_id(), None);
+        assert_eq!(
+            shared.selection_generation(),
+            generation + 1,
+            "post-commit failure must still invalidate every old frontend scope"
+        );
+
+        shared.mark_shutting_down();
+        shared.drain_workers();
+        drop(bridge);
+        let shared = Arc::try_unwrap(shared).ok().expect("sole shared owner");
+        drop(shared);
+        let application = Arc::try_unwrap(app)
+            .ok()
+            .expect("sole application owner")
+            .into_inner()
+            .unwrap();
+        application.close().unwrap();
+        crate::test_support::cleanup_tree(&storage_root);
+        crate::test_support::cleanup_tree(&project_root);
+    }
+
+    #[test]
+    fn failed_fresh_prompt_selection_remains_retryable_and_invalidates_scopes() {
+        let (storage_root, project_root) = roots("wechat-fresh-prompt-selection-witness");
+        std::fs::create_dir_all(&project_root).unwrap();
+        let bootstrap =
+            BootstrapApplication::open(Project::new(&project_root), storage_root.clone()).unwrap();
+        let application = bootstrap
+            .with_permission_modes()
+            .authorize_and_mount_with_provider(Arc::new(TestProviderPlugin {
+                behavior: TestBehavior::Success,
+            }))
+            .unwrap();
+        crate::test_support::configure_test_model(&application);
+        application
+            .replace_wechat_binding(
+                &Credentials::new(
+                    "test-token".into(),
+                    "test-bot".into(),
+                    None,
+                    "https://ilinkai.weixin.qq.com".into(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        application.set_wechat_allowlist("user-a", true).unwrap();
+
+        let app = Arc::new(Mutex::new(application));
+        let shared = Arc::new(ServeShared::new(Arc::clone(&app), "token".into(), 0));
+        let bridge = WechatBridge {
+            shared: Arc::clone(&shared),
+            client: Client::new(),
+            shutdown: Arc::new(AtomicBool::new(false)),
+            outbound: Arc::new(RecordingOutbox::default()),
+            approvals: Arc::new(ApprovalRegistry::default()),
+            armed_new_chats: Mutex::new(HashMap::new()),
+            volatile_chat_sessions: Mutex::new(HashMap::new()),
+        };
+
+        bridge
+            .handle_authorized(&message_with_id("/new", "fresh-witness-new"))
+            .unwrap();
+
+        // Model a second frontend materializing a session after WeChat armed
+        // its next prompt. The WeChat prompt must select Fresh again, and a
+        // post-commit cleanup failure must remain both visible and retryable.
+        fn allow_all(
+            _request: crate::PermissionRequest,
+            _cancel: &crate::model::CancelToken,
+        ) -> crate::PermissionDecision {
+            crate::PermissionDecision::Allow
+        }
+        let (completion_tx, completion_rx) = std::sync::mpsc::channel();
+        let drift_handle = app
+            .lock()
+            .unwrap()
+            .start_run(ApplicationRunRequest {
+                message: PendingMessage::text("materialize another frontend selection"),
+                approver: Arc::new(allow_all),
+                asker: None,
+                events: Box::new(SharedEvents(Arc::new(Mutex::new(Vec::new())))),
+                completion: completion_tx,
+            })
+            .unwrap();
+        drift_handle.join().unwrap();
+        completion_rx.recv().unwrap().unwrap();
+
+        let generation = shared.selection_generation();
+        app.lock().unwrap().inject_next_session_quiesce_failure();
+        let prompt = message_with_id("must remain retryable", "fresh-witness-prompt");
+        let delivery_id = crate::im::delivery_id(&prompt).unwrap();
+        let error = bridge
+            .handle_authorized(&prompt)
+            .expect_err("post-commit Fresh failure must retain the delivery for retry");
+        assert!(error.contains("injected session quiesce failure"));
+        assert_eq!(app.lock().unwrap().current_session_id(), None);
+        assert_eq!(shared.selection_generation(), generation + 1);
+        assert!(
+            !app.lock()
+                .unwrap()
+                .inspect_wechat_delivery_handled(&delivery_id),
+            "a prompt that never reached admission must not be acknowledged"
         );
 
         shared.mark_shutting_down();

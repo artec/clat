@@ -68,6 +68,10 @@ impl BootstrapApplication {
         &self.project
     }
 
+    pub(crate) fn storage_root(&self) -> &std::path::Path {
+        &self.storage_root
+    }
+
     /// Read-only trust check through the sentinel path — no writable
     /// file is ever created here.
     pub fn is_trusted(&self) -> Result<bool, ApplicationError> {

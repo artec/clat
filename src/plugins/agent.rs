@@ -183,6 +183,7 @@ impl AgentRuntime for DefaultAgentRuntime {
         .with_steering(request.steering)
         .with_tool_pipeline(&self.pipeline)
         .with_tool_access(request.tool_access)
+        .with_tool_definitions(request.tool_definitions)
         .with_instructions(instructions);
         let mut run = match &self.dynamic_instructions {
             Some(source) => run.with_dynamic_instructions(Arc::clone(source)),

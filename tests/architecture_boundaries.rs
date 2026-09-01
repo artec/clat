@@ -86,6 +86,30 @@ fn without_line_comments(source: &str) -> String {
         .join("\n")
 }
 
+fn internal_owner_violation(source: &str) -> Option<&'static str> {
+    let code = without_line_comments(source);
+    let identifiers = code
+        .split(|character: char| !(character.is_ascii_alphanumeric() || character == '_'))
+        .filter(|identifier| !identifier.is_empty())
+        .collect::<Vec<_>>();
+    [
+        "ControlStorage",
+        "SessionService",
+        "TrustedProjectComposition",
+        "ProjectPorts",
+        "RunContextSnapshot",
+        "RunExecutionEngine",
+        "WaitingRunExecution",
+        "composition",
+        "run_context",
+        "run_execution",
+        "use_cases",
+        "control_storage",
+    ]
+    .into_iter()
+    .find(|forbidden| identifiers.contains(forbidden))
+}
+
 /// Every Rust source below src is classified automatically. lib.rs and
 /// main.rs are composition roots; TUI/DSH/exec/serve are local clients; every
 /// other source is core, including newly added nested plugin/provider files.
@@ -161,21 +185,52 @@ fn local_frontends_do_not_reach_internal_core_owners() {
         let source = fs::read_to_string(&path).expect("read frontend source");
         let code = without_line_comments(&source);
         let relative = relative(root, &path).display();
-        for owner in [
-            "ControlStorage",
-            "SessionService",
-            "TrustedProjectComposition",
-            "ProjectPorts",
-            "RunContextSnapshot",
-            "RunExecutionEngine",
-            "WaitingRunExecution",
-        ] {
-            assert!(
-                !code.contains(owner),
-                "local frontend {relative} must use the Application facade, not internal owner `{owner}`"
-            );
-        }
+        assert!(
+            internal_owner_violation(&code).is_none(),
+            "local frontend {relative} must use the Application facade, not internal owner `{}`",
+            internal_owner_violation(&code).expect("checked violation")
+        );
     }
+}
+
+#[test]
+fn internal_owner_guard_rejects_aliases_and_glob_imports() {
+    assert_eq!(
+        internal_owner_violation("use crate::application::run_execution as execution;"),
+        Some("run_execution")
+    );
+    assert_eq!(
+        internal_owner_violation("use crate::control_storage::*;"),
+        Some("control_storage")
+    );
+    assert_eq!(
+        internal_owner_violation("use crate::session::use_cases::*;"),
+        Some("use_cases")
+    );
+    assert_eq!(
+        internal_owner_violation("use crate::control_storage::control_error as err;"),
+        Some("control_storage")
+    );
+    assert_eq!(
+        internal_owner_violation("use crate::{control_storage::*};"),
+        Some("control_storage")
+    );
+    assert_eq!(
+        internal_owner_violation("use crate::{application::run_context as context};"),
+        Some("run_context")
+    );
+    assert_eq!(
+        internal_owner_violation("use crate::application::{run_context::*};"),
+        Some("run_context")
+    );
+    assert_eq!(
+        internal_owner_violation("use crate::{application::{run_execution as execution}};"),
+        Some("run_execution")
+    );
+    assert_eq!(
+        internal_owner_violation("use crate::application::DshWorkspaceFile;"),
+        None
+    );
 }
 
 /// The crate root may re-export supported facade/domain contracts, but

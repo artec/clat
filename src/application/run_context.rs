@@ -26,6 +26,8 @@ pub(super) struct InstructionLayers {
 #[derive(Clone)]
 pub(super) struct RunContextSnapshot {
     pub(super) tool_access: crate::tool::ToolAccessPolicy,
+    pub(super) tool_definitions: Arc<[crate::tool::ToolDefinition]>,
+    subagents_enabled: bool,
     pub(super) instructions: InstructionLayers,
     pub(super) workflow_base: String,
     pub(super) workflow_instructions: Option<String>,
@@ -119,10 +121,15 @@ impl TrustedProjectApplication {
         let visual_tool_enabled = config.capabilities.accepts_image_input()
             && config.capabilities.accepts_image_tool_results();
 
+        let tool_access = tool_access
+            .with_subagents(subagents_enabled)
+            .with_view_image(visual_tool_enabled);
+        let tool_definitions = self.tools.definitions_for(&tool_access).into();
+
         RunContextSnapshot {
-            tool_access: tool_access
-                .with_subagents(subagents_enabled)
-                .with_view_image(visual_tool_enabled),
+            tool_access,
+            tool_definitions,
+            subagents_enabled,
             instructions: InstructionLayers {
                 base,
                 with_plan,
@@ -190,16 +197,15 @@ impl TrustedProjectApplication {
         header.insert(
             "subagents".into(),
             json!({
-                "enabled": self.subagents.enabled(self.sessions.active_id().as_ref()),
+                "enabled": context.subagents_enabled,
                 "roles": ["explorer", "reviewer"],
                 "depth": 1,
                 "mode": "read-only-one-shot",
             }),
         );
         header.insert("skills".into(), context.skills.header_json());
-        let tools: Vec<Value> = self
-            .tools
-            .definitions_for(&context.tool_access)
+        let tools: Vec<Value> = context
+            .tool_definitions
             .iter()
             .map(|definition| {
                 json!({

@@ -440,12 +440,12 @@ pub(crate) fn serve_with_with_queue<F>(
 where
     F: FnOnce(BootstrapApplication) -> Result<TrustedProjectApplication, crate::ApplicationError>,
 {
-    let storage_root = match storage_root {
-        Some(root) => root,
-        None => crate::control_storage::sentinel::default_storage_root()?,
+    let bootstrap = match storage_root {
+        Some(root) => BootstrapApplication::open(project.clone(), root),
+        None => BootstrapApplication::open_default(project.clone()),
     };
-    let bootstrap = BootstrapApplication::open(project.clone(), storage_root.clone());
     let bootstrap = bootstrap.map_err(|error| error.to_string())?;
+    let storage_root = bootstrap.storage_root().to_path_buf();
     let trusted = match bootstrap.is_trusted() {
         Ok(true) => into_trusted(bootstrap).map_err(|error| error.to_string())?,
         Ok(false) => {

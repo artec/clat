@@ -706,6 +706,10 @@ pub(crate) struct AgentRequest {
     pub approver: Arc<dyn PermissionApprover>,
     pub events: Box<dyn EventSink + Send>,
     pub tool_access: crate::tool::ToolAccessPolicy,
+    /// Immutable model-schema view frozen with the run context. The registry
+    /// remains available to the runtime for invocation, but request
+    /// projection never reconstructs visibility from mutable sources.
+    pub tool_definitions: Arc<[crate::tool::ToolDefinition]>,
     pub workflow_instructions: Option<String>,
     /// run 起点的权限档位快照——仅供系统指令注入说明；权限决策读共
     /// 享 cell，不受此快照限制。None = Classic（exec）——不注入。

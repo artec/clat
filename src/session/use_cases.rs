@@ -260,6 +260,8 @@ pub(crate) struct SessionService {
     fail_next_permission_checkpoint: std::sync::atomic::AtomicBool,
     #[cfg(test)]
     fail_next_admission_owner_scan: std::sync::atomic::AtomicBool,
+    #[cfg(test)]
+    fail_next_quiesce: std::sync::atomic::AtomicBool,
 }
 
 impl SessionService {
@@ -284,6 +286,8 @@ impl SessionService {
             fail_next_permission_checkpoint: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
             fail_next_admission_owner_scan: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(test)]
+            fail_next_quiesce: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -296,6 +300,11 @@ impl SessionService {
     pub(crate) fn inject_next_admission_owner_scan_failure(&self) {
         self.fail_next_admission_owner_scan
             .store(true, Ordering::Release);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inject_next_quiesce_failure(&self) {
+        self.fail_next_quiesce.store(true, Ordering::Release);
     }
 
     /// `/new`: a lazy session — nothing on disk until the first durable
@@ -1406,6 +1415,10 @@ impl SessionService {
             }
             if let Err(error) = active.coordinator.close() {
                 errors.push(format!("session writer close failed: {error}"));
+            }
+            #[cfg(test)]
+            if self.fail_next_quiesce.swap(false, Ordering::AcqRel) {
+                errors.push("injected session quiesce failure".into());
             }
             if !errors.is_empty() {
                 return Err(SessionError::Corruption(errors.join("; ")));

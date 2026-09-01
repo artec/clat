@@ -368,7 +368,7 @@ impl TrustedProjectApplication {
         self.new_session()?;
         self.control
             .clear_wechat_chat_binding(user_id, chat_id)
-            .map_err(|error| ApplicationError::new(error.to_string()))?;
+            .map_err(|error| ApplicationError::new(error.to_string()).with_selection_changed())?;
         Ok(WechatNewChatOutcome::Ready)
     }
 
@@ -487,6 +487,8 @@ impl TrustedProjectApplication {
                         retry_delivery: true,
                     },
                     StartFailure::Error(error) => {
+                        let committed_selection = error.selection_changed();
+                        selection_changed |= committed_selection;
                         let mut message = error.to_string();
                         if let Some(ref compensation_error) = compensation_error {
                             message.push_str(&format!(
@@ -495,7 +497,8 @@ impl TrustedProjectApplication {
                         }
                         WechatPromptStartOutcome::Failed {
                             error: message,
-                            retry_delivery: intent == ChatMappingIntent::Recovery
+                            retry_delivery: committed_selection
+                                || intent == ChatMappingIntent::Recovery
                                 || committed
                                 || compensation_error.is_some(),
                         }
@@ -607,9 +610,13 @@ impl TrustedProjectApplication {
     ) -> Result<WechatPromptStartOutcome, StartFailure> {
         if let Some(binding) = binding {
             if self.current_session_id().as_ref() != Some(&binding.session_id) {
-                self.switch_session(binding.session_id.clone())
-                    .map_err(StartFailure::Error)?;
-                *selection_changed = true;
+                match self.switch_session(binding.session_id.clone()) {
+                    Ok(_) => *selection_changed = true,
+                    Err(error) => {
+                        *selection_changed |= error.selection_changed();
+                        return Err(StartFailure::Error(error));
+                    }
+                }
             }
             if self.control.wechat_chat_binding(&ticket.chat_id).is_none() {
                 let repair = if intent == ChatMappingIntent::Recovery {
@@ -646,9 +653,13 @@ impl TrustedProjectApplication {
                     return Err(StartFailure::Conflict);
                 }
                 if self.current_session_id().as_ref() != Some(&session_id) {
-                    self.switch_session(session_id.clone())
-                        .map_err(StartFailure::Error)?;
-                    *selection_changed = true;
+                    match self.switch_session(session_id.clone()) {
+                        Ok(_) => *selection_changed = true,
+                        Err(error) => {
+                            *selection_changed |= error.selection_changed();
+                            return Err(StartFailure::Error(error));
+                        }
+                    }
                 }
                 self.control
                     .complete_wechat_chat_mapping(
