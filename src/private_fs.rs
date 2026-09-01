@@ -111,11 +111,10 @@ pub(crate) fn sync_dir(path: &Path) -> Result<(), String> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
-    #[cfg(unix)]
     #[test]
     fn atomic_private_file_is_created_with_private_mode() {
         use std::os::unix::fs::PermissionsExt as _;
