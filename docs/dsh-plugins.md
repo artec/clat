@@ -21,10 +21,22 @@ CLAT 把 DeepSeek Harness（DSH）作为插件协议参考实现，但不在 Rus
 | tool registry | `ToolRegistry`、middleware、observer、permission gate |
 | system-prompt registry | `PromptRegistry` 与可撤销 contribution |
 | 动态 JS 插件 | adapter 子进程，经 MCP `tools` / `prompts` 接入 |
+| 动态 Cordis 包子系统 | **不映射**（显式 deliberate deviation，见下） |
 
 Rust 内核有意去掉 Cordis 的运行时猴子补丁、原型链注入、热替换与任意服务
 动态重启；其余可静态表达的依赖、所有权、挂载事务、作用域和反向清理语义
 由 CLAT 自己持有。这样桌面端、TUI、headless 与未来客户端仍共享同一内核。
+
+**显式偏差（2026-09-02 记档）：动态 Cordis 包子系统不映射。** DSH 的
+`packages/extensions/` 四包（`tool-cordis` + host/client runner +
+`ui-cordis`）让运行中的模型可以自主检查当前进程的插件/服务、定义动态
+Cordis 包（host 半 + 浏览器半）、运行/停止/移除，浏览器面板全程操作；
+定义只存活于进程内存。CLAT 不提供任何对位物，理由与上一段同一裁定：
+内核不持有运行时动态 JS——进程内 eval 无签名、无能力门，与 CLAT 的
+权限/签名市场模型不相容。若未来出现"模型自主定义沙盒插件"的真实病历，
+CLAT 的对位路径是 WASM 宿主（fuel/epoch 沙盒、哈希绑定写授予、事务
+存储），届时再立项；`ui-cordis` 浏览器半同样无对应物（PWA 是前端，
+不是插件宿主）。
 
 ## 当前兼容面
 
@@ -234,6 +246,13 @@ clat plugin pack ./clat-package --output my-dsh-plugin.clatpkg
 `package` 默认拒绝存在 unsupported seam 的报告；人工审查后只能显式使用
 `--allow-partial`。它通过 Bun 生成单一可执行文件，因此最终用户不需要
 Node.js。`test` 和 `package` 都会进行真实 MCP initialize/tools-list smoke。
+
+DSH 上游已把 Cordis 框架在 npm 公开（`@deepseek-ai` scope 从 restricted
+转 public，2026-08-13 `a213befd0f`）。adapter 本身不依赖 `cordis`（接口
+是结构化鸭子类型，插件自带 type-only import），收益落在被移植的 DSH
+插件一侧：port 后的插件及其依赖树可以直接从公开 npm 解析
+`@deepseek-ai/cordis`，打包工具链不需要 vendor 源码或私有 registry
+凭据——DSH 插件打包路径的安装面因此收窄为纯公开依赖。
 
 可选的 `--publisher`、`--publisher-key`、`--minisign-key` 会生成
 Minisign companion 文件。CLAT 安装器重新计算完整包树并验签，但

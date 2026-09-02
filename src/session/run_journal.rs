@@ -565,6 +565,80 @@ mod tests {
         crate::test_support::cleanup_tree(&root);
     }
 
+    /// DU-1（2026-09-02，对照 DSH 2026-08-30 外部插件 ignorable 事件
+    /// 保留决策）：未知类型 + `ignorable: true` 信封（DSH 外部插件事件
+    /// 的词表形态）在 CLAT 日志里的**可重载行为**——写入侧信封字段透传
+    /// （round-trip 还原 `Some(true)`）、读取侧准入放行、重放跳过不重
+    /// 建、resume 的 seq 游标跨过外部事件继续追加、重载后外部事件与
+    /// CLAT 事件共存且 seq 连续。fail-closed 对照腿（未知且无
+    /// ignorable → resume 拒绝）由 persistence 的
+    /// `inspect_preserves_required_unknown_but_resume_rejects_it` 钉住。
+    #[test]
+    fn external_ignorable_events_are_reloadable_across_resume() {
+        let (backend, key, coordinator, root) = setup("external-ignorable");
+        let journal = coordinator.journal();
+        journal
+            .append_atomic(&[turn_start(1), user_message("hello")])
+            .expect("first");
+        journal
+            .append(
+                NewSessionEvent::new("cordis-plugin/foreign-note", json!({"vendor": "tree-out"}))
+                    .log_only(),
+            )
+            .expect("external ignorable event journals");
+        // 干净收尾本轮：resume 侧才不会先走撕裂修复的合成关闭。
+        journal
+            .append(NewSessionEvent::new(
+                "turn/end",
+                payloads::turn_end(1, &crate::session::event::TurnEndReason::Completed),
+            ))
+            .expect("turn end");
+        journal.flush().expect("durable");
+        coordinator.close().expect("close");
+
+        // 读取侧：未知 + ignorable 准入放行，信封字段经物理文件
+        // round-trip 还原。
+        let loaded = backend.load(&key, false).expect("admission passes");
+        assert_eq!(loaded.events.len(), 4);
+        let external = &loaded.events[2];
+        assert_eq!(external.event_type, "cordis-plugin/foreign-note");
+        assert_eq!(external.ignorable, Some(true), "the envelope flag survives");
+
+        // 重放：外部事件跳过不重建，用户消息正常还原。
+        let replay = crate::session::replay::ReplayAdapter::fold(&loaded.events);
+        assert!(replay.iter().any(|event| matches!(
+            event,
+            crate::session::replay::ReplayEvent::UserMessage { text, .. } if text == "hello"
+        )));
+
+        // resume：coordinator 在同一日志上重开。日志末尾不是
+        // session/end-seed，resume 协议先补一个 seed marker（seq 4），
+        // 新事件从 seq 5 继续——seq 游标跨过外部事件与 seed 正常前进。
+        let coordinator =
+            SessionCoordinator::start(Arc::clone(&backend), key.clone(), loaded.header.clone())
+                .expect("resume past the external event");
+        let journal = coordinator.journal();
+        let next_seq = journal.append(turn_start(2)).expect("append continues");
+        assert_eq!(
+            next_seq, 5,
+            "resume appends its end-seed (seq 4), then continues past the external event"
+        );
+        journal.flush().expect("flush");
+        coordinator.close().expect("close");
+
+        let reloaded = backend.load(&key, false).expect("reload");
+        let seqs: Vec<u64> = reloaded.events.iter().map(|event| event.seq).collect();
+        assert_eq!(
+            seqs,
+            vec![0, 1, 2, 3, 4, 5],
+            "seqs stay contiguous across the external event and the resume seed"
+        );
+        assert_eq!(reloaded.events[2].event_type, "cordis-plugin/foreign-note");
+        assert_eq!(reloaded.events[2].ignorable, Some(true));
+        assert_eq!(reloaded.events[4].event_type, "session/end-seed");
+        crate::test_support::cleanup_tree(&root);
+    }
+
     #[test]
     fn unknown_outcome_stops_the_journal_and_requires_cold_recovery() {
         let (backend, key, coordinator, root) = setup("unknown");
