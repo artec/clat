@@ -165,16 +165,21 @@ still dispatch unchanged.
 
 These image-draft commands are TUI-local (they edit the terminal composer
 without touching a session or model) and appear in the TUI help under
-"Composer":
+"Composer" (the `Ctrl+V` chord is listed under "Keys"):
 
 | Command | Purpose |
 |---|---|
 | `/attach PATH...` | add project-relative or absolute image paths; quotes group paths with spaces |
 | `@ PATH...` | keyboard-short alias for `/attach` (the required space avoids consuming `@mentions`) |
-| `/paste-image` | explicitly read one image from the system clipboard on a bounded worker |
+| `/pi, /paste-image` | explicitly read one image from the system clipboard on a bounded worker |
+| `Ctrl+V` | paste a clipboard image through `/pi`, or insert clipboard text |
 | `/image remove ID` | remove a stable `[Image #ID]` from the current draft |
 | `/image move ID POSITION` | move that stable image to a one-based position |
-| `/attachments clear` | clear the current structured image draft |
+| `/ac, /attach-clear` | clear the current structured image draft |
+
+The retired `/attachments` spelling (formerly `/attachments clear`) answers
+with a one-line migration hint pointing at `/ac` instead of dispatching or
+being sent as a message.
 
 The core command catalog is shared with `clat exec --command`. Commands that
 require an interactive picker, such as `/model`, `/resume`, and `/perm`,
@@ -371,18 +376,21 @@ repaintable while input is briefly gated; the first run event cannot pass its
 handoff barrier until the application and run state are back on the frontend.
 Text-only startup keeps its existing fast path.
 
-`/paste-image` is explicit: ordinary bracketed paste never probes the system
-clipboard. CLAT reads RGBA dimensions and enforces the 16M-pixel/byte-layout
-guard immediately, encodes PNG on a single bounded worker, and places the result
-in core-owned process-local staging before the TUI receives a path. Clipboard
-staging is capped at 128 MiB in aggregate and swept after one hour. Removing or
-clearing a draft, completing initial-message admission, or durably claiming an
-image steering message reclaims its raw staged PNG; CLAT never deletes a
-user-selected `/attach` source. macOS uses
-the native pasteboard, Windows uses the Win32 clipboard, and Linux supports X11
-plus compatible Wayland data-control compositors. WSLg can use those Linux
-paths; WSL without a graphical clipboard, Android, and Termux report an
-actionable unsupported error. CLAT deliberately does not concatenate or run a
+`/pi` (alias `/paste-image`) and the TUI's explicit `Ctrl+V` chord are the only
+system clipboard probes: ordinary bracketed paste never probes the system
+clipboard. `Ctrl+V` uses the same image path as `/pi`, falling back to ordinary
+composer insertion when the clipboard contains text and showing a status-line
+message when it is empty or unreadable. CLAT reads RGBA dimensions and enforces
+the 16M-pixel/byte-layout guard immediately, encodes PNG on a single bounded
+worker, and places the result in core-owned process-local staging before the TUI
+receives a path. Clipboard staging is capped at 128 MiB in aggregate and swept
+after one hour. Removing or clearing a draft, completing initial-message
+admission, or durably claiming an image steering message reclaims its raw staged
+PNG; CLAT never deletes a user-selected `/attach` source. macOS uses the native
+pasteboard, Windows uses the Win32 clipboard, and Linux supports X11 plus
+compatible Wayland data-control compositors. WSLg can use those Linux paths;
+WSL without a graphical clipboard, Android, and Termux report an actionable
+unsupported error. CLAT deliberately does not concatenate or run a
 PowerShell/shell fallback.
 
 On send (including steering during an active run), CLAT normalizes the image

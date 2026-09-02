@@ -9,13 +9,13 @@ scroll 0
 005| │                                                                              │  ⟦0..79 DIM⟧
 006| │                                                                              │  ⟦0..79 DIM⟧
 007| │                        ██████╗██╗      █████╗ ███████╗                       │  ⟦0..23 DIM · 24..55 fg=Rgb(65, 118, 230)+DIM · 56..79 DIM⟧
-008| │                                                                              │  ⟦0..9 DIM · 70..79 DIM⟧
+008| │                       ██╔════╝██║     ██╔══██╗╚══██══╝                       │  ⟦0..23 DIM · 24..55 fg=Rgb(65, 118, 230)+DIM · 56..79 DIM⟧
 009| │          ┌ /rename ───────────────────────────────────────────────┐          │  ⟦0..9 DIM · 11..11 fg=Yellow · 12..20 fg=Yellow+BOLD · 21..68 fg=Yellow · 70..79 DIM⟧
 010| │          │ Fix the Safari login crashX                            │          │  ⟦0..9 DIM · 11..11 fg=Yellow · 68..68 fg=Yellow · 70..79 DIM⟧
 011| │          │                                                        │          │  ⟦0..9 DIM · 11..11 fg=Yellow · 68..68 fg=Yellow · 70..79 DIM⟧
 012| │          │ Enter — rename      ·      Esc — cancel                │          │  ⟦0..9 DIM · 11..11 fg=Yellow · 13..51 fg=DarkGray · 68..68 fg=Yellow · 70..79 DIM⟧
 013| │          └────────────────────────────────────────────────────────┘          │  ⟦0..9 DIM · 11..68 fg=Yellow · 70..79 DIM⟧
-014| │                                                                              │  ⟦0..9 DIM · 70..79 DIM⟧
+014| │                        v<VERSION> · cmd-line agent runtime                       │  ⟦0..79 DIM⟧
 015| │                   type a message to begin · /help for keys                   │  ⟦0..19 DIM · 20..59 fg=DarkGray+DIM · 60..79 DIM⟧
 016| │                                                                              │  ⟦0..79 DIM⟧
 017| │                                                                              │  ⟦0..79 DIM⟧

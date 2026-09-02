@@ -8,6 +8,28 @@
 use super::App;
 use std::path::{Path, PathBuf};
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ClipboardPasteMode {
+    ImageOnly,
+    ImageOrText,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub(super) enum PreparedClipboardPaste {
+    Image(PathBuf),
+    Text(String),
+    Empty,
+}
+
+pub(super) type ClipboardPasteReader = std::sync::Arc<
+    dyn Fn(
+            Option<std::sync::Arc<crate::draft::DraftImageStore>>,
+            ClipboardPasteMode,
+        ) -> Result<PreparedClipboardPaste, String>
+        + Send
+        + Sync,
+>;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct AttachmentDraft {
     id: u64,
@@ -252,13 +274,16 @@ impl App {
                 self.clear_attachment_draft();
                 self.flash_status("image draft cleared");
             }
-            Ok(AttachmentCommand::PasteClipboard) => self.start_clipboard_image(),
+            Ok(AttachmentCommand::PasteClipboard) => {
+                self.start_clipboard_paste(ClipboardPasteMode::ImageOnly)
+            }
             Err(error) => self.flash_status(error),
         }
         true
     }
 }
 
+#[derive(Debug, Eq, PartialEq)]
 pub(super) enum AttachmentCommand {
     Add(Vec<PathBuf>),
     Remove(u64),
@@ -268,14 +293,29 @@ pub(super) enum AttachmentCommand {
 }
 
 pub(super) fn parse_attachment_command(value: &str) -> Option<Result<AttachmentCommand, String>> {
-    if value == "/paste-image" {
+    // Exact-match-first 名单（M-11 纪律）：凡以更短的 `/attach` 前缀
+    // 开头的精确拼法，必须先于下方前缀解析器判定——旧顺序曾把
+    // `/attachments clear` 当无效 `/attach...` 拼法吞掉（clear 面从未
+    // 运行）；`/attach-clear`（A6 别名）是同型雷区。A5：`/pi` 为短
+    // 主名，`/paste-image` 旧输入保留可达。
+    if matches!(value, "/pi" | "/paste-image") {
         return Some(Ok(AttachmentCommand::PasteClipboard));
     }
-    // Exact longer commands must precede the `/attach` prefix parser. The
-    // old order treated `/attachments clear` as an invalid `/attach...`
-    // spelling and returned None, so the advertised clear surface never ran.
-    if value == "/attachments clear" {
+    if matches!(value, "/ac" | "/attach-clear") {
         return Some(Ok(AttachmentCommand::Clear));
+    }
+    // CP-4（2026-09-02，INV-SC-2 口径细化）：`/attachments` 旧全拼
+    // 退役——旧名保留义务只覆盖可编程触达的命令面（核心注册表），
+    // TUI composer 是纯交互面（serve/exec/脚本不可达），无保留义务；
+    // 但退役必须可行动：任何 `/attachments` 前缀输入给一次性迁移
+    // 提示（指向 /ac），不静默落普通消息。本分支同样必须先于下方
+    // `/attach` 前缀解析器（M-11 同型：否则被「非空白参数」守卫吞成
+    // None → 普通消息）。
+    if value.starts_with("/attachments") {
+        return Some(Err(
+            "/attachments was retired — use /ac (alias /attach-clear) to clear the image draft"
+                .into(),
+        ));
     }
     if let Some(arguments) = value.strip_prefix("/attach") {
         if !arguments.is_empty() && !arguments.starts_with(char::is_whitespace) {
@@ -323,16 +363,29 @@ pub(super) fn parse_attachment_command(value: &str) -> Option<Result<AttachmentC
 }
 
 impl App {
-    fn start_clipboard_image(&mut self) {
+    pub(super) fn start_smart_clipboard_paste(&mut self) {
+        self.start_clipboard_paste(ClipboardPasteMode::ImageOrText);
+    }
+
+    fn start_clipboard_paste(&mut self, mode: ClipboardPasteMode) {
         if self.clipboard_image_pending {
-            self.flash_status("clipboard image preparation is already running");
+            self.flash_status(match mode {
+                ClipboardPasteMode::ImageOnly => "clipboard image preparation is already running",
+                ClipboardPasteMode::ImageOrText => "clipboard paste is already running",
+            });
             return;
         }
-        let Some(application) = self.application.as_ref() else {
+        let stager = self
+            .application
+            .as_ref()
+            .map(|application| application.draft_image_store());
+        if mode == ClipboardPasteMode::ImageOnly && stager.is_none() {
             self.flash_status("system clipboard images are unavailable in clat dsh mode");
             return;
-        };
-        if self.attachments.len() >= crate::session::attachments::MAX_IMAGES_PER_MESSAGE {
+        }
+        if mode == ClipboardPasteMode::ImageOnly
+            && self.attachments.len() >= crate::session::attachments::MAX_IMAGES_PER_MESSAGE
+        {
             self.flash_status(format!(
                 "image draft already has the {}-image maximum",
                 crate::session::attachments::MAX_IMAGES_PER_MESSAGE
@@ -343,15 +396,18 @@ impl App {
             self.flash_status("clipboard worker is unavailable before the terminal starts");
             return;
         };
-        let stager = application.draft_image_store();
+        let reader = std::sync::Arc::clone(&self.clipboard_paste_reader);
         self.clipboard_image_pending = true;
-        self.flash_status("reading clipboard image…");
+        self.flash_status(match mode {
+            ClipboardPasteMode::ImageOnly => "reading clipboard image…",
+            ClipboardPasteMode::ImageOrText => "reading clipboard…",
+        });
         let spawn = std::thread::Builder::new()
-            .name("clat-clipboard-image".into())
+            .name("clat-clipboard-paste".into())
             .spawn(move || {
-                let result = read_encode_and_stage_clipboard(stager);
+                let result = reader(stager, mode);
                 let _ = sender.send(super::worker::UiEvent::Worker(
-                    super::worker::WorkerMessage::ClipboardImagePrepared(result),
+                    super::worker::WorkerMessage::ClipboardPastePrepared(result),
                 ));
             });
         if let Err(error) = spawn {
@@ -363,25 +419,42 @@ impl App {
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn read_encode_and_stage_clipboard(
-    stager: std::sync::Arc<crate::draft::DraftImageStore>,
-) -> Result<PathBuf, String> {
+    stager: Option<std::sync::Arc<crate::draft::DraftImageStore>>,
+    mode: ClipboardPasteMode,
+) -> Result<PreparedClipboardPaste, String> {
     let mut clipboard = arboard::Clipboard::new()
         .map_err(|error| format!("system clipboard is unavailable: {error}"))?;
-    let image = clipboard
-        .get_image()
-        .map_err(|error| format!("clipboard does not contain a readable image: {error}"))?;
-    let png = encode_clipboard_rgba(image.width, image.height, image.bytes.as_ref())?;
-    stager.stage_png(&png)
+    match clipboard.get_image() {
+        Ok(image) => {
+            let stager = stager.ok_or_else(|| {
+                "system clipboard images are unavailable in clat dsh mode".to_owned()
+            })?;
+            let png = encode_clipboard_rgba(image.width, image.height, image.bytes.as_ref())?;
+            stager.stage_png(&png).map(PreparedClipboardPaste::Image)
+        }
+        Err(error) if mode == ClipboardPasteMode::ImageOnly => Err(format!(
+            "clipboard does not contain a readable image: {error}"
+        )),
+        Err(_) => match clipboard.get_text() {
+            Ok(text) if !text.is_empty() => Ok(PreparedClipboardPaste::Text(text)),
+            Ok(_) | Err(_) => Ok(PreparedClipboardPaste::Empty),
+        },
+    }
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 fn read_encode_and_stage_clipboard(
-    _stager: std::sync::Arc<crate::draft::DraftImageStore>,
-) -> Result<PathBuf, String> {
+    _stager: Option<std::sync::Arc<crate::draft::DraftImageStore>>,
+    _mode: ClipboardPasteMode,
+) -> Result<PreparedClipboardPaste, String> {
     Err(
         "clipboard images are supported on macOS, Windows, X11, and compatible Wayland compositors"
             .into(),
     )
+}
+
+pub(super) fn system_clipboard_paste_reader() -> ClipboardPasteReader {
+    std::sync::Arc::new(read_encode_and_stage_clipboard)
 }
 
 fn encode_clipboard_rgba(width: usize, height: usize, bytes: &[u8]) -> Result<Vec<u8>, String> {
@@ -542,6 +615,62 @@ mod tests {
         ));
     }
 
+    /// CP-2（2026-09-02）判别：A5/A6 短名与别名。`/attach-clear` 以
+    /// `/attach` 为前缀（M-11「/attachments clear 被前缀吞掉」同型
+    /// 雷区）——必须落在 exact-match-first 名单、先于 `/attach` 前缀
+    /// 解析器；把它挪到前缀块之后（删 exact-first）即红：前缀块的
+    /// 「非空白参数」守卫先行返回 None。本测试同时断言 `/attach-clear`
+    /// 不被解析成 `/attach` + 参数（`Add(["-clear"])` 之形）。
+    #[test]
+    fn short_names_resolve_exactly_and_attach_clear_is_never_an_attach_argument() {
+        match parse_attachment_command("/attach-clear") {
+            Some(Ok(AttachmentCommand::Clear)) => {}
+            other => panic!(
+                "/attach-clear must resolve as the exact clear alias, \
+                 never None nor /attach + argument; got {other:?}"
+            ),
+        }
+        assert_eq!(
+            parse_attachment_command("/ac"),
+            Some(Ok(AttachmentCommand::Clear))
+        );
+        assert_eq!(
+            parse_attachment_command("/pi"),
+            Some(Ok(AttachmentCommand::PasteClipboard))
+        );
+        // 旧输入可达（A5 旧名纪律；CP-4 后 `/paste-image` 是仅存的
+        // 保留别名）。
+        assert_eq!(
+            parse_attachment_command("/paste-image"),
+            Some(Ok(AttachmentCommand::PasteClipboard))
+        );
+        // CP-4（2026-09-02，INV-SC-2 口径细化）：`/attachments` 旧全拼
+        // 退役——纯交互面无保留义务，但退役必须可行动：前缀输入给
+        // 迁移提示（可行动错误、指向 /ac），不静默落普通消息。删提示
+        // 分支 → 输入落回 `/attach` 前缀守卫变 None（普通消息）→ 本腿红。
+        for retired in ["/attachments clear", "/attachments"] {
+            match parse_attachment_command(retired) {
+                Some(Err(hint)) => {
+                    assert!(
+                        hint.contains("/ac"),
+                        "migration hint must point at /ac: {hint}"
+                    );
+                }
+                other => panic!(
+                    "{retired} must surface the migration hint, never dispatch nor \
+                     fall through as a normal message; got {other:?}"
+                ),
+            }
+        }
+        // 前缀形态不受短名影响：`/attach PATH` 仍走 Add；`/attachx`
+        // 仍是无效拼法（None），不被吞成路径。
+        assert!(matches!(
+            parse_attachment_command("/attach a.png"),
+            Some(Ok(AttachmentCommand::Add(_)))
+        ));
+        assert_eq!(parse_attachment_command("/attachx"), None);
+    }
+
     #[test]
     fn stable_ids_survive_remove_and_reorder_and_batch_add_is_atomic() {
         let root = std::env::temp_dir().join(format!("clat-composer-{}", uuid::Uuid::new_v4()));
@@ -643,8 +772,15 @@ mod tests {
             std::env::temp_dir().join(format!("clat-live-clipboard-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let store = std::sync::Arc::new(crate::draft::DraftImageStore::new(&root));
-        let path = read_encode_and_stage_clipboard(std::sync::Arc::clone(&store))
-            .expect("copy a non-sensitive image to the system clipboard before running");
+        let path = match read_encode_and_stage_clipboard(
+            Some(std::sync::Arc::clone(&store)),
+            ClipboardPasteMode::ImageOnly,
+        )
+        .expect("copy a non-sensitive image to the system clipboard before running")
+        {
+            PreparedClipboardPaste::Image(path) => path,
+            other => panic!("image-only clipboard read returned {other:?}"),
+        };
         let metadata = std::fs::metadata(&path).expect("staged clipboard PNG");
         assert!(metadata.len() > 0);
         let decoded = image::open(&path).expect("staged clipboard bytes remain a valid PNG");

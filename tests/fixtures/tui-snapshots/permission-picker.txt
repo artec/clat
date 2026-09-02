@@ -8,7 +8,7 @@ scroll 0
 004| │                                                                              │  ⟦0..79 DIM⟧
 005| │                                                                              │  ⟦0..79 DIM⟧
 006| │                                                                              │  ⟦0..79 DIM⟧
-007| │                                                                              │  ⟦0..4 DIM · 75..79 DIM⟧
+007| │                        ██████╗██╗      █████╗ ███████╗                       │  ⟦0..23 DIM · 24..55 fg=Rgb(65, 118, 230)+DIM · 56..79 DIM⟧
 008| │     ┌ /perm ───────────────────────────────────────────────────────────┐     │  ⟦0..4 DIM · 6..6 fg=Yellow · 7..13 fg=Yellow+BOLD · 14..73 fg=Yellow · 75..79 DIM⟧
 009| │     │    Read Only     every side effect asks before it runs           │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
 010| │     │  ● Project Write file edits, reads, and network tools run; comm… │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 8..71 REVERSED · 73..73 fg=Yellow · 75..79 DIM⟧
@@ -16,7 +16,7 @@ scroll 0
 012| │     │                                                                  │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
 013| │     │ ↑/↓ select · Enter apply · Esc cancel                            │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 8..44 fg=DarkGray · 73..73 fg=Yellow · 75..79 DIM⟧
 014| │     └──────────────────────────────────────────────────────────────────┘     │  ⟦0..4 DIM · 6..73 fg=Yellow · 75..79 DIM⟧
-015| │                                                                              │  ⟦0..4 DIM · 75..79 DIM⟧
+015| │                   type a message to begin · /help for keys                   │  ⟦0..19 DIM · 20..59 fg=DarkGray+DIM · 60..79 DIM⟧
 016| │                                                                              │  ⟦0..79 DIM⟧
 017| │                                                                              │  ⟦0..79 DIM⟧
 018| │                                                                              │  ⟦0..79 DIM⟧

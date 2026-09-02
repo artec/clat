@@ -1,0 +1,27 @@
+size 80x24
+cursor 3,21
+scroll 0
+000| ┌──────────────────────────────────────────────────────────────────────────────┐  ⟦0..79 DIM⟧
+001| │ CLAT v<VERSION>  ready  ·  not configured — /model                               │  ⟦0..1 DIM · 2..5 BOLD+DIM · 6..24 DIM · 25..47 fg=Cyan+DIM · 48..79 DIM⟧
+002| └──── ┌ /help ───────────────────────────────────────────────────────────┐ ────┘  ⟦0..4 DIM · 6..6 fg=Yellow · 7..13 fg=Yellow+BOLD · 14..73 fg=Yellow · 75..79 DIM⟧
+003| ┌ Con │   /pi, /paste-image — read one image from the system clipboard i │ ────┐  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+004| │     │ nto the draft                                                    │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+005| │     │   /ac, /attach-clear — clear the current structured image draft  │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+006| │     │                                                                  │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+007| │     │ Keys                                                             │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 8..11 BOLD · 73..73 fg=Yellow · 75..79 DIM⟧
+008| │     │   Enter — submit; while a run is active, submit steering         │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+009| │     │   Shift+Enter, Alt+Enter, Ctrl+J — insert a line break           │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+010| │     │   Ctrl+V — paste clipboard image or text                         │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+011| │     │   Up / Down — recall input history (or scroll the conversation)  │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+012| │     │   Esc — cancel the running request; otherwise clear input        │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+013| │     │   Shift+Tab — cycle the thinking level                           │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+014| │     │   PgUp / PgDn, mouse wheel — scroll the conversation             │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+015| │     │   Ctrl+O — cycle tool cards (collapsed / expanded / hidden)      │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+016| │     │   drag — select text and copy it on release                      │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+017| │     │   Ctrl+C — re-copy the selection; otherwise quit                 │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+018| │     │   Shift+drag — the terminal's own selection, then Cmd+C          │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+019| └──── │                                                                  │ ────┘  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+020| ┌ Mes │ ↑↓/PgUp/PgDn scroll · end · Esc close                            │ ite ┐  ⟦0..4 DIM · 6..6 fg=Yellow · 8..44 fg=DarkGray · 73..73 fg=Yellow · 75..78 fg=DarkGray+DIM · 79..79 DIM⟧
+021| │❯    └──────────────────────────────────────────────────────────────────┘     │  ⟦0..4 DIM · 6..73 fg=Yellow · 75..79 DIM⟧
+022| └──────────────────────────────────────────────────────────────────────────────┘  ⟦0..79 DIM⟧
+023|  <STORAGE-ROOT>  ⟦0..14 DIM · 15..79 PAD:65 DIM⟧

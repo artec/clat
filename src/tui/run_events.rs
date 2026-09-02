@@ -49,10 +49,10 @@ impl App {
                 self.notify();
                 self.flash_status("the model asks a question — answer or Esc to decline");
             }
-            WorkerMessage::ClipboardImagePrepared(result) => {
+            WorkerMessage::ClipboardPastePrepared(result) => {
                 self.clipboard_image_pending = false;
                 match result {
-                    Ok(path) => {
+                    Ok(crate::tui::attachments::PreparedClipboardPaste::Image(path)) => {
                         let root = self.project.root().to_path_buf();
                         match self.attachments.add_paths(&root, [path.clone()]) {
                             Ok(_) => self.flash_status(format!(
@@ -66,6 +66,13 @@ impl App {
                                 ));
                             }
                         }
+                    }
+                    Ok(crate::tui::attachments::PreparedClipboardPaste::Text(text)) => {
+                        self.input.insert_str(&text);
+                        self.flash_status("clipboard text pasted");
+                    }
+                    Ok(crate::tui::attachments::PreparedClipboardPaste::Empty) => {
+                        self.flash_status("clipboard is empty or unreadable");
                     }
                     Err(error) => self.flash_status(error),
                 }

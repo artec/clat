@@ -108,8 +108,11 @@ pub(super) fn draw_welcome(frame: &mut Frame, inner: Rect) {
 /// 弹窗内宽折行（wrap_text）。节标题 Bold，条目默认色。命令节从
 /// `core.commands` 目录派生（INV-C4：`ShowHelp` 载荷，INV-SC-1 折叠序）；
 /// Composer 节与键位节保持前端本地（INV-SC-3：附件草稿是 TUI 状态，
-/// 不进 core `CommandRegistry`——三条命令真实存在于 attachments.rs 的
-/// 本地拦截，不列死条目）。
+/// 不进 core `CommandRegistry`——命令真实存在于 attachments.rs 的
+/// 本地拦截，不列死条目）。Composer 条目主名在前、别名随后（CP-2
+/// A5/A6）；键位节十一行按任务域四组排布（CP-2 A4：输入与提交 /
+/// 运行控制 / 浏览与显示 / 选择与复制，组序即行序——与命令节七组
+/// 的"组序即序"设计语言统一），Ctrl+V 归位 Keys 节。
 pub(super) fn help_dialog_lines(width: usize, commands: &[CommandInfo]) -> Vec<Line<'static>> {
     let composer: &[(&str, &str)] = &[
         (
@@ -117,28 +120,31 @@ pub(super) fn help_dialog_lines(width: usize, commands: &[CommandInfo]) -> Vec<L
             "add project-relative or absolute image paths (`@ ` is the alias)",
         ),
         (
-            "/paste-image",
+            "/pi, /paste-image",
             "read one image from the system clipboard into the draft",
         ),
         (
-            "/attachments clear",
+            "/ac, /attach-clear",
             "clear the current structured image draft",
         ),
     ];
+    // CP-2 A4（2026-09-02 负责人拍板的权威顺序表）：行 1-4 输入与提交，
+    // 5-6 运行控制，7-8 浏览与显示，9-11 选择与复制。
     let keys: &[(&str, &str)] = &[
         ("Enter", "submit; while a run is active, submit steering"),
         ("Shift+Enter, Alt+Enter, Ctrl+J", "insert a line break"),
+        ("Ctrl+V", "paste clipboard image or text"),
         (
             "Up / Down",
             "recall input history (or scroll the conversation)",
         ),
-        ("PgUp / PgDn, mouse wheel", "scroll the conversation"),
+        ("Esc", "cancel the running request; otherwise clear input"),
         ("Shift+Tab", "cycle the thinking level"),
+        ("PgUp / PgDn, mouse wheel", "scroll the conversation"),
         ("Ctrl+O", "cycle tool cards (collapsed / expanded / hidden)"),
         ("drag", "select text and copy it on release"),
         ("Ctrl+C", "re-copy the selection; otherwise quit"),
         ("Shift+drag", "the terminal's own selection, then Cmd+C"),
-        ("Esc", "cancel the running request; otherwise clear input"),
     ];
     let mut lines = Vec::new();
     for (title, entry_lines) in [

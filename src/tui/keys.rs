@@ -497,6 +497,17 @@ impl App {
             return;
         }
 
+        // CP-I1/CP-I3: only the explicit, unmodified Ctrl+V chord probes the
+        // system clipboard, and only after every modal/editor gate has had
+        // first ownership of the key. Terminal bracketed paste remains the
+        // independent Event::Paste path below and performs zero such probes.
+        if key.modifiers == KeyModifiers::CONTROL
+            && matches!(key.code, KeyCode::Char('v') | KeyCode::Char('V'))
+        {
+            self.start_smart_clipboard_paste();
+            return;
+        }
+
         match key.code {
             // 输入在 run 进行中保持可用：Enter 变为插话（DSH "steer
             // while running, send while idle"），其余编辑键不变。

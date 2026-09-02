@@ -30,9 +30,10 @@ pub(crate) enum WorkerMessage {
         question: AskQuestion,
         answer_tx: Sender<AskAnswer>,
     },
-    /// Result of the single bounded clipboard-image worker. The path, when
-    /// present, was minted by core draft staging rather than the frontend.
-    ClipboardImagePrepared(Result<std::path::PathBuf, String>),
+    /// Result of the single bounded explicit clipboard worker. Image paths
+    /// are minted by the existing core draft staging registry; Ctrl+V may
+    /// instead return ordinary composer text or an empty result.
+    ClipboardPastePrepared(Result<super::attachments::PreparedClipboardPaste, String>),
     /// Initial attachment admission can decode and normalize up to eight
     /// images. The whole application is temporarily handed to a bounded
     /// worker so none of that filesystem/codec work runs on the render/input

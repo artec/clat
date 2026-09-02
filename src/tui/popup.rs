@@ -209,20 +209,22 @@ pub(crate) fn popup_block(title: &str) -> Block<'static> {
         .padding(Padding::horizontal(POPUP_TEXT_PADDING))
 }
 
-/// 弹窗清屏垫边（wide-glyph guard）：Clear 范围左右各扩一列（钳制在
-/// 终端区域内）。跨在弹窗左边框起点上的宽字符（CJK/emoji 占 2 列，
-/// 起点格在 Clear 范围之外）会让 ratatui diff 的 `to_skip` 吞掉边框
-/// 列的更新——上一帧的字形铺进边框列，本帧 │ 不再补发，左边线被吃
-/// 掉（用户实测：仅左边线受损，弹窗内部不受影响；右侧因起点格在
-/// Clear 范围内天然安全，扩列是对称保险）。起点格被一并清掉后，
-/// diff 正常发出边框更新。
+/// 弹窗清屏垫边（wide-glyph guard，CP-3 收窄 2026-09-02）：Clear 范围
+/// 左右各扩一列（钳制在终端区域内），上下不扩。跨在弹窗左边框起点上
+/// 的宽字符（CJK/emoji 占 2 列，起点格在 Clear 范围之外）会让 ratatui
+/// diff 的 `to_skip` 吞掉边框列的更新——上一帧的字形铺进边框列，本帧
+/// │ 不再补发，左边线被吃掉（用户实测：仅左边线受损，弹窗内部不受影
+/// 响；右侧因起点格在 Clear 范围内天然安全，扩列是末列宽字符换行类
+/// 的廉价保险）。起点格被一并清掉后，diff 正常发出边框更新。
+/// 历史实现曾在上下各扩一行——那是无事故依据的纯视觉对称（注释也未
+/// 论证）：宽字形溢出与 `to_skip` 吞更新均为纯列向机制，字形不纵向
+/// 跨行，上下守卫零防护价值、每侧白占一行底层 UI 的可见内容
+///（2026-09-02 负责人裁定收窄，守卫几何测试锁形）。
 pub(crate) fn clear_popup_with_guards(frame: &mut Frame, rect: Rect) {
     let area = frame.area();
     let left = rect.x.saturating_sub(1).max(area.x);
     let right = rect.right().saturating_add(1).min(area.right());
-    let top = rect.y.saturating_sub(1).max(area.y);
-    let bottom = rect.bottom().saturating_add(1).min(area.bottom());
-    if right <= left || bottom <= top {
+    if right <= left || rect.height == 0 {
         frame.render_widget(Clear, rect);
         return;
     }
@@ -231,8 +233,8 @@ pub(crate) fn clear_popup_with_guards(frame: &mut Frame, rect: Rect) {
         Rect {
             x: left,
             width: right - left,
-            y: top,
-            height: bottom - top,
+            y: rect.y,
+            height: rect.height,
         },
     );
 }
@@ -325,4 +327,48 @@ pub(super) fn permission_argument_width(area: Rect) -> usize {
         .saturating_sub(2) // 边框
         .saturating_sub(2 * POPUP_TEXT_PADDING) // 弹窗内边距
         .saturating_sub(4) as usize // 参数缩进/留白
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    /// CP-3（2026-09-02）判别：守卫几何——Clear 恰为 rect 左右各扩
+    /// 1 列、纵向不扩。pre-fix（上下各扩 1 行的历史对称实现）本测试
+    /// 的纵向腿红：框上/下紧邻行的底衬内容被清成空白。
+    #[test]
+    fn guard_clears_one_column_sideways_and_no_rows_vertically() {
+        let mut terminal = Terminal::new(TestBackend::new(20, 8)).unwrap();
+        terminal
+            .draw(|frame| {
+                // 铺底衬：全屏 'X' 模拟上一帧残留/底层 UI 内容。
+                for y in 0..frame.area().height {
+                    for x in 0..frame.area().width {
+                        frame.buffer_mut()[(x, y)].set_char('X');
+                    }
+                }
+                clear_popup_with_guards(frame, Rect::new(5, 2, 10, 4));
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let symbol = |x: u16, y: u16| buffer[(x, y)].symbol().to_owned();
+        // 纵向腿：框上/下紧邻行（y=1、y=6）整行保留底衬——上下不扩。
+        for y in [1_u16, 6] {
+            for x in 4..=15_u16 {
+                assert_eq!(symbol(x, y), "X", "row {y} must keep its backing content");
+            }
+        }
+        // 横向腿：框行（y=2..5）内左右各扩 1 列（x=4、x=15）被清空，
+        // 再外一圈（x=3、x=16）保留。
+        for y in 2..6_u16 {
+            assert_eq!(symbol(3, y), "X");
+            assert_eq!(symbol(4, y), " ", "left guard column must be cleared");
+            for x in 5..15_u16 {
+                assert_eq!(symbol(x, y), " ");
+            }
+            assert_eq!(symbol(15, y), " ", "right guard column must be cleared");
+            assert_eq!(symbol(16, y), "X");
+        }
+    }
 }

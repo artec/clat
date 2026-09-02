@@ -66,6 +66,17 @@ use unicode_width::UnicodeWidthStr;
 /// （五厂商 + Custom = 6 行，hy4-preview 条目）。
 /// 同日四次刷新（TC-2 口径修正）：model-picker 再钉——Tencent 一级
 /// 行更名 "Hy Token Plan"（归队计划名命名模式，负责人二次裁定）。
+/// 2026-09-02 五次刷新与新增（CP-2 帮助归位与命令短名，A4/A5/A6）：
+/// 新场景 help-dialog-end——首页快照只锁命令节，尾页（滚动钳制位）
+/// 补锁 Composer/Keys 节；help-dialog 本身零变化（命令节未动）。
+/// Composer 节改三行短主名（/pi, /paste-image；/ac, /attach-clear,
+/// /attachments clear），Ctrl+V 归位 Keys 节（A4 四组 11 行：输入与
+/// 提交 / 运行控制 / 浏览与显示 / 选择与复制）。
+/// 2026-09-02 六次刷新（CP-3 弹窗守卫收窄为仅横向）：21 个含弹窗
+/// 场景重钉——clear_popup_with_guards 不再上下各扩一行，弹框上/下
+/// 紧邻行恢复显示压暗底层 UI（此前被守卫清成空白；每场景恰两行、
+/// 框内零变化）。CP-4 同批：help-dialog-end 尾页 Composer 行三名改
+/// 两名（/ac, /attach-clear——退役全拼不再宣传）。
 const SCENARIOS: &[&str] = &[
     "idle-transcript-80",
     "idle-transcript-40",
@@ -94,6 +105,7 @@ const SCENARIOS: &[&str] = &[
     "ask-dialog-options",
     "ask-dialog-custom",
     "help-dialog",
+    "help-dialog-end",
     "context-dialog",
     "skills-dialog",
     "mcp-dialog",
@@ -199,8 +211,26 @@ fn core_staged_clipboard_drafts_release_on_remove_clear_and_durable_claim_only()
         .attachments
         .add_paths(&harness.project_root, [cleared.clone()])
         .unwrap();
-    assert!(harness.app.handle_attachment_command("/attachments clear"));
+    assert!(harness.app.handle_attachment_command("/ac"));
     assert!(!cleared.exists(), "clear reclaims a core-staged raw image");
+
+    // CP-4：退役全拼在 App 面同样被拦截（返回 true = 消费掉输入、
+    // 不落普通消息），草稿保持原样——迁移提示不是清空。
+    let hinted = store
+        .stage_png(&bytes)
+        .expect("stage image for the retired-spelling hint leg");
+    harness
+        .app
+        .attachments
+        .add_paths(&harness.project_root, [hinted.clone()])
+        .unwrap();
+    assert!(
+        harness.app.handle_attachment_command("/attachments clear"),
+        "the retired spelling must be intercepted, never sent as a message"
+    );
+    assert_eq!(harness.app.attachments.len(), 1, "the hint does not clear");
+    assert!(harness.app.handle_attachment_command("/ac"));
+    assert!(!hinted.exists(), "/ac still clears after the hint");
 
     let user_source = harness.project_root.join("user-owned.png");
     std::fs::write(&user_source, &bytes).unwrap();
@@ -276,6 +306,183 @@ fn core_staged_clipboard_drafts_release_on_remove_clear_and_durable_claim_only()
     assert!(harness.app.deferred_core_staged_releases.is_empty());
 }
 
+/// CP four-leg discriminator, image leg: Ctrl+V invokes the shared explicit
+/// reader once, and the returned PNG is owned by the existing stage_png/H-17
+/// registry rather than by a frontend-only path or cleanup lifecycle.
+#[test]
+fn ctrl_v_image_uses_existing_clipboard_staging_and_attachment_rail() {
+    use crate::tui::attachments::{ClipboardPasteMode, PreparedClipboardPaste};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let mut harness = Harness::trusted("ctrl-v-image", 80, 24);
+    let probes = Arc::new(AtomicUsize::new(0));
+    let staged = Arc::new(std::sync::Mutex::new(None));
+    let probe_count = Arc::clone(&probes);
+    let staged_path = Arc::clone(&staged);
+    harness.app.clipboard_paste_reader = Arc::new(move |stager, mode| {
+        probe_count.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(mode, ClipboardPasteMode::ImageOrText);
+        let path = stager
+            .expect("local Ctrl+V image uses the application draft store")
+            .stage_png(&test_png(9, 7))?;
+        *staged_path.lock().unwrap() = Some(path.clone());
+        Ok(PreparedClipboardPaste::Image(path))
+    });
+    let (sender, events) = super::ui_event_channel();
+    harness.app.event_sender = Some(sender);
+
+    harness.key_with_modifiers(KeyCode::Char('v'), KeyModifiers::CONTROL);
+    let prepared = events
+        .recv_timeout(Duration::from_secs(2))
+        .expect("Ctrl+V clipboard worker result");
+    harness.event(prepared);
+
+    assert_eq!(probes.load(Ordering::SeqCst), 1, "one explicit probe");
+    assert_eq!(harness.app.attachments.len(), 1);
+    assert!(
+        harness
+            .app
+            .attachments
+            .rows()
+            .next()
+            .is_some_and(|row| row.contains("clipboard-")),
+        "the existing composer rail presents the core-staged image"
+    );
+    let path = staged.lock().unwrap().clone().expect("staged path");
+    assert!(path.exists(), "the draft stays retryable before claim");
+    assert!(harness.app.handle_attachment_command("/ac"));
+    assert!(
+        !path.exists(),
+        "the existing clipboard registry reclaims Ctrl+V drafts"
+    );
+}
+
+/// CP four-leg discriminator, text leg: the same explicit key probe falls
+/// back to ordinary composer insertion without creating an attachment.
+#[test]
+fn ctrl_v_text_falls_back_to_ordinary_composer_insertion() {
+    use crate::tui::attachments::{ClipboardPasteMode, PreparedClipboardPaste};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let mut harness = Harness::trusted("ctrl-v-text", 80, 24);
+    let probes = Arc::new(AtomicUsize::new(0));
+    let probe_count = Arc::clone(&probes);
+    harness.app.clipboard_paste_reader = Arc::new(move |_stager, mode| {
+        probe_count.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(mode, ClipboardPasteMode::ImageOrText);
+        Ok(PreparedClipboardPaste::Text("hello\nclipboard".into()))
+    });
+    let (sender, events) = super::ui_event_channel();
+    harness.app.event_sender = Some(sender);
+
+    harness.key_with_modifiers(KeyCode::Char('v'), KeyModifiers::CONTROL);
+    harness.event(
+        events
+            .recv_timeout(Duration::from_secs(2))
+            .expect("Ctrl+V text result"),
+    );
+
+    assert_eq!(probes.load(Ordering::SeqCst), 1);
+    assert_eq!(harness.app.input.text(), "hello\nclipboard");
+    assert!(harness.app.attachments.is_empty());
+}
+
+/// CP four-leg discriminator, empty leg: no modal is opened and the
+/// unavailable content is explained on the transient status line.
+#[test]
+fn ctrl_v_empty_clipboard_flashes_status_without_mutating_composer() {
+    use crate::tui::attachments::PreparedClipboardPaste;
+
+    let mut harness = Harness::trusted("ctrl-v-empty", 80, 24);
+    harness.app.clipboard_paste_reader =
+        Arc::new(|_stager, _mode| Ok(PreparedClipboardPaste::Empty));
+    let (sender, events) = super::ui_event_channel();
+    harness.app.event_sender = Some(sender);
+
+    harness.key_with_modifiers(KeyCode::Char('v'), KeyModifiers::CONTROL);
+    harness.event(
+        events
+            .recv_timeout(Duration::from_secs(2))
+            .expect("Ctrl+V empty result"),
+    );
+
+    assert_eq!(harness.app.status, "clipboard is empty or unreadable");
+    assert!(harness.app.input.text().is_empty());
+    assert!(harness.app.attachments.is_empty());
+    assert!(harness.app.info_dialog.is_none());
+}
+
+/// CP-I1 discriminator: terminal bracketed paste is a separate event path
+/// and must never invoke the system clipboard reader. Removing that routing
+/// boundary makes this assertion red even when the pasted payload is text.
+#[test]
+fn bracketed_paste_remains_zero_clipboard_probe() {
+    use crate::tui::attachments::PreparedClipboardPaste;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let mut harness = Harness::trusted("bracketed-paste-zero-probe", 80, 24);
+    let probes = Arc::new(AtomicUsize::new(0));
+    let probe_count = Arc::clone(&probes);
+    harness.app.clipboard_paste_reader = Arc::new(move |_stager, _mode| {
+        probe_count.fetch_add(1, Ordering::SeqCst);
+        Ok(PreparedClipboardPaste::Text("wrong source".into()))
+    });
+
+    harness.event(UiEvent::Terminal(Event::Paste("terminal payload".into())));
+
+    assert_eq!(probes.load(Ordering::SeqCst), 0);
+    assert_eq!(harness.app.input.text(), "terminal payload");
+}
+
+/// CP-I3: modal owners see Ctrl+V before the composer shortcut, matching the
+/// existing `/paste-image` command's inability to bypass a dialog.
+#[test]
+fn ctrl_v_respects_modal_key_ownership() {
+    use crate::tui::attachments::PreparedClipboardPaste;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let mut harness = Harness::trusted("ctrl-v-modal-gate", 80, 24);
+    let probes = Arc::new(AtomicUsize::new(0));
+    let probe_count = Arc::clone(&probes);
+    harness.app.clipboard_paste_reader = Arc::new(move |_stager, _mode| {
+        probe_count.fetch_add(1, Ordering::SeqCst);
+        Ok(PreparedClipboardPaste::Text("must not paste".into()))
+    });
+    harness.type_text("/help");
+    harness.key(KeyCode::Enter);
+    assert!(harness.app.info_dialog.is_some());
+
+    harness.key_with_modifiers(KeyCode::Char('v'), KeyModifiers::CONTROL);
+
+    assert_eq!(probes.load(Ordering::SeqCst), 0);
+    assert!(harness.app.info_dialog.is_some());
+    assert!(harness.app.input.text().is_empty());
+}
+
+/// CP-I3 run-state leg: an active run keeps the composer available for
+/// steering, so Ctrl+V has the same reachability as `/paste-image` there.
+#[test]
+fn ctrl_v_remains_available_for_the_running_steering_composer() {
+    use crate::tui::attachments::PreparedClipboardPaste;
+
+    let mut harness = Harness::trusted("ctrl-v-running", 80, 24);
+    harness.app.running = true;
+    harness.app.clipboard_paste_reader =
+        Arc::new(|_stager, _mode| Ok(PreparedClipboardPaste::Text("steering paste".into())));
+    let (sender, events) = super::ui_event_channel();
+    harness.app.event_sender = Some(sender);
+
+    harness.key_with_modifiers(KeyCode::Char('v'), KeyModifiers::CONTROL);
+    harness.event(
+        events
+            .recv_timeout(Duration::from_secs(2))
+            .expect("running Ctrl+V result"),
+    );
+
+    assert_eq!(harness.app.input.text(), "steering paste");
+    assert!(harness.app.attachments.is_empty());
+}
+
 fn harness(tag: &str, width: u16, height: u16, trusted: bool) -> Harness {
     let (storage_root, project_root) = roots(tag);
     std::fs::create_dir_all(&project_root).expect("project dir");
@@ -335,9 +542,12 @@ impl Harness {
     }
 
     fn key(&mut self, code: KeyCode) {
+        self.key_with_modifiers(code, KeyModifiers::NONE);
+    }
+
+    fn key_with_modifiers(&mut self, code: KeyCode, modifiers: KeyModifiers) {
         self.event(UiEvent::Terminal(Event::Key(KeyEvent::new(
-            code,
-            KeyModifiers::NONE,
+            code, modifiers,
         ))));
     }
 
@@ -1538,6 +1748,8 @@ fn help_dialog_snapshot_and_paging() {
     assert!(!harness.app.input.visual_rows(60).join("").contains('a'));
 
     // 翻页：Down 推进滚动位并钳制在最大值；Esc 关闭并交还输入。
+    // CP-2：尾页（钳制位）补钉 help-dialog-end——首页快照只见命令节，
+    // Composer/Keys 节（A4 四组 11 行 + 短主名）由尾页锁定。
     harness.key(KeyCode::Down);
     harness.snapshot("help-dialog");
     let max = harness.app.info_scroll_max;
@@ -1549,6 +1761,7 @@ fn help_dialog_snapshot_and_paging() {
         Some(max),
         "scroll clamps at the end"
     );
+    harness.snapshot("help-dialog-end");
     harness.key(KeyCode::Esc);
     assert!(harness.app.info_dialog.is_none(), "Esc closes the dialog");
     harness.type_text("hi");
@@ -1586,10 +1799,14 @@ fn context_dialog_snapshot_and_modal_gate() {
     assert!(harness.app.info_dialog.is_none(), "Esc closes the dialog");
 }
 
-/// SC-3 判别（INV-SC-3）：帮助弹窗在前端本地呈现 Composer 节，三条命
-/// 令与 attachments.rs 的本地拦截一一对应（不可列出死条目——W1-07 同
-/// 精神）；删 Composer 节此测试红。帮助快照停在第一页，Composer 在
-/// 滚动区后方，由本测试补齐可见性判别。
+/// SC-3/CP 判别：帮助弹窗在前端本地呈现 Composer 节，命令与别名来自
+/// TUI 自有交互面；附件命令与 attachments.rs 的本地拦截一一对应
+///（不可列出死条目——W1-07 同精神）；删 Composer 节此测试红。CP-2
+///（A5/A6）后主名是 `/pi`、`/ac`，别名 `/paste-image`、`/attach-clear`
+/// 全部可达；CP-4 退役 `/attachments` 全拼（迁移提示，不再宣传）；
+/// Ctrl+V 归位 Keys 节（A4），不再列在 Composer。帮助快照停在第一页，
+/// Composer/Keys 在滚动区后方，由尾页快照（help-dialog-end）与本测试
+/// 补齐可见性判别。
 #[test]
 fn help_dialog_lines_carry_the_frontend_local_composer_section() {
     let harness = Harness::trusted("snap-help-composer", 80, 24);
@@ -1602,11 +1819,26 @@ fn help_dialog_lines_carry_the_frontend_local_composer_section() {
         text.push('\n');
     }
     assert!(text.contains("Composer"), "the Composer section exists");
-    for entry in ["/attach PATH", "/paste-image", "/attachments clear"] {
+    for entry in ["/attach PATH", "/pi, /paste-image", "/ac, /attach-clear"] {
         assert!(text.contains(entry), "Composer lists {entry}");
     }
-    // 三条命令真实存在于 TUI 本地拦截（attachments.rs），不是死条目。
-    for dispatchable in ["/paste-image", "/attachments clear"] {
+    // CP-4：退役全拼不再出现在帮助表。
+    assert!(
+        !text.contains("/attachments clear"),
+        "the retired spelling must not be advertised"
+    );
+    // A4：Ctrl+V 归位 Keys 节——Composer 节不再出现按键条目。
+    assert!(
+        text.contains("Keys"),
+        "the Keys section exists for the Ctrl+V entry"
+    );
+    assert!(
+        text.contains("Ctrl+V — paste clipboard image or text"),
+        "Ctrl+V is listed in the Keys section"
+    );
+    // 三条命令真实存在于 TUI 本地拦截（attachments.rs），不是死条目；
+    // 短主名与旧名（A5 旧名纪律）全部可达。
+    for dispatchable in ["/pi", "/paste-image", "/ac", "/attach-clear"] {
         assert!(
             crate::tui::attachments::parse_attachment_command(dispatchable).is_some(),
             "{dispatchable} must be intercepted by the real TUI composer path"

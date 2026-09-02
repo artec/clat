@@ -410,8 +410,11 @@ struct App {
     /// stdout（生产行为零变化）；测试 = 记录 sink——单元/快照测试不
     /// 写真实终端或系统剪贴板。接收**已编码**字节。
     clipboard_writer: fn(&[u8]) -> bool,
-    /// At most one explicit `/paste-image` clipboard read/PNG encode may run.
-    /// Ordinary bracketed paste never touches the system clipboard.
+    /// Shared `/paste-image` / Ctrl+V clipboard reader. Tests replace this
+    /// boundary so key routing is verified without touching the OS clipboard.
+    clipboard_paste_reader: attachments::ClipboardPasteReader,
+    /// At most one explicit clipboard read/PNG encode may run. Ordinary
+    /// bracketed paste never touches the system clipboard.
     clipboard_image_pending: bool,
 }
 
@@ -552,6 +555,7 @@ impl App {
             dsh_connect_rx: None,
             dsh_memory_path: crate::dsh::last_session::last_session_path(),
             clipboard_writer: write_osc52_to_stdout,
+            clipboard_paste_reader: attachments::system_clipboard_paste_reader(),
             clipboard_image_pending: false,
         };
         Ok(app)
@@ -650,6 +654,7 @@ impl App {
             dsh_connect_rx: Some(dsh_rx),
             dsh_memory_path: crate::dsh::last_session::last_session_path(),
             clipboard_writer: write_osc52_to_stdout,
+            clipboard_paste_reader: attachments::system_clipboard_paste_reader(),
             clipboard_image_pending: false,
         })
     }
