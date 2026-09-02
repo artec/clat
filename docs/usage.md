@@ -139,34 +139,46 @@ selection behavior instead of CLAT's mouse handling.
 
 ### Slash commands
 
+The core command table is ordered by task flow (conversation → context →
+model → safety → extensions → experiments → meta):
+
 | Command | Purpose |
 |---|---|
-| `/model` | choose a provider preset or manage named custom profiles |
 | `/new`, `/clear` | start a fresh, lazily materialized conversation |
 | `/resume` | switch to a prior conversation in this project |
 | `/rename` | replace the current conversation title |
 | `/compact` | summarize older context in the background; original history remains on disk |
-| `/plan`, `/plan off` | enter or leave durable Plan Mode at an idle boundary |
-| `/memory ...` | explicitly list, add, edit, or delete local memory records |
-| `/goal ...` | inspect or control one bounded goal for the current session |
-| `/subagents on|off` | opt into or leave the read-only subagent experiment |
-| `/perm`, `/permission` | switch Read Only, Project Write, or Full Access |
-| `/mcp` | inspect MCP/WASM connection state, tools, and isolated failures |
 | `/context` | inspect a one-shot estimated model-context breakdown |
+| `/model` | choose a provider preset or manage named custom profiles |
+| `/perm`, `/permission` | switch Read Only, Project Write, or Full Access |
+| `/plan`, `/plan off` | enter or leave durable Plan Mode at an idle boundary |
+| `/mcp` | inspect MCP/WASM connection state, tools, and isolated failures |
+| `/skill`, `/skills` | list cataloged skills, or arm one for your next message |
+| `/mem`, `/memory ...` | explicitly list, add, edit, or delete local memory records |
+| `/goal ...` | inspect or control one bounded goal for the current session |
+| `/sub`, `/subagents on|off` | opt into or leave the read-only subagent experiment |
+| `/help` | open the command and key reference |
+| `/quit`, `/exit` | close CLAT cleanly |
+
+Renamed primaries keep their old inputs working: `/memory` and `/subagents`
+still dispatch unchanged.
+
+These image-draft commands are TUI-local (they edit the terminal composer
+without touching a session or model) and appear in the TUI help under
+"Composer":
+
+| Command | Purpose |
+|---|---|
 | `/attach PATH...` | add project-relative or absolute image paths; quotes group paths with spaces |
 | `@ PATH...` | keyboard-short alias for `/attach` (the required space avoids consuming `@mentions`) |
 | `/paste-image` | explicitly read one image from the system clipboard on a bounded worker |
 | `/image remove ID` | remove a stable `[Image #ID]` from the current draft |
 | `/image move ID POSITION` | move that stable image to a one-based position |
 | `/attachments clear` | clear the current structured image draft |
-| `/help` | open the command and key reference |
-| `/quit`, `/exit` | close CLAT cleanly |
 
-The core command catalog is shared with `clat exec --command`. The image-draft
-commands above are TUI-local because they edit the terminal composer without
-touching a session or model. Commands that require
-an interactive picker, such as `/model`, `/resume`, and `/perm`, report a usage
-error in headless mode instead of inventing a selection.
+The core command catalog is shared with `clat exec --command`. Commands that
+require an interactive picker, such as `/model`, `/resume`, and `/perm`,
+report a usage error in headless mode instead of inventing a selection.
 
 ### Plan Mode, skills, LSP, and context inspection
 
@@ -195,6 +207,26 @@ only where CLAT has graduated `sandbox="required"` enforcement; any script still
 runs only through the ordinary Execute tools, approvals, ProcessService, and
 sandbox policy.
 
+`/skill` (alias `/skills`) works on the same catalog from the human side:
+
+- `/skill` lists every cataloged skill with its source layer
+  (bundled/user/project) and `requires-execution` marking, plus discovery
+  diagnostics. The TUI shows it as a dialog; `clat exec --command /skill`
+  prints the same facts as text.
+- `/skill <name>` arms that skill for your next message: the next run's
+  system instructions carry the skill body verbatim, witnessed by
+  `request/header.invokedSkill`, and the arm is consumed by exactly that one
+  run. Session switching and `/new` clear an armed skill; restart does not
+  restore it. This is prompt-side guidance only — it grants no new
+  authority, and `requires-execution` skills still run their scripts solely
+  through the ordinary sandboxed Execute path.
+- An unknown name fails with the catalog's candidate list.
+
+Five skills ship compiled-in: `code-review`, `bug-diagnosis`,
+`change-verification`, `docs-sync`, and `grill-me` (interrogate a plan before
+implementation begins). User and project layers can override any of them by
+name.
+
 Optional read-only language intelligence is configured only by the user-level
 `~/.clat/lsp.json`, for example:
 
@@ -219,7 +251,8 @@ server executable. Platforms without the required sandbox fail before spawn.
 
 `/context` takes one read-only snapshot of the next model-facing context and
 reports conservative estimates for base prompt, project instructions, plan
-policy, skill catalog, tool schemas, history/compaction view, output reserve,
+policy, skill catalog, an armed `/skill` invocation (zero when none is armed),
+tool schemas, history/compaction view, output reserve,
 and total, plus skill discovery diagnostics. For multimodal history it also
 reports the image count, normalized image bytes, visual-token estimate, and the
 explicit safety factor. Typed tool-result images are counted in provider
@@ -232,14 +265,15 @@ write a session event, or start a live monitor.
 ### Memory, goals, and read-only subagents
 
 Memory is explicit local knowledge, not an automatic transcript extractor.
-Only the user-facing command/Application control plane can write it:
+Only the user-facing command/Application control plane can write it
+(`/mem` is the primary name; `/memory` still dispatches):
 
 ```text
-/memory list [all|project|user]
-/memory show <id>
-/memory add <project|user> <content> [--source file:path]
-/memory edit <id> <revision> <content>
-/memory delete <id> <revision>
+/mem list [all|project|user]
+/mem show <id>
+/mem add <project|user> <content> [--source file:path]
+/mem edit <id> <revision> <content>
+/mem delete <id> <revision>
 ```
 
 Project records are visible only in the matching canonical project. User
@@ -272,7 +306,8 @@ be completed by `/goal complete`.
 File acceptance is project-relative and may be proposed by the model through
 `update_goal`, but CLAT verifies it before committing completion.
 
-`/subagents on` exposes `delegate_readonly` for the current session and process;
+`/sub on` (alias `/subagents on`) exposes `delegate_readonly` for the current
+session and process;
 the default and every restart are off. One call may launch one or two fixed
 `explorer`/`reviewer` children. Children have independent empty history, depth
 1, only project-confined `list_files`, `read_file`, and `search`, and no memory,

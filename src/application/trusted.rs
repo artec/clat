@@ -214,6 +214,7 @@ impl TrustedProjectApplication {
             view_image,
             skills,
             skill_catalog,
+            invoked_skill: None,
             memory,
             goal,
             subagents,
@@ -878,6 +879,8 @@ impl TrustedProjectApplication {
         self.plan_mode.reset_for_new();
         self.goal.reset_for_new();
         self.subagents.session_boundary();
+        // SC-2：武装的显式技能调用不跨会话（与附件草稿同纪律）。
+        self.invoked_skill = None;
         // 新会话从默认档起步：上一个会话的档位绝不跨 /new 携带（PS1
         // 的进程内变体）；物化前 /perm 的选择仍是出生档（PS7）。
         if self.permission_modes_enabled {
@@ -1016,6 +1019,8 @@ impl TrustedProjectApplication {
         self.plan_mode.materialized();
         self.goal.session_boundary();
         self.subagents.session_boundary();
+        // SC-2：武装的显式技能调用不跨会话（与附件草稿同纪律）。
+        self.invoked_skill = None;
         self.restore_todo_from(&view);
         let input_history = self
             .sessions
@@ -1291,6 +1296,79 @@ impl TrustedProjectApplication {
     /// 命令目录（INV-C4：帮助表与未知命令提示的唯一事实源）。
     pub fn command_catalog(&self) -> Vec<crate::command::CommandInfo> {
         self.commands.catalog()
+    }
+
+    /// `/skill`（无参）列表投影（SC-2）：当前三层 catalog 的
+    /// display-ready 条目加发现诊断，与 `/context` 同一 fresh 快照来源。
+    pub fn skills_overview(&self) -> Result<SkillsOverviewDto, ApplicationError> {
+        let snapshot = self.skills.snapshot().map_err(ApplicationError::new)?;
+        Ok(SkillsOverviewDto {
+            entries: snapshot
+                .entries
+                .iter()
+                .map(|entry| SkillEntryDto {
+                    name: entry.name.clone(),
+                    source: entry.source.as_str().to_owned(),
+                    requires_execution: entry.requires_execution,
+                    description: entry.description.clone(),
+                })
+                .collect(),
+            diagnostics: super::context::skill_diagnostics_dto(&snapshot),
+        })
+    }
+
+    /// `/skill <name>`（SC-2，INV-SC-4）：武装"下一次提交的消息携带该
+    /// 技能指令"。只校验名字在当前 catalog——正文解析发生在 run 边界，
+    /// 针对 run 冻结 catalog（stale 即拒绝），armed 位本身不持久化。
+    /// 返回来源层名供确认提示。
+    pub fn arm_skill(&mut self, name: &str) -> Result<&'static str, ApplicationError> {
+        let snapshot = self.skills.snapshot().map_err(ApplicationError::new)?;
+        let Some(entry) = snapshot.entries.iter().find(|entry| entry.name == name) else {
+            let mut candidates: Vec<&str> = snapshot
+                .entries
+                .iter()
+                .map(|entry| entry.name.as_str())
+                .collect();
+            candidates.sort_unstable();
+            let total = candidates.len();
+            candidates.truncate(12);
+            let mut listed = candidates.join(", ");
+            if total > candidates.len() {
+                listed.push_str(&format!(", +{} more", total - candidates.len()));
+            }
+            return Err(ApplicationError::new(format!(
+                "unknown skill `{name}`; available skills: {listed}"
+            )));
+        };
+        let source = entry.source.as_str();
+        self.invoked_skill = Some(name.to_owned());
+        Ok(source)
+    }
+
+    /// `/context` 的只读一瞥（SC-2）：不消费武装位（消费只属于 run 边
+    /// 界）。解析失败以诊断形式回报，不把估算整体打红。
+    pub(super) fn peek_invoked_skill(
+        &self,
+        snapshot: &crate::skills::SkillCatalogSnapshot,
+    ) -> (
+        Option<crate::skills::InvokedSkill>,
+        Option<super::ContextSkillDiagnostic>,
+    ) {
+        let Some(name) = self.invoked_skill.as_deref() else {
+            return (None, None);
+        };
+        match self.skills.resolve_invoked(snapshot, name) {
+            Ok(skill) => (Some(skill), None),
+            Err(message) => (
+                None,
+                Some(super::ContextSkillDiagnostic {
+                    source: "invocation".into(),
+                    name: Some(name.to_owned()),
+                    kind: "unavailable".into(),
+                    message,
+                }),
+            ),
+        }
     }
 
     pub fn close(mut self) -> Result<(), ApplicationError> {

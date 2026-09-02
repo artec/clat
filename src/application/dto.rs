@@ -14,6 +14,9 @@ pub struct ContextEstimateSnapshot {
     pub project_instructions_estimate: u64,
     pub plan_policy_estimate: u64,
     pub skill_catalog_estimate: u64,
+    /// Bytes of the explicitly invoked skill layer (`/skill <name>`), zero
+    /// when no skill is armed for the next request (SC-2).
+    pub invoked_skill_estimate: u64,
     pub goal_policy_estimate: u64,
     /// Actual memory bytes injected for the inspected request (zero when
     /// `/context` has no future prompt to search with).
@@ -46,6 +49,24 @@ pub struct ContextSkillDiagnostic {
     pub name: Option<String>,
     pub kind: String,
     pub message: String,
+}
+
+/// `/skill` 列表投影（SC-2）：三层 catalog 的 display-ready 条目加发现
+/// 诊断。正文与 digest 不进 DTO——加载仍走 run 冻结 catalog 的 `skill`
+/// 工具/调用解析，列表只回答"有哪些、来自哪层、什么约束"。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SkillsOverviewDto {
+    pub entries: Vec<SkillEntryDto>,
+    pub diagnostics: Vec<ContextSkillDiagnostic>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SkillEntryDto {
+    pub name: String,
+    /// "bundled" | "user" | "project"
+    pub source: String,
+    pub requires_execution: bool,
+    pub description: String,
 }
 
 /// 轻量、前端中立的工作台读模型。

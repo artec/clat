@@ -71,9 +71,13 @@ impl Plugin for MemoryPlugin {
             .register(
                 context.owner(),
                 CommandSpec {
-                    names: vec!["memory".into(), "mem".into()],
+                    // A2（2026-09-02 负责人裁定）：主名 `mem`，旧名保留别名
+                    //（INV-SC-2：lookup 按全部名字匹配，旧输入仍可派发）。
+                    names: vec!["mem".into(), "memory".into()],
                     description: "list, add, edit, or delete explicit local memories".into(),
                     takes_args: true,
+                    group: crate::command::CommandGroup::Experiments,
+                    order: 11,
                     handler: Arc::new(MemoryCommand),
                 },
             )

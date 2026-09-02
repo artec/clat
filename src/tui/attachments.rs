@@ -259,7 +259,7 @@ impl App {
     }
 }
 
-enum AttachmentCommand {
+pub(super) enum AttachmentCommand {
     Add(Vec<PathBuf>),
     Remove(u64),
     Move { id: u64, position: usize },
@@ -267,7 +267,7 @@ enum AttachmentCommand {
     PasteClipboard,
 }
 
-fn parse_attachment_command(value: &str) -> Option<Result<AttachmentCommand, String>> {
+pub(super) fn parse_attachment_command(value: &str) -> Option<Result<AttachmentCommand, String>> {
     if value == "/paste-image" {
         return Some(Ok(AttachmentCommand::PasteClipboard));
     }

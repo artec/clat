@@ -35,6 +35,8 @@ impl Plugin for ContextInspectorPlugin {
                     names: vec!["context".into()],
                     description: "inspect an estimated model-context breakdown".into(),
                     takes_args: false,
+                    group: crate::command::CommandGroup::Context,
+                    order: 5,
                     handler: Arc::new(ContextCommand),
                 },
             )

@@ -820,6 +820,37 @@ fn run_headless_command(
                     usage: Usage::default(),
                 }
             }
+            Ok(CommandOutcome::ShowSkills(overview)) => {
+                let mut text = format!("skills: {}\n", overview.entries.len());
+                for entry in &overview.entries {
+                    let execution = if entry.requires_execution {
+                        ", requires-execution"
+                    } else {
+                        ""
+                    };
+                    text.push_str(&format!(
+                        "● {}  {}{} — {}\n",
+                        entry.name, entry.source, execution, entry.description
+                    ));
+                }
+                for diagnostic in &overview.diagnostics {
+                    let name = diagnostic.name.as_deref().unwrap_or("-");
+                    text.push_str(&format!(
+                        "! {} / {} / {}: {}\n",
+                        diagnostic.source, name, diagnostic.kind, diagnostic.message
+                    ));
+                }
+                let write = stream_write(&io.output, format_args!("{text}"))
+                    .and_then(|()| stream_flush(&io.output));
+                if let Err(error) = write {
+                    io_state.note("stdout", error);
+                }
+                ExecOutcome::Success {
+                    output: text,
+                    turns: 0,
+                    usage: Usage::default(),
+                }
+            }
             Ok(CommandOutcome::ShowContext(snapshot)) => {
                 let mut text = format!(
                     "context estimate ({})\nbase prompt: {}\nproject instructions: {}\nplan policy: {}\nskill catalog: {}\ngoal policy: {}\nmemory injection: {}/{} bytes\ntool schemas: {}\nhistory/compaction view: {}\noutput reserve: {}\ninput estimate: {}\ntotal estimate: {}\n",
@@ -1537,6 +1568,38 @@ mod tests {
                 assert_eq!(captured.output_string(), output);
             }
             other => panic!("expected success, got {other:?}"),
+        }
+        fs::remove_dir_all(storage_root).ok();
+        fs::remove_dir_all(project_root).ok();
+    }
+
+    /// SC-2 双入口等价：`--command /skill` 在 headless 输出列表文本（与
+    /// TUI 弹窗同一 `ShowSkills` DTO 的另一呈现）；`/skill <name>` 武装
+    /// 经 Status 提示确认。快照含 bundled 层标记与 grill-me（SC-1）。
+    #[test]
+    fn command_skill_lists_catalog_and_arms_via_status_headless() {
+        let (storage_root, project_root, project) = setup("exec-command-skill");
+        prepare_storage(&project, &storage_root, TestBehavior::Success);
+        let mut options = args(None);
+        options.command = Some("/skill".into());
+        let (io, captured) = ExecIo::capture(&[]);
+        let outcome = exec(&project, &storage_root, TestBehavior::Success, options, io);
+        match outcome {
+            ExecOutcome::Success { output, turns, .. } => {
+                assert_eq!(turns, 0);
+                assert!(output.contains("● grill-me  bundled"), "{output}");
+                assert!(output.contains("● code-review  bundled"), "{output}");
+                assert_eq!(captured.output_string(), output);
+            }
+            other => panic!("expected success, got {other:?}"),
+        }
+        let mut options = args(None);
+        options.command = Some("/skill grill-me".into());
+        let (io, _captured) = ExecIo::capture(&[]);
+        let outcome = exec(&project, &storage_root, TestBehavior::Success, options, io);
+        match outcome {
+            ExecOutcome::Success { .. } => {}
+            other => panic!("arming via /skill <name> must succeed headless, got {other:?}"),
         }
         fs::remove_dir_all(storage_root).ok();
         fs::remove_dir_all(project_root).ok();

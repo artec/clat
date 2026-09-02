@@ -34,6 +34,7 @@ pub(super) enum InfoDialogKind {
     Help,
     Mcp,
     Context,
+    Skills,
 }
 
 /// 打开中的信息弹窗：种类 + 当前滚动位（绘制期钳制在
@@ -103,11 +104,27 @@ pub(super) fn draw_welcome(frame: &mut Frame, inner: Rect) {
     );
 }
 
-/// /help 弹窗内容：命令与键位两节，逐条 `命令 — 说明`，按弹窗内宽
-/// 折行（wrap_text）。节标题 Bold，条目默认色。命令节从 `core.commands`
-/// 目录派生（INV-C4：`ShowHelp` 载荷），键位节保持前端本地——键位是
-/// 终端前端的概念。
+/// /help 弹窗内容：命令、Composer、键位三节，逐条 `命令 — 说明`，按
+/// 弹窗内宽折行（wrap_text）。节标题 Bold，条目默认色。命令节从
+/// `core.commands` 目录派生（INV-C4：`ShowHelp` 载荷，INV-SC-1 折叠序）；
+/// Composer 节与键位节保持前端本地（INV-SC-3：附件草稿是 TUI 状态，
+/// 不进 core `CommandRegistry`——三条命令真实存在于 attachments.rs 的
+/// 本地拦截，不列死条目）。
 pub(super) fn help_dialog_lines(width: usize, commands: &[CommandInfo]) -> Vec<Line<'static>> {
+    let composer: &[(&str, &str)] = &[
+        (
+            "/attach PATH…",
+            "add project-relative or absolute image paths (`@ ` is the alias)",
+        ),
+        (
+            "/paste-image",
+            "read one image from the system clipboard into the draft",
+        ),
+        (
+            "/attachments clear",
+            "clear the current structured image draft",
+        ),
+    ];
     let keys: &[(&str, &str)] = &[
         ("Enter", "submit; while a run is active, submit steering"),
         ("Shift+Enter, Alt+Enter, Ctrl+J", "insert a line break"),
@@ -126,6 +143,13 @@ pub(super) fn help_dialog_lines(width: usize, commands: &[CommandInfo]) -> Vec<L
     let mut lines = Vec::new();
     for (title, entry_lines) in [
         ("Commands", command_help_entries(commands)),
+        (
+            "Composer",
+            composer
+                .iter()
+                .map(|(name, description)| format!("  {name} — {description}"))
+                .collect::<Vec<_>>(),
+        ),
         (
             "Keys",
             keys.iter()
@@ -238,6 +262,7 @@ pub(super) fn context_dialog_lines(
         ("Project instructions", view.project_instructions_estimate),
         ("Plan policy", view.plan_policy_estimate),
         ("Skill catalog", view.skill_catalog_estimate),
+        ("Invoked skill", view.invoked_skill_estimate),
         ("Goal policy", view.goal_policy_estimate),
         ("Tool schemas", view.tool_schemas_estimate),
         ("History / compaction view", view.history_estimate),
@@ -307,6 +332,57 @@ pub(super) fn context_dialog_lines(
         )));
     } else {
         for diagnostic in &view.skill_diagnostics {
+            let name = diagnostic.name.as_deref().unwrap_or("-");
+            let text = format!(
+                "  {} / {} / {}: {}",
+                diagnostic.source, name, diagnostic.kind, diagnostic.message
+            );
+            for wrapped in wrap_text(&text, width) {
+                lines.push(Line::from(Span::styled(
+                    wrapped,
+                    theme::style(theme::Role::Dim),
+                )));
+            }
+        }
+    }
+    lines
+}
+
+/// /skill 弹窗内容行（SC-2）：概览行 → 每技能一行
+/// `● name  source · [requires-execution] — description`（描述按内宽折
+/// 行）→ `Diagnostics` 节（发现诊断，dim——同 /context 的呈现纪律）。
+pub(super) fn skills_dialog_lines(view: &SkillsOverviewDto, width: usize) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::from(Span::styled(
+        format!("Skills: {}", view.entries.len()),
+        theme::style(theme::Role::Bold),
+    ))];
+    if !view.entries.is_empty() {
+        lines.push(Line::from(""));
+    }
+    for entry in &view.entries {
+        let mut meta = format!("{} layer", entry.source);
+        if entry.requires_execution {
+            meta.push_str(" · requires-execution (sandboxed exec only)");
+        }
+        lines.push(Line::from(vec![
+            Span::raw("● "),
+            Span::raw(entry.name.clone()),
+            Span::styled(format!("  {meta}"), theme::style(theme::Role::Dim)),
+        ]));
+        for wrapped in wrap_text(&format!("  {}", entry.description), width) {
+            lines.push(Line::from(Span::styled(
+                wrapped,
+                theme::style(theme::Role::Dim),
+            )));
+        }
+    }
+    if !view.diagnostics.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "Diagnostics",
+            theme::style(theme::Role::Bold),
+        )));
+        for diagnostic in &view.diagnostics {
             let name = diagnostic.name.as_deref().unwrap_or("-");
             let text = format!(
                 "  {} / {} / {}: {}",

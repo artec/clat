@@ -594,6 +594,10 @@ impl App {
                 self.context_view = Some(view);
                 self.info_dialog = Some(InfoDialog::new(InfoDialogKind::Context));
             }
+            CommandOutcome::ShowSkills(view) => {
+                self.skills_view = Some(view);
+                self.info_dialog = Some(InfoDialog::new(InfoDialogKind::Skills));
+            }
             CommandOutcome::StartModelSelection => {
                 // Claude Code 风格：先选厂商（一级），再选该厂商的模型
                 //（二级）；Custom 入口经档案三态（B9：零档案直进新建

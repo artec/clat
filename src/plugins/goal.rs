@@ -71,6 +71,8 @@ impl Plugin for GoalPlugin {
                     description: "create, inspect, control, or explicitly run one bounded goal"
                         .into(),
                     takes_args: true,
+                    group: crate::command::CommandGroup::Experiments,
+                    order: 12,
                     handler: Arc::new(GoalCommand),
                 },
             )

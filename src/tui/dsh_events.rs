@@ -1579,36 +1579,43 @@ impl App {
                         name: "new".into(),
                         aliases: Vec::new(),
                         description: "start a fresh session on the host".into(),
+                        group: crate::command::CommandGroup::Conversation,
                     },
                     CommandInfo {
                         name: "resume".into(),
                         aliases: Vec::new(),
                         description: "pick a session (grouped by workspace)".into(),
-                    },
-                    CommandInfo {
-                        name: "model".into(),
-                        aliases: Vec::new(),
-                        description: "show and switch the host's model groups".into(),
-                    },
-                    CommandInfo {
-                        name: "perm".into(),
-                        aliases: vec!["permission".into()],
-                        description: "switch the host permission preset".into(),
+                        group: crate::command::CommandGroup::Conversation,
                     },
                     CommandInfo {
                         name: "rename".into(),
                         aliases: Vec::new(),
                         description: "rename the current session".into(),
+                        group: crate::command::CommandGroup::Conversation,
                     },
                     CommandInfo {
                         name: "clear".into(),
                         aliases: Vec::new(),
                         description: "clear the local conversation view".into(),
+                        group: crate::command::CommandGroup::Conversation,
+                    },
+                    CommandInfo {
+                        name: "model".into(),
+                        aliases: Vec::new(),
+                        description: "show and switch the host's model groups".into(),
+                        group: crate::command::CommandGroup::Model,
+                    },
+                    CommandInfo {
+                        name: "perm".into(),
+                        aliases: vec!["permission".into()],
+                        description: "switch the host permission preset".into(),
+                        group: crate::command::CommandGroup::Safety,
                     },
                     CommandInfo {
                         name: "quit".into(),
                         aliases: vec!["exit".into()],
                         description: "leave the TUI".into(),
+                        group: crate::command::CommandGroup::Meta,
                     },
                 ];
                 self.info_dialog = Some(InfoDialog::new(InfoDialogKind::Help));

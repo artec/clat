@@ -843,6 +843,7 @@ fn command_run(params: &Map<String, Value>, shared: &Arc<ServeShared>) -> Result
                 "project_instructions": snapshot.project_instructions_estimate,
                 "plan_policy": snapshot.plan_policy_estimate,
                 "skill_catalog": snapshot.skill_catalog_estimate,
+                "invoked_skill": snapshot.invoked_skill_estimate,
                 "goal_policy": snapshot.goal_policy_estimate,
                 "memory": snapshot.memory_estimate,
                 "memory_budget_bytes": snapshot.memory_budget_bytes,
@@ -867,6 +868,30 @@ fn command_run(params: &Map<String, Value>, shared: &Arc<ServeShared>) -> Result
                 })).collect::<Vec<_>>(),
             }
         })),
+        // SC-2：与 ShowHelp 同姿势——结构化 DTO 渲染为文本、以 status
+        // kind 回给 PWA（workbench 的 /help 即此形态，零前端改动）。
+        crate::CommandOutcome::ShowSkills(overview) => {
+            let mut lines = vec![format!("skills: {}", overview.entries.len())];
+            for entry in &overview.entries {
+                let execution = if entry.requires_execution {
+                    " · requires-execution"
+                } else {
+                    ""
+                };
+                lines.push(format!(
+                    "● {}  {} layer{} — {}",
+                    entry.name, entry.source, execution, entry.description
+                ));
+            }
+            for diagnostic in &overview.diagnostics {
+                let name = diagnostic.name.as_deref().unwrap_or("-");
+                lines.push(format!(
+                    "! {}/{}/{}: {}",
+                    diagnostic.source, name, diagnostic.kind, diagnostic.message
+                ));
+            }
+            Ok(json!({ "kind": "status", "message": lines.join("\n") }))
+        }
         crate::CommandOutcome::StartGoalRun => {
             let rpc_id = claimed_goal_run.ok_or_else(|| {
                 RpcError::internal("goal run command reached execution without a run claim")

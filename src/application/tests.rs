@@ -4296,6 +4296,8 @@ fn failed_run_spawn_does_not_mark_the_request_header_emitted() {
         .iter()
         .filter_map(|tool| tool.get("name").and_then(serde_json::Value::as_str))
         .collect::<Vec<_>>();
+    // SC-2：SkillsPlugin 因 `/skill` 命令进入 COMMAND_SERVICE 依赖层，
+    // 挂载拓扑把 exit_plan_mode 排到 skill 之前（层内保持目录序）。
     assert_eq!(
         tool_names,
         [
@@ -4309,8 +4311,8 @@ fn failed_run_spawn_does_not_mark_the_request_header_emitted() {
             "exec_command",
             "write_stdin",
             "ask_user",
-            "skill",
             "exit_plan_mode",
+            "skill",
             "memory_search",
             "update_goal",
             "view_image",

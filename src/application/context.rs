@@ -1,5 +1,21 @@
 use super::{ApplicationError, TrustedProjectApplication};
 
+/// Shared catalog-diagnostics projection for `/context` and `/skill` (SC-2).
+pub(super) fn skill_diagnostics_dto(
+    snapshot: &crate::skills::SkillCatalogSnapshot,
+) -> Vec<super::ContextSkillDiagnostic> {
+    snapshot
+        .diagnostics
+        .iter()
+        .map(|diagnostic| super::ContextSkillDiagnostic {
+            source: diagnostic.source.as_str().to_owned(),
+            name: diagnostic.name.clone(),
+            kind: diagnostic.kind.clone(),
+            message: diagnostic.message.clone(),
+        })
+        .collect()
+}
+
 impl TrustedProjectApplication {
     pub(super) fn current_model_history(
         &self,
@@ -36,9 +52,13 @@ impl TrustedProjectApplication {
         // memory injection rather than guessing which records a future query
         // would retrieve. The fixed budget remains visible in the DTO.
         let goal = self.goal.injection().map_err(ApplicationError::new)?;
+        // SC-2: `/skill <name>` 武装的显式调用属于"下一次请求"，/context
+        // 如实计入其指令层（只读一瞥，不消费武装位）。
+        let (invoked_skill, invoked_diagnostic) = self.peek_invoked_skill(&skills);
         let run_context = self.run_context_snapshot(
             &config,
             std::sync::Arc::clone(&skills),
+            invoked_skill,
             crate::memory::MemoryInjection::default(),
             goal,
         );
@@ -55,6 +75,7 @@ impl TrustedProjectApplication {
         let base_total = estimate_instructions(&run_context.instructions.base);
         let plan_total = estimate_instructions(&run_context.instructions.with_plan);
         let skills_total = estimate_instructions(&run_context.instructions.with_skills);
+        let invoked_total = estimate_instructions(&run_context.instructions.with_invoked);
         let goal_total = estimate_instructions(&run_context.instructions.with_goal);
         let system_total = estimate_instructions(&final_system);
         let model_options = crate::model::ModelOptions {
@@ -93,7 +114,8 @@ impl TrustedProjectApplication {
             project_instructions_estimate: system_total.saturating_sub(goal_total),
             plan_policy_estimate: plan_total.saturating_sub(base_total),
             skill_catalog_estimate: skills_total.saturating_sub(plan_total),
-            goal_policy_estimate: goal_total.saturating_sub(skills_total),
+            invoked_skill_estimate: invoked_total.saturating_sub(skills_total),
+            goal_policy_estimate: goal_total.saturating_sub(invoked_total),
             memory_estimate: run_context.memory_bytes as u64,
             memory_budget_bytes: crate::memory::MAX_INJECTION_BYTES as u64,
             tool_schemas_estimate: input_total.saturating_sub(with_history),
@@ -113,16 +135,13 @@ impl TrustedProjectApplication {
                 .iter()
                 .map(|entry| entry.name.clone())
                 .collect(),
-            skill_diagnostics: skills
-                .diagnostics
-                .iter()
-                .map(|diagnostic| super::ContextSkillDiagnostic {
-                    source: diagnostic.source.as_str().to_owned(),
-                    name: diagnostic.name.clone(),
-                    kind: diagnostic.kind.clone(),
-                    message: diagnostic.message.clone(),
-                })
-                .collect(),
+            skill_diagnostics: {
+                let mut diagnostics = skill_diagnostics_dto(&skills);
+                if let Some(diagnostic) = invoked_diagnostic {
+                    diagnostics.push(diagnostic);
+                }
+                diagnostics
+            },
         })
     }
 }

@@ -30,8 +30,8 @@ use crate::{
     CommandOutcome, CompactHandle, CompactionStatus, ContextEstimateSnapshot, McpStatusDto,
     ModelConfig, ModelEvent, ModelVendor, PermissionDecision, PermissionMode, PermissionRequest,
     Project, ProjectAuthorization, ProviderCredentials, ProviderDescriptor, RenameOutcome,
-    RunEvent, RunHandle, SteerOutcome, ThinkingLevel, TrustedProjectApplication, Usage,
-    apply_thinking_level, effective_thinking_level, escalation_targets, next_thinking_level,
+    RunEvent, RunHandle, SkillsOverviewDto, SteerOutcome, ThinkingLevel, TrustedProjectApplication,
+    Usage, apply_thinking_level, effective_thinking_level, escalation_targets, next_thinking_level,
     thinking_levels,
 };
 use crossterm::event::{
@@ -344,6 +344,8 @@ struct App {
     mcp_view: Option<McpStatusDto>,
     /// /context 打开时缓存的一次性估算快照；没有后台刷新或 watcher。
     context_view: Option<ContextEstimateSnapshot>,
+    /// /skill 打开时缓存的技能 catalog 列表（SC-2）；一次性快照，无刷新。
+    skills_view: Option<SkillsOverviewDto>,
     /// /help 打开时缓存的命令目录（`ShowHelp` 载荷，INV-C4）：帮助表
     /// 行从它派生，新增命令不改前端。
     help_commands: Vec<CommandInfo>,
@@ -523,6 +525,7 @@ impl App {
             info_page: 1,
             mcp_view: None,
             context_view: None,
+            skills_view: None,
             help_commands: Vec::new(),
             balance: None,
             session_usage: Usage::default(),
@@ -620,6 +623,7 @@ impl App {
             info_page: 1,
             mcp_view: None,
             context_view: None,
+            skills_view: None,
             help_commands: Vec::new(),
             balance: None,
             session_usage: Usage::default(),

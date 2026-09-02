@@ -75,6 +75,8 @@ impl Plugin for PlanModePlugin {
                     names: vec!["plan".into()],
                     description: "enter or leave durable Plan Mode".into(),
                     takes_args: true,
+                    group: crate::command::CommandGroup::Safety,
+                    order: 8,
                     handler: Arc::new(PlanCommand),
                 },
             )

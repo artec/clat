@@ -88,6 +88,8 @@ impl Plugin for BuiltinCommandsPlugin {
 }
 
 fn spec(
+    group: crate::command::CommandGroup,
+    order: u16,
     names: &[&str],
     description: &str,
     run: fn(&mut TrustedProjectApplication) -> Result<CommandOutcome, CommandError>,
@@ -96,39 +98,69 @@ fn spec(
         names: names.iter().map(|name| (*name).to_owned()).collect(),
         description: description.to_owned(),
         takes_args: false,
+        group,
+        order,
         handler: Arc::new(Builtin { run }),
     }
 }
 
-/// 注册序 = 帮助/目录序（保持抽取前帮助表的展示顺序；描述串沿用
-/// 原文，快照尽量零刷新）。
+/// 出厂命令的（组, 表内序）按权威顺序表落位
+/// （docs/todo/skills-and-command-order.md，SC 组 A1 裁定 2026-09-02）。
+/// 展示序由 `catalog()` 折叠，与这里的声明序无关；描述串沿用原文。
 fn builtin_specs() -> Vec<CommandSpec> {
+    use crate::command::CommandGroup::{Context, Conversation, Extensions, Meta, Model, Safety};
     vec![
-        spec(&["model"], "configure the active model/provider", run_model),
-        spec(&["new", "clear"], "start a new conversation", run_new),
         spec(
-            &["compact"],
-            "summarize earlier turns into a compact context",
-            run_compact,
+            Conversation,
+            1,
+            &["new", "clear"],
+            "start a new conversation",
+            run_new,
         ),
         spec(
+            Conversation,
+            2,
             &["resume"],
             "pick a previous conversation to continue",
             run_resume,
         ),
         spec(
-            &["mcp"],
-            "inspect MCP servers, tools, and failures",
-            run_mcp,
+            Conversation,
+            3,
+            &["rename"],
+            "rename the current conversation",
+            run_rename,
         ),
         spec(
+            Context,
+            4,
+            &["compact"],
+            "summarize earlier turns into a compact context",
+            run_compact,
+        ),
+        spec(
+            Model,
+            6,
+            &["model"],
+            "configure the active model/provider",
+            run_model,
+        ),
+        spec(
+            Safety,
+            7,
             &["perm", "permission"],
             "switch the permission mode (Read Only / Project Write / Full Access)",
             run_perm,
         ),
-        spec(&["rename"], "rename the current conversation", run_rename),
-        spec(&["help"], "this help", run_help),
-        spec(&["quit", "exit"], "exit", run_quit),
+        spec(
+            Extensions,
+            9,
+            &["mcp"],
+            "inspect MCP servers, tools, and failures",
+            run_mcp,
+        ),
+        spec(Meta, 14, &["help"], "this help", run_help),
+        spec(Meta, 15, &["quit", "exit"], "exit", run_quit),
     ]
 }
 
@@ -293,8 +325,14 @@ mod tests {
             vec!["new", "clear"],
             vec!["compact"],
             vec!["resume"],
+            vec!["context"],
             vec!["mcp"],
             vec!["perm", "permission"],
+            vec!["plan"],
+            vec!["skill", "skills"],
+            vec!["mem", "memory"],
+            vec!["goal"],
+            vec!["sub", "subagents"],
             vec!["rename"],
             vec!["help"],
             vec!["quit", "exit"],
@@ -342,6 +380,75 @@ mod tests {
             Ok(CommandOutcome::QuitRequested)
         ));
 
+        application.close().unwrap();
+        cleanup(&storage_root);
+    }
+
+    /// SC-3 判别：真机 catalog 逐行等于权威顺序表（A1 裁定，2026-09-02）
+    /// 的十五行——删 `catalog()` 折叠（或抹掉某条 spec 的分组键落位）即
+    /// 红。挂载序与展示序解耦（INV-SC-1）靠此测试钉住。
+    #[test]
+    fn command_catalog_matches_the_authoritative_table() {
+        let (application, storage_root) = mount("commands-authoritative-order");
+        let catalog = application.command_catalog();
+        let rows: Vec<String> = catalog
+            .iter()
+            .map(|info| {
+                let mut names = format!("/{}", info.name);
+                for alias in &info.aliases {
+                    names.push_str(&format!(", /{alias}"));
+                }
+                names
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                "/new, /clear",
+                "/resume",
+                "/rename",
+                "/compact",
+                "/context",
+                "/model",
+                "/perm, /permission",
+                "/plan",
+                "/mcp",
+                "/skill, /skills",
+                "/mem, /memory",
+                "/goal",
+                "/sub, /subagents",
+                "/help",
+                "/quit, /exit",
+            ],
+            "the catalog must fold to the authoritative fifteen-row table"
+        );
+        application.close().unwrap();
+        cleanup(&storage_root);
+    }
+
+    /// INV-SC-2（A2/A3 判别）：主名调整后，`/memory`、`/subagents` 旧输入
+    /// 仍可派发到同一处理器——用户肌肉记忆与既有脚本不破坏。
+    #[test]
+    fn renamed_primary_names_keep_old_inputs_dispatchable() {
+        let (mut application, storage_root) = mount("commands-alias-reachability");
+        for input in ["/mem", "/memory"] {
+            match application.dispatch_command(input) {
+                Ok(CommandOutcome::Status(message)) => assert!(
+                    message.contains("memor"),
+                    "{input} must reach the memory handler: {message}"
+                ),
+                other => panic!("{input} must be a Status outcome, got {other:?}"),
+            }
+        }
+        for input in ["/sub", "/subagents"] {
+            match application.dispatch_command(input) {
+                Ok(CommandOutcome::Status(message)) => assert!(
+                    message.contains("subagent experiment"),
+                    "{input} must reach the subagent handler: {message}"
+                ),
+                other => panic!("{input} must be a Status outcome, got {other:?}"),
+            }
+        }
         application.close().unwrap();
         cleanup(&storage_root);
     }
@@ -403,7 +510,17 @@ mod tests {
     fn dispatch_journals_nothing_by_itself() {
         let (mut application, storage_root) = mount("commands-journal-neutral");
         for command in [
-            "/model", "/help", "/mcp", "/resume", "/perm", "/new", "/clear", "/rename", "/quit",
+            "/model",
+            "/help",
+            "/mcp",
+            "/resume",
+            "/perm",
+            "/new",
+            "/clear",
+            "/rename",
+            "/quit",
+            "/skill",
+            "/skill grill-me",
         ] {
             let _ = application.dispatch_command(command);
         }
@@ -413,7 +530,17 @@ mod tests {
         run_once(&mut application, "hello there");
         let before = journal_events(&storage_root);
         for command in [
-            "/model", "/help", "/mcp", "/resume", "/perm", "/new", "/clear", "/rename", "/quit",
+            "/model",
+            "/help",
+            "/mcp",
+            "/resume",
+            "/perm",
+            "/new",
+            "/clear",
+            "/rename",
+            "/quit",
+            "/skill",
+            "/skill grill-me",
         ] {
             let _ = application.dispatch_command(command);
         }
@@ -458,25 +585,70 @@ mod tests {
         let registry = Arc::new(CommandRegistry::new());
         let owner = PluginOwner::for_test(PluginId::new("test.command_discipline"));
         let lease = registry
-            .register(owner, spec(&["demo"], "demo command", run_demo))
+            .register(
+                owner,
+                spec(
+                    crate::command::CommandGroup::Meta,
+                    crate::command::COMMAND_ORDER_APPEND,
+                    &["demo"],
+                    "demo command",
+                    run_demo,
+                ),
+            )
             .unwrap();
         assert!(matches!(
-            registry.register(owner, spec(&["demo"], "duplicate", run_demo)),
+            registry.register(
+                owner,
+                spec(
+                    crate::command::CommandGroup::Meta,
+                    crate::command::COMMAND_ORDER_APPEND,
+                    &["demo"],
+                    "duplicate",
+                    run_demo
+                )
+            ),
             Err(CommandRegistryError::Duplicate { .. })
         ));
         assert!(matches!(
-            registry.register(owner, spec(&["other", "demo"], "alias duplicate", run_demo)),
+            registry.register(
+                owner,
+                spec(
+                    crate::command::CommandGroup::Meta,
+                    crate::command::COMMAND_ORDER_APPEND,
+                    &["other", "demo"],
+                    "alias duplicate",
+                    run_demo
+                )
+            ),
             Err(CommandRegistryError::Duplicate { .. })
         ));
         assert!(matches!(
-            registry.register(owner, spec(&[], "no names", run_demo)),
+            registry.register(
+                owner,
+                spec(
+                    crate::command::CommandGroup::Meta,
+                    crate::command::COMMAND_ORDER_APPEND,
+                    &[],
+                    "no names",
+                    run_demo
+                )
+            ),
             Err(CommandRegistryError::Invalid)
         ));
         assert!(registry.lookup("demo").is_some());
         assert!(!registry.lookup("demo").unwrap().takes_args);
         registry.freeze();
         assert!(matches!(
-            registry.register(owner, spec(&["late"], "late", run_demo)),
+            registry.register(
+                owner,
+                spec(
+                    crate::command::CommandGroup::Meta,
+                    crate::command::COMMAND_ORDER_APPEND,
+                    &["late"],
+                    "late",
+                    run_demo
+                )
+            ),
             Err(CommandRegistryError::Frozen)
         ));
         lease.revoke().unwrap();
@@ -505,7 +677,16 @@ mod tests {
                 .require(COMMAND_SERVICE)
                 .map_err(|error| PluginError::new(error.to_string()))?;
             let lease = registry
-                .register(context.owner(), spec(&["extra"], "extra", run_demo))
+                .register(
+                    context.owner(),
+                    spec(
+                        crate::command::CommandGroup::Meta,
+                        crate::command::COMMAND_ORDER_APPEND,
+                        &["extra"],
+                        "extra",
+                        run_demo,
+                    ),
+                )
                 .map_err(|error| PluginError::new(error.to_string()))?;
             context.defer(move || {
                 lease
@@ -554,7 +735,16 @@ mod tests {
                 .require(COMMAND_SERVICE)
                 .map_err(|error| PluginError::new(error.to_string()))?;
             let lease = registry
-                .register(context.owner(), spec(&["boom"], "boom", run_boom))
+                .register(
+                    context.owner(),
+                    spec(
+                        crate::command::CommandGroup::Meta,
+                        crate::command::COMMAND_ORDER_APPEND,
+                        &["boom"],
+                        "boom",
+                        run_boom,
+                    ),
+                )
                 .map_err(|error| PluginError::new(error.to_string()))?;
             context.defer(move || {
                 lease

@@ -54,8 +54,8 @@ pub use bootstrap::{BootstrapApplication, ProjectAuthorization};
 pub use compaction::{CompactHandle, CompactReport};
 pub use dto::{
     ContextEstimateSnapshot, ContextSkillDiagnostic, McpServerInfoDto, McpStatusDto,
-    ProjectSnapshot, SessionSnapshot, WorkbenchModelSnapshot, WorkbenchProjectSnapshot,
-    WorkbenchSessionSnapshot, WorkbenchSnapshot, WorkspaceInfo,
+    ProjectSnapshot, SessionSnapshot, SkillEntryDto, SkillsOverviewDto, WorkbenchModelSnapshot,
+    WorkbenchProjectSnapshot, WorkbenchSessionSnapshot, WorkbenchSnapshot, WorkspaceInfo,
 };
 pub(crate) use remote_control::{
     WechatChatReadiness, WechatChatStatus, WechatChatTicket, WechatDeliveryDisposition,
@@ -214,6 +214,11 @@ pub struct TrustedProjectApplication {
     view_image: Arc<crate::view_image::ViewImageState>,
     skills: Arc<crate::skills::SkillsService>,
     skill_catalog: Arc<crate::skills::SkillCatalogSlot>,
+    /// `/skill <name>` 武装的一次性显式调用（SC-2，INV-SC-4：只是提示侧
+    /// 指令，不带来新权力）。run 边界消费一次；会话切换与 `/new` 清除
+    /// （草稿不跨会话）；不持久化——重启后不再武装，与 goal 武装位同
+    /// 纪律。
+    invoked_skill: Option<String>,
     /// Explicit, local knowledge service. Mutations are user-only Application
     /// APIs; runs consume immutable bounded injections.
     memory: Arc<crate::memory::MemoryService>,

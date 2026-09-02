@@ -18,12 +18,43 @@
 //!   挡注册不挡撤销（INV-C3）。
 
 use crate::application::{
-    CompactHandle, ContextEstimateSnapshot, McpStatusDto, TrustedProjectApplication,
+    CompactHandle, ContextEstimateSnapshot, McpStatusDto, SkillsOverviewDto,
+    TrustedProjectApplication,
 };
 use crate::permission::PermissionMode;
 use crate::session::use_cases::SessionSummary;
 use std::fmt;
 use std::sync::Arc;
+
+/// 命令展示分组（SC 组 A1 裁定，2026-09-02）：七组顺序即变体声明序
+///（会话 → 上下文 → 模型 → 安全与纪律 → 扩展 → 实验 → 元）。组序是
+/// `catalog()` 折叠的第一键；组内按权威顺序表行号（`CommandSpec::order`），
+/// 同键按贡献序稳定排序（INV-SC-1：顺序是声明属性，不是挂载序）。
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum CommandGroup {
+    Conversation,
+    Context,
+    Model,
+    Safety,
+    Extensions,
+    Experiments,
+    Meta,
+}
+
+impl CommandGroup {
+    /// 稳定 wire 标识（DTO/前端投影用，additive）。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Conversation => "conversation",
+            Self::Context => "context",
+            Self::Model => "model",
+            Self::Safety => "safety",
+            Self::Extensions => "extensions",
+            Self::Experiments => "experiments",
+            Self::Meta => "meta",
+        }
+    }
+}
 
 /// 帮助/目录 DTO（INV-C4：`command_catalog()` 是帮助表与未知命令提示的
 /// 唯一事实源）。`name` 是主名 token（不带前导 `/`），`aliases` 同格式。
@@ -32,6 +63,7 @@ pub struct CommandInfo {
     pub name: String,
     pub aliases: Vec<String>,
     pub description: String,
+    pub group: CommandGroup,
 }
 
 /// 命令分发的前端中立结果。变体表达意图与数据，不是渲染指令。
@@ -42,6 +74,10 @@ pub enum CommandOutcome {
     ShowHelp { commands: Vec<CommandInfo> },
     /// `/mcp`：MCP 状态快照。
     ShowMcpStatus(McpStatusDto),
+    /// `/skill`（无参）：技能 catalog 列表投影（SC-2）。显式调用的确认
+    /// 走 `Status`——武装是"下一次消息携带该技能"的提示侧承诺，无新
+    /// 权力（INV-SC-4）。
+    ShowSkills(SkillsOverviewDto),
     /// `/context`：一次性的前端中立上下文估算快照；不启动模型、不写会话。
     ShowContext(ContextEstimateSnapshot),
     /// `/model`：延续是模型选择交互（前端开各自的选择器）。
@@ -71,6 +107,7 @@ impl fmt::Debug for CommandOutcome {
             Self::Status(_) => "Status(..)",
             Self::ShowHelp { .. } => "ShowHelp { .. }",
             Self::ShowMcpStatus(_) => "ShowMcpStatus(..)",
+            Self::ShowSkills(_) => "ShowSkills(..)",
             Self::ShowContext(_) => "ShowContext(..)",
             Self::StartModelSelection => "StartModelSelection",
             Self::StartSessionSelection { .. } => "StartSessionSelection { .. }",
@@ -159,12 +196,22 @@ fn valid_command_name(name: &str) -> bool {
 
 /// 一条命令的注册规格。`names` 首元素是主名（帮助/目录展示用），
 /// 其余为别名；`takes_args` 声明命令是否接受参数（v1 内建全部 false）。
+/// `order` 是权威顺序表（docs/todo/skills-and-command-order.md）的行号，
+/// 组内展示序；表外命令用 `u16::MAX` 落组尾（同序按贡献序）。
 pub(crate) struct CommandSpec {
     pub(crate) names: Vec<String>,
     pub(crate) description: String,
     pub(crate) takes_args: bool,
+    pub(crate) group: CommandGroup,
+    pub(crate) order: u16,
     pub(crate) handler: Arc<dyn CommandHandler>,
 }
+
+/// 权威顺序表之外的扩展命令的表内序：组尾，同序按贡献序（稳定排序）。
+/// 目前只有 crate 内测试夹具注册表外命令；第一个生产扩展命令落地时
+/// 把本项从 `cfg(test)` 提出来。
+#[cfg(test)]
+pub(crate) const COMMAND_ORDER_APPEND: u16 = u16::MAX;
 
 /// 分发点取回的条目快照（owned，避免借用与 `&mut Application` 冲突）。
 pub(crate) struct CommandEntry {
@@ -209,7 +256,8 @@ impl fmt::Display for CommandRegistryError {
 
 impl std::error::Error for CommandRegistryError {}
 
-/// 命令注册表：贡献序即帮助/目录序；freeze 后贡献失败、撤销仍可用。
+/// 命令注册表：贡献序即撤销序（挂载拓扑序）；展示序由 `catalog()` 按
+/// （组序, 表内序）另行折叠（INV-SC-1）。freeze 后贡献失败、撤销仍可用。
 pub struct CommandRegistry {
     entries: std::sync::RwLock<Vec<(u64, crate::plugin::PluginId, CommandSpec)>>,
     next_contribution: std::sync::atomic::AtomicU64,
@@ -239,17 +287,23 @@ impl CommandRegistry {
         })
     }
 
-    /// 目录折叠（保贡献序）：帮助表与未知命令提示的唯一事实源。
+    /// 目录折叠（INV-SC-1：按（组序, 表内序）折叠，同键按贡献序）：
+    /// 帮助表与未知命令提示的唯一事实源。挂载序仍由依赖拓扑决定，
+    /// 与展示序解耦——排序键是 `CommandSpec` 的声明属性。
     pub fn catalog(&self) -> Vec<CommandInfo> {
         self.entries
             .read()
             .map(|entries| {
-                entries
-                    .iter()
+                let mut sorted: Vec<&(_, crate::plugin::PluginId, CommandSpec)> =
+                    entries.iter().collect();
+                sorted.sort_by_key(|(_, _, spec)| (spec.group, spec.order));
+                sorted
+                    .into_iter()
                     .map(|(_, _, spec)| CommandInfo {
                         name: spec.names[0].clone(),
                         aliases: spec.names[1..].to_vec(),
                         description: spec.description.clone(),
+                        group: spec.group,
                     })
                     .collect()
             })
@@ -353,10 +407,16 @@ mod tests {
     }
 
     fn spec(names: &[&str]) -> CommandSpec {
+        spec_in(names, CommandGroup::Meta, COMMAND_ORDER_APPEND)
+    }
+
+    fn spec_in(names: &[&str], group: CommandGroup, order: u16) -> CommandSpec {
         CommandSpec {
             names: names.iter().map(|name| (*name).to_owned()).collect(),
             description: "test".into(),
             takes_args: false,
+            group,
+            order,
             handler: Arc::new(NoopHandler),
         }
     }
@@ -427,5 +487,61 @@ mod tests {
         // 校验拒绝的 `foo bar` 形态：parser 只会切出 `foo`。
         let (name, rest) = parse_command_input("/foo bar").expect("parse");
         assert_eq!((name.as_str(), rest), ("foo", "bar"));
+    }
+
+    /// INV-SC-1 判别：目录按（组序, 表内序）折叠，同键回退贡献序；
+    /// 删掉 `catalog()` 的排序（退回贡献序）此测试必红——注册序故意
+    /// 逆着权威顺序表排，挂载序不可能"碰巧"等于展示序。
+    #[test]
+    fn catalog_folds_by_group_then_table_order_not_contribution_order() {
+        let registry = Arc::new(CommandRegistry::new());
+        let owner = crate::plugin::PluginOwner::for_test(PluginId::new("test.order"));
+        // 注册序完全打乱：Meta 先进、Conversation 最后。
+        for (names, group, order) in [
+            (&["quit"][..], CommandGroup::Meta, 15u16),
+            (&["goal"], CommandGroup::Experiments, 12),
+            (&["skill"], CommandGroup::Extensions, 10),
+            (&["mcp"], CommandGroup::Extensions, 9),
+            (&["plan"], CommandGroup::Safety, 8),
+            (&["compact"], CommandGroup::Context, 4),
+            (&["new"], CommandGroup::Conversation, 1),
+            (&["resume"], CommandGroup::Conversation, 2),
+        ] {
+            registry
+                .register(owner, spec_in(names, group, order))
+                .expect("register");
+        }
+        let catalog = registry.catalog();
+        let names: Vec<&str> = catalog.iter().map(|info| info.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "new", "resume", "compact", "plan", "mcp", "skill", "goal", "quit"
+            ],
+            "catalog must fold by (group, table order), not registration order"
+        );
+        // 同组同序（扩展命令 APPEND）：按贡献序稳定排在出厂命令之后。
+        registry
+            .register(
+                owner,
+                spec_in(&["extra-a"], CommandGroup::Extensions, COMMAND_ORDER_APPEND),
+            )
+            .expect("append a");
+        registry
+            .register(
+                owner,
+                spec_in(&["extra-b"], CommandGroup::Extensions, COMMAND_ORDER_APPEND),
+            )
+            .expect("append b");
+        let catalog = registry.catalog();
+        let names: Vec<&str> = catalog.iter().map(|info| info.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "new", "resume", "compact", "plan", "mcp", "skill", "extra-a", "extra-b", "goal",
+                "quit"
+            ],
+            "APPEND commands land after table-order commands, ties by contribution"
+        );
     }
 }

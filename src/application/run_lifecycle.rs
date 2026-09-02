@@ -361,6 +361,23 @@ impl TrustedProjectApplication {
             .snapshot()
             .map_err(ApplicationError::new)?;
         let skill_snapshot = self.skills.snapshot().map_err(ApplicationError::new)?;
+        // SC-2：消费 `/skill <name>` 武装的一次性显式调用，针对本 run 冻
+        // 结 catalog 解析。解析发生在 admission 之前——过期的武装快速失
+        // 败，不留任何耐久用户事实；武装位无论成败都在此取走（失败后重
+        // 新提交即普通 run，不会反复中毒）。
+        let invoked_skill = match self.invoked_skill.take() {
+            Some(name) => Some(
+                self.skills
+                    .resolve_invoked(&skill_snapshot, &name)
+                    .map_err(|error| {
+                        ApplicationError::new(format!(
+                            "invoked skill `{name}` is unavailable: {error}; \
+                             run /skill to pick another"
+                        ))
+                    })?,
+            ),
+            None => None,
+        };
         let memory_query = request.message.content.plain_text();
         // Image-only is a valid multimodal user message. Memory retrieval is
         // text-indexed, so use a stable semantic sentinel rather than letting
@@ -430,8 +447,13 @@ impl TrustedProjectApplication {
                 return Err(post_commit_start_error(error, "goal-injection"));
             }
         };
-        let context =
-            self.run_context_snapshot(&config, skill_snapshot, memory_injection, goal_injection);
+        let context = self.run_context_snapshot(
+            &config,
+            skill_snapshot,
+            invoked_skill,
+            memory_injection,
+            goal_injection,
+        );
         let request_header =
             self.request_header_data(&config, &context, instruction_snapshot.as_ref());
         let header_reason = self.request_header_reason(&request_header.header);

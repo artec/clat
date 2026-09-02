@@ -343,6 +343,7 @@ fn run_header_and_context_inspector_share_authoritative_instruction_layers() {
     let context = application.run_context_snapshot(
         &config,
         skills,
+        None,
         crate::memory::MemoryInjection::default(),
         goal,
     );

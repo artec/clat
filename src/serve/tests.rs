@@ -1011,6 +1011,24 @@ fn dispatch_covers_the_full_method_set() {
     .unwrap();
     assert_eq!(goal["message"], "No current goal.");
 
+    // SC-2：/skill 经 command.run 列表（status 文本，ShowHelp 同姿势）
+    // 与武装确认；别名 /sub（A3）经同一注册表派发。
+    let skills = protocol::dispatch(
+        "command.run",
+        &serde_json::json!({"command": "/skill"}),
+        &shared,
+    )
+    .unwrap();
+    assert_eq!(skills["kind"], "status");
+    assert!(skills["message"].as_str().unwrap().contains("grill-me"));
+    let armed = protocol::dispatch(
+        "command.run",
+        &serde_json::json!({"command": "/skill grill-me"}),
+        &shared,
+    )
+    .unwrap();
+    assert!(armed["message"].as_str().unwrap().contains("grill-me"));
+
     let rename = protocol::dispatch(
         "session.rename",
         &serde_json::json!({"id": "whatever", "title": "t"}),

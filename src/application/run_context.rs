@@ -17,6 +17,7 @@ pub(super) struct InstructionLayers {
     pub(super) base: String,
     pub(super) with_plan: String,
     pub(super) with_skills: String,
+    pub(super) with_invoked: String,
     pub(super) with_goal: String,
 }
 
@@ -36,6 +37,9 @@ pub(super) struct RunContextSnapshot {
     pub(super) memory_bytes: usize,
     goal_header: Value,
     pub(super) skills: Arc<crate::skills::SkillCatalogSnapshot>,
+    /// `/skill <name>` 武装的一次性显式调用，已针对 run 冻结 catalog 解析
+    /// （SC-2）。None = 本 run 无显式调用。
+    pub(super) invoked_skill: Option<crate::skills::InvokedSkill>,
 }
 
 impl TrustedProjectApplication {
@@ -43,6 +47,7 @@ impl TrustedProjectApplication {
         &self,
         config: &ModelConfig,
         skills: Arc<crate::skills::SkillCatalogSnapshot>,
+        invoked_skill: Option<crate::skills::InvokedSkill>,
         memory: crate::memory::MemoryInjection,
         goal: crate::goal::GoalInjection,
     ) -> RunContextSnapshot {
@@ -87,8 +92,15 @@ impl TrustedProjectApplication {
             with_plan.clone(),
             skills.instructions(),
         );
-        let with_memory = crate::plan_mode::compose_workflow_instructions(
+        let invoked_instructions = invoked_skill
+            .as_ref()
+            .map(crate::skills::InvokedSkill::instructions);
+        let with_invoked = crate::plan_mode::compose_workflow_instructions(
             with_skills.clone(),
+            invoked_instructions.as_deref(),
+        );
+        let with_memory = crate::plan_mode::compose_workflow_instructions(
+            with_invoked.clone(),
             (!memory.instructions.is_empty()).then_some(memory.instructions.as_str()),
         );
         let with_goal = crate::plan_mode::compose_workflow_instructions(
@@ -97,13 +109,18 @@ impl TrustedProjectApplication {
         );
 
         // The worker needs the workflow-only form so goal continuation can
-        // replace just the goal layer without reassembling plan/skills/memory.
+        // replace just the goal layer without reassembling plan/skills/invoked
+        // /memory.
         let plan_and_skills = crate::plan_mode::compose_workflow_instructions(
             plan_instructions.unwrap_or_default(),
             skills.instructions(),
         );
-        let workflow_base = crate::plan_mode::compose_workflow_instructions(
+        let plan_skills_invoked = crate::plan_mode::compose_workflow_instructions(
             plan_and_skills,
+            invoked_instructions.as_deref(),
+        );
+        let workflow_base = crate::plan_mode::compose_workflow_instructions(
+            plan_skills_invoked,
             (!memory.instructions.is_empty()).then_some(memory.instructions.as_str()),
         );
         let workflow = crate::plan_mode::compose_workflow_instructions(
@@ -134,6 +151,7 @@ impl TrustedProjectApplication {
                 base,
                 with_plan,
                 with_skills,
+                with_invoked,
                 with_goal,
             },
             workflow_base,
@@ -143,6 +161,7 @@ impl TrustedProjectApplication {
             memory_bytes: memory.bytes,
             goal_header: goal.header,
             skills,
+            invoked_skill,
         }
     }
 
@@ -204,6 +223,19 @@ impl TrustedProjectApplication {
             }),
         );
         header.insert("skills".into(), context.skills.header_json());
+        // SC-2: the durable witness of an explicit `/skill <name>` invocation.
+        // Informational only — the arm itself is process-local and is not
+        // restored on resume (same discipline as the goal armed bit).
+        if let Some(skill) = &context.invoked_skill {
+            header.insert(
+                "invokedSkill".into(),
+                json!({
+                    "name": skill.name,
+                    "source": skill.source.as_str(),
+                    "digest": skill.digest,
+                }),
+            );
+        }
         let tools: Vec<Value> = context
             .tool_definitions
             .iter()

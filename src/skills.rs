@@ -56,6 +56,16 @@ requires-execution: false
 ---
 Update documentation to match the implemented public behavior, configuration, constraints, and verification evidence. Remove stale claims and do not describe unimplemented or unverified capabilities as complete.
 "#,
+    // SC-1（2026-09-02）：验证生命周期第五腿——事前拷问。自研文案
+    //（借鉴门禁：借"实施前拷问"设计，不搬社区正文）；description 触发
+    // 面收窄到"方案/计划即将实施"，不做全局默认触发（INV-SC-5）。
+    r#"---
+name: grill-me
+description: Interrogate a proposed plan or impending change before implementation begins.
+requires-execution: false
+---
+Challenge the plan before it is built. Surface unstated assumptions, missing failure paths, unverified claims, and cheaper alternatives. Ask the hardest questions first and require discriminating evidence, not reassurance. Do not start implementing until the plan survives.
+"#,
 ];
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -157,6 +167,33 @@ impl SkillCatalogSnapshot {
 
     fn entry(&self, name: &str) -> Option<&SkillCatalogEntry> {
         self.entries.iter().find(|entry| entry.name == name)
+    }
+}
+
+/// One explicitly invoked skill resolved at a run boundary (SC-2). The body
+/// comes from the run's frozen catalog via the same staleness-checked
+/// current-read the `skill` tool uses, so what the header witnesses and what
+/// the model sees cannot drift apart.
+#[derive(Clone)]
+pub(crate) struct InvokedSkill {
+    pub(crate) name: String,
+    pub(crate) source: SkillSource,
+    pub(crate) digest: String,
+    pub(crate) body: String,
+}
+
+impl InvokedSkill {
+    /// The workflow-instruction text for this invocation (SC-2). Deliberate
+    /// deviation from DSH's per-step user-message injection — CLAT carries
+    /// the invocation as one run-boundary system layer witnessed by
+    /// `request/header.invokedSkill`; mapping recorded in
+    /// `docs/research/dsh-skill-invocation-mapping.md`.
+    pub(crate) fn instructions(&self) -> String {
+        format!(
+            "The user explicitly invoked the `{}` skill for this message; follow its \
+             instructions within the active workflow policy.\n\n<skill name=\"{}\">\n{}\n</skill>",
+            self.name, self.name, self.body
+        )
     }
 }
 
@@ -270,6 +307,36 @@ impl SkillsService {
             diagnostics,
             rendered_catalog,
         }))
+    }
+
+    /// Resolve an explicitly invoked skill against a snapshot (SC-2). The
+    /// same staleness discipline as [`Self::load`]: the reread body must
+    /// still match the catalog entry, so an invocation cannot inject text
+    /// the frozen catalog does not vouch for.
+    pub(crate) fn resolve_invoked(
+        &self,
+        snapshot: &SkillCatalogSnapshot,
+        name: &str,
+    ) -> Result<InvokedSkill, String> {
+        let entry = snapshot
+            .entry(name)
+            .ok_or_else(|| format!("skill `{name}` is not in the current catalog"))?;
+        let current = read_current(entry)?;
+        if current.name != entry.name
+            || current.description != entry.description
+            || current.requires_execution != entry.requires_execution
+            || current.digest != entry.digest
+        {
+            return Err(format!(
+                "skill `{name}` is stale; its file changed since the catalog was built"
+            ));
+        }
+        Ok(InvokedSkill {
+            name: entry.name.clone(),
+            source: entry.source,
+            digest: entry.digest.clone(),
+            body: current.body,
+        })
     }
 
     fn execution_capability(&self) -> Result<(), String> {
@@ -1209,6 +1276,50 @@ mod tests {
         assert_eq!(snapshot.entries.len(), BUNDLED_SKILLS.len());
         assert!(snapshot.diagnostics.is_empty());
         assert_eq!(entry(&snapshot, "code-review").source, SkillSource::Bundled);
+        crate::test_support::cleanup_tree(storage.parent().unwrap());
+    }
+
+    /// SC-1：出厂技能家族恰为五条（grill→review→diagnose→verify→docs），
+    /// grill-me 是第五腿；description 触发面收窄在"实施前"
+    ///（INV-SC-5 判别：把收窄短语删掉，此测试红）。全文自研，不含社区
+    /// 技能的标志性句子。
+    #[test]
+    fn bundled_family_is_five_skills_and_grill_me_is_scoped_to_pre_implementation() {
+        let (storage, _project, service) =
+            make_service("skills-bundled-family", SandboxModeSource::Classic);
+        let snapshot = service.snapshot().unwrap();
+        let names: Vec<&str> = snapshot
+            .entries
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "bug-diagnosis",
+                "change-verification",
+                "code-review",
+                "docs-sync",
+                "grill-me",
+            ],
+            "alphabetical fold over exactly the five bundled skills"
+        );
+        let grill = entry(&snapshot, "grill-me");
+        assert_eq!(grill.source, SkillSource::Bundled);
+        assert!(!grill.requires_execution);
+        assert!(
+            grill
+                .description
+                .to_lowercase()
+                .contains("before implementation begins"),
+            "trigger must stay narrowed to the pre-implementation moment: {}",
+            grill.description
+        );
+        assert!(
+            grill.description.to_lowercase().contains("plan"),
+            "trigger names its subject: {}",
+            grill.description
+        );
         crate::test_support::cleanup_tree(storage.parent().unwrap());
     }
 

@@ -1,0 +1,27 @@
+size 80x24
+cursor 3,21
+scroll 0
+000| ┌──────────────────────────────────────────────────────────────────────────────┐  ⟦0..79 DIM⟧
+001| │ CLA                                                                          │  ⟦0..1 DIM · 2..4 BOLD+DIM · 75..79 DIM⟧
+002| └──── ┌ /skill ──────────────────────────────────────────────────────────┐ ────┘  ⟦0..4 DIM · 6..6 fg=Yellow · 7..14 fg=Yellow+BOLD · 15..73 fg=Yellow · 75..79 DIM⟧
+003| ┌ Con │ Skills: 5                                                        │ ────┐  ⟦0..4 DIM · 6..6 fg=Yellow · 8..16 BOLD · 73..73 fg=Yellow · 75..79 DIM⟧
+004| │     │                                                                  │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+005| │     │ ● bug-diagnosis  bundled layer                                   │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 23..37 DIM · 73..73 fg=Yellow · 75..79 DIM⟧
+006| │     │   Diagnose a reproducible defect before proposing the smallest s │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 8..71 DIM · 73..73 fg=Yellow · 75..79 DIM⟧
+007| │     │ afe fix.                                                         │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 8..15 DIM · 73..73 fg=Yellow · 75..79 DIM⟧
+008| │     │ ● change-verification  bundled layer                             │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 29..43 DIM · 73..73 fg=Yellow · 75..79 DIM⟧
+009| │     │   Verify a completed change with focused evidence and regression │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 8..71 DIM · 73..73 fg=Yellow · 75..79 DIM⟧
+010| │     │  checks.                                                         │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 8..15 DIM · 73..73 fg=Yellow · 75..79 DIM⟧
+011| │     │ ● code-review  bundled layer                                     │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 21..35 DIM · 73..73 fg=Yellow · 75..79 DIM⟧
+012| │     │   Review a scoped change for correctness, regressions, and maint │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 8..71 DIM · 73..73 fg=Yellow · 75..79 DIM⟧
+013| │     │ ainability.                                                      │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 8..18 DIM · 73..73 fg=Yellow · 75..79 DIM⟧
+014| │     │ ● docs-sync  bundled layer                                       │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 19..33 DIM · 73..73 fg=Yellow · 75..79 DIM⟧
+015| │     │   Synchronize documentation with implemented behavior without in │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 8..71 DIM · 73..73 fg=Yellow · 75..79 DIM⟧
+016| │     │ venting capabilities.                                            │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 8..28 DIM · 73..73 fg=Yellow · 75..79 DIM⟧
+017| │     │ ● grill-me  bundled layer                                        │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 18..32 DIM · 73..73 fg=Yellow · 75..79 DIM⟧
+018| │     │   Interrogate a proposed plan or impending change before impleme │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 8..71 DIM · 73..73 fg=Yellow · 75..79 DIM⟧
+019| └──── │                                                                  │ ────┘  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+020| ┌ Mes │ ↑↓/PgUp/PgDn scroll · more below · Esc close                     │ ite ┐  ⟦0..4 DIM · 6..6 fg=Yellow · 8..51 fg=DarkGray · 73..73 fg=Yellow · 75..78 fg=DarkGray+DIM · 79..79 DIM⟧
+021| │❯    └──────────────────────────────────────────────────────────────────┘     │  ⟦0..4 DIM · 6..73 fg=Yellow · 75..79 DIM⟧
+022| └────                                                                      ────┘  ⟦0..4 DIM · 75..79 DIM⟧
+023|  <STORAGE-ROOT>  ⟦0..14 DIM · 15..79 PAD:65 DIM⟧

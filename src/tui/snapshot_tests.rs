@@ -54,6 +54,13 @@ use unicode_width::UnicodeWidthStr;
 /// `· Thinking · High` 档位段、当前模型行常显档位、footer 提示
 /// ⇧Tab；新场景 dsh-model-effort——二级高亮行 Shift+Tab 后行内呈现
 /// pending 档位（`fast general model · max ●`）。
+/// 2026-09-02 批量刷新与新增（SC 组技能与命令面，A1/A2/A3 裁定）：
+/// help-dialog 重钉——命令节按权威顺序表十五行重排（会话→上下文→
+/// 模型→安全→扩展→实验→元；/mem /sub 成为主名，/skill 落扩展组），
+/// 并新增前端本地 Composer 节（/attach /paste-image /attachments clear，
+/// INV-SC-3）；context-dialog 重钉——新增 "Invoked skill" 估算行（SC-2，
+/// 未武装时为 0）；新场景 skills-dialog——/skill 列表弹窗（bundled 五条
+/// 含 grill-me，来源层与 requires-execution 呈现）。
 const SCENARIOS: &[&str] = &[
     "idle-transcript-80",
     "idle-transcript-40",
@@ -83,6 +90,7 @@ const SCENARIOS: &[&str] = &[
     "ask-dialog-custom",
     "help-dialog",
     "context-dialog",
+    "skills-dialog",
     "mcp-dialog",
     "permission-picker",
     "permission-confirm-full",
@@ -1567,6 +1575,76 @@ fn context_dialog_snapshot_and_modal_gate() {
     );
     harness.project();
     harness.snapshot("context-dialog");
+    harness.type_text("x");
+    assert!(!harness.app.input.visual_rows(60).join("").contains('x'));
+    harness.key(KeyCode::Esc);
+    assert!(harness.app.info_dialog.is_none(), "Esc closes the dialog");
+}
+
+/// SC-3 判别（INV-SC-3）：帮助弹窗在前端本地呈现 Composer 节，三条命
+/// 令与 attachments.rs 的本地拦截一一对应（不可列出死条目——W1-07 同
+/// 精神）；删 Composer 节此测试红。帮助快照停在第一页，Composer 在
+/// 滚动区后方，由本测试补齐可见性判别。
+#[test]
+fn help_dialog_lines_carry_the_frontend_local_composer_section() {
+    let harness = Harness::trusted("snap-help-composer", 80, 24);
+    let commands = harness.app.application.as_ref().unwrap().command_catalog();
+    let mut text = String::new();
+    for line in super::dialogs::help_dialog_lines(76, &commands) {
+        for span in line.spans {
+            text.push_str(&span.content);
+        }
+        text.push('\n');
+    }
+    assert!(text.contains("Composer"), "the Composer section exists");
+    for entry in ["/attach PATH", "/paste-image", "/attachments clear"] {
+        assert!(text.contains(entry), "Composer lists {entry}");
+    }
+    // 三条命令真实存在于 TUI 本地拦截（attachments.rs），不是死条目。
+    for dispatchable in ["/paste-image", "/attachments clear"] {
+        assert!(
+            crate::tui::attachments::parse_attachment_command(dispatchable).is_some(),
+            "{dispatchable} must be intercepted by the real TUI composer path"
+        );
+    }
+    // `/attach` 的解析器吃前缀（带参形态），同样真实可达。
+    assert!(crate::tui::attachments::parse_attachment_command("/attach a.png").is_some());
+}
+
+/// `/skill`（SC-2）：真实 core command → `ShowSkills` DTO → TUI modal；
+/// snapshot 锁定五条 bundled 技能（含 grill-me）的名称/来源层呈现与模
+/// 态输入门控。
+#[test]
+fn skills_dialog_snapshot_and_modal_gate() {
+    let mut harness = Harness::trusted("snap-skills", 80, 24);
+    harness.type_text("/skill");
+    harness.key(KeyCode::Enter);
+    assert!(
+        harness
+            .app
+            .info_dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.kind == super::InfoDialogKind::Skills),
+        "the /skill command opens the Skills dialog"
+    );
+    let view = harness.app.skills_view.as_ref().expect("skills view");
+    let names: Vec<&str> = view
+        .entries
+        .iter()
+        .map(|entry| entry.name.as_str())
+        .collect();
+    assert_eq!(
+        names,
+        vec![
+            "bug-diagnosis",
+            "change-verification",
+            "code-review",
+            "docs-sync",
+            "grill-me",
+        ]
+    );
+    harness.project();
+    harness.snapshot("skills-dialog");
     harness.type_text("x");
     assert!(!harness.app.input.visual_rows(60).join("").contains('x'));
     harness.key(KeyCode::Esc);

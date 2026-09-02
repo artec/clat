@@ -73,10 +73,14 @@ impl Plugin for SubagentPlugin {
             .register(
                 context.owner(),
                 CommandSpec {
-                    names: vec!["subagents".into()],
+                    // A3（2026-09-02 负责人裁定）：新增主名 `sub`，旧名保留
+                    // 别名（INV-SC-2）。
+                    names: vec!["sub".into(), "subagents".into()],
                     description: "enable or disable the read-only one-shot subagent experiment"
                         .into(),
                     takes_args: true,
+                    group: crate::command::CommandGroup::Experiments,
+                    order: 13,
                     handler: Arc::new(SubagentCommand),
                 },
             )

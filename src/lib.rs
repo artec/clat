@@ -57,10 +57,11 @@ pub use application::{
     ApplicationRunRequest, ApplicationRunResult, BootstrapApplication, CompactHandle,
     CompactReport, CompactionStatus, ContextEstimateSnapshot, ContextSkillDiagnostic,
     McpServerInfoDto, McpStatusDto, ProjectAuthorization, ProjectSnapshot, RecalledSteering,
-    RenameOutcome, RunHandle, SessionSnapshot, SteerOutcome, TrustedProjectApplication,
-    WorkbenchModelSnapshot, WorkbenchProjectSnapshot, WorkbenchSessionSnapshot, WorkbenchSnapshot,
+    RenameOutcome, RunHandle, SessionSnapshot, SkillEntryDto, SkillsOverviewDto, SteerOutcome,
+    TrustedProjectApplication, WorkbenchModelSnapshot, WorkbenchProjectSnapshot,
+    WorkbenchSessionSnapshot, WorkbenchSnapshot,
 };
-pub use command::{CommandError, CommandInfo, CommandOutcome};
+pub use command::{CommandError, CommandGroup, CommandInfo, CommandOutcome};
 pub use control_storage::ModelProfileSummary;
 pub use event::{EventSink, ModelOutcome, RunEvent};
 pub use interaction::{AskAnswer, AskOption, AskQuestion, UserAsker};
