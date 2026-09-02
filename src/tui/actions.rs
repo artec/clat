@@ -154,7 +154,13 @@ impl App {
     pub(super) fn cycle_thinking_level(&mut self) {
         let vendor = self.config.vendor();
         if thinking_levels(vendor).is_empty() {
-            self.flash_status("thinking levels apply to DeepSeek and GLM models");
+            // TC-3：Tencent Hy 思考服务端常开（标题栏 Thinking · Server）
+            // ——按键如实告知不可调；其它未知端点本就无档位。
+            self.flash_status(if vendor == ModelVendor::Tencent {
+                "thinking is always on for this model (server-side)"
+            } else {
+                "thinking levels apply to known reasoning vendors"
+            });
             return;
         }
         // 当前生效档位：一等字段优先，其次解析 extra_body；手工编辑成

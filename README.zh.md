@@ -63,7 +63,7 @@ clat upgrade --check
 - **有界 Agent 智能**——不允许模型写入的显式 project/user 本地记忆；
   每会话一个带 CAS 的持久 goal 及仅由用户显式开启的有界续跑；默认关闭、
   深度 1 的 explorer/reviewer 实验，子 Agent 只拥有三个项目相对只读工具。
-- **模型**——DeepSeek、GLM、Qwen、Kimi 内置预设，命名自定义档案，
+- **模型**——DeepSeek、GLM、Qwen、Kimi、腾讯混元内置预设，命名自定义档案，
   OpenAI Responses 与 OpenAI 兼容协议，思考/用量/缓存/上下文/配额遥测；
   经探针验证的视觉路由支持结构化 TUI 图片草稿、多路径选择、显式剪贴板
   导入、纯图片消息与运行中图片插话。

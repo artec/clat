@@ -45,6 +45,7 @@ The preset catalog configures the OpenAI-compatible adapter:
 | GLM 5.3 Flash | `glm-5.3-flash` | 1M | 128K | `high` |
 | Qwen3.8 Max Token Plan | `qwen3.8-max` | 1M | 128K | `medium` |
 | Kimi K3 Coding Plan | `kimi-k3` | 1M | 128K | `high` |
+| Hy 4 Preview · Hy Token Plan | `hy4-preview` | 1M | 64K | — (always on) |
 
 The context value also seeds automatic compaction. The output value bounds
 request configuration and the aggregated response budget. User edits convert a
@@ -137,15 +138,81 @@ their own terms/compliance decision before relying on it.
 The status monitor queries the provider's five-hour usage window and displays
 the remaining percentage when available.
 
+### Tencent Hy Token Plan
+
+The preset uses `https://api.lkeap.cloud.tencent.com/plan/v3` with `hy4-preview`
+— the subscription endpoint for Tencent's own Hunyuan models (the separate
+"general" Token Plan aggregating third-party open models is deliberately not
+covered; those vendors already have direct presets). Generate the key in the
+TokenHub console; the same key and URL serve both plans and deduct by model id.
+
+All parameters are pinned by the TC-0 live probe
+(`docs/research/tc0-probe/`, 2026-09-02):
+
+- Thinking is always on server-side: every response carries
+  `reasoning_content`, and a `thinking: {"type":"disabled"}` request is silently
+  ignored. `reasoning_effort` shows no reproducible effect (invalid values are
+  also accepted without error), so the preset sends neither field and offers no
+  `Shift+Tab` ladder.
+- `max_tokens` is enforced (a 64-token request finishes with `length` at
+  exactly 64) but has no schema upper bound; the longest observed natural
+  completion is 44,240 tokens, so the output limit is pinned at 65,536.
+- The context window follows the official 1M total-window figure (the same
+  pinning style as GLM). The interface decomposes it into roughly 960K input
+  plus 64K output, which is exactly what the probe observed: prompts of
+  929,775 and 958,177 tokens were served while a ~1M-token prompt alone fails
+  with engine error `20057` rather than a clean context rejection. Pinning
+  rule (owner ruling, TC-2): official documentation wins; probes only verify
+  surprises — a single-sample anomaly must not override a documented claim.
+- The preset's vendor level reads "Hy Token Plan", matching the plan-name
+  pattern of the other subscription presets; vendor detection and the key
+  slot still resolve to Tencent via the endpoint domain.
+- Streaming usage rides every SSE chunk (real values on the final one), so no
+  `stream_options` is sent. CLAT drops the all-zero intermediate usage
+  payloads (`prompt_tokens == 0 && completion_tokens == 0` carries no
+  information and would overwrite the status bar's context watermark during
+  streaming); a single real usage or a partial-zero one still passes through.
+- Tool calling follows the OpenAI shape, including the `index` field on
+  streamed `tool_calls`.
+- The model is text-only, and the endpoint **silently drops** image content
+  parts — it answers blind with HTTP 200 instead of rejecting. CLAT's
+  text-only capability gate is therefore the enforcing side; do not bypass it
+  via a custom profile expecting image support.
+- Error signatures: bad key → `401 not_authorized`; unknown model →
+  `400 code 20033`.
+
+**Terms-of-use note**: the Hy Token Plan key is, per Tencent's usage terms,
+restricted to *interactive use inside AI tools*; automated scripting and
+custom application backends are outside the terms and risk key revocation.
+Interactive CLAT sessions (TUI, workbench) fit that intent. Headless `clat
+exec` in CI or scripted automation is a gray zone — you alone are responsible
+for complying with the plan's terms.
+
+**Plan balance**: Tencent does expose `DescribeTokenPlan`
+(`tokenhub.tencentcloudapi.com`), which reports the plan's remaining quota —
+but it is a Tencent Cloud API 3.0 control-plane call that requires an
+account-level TC3 signature (SecretId/SecretKey) plus the plan's TeamId. The
+plan's Bearer API key cannot call it (probe-pinned
+`AuthFailure.InvalidAuthorization`), and the `/plan/v3` data plane has no
+balance route. CLAT therefore shows no quota segment for this vendor rather
+than fabricating one; the status surface keeps the usage-derived cache and
+context facts. Check remaining points in the
+[TokenHub console](https://console.cloud.tencent.com/tokenhub/tokenplan).
+Concurrency limits scale with the plan tier and may tighten at peak hours.
+
 ## Reasoning control
 
 `ThinkingLevel` is provider-aware:
 
-| CLAT level | DeepSeek / GLM / Kimi | Qwen |
-|---|---|---|
-| Low | `low` | `low` |
-| High | `high` | `medium` |
-| Max | `max` | `xhigh` |
+| CLAT level | DeepSeek / GLM / Kimi | Qwen | Tencent Hy |
+|---|---|---|---|
+| Low | `low` | `low` | — |
+| High | `high` | `medium` | — |
+| Max | `max` | `xhigh` | — |
+
+Tencent Hy exposes no effective reasoning control (see above); the ladder is
+empty, `Shift+Tab` has no effect on that vendor, and the title bar shows
+`Thinking · Server` so the always-on state stays visible.
 
 Known endpoint domains receive this mapping even for a custom profile. Unknown
 domains do not receive an inferred field. The raw Extra Body remains the

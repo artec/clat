@@ -438,6 +438,9 @@ level for the next run and persists the effective model configuration:
 
 - DeepSeek, GLM, and Kimi use CLAT's Low / High / Max ladder.
 - Qwen maps Low / High / Max to its `low` / `medium` / `xhigh` values.
+- Tencent Hy always thinks server-side; the endpoint ignores `reasoning_effort`
+  (probe-verified), so no ladder is offered and `Shift+Tab` has no effect —
+  the title bar shows `Thinking · Server` instead of a level.
 - Custom profiles on a known vendor domain use that vendor's mapping.
 - Unknown endpoints do not receive an inferred reasoning parameter; configure
   it explicitly in Extra Body.

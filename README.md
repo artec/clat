@@ -66,7 +66,8 @@ it remains off unless serve is started with `--im wechat`.
   model writes; one durable CAS goal per session with user-armed, capped
   continuation; and a default-off, depth-1 explorer/reviewer experiment whose
   children are confined to three project-relative read tools.
-- **Models** — built-in DeepSeek, GLM, Qwen, and Kimi presets; named custom
+- **Models** — built-in DeepSeek, GLM, Qwen, Kimi, and Tencent Hy presets;
+  named custom
   profiles; OpenAI Responses and OpenAI-compatible protocols; reasoning,
   usage, cache, context, and quota telemetry. Probe-verified vision routes use
   a structured TUI image draft with multi-path selection, explicit clipboard

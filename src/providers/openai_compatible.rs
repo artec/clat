@@ -707,9 +707,23 @@ fn dispatch(
     }
 
     if let Some(usage) = value.get("usage") {
-        accumulator.usage = parse_usage(usage);
-        if let Some(usage) = &accumulator.usage {
-            events.emit(ModelEvent::Usage(usage.clone()));
+        let parsed = parse_usage(usage);
+        // TC-5（2026-09-02）：Hy 流式每个 chunk 都携带 usage——前段
+        // 全 0、终 chunk 真值（TC-0 实测 fixture
+        // docs/research/tc0-probe/resp-p2-stream.txt）。全零（input==0
+        // && output==0）无信息量——真实请求 prompt ≥1 token，缓存命中
+        // 也计入 prompt_tokens——不落 accumulator、不发事件，免得前端
+        // last_turn_usage 被逐 chunk 零值覆盖（Context 长时间显示 0）。
+        // 单次 usage 形态（DeepSeek/GLM 终 chunk、非流式）全为真值，
+        // 部分零（prompt 真实、output==0）照发——谓词是「全零」。
+        let all_zero = parsed
+            .as_ref()
+            .is_some_and(|usage| usage.input_tokens == 0 && usage.output_tokens == 0);
+        if !all_zero {
+            accumulator.usage = parsed;
+            if let Some(usage) = &accumulator.usage {
+                events.emit(ModelEvent::Usage(usage.clone()));
+            }
         }
     }
 
@@ -2095,6 +2109,107 @@ mod tests {
             event,
             ModelEvent::ReasoningDelta { delta } if delta == "step one "
         )));
+    }
+
+    /// TC-5（2026-09-02）判别：Hy 流式每个 chunk 都携带 usage——前段
+    /// 全 0、终 chunk 真值（TC-0 live 实测序列
+    /// docs/research/tc0-probe/resp-p2-stream.txt 摘形，字段逐字保
+    /// 留，只截掉中间重复 chunk）。pre-fix（逐 chunk 照发 Usage、前端
+    /// last_turn_usage 逐次覆盖）本测试红：流式期间出现全零 Usage 事
+    /// 件。删 dispatch 的全零过滤即红。
+    #[test]
+    fn hy_stream_zero_usage_chunks_do_not_emit_usage_events() {
+        let stream = concat!(
+            "data: {\"id\":\"c647867cbe40e66c4a393fcbd9df587e\",\"object\":\"chat.completion.chunk\",\"created\":1788332979,\"model\":\"hy4-preview\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"}}],\"usage\":{\"prompt_tokens\":0,\"completion_tokens\":0,\"total_tokens\":0,\"prompt_tokens_details\":{\"cached_tokens\":0},\"completion_tokens_details\":{\"reasoning_tokens\":0}}}\n\n",
+            "data: {\"id\":\"c647867cbe40e66c4a393fcbd9df587e\",\"object\":\"chat.completion.chunk\",\"created\":1788332979,\"model\":\"hy4-preview\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"reasoning_content\":\"We\"}}],\"usage\":{\"prompt_tokens\":0,\"completion_tokens\":0,\"total_tokens\":0,\"prompt_tokens_details\":{\"cached_tokens\":0},\"completion_tokens_details\":{\"reasoning_tokens\":0}}}\n\n",
+            "data: {\"id\":\"c647867cbe40e66c4a393fcbd9df587e\",\"object\":\"chat.completion.chunk\",\"created\":1788332979,\"model\":\"hy4-preview\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"1,2,3,4,5\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":35,\"completion_tokens\":181,\"total_tokens\":216,\"prompt_tokens_details\":{\"cached_tokens\":0},\"completion_tokens_details\":{\"reasoning_tokens\":170}}}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let mut events = Vec::new();
+        let response = consume_sse(
+            BufReader::new(stream.as_bytes()),
+            &mut events,
+            &CancelToken::new(),
+            usize::MAX,
+        )
+        .unwrap();
+
+        let usage_events: Vec<&Usage> = events
+            .iter()
+            .filter_map(|event| match event {
+                ModelEvent::Usage(usage) => Some(usage),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            usage_events
+                .iter()
+                .all(|usage| usage.input_tokens > 0 || usage.output_tokens > 0),
+            "all-zero usage must not surface during streaming: {usage_events:?}"
+        );
+        assert_eq!(usage_events.len(), 1, "only the true final chunk speaks");
+        assert_eq!(usage_events[0].input_tokens, 35);
+        assert_eq!(usage_events[0].output_tokens, 181);
+        assert_eq!(usage_events[0].reasoning_tokens, Some(170));
+        // accumulator 终态同真值：ModelResponse.usage 不被零值 chunk
+        // 落成 Some(0,0)。
+        assert_eq!(response.usage.as_ref(), Some(usage_events[0]));
+    }
+
+    /// TC-5 对照腿：单次 usage 形态（DeepSeek/GLM 流式只在终 chunk 报
+    /// usage）不受过滤影响；部分零（prompt 真实、空补全 output==0）
+    /// 也必须照发——过滤谓词是「全零」而非「任一为零」。删对照腿的
+    /// 任何一边仍应绿；把谓词改宽（||）则本测试红。
+    #[test]
+    fn single_and_partial_zero_usage_still_reach_the_stream() {
+        let single = concat!(
+            "data: {\"id\":\"ctl-1\",\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n",
+            "data: {\"id\":\"ctl-1\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":3,\"total_tokens\":15}}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let mut events = Vec::new();
+        let response = consume_sse(
+            BufReader::new(single.as_bytes()),
+            &mut events,
+            &CancelToken::new(),
+            usize::MAX,
+        )
+        .unwrap();
+        let usage_events: Vec<&Usage> = events
+            .iter()
+            .filter_map(|event| match event {
+                ModelEvent::Usage(usage) => Some(usage),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(usage_events.len(), 1);
+        assert_eq!(usage_events[0].input_tokens, 12);
+        assert_eq!(usage_events[0].output_tokens, 3);
+        assert_eq!(response.usage.as_ref(), Some(usage_events[0]));
+
+        let partial_zero = concat!(
+            "data: {\"id\":\"ctl-2\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":9,\"completion_tokens\":0,\"total_tokens\":9}}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let mut events = Vec::new();
+        let response = consume_sse(
+            BufReader::new(partial_zero.as_bytes()),
+            &mut events,
+            &CancelToken::new(),
+            usize::MAX,
+        )
+        .unwrap();
+        let usage_events: Vec<&Usage> = events
+            .iter()
+            .filter_map(|event| match event {
+                ModelEvent::Usage(usage) => Some(usage),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(usage_events.len(), 1, "partial-zero usage still speaks");
+        assert_eq!(usage_events[0].input_tokens, 9);
+        assert_eq!(usage_events[0].output_tokens, 0);
+        assert_eq!(response.usage.as_ref(), Some(usage_events[0]));
     }
 
     /// FP-02（①层，前置红）：无换行的巨型 SSE 行必须在字节帽内失败。

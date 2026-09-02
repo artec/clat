@@ -338,6 +338,51 @@ pub const MODEL_PRESETS: &[ModelPreset] = &[
         include_usage: true,
         user_agent: Some(KIMI_WHITELIST_UA),
     },
+    // Tencent Hy4 preview（TC-0/TC-1，2026-09-02；TC-2 口径修正，
+    // 负责人二次裁定）：参数以官方文档口径为准、TC-0 live probe
+    // （docs/research/tc0-probe/manifest.json，授权 key、产物脱敏）
+    // 验证意外：
+    // - 端点：Hy Token Plan 的 OpenAI 兼容端点
+    //   api.lkeap.cloud.tencent.com/plan/v3（负责人裁定只接 Hy Token
+    //   Plan，不接通用 Token Plan；Hy3 同端点可用但不放）；
+    // - vendor "Hy Token Plan"（TC-2 ②）：归队 GLM Coding Plan /
+    //   Qwen Token Plan / Kimi Coding Plan 的计划名命名模式；厂商识别
+    //   与 key 记忆槽仍是 ModelVendor::Tencent（经端点域名推导）；
+    // - thinking 服务端常开（reasoning_content 恒在，disabled 被静默
+    //   忽略）；reasoning_effort 无可复现效果且无效值被静默接受 →
+    //   预设不发 thinking 对象、不发 reasoning_effort，Shift+Tab 无档位
+    //   （ModelVendor::Tencent 的 thinking_levels 为空；标题栏以
+    //   "Thinking · Server" 常开显示，TC-3）；
+    // - output_limit 65,536：网关无上限校验（1,048,576 也受理）、
+    //   max_tokens 遵守（64→length@64），最长自然生成实测 44,240
+    //   token——取其上的下一个 2 的幂留余量；
+    // - context_window 1,000,000（TC-2 ①：官方口径 1M 总窗口，GLM
+    //   同款钉法；接口实给分解 ~960K 输入 + 64K 输出——正好解释
+    //   TC-0 探针的输入 958,177 受理、~1.0M 输入 500 code 20057。
+    //   纪律（负责人 2026-09-02）：官方文档口径优先，探针只验证
+    //   意外，不得拿单样本异常压官方声明）；
+    // - 流式 usage 随每个 chunk（终 chunk 真值）→ include_usage=false；
+    // - 纯文本：**端点对图片部件静默丢弃**（200 + 模型自述看不见图，
+    //   probe fixture image-silent-drop）——CLAT 侧 text-only fail-closed
+    //   是承担拦截责任的一侧。
+    ModelPreset {
+        id: "hy4-preview",
+        capabilities: TEXT_CAPS,
+        name: "Hy 4 Preview",
+        description: "Tencent Hunyuan preview model (always-on thinking)",
+        vendor: "Hy Token Plan",
+        protocol: ModelProtocol::OpenAiCompatible,
+        model: "hy4-preview",
+        endpoint: "https://api.lkeap.cloud.tencent.com/plan/v3",
+        request_path: "/chat/completions",
+        output_limit: 65_536,
+        context_window: 1_000_000,
+        reasoning_effort: None,
+        preserve_thinking: false,
+        thinking_object: false,
+        include_usage: false,
+        user_agent: None,
+    },
 ];
 
 pub fn preset_by_id(id: &str) -> Option<&'static ModelPreset> {
@@ -732,6 +777,10 @@ mod tests {
     /// - kimi-k3：1M context / 131,072 output
     ///   （platform.kimi.com/docs/overview 与 OpenCode 接入指南，
     ///   2026-08 核验）
+    /// - hy4-preview：1M context / 65,536 output（TC-2 ①：官方口径
+    ///   1M 总窗口优先（接口分解 ~960K 输入 + 64K 输出，与 TC-0 探针
+    ///   一致）；output 为 TC-0 实测钉值——见
+    ///   docs/research/tc0-probe/manifest.json）
     #[test]
     fn official_context_windows_and_output_limits() {
         let flash = preset_by_id("deepseek-v4-flash").expect("flash");
@@ -753,6 +802,10 @@ mod tests {
         let kimi = preset_by_id("kimi-k3").expect("kimi");
         assert_eq!(kimi.context_window, 1_000_000);
         assert_eq!(kimi.output_limit, 131_072);
+
+        let hy = preset_by_id("hy4-preview").expect("hy");
+        assert_eq!(hy.context_window, 1_000_000);
+        assert_eq!(hy.output_limit, 65_536);
     }
 
     #[test]
@@ -764,7 +817,8 @@ mod tests {
                 "DeepSeek",
                 "GLM Coding Plan",
                 "Qwen Token Plan",
-                "Kimi Coding Plan"
+                "Kimi Coding Plan",
+                "Hy Token Plan",
             ]
         );
         assert_eq!(presets_by_vendor("DeepSeek").len(), 3);
@@ -773,6 +827,7 @@ mod tests {
         assert_eq!(presets_by_vendor("GLM Coding Plan").len(), 2);
         assert_eq!(presets_by_vendor("Qwen Token Plan")[0].id, "qwen3.8-max");
         assert_eq!(presets_by_vendor("Kimi Coding Plan")[0].id, "kimi-k3");
+        assert_eq!(presets_by_vendor("Hy Token Plan")[0].id, "hy4-preview");
     }
 
     /// INV-MM2-1/2（MM-2 W1 红测）：全预设 capability matrix 完备且
@@ -818,10 +873,60 @@ mod tests {
             "deepseek-v4-pro",
             "glm-5.3",
             "qwen3.8-max",
+            "hy4-preview",
         ] {
             let caps = preset_by_id(id).unwrap().owned_capabilities();
             assert_eq!(caps.input_modalities, vec![Modality::Text], "{id}");
         }
+    }
+
+    /// TC-1：Tencent Hy4 preview 预设参数金测——全部字段以 TC-0 探针
+    /// 钉死（docs/research/tc0-probe/manifest.json）。判别：删预设里的
+    /// 任一钉值（或误加 thinking/UA 参数）此测试红。
+    #[test]
+    fn applies_official_tencent_hy_parameters() {
+        let preset = preset_by_id("hy4-preview").expect("preset exists");
+        assert_eq!(preset.model, "hy4-preview");
+        assert_eq!(preset.vendor, "Hy Token Plan");
+        // Hy Token Plan 专用端点（不是通用 Token Plan，也不是 lkeap
+        // 按量域名）。
+        assert_eq!(
+            preset.endpoint,
+            "https://api.lkeap.cloud.tencent.com/plan/v3"
+        );
+        assert_eq!(preset.request_path, "/chat/completions");
+        // TC-2 ①：官方口径 1M 总窗口（GLM 同款钉法；接口分解
+        // ~960K 输入 + 64K 输出记注释于预设上方）。output 为 TC-0
+        // maxtok 边界探针钉值。
+        assert_eq!(preset.output_limit, 65_536);
+        assert_eq!(preset.context_window, 1_000_000);
+
+        let mut config = ModelConfig::default();
+        preset.apply(&mut config);
+        // 端点识别 → Tencent 厂商（key 记忆槽 + 空思考档位）。
+        assert_eq!(config.vendor(), crate::model::ModelVendor::Tencent);
+        assert!(
+            crate::model::endpoint_vendor(&config.endpoint)
+                .storage_key()
+                .is_some()
+        );
+        assert!(crate::model::thinking_levels(config.vendor()).is_empty());
+        assert!(crate::model::effective_thinking_level(&config).is_none());
+        // extra_body 干净：无 thinking 对象、无 reasoning_effort（探针
+        // 实证两者或被忽略或无效果——不发无效果参数）、无
+        // stream_options（流式 usage 随每个 chunk 返回）。
+        assert_eq!(config.extra_body, json!({}));
+        // 无 UA 要求。
+        assert!(config.extra_headers.get("User-Agent").is_none());
+        // 预算种入：自动压缩窗口 = 官方口径钉值（TC-2 ①）。
+        assert_eq!(config.max_context_tokens, Some(1_000_000));
+        // 能力：text-only fail-closed（端点对图片部件静默丢弃——
+        // CLAT 侧门是承担拦截责任的一侧）。
+        let caps = &config.capabilities;
+        assert!(!caps.accepts_image_input());
+        assert!(!caps.image_input_verified);
+        assert_eq!(caps.input_modalities, vec![Modality::Text]);
+        assert_eq!(caps.tool_result_modalities, vec![Modality::Text]);
     }
 
     /// MM-2 W3：GLM 5.3 Flash 预设参数金测——全部字段以 MM-0

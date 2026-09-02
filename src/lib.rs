@@ -75,7 +75,7 @@ pub use model::{
     ModelOptions, ModelOverrides, ModelProtocol, ModelRequest, ModelResponse, ModelVendor,
     Override, ProviderCredentials, ProviderDescriptor, ProviderFieldDescriptor, ProviderFieldKind,
     ProviderState, RetryHint, ThinkingLevel, Usage, apply_thinking_level, effective_thinking_level,
-    endpoint_vendor, next_thinking_level, thinking_levels,
+    endpoint_vendor, next_thinking_level, thinking_display, thinking_levels,
 };
 pub use permission::{
     AllowAll, InteractivePermissionPolicy, ModePolicy, PermissionApprover, PermissionDecision,

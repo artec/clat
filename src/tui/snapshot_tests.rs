@@ -61,6 +61,11 @@ use unicode_width::UnicodeWidthStr;
 /// INV-SC-3）；context-dialog 重钉——新增 "Invoked skill" 估算行（SC-2，
 /// 未武装时为 0）；新场景 skills-dialog——/skill 列表弹窗（bundled 五条
 /// 含 grill-me，来源层与 requires-execution 呈现）。
+/// 2026-09-02 三次刷新（TC 组 Tencent Hy 接入）：model-picker 与
+/// model-editor-escape 两场景重钉——一级列表新增 Tencent 厂商行
+/// （五厂商 + Custom = 6 行，hy4-preview 条目）。
+/// 同日四次刷新（TC-2 口径修正）：model-picker 再钉——Tencent 一级
+/// 行更名 "Hy Token Plan"（归队计划名命名模式，负责人二次裁定）。
 const SCENARIOS: &[&str] = &[
     "idle-transcript-80",
     "idle-transcript-40",
@@ -1217,7 +1222,7 @@ fn model_editor_escape_returns_to_the_picker_in_place() {
     let mut harness = Harness::trusted("snap-model-editor-back", 80, 24);
     harness.type_text("/model");
     harness.key(KeyCode::Enter);
-    for _ in 0..4 {
+    for _ in 0..5 {
         harness.key(KeyCode::Down);
     }
     harness.key(KeyCode::Enter); // Custom（零档案）→ 新建页
@@ -1236,7 +1241,7 @@ fn model_editor_escape_returns_to_the_picker_in_place() {
         .expect("picker restored in place after editor cancel");
     assert_eq!(
         picker.selected_index(),
-        4,
+        5,
         "cursor returns to the Custom row we entered from"
     );
 }

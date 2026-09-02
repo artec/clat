@@ -32,7 +32,7 @@ use crate::{
     Project, ProjectAuthorization, ProviderCredentials, ProviderDescriptor, RenameOutcome,
     RunEvent, RunHandle, SkillsOverviewDto, SteerOutcome, ThinkingLevel, TrustedProjectApplication,
     Usage, apply_thinking_level, effective_thinking_level, escalation_targets, next_thinking_level,
-    thinking_levels,
+    thinking_display, thinking_levels,
 };
 use crossterm::event::{
     self, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, Event, KeyCode, KeyEvent,

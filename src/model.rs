@@ -448,10 +448,12 @@ impl ModelConfig {
             Override::Inherit => {}
             Override::Set(level) => {
                 let vendor = endpoint_vendor(&self.endpoint);
-                if vendor != ModelVendor::Other {
+                if !thinking_levels(vendor).is_empty() {
                     // 一次成型：apply stamp 的预设 effort 被用户档位
-                    // 覆盖；unknown vendor 不注入（严格网关拒未定义
-                    // 参数——与 effective_thinking_level 口径一致）。
+                    // 覆盖；unknown/无档位 vendor 不注入（严格网关拒
+                    // 未定义参数；Tencent Hy 的 effort 无效果——TC-3
+                    // wire 零参数，与 effective_thinking_level 口径
+                    // 一致）。
                     apply_thinking_level(&mut self.extra_body, vendor, level);
                 }
                 // 一等字段回填（UI/持久层继续读它；merge 的唯一事实
@@ -991,7 +993,10 @@ impl ThinkingLevel {
 
 /// 按端点识别的模型厂商。DeepSeek 与 GLM 提供思考档位与额度监控，
 /// Kimi（月之暗面）与 Qwen（阿里云百炼）提供思考档位（额度监控暂无
-/// 官方文档支撑，状态栏只显示 usage 派生的 Cache/Context），其它端点
+/// 官方文档支撑，状态栏只显示 usage 派生的 Cache/Context），Tencent
+/// （Hy Token Plan）只提供 key 记忆与 usage 派生状态——TC-0 探针实证
+/// `reasoning_effort` 在 hy4-preview 上无可复现效果（无效值也不报
+/// 错，网关接受但忽略），思考档位留空、不发送无效果参数，其它端点
 /// 一律 `Other`（不提供该功能，显示层隐藏相关内容）。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ModelVendor {
@@ -999,6 +1004,7 @@ pub enum ModelVendor {
     Glm,
     Kimi,
     Qwen,
+    Tencent,
     Other,
 }
 
@@ -1012,6 +1018,7 @@ impl ModelVendor {
             Self::Glm => Some("Glm"),
             Self::Kimi => Some("Kimi"),
             Self::Qwen => Some("Qwen"),
+            Self::Tencent => Some("Tencent"),
             Self::Other => None,
         }
     }
@@ -1030,6 +1037,10 @@ pub fn endpoint_vendor(endpoint: &str) -> ModelVendor {
     } else if endpoint.contains("aliyuncs.com") || endpoint.contains("dashscope") {
         // Qwen Token Plan 专用 MaaS 域名与百炼按量域名。
         ModelVendor::Qwen
+    } else if endpoint.contains("lkeap.cloud.tencent.com") {
+        // Tencent Hy Token Plan 的 OpenAI 兼容端点
+        // （api.lkeap.cloud.tencent.com/plan/v3）。
+        ModelVendor::Tencent
     } else {
         ModelVendor::Other
     }
@@ -1048,6 +1059,11 @@ pub fn thinking_levels(vendor: ModelVendor) -> &'static [ThinkingLevel] {
         // Qwen3.8-Max 官方档位 low/medium/xhigh（默认 xhigh），CLAT 三档
         // 经 wire_effort 映射后各有效果（见 wire_effort 注释）。
         ModelVendor::Qwen => &[ThinkingLevel::Low, ThinkingLevel::High, ThinkingLevel::Max],
+        // Tencent hy4-preview：思考服务端常开（reasoning_content 恒在），
+        // 但 TC-0 探针实证 reasoning_effort 无可复现效果且无效值被
+        // 静默接受（docs/research/tc0-probe/）——档位循环会是"切换无
+        // 效果"的谎话，留空 = Shift+Tab 对该厂商无效（同 Other）。
+        ModelVendor::Tencent => &[],
         ModelVendor::Other => &[],
     }
 }
@@ -1097,11 +1113,12 @@ pub fn apply_thinking_level(extra_body: &mut Value, vendor: ModelVendor, level: 
 /// 当前生效的思考档位：一等字段优先，其次解析 `extra_body`（预设
 /// 默认写法）。手工把 `extra_body` 编辑成 `thinking.type: "disabled"`
 /// 视为用户明确关闭思考——返回 `None`，标题栏不显示，下一次
-/// Shift+Tab 会恢复成 `enabled` + 三档之一。非 DeepSeek/GLM 端点
+/// Shift+Tab 会恢复成 `enabled` + 三档之一。无档位厂商（`Other`；
+/// Tencent Hy——TC-0 探针实证 `reasoning_effort` 无可复现效果）
 /// 一律 `None`。
 pub fn effective_thinking_level(config: &ModelConfig) -> Option<ThinkingLevel> {
     let vendor = config.vendor();
-    if vendor == ModelVendor::Other {
+    if thinking_levels(vendor).is_empty() {
         return None;
     }
     let level = if let Some(level) = config.thinking_level {
@@ -1124,6 +1141,18 @@ pub fn effective_thinking_level(config: &ModelConfig) -> Option<ThinkingLevel> {
         ThinkingLevel::from_wire_effort(vendor, effort)
     };
     Some(level)
+}
+
+/// 标题栏思考段的三态显示（TC-3，2026-09-02）：可循环档位 → 档位名
+/// （`Thinking · High`）；**服务端常开但无档位**（Tencent Hy——TC-0
+/// 实证 effort 无效果、disabled 被忽略，思考关不掉）→ `"Server"`
+/// （`Thinking · Server`：状态可见，Shift+Tab 不可循环，wire 零参数
+/// ——不违背探针结论）；无思考面 → `None`（整段省略）。
+pub fn thinking_display(config: &ModelConfig) -> Option<&'static str> {
+    if let Some(level) = effective_thinking_level(config) {
+        return Some(level.label());
+    }
+    matches!(config.vendor(), ModelVendor::Tencent).then_some("Server")
 }
 
 /// Provider-neutral persisted credentials. The JSON representation remains
@@ -1739,6 +1768,55 @@ mod tests {
             assert_eq!(credentials.value(0), Some("legacy-secret"));
             assert_eq!(credentials.to_json(), legacy);
         }
+    }
+
+    /// INV-MM2-3（MM-2 W2 红测）：typed overrides 三态——Set 覆盖
+    /// preset-managed 默认、Clear 抑制字段、Inherit 跟随；thinking_level
+    /// 的厂商映射在 `apply_overrides` 内一次完成（Qwen Max→xhigh），
+    /// TC-3（2026-09-02）判别：Tencent Hy 思考服务端常开——标题栏
+    /// 显示 "Thinking · Server"（删 thinking_display 的 Tencent 分支
+    /// 即红）；Shift+Tab 不可循环（空档位 next 返回 None）；wire 零
+    /// 参数（thinking_level override 不注入 reasoning_effort/thinking
+    /// ——删 merge 的空档位门即红）。对照腿：DeepSeek 同 override 正常
+    /// 注入。
+    #[test]
+    fn server_always_on_thinking_displays_without_ladder_or_wire_params() {
+        let preset = crate::presets::preset_by_id("hy4-preview").unwrap();
+        let mut config = ModelConfig::default();
+        preset.apply(&mut config);
+
+        // 显示：常开标记而非整段省略。
+        assert_eq!(thinking_display(&config), Some("Server"));
+        assert_eq!(effective_thinking_level(&config), None);
+
+        // 循环键无操作：空档位下 next_thinking_level 返回 None。
+        assert_eq!(
+            next_thinking_level(config.vendor(), ThinkingLevel::High),
+            None
+        );
+
+        // wire 零参数：即使 override Set 了档位（编辑器/旧配置路径），
+        // merge 也不给无档位厂商注入任何思考参数。
+        config.overrides.thinking_level = Override::Set(ThinkingLevel::Max);
+        config.apply_overrides();
+        assert_eq!(config.thinking_level, Some(ThinkingLevel::Max));
+        assert!(
+            config.extra_body.get("reasoning_effort").is_none(),
+            "the effort param has no effect on this vendor (TC-0); it must never be sent"
+        );
+        assert!(config.extra_body.get("thinking").is_none());
+        // 显示仍是 Server（一等字段在，但厂商无档位 → 常开口径）。
+        assert_eq!(thinking_display(&config), Some("Server"));
+
+        // 对照腿：DeepSeek 上同样的 override 正常注入。
+        let deepseek = crate::presets::preset_by_id("deepseek-v4-flash").unwrap();
+        let mut config = ModelConfig::default();
+        deepseek.apply(&mut config);
+        config.overrides.thinking_level = Override::Set(ThinkingLevel::Max);
+        config.apply_overrides();
+        assert_eq!(config.extra_body["reasoning_effort"], "max");
+        assert_eq!(config.extra_body["thinking"]["type"], "enabled");
+        assert_eq!(thinking_display(&config), Some("Max"));
     }
 
     /// INV-MM2-3（MM-2 W2 红测）：typed overrides 三态——Set 覆盖

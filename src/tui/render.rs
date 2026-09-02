@@ -736,10 +736,7 @@ impl App {
                     Some(preset) => preset.name.to_owned(),
                     None => format!("{} · {}", self.config.protocol, self.config.model),
                 };
-                (
-                    name,
-                    effective_thinking_level(&self.config).map(|level| level.label().to_owned()),
-                )
+                (name, thinking_display(&self.config).map(str::to_owned))
             } else {
                 ("not configured — /model".to_owned(), None)
             };
