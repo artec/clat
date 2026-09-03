@@ -44,8 +44,15 @@ The preset catalog configures the OpenAI-compatible adapter:
 | GLM 5.3 Coding Plan | `glm-5.3` | 1M | 128K | `high` |
 | GLM 5.3 Flash | `glm-5.3-flash` | 1M | 128K | `high` |
 | Qwen3.8 Max Token Plan | `qwen3.8-max` | 1M | 128K | `medium` |
+| Qwen3.8 Flash Token Plan | `qwen3.8-flash` | 1M | 128K | `medium` |
 | Kimi K3 Coding Plan | `kimi-k3` | 1M | 128K | `high` |
 | Hy 4 Preview · Hy Token Plan | `hy4-preview` | 1M | 64K | — (always on) |
+
+Vision capability is hardcoded per preset, never probed at runtime: the
+five image-input routes are `deepseek-v4-flash-vision-exp`, `glm-5.3-flash`
+(also verified for image tool results), `qwen3.8-max`, `qwen3.8-flash`, and
+`kimi-k3` — the first declared by official vendor documentation, the GLM
+route proven by CLAT's own live probe. All other presets are text-only.
 
 The context value also seeds automatic compaction. The output value bounds
 request configuration and the aggregated response budget. User edits convert a
@@ -65,7 +72,9 @@ The three presets use `https://api.deepseek.com` and explicitly send:
 
 Thinking mode ignores sampling fields such as temperature, so the presets leave
 them unset. Usage parsing recognizes DeepSeek's cache-hit token field. The
-Vision experimental preset uses the same protocol with native image input.
+Vision experimental preset uses the same protocol with native image input,
+declared by the official API documentation, so attach admission is open on
+that route.
 
 DeepSeek streams chain-of-thought as `delta.reasoning_content`. CLAT accumulates
 it and attaches it only to an assistant item that made tool calls. On the next
@@ -103,7 +112,7 @@ or current-turn tool image fails before network I/O with a path-free error,
 while an unavailable historical image remains a visible path-free notice so a
 damaged old session can still continue. Because this route also verified
 direct image tool results, visual runs expose CLAT's fenced `view_image` tool;
-text-only and unverified presets do not.
+text-only presets do not.
 
 When this preset and its API key are active at project mount, the MCP adapter
 also prepares the GLM Coding Plan server pack. See
@@ -111,9 +120,14 @@ also prepares the GLM Coding Plan server pack. See
 
 ### Qwen Token Plan
 
-The preset uses the Singapore Token Plan endpoint and its subscription key. It
-sends top-level `reasoning_effort` without a `thinking` object. CLAT maps its
-Low / High / Max UI to Qwen's `low` / `medium` / `xhigh` ladder.
+The presets use the Singapore Token Plan endpoint and their subscription key.
+They send top-level `reasoning_effort` without a `thinking` object. CLAT maps
+its Low / High / Max UI to Qwen's `low` / `medium` / `xhigh` ladder. Both
+`qwen3.8-max` and the incremental `qwen3.8-flash` preset carry image input per
+the official model pages (`qwen3.8-max` runs the 0902 snapshot whose native
+vision understanding is officially confirmed; flash documents Image+Text
+input, video stays outside CLAT's scope). Their context/output budgets match
+the documented 1,000,000 / 131,072 values.
 
 Context caching is implicit. Usage parsing accepts both
 `prompt_tokens_details.cached_tokens` and the transitional top-level cached
@@ -127,7 +141,8 @@ cache and context but does not invent a Token segment.
 
 The preset uses `https://api.kimi.com/coding/v1`, top-level
 `reasoning_effort`, and automatic context caching. Low / High / Max map directly
-to the vendor ladder.
+to the vendor ladder. `kimi-k3` image input is declared by the official API
+documentation, so attach admission is open on that route.
 
 The Coding membership endpoint currently filters clients by a coding-agent
 User-Agent. The preset injects the field-verified compatible value

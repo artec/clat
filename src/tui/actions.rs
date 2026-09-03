@@ -631,6 +631,11 @@ impl App {
                 // 完成/失败时结果文本）；Esc 取消。
                 self.compact_handle = Some(handle);
             }
+            CommandOutcome::StartVisionProbe(_) => {
+                // VP-1：探测异步执行，判定经 VisionProbeNotice 事件回流；
+                // TUI 无需持有句柄（fire-and-forget + 状态栏通知）。
+                self.flash_status("vision probe started — the verdict lands here");
+            }
             CommandOutcome::StartGoalRun => {
                 self.start_goal_run();
             }

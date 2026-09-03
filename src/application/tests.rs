@@ -1737,7 +1737,8 @@ fn rename_facade_gates_journals_and_broadcasts() {
                     | ApplicationEvent::TitleUpdated { .. }
                     | ApplicationEvent::McpStartupNotice { .. }
                     | ApplicationEvent::LanguageIntelligenceNotice { .. }
-                    | ApplicationEvent::ProcessFinished { .. },
+                    | ApplicationEvent::ProcessFinished { .. }
+                    | ApplicationEvent::VisionProbeNotice { .. },
                 ) => {}
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
@@ -2181,16 +2182,17 @@ fn image_attachments_are_gated_by_verified_model_capability() {
         "the rejected round materializes no session at all"
     );
 
-    // —— 2. unverified 视觉声明（kimi-k3：doc-only）同样拒绝。——
+    // —— 2. 纯文本预设（hy4-preview：端点对图片静默弃图，TC-0 实证
+    // —— CLAT 侧门承担拦截责任）同样拒绝。——
     save_config(
         &mut application,
         crate::model::ModelConfig {
-            preset: Some("kimi-k3".into()),
+            preset: Some("hy4-preview".into()),
             ..crate::model::ModelConfig::default()
         },
     );
     let error = match attempt(&mut application, "look") {
-        Ok(_) => panic!("unverified (doc-only) vision capability stays closed"),
+        Ok(_) => panic!("text-only preset vision stays closed"),
         Err(error) => error.to_string(),
     };
     assert!(error.contains("does not accept image input"));
@@ -2240,6 +2242,19 @@ fn image_attachments_are_gated_by_verified_model_capability() {
         user_event.data["content"].as_array().unwrap()[1]["type"],
         json!("image")
     );
+
+    // —— 4. officially-declared（VP-2：kimi-k3 由 doc-only 升级为官方
+    // 声明 verified）放行——MM-I1 闸语义 officially-declared 的执行面。——
+    save_config(
+        &mut application,
+        crate::model::ModelConfig {
+            preset: Some("kimi-k3".into()),
+            ..crate::model::ModelConfig::default()
+        },
+    );
+    let kimi_done = run_with_attachments(&mut application, "look at this", vec![source.clone()])
+        .expect("officially-declared vision admits images");
+    assert_eq!(kimi_done.output, "done");
 
     std::fs::remove_file(&source).ok();
     application.close().unwrap();

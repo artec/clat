@@ -249,8 +249,10 @@ still reject `..` traversal and use symlink-aware capability resolution.
 
 Image authority is deliberately narrower than this ambient read rule.
 `view_image` is a `Read` tool, but it is registered in a run's model-facing
-catalog only when the frozen model route has a probe-verified image-input and
-tool-result policy. Its argument must resolve through exactly one of three
+catalog only when the frozen model route has a vision-capable image-input and
+tool-result policy (officially-declared built-in presets, or a custom route
+unlocked by a passing `/vision-probe`). Its argument must resolve through
+exactly one of three
 authorities: an attachment id reachable from the active session, a
 project-relative no-follow path, or an unforgeable current-run scratch ref
 minted by core. Absolute host paths are rejected even in Full Access, and Full

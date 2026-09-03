@@ -598,6 +598,23 @@ pub(crate) fn notice_ctl(event: &ApplicationEvent) -> Value {
                 ]),
             ),
         ]),
+        ApplicationEvent::VisionProbeNotice { report } => object(vec![
+            ("kind", Value::String("vision_probe".into())),
+            (
+                "payload",
+                object(vec![
+                    ("outcome", Value::String(report.outcome.as_str().into())),
+                    ("model", Value::String(report.model.clone())),
+                    ("expected_code", Value::String(report.expected_code.clone())),
+                    (
+                        "answer_excerpt",
+                        Value::String(report.answer_excerpt.clone()),
+                    ),
+                    ("override_applied", Value::Bool(report.override_applied)),
+                    ("note", Value::String(report.note.clone())),
+                ]),
+            ),
+        ]),
     }
 }
 

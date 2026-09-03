@@ -30,12 +30,19 @@ const TEXT_CAPS: PresetCapabilities = PresetCapabilities {
     image_max_bytes: 4 * 1024 * 1024,
 };
 
-/// 厂商文档声明视觉、但无自有 live 探针证据 → unverified（attach
-/// 拒绝，INV-MM2-2）。tool result 图无文档证据 → 仍 [Text]。
-const UNVERIFIED_VISION_CAPS: PresetCapabilities = PresetCapabilities {
+/// VP-2（2026-09-03 负责人裁定，二次裁定记档）：官方文档明确声明视觉
+/// 输入的内置模型——能力面 **officially-declared 硬编码**（MM-I1
+/// verified-only 闸语义更新：自有 live 探针证据与官方声明同为
+/// verified 依据；能力面探针退役，唯一保留位 = custom 一次性显式
+/// 验证）。input [Text, Image] + verified=true；tool_result 携图无
+/// 官方证据 → 仍 [Text]（glm-5.3-flash 的 tool_result 图是 MM-0
+/// U-6 探针实证，走独立常量）。图片策略保守档：png+jpeg / ≤8 张 /
+/// ≤4MiB。原「doc 声明但 unverified」中间档随裁定退役——存量矩阵
+/// 直写终态，不留中间态。
+const OFFICIAL_VISION_CAPS: PresetCapabilities = PresetCapabilities {
     input_modalities: &[Modality::Text, Modality::Image],
     tool_result_modalities: &[Modality::Text],
-    image_input_verified: false,
+    image_input_verified: true,
     image_media_types: &["image/png", "image/jpeg"],
     image_max_per_message: 8,
     image_max_bytes: 4 * 1024 * 1024,
@@ -235,7 +242,9 @@ pub const MODEL_PRESETS: &[ModelPreset] = &[
     },
     ModelPreset {
         id: "deepseek-v4-flash-vision-exp",
-        capabilities: UNVERIFIED_VISION_CAPS,
+        // VP-2（2026-09-03）：官方 API 文档声明视觉输入（实验性多模态
+        // 视觉理解模型，见模块文档 DeepSeek 节）→ officially-declared。
+        capabilities: OFFICIAL_VISION_CAPS,
         name: "DeepSeek V4.0 Flash Vision (Exp)",
         description: "Experimental multimodal DeepSeek V4 Flash — reads image input",
         vendor: "DeepSeek",
@@ -302,11 +311,16 @@ pub const MODEL_PRESETS: &[ModelPreset] = &[
         include_usage: false,
         user_agent: None,
     },
+    // Qwen3.8 Max（VP-2，2026-09-03）：官方模型页
+    // help.aliyun.com/zh/model-studio/qwen3-8-max 确认"原生视觉理解
+    // 能力"（9/2 升级为快照版 Qwen3.8-Max-0902，编码/协作智能体增强）
+    // → 能力位 officially-declared 翻转 + 开图；上下文 1,000,000 /
+    // 最大输出 131,072 与官方页一致，参数零变化、model id 不变。
     ModelPreset {
         id: "qwen3.8-max",
-        capabilities: TEXT_CAPS,
+        capabilities: OFFICIAL_VISION_CAPS,
         name: "Qwen3.8 Max",
-        description: "Alibaba flagship via Qwen Token Plan (implicit context cache)",
+        description: "Alibaba flagship via Qwen Token Plan (implicit context cache, reads images)",
         vendor: "Qwen Token Plan",
         protocol: ModelProtocol::OpenAiCompatible,
         model: "qwen3.8-max",
@@ -320,9 +334,41 @@ pub const MODEL_PRESETS: &[ModelPreset] = &[
         include_usage: true,
         user_agent: None,
     },
+    // Qwen3.8 Flash（VP-2B 增量预设，2026-09-03）：官方模型页
+    // help.aliyun.com/zh/model-studio/qwen3-8-flash；Token Plan 模型
+    // 列表含 flash。全部钉值以官方页为准：
+    // - vendor `Qwen Token Plan`（同 key 槽，端点同 qwen3.8-max）；
+    // - context 1,000,000 / output 131,072（两模式同值；官方分解：
+    //   最大输入 991,808 = 1M−8K、思考输入 983,616 = 1M−16K、思维链
+    //   262,144 = 4×64K——全是干净 2 的幂/整十进制常数，参数钉值
+    //   纪律检验通过）；
+    // - 开图（官方输入模态 Image+Text+Video；视频维持 MM 范围外，
+    //   不进能力矩阵）→ OFFICIAL_VISION_CAPS；
+    // - thinking 沿用 qwen3.8-max 同族配置（顶层 reasoning_effort、
+    //   无 thinking 对象；官方页未详述 flash 差异，异常再调）。
+    ModelPreset {
+        id: "qwen3.8-flash",
+        capabilities: OFFICIAL_VISION_CAPS,
+        name: "Qwen3.8 Flash",
+        description: "Alibaba fast tier via Qwen Token Plan (reads images)",
+        vendor: "Qwen Token Plan",
+        protocol: ModelProtocol::OpenAiCompatible,
+        model: "qwen3.8-flash",
+        endpoint: "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+        request_path: "/chat/completions",
+        output_limit: 131_072,
+        context_window: 1_000_000,
+        reasoning_effort: Some("medium"),
+        preserve_thinking: false,
+        thinking_object: false,
+        include_usage: true,
+        user_agent: None,
+    },
     ModelPreset {
         id: "kimi-k3",
-        capabilities: UNVERIFIED_VISION_CAPS,
+        // VP-2（2026-09-03）：Kimi K3 视觉输入为官方声明（负责人按
+        // Moonshot API 文档核实）→ officially-declared。
+        capabilities: OFFICIAL_VISION_CAPS,
         name: "Kimi K3",
         description: "Moonshot flagship via Kimi Coding membership (auto context cache)",
         vendor: "Kimi Coding Plan",
@@ -825,16 +871,20 @@ mod tests {
         // MM-2：GLM 5.3 Flash 与 glm-5.3 同 vendor（共享 key 槽/额度
         // 监控接线）。
         assert_eq!(presets_by_vendor("GLM Coding Plan").len(), 2);
+        // VP-2B：Qwen Token Plan 两模型（max + flash，同 key 槽）。
+        assert_eq!(presets_by_vendor("Qwen Token Plan").len(), 2);
         assert_eq!(presets_by_vendor("Qwen Token Plan")[0].id, "qwen3.8-max");
+        assert_eq!(presets_by_vendor("Qwen Token Plan")[1].id, "qwen3.8-flash");
         assert_eq!(presets_by_vendor("Kimi Coding Plan")[0].id, "kimi-k3");
         assert_eq!(presets_by_vendor("Hy Token Plan")[0].id, "hy4-preview");
     }
 
-    /// INV-MM2-1/2（MM-2 W1 红测）：全预设 capability matrix 完备且
-    /// sourced——每个内置预设有明确能力矩阵；**唯一** verified 开图
-    /// 的是 glm-5.3-flash（MM-0 探针）；doc 声明视觉但无第一方证据
-    /// 的（vision-exp、kimi-k3）标 unverified → attach 关闭；纯文本
-    /// 预设不含 Image 模态。漏配新预设时哨兵断言红。
+    /// INV-MM2-1/2（MM-2 W1 红测；VP-2 终态直写 2026-09-03）：全预设
+    /// capability matrix 完备且 sourced——**恰五个** verified 开图
+    /// （四存量 officially-declared：vision-exp / qwen3.8-max /
+    /// kimi-k3，加增量 qwen3.8-flash；glm-5.3-flash 为 MM-0 探针
+    /// 实证），无中间态（unverified 档已退役）；其余全部纯文本。
+    /// 漏配新预设时哨兵断言红。
     #[test]
     fn capability_matrix_is_complete_sourced_and_fail_closed() {
         for preset in MODEL_PRESETS {
@@ -850,34 +900,125 @@ mod tests {
                 "{}: tool-result modalities must be explicit",
                 preset.id
             );
-            // INV-MM2-2 的唯一放行位。
-            let expects_images = preset.id == "glm-5.3-flash";
+            // INV-MM2-2 的唯一放行位（officially-declared 或探针实证）。
+            let expects_images = matches!(
+                preset.id,
+                "deepseek-v4-flash-vision-exp"
+                    | "glm-5.3-flash"
+                    | "qwen3.8-max"
+                    | "qwen3.8-flash"
+                    | "kimi-k3"
+            );
             assert_eq!(
                 caps.accepts_image_input(),
                 expects_images,
-                "{}: only the probe-verified preset accepts image input",
+                "{}: vision matrix must match the declared five-model final state",
                 preset.id
             );
         }
-        // doc 声明视觉（unverified）与纯文本的具体落位。
-        for id in ["deepseek-v4-flash-vision-exp", "kimi-k3"] {
+        // officially-declared 四存量：input [Text, Image] + verified，
+        // tool_result 携图无官方证据 → 仍 [Text]。
+        for id in [
+            "deepseek-v4-flash-vision-exp",
+            "qwen3.8-max",
+            "kimi-k3",
+            "qwen3.8-flash",
+        ] {
             let caps = preset_by_id(id).unwrap().owned_capabilities();
-            assert!(caps.input_modalities.contains(&Modality::Image), "{id}");
-            assert!(
-                !caps.image_input_verified,
-                "{id}: doc-only claim stays unverified"
+            assert_eq!(
+                caps.input_modalities,
+                vec![Modality::Text, Modality::Image],
+                "{id}"
             );
+            assert!(caps.image_input_verified, "{id}: officially-declared");
+            assert_eq!(caps.tool_result_modalities, vec![Modality::Text], "{id}");
         }
+        // 探针实证腿（MM-0 U-6）：glm-5.3-flash 是唯一 tool_result 开图。
+        let glm = preset_by_id("glm-5.3-flash").unwrap().owned_capabilities();
+        assert_eq!(
+            glm.tool_result_modalities,
+            vec![Modality::Text, Modality::Image]
+        );
+        // 纯文本预设不含 Image 模态。
         for id in [
             "deepseek-v4-flash",
             "deepseek-v4-pro",
             "glm-5.3",
-            "qwen3.8-max",
             "hy4-preview",
         ] {
             let caps = preset_by_id(id).unwrap().owned_capabilities();
             assert_eq!(caps.input_modalities, vec![Modality::Text], "{id}");
         }
+    }
+
+    /// VP-2（2026-09-03）判别：officially-declared 存量开图金测——
+    /// 四预设的能力位与图片策略逐字段锁定；删任一 verified 翻转
+    /// （或误开 tool_result 图）此测试红。
+    #[test]
+    fn officially_declared_vision_presets_carry_the_declared_matrix() {
+        for id in [
+            "deepseek-v4-flash-vision-exp",
+            "qwen3.8-max",
+            "kimi-k3",
+            "qwen3.8-flash",
+        ] {
+            let preset = preset_by_id(id).unwrap();
+            let caps = preset.owned_capabilities();
+            assert!(
+                caps.accepts_image_input(),
+                "{id}: declared vision opens attach"
+            );
+            assert!(caps.image_input_verified, "{id}");
+            assert_eq!(caps.tool_result_modalities, vec![Modality::Text], "{id}");
+            // 图片策略保守档（png+jpeg / 8 / 4MiB）。
+            let policy = preset.owned_image_policy();
+            assert_eq!(
+                policy.media_types,
+                vec!["image/png".to_owned(), "image/jpeg".to_owned()],
+                "{id}"
+            );
+            assert_eq!(policy.max_images, 8, "{id}");
+            assert_eq!(policy.max_bytes, 4 * 1024 * 1024, "{id}");
+        }
+    }
+
+    /// VP-2B：qwen3.8-flash 预设参数金测——全部字段以官方模型页钉死
+    /// （help.aliyun.com/zh/model-studio/qwen3-8-flash）。判别：删预设
+    /// 里的任一钉值此测试红。
+    #[test]
+    fn applies_official_qwen38_flash_parameters() {
+        let preset = preset_by_id("qwen3.8-flash").expect("preset exists");
+        assert_eq!(preset.model, "qwen3.8-flash");
+        assert_eq!(preset.vendor, "Qwen Token Plan");
+        // 同 key 槽、端点同 qwen3.8-max。
+        let max = preset_by_id("qwen3.8-max").unwrap();
+        assert_eq!(preset.endpoint, max.endpoint);
+        assert_eq!(preset.request_path, "/chat/completions");
+        // 官方：两模式同值——context 1,000,000 / output 131,072。
+        assert_eq!(preset.output_limit, 131_072);
+        assert_eq!(preset.context_window, 1_000_000);
+
+        let mut config = ModelConfig::default();
+        preset.apply(&mut config);
+        // 端点识别 → Qwen 厂商（key 记忆槽与 max 同槽）。
+        assert_eq!(config.vendor(), crate::model::ModelVendor::Qwen);
+        assert_eq!(config.max_context_tokens, Some(1_000_000));
+        // thinking 沿用 max 同族：顶层 reasoning_effort=medium、无
+        // thinking 对象（未定义参数不发给严格网关）；include_usage
+        // 走 stream_options（与 qwen3.8-max 同形）。
+        assert_eq!(
+            config.extra_body,
+            json!({
+                "reasoning_effort": "medium",
+                "stream_options": {"include_usage": true},
+            })
+        );
+        // 能力：officially-declared 开图。
+        let caps = &config.capabilities;
+        assert!(caps.accepts_image_input());
+        assert!(caps.image_input_verified);
+        assert_eq!(caps.input_modalities, vec![Modality::Text, Modality::Image]);
+        assert_eq!(caps.tool_result_modalities, vec![Modality::Text]);
     }
 
     /// TC-1：Tencent Hy4 preview 预设参数金测——全部字段以 TC-0 探针

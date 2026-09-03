@@ -161,7 +161,30 @@ fn builtin_specs() -> Vec<CommandSpec> {
         ),
         spec(Meta, 14, &["help"], "this help", run_help),
         spec(Meta, 15, &["quit", "exit"], "exit", run_quit),
+        // VP-1（2026-09-03）：custom 一次性视觉探针——Experiments 组、
+        // /sub（order 13）之后。探测与覆盖位门控都在
+        // application::vision_probe；这里只声明延续意图。
+        spec(
+            crate::command::CommandGroup::Experiments,
+            16,
+            &["vision-probe"],
+            "verify whether the current custom model reads images (one-shot probe)",
+            run_vision_probe,
+        ),
     ]
+}
+
+fn run_vision_probe(
+    application: &mut TrustedProjectApplication,
+) -> Result<CommandOutcome, CommandError> {
+    // 异步：立即返回 handle，判定经 VisionProbeNotice 事件回流；
+    // headless 调用方用 join_report 等结果。
+    application
+        .start_vision_probe()
+        .map(CommandOutcome::StartVisionProbe)
+        .map_err(|error| CommandError::Failed {
+            message: format!("vision probe unavailable: {error}"),
+        })
 }
 
 fn run_model(_application: &mut TrustedProjectApplication) -> Result<CommandOutcome, CommandError> {
@@ -417,10 +440,12 @@ mod tests {
                 "/mem, /memory",
                 "/goal",
                 "/sub, /subagents",
+                // VP-1（2026-09-03）：custom 一次性视觉探针落 Experiments 组。
+                "/vision-probe",
                 "/help",
                 "/quit, /exit",
             ],
-            "the catalog must fold to the authoritative fifteen-row table"
+            "the catalog must fold to the authoritative sixteen-row table"
         );
         application.close().unwrap();
         cleanup(&storage_root);

@@ -49,6 +49,7 @@ mod tests;
 mod threads;
 mod title;
 mod trusted;
+mod vision_probe;
 
 pub use bootstrap::{BootstrapApplication, ProjectAuthorization};
 pub use compaction::{CompactHandle, CompactReport};
@@ -67,6 +68,7 @@ pub use run_lifecycle::{
     RecalledSteering, RenameOutcome, SteerOutcome,
 };
 pub(crate) use threads::{EXIT_JOIN_GRACE, join_with_grace};
+pub use vision_probe::{VisionProbeHandle, VisionProbeOutcome, VisionProbeReport};
 
 use title::TitleWorker;
 
@@ -184,6 +186,12 @@ pub enum ApplicationEvent {
         cancelled: bool,
         terminated: bool,
     },
+    /// VP-1：custom 一次性视觉探针（`/vision-probe`）的判定通知。
+    /// Pass 且配置为 custom 时能力覆盖位已随写盘；证据另落
+    /// vision-probe-log.jsonl。绝不携带 RunEvent 语义（协议冻结）。
+    VisionProbeNotice {
+        report: VisionProbeReport,
+    },
 }
 
 pub struct TrustedProjectApplication {
@@ -291,6 +299,9 @@ pub struct TrustedProjectApplication {
     startup_diagnostic: Option<String>,
     active_run: Option<RunHandle>,
     active_compaction: Option<CompactHandle>,
+    /// VP-1：进行中的视觉探针句柄（同一时刻至多一个；重启/新会话不
+    /// 保留——探针是一次性动作，判定经事件回流后句柄即退役）。
+    active_vision_probe: Option<VisionProbeHandle>,
     /// 权限档位共享 cell（P3）：`permission_mode()`/`set_permission_mode`
     /// 的存储；ModeSource::Shared 的策略委托逐检查读取。Classic 模式
     /// （exec）下 cell 存在但无策略读它——写它无效果。

@@ -770,6 +770,33 @@ fn run_headless_command(
                 Ok(Err(message)) => ExecOutcome::Failure(message),
                 Err(error) => ExecOutcome::Failure(error.to_string()),
             },
+            Ok(CommandOutcome::StartVisionProbe(handle)) => match handle.join_report() {
+                // VP-1：headless 腿同步等判定；报告一行式打印。
+                Ok(report) => {
+                    if !args.quiet {
+                        write_status(
+                            &io.error,
+                            io_state,
+                            format_args!("● {}\n", report.status_text()),
+                        );
+                    }
+                    match report.outcome {
+                        crate::application::VisionProbeOutcome::Pass => ExecOutcome::Success {
+                            output: String::new(),
+                            turns: 0,
+                            usage: Usage::default(),
+                        },
+                        crate::application::VisionProbeOutcome::Rejected
+                        | crate::application::VisionProbeOutcome::SilentDrop => {
+                            ExecOutcome::Failure(report.status_text())
+                        }
+                        crate::application::VisionProbeOutcome::Inconclusive => {
+                            ExecOutcome::Failure(report.status_text())
+                        }
+                    }
+                }
+                Err(error) => ExecOutcome::Failure(error.to_string()),
+            },
             Ok(CommandOutcome::ShowHelp { commands }) => {
                 let mut text = String::new();
                 for info in &commands {

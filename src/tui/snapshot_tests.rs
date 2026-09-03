@@ -77,6 +77,10 @@ use unicode_width::UnicodeWidthStr;
 /// 紧邻行恢复显示压暗底层 UI（此前被守卫清成空白；每场景恰两行、
 /// 框内零变化）。CP-4 同批：help-dialog-end 尾页 Composer 行三名改
 /// 两名（/ac, /attach-clear——退役全拼不再宣传）。
+/// 2026-09-03 刷新（VP-2 内置矩阵终态）：model-picker 与
+/// model-picker-vendor 两场景重钉——Qwen Token Plan 一级行 "1 models"
+/// → "2 models"（增量预设 qwen3.8-flash），二级列表新增 flash 行
+/// （Qwen3.8 Max + Qwen3.8 Flash 两模型）。
 const SCENARIOS: &[&str] = &[
     "idle-transcript-80",
     "idle-transcript-40",

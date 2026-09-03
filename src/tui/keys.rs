@@ -92,6 +92,11 @@ impl App {
                 self.flash_status(format!("process {session_id} · {state}"));
                 self.notify();
             }
+            // VP-1：custom 视觉探针判定——状态栏一行摘要（覆盖位已在
+            // core 侧落盘，TUI 不触碰持久化）。
+            UiEvent::Application(ApplicationEvent::VisionProbeNotice { report }) => {
+                self.flash_status(report.status_text());
+            }
         }
     }
 

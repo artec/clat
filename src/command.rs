@@ -19,7 +19,7 @@
 
 use crate::application::{
     CompactHandle, ContextEstimateSnapshot, McpStatusDto, SkillsOverviewDto,
-    TrustedProjectApplication,
+    TrustedProjectApplication, VisionProbeHandle,
 };
 use crate::permission::PermissionMode;
 use crate::session::use_cases::SessionSummary;
@@ -90,6 +90,9 @@ pub enum CommandOutcome {
     StartTitleEdit { prefill: String },
     /// `/compact`：压缩已启动，携带可取消/可 join 的句柄。
     StartCompaction(CompactHandle),
+    /// `/vision-probe`（VP-1）：custom 视觉探针已启动，携带可 join 的
+    /// 句柄（判定另经 `ApplicationEvent::VisionProbeNotice` 回流）。
+    StartVisionProbe(VisionProbeHandle),
     /// `/goal ... --run` or `/goal run`: the frontend supplies its normal
     /// event/approval channels while core owns the admitted goal-round prompt.
     StartGoalRun,
@@ -114,6 +117,7 @@ impl fmt::Debug for CommandOutcome {
             Self::StartPermissionModeSelection { .. } => "StartPermissionModeSelection { .. }",
             Self::StartTitleEdit { .. } => "StartTitleEdit { .. }",
             Self::StartCompaction(_) => "StartCompaction(..)",
+            Self::StartVisionProbe(_) => "StartVisionProbe(..)",
             Self::StartGoalRun => "StartGoalRun",
             Self::SessionReset => "SessionReset",
             Self::QuitRequested => "QuitRequested",

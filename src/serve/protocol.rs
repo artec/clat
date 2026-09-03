@@ -899,6 +899,15 @@ fn command_run(params: &Map<String, Value>, shared: &Arc<ServeShared>) -> Result
             start_goal_run(shared, rpc_id)
         }
         crate::CommandOutcome::SessionReset => Ok(json!({ "kind": "session_reset" })),
+        crate::CommandOutcome::StartVisionProbe(_) => {
+            // VP-1 serve 入口：探测异步执行，判定以 notice 事件回流
+            //（notice_ctl 的 VisionProbeNotice 腿）；句柄在此弃置——
+            // worker 自行收尾并广播，无需 join。
+            Ok(json!({
+                "kind": "status",
+                "message": "vision probe started; the verdict arrives as a vision_probe notice",
+            }))
+        }
         crate::CommandOutcome::StartModelSelection
         | crate::CommandOutcome::StartSessionSelection { .. }
         | crate::CommandOutcome::StartPermissionModeSelection { .. }

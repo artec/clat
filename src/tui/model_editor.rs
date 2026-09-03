@@ -2755,6 +2755,9 @@ mod tests {
         editor.handle_key(key(KeyCode::Right));
         assert_eq!(editor.preset.map(|preset| preset.id), Some("qwen3.8-max"));
         editor.handle_key(key(KeyCode::Right));
+        // VP-2B：Qwen Token Plan 两模型（max + flash）连续排布。
+        assert_eq!(editor.preset.map(|preset| preset.id), Some("qwen3.8-flash"));
+        editor.handle_key(key(KeyCode::Right));
         assert_eq!(editor.preset.map(|preset| preset.id), Some("kimi-k3"));
         editor.handle_key(key(KeyCode::Right));
         assert_eq!(editor.preset.map(|preset| preset.id), Some("hy4-preview"));
@@ -2879,7 +2882,8 @@ mod tests {
             picker.handle_key(picker_key(KeyCode::Down));
         }
         picker.handle_key(picker_key(KeyCode::Enter)); // 进入第 3 行 Qwen
-        assert_eq!(picker.row_count(), 1);
+        // VP-2B：Qwen Token Plan 两模型（max + flash）。
+        assert_eq!(picker.row_count(), 2);
         assert!(matches!(
             picker.handle_key(picker_key(KeyCode::Esc)),
             PickerAction::Continue
@@ -2982,13 +2986,14 @@ mod tests {
         };
         assert_eq!(preset.id, "glm-5.3");
 
-        // 一级数字 3 进入 Qwen Token Plan（唯一模型），5 快选 Custom。
+        // 一级数字 3 进入 Qwen Token Plan（VP-2B：两模型），5 快选
+        // Custom。
         let mut picker = new_picker();
         assert!(matches!(
             picker.handle_key(picker_key(KeyCode::Char('3'))),
             PickerAction::Continue
         ));
-        assert_eq!(picker.row_count(), 1);
+        assert_eq!(picker.row_count(), 2);
         let PickerAction::SelectPreset(preset) = picker.handle_key(picker_key(KeyCode::Char('1')))
         else {
             panic!("expected SelectPreset");

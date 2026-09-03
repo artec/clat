@@ -58,8 +58,8 @@ pub use application::{
     CompactReport, CompactionStatus, ContextEstimateSnapshot, ContextSkillDiagnostic,
     McpServerInfoDto, McpStatusDto, ProjectAuthorization, ProjectSnapshot, RecalledSteering,
     RenameOutcome, RunHandle, SessionSnapshot, SkillEntryDto, SkillsOverviewDto, SteerOutcome,
-    TrustedProjectApplication, WorkbenchModelSnapshot, WorkbenchProjectSnapshot,
-    WorkbenchSessionSnapshot, WorkbenchSnapshot,
+    TrustedProjectApplication, VisionProbeHandle, VisionProbeOutcome, VisionProbeReport,
+    WorkbenchModelSnapshot, WorkbenchProjectSnapshot, WorkbenchSessionSnapshot, WorkbenchSnapshot,
 };
 pub use command::{CommandError, CommandGroup, CommandInfo, CommandOutcome};
 pub use control_storage::ModelProfileSummary;

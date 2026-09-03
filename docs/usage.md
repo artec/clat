@@ -157,11 +157,26 @@ model → safety → extensions → experiments → meta):
 | `/mem`, `/memory ...` | explicitly list, add, edit, or delete local memory records |
 | `/goal ...` | inspect or control one bounded goal for the current session |
 | `/sub`, `/subagents on|off` | opt into or leave the read-only subagent experiment |
+| `/vision-probe` | run the one-shot vision probe against the current custom model |
 | `/help` | open the command and key reference |
 | `/quit`, `/exit` | close CLAT cleanly |
 
 Renamed primaries keep their old inputs working: `/memory` and `/subagents`
 still dispatch unchanged.
+
+`/vision-probe` (VP-1) is the only capability probe CLAT runs, and it never
+runs on its own: built-in presets carry officially-declared capabilities that
+are hardcoded (no probing), so the command applies to custom model
+configurations only. It generates a small image containing a random four-digit
+code, sends it with the current endpoint, model, and key, and grades the
+answer. A pass writes the vision capability override into that custom
+configuration (persisted; the fail-closed default is unchanged for everything
+else) and appends a JSON evidence line to `vision-probe-log.jsonl` under the
+storage root. A 4xx rejection and a 200 answer that cannot read the code are
+reported separately; network, authentication, and server failures are
+inconclusive — rerun the probe. `clat exec --command /vision-probe` joins the
+probe and prints the verdict; serve clients receive it as a `vision_probe`
+notice event.
 
 These image-draft commands are TUI-local (they edit the terminal composer
 without touching a session or model) and appear in the TUI help under
@@ -362,7 +377,10 @@ Each image has a stable `[Image #N]` label independent of editable message text.
 The rail shows its filename, measured dimensions, source size, estimated visual
 tokens, and draft totals. `/image remove` and `/image move` operate on that
 stable id. Text-only model routes keep the draft visible but block sending;
-switch to a probe-verified vision route or remove the images. Image-only prompts
+switch to a vision-capable route or remove the images. Vision capability is
+officially-declared for built-in presets (five models across four vendors) and,
+for custom configurations, unlocked only by a passing `/vision-probe`.
+Image-only prompts
 are valid. Startup/admission failures restore the text and ordered draft, and
 `Esc` recalls queued image steering with its original sources. If cancellation
 or failure seals the run before a queued steering message is claimed, its exact

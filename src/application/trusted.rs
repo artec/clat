@@ -240,6 +240,7 @@ impl TrustedProjectApplication {
             startup_diagnostic: None,
             active_run: None,
             active_compaction: None,
+            active_vision_probe: None,
             permission_mode,
             permission_modes_enabled: permission_modes,
             asker_slot,
