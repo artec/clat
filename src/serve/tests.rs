@@ -763,6 +763,7 @@ fn dispatch_covers_the_full_method_set() {
     );
     assert_eq!(workbench["permission"]["mode"], "workspace-write");
     assert_eq!(workbench["model"]["model"], "deterministic");
+    assert_eq!(workbench["model"]["image_input"], true);
     assert_eq!(
         workbench["methods"].as_array().unwrap().len(),
         protocol::RPC_METHODS.len()

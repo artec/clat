@@ -112,6 +112,9 @@ pub struct WorkbenchModelSnapshot {
     pub overrides: crate::model::ModelOverrides,
     /// 已解析缺省值后的单次 run token 花费护栏；0 表示关闭。
     pub run_token_budget: u64,
+    /// 当前冻结配置是否接受图片输入。唯一事实源是
+    /// `ModelCapabilities::accepts_image_input()`；前端不得重判。
+    pub image_input: bool,
 }
 
 #[derive(Clone, Debug)]

@@ -146,7 +146,7 @@ impl App {
             self.editor_area = Some(picker_area);
             picker.draw(frame, picker_area);
         } else if let Some(picker) = &self.picker {
-            // 高度=内容精确高度（行 + 空行 + 说明行 + 双边框）：不设
+            // 高度=内容精确高度（行 + 空行 + 说明/图例 + 双边框）：不设
             // max 兜底——此前 max(8) 把小列表（单模型二级/短档案列表）
             // 人为撑高，钉底的说明行与内容之间出现多余空行、各级弹框
             // 观感不一（2026-08-22 用户反馈）。超高列表由 draw 内部的
@@ -760,6 +760,9 @@ impl App {
             state,
             model: model.as_str(),
             level: level.as_deref(),
+            image_input: self.dsh.is_none()
+                && !connecting
+                && self.config.capabilities.accepts_image_input(),
         };
         let mut first_line = prefix;
         first_line.extend(compose_header_rest(&header, rest_budget));

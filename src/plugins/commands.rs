@@ -100,6 +100,7 @@ fn spec(
         takes_args: false,
         group,
         order,
+        listed: true,
         handler: Arc::new(Builtin { run }),
     }
 }
@@ -164,13 +165,21 @@ fn builtin_specs() -> Vec<CommandSpec> {
         // VP-1（2026-09-03）：custom 一次性视觉探针——Experiments 组、
         // /sub（order 13）之后。探测与覆盖位门控都在
         // application::vision_probe；这里只声明延续意图。
-        spec(
-            crate::command::CommandGroup::Experiments,
-            16,
-            &["vision-probe"],
-            "verify whether the current custom model reads images (one-shot probe)",
-            run_vision_probe,
-        ),
+        // 附加工单（2026-09-03 负责人令）：listed = false——内部/实验
+        // 性一次性工具不进 /help 目录（INV-C4 的显式例外），命令照常
+        // 派发。
+        CommandSpec {
+            names: vec!["vision-probe".into()],
+            description: "verify whether the current custom model reads images (one-shot probe)"
+                .to_owned(),
+            takes_args: false,
+            group: crate::command::CommandGroup::Experiments,
+            order: 16,
+            listed: false,
+            handler: Arc::new(Builtin {
+                run: run_vision_probe,
+            }),
+        },
     ]
 }
 
@@ -412,7 +421,7 @@ mod tests {
     /// 红。挂载序与展示序解耦（INV-SC-1）靠此测试钉住。
     #[test]
     fn command_catalog_matches_the_authoritative_table() {
-        let (application, storage_root) = mount("commands-authoritative-order");
+        let (mut application, storage_root) = mount("commands-authoritative-order");
         let catalog = application.command_catalog();
         let rows: Vec<String> = catalog
             .iter()
@@ -440,13 +449,23 @@ mod tests {
                 "/mem, /memory",
                 "/goal",
                 "/sub, /subagents",
-                // VP-1（2026-09-03）：custom 一次性视觉探针落 Experiments 组。
-                "/vision-probe",
                 "/help",
                 "/quit, /exit",
             ],
-            "the catalog must fold to the authoritative sixteen-row table"
+            "the catalog must fold to the authoritative fifteen-row table"
         );
+        // 附加工单（2026-09-03 负责人令）：`/vision-probe` 不进帮助目录
+        //（listed = false），但仍可派发——隐藏 ≠ 下线。判定只区分
+        // NotFound：探针自身的门控错误（模型未配置等）同样证明派发可达。
+        assert!(
+            !rows.iter().any(|row| row.contains("vision-probe")),
+            "the vision probe must not be advertised in /help"
+        );
+        if let Err(crate::command::CommandError::NotFound { .. }) =
+            application.dispatch_command("/vision-probe")
+        {
+            panic!("the hidden command must still be dispatchable");
+        }
         application.close().unwrap();
         cleanup(&storage_root);
     }

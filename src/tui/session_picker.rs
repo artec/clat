@@ -290,9 +290,11 @@ impl SessionPicker {
 
     pub fn draw(&self, frame: &mut Frame, area: Rect) {
         crate::tui::clear_popup_with_guards(frame, area);
+        let block = crate::tui::popup_block("/resume");
+        let row_width = block.inner(area).width as usize;
         let mut lines = Vec::new();
         if let Some(dsh) = self.dsh.as_deref() {
-            self.draw_dsh(dsh, &mut lines);
+            self.draw_dsh(dsh, &mut lines, row_width);
         } else if self.sessions.is_empty() {
             lines.push(Line::from("no previous conversations in this project"));
             lines.push(Line::from(""));
@@ -313,17 +315,13 @@ impl SessionPicker {
                     " ".to_owned()
                 };
                 let title = session.title.clone().unwrap_or_else(|| "(untitled)".into());
-                let marker = if Some(&session.id) == self.current.as_ref() {
-                    "●"
-                } else {
-                    " "
-                };
-                lines.push(Line::from(vec![
-                    Span::styled(format!("{number}  "), style),
-                    Span::raw(format!("{marker} ")),
-                    Span::styled(format!("{title:<32}"), style),
-                    Span::styled(format!("{} msgs", session.message_count), style),
-                ]));
+                let current = Some(&session.id) == self.current.as_ref();
+                // VP-3 四轮定稿：✓ 锚定名称——数字列之后、标题之前。
+                let body = format!("{title:<32}{} msgs", session.message_count);
+                lines.push(Line::from(Span::styled(
+                    crate::tui::numbered_picker_row(&number, &body, current, row_width),
+                    style,
+                )));
             }
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
@@ -333,16 +331,16 @@ impl SessionPicker {
         }
         frame.render_widget(
             Paragraph::new(lines)
-                .block(crate::tui::popup_block("/resume"))
+                .block(block)
                 .wrap(Wrap { trim: false }),
             area,
         );
     }
 
     /// dsh 行：分组头（Faint，不可选）+ 会话行
-    /// `{n}  {marker} {title:<32}{activity}`——工作区归属由分组头表达，
-    /// 行内不再带标签。
-    fn draw_dsh(&self, dsh: &DshResumeData, lines: &mut Vec<Line<'static>>) {
+    /// `{n} {✓| } {title:<32}{activity}`——工作区归属由分组头表达，
+    /// 行内不再带标签；✓ 锚定名称，居数字列之后（VP-3 四轮定稿）。
+    fn draw_dsh(&self, dsh: &DshResumeData, lines: &mut Vec<Line<'static>>, row_width: usize) {
         if dsh.rows.is_empty() {
             lines.push(Line::from("no dsh sessions — /new to start one"));
             lines.push(Line::from(""));
@@ -374,18 +372,17 @@ impl SessionPicker {
                         " ".to_owned()
                     };
                     session_ordinal += 1;
-                    let marker = if dsh.current_session.as_deref() == Some(row.session_id.as_str())
-                    {
-                        "●"
-                    } else {
-                        " "
-                    };
-                    lines.push(Line::from(vec![
-                        Span::styled(format!("{number}  "), style),
-                        Span::raw(format!("{marker} ")),
-                        Span::styled(format!("{:<32}", row.display_title()), style),
-                        Span::styled(format_activity(row.activity_ms), style),
-                    ]));
+                    let current = dsh.current_session.as_deref() == Some(row.session_id.as_str());
+                    // VP-3 四轮定稿：✓ 锚定名称——数字列之后、标题之前。
+                    let body = format!(
+                        "{:<32}{}",
+                        row.display_title(),
+                        format_activity(row.activity_ms)
+                    );
+                    lines.push(Line::from(Span::styled(
+                        crate::tui::numbered_picker_row(&number, &body, current, row_width),
+                        style,
+                    )));
                 }
             }
         }

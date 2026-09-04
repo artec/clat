@@ -2080,12 +2080,14 @@ mod tests {
             state: &'a str,
             model: &'a str,
             level: Option<&'a str>,
+            image_input: bool,
         ) -> HeaderModel<'a> {
             HeaderModel {
                 version,
                 state,
                 model,
                 level,
+                image_input,
             }
         }
         fn text(spans: Vec<Span<'static>>) -> String {
@@ -2094,7 +2096,7 @@ mod tests {
                 .map(|span| span.content.to_string())
                 .collect()
         }
-        let levelled = header("0.5.1", "ready", "DeepSeek V4.0 Flash", Some("High"));
+        let levelled = header("0.5.1", "ready", "DeepSeek V4.0 Flash", Some("High"), false);
         let full = " v0.5.1  ready  ·  DeepSeek V4.0 Flash · Thinking · High";
         let full_spans = compose_header_rest(&levelled, 200);
         assert_eq!(text(full_spans.clone()), full);
@@ -2136,7 +2138,7 @@ mod tests {
         // 无档位（未配置 / 其它厂商 / 手工 disabled 由调用方归为 None /
         // dsh 模式恒 None）：各层级不出现档位片段，最小层级只剩版本与
         // 状态。
-        let unlevelled = header("0.5.1", "ready", "DeepSeek V4.0 Flash", None);
+        let unlevelled = header("0.5.1", "ready", "DeepSeek V4.0 Flash", None, false);
         assert_eq!(
             text(compose_header_rest(&unlevelled, 200)),
             " v0.5.1  ready  ·  DeepSeek V4.0 Flash"
@@ -2146,6 +2148,19 @@ mod tests {
             " v0.5.1 ready · DeepSeek V4.0 Flash"
         );
         assert_eq!(text(compose_header_rest(&unlevelled, 34)), " v0.5.1 ready");
+
+        // VP-3：能力符号属于模型名段并参与宽度退化。恰好能放无符号
+        // 完整态的预算，不足以放多出的 ` ⧉`，必须降到紧凑态；dsh 由
+        // 调用方传 false，继续走上面的无符号路径。
+        let vision = header("0.5.1", "ready", "Vision", Some("High"), true);
+        let vision_full = " v0.5.1  ready  ·  Vision ⧉ · Thinking · High";
+        assert_eq!(text(compose_header_rest(&vision, 200)), vision_full);
+        let without_icon_fit =
+            UnicodeWidthStr::width(" v0.5.1  ready  ·  Vision · Thinking · High");
+        assert_eq!(
+            text(compose_header_rest(&vision, without_icon_fit)),
+            " v0.5.1 ready · Vision ⧉ · High"
+        );
     }
 
     /// TUI-L02：窄终端下右侧遥测按优先级让位（Context 先弃，Cache 次

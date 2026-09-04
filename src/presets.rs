@@ -550,8 +550,16 @@ impl ModelPreset {
         // - 空 → 种入本预设窗口；
         // - 等于本预设或旧预设的窗口（我们种的）→ 更新为本预设窗口；
         // - 其它值（用户手填）→ 永不覆盖。
-        let seeded_by_us =
-            |value: u32| value == self.context_window || Some(value) == previous_preset_window;
+        // TC-6（2026-09-03）：950,000 是 TC-1 时代的历史种值（hy4 预设
+        // 的旧窗口口径），TC-2 改口径 1M 后值匹配启发式不再认识它——
+        // 被 INV-MM2-1 误判为用户手填值而跨模型钉死。该值只作为我们
+        // 的历史种值存在过，归入"我们种的"已知值家族随当前预设重种
+        //（已知唯一案例；结构化方案——种值位持久化——无病历不立项）。
+        let seeded_by_us = |value: u32| {
+            value == self.context_window
+                || Some(value) == previous_preset_window
+                || value == 950_000
+        };
         match config.max_context_tokens {
             None => config.max_context_tokens = Some(self.context_window),
             Some(current) if seeded_by_us(current) => {
@@ -798,6 +806,52 @@ mod tests {
             config.max_context_tokens,
             Some(65_536),
             "a user-entered budget is never clobbered by the preset"
+        );
+
+        // TC-6（2026-09-03）判别：950,000 僵尸种值迁移——TC-1 时代 hy4
+        // 预设种出的存量，在 TC-2 把预设窗口改为 1M 后被值匹配启发式
+        // 误判为用户手填值（INV-MM2-1 永不覆盖）→ 跨模型钉死（PWA
+        // MODEL ROUTE 的 CONTEXT 恒显 950K）。该值只作为我们的历史种
+        // 值存在过（非设计常数，钉值纪律反证无合法用户值撞上）→ 归入
+        // "我们种的"已知值家族，随当前预设重种。pre-fix（家族不含
+        // 950K）本腿红：两次 apply 后仍是 950,000。
+        let hy = preset_by_id("hy4-preview").expect("hy4");
+        let mut zombied = ModelConfig {
+            preset: Some("hy4-preview".into()),
+            max_context_tokens: Some(950_000),
+            ..ModelConfig::default()
+        };
+        hy.apply(&mut zombied);
+        assert_eq!(
+            zombied.max_context_tokens,
+            Some(1_000_000),
+            "the TC-1-era 950K zombie seed must re-seed to the current preset window"
+        );
+        // 跨模型腿：带着僵尸值换预设，同样重种为新预设窗口（ curing
+        // "跨模型钉死"）。
+        let mut carried = ModelConfig {
+            preset: Some("hy4-preview".into()),
+            max_context_tokens: Some(950_000),
+            ..ModelConfig::default()
+        };
+        glm.apply(&mut carried);
+        assert_eq!(
+            carried.max_context_tokens,
+            Some(window),
+            "the zombie seed must not survive a preset switch"
+        );
+        // 正常用户值（非设计常数违背例）不动：500,000 是干净整数，
+        // 视为手填，永不覆盖。
+        let mut user_value = ModelConfig {
+            preset: Some("hy4-preview".into()),
+            max_context_tokens: Some(500_000),
+            ..ModelConfig::default()
+        };
+        hy.apply(&mut user_value);
+        assert_eq!(
+            user_value.max_context_tokens,
+            Some(500_000),
+            "a legitimate user value must stay untouched"
         );
     }
 

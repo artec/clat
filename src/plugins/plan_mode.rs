@@ -77,6 +77,7 @@ impl Plugin for PlanModePlugin {
                     takes_args: true,
                     group: crate::command::CommandGroup::Safety,
                     order: 8,
+                    listed: true,
                     handler: Arc::new(PlanCommand),
                 },
             )

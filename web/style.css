@@ -190,6 +190,10 @@ button:disabled { cursor: default; opacity: .45; }
 .session-title { display: block; max-width: 100%; padding: 0; overflow: hidden; color: var(--text); font-size: 14px; font-weight: 650; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
 .session-title:hover { color: var(--accent); }
 .conversation-meta { display: flex; align-items: center; gap: 7px; margin-top: 2px; color: var(--text-muted); font: 11px/1.2 var(--font-mono); white-space: nowrap; }
+.model-identity { display: inline-flex; min-width: 0; align-items: center; gap: 5px; }
+.model-identity .model-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vision-capability { display: inline-grid; flex: 0 0 auto; place-items: center; width: 18px; height: 18px; border: 1px solid color-mix(in srgb, var(--signal) 42%, var(--line)); border-radius: 5px; color: var(--signal); background: color-mix(in srgb, var(--signal) 8%, transparent); }
+.vision-capability svg { width: 12px; height: 12px; stroke-width: 1.8; }
 .conn-status[data-state="live"] { color: var(--success); }
 .conn-status[data-state="reconnecting"] { color: var(--warning); }
 .conn-status[data-state="failed"] { color: var(--danger); }
@@ -309,6 +313,7 @@ button:disabled { cursor: default; opacity: .45; }
 .inspector-section { padding: 20px 18px; border-bottom: 1px solid var(--line); }
 .inspector-section h2 { margin: 0 0 14px; color: var(--text-muted); font: 700 11px var(--font-mono); letter-spacing: .12em; text-transform: uppercase; }
 .inspector-section > strong { font-size: 14px; }
+.inspector-section > .model-route-row { display: flex; width: 100%; justify-content: space-between; padding: 9px 10px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: linear-gradient(100deg, var(--surface-input), color-mix(in srgb, var(--signal) 5%, var(--surface-input))); }
 .inspector-section > p { margin: 4px 0 0; color: var(--text-muted); font-size: 12px; }
 .inspector-section dl { margin: 0; }
 .inspector-section dl div { display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: 8px; margin: 9px 0; }

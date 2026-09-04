@@ -1,4 +1,70 @@
 use super::*;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+/// 选择器单行的统一几何（VP-3 四轮定稿 + 2026-09-04 负责人五轮微调）：
+/// `✓` **永远紧贴名称之前的固定列**——统一规则锚定名称、不绑定行首
+/// 或数字列。本函数是无数字列形态（permission 等列表）：` ✓ 名称`
+/// ——✓ 前必须有一个空格（不顶行首左边）、✓ 与名称之间恰好一个
+/// 空格；未选中该列留空。有数字列的列表（model/session picker）用
+/// [`numbered_picker_row`]（`1 ✓ 名称`，数字在 ✓ 前）。正文占满剩余
+/// 内宽（超宽省略号截断），导航态整行应用样式时背景横贯内宽。
+/// 字形 `✓` = U+2713 纯文本形，禁 emoji 变体选择符。
+pub(crate) fn picker_row(body: &str, current: bool, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    let marker = if current { '✓' } else { ' ' };
+    if width == 1 {
+        return marker.to_string();
+    }
+    fill_display_row(&format!(" {marker} {body}"), width)
+}
+
+/// 有数字列的行（VP-3 四轮定稿）：`✓` 锚定名称，居数字列之后、名称
+/// 之前——`{number} {✓| }{body}`；未选中该列留空。
+pub(crate) fn numbered_picker_row(number: &str, body: &str, current: bool, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    let marker = if current { '✓' } else { ' ' };
+    fill_display_row(&format!("{number} {marker} {body}"), width)
+}
+
+/// 截断并补白占满 `width` 显示宽——导航背景条因此横贯整行内宽。
+fn fill_display_row(body: &str, width: usize) -> String {
+    let body = truncate_display_width(body, width);
+    let padding = " ".repeat(width.saturating_sub(UnicodeWidthStr::width(body.as_str())));
+    format!("{body}{padding}")
+}
+
+/// 截断并补白到恰好 `width` 显示宽（超宽省略号截断）——固定列宽的
+/// 名称单元用：hint 起排位置因此恒定，不随名称长度漂移。
+pub(crate) fn fit_display_width(text: &str, width: usize) -> String {
+    let truncated = truncate_display_width(text, width);
+    let padding = " ".repeat(width.saturating_sub(UnicodeWidthStr::width(truncated.as_str())));
+    format!("{truncated}{padding}")
+}
+
+fn truncate_display_width(text: &str, max: usize) -> String {
+    if max == 0 {
+        return String::new();
+    }
+    if UnicodeWidthStr::width(text) <= max {
+        return text.to_owned();
+    }
+    let mut out = String::new();
+    let mut used = 0usize;
+    for character in text.chars() {
+        let width = UnicodeWidthChar::width(character).unwrap_or(0);
+        if used + width > max.saturating_sub(1) {
+            break;
+        }
+        out.push(character);
+        used += width;
+    }
+    out.push('…');
+    out
+}
 
 /// 权限对话框的参数字段摘要：对象时列出全部顶层键（截断到 10 个
 /// 并标注剩余数），非对象（字符串/数字等）返回 None——摘要只在
@@ -332,6 +398,73 @@ pub(super) fn permission_argument_width(area: Rect) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn picker_row_fills_width_and_leads_with_the_current_marker() {
+        assert_eq!(
+            UnicodeWidthStr::width("⧉"),
+            1,
+            "capability glyph must be width-1"
+        );
+        // VP-3 四轮定稿 + 2026-09-04 五轮微调（无数字列形态）：` ✓ 名称`
+        // ——✓ 前一个空格（不顶左缘）、✓ 与名称间恰一个空格；未选中
+        // 同列留空（名称仍起于固定第 3 列），整行占满内宽（导航背景
+        // 条横贯）。
+        let current = picker_row("short", true, 20);
+        let other = picker_row("a much longer label", false, 20);
+        assert_eq!(UnicodeWidthStr::width(current.as_str()), 20);
+        assert_eq!(UnicodeWidthStr::width(other.as_str()), 20);
+        assert!(
+            current.starts_with(" ✓ short"),
+            "one space, the marker, one space, then the body"
+        );
+        assert_eq!(current.chars().nth(3), Some('s'));
+        assert!(
+            other.starts_with("   a"),
+            "the blank marker column keeps the name at its fixed column"
+        );
+        assert_eq!(other.chars().nth(3), Some('a'));
+        // fit_display_width：截断 + 补白到恒定列宽。
+        assert_eq!(fit_display_width("abc", 6), "abc   ");
+        assert_eq!(
+            UnicodeWidthStr::width(fit_display_width("abcdefg", 6).as_str()),
+            6
+        );
+        assert!(fit_display_width("abcdefg", 6).ends_with('…'));
+    }
+
+    /// VP-3 四轮定稿（有数字列形态）：`✓` 锚定名称——居数字列之后、
+    /// 名称之前（`1 ✓ 名称`）；未选中该列留空（`1   名称`），标记列
+    /// 位置恒定；超宽整体省略号截断、仍占满内宽。删该列或回退行首
+    /// 案 → 位置断言红。
+    #[test]
+    fn numbered_picker_row_anchors_the_marker_between_number_and_name() {
+        let current = numbered_picker_row("1", "Custom", true, 20);
+        let other = numbered_picker_row("2", "a much longer label here", false, 20);
+        assert_eq!(UnicodeWidthStr::width(current.as_str()), 20);
+        assert_eq!(UnicodeWidthStr::width(other.as_str()), 20);
+        assert!(
+            current.starts_with("1 ✓ "),
+            "digit column, then the ✓ column"
+        );
+        assert!(
+            other.starts_with("2   "),
+            "the unselected marker column stays blank"
+        );
+        // "1 ✓ C"：名称起于固定第 5 字符位（✓ 是 3 字节，按字符取位）。
+        assert_eq!(
+            current.chars().nth(4),
+            Some('C'),
+            "the name starts at its fixed column"
+        );
+        // 标记列位置恒定：不随名称长度漂移。
+        assert_eq!(other.chars().nth(2), Some(' '));
+        let truncated =
+            numbered_picker_row("3", "a very long name that overflows the row", true, 20);
+        assert_eq!(UnicodeWidthStr::width(truncated.as_str()), 20);
+        assert!(truncated.starts_with("3 ✓ "));
+        assert!(truncated.contains('…'), "over-wide bodies truncate");
+    }
     use ratatui::{Terminal, backend::TestBackend};
 
     /// CP-3（2026-09-02）判别：守卫几何——Clear 恰为 rect 左右各扩

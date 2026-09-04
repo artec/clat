@@ -753,6 +753,7 @@ impl TrustedProjectApplication {
                 run_token_budget: config
                     .run_token_budget
                     .unwrap_or(crate::model::RUN_TOKEN_BUDGET_DEFAULT),
+                image_input: config.capabilities.accepts_image_input(),
             },
             permission_mode: self.permission_mode(),
             mcp: self.mcp_status(),

@@ -78,6 +78,7 @@ impl Plugin for MemoryPlugin {
                     takes_args: true,
                     group: crate::command::CommandGroup::Experiments,
                     order: 11,
+                    listed: true,
                     handler: Arc::new(MemoryCommand),
                 },
             )

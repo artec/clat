@@ -30,6 +30,7 @@ const ICON_PATHS = {
   check: ['m5 12 4 4L19 6'],
   wasm: ['M5 5h14v14H5z', 'M9 9h6v6H9z'],
   mcp: ['M4 12h5m6-5h5m-5 10h5', 'M9 12l6-5m-6 5 6 5'],
+  vision: ['M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6S2.5 12 2.5 12Z', 'M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6Z'],
 };
 
 function svgIcon(name) {
@@ -42,6 +43,16 @@ function svgIcon(name) {
     svg.appendChild(path);
   }
   return svg;
+}
+
+function renderModelIdentity(target, name, imageInput) {
+  target.replaceChildren(el('span', 'model-name', name));
+  if (!imageInput) return;
+  const badge = el('span', 'vision-capability');
+  badge.title = 'Accepts images';
+  badge.setAttribute('aria-label', 'Accepts images');
+  badge.appendChild(svgIcon('vision'));
+  target.appendChild(badge);
 }
 
 const EVENT_LABELS = {
@@ -943,7 +954,11 @@ async function refreshWorkbench() {
     dom['project-root'].title = project.root || '';
     dom['session-title'].textContent = session.title || 'Untitled session';
     updateDocumentTitle();
-    dom['header-model'].textContent = model.model || 'model unavailable';
+    renderModelIdentity(
+      dom['header-model'],
+      model.model || 'model unavailable',
+      Boolean(model.image_input),
+    );
     const modeLabel = permission.label || PERMISSION_LABELS[permission.mode] || 'Permission mode';
     dom['header-permission'].textContent = modeLabel;
     dom['composer-permission-label'].textContent = modeLabel;
@@ -952,7 +967,7 @@ async function refreshWorkbench() {
       ? '—' : String(session.committed_seq);
     dom['detail-session'].textContent = session.id ? shortenId(session.id) : 'Fresh';
     dom['detail-session'].title = session.id || '';
-    dom['detail-model'].textContent = model.model || '—';
+    renderModelIdentity(dom['detail-model'], model.model || '—', Boolean(model.image_input));
     dom['detail-protocol'].textContent = [model.protocol, model.active_profile || model.preset]
       .filter(Boolean).join(' / ') || '—';
     dom['detail-context'].textContent = model.max_context_tokens

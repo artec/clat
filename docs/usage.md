@@ -44,7 +44,9 @@ model.
 
 After trust is accepted, run `/model`, choose a built-in preset or Custom, and
 enter the provider credential. The setting is reused by `clat exec` and
-`clat serve` for the same local installation.
+`clat serve` for the same local installation. In the model picker and title
+bar, `⧉` means **accepts images**; the `✓` immediately before an entry's
+name marks the currently configured item.
 
 CLAT loads the root `AGENTS.md`, falling back to `CLAUDE.md`. When an approved
 successful file tool reaches a nested path, the next model request also sees
@@ -167,7 +169,9 @@ still dispatch unchanged.
 `/vision-probe` (VP-1) is the only capability probe CLAT runs, and it never
 runs on its own: built-in presets carry officially-declared capabilities that
 are hardcoded (no probing), so the command applies to custom model
-configurations only. It generates a small image containing a random four-digit
+configurations only. It is deliberately not listed in the in-app `/help`
+(internal one-shot tool); this manual is its documentation. It generates a
+small image containing a random four-digit
 code, sends it with the current endpoint, model, and key, and grades the
 answer. A pass writes the vision capability override into that custom
 configuration (persisted; the fail-closed default is unchanged for everything

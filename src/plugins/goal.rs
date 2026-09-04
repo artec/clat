@@ -73,6 +73,7 @@ impl Plugin for GoalPlugin {
                     takes_args: true,
                     group: crate::command::CommandGroup::Experiments,
                     order: 12,
+                    listed: true,
                     handler: Arc::new(GoalCommand),
                 },
             )

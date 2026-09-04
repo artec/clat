@@ -37,6 +37,7 @@ impl Plugin for ContextInspectorPlugin {
                     takes_args: false,
                     group: crate::command::CommandGroup::Context,
                     order: 5,
+                    listed: true,
                     handler: Arc::new(ContextCommand),
                 },
             )

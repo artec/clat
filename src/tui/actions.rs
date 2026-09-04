@@ -202,11 +202,19 @@ impl App {
         };
         profiles
             .into_iter()
-            .map(|profile| ProfileSummary {
-                active: active.as_deref() == Some(profile.name.as_str()),
-                name: profile.name,
-                endpoint: profile.endpoint.clone(),
-                model: profile.model.clone(),
+            .map(|profile| {
+                let image_input = application
+                    .load_model_profile(&profile.name)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|(config, _)| config.capabilities.accepts_image_input());
+                ProfileSummary {
+                    active: active.as_deref() == Some(profile.name.as_str()),
+                    name: profile.name,
+                    endpoint: profile.endpoint.clone(),
+                    model: profile.model.clone(),
+                    image_input,
+                }
             })
             .collect()
     }

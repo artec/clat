@@ -1361,7 +1361,7 @@ pub(crate) struct DshModelData {
     pub(crate) groups: Vec<DshModelGroup>,
     /// 失败组（一级尾部灰行，诚实呈现不静默丢组）。
     pub(crate) failures: Vec<DshModelFailure>,
-    /// 当前所选 (provider, model id)——二级行标 ●。
+    /// 当前所选 (provider, model id)——当前行行首前置列标 `✓`。
     pub(crate) current: Option<(String, String)>,
     /// 当前选择的档位 id（`current.reasoningEffort`；缺席 = 不带档位）。
     pub(crate) current_effort: Option<String>,
@@ -1511,7 +1511,16 @@ pub(crate) struct ProfileSummary {
     pub endpoint: String,
     pub model: String,
     pub active: bool,
+    /// VP-3：只由档案 config 的 `capabilities.accepts_image_input()` 派生。
+    pub image_input: bool,
 }
+
+/// VP-3 返工二轮（2026-09-03 负责人裁定）：选择器名称列的舒适定宽
+/// ——≈ 最长内置名（"DeepSeek V4.0 Flash Vision (Exp)"，32 列）+
+/// ` ⧉` + 余量；内置名永不截断，超宽档案名整体省略号截断，hint 从
+/// 该固定列起排——间距舒适、位置恒定（右对齐右缘案与标签右邻案
+/// 均已被否，见 open-worklist VP-3 返工记录）。
+const MODEL_NAME_COLUMN: usize = 40;
 
 /// Claude Code 风格的二级 /model 选择器：
 ///
@@ -1912,11 +1921,13 @@ impl ModelPicker {
 
     pub fn draw(&self, frame: &mut Frame, area: Rect) {
         crate::tui::clear_popup_with_guards(frame, area);
-        // 弹窗规范统一（2026-08-22 用户反馈）：键位说明行钉在弹框内底
-        // 行、Faint 灰、与内容恰好隔一空行——与 /resume /perm /help
+        // 弹窗规范统一（2026-08-22 用户反馈）：键位说明钉在弹框底部、
+        // Faint 灰、与内容恰好隔一空行——与 /resume /perm /help
         // /mcp 一致；此前说明行随 Paragraph 内容浮动，小列表（max(8)
         // 兜底撑高）悬空、各级观感不一。内容行超高时被裁剪，说明行
-        // 永不被挤出框外。
+        // 永不被挤出框外。VP-3 返工二轮（2026-09-03）：能力图例并入
+        // 说明行行尾（`· ⧉ images`），不再单占一行——一处足矣，
+        // 拒绝重复张贴。
         let title = if let Some(dsh) = &self.dsh {
             match self.dsh_group.and_then(|index| dsh.groups.get(index)) {
                 Some(group) => format!("/model · {}", group.name),
@@ -1939,7 +1950,7 @@ impl ModelPicker {
         let mut lines = Vec::new();
         let row_width = content_area.width as usize;
         for (index, row) in self.rows().iter().enumerate() {
-            let (mut label, mut hint, current) = self.row_display(index);
+            let (mut label, mut hint, current, image_input) = self.row_display(index);
             if self.confirm_delete == Some(index) {
                 label = format!("delete {label}?");
                 hint = "d again to confirm · any other key cancels".into();
@@ -1952,17 +1963,29 @@ impl ModelPicker {
             } else {
                 Style::default()
             };
-            let marker = if current { " ●" } else { "" };
+            // VP-3 四轮定稿（2026-09-03 负责人裁定）：✓ 锚定名称——
+            // 居数字列之后、名称列之前（`1 ✓ 名称⧉`）；名称 + ⧉ 渲染
+            // 为一个单元，超宽省略号截断（列宽 ≈ 最长内置名 + ⧉ + 余
+            // 量，内置名永不截断），hint 起排位置恒定，不随名称长度
+            // 漂移（根治 hint 尾挂与撞字）。
+            if image_input {
+                label.push_str(" ⧉");
+            }
+            let name_column = crate::tui::fit_display_width(&label, MODEL_NAME_COLUMN);
             let number = if index < 9 {
                 format!("{}", index + 1)
             } else {
                 " ".into()
             };
-            // 列表行保持单行：超宽截尾加省略号（permission_picker 同款
-            // 纪律）——行数即内容高度，说明行与内容恒隔一空行。
-            let row_text = format!("{number}  {label:<24}{hint}{marker}");
+            // 列表行保持单行：超宽整体截尾加省略号——行数即内容高度，
+            // 说明行与内容恒隔一空行。
             lines.push(Line::from(Span::styled(
-                truncate_to_width(&row_text, row_width),
+                crate::tui::numbered_picker_row(
+                    &number,
+                    &format!("{name_column}{hint}"),
+                    current,
+                    row_width,
+                ),
                 style,
             )));
         }
@@ -2001,19 +2024,25 @@ impl ModelPicker {
                 Some(_) => "↑↓ select · Enter confirm · Esc back",
             }
         };
+        // VP-3：能力图例只留此处（local 形态说明行行尾；dsh 不猜能力
+        // 不显示）。
+        let mut footer = footer.to_owned();
+        if self.dsh.is_none() {
+            footer.push_str(" · ⧉ images");
+        }
         frame.render_widget(
-            Paragraph::new(Span::styled(
+            Paragraph::new(vec![Line::from(Span::styled(
                 footer,
                 crate::tui::theme::style(crate::tui::theme::Role::Faint),
-            )),
+            ))]),
             footer_area,
         );
     }
 
-    fn row_display(&self, index: usize) -> (String, String, bool) {
+    fn row_display(&self, index: usize) -> (String, String, bool, bool) {
         let rows = self.rows();
         let Some(row) = rows.get(index) else {
-            return (String::new(), String::new(), false);
+            return (String::new(), String::new(), false, false);
         };
         if let Some(dsh) = &self.dsh {
             return match row {
@@ -2027,9 +2056,10 @@ impl ModelPicker {
                             group.name.clone(),
                             format!("{} models", group.models.len()),
                             current,
+                            false,
                         )
                     }
-                    None => (String::new(), String::new(), false),
+                    None => (String::new(), String::new(), false, false),
                 },
                 PickerRow::DshModel(group_index, model_index) => {
                     match dsh
@@ -2081,9 +2111,9 @@ impl ModelPicker {
                                     .clone()
                                     .unwrap_or_else(|| model.id.clone()),
                             };
-                            (model.name.clone(), hint, current)
+                            (model.name.clone(), hint, current, false)
                         }
-                        None => (String::new(), String::new(), false),
+                        None => (String::new(), String::new(), false, false),
                     }
                 }
                 PickerRow::DshFailure(index) => match dsh.failures.get(*index) {
@@ -2091,10 +2121,11 @@ impl ModelPicker {
                         format!("{} ⚠", failure.name),
                         failure.message.clone(),
                         false,
+                        false,
                     ),
-                    None => (String::new(), String::new(), false),
+                    None => (String::new(), String::new(), false, false),
                 },
-                _ => (String::new(), String::new(), false),
+                _ => (String::new(), String::new(), false, false),
             };
         }
         match row {
@@ -2103,13 +2134,19 @@ impl ModelPicker {
                 let current = self
                     .current_preset
                     .is_some_and(|preset| preset.vendor == *vendor);
-                ((*vendor).to_owned(), format!("{count} models"), current)
+                (
+                    (*vendor).to_owned(),
+                    format!("{count} models"),
+                    current,
+                    false,
+                )
             }
             PickerRow::Preset(preset) => (
                 preset.name.to_owned(),
                 preset.description.to_owned(),
                 self.current_preset
                     .is_some_and(|current| current.id == preset.id),
+                preset.owned_capabilities().accepts_image_input(),
             ),
             PickerRow::Custom => {
                 let count = self.profiles.len();
@@ -2118,7 +2155,12 @@ impl ModelPicker {
                 } else {
                     format!("{count} custom model{}", if count == 1 { "" } else { "s" })
                 };
-                ("Custom".to_owned(), hint, self.current_preset.is_none())
+                (
+                    "Custom".to_owned(),
+                    hint,
+                    self.current_preset.is_none(),
+                    false,
+                )
             }
             PickerRow::Profile(name) => {
                 let profile = self
@@ -2130,12 +2172,13 @@ impl ModelPicker {
                     name.clone(),
                     format!("{} · {}", profile.endpoint, profile.model),
                     profile.active,
+                    profile.image_input,
                 )
             }
-            PickerRow::NewProfile => ("New…".to_owned(), "blank template".to_owned(), false),
+            PickerRow::NewProfile => ("New…".to_owned(), "blank template".to_owned(), false, false),
             // dsh 行在上方 dsh 分支早退，此处不可达。
             PickerRow::DshGroup(_) | PickerRow::DshModel(_, _) | PickerRow::DshFailure(_) => {
-                (String::new(), String::new(), false)
+                (String::new(), String::new(), false, false)
             }
         }
     }
@@ -2823,6 +2866,7 @@ mod tests {
             endpoint: "https://api.example.com/v1".into(),
             model: "model-x".into(),
             active: false,
+            image_input: false,
         }
     }
 

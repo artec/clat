@@ -341,6 +341,9 @@ pub(super) struct HeaderModel<'a> {
     pub(super) state: &'a str,
     pub(super) model: &'a str,
     pub(super) level: Option<&'a str>,
+    /// VP-3：local 由当前 config 的能力方法注入；dsh 没有 CLAT 能力
+    /// 矩阵事实，调用方固定传 false。
+    pub(super) image_input: bool,
 }
 
 /// 标题栏首行在 "CLAT" 之后的内容，按可用显示宽度逐级退化（TUI-L02），
@@ -362,18 +365,24 @@ pub(super) fn compose_header_rest(header: &HeaderModel<'_>, width: usize) -> Vec
         state,
         model,
         level,
+        image_input,
     } = header;
+    let model = if *image_input {
+        format!("{model} ⧉")
+    } else {
+        (*model).to_owned()
+    };
     let full_prefix = format!(" v{version}  {state}  ·  ");
     let full_suffix = level
         .map(|level| format!(" · Thinking · {level}"))
         .unwrap_or_default();
-    if spans_width(&full_prefix, model, &full_suffix) <= width {
-        return styled_spans(full_prefix, model, full_suffix);
+    if spans_width(&full_prefix, &model, &full_suffix) <= width {
+        return styled_spans(full_prefix, &model, full_suffix);
     }
     let compact_prefix = format!(" v{version} {state} · ");
     let compact_suffix = level.map(|level| format!(" · {level}")).unwrap_or_default();
-    if spans_width(&compact_prefix, model, &compact_suffix) <= width {
-        return styled_spans(compact_prefix, model, compact_suffix);
+    if spans_width(&compact_prefix, &model, &compact_suffix) <= width {
+        return styled_spans(compact_prefix, &model, compact_suffix);
     }
     vec![Span::raw(match level {
         Some(level) => format!(" v{version} {state} · Thinking · {level}"),

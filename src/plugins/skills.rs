@@ -88,6 +88,7 @@ impl Plugin for SkillsPlugin {
                     takes_args: true,
                     group: crate::command::CommandGroup::Extensions,
                     order: 10,
+                    listed: true,
                     handler: Arc::new(SkillCommand),
                 },
             )

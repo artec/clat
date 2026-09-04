@@ -208,15 +208,16 @@ impl PermissionPicker {
                 PermissionSource::Dsh => 16,
             };
             for (index, mode) in MODES.iter().enumerate() {
-                let marker = if *mode == current { "●" } else { " " };
+                // 五轮微调（2026-09-04）：前导空格交给 `picker_row`
+                //（` ✓ 名称`）——名称恒定第 3 列，✓ 不顶左缘、与名称
+                // 恰隔一空格。
                 let row = format!(
-                    " {marker} {:<width$}{}{}",
+                    "{:<width$}{}",
                     self.label(*mode),
                     self.description(*mode),
-                    if *mode == current { "  (current)" } else { "" },
                     width = label_width,
                 );
-                let row = truncate_head(&row, width);
+                let row = crate::tui::picker_row(&row, *mode == current, width);
                 let line = if index == self.selected {
                     Line::from(Span::styled(row, theme::style(theme::Role::Selected)))
                 } else {
@@ -240,16 +241,6 @@ impl PermissionPicker {
             dialog,
         );
     }
-}
-
-/// 头部截断（含省略号）：标题/行内容超宽时保留开头（标题语义在头部，
-/// 与 model_editor::tail_window 的尾部保留互补）。
-fn truncate_head(text: &str, max: usize) -> String {
-    if text.chars().count() <= max {
-        return text.to_owned();
-    }
-    let kept: String = text.chars().take(max.saturating_sub(1)).collect();
-    format!("{kept}…")
 }
 
 /// 不变量 P4：冷切换进入 Full Access 必须经过确认子态——未确认的

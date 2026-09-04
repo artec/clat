@@ -81,6 +81,7 @@ impl Plugin for SubagentPlugin {
                     takes_args: true,
                     group: crate::command::CommandGroup::Experiments,
                     order: 13,
+                    listed: true,
                     handler: Arc::new(SubagentCommand),
                 },
             )

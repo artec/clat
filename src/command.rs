@@ -202,12 +202,16 @@ fn valid_command_name(name: &str) -> bool {
 /// 其余为别名；`takes_args` 声明命令是否接受参数（v1 内建全部 false）。
 /// `order` 是权威顺序表（docs/todo/skills-and-command-order.md）的行号，
 /// 组内展示序；表外命令用 `u16::MAX` 落组尾（同序按贡献序）。
+/// `listed` 退出帮助/目录 listing（INV-C4 的显式例外）：命令仍可经
+/// `lookup` 正常派发，只是不进 `catalog()`——内部/实验性工具用
+///（先例：`/vision-probe`，VP-1 负责人令 2026-09-03）。
 pub(crate) struct CommandSpec {
     pub(crate) names: Vec<String>,
     pub(crate) description: String,
     pub(crate) takes_args: bool,
     pub(crate) group: CommandGroup,
     pub(crate) order: u16,
+    pub(crate) listed: bool,
     pub(crate) handler: Arc<dyn CommandHandler>,
 }
 
@@ -299,7 +303,7 @@ impl CommandRegistry {
             .read()
             .map(|entries| {
                 let mut sorted: Vec<&(_, crate::plugin::PluginId, CommandSpec)> =
-                    entries.iter().collect();
+                    entries.iter().filter(|(_, _, spec)| spec.listed).collect();
                 sorted.sort_by_key(|(_, _, spec)| (spec.group, spec.order));
                 sorted
                     .into_iter()
@@ -421,6 +425,7 @@ mod tests {
             takes_args: false,
             group,
             order,
+            listed: true,
             handler: Arc::new(NoopHandler),
         }
     }

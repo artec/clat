@@ -81,6 +81,29 @@ use unicode_width::UnicodeWidthStr;
 /// model-picker-vendor 两场景重钉——Qwen Token Plan 一级行 "1 models"
 /// → "2 models"（增量预设 qwen3.8-flash），二级列表新增 flash 行
 /// （Qwen3.8 Max + Qwen3.8 Flash 两模型）。
+/// 2026-09-03 刷新（VP-3）：model-picker / model-picker-vendor 增加本地
+/// `⧉` 图片能力标识与图例；model-picker、permission-picker、dsh-resume-
+/// picker、dsh-model-picker、dsh-permission-picker 的导航行改为全内宽
+/// REVERSED，当前项 `✓` 固定最右列。能力未知的 dsh 模型行不显示 `⧉`。
+/// dsh-model-effort 同步当前项新几何；attachment-failure-restore 的本地
+/// 已验证测试模型标题同步显示 `⧉`。
+/// 2026-09-03 二次刷新（VP-3 返工二轮→四轮定稿，负责人三条）：①`✓`
+/// **永远紧贴名称之前的固定列**——锚定名称、不绑定行首：有数字列
+/// （model/session picker）为 `1 ✓ 名称`（数字列之后、名称列之前），
+/// 无数字列（permission 等）为 `✓ 名称`；未选中该列留空；字形
+/// U+2713 纯文本形。②名称列放宽为舒适定宽 40 列（名称+⧉ 单元整体
+/// 省略号截断，内置名永不截断），hint 从固定列起排；③图例撤独立行
+/// 并入说明行行尾（`· ⧉ images`），/help 不加图例。受影响快照：
+/// model-picker、model-picker-vendor、dsh-resume-picker、
+/// dsh-model-picker、dsh-model-effort（permission-picker 无数字列、
+/// 几何不变未动）。
+/// 2026-09-04 三次刷新（审计 F-1 修复 + 负责人五轮微调，审计
+/// `docs/audit/2026-09-04-vp3-rework2-vp4-review.md`）：①local /model
+/// 弹框高度回 rows+4——`chrome_height` 遗留返工一轮的 5 造成内容与
+/// 说明行之间**双空行**（model-picker、model-picker-vendor 重钉为
+/// 单空行）；②无数字列行改 ` ✓ 名称`——✓ 前一个空格不顶左缘、✓
+/// 与名称之间恰一个空格（permission-picker、dsh-permission-picker
+/// 重钉；名称仍恒定第 3 列）。
 const SCENARIOS: &[&str] = &[
     "idle-transcript-80",
     "idle-transcript-40",
@@ -1387,7 +1410,14 @@ fn model_picker_snapshot() {
     let mut harness = Harness::trusted("snap-model-picker", 80, 24);
     harness.type_text("/model");
     harness.key(KeyCode::Enter);
-    harness.snapshot("model-picker");
+    let projection = harness.draw_projection();
+    check_or_refresh("model-picker", &projection);
+    // VP-3 返工二轮：图例只留说明行行尾一处（`· ⧉ images`）。
+    assert!(projection.contains("· ⧉ images"));
+    assert!(
+        !projection.contains("DeepSeek ⧉"),
+        "vendor rows have no capability icon"
+    );
 }
 
 /// 弹窗规范不变量：/model 选择器在任何终端宽度下都不得贴屏幕左右
@@ -1474,7 +1504,11 @@ fn model_picker_vendor_level_snapshot() {
         harness.key(KeyCode::Down);
     }
     harness.key(KeyCode::Enter); // 第 3 行 Qwen（单模型二级）
-    harness.snapshot("model-picker-vendor");
+    let projection = harness.draw_projection();
+    check_or_refresh("model-picker-vendor", &projection);
+    assert!(projection.contains("Qwen3.8 Max ⧉"));
+    assert!(projection.contains("Qwen3.8 Flash ⧉"));
+    assert!(projection.contains("· ⧉ images"));
 }
 
 /// 工具卡三态（B5）：同一张已落定的 write_file 卡，内容行数超过折叠

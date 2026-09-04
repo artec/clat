@@ -400,6 +400,23 @@ test('model trace renders human-readable event names instead of raw protocol ids
   await expect(page.locator('.verdict.completed')).toBeVisible(LIVE);
 });
 
+test('image-capable model is marked in the top bar and model route row', async ({ page }) => {
+  const entry = hostInfo('success');
+  await openWorkbench(page, entry);
+
+  for (const selector of ['#header-model', '#detail-model']) {
+    const identity = page.locator(selector);
+    await expect(identity.locator('.vision-capability')).toHaveCount(1);
+    await expect(identity.locator('.vision-capability')).toHaveAttribute('aria-label', 'Accepts images');
+    await expect(identity.locator('svg')).toHaveCount(1);
+    const colors = await identity.locator('.vision-capability').evaluate((badge) => ({
+      color: getComputedStyle(badge).color,
+      stroke: getComputedStyle(badge.querySelector('svg')).stroke,
+    }));
+    expect(colors.stroke).toBe(colors.color);
+  }
+});
+
 // FE-1：斜杠桥仍只返回 core 事实；PWA 负责格式化 context，并让 Plan Mode
 // 在普通 notice 退场后仍有持续、可撤销的视觉状态。
 test('context is readable and the plan-mode marker appears and clears', async ({ page }) => {
