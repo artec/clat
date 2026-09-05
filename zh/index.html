@@ -5,14 +5,20 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>CLAT — command-line agent</title>
   <meta name="description" content="CLAT：稳如磐石的 Agent 底座，DSH 的 TUI 客户端。Rust 单文件，五家厂商预设开箱即用，多模态看图，签名插件市场 + WASM / MCP 扩展。">
-  <!-- 语言记忆：与记录不符才跳转（上次选了英文则回英文页）；
-       无记录时默认留在中文页并记录。手动切换链接会先写偏好再导航。 -->
+  <!-- 语言记忆：?lang=zh|en 显式指定并记录（优先级最高）；
+       记录为英文则跳回英文页，否则留在中文页并记录。
+       手动切换链接会先写偏好再导航，避免落地页弹回。 -->
   <script>
     (function () {
       try {
         var pref = null;
         try { pref = localStorage.getItem('clat-lang'); } catch (e) {}
+        try {
+          var q = new URLSearchParams(location.search).get('lang');
+          if (q === 'zh' || q === 'en') pref = q;
+        } catch (e) {}
         if (pref === 'en') {
+          try { localStorage.setItem('clat-lang', 'en'); } catch (e) {}
           location.replace(location.protocol === 'file:' ? '../index.html' : '/');
           return;
         }
@@ -405,7 +411,7 @@
         </div>
         <div class="stat">
           <div class="stat-number">5 个</div>
-          <div class="stat-label">预设厂商：DeepSeek / GLM / Qwen / Kimi / Tencent Hy</div>
+          <div class="stat-label">预设厂商：DS / GLM / Qwen / Kimi / Hy</div>
         </div>
       </div>
     </header>

@@ -4,7 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>CLAT — command-line agent</title>
-  <!-- 语言记忆：首访（无记录）按浏览器语言判断——简繁中文（zh-*）跳 /zh/，
+  <!-- 语言记忆：?lang=zh|en 显式指定并记录（优先级最高）；
+       否则首访（无记录）按浏览器语言判断——简繁中文（zh-*）跳 /zh/，
        其余留英文；此后每次打开记录当前语言，下次按记录跳转。
        手动切换链接会先写偏好再导航，避免落地页弹回。 -->
   <script>
@@ -12,6 +13,10 @@
       try {
         var pref = null;
         try { pref = localStorage.getItem('clat-lang'); } catch (e) {}
+        try {
+          var q = new URLSearchParams(location.search).get('lang');
+          if (q === 'zh' || q === 'en') pref = q;
+        } catch (e) {}
         if (!pref) {
           var langs = (navigator.languages && navigator.languages.length)
             ? navigator.languages : [navigator.language || ''];
@@ -20,6 +25,7 @@
           }
         }
         if (pref === 'zh') {
+          try { localStorage.setItem('clat-lang', 'zh'); } catch (e) {}
           location.replace(location.protocol === 'file:' ? 'zh/index.html' : '/zh/');
           return;
         }
@@ -27,7 +33,7 @@
       } catch (e) { /* 出错留在英文页 */ }
     })();
   </script>
-  <meta name="description" content="CLAT: a rock-solid agent foundation and the TUI client for DSH. A single Rust binary with DeepSeek / GLM / Qwen / Kimi presets out of the box, multimodal image input, a signed plugin marketplace, WASM plugins, and MCP extensions.">
+  <meta name="description" content="CLAT: a rock-solid agent foundation and the TUI client for DSH. A single Rust binary with five built-in vendor presets, multimodal image input, a signed plugin marketplace, WASM plugins, and MCP extensions.">
   <link rel="alternate" hreflang="en" href="https://cl.at.cn/">
   <link rel="alternate" hreflang="zh" href="https://cl.at.cn/zh/">
   <link rel="alternate" hreflang="x-default" href="https://cl.at.cn/">
@@ -413,7 +419,7 @@
         </div>
         <div class="stat">
           <div class="stat-number">5</div>
-          <div class="stat-label">Built-in presets: DeepSeek / GLM / Qwen / Kimi / Tencent Hy</div>
+          <div class="stat-label">Built-in presets: DS / GLM / Qwen / Kimi / Hy</div>
         </div>
       </div>
     </header>
