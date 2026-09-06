@@ -788,13 +788,23 @@ fn command_run(params: &Map<String, Value>, shared: &Arc<ServeShared>) -> Result
             return Err(RpcError::bad_request(error.to_string()));
         }
     };
-    if !matches!(&outcome, crate::CommandOutcome::StartGoalRun) && claimed_goal_run.is_some() {
+    if !matches!(&outcome, crate::CommandOutcome::StartGoalRun { .. }) && claimed_goal_run.is_some()
+    {
         shared.release_run_claim();
     }
     match outcome {
         crate::CommandOutcome::Status(message) => {
             Ok(json!({ "kind": "status", "message": message }))
         }
+        crate::CommandOutcome::ShowMemory(view) => Ok(json!({
+            "kind": "memory", "memory": view, "message": view.to_text(),
+        })),
+        crate::CommandOutcome::ShowGoal(view) => Ok(json!({
+            "kind": "goal", "goal": view, "message": view.to_text(),
+        })),
+        crate::CommandOutcome::ShowSubagentStatus(view) => Ok(json!({
+            "kind": "subagent_status", "subagent_status": view, "message": view.to_text(),
+        })),
         crate::CommandOutcome::ShowHelp { commands } => {
             let message = commands
                 .iter()
@@ -892,7 +902,7 @@ fn command_run(params: &Map<String, Value>, shared: &Arc<ServeShared>) -> Result
             }
             Ok(json!({ "kind": "status", "message": lines.join("\n") }))
         }
-        crate::CommandOutcome::StartGoalRun => {
+        crate::CommandOutcome::StartGoalRun { .. } => {
             let rpc_id = claimed_goal_run.ok_or_else(|| {
                 RpcError::internal("goal run command reached execution without a run claim")
             })?;
@@ -924,6 +934,9 @@ fn start_goal_run(shared: &Arc<ServeShared>, rpc_id: String) -> Result<Value, Rp
         mpsc::channel::<Result<ApplicationRunDone, ApplicationRunFailure>>();
     let started = {
         let mut app = shared.app.lock().expect("application lock");
+        // Another client may clear an approved plan between command dispatch
+        // and run admission. Describe the state frozen at the actual start.
+        let message = app.goal_run_message();
         app.start_goal_run(ApplicationRunRequest {
             message: crate::message::PendingMessage::text(String::new()),
             asker: None,
@@ -933,11 +946,12 @@ fn start_goal_run(shared: &Arc<ServeShared>, rpc_id: String) -> Result<Value, Rp
             }),
             completion: completion_tx,
         })
+        .map(|started| (started, message))
     };
     match started {
-        Ok((handle, _)) => {
+        Ok(((handle, _), message)) => {
             shared.spawn_settler(rpc_id.clone(), completion_rx, handle);
-            Ok(json!({ "kind": "goal_run", "prompt_rpc_id": rpc_id }))
+            Ok(json!({ "kind": "goal_run", "prompt_rpc_id": rpc_id, "message": message }))
         }
         Err(error) => {
             shared.release_run_claim();

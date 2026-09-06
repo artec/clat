@@ -23,7 +23,8 @@ function el(tag, cls, text) {
 
 const ICON_PATHS = {
   user: ['M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z', 'M5 21c.8-4 3.1-6 7-6s6.2 2 7 6'],
-  agent: ['M7 8h10v9H7z', 'M9 4h6M12 4v4M4 11h3m10 0h3M10 13h.01m4-.01h.01'],
+  // PU-9（2026-09-06 负责人令）：品牌像素机器人剪影（fill + evenodd 挖出面部）。
+  agent: ['M6 4h12v4h4v4h-4v4h4v4h-4v-4h-4v4h-4v-4h-4v4H2v-4h4v-4H2V8h4V4z M6.2 8.2h11.6v3.8h-3.8v4H10.2v-4H6.2z'],
   tool: ['m14 6 4 4-8 8-4 1 1-4z', 'm13 7 4 4'],
   trace: ['M5 17 9 9l4 6 3-10 3 12', 'M4 20h16'],
   info: ['M12 8h.01M11 12h1v5h1'],
@@ -33,6 +34,9 @@ const ICON_PATHS = {
   vision: ['M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6S2.5 12 2.5 12Z', 'M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6Z'],
 };
 
+// Fill-based glyphs (pixel silhouettes) bypass the global stroke pipeline.
+const FILL_ICONS = new Set(['agent']);
+
 function svgIcon(name) {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   svg.setAttribute('viewBox', '0 0 24 24');
@@ -40,6 +44,11 @@ function svgIcon(name) {
   for (const data of ICON_PATHS[name] || ICON_PATHS.info) {
     const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
     path.setAttribute('d', data);
+    if (FILL_ICONS.has(name)) {
+      path.setAttribute('fill', 'currentColor');
+      path.setAttribute('fill-rule', 'evenodd');
+      path.setAttribute('stroke', 'none');
+    }
     svg.appendChild(path);
   }
   return svg;
@@ -151,10 +160,6 @@ const state = {
     queuedClientMessageId: null,
     notice: '',
   },
-  // Browser-local projection only. Durable Plan Mode remains core-owned; this
-  // set lets session switches in the current page restore the marker without
-  // persisting workflow authority in localStorage.
-  planModeSessions: new Set(),
   wechatBindingPoll: 0,
   wechatQrUrl: null,
 };
@@ -163,12 +168,12 @@ const dom = {};
 for (const id of [
   'landing', 'connect-form', 'connect-token', 'connect-error', 'app', 'sidebar',
   'sidebar-toggle', 'mobile-sidebar-open', 'mobile-sidebar-close', 'sidebar-backdrop',
-  'project-name', 'project-root', 'session-title', 'conn-status', 'sidebar-connection',
+  'project-name', 'project-root', 'session-title', 'conn-status', 'sidebar-connection', 'sidebar-footnote',
   'header-model', 'header-permission', 'new-session', 'session-search', 'session-count',
   'session-list', 'session-empty', 'transcript-scroll', 'empty-state', 'transcript',
   'prompt', 'send', 'cancel', 'run-state', 'composer-permission', 'composer-shell',
   'attachment-input', 'attachment-open', 'attachment-rail', 'attachment-summary', 'drop-overlay',
-  'composer-permission-label', 'plan-mode-badge', 'inspector', 'inspector-toggle', 'inspector-close',
+  'composer-permission-label', 'plan-mode-badge', 'goal-badge', 'inspector', 'inspector-toggle', 'inspector-close',
   'detail-run', 'detail-seq', 'detail-session', 'detail-model', 'detail-protocol',
   'detail-context', 'detail-budget', 'compact-session', 'capability-list', 'detail-mcp', 'mcp-servers',
   'settings-open', 'settings-dialog', 'theme-options', 'permission-options',
@@ -272,6 +277,7 @@ async function openStream() {
 function setConnStatus(text, stateName) {
   dom['conn-status'].textContent = text;
   dom['conn-status'].dataset.state = stateName;
+  dom['sidebar-footnote'].dataset.state = stateName;
   dom['sidebar-connection'].textContent = stateName === 'live'
     ? 'Local runtime connected'
     : text.replace('…', '');
@@ -428,7 +434,7 @@ function handleLive(event) {
       const result = event.result || {};
       addToolCard(result.tool_name, '← ' + jsonText(result.output), null, result.is_error);
       if (result.tool_name === 'exit_plan_mode' && !result.is_error) {
-        setCurrentSessionPlanMode(false);
+        refreshWorkbench();
       }
       break;
     }
@@ -847,23 +853,10 @@ function addContextSnapshot(snapshot) {
 }
 
 function syncPlanModeBadge() {
-  const active = Boolean(state.sessionId && state.planModeSessions.has(state.sessionId));
-  dom['plan-mode-badge'].classList.toggle('hidden', !active);
-}
-
-function setCurrentSessionPlanMode(active) {
-  if (state.sessionId) {
-    if (active) state.planModeSessions.add(state.sessionId);
-    else state.planModeSessions.delete(state.sessionId);
-  }
-  syncPlanModeBadge();
-}
-
-function planModeCommandState(command) {
-  const words = String(command || '').trim().split(/\s+/);
-  if (words.length === 1 && words[0] === '/plan') return true;
-  if (words.length === 2 && words[0] === '/plan' && words[1] === 'off') return false;
-  return null;
+  const info = state.workbench;
+  const sameSession = info && (info.session?.id || null) === state.sessionId;
+  dom['plan-mode-badge'].classList.toggle('hidden', !(sameSession && info.plan_mode_active));
+  dom['goal-badge'].classList.toggle('hidden', !(sameSession && info.goal_armed));
 }
 
 function addTraceEvent(eventId, detail) {
@@ -962,6 +955,9 @@ async function refreshWorkbench() {
     const modeLabel = permission.label || PERMISSION_LABELS[permission.mode] || 'Permission mode';
     dom['header-permission'].textContent = modeLabel;
     dom['composer-permission-label'].textContent = modeLabel;
+    // PU-8：Full Access 与 TUI 同语——权限文字转警示黄（CSS 按 data-mode 着色）。
+    dom['header-permission'].dataset.mode = permission.mode || '';
+    dom['composer-permission'].dataset.mode = permission.mode || '';
 
     dom['detail-seq'].textContent = session.committed_seq === null || session.committed_seq === undefined
       ? '—' : String(session.committed_seq);
@@ -1885,10 +1881,12 @@ async function submitPrompt() {
       resubscribe();
     } else if (text.startsWith('/')) {
       const value = await rpc('command.run', { command: text });
-      if (value && value.kind === 'status') {
-        addNoticeLine(value.message || 'command completed');
-        const planMode = planModeCommandState(text);
-        if (planMode !== null) setCurrentSessionPlanMode(planMode);
+      if (value && ['status', 'memory', 'goal', 'subagent_status', 'goal_run'].includes(value.kind)) {
+        const notice = addNoticeLine(value.message || 'command completed');
+        if (['memory', 'goal', 'subagent_status'].includes(value.kind)) {
+          notice.classList.add('content-notice');
+          notice.setAttribute('aria-label', value.kind.replaceAll('_', ' '));
+        }
       } else if (value && value.kind === 'context') {
         addContextSnapshot(value.context);
       } else if (value && value.kind === 'session_reset') {
@@ -1896,6 +1894,7 @@ async function submitPrompt() {
         await loadSessions();
         resubscribe();
       }
+      await refreshWorkbench();
     } else {
       const params = images.length === 0
         ? { text }

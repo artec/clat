@@ -249,10 +249,9 @@ impl CommandHandler for SubagentCommand {
         args: &str,
     ) -> Result<CommandOutcome, CommandError> {
         match args.trim() {
-            "" | "status" => Ok(CommandOutcome::Status(format!(
-                "Read-only subagent experiment: {} (process-local for this session; restart resets off).",
-                if application.subagents_enabled() { "enabled" } else { "disabled" }
-            ))),
+            "" | "status" => Ok(CommandOutcome::ShowSubagentStatus(crate::application::SubagentStatusDto {
+                enabled: application.subagents_enabled(),
+            })),
             "on" => application
                 .set_subagents_enabled(true)
                 .map(|_| CommandOutcome::Status(

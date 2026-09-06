@@ -24,6 +24,7 @@ use std::sync::{Arc, Mutex, mpsc};
 mod bootstrap;
 mod compaction;
 mod composition;
+mod content_views;
 mod context;
 #[cfg(test)]
 mod context_tests;
@@ -53,6 +54,7 @@ mod vision_probe;
 
 pub use bootstrap::{BootstrapApplication, ProjectAuthorization};
 pub use compaction::{CompactHandle, CompactReport};
+pub use content_views::{GoalViewDto, MemoryEntryDto, MemoryOverviewDto, SubagentStatusDto};
 pub use dto::{
     ContextEstimateSnapshot, ContextSkillDiagnostic, McpServerInfoDto, McpStatusDto,
     ProjectSnapshot, SessionSnapshot, SkillEntryDto, SkillsOverviewDto, WorkbenchModelSnapshot,

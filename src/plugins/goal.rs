@@ -161,12 +161,10 @@ impl CommandHandler for GoalCommand {
     ) -> Result<CommandOutcome, CommandError> {
         let (verb, rest) = split_once(args);
         match verb {
-            "" | "show" => {
-                let Some(view) = application.goal().map_err(failed)? else {
-                    return Ok(CommandOutcome::Status("No current goal.".into()));
-                };
-                Ok(CommandOutcome::Status(render_goal(&view)))
-            }
+            "" | "show" => application
+                .goal_overview()
+                .map(CommandOutcome::ShowGoal)
+                .map_err(failed),
             "create" => {
                 let parsed = parse_create(rest)?;
                 let view = application
@@ -178,7 +176,9 @@ impl CommandHandler for GoalCommand {
                     )
                     .map_err(failed)?;
                 if parsed.run {
-                    Ok(CommandOutcome::StartGoalRun)
+                    Ok(CommandOutcome::StartGoalRun {
+                        message: application.goal_run_message(),
+                    })
                 } else {
                     Ok(CommandOutcome::Status(format!(
                         "Goal {} created at revision {} (disarmed). Use /goal run to start.",
@@ -192,7 +192,9 @@ impl CommandHandler for GoalCommand {
                     .map_err(failed)?
                     .ok_or_else(|| failed("no current goal"))?;
                 application.goal_arm(view.state.revision).map_err(failed)?;
-                Ok(CommandOutcome::StartGoalRun)
+                Ok(CommandOutcome::StartGoalRun {
+                    message: application.goal_run_message(),
+                })
             }
             "pause" => {
                 let view = current(application)?;

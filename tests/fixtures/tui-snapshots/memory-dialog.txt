@@ -1,0 +1,27 @@
+size 80x24
+cursor 3,21
+scroll 0
+000| ┌──────────────────────────────────────────────────────────────────────────────┐  ⟦0..79 DIM⟧
+001| │ CLAT v<VERSION>  ready  ·  not configured — /model                               │  ⟦0..1 DIM · 2..5 BOLD+DIM · 6..24 DIM · 25..47 fg=Cyan+DIM · 48..79 DIM⟧
+002| └──── ┌ /mem ────────────────────────────────────────────────────────────┐ ────┘  ⟦0..4 DIM · 6..6 fg=Yellow · 7..12 fg=Yellow+BOLD · 13..73 fg=Yellow · 75..79 DIM⟧
+003| ┌ Con │ Memories: 1                                                      │ ────┐  ⟦0..4 DIM · 6..6 fg=Yellow · 8..18 BOLD · 73..73 fg=Yellow · 75..79 DIM⟧
+004| │     │                                                                  │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+005| │     │ memory-example · project · rev 1                                 │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+006| │     │ Source: user-command                                             │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+007| │     │ Digest: example-digest                                           │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+008| │     │                                                                  │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+009| │     │ memory line 00                                                   │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+010| │     │ memory line 01                                                   │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+011| │     │ memory line 02                                                   │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+012| │     │ memory line 03                                                   │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+013| │     │ memory line 04                                                   │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+014| │     │ memory line 05                                                   │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+015| │     │ memory line 06                                                   │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+016| │     │ memory line 07                                                   │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+017| │     │ memory line 08                                                   │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+018| │     │ memory line 09                                                   │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+019| └──── │                                                                  │ ────┘  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+020| ┌ Mes │ ↑↓/PgUp/PgDn scroll · more below · Esc close                     │ ite ┐  ⟦0..4 DIM · 6..6 fg=Yellow · 8..51 fg=DarkGray · 73..73 fg=Yellow · 75..78 fg=DarkGray+DIM · 79..79 DIM⟧
+021| │❯    └──────────────────────────────────────────────────────────────────┘     │  ⟦0..4 DIM · 6..73 fg=Yellow · 75..79 DIM⟧
+022| └──────────────────────────────────────────────────────────────────────────────┘  ⟦0..79 DIM⟧
+023|  <STORAGE-ROOT>  ⟦0..14 DIM · 15..79 PAD:65 DIM⟧

@@ -80,6 +80,8 @@ pub struct WorkbenchSnapshot {
     pub session: WorkbenchSessionSnapshot,
     pub model: WorkbenchModelSnapshot,
     pub permission_mode: PermissionMode,
+    pub plan_mode_active: bool,
+    pub goal_armed: bool,
     pub mcp: McpStatusDto,
 }
 

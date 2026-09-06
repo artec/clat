@@ -105,6 +105,14 @@ use unicode_width::UnicodeWidthStr;
 /// 与名称之间恰一个空格（permission-picker、dsh-permission-picker
 /// 重钉；名称仍恒定第 3 列）。
 const SCENARIOS: &[&str] = &[
+    // 2026-09-05 PU-2/3: core-driven Plan/Goal title markers and scrollable
+    // read-only command dialogs; existing idle/permission styling is unchanged.
+    "plan-marker",
+    "goal-marker",
+    "memory-dialog",
+    "memory-dialog-end",
+    "goal-dialog",
+    "subagent-dialog",
     "idle-transcript-80",
     "idle-transcript-40",
     "startup-loading",
@@ -833,6 +841,180 @@ fn idle_transcript_wide() {
     //（tui_logo + Role::Logo 品牌蓝）。
     let mut harness = Harness::trusted("snap-idle-80", 80, 24);
     harness.snapshot("idle-transcript-80");
+}
+
+#[test]
+fn pu_workflow_markers_follow_core_and_preserve_permission_color() {
+    let mut harness = Harness::trusted("pu-workflow-markers", 80, 24);
+    harness
+        .app
+        .application
+        .as_mut()
+        .unwrap()
+        .set_plan_mode(true)
+        .unwrap();
+    harness.snapshot("plan-marker");
+    let text = harness.project();
+    assert!(text.contains("Plan · Project Write"), "{text}");
+    assert!(!text.contains("Plan Mode"));
+    assert!(text.contains("Rgb(240, 189, 90)"));
+    harness
+        .app
+        .application
+        .as_ref()
+        .unwrap()
+        .set_permission_mode(crate::PermissionMode::FullAccess)
+        .unwrap();
+    let text = harness.project();
+    assert!(text.contains("Plan · Full Access"));
+    assert!(text.contains("Yellow") && text.contains("Rgb(240, 189, 90)"));
+    harness
+        .app
+        .application
+        .as_mut()
+        .unwrap()
+        .set_plan_mode(false)
+        .unwrap();
+    let app = harness.app.application.as_mut().unwrap();
+    app.set_permission_mode(crate::PermissionMode::ProjectWrite)
+        .unwrap();
+    app.dispatch_command("/goal create inspect work --run")
+        .unwrap();
+    harness.snapshot("goal-marker");
+    let text = harness.project();
+    assert!(text.contains("Goal · Project Write"));
+    assert!(text.contains("Rgb(92, 240, 125)"));
+    assert!(!text.contains("Plan ·"));
+    harness
+        .app
+        .application
+        .as_mut()
+        .unwrap()
+        .dispatch_command("/goal pause")
+        .unwrap();
+    assert!(!harness.project().contains("Goal ·"));
+
+    // Even with local state attached, a DSH frontend must not display it.
+    let mut dsh = harness_dsh("pu-workflow-dsh", 80, 24);
+    dsh.app.application = harness.app.application.take();
+    dsh.app
+        .application
+        .as_mut()
+        .unwrap()
+        .dispatch_command("/goal resume")
+        .unwrap();
+    dsh.app
+        .application
+        .as_mut()
+        .unwrap()
+        .dispatch_command("/goal run")
+        .unwrap();
+    assert!(!dsh.project().contains("Goal ·"));
+    dsh.app
+        .application
+        .as_mut()
+        .unwrap()
+        .dispatch_command("/goal pause")
+        .unwrap();
+    dsh.app
+        .application
+        .as_mut()
+        .unwrap()
+        .set_plan_mode(true)
+        .unwrap();
+    assert!(!dsh.project().contains("Plan ·"));
+}
+
+#[test]
+fn pu_content_dialogs_use_real_dispatch_and_scroll_without_editing() {
+    let mut harness = Harness::trusted("pu-content-dialogs", 80, 24);
+    let content = (0..32)
+        .map(|i| format!("memory line {i:02}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let record = harness
+        .app
+        .application
+        .as_ref()
+        .unwrap()
+        .memory_add(crate::memory::MemoryScope::Project, &content, None)
+        .unwrap();
+    harness.type_text(&format!("/mem show {}", record.id));
+    harness.key(KeyCode::Enter);
+    assert!(
+        harness
+            .app
+            .info_dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.kind == super::InfoDialogKind::Memory)
+    );
+    let Some(super::ContentView::Memory(view)) = harness.app.content_view.as_mut() else {
+        panic!("memory DTO")
+    };
+    assert_eq!(view.entries[0].content, content);
+    view.entries[0].id = "memory-example".into();
+    view.entries[0].digest = "example-digest".into();
+    harness.snapshot("memory-dialog");
+    for _ in 0..4 {
+        harness.key(KeyCode::PageDown);
+    }
+    harness.snapshot("memory-dialog-end");
+    assert!(harness.project().contains("memory line 31"));
+    harness.type_text("must not edit");
+    assert!(harness.app.input.text().is_empty());
+    harness.key(KeyCode::Esc);
+    assert!(harness.app.info_dialog.is_none());
+    assert_eq!(
+        harness
+            .app
+            .application
+            .as_ref()
+            .unwrap()
+            .memory_get(&record.id)
+            .unwrap()
+            .unwrap()
+            .record,
+        record
+    );
+
+    harness
+        .app
+        .application
+        .as_mut()
+        .unwrap()
+        .dispatch_command("/goal create inspect the current changes")
+        .unwrap();
+    harness.type_text("/goal");
+    harness.key(KeyCode::Enter);
+    assert!(
+        harness
+            .app
+            .info_dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.kind == super::InfoDialogKind::Goal)
+    );
+    let Some(super::ContentView::Goal(view)) = harness.app.content_view.as_mut() else {
+        panic!("goal DTO")
+    };
+    view.goal.as_mut().unwrap().id = "goal-example".into();
+    harness.snapshot("goal-dialog");
+    harness.key(KeyCode::Esc);
+    harness.type_text("/sub");
+    harness.key(KeyCode::Enter);
+    assert!(
+        harness
+            .app
+            .info_dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.kind == super::InfoDialogKind::SubagentStatus)
+    );
+    harness.snapshot("subagent-dialog");
+    assert!(harness.project().contains("delegate_readonly"));
+    harness.key(KeyCode::Esc);
+    harness.type_text("/sub on");
+    harness.key(KeyCode::Enter);
+    assert!(harness.app.info_dialog.is_none());
+    assert!(harness.app.status.contains("enabled"));
 }
 
 #[test]

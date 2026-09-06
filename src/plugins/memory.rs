@@ -185,46 +185,20 @@ impl CommandHandler for MemoryCommand {
                     "" | "all" => None,
                     value => Some(parse_scope(value)?),
                 };
-                let hits = application.memory_list(scope).map_err(failed)?;
-                let message = if hits.is_empty() {
-                    "No explicit memories.".into()
-                } else {
-                    hits.into_iter()
-                        .map(|hit| {
-                            format!(
-                                "{} rev={} scope={}{} source={} — {}",
-                                hit.record.id,
-                                hit.record.revision,
-                                hit.record.scope.as_str(),
-                                if hit.stale { " stale" } else { "" },
-                                hit.record.source,
-                                hit.record.content
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                };
-                Ok(CommandOutcome::Status(message))
+                application
+                    .memory_overview(scope)
+                    .map(CommandOutcome::ShowMemory)
+                    .map_err(failed)
             }
             "show" => {
                 let id = rest.trim();
                 if id.is_empty() {
                     return Err(usage());
                 }
-                let hit = application.memory_get(id).map_err(failed)?;
-                let Some(hit) = hit else {
-                    return Err(failed(format!("memory `{id}` not found")));
-                };
-                Ok(CommandOutcome::Status(format!(
-                    "{} rev={} scope={} stale={} digest={} source={}\n{}",
-                    hit.record.id,
-                    hit.record.revision,
-                    hit.record.scope.as_str(),
-                    hit.stale,
-                    hit.record.digest,
-                    hit.record.source,
-                    hit.record.content
-                )))
+                application
+                    .memory_detail(id)
+                    .map(CommandOutcome::ShowMemory)
+                    .map_err(failed)
             }
             "add" => {
                 let (scope, tail) = split_once(rest);

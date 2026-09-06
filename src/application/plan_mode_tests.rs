@@ -28,6 +28,197 @@ fn mount(
         .unwrap()
 }
 
+#[test]
+fn pu_plan_command_toggles_and_explicit_modes_are_idempotent() {
+    let (storage, root) = roots("pu-plan-toggle");
+    std::fs::create_dir_all(&root).unwrap();
+    let mut app = mount(&Project::new(&root), &storage, TestBehavior::Success, true);
+    for (command, active) in [
+        ("/plan", true),
+        ("/plan", false),
+        ("/plan on", true),
+        ("/plan on", true),
+        ("/plan off", false),
+        ("/plan off", false),
+    ] {
+        let outcome = app.dispatch_command(command).unwrap();
+        assert_eq!(app.plan_mode.state().active, active, "{command}");
+        let crate::CommandOutcome::Status(message) = outcome else {
+            panic!("operation must remain Status")
+        };
+        assert!(message.contains(if active { "enabled" } else { "disabled" }));
+    }
+    assert!(
+        app.dispatch_command("/plan maybe")
+            .unwrap_err()
+            .to_string()
+            .contains("usage: /plan [on|off]")
+    );
+    app.close().unwrap();
+    crate::test_support::cleanup_tree(storage.parent().unwrap());
+}
+
+#[test]
+fn pu_plan_rejects_goal_activation_before_any_mutation() {
+    let (storage, root) = roots("pu-plan-goal-refusal");
+    std::fs::create_dir_all(&root).unwrap();
+    let mut app = mount(&Project::new(&root), &storage, TestBehavior::Success, true);
+    app.set_plan_mode(true).unwrap();
+    let error = app
+        .dispatch_command("/goal create forbidden --run")
+        .unwrap_err();
+    assert!(error.to_string().contains("exit plan mode first"));
+    assert!(app.goal().unwrap().is_none());
+    app.dispatch_command("/goal create allowed").unwrap();
+    let before = app.goal().unwrap();
+    assert!(
+        app.dispatch_command("/goal run")
+            .unwrap_err()
+            .to_string()
+            .contains("exit plan mode first")
+    );
+    assert_eq!(app.goal().unwrap(), before);
+    assert!(app.plan_mode.state().active);
+    app.close().unwrap();
+    crate::test_support::cleanup_tree(storage.parent().unwrap());
+}
+
+#[test]
+fn pu_armed_goal_rejects_plan_without_silently_disarming() {
+    let (storage, root) = roots("pu-goal-plan-refusal");
+    std::fs::create_dir_all(&root).unwrap();
+    let mut app = mount(&Project::new(&root), &storage, TestBehavior::Success, true);
+    app.dispatch_command("/goal create work --run").unwrap();
+    let before = app.goal().unwrap();
+    let error = app.set_plan_mode(true).unwrap_err();
+    assert!(error.to_string().contains("disarm the goal first"));
+    assert_eq!(app.goal().unwrap(), before);
+    assert!(!app.plan_mode.state().active);
+    app.dispatch_command("/goal pause").unwrap();
+    app.set_plan_mode(true).unwrap();
+    app.dispatch_command("/goal resume").unwrap();
+    assert!(!app.goal().unwrap().unwrap().armed, "resume is not arm");
+    app.close().unwrap();
+    crate::test_support::cleanup_tree(storage.parent().unwrap());
+}
+
+#[test]
+fn pu_content_commands_return_views_and_operations_return_status() {
+    let (storage, root) = roots("pu-content-outcomes");
+    std::fs::create_dir_all(&root).unwrap();
+    let mut app = mount(&Project::new(&root), &storage, TestBehavior::Success, true);
+    for (command, variant) in [
+        ("/mem", "ShowMemory"),
+        ("/mem list", "ShowMemory"),
+        ("/goal", "ShowGoal"),
+        ("/goal show", "ShowGoal"),
+        ("/sub", "ShowSubagentStatus"),
+        ("/sub status", "ShowSubagentStatus"),
+    ] {
+        let outcome = app.dispatch_command(command).unwrap();
+        assert!(
+            format!("{outcome:?}").starts_with(variant),
+            "{command}: {outcome:?}"
+        );
+    }
+    for command in [
+        "/mem add project first line",
+        "/sub on",
+        "/sub off",
+        "/goal create work",
+        "/goal pause",
+    ] {
+        assert!(matches!(
+            app.dispatch_command(command).unwrap(),
+            crate::CommandOutcome::Status(_)
+        ));
+    }
+    let record = app.memory_list(None).unwrap().remove(0).record;
+    let outcome = app
+        .dispatch_command(&format!("/mem show {}", record.id))
+        .unwrap();
+    assert!(format!("{outcome:?}").starts_with("ShowMemory"));
+    app.close().unwrap();
+    crate::test_support::cleanup_tree(storage.parent().unwrap());
+}
+
+#[test]
+fn pu_plan_switches_remain_rejected_during_run_and_compaction() {
+    let (storage, root) = roots("pu-plan-busy");
+    std::fs::create_dir_all(&root).unwrap();
+    let gate = Arc::new(crate::test_support::SteerGate::default());
+    let mut app = mount(
+        &Project::new(&root),
+        &storage,
+        TestBehavior::Steer(gate.clone()),
+        true,
+    );
+    configure_test_model(&app);
+    let (completion, receiver) = mpsc::channel();
+    let handle = app
+        .start_run(ApplicationRunRequest {
+            message: crate::message::PendingMessage::text("seed session"),
+            approver: Arc::new(CountingApprover(Arc::new(AtomicUsize::new(0)))),
+            asker: None,
+            events: Box::new(SharedEvents(Arc::new(Mutex::new(Vec::new())))),
+            completion,
+        })
+        .unwrap();
+    gate.wait_entered();
+    for command in ["/plan", "/plan on", "/plan off"] {
+        assert!(
+            app.dispatch_command(command)
+                .unwrap_err()
+                .to_string()
+                .contains("while a run is active")
+        );
+        assert!(!app.plan_mode_active());
+    }
+    gate.release();
+    handle.join().unwrap();
+    receiver.recv().unwrap().unwrap();
+
+    struct HeldCompactor;
+    impl crate::plugins::services::HistoryCompactor for HeldCompactor {
+        fn compact(
+            &self,
+            request: crate::plugins::services::CompactionRequest<'_>,
+        ) -> crate::plugins::services::CompactionOutcome {
+            while !request.cancel.is_cancelled() {
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            crate::plugins::services::CompactionOutcome::default()
+        }
+    }
+    app.compactor = Some(Arc::new(HeldCompactor));
+    let compact = app.compact_session().unwrap();
+    for command in ["/plan", "/plan on", "/plan off"] {
+        assert!(
+            app.dispatch_command(command)
+                .unwrap_err()
+                .to_string()
+                .contains("while a compaction is active")
+        );
+        assert!(!app.plan_mode_active());
+    }
+    compact.cancel();
+    compact.join().unwrap();
+    // The independent title producer must finish before cursor assertions.
+    if let Some(worker) = app.title_worker.as_mut() {
+        worker.shutdown().unwrap();
+    }
+    app.set_plan_mode(true).unwrap();
+    let seq = app.committed_seq();
+    app.dispatch_command("/plan on").unwrap();
+    assert_eq!(app.committed_seq(), seq, "idempotent on appends no event");
+    app.dispatch_command("/plan off").unwrap();
+    let seq = app.committed_seq();
+    app.dispatch_command("/plan off").unwrap();
+    assert_eq!(app.committed_seq(), seq, "idempotent off appends no event");
+    app.close().unwrap();
+    crate::test_support::cleanup_tree(storage.parent().unwrap());
+}
+
 fn load_events_for(
     storage_root: &std::path::Path,
     id: &SessionId,
@@ -338,6 +529,64 @@ fn approved_handoff_is_durable_and_unlocks_only_the_next_run() {
 struct ReviewFailureScript {
     requests: AtomicUsize,
     plan: &'static str,
+}
+
+#[test]
+fn pu_approved_plan_is_announced_and_injected_into_a_real_goal_round() {
+    const PLAN: &str = "Inspect source, apply the requested change, verify it.";
+    let (storage, root) = roots("pu-approved-goal-round");
+    std::fs::create_dir_all(&root).unwrap();
+    let script = Arc::new(PlanApprovalHandoffScript {
+        step: AtomicUsize::new(0),
+        plan: PLAN,
+        tool_snapshots: Mutex::new(Vec::new()),
+    });
+    let mut app = mount(
+        &Project::new(&root),
+        &storage,
+        TestBehavior::Scripted(script.clone()),
+        true,
+    );
+    configure_test_model(&app);
+    app.set_plan_mode(true).unwrap();
+    run_request(
+        &mut app,
+        "plan the change",
+        Some(Arc::new(crate::test_support::ScriptedAsker {
+            selected: "Approve".into(),
+            asked: Mutex::new(Vec::new()),
+        })),
+        Arc::new(CountingApprover(Arc::new(AtomicUsize::new(0)))),
+    )
+    .unwrap();
+    app.dispatch_command("/goal create implement approved plan --rounds 1")
+        .unwrap();
+    let crate::CommandOutcome::StartGoalRun { message } =
+        app.dispatch_command("/goal run").unwrap()
+    else {
+        panic!("goal run")
+    };
+    assert!(message.contains("approved plan will be injected"));
+    let (completion, receiver) = mpsc::channel();
+    let (handle, _) = app
+        .start_goal_run(ApplicationRunRequest {
+            message: crate::message::PendingMessage::text(String::new()),
+            approver: Arc::new(CountingApprover(Arc::new(AtomicUsize::new(0)))),
+            asker: None,
+            events: Box::new(SharedEvents(Arc::new(Mutex::new(Vec::new())))),
+            completion,
+        })
+        .unwrap();
+    handle.join().unwrap();
+    assert_eq!(
+        receiver.recv().unwrap().unwrap().output,
+        "implementation unlocked"
+    );
+    assert_eq!(script.step.load(Ordering::SeqCst), 2);
+    assert!(!app.goal().unwrap().unwrap().armed);
+    assert!(app.plan_mode.state().approved.is_some());
+    app.close().unwrap();
+    crate::test_support::cleanup_tree(storage.parent().unwrap());
 }
 
 impl TestModelScript for ReviewFailureScript {

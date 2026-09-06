@@ -106,11 +106,12 @@ impl CommandHandler for PlanCommand {
         args: &str,
     ) -> Result<CommandOutcome, CommandError> {
         let active = match args.trim() {
-            "" => true,
+            "" => !application.plan_mode_active(),
+            "on" => true,
             "off" => false,
             _ => {
                 return Err(CommandError::Failed {
-                    message: "usage: /plan [off]".into(),
+                    message: "usage: /plan [on|off]".into(),
                 });
             }
         };
@@ -118,7 +119,7 @@ impl CommandHandler for PlanCommand {
             .set_plan_mode(active)
             .map(|_| {
                 CommandOutcome::Status(if active {
-                    "Plan Mode enabled".into()
+                    "Plan Mode enabled — /plan toggles it off".into()
                 } else {
                     "Plan Mode disabled".into()
                 })

@@ -35,6 +35,46 @@ pub(super) enum InfoDialogKind {
     Mcp,
     Context,
     Skills,
+    Memory,
+    Goal,
+    SubagentStatus,
+}
+
+pub(super) enum ContentView {
+    Memory(crate::application::MemoryOverviewDto),
+    Goal(Box<crate::application::GoalViewDto>),
+    SubagentStatus(crate::application::SubagentStatusDto),
+}
+
+impl ContentView {
+    pub(super) fn title(&self) -> &'static str {
+        match self {
+            Self::Memory(_) => "/mem",
+            Self::Goal(_) => "/goal",
+            Self::SubagentStatus(_) => "/sub",
+        }
+    }
+
+    pub(super) fn lines(&self, width: usize) -> Vec<Line<'static>> {
+        let text = match self {
+            Self::Memory(view) => view.to_text(),
+            Self::Goal(view) => view.to_text(),
+            Self::SubagentStatus(view) => view.to_text(),
+        };
+        text.lines()
+            .enumerate()
+            .flat_map(|(index, line)| {
+                let style = if index == 0 {
+                    theme::style(theme::Role::Bold)
+                } else {
+                    Style::default()
+                };
+                wrap_text(line, width)
+                    .into_iter()
+                    .map(move |text| Line::from(Span::styled(text, style)))
+            })
+            .collect()
+    }
 }
 
 /// 打开中的信息弹窗：种类 + 当前滚动位（绘制期钳制在

@@ -612,6 +612,18 @@ impl App {
                 self.skills_view = Some(view);
                 self.info_dialog = Some(InfoDialog::new(InfoDialogKind::Skills));
             }
+            CommandOutcome::ShowMemory(view) => {
+                self.content_view = Some(ContentView::Memory(view));
+                self.info_dialog = Some(InfoDialog::new(InfoDialogKind::Memory));
+            }
+            CommandOutcome::ShowGoal(view) => {
+                self.content_view = Some(ContentView::Goal(Box::new(view)));
+                self.info_dialog = Some(InfoDialog::new(InfoDialogKind::Goal));
+            }
+            CommandOutcome::ShowSubagentStatus(view) => {
+                self.content_view = Some(ContentView::SubagentStatus(view));
+                self.info_dialog = Some(InfoDialog::new(InfoDialogKind::SubagentStatus));
+            }
             CommandOutcome::StartModelSelection => {
                 // Claude Code 风格：先选厂商（一级），再选该厂商的模型
                 //（二级）；Custom 入口经档案三态（B9：零档案直进新建
@@ -644,8 +656,10 @@ impl App {
                 // TUI 无需持有句柄（fire-and-forget + 状态栏通知）。
                 self.flash_status("vision probe started — the verdict lands here");
             }
-            CommandOutcome::StartGoalRun => {
-                self.start_goal_run();
+            CommandOutcome::StartGoalRun { message } => {
+                if self.start_goal_run() {
+                    self.flash_status(message);
+                }
             }
             CommandOutcome::SessionReset => {
                 // /new 成功后的前端视图清空：用量指标归属会话（TUI-L04），

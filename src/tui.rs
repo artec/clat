@@ -346,6 +346,7 @@ struct App {
     context_view: Option<ContextEstimateSnapshot>,
     /// /skill 打开时缓存的技能 catalog 列表（SC-2）；一次性快照，无刷新。
     skills_view: Option<SkillsOverviewDto>,
+    content_view: Option<ContentView>,
     /// /help 打开时缓存的命令目录（`ShowHelp` 载荷，INV-C4）：帮助表
     /// 行从它派生，新增命令不改前端。
     help_commands: Vec<CommandInfo>,
@@ -529,6 +530,7 @@ impl App {
             mcp_view: None,
             context_view: None,
             skills_view: None,
+            content_view: None,
             help_commands: Vec::new(),
             balance: None,
             session_usage: Usage::default(),
@@ -628,6 +630,7 @@ impl App {
             mcp_view: None,
             context_view: None,
             skills_view: None,
+            content_view: None,
             help_commands: Vec::new(),
             balance: None,
             session_usage: Usage::default(),

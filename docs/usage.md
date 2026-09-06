@@ -153,12 +153,12 @@ model → safety → extensions → experiments → meta):
 | `/context` | inspect a one-shot estimated model-context breakdown |
 | `/model` | choose a provider preset or manage named custom profiles |
 | `/perm`, `/permission` | switch Read Only, Project Write, or Full Access |
-| `/plan`, `/plan off` | enter or leave durable Plan Mode at an idle boundary |
+| `/plan [on|off]` | toggle durable Plan Mode; explicit on/off is idempotent at an idle boundary |
 | `/mcp` | inspect MCP/WASM connection state, tools, and isolated failures |
 | `/skill`, `/skills` | list cataloged skills, or arm one for your next message |
-| `/mem`, `/memory ...` | explicitly list, add, edit, or delete local memory records |
-| `/goal ...` | inspect or control one bounded goal for the current session |
-| `/sub`, `/subagents on|off` | opt into or leave the read-only subagent experiment |
+| `/mem`, `/memory ...` | open a read-only memory dialog; add/edit/delete confirms in the status bar |
+| `/goal ...` | open the current goal dialog, or explicitly control a bounded goal |
+| `/sub`, `/subagents on|off` | open the subagent status dialog, or enable/disable the experiment |
 | `/vision-probe` | run the one-shot vision probe against the current custom model |
 | `/help` | open the command and key reference |
 | `/quit`, `/exit` | close CLAT cleanly |
@@ -206,7 +206,9 @@ report a usage error in headless mode instead of inventing a selection.
 
 ### Plan Mode, skills, LSP, and context inspection
 
-`/plan` enters durable Plan Mode. The next run receives a planning policy and a
+`/plan` toggles durable Plan Mode on or off; `/plan on` and `/plan off` set the
+state explicitly. Switching is refused while a run or compaction is active.
+When Plan Mode is active, the next run receives a planning policy and a
 filtered tool catalog: only `Pure`/`Read` tools plus `exit_plan_mode` remain
 model-callable. The same frozen policy guards the model schema, durable
 `request/header`, direct dispatch, permission construction, and plugin-host
@@ -214,6 +216,19 @@ tool calls. When the model submits `exit_plan_mode`, approval saves the plan and
 ends that run; implementation tools return only on the next user run. `/plan
 off` leaves the mode at an idle boundary. Plan Mode is an agent authority guard,
 not an operating-system sandbox.
+
+The TUI composer title shows **Plan** in amber (`#f0bd5a`) before the permission
+label. An armed goal shows **Goal** in green (`#5cf07d`) in the same location;
+paused or otherwise disarmed goals have no marker. These markers reflect core
+state and are absent in the DSH frontend. Full Access keeps its existing warning
+yellow.
+
+Active Plan Mode and an armed Goal are mutually exclusive: `/goal run` and
+`/goal create --run` require leaving Plan Mode first; entering Plan Mode requires
+disarming the goal, for example with `/goal pause`. Neither operation silently
+switches the other mode. An **approved** plan can coexist with a Goal: after
+approval, `/goal run` confirms that the approved plan will be injected into the
+goal round. `/goal resume` restores eligibility but does not arm continuation.
 
 Skills are instruction bundles discovered one directory deep from three layers:
 
@@ -299,6 +314,14 @@ Only the user-facing command/Application control plane can write it
 /mem edit <id> <revision> <content>
 /mem delete <id> <revision>
 ```
+
+`/mem` (or `list`) and `show <id>` open a read-only, scrollable TUI dialog.
+Lists show up to 64 entries with 1 KiB UTF-8 content previews and explicit
+omission markers; `show <id>` displays the full record. `/goal` (or `show`) and
+`/sub` (or `status`) use the same dialog family. Use arrow keys or PgUp/PgDn to
+scroll and Esc to close. Operation confirmations keep the four-second status
+flash. With `clat exec --command`, these content queries print to stdout;
+the PWA presents them as multiline text notices.
 
 Project records are visible only in the matching canonical project. User
 records are global to this CLAT storage root. Updates and deletes require the
@@ -785,10 +808,13 @@ confirmation described in [Permissions](permissions.md).
 
 Informational slash commands use the same core command catalog. `/context`
 renders its estimate as a readable multi-line breakdown, including plan, goal,
-and memory injection state. After `/plan` succeeds, a persistent composer badge
-marks Plan Mode until `/plan off` succeeds or an `exit_plan_mode` tool call
-finishes successfully; the browser does not persist that workflow authority in
-localStorage.
+and memory injection state. Composer badges show **Plan** and an armed **Goal**
+from the core workbench snapshot, including after reload or session selection.
+The browser does not persist workflow authority in localStorage or infer it
+from command text. The command bridge adds `memory`, `goal`, and `subagent_status`
+result kinds with read-only DTOs and a text `message`; `goal_run` also includes
+its confirmation message. `workbench.info` adds `plan_mode_active` and
+`goal_armed` booleans. RunEvent and durable event vocabularies are unchanged.
 
 Model lifecycle and reasoning traces use human-readable labels in the visual
 surface (`Model request started`, `Reasoning summary`, and so on). The stable

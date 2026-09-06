@@ -745,9 +745,13 @@ fn run_headless_command(
         && (goal_words.get(1).copied() == Some("run")
             || (goal_words.get(1).copied() == Some("create") && goal_words.contains(&"--run")));
     let outcome = if interactive_goal_run {
-        ExecOutcome::UsageError(format!(
-            "{command} requires an interactive frontend — run `clat` or `clat serve`"
-        ))
+        if let Err(error) = application.check_goal_activation() {
+            ExecOutcome::Failure(error.to_string())
+        } else {
+            ExecOutcome::UsageError(format!(
+                "{command} requires an interactive frontend — run `clat` or `clat serve`"
+            ))
+        }
     } else {
         match application.dispatch_command(command) {
             Ok(CommandOutcome::StartCompaction(handle)) => match handle.join_report() {
@@ -846,6 +850,13 @@ fn run_headless_command(
                     turns: 0,
                     usage: Usage::default(),
                 }
+            }
+            Ok(CommandOutcome::ShowMemory(view)) => {
+                write_content_view(view.to_text(), io, io_state)
+            }
+            Ok(CommandOutcome::ShowGoal(view)) => write_content_view(view.to_text(), io, io_state),
+            Ok(CommandOutcome::ShowSubagentStatus(view)) => {
+                write_content_view(view.to_text(), io, io_state)
             }
             Ok(CommandOutcome::ShowSkills(overview)) => {
                 let mut text = format!("skills: {}\n", overview.entries.len());
@@ -951,7 +962,7 @@ fn run_headless_command(
                 | CommandOutcome::StartSessionSelection { .. }
                 | CommandOutcome::StartPermissionModeSelection { .. }
                 | CommandOutcome::StartTitleEdit { .. }
-                | CommandOutcome::StartGoalRun,
+                | CommandOutcome::StartGoalRun { .. },
             ) => ExecOutcome::UsageError(format!(
                 "{command} requires an interactive frontend — run `clat` and use it there"
             )),
@@ -974,6 +985,20 @@ fn run_headless_command(
         forwarder.join();
     }
     closed
+}
+
+fn write_content_view(text: String, io: &ExecIo, io_state: &SharedIoState) -> ExecOutcome {
+    let output = format!("{text}\n");
+    if let Err(error) =
+        stream_write(&io.output, format_args!("{output}")).and_then(|()| stream_flush(&io.output))
+    {
+        io_state.note("stdout", error);
+    }
+    ExecOutcome::Success {
+        output,
+        turns: 0,
+        usage: Usage::default(),
+    }
 }
 
 /// 观察每个退出路径上的 application.close()（审计 P2-01）：早退不再吞掉
@@ -1710,6 +1735,95 @@ mod tests {
         application.close().unwrap();
         fs::remove_dir_all(storage_root).ok();
         fs::remove_dir_all(project_root).ok();
+    }
+
+    #[test]
+    fn pu_headless_content_views_print_to_stdout_and_plan_conflicts_are_read_only() {
+        let (storage, root, project) = setup("pu-exec-views");
+        prepare_storage(&project, &storage, TestBehavior::Success);
+        for (command, expected) in [
+            ("/mem", "No explicit memories."),
+            ("/goal", "No current goal."),
+            ("/sub", "delegate_readonly"),
+        ] {
+            let mut options = args(None);
+            options.command = Some(command.into());
+            let (io, captured) = ExecIo::capture(&[]);
+            let outcome = exec(&project, &storage, TestBehavior::Success, options, io);
+            let ExecOutcome::Success { output, turns, .. } = outcome else {
+                panic!("{outcome:?}")
+            };
+            assert_eq!(turns, 0);
+            assert!(output.contains(expected));
+            assert_eq!(captured.output_string(), output);
+        }
+        let (io, _) = ExecIo::capture(&[]);
+        assert!(matches!(
+            exec(
+                &project,
+                &storage,
+                TestBehavior::Success,
+                args(Some("materialize session")),
+                io
+            ),
+            ExecOutcome::Success { .. }
+        ));
+        let mut app = BootstrapApplication::open(project.clone(), storage.clone())
+            .unwrap()
+            .into_trusted_with_provider(Arc::new(TestProviderPlugin {
+                behavior: TestBehavior::Success,
+            }))
+            .unwrap();
+        app.set_plan_mode(true).unwrap();
+        app.dispatch_command("/goal create keep disarmed").unwrap();
+        let before = app.goal().unwrap();
+        app.close().unwrap();
+        // Opening an existing writer may append session/end-seed. Compare
+        // authoritative workflow events, not the unrelated resume cursor.
+        let workflow_events = || {
+            let backend = crate::session::persistence::JsonlBackend::new(
+                storage.join("sessions"),
+                crate::session::persistence::JsonlCompression::Zstd,
+                false,
+            );
+            let header = backend.list_headers().unwrap().remove(0);
+            let key = crate::session::key::SessionKey {
+                project: crate::session::key::ProjectKey::from_cwd(&header.cwd.unwrap()),
+                id: header.id,
+            };
+            backend
+                .load(&key, false)
+                .unwrap()
+                .events
+                .into_iter()
+                .filter(|event| event.event_type != "session/end-seed")
+                .map(|event| (event.event_type, event.data))
+                .collect::<Vec<_>>()
+        };
+        let before_events = workflow_events();
+        for command in ["/goal run", "/goal create forbidden --run"] {
+            let mut options = args(None);
+            options.continue_session = true;
+            options.command = Some(command.into());
+            let (io, _) = ExecIo::capture(&[]);
+            let outcome = exec(&project, &storage, TestBehavior::Success, options, io);
+            assert!(
+                matches!(outcome, ExecOutcome::Failure(ref message) if message.contains("exit plan mode first")),
+                "{outcome:?}"
+            );
+        }
+        let app = BootstrapApplication::open(project, storage.clone())
+            .unwrap()
+            .into_trusted_with_provider(Arc::new(TestProviderPlugin {
+                behavior: TestBehavior::Success,
+            }))
+            .unwrap();
+        assert_eq!(app.goal().unwrap(), before);
+        assert_eq!(workflow_events(), before_events);
+        assert!(app.plan_mode_active());
+        app.close().unwrap();
+        crate::test_support::cleanup_tree(storage.parent().unwrap());
+        assert!(!root.exists());
     }
 
     // ---- 中断决策（HL-03：pending 而非硬退；中断永不吞掉）----

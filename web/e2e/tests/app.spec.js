@@ -398,6 +398,13 @@ test('model trace renders human-readable event names instead of raw protocol ids
   await expect(approval).toBeVisible(LIVE);
   await approval.locator('button.ghost').click();
   await expect(page.locator('.verdict.completed')).toBeVisible(LIVE);
+
+  // PU-9（附加工单 2026-09-06 负责人令）：assistant 标记换品牌像素机
+  // 器人剪影——fill 剪影（evenodd 挖出面部），不走全局描边管线。
+  const agentGlyph = page.locator('.msg.assistant .marker svg path').first();
+  await expect(agentGlyph).toHaveAttribute('d', /^M6 4h12v4/);
+  await expect(agentGlyph).toHaveAttribute('fill-rule', 'evenodd');
+  await expect(agentGlyph).toHaveAttribute('stroke', 'none');
 });
 
 test('image-capable model is marked in the top bar and model route row', async ({ page }) => {
@@ -420,6 +427,7 @@ test('image-capable model is marked in the top bar and model route row', async (
 // FE-1：斜杠桥仍只返回 core 事实；PWA 负责格式化 context，并让 Plan Mode
 // 在普通 notice 退场后仍有持续、可撤销的视觉状态。
 test('context is readable and the plan-mode marker appears and clears', async ({ page }) => {
+  await page.emulateMedia({ colorScheme: 'dark' });
   const entry = hostInfo('run-command');
   await openWorkbench(page, entry);
 
@@ -471,7 +479,8 @@ test('context is readable and the plan-mode marker appears and clears', async ({
   await page.click('#send');
   const badge = page.locator('#plan-mode-badge');
   await expect(badge).toBeVisible(LIVE);
-  await expect(badge).toHaveText('Plan mode');
+  await expect(badge).toHaveText('Plan');
+  await expect(badge).toHaveCSS('color', 'rgb(240, 189, 90)');
 
   // 另一条命令完成后仍常显，不是转录区里一闪而过的 status notice。
   await page.fill('#prompt', '/context');
@@ -479,9 +488,266 @@ test('context is readable and the plan-mode marker appears and clears', async ({
   await expect(page.locator('.context-notice')).toHaveCount(2, LIVE);
   await expect(badge).toBeVisible();
 
-  await page.fill('#prompt', '/plan off');
+  await page.reload();
+  await expect(page.locator('#conn-status')).toHaveText('live', LIVE);
+  await expect(badge).toBeVisible(LIVE);
+  // The second no-argument /plan toggles off, including after a cold reload.
+  await page.fill('#prompt', '/plan');
   await page.click('#send');
   await expect(badge).toBeHidden(LIVE);
+});
+
+test('PU content notices and armed Goal badge follow core workflow state', async ({ page }, testInfo) => {
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await openWorkbench(page, hostInfo('run-command'));
+  await expect(page.locator('#detail-run')).toHaveText('Idle', LIVE);
+  await page.click('#new-session');
+  await expect(page.locator('.msg.user')).toHaveCount(0, LIVE);
+  await expect(page.locator('#plan-mode-badge')).toBeHidden();
+  await expect(page.locator('#goal-badge')).toBeHidden();
+  const command = async (text) => {
+    await expect(page.locator('#send')).toBeEnabled(LIVE);
+    await page.fill('#prompt', text);
+    await page.click('#send');
+    await expect(page.locator('#prompt')).toHaveValue('', LIVE);
+  };
+  await command('/mem add project PU first line\nPU second line');
+  await command('/mem list');
+  const memory = page.locator('.content-notice[aria-label="memory"]').last();
+  await expect(memory).toContainText('PU first line\nPU second line');
+  await expect(memory.locator('span')).toHaveCSS('white-space', 'pre-wrap');
+  await expect(memory).toContainText('Source:');
+  await command('/sub on');
+  await command('/sub status');
+  const sub = page.locator('.content-notice[aria-label="subagent status"]').last();
+  await expect(sub).toContainText('enabled');
+  await expect(sub).toContainText('/sub off');
+  await expect(sub).toContainText('delegate_readonly');
+  await command('/goal create inspect PU changes --rounds 1');
+  await command('/goal');
+  await expect(page.locator('.content-notice[aria-label="goal"]').last()).toContainText('inspect PU changes');
+  await expect(page.locator('#goal-badge')).toBeHidden();
+
+  // Materialize before entering durable Plan Mode; an ordinary run disarms.
+  await command('materialize PU workflow session');
+  await expect(page.locator('.approval-card').last()).toBeVisible(LIVE);
+  await page.locator('.approval-card').last().locator('button.ghost').click();
+  // run_completed updates the UI before core settlement releases the run.
+  // Wait for prompt.settled, not the transient Idle presentation alone.
+  await expect(page.locator('.verdict.completed')).toBeVisible(LIVE);
+  await expect(page.locator('#detail-run')).toHaveText('Idle', LIVE);
+  await command('/plan on');
+  await page.fill('#prompt', '/goal run');
+  await page.click('#send');
+  await expect(page.locator('#run-state')).toContainText('exit plan mode first', LIVE);
+  await expect(page.locator('#plan-mode-badge')).toBeVisible();
+  await expect(page.locator('#goal-badge')).toBeHidden();
+  await command('/plan off');
+  await command('/goal run');
+  const goalBadge = page.locator('#goal-badge');
+  await expect(goalBadge).toBeVisible(LIVE);
+  await expect(goalBadge).toHaveText('Goal');
+  await expect(goalBadge).toHaveCSS('color', 'rgb(92, 240, 125)');
+  await expect(page.locator('#plan-mode-badge')).toBeHidden();
+  await page.emulateMedia({ colorScheme: 'light' });
+  await expect(goalBadge).toHaveCSS('color', 'rgb(33, 114, 59)');
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await page.screenshot({ path: testInfo.outputPath('pu-goal-workflow.png'), fullPage: true });
+  await page.reload();
+  await expect(page.locator('#conn-status')).toHaveText('live', LIVE);
+  await expect(goalBadge).toBeVisible(LIVE);
+  await page.click('#cancel');
+  await expect(page.locator('#detail-run')).toHaveText('Idle', LIVE);
+  await expect(goalBadge).toBeHidden(LIVE);
+  await command('/goal');
+  const goal = page.locator('.content-notice[aria-label="goal"]').last();
+  await expect(goal).toContainText('paused');
+  await expect(goal).toContainText('disarmed');
+  await page.click('#new-session');
+  await expect(page.locator('#goal-badge')).toBeHidden();
+});
+
+// PU-5（F-1 返工）：权限 pill 是 composer 行的左锚点，徽标按
+// 「权限 · Plan · Goal」镜像序向右递进（TUI 锚右，序恰相反）。
+// 徽标激活时不得把 pill 锚点向右推：间距只能长在 margin-left。
+test('permission pill stays the left anchor before the Plan and Goal badges', async ({ page }) => {
+  await openWorkbench(page, hostInfo('success'));
+  const order = await page.evaluate(() => {
+    const ids = ['composer-permission', 'plan-mode-badge', 'goal-badge'];
+    const nodes = ids.map((id) => document.getElementById(id));
+    if (nodes.some((node) => node === null)) return null;
+    const follows = (a, b) =>
+      Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+    return {
+      permissionBeforePlan: follows(nodes[0], nodes[1]),
+      permissionBeforeGoal: follows(nodes[0], nodes[2]),
+      planBeforeGoal: follows(nodes[1], nodes[2]),
+    };
+  });
+  expect(order).toEqual({
+    permissionBeforePlan: true,
+    permissionBeforeGoal: true,
+    planBeforeGoal: true,
+  });
+  for (const id of ['plan-mode-badge', 'goal-badge']) {
+    const badge = page.locator(`#${id}`);
+    await expect(badge).toHaveCSS('margin-left', '7px');
+    await expect(badge).toHaveCSS('margin-right', '0px');
+  }
+});
+
+// 附加工单（2026-09-06 负责人验收附加）：侧栏连接指示与插件/设置
+// 图标同尺寸同列位——前身 7px 圆点既不对齐也不随状态变色。状态色沿用
+// 页眉 conn-status 同一套 success/warning/danger 语义。
+test('sidebar connection indicator matches footer icon geometry and follows conn state', async ({ page }) => {
+  await page.emulateMedia({ colorScheme: 'dark' });
+  const entry = hostInfo('success');
+  const footnote = page.locator('#sidebar-footnote');
+  const footnoteIcon = page.locator('#sidebar-footnote > svg');
+
+  // 无 token：HTML 初始态 connecting，警告色图标已在 17px 网格上。
+  await page.goto(`${entry.origin}/`);
+  await expect(page.locator('#landing')).toBeVisible(LIVE);
+  await expect(footnote).toHaveAttribute('data-state', 'connecting');
+  await expect(footnoteIcon).toHaveCSS('width', '17px');
+  await expect(footnoteIcon).toHaveCSS('color', 'rgb(240, 189, 90)');
+
+  // 假 token：自动重连被 401 拒绝 → failed 态（真实断线路径）。
+  await page.evaluate((token) => localStorage.setItem('clat.auth.v1', token), 'not-a-real-token');
+  await page.reload();
+  await expect(page.locator('#landing')).toBeVisible(LIVE);
+  await expect(footnote).toHaveAttribute('data-state', 'failed', LIVE);
+  await expect(footnoteIcon).toHaveCSS('color', 'rgb(255, 123, 112)');
+
+  // 真 token：live 态 + 与上方两枚操作图标同宽同列、行高同网格。
+  await page.fill('#connect-token', entry.token);
+  await page.click('#connect-form button[type="submit"]');
+  await expect(page.locator('#conn-status')).toHaveText('live', LIVE);
+  await expect(footnote).toHaveAttribute('data-state', 'live');
+  await expect(footnoteIcon).toHaveCSS('color', 'rgb(127, 219, 152)');
+  // Solid inner dot + stroked outer ring: both track the state color.
+  const [dotFill, ringStroke] = await footnoteIcon.evaluate((svg) => {
+    const [dot, ring] = svg.querySelectorAll('circle');
+    const dotStyle = getComputedStyle(dot);
+    const ringStyle = getComputedStyle(ring);
+    return [dotStyle.fill + ' ' + dotStyle.stroke, ringStyle.stroke + ' ' + ringStyle.fill];
+  });
+  expect(dotFill).toBe('rgb(127, 219, 152) none');
+  expect(ringStroke).toBe('rgb(127, 219, 152) none');
+  await expect(footnote).toHaveCSS('min-height', '36px');
+  const [footBox, setBox, mktBox] = await Promise.all([
+    footnoteIcon.boundingBox(),
+    page.locator('#settings-open > svg').boundingBox(),
+    page.locator('#market-open > svg').boundingBox(),
+  ]);
+  // The settings icon is the unbordered baseline column; the market entry's
+  // own 1px border shifts its glyph right by a pixel by design.
+  expect(footBox.x).toBeCloseTo(setBox.x, 1);
+  expect(Math.abs(footBox.x - mktBox.x)).toBeLessThanOrEqual(1);
+  expect(footBox.width).toBeCloseTo(setBox.width, 1);
+  expect(footBox.width).toBeCloseTo(mktBox.width, 1);
+});
+
+// PU-7（附加工单 2026-09-06 负责人验收附加）：收起态侧栏是单一图标
+// 网格——logo 与展开钮对轨心，新建会话/会话块/底部按钮同列同宽，
+// 会话字块在块内双向居中且与新建按钮同高。
+test('collapsed rail centers the brand and toggle and unifies the icon grid', async ({ page }) => {
+  await openWorkbench(page, hostInfo('success'));
+  // Seed one real session so the tile row exists before collapsing.
+  // The success host completes deterministically without a tool approval.
+  await page.click('#new-session');
+  await expect(page.locator('#send')).toBeEnabled(LIVE);
+  await page.fill('#prompt', 'collapsed rail seed');
+  await page.click('#send');
+  await expect(page.locator('.verdict.completed')).toBeVisible(LIVE);
+  await expect(page.locator('.session-item').first()).toBeVisible(LIVE);
+
+  await page.click('#sidebar-toggle');
+  const probe = () => page.evaluate(() => {
+    const box = (selector) => {
+      const node = document.querySelector(selector);
+      if (!node) throw new Error(`missing node: ${selector}`);
+      const rect = node.getBoundingClientRect();
+      return {
+        left: rect.left,
+        width: rect.width,
+        height: rect.height,
+        cx: rect.left + rect.width / 2,
+        cy: rect.top + rect.height / 2,
+      };
+    };
+    return {
+      rail: box('#sidebar'),
+      head: box('.sidebar-head'),
+      brand: box('.brand-icon'),
+      toggle: box('#sidebar-toggle'),
+      fresh: box('#new-session'),
+      tile: box('.session-item'),
+      glyph: box('.session-glyph'),
+      settings: box('#settings-open'),
+    };
+  });
+  // The rail resizes over a 180ms grid transition; retry until it settles.
+  // Every icon shares one vertical axis (±1px absorbs the rail's 1px right
+  // border shifting the content-box center by half a pixel). The toggle's
+  // inner svg is measured too: UA button padding + the 180° rotation once
+  // threw the glyph 5px off the shared axis while the button box stayed put.
+  // The toggle also straddles the header's bottom border: its vertical
+  // center sits on the divider line (box bottom minus the 1px border half).
+  await expect(async () => {
+    const g = await probe();
+    const glyph = await page.locator('#sidebar-toggle > svg').boundingBox();
+    const axis = g.brand.cx;
+    const dividerY = g.head.cy + g.head.height / 2 - 0.5;
+    const near = (a, b) => expect(Math.abs(a - b)).toBeLessThanOrEqual(1);
+    near(axis, g.rail.left + g.rail.width / 2);
+    near(g.toggle.cx, axis);
+    near(glyph.x + glyph.width / 2, axis);
+    near(g.toggle.cy, dividerY);
+    near(g.fresh.cx, axis);
+    near(g.tile.cx, axis);
+    near(g.settings.cx, axis);
+    expect(Math.abs(g.tile.width - g.fresh.width)).toBeLessThanOrEqual(1);
+    expect(Math.abs(g.tile.width - g.settings.width)).toBeLessThanOrEqual(1);
+    expect(Math.abs(g.tile.height - g.fresh.height)).toBeLessThanOrEqual(1);
+    near(g.glyph.cx, g.tile.cx);
+    near(g.glyph.cy, g.tile.cy);
+  }).toPass();
+});
+
+// PU-8（附加工单 2026-09-06 负责人验收附加）：Full Access 与 TUI 同语——
+// 权限文字（页眉徽标 + 输入框上方 pill）转警示黄；其余模式保持默认色。
+test('full access paints the permission text warning yellow', async ({ page }) => {
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await openWorkbench(page, hostInfo('success'));
+  const pill = page.locator('#composer-permission');
+  const badge = page.locator('#header-permission');
+
+  await page.click('#settings-open');
+  await expect(page.locator('#settings-dialog')).toBeVisible(LIVE);
+  // The dialog is a live view: an async workbench refresh re-renders the
+  // radios from host state and can land between our clicks. Retry the whole
+  // select→confirm→save unit until the save actually lands.
+  const grantFullAccess = async () => {
+    await page.click('#permission-options label:has(input[value="workspace-write"])', { timeout: 3000 });
+    await page.click('#permission-options label:has(input[value="danger-full-access"])', { timeout: 3000 });
+    await page.check('#full-access-confirm', { timeout: 3000 });
+    await page.click('#permission-save', { timeout: 3000 });
+  };
+  await expect(grantFullAccess).toPass({ timeout: 30_000 });
+  await expect(page.locator('#settings-saved')).toHaveText('Permission mode updated.', LIVE);
+  await expect(pill).toHaveCSS('color', 'rgb(205, 205, 0)', LIVE);
+  await expect(badge).toHaveCSS('color', 'rgb(205, 205, 0)', LIVE);
+
+  // Restore the host's default mode; colors follow the state, not the dialog.
+  const restoreWrite = async () => {
+    await page.click('#permission-options label:has(input[value="workspace-write"])', { timeout: 3000 });
+    await page.click('#permission-save', { timeout: 3000 });
+  };
+  await expect(restoreWrite).toPass({ timeout: 30_000 });
+  await expect(page.locator('#settings-saved')).toHaveText('Permission mode updated.', LIVE);
+  await expect(pill).toHaveCSS('color', 'rgb(116, 128, 127)', LIVE);
+  await expect(badge).toHaveCSS('color', 'rgb(174, 183, 182)', LIVE);
 });
 
 // Manual history compaction is a first-class PWA surface, not a slash-command

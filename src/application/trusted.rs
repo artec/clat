@@ -452,6 +452,9 @@ impl TrustedProjectApplication {
         arm: bool,
     ) -> Result<crate::goal::GoalView, ApplicationError> {
         self.reject_session_switch_while_busy()?;
+        if arm {
+            self.check_goal_activation()?;
+        }
         self.goal
             .create(objective, acceptance, limits, arm)
             .map_err(ApplicationError::new)
@@ -462,6 +465,7 @@ impl TrustedProjectApplication {
         expected_revision: u64,
     ) -> Result<crate::goal::GoalView, ApplicationError> {
         self.reject_session_switch_while_busy()?;
+        self.check_goal_activation()?;
         self.goal
             .arm(expected_revision)
             .map_err(ApplicationError::new)
@@ -596,6 +600,29 @@ impl TrustedProjectApplication {
         }
     }
 
+    /// Current core state, including an unmaterialized session's birth intent.
+    pub fn plan_mode_active(&self) -> bool {
+        self.plan_mode.state().active
+    }
+
+    /// Read-only preflight also used by headless before rejecting interactive runs.
+    pub fn check_goal_activation(&self) -> Result<(), ApplicationError> {
+        if self.plan_mode_active() {
+            return Err(ApplicationError::new(
+                "exit plan mode first (/plan off) before arming the goal",
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn goal_run_message(&self) -> String {
+        if self.plan_mode.state().approved.is_some() {
+            "Goal run started — approved plan will be injected".into()
+        } else {
+            "Goal run started".into()
+        }
+    }
+
     /// Enter or leave Plan Mode at an idle application boundary.
     pub fn set_plan_mode(&mut self, active: bool) -> Result<(), ApplicationError> {
         if self
@@ -614,6 +641,11 @@ impl TrustedProjectApplication {
         {
             return Err(ApplicationError::new(
                 "cannot change Plan Mode while a compaction is active",
+            ));
+        }
+        if active && self.goal()?.is_some_and(|goal| goal.armed) {
+            return Err(ApplicationError::new(
+                "disarm the goal first (/goal pause) before entering Plan Mode",
             ));
         }
         if self.sessions.active_id().is_some() {
@@ -756,6 +788,8 @@ impl TrustedProjectApplication {
                 image_input: config.capabilities.accepts_image_input(),
             },
             permission_mode: self.permission_mode(),
+            plan_mode_active: self.plan_mode_active(),
+            goal_armed: self.goal()?.is_some_and(|goal| goal.armed),
             mcp: self.mcp_status(),
         })
     }

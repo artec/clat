@@ -1084,6 +1084,7 @@ fn command_run_starts_and_settles_an_explicit_web_goal_continuation() {
     assert_eq!(status, 200);
     let result = result.unwrap();
     assert_eq!(result["kind"], "goal_run");
+    assert_eq!(result["message"], "Goal run started");
     client.wait_settled();
     let (status, shown) = post(
         handle.addr,
@@ -1093,12 +1094,113 @@ fn command_run_starts_and_settles_an_explicit_web_goal_continuation() {
     );
     assert_eq!(status, 200);
     let shown = shown.unwrap();
-    assert_eq!(shown["kind"], "status");
-    assert!(shown["message"].as_str().unwrap().contains("phase=paused"));
+    assert_eq!(shown["kind"], "goal");
+    assert_eq!(shown["goal"]["goal"]["phase"], "paused");
+    assert_eq!(shown["goal"]["armed"], false);
     cleanup(handle, &storage_root, &project_root);
 }
 
 // ---- 零转译（验收 5，INV-S2）----
+
+#[test]
+fn pu_serve_content_kinds_and_workflow_refusals_preserve_state_and_release_claims() {
+    let (storage, root, project) = setup("pu-serve-views");
+    let app = BootstrapApplication::open(project, storage.clone())
+        .unwrap()
+        .with_permission_modes()
+        .authorize_and_mount_with_provider(Arc::new(TestProviderPlugin {
+            behavior: TestBehavior::Success,
+        }))
+        .unwrap();
+    let shared = Arc::new(ServeShared::new(
+        Arc::new(Mutex::new(app)),
+        "unit".into(),
+        0,
+    ));
+    let command = |text: &str| {
+        protocol::dispatch("command.run", &serde_json::json!({"command":text}), &shared)
+    };
+    assert_eq!(
+        command("/mem list").unwrap().to_string(),
+        r#"{"kind":"memory","memory":{"entries":[],"omitted":0},"message":"No explicit memories."}"#
+    );
+    assert_eq!(
+        command("/goal").unwrap().to_string(),
+        r#"{"kind":"goal","goal":{"goal":null,"armed":false},"message":"No current goal."}"#
+    );
+    for (command_text, enabled) in [("/sub", false), ("/sub on", true), ("/sub status", true)] {
+        let value = command(command_text).unwrap();
+        if command_text == "/sub on" {
+            assert_eq!(value["kind"], "status");
+        } else {
+            assert_eq!(value["kind"], "subagent_status");
+            assert_eq!(
+                value["subagent_status"],
+                serde_json::json!({"enabled":enabled})
+            );
+            assert!(
+                value["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("delegate_readonly")
+            );
+        }
+    }
+    command("/mem add project first\nsecond").unwrap();
+    let memory = command("/mem").unwrap();
+    assert_eq!(memory["memory"]["entries"][0]["content"], "first\nsecond");
+    let id = memory["memory"]["entries"][0]["id"].as_str().unwrap();
+    assert_eq!(
+        command(&format!("/mem show {id}")).unwrap()["memory"],
+        memory["memory"]
+    );
+    command("/plan").unwrap();
+    let info = protocol::dispatch("workbench.info", &serde_json::json!({}), &shared).unwrap();
+    assert_eq!(info["plan_mode_active"], true);
+    assert_eq!(info["goal_armed"], false);
+    for text in ["/goal create forbidden --run", "/goal run"] {
+        let error = command(text).unwrap_err();
+        assert_eq!(error.code, ErrorCode::BadRequest);
+        // /goal run requires a goal; create a disarmed one for the second leg.
+        if text.contains("create") {
+            assert!(error.message.contains("exit plan mode first"));
+            assert!(shared.app.lock().unwrap().goal().unwrap().is_none());
+            command("/goal create allowed").unwrap();
+        } else {
+            assert!(error.message.contains("exit plan mode first"));
+        }
+        assert!(shared.try_claim_run("claim-released", super::state::now_ms()));
+        shared.release_run_claim();
+    }
+    command("/plan off").unwrap();
+    {
+        let app = shared.app.lock().unwrap();
+        app.goal_arm(app.goal().unwrap().unwrap().state.revision)
+            .unwrap();
+    }
+    let before = shared.app.lock().unwrap().goal().unwrap();
+    let error = command("/plan on").unwrap_err();
+    assert!(error.message.contains("disarm the goal first"));
+    assert_eq!(shared.app.lock().unwrap().goal().unwrap(), before);
+    let info = protocol::dispatch("workbench.info", &serde_json::json!({}), &shared).unwrap();
+    assert_eq!(info["plan_mode_active"], false);
+    assert_eq!(info["goal_armed"], true);
+    command("/goal pause").unwrap();
+    assert_eq!(
+        protocol::dispatch("workbench.info", &serde_json::json!({}), &shared).unwrap()["goal_armed"],
+        false
+    );
+    let shared = Arc::try_unwrap(shared).ok().unwrap();
+    Arc::try_unwrap(shared.app)
+        .ok()
+        .unwrap()
+        .into_inner()
+        .unwrap()
+        .close()
+        .unwrap();
+    crate::test_support::cleanup_tree(storage.parent().unwrap());
+    assert!(!root.exists());
+}
 
 #[test]
 fn realtime_frames_are_byte_identical_to_envelope_line() {

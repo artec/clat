@@ -40,6 +40,7 @@ impl TrustedProjectApplication {
         &mut self,
         mut request: ApplicationRunRequest,
     ) -> Result<(RunHandle, String), ApplicationError> {
+        self.check_goal_activation()?;
         if !request.message.staged_attachments.is_empty() {
             return Err(ApplicationError::new(
                 "goal continuation rounds do not accept attachments",

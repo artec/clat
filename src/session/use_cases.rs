@@ -976,7 +976,7 @@ impl SessionService {
                 .and_then(Value::as_bool)
                 .unwrap_or(false)
                 == active_mode
-            && current.get("approved").is_none()
+            && current.get("approved").is_none_or(Value::is_null)
         {
             return Ok(None);
         }

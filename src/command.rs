@@ -71,23 +71,35 @@ pub enum CommandOutcome {
     /// 纯信息性消息（前端以状态提示呈现）。
     Status(String),
     /// `/help`：携带完整命令目录，帮助表从载荷派生。
-    ShowHelp { commands: Vec<CommandInfo> },
+    ShowHelp {
+        commands: Vec<CommandInfo>,
+    },
     /// `/mcp`：MCP 状态快照。
     ShowMcpStatus(McpStatusDto),
     /// `/skill`（无参）：技能 catalog 列表投影（SC-2）。显式调用的确认
     /// 走 `Status`——武装是"下一次消息携带该技能"的提示侧承诺，无新
     /// 权力（INV-SC-4）。
     ShowSkills(SkillsOverviewDto),
+    /// PU-3: read-only content views, additive client protocol outcomes.
+    ShowMemory(crate::application::MemoryOverviewDto),
+    ShowGoal(crate::application::GoalViewDto),
+    ShowSubagentStatus(crate::application::SubagentStatusDto),
     /// `/context`：一次性的前端中立上下文估算快照；不启动模型、不写会话。
     ShowContext(ContextEstimateSnapshot),
     /// `/model`：延续是模型选择交互（前端开各自的选择器）。
     StartModelSelection,
     /// `/resume`：延续是会话选择交互，携带候选列表。
-    StartSessionSelection { sessions: Vec<SessionSummary> },
+    StartSessionSelection {
+        sessions: Vec<SessionSummary>,
+    },
     /// `/perm`：延续是权限档位选择交互，携带当前档。
-    StartPermissionModeSelection { current: PermissionMode },
+    StartPermissionModeSelection {
+        current: PermissionMode,
+    },
     /// `/rename`：延续是标题编辑交互，携带预填文本。
-    StartTitleEdit { prefill: String },
+    StartTitleEdit {
+        prefill: String,
+    },
     /// `/compact`：压缩已启动，携带可取消/可 join 的句柄。
     StartCompaction(CompactHandle),
     /// `/vision-probe`（VP-1）：custom 视觉探针已启动，携带可 join 的
@@ -95,7 +107,9 @@ pub enum CommandOutcome {
     StartVisionProbe(VisionProbeHandle),
     /// `/goal ... --run` or `/goal run`: the frontend supplies its normal
     /// event/approval channels while core owns the admitted goal-round prompt.
-    StartGoalRun,
+    StartGoalRun {
+        message: String,
+    },
     /// `/new`：会话已重置，前端清空自己的视图状态。
     SessionReset,
     /// `/quit`：请求退出应用（前端生命周期概念，headless 为无操作）。
@@ -111,6 +125,9 @@ impl fmt::Debug for CommandOutcome {
             Self::ShowHelp { .. } => "ShowHelp { .. }",
             Self::ShowMcpStatus(_) => "ShowMcpStatus(..)",
             Self::ShowSkills(_) => "ShowSkills(..)",
+            Self::ShowMemory(_) => "ShowMemory(..)",
+            Self::ShowGoal(_) => "ShowGoal(..)",
+            Self::ShowSubagentStatus(_) => "ShowSubagentStatus(..)",
             Self::ShowContext(_) => "ShowContext(..)",
             Self::StartModelSelection => "StartModelSelection",
             Self::StartSessionSelection { .. } => "StartSessionSelection { .. }",
@@ -118,7 +135,7 @@ impl fmt::Debug for CommandOutcome {
             Self::StartTitleEdit { .. } => "StartTitleEdit { .. }",
             Self::StartCompaction(_) => "StartCompaction(..)",
             Self::StartVisionProbe(_) => "StartVisionProbe(..)",
-            Self::StartGoalRun => "StartGoalRun",
+            Self::StartGoalRun { .. } => "StartGoalRun { .. }",
             Self::SessionReset => "SessionReset",
             Self::QuitRequested => "QuitRequested",
         })

@@ -198,6 +198,9 @@ impl App {
                 InfoDialogKind::Mcp => self.draw_mcp_dialog(frame),
                 InfoDialogKind::Context => self.draw_context_dialog(frame),
                 InfoDialogKind::Skills => self.draw_skills_dialog(frame),
+                InfoDialogKind::Memory | InfoDialogKind::Goal | InfoDialogKind::SubagentStatus => {
+                    self.draw_content_dialog(frame)
+                }
             }
         }
         if let Some(picker) = &self.permission_picker {
@@ -362,6 +365,24 @@ impl App {
             return;
         };
         let lines = skills_dialog_lines(view, inner_width);
+        self.draw_readonly_dialog(frame, "/skill", lines);
+    }
+
+    pub(super) fn draw_content_dialog(&mut self, frame: &mut Frame) {
+        let Some(view) = self.content_view.as_ref() else {
+            return;
+        };
+        let lines = view.lines(popup_inner_width(84, frame.area()));
+        self.draw_readonly_dialog(frame, view.title(), lines);
+    }
+
+    fn draw_readonly_dialog(
+        &mut self,
+        frame: &mut Frame,
+        title: &'static str,
+        lines: Vec<Line<'static>>,
+    ) {
+        let area = frame.area();
         let dialog = centered_rect(84, content_dialog_height(lines.len(), area), area);
         let visible = (dialog.height.saturating_sub(2 + 2)) as usize;
         let max_scroll = lines.len().saturating_sub(visible);
@@ -389,7 +410,7 @@ impl App {
             theme::style(theme::Role::Faint),
         )));
         clear_popup_with_guards(frame, dialog);
-        frame.render_widget(Paragraph::new(body).block(popup_block("/skill")), dialog);
+        frame.render_widget(Paragraph::new(body).block(popup_block(title)), dialog);
     }
 
     /// ask-user 对话框：问题原文（按实际宽度换行）+ 选项列表（选择行
@@ -932,17 +953,35 @@ impl App {
                         .right_aligned(),
                 );
             }
-        } else if let Some(mode) = self
-            .application
-            .as_ref()
-            .map(|application| application.permission_mode())
-        {
+        } else if let Some(application) = self.application.as_ref() {
+            let mode = application.permission_mode();
             let style = if mode == PermissionMode::FullAccess {
                 theme::style(theme::Role::Warning)
             } else {
                 theme::style(theme::Role::Faint)
             };
-            block = block.title(Line::from(format!(" {mode} ")).style(style).right_aligned());
+            let mut spans = vec![Span::styled(" ", style)];
+            if application
+                .goal()
+                .ok()
+                .flatten()
+                .is_some_and(|goal| goal.armed)
+            {
+                spans.push(Span::styled(
+                    "Goal",
+                    Style::default().fg(ratatui::style::Color::Rgb(92, 240, 125)),
+                ));
+                spans.push(Span::styled(" · ", theme::style(theme::Role::Faint)));
+            }
+            if application.plan_mode_active() {
+                spans.push(Span::styled(
+                    "Plan",
+                    Style::default().fg(ratatui::style::Color::Rgb(240, 189, 90)),
+                ));
+                spans.push(Span::styled(" · ", theme::style(theme::Role::Faint)));
+            }
+            spans.push(Span::styled(format!("{mode} "), style));
+            block = block.title(Line::from(spans).right_aligned());
         }
         // 输入框与聊天记录的用户消息同款排版：首行 `❯ ` 前缀，续行
         // 两个空格保持等宽左缩进，文本按扣除前缀后的宽度换行。与

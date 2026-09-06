@@ -477,20 +477,14 @@ mod tests {
         let (mut application, storage_root) = mount("commands-alias-reachability");
         for input in ["/mem", "/memory"] {
             match application.dispatch_command(input) {
-                Ok(CommandOutcome::Status(message)) => assert!(
-                    message.contains("memor"),
-                    "{input} must reach the memory handler: {message}"
-                ),
-                other => panic!("{input} must be a Status outcome, got {other:?}"),
+                Ok(CommandOutcome::ShowMemory(view)) => assert!(view.entries.is_empty()),
+                other => panic!("{input} must be a ShowMemory outcome, got {other:?}"),
             }
         }
         for input in ["/sub", "/subagents"] {
             match application.dispatch_command(input) {
-                Ok(CommandOutcome::Status(message)) => assert!(
-                    message.contains("subagent experiment"),
-                    "{input} must reach the subagent handler: {message}"
-                ),
-                other => panic!("{input} must be a Status outcome, got {other:?}"),
+                Ok(CommandOutcome::ShowSubagentStatus(view)) => assert!(!view.enabled),
+                other => panic!("{input} must be a ShowSubagentStatus outcome, got {other:?}"),
             }
         }
         application.close().unwrap();
