@@ -21,6 +21,31 @@ pub use openai_compatible::OpenAiCompatibleModel;
 
 const MONITOR_HTTP_TIMEOUT: Duration = Duration::from_secs(15);
 pub(super) const STREAM_BODY_POLL_TIMEOUT: Duration = Duration::from_millis(250);
+/// DV-7（dsh-llm-params.md §2 确诊缺口转正）：流读的 chunk 间空闲
+/// 上限。250ms body 轮询超时在适配器循环里是可重试常态，但对端挂死
+/// 时若只有轮询没有总空闲上界，run 仅靠手动取消才能断开。DSH 同源
+/// 同值：`DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300_000`——量级容纳长
+/// 思考的首字延迟。任何字节推进即重置；耗尽后经
+/// [`CancelAwareReader`] 浮出**非轮询形态**的空闲错误，落入适配器
+/// 的 Transport 错误臂，由重试层有界终止（4 次尝试 × 每次新窗口）。
+pub(super) const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// 空闲超时错误的载荷标记——让 [`is_stream_poll_timeout`] 把它与
+/// ureq 的 body 轮询超时区分开（后者会被适配器 continue 吞掉）。
+#[derive(Debug)]
+struct StreamIdleTimedOut(Duration);
+
+impl std::fmt::Display for StreamIdleTimedOut {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "stream idle for over {:?} without any data",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for StreamIdleTimedOut {}
 
 /// FP-02（2026-08-22 审计）：SSE 单行/单事件字节帽——无换行洪水不能
 /// 先于检查进入内存（`output_limit`/timeout 只约束守规端点，自定义
@@ -139,11 +164,27 @@ pub(super) fn read_monitor_body_capped(body: impl Read) -> Option<String> {
 pub(super) struct CancelAwareReader<'a, R> {
     inner: R,
     cancel: &'a CancelToken,
+    /// DV-7：最近一次字节推进时刻与空闲窗口宽度。
+    last_progress: Instant,
+    idle_timeout: Duration,
 }
 
 impl<'a, R> CancelAwareReader<'a, R> {
     pub(super) fn new(inner: R, cancel: &'a CancelToken) -> Self {
-        Self { inner, cancel }
+        Self::with_idle_timeout(inner, cancel, STREAM_IDLE_TIMEOUT)
+    }
+
+    pub(super) fn with_idle_timeout(
+        inner: R,
+        cancel: &'a CancelToken,
+        idle_timeout: Duration,
+    ) -> Self {
+        Self {
+            inner,
+            cancel,
+            last_progress: Instant::now(),
+            idle_timeout,
+        }
     }
 }
 
@@ -152,11 +193,37 @@ impl<R: Read> Read for CancelAwareReader<'_, R> {
         if self.cancel.is_cancelled() {
             return Ok(0);
         }
-        self.inner.read(buffer)
+        match self.inner.read(buffer) {
+            // EOF 不推进空闲钟（无数据到达）。
+            Ok(0) => Ok(0),
+            Ok(byte_count) => {
+                self.last_progress = Instant::now();
+                Ok(byte_count)
+            }
+            Err(error) if is_stream_poll_timeout(&error) => {
+                let idle_for = self.last_progress.elapsed();
+                if idle_for >= self.idle_timeout {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        StreamIdleTimedOut(idle_for),
+                    ));
+                }
+                Err(error)
+            }
+            Err(error) => Err(error),
+        }
     }
 }
 
 pub(super) fn is_stream_poll_timeout(error: &io::Error) -> bool {
+    // DV-7：空闲超时错误带 StreamIdleTimedOut 标记——它不是可继续
+    // 轮询的常态，必须逃离适配器的 continue 臂。
+    if error
+        .get_ref()
+        .is_some_and(|source| source.downcast_ref::<StreamIdleTimedOut>().is_some())
+    {
+        return false;
+    }
     matches!(
         error.kind(),
         io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
@@ -1647,5 +1714,110 @@ mod tests {
             "parent cancel must short-circuit the 30s deadline, took {elapsed:?}"
         );
         assert_eq!(response.finish_reason, FinishReason::Cancelled);
+    }
+
+    // ─── DV-7：流空闲上限（dsh-llm-params.md §2 确诊缺口转正）─────────
+
+    /// 参数钉值：DSH `DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300_000`（官方
+    /// 口径，量级容纳长思考首字延迟）。CLAT 同源同值。
+    #[test]
+    fn stream_idle_timeout_pins_the_dsh_reference_value() {
+        assert_eq!(STREAM_IDLE_TIMEOUT, Duration::from_secs(300));
+    }
+
+    /// DV-7（判别腿）：对端发完响应头后挂死——轮询超时在空闲窗口内
+    /// 照常透传（适配器循环继续），窗口耗尽后读侧必须浮出**空闲
+    /// 超时错误**，且该错误不匹配 `is_stream_poll_timeout`（否则会被
+    /// 适配器的 continue 臂吞掉、永远到不了 ModelError）。挂死 run
+    /// 从此以 Transport 错误经重试层有界终止，而非无限挂起。
+    #[test]
+    fn poll_timeouts_propagate_while_fresh_and_surface_the_idle_error_when_hung() {
+        /// 先交付一段真实数据（推进空闲钟），随后永远返回 WouldBlock
+        ///（ureq 250ms body 轮询超时的 io 形态）。
+        struct HangingBody {
+            delivered: bool,
+        }
+        impl Read for HangingBody {
+            fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+                if !self.delivered {
+                    self.delivered = true;
+                    buffer[..1].copy_from_slice(b"x");
+                    return Ok(1);
+                }
+                Err(io::Error::new(io::ErrorKind::WouldBlock, "poll timeout"))
+            }
+        }
+
+        let cancel = CancelToken::new();
+        let mut reader = CancelAwareReader::with_idle_timeout(
+            HangingBody { delivered: false },
+            &cancel,
+            Duration::from_millis(40),
+        );
+
+        // 首读是真实数据：空闲钟推进。
+        let mut scratch = [0u8; 8];
+        assert_eq!(reader.read(&mut scratch).expect("first byte"), 1);
+
+        // 空闲窗口内：轮询超时原样透传（适配器 continue 臂的输入）。
+        let early = reader
+            .read(&mut scratch)
+            .expect_err("poll timeouts propagate while fresh");
+        assert!(is_stream_poll_timeout(&early), "fresh poll timeout shape");
+
+        // 窗口耗尽：浮出空闲超时——不匹配轮询超时（落入适配器错误臂）。
+        std::thread::sleep(Duration::from_millis(60));
+        let idle = reader
+            .read(&mut scratch)
+            .expect_err("idle deadline must surface");
+        assert!(
+            !is_stream_poll_timeout(&idle),
+            "the idle error must escape the adapters' continue arm: {idle}"
+        );
+        assert!(
+            idle.to_string().contains("idle"),
+            "error stays actionable: {idle}"
+        );
+    }
+
+    /// DV-7（腿 2）：数据推进重置空闲钟——慢流只要仍有字节到达就不
+    /// 断流。间隔 30ms 的滴流（< 80ms 窗口）持续 200ms 后仍正常读取。
+    #[test]
+    fn trickling_data_resets_the_idle_clock() {
+        struct TrickleBody {
+            reads: usize,
+        }
+        impl Read for TrickleBody {
+            fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+                self.reads += 1;
+                if self.reads.is_multiple_of(2) {
+                    buffer[..1].copy_from_slice(b"y");
+                    Ok(1)
+                } else {
+                    Err(io::Error::new(io::ErrorKind::WouldBlock, "poll timeout"))
+                }
+            }
+        }
+
+        let cancel = CancelToken::new();
+        let mut reader = CancelAwareReader::with_idle_timeout(
+            TrickleBody { reads: 0 },
+            &cancel,
+            Duration::from_millis(80),
+        );
+        let mut scratch = [0u8; 8];
+        let started = Instant::now();
+        while started.elapsed() < Duration::from_millis(200) {
+            match reader.read(&mut scratch) {
+                Ok(n) => assert_eq!(n, 1, "trickled bytes still arrive"),
+                Err(error) => {
+                    assert!(
+                        is_stream_poll_timeout(&error),
+                        "trickle must never surface the idle error: {error}"
+                    );
+                }
+            }
+            std::thread::sleep(Duration::from_millis(30));
+        }
     }
 }

@@ -658,6 +658,50 @@ mod tests {
         }
     }
 
+    /// DV-5（B3 同型）：DSH 0.1.2-alpha.4+ 落地的 3 个 v0 必填事件
+    ///（引入提交 822d735356 2026-08-25）——`model/selection` 由
+    /// session-controller 的模型选择流**必填落盘**（无 ignorable），
+    /// 0.1.2+ 的 v0 日志只要用户在 web 选过模型即含此事件。不补录则
+    /// CLAT 准入层 fail-closed 拒载（team/\* B3 事故同型复发）。
+    /// pre-fix 红：RequiredUnknown。
+    #[test]
+    fn dsh_012_model_selection_events_are_admitted() {
+        let cases: [(&str, serde_json::Value); 3] = [
+            (
+                "model/selection",
+                json!({
+                    "provider": "deepseek",
+                    "model": "deepseek-chat",
+                    "reasoningEffort": "high",
+                }),
+            ),
+            (
+                "session-log-deepseek/delivery-accepted",
+                json!({
+                    "sessionId": "018f2a64-9d3f-7cde-8123-9a4f2b6c0b04",
+                    "sessionFormatVersion": 0,
+                    "throughSeq": 2,
+                }),
+            ),
+            (
+                "subagent/model-selection-policy",
+                json!({
+                    "allowedModels": [
+                        { "provider": "deepseek", "model": "deepseek-chat" },
+                        { "provider": "openai", "model": "gpt-5" },
+                    ],
+                }),
+            ),
+        ];
+        for (event_type, data) in cases {
+            let event = SessionEvent::new(event_type, 0, 1, data);
+            assert!(
+                admit_events(&[event]).is_ok(),
+                "{event_type} must be a known type"
+            );
+        }
+    }
+
     #[test]
     fn unknown_required_event_is_rejected_and_ignorable_unknown_passes() {
         let required = SessionEvent::new("future/required", 0, 1, json!({}));
@@ -760,7 +804,7 @@ mod tests {
     /// The catalog constants stay honest against the dispatch above.
     #[test]
     fn known_catalog_is_consistent() {
-        assert_eq!(crate::session::catalog::KNOWN_EVENT_TYPES.len(), 50);
+        assert_eq!(crate::session::catalog::KNOWN_EVENT_TYPES.len(), 53);
     }
     /// MM-1A：幂等/元数据字段的 admission 校验——可选字段一旦出现
     /// 必须类型正确且有界（坏 attachmentId/宽高/clientMessageId/

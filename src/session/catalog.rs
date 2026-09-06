@@ -7,11 +7,14 @@ pub(crate) const SURFACE_EVENT_TYPES: [&str; 3] =
     ["user/message", "assistant/message", "tool/result"];
 
 /// Every `SessionEventMap` member declared in the pinned upstream revision,
-/// plus DSH 0.1.1-rc.1's four `team/*` types (B3 re-pin) and CLAT's own
-/// `clat/budget` spend guardrail and `clat/subagent` provenance
+/// plus DSH 0.1.1-rc.1's four `team/*` types (B3 re-pin), DSH 0.1.2's three
+/// v0-required additions (DV-5: `model/selection` is unconditionally appended
+/// by session-controller's selection flow, so any 0.1.2+ v0 log where the
+/// user picked a model in web carries it), and CLAT's own `clat/budget`
+/// spend guardrail and `clat/subagent` provenance
 /// events (both written with `ignorable: true`, so older readers may skip
 /// them per the envelope contract).
-pub(crate) const KNOWN_EVENT_TYPES: [&str; 50] = [
+pub(crate) const KNOWN_EVENT_TYPES: [&str; 53] = [
     "agent-preset/selected",
     "clat/budget",
     "clat/subagent",
@@ -33,17 +36,20 @@ pub(crate) const KNOWN_EVENT_TYPES: [&str; 50] = [
     "hook/result",
     "llm/retry",
     "llm/retry-started",
+    "model/selection",
     "permission/preset",
     "plan/mode",
     "request/context",
     "request/header",
     "sandbox/mode",
     "schedule/change",
+    "session-log-deepseek/delivery-accepted",
     "session/end-seed",
     "session/title",
     "session/title-llm-request",
     "step/end",
     "step/start",
+    "subagent/model-selection-policy",
     "subagent/descriptor",
     "team/member",
     "team/message/delivered",
@@ -84,7 +90,7 @@ mod tests {
     fn catalog_covers_the_pinned_vocabulary_and_surface_subset() {
         // The upstream set is sorted; every entry is known and the surface
         // subset is exactly the three message types.
-        assert_eq!(KNOWN_EVENT_TYPES.len(), 50);
+        assert_eq!(KNOWN_EVENT_TYPES.len(), 53);
         assert!(is_known_type("user/message"));
         assert!(is_known_type("compaction/summary"));
         assert!(!is_known_type("future/thing"));
@@ -93,5 +99,9 @@ mod tests {
         }
         assert!(!is_surface_type("assistant/chunk"));
         assert!(!is_known_type("request/header-delta"));
+        // DV-5：DSH 0.1.2-alpha.4+ 的 3 个 v0 必填事件（822d735356）。
+        assert!(is_known_type("model/selection"));
+        assert!(is_known_type("session-log-deepseek/delivery-accepted"));
+        assert!(is_known_type("subagent/model-selection-policy"));
     }
 }

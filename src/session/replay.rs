@@ -384,6 +384,9 @@ impl ReplayAdapter {
             | "team/task"
             | "team/message/queued"
             | "team/message/delivered"
+            | "model/selection"
+            | "subagent/model-selection-policy"
+            | "session-log-deepseek/delivery-accepted"
             | "clat/budget" => {}
             _ => {}
         }

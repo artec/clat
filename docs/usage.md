@@ -910,6 +910,12 @@ failures exit non-zero for supervisors.
 
 ## DeepSeek Harness client (`clat dsh`)
 
+> Compatibility note (2026-09-06): the bridge speaks the DSH web API as of
+> `dsh-v0.1.1-rc.2`. DSH 0.1.2 replaced that API surface with the Typert
+> Gateway (`/api/remote.mux` with a trust gate), so `clat dsh` cannot
+> connect to DSH 0.1.2+ hosts, including 0.1.3. Re-bridging is tracked as
+> worklist DV-9.
+
 `clat dsh` reuses the CLAT TUI as a client of a local DSH web host:
 
 ```bash

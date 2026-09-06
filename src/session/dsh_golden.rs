@@ -34,6 +34,7 @@ mod tests {
     const INTERRUPTED_ID: &str = "018f2a64-9d3f-7cde-8123-9a4f2b6c0b01";
     const TEAM_ID: &str = "018f2a64-9d3f-7cde-8123-9a4f2b6c0b02";
     const PLAN_ID: &str = "018f2a64-9d3f-7cde-8123-9a4f2b6c0b03";
+    const MODEL_SELECTION_ID: &str = "018f2a64-9d3f-7cde-8123-9a4f2b6c0b04";
     const APPROVED_PLAN: &str =
         "Inspect the project, preserve invariants, implement the change, then run focused tests.";
 
@@ -212,6 +213,80 @@ mod tests {
             replay.len(),
             3,
             "user + assistant + turn/end only — team events are skipped without rebuilding: {replay:?}"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// DV-5（B3 同型判别腿）：DSH 0.1.2-alpha.4+ 的 3 个 v0 必填事件
+    ///（引入提交 822d735356）在 v0 帧字节中随会话落盘——CLAT 准入
+    /// 放行（删 catalog 补录即红：RequiredUnknown 拒载整个会话）、
+    /// 重放跳过不重建。fixture 出处见 `gen-dv5-fixture.mjs`：钉靶
+    /// 0.1.3 写路径只产 v2（`SESSION_FORMAT_VERSION = 2`，无版本
+    /// 旋钮），v0 字节无法再由 DSH 产出，改以 DSH 同款原语铸出，
+    /// payload 形状取自 DSH 0.1.3 源的三个写点。
+    #[test]
+    fn dsh_012_model_selection_events_admit_and_replay_skips() {
+        let (root, backend) =
+            mount_fixture("model-selection-session.jsonl.zstd", MODEL_SELECTION_ID);
+        let events = load_golden(&backend, MODEL_SELECTION_ID);
+
+        let new_types: Vec<&str> = events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event.event_type.as_str(),
+                    "model/selection"
+                        | "session-log-deepseek/delivery-accepted"
+                        | "subagent/model-selection-policy"
+                )
+            })
+            .map(|event| event.event_type.as_str())
+            .collect();
+        assert_eq!(
+            new_types,
+            vec![
+                "model/selection",
+                "subagent/model-selection-policy",
+                "session-log-deepseek/delivery-accepted",
+            ],
+            "all three 0.1.2 additions ride in v0 bytes in write order"
+        );
+        for event in &events {
+            assert!(
+                event.ignorable.is_none(),
+                "the fixture carries required envelopes (no ignorable)"
+            );
+        }
+
+        // 重放：user + assistant 还原；三个新事件跳过不重建。
+        let replay = ReplayAdapter::fold(&events);
+        let user_texts: Vec<&String> = replay
+            .iter()
+            .filter_map(|event| match event {
+                ReplayEvent::UserMessage { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            user_texts,
+            vec!["pick a model for this turn"],
+            "the user message restores normally"
+        );
+        let assistant: Vec<&ReplayEvent> = replay
+            .iter()
+            .filter(|event| matches!(event, ReplayEvent::AssistantMessage { .. }))
+            .collect();
+        assert_eq!(assistant.len(), 1, "the assistant reply restores");
+        match assistant[0] {
+            ReplayEvent::AssistantMessage { text, .. } => {
+                assert_eq!(text, "model selected for the run");
+            }
+            other => panic!("unexpected replay event: {other:?}"),
+        }
+        assert_eq!(
+            replay.len(),
+            3,
+            "user + assistant + turn/end only — the three additions are skipped: {replay:?}"
         );
         let _ = std::fs::remove_dir_all(root);
     }

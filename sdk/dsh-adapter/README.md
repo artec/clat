@@ -220,8 +220,22 @@ artifact, so end users install no JavaScript environment.
 
 - Author runtime: Node.js 22.19 or newer.
 - Adapter runtime dependencies: zero.
+- Cordis reference: DSH vendors its framework layer (`@deepseek-ai/cordis`
+  and friends in `vendor/`, with an exhaustive local-modification log in
+  `vendor/README.md`), so the adapter's static single-scope Cordis subset is
+  reviewed against that fork — not against upstream npm cordis. The
+  2026-09-06 review of the fork as of DSH 0.1.3-alpha.1 (`d347e70390`,
+  modification-log entries #1–#18) found every fork divergence
+  (loader/HMR transactions, disposal hardening, config reconciliation)
+  outside the subset's emulated surface — process-local dispatch, effects,
+  and basic lifecycle semantics are unchanged.
 - API target: `dsh-v0.1.1-rc.2`, source revision
-  `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`.
+  `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`. Re-verified 2026-09-06
+  against `dsh-v0.1.3-alpha.1` (`d347e70390`): the plugin-facing seams the
+  adapter maps (`defineTool`, `ctx.tools.register`, `ctx.systemPrompt`,
+  llm sampling, web/fs/shell/sessions/agents surfaces) are unchanged;
+  0.1.3's session-format v2, persistence seam, and Gateway/SDK refactor are
+  host-side concerns outside the adapter subset.
 - Acceptance fixture: the npm-published
   `@deepseek-ai/dsh-web-search-exa` mounts unmodified under
   [`examples/exa`](https://github.com/artec/clat/tree/main/sdk/dsh-adapter/examples/exa).

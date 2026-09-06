@@ -6,8 +6,14 @@ CLAT 把 DeepSeek Harness（DSH）作为插件协议参考实现，但不在 Rus
 原 DSH 插件，把可移植能力映射为 MCP。
 
 本文当前钉在 DSH `dsh-v0.1.1-rc.2`，源代码提交
-`b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`。DSH Web 设置中看到的
-147 项是 preset、base bundle 与 Web patch 组装后的插件配置项，不等同于
+`b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`。2026-09-06 按
+`dsh-v0.1.3-alpha.1`（`d347e70390`）复核兼容表：下表所列插件面缝
+（`defineTool`、`ctx.tools.register`、`ctx.systemPrompt`、llm 采样、
+web/fs/shell/sessions/agents 面）在 rc.2→0.1.3 区间未变——0.1.3 的
+大改（会话格式 v2、持久化接缝、Gateway/SDK、tools 展示层 code→ptc
+内部改名）都在宿主侧或子集仿真面之外，兼容行为逐项仍然成立。DSH Web
+设置中看到的 147 项是 preset、base bundle 与 Web patch 组装后的插件
+配置项，不等同于
 147 个彼此独立的 npm 包。兼容目标是尽量让这些配置背后的插件原样加载，
 不是宣称它们已经全部逐个转换和验收。
 
@@ -27,7 +33,8 @@ Rust 内核有意去掉 Cordis 的运行时猴子补丁、原型链注入、热�
 动态重启；其余可静态表达的依赖、所有权、挂载事务、作用域和反向清理语义
 由 CLAT 自己持有。这样桌面端、TUI、headless 与未来客户端仍共享同一内核。
 
-**显式偏差（2026-09-02 记档）：动态 Cordis 包子系统不映射。** DSH 的
+**显式偏差（2026-09-02 记档；2026-09-06 按 0.1.3 复核仍成立）：动态
+Cordis 包子系统不映射。** DSH 的
 `packages/extensions/` 四包（`tool-cordis` + host/client runner +
 `ui-cordis`）让运行中的模型可以自主检查当前进程的插件/服务、定义动态
 Cordis 包（host 半 + 浏览器半）、运行/停止/移除，浏览器面板全程操作；
