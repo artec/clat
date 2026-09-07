@@ -19,6 +19,7 @@ use crate::dsh::client::{DshClient, DshEra};
 use crate::dsh::connect::{self, ConnectFailure, OwnedDshHost};
 use crate::dsh::files;
 use crate::dsh::frames::{DshFrame, parse_frame};
+use crate::dsh::mux::MuxController;
 use crate::dsh::ws::{self, WsMessage};
 use crate::session::event::SessionEvent;
 use serde_json::{Value, json};
@@ -64,12 +65,17 @@ pub(crate) enum DshEvent {
     Reconnected {
         port: u16,
         describe: Value,
+        /// DV-9/S3：世代 + cookie（App 存入 DshState；下行开路与
+        /// worker 重建 client 依赖它）。
+        era: DshEra,
+        cookie: Option<String>,
         /// FIX-3/CA-03：进程组句柄（树级清理语义见 connect.rs）。
         child: Option<OwnedDshHost>,
     },
 }
 
-/// HTTP 任务（D-1 WorkerTask 十变体原样；`Create` 扩展收养参数）。
+/// HTTP 任务（D-1 WorkerTask 十变体原样；`Create` 扩展收养参数；
+/// DV-9/S3 增 `AdoptMux`）。
 #[derive(Debug)]
 pub(crate) enum DshTask {
     /// `prefer` = 客户端自记的最后打开会话（拍板 A，2026-08-24）：仍在
@@ -120,6 +126,11 @@ pub(crate) enum DshTask {
         rpc_id: String,
         result: Value,
     },
+    /// DV-9/S3：App 开完 mux 连接后把控制器移交 worker（History 的
+    /// follow 切换与 Respond 的 clientId 都在 worker 侧消费）。
+    AdoptMux {
+        controller: MuxController,
+    },
     Reconnect,
 }
 
@@ -161,6 +172,8 @@ pub(crate) enum TaskReply {
     Reconnected {
         port: u16,
         describe: Value,
+        era: DshEra,
+        cookie: Option<String>,
         child: Option<OwnedDshHost>,
     },
 }
@@ -172,7 +185,14 @@ pub(crate) fn spawn_connect(preferred_port: u16, events: SyncSender<DshEvent>) {
         let home = files::dsh_home();
         match connect::ensure_online(preferred_port, "dsh", home.as_deref()) {
             Ok(online) => {
-                let _ = deliver_reconnected(&events, online.port, online.describe, online.child);
+                let _ = deliver_reconnected(
+                    &events,
+                    online.port,
+                    online.describe,
+                    online.era,
+                    online.cookie,
+                    online.child,
+                );
             }
             Err(ConnectFailure::NotInstalled) => {
                 let _ = events.send(DshEvent::LinkDown {
@@ -201,14 +221,24 @@ pub(crate) fn spawn_worker(
     std::thread::spawn(move || {
         let mut client = client;
         let mut port = port;
+        // DV-9/S3：Typert mux 控制器（AdoptMux 移交；Legacy 恒 None）。
+        let mut mux: Option<MuxController> = None;
         while let Ok(task) = tasks.recv() {
-            let reply = run_task(&task, &mut client, &mut port);
+            if matches!(task, DshTask::AdoptMux { .. }) {
+                if let DshTask::AdoptMux { controller } = task {
+                    mux = Some(controller);
+                }
+                continue;
+            }
+            let reply = run_task(&task, &mut client, &mut port, mux.as_ref());
             let delivered = match reply {
                 Some(TaskReply::Reconnected {
                     port,
                     describe,
+                    era,
+                    cookie,
                     child,
-                }) => deliver_reconnected(&events, port, describe, child),
+                }) => deliver_reconnected(&events, port, describe, era, cookie, child),
                 Some(reply) => events.send(DshEvent::Reply(reply)).is_ok(),
                 None => true,
             };
@@ -226,12 +256,16 @@ fn deliver_reconnected(
     events: &SyncSender<DshEvent>,
     port: u16,
     describe: Value,
+    era: DshEra,
+    cookie: Option<String>,
     child: Option<OwnedDshHost>,
 ) -> bool {
     events
         .send(DshEvent::Reconnected {
             port,
             describe,
+            era,
+            cookie,
             child,
         })
         .is_ok()
@@ -269,6 +303,9 @@ pub(crate) fn open_downlink(
                         return;
                     }
                 }
+                // DV-9/S3：旧宿主从不 ping——上行不存在的路径静默丢弃
+                //（Typert 泵在 mux.rs 内应答心跳，不经此分发）。
+                WsMessage::Ping(_) => {}
                 WsMessage::Closed(reason) | WsMessage::Failed(reason) => {
                     let _ = events.send(DshEvent::LinkDown { generation, reason });
                     return;
@@ -387,6 +424,7 @@ pub(crate) fn run_task(
     task: &DshTask,
     client: &mut DshClient,
     port: &mut u16,
+    mux: Option<&MuxController>,
 ) -> Option<TaskReply> {
     // 重连是特殊路径：可能 spawn，阻塞到就绪，随后本线程换 client，
     // App 侧收到 Reconnected 后重开 WS。失败走独立的 ReconnectFailed
@@ -396,10 +434,21 @@ pub(crate) fn run_task(
         return match connect::ensure_online(*port, "dsh", home.as_deref()) {
             Ok(online) => {
                 *port = online.port;
-                *client = DshClient::new(online.port);
+                let era = online.era;
+                let cookie = online.cookie.clone();
+                let mut next = DshClient::new(online.port);
+                if era == DshEra::Typert {
+                    if let Some(cookie) = &cookie {
+                        next = next.with_cookie(cookie);
+                    }
+                    next = next.with_typert_era();
+                }
+                *client = next;
                 Some(TaskReply::Reconnected {
                     port: online.port,
                     describe: online.describe,
+                    era,
+                    cookie,
                     child: online.child,
                 })
             }
@@ -494,12 +543,41 @@ pub(crate) fn run_task(
             Some(TaskReply::Created(session))
         }
         DshTask::History { session } => {
-            // DV-9/S3 范围：Typert 的历史装载走 follow 快照 + page
-            // 回填（计划 §2）；S2 阶段 Typert 世代明确拒绝而非走旧面。
+            // DV-9/S3：Typert 历史装载 = session/page（throughSeq:-1
+            // 哨兵 = 最新，research §7 开题 2）+ 顺带切 mux follow
+            // 目标（App 每次会话切换都发 History——零新增任务变体）。
             if client.era == DshEra::Typert {
-                return Some(TaskReply::Failed(
-                    "session history requires the S3 follow stream (not yet wired)".to_owned(),
-                ));
+                if let Some(controller) = mux {
+                    controller.follow(session);
+                } else {
+                    return Some(TaskReply::Failed(
+                        "typert history needs the mux controller (AdoptMux missing)".to_owned(),
+                    ));
+                }
+                let payload = json!({"args": {
+                    "address": {"kind": "session", "sessionId": session},
+                    "throughSeq": -1,
+                    "maxMessages": 2000,
+                }});
+                let value = match client.call("session/page", payload) {
+                    Ok(value) => value,
+                    Err(error) => return Some(TaskReply::Failed(error.to_string())),
+                };
+                let mut events = Vec::new();
+                if let Some(records) = value.get("records").and_then(Value::as_array) {
+                    for record in records {
+                        if let Ok(event) = serde_json::from_value::<SessionEvent>(
+                            record.get("event").cloned().unwrap_or(Value::Null),
+                        ) {
+                            events.push(event);
+                        }
+                    }
+                }
+                events.sort_by_key(|event| event.seq);
+                return Some(TaskReply::History {
+                    session: session.clone(),
+                    events,
+                });
             }
             let value = match client.call("session.history", json!({"sessionId": session})) {
                 Ok(value) => value,
@@ -593,12 +671,39 @@ pub(crate) fn run_task(
             "renamed",
         ),
         DshTask::Respond { rpc_id, result } => {
-            // DV-9/S3 范围：Typert 的应答走 $events waterfall 的
-            // `$events/result`（clientId/eventId 来自 S3 的流面）。
+            // DV-9/S3：Typert 应答走 `$events/result`（research §5：
+            // payload 带 {args:…} 包裹）。outcome 词汇两代同源
+            //（allowed-once/rejected…）；问答答案取 `answer` 字段。
             if client.era == DshEra::Typert {
-                return Some(TaskReply::Failed(
-                    "answers require the S3 $events stream (not yet wired)".to_owned(),
-                ));
+                let Some(controller) = mux else {
+                    return Some(TaskReply::Failed(
+                        "answers need the mux controller (AdoptMux missing)".to_owned(),
+                    ));
+                };
+                let client_id = controller
+                    .client_id
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .clone();
+                let Some(client_id) = client_id else {
+                    return Some(TaskReply::Failed(
+                        "the host event stream is not ready yet (no clientId)".to_owned(),
+                    ));
+                };
+                let outcome_value = result
+                    .get("outcome")
+                    .cloned()
+                    .or_else(|| result.get("answer").cloned())
+                    .unwrap_or(Value::Null);
+                let payload = json!({"args": {
+                    "clientId": client_id,
+                    "eventId": rpc_id,
+                    "outcome": {"kind": "result", "value": outcome_value},
+                }});
+                return match client.call("$events/result", payload) {
+                    Ok(_) => Some(TaskReply::Status("answer accepted".to_owned())),
+                    Err(error) => Some(TaskReply::Failed(error.to_string())),
+                };
             }
             match client.respond(rpc_id, result.clone()) {
                 Ok(true) => Some(TaskReply::Status("answer accepted".to_owned())),
@@ -608,6 +713,7 @@ pub(crate) fn run_task(
                 Err(error) => Some(TaskReply::Failed(error.to_string())),
             }
         }
+        DshTask::AdoptMux { .. } => unreachable!("intercepted by the worker loop"),
         DshTask::Reconnect => unreachable!("handled above"),
     }
 }
@@ -685,6 +791,8 @@ mod tests {
             &events,
             3080,
             json!({}),
+            crate::dsh::client::DshEra::Legacy,
+            None,
             Some(OwnedDshHost::new(child)),
         ));
         assert!(
@@ -737,6 +845,8 @@ mod tests {
             &events,
             3080,
             json!({}),
+            crate::dsh::client::DshEra::Legacy,
+            None,
             Some(OwnedDshHost::new(child)),
         ));
         drop(receiver);
@@ -1010,7 +1120,12 @@ mod tests {
         let mut client = host.client();
         let mut port = 0;
 
-        let reply = run_task(&DshTask::Restore { prefer: None }, &mut client, &mut port);
+        let reply = run_task(
+            &DshTask::Restore { prefer: None },
+            &mut client,
+            &mut port,
+            None,
+        );
         assert!(
             matches!(reply, Some(TaskReply::Restored { session: None, .. })),
             "restore reply: {reply:?}"
@@ -1024,6 +1139,7 @@ mod tests {
             },
             &mut client,
             &mut port,
+            None,
         );
         assert!(matches!(reply, Some(TaskReply::Status(_))));
         let prompt = host.payload_of("session/prompt");
@@ -1035,6 +1151,7 @@ mod tests {
             },
             &mut client,
             &mut port,
+            None,
         );
         let reply = run_task(
             &DshTask::Create {
@@ -1043,6 +1160,7 @@ mod tests {
             },
             &mut client,
             &mut port,
+            None,
         );
         assert!(matches!(reply, Some(TaskReply::Created(id)) if id == "s-new"));
 
@@ -1052,6 +1170,7 @@ mod tests {
             },
             &mut client,
             &mut port,
+            None,
         );
         match reply {
             Some(TaskReply::Models(value)) => {
@@ -1075,6 +1194,7 @@ mod tests {
             },
             &mut client,
             &mut port,
+            None,
         );
         assert!(matches!(
             reply,
@@ -1088,6 +1208,7 @@ mod tests {
             },
             &mut client,
             &mut port,
+            None,
         );
 
         let methods = host.methods();
@@ -1120,7 +1241,7 @@ mod tests {
                 result: json!({}),
             },
         ] {
-            let reply = run_task(&task, &mut client, &mut port);
+            let reply = run_task(&task, &mut client, &mut port, None);
             assert!(
                 matches!(reply, Some(TaskReply::Failed(_))),
                 "{task:?} must defer to S3, got {reply:?}"
@@ -1129,7 +1250,12 @@ mod tests {
 
         // 世代判别：同一宿主上 Legacy 客户端仍发点名族。
         let mut legacy = DshClient::new(host.port);
-        let _ = run_task(&DshTask::Restore { prefer: None }, &mut legacy, &mut port);
+        let _ = run_task(
+            &DshTask::Restore { prefer: None },
+            &mut legacy,
+            &mut port,
+            None,
+        );
         assert!(
             host.methods().iter().any(|m| m == "session.list"),
             "legacy era keeps the dotted family"
@@ -1163,7 +1289,7 @@ mod tests {
                 session: Some("s-1".into()),
             },
         ] {
-            let reply = run_task(&task, &mut client, &mut port);
+            let reply = run_task(&task, &mut client, &mut port, None);
             assert!(
                 matches!(reply, Some(TaskReply::Failed(_))),
                 "{task:?} must surface its call failure, got {reply:?}"

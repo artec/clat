@@ -1,10 +1,15 @@
-//! RFC 6455 客户端最小帧层（D-1 唯一新工程面，设计 §3.2）。
+//! RFC 6455 客户端最小帧层（D-1 唯一新工程面，设计 §3.2；DV-9/S3
+//! 扩上行）。
 //!
-//! 只做客户端下行：握手（含 `Sec-WebSocket-Accept` 验证——手写
-//! SHA-1 + base64，零新依赖，INV-D7）+ 文本帧解析（分片 continuation、
-//! 控制帧）。**永不发送数据帧**（INV-D3：DSH 服务端对任何 message
-//! 关 1008 `downlink only`）；不做压缩扩展、二进制帧、TLS（loopback
-//! 明文与 DSH 浏览器客户端同款）。帧解析是纯函数层，单测不开真连接。
+//! 下行：握手（含 `Sec-WebSocket-Accept` 验证——手写 SHA-1 + base64，
+//! 零新依赖，INV-D7）+ 文本帧解析（分片 continuation、控制帧；ping
+//! 以 [`WsMessage::Ping`] 浮出供 mux 泵应答——Typert 宿主有心跳，
+//! 两拍无 pong 即断连）。
+//! 上行（DV-9/S3，INV-D3 修订）：**仅 Typert mux 控制**——masked
+//! 文本帧（open/cancel）与 pong。旧宿主路径仍只收不发（旧服务端对
+//! 任何 message 关 1008 `downlink only`）。不做压缩扩展、二进制
+//! 数据帧、TLS（loopback 明文与 DSH 浏览器客户端同款）。帧编解码
+//! 是纯函数层，单测不开真连接。
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -113,6 +118,8 @@ pub(crate) const OPCODE_PONG: u8 = 0xA;
 pub(crate) enum WsMessage {
     /// 一条完整文本消息（分片重组后）。
     Text(String),
+    /// 服务端 ping（DV-9/S3：Typert 心跳——调用方必须回 pong）。
+    Ping(Vec<u8>),
     /// 服务端 close（含状态码/原因的最佳努力解读）。
     Closed(String),
     /// 读错误/协议错误（连接不可再用）。
@@ -151,8 +158,12 @@ impl FrameAssembler {
                 if opcode == OPCODE_CLOSE {
                     let reason = decode_close_reason(&data[consumed..]);
                     messages.push(WsMessage::Closed(reason));
+                } else if opcode == OPCODE_PING {
+                    // DV-9/S3：ping 浮出（Typert 心跳要求 pong 应答）；
+                    // 旧宿主从不 ping，旧泵对该分支无感。
+                    messages.push(WsMessage::Ping(data[consumed..].to_vec()));
                 }
-                // ping/pong：静默忽略（服务端从不 ping；见模块注释）。
+                // pong：静默忽略（主动心跳非客户端义务）。
                 continue;
             }
             // 数据帧：continuation 必须有在途分片，反之亦然。
@@ -229,6 +240,40 @@ impl FrameAssembler {
         }
         Ok(data)
     }
+}
+
+/// DV-9/S3：客户端上行帧编码（RFC §5.3 客户端必须掩码）。单帧
+/// FIN、无分片——mux 控制消息（open/cancel 文本、pong）的形状。
+pub(crate) fn encode_client_frame(opcode: u8, payload: &[u8]) -> Vec<u8> {
+    let mask_seed = uuid_key();
+    let mask: [u8; 4] = mask_seed[0..4].try_into().expect("4 mask bytes");
+    let mut frame = Vec::with_capacity(2 + 4 + payload.len());
+    frame.push(0x80 | opcode); // FIN + opcode
+    let len = payload.len();
+    if len < 126 {
+        frame.push(0x80 | len as u8);
+    } else if len <= u16::MAX as usize {
+        frame.push(0x80 | 126);
+        frame.extend_from_slice(&(len as u16).to_be_bytes());
+    } else {
+        frame.push(0x80 | 127);
+        frame.extend_from_slice(&(len as u64).to_be_bytes());
+    }
+    frame.extend_from_slice(&mask);
+    for (index, byte) in payload.iter().enumerate() {
+        frame.push(byte ^ mask[index % 4]);
+    }
+    frame
+}
+
+/// 一条上行文本消息（mux open/cancel）。
+pub(crate) fn encode_client_text(text: &str) -> Vec<u8> {
+    encode_client_frame(OPCODE_TEXT, text.as_bytes())
+}
+
+/// 一个 pong 应答（回显 ping payload）。
+pub(crate) fn encode_client_pong(payload: &[u8]) -> Vec<u8> {
+    encode_client_frame(OPCODE_PONG, payload)
 }
 
 type Header = (bool, u8, bool, usize, usize);
@@ -339,6 +384,10 @@ pub(crate) fn connect_downlink(
     }
 }
 
+pub(crate) fn uuid_key_bytes() -> [u8; 16] {
+    uuid_key()
+}
+
 fn uuid_key() -> [u8; 16] {
     let uuid = uuid::Uuid::new_v4();
     let mut key = [0u8; 16];
@@ -350,7 +399,7 @@ fn find_header_end(buffer: &[u8]) -> Option<usize> {
     buffer.windows(4).position(|window| window == b"\r\n\r\n")
 }
 
-fn verify_handshake(header: &str, key: &str) -> Result<(), String> {
+pub(crate) fn verify_handshake(header: &str, key: &str) -> Result<(), String> {
     let status = header.lines().next().unwrap_or_default();
     if !status.contains("101") {
         return Err(format!("handshake refused: {status}"));
@@ -502,12 +551,14 @@ mod tests {
     }
 
     #[test]
-    fn assembler_reports_close_and_ignores_ping_pong() {
+    fn assembler_reports_close_and_surfaces_ping() {
         let mut assembler = FrameAssembler::new();
+        // DV-9/S3（INV-D3 修订）：Typert 宿主心跳要求 pong——ping 以
+        // 消息形态浮出；pong 仍静默。
         let messages = assembler
             .push(&server_frame(true, OPCODE_PING, b"hb"))
             .unwrap();
-        assert!(messages.is_empty(), "ping 静默忽略（INV-D3 注记）");
+        assert_eq!(messages, vec![WsMessage::Ping(b"hb".to_vec())]);
         let messages = assembler
             .push(&server_frame(true, OPCODE_CLOSE, &[0x03, 0xE8, b' ', b'x']))
             .unwrap();
@@ -527,8 +578,8 @@ mod tests {
         let orphan = server_frame(true, OPCODE_CONTINUATION, b"a");
         let mut assembler2 = FrameAssembler::new();
         assert!(assembler2.push(&orphan).is_err());
-        // RFC §5.5.1 允许控制帧穿插分片——ping 打断 continuation 是合法
-        // 的，且被静默忽略（不开错误路径）。
+        // RFC §5.5.1 允许控制帧穿插分片——ping 打断 continuation 合法，
+        // 浮出为独立消息（DV-9/S3）。
         let mut interleaved = Vec::new();
         interleaved.extend_from_slice(&server_frame(false, OPCODE_TEXT, b"a"));
         interleaved.extend_from_slice(&server_frame(true, OPCODE_PING, b"b"));
@@ -536,7 +587,32 @@ mod tests {
         let mut assembler3 = FrameAssembler::new();
         assert_eq!(
             assembler3.push(&interleaved).unwrap(),
-            vec![WsMessage::Text("ac".into())]
+            vec![WsMessage::Ping(b"b".to_vec()), WsMessage::Text("ac".into())]
+        );
+    }
+
+    /// DV-9/S3：客户端上行帧编码——掩码正确性（服务端 FrameAssembler
+    /// 解回验证）+ pong 短控制帧 + 16-bit 扩展长度档。
+    #[test]
+    fn client_frames_are_masked_and_round_trip() {
+        let open = encode_client_text("{\"type\":\"open\"}");
+        assert_eq!(open[0], 0x81, "FIN + text");
+        assert_eq!(open[1] & 0x80, 0x80, "mask bit set");
+        let mut assembler = FrameAssembler::new();
+        assert_eq!(
+            assembler.push(&open).unwrap(),
+            vec![WsMessage::Text("{\"type\":\"open\"}".into())],
+            "the server-side assembler unmasks it back"
+        );
+        let pong = encode_client_pong(b"hb");
+        assert_eq!(pong[0] & 0x0F, OPCODE_PONG);
+        assert_eq!(pong[1] & 0x7F, 2, "control payload stays short");
+        let big = encode_client_text(&"x".repeat(300));
+        assert_eq!(big[1] & 0x7F, 126, "16-bit extended length kicks in");
+        let mut assembler = FrameAssembler::new();
+        assert_eq!(
+            assembler.push(&big).unwrap(),
+            vec![WsMessage::Text("x".repeat(300))]
         );
     }
 

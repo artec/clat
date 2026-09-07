@@ -61,18 +61,13 @@ impl DshClient {
         }
     }
 
-    /// DV-9/S2：Typert 方法面形态（测试直构；S3 探测链接线后生产
-    /// 使用——半桥惰性法则，生产消费者缺席）。
-    #[allow(dead_code)]
+    /// DV-9/S3：Typert 方法面形态（探测链/重连生产使用）。
     pub(crate) fn with_typert_era(mut self) -> Self {
         self.era = DshEra::Typert;
         self
     }
 
     /// 附带会话 cookie 的形态（`exchange_token` 的产物）。
-    /// DV-9/S1 惰性层：S3 流面接线前的生产消费者缺席（半桥惰性法则，
-    /// 计划 §0 裁定 3）；测试已行激励。S3 接线时移除本豁免。
-    #[allow(dead_code)]
     pub(crate) fn with_cookie(mut self, cookie: &str) -> Self {
         self.cookie = Some(cookie.to_owned());
         self
@@ -121,10 +116,6 @@ impl DshClient {
         // DV-9/S1：载体层状态码如实上报（401=需鉴权、403=信任栅、
         // 404=端点无 owner——Typert 探测依赖 401 形状；旧宿主恒 200
         // 不受影响）。
-
-        // DV-9/S1：载体层状态码如实上报（401=需鉴权、403=信任栅、
-        // 404=端点无 owner——Typert 探测依赖 401 形状；旧宿主恒 200
-        // 不受影响）。
         let status = response.status().as_u16();
         if status != 200 {
             return Err(DshApiError {
@@ -169,6 +160,14 @@ impl DshClient {
                 code: "transport".to_owned(),
                 message: error.to_string(),
             })?;
+        // F-A/F-3（S2 审计）：回执路径同 call 的载体状态码上报。
+        let status = response.status().as_u16();
+        if status != 200 {
+            return Err(DshApiError {
+                code: format!("http-{status}"),
+                message: format!("carrier rejected the respond with HTTP {status}"),
+            });
+        }
         // FIX-2/CA-02：回执 body 同帽有界。
         let text = crate::dsh::budget::read_string_capped(
             response.into_body().into_reader(),
@@ -198,8 +197,6 @@ impl DshClient {
 /// DV-9/S1：launch token → 会话 cookie 的交换（research §2）。
 /// `GET /?token=<t>` 禁重定向，读 `Set-Cookie: dsh-auth-<hash>=<value>`
 /// 并拼回 `name=value`。loopback `Host` 过信任栅；此请求本身免 cookie。
-/// DV-9/S1 惰性层（同上）。
-#[allow(dead_code)]
 pub(crate) fn exchange_token(port: u16, token: &str) -> Result<String, DshApiError> {
     let agent = ureq::Agent::config_builder()
         .http_status_as_error(false)
@@ -254,8 +251,6 @@ pub(crate) fn exchange_token(port: u16, token: &str) -> Result<String, DshApiErr
 /// 鉴权后的 `session/canOpenWorkspacePath`（最便宜的无参单发）。
 /// 200 server-response（含 ok:false 业务错误）= Typert 宿主在线；
 /// 401 = 宿主在但 cookie/token 不可用；连接失败 = 无宿主。
-/// DV-9/S1 惰性层（同上）。
-#[allow(dead_code)]
 pub(crate) fn probe_typert(client: &DshClient) -> Result<(), DshApiError> {
     match client.call("session/canOpenWorkspacePath", json!({})) {
         Ok(_) => Ok(()),

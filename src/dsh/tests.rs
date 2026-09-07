@@ -569,6 +569,7 @@ fn ws_downlink_reports_disconnect() {
         };
         match message {
             WsMessage::Text(_) => saw_text = true,
+            WsMessage::Ping(_) => {}
             WsMessage::Closed(_) | WsMessage::Failed(_) => {
                 saw_close = true;
                 break;
@@ -617,6 +618,7 @@ fn live_dsh_web_connects_and_streams() {
     let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
         match receiver.recv_timeout(Duration::from_millis(200)) {
+            Ok(WsMessage::Ping(_)) => continue,
             Ok(WsMessage::Text(text)) => {
                 assert!(text.contains("server-request"), "{text}");
                 return;
@@ -643,6 +645,7 @@ fn create_adoption_sends_session_id_and_target_cwd_over_the_wire() {
         },
         &mut client,
         &mut port,
+        None,
     )
     .expect("reply");
     match reply {
@@ -688,9 +691,13 @@ fn restore_picks_the_list_head_even_when_blank() {
     );
     let mut client = host.client();
     let mut port = host.port;
-    let reply =
-        crate::dsh::backend::run_task(&DshTask::Restore { prefer: None }, &mut client, &mut port)
-            .expect("reply");
+    let reply = crate::dsh::backend::run_task(
+        &DshTask::Restore { prefer: None },
+        &mut client,
+        &mut port,
+        None,
+    )
+    .expect("reply");
     match reply {
         TaskReply::Restored { session, cwd } => {
             assert_eq!(
@@ -731,6 +738,7 @@ fn restore_prefers_the_remembered_session() {
         },
         &mut client,
         &mut port,
+        None,
     )
     .expect("reply");
     match reply {
@@ -747,6 +755,7 @@ fn restore_prefers_the_remembered_session() {
         },
         &mut client,
         &mut port,
+        None,
     )
     .expect("reply");
     match reply {

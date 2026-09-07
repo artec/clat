@@ -3,7 +3,7 @@
 //! `--port 0` + 解析 stdout 就绪行）；无 dsh 且无 `~/.dsh` → 「dsh
 //! 未安装」。掉线由前端横幅 + `/reconnect` 手动重试（INV-D2/D4）。
 
-use crate::dsh::client::{DshClient, looks_like_dsh};
+use crate::dsh::client::{DshClient, DshEra, exchange_token, looks_like_dsh, probe_typert};
 use command_group::{CommandGroup as _, GroupChild};
 use serde_json::Value;
 use std::path::Path;
@@ -58,12 +58,11 @@ impl Drop for OwnedDshHost {
 pub(crate) struct Online {
     pub(crate) port: u16,
     pub(crate) describe: Value,
-    /// DV-9/S1：自起宿主 stdout 就绪行里的 launch token（0.1.2+
-    /// Typert 宿主换会话 cookie 用；旧世代宿主/外起宿主/就绪行未及
-    /// 刷出时为 None——S3 接线前仅为携带，不参与 Online 判定）。
-    /// S1 惰性层：生产消费者缺席（半桥惰性法则）。
-    #[allow(dead_code)]
-    pub(crate) token: Option<String>,
+    /// DV-9/S3：本连接的方法面世代——探测链判定（Legacy=旧 describe
+    /// 指纹过；Typert=token 交换 + 能力面探测过，半桥解锁点）。
+    pub(crate) era: DshEra,
+    /// Typert 世代的会话 cookie（`dsh-auth-*`；Legacy = None）。
+    pub(crate) cookie: Option<String>,
     /// 本进程 spawn 的宿主句柄（None = 探测直连了别人起的宿主——
     /// 归属权不明，永不触碰）。D-2 退出清理：调用方持有至退出。
     /// FIX-3/CA-03：进程组句柄——清理按整树（unix 进程组 /
@@ -96,22 +95,46 @@ pub(crate) fn ensure_online(
         return Ok(Online {
             port: preferred_port,
             describe,
-            token: None,
+            era: DshEra::Legacy,
+            cookie: None,
             child: None,
         });
+    }
+    // DV-9/S3：Typert 宿主探测（外起宿主必须用户递 URL——DSH 安全
+    // 模型下 launch token 只在宿主 stdout 打印一次，research §2）。
+    // `CLAT_DSH_URL=http://127.0.0.1:P/?token=T`；S4 补 --url 旗标。
+    if let Some(online) = external_url_online() {
+        return Ok(online);
     }
     // spawn 路径。可执行缺席时按有无 ~/.dsh 区分两种失败形态。
     let spawned = spawn_web(dsh_binary, preferred_port);
     match spawned {
         Ok((port, token, mut child)) => {
-            // 就绪轮询：describe 通过才算在线（INV：指纹是唯一闸门）。
+            // 就绪轮询（INV：能力面探测是唯一闸门）：旧二进制过
+            // describe 指纹 → Legacy；0.1.2+ 二进制 describe 恒 401，
+            // 由就绪行 token 换 cookie 过能力面探测 → Typert（S3 解锁）。
             let deadline = Instant::now() + SPAWN_READY_TIMEOUT;
             while Instant::now() < deadline {
                 if let Some(describe) = probe(port) {
                     return Ok(Online {
                         port,
                         describe,
-                        token,
+                        era: DshEra::Legacy,
+                        cookie: None,
+                        child: Some(OwnedDshHost::new(child)),
+                    });
+                }
+                if let Some(token) = &token
+                    && let Some(online) = typert_online(port, token)
+                {
+                    let Online {
+                        cookie, describe, ..
+                    } = online;
+                    return Ok(Online {
+                        port,
+                        describe,
+                        era: DshEra::Typert,
+                        cookie,
                         child: Some(OwnedDshHost::new(child)),
                     });
                 }
@@ -285,6 +308,55 @@ fn wait_bounded(
         }
         std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+/// token → cookie → 能力面探测（`session/canOpenWorkspacePath`）。
+/// 任一步失败 = None（调用方继续轮询/报错）。describe 为 Typert 合成
+/// 形（version/home/cwd 占位——$events ready 的 home 与会话级 cwd
+/// 由流面/Restore 补，见 research §5）。
+fn typert_online(port: u16, token: &str) -> Option<Online> {
+    let cookie = exchange_token(port, token).ok()?;
+    let client = DshClient::new(port).with_cookie(&cookie).with_typert_era();
+    probe_typert(&client).ok()?;
+    Some(Online {
+        port,
+        describe: serde_json::json!({
+            "version": "typert",
+            "home": "",
+            "cwd": "",
+            "attachedSessions": 0,
+        }),
+        era: DshEra::Typert,
+        cookie: Some(cookie),
+        child: None,
+    })
+}
+
+/// `CLAT_DSH_URL`（`http://127.0.0.1:P/?token=T`）→ Typert 连接。
+/// 非 loopback / 缺 token / 探测失败 = None（走后续 spawn 路径）。
+fn external_url_online() -> Option<Online> {
+    let url = std::env::var("CLAT_DSH_URL").ok()?;
+    let (port, token) = parse_external_url(&url)?;
+    typert_online(port, &token)
+}
+
+fn parse_external_url(url: &str) -> Option<(u16, String)> {
+    let after_scheme = url.split_once("://")?.1;
+    let (authority, rest) = after_scheme.split_once('/')?;
+    let host = authority.split(':').next()?;
+    if host != "127.0.0.1" && host != "localhost" {
+        return None; // 信任栅只认 loopback（research §2）。
+    }
+    let port: u16 = authority.split_once(':')?.1.parse().ok()?;
+    let token = rest
+        .split_once("token=")
+        .map(|(_, tail)| {
+            tail.chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '='))
+                .collect::<String>()
+        })
+        .filter(|token| !token.is_empty())?;
+    Some((port, token))
 }
 
 fn parse_ready_port(line: &str) -> Option<u16> {
@@ -607,6 +679,117 @@ mod tests {
             other => panic!("expected Failed, got {other:?}"),
         }
         std::fs::remove_file(&script).ok();
+    }
+
+    /// DV-9/S3 解锁链判别：假 dsh 二进制（打印指向假宿主的就绪行）→
+    /// ensure_online 走 spawn → token 交换 → 能力面探测 → **Typert
+    /// Online**（era + cookie）。删探测链接线（typert_online 分支）
+    /// 即红——宿主对旧面恒 401，链路只能靠新分支闭合。
+    #[test]
+    #[cfg(unix)]
+    fn ensure_online_unlocks_typert_hosts_via_the_spawn_token() {
+        use std::os::unix::fs::PermissionsExt as _;
+        if std::env::var("CLAT_DSH_URL").is_ok() {
+            // 全局 env 会劫持外接路径——本腿只测 spawn 链。
+            return;
+        }
+        // 假宿主：复用 mux 测试的形状（token 交换 + canOpenWorkspacePath）。
+        use std::io::{Read as _, Write as _};
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let host_port = listener.local_addr().expect("addr").port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                std::thread::spawn(move || {
+                    let mut buffer = [0u8; 4096];
+                    let Ok(read) = stream.read(&mut buffer) else {
+                        return;
+                    };
+                    let head = String::from_utf8_lossy(&buffer[..read]).into_owned();
+                    let response: std::borrow::Cow<'_, str> = if head
+                        .starts_with("GET /?token=good")
+                    {
+                        "HTTP/1.1 303 See Other\r\nLocation: /\r\nSet-Cookie: dsh-auth-x=v1.y; Path=/; HttpOnly\r\nContent-Length: 0\r\n\r\n".into()
+                    } else if head.starts_with("POST /api/session/canOpenWorkspacePath") {
+                        let rpc_id = head
+                            .split("\r\n\r\n")
+                            .nth(1)
+                            .and_then(|body| serde_json::from_str::<serde_json::Value>(body).ok())
+                            .and_then(|envelope| {
+                                envelope
+                                    .get("rpcId")
+                                    .and_then(serde_json::Value::as_str)
+                                    .map(str::to_owned)
+                            })
+                            .unwrap_or_else(|| "x".to_owned());
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{{\"type\":\"server-response\",\"rpcId\":\"{rpc_id}\",\"result\":{{\"ok\":true,\"value\":true}}}}"
+                        )
+                        .into()
+                    } else {
+                        "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n".into()
+                    };
+                    let _ = stream.write_all(response.as_bytes());
+                });
+            }
+        });
+        // 假 dsh 二进制：即刻打印就绪行（含真宿主端口 + token），长睡。
+        let script = std::env::temp_dir().join(format!(
+            "clat-fake-dsh-{}-{}.sh",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\necho 'dsh web: http://127.0.0.1:{host_port}/?token=good'\nsleep 60\n"
+            ),
+        )
+        .expect("write fake dsh");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        // 首选端口给一个空位（探测必拒，逼 spawn 路径）。
+        let scratch = TcpListener::bind("127.0.0.1:0").expect("scratch");
+        let preferred = scratch.local_addr().expect("addr").port();
+        drop(scratch);
+
+        let online = ensure_online(
+            preferred,
+            script.to_str().expect("path"),
+            Some(Path::new("/h")),
+        )
+        .expect("the typert host unlocks through the spawn chain");
+        assert_eq!(online.era, crate::dsh::client::DshEra::Typert);
+        assert_eq!(
+            online.cookie.as_deref(),
+            Some("dsh-auth-x=v1.y"),
+            "the cookie rode the whole chain"
+        );
+        // 自起宿主句柄归本进程——退场带走（脚本 sleep 60 的树）。
+        drop(online);
+        std::fs::remove_file(&script).ok();
+    }
+
+    /// 外接 URL 解析：loopback + token 段；非 loopback / 缺 token 拒。
+    #[test]
+    fn external_url_parsing_requires_loopback_and_a_token() {
+        assert_eq!(
+            parse_external_url("http://127.0.0.1:43121/?token=AbC_dEf"),
+            Some((43121, "AbC_dEf".to_owned()))
+        );
+        assert_eq!(
+            parse_external_url("http://localhost:43121/?token=t1"),
+            Some((43121, "t1".to_owned()))
+        );
+        assert_eq!(
+            parse_external_url("http://192.168.1.4:43121/?token=t"),
+            None
+        );
+        assert_eq!(parse_external_url("http://127.0.0.1:43121/"), None);
+        assert_eq!(parse_external_url("garbage"), None);
     }
 
     /// DV-9/S1：就绪行 token 段提取——0.1.2+ 宿主的 launch token

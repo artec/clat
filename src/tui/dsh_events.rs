@@ -195,6 +195,10 @@ pub(crate) struct DshState {
     pub(crate) connected: bool,
     client: DshClient,
     port: u16,
+    /// DV-9/S3：世代 + cookie（下行开路与 client 重建依赖；连接事件
+    // 写入）。
+    era: crate::dsh::client::DshEra,
+    cookie: Option<String>,
     describe: Value,
     pub(crate) model_label: String,
     /// 当前选择的原始 id 对（provider, model）——标签经名字索引解析成
@@ -296,6 +300,8 @@ impl DshState {
             connected: true,
             client: DshClient::new(port),
             port,
+            era: crate::dsh::client::DshEra::Legacy,
+            cookie: None,
             describe,
             model_label,
             model_ids,
@@ -530,9 +536,11 @@ impl App {
             DshEvent::Reconnected {
                 port,
                 describe,
+                era,
+                cookie,
                 child,
             } => {
-                self.handle_dsh_reconnected(port, describe, child);
+                self.handle_dsh_reconnected(port, describe, era, cookie, child);
             }
         }
     }
@@ -693,6 +701,8 @@ impl App {
         &mut self,
         port: u16,
         describe: Value,
+        era: crate::dsh::client::DshEra,
+        cookie: Option<String>,
         child: Option<crate::dsh::connect::OwnedDshHost>,
     ) {
         if self.dsh_connect.is_some() {
@@ -701,8 +711,18 @@ impl App {
             // 安装），恢复最近活跃会话（§1.0 启动序列）。
             let (_, events_tx) = self.dsh_connect.take().expect("checked above");
             let (task_tx, task_rx) = mpsc::channel::<DshTask>();
-            backend::spawn_worker(DshClient::new(port), port, task_rx, events_tx.clone());
+            let mut era_client = DshClient::new(port);
+            if era == crate::dsh::client::DshEra::Typert {
+                if let Some(cookie) = &cookie {
+                    era_client = era_client.with_cookie(cookie);
+                }
+                era_client = era_client.with_typert_era();
+            }
+            backend::spawn_worker(era_client.clone(), port, task_rx, events_tx.clone());
             let mut dsh = DshState::new(port, describe, task_tx, events_tx);
+            dsh.client = era_client;
+            dsh.era = era;
+            dsh.cookie = cookie;
             dsh.adopt_spawned_host(child);
             self.default_status = abbreviate_home(std::path::Path::new(&dsh.cwd()));
             // 拍板 A：优先恢复自己上次打开的会话（记忆缺席/已删回落
@@ -720,7 +740,16 @@ impl App {
         // 自然恢复）。
         if let Some(dsh) = self.dsh.as_mut() {
             dsh.port = port;
-            dsh.client = DshClient::new(port);
+            let mut era_client = DshClient::new(port);
+            if era == crate::dsh::client::DshEra::Typert {
+                if let Some(cookie) = &cookie {
+                    era_client = era_client.with_cookie(cookie);
+                }
+                era_client = era_client.with_typert_era();
+            }
+            dsh.client = era_client;
+            dsh.era = era;
+            dsh.cookie = cookie;
             dsh.describe = describe;
             // 宿主句柄的归属甄别（审计 P1-4）：只有本次重连真的 respawn
             // 了宿主（child = Some）才换句柄；探测直连（child = None）
@@ -807,6 +836,26 @@ impl App {
         dsh.epoch.store(dsh.generation, Ordering::SeqCst);
         let generation = dsh.generation;
         let port = dsh.port;
+        if dsh.era == crate::dsh::client::DshEra::Typert {
+            // DV-9/S3：一条 mux 连接承载 follow/$events/control 三逻辑
+            // 流；控制器移交 worker（History 的 follow 切换在 worker 侧）。
+            let cookie = dsh
+                .cookie
+                .clone()
+                .ok_or_else(|| "typert host without a session cookie".to_owned())?;
+            let session = dsh.current_session.clone();
+            let controller = crate::dsh::mux::open(
+                port,
+                &cookie,
+                session.as_deref(),
+                dsh.events.clone(),
+                generation,
+                &dsh.epoch,
+            )
+            .map_err(|error| format!("cannot open the typert mux: {error}"))?;
+            dsh.send_task(DshTask::AdoptMux { controller });
+            return Ok(());
+        }
         backend::open_downlink(port, "/api/events.mux", &dsh.events, generation, &dsh.epoch)
             .and_then(|()| {
                 backend::open_downlink(
@@ -2455,6 +2504,8 @@ mod tests {
             DshEvent::Reconnected {
                 port: scratch_port(),
                 describe: describe_fixture(),
+                era: crate::dsh::client::DshEra::Legacy,
+                cookie: None,
                 child: None,
             },
         );
@@ -2570,6 +2621,8 @@ mod tests {
             DshEvent::Reconnected {
                 port,
                 describe: describe_fixture(),
+                era: crate::dsh::client::DshEra::Legacy,
+                cookie: None,
                 child: None,
             },
         );
