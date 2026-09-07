@@ -133,6 +133,15 @@ pub fn run(project: Project) -> io::Result<()> {
 /// 复用同一终端生命周期与 App::run 主循环。
 pub fn run_dsh_mode(args: &[String]) -> io::Result<()> {
     let port = parse_dsh_port(args).unwrap_or(crate::dsh::connect::DEFAULT_PORT);
+    // DV-9/S4：`--url`（外起 0.1.2+ 宿主的 token 入口）。DSH 的 launch
+    // token 只在宿主 stdout 打印一次（research §2），CLAT 无法探测外起
+    // 宿主的凭据——必须用户递 URL。经进程 env 递给连接链（spawn 前单
+    // 线程窗口写入，此后只读）。
+    if let Some(url) = parse_dsh_url(args) {
+        // Safety: 此处处于进程启动单线程段（任何连接线程尚未 spawn），
+        // set_var 的数据竞争前提不成立；连接链各线程启动后仅读取。
+        unsafe { std::env::set_var("CLAT_DSH_URL", url) };
+    }
     let app = App::open_dsh(port).map_err(io::Error::other)?;
     run_frontend(app)
 }
@@ -143,6 +152,17 @@ fn parse_dsh_port(args: &[String]) -> Option<u16> {
     while let Some(arg) = iter.next() {
         if arg == "--port" {
             return iter.next().and_then(|value| value.parse().ok());
+        }
+    }
+    None
+}
+
+/// `--url <u>` 解析（DV-9/S4）。
+fn parse_dsh_url(args: &[String]) -> Option<String> {
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if arg == "--url" {
+            return iter.next().cloned();
         }
     }
     None

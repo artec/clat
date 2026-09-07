@@ -910,18 +910,32 @@ failures exit non-zero for supervisors.
 
 ## DeepSeek Harness client (`clat dsh`)
 
-> Compatibility note (2026-09-06): the bridge speaks the DSH web API as of
-> `dsh-v0.1.1-rc.2`. DSH 0.1.2 replaced that API surface with the Typert
-> Gateway (`/api/remote.mux` with a trust gate), so `clat dsh` cannot
-> connect to DSH 0.1.2+ hosts, including 0.1.3. Re-bridging is tracked as
-> worklist DV-9.
-
 `clat dsh` reuses the CLAT TUI as a client of a local DSH web host:
 
 ```bash
 clat dsh
 clat dsh --port 3080
 ```
+
+Two host generations are supported. Legacy DSH (0.1.1-rc.2 era) is detected
+through the old `host.describe` fingerprint. DSH 0.1.2+ speaks the Typert
+Gateway (`/api/remote.mux` with browser-session authentication); for those
+hosts CLAT exchanges the host's one-time launch token for a session cookie
+and follows sessions over the gateway's multiplexed stream:
+
+- If no host is running and the `dsh` executable is installed, CLAT starts
+  `dsh web` itself and reads the launch token from the startup line — no
+  extra input needed. A host CLAT started is stopped when CLAT exits.
+- For a host you started yourself, pass its startup URL (the token is
+  printed once in the host's stdout and cannot be probed):
+
+  ```bash
+  clat dsh --url 'http://127.0.0.1:3080/?token=<launch-token>'
+  # or: CLAT_DSH_URL='http://127.0.0.1:3080/?token=…' clat dsh
+  ```
+
+  Only loopback URLs are accepted. This is DSH's security model: the
+  browser-session gate applies to every API call and the stream upgrade.
 
 It probes and fingerprints the host. If no DSH host is running and the `dsh`
 executable is installed, CLAT starts `dsh web`; a host CLAT started is stopped

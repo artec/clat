@@ -94,6 +94,16 @@ impl DshClient {
     /// 一次一元调用：信封包装 → POST → 信封解包。
     pub(crate) fn call(&self, method: &str, payload: Value) -> Result<Value, DshApiError> {
         let rpc_id = uuid::Uuid::new_v4().to_string();
+        // DV-9/S4（真实宿主实证）：Typert 严格模式要求载荷为单个
+        // plain-object `args` 字段（gateway "Remote payload must contain
+        // exactly one plain-object args field"）。在传输缝按世代统一
+        // 包裹——上层各端点保持朴素载荷（backend/$events 构造点已改为
+        // 传裸对象）。
+        let payload = if self.era == DshEra::Typert {
+            json!({"args": payload})
+        } else {
+            payload
+        };
         let body = json!({
             "type": "client-request",
             "rpcId": rpc_id,
@@ -375,11 +385,19 @@ mod tests {
                         let head_text = String::from_utf8_lossy(&buffer).into_owned();
                         if let Some(header_end) = head_text.find("\r\n\r\n") {
                             let body_have = buffer.len() - header_end - 4;
+                            // ureq 实发小写 `content-length:`——大小写不敏感匹配
+                            //（CI 上请求常分段到达，漏配会让 want=0 提前
+                            // break、body 缺失，rpcId 回退 "x"）。
                             let want = head_text
                                 .lines()
                                 .find_map(|line| {
-                                    line.strip_prefix("Content-Length:")
-                                        .and_then(|v| v.trim().parse::<usize>().ok())
+                                    if line.to_ascii_lowercase().starts_with("content-length:") {
+                                        line.split_once(':').and_then(|(_, value)| {
+                                            value.trim().parse::<usize>().ok()
+                                        })
+                                    } else {
+                                        None
+                                    }
                                 })
                                 .unwrap_or(0);
                             if body_have >= want {

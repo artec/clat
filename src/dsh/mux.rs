@@ -125,10 +125,13 @@ pub(crate) fn open(
 /// follow 载荷：maxMessages=1（快照最小化——历史装载走 session/page
 /// 的 HTTP 路径，快照只作 Subscribed 锚 + 尾部对齐）。
 fn follow_payload(session: &str) -> Value {
+    // S4 实证：follow(request, signal) 的 args 字段名 = `request`。
     json!({
         "args": {
-            "address": {"kind": "session", "sessionId": session},
-            "maxMessages": 1,
+            "request": {
+                "address": {"kind": "session", "sessionId": session},
+                "maxMessages": 1,
+            }
         }
     })
 }
@@ -399,7 +402,27 @@ fn translate_follow_item(item: &Value, follow_session: &mut String) -> Vec<DshFr
             }
             frames
         }
-        _ => Vec::new(), // assistant-stream 等：S3 丢弃（增量呈现层）。
+        // assistant-stream（S4 接译）：'chunk' 帧的 chunk 字段与旧
+        // durable assistant/chunk 同形（text-delta 等）——合成 seq=0
+        // 事件复用整条渲染管线（transcript.apply_chunk 在 last_seq
+        // 推进判定**之前**独立应用，且 last_seq 只进不退——seq=0 永不
+        // 触发间隙补拉，流式收尾由落定的 assistant/message 自然终结）。
+        // start/end 帧不驱动渲染：开放态由首 chunk 开启、落定事件关闭。
+        "assistant-stream" => {
+            let frame = item.get("frame").cloned().unwrap_or(Value::Null);
+            if frame.get("type").and_then(Value::as_str) != Some("chunk") {
+                return Vec::new();
+            }
+            let Some(chunk) = frame.get("chunk") else {
+                return Vec::new();
+            };
+            let event = SessionEvent::new("assistant/chunk", 0, 0, json!({"chunk": chunk}));
+            vec![DshFrame::SessionEvent {
+                session_id: follow_session.clone(),
+                event,
+            }]
+        }
+        _ => Vec::new(),
     }
 }
 
@@ -831,6 +854,16 @@ mod tests {
             let _ = stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
             return;
         }
+        // F-C（S3 审计前置）：WS 升级同受会话 cookie 门禁（真实宿主
+        // 在 upgrade 前过 requestRejection——含 cookie 校验）。剥掉
+        // 握手 Cookie 的变异从此红。
+        if !head
+            .to_ascii_lowercase()
+            .contains("cookie: dsh-auth-t=v1.s")
+        {
+            let _ = stream.write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n");
+            return;
+        }
         // WS 升级：回显计算 Accept。
         let key = head
             .lines()
@@ -1001,16 +1034,26 @@ mod tests {
         assert!(matches!(&seen[1], DshFrame::SessionEvent { event, .. } if event.seq == 11));
         assert!(matches!(&seen[2], DshFrame::ApprovalRequested { rpc_id, .. } if rpc_id == "ev-1"));
 
-        // 上行：三流 open 到达假宿主。
-        let upstream = host.upstream_texts();
-        assert!(upstream.iter().any(
-            |t| t.contains("\"streamId\":\"events\"") && t.contains("\"endpoint\":\"$events\"")
-        ));
-        assert!(
-            upstream
+        // 上行：三流 open 到达假宿主（下行帧先到不保证服务器读泵已
+        // 记录上行——CI 时序下必须轮询等）。
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let upstream = host.upstream_texts();
+            let events_open = upstream.iter().any(|t| {
+                t.contains("\"streamId\":\"events\"") && t.contains("\"endpoint\":\"$events\"")
+            });
+            let follow_open = upstream
                 .iter()
-                .any(|t| t.contains("\"endpoint\":\"session/follow\""))
-        );
+                .any(|t| t.contains("\"endpoint\":\"session/follow\""));
+            if events_open && follow_open {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "stream opens not recorded: {upstream:?}"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
 
         // follow 切换：cancel + 重新 open。
         controller.follow("session-2");
@@ -1099,6 +1142,57 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(20));
         }
+    }
+
+    /// F-C 判别：WS 升级必须带会话 cookie——无 cookie 的握手被
+    /// 拒（401，非 101）。剥掉 mux::handshake 的 Cookie 头即红。
+    #[test]
+    fn mux_handshake_requires_the_session_cookie() {
+        let host = MuxHost::spawn();
+        let (events_tx, _events_rx) = std::sync::mpsc::sync_channel(4);
+        let epoch = Arc::new(AtomicU64::new(1));
+        let error = open(
+            host.port,
+            "dsh-auth-forged=v1.nope",
+            Some("session-9"),
+            events_tx,
+            1,
+            &epoch,
+        )
+        .expect_err("a forged cookie must not pass the upgrade gate");
+        assert!(
+            error.contains("401") || error.contains("refused"),
+            "the refusal surfaces the carrier status: {error}"
+        );
+    }
+
+    /// S4：assistant-stream chunk 帧 → 合成 assistant/chunk 事件
+    /// （seq=0——不触发间隙补拉）；start/end 帧不产帧。
+    #[test]
+    fn assistant_stream_chunks_translate_into_synthetic_chunk_events() {
+        let chunk = json!({"type": "item", "streamId": "follow", "value": {
+            "type": "assistant-stream",
+            "frame": {"type": "chunk", "attemptId": "a-1", "revision": 1,
+                      "index": 2, "time": 9,
+                      "chunk": {"type": "text-delta", "text": "par"}}
+        }});
+        let translated = frames(&chunk.to_string());
+        assert!(
+            matches!(&translated[0], DshFrame::SessionEvent { event, .. }
+            if event.event_type == "assistant/chunk"
+                && event.seq == 0
+                && event.data["chunk"]["text"] == json!("par"))
+        );
+
+        let start = json!({"type": "item", "streamId": "follow", "value": {
+            "type": "assistant-stream",
+            "frame": {"type": "start", "attemptId": "a-1", "revision": 1,
+                      "startedAfterSeq": 5, "turn": 1, "step": 1}
+        }});
+        assert!(
+            frames(&start.to_string()).is_empty(),
+            "start is render-neutral"
+        );
     }
 
     /// control 队列映射；流级 error 上浮为 StreamError（代际重开语义）。

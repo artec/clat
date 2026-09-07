@@ -20,3 +20,6 @@ pub(crate) mod ws;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod live_tests;

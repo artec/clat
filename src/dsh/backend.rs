@@ -334,6 +334,17 @@ pub(crate) fn select_model_payload(
     payload
 }
 
+/// DV-9/S4（真实宿主实证）：Typert 严格模式的 args 字段名 = Remote
+/// 方法的 TS 参数名（descriptor 由此生成）——`session/list(_request,…)`
+/// 用 `_request`，其余单请求对象方法用 `request`；无参方法 `{}`
+///（外层 `{args:…}` 由 client 传输缝统一包裹）。Legacy 载荷原样。
+pub(crate) fn era_request_args(era: DshEra, param: Option<&str>, payload: Value) -> Value {
+    match (era, param) {
+        (DshEra::Typert, Some(param)) => json!({param: payload}),
+        _ => payload,
+    }
+}
+
 /// DV-9/S2：世代方法名（Legacy 点名族 ↔ Typert 斜杠族）。
 pub(crate) fn era_method(era: DshEra, legacy: &str, typert: &str) -> String {
     match era {
@@ -461,7 +472,8 @@ pub(crate) fn run_task(
     match task {
         DshTask::Restore { prefer } => {
             let list_method = era_method(client.era, "session.list", "session/list");
-            let list = match client.call(&list_method, json!({})) {
+            let list_payload = era_request_args(client.era, Some("_request"), json!({}));
+            let list = match client.call(&list_method, list_payload) {
                 Ok(value) => value,
                 Err(error) => return Some(TaskReply::Failed(error.to_string())),
             };
@@ -505,17 +517,17 @@ pub(crate) fn run_task(
             text,
         } => {
             let method = era_method(client.era, "session.prompt", "session/prompt");
-            call_status(
-                client,
-                &method,
+            let payload = era_request_args(
+                client.era,
+                Some("request"),
                 prompt_payload(client.era, session, *steer, text),
-                "prompt sent",
-            )
+            );
+            call_status(client, &method, payload, "prompt sent")
         }
         DshTask::Cancel { session } => call_status(
             client,
             &era_method(client.era, "session.cancel", "session/cancel"),
-            json!({"sessionId": session}),
+            era_request_args(client.era, Some("request"), json!({"sessionId": session})),
             "cancel sent",
         ),
         DshTask::Create { session_id, cwd } => {
@@ -527,7 +539,8 @@ pub(crate) fn run_task(
                 payload.insert("cwd".into(), json!(cwd));
             }
             let create_method = era_method(client.era, "session.create", "session/create");
-            let value = match client.call(&create_method, Value::Object(payload)) {
+            let payload = era_request_args(client.era, Some("request"), Value::Object(payload));
+            let value = match client.call(&create_method, payload) {
                 Ok(value) => value,
                 Err(error) => return Some(TaskReply::Failed(error.to_string())),
             };
@@ -554,11 +567,15 @@ pub(crate) fn run_task(
                         "typert history needs the mux controller (AdoptMux missing)".to_owned(),
                     ));
                 }
-                let payload = json!({"args": {
-                    "address": {"kind": "session", "sessionId": session},
-                    "throughSeq": -1,
-                    "maxMessages": 2000,
-                }});
+                let payload = era_request_args(
+                    client.era,
+                    Some("request"),
+                    json!({
+                        "address": {"kind": "session", "sessionId": session},
+                        "throughSeq": -1,
+                        "maxMessages": 2000,
+                    }),
+                );
                 let value = match client.call("session/page", payload) {
                     Ok(value) => value,
                     Err(error) => return Some(TaskReply::Failed(error.to_string())),
@@ -655,6 +672,7 @@ pub(crate) fn run_task(
             let (provider, model) = (provider.clone(), model.clone());
             let select_method =
                 era_method(client.era, "session.selectModel", "session/selectModel");
+            let payload = era_request_args(client.era, Some("request"), payload);
             match client.call(&select_method, payload) {
                 Ok(value) => Some(TaskReply::Selected {
                     provider,
@@ -667,7 +685,11 @@ pub(crate) fn run_task(
         DshTask::Rename { session, title } => call_status(
             client,
             &era_method(client.era, "session.rename", "session/rename"),
-            json!({"sessionId": session, "title": title}),
+            era_request_args(
+                client.era,
+                Some("request"),
+                json!({"sessionId": session, "title": title}),
+            ),
             "renamed",
         ),
         DshTask::Respond { rpc_id, result } => {
@@ -695,11 +717,11 @@ pub(crate) fn run_task(
                     .cloned()
                     .or_else(|| result.get("answer").cloned())
                     .unwrap_or(Value::Null);
-                let payload = json!({"args": {
+                let payload = json!({
                     "clientId": client_id,
                     "eventId": rpc_id,
                     "outcome": {"kind": "result", "value": outcome_value},
-                }});
+                });
                 return match client.call("$events/result", payload) {
                     Ok(_) => Some(TaskReply::Status("answer accepted".to_owned())),
                     Err(error) => Some(TaskReply::Failed(error.to_string())),
@@ -1143,7 +1165,15 @@ mod tests {
         );
         assert!(matches!(reply, Some(TaskReply::Status(_))));
         let prompt = host.payload_of("session/prompt");
-        assert!(uuid::Uuid::parse_str(prompt["requestId"].as_str().unwrap_or("")).is_ok());
+        assert!(
+            uuid::Uuid::parse_str(
+                prompt["args"]["request"]["requestId"]
+                    .as_str()
+                    .unwrap_or("")
+            )
+            .is_ok(),
+            "requestId rides inside args.request: {prompt}"
+        );
 
         run_task(
             &DshTask::Cancel {
@@ -1181,8 +1211,8 @@ mod tests {
         }
         assert_eq!(
             host.payload_of("session/modelCatalog"),
-            json!({}),
-            "catalog takes no args"
+            json!({"args": {}}),
+            "catalog takes no endpoint args (args wrapper at the seam)"
         );
 
         let reply = run_task(
