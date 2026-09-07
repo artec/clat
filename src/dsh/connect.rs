@@ -58,6 +58,12 @@ impl Drop for OwnedDshHost {
 pub(crate) struct Online {
     pub(crate) port: u16,
     pub(crate) describe: Value,
+    /// DV-9/S1：自起宿主 stdout 就绪行里的 launch token（0.1.2+
+    /// Typert 宿主换会话 cookie 用；旧世代宿主/外起宿主/就绪行未及
+    /// 刷出时为 None——S3 接线前仅为携带，不参与 Online 判定）。
+    /// S1 惰性层：生产消费者缺席（半桥惰性法则）。
+    #[allow(dead_code)]
+    pub(crate) token: Option<String>,
     /// 本进程 spawn 的宿主句柄（None = 探测直连了别人起的宿主——
     /// 归属权不明，永不触碰）。D-2 退出清理：调用方持有至退出。
     /// FIX-3/CA-03：进程组句柄——清理按整树（unix 进程组 /
@@ -90,13 +96,14 @@ pub(crate) fn ensure_online(
         return Ok(Online {
             port: preferred_port,
             describe,
+            token: None,
             child: None,
         });
     }
     // spawn 路径。可执行缺席时按有无 ~/.dsh 区分两种失败形态。
     let spawned = spawn_web(dsh_binary, preferred_port);
     match spawned {
-        Ok((port, mut child)) => {
+        Ok((port, token, mut child)) => {
             // 就绪轮询：describe 通过才算在线（INV：指纹是唯一闸门）。
             let deadline = Instant::now() + SPAWN_READY_TIMEOUT;
             while Instant::now() < deadline {
@@ -104,6 +111,7 @@ pub(crate) fn ensure_online(
                     return Ok(Online {
                         port,
                         describe,
+                        token,
                         child: Some(OwnedDshHost::new(child)),
                     });
                 }
@@ -136,7 +144,10 @@ pub(crate) fn ensure_online(
 /// 退出清理：clat 只 kill 自己 spawn 的宿主）。
 /// FIX-3/CA-03：spawn 即入组（unix 进程组 / Windows Job Object，
 /// native_tools 同款 `group_spawn` 语义）——leader 被带走时整树可收。
-fn spawn_web(dsh_binary: &str, preferred_port: u16) -> Result<(u16, GroupChild), String> {
+fn spawn_web(
+    dsh_binary: &str,
+    preferred_port: u16,
+) -> Result<(u16, Option<String>, GroupChild), String> {
     let mut last_error = String::new();
     for attempt in [Some(preferred_port), None] {
         let mut command = std::process::Command::new(dsh_binary);
@@ -167,7 +178,9 @@ fn spawn_web(dsh_binary: &str, preferred_port: u16) -> Result<(u16, GroupChild),
                 match line {
                     ReadyLine::Line(line) => {
                         if let Some(port) = parse_ready_port(&line) {
-                            return Ok((port, child));
+                            // DV-9/S1：同一就绪行顺带捕 launch token。
+                            let token = parse_ready_token(&line);
+                            return Ok((port, token, child));
                         }
                     }
                     ReadyLine::Overflow(reason) => {
@@ -202,7 +215,8 @@ fn spawn_web(dsh_binary: &str, preferred_port: u16) -> Result<(u16, GroupChild),
             if let Some(port) = attempt
                 && probe(port).is_some()
             {
-                return Ok((port, child));
+                // 就绪行可能尚未刷出——token 暂缺（best-effort，S1 不参与判定）。
+                return Ok((port, None, child));
             }
             std::thread::sleep(PROBE_INTERVAL);
         }
@@ -279,6 +293,19 @@ fn parse_ready_port(line: &str) -> Option<u16> {
     let tail = &line[start..];
     let digits: String = tail.chars().take_while(char::is_ascii_digit).collect();
     digits.parse().ok()
+}
+
+/// DV-9/S1：就绪行 URL 的 `?token=` 段（research §2：launch token
+/// 只在宿主 stdout 打印一次）。base64url 字符集，取到非令牌字符为
+/// 止；无 token 段（旧世代宿主）→ None。
+fn parse_ready_token(line: &str) -> Option<String> {
+    let start = line.find("token=")? + "token=".len();
+    let tail = &line[start..];
+    let token: String = tail
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '=' | '.'))
+        .collect();
+    (!token.is_empty()).then_some(token)
 }
 
 /// FIX-2/CA-02：就绪期 stdout 有界泵的输出项。
@@ -580,5 +607,28 @@ mod tests {
             other => panic!("expected Failed, got {other:?}"),
         }
         std::fs::remove_file(&script).ok();
+    }
+
+    /// DV-9/S1：就绪行 token 段提取——0.1.2+ 宿主的 launch token
+    /// 只在 stdout 就绪行打印一次（research §2）。端口解析与 token
+    /// 解析互不干扰（同行的两个独立段）。
+    #[test]
+    fn ready_line_token_extraction() {
+        let line = "dsh web: http://127.0.0.1:43121/?token=AbC123_-xYz (LAN: http://192.168.1.4:43121/?token=AbC123_-xYz)";
+        assert_eq!(parse_ready_port(line), Some(43121));
+        assert_eq!(
+            parse_ready_token(line).as_deref(),
+            Some("AbC123_-xYz"),
+            "first token= segment of the readiness line"
+        );
+        // 旧世代宿主：无 token 段。
+        let legacy = "dsh web: http://127.0.0.1:43121";
+        assert_eq!(parse_ready_port(legacy), Some(43121));
+        assert_eq!(parse_ready_token(legacy), None);
+        // 空 token 不当真。
+        assert_eq!(
+            parse_ready_token("dsh web: http://127.0.0.1:1/?token="),
+            None
+        );
     }
 }

@@ -15,7 +15,7 @@
 //! 迟到帧/断线不得污染新流，App 按代际过滤）；⑤ `ReconnectFailed`
 //! 独立应答（审计 P1-3：重连失败须可识别，UI 才能重新武装重试）。
 
-use crate::dsh::client::DshClient;
+use crate::dsh::client::{DshClient, DshEra};
 use crate::dsh::connect::{self, ConnectFailure, OwnedDshHost};
 use crate::dsh::files;
 use crate::dsh::frames::{DshFrame, parse_frame};
@@ -297,6 +297,42 @@ pub(crate) fn select_model_payload(
     payload
 }
 
+/// DV-9/S2：世代方法名（Legacy 点名族 ↔ Typert 斜杠族）。
+pub(crate) fn era_method(era: DshEra, legacy: &str, typert: &str) -> String {
+    match era {
+        DshEra::Legacy => legacy.to_owned(),
+        DshEra::Typert => typert.to_owned(),
+    }
+}
+
+/// DV-9/S2：prompt 载荷。Typert 增 `requestId`（客户端铸造、落在
+/// 被接受的那条 user/message 上，research §4）；Legacy 不带。
+pub(crate) fn prompt_payload(era: DshEra, session: &str, steer: bool, text: &str) -> Value {
+    let mode = if steer { "steer" } else { "queue" };
+    let mut payload = json!({
+        "sessionId": session,
+        "mode": mode,
+        "content": [{"type": "text", "text": text}],
+    });
+    if era == DshEra::Typert {
+        payload["requestId"] = json!(uuid::Uuid::new_v4().to_string());
+    }
+
+    payload
+}
+
+/// DV-9/S2：modelCatalog → 旧 `session.models` 应答形状的折算
+///（TUI 零改动，计划 §0 裁定 2）。Typert catalog 无按会话 current——
+/// `current` 暂取 `default`（部署默认），会话级校正随 S3 的
+/// model-selection projection 落位（计划 §2 开题 1 同族）。
+pub(crate) fn fold_model_catalog(catalog: &Value) -> Value {
+    json!({
+        "groups": catalog.get("groups").cloned().unwrap_or(Value::Array(Vec::new())),
+        "failures": catalog.get("failures").cloned().unwrap_or(Value::Array(Vec::new())),
+        "current": catalog.get("default").cloned().unwrap_or(Value::Null),
+    })
+}
+
 /// selectModel 应答的落定档位：`selected.reasoningEffort`（宿主
 /// resolveCallConfig 之后的权威值；缺席 = 该选择不带档位）。
 fn selected_effort(value: &Value) -> Option<String> {
@@ -375,7 +411,8 @@ pub(crate) fn run_task(
     }
     match task {
         DshTask::Restore { prefer } => {
-            let list = match client.call("session.list", json!({})) {
+            let list_method = era_method(client.era, "session.list", "session/list");
+            let list = match client.call(&list_method, json!({})) {
                 Ok(value) => value,
                 Err(error) => return Some(TaskReply::Failed(error.to_string())),
             };
@@ -418,21 +455,17 @@ pub(crate) fn run_task(
             steer,
             text,
         } => {
-            let mode = if *steer { "steer" } else { "queue" };
+            let method = era_method(client.era, "session.prompt", "session/prompt");
             call_status(
                 client,
-                "session.prompt",
-                json!({
-                    "sessionId": session,
-                    "mode": mode,
-                    "content": [{"type": "text", "text": text}],
-                }),
+                &method,
+                prompt_payload(client.era, session, *steer, text),
                 "prompt sent",
             )
         }
         DshTask::Cancel { session } => call_status(
             client,
-            "session.cancel",
+            &era_method(client.era, "session.cancel", "session/cancel"),
             json!({"sessionId": session}),
             "cancel sent",
         ),
@@ -444,7 +477,8 @@ pub(crate) fn run_task(
             if let Some(cwd) = cwd {
                 payload.insert("cwd".into(), json!(cwd));
             }
-            let value = match client.call("session.create", Value::Object(payload)) {
+            let create_method = era_method(client.era, "session.create", "session/create");
+            let value = match client.call(&create_method, Value::Object(payload)) {
                 Ok(value) => value,
                 Err(error) => return Some(TaskReply::Failed(error.to_string())),
             };
@@ -460,6 +494,13 @@ pub(crate) fn run_task(
             Some(TaskReply::Created(session))
         }
         DshTask::History { session } => {
+            // DV-9/S3 范围：Typert 的历史装载走 follow 快照 + page
+            // 回填（计划 §2）；S2 阶段 Typert 世代明确拒绝而非走旧面。
+            if client.era == DshEra::Typert {
+                return Some(TaskReply::Failed(
+                    "session history requires the S3 follow stream (not yet wired)".to_owned(),
+                ));
+            }
             let value = match client.call("session.history", json!({"sessionId": session})) {
                 Ok(value) => value,
                 Err(error) => return Some(TaskReply::Failed(error.to_string())),
@@ -484,9 +525,21 @@ pub(crate) fn run_task(
             let Some(session) = session else {
                 return Some(TaskReply::Failed("no active session".to_owned()));
             };
-            let value = match client.call("session.models", json!({"sessionId": session})) {
+            // DV-9/S2：Typert 的 modelCatalog 是宿主级目录（无按会话
+            // 参数）；`session` 字段仅 Legacy 使用。
+            let (method, payload, fold) = if client.era == DshEra::Typert {
+                ("session/modelCatalog", json!({}), true)
+            } else {
+                ("session.models", json!({"sessionId": session}), false)
+            };
+            let value = match client.call(method, payload) {
                 Ok(value) => value,
                 Err(error) => return Some(TaskReply::Failed(error.to_string())),
+            };
+            let value = if fold {
+                fold_model_catalog(&value)
+            } else {
+                value
             };
             Some(TaskReply::Models(value))
         }
@@ -494,13 +547,23 @@ pub(crate) fn run_task(
             // prime 形态：同一调用；失败降 Status（装饰性获取——名字
             // 缺席只是标签回落裸 id，不配触发 Failed 的 fail-soft/装载
             // 中止路径，也不打扰用户）。
-            let value = match client.call("session.models", json!({"sessionId": session})) {
+            let (method, payload, fold) = if client.era == DshEra::Typert {
+                ("session/modelCatalog", json!({}), true)
+            } else {
+                ("session.models", json!({"sessionId": session}), false)
+            };
+            let value = match client.call(method, payload) {
                 Ok(value) => value,
                 Err(error) => {
                     return Some(TaskReply::Status(format!(
                         "model names unavailable ({error})"
                     )));
                 }
+            };
+            let value = if fold {
+                fold_model_catalog(&value)
+            } else {
+                value
             };
             Some(TaskReply::ModelNames(value))
         }
@@ -512,7 +575,9 @@ pub(crate) fn run_task(
         } => {
             let payload = select_model_payload(session, provider, model, effort.as_deref());
             let (provider, model) = (provider.clone(), model.clone());
-            match client.call("session.selectModel", payload) {
+            let select_method =
+                era_method(client.era, "session.selectModel", "session/selectModel");
+            match client.call(&select_method, payload) {
                 Ok(value) => Some(TaskReply::Selected {
                     provider,
                     model,
@@ -523,17 +588,26 @@ pub(crate) fn run_task(
         }
         DshTask::Rename { session, title } => call_status(
             client,
-            "session.rename",
+            &era_method(client.era, "session.rename", "session/rename"),
             json!({"sessionId": session, "title": title}),
             "renamed",
         ),
-        DshTask::Respond { rpc_id, result } => match client.respond(rpc_id, result.clone()) {
-            Ok(true) => Some(TaskReply::Status("answer accepted".to_owned())),
-            Ok(false) => Some(TaskReply::Status(
-                "answer not pending (first answer wins)".to_owned(),
-            )),
-            Err(error) => Some(TaskReply::Failed(error.to_string())),
-        },
+        DshTask::Respond { rpc_id, result } => {
+            // DV-9/S3 范围：Typert 的应答走 $events waterfall 的
+            // `$events/result`（clientId/eventId 来自 S3 的流面）。
+            if client.era == DshEra::Typert {
+                return Some(TaskReply::Failed(
+                    "answers require the S3 $events stream (not yet wired)".to_owned(),
+                ));
+            }
+            match client.respond(rpc_id, result.clone()) {
+                Ok(true) => Some(TaskReply::Status("answer accepted".to_owned())),
+                Ok(false) => Some(TaskReply::Status(
+                    "answer not pending (first answer wins)".to_owned(),
+                )),
+                Err(error) => Some(TaskReply::Failed(error.to_string())),
+            }
+        }
         DshTask::Reconnect => unreachable!("handled above"),
     }
 }
@@ -739,6 +813,326 @@ mod tests {
         assert_eq!(
             selected_effort(&json!({"selected": {"provider": "deepseek", "model": "m-1"}})),
             None
+        );
+    }
+
+    // ─── DV-9/S2：双世代方法面判别 ──────────────────────────────────
+
+    /// 世代方法表 + prompt 载荷：Typert 斜杠族 + requestId（uuid 形）；
+    /// Legacy 点名族原样、不带 requestId。删任一映射即红。
+    #[test]
+    fn typert_method_table_and_prompt_payload_differ_by_era() {
+        use crate::dsh::client::DshEra;
+        for (legacy, typert) in [
+            ("session.list", "session/list"),
+            ("session.prompt", "session/prompt"),
+            ("session.cancel", "session/cancel"),
+            ("session.create", "session/create"),
+            ("session.selectModel", "session/selectModel"),
+            ("session.rename", "session/rename"),
+        ] {
+            assert_eq!(era_method(DshEra::Legacy, legacy, typert), legacy);
+            assert_eq!(era_method(DshEra::Typert, legacy, typert), typert);
+        }
+        let legacy = prompt_payload(DshEra::Legacy, "s-1", false, "hi");
+        assert!(legacy.get("requestId").is_none(), "legacy has no requestId");
+        assert_eq!(legacy["mode"], json!("queue"));
+        let typert = prompt_payload(DshEra::Typert, "s-1", true, "hi");
+        assert_eq!(typert["mode"], json!("steer"));
+        let request_id = typert
+            .get("requestId")
+            .and_then(Value::as_str)
+            .expect("typert carries requestId");
+        assert!(
+            uuid::Uuid::parse_str(request_id).is_ok(),
+            "requestId is a uuid: {request_id}"
+        );
+    }
+
+    /// modelCatalog 折算：groups/failures 原样透传、current ← default
+    ///（TUI 零改动的形状契约）；default 缺席 → current:null（TUI 回落
+    /// refresh 路径）。
+    #[test]
+    fn model_catalog_folds_default_into_the_legacy_shape() {
+        let catalog = json!({
+            "default": {"provider": "deepseek", "model": "m-1", "reasoningEffort": "high"},
+            "routableProviders": ["deepseek"],
+            "groups": [{"id": "deepseek", "name": "DeepSeek", "models": [
+                {"id": "m-1", "name": "M1", "reasoning": {"efforts": [{"id": "high", "name": "High"}]}}
+            ]}],
+            "failures": [{"id": "kimi", "name": "Kimi", "message": "no key"}]
+        });
+        let folded = fold_model_catalog(&catalog);
+        assert_eq!(folded["groups"], catalog["groups"], "groups passthrough");
+        assert_eq!(folded["failures"], catalog["failures"]);
+        assert_eq!(folded["current"], catalog["default"], "current ← default");
+        assert!(
+            folded.get("routableProviders").is_none(),
+            "extra fields dropped"
+        );
+        assert_eq!(
+            fold_model_catalog(&json!({"groups": []}))["current"],
+            Value::Null
+        );
+    }
+
+    /// 录制式 Typert 假宿主：`POST /api/<endpoint>` 信封往返 + 方法/
+    /// 载荷记录。与 client.rs 的 mini host 同款手写 TcpListener 模式。
+    struct TypertHost {
+        port: u16,
+        requests: std::sync::Arc<std::sync::Mutex<Vec<(String, Value)>>>,
+    }
+
+    impl TypertHost {
+        fn spawn() -> Self {
+            use std::io::{Read as _, Write as _};
+            use std::net::TcpListener;
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind typert host");
+            let port = listener.local_addr().expect("addr").port();
+            let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let seen = std::sync::Arc::clone(&requests);
+            std::thread::spawn(move || {
+                for stream in listener.incoming() {
+                    let Ok(mut stream) = stream else { continue };
+                    let seen = std::sync::Arc::clone(&seen);
+                    std::thread::spawn(move || {
+                        let mut buffer = Vec::new();
+                        let mut chunk = [0u8; 4096];
+                        loop {
+                            let text = String::from_utf8_lossy(&buffer).into_owned();
+                            if let Some(header_end) = text.find("\r\n\r\n") {
+                                let body_have = buffer.len() - header_end - 4;
+                                let want = text
+                                    .lines()
+                                    .find_map(|line| {
+                                        let lowered = line.to_ascii_lowercase();
+                                        lowered
+                                            .strip_prefix("content-length:")
+                                            .and_then(|v| v.trim().parse::<usize>().ok())
+                                    })
+                                    .unwrap_or(0);
+                                if body_have >= want {
+                                    break;
+                                }
+                            }
+                            match stream.read(&mut chunk) {
+                                Ok(0) | Err(_) => break,
+                                Ok(n) => buffer.extend_from_slice(&chunk[..n]),
+                            }
+                            if buffer.len() > 65536 {
+                                break;
+                            }
+                        }
+                        let text = String::from_utf8_lossy(&buffer).into_owned();
+                        let endpoint = text
+                            .lines()
+                            .next()
+                            .and_then(|request_line| request_line.split(' ').nth(1))
+                            .unwrap_or_default()
+                            .trim_start_matches("/api/")
+                            .to_owned();
+                        let body = text
+                            .split_once("\r\n\r\n")
+                            .map(|(_, body)| body)
+                            .unwrap_or_default();
+                        let envelope: Value = serde_json::from_str(body).unwrap_or(Value::Null);
+                        let payload = envelope.get("payload").cloned().unwrap_or(Value::Null);
+                        let rpc_id = envelope
+                            .get("rpcId")
+                            .and_then(Value::as_str)
+                            .unwrap_or("x")
+                            .to_owned();
+                        seen.lock()
+                            .expect("requests")
+                            .push((endpoint.clone(), payload.clone()));
+                        let value: Value = match endpoint.as_str() {
+                            "session/list" => json!({"items": []}),
+                            "session/modelCatalog" => json!({
+                                "default": {"provider": "p", "model": "m", "reasoningEffort": "high"},
+                                "groups": [{"id": "p", "name": "P", "models": [{"id": "m", "name": "M"}]}],
+                                "failures": []
+                            }),
+                            "session/create" => json!({"sessionId": "s-new"}),
+                            "session/selectModel" => json!({"selected": {
+                                "provider": "p", "model": "m", "reasoningEffort": "max"
+                            }}),
+                            _ => json!({"accepted": true}),
+                        };
+                        let reply = json!({
+                            "type": "server-response",
+                            "rpcId": rpc_id,
+                            "result": {"ok": true, "value": value}
+                        });
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                            reply.to_string().len(),
+                            reply
+                        );
+                        let _ = stream.write_all(response.as_bytes());
+                        let _ = stream.flush();
+                    });
+                }
+            });
+            Self { port, requests }
+        }
+
+        fn client(&self) -> DshClient {
+            DshClient::new(self.port).with_typert_era()
+        }
+
+        fn methods(&self) -> Vec<String> {
+            self.requests
+                .lock()
+                .expect("requests")
+                .iter()
+                .map(|(method, _)| method.clone())
+                .collect()
+        }
+
+        fn payload_of(&self, method: &str) -> Value {
+            self.requests
+                .lock()
+                .expect("requests")
+                .iter()
+                .find(|(seen, _)| seen == method)
+                .map(|(_, payload)| payload.clone())
+                .expect("method was called")
+        }
+    }
+
+    /// DV-9/S2 端到端腿：Typert 世代走斜杠方法族、prompt 带
+    /// requestId、modelCatalog 无参且折回旧形状、selectModel 落定档位
+    /// 透传；同一宿主上 Legacy 世代仍发点名族（世代判别）。
+    /// 半桥惰性：History/Respond 在 Typert 世代明确拒绝（S3 范围）。
+    #[test]
+    fn typert_era_round_trips_the_slash_method_family() {
+        let host = TypertHost::spawn();
+        let mut client = host.client();
+        let mut port = 0;
+
+        let reply = run_task(&DshTask::Restore { prefer: None }, &mut client, &mut port);
+        assert!(
+            matches!(reply, Some(TaskReply::Restored { session: None, .. })),
+            "restore reply: {reply:?}"
+        );
+
+        let reply = run_task(
+            &DshTask::Prompt {
+                session: "s-1".into(),
+                steer: true,
+                text: "go".into(),
+            },
+            &mut client,
+            &mut port,
+        );
+        assert!(matches!(reply, Some(TaskReply::Status(_))));
+        let prompt = host.payload_of("session/prompt");
+        assert!(uuid::Uuid::parse_str(prompt["requestId"].as_str().unwrap_or("")).is_ok());
+
+        run_task(
+            &DshTask::Cancel {
+                session: "s-1".into(),
+            },
+            &mut client,
+            &mut port,
+        );
+        let reply = run_task(
+            &DshTask::Create {
+                session_id: None,
+                cwd: Some("/w".into()),
+            },
+            &mut client,
+            &mut port,
+        );
+        assert!(matches!(reply, Some(TaskReply::Created(id)) if id == "s-new"));
+
+        let reply = run_task(
+            &DshTask::Models {
+                session: Some("s-1".into()),
+            },
+            &mut client,
+            &mut port,
+        );
+        match reply {
+            Some(TaskReply::Models(value)) => {
+                assert_eq!(value["current"]["model"], json!("m"), "catalog folded");
+                assert_eq!(value["groups"][0]["models"][0]["id"], json!("m"));
+            }
+            other => panic!("Models reply: {other:?}"),
+        }
+        assert_eq!(
+            host.payload_of("session/modelCatalog"),
+            json!({}),
+            "catalog takes no args"
+        );
+
+        let reply = run_task(
+            &DshTask::Select {
+                session: "s-1".into(),
+                provider: "p".into(),
+                model: "m".into(),
+                effort: Some("high".into()),
+            },
+            &mut client,
+            &mut port,
+        );
+        assert!(matches!(
+            reply,
+            Some(TaskReply::Selected { effort: Some(e), .. }) if e == "max"
+        ));
+
+        run_task(
+            &DshTask::Rename {
+                session: "s-1".into(),
+                title: "t".into(),
+            },
+            &mut client,
+            &mut port,
+        );
+
+        let methods = host.methods();
+        for expected in [
+            "session/list",
+            "session/prompt",
+            "session/cancel",
+            "session/create",
+            "session/modelCatalog",
+            "session/selectModel",
+            "session/rename",
+        ] {
+            assert!(
+                methods.iter().any(|m| m == expected),
+                "missing {expected} in {methods:?}"
+            );
+        }
+        assert!(
+            !methods.iter().any(|m| m.contains('.')),
+            "legacy dotted names never fire in typert era: {methods:?}"
+        );
+
+        // 半桥惰性：S3 范围的 History/Respond 在 Typert 世代明确拒绝。
+        for task in [
+            DshTask::History {
+                session: "s-1".into(),
+            },
+            DshTask::Respond {
+                rpc_id: "r-1".into(),
+                result: json!({}),
+            },
+        ] {
+            let reply = run_task(&task, &mut client, &mut port);
+            assert!(
+                matches!(reply, Some(TaskReply::Failed(_))),
+                "{task:?} must defer to S3, got {reply:?}"
+            );
+        }
+
+        // 世代判别：同一宿主上 Legacy 客户端仍发点名族。
+        let mut legacy = DshClient::new(host.port);
+        let _ = run_task(&DshTask::Restore { prefer: None }, &mut legacy, &mut port);
+        assert!(
+            host.methods().iter().any(|m| m == "session.list"),
+            "legacy era keeps the dotted family"
         );
     }
 
