@@ -2891,6 +2891,14 @@ mod tests {
             log_size,
             log_size as f64 / 1024.0 / 1024.0
         );
+        // 干净关闭：租约不变量（DV-2/3）下同一会话只允许一个写者，
+        // 服务层同键 resume 会先 quiesce 再重挂。本计时腿声称测的正是
+        // 「最近一次干净关闭后重开」——写者必须先退场，直调
+        // backend.prepare 才是冷重开路径（active 写者未退场时 prepare
+        // 会被租约以 Conflict 拒绝，CI 2026-09-07 门控步红即此）。
+        service
+            .quiesce_active()
+            .expect("quiesce for the cold reopen");
 
         let time = |label: &str, f: &mut dyn FnMut()| {
             let start = std::time::Instant::now();
