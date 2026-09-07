@@ -694,7 +694,11 @@ mod tests {
             return;
         }
         // 假宿主：复用 mux 测试的形状（token 交换 + canOpenWorkspacePath）。
-        use std::io::{Read as _, Write as _};
+        // 请求读取走共享 read_http_request（按 Content-Length 读完整）——
+        // CI 病历（2026-09-07，同型第三犯）：ureq 的 POST 在 CI 上常分两
+        // 段到达，单次 read 漏体 → rpcId 回退 "x" → 回显校验失败 → 就绪
+        // 轮询 20s 超时（即本腿的 CI 红）。
+        use std::io::Write as _;
         use std::net::TcpListener;
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let host_port = listener.local_addr().expect("addr").port();
@@ -702,29 +706,34 @@ mod tests {
             for stream in listener.incoming() {
                 let Ok(mut stream) = stream else { continue };
                 std::thread::spawn(move || {
-                    let mut buffer = [0u8; 4096];
-                    let Ok(read) = stream.read(&mut buffer) else {
+                    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+                    let Ok((method, path, body)) =
+                        crate::dsh::tests::read_http_request(&mut stream)
+                    else {
                         return;
                     };
-                    let head = String::from_utf8_lossy(&buffer[..read]).into_owned();
-                    let response: std::borrow::Cow<'_, str> = if head
-                        .starts_with("GET /?token=good")
+                    let response: std::borrow::Cow<'_, str> = if method == "GET"
+                        && path == "/?token=good"
                     {
                         "HTTP/1.1 303 See Other\r\nLocation: /\r\nSet-Cookie: dsh-auth-x=v1.y; Path=/; HttpOnly\r\nContent-Length: 0\r\n\r\n".into()
-                    } else if head.starts_with("POST /api/session/canOpenWorkspacePath") {
-                        let rpc_id = head
-                            .split("\r\n\r\n")
-                            .nth(1)
-                            .and_then(|body| serde_json::from_str::<serde_json::Value>(body).ok())
-                            .and_then(|envelope| {
-                                envelope
-                                    .get("rpcId")
-                                    .and_then(serde_json::Value::as_str)
-                                    .map(str::to_owned)
-                            })
-                            .unwrap_or_else(|| "x".to_owned());
+                    } else if method == "POST" && path == "/api/session/canOpenWorkspacePath" {
+                        let payload = serde_json::json!({
+                            "type": "server-response",
+                            "rpcId": serde_json::from_str::<serde_json::Value>(&body)
+                                .ok()
+                                .and_then(|envelope| {
+                                    envelope
+                                        .get("rpcId")
+                                        .and_then(serde_json::Value::as_str)
+                                        .map(str::to_owned)
+                                })
+                                .unwrap_or_else(|| "x".to_owned()),
+                            "result": {"ok": true, "value": true},
+                        })
+                        .to_string();
                         format!(
-                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{{\"type\":\"server-response\",\"rpcId\":\"{rpc_id}\",\"result\":{{\"ok\":true,\"value\":true}}}}"
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{payload}",
+                            payload.len()
                         )
                         .into()
                     } else {

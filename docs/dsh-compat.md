@@ -3,7 +3,8 @@
 CLAT uses DeepSeek Harness (DSH) as the reference implementation for
 interoperable event, session, permission, and plugin surfaces. This document
 states only what executable evidence proves at pinned DSH revision
-`b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`.
+`d347e703908d0406b7a7ef80e3a0e594d86b2215` (`dsh-v0.1.3-alpha.1`,
+released session format v2).
 
 The status vocabulary is deliberately strict:
 
@@ -25,13 +26,16 @@ are useful diagnostics, but they are not compatibility evidence.
 |---|---|---|---|---|---|
 | Cordis event dispatch (`on/once/emit/parallel/serial/bail/waterfall`) | `vendor/cordis/src/events.ts` | `sdk/dsh-adapter/src/events.ts` | `tests/fixtures/dsh-oracle/cordis-events.json` | **compatible** | Single adapter scope; no Cordis filter/isolate chain. Disposer return value is not treated as a wire contract. |
 | System-prompt registry ordering, complete sections, variables, contexts, tools, waterfall | `packages/core/system-prompt/src/index.ts` | `sdk/dsh-adapter/src/system-prompt.ts` | `tests/fixtures/dsh-oracle/system-prompt.json` | **compatible** | DSH's built-in `harness:identity` and deployment persona sections are host-owned and are not recreated by the registry seam. Agent-scoped shadowing and `toolOrder` are outside the static adapter. `cwd/provider/model` providers are installed by the Shim's agent-runtime layer, as DSH agent-loop does, rather than baked into the registry. |
-| Session packed chunk rows and decoder | `packages/core/session/src/chunk-rows.ts` | `src/session/chunk_packing.rs` | `tests/fixtures/dsh-oracle/session-jsonl.json` | **compatible** | Fixture covers threshold, expansion, and deterministic field shape, not every property-test input. |
-| JSONL torn-tail committed-prefix scan | `packages/session/session-persistence-jsonl/src/format.ts` | `src/session/jsonl.rs` | `tests/fixtures/dsh-oracle/session-jsonl.json` | **compatible** | Zstandard frame recovery has separate CLAT/DSH golden coverage, not this JSON oracle. |
+| Released-v2 embedded Assistant streams (`assistant/attempt`, `assistant/message`) | `packages/llm/llm/src/assistant-stream.ts`, `packages/session/session-persistence-jsonl/src/format.ts` | `src/session/assistant_stream.rs`, `src/session/jsonl.rs` | `tests/fixtures/dsh-oracle/session-jsonl.json` | **compatible** | Oracle covers all four compact record variants and exact timed expansion; model-provider semantics are outside the storage seam. |
+| Released-v2 provenance range pairs and `request/header` `series` | `packages/session/session-persistence-jsonl/src/format.ts` | `src/session/event.rs`, `src/session/jsonl.rs` | `tests/fixtures/dsh-oracle/session-jsonl.json` | **compatible** | Oracle pins `[0,3]` storage expansion and the current reason value; local adversarial tests cover malformed/overlapping ranges. |
+| Legacy-v0 packed chunk rows and decoder | retired `packages/core/session/src/chunk-rows.ts` at `b150a551b8` | `src/session/chunk_packing.rs` | `tests/fixtures/dsh-oracle/session-jsonl-v0.json` | **compatible** | Frozen read-only legacy leg. It is deliberately excluded from current 0.1.3 regeneration and is never a write target. |
+| JSONL header and torn-tail committed-prefix scan | `packages/session/session-persistence-jsonl/src/format.ts` | `src/session/header.rs`, `src/session/jsonl.rs` | `tests/fixtures/dsh-oracle/session-jsonl.json` | **compatible** | Pins required `isSeeded`, v2 generation filename, and committed byte boundary. Zstandard frame recovery also has real DSH binary goldens. |
 | Interrupted-turn synthetic closers | `packages/core/session/src/repair.ts` | `src/session/recovery.rs` | `tests/fixtures/dsh-oracle/session-jsonl.json` | **compatible** | The oracle section covers an open step without a tool; CLAT has additional branch tests for unknown tool outcomes. |
 | Lone UTF-16 surrogate serialization | JavaScript `JSON.stringify` on DSH session rows | Rust `String` + `serde_json` | `tests/fixtures/dsh-oracle/session-jsonl.json` | **intentional-difference** | JavaScript retains `\\ud800`; Rust strings contain Unicode scalar values only, so an ingress replacement becomes U+FFFD. The difference is explicit and byte-tested. |
 | Workspace v2 record/global schema | `packages/workspace/workspace/src/spec.ts` | `src/control_storage/workspace.rs` | `tests/fixtures/dsh-oracle/workspace-model.json` | **compatible** | CLAT adds optional active-selection fields; DSH's Zod reader strips those unknown extensions. |
 | Workspace realpath identity | `packages/workspace/workspace/src/paths.ts` | Application canonical project root + workspace registry | `tests/fixtures/dsh-oracle/workspace-model.json` | **partial** | The oracle pins dot-segment, symlink, and missing-path behavior, but OC-1 has not added a cross-platform CLAT consumer for every path case. |
-| Full JSONL session artifact, header, zstd, resume | session + JSONL packages | `src/session/*` | — | **partial** | Existing binary goldens and cross-read tests remain valuable, but no single OC-1 JSON fixture covers the whole artifact lifecycle. |
+| Full current JSONL session artifact, header, zstd, resume | session + JSONL packages | `src/session/*` | `tests/fixtures/dsh-oracle/session-jsonl.json`, `tests/fixtures/dsh-session/v2-session-0.1.3.jsonl.zstd` | **compatible** | OC-1 pins the v2 plaintext codec; the B8 fixture comes from DSH's real 0.1.3 zstd write path and is decoded by CLAT. Live concurrent-process ownership is the separate lease row below. |
+| Per-session write ownership (`session.lock`) | `packages/session/session-persistence-jsonl/src/lease.ts`, `win32.ts` | `src/session/write_lease.rs`, `src/session/persistence.rs` | — | **partial** | Exact POSIX filename/flock/inode verification and Windows semaphore-name algorithm are mirrored and locally tested, including an independent process. No committed executable DSH-process fixture is possible for a kernel-lifetime behavior. |
 | `plan/mode` approved-plan extension | DSH `plan/mode` vocabulary | `src/plan_mode.rs`, session projection | — | **intentional-difference** | CLAT adds bounded approved text/digest fields accepted as an extensible payload; not an upstream feature. |
 | Goal state and bounded continuation | DSH goal plugin/round driver | `src/goal.rs`, `src/plugins/goal.rs`, Application run worker | — | **intentional-difference** | CLAT uses one whole-snapshot `goal/change` state with revision CAS and process-local explicit arming. No DSH runtime oracle currently proves behavioral compatibility. |
 | One-shot subagent descriptor | DSH subagent v2 descriptor | `src/subagent.rs`, `src/plugins/subagent.rs` | — | **partial** | CLAT emits the DSH v2 descriptor shape, but records it in the parent log because v1 has no resumable child session; source mapping and local admission tests are not a runtime oracle. |
@@ -74,7 +78,9 @@ Re-pin only when at least one of these conditions holds:
    point above;
 3. one quarter has elapsed since the last pin.
 
-A re-pin is an isolated review: regenerate every fixture, rerun the official
-cohort, update the revision here, and record every changed section. CLAT does
+A re-pin is an isolated review: regenerate every current fixture, rerun the official
+cohort, update the revision here, and record every changed section. Frozen
+legacy fixtures remain at their historical pin and are never silently
+regenerated. CLAT does
 not continuously chase the DSH main branch, because a moving oracle cannot
 serve as compatibility evidence.

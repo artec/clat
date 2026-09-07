@@ -5,11 +5,13 @@ CLAT 把 DeepSeek Harness（DSH）作为插件协议参考实现，但不在 Rus
 带权限与生命周期的插件内核；`@artec/clat-dsh-adapter` 在独立进程中加载
 原 DSH 插件，把可移植能力映射为 MCP。
 
-本文当前钉在 DSH `dsh-v0.1.1-rc.2`，源代码提交
-`b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`。2026-09-06 按
-`dsh-v0.1.3-alpha.1`（`d347e70390`）复核兼容表：下表所列插件面缝
+本文当前钉在 DSH `dsh-v0.1.3-alpha.1`，源代码提交
+`d347e703908d0406b7a7ef80e3a0e594d86b2215`。2026-09-07 完成 OC-1
+重钉：下表所列插件面缝
 （`defineTool`、`ctx.tools.register`、`ctx.systemPrompt`、llm 采样、
-web/fs/shell/sessions/agents 面）在 rc.2→0.1.3 区间未变——0.1.3 的
+web/fs/shell/sessions/agents 面）在 rc.2→0.1.3 区间未变；`sessionProjections`
+是 0.1.3 新增的宿主服务，当前 adapter 对依赖它的 todo/agent-loop/subagent
+包明确保留为 `partial`；0.1.3 的
 大改（会话格式 v2、持久化接缝、Gateway/SDK、tools 展示层 code→ptc
 内部改名）都在宿主侧或子集仿真面之外，兼容行为逐项仍然成立。DSH Web
 设置中看到的 147 项是 preset、base bundle 与 Web patch 组装后的插件

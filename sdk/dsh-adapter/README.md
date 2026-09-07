@@ -229,13 +229,16 @@ artifact, so end users install no JavaScript environment.
   (loader/HMR transactions, disposal hardening, config reconciliation)
   outside the subset's emulated surface — process-local dispatch, effects,
   and basic lifecycle semantics are unchanged.
-- API target: `dsh-v0.1.1-rc.2`, source revision
-  `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`. Re-verified 2026-09-06
-  against `dsh-v0.1.3-alpha.1` (`d347e70390`): the plugin-facing seams the
+- API target: `dsh-v0.1.3-alpha.1`, source revision
+  `d347e703908d0406b7a7ef80e3a0e594d86b2215`. OC-1 was re-pinned on
+  2026-09-07; the plugin-facing seams the
   adapter maps (`defineTool`, `ctx.tools.register`, `ctx.systemPrompt`,
   llm sampling, web/fs/shell/sessions/agents surfaces) are unchanged;
-  0.1.3's session-format v2, persistence seam, and Gateway/SDK refactor are
-  host-side concerns outside the adapter subset.
+  `sessionProjections` is a new host service and remains explicitly partial
+  for the cohort packages that require it. 0.1.3's session-format v2,
+  persistence seam, and Gateway/SDK refactor are host-side concerns outside
+  the adapter subset. The v2 session oracle is now current; the v0 fixture
+  remains only as a legacy-read leg.
 - Acceptance fixture: the npm-published
   `@deepseek-ai/dsh-web-search-exa` mounts unmodified under
   [`examples/exa`](https://github.com/artec/clat/tree/main/sdk/dsh-adapter/examples/exa).

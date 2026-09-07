@@ -342,7 +342,24 @@ impl SessionService {
     }
 
     /// `/resume` one-shot: bounded stage → arm → quiesce → infallible install.
+    /// Reopening the already-active key retires that writer before staging so
+    /// the lease is never acquired twice for one physical session.
     pub(crate) fn resume(&self, key: &SessionKey) -> Result<SessionView, SessionError> {
+        // Reopening the session that is already active must first retire its
+        // writer.  Otherwise arming the same physical log would require a
+        // second lease in this process and, more importantly, would race the
+        // existing write-behind coordinator.  A different target still uses
+        // the stage → arm → CAS path below so a failed switch leaves the
+        // current session untouched.
+        let same_active = self
+            .active
+            .lock()
+            .expect("active")
+            .as_ref()
+            .is_some_and(|active| active.key == *key);
+        if same_active {
+            self.quiesce_active()?;
+        }
         let staged = self.stage_resume(key)?;
         let armed = self.arm_session(staged)?;
         if let Err(error) = self.quiesce_active() {
@@ -3082,6 +3099,10 @@ mod tests {
 
         // A lazy session with no log replays empty (never an error).
         service.checkpoints.drop(&key);
+        // Arming a resume target opens a writable prepared handle. The
+        // active coordinator must be retired first; staging itself remains
+        // read-only and can still be performed before this boundary.
+        service.quiesce_active().expect("detach before arm");
         let staged = service.stage_resume(&key).expect("stage");
         let armed = service.arm_session(staged).expect("arm");
         assert_eq!(&armed.view.replay, &direct, "resume without checkpoint");

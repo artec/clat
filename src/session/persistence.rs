@@ -11,12 +11,13 @@ use crate::session::header::{HeaderError, SessionHeader};
 use crate::session::key::SessionKey;
 use crate::session::recovery::interrupted_turn_closers;
 use crate::session::root_dir::SessionRootDir;
+use crate::session::write_lease::{self, SessionWriteLease};
 use crate::session::{compat, jsonl, path_layout};
 use cap_std::fs::Dir;
 use std::collections::HashMap;
 use std::io::{BufRead, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum JsonlCompression {
@@ -130,6 +131,11 @@ pub(crate) struct PreparedSession {
     /// Capability-held session directory. Present for every materialized
     /// handle; lazy sessions acquire it at the first atomic publish.
     dir: Option<std::sync::Arc<Dir>>,
+    /// Cross-process writer ownership, interoperable with DSH. Arc is
+    /// intentional: write-behind snapshots clone PreparedSession, and the
+    /// kernel lease must outlive every clone rather than opening a second
+    /// lifecycle.
+    lease: Option<Arc<SessionWriteLease>>,
     /// File identity at the time this handle was armed. Every append
     /// re-verifies it: drift means an external writer touched the log and
     /// the outcome is Unknown (audit P1-04).
@@ -289,10 +295,44 @@ impl JsonlBackend {
     }
 
     fn log_path(&self, key: &SessionKey) -> PathBuf {
+        self.session_dir_path(key)
+            .join(compat::log_file_name(self.compression))
+    }
+
+    fn session_dir_path(&self, key: &SessionKey) -> PathBuf {
         self.root
             .join(&key.project.bucket)
             .join(path_layout::encode_segment(key.id.as_str()))
-            .join(compat::log_file_name(self.compression))
+    }
+
+    fn acquire_existing_write_lease(
+        &self,
+        key: &SessionKey,
+    ) -> Result<Arc<SessionWriteLease>, SessionError> {
+        validate_key_witness(key)?;
+        let dir = match self.root_dir.open_session(key) {
+            Ok(dir) => dir,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                // A freshly-created session is intentionally lazy: there is
+                // no directory (and therefore no lease) until its first
+                // durable batch. Preserve the prepare->create handshake so
+                // callers can materialize that handle atomically.
+                return Err(SessionError::NotFound(key.id.to_string()));
+            }
+            Err(error) => return Err(io(error)),
+        };
+        let resolved = self
+            .resolve_log_in_dir(key, &dir)?
+            .ok_or_else(|| SessionError::NotFound(key.id.to_string()))?;
+        ensure_writable_generation(key, &resolved)?;
+        let lock_path = self.session_dir_path(key).join(write_lease::LEASE_FILENAME);
+        match SessionWriteLease::try_acquire(&dir, &lock_path).map_err(io)? {
+            Some(lease) => Ok(Arc::new(lease)),
+            None => Err(SessionError::Conflict(format!(
+                "session \"{}\" already has an active writer",
+                key.id
+            ))),
+        }
     }
 
     /// Resolve the highest canonical generation in the configured encoding.
@@ -387,6 +427,7 @@ impl JsonlBackend {
             );
         }
         if let Some(found) = self.find_log(&key)? {
+            ensure_supported_generation(&key, &found)?;
             return Err(SessionError::Conflict(format!(
                 "session \"{}\" already has a persisted log on disk ({found:?}); load/resume it instead of creating",
                 key.id
@@ -399,6 +440,7 @@ impl JsonlBackend {
             next_seq: 0,
             materialized: false,
             dir: None,
+            lease: None,
             revision: LogRevision::unmaterialized(),
             needs_seed_marker: false,
         })
@@ -457,7 +499,7 @@ impl JsonlBackend {
         }
 
         if !session.materialized {
-            let (dir, revision) = match self.materialize(&session, events) {
+            let (dir, lease, revision) = match self.materialize(&session, events) {
                 Ok(committed) => committed,
                 Err(MaterializeFailure::NotCommitted(error)) => {
                     return Err(AppendFailure::NotCommitted {
@@ -483,6 +525,7 @@ impl JsonlBackend {
             return Ok(PreparedSession {
                 revision,
                 dir: Some(dir),
+                lease: Some(lease),
                 ..advanced(&session)
             });
         }
@@ -502,6 +545,11 @@ impl JsonlBackend {
                 error: "materialized session has no capability-held directory".into(),
             });
         };
+        if session.lease.is_none() {
+            return Err(AppendFailure::Unknown {
+                error: "materialized session has no active cross-process write lease".into(),
+            });
+        }
         let mut file = match open_append_no_follow(dir, compat::log_file_name(self.compression)) {
             Ok(file) => file,
             Err(error) => {
@@ -659,12 +707,40 @@ impl JsonlBackend {
         &self,
         session: &PreparedSession,
         events: &[SessionEvent],
-    ) -> Result<(std::sync::Arc<Dir>, LogRevision), MaterializeFailure> {
+    ) -> Result<(std::sync::Arc<Dir>, Arc<SessionWriteLease>, LogRevision), MaterializeFailure>
+    {
         let dir = std::sync::Arc::new(
             self.root_dir
                 .create_session(&session.key)
                 .map_err(|error| MaterializeFailure::NotCommitted(error.to_string()))?,
         );
+        let lock_path = self
+            .session_dir_path(&session.key)
+            .join(write_lease::LEASE_FILENAME);
+        let lease = SessionWriteLease::try_acquire(&dir, &lock_path)
+            .map_err(|error| MaterializeFailure::NotCommitted(error.to_string()))?
+            .ok_or_else(|| {
+                MaterializeFailure::NotCommitted(format!(
+                    "session \"{}\" already has an active writer",
+                    session.key.id
+                ))
+            })?;
+        let lease = Arc::new(lease);
+        if let Some(found) = self
+            .resolve_log_in_dir(&session.key, &dir)
+            .map_err(|error| MaterializeFailure::NotCommitted(error.to_string()))?
+        {
+            let detail = ensure_supported_generation(&session.key, &found)
+                .err()
+                .map_or_else(
+                    || format!("a v{} log already exists", found.version),
+                    |error| error.to_string(),
+                );
+            return Err(MaterializeFailure::NotCommitted(format!(
+                "refusing to materialize \"{}\": {detail}; load/resume it instead",
+                session.key.id
+            )));
+        }
         let log_name = compat::log_file_name(self.compression);
         let opposite_name = compat::log_file_name(match self.compression {
             JsonlCompression::Zstd => JsonlCompression::None,
@@ -735,7 +811,7 @@ impl JsonlBackend {
             .map_err(|error| MaterializeFailure::Unknown(error.to_string()))?;
         let revision = matching_handle_and_path_revision(&file, &dir, log_name)
             .map_err(|error| MaterializeFailure::Unknown(error.to_string()))?;
-        Ok((dir, revision))
+        Ok((dir, lease, revision))
     }
 
     /// Read + scan + compute closers. `repair` additionally commits the
@@ -753,7 +829,15 @@ impl JsonlBackend {
             && read.header.version == compat::SESSION_FORMAT_VERSION
             && (read.truncate_to.is_some() || !closers.is_empty())
         {
-            self.commit_repair(&mut read, &mut closers)?;
+            // The first read only discovers whether mutation may be needed.
+            // Acquire the shared DSH lease, then re-read under it so repair
+            // never acts on bytes admitted before another writer released.
+            let lease = self.acquire_existing_write_lease(key)?;
+            read = self.read_events(key, true)?;
+            closers = interrupted_turn_closers(&read.events);
+            if read.truncate_to.is_some() || !closers.is_empty() {
+                self.commit_repair(&lease, &mut read, &mut closers)?;
+            }
             return self.load(key, false);
         }
         if repair {
@@ -821,6 +905,11 @@ impl JsonlBackend {
                 key.id
             )));
         }
+        // Resolve before locking so legacy v0 and unsupported newer
+        // generations fail without leaving a lock artifact. Once admitted,
+        // retain this one lease through streaming, repair, and every clone of
+        // the returned PreparedSession.
+        let lease = self.acquire_existing_write_lease(key)?;
         // Balanced logs take the constant-memory streaming path. A physically
         // torn final frame/line falls back to the compatibility repair reader,
         // whose extra allocation is limited to the exceptional crash-repair
@@ -833,7 +922,7 @@ impl JsonlBackend {
                     ));
                 }
                 return self
-                    .prepare_from_stream(key, scan)
+                    .prepare_from_stream(key, scan, Arc::clone(&lease))
                     .map(|prepared| (prepared, true));
             }
             Err(SessionError::Io(_)) => {}
@@ -849,7 +938,7 @@ impl JsonlBackend {
         }
         let mut closers = interrupted_turn_closers(&read.events);
         if read.truncate_to.is_some() || !closers.is_empty() {
-            self.commit_repair(&mut read, &mut closers)?;
+            self.commit_repair(&lease, &mut read, &mut closers)?;
             read = self.read_events(key, true)?;
         }
         let needs_seed_marker = read
@@ -871,6 +960,7 @@ impl JsonlBackend {
             PreparedSession {
                 path: read.path.clone(),
                 dir: Some(std::sync::Arc::clone(&read.dir)),
+                lease: Some(lease),
                 header: read.header,
                 next_seq: read.events.len() as u64,
                 materialized: true,
@@ -886,6 +976,7 @@ impl JsonlBackend {
         &self,
         key: &SessionKey,
         scan: StreamRead,
+        lease: Arc<SessionWriteLease>,
     ) -> Result<PreparedSession, SessionError> {
         if scan.header.version != compat::SESSION_FORMAT_VERSION {
             return Err(SessionError::UnsupportedFormat(format!(
@@ -912,6 +1003,7 @@ impl JsonlBackend {
             materialized: true,
             path: self.log_path(key),
             dir: Some(scan.dir),
+            lease: Some(lease),
             revision: scan.revision,
             needs_seed_marker: false,
         };
@@ -950,6 +1042,7 @@ impl JsonlBackend {
         let resolved = self
             .resolve_log_in_dir(key, &dir)?
             .ok_or_else(|| SessionError::NotFound(key.id.to_string()))?;
+        ensure_supported_generation(key, &resolved)?;
         let mut file = open_read_no_follow(&dir, &resolved.name).map_err(io)?;
         let header = read_header_from_reader(&mut file, self.compression)?
             .ok_or_else(|| SessionError::Corruption("session log has no header".into()))?;
@@ -978,6 +1071,7 @@ impl JsonlBackend {
         let resolved = self
             .resolve_log_in_dir(key, &dir)?
             .ok_or_else(|| SessionError::NotFound(key.id.to_string()))?;
+        ensure_supported_generation(key, &resolved)?;
         let file = open_read_no_follow(&dir, &resolved.name).map_err(io)?;
         let before = LogRevision::of_metadata(&file.metadata().map_err(io)?);
         let (header, tracker, last_event_type, file) = match self.compression {
@@ -1037,6 +1131,7 @@ impl JsonlBackend {
         let resolved = self
             .find_log(key)?
             .ok_or_else(|| SessionError::NotFound(key.id.to_string()))?;
+        ensure_supported_generation(key, &resolved)?;
         let dir = std::sync::Arc::new(self.root_dir.open_session(key).map_err(io)?);
         // Stat → read → stat (audit P1-04): the revision we report is the
         // one whose bytes we actually decoded; a log that keeps changing
@@ -1156,6 +1251,7 @@ impl JsonlBackend {
     /// the next repair handles identically.
     fn commit_repair(
         &self,
+        _lease: &SessionWriteLease,
         read: &mut RawRead,
         closers: &mut [SessionEvent],
     ) -> Result<(), SessionError> {
@@ -1301,6 +1397,7 @@ impl JsonlBackend {
                 else {
                     continue;
                 };
+                ensure_supported_generation(&provisional_key, &resolved)?;
                 let mut log = open_read_no_follow(&session_dir, &resolved.name).map_err(io)?;
                 let header = read_header_from_reader(&mut log, self.compression)?;
                 let Some(header) = header else { continue };
@@ -1368,6 +1465,37 @@ fn ensure_generation_matches(
         Err(SessionError::Corruption(format!(
             "session generation filename v{} disagrees with header v{}",
             resolved.version, header.version
+        )))
+    }
+}
+
+fn ensure_supported_generation(
+    key: &SessionKey,
+    resolved: &ResolvedLog,
+) -> Result<(), SessionError> {
+    if resolved.version <= compat::SESSION_FORMAT_VERSION {
+        return Ok(());
+    }
+    Err(SessionError::UnsupportedFormat(format!(
+        "session \"{}\" uses newer generation v{}; this CLAT supports through v{} and will not fall back or append; upgrade CLAT or start a new session",
+        key.id,
+        resolved.version,
+        compat::SESSION_FORMAT_VERSION
+    )))
+}
+
+fn ensure_writable_generation(
+    key: &SessionKey,
+    resolved: &ResolvedLog,
+) -> Result<(), SessionError> {
+    ensure_supported_generation(key, resolved)?;
+    if resolved.version == compat::SESSION_FORMAT_VERSION {
+        Ok(())
+    } else {
+        Err(SessionError::UnsupportedFormat(format!(
+            "legacy v{} sessions are read-only; start a new v{} session",
+            resolved.version,
+            compat::SESSION_FORMAT_VERSION
         )))
     }
 }
@@ -1868,6 +1996,14 @@ mod tests {
             .join("session.v2.jsonl.zstd");
         assert!(log.is_file());
         #[cfg(unix)]
+        assert!(
+            log.parent()
+                .unwrap()
+                .join(write_lease::LEASE_FILENAME)
+                .is_file(),
+            "first materialization publishes DSH's stable lock inode"
+        );
+        #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
             assert_eq!(
@@ -2031,6 +2167,9 @@ mod tests {
         let next = backend
             .append_batch(next, 4, &open_turn)
             .expect("append commits");
+        // Simulate the writer process ending before the crash-torn artifact is
+        // reopened. A live PreparedSession now correctly owns session.lock.
+        drop(next);
         let file = root
             .join("--tmp-clat-project--")
             .join("repair-1")
@@ -2312,6 +2451,9 @@ mod tests {
         let mut read = backend.read_events(&key, true).expect("stable read");
         let mut closers = interrupted_turn_closers(&read.events);
         assert!(!closers.is_empty());
+        let lease = backend
+            .acquire_existing_write_lease(&key)
+            .expect("repair lease");
 
         let log = root
             .join("--tmp-clat-project--")
@@ -2322,7 +2464,11 @@ mod tests {
         std::fs::remove_file(&log).expect("remove log entry");
         std::os::unix::fs::symlink(&outside, &log).expect("swap symlink");
 
-        assert!(backend.commit_repair(&mut read, &mut closers).is_err());
+        assert!(
+            backend
+                .commit_repair(&lease, &mut read, &mut closers)
+                .is_err()
+        );
         assert_eq!(std::fs::read(&outside).unwrap(), b"unchanged");
         crate::test_support::cleanup_tree(&root);
     }
@@ -2416,6 +2562,111 @@ mod tests {
         crate::test_support::cleanup_tree(&root);
     }
 
+    /// DV-2 generation discriminator: a future highest generation is an
+    /// actionable hard stop. Removing the explicit gate either falls back to
+    /// v2 or degrades this to a header/parser error and fails these assertions.
+    #[test]
+    fn newer_highest_generation_refuses_without_fallback_or_lock_artifact() {
+        let (backend, root) = backend("generation-future");
+        let key = key("generation-future-1");
+        let v2 = write_generation(&backend, &key, header(&key), 2, &turn_events(0, 2));
+        let v3 = v2
+            .parent()
+            .unwrap()
+            .join(compat::generation_log_file_name(3, backend.compression));
+        std::fs::copy(&v2, &v3).expect("opaque future generation bytes");
+        let before_v2 = std::fs::read(&v2).unwrap();
+        let before_v3 = std::fs::read(&v3).unwrap();
+
+        for result in [
+            backend.header_snapshot(&key).map(|_| ()),
+            backend.load(&key, true).map(|_| ()),
+            backend.prepare(&key).map(|_| ()),
+        ] {
+            assert!(matches!(
+                result,
+                Err(SessionError::UnsupportedFormat(message))
+                    if message.contains("newer generation v3")
+                        && message.contains("supports through v2")
+                        && message.contains("will not fall back or append")
+            ));
+        }
+        assert_eq!(std::fs::read(&v2).unwrap(), before_v2);
+        assert_eq!(std::fs::read(&v3).unwrap(), before_v3);
+        assert!(
+            !v3.parent()
+                .unwrap()
+                .join(write_lease::LEASE_FILENAME)
+                .exists(),
+            "unsupported generation refusal must not create a lease artifact"
+        );
+        crate::test_support::cleanup_tree(&root);
+    }
+
+    /// The lease belongs to the write handle and all of its clones. A second
+    /// backend can only prepare after the final owner is dropped.
+    #[test]
+    fn prepared_handle_excludes_competing_writer_until_last_clone_drops() {
+        let (first_backend, root) = backend("writer-lease");
+        let second_backend = JsonlBackend::new(&root, JsonlCompression::Zstd, true);
+        let key = key("writer-lease-1");
+        let created = first_backend
+            .create(key.clone(), header(&key))
+            .expect("lazy create");
+        assert!(!first_backend.session_dir_path(&key).exists());
+        let first = first_backend
+            .append_batch(created, 0, &turn_events(0, 1))
+            .expect("materialize and lease");
+        let retained_clone = first.clone();
+
+        assert!(matches!(
+            second_backend.prepare(&key),
+            Err(SessionError::Conflict(message)) if message.contains("active writer")
+        ));
+        drop(first);
+        assert!(matches!(
+            second_backend.prepare(&key),
+            Err(SessionError::Conflict(_))
+        ));
+        drop(retained_clone);
+        let second = second_backend.prepare(&key).expect("lease released");
+        drop(second);
+        crate::test_support::cleanup_tree(&root);
+    }
+
+    /// Read-only inspection remains available while another process owns the
+    /// writer, but the repair mutation must fail before touching bytes.
+    #[test]
+    fn repair_respects_active_writer_lease_and_preserves_bytes() {
+        let (writer, root) = backend("repair-lease");
+        let reader = JsonlBackend::new(&root, JsonlCompression::Zstd, true);
+        let key = key("repair-lease-1");
+        let created = writer.create(key.clone(), header(&key)).expect("create");
+        let held = writer
+            .append_batch(
+                created,
+                0,
+                &[SessionEvent::new(
+                    "turn/start",
+                    0,
+                    43_000,
+                    payloads::turn_start(1),
+                )],
+            )
+            .expect("open turn");
+        let path = writer.log_path(&key);
+        let before = std::fs::read(&path).unwrap();
+        assert_eq!(reader.load(&key, false).unwrap().events.len(), 1);
+        assert!(matches!(
+            reader.load(&key, true),
+            Err(SessionError::Conflict(message)) if message.contains("active writer")
+        ));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        drop(held);
+        assert!(reader.load(&key, true).is_ok());
+        crate::test_support::cleanup_tree(&root);
+    }
+
     /// DV-1 zero-user-decision ruling: v0 remains readable but no load,
     /// recovery, or prepare path may rewrite it or produce an append handle.
     #[test]
@@ -2448,6 +2699,14 @@ mod tests {
             Err(SessionError::UnsupportedFormat(message)) if message.contains("read-only")
         ));
         assert_eq!(std::fs::read(&path).expect("after refusal"), before);
+        assert!(
+            !path
+                .parent()
+                .unwrap()
+                .join(write_lease::LEASE_FILENAME)
+                .exists(),
+            "legacy read-only refusal must not create a lock artifact"
+        );
         crate::test_support::cleanup_tree(&root);
     }
 

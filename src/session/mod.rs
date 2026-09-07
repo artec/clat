@@ -34,4 +34,5 @@ pub(crate) mod run_journal;
 pub(crate) mod surface;
 pub(crate) mod use_cases;
 pub(crate) mod write_behind;
+pub(crate) mod write_lease;
 pub(crate) mod zstd_frames;

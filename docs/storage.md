@@ -36,6 +36,7 @@ Files appear lazily, so a fresh installation may contain only a subset.
     └── --<project-key>--/
         └── <encoded-session-id>/
             ├── session.v2.jsonl.zstd # current authoritative DSH-compatible log
+            ├── session.lock          # POSIX-only stable DSH writer-lock inode
             ├── clat-checkpoint.json # bounded derived projection cache
             └── attachments/
                 ├── .orphan-sweep-cursor-v1 # private bounded-GC progress
@@ -101,6 +102,17 @@ an encoding conflict before mounting storage. Released-v0
 `session.jsonl[.zstd]` remains readable, including when it sits beside v2, but
 CLAT never appends to, repairs, or migrates a v0 log; start a new session to
 continue writing.
+
+If the highest canonical filename names a generation newer than v2, CLAT
+refuses inspection/resume with an upgrade-or-new-session diagnostic. It never
+falls back to the older sibling, because doing so would split one conversation
+into two invisible histories.
+
+Every writable v2 handle also owns DSH's per-session kernel lease for its full
+lifetime. POSIX uses non-blocking `flock` on the stable `session.lock` inode;
+Windows uses DSH's case-folded path-derived named semaphore and creates no lock
+file. Readers stay lock-free, while first materialization, append, and repair
+all require the lease. A crashed process releases it through the kernel.
 
 V2 stores model deltas inside `assistant/message.stream`; failed model requests
 are retained as `assistant/attempt` with the same embedded stream format.

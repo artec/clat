@@ -26,7 +26,7 @@ const sha = value => createHash('sha256').update(value).digest('hex')
 
 try {
   await mkdir(out, { recursive: true })
-  const manifest = { pinnedRevision: 'b150a551b8', entries: {} }
+  const manifest = { pinnedRevision: 'd347e70390', entries: {} }
   for (const name of names) {
     const generator = join(here, `gen-${name}.mts`)
     const checker = join(here, `check-${name}.mjs`)

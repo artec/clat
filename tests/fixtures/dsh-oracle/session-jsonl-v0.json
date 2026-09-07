@@ -1,0 +1,147 @@
+{
+  "pinnedRevision": "b150a551b8",
+  "pinnedCommit": "b150a551b8d465e31e418e1b2eaf5e79bbb7d28e",
+  "generatedAt": "2026-08-21T20:03:37+08:00",
+  "toolVersions": {
+    "node": "24.3.0"
+  },
+  "sections": {
+    "packing": {
+      "two": [
+        {
+          "type": "assistant/chunk",
+          "seq": 0,
+          "time": 1000,
+          "data": {
+            "turn": 1,
+            "step": 1,
+            "chunk": {
+              "type": "text-delta",
+              "index": 0,
+              "text": "a"
+            }
+          }
+        },
+        {
+          "type": "assistant/chunk",
+          "seq": 1,
+          "time": 1010,
+          "data": {
+            "turn": 1,
+            "step": 1,
+            "chunk": {
+              "type": "text-delta",
+              "index": 0,
+              "text": "b"
+            }
+          }
+        }
+      ],
+      "three": [
+        {
+          "type": "text-chunks",
+          "seq0": 0,
+          "time0": 1000,
+          "data": {
+            "turn": 1,
+            "step": 1,
+            "index": 0,
+            "dt": [
+              10,
+              10
+            ],
+            "texts": [
+              "a",
+              "b",
+              "c"
+            ]
+          }
+        }
+      ],
+      "decodedThree": [
+        {
+          "type": "assistant/chunk",
+          "seq": 0,
+          "time": 1000,
+          "data": {
+            "turn": 1,
+            "step": 1,
+            "chunk": {
+              "type": "text-delta",
+              "index": 0,
+              "text": "a"
+            }
+          }
+        },
+        {
+          "type": "assistant/chunk",
+          "seq": 1,
+          "time": 1010,
+          "data": {
+            "turn": 1,
+            "step": 1,
+            "chunk": {
+              "type": "text-delta",
+              "index": 0,
+              "text": "b"
+            }
+          }
+        },
+        {
+          "type": "assistant/chunk",
+          "seq": 2,
+          "time": 1020,
+          "data": {
+            "turn": 1,
+            "step": 1,
+            "chunk": {
+              "type": "text-delta",
+              "index": 0,
+              "text": "c"
+            }
+          }
+        }
+      ],
+      "packedAtThree": true
+    },
+    "loneSurrogate": {
+      "jsonLine": "{\"type\":\"assistant/chunk\",\"seq\":0,\"time\":1000,\"data\":{\"turn\":1,\"step\":1,\"chunk\":{\"type\":\"text-delta\",\"index\":0,\"text\":\"\\ud800\"}}}",
+      "utf8Hex": "7b2274797065223a22617373697374616e742f6368756e6b222c22736571223a302c2274696d65223a313030302c2264617461223a7b227475726e223a312c2273746570223a312c226368756e6b223a7b2274797065223a22746578742d64656c7461222c22696e646578223a302c2274657874223a225c7564383030227d7d7d",
+      "parsedTextCodeUnits": [
+        55296
+      ]
+    },
+    "tornTail": {
+      "eventTypes": [
+        "turn/start"
+      ],
+      "committedBytes": 194,
+      "totalBytes": 227,
+      "safePrefix": "{\"type\":\"session\",\"version\":0,\"id\":\"018f2a64-9d3f-7cde-8123-9a4f2b6c0f01\",\"createdAt\":1724572800000,\"cwd\":\"/oracle\",\"delegationDepth\":0}\n{\"type\":\"turn/start\",\"seq\":0,\"time\":1,\"data\":{\"turn\":1}}\n"
+    },
+    "repair": {
+      "closers": [
+        {
+          "type": "step/end",
+          "seq": 2,
+          "time": 1,
+          "data": {
+            "turn": 1,
+            "step": 1
+          }
+        },
+        {
+          "type": "turn/end",
+          "seq": 3,
+          "time": 1,
+          "data": {
+            "turn": 1,
+            "reason": {
+              "kind": "interrupted"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

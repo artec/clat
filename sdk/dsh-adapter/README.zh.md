@@ -210,13 +210,14 @@ MCP `command` 指向这个可执行文件。运行时已经打入产物，终端
   fork（修改日志 #1–#18）复核：全部分歧（loader/HMR 事务化、处置
   加固、配置调和）都落在子集仿真面之外——进程内派发、effect 与
   基础生命周期语义未变。
-- API 钉靶：`dsh-v0.1.1-rc.2`，源提交
-  `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`。2026-09-06 复核
-  `dsh-v0.1.3-alpha.1`（`d347e70390`）：adapter 映射的插件面缝
+- API 钉靶：`dsh-v0.1.3-alpha.1`，源提交
+  `d347e703908d0406b7a7ef80e3a0e594d86b2215`。2026-09-07 完成 OC-1
+  重钉；adapter 映射的插件面缝
   （`defineTool`、`ctx.tools.register`、`ctx.systemPrompt`、llm
-  采样、web/fs/shell/sessions/agents 面）未变；0.1.3 的会话格式
-  v2、持久化接缝与 Gateway/SDK 重构是宿主侧事务，不在 adapter
-  子集内。
+  采样、web/fs/shell/sessions/agents 面）未变；`sessionProjections` 是
+  0.1.3 新增的宿主服务，依赖它的 cohort 包明确保留为 partial。0.1.3
+  的会话格式 v2、持久化接缝与 Gateway/SDK 重构是宿主侧事务，不在
+  adapter 子集内；v2 session oracle 已成为现行金样，v0 金样仅保留遗产读腿。
 - 验收 fixture：npm 发布物 `@deepseek-ai/dsh-web-search-exa` 在
   [`examples/exa`](https://github.com/artec/clat/tree/main/sdk/dsh-adapter/examples/exa)
   中原样挂载。

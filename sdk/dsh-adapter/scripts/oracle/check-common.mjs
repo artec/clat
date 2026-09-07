@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 
-const pinned = 'b150a551b8'
+const pinned = 'd347e70390'
 
 export async function checkOracle(generator, upstream, symbols) {
   const root = resolve(process.env.DSH_ROOT ?? join(import.meta.dirname, '..', '..', '..', '..', '..', 'deepseek-harness'))

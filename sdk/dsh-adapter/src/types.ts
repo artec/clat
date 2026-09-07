@@ -1,7 +1,7 @@
 /**
  * Runtime shapes of the DeepSeek Harness (DSH) plugin API exposed by the
- * adapter. Pinned to DSH revision `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`
- * (`dsh-v0.1.1-rc.2`).
+ * adapter. Pinned to DSH revision `d347e703908d0406b7a7ef80e3a0e594d86b2215`
+ * (`dsh-v0.1.3-alpha.1`, the released-v2 contract target).
  *
  * These are deliberately structural: a real plugin brings its own types via
  * `@deepseek-ai/cordis` / `@deepseek-ai/dsh-tools` type-only imports; at

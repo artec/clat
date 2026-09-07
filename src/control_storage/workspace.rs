@@ -1,5 +1,5 @@
 //! `storages/workspace.json`：工作区注册表（MP-1 §4.2）——DSH 同构
-//! schema（钉靶 `b150a551b8`，unit{workspace,2}/global/tables），读真实
+//! schema（现行钉靶 `d347e70390`，unit{workspace,2}/global/tables），读真实
 //! DSH 文件零适配（serde 容忍未知字段——上游演进面）。
 //!
 //! 两处记档的 CLAT 扩展（设计文档「实现修正记录」）：
@@ -482,7 +482,7 @@ mod tests {
     #[test]
     fn parses_the_real_dsh_shape_zero_adaptation() {
         // 本机 ~/.dsh/storages/workspace.json 的字节副本（钉靶
-        // b150a551b8 运行时形态）。未知字段容忍 + 驼峰对齐 = 零适配。
+        // d347e70390 运行时形态）。未知字段容忍 + 驼峰对齐 = 零适配。
         let fixture = include_str!("../../tests/fixtures/dsh-workspace.json");
         let file: WorkspaceFile = serde_json::from_str(fixture).expect("parses the DSH file");
         assert_eq!(file.unit.name, "workspace");

@@ -1,2 +1,2 @@
 import { checkOracle } from './check-common.mjs'
-await checkOracle('gen-session-jsonl.mts', 'packages/core/session/src/chunk-rows.ts', ['export function packChunkRuns', 'export function decodeStorageRecord'])
+await checkOracle('gen-session-jsonl.mts', 'packages/session/session-persistence-jsonl/src/format.ts', ['export function eventLines', 'export class SessionLogScanner', 'encodeSeqRanges(record.sourceEventSeqs)'])

@@ -223,8 +223,15 @@ fn handle(
 }
 
 /// 极简 HTTP 读取（serve/tests 同款手法）：头到 `\r\n\r\n` + body 按
-/// content-length。
-fn read_http_request(stream: &mut TcpStream) -> Result<(String, String, String), String> {
+/// content-length。**假宿主共用件**（connect.rs 等测试模块的内联
+/// listener 同用）：必须按 Content-Length 读完整——CI 病历（S2 轮×2、
+/// S4 轮×1）证明 ureq 的 POST 在 GitHub Actions 上常分两段到达（头
+/// 先、体后），单次 read 漏体会让 rpcId 回退占位值，客户端回显校验
+/// 失败。契约由 `fake_host_request_reader_survives_segmented_arrival`
+/// 钉死。
+pub(crate) fn read_http_request(
+    stream: &mut TcpStream,
+) -> Result<(String, String, String), String> {
     let mut buffer = Vec::new();
     let mut byte = [0u8; 1];
     loop {
@@ -271,6 +278,48 @@ fn write_response(stream: &mut TcpStream, status: u16, body: &str) -> Result<(),
         .write_all(head.as_bytes())
         .and_then(|_| stream.write_all(body.as_bytes()))
         .map_err(|error| error.to_string())
+}
+
+/// 假宿主读取器的分段到达契约（CI 病历 2026-09-07，同型第三犯：
+/// connect.rs 假宿主单次 read，CI 上就绪轮询 20s 超时）。CI 上 ureq
+/// 的 POST 常分两段到达——头先（含小写 `content-length:`）、体后；
+/// 单次 read 只拿到头，rpcId 取不到回退占位值，客户端回显校验失败。
+/// 本腿把分段钉成确定输入：头一段、体再劈两段——读取器必须拼完整。
+/// 判别：回退单次 read（或漏读 body）即红（body 断言拿不到全文）。
+#[test]
+fn fake_host_request_reader_survives_segmented_arrival() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
+    let port = listener.local_addr().unwrap().port();
+    let body = r#"{"type":"client-request","rpcId":"rpc-split-1","method":"session/canOpenWorkspacePath","payload":{"args":{}}}"#;
+    let sender = std::thread::spawn(move || {
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect");
+        stream
+            .write_all(
+                format!(
+                    "POST /api/session/canOpenWorkspacePath HTTP/1.1\r\n\
+                     host: 127.0.0.1:{port}\r\ncontent-type: application/json\r\n\
+                     content-length: {}\r\n\r\n",
+                    body.len()
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+        stream.flush().unwrap();
+        // 头体分段屏障：头独立成段先行抵达。
+        std::thread::sleep(Duration::from_millis(50));
+        stream.write_all(&body.as_bytes()[..40]).unwrap();
+        stream.flush().unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        stream.write_all(&body.as_bytes()[40..]).unwrap();
+        stream.flush().unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+    });
+    let (mut stream, _) = listener.accept().expect("accept");
+    let (method, path, read_body) = read_http_request(&mut stream).expect("complete request");
+    assert_eq!(method, "POST");
+    assert_eq!(path, "/api/session/canOpenWorkspacePath");
+    assert_eq!(read_body, body, "the body must reassemble across segments");
+    sender.join().expect("sender finished");
 }
 
 fn server_text_frame(payload: &[u8]) -> Vec<u8> {

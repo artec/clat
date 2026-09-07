@@ -4,7 +4,7 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
-export const PINNED_REVISION = 'b150a551b8'
+export const PINNED_REVISION = 'd347e70390'
 export const harnessRoot = resolve(
   process.env.DSH_ROOT ?? join(import.meta.dirname, '..', '..', '..', '..', '..', 'deepseek-harness'),
 )

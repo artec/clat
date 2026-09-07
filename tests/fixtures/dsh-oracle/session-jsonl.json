@@ -1,112 +1,368 @@
 {
-  "pinnedRevision": "b150a551b8",
-  "pinnedCommit": "b150a551b8d465e31e418e1b2eaf5e79bbb7d28e",
-  "generatedAt": "2026-08-21T20:03:37+08:00",
+  "pinnedRevision": "d347e70390",
+  "pinnedCommit": "d347e703908d0406b7a7ef80e3a0e594d86b2215",
+  "generatedAt": "2026-09-04T17:16:23+08:00",
   "toolVersions": {
     "node": "24.3.0"
   },
   "sections": {
-    "packing": {
-      "two": [
+    "header": {
+      "stored": {
+        "type": "session",
+        "version": 2,
+        "id": "018f2a64-9d3f-7cde-8123-9a4f2b6c0f01",
+        "createdAt": 1724572800000,
+        "cwd": "/oracle",
+        "isSeeded": false,
+        "delegationDepth": 0
+      },
+      "requiredIsSeeded": true,
+      "filename": "session.v2.jsonl.zstd"
+    },
+    "assistantStreams": {
+      "compact": [
         {
-          "type": "assistant/chunk",
-          "seq": 0,
-          "time": 1000,
-          "data": {
-            "turn": 1,
-            "step": 1,
-            "chunk": {
-              "type": "text-delta",
-              "index": 0,
-              "text": "a"
-            }
+          "type": "chunk",
+          "time": 1010,
+          "chunk": {
+            "type": "block-start",
+            "index": 0,
+            "blockType": "text"
           }
         },
-        {
-          "type": "assistant/chunk",
-          "seq": 1,
-          "time": 1010,
-          "data": {
-            "turn": 1,
-            "step": 1,
-            "chunk": {
-              "type": "text-delta",
-              "index": 0,
-              "text": "b"
-            }
-          }
-        }
-      ],
-      "three": [
         {
           "type": "text-chunks",
-          "seq0": 0,
-          "time0": 1000,
-          "data": {
-            "turn": 1,
-            "step": 1,
-            "index": 0,
-            "dt": [
-              10,
-              10
-            ],
-            "texts": [
-              "a",
-              "b",
-              "c"
-            ]
+          "time0": 1020,
+          "index": 0,
+          "dt": [
+            5
+          ],
+          "texts": [
+            "hel",
+            "lo"
+          ]
+        },
+        {
+          "type": "reasoning-chunks",
+          "time0": 1030,
+          "index": 1,
+          "dt": [
+            10
+          ],
+          "texts": [
+            "plan",
+            " it"
+          ]
+        },
+        {
+          "type": "tool-call-chunks",
+          "time0": 1050,
+          "index": 2,
+          "dt": [
+            7
+          ],
+          "id": "call-oracle",
+          "name": "lookup",
+          "args": [
+            "{\"q\":",
+            "\"v2\"}"
+          ]
+        },
+        {
+          "type": "chunk",
+          "time": 1060,
+          "chunk": {
+            "type": "finish",
+            "reason": {
+              "kind": "stop"
+            }
           }
         }
       ],
-      "decodedThree": [
+      "recordTypes": [
+        "chunk",
+        "text-chunks",
+        "reasoning-chunks",
+        "tool-call-chunks",
+        "chunk"
+      ],
+      "expanded": [
         {
-          "type": "assistant/chunk",
-          "seq": 0,
-          "time": 1000,
-          "data": {
-            "turn": 1,
-            "step": 1,
-            "chunk": {
-              "type": "text-delta",
-              "index": 0,
-              "text": "a"
-            }
-          }
-        },
-        {
-          "type": "assistant/chunk",
-          "seq": 1,
           "time": 1010,
-          "data": {
-            "turn": 1,
-            "step": 1,
-            "chunk": {
-              "type": "text-delta",
-              "index": 0,
-              "text": "b"
-            }
+          "chunk": {
+            "type": "block-start",
+            "index": 0,
+            "blockType": "text"
           }
         },
         {
-          "type": "assistant/chunk",
-          "seq": 2,
           "time": 1020,
-          "data": {
-            "turn": 1,
-            "step": 1,
-            "chunk": {
-              "type": "text-delta",
-              "index": 0,
-              "text": "c"
+          "chunk": {
+            "type": "text-delta",
+            "index": 0,
+            "text": "hel"
+          }
+        },
+        {
+          "time": 1025,
+          "chunk": {
+            "type": "text-delta",
+            "index": 0,
+            "text": "lo"
+          }
+        },
+        {
+          "time": 1030,
+          "chunk": {
+            "type": "reasoning-delta",
+            "index": 1,
+            "text": "plan"
+          }
+        },
+        {
+          "time": 1040,
+          "chunk": {
+            "type": "reasoning-delta",
+            "index": 1,
+            "text": " it"
+          }
+        },
+        {
+          "time": 1050,
+          "chunk": {
+            "type": "tool-call-delta",
+            "index": 2,
+            "id": "call-oracle",
+            "name": "lookup",
+            "argumentsDelta": "{\"q\":"
+          }
+        },
+        {
+          "time": 1057,
+          "chunk": {
+            "type": "tool-call-delta",
+            "index": 2,
+            "id": "call-oracle",
+            "name": "lookup",
+            "argumentsDelta": "\"v2\"}"
+          }
+        },
+        {
+          "time": 1060,
+          "chunk": {
+            "type": "finish",
+            "reason": {
+              "kind": "stop"
             }
           }
         }
       ],
-      "packedAtThree": true
+      "attempt": {
+        "type": "assistant/attempt",
+        "seq": 3,
+        "time": 1061,
+        "data": {
+          "turn": 1,
+          "step": 1,
+          "stream": [
+            {
+              "type": "chunk",
+              "time": 1010,
+              "chunk": {
+                "type": "block-start",
+                "index": 0,
+                "blockType": "text"
+              }
+            },
+            {
+              "type": "text-chunks",
+              "time0": 1020,
+              "index": 0,
+              "dt": [
+                5
+              ],
+              "texts": [
+                "hel",
+                "lo"
+              ]
+            },
+            {
+              "type": "reasoning-chunks",
+              "time0": 1030,
+              "index": 1,
+              "dt": [
+                10
+              ],
+              "texts": [
+                "plan",
+                " it"
+              ]
+            },
+            {
+              "type": "tool-call-chunks",
+              "time0": 1050,
+              "index": 2,
+              "dt": [
+                7
+              ],
+              "id": "call-oracle",
+              "name": "lookup",
+              "args": [
+                "{\"q\":",
+                "\"v2\"}"
+              ]
+            },
+            {
+              "type": "chunk",
+              "time": 1060,
+              "chunk": {
+                "type": "finish",
+                "reason": {
+                  "kind": "stop"
+                }
+              }
+            }
+          ]
+        }
+      },
+      "message": {
+        "type": "assistant/message",
+        "seq": 4,
+        "time": 1062,
+        "sourceEventSeqs": [
+          0,
+          1,
+          2,
+          3
+        ],
+        "surfaceOp": "append",
+        "data": {
+          "turn": 1,
+          "step": 1,
+          "message": {
+            "id": "assistant-oracle",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "hello"
+              }
+            ],
+            "source": {
+              "kind": "model",
+              "provider": "oracle",
+              "model": "v2"
+            }
+          },
+          "stream": [
+            {
+              "type": "chunk",
+              "time": 1010,
+              "chunk": {
+                "type": "block-start",
+                "index": 0,
+                "blockType": "text"
+              }
+            },
+            {
+              "type": "text-chunks",
+              "time0": 1020,
+              "index": 0,
+              "dt": [
+                5
+              ],
+              "texts": [
+                "hel",
+                "lo"
+              ]
+            },
+            {
+              "type": "reasoning-chunks",
+              "time0": 1030,
+              "index": 1,
+              "dt": [
+                10
+              ],
+              "texts": [
+                "plan",
+                " it"
+              ]
+            },
+            {
+              "type": "tool-call-chunks",
+              "time0": 1050,
+              "index": 2,
+              "dt": [
+                7
+              ],
+              "id": "call-oracle",
+              "name": "lookup",
+              "args": [
+                "{\"q\":",
+                "\"v2\"}"
+              ]
+            },
+            {
+              "type": "chunk",
+              "time": 1060,
+              "chunk": {
+                "type": "finish",
+                "reason": {
+                  "kind": "stop"
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "provenance": {
+      "stored": [
+        [
+          0,
+          3
+        ]
+      ],
+      "decoded": [
+        0,
+        1,
+        2,
+        3
+      ]
+    },
+    "requestHeader": {
+      "type": "request/header",
+      "seq": 1,
+      "time": 1001,
+      "data": {
+        "header": {
+          "config": {
+            "provider": "oracle",
+            "model": "v2"
+          },
+          "system": "oracle",
+          "tools": []
+        },
+        "reason": "series"
+      }
+    },
+    "artifact": {
+      "jsonl": "{\"type\":\"session\",\"version\":2,\"id\":\"018f2a64-9d3f-7cde-8123-9a4f2b6c0f01\",\"createdAt\":1724572800000,\"cwd\":\"/oracle\",\"isSeeded\":false,\"delegationDepth\":0}\n{\"type\":\"turn/start\",\"seq\":0,\"time\":1000,\"data\":{\"turn\":1}}\n{\"type\":\"request/header\",\"seq\":1,\"time\":1001,\"data\":{\"header\":{\"config\":{\"provider\":\"oracle\",\"model\":\"v2\"},\"system\":\"oracle\",\"tools\":[]},\"reason\":\"series\"}}\n{\"type\":\"step/start\",\"seq\":2,\"time\":1002,\"data\":{\"turn\":1,\"step\":1}}\n{\"type\":\"assistant/attempt\",\"seq\":3,\"time\":1061,\"data\":{\"turn\":1,\"step\":1,\"stream\":[{\"type\":\"chunk\",\"time\":1010,\"chunk\":{\"type\":\"block-start\",\"index\":0,\"blockType\":\"text\"}},{\"type\":\"text-chunks\",\"time0\":1020,\"index\":0,\"dt\":[5],\"texts\":[\"hel\",\"lo\"]},{\"type\":\"reasoning-chunks\",\"time0\":1030,\"index\":1,\"dt\":[10],\"texts\":[\"plan\",\" it\"]},{\"type\":\"tool-call-chunks\",\"time0\":1050,\"index\":2,\"dt\":[7],\"id\":\"call-oracle\",\"name\":\"lookup\",\"args\":[\"{\\\"q\\\":\",\"\\\"v2\\\"}\"]},{\"type\":\"chunk\",\"time\":1060,\"chunk\":{\"type\":\"finish\",\"reason\":{\"kind\":\"stop\"}}}]}}\n{\"type\":\"assistant/message\",\"seq\":4,\"time\":1062,\"sourceEventSeqs\":[[0,3]],\"surfaceOp\":\"append\",\"data\":{\"turn\":1,\"step\":1,\"message\":{\"id\":\"assistant-oracle\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"hello\"}],\"source\":{\"kind\":\"model\",\"provider\":\"oracle\",\"model\":\"v2\"}},\"stream\":[{\"type\":\"chunk\",\"time\":1010,\"chunk\":{\"type\":\"block-start\",\"index\":0,\"blockType\":\"text\"}},{\"type\":\"text-chunks\",\"time0\":1020,\"index\":0,\"dt\":[5],\"texts\":[\"hel\",\"lo\"]},{\"type\":\"reasoning-chunks\",\"time0\":1030,\"index\":1,\"dt\":[10],\"texts\":[\"plan\",\" it\"]},{\"type\":\"tool-call-chunks\",\"time0\":1050,\"index\":2,\"dt\":[7],\"id\":\"call-oracle\",\"name\":\"lookup\",\"args\":[\"{\\\"q\\\":\",\"\\\"v2\\\"}\"]},{\"type\":\"chunk\",\"time\":1060,\"chunk\":{\"type\":\"finish\",\"reason\":{\"kind\":\"stop\"}}}]}}\n{\"type\":\"step/end\",\"seq\":5,\"time\":1063,\"data\":{\"turn\":1,\"step\":1}}\n{\"type\":\"turn/end\",\"seq\":6,\"time\":1064,\"data\":{\"turn\":1,\"reason\":{\"kind\":\"completed\"}}}\n",
+      "sha256": "f5a1edde219c0fd060ca7058abbfc8f2b2722c701f04af389878ee948e5b31f7",
+      "eventTypes": [
+        "turn/start",
+        "request/header",
+        "step/start",
+        "assistant/attempt",
+        "assistant/message",
+        "step/end",
+        "turn/end"
+      ],
+      "committedBytes": 1879
     },
     "loneSurrogate": {
-      "jsonLine": "{\"type\":\"assistant/chunk\",\"seq\":0,\"time\":1000,\"data\":{\"turn\":1,\"step\":1,\"chunk\":{\"type\":\"text-delta\",\"index\":0,\"text\":\"\\ud800\"}}}",
-      "utf8Hex": "7b2274797065223a22617373697374616e742f6368756e6b222c22736571223a302c2274696d65223a313030302c2264617461223a7b227475726e223a312c2273746570223a312c226368756e6b223a7b2274797065223a22746578742d64656c7461222c22696e646578223a302c2274657874223a225c7564383030227d7d7d",
+      "jsonLine": "{\"type\":\"assistant/attempt\",\"seq\":0,\"time\":1000,\"data\":{\"turn\":1,\"step\":1,\"stream\":[{\"type\":\"text-chunks\",\"time0\":1000,\"index\":0,\"dt\":[],\"texts\":[\"\\ud800\"]}]}}",
+      "utf8Hex": "7b2274797065223a22617373697374616e742f617474656d7074222c22736571223a302c2274696d65223a313030302c2264617461223a7b227475726e223a312c2273746570223a312c2273747265616d223a5b7b2274797065223a22746578742d6368756e6b73222c2274696d6530223a313030302c22696e646578223a302c226474223a5b5d2c227465787473223a5b225c7564383030225d7d5d7d7d",
       "parsedTextCodeUnits": [
         55296
       ]
@@ -115,9 +371,9 @@
       "eventTypes": [
         "turn/start"
       ],
-      "committedBytes": 194,
-      "totalBytes": 227,
-      "safePrefix": "{\"type\":\"session\",\"version\":0,\"id\":\"018f2a64-9d3f-7cde-8123-9a4f2b6c0f01\",\"createdAt\":1724572800000,\"cwd\":\"/oracle\",\"delegationDepth\":0}\n{\"type\":\"turn/start\",\"seq\":0,\"time\":1,\"data\":{\"turn\":1}}\n"
+      "committedBytes": 211,
+      "totalBytes": 246,
+      "safePrefix": "{\"type\":\"session\",\"version\":2,\"id\":\"018f2a64-9d3f-7cde-8123-9a4f2b6c0f01\",\"createdAt\":1724572800000,\"cwd\":\"/oracle\",\"isSeeded\":false,\"delegationDepth\":0}\n{\"type\":\"turn/start\",\"seq\":0,\"time\":1,\"data\":{\"turn\":1}}\n"
     },
     "repair": {
       "closers": [

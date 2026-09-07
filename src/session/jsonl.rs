@@ -298,11 +298,12 @@ mod tests {
     }
 
     #[test]
-    fn matches_pinned_dsh_session_oracle_for_packing_lone_surrogate_and_torn_tail() {
+    fn matches_frozen_legacy_dsh_v0_oracle_for_packing_and_repair() {
         let fixture: serde_json::Value = serde_json::from_str(include_str!(
-            "../../tests/fixtures/dsh-oracle/session-jsonl.json"
+            "../../tests/fixtures/dsh-oracle/session-jsonl-v0.json"
         ))
         .expect("oracle fixture");
+        assert_eq!(fixture["pinnedRevision"], "b150a551b8");
         let sections = &fixture["sections"];
         let chunks = ["a", "b", "c"]
             .into_iter()
@@ -381,6 +382,104 @@ mod tests {
             .map(|event| serde_json::to_value(event).expect("serialize recovery closer"))
             .collect::<Vec<_>>();
         assert_eq!(json!(closers), sections["repair"]["closers"]);
+    }
+
+    /// DV-3 current-contract oracle: generated only through DSH 0.1.3's v2
+    /// codecs and AssistantStreamAccumulator. This independently pins the
+    /// exact header generation, all four embedded stream record variants,
+    /// retry attempts, provenance range expansion, and `series` reason.
+    #[test]
+    fn matches_current_dsh_v2_session_oracle() {
+        use sha2::{Digest as _, Sha256};
+
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/dsh-oracle/session-jsonl.json"
+        ))
+        .expect("v2 oracle fixture");
+        assert_eq!(fixture["pinnedRevision"], "d347e70390");
+        let sections = &fixture["sections"];
+        assert_eq!(sections["header"]["stored"]["version"], 2);
+        assert_eq!(sections["header"]["stored"]["isSeeded"], false);
+        assert_eq!(sections["header"]["requiredIsSeeded"], true);
+        assert_eq!(sections["header"]["filename"], "session.v2.jsonl.zstd");
+
+        let artifact = sections["artifact"]["jsonl"]
+            .as_str()
+            .expect("DSH v2 artifact");
+        assert_eq!(
+            format!("{:x}", Sha256::digest(artifact.as_bytes())),
+            sections["artifact"]["sha256"].as_str().unwrap()
+        );
+        let scan = scan_raw(artifact.as_bytes()).expect("CLAT reads DSH v2 artifact");
+        assert_eq!(scan.header.version, 2);
+        assert!(!scan.header.is_seeded);
+        assert_eq!(scan.committed_plain_bytes, artifact.len());
+        assert_eq!(
+            json!(
+                scan.events
+                    .iter()
+                    .map(|event| event.event_type.as_str())
+                    .collect::<Vec<_>>()
+            ),
+            sections["artifact"]["eventTypes"]
+        );
+
+        let attempt = scan
+            .events
+            .iter()
+            .find(|event| event.event_type == "assistant/attempt")
+            .expect("attempt decoded");
+        let message = scan
+            .events
+            .iter()
+            .find(|event| event.event_type == "assistant/message")
+            .expect("message decoded");
+        let record_types = attempt.data["stream"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|record| record["type"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            json!(record_types),
+            sections["assistantStreams"]["recordTypes"]
+        );
+        assert_eq!(
+            attempt.data["stream"],
+            sections["assistantStreams"]["attempt"]["data"]["stream"]
+        );
+        assert_eq!(
+            message.data["stream"],
+            sections["assistantStreams"]["message"]["data"]["stream"]
+        );
+        assert_eq!(message.source_event_seqs, Some(vec![0, 1, 2, 3]));
+        assert_eq!(sections["provenance"]["stored"], json!([[0, 3]]));
+        assert_eq!(sections["provenance"]["decoded"], json!([0, 1, 2, 3]));
+        let physical_message = event_lines(std::slice::from_ref(message), true, 2);
+        let physical_message: serde_json::Value = serde_json::from_str(&physical_message).unwrap();
+        assert_eq!(physical_message["sourceEventSeqs"], json!([[0, 3]]));
+
+        let request = scan
+            .events
+            .iter()
+            .find(|event| event.event_type == "request/header")
+            .expect("request header decoded");
+        assert_eq!(request.data["reason"], "series");
+        assert_eq!(request.data, sections["requestHeader"]["data"]);
+
+        // Rust cannot retain a lone UTF-16 surrogate; the intentional U+FFFD
+        // ingress boundary remains explicit under the current embedded stream.
+        assert!(
+            sections["loneSurrogate"]["jsonLine"]
+                .as_str()
+                .unwrap()
+                .contains("\\ud800")
+        );
+        let safe = sections["tornTail"]["safePrefix"].as_str().unwrap();
+        let torn = format!("{safe}{{\"type\":\"assistant/attempt\",\"seq\":1");
+        let torn_scan = scan_raw(torn.as_bytes()).expect("v2 torn tail");
+        assert_eq!(torn_scan.committed_plain_bytes, safe.len());
+        assert_eq!(torn_scan.events[0].event_type, "turn/start");
     }
 
     fn sample_events() -> Vec<SessionEvent> {

@@ -747,13 +747,16 @@ mod tests {
             ).append(Vec::new()))
             .expect("result");
         journal.flush().expect("result durable");
+        // Repair is a write operation. Retire the coordinator before asking
+        // the backend to append recovery closers so the test models a cold
+        // recovery rather than opening a second writer on the same log.
+        coordinator.close().expect("close before repair");
         let loaded = backend.load(&key, true).expect("final load");
         assert_eq!(loaded.events.len(), 7);
         // Recovery closes the still-open turn with interrupted... wait: no
         // turn/end was written, so repair synthesizes one — proving the
         // three-way recovery distinction holds through the journal too.
         assert!(loaded.events.last().unwrap().data["reason"]["kind"] == "interrupted");
-        coordinator.close().expect("close");
         crate::test_support::cleanup_tree(&root);
     }
 }
