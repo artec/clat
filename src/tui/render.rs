@@ -803,15 +803,23 @@ impl App {
         // 会话右标题（用户指定布局）：左上角 Conversation、右上角对称
         // 放当前会话名（effective：LLM/用户标题，否则首条消息派生）。
         // 超宽截断保头（标题语义在头部），留出左标题与边框的余量。
-        let mut block = Block::default()
-            .title(" Conversation ")
-            .borders(Borders::ALL);
+        let left_title = if self.dsh.is_none()
+            && self
+                .application
+                .as_ref()
+                .is_some_and(|app| app.session_is_read_only())
+        {
+            " Conversation · read-only v0 · /update "
+        } else {
+            " Conversation "
+        };
+        let mut block = Block::default().title(left_title).borders(Borders::ALL);
         if let Some(title) = self
             .session_title
             .as_deref()
             .filter(|title| !title.is_empty())
         {
-            let budget = area.width.saturating_sub(16) as usize;
+            let budget = (area.width as usize).saturating_sub(left_title.chars().count() + 2);
             let shown = if title.chars().count() > budget {
                 let kept: String = title.chars().take(budget.saturating_sub(1)).collect();
                 format!("{kept}…")

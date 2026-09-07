@@ -164,6 +164,8 @@ pub(crate) struct LoadedSession {
 /// Fault-injection hooks for commit three-state tests (tests only).
 #[derive(Default, Clone, Copy)]
 pub(crate) struct FaultHooks {
+    pub(crate) fail_upgrade_before_publish: bool,
+    pub(crate) fail_upgrade_after_publish: bool,
     pub(crate) fail_batch_write: bool,
     pub(crate) fail_batch_fsync: bool,
     pub(crate) fail_rollback_fsync: bool,
@@ -237,6 +239,122 @@ pub(crate) struct JsonlBackend {
 }
 
 impl JsonlBackend {
+    /// Explicit generation publication. The v0 source is retained byte-for-byte;
+    /// the complete v2 file becomes discoverable at one no-overwrite link.
+    pub(crate) fn upgrade_legacy(&self, key: &SessionKey) -> Result<(), SessionError> {
+        let source = self
+            .find_log(key)?
+            .ok_or_else(|| SessionError::NotFound(key.id.to_string()))?;
+        ensure_supported_generation(key, &source)?;
+        if source.version == 2 {
+            return Ok(());
+        }
+        if source.version != 0 {
+            return Err(SessionError::UnsupportedFormat(
+                "only v0 can be upgraded".into(),
+            ));
+        }
+        let dir = self.open_session_dir(key)?;
+        let _lease = SessionWriteLease::try_acquire(
+            &dir,
+            &source.path.with_file_name(write_lease::LEASE_FILENAME),
+        )
+        .map_err(io)?
+        .ok_or_else(|| {
+            SessionError::Io("session has an active writer; close it before /update".into())
+        })?;
+        let read = self.read_events(key, true)?;
+        if read.header.version == 2 {
+            return Ok(());
+        }
+        if read.truncate_to.is_some() || read.stable_events != read.events.len() {
+            return Err(SessionError::Corruption(
+                "legacy log has a torn tail; /update will not discard it".into(),
+            ));
+        }
+        let (header, events) = crate::session::upgrade::convert(&read.header, &read.events)
+            .map_err(SessionError::UnsupportedFormat)?;
+        let content = if events.is_empty() {
+            let plain = format!("{}\n", header.to_line());
+            match self.compression {
+                JsonlCompression::None => plain.into_bytes(),
+                JsonlCompression::Zstd => {
+                    crate::session::zstd_frames::compress_frame(plain.as_bytes()).map_err(io)?
+                }
+            }
+        } else {
+            jsonl::materialized_bytes(&header, &events, self.compression, self.pack_chunks)
+                .map_err(io)?
+        };
+        let plain = match self.compression {
+            JsonlCompression::None => content.clone(),
+            JsonlCompression::Zstd => {
+                jsonl::decode_zstd_log(&content)
+                    .map_err(SessionError::Corruption)?
+                    .0
+            }
+        };
+        let roundtrip = jsonl::scan_raw(&plain).map_err(SessionError::Corruption)?;
+        if roundtrip.events != events
+            || roundtrip.header != header
+            || roundtrip.committed_plain_bytes != plain.len()
+        {
+            return Err(SessionError::Corruption(
+                "v2 conversion failed byte-codec roundtrip validation".into(),
+            ));
+        }
+        let hooks = std::mem::take(&mut *self.faults.lock().expect("faults"));
+        let target = compat::log_file_name(self.compression);
+        let temp = format!("{target}.{}.tmp", uuid::Uuid::new_v4().simple());
+        let mut options = cap_std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use cap_std::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
+        let result = (|| {
+            let mut file = dir.open_with(&temp, &options).map_err(io)?;
+            file.write_all(&content).map_err(io)?;
+            file.sync_all().map_err(io)?;
+            let current = self
+                .resolve_log_in_dir(key, &dir)?
+                .ok_or_else(|| SessionError::NotFound(key.id.to_string()))?;
+            if current.version != 0 || current.name != source.name {
+                return Err(SessionError::Io(
+                    "session generation changed during /update".into(),
+                ));
+            }
+            let file = open_read_no_follow(&dir, &source.name).map_err(io)?;
+            if matching_handle_and_path_revision(&file, &dir, &source.name).map_err(io)?
+                != read.revision
+            {
+                return Err(SessionError::Io(
+                    "legacy source changed during /update".into(),
+                ));
+            }
+            if hooks.fail_upgrade_before_publish {
+                return Err(SessionError::Io(
+                    "injected pre-publication upgrade failure".into(),
+                ));
+            }
+            dir.hard_link(&temp, &dir, target).map_err(io)?;
+            if hooks.fail_upgrade_after_publish {
+                return Err(SessionError::Io(
+                    "v2 was published; injected directory sync failure; retry /update".into(),
+                ));
+            }
+            crate::session::root_dir::sync_dir(&dir).map_err(|error| {
+                SessionError::Io(format!(
+                    "v2 was published but directory sync failed; retry /update: {error}"
+                ))
+            })?;
+            Ok(())
+        })();
+        let _ = dir.remove_file(&temp);
+        result
+    }
+
     /// 会话根的物理路径（附件导入落子目录用，M4）。
     pub(crate) fn root_path(&self) -> &std::path::Path {
         &self.root
@@ -2707,6 +2825,98 @@ mod tests {
                 .exists(),
             "legacy read-only refusal must not create a lock artifact"
         );
+        crate::test_support::cleanup_tree(&root);
+    }
+
+    #[test]
+    fn legacy_empty_upgrade_and_future_generation_guard() {
+        let (_, root) = backend("upgrade-empty");
+        let backend = JsonlBackend::new(&root, JsonlCompression::None, true);
+        let key = key("upgrade-empty");
+        let dir = backend.create_session_dir(&key).unwrap();
+        let mut legacy = header(&key);
+        legacy.version = 0;
+        let original = format!("{}\n", legacy.to_line());
+        dir.write("session.jsonl", original.as_bytes()).unwrap();
+        backend.upgrade_legacy(&key).unwrap();
+        assert_eq!(backend.header_snapshot(&key).unwrap().version, 2);
+        assert_eq!(dir.read("session.jsonl").unwrap(), original.as_bytes());
+        dir.write("session.v99.jsonl", b"future").unwrap();
+        assert!(backend.upgrade_legacy(&key).is_err());
+        assert_eq!(dir.read("session.v99.jsonl").unwrap(), b"future");
+        crate::test_support::cleanup_tree(&root);
+    }
+
+    #[test]
+    fn legacy_upgrade_publish_boundary_lock_and_retry_preserve_source() {
+        let (backend, root) = backend("upgrade-publish");
+        let key = key("upgrade-publish");
+        let path = write_generation(
+            &backend,
+            &key,
+            header(&key),
+            0,
+            &[
+                SessionEvent::new("user/message", 0, 1, payloads::user_message("keep me"))
+                    .append(vec![]),
+            ],
+        );
+        let source = std::fs::read(&path).unwrap();
+        let dir = backend.open_session_dir(&key).unwrap();
+        let lease =
+            SessionWriteLease::try_acquire(&dir, &path.with_file_name(write_lease::LEASE_FILENAME))
+                .unwrap()
+                .unwrap();
+        assert!(
+            backend
+                .upgrade_legacy(&key)
+                .unwrap_err()
+                .to_string()
+                .contains("active writer")
+        );
+        drop(lease);
+        backend.inject_faults(FaultHooks {
+            fail_upgrade_before_publish: true,
+            ..Default::default()
+        });
+        assert!(backend.upgrade_legacy(&key).is_err());
+        assert_eq!(backend.header_snapshot(&key).unwrap().version, 0);
+        assert!(!dir.entries().unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".tmp")
+        }));
+        backend.inject_faults(FaultHooks {
+            fail_upgrade_after_publish: true,
+            ..Default::default()
+        });
+        assert!(
+            backend
+                .upgrade_legacy(&key)
+                .unwrap_err()
+                .to_string()
+                .contains("was published")
+        );
+        assert_eq!(backend.header_snapshot(&key).unwrap().version, 2);
+        let target = std::fs::read(backend.log_path(&key)).unwrap();
+        backend.upgrade_legacy(&key).unwrap();
+        assert_eq!(std::fs::read(backend.log_path(&key)).unwrap(), target);
+        assert_eq!(std::fs::read(&path).unwrap(), source);
+        let prepared = backend.prepare(&key).unwrap();
+        let prepared = backend
+            .append_batch(
+                prepared,
+                1,
+                &[
+                    SessionEvent::new("user/message", 1, 2, payloads::user_message("new"))
+                        .append(vec![]),
+                ],
+            )
+            .unwrap();
+        assert_eq!(backend.load(&key, false).unwrap().header.version, 2);
+        drop(prepared);
         crate::test_support::cleanup_tree(&root);
     }
 

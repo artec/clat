@@ -1298,6 +1298,11 @@ impl TrustedProjectApplication {
         input: &str,
     ) -> Result<crate::command::CommandOutcome, crate::command::CommandError> {
         let (name, args) = crate::command::parse_command_input(input)?;
+        if name == "update" && !self.sessions.is_read_only() {
+            return Err(crate::command::CommandError::NotFound {
+                input: input.to_owned(),
+            });
+        }
         // 条目是 owned 快照（handler 为 Arc 拷贝），查表的可变借用在此
         // 结束，处理器才能拿 `&mut self`。
         let entry =
@@ -1331,7 +1336,27 @@ impl TrustedProjectApplication {
 
     /// 命令目录（INV-C4：帮助表与未知命令提示的唯一事实源）。
     pub fn command_catalog(&self) -> Vec<crate::command::CommandInfo> {
-        self.commands.catalog()
+        self.commands
+            .catalog()
+            .into_iter()
+            .filter(|entry| entry.name != "update" || self.sessions.is_read_only())
+            .collect()
+    }
+
+    pub fn session_is_read_only(&self) -> bool {
+        self.sessions.is_read_only()
+    }
+
+    pub fn update_legacy_session(&mut self) -> Result<(), ApplicationError> {
+        self.reject_session_switch_while_busy()?;
+        let view = self.sessions.upgrade_active().map_err(session_error)?;
+        self.reseed_permission_mode_from_session();
+        self.fresh_session_open = true;
+        self.emitted_request_header = self.sessions.last_request_header();
+        self.restore_instruction_sources();
+        self.restore_todo_from(&view);
+        self.mounted_replay = None;
+        Ok(())
     }
 
     /// `/skill`（无参）列表投影（SC-2）：当前三层 catalog 的

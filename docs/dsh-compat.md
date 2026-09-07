@@ -50,6 +50,28 @@ are useful diagnostics, but they are not compatibility evidence.
 | `ctx.sessions` / `ctx.agents` | DSH session/agent services | bounded read-only run mirror | — | **intentional-difference** | No creation, mutation, resume, live stream, or child orchestration through the adapter. |
 | Market package/signature contract | DSH plugin packages and CLAT market format | `src/market.rs`, schemas, release tooling | — | **unresearched** | CLAT owns a different signed package contract; package quantity is not evidence. |
 
+## Remote mux session subscriptions
+
+For Typert hosts, loading history for the currently followed session leaves
+its subscription intact. Switching sessions cancels the previous subscription
+and opens a fresh connection-local stream ID, including when returning to a
+previous session. DSH releases cancelled IDs only after the asynchronous stream
+pump finishes; cancellation is not an acknowledgement that an ID is reusable.
+Late items and errors from retired subscriptions are ignored. Follow commands
+and heartbeat replies serialize complete WebSocket frames on the same writer.
+
+History waits for the selected follow stream's durable cursor before calling
+`session/page`. Its `throughSeq: -1` means an empty prefix, **not** latest.
+Subsequent pages keep that inclusive cut and move `beforeSeq` backwards until
+`hasMore` is false. A target switch clears the previous cursor; connection
+retirement wakes pending history requests with an error. The one-message
+follow snapshot remains a lightweight live anchor, not the history window.
+
+Local mux tests cover delayed cancellation, repeated history requests,
+switch-away/switch-back, stale-stream filtering, multi-page transcript rendering,
+and history-wait cancellation. These are regression
+tests, not a claim of complete live-host compatibility.
+
 ## Reproducing the oracles
 
 Oracle generation is a maintainer operation. CI and CLAT users consume only

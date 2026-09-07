@@ -556,37 +556,75 @@ pub(crate) fn run_task(
             Some(TaskReply::Created(session))
         }
         DshTask::History { session } => {
-            // DV-9/S3：Typert 历史装载 = session/page（throughSeq:-1
-            // 哨兵 = 最新，research §7 开题 2）+ 顺带切 mux follow
-            // 目标（App 每次会话切换都发 History——零新增任务变体）。
+            // page 的 throughSeq 是 follow 的真实持久游标；-1 是空
+            // 前缀，不是“最新”。同一截止点向前翻页，避免并发追加漂移。
             if client.era == DshEra::Typert {
-                if let Some(controller) = mux {
-                    controller.follow(session);
+                let through_seq = if let Some(controller) = mux {
+                    match controller.history_cursor(session) {
+                        Ok(cursor) => cursor,
+                        Err(error) => return Some(TaskReply::Failed(error)),
+                    }
                 } else {
                     return Some(TaskReply::Failed(
                         "typert history needs the mux controller (AdoptMux missing)".to_owned(),
                     ));
-                }
-                let payload = era_request_args(
-                    client.era,
-                    Some("request"),
-                    json!({
-                        "address": {"kind": "session", "sessionId": session},
-                        "throughSeq": -1,
-                        "maxMessages": 2000,
-                    }),
-                );
-                let value = match client.call("session/page", payload) {
-                    Ok(value) => value,
-                    Err(error) => return Some(TaskReply::Failed(error.to_string())),
                 };
+                let mut before_seq = None;
                 let mut events = Vec::new();
-                if let Some(records) = value.get("records").and_then(Value::as_array) {
+                loop {
+                    let mut request = json!({
+                        "address": {"kind": "session", "sessionId": session},
+                        "throughSeq": through_seq,
+                        "maxMessages": 2000,
+                    });
+                    if let Some(before) = before_seq {
+                        request["beforeSeq"] = json!(before);
+                    }
+                    let payload = era_request_args(client.era, Some("request"), request);
+                    let value = match client.call("session/page", payload) {
+                        Ok(value) => value,
+                        Err(error) => return Some(TaskReply::Failed(error.to_string())),
+                    };
+                    let Some(records) = value.get("records").and_then(Value::as_array) else {
+                        return Some(TaskReply::Failed("session/page reply lacks records".into()));
+                    };
+                    let mut first_seq = None;
                     for record in records {
-                        if let Ok(event) = serde_json::from_value::<SessionEvent>(
+                        let event = match serde_json::from_value::<SessionEvent>(
                             record.get("event").cloned().unwrap_or(Value::Null),
                         ) {
-                            events.push(event);
+                            Ok(event) => event,
+                            Err(error) => {
+                                return Some(TaskReply::Failed(format!(
+                                    "invalid history event: {error}"
+                                )));
+                            }
+                        };
+                        if i64::try_from(event.seq).map_or(true, |seq| seq > through_seq)
+                            || before_seq.is_some_and(|before| event.seq >= before)
+                        {
+                            return Some(TaskReply::Failed(
+                                "session/page returned an event outside the requested cut".into(),
+                            ));
+                        }
+                        first_seq =
+                            Some(first_seq.map_or(event.seq, |seq: u64| seq.min(event.seq)));
+                        events.push(event);
+                    }
+                    match value.get("hasMore").and_then(Value::as_bool) {
+                        Some(false) => break,
+                        Some(true) => {
+                            let Some(first) = first_seq.filter(|seq| *seq > 0) else {
+                                return Some(TaskReply::Failed(
+                                    "session/page hasMore without backwards progress".into(),
+                                ));
+                            };
+                            before_seq = Some(first);
+                        }
+                        None => {
+                            return Some(TaskReply::Failed(
+                                "session/page reply lacks hasMore".into(),
+                            ));
                         }
                     }
                 }

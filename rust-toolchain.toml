@@ -1,0 +1,8 @@
+# 本地与 CI 同钉一个工具链（2026-09-07 CI-parity 决议，档案
+# docs/research/ci-parity.md）：fmt/clippy 的 lint 面随版本漂移，
+# 不钉版会出现「本地绿 / CI 红」（或反向）的单侧新 lint
+# （2026-09-07 jsonl.rs 新 lint 单侧红即此）。升级 = 有意的同批
+# 改动：改这里 → scripts/gates.sh 全绿 → 提交（负责人执行）。
+[toolchain]
+channel = "1.98.0"
+components = ["clippy", "rustfmt"]

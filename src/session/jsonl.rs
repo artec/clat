@@ -23,7 +23,36 @@ fn decode_record_value(
     version: u32,
 ) -> Result<Vec<SessionEvent>, String> {
     if version == 0 {
-        return decode_storage_record(value);
+        let mut events = decode_storage_record(value)?;
+        for event in &mut events {
+            // Pre-MM legacy images stored an absolute path, before durable
+            // attachment IDs existed. Derive the same opaque ID as replay;
+            // retain the original fenced path, never invent a blob location.
+            let pointer = match event.event_type.as_str() {
+                "user/message" => "/content",
+                "assistant/message" => "/message/content",
+                _ => continue,
+            };
+            if let Some(blocks) = event
+                .data
+                .pointer_mut(pointer)
+                .and_then(|v| v.as_array_mut())
+            {
+                for block in blocks {
+                    if block["type"] == "image"
+                        && block.get("attachmentId").is_none()
+                        && let Some(path) = block
+                            .get("path")
+                            .and_then(|v| v.as_str())
+                            .filter(|s| !s.is_empty())
+                    {
+                        block["attachmentId"] =
+                            serde_json::json!(crate::message::legacy_attachment_id(path));
+                    }
+                }
+            }
+        }
+        return Ok(events);
     }
     if version != crate::session::compat::SESSION_FORMAT_VERSION {
         return Err(format!("format-unsupported: v{version}"));

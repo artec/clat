@@ -100,8 +100,29 @@ The session root may contain uncompressed generation files from a compatible
 source, but one root cannot mix raw and zstd session encodings. Startup rejects
 an encoding conflict before mounting storage. Released-v0
 `session.jsonl[.zstd]` remains readable, including when it sits beside v2, but
-CLAT never appends to, repairs, or migrates a v0 log; start a new session to
-continue writing.
+CLAT opens v0 sessions read-only through normal startup and `/resume`. Reading
+and closing do not repair the source, append a seed, write a checkpoint, or
+clean attachments. Runs and persisted session edits are rejected.
+
+Only while a legacy local session is selected, `/update` appears in the command
+menu. It converts the complete history to `session.v2.jsonl[.zstd]`, preserving
+the original v0 file and attachment paths, and reopens the same session for
+normal read/write use. The command disappears after upgrading and is absent
+and unavailable in new/v2 sessions. It is not a binary updater and does not
+migrate a remote DSH host's files.
+
+Pre-attachment-ID image records retain their original fenced paths and receive
+the same deterministic legacy IDs used by replay. Upgrade does not relocate
+their images; missing image files are not reconstructed from the journal.
+
+Upgrade holds the session writer lease and atomically publishes the validated
+new log without overwriting an existing generation. Before-publication failure
+leaves v0 selected; a reported post-publication failure can be recovered by
+retrying or reopening. Torn logs, unsupported lineage, unknown extensions, and
+unresolvable references are refused instead of silently discarding history.
+Close old CLAT processes first. The retained v0 is a pre-upgrade backup, not a
+synchronized copy of later v2 messages. Alternatively, use `/new` to leave the
+old conversation untouched.
 
 If the highest canonical filename names a generation newer than v2, CLAT
 refuses inspection/resume with an upgrade-or-new-session diagnostic. It never

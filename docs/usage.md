@@ -148,6 +148,7 @@ model → safety → extensions → experiments → meta):
 |---|---|
 | `/new`, `/clear` | start a fresh, lazily materialized conversation |
 | `/resume` | switch to a prior conversation in this project |
+| `/update` | shown only in a selected legacy local session: retain v0, upgrade it to writable v2; disappears after success |
 | `/rename` | replace the current conversation title |
 | `/compact` | summarize older context in the background; original history remains on disk |
 | `/context` | inspect a one-shot estimated model-context breakdown |
@@ -920,14 +921,20 @@ clat dsh --port 3080
 Two host generations are supported. Legacy DSH (0.1.1-rc.2 era) is detected
 through the old `host.describe` fingerprint. DSH 0.1.2+ speaks the Typert
 Gateway (`/api/remote.mux` with browser-session authentication); for those
-hosts CLAT exchanges the host's one-time launch token for a session cookie
-and follows sessions over the gateway's multiplexed stream:
+hosts CLAT authenticates through one of two paths:
 
+- If a host is already running and your `~/.dsh/.credentials.yaml` carries
+  the browser-session record (it does once `dsh web` has run on this
+  machine), CLAT reads that single record and mints its own short-lived
+  session cookie — no token ceremony. CLAT only ever reads this one
+  record and never writes anything under `~/.dsh`.
 - If no host is running and the `dsh` executable is installed, CLAT starts
-  `dsh web` itself and reads the launch token from the startup line — no
+  `dsh web` itself (retrying on an OS-assigned port when the preferred one
+  is taken) and reads the launch token from the startup line — again no
   extra input needed. A host CLAT started is stopped when CLAT exits.
-- For a host you started yourself, pass its startup URL (the token is
-  printed once in the host's stdout and cannot be probed):
+- If the cookie mint is not possible (no credentials record yet, or the
+  host rejects it), pass the host's startup URL (the token is printed once
+  in the host's stdout and cannot be probed):
 
   ```bash
   clat dsh --url 'http://127.0.0.1:3080/?token=<launch-token>'
@@ -937,10 +944,10 @@ and follows sessions over the gateway's multiplexed stream:
   Only loopback URLs are accepted. This is DSH's security model: the
   browser-session gate applies to every API call and the stream upgrade.
 
-It probes and fingerprints the host. If no DSH host is running and the `dsh`
-executable is installed, CLAT starts `dsh web`; a host CLAT started is stopped
-when CLAT exits, while a host started by the user is left alone. A non-DSH
-process occupying the requested port is rejected.
+It probes and fingerprints the host; a host that answers with
+"credentials required" is connected rather than replaced — CLAT never
+spawns onto a port an authenticated host already owns. A non-DSH process
+occupying the requested port is rejected.
 
 DSH owns sessions, providers, permissions, tools, and execution. CLAT renders
 the host's events and never writes `~/.dsh`. It remembers only the last opened

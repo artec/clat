@@ -32,6 +32,7 @@ pub(crate) mod root_dir;
 pub(crate) mod root_lease;
 pub(crate) mod run_journal;
 pub(crate) mod surface;
+pub(crate) mod upgrade;
 pub(crate) mod use_cases;
 pub(crate) mod write_behind;
 pub(crate) mod write_lease;

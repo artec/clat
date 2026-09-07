@@ -1,6 +1,6 @@
 [package]
 name = "clat"
-version = "1.2.3"
+version = "1.2.4"
 edition = "2024"
 description = "A rock-solid agent foundation: fast, local-first, one Rust binary"
 license-file = "LICENSE"
@@ -41,6 +41,10 @@ command-group = "5.0.1"
 # Agent phase 1 search: Git-aware traversal and bounded compiled glob/regex
 # matching stay inside the Rust binary (no user-installed ripgrep runtime).
 globset = "0.4"
+# DV-10/D: DSH browser-session cookie minting signs with HMAC-SHA256 over the
+# cookie body (mirrors upstream browser-auth.ts). Never hand-roll MAC
+# constructions; this is the standard sha2-composable implementation.
+hmac = "0.12"
 ignore = "0.4.23"
 # Agent phase 2: cross-platform PTY sessions (same pinned crate line as the
 # local Codex reference); compiled into the CLAT binary.

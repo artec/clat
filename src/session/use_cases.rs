@@ -470,7 +470,8 @@ impl SessionService {
             &key.id,
         )
         .join("attachments");
-        if let Ok(session_dir) = self.backend.open_session_dir(&key)
+        if !coordinator.is_read_only()
+            && let Ok(session_dir) = self.backend.open_session_dir(&key)
             && session_dir.symlink_metadata("attachments").is_ok()
             && let Ok(store) = crate::session::attachments::AttachmentStore::open_in_session(
                 &session_dir,
@@ -578,11 +579,55 @@ impl SessionService {
         let session = active
             .as_ref()
             .ok_or_else(|| SessionError::NotFound("no active session".into()))?;
+        if session.coordinator.is_read_only() {
+            return Err(SessionError::UnsupportedFormat(
+                "legacy session is read-only; use /update to upgrade or /new".into(),
+            ));
+        }
         let mut journal = session.journal.lock().expect("session journal");
         if journal.is_none() {
             *journal = Some(journal_with_projection_fold(session, &self.backend));
         }
         Ok(Arc::clone(journal.as_ref().expect("just initialized")))
+    }
+
+    pub(crate) fn is_read_only(&self) -> bool {
+        self.active
+            .lock()
+            .expect("active")
+            .as_ref()
+            .is_some_and(|active| active.coordinator.is_read_only())
+    }
+
+    pub(crate) fn upgrade_active(&self) -> Result<SessionView, SessionError> {
+        let key = {
+            let guard = self.active.lock().expect("active");
+            let active = guard
+                .as_ref()
+                .ok_or_else(|| SessionError::NotFound("no active session".into()))?;
+            if !active.coordinator.is_read_only() {
+                return Err(SessionError::UnsupportedFormat(
+                    "/update is only available in legacy sessions".into(),
+                ));
+            }
+            active.key.clone()
+        };
+        self.backend.upgrade_legacy(&key)?;
+        let armed = self
+            .stage_resume(&key)
+            .and_then(|staged| self.arm_session(staged))
+            .map_err(|error| {
+                SessionError::Io(format!(
+                    "v2 has been published; reopen the session or retry /update: {error}"
+                ))
+            })?;
+        if let Err(error) = self.quiesce_active() {
+            let cleanup = self.discard_armed(armed);
+            return Err(SessionError::Io(format!(
+                "v2 has been published; reopen the session after detach failure: {error}; target close: {cleanup:?}"
+            )));
+        }
+        Ok(self.install_armed(armed))
     }
 
     /// 导入图片附件（M4，2026-08-19）：先整体校验（存在、扩展名合法、
@@ -601,6 +646,11 @@ impl SessionService {
         &self,
         sources: &[std::path::PathBuf],
     ) -> Result<Vec<crate::message::JournalImage>, SessionError> {
+        if self.is_read_only() {
+            return Err(SessionError::UnsupportedFormat(
+                "legacy session is read-only; use /update first".into(),
+            ));
+        }
         if sources.is_empty() {
             return Ok(Vec::new());
         }
@@ -744,13 +794,22 @@ impl SessionService {
                 .bytes()
                 .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase());
         let (snapshot, bytes) = if content_addressed {
-            self.active_attachment_store()?
-                .open_blob_verified(&image.descriptor.attachment_id)
-                .map_err(|error| {
-                    SessionError::NotFound(format!(
-                        "attachment integrity verification failed: {error}"
-                    ))
-                })?
+            let key = self
+                .active
+                .lock()
+                .expect("active")
+                .as_ref()
+                .ok_or_else(|| SessionError::NotFound("no active session".into()))?
+                .key
+                .clone();
+            let dir = self.backend.open_session_dir(&key)?;
+            crate::session::attachments::AttachmentStore::read_session_blob(
+                &dir,
+                &image.descriptor.attachment_id,
+            )
+            .map_err(|error| {
+                SessionError::NotFound(format!("attachment integrity verification failed: {error}"))
+            })?
         } else {
             open_attachment_file(&image.path)?
         };
@@ -787,6 +846,11 @@ impl SessionService {
     fn active_attachment_store(
         &self,
     ) -> Result<crate::session::attachments::AttachmentStore, SessionError> {
+        if self.is_read_only() {
+            return Err(SessionError::UnsupportedFormat(
+                "legacy session is read-only; use /update first".into(),
+            ));
+        }
         let active = self.active.lock().expect("active");
         let session = active
             .as_ref()
@@ -1778,6 +1842,9 @@ fn checkpoint_active(
     active: &ActiveSession,
     checkpoints: &CheckpointStore,
 ) -> Result<(), SessionError> {
+    if active.coordinator.is_read_only() {
+        return Ok(());
+    }
     // A lazy session with no committed event has no authoritative log and
     // therefore must not materialize a checkpoint-only ghost directory.
     if active.coordinator.committed_seq().is_none() {
@@ -1952,6 +2019,49 @@ mod tests {
     use super::*;
     use crate::session::event::payloads;
     use crate::session::replay::ReplayTurnEnd;
+
+    #[test]
+    fn legacy_resume_is_read_only_without_changing_any_session_artifact() {
+        let (service, root) = service("legacy-read-only");
+        let key = SessionKey {
+            project: project(),
+            id: SessionId::new("legacy-readable"),
+        };
+        let mut header = SessionHeader::new(key.id.clone(), key.project.header_cwd.clone(), 1);
+        header.version = 0;
+        let mut event = SessionEvent::new(
+            "user/message",
+            0,
+            2,
+            payloads::user_message("old conversation"),
+        );
+        event.surface_op = Some(crate::session::event::SurfaceOp::Append);
+        let dir = service.backend.create_session_dir(&key).unwrap();
+        let bytes = crate::session::jsonl::materialized_bytes(
+            &header,
+            &[event],
+            JsonlCompression::Zstd,
+            true,
+        )
+        .unwrap();
+        dir.write("session.jsonl.zstd", &bytes).unwrap();
+        let view = service
+            .resume(&key)
+            .expect("v0 must open through normal resume");
+        assert!(!view.replay.is_empty());
+        assert!(
+            service.journal().is_err(),
+            "read-only sessions cannot acquire a run journal"
+        );
+        service.quiesce_active().unwrap();
+        assert_eq!(dir.read("session.jsonl.zstd").unwrap(), bytes);
+        assert_eq!(
+            dir.entries().unwrap().count(),
+            1,
+            "no lock, checkpoint, seed or writer artifacts"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     fn service(tag: &str) -> (SessionService, std::path::PathBuf) {
         let root = std::env::temp_dir().join(format!(

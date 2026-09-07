@@ -4,6 +4,7 @@
 //! 未安装」。掉线由前端横幅 + `/reconnect` 手动重试（INV-D2/D4）。
 
 use crate::dsh::client::{DshClient, DshEra, exchange_token, looks_like_dsh, probe_typert};
+use crate::dsh::credentials;
 use command_group::{CommandGroup as _, GroupChild};
 use serde_json::Value;
 use std::path::Path;
@@ -77,11 +78,31 @@ pub(crate) enum ConnectFailure {
     Failed(String),
 }
 
-/// 就绪探测的轮内上限：describe 指纹通过 = 在线。
-fn probe(port: u16) -> Option<Value> {
-    let client = DshClient::new(port);
-    let describe = client.probe_describe(port).ok()?;
-    looks_like_dsh(&describe).then_some(describe)
+/// DV-10/B：探测三态——describe 指纹过（旧宿主直连）/ 载体 401·403
+/// （**宿主已在、缺凭据**——铸 cookie 或 `--url` 指引，绝不 spawn 撞
+/// 端口）/ 连接拒绝或异形 HTTP（无 DSH 宿主——spawn 路径）。401 =
+/// 需鉴权、403 = 信任栅（client.rs 载体纪律）；404 等其他状态码按
+/// 无宿主处理（保持异形占端口的旧语义：spawn 重试档兜底）。
+enum ProbeOutcome {
+    LegacyDescribe(Value),
+    AuthRequired,
+    NoHost,
+}
+
+fn probe(port: u16) -> ProbeOutcome {
+    match DshClient::new(port).probe_describe(port) {
+        Ok(describe) => {
+            if looks_like_dsh(&describe) {
+                ProbeOutcome::LegacyDescribe(describe)
+            } else {
+                ProbeOutcome::NoHost
+            }
+        }
+        Err(error) => match error.code.as_str() {
+            "http-401" | "http-403" => ProbeOutcome::AuthRequired,
+            _ => ProbeOutcome::NoHost,
+        },
+    }
 }
 
 /// 连接流程（探测 → spawn → 就绪）。`dsh_binary`/`home` 由调用方注入
@@ -91,18 +112,42 @@ pub(crate) fn ensure_online(
     dsh_binary: &str,
     home: Option<&Path>,
 ) -> Result<Online, ConnectFailure> {
-    if let Some(describe) = probe(preferred_port) {
-        return Ok(Online {
-            port: preferred_port,
-            describe,
-            era: DshEra::Legacy,
-            cookie: None,
-            child: None,
-        });
+    match probe(preferred_port) {
+        ProbeOutcome::LegacyDescribe(describe) => {
+            return Ok(Online {
+                port: preferred_port,
+                describe,
+                era: DshEra::Legacy,
+                cookie: None,
+                child: None,
+            });
+        }
+        // DV-10/B：宿主已在跑、载体要凭据——不再 spawn（旧路径 spawn
+        // 会撞在别人宿主的端口上，EADDRINUSE 病历）。D 路径：读
+        // `~/.dsh` 单条记录自铸短窗 cookie 直连（research §8）；失败
+        // 降级 `--url` 指引（不交互，"简单"裁定）。
+        // DV-10/B：宿主已在跑、载体要凭据——不再 spawn（旧路径 spawn
+        // 会撞在别人宿主的端口上，EADDRINUSE 病历）。D 路径：读
+        // `~/.dsh` 单条记录自铸短窗 cookie 直连（research §8）；失败
+        // 降级 `--url` 指引（不交互，"简单"裁定）。
+        ProbeOutcome::AuthRequired => {
+            return match minted_online(preferred_port, home) {
+                Ok(online) => Ok(online),
+                Err(failure) => Err(ConnectFailure::Failed(format!(
+                    "dsh web on port {preferred_port} requires credentials ({}) \
+                     and the cookie mint failed; pass --url with the launch token \
+                     printed by `dsh web`",
+                    failure.reason()
+                ))),
+            };
+        }
+        ProbeOutcome::NoHost => {}
     }
     // DV-9/S3：Typert 宿主探测（外起宿主必须用户递 URL——DSH 安全
     // 模型下 launch token 只在宿主 stdout 打印一次，research §2）。
     // `CLAT_DSH_URL=http://127.0.0.1:P/?token=T`；S4 补 --url 旗标。
+    // （顺序：preferred 上的 401 宿主先于显式 URL——3080 上要凭据的
+    // 几乎总是同一宿主，不反转既有次序。）
     if let Some(online) = external_url_online() {
         return Ok(online);
     }
@@ -115,7 +160,7 @@ pub(crate) fn ensure_online(
             // 由就绪行 token 换 cookie 过能力面探测 → Typert（S3 解锁）。
             let deadline = Instant::now() + SPAWN_READY_TIMEOUT;
             while Instant::now() < deadline {
-                if let Some(describe) = probe(port) {
+                if let ProbeOutcome::LegacyDescribe(describe) = probe(port) {
                     return Ok(Online {
                         port,
                         describe,
@@ -161,10 +206,13 @@ pub(crate) fn ensure_online(
 }
 
 /// spawn `dsh web`：先 `--port <preferred>`；进程即刻退出（典型：端口
-/// 被非 DSH 占用）则重试 `--port 0` 并解析 stdout 的
+/// 被占）则重试 **`--port 0`**（OS 指派），从 stdout 的
 /// `dsh web: http://127.0.0.1:<port>` 就绪行拿实际端口。返回就绪
 /// 探测应使用的端口 + **存活子进程句柄**（调用方持有至退出——D-2
 /// 退出清理：clat 只 kill 自己 spawn 的宿主）。
+/// DV-10/A：第二档必须**显式 `--port 0`**——旧实现省略 `--port` 实为
+/// DSH 默认 3080（EADDRINUSE 复现实证：宿主已在 3080 时重试又撞
+/// 3080，循环失败）。
 /// FIX-3/CA-03：spawn 即入组（unix 进程组 / Windows Job Object，
 /// native_tools 同款 `group_spawn` 语义）——leader 被带走时整树可收。
 fn spawn_web(
@@ -172,7 +220,7 @@ fn spawn_web(
     preferred_port: u16,
 ) -> Result<(u16, Option<String>, GroupChild), String> {
     let mut last_error = String::new();
-    for attempt in [Some(preferred_port), None] {
+    for attempt in [Some(preferred_port), Some(0)] {
         let mut command = std::process::Command::new(dsh_binary);
         command
             .arg("web")
@@ -235,8 +283,10 @@ fn spawn_web(
                 return Err(cleanup_spawn_failure(&mut child, base));
             }
             // 有明确端口档位时也可以直接探测就绪（就绪行可能尚未刷出）。
+            // `--port 0` 档（DV-10/A）没有可探测的端口——等就绪行。
             if let Some(port) = attempt
-                && probe(port).is_some()
+                && port != 0
+                && matches!(probe(port), ProbeOutcome::LegacyDescribe(_))
             {
                 // 就绪行可能尚未刷出——token 暂缺（best-effort，S1 不参与判定）。
                 return Ok((port, None, child));
@@ -310,6 +360,46 @@ fn wait_bounded(
     }
 }
 
+/// DV-10/D：凭据单条记录 → 短窗 cookie → 能力面探测 → Typert
+/// Online（research §8）。宿主非本进程所起——`child: None`（归属权
+/// 不明，永不触碰，Online 既有语义）。任何失败原样透传
+/// `CredentialFailure`（文案已脱敏）。
+fn minted_online(port: u16, home: Option<&Path>) -> Result<Online, credentials::CredentialFailure> {
+    let home = home.ok_or(credentials::CredentialFailure::Absent)?;
+    let secret = credentials::load_browser_session_secret(home)?;
+    let authority = format!("127.0.0.1:{port}");
+    let cookie = credentials::mint_session_cookie(&secret, &authority, now_ms());
+    let client = DshClient::new(port).with_cookie(&cookie).with_typert_era();
+    probe_typert(&client).map_err(|_| {
+        credentials::CredentialFailure::Rejected("the minted cookie was not accepted")
+    })?;
+    Ok(Online {
+        port,
+        describe: typert_describe_placeholder(),
+        era: DshEra::Typert,
+        cookie: Some(cookie),
+        child: None,
+    })
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Typert 宿主的合成 describe（$events ready 的 home 与会话级 cwd
+/// 由流面/Restore 补，research §5）。
+fn typert_describe_placeholder() -> Value {
+    serde_json::json!({
+        "version": "typert",
+        "home": "",
+        "cwd": "",
+        "attachedSessions": 0,
+    })
+}
+
 /// token → cookie → 能力面探测（`session/canOpenWorkspacePath`）。
 /// 任一步失败 = None（调用方继续轮询/报错）。describe 为 Typert 合成
 /// 形（version/home/cwd 占位——$events ready 的 home 与会话级 cwd
@@ -320,12 +410,7 @@ fn typert_online(port: u16, token: &str) -> Option<Online> {
     probe_typert(&client).ok()?;
     Some(Online {
         port,
-        describe: serde_json::json!({
-            "version": "typert",
-            "home": "",
-            "cwd": "",
-            "attachedSessions": 0,
-        }),
+        describe: typert_describe_placeholder(),
         era: DshEra::Typert,
         cookie: Some(cookie),
         child: None,
@@ -707,7 +792,7 @@ mod tests {
                 let Ok(mut stream) = stream else { continue };
                 std::thread::spawn(move || {
                     let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
-                    let Ok((method, path, body)) =
+                    let Ok((method, path, body, _full_text)) =
                         crate::dsh::tests::read_http_request(&mut stream)
                     else {
                         return;
@@ -780,6 +865,337 @@ mod tests {
         // 自起宿主句柄归本进程——退场带走（脚本 sleep 60 的树）。
         drop(online);
         std::fs::remove_file(&script).ok();
+    }
+
+    // ─── DV-10 判别腿 ────────────────────────────────────────────────
+
+    /// 测试用一次性目录（凭据卫生腿的临时 dsh home）。
+    fn temp_dsh_home(label: &str) -> std::path::PathBuf {
+        let home = std::env::temp_dir().join(format!(
+            "clat-dv10-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&home).expect("create temp dsh home");
+        home
+    }
+
+    /// DV-10/A：首选端口被占（子进程即刻退场）→ 重试档必须是**显式
+    /// `--port 0`**。假 dsh 脚本：`--port <非 0>` 即退 1；**无 `--port`
+    /// 也退 1**（旧实现第二档省略 `--port` 实为 DSH 默认 3080——宿主
+    /// 已在 3080 时重试又撞同一端口，EADDRINUSE 病历）。判别：撤
+    /// `--port 0` 修复（回退省略）即红（两档全退 → "exited early"）。
+    #[test]
+    #[cfg(unix)]
+    fn spawn_retry_falls_back_to_explicit_port_zero() {
+        use std::io::Write as _;
+        use std::net::TcpListener;
+        use std::os::unix::fs::PermissionsExt as _;
+        if std::env::var("CLAT_DSH_URL").is_ok() {
+            return;
+        }
+        // 就绪终点：复用 S3 解锁腿形状的假宿主（token 交换 + canOpen）。
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let host_port = listener.local_addr().expect("addr").port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                std::thread::spawn(move || {
+                    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+                    let Ok((method, path, body, _full_text)) =
+                        crate::dsh::tests::read_http_request(&mut stream)
+                    else {
+                        return;
+                    };
+                    let response = if method == "GET" && path == "/?token=good" {
+                        "HTTP/1.1 303 See Other\r\nLocation: /\r\nSet-Cookie: dsh-auth-x=v1.y; Path=/; HttpOnly\r\nContent-Length: 0\r\n\r\n".to_owned()
+                    } else if method == "POST" && path == "/api/session/canOpenWorkspacePath" {
+                        let rpc_id = serde_json::from_str::<serde_json::Value>(&body)
+                            .ok()
+                            .and_then(|envelope| {
+                                envelope
+                                    .get("rpcId")
+                                    .and_then(serde_json::Value::as_str)
+                                    .map(str::to_owned)
+                            })
+                            .unwrap_or_else(|| "x".to_owned());
+                        let payload = serde_json::json!({
+                            "type": "server-response",
+                            "rpcId": rpc_id,
+                            "result": {"ok": true, "value": true},
+                        })
+                        .to_string();
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{payload}",
+                            payload.len()
+                        )
+                    } else {
+                        "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n".to_owned()
+                    };
+                    let _ = stream.write_all(response.as_bytes());
+                });
+            }
+        });
+        // 假 dsh：--port 非 0 或缺席 → 退 1（占端口 / 默认 3080 被占）；
+        // --port 0 → 打就绪行（指向假宿主端口），长睡。
+        let script = std::env::temp_dir().join(format!(
+            "clat-dv10-port0-{}-{}.sh",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\n\
+                 expect=0\n\
+                 ok=0\n\
+                 for arg in \"$@\"; do\n\
+                   if [ \"$expect\" = 1 ]; then\n\
+                     if [ \"$arg\" != 0 ]; then exit 1; fi\n\
+                     ok=1\n\
+                     expect=0\n\
+                   elif [ \"$arg\" = --port ]; then\n\
+                     expect=1\n\
+                   fi\n\
+                 done\n\
+                 if [ \"$ok\" != 1 ]; then exit 1; fi\n\
+                 echo 'dsh web: http://127.0.0.1:{host_port}/?token=good'\n\
+                 sleep 60\n"
+            ),
+        )
+        .expect("write fake dsh");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        // 首选端口空位（探测必拒，逼 spawn 路径）。
+        let scratch = TcpListener::bind("127.0.0.1:0").expect("scratch");
+        let preferred = scratch.local_addr().expect("addr").port();
+        drop(scratch);
+
+        let online = ensure_online(
+            preferred,
+            script.to_str().expect("path"),
+            Some(Path::new("/h")),
+        )
+        .expect("the retry leg reaches the readiness line through --port 0");
+        assert_eq!(
+            online.port, host_port,
+            "the OS-assigned readiness port wins"
+        );
+        assert_ne!(online.port, preferred);
+        assert_eq!(online.era, crate::dsh::client::DshEra::Typert);
+        drop(online);
+        std::fs::remove_file(&script).ok();
+    }
+
+    /// 凭据门假宿主（DV-10/B+D）：describe 恒 401；canOpen 只认
+    /// **按上游配方（browser-auth.ts）重验通过的 cookie**——名字
+    /// `dsh-auth-<b64url(sha256(authority))>`、HMAC 对 body 文本、
+    /// version/authority/时间窗逐项核对。判别力：撤铸 cookie（或铸
+    /// 错）→ 客户端拿不到有效 cookie → 401 → 红。
+    fn spawn_credential_gated_host(secret: [u8; 32]) -> u16 {
+        use std::io::Write as _;
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let secret = secret;
+                std::thread::spawn(move || {
+                    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+                    let Ok((method, path, body, full_text)) =
+                        crate::dsh::tests::read_http_request(&mut stream)
+                    else {
+                        return;
+                    };
+                    let response = if method == "POST"
+                        && path == "/api/session/canOpenWorkspacePath"
+                        && cookie_passes_the_upstream_recipe(&full_text, &secret, port)
+                    {
+                        let rpc_id = serde_json::from_str::<serde_json::Value>(&body)
+                            .ok()
+                            .and_then(|envelope| {
+                                envelope
+                                    .get("rpcId")
+                                    .and_then(serde_json::Value::as_str)
+                                    .map(str::to_owned)
+                            })
+                            .unwrap_or_else(|| "x".to_owned());
+                        let payload = serde_json::json!({
+                            "type": "server-response",
+                            "rpcId": rpc_id,
+                            "result": {"ok": true, "value": true},
+                        })
+                        .to_string();
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{payload}",
+                            payload.len()
+                        )
+                    } else {
+                        "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n".to_owned()
+                    };
+                    let _ = stream.write_all(response.as_bytes());
+                });
+            }
+        });
+        port
+    }
+
+    /// 上游 browser-auth.ts 的 cookie 校验缩影（名字 tag / HMAC / 时间
+    /// 窗 / authority 绑定）。请求体不可信——cookie 在头里，这里从完整
+    /// 请求文本中找 `cookie:` 行（ureq 实发小写）。
+    fn cookie_passes_the_upstream_recipe(head: &str, secret: &[u8; 32], port: u16) -> bool {
+        use base64::Engine as _;
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        use hmac::{Hmac, Mac};
+        use sha2::{Digest, Sha256};
+        let Some(cookie_line) = head
+            .lines()
+            .find(|line| line.to_ascii_lowercase().starts_with("cookie:"))
+        else {
+            return false;
+        };
+        let Some(pair) = cookie_line.split_once(':').map(|(_, rest)| rest.trim()) else {
+            return false;
+        };
+        let Some((name, value)) = pair.split_once('=') else {
+            return false;
+        };
+        let authority = format!("127.0.0.1:{port}");
+        let expected_name = format!(
+            "dsh-auth-{}",
+            URL_SAFE_NO_PAD.encode(Sha256::digest(authority.as_bytes()))
+        );
+        if name != expected_name {
+            return false;
+        }
+        let parts: Vec<&str> = value.split('.').collect();
+        if parts.len() != 3 || parts[0] != "v1" {
+            return false;
+        }
+        let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("hmac key");
+        mac.update(parts[1].as_bytes());
+        if !URL_SAFE_NO_PAD
+            .decode(parts[2])
+            .is_ok_and(|signature| mac.verify_slice(&signature).is_ok())
+        {
+            return false;
+        }
+        let payload = URL_SAFE_NO_PAD
+            .decode(parts[1])
+            .ok()
+            .and_then(|body| serde_json::from_slice::<serde_json::Value>(&body).ok());
+        let Some(payload) = payload else {
+            return false;
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        payload["version"] == 1
+            && payload["authority"] == authority.as_str()
+            && payload["issuedAt"].as_u64().is_some_and(|at| at <= now)
+            && payload["expiresAt"].as_u64().is_some_and(|at| at > now)
+    }
+
+    fn write_credentials_file(home: &std::path::Path, secret: &[u8; 32]) {
+        use base64::Engine as _;
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        let encoded = URL_SAFE_NO_PAD.encode(secret);
+        let mut text = String::from("version: 1\nrefs: {}\nrecords:\n");
+        text.push_str("  client-connection/browser-session:\n");
+        text.push_str("    kind: grant\n");
+        text.push_str("    payload:\n");
+        text.push_str("      version: 1\n");
+        text.push_str("      secret: ");
+        text.push_str(&encoded);
+        text.push('\n');
+        std::fs::write(home.join(".credentials.yaml"), text).expect("write credentials");
+    }
+
+    /// DV-10/B+D：宿主已在、describe 401 → 读 `~/.dsh` 单条记录自铸
+    /// 短窗 cookie 直连（零 token 仪式）。判别：撤 minted_online（或
+    /// pre-fix 整条路径）→ 旧路径 spawn `/nonexistent/dsh` → 红；
+    /// cookie 铸错（签名/名字/窗任一）→ 假宿主门 401 → 红。
+    #[test]
+    #[cfg(unix)]
+    fn minted_cookie_connects_without_the_token_ceremony() {
+        if std::env::var("CLAT_DSH_URL").is_ok() {
+            return;
+        }
+        let secret = [0x5au8; 32];
+        let port = spawn_credential_gated_host(secret);
+        let home = temp_dsh_home("mint");
+        write_credentials_file(&home, &secret);
+
+        let online = ensure_online(port, "/nonexistent/dsh", Some(&home))
+            .expect("the minted cookie unlocks the running host");
+        assert_eq!(online.era, crate::dsh::client::DshEra::Typert);
+        assert_eq!(online.port, port);
+        assert!(
+            online
+                .cookie
+                .as_deref()
+                .is_some_and(|cookie| cookie.starts_with("dsh-auth-")),
+            "the minted cookie rode into the Online state"
+        );
+        assert!(
+            online.child.is_none(),
+            "a foreign host is never owned or touched"
+        );
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    /// DV-10/B：宿主已在但凭据缺席 → **不 spawn**（不撞端口），给
+    /// `--url` 可行动指引。判别：pre-fix 走 spawn → "cannot start" 且
+    /// 无 --url 文案 → 红。
+    #[test]
+    fn auth_required_without_credentials_degrades_to_url_guidance() {
+        let secret = [0x5au8; 32];
+        let port = spawn_credential_gated_host(secret);
+        let home = temp_dsh_home("absent");
+
+        match ensure_online(port, "/nonexistent/dsh", Some(&home)) {
+            Err(ConnectFailure::Failed(message)) => {
+                assert!(message.contains("--url"), "guidance: {message}");
+                assert!(
+                    !message.contains("cannot start"),
+                    "must not attempt to spawn onto the occupied port: {message}"
+                );
+            }
+            other => panic!("expected Failed with --url guidance, got {other:?}"),
+        }
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    /// DV-10/D 卫生：凭据文件形状不符 → 降级文案**不得引用文件内容**
+    ///（密钥/记录值永不入错误信息，research §8）。
+    #[test]
+    fn credential_failures_never_quote_file_contents() {
+        let port = spawn_credential_gated_host([0x5au8; 32]);
+        let home = temp_dsh_home("leak");
+        let marker = "DV10-NEVER-QUOTE-ME-9f8e7d6c";
+        let text = format!(
+            "version: 1\nrefs: {{}}\nrecords:\n  client-connection/browser-session:\n    kind: grant\n    payload:\n      version: 1\n      secret: {marker}\n"
+        );
+        std::fs::write(home.join(".credentials.yaml"), text).expect("write malformed");
+
+        match ensure_online(port, "/nonexistent/dsh", Some(&home)) {
+            Err(ConnectFailure::Failed(message)) => {
+                assert!(
+                    !message.contains(marker),
+                    "failure must not quote the record: {message}"
+                );
+                assert!(message.contains("--url"), "still actionable: {message}");
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
+        std::fs::remove_dir_all(&home).ok();
     }
 
     /// 外接 URL 解析：loopback + token 段；非 loopback / 缺 token 拒。

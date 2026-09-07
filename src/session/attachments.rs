@@ -660,8 +660,23 @@ impl AttachmentStore {
         }
     }
 
-    pub(crate) fn open_blob_verified(
-        &self,
+    /// Read through existing capabilities only: opening a legacy conversation
+    /// must not create staging directories or change directory permissions.
+    pub(crate) fn read_session_blob(
+        session: &Dir,
+        attachment_id: &str,
+    ) -> Result<(Vec<u8>, u64), std::io::Error> {
+        let root = crate::session::root_dir::SessionRootDir::open_child(
+            session,
+            Path::new("attachments"),
+        )?;
+        let blobs =
+            crate::session::root_dir::SessionRootDir::open_child(&root, Path::new("blobs"))?;
+        Self::read_blob_verified(&blobs, attachment_id)
+    }
+
+    fn read_blob_verified(
+        blobs: &Dir,
         attachment_id: &str,
     ) -> Result<(Vec<u8>, u64), std::io::Error> {
         if expected_content_address(Path::new(attachment_id)).is_none() {
@@ -670,8 +685,7 @@ impl AttachmentStore {
                 "attachment id is not a content address",
             ));
         }
-        let (mut file, metadata) =
-            open_private_regular_file_in(&self.blobs_dir, Path::new(attachment_id))?;
+        let (mut file, metadata) = open_private_regular_file_in(blobs, Path::new(attachment_id))?;
         let bytes = metadata.len();
         if bytes > media::MAX_ATTACHMENT_BYTES {
             return Err(std::io::Error::new(
@@ -1309,6 +1323,31 @@ fn set_private_dir(path: &Path) -> Result<(), std::io::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_blob_read_does_not_create_store_or_staging() {
+        let (_, root) = temp_store("legacy-reader");
+        let session_path = root.join("reader-session");
+        std::fs::create_dir(&session_path).unwrap();
+        let session = Dir::open_ambient_dir(&session_path, ambient_authority()).unwrap();
+        let bytes = valid_png(2, 2, [4, 5, 6]);
+        let id = format!("{:x}", Sha256::digest(&bytes));
+        assert!(AttachmentStore::read_session_blob(&session, &id).is_err());
+        assert_eq!(session.entries().unwrap().count(), 0);
+        std::fs::create_dir_all(session_path.join("attachments/blobs")).unwrap();
+        std::fs::write(session_path.join("attachments/blobs").join(&id), &bytes).unwrap();
+        let (loaded, length) = AttachmentStore::read_session_blob(&session, &id).unwrap();
+        assert_eq!(loaded, bytes);
+        assert_eq!(length, bytes.len() as u64);
+        assert!(!session_path.join("attachments/staging").exists());
+        assert_eq!(
+            std::fs::read_dir(session_path.join("attachments"))
+                .unwrap()
+                .count(),
+            1
+        );
+        crate::test_support::cleanup_tree(&root);
+    }
 
     fn temp_store(tag: &str) -> (AttachmentStore, PathBuf) {
         let root = std::env::temp_dir().join(format!(

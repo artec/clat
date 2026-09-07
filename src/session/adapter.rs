@@ -169,9 +169,12 @@ fn content_parts(blocks: &Value) -> Vec<crate::model::ContentPart> {
                 let media_type = block.get("mediaType").and_then(Value::as_str);
                 let attachment_id = block.get("attachmentId").and_then(Value::as_str);
                 let path = block.get("path").and_then(Value::as_str);
-                let reference = attachment_id
-                    .map(|id| format!("blobs/{id}"))
-                    .or_else(|| path.map(str::to_owned));
+                let legacy_path = path.filter(|path| {
+                    attachment_id.is_none_or(|id| id == crate::message::legacy_attachment_id(path))
+                });
+                let reference = legacy_path
+                    .map(str::to_owned)
+                    .or_else(|| attachment_id.map(|id| format!("blobs/{id}")));
                 if let (Some(reference), Some(media_type)) = (reference, media_type) {
                     parts.push(crate::model::ContentPart::Image {
                         path: reference,
@@ -520,6 +523,16 @@ mod tests {
                     media_type: "image/png".into(),
                 },
             ]
+        );
+
+        let mut normalized = legacy.clone();
+        normalized[1]["attachmentId"] = json!(crate::message::legacy_attachment_id(
+            "/old/attachments/x.png"
+        ));
+        assert_eq!(
+            content_parts(&normalized),
+            content_parts(&legacy),
+            "upgraded path references must not become nonexistent blobs"
         );
 
         // 纯文本：文本块直通。

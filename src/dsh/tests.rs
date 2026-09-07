@@ -140,8 +140,7 @@ fn handle(
     mux_script: &[String],
     close_after_push: bool,
 ) -> Result<(), String> {
-    let request = read_http_request(stream)?;
-    let (method, path, body) = request;
+    let (method, path, body, _full_text) = read_http_request(stream)?;
     if method == "POST" {
         posts
             .lock()
@@ -228,10 +227,11 @@ fn handle(
 /// S4 轮×1）证明 ureq 的 POST 在 GitHub Actions 上常分两段到达（头
 /// 先、体后），单次 read 漏体会让 rpcId 回退占位值，客户端回显校验
 /// 失败。契约由 `fake_host_request_reader_survives_segmented_arrival`
-/// 钉死。
+/// 钉死。返回 `(method, path, body, 完整文本)`——完整文本供需要检视
+/// 头行的假宿主用（DV-10 凭据门校验 cookie）。
 pub(crate) fn read_http_request(
     stream: &mut TcpStream,
-) -> Result<(String, String, String), String> {
+) -> Result<(String, String, String, String), String> {
     let mut buffer = Vec::new();
     let mut byte = [0u8; 1];
     loop {
@@ -264,7 +264,9 @@ pub(crate) fn read_http_request(
     if content_length > 0 {
         stream.read_exact(&mut body).map_err(|e| e.to_string())?;
     }
-    Ok((method, path, String::from_utf8_lossy(&body).into_owned()))
+    let body = String::from_utf8_lossy(&body).into_owned();
+    let full_text = format!("{head}{body}");
+    Ok((method, path, body, full_text))
 }
 
 fn write_response(stream: &mut TcpStream, status: u16, body: &str) -> Result<(), String> {
@@ -315,7 +317,8 @@ fn fake_host_request_reader_survives_segmented_arrival() {
         std::thread::sleep(Duration::from_millis(50));
     });
     let (mut stream, _) = listener.accept().expect("accept");
-    let (method, path, read_body) = read_http_request(&mut stream).expect("complete request");
+    let (method, path, read_body, _full_text) =
+        read_http_request(&mut stream).expect("complete request");
     assert_eq!(method, "POST");
     assert_eq!(path, "/api/session/canOpenWorkspacePath");
     assert_eq!(read_body, body, "the body must reassemble across segments");
@@ -377,7 +380,7 @@ fn client_rejects_an_oversized_response_body() {
     let port = listener.local_addr().unwrap().port();
     let server = std::thread::spawn(move || {
         let (mut stream, _) = listener.accept().expect("accept");
-        let (_, _, body) = read_http_request(&mut stream).expect("read request");
+        let (_, _, body, _full_text) = read_http_request(&mut stream).expect("read request");
         let rpc_id = serde_json::from_str::<Value>(&body)
             .expect("request json")
             .get("rpcId")

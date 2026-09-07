@@ -11,6 +11,7 @@ pub(crate) mod backend;
 pub(crate) mod budget;
 pub(crate) mod client;
 pub(crate) mod connect;
+pub(crate) mod credentials;
 pub(crate) mod files;
 pub(crate) mod frames;
 pub(crate) mod last_session;

@@ -1,5 +1,104 @@
 use super::trusted::glm_mcp_pack_from_control;
 use super::*;
+
+#[test]
+fn legacy_session_update_is_contextual_and_survives_reopen() {
+    let (storage_root, project_root) = roots("legacy-update-command");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let project = Project::new(&project_root);
+    let mut application = mount(&project, &storage_root, TestBehavior::Success);
+    configure_test_model(&application);
+    assert!(
+        !application
+            .command_catalog()
+            .iter()
+            .any(|command| command.name == "update")
+    );
+    assert!(matches!(
+        application.dispatch_command("/update"),
+        Err(crate::command::CommandError::NotFound { .. })
+    ));
+    let key = SessionKey {
+        project: application.project_key(),
+        id: SessionId::new("old-local"),
+    };
+    let mut header = crate::session::header::SessionHeader::new(
+        key.id.clone(),
+        key.project.header_cwd.clone(),
+        1,
+    );
+    header.version = 0;
+    let events = vec![
+        crate::session::event::SessionEvent::new(
+            "user/message",
+            0,
+            1,
+            crate::session::event::payloads::user_message("legacy question"),
+        )
+        .append(vec![]),
+    ];
+    let bytes =
+        crate::session::jsonl::materialized_bytes(&header, &events, JsonlCompression::Zstd, true)
+            .unwrap();
+    let path = crate::session::path_layout::session_dir(
+        &storage_root.join("sessions"),
+        header.cwd.as_deref(),
+        &key.id,
+    );
+    std::fs::create_dir_all(&path).unwrap();
+    std::fs::write(path.join("session.jsonl.zstd"), &bytes).unwrap();
+    let snapshot = application.switch_session(key.id.clone()).unwrap();
+    assert!(!snapshot.replay.is_empty());
+    assert!(application.session_is_read_only());
+    assert!(
+        application
+            .command_catalog()
+            .iter()
+            .any(|command| command.name == "update")
+    );
+    assert!(application.sessions.journal().is_err());
+    let (completion, _receiver) = mpsc::channel();
+    let rejected = application.start_run(ApplicationRunRequest {
+        message: crate::message::PendingMessage::text("must not run"),
+        asker: None,
+        approver: allow_all_approver(),
+        events: Box::new(SharedEvents(Arc::new(Mutex::new(Vec::new())))),
+        completion,
+    });
+    assert!(matches!(rejected, Err(error) if error.to_string().contains("read-only")));
+    application.sessions.inject_persistence_faults(FaultHooks {
+        fail_upgrade_before_publish: true,
+        ..Default::default()
+    });
+    assert!(application.dispatch_command("/update").is_err());
+    assert!(application.session_is_read_only());
+    assert!(!path.join("session.v2.jsonl.zstd").exists());
+    assert!(application.dispatch_command("/update").is_ok());
+    assert!(!application.session_is_read_only());
+    assert!(
+        !application
+            .command_catalog()
+            .iter()
+            .any(|command| command.name == "update")
+    );
+    assert!(matches!(
+        application.dispatch_command("/update"),
+        Err(crate::command::CommandError::NotFound { .. })
+    ));
+    run(&mut application, "continue after upgrade").unwrap();
+    application.close().unwrap();
+    let mut reopened = mount(&project, &storage_root, TestBehavior::Success);
+    let snapshot = reopened.switch_session(key.id).unwrap();
+    assert!(snapshot.replay.len() >= 2);
+    assert!(!reopened.session_is_read_only());
+    assert_eq!(
+        std::fs::read(path.join("session.jsonl.zstd")).unwrap(),
+        bytes
+    );
+    reopened.close().unwrap();
+    crate::test_support::cleanup_tree(&storage_root);
+    crate::test_support::cleanup_tree(&project_root);
+}
 use crate::RunEvent;
 use crate::control_storage::ControlStorage;
 use crate::event::EventSink;
@@ -8,7 +107,6 @@ use crate::permission::PermissionApprover;
 use crate::presets::preset_by_id;
 use crate::session::key::{ProjectKey, SessionKey};
 use crate::session::persistence::FaultHooks;
-#[cfg(unix)]
 use crate::session::persistence::JsonlCompression;
 use crate::test_support::{
     CountingApprover, LiveGlmProviderPlugin, SharedEvents, TestBehavior, TestModelScript,
@@ -3917,17 +4015,13 @@ fn legacy_sqlite_control_plane_is_upgraded_and_sessions_survive() {
         sessions.iter().any(|summary| summary.id == legacy_id),
         "{sessions:?}"
     );
-    // v0 只读：目录事实仍出现在列表，但恢复追加明确拒绝；两阶段
-    // 切换在 prepare 失败，既不改日志，也不为一次失败的恢复新建投影。
-    let error = application
+    // v0 只读：正常选择可浏览，持久写入仍拒绝。
+    let snapshot = application
         .switch_session(legacy_id.clone())
-        .expect_err("released-v0 session is read-only");
-    assert!(error.message.contains("read-only"), "{error:?}");
-    let workspaces = application.workspaces().unwrap();
-    assert!(
-        workspaces.is_empty(),
-        "failed resume must not write a projection"
-    );
+        .expect("released-v0 session opens read-only");
+    assert_eq!(snapshot.id, legacy_id);
+    assert!(application.session_is_read_only());
+    assert!(application.sessions.journal().is_err());
     application.close().unwrap();
     std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
 }

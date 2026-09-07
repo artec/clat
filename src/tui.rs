@@ -239,9 +239,17 @@ fn run_frontend(mut app: App) -> io::Result<()> {
     crate::tui::logo::print_farewell();
     // 显式 shutdown 的失败在终端恢复后可见地报告（plan §16 阶段5）。
     if let Some(error) = close_error {
-        let _ = writeln!(io::stderr(), "clat: {error}");
+        let _ = writeln!(io::stderr(), "{}", user_facing_error_line(&error));
     }
     result.and(mouse_result).and(paste_result).and(focus_result)
+}
+
+/// DV-10/C：存储的错误串（close_error 等）可能已带 `clat: ` 前缀——
+/// 打印前去重，永不出现 `clat: clat:`（病历：dsh_events 初始连接失败
+/// 曾存 `clat: dsh: …` 再被此处加一层）。
+fn user_facing_error_line(error: &str) -> String {
+    let stripped = error.strip_prefix("clat: ").unwrap_or(error);
+    format!("clat: {stripped}")
 }
 
 struct App {
@@ -985,6 +993,25 @@ mod snapshot_tests;
 mod tests {
     use super::*;
     use ratatui::Terminal;
+
+    /// DV-10/C 判别：close_error 出口永不双前缀——已带 `clat: ` 的
+    /// 存储错误只保留一层；裸错误恰好加一层。pre-fix（打印点硬拼
+    /// `"clat: {error}"` 且 dsh_events 自带前缀）即红。
+    #[test]
+    fn user_facing_error_lines_never_double_the_prefix() {
+        assert_eq!(
+            user_facing_error_line("clat: dsh: connect failed"),
+            "clat: dsh: connect failed"
+        );
+        assert_eq!(
+            user_facing_error_line("dsh: connect failed"),
+            "clat: dsh: connect failed"
+        );
+        assert_eq!(
+            user_facing_error_line("plain failure"),
+            "clat: plain failure"
+        );
+    }
     use ratatui::backend::TestBackend;
     use ratatui::style::Color;
 

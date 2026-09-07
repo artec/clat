@@ -327,6 +327,13 @@ fn parse_header(buffer: &[u8]) -> Result<Option<Header>, String> {
             crate::dsh::budget::WS_MESSAGE_CAP
         ));
     }
+    // DV-10 收尾（真宿主病历 2026-09-07）：头部可解 ≠ 帧可取——payload
+    // 未齐必须返回 None 等余量，否则 take 的 `drain(..header+payload)`
+    // 越界 panic（~10KB mux 事件帧跨 TCP 读即触发；契约由
+    // `assembler_waits_for_a_payload_that_spans_reads` 钉死）。
+    if buffer.len() < header_len + payload_len {
+        return Ok(None);
+    }
     Ok(Some((fin, opcode, masked, payload_len, header_len)))
 }
 
@@ -547,6 +554,23 @@ mod tests {
         let messages = assembler
             .push(&server_frame(true, OPCODE_TEXT, big.as_bytes()))
             .unwrap();
+        assert_eq!(messages, vec![WsMessage::Text(big)]);
+    }
+
+    /// DV-10 收尾判别（真宿主病历 2026-09-07）：~10KB 的 mux 事件帧
+    /// 跨 TCP 读到达——头部可解而 payload 未齐时必须等待，而不是越界
+    /// drain。pre-fix：parse_header 不查 header+payload 可用性即返回
+    /// Some，take 里 `drain(..10010)` 对 9569 字节缓冲 panic。判别：
+    /// 切点钉在半 payload（pre-fix 本腿 panic 即红）。
+    #[test]
+    fn assembler_waits_for_a_payload_that_spans_reads() {
+        let mut assembler = FrameAssembler::new();
+        let big = "y".repeat(10_006); // 帧总长 10010 = 头 4（含 u16 扩展长度）+ payload
+        let frame = server_frame(true, OPCODE_TEXT, big.as_bytes());
+        assert_eq!(frame.len(), 10_010);
+        let split = 9_569; // 头已齐、payload 差 441 字节（病历数字）
+        assert!(assembler.push(&frame[..split]).unwrap().is_empty());
+        let messages = assembler.push(&frame[split..]).unwrap();
         assert_eq!(messages, vec![WsMessage::Text(big)]);
     }
 

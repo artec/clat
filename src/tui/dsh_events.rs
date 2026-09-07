@@ -668,7 +668,9 @@ impl App {
     fn handle_dsh_link_down(&mut self, generation: u64, reason: String) {
         if self.dsh_connect.is_some() {
             // 初始连接失败：报错退出（D-1 语义——启动是单次尝试）。
-            self.close_error = Some(format!("clat: dsh: {reason}"));
+            // DV-10/C：不自带 `clat: ` 前缀——打印点（tui::run 的
+            // close_error 出口）会统一加一层。
+            self.close_error = Some(format!("dsh: {reason}"));
             self.should_quit = true;
             return;
         }
@@ -1073,10 +1075,30 @@ impl App {
         // 下次回落列表头）。restore/收养//new 全部经此，单点写入。
         let memory_path = self.dsh_memory_path.clone();
         crate::dsh::last_session::remember_last_session_at(&memory_path, &session);
+        // 先落目标会话：Typert mux 的 follow 目标从 current_session 取。
+        if let Some(dsh) = self.dsh.as_mut() {
+            dsh.current_session = Some(session.clone());
+        }
+        // DV-10 收尾（TUI 时序修复，负责人 dogfood 病历 2026-09-07）：
+        // Typert 世代的 History = page + controller.follow——mux 必须
+        // **先于** History 到位。旧编排沿 Legacy 的"历史装载完成后开
+        // WS"，Typert 下 History 永远先于 AdoptMux 进 worker，controller
+        // 恒缺席（状态栏 "typert history needs the mux controller
+        // (AdoptMux missing)"）。Legacy 双 WS 是宿主级、与次序无关，
+        // 维持原编排；同一任务的 FIFO 队列保证 AdoptMux → History 序
+        //（判别腿 `typert_restore_adopts_the_mux_before_requesting_
+        // history`）。失败降级：开下行失败时 History 仍发出，worker 侧
+        // 如实报错（与修复前同一可见形态，不静默）。
+        if self
+            .dsh
+            .as_ref()
+            .is_some_and(|dsh| dsh.era == crate::dsh::client::DshEra::Typert)
+        {
+            self.dsh_open_downlinks();
+        }
         let Some(dsh) = self.dsh.as_mut() else {
             return;
         };
-        dsh.current_session = Some(session.clone());
         dsh.session_tail = session
             .chars()
             .rev()
@@ -2644,6 +2666,76 @@ mod tests {
             before + 1,
             "the generation advances even on partial failure"
         );
+    }
+
+    /// DV-10 收尾判别（负责人 dogfood 病历 2026-09-07）：Typert 初始
+    /// 恢复的任务序必须是 **AdoptMux → History**——旧编排沿 Legacy 的
+    /// "历史装载完成后开 WS"，History 先进 worker 而 controller 恒缺席
+    ///（状态栏 "typert history needs the mux controller (AdoptMux
+    /// missing)"）。判别：撤 dsh_switch_session 的 Typert 先开下行
+    /// （era 分支）即红——首任务变 History。
+    #[test]
+    fn typert_restore_adopts_the_mux_before_requesting_history() {
+        // mux 握手假宿主：回合法 101 后静默持连。
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                std::thread::spawn(move || {
+                    use std::io::{Read, Write};
+                    let mut buffer = [0u8; 4096];
+                    let Ok(read) = stream.read(&mut buffer) else {
+                        return;
+                    };
+                    let request = String::from_utf8_lossy(&buffer[..read]).into_owned();
+                    let key = request
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.trim()
+                                .eq_ignore_ascii_case("sec-websocket-key")
+                                .then(|| value.trim().to_owned())
+                        })
+                        .unwrap_or_default();
+                    let accept = crate::dsh::ws::expected_accept(&key);
+                    let response = format!(
+                        "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n\
+                         Connection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"
+                    );
+                    let _ = stream.write_all(response.as_bytes());
+                    // 静默持连到 EOF。
+                    let mut sink = [0u8; 4096];
+                    let _ = stream.read(&mut sink);
+                });
+            }
+        });
+
+        let (mut app, task_rx) = dsh_app();
+        {
+            let state = app.dsh.as_mut().expect("dsh state");
+            state.port = port;
+            state.era = crate::dsh::client::DshEra::Typert;
+            state.cookie = Some("dsh-auth-test=v1.x".into());
+            state.current_session = None;
+            state.ws_open = false; // 初始启动形态：下行未开
+        }
+        app.dsh_switch_session("session-target".into());
+
+        let first = task_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("a task arrives");
+        assert!(
+            matches!(first, DshTask::AdoptMux { .. }),
+            "AdoptMux must precede History on a typert restore"
+        );
+        let second = task_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the history task follows");
+        match second {
+            DshTask::History { session } => assert_eq!(session, "session-target"),
+            other => panic!("History must follow the mux adoption, got {other:?}"),
+        }
     }
 
     /// 审计 P2-1 UI 腿：启动链 Restore/History 失败（Failed 回执）时

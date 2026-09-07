@@ -95,7 +95,7 @@ pub(crate) struct SessionCoordinator {
     /// Serializes normal queue admission with synchronous reversible
     /// transactions without blocking the worker's `CoordinatorCore` lock.
     transaction: Mutex<()>,
-    writer: SessionWriteBehind,
+    writer: Option<SessionWriteBehind>,
     needs_seed_marker: std::sync::atomic::AtomicBool,
 }
 
@@ -112,7 +112,10 @@ impl SessionCoordinator {
     /// 仍可轮询，验证 Drop 安全网真的 join 了线程。
     #[cfg(test)]
     pub(crate) fn writer_alive_handle_for_test(&self) -> Arc<std::sync::atomic::AtomicBool> {
-        self.writer.worker_alive_handle_for_test()
+        self.writer
+            .as_ref()
+            .expect("writable coordinator")
+            .worker_alive_handle_for_test()
     }
 
     pub(crate) fn start(
@@ -149,6 +152,32 @@ impl SessionCoordinator {
         header: SessionHeader,
         visitor: &mut dyn FnMut(&SessionEvent) -> Result<(), String>,
     ) -> Result<(Arc<Self>, bool), SessionError> {
+        if let Ok(stored) = backend.header_snapshot(&key)
+            && stored.version == 0
+        {
+            let mut next_seq = 0;
+            backend.visit_from(&key, 0, &mut |event| {
+                visitor(event)?;
+                next_seq = event.seq + 1;
+                Ok(())
+            })?;
+            return Ok((
+                Arc::new(Self {
+                    key,
+                    header: stored,
+                    backend,
+                    inner: Arc::new(Mutex::new(CoordinatorCore {
+                        handle: None,
+                        next_seq,
+                        fatal: None,
+                    })),
+                    transaction: Mutex::new(()),
+                    writer: None,
+                    needs_seed_marker: std::sync::atomic::AtomicBool::new(false),
+                }),
+                true,
+            ));
+        }
         // Resume an existing log, or keep the freshly created lazy handle
         // (materialization happens on the first durable batch).
         let (handle, visitor_applied) = match backend.prepare_with_visitor(&key, visitor) {
@@ -175,7 +204,7 @@ impl SessionCoordinator {
             backend,
             inner: core,
             transaction: Mutex::new(()),
-            writer,
+            writer: Some(writer),
             needs_seed_marker: std::sync::atomic::AtomicBool::new(needs_seed_marker),
         });
         Ok((coordinator, visitor_applied))
@@ -213,12 +242,20 @@ impl SessionCoordinator {
         &self.header
     }
 
+    pub(crate) fn is_read_only(&self) -> bool {
+        self.writer.is_none()
+    }
+
     fn enqueue_atomic(&self, events: Vec<SessionEvent>) -> Result<SeqRange, String> {
         let _transaction = self.transaction.lock().expect("journal transaction");
         self.enqueue_atomic_locked(events)
     }
 
     fn enqueue_atomic_locked(&self, events: Vec<SessionEvent>) -> Result<SeqRange, String> {
+        let writer = self
+            .writer
+            .as_ref()
+            .ok_or("legacy session is read-only; use /update to upgrade or /new")?;
         if events.is_empty() {
             return Err("cannot append an empty event group".into());
         }
@@ -237,7 +274,7 @@ impl SessionCoordinator {
             }
             // Queue admission and cursor publication are one transaction.
             // A closed writer must not consume an invisible seq range.
-            self.writer.enqueue(events)?;
+            writer.enqueue(events)?;
             core.next_seq = end_inclusive + 1;
             SeqRange {
                 start,
@@ -250,7 +287,8 @@ impl SessionCoordinator {
     fn enqueue_atomic_durable(&self, events: Vec<SessionEvent>) -> Result<SeqRange, String> {
         let _transaction = self.transaction.lock().expect("journal transaction");
         let range = self.enqueue_atomic_locked(events)?;
-        if let Err(error) = self.writer.flush() {
+        let writer = self.writer.as_ref().expect("admitted writable transaction");
+        if let Err(error) = writer.flush() {
             let fatal = self.inner.lock().expect("coordinator lock").fatal.clone();
             if fatal.is_none() {
                 {
@@ -261,8 +299,7 @@ impl SessionCoordinator {
                         ));
                     }
                 }
-                self.writer
-                    .discard_pending_tail(range.start, range.end_inclusive)?;
+                writer.discard_pending_tail(range.start, range.end_inclusive)?;
                 self.inner.lock().expect("coordinator lock").next_seq = range.start;
             }
             return Err(error);
@@ -280,7 +317,9 @@ impl SessionCoordinator {
     /// mid-stream change. A failure keeps the batch queued for the normal
     /// retry lane (write-behind semantics).
     pub(crate) fn flush(&self) -> Result<(), String> {
-        self.writer.flush()?;
+        if let Some(writer) = &self.writer {
+            writer.flush()?;
+        }
         let core = self.inner.lock().expect("coordinator lock");
         if let Some(fatal) = &core.fatal {
             return Err(fatal.clone());
@@ -293,6 +332,9 @@ impl SessionCoordinator {
     /// to skip physical re-reads when projections are already current.
     pub(crate) fn committed_seq(&self) -> Option<u64> {
         let core = self.inner.lock().expect("coordinator lock");
+        if self.is_read_only() {
+            return core.next_seq.checked_sub(1);
+        }
         core.handle
             .as_ref()
             .and_then(|handle| handle.next_seq().checked_sub(1))
@@ -302,7 +344,7 @@ impl SessionCoordinator {
     /// The join is the anti-leak guarantee (audit P1-07): every session
     /// switch retires exactly one writer thread.
     pub(crate) fn close(&self) -> Result<(), String> {
-        let result = self.writer.close();
+        let result = self.writer.as_ref().map_or(Ok(()), |writer| writer.close());
         let mut core = self.inner.lock().expect("coordinator lock");
         if let Some(fatal) = &core.fatal {
             return Err(fatal.clone());

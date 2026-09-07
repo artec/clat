@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# 本地门禁——逐条镜像 .github/workflows/ci.yml 的 Linux job（check）。
+# 纪律（AGENTS.md 工程约束）：ci.yml 步骤变更时同批改本脚本，两处
+# diverge 即 bug。目标：本地全绿 ⇒ CI Linux job 绿。
+#
+# Windows 腿无法本地复刻；涉平台语义（文件锁 / 进程树 / TCP 时序 /
+# 低核满载竞争）的改动加跑 scripts/ci-box.sh（Linux 容器复刻）。
+# 残余不可收敛项归档于 docs/research/ci-parity.md。
+#
+# 用法：
+#   scripts/gates.sh               # 全量镜像：fmt → clippy → rustdoc →
+#                                  #   test → adapter build/test → gated
+#   scripts/gates.sh --stress N    # 全量后把 Test + Gated 复跑 N 遍
+#                                  #   （网络 / 并发 / 时序敏感改动用）
+#   scripts/gates.sh --rust-only   # 跳过 node 两步（无 node 环境时；
+#                                  #   注意这不是完整的 CI 镜像）
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+stress=0
+rust_only=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --stress) stress="${2:?--stress needs a repeat count}"; shift 2 ;;
+        --rust-only) rust_only=1; shift ;;
+        *) echo "unknown flag: $1" >&2; exit 2 ;;
+    esac
+done
+
+step() { printf '\n\033[1m== %s\033[0m\n' "$1"; }
+
+step "Format (cargo fmt --all -- --check)"
+cargo fmt --all -- --check
+
+step "Clippy (cargo clippy --all-targets --all-features -- -D warnings)"
+cargo clippy --all-targets --all-features -- -D warnings
+
+step "Rustdoc (RUSTDOCFLAGS=-D warnings cargo doc --no-deps --all-features)"
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
+
+step "Test (cargo test --all-targets --all-features)"
+cargo test --all-targets --all-features
+
+if [ "$rust_only" -eq 0 ]; then
+    command -v npm >/dev/null || {
+        echo "npm 不在 PATH：装 node 22，或用 --rust-only（非完整镜像）" >&2
+        exit 1
+    }
+    step "Build dsh-adapter for the gated e2e (sdk/dsh-adapter: npm ci && npm run build)"
+    (cd sdk/dsh-adapter && npm ci && npm run build)
+    step "Adapter tests (sdk/dsh-adapter: npm test)"
+    (cd sdk/dsh-adapter && npm test)
+else
+    echo "--rust-only：跳过 npm 两步——这不是完整的 CI 镜像"
+fi
+
+step "Gated tests (cargo test --lib -- --ignored)"
+cargo test --lib -- --ignored
+
+i=1
+while [ "$i" -le "$stress" ]; do
+    step "Stress $i/$stress — Test (时序敏感复跑)"
+    cargo test --all-targets --all-features
+    step "Stress $i/$stress — Gated"
+    cargo test --lib -- --ignored
+    i=$((i + 1))
+done
+
+printf '\n\033[1m门禁全绿（CI Linux job 镜像）\033[0m\n'
