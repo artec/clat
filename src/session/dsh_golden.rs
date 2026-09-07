@@ -1,5 +1,5 @@
-//! B8（F-2 闭环，2026-08-22）：DSH 钉靶 checkout（0.1.1-rc.2 =
-//! `b150a551b8`）真实写路径产出的 golden fixture 读腿。与
+//! B8 golden 读腿：既覆盖 DSH 0.1.1-rc.2 的 released-v0 字节，也
+//! 覆盖 0.1.3-alpha.1（`d347e70390`）原生写出的 released-v2 字节。与
 //! `interop.rs`（/tmp 自跳过的原语级互证）不同，这里的 fixture
 //! **提交进库**（`tests/fixtures/dsh-session/`），本模块随主测试套
 //! 常跑、零 Node 依赖；再生脚本见同目录 `gen-dsh-fixtures.mts`
@@ -35,6 +35,7 @@ mod tests {
     const TEAM_ID: &str = "018f2a64-9d3f-7cde-8123-9a4f2b6c0b02";
     const PLAN_ID: &str = "018f2a64-9d3f-7cde-8123-9a4f2b6c0b03";
     const MODEL_SELECTION_ID: &str = "018f2a64-9d3f-7cde-8123-9a4f2b6c0b04";
+    const V2_ID: &str = "018f2a64-9d3f-7cde-8123-9a4f2b6c0d01";
     const APPROVED_PLAN: &str =
         "Inspect the project, preserve invariants, implement the change, then run focused tests.";
 
@@ -45,6 +46,14 @@ mod tests {
     /// 把 golden 日志按 CLAT 布局放进临时 root（project_key(cwd) /
     /// encode_segment(id) / log 文件名），返回 root 供清理。
     fn mount_fixture(file: &str, id: &str) -> (std::path::PathBuf, JsonlBackend) {
+        mount_fixture_generation(file, id, 0)
+    }
+
+    fn mount_fixture_generation(
+        file: &str,
+        id: &str,
+        version: u32,
+    ) -> (std::path::PathBuf, JsonlBackend) {
         let root = std::env::temp_dir().join(format!(
             "clat-dsh-golden-{id}-{}-{}",
             std::process::id(),
@@ -54,15 +63,79 @@ mod tests {
                 .as_nanos()
         ));
         let backend = JsonlBackend::new(root.clone(), JsonlCompression::Zstd, false);
-        let target = log_path(
+        let current_target = log_path(
             &root,
             Some(FIXTURE_CWD),
             &SessionId::new(id),
             JsonlCompression::Zstd,
         );
+        let target = current_target.parent().expect("session dir").join(
+            crate::session::compat::generation_log_file_name(version, JsonlCompression::Zstd),
+        );
         std::fs::create_dir_all(target.parent().expect("parent")).expect("layout dir");
         std::fs::copy(fixture_dir().join(file), &target).expect("copy golden log");
         (root, backend)
+    }
+
+    /// DV-1 decisive read leg: bytes were emitted and read back by the pinned
+    /// DSH 0.1.3 live persistence path. CLAT must discover the v2 generation,
+    /// expand range provenance, admit `series`, and decode every embedded
+    /// Assistant stream record variant including a failed attempt.
+    #[test]
+    fn dsh_013_native_v2_fixture_decodes_the_full_family() {
+        let (root, backend) = mount_fixture_generation("v2-session-0.1.3.jsonl.zstd", V2_ID, 2);
+        let header = backend.header_snapshot(&key_for(V2_ID)).expect("v2 header");
+        assert_eq!(header.version, 2);
+        assert!(!header.is_seeded);
+
+        let events = load_golden(&backend, V2_ID);
+        assert_eq!(events.len(), 11);
+        assert!(
+            !events
+                .iter()
+                .any(|event| event.event_type == "assistant/chunk")
+        );
+
+        let replacement = events
+            .iter()
+            .find(|event| event.seq == 4)
+            .expect("range-bearing replacement");
+        assert_eq!(replacement.source_event_seqs, Some(vec![1, 2, 3]));
+
+        let request = events
+            .iter()
+            .find(|event| event.event_type == "request/header")
+            .expect("request header");
+        assert_eq!(request.data["reason"], "series");
+        assert_eq!(request.data["startsSeries"], true);
+
+        let attempt = events
+            .iter()
+            .find(|event| event.event_type == "assistant/attempt")
+            .expect("failed attempt");
+        let decoded =
+            crate::session::assistant_stream::expand_assistant_stream(&attempt.data["stream"])
+                .expect("all four AssistantStreamRecord variants");
+        let chunk_types: Vec<&str> = decoded
+            .iter()
+            .map(|timed| timed.chunk["type"].as_str().expect("chunk type"))
+            .collect();
+        assert_eq!(
+            chunk_types,
+            vec!["text-delta", "reasoning-delta", "tool-call-delta", "finish"]
+        );
+
+        let message = events
+            .iter()
+            .find(|event| event.event_type == "assistant/message")
+            .expect("settled message");
+        assert_eq!(
+            crate::session::assistant_stream::expand_assistant_stream(&message.data["stream"])
+                .expect("message stream")
+                .len(),
+            2
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     fn key_for(id: &str) -> SessionKey {
@@ -360,11 +433,12 @@ mod tests {
         ));
         let key = key_for(CLAT_ID);
         let header = SessionHeader {
-            version: 0,
+            version: 2,
             id: SessionId::new(CLAT_ID),
             created_at: 1_787_400_000_000,
             cwd: Some(FIXTURE_CWD.into()),
             parent_session: None,
+            is_seeded: false,
             seed_length: None,
             origin: None,
             delegation_depth: 0,

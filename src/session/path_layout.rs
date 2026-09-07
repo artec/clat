@@ -193,7 +193,7 @@ mod tests {
         assert_eq!(project_dir(root, None), PathBuf::from("/r/_no-cwd"));
         assert_eq!(
             log_path(root, Some("/p"), &id, JsonlCompression::Zstd),
-            PathBuf::from("/r/--p--/s1/session.jsonl.zstd")
+            PathBuf::from("/r/--p--/s1/session.v2.jsonl.zstd")
         );
     }
 }

@@ -42,6 +42,23 @@ CLAT_CLAT_LOG=/tmp/clat-interop/clat-interrupted.jsonl.zstd \
 
 Verification ledger: `docs/research/dsh-session-compatibility.md` §14.1.
 
+## DV-1 released-v2 golden (2026-09-07, DSH 0.1.3-alpha.1)
+
+`v2-session-0.1.3.jsonl.zstd` is generated through the pinned checkout's
+real `SessionStore` → `JsonlSessionPersistence` live path and then opened by
+the DSH reader before it is copied here. It pins the required `isSeeded`
+header, `request/header` reason `series`, a range-encoded
+`sourceEventSeqs: [[1,3]]`, `assistant/attempt`, `assistant/message.stream`,
+and all four `AssistantStreamRecord` variants.
+
+```sh
+cd ../deepseek-harness && \
+  pnpm exec tsx ../clat/tests/fixtures/dsh-session/gen-dv1-fixture.mts
+```
+
+The always-on CLAT read leg is
+`session::dsh_golden::tests::dsh_013_native_v2_fixture_decodes_the_full_family`.
+
 ## DV-5 golden (2026-09-06, provenance shift)
 
 `model-selection-session.jsonl.zstd` carries the three DSH 0.1.2-alpha.4+

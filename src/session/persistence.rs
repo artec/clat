@@ -204,6 +204,13 @@ struct StreamRead {
     last_event_type: Option<String>,
 }
 
+#[derive(Clone, Debug)]
+struct ResolvedLog {
+    path: PathBuf,
+    name: String,
+    version: u32,
+}
+
 const STREAM_RECORD_BYTE_CAP: usize = 64 * 1024 * 1024;
 
 pub(crate) struct JsonlBackend {
@@ -288,6 +295,59 @@ impl JsonlBackend {
             .join(compat::log_file_name(self.compression))
     }
 
+    /// Resolve the highest canonical generation in the configured encoding.
+    /// A Session directory may retain v0 beside v2; readers must never fall
+    /// back to stale v0 once a higher generation exists.
+    fn resolve_log_in_dir(
+        &self,
+        key: &SessionKey,
+        dir: &Dir,
+    ) -> Result<Option<ResolvedLog>, SessionError> {
+        let opposite = match self.compression {
+            JsonlCompression::Zstd => JsonlCompression::None,
+            JsonlCompression::None => JsonlCompression::Zstd,
+        };
+        let mut selected: Option<(u32, String)> = None;
+        let mut opposite_found = false;
+        for entry in dir.entries().map_err(io)? {
+            let entry = entry.map_err(io)?;
+            let name = entry.file_name().into_string().map_err(|_| {
+                SessionError::Corruption("session directory has a non-UTF-8 entry".into())
+            })?;
+            if let Some(version) = compat::parse_generation_log_file_name(&name, self.compression) {
+                let file_type = entry.file_type().map_err(io)?;
+                if !file_type.is_file() {
+                    return Err(SessionError::Corruption(format!(
+                        "session generation `{name}` is not a regular file"
+                    )));
+                }
+                if selected
+                    .as_ref()
+                    .is_none_or(|(highest, _)| version > *highest)
+                {
+                    selected = Some((version, name));
+                }
+            } else if compat::parse_generation_log_file_name(&name, opposite).is_some() {
+                opposite_found = true;
+            }
+        }
+        if opposite_found {
+            return Err(SessionError::EncodingMismatch(format!(
+                "opposite-encoding artifact for session {}",
+                key.id
+            )));
+        }
+        Ok(selected.map(|(version, name)| ResolvedLog {
+            path: self
+                .root
+                .join(&key.project.bucket)
+                .join(path_layout::encode_segment(key.id.as_str()))
+                .join(&name),
+            name,
+            version,
+        }))
+    }
+
     /// Lazy registration: nothing touches the disk until the first append.
     /// A conflict is raised only for the same complete physical SessionKey.
     /// The same opaque id may legitimately exist in another project bucket
@@ -302,6 +362,12 @@ impl JsonlBackend {
             return Err(SessionError::Corruption(
                 "new session header does not match its physical SessionKey".into(),
             ));
+        }
+        if header.version != compat::SESSION_FORMAT_VERSION {
+            return Err(SessionError::UnsupportedFormat(format!(
+                "new sessions must use v{}",
+                compat::SESSION_FORMAT_VERSION
+            )));
         }
         {
             let mut states = self.states.lock().expect("states");
@@ -683,7 +749,10 @@ impl JsonlBackend {
     ) -> Result<LoadedSession, SessionError> {
         let mut read = self.read_events(key, true)?;
         let mut closers = interrupted_turn_closers(&read.events);
-        if repair && (read.truncate_to.is_some() || !closers.is_empty()) {
+        if repair
+            && read.header.version == compat::SESSION_FORMAT_VERSION
+            && (read.truncate_to.is_some() || !closers.is_empty())
+        {
             self.commit_repair(&mut read, &mut closers)?;
             return self.load(key, false);
         }
@@ -758,6 +827,11 @@ impl JsonlBackend {
         // path rather than every cold resume.
         match self.stream_events(key, 0, visitor) {
             Ok(scan) => {
+                if scan.header.version == 0 {
+                    return Err(SessionError::UnsupportedFormat(
+                        "legacy v0 sessions are read-only; start a new v2 session".into(),
+                    ));
+                }
                 return self
                     .prepare_from_stream(key, scan)
                     .map(|prepared| (prepared, true));
@@ -768,6 +842,11 @@ impl JsonlBackend {
         // The writable path commits pending recovery first (DSH prepare):
         // appending behind a torn tail would concatenate garbage.
         let mut read = self.read_events(key, true)?;
+        if read.header.version == 0 {
+            return Err(SessionError::UnsupportedFormat(
+                "legacy v0 sessions are read-only; start a new v2 session".into(),
+            ));
+        }
         let mut closers = interrupted_turn_closers(&read.events);
         if read.truncate_to.is_some() || !closers.is_empty() {
             self.commit_repair(&mut read, &mut closers)?;
@@ -808,6 +887,12 @@ impl JsonlBackend {
         key: &SessionKey,
         scan: StreamRead,
     ) -> Result<PreparedSession, SessionError> {
+        if scan.header.version != compat::SESSION_FORMAT_VERSION {
+            return Err(SessionError::UnsupportedFormat(format!(
+                "legacy v{} sessions are read-only",
+                scan.header.version
+            )));
+        }
         let next_seq = scan.tracker.next_seq();
         let closers = scan.tracker.closers();
         {
@@ -862,10 +947,13 @@ impl JsonlBackend {
     pub(crate) fn header_snapshot(&self, key: &SessionKey) -> Result<SessionHeader, SessionError> {
         validate_key_witness(key)?;
         let dir = self.root_dir.open_session(key).map_err(io)?;
-        let mut file =
-            open_read_no_follow(&dir, compat::log_file_name(self.compression)).map_err(io)?;
+        let resolved = self
+            .resolve_log_in_dir(key, &dir)?
+            .ok_or_else(|| SessionError::NotFound(key.id.to_string()))?;
+        let mut file = open_read_no_follow(&dir, &resolved.name).map_err(io)?;
         let header = read_header_from_reader(&mut file, self.compression)?
             .ok_or_else(|| SessionError::Corruption("session log has no header".into()))?;
+        ensure_generation_matches(&header, &resolved)?;
         if header.id != key.id || header.cwd != key.project.header_cwd {
             return Err(SessionError::Corruption(
                 "stored identity does not match the requested SessionKey".into(),
@@ -887,8 +975,10 @@ impl JsonlBackend {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         validate_key_witness(key)?;
         let dir = std::sync::Arc::new(self.root_dir.open_session(key).map_err(io)?);
-        let name = compat::log_file_name(self.compression);
-        let file = open_read_no_follow(&dir, name).map_err(io)?;
+        let resolved = self
+            .resolve_log_in_dir(key, &dir)?
+            .ok_or_else(|| SessionError::NotFound(key.id.to_string()))?;
+        let file = open_read_no_follow(&dir, &resolved.name).map_err(io)?;
         let before = LogRevision::of_metadata(&file.metadata().map_err(io)?);
         let (header, tracker, last_event_type, file) = match self.compression {
             JsonlCompression::None => {
@@ -904,11 +994,12 @@ impl JsonlBackend {
                 (parsed.0, parsed.1, parsed.2, decoder.finish().into_inner())
             }
         };
-        let after = matching_handle_and_path_revision(&file, &dir, name).map_err(io)?;
+        ensure_generation_matches(&header, &resolved)?;
+        let after = matching_handle_and_path_revision(&file, &dir, &resolved.name).map_err(io)?;
         if before != after {
             return Err(SessionError::Io(format!(
                 "session log {:?} changed while streaming",
-                self.log_path(key)
+                resolved.path
             )));
         }
         Ok(StreamRead {
@@ -943,14 +1034,14 @@ impl JsonlBackend {
         enforce_resume_capabilities: bool,
     ) -> Result<RawRead, SessionError> {
         validate_key_witness(key)?;
-        let path = self
+        let resolved = self
             .find_log(key)?
             .ok_or_else(|| SessionError::NotFound(key.id.to_string()))?;
         let dir = std::sync::Arc::new(self.root_dir.open_session(key).map_err(io)?);
         // Stat → read → stat (audit P1-04): the revision we report is the
         // one whose bytes we actually decoded; a log that keeps changing
         // under us is an external writer and fails closed.
-        let (bytes, revision) = read_stable(&dir, compat::log_file_name(self.compression), &path)?;
+        let (bytes, revision) = read_stable(&dir, &resolved.name, &resolved.path)?;
         let (events, stable_events, truncate_to, header) = match self.compression {
             JsonlCompression::Zstd => {
                 // FP-08（2026-08-22 审计）：repair 全读路径的解压层预算
@@ -1037,17 +1128,18 @@ impl JsonlBackend {
                 key.id
             )));
         }
+        ensure_generation_matches(&header, &resolved)?;
         // Admission gate (audit P1-03): fail closed on required-unknown,
         // retired, malformed-folded payloads, and unsupported header
         // capabilities — before any projection trusts these events.
         if enforce_resume_capabilities {
             crate::session::admission::admit_header(&header)
                 .map_err(|error| SessionError::UnsupportedFormat(error.to_string()))?;
-            crate::session::admission::admit_events(&events)
+            crate::session::admission::admit_events_for_version(&events, header.version)
                 .map_err(|error| SessionError::Corruption(error.to_string()))?;
         }
         Ok(RawRead {
-            path,
+            path: resolved.path,
             dir,
             header,
             events,
@@ -1067,6 +1159,12 @@ impl JsonlBackend {
         read: &mut RawRead,
         closers: &mut [SessionEvent],
     ) -> Result<(), SessionError> {
+        if read.header.version != compat::SESSION_FORMAT_VERSION {
+            return Err(SessionError::UnsupportedFormat(format!(
+                "legacy v{} sessions are read-only and cannot be repaired in place",
+                read.header.version
+            )));
+        }
         let salvaged: Vec<SessionEvent> = read.events[read.stable_events..].to_vec();
         let mut batch = salvaged;
         batch.extend(closers.iter().cloned());
@@ -1125,8 +1223,9 @@ impl JsonlBackend {
             && self
                 .root_dir
                 .open_session(key)
-                .and_then(|dir| open_read_no_follow(&dir, compat::log_file_name(self.compression)))
-                .is_ok()
+                .ok()
+                .and_then(|dir| self.resolve_log_in_dir(key, &dir).ok().flatten())
+                .is_some()
     }
 
     /// Physical SessionKey + Header + stat revision per materialized
@@ -1146,11 +1245,6 @@ impl JsonlBackend {
             }
             other => SessionError::Corruption(other.to_string()),
         })?;
-        let expected = compat::log_file_name(self.compression);
-        let opposite = compat::log_file_name(match self.compression {
-            JsonlCompression::Zstd => JsonlCompression::None,
-            JsonlCompression::None => JsonlCompression::Zstd,
-        });
         let mut snapshots = Vec::new();
         let root = self.root_dir.root().map_err(io)?;
         for project_entry in root.entries().map_err(io)? {
@@ -1190,27 +1284,27 @@ impl JsonlBackend {
                 let session_dir =
                     SessionRootDir::open_child(&project, std::path::Path::new(&physical_id))
                         .map_err(io)?;
-                let expected_file = open_read_no_follow(&session_dir, expected);
-                let opposite_file = open_read_no_follow(&session_dir, opposite);
-                if expected_file.is_ok() && opposite_file.is_ok() {
-                    return Err(SessionError::EncodingMismatch(format!(
-                        "both raw and zstd logs exist in {bucket}/{physical_id}"
-                    )));
-                }
-                let mut log = match expected_file {
-                    Ok(file) => file,
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                        if opposite_file.is_ok() {
-                            return Err(SessionError::EncodingMismatch(format!(
-                                "opposite-encoding artifact in {bucket}/{physical_id}"
-                            )));
-                        }
-                        continue;
-                    }
-                    Err(error) => return Err(io(error)),
+                let provisional_key = SessionKey {
+                    project: crate::session::key::ProjectKey {
+                        header_cwd: None,
+                        bucket: bucket.clone(),
+                    },
+                    id: crate::session::id::SessionId::new(
+                        path_layout::decode_segment(&physical_id).ok_or_else(|| {
+                            SessionError::Corruption(format!(
+                                "session directory `{physical_id}` is not a canonical encoded id"
+                            ))
+                        })?,
+                    ),
                 };
+                let Some(resolved) = self.resolve_log_in_dir(&provisional_key, &session_dir)?
+                else {
+                    continue;
+                };
+                let mut log = open_read_no_follow(&session_dir, &resolved.name).map_err(io)?;
                 let header = read_header_from_reader(&mut log, self.compression)?;
                 let Some(header) = header else { continue };
+                ensure_generation_matches(&header, &resolved)?;
                 let expected_bucket = expected_bucket(header.cwd.as_deref())?;
                 if bucket != expected_bucket {
                     return Err(SessionError::Corruption(format!(
@@ -1242,30 +1336,9 @@ impl JsonlBackend {
         Ok(snapshots)
     }
 
-    fn find_log(&self, key: &SessionKey) -> Result<Option<PathBuf>, SessionError> {
-        let direct = self.log_path(key);
+    fn find_log(&self, key: &SessionKey) -> Result<Option<ResolvedLog>, SessionError> {
         match self.root_dir.open_session(key) {
-            Ok(dir) => {
-                match open_read_no_follow(&dir, compat::log_file_name(self.compression)) {
-                    Ok(_) => return Ok(Some(direct)),
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(error) => return Err(io(error)),
-                }
-                let opposite = compat::log_file_name(match self.compression {
-                    JsonlCompression::Zstd => JsonlCompression::None,
-                    JsonlCompression::None => JsonlCompression::Zstd,
-                });
-                match open_read_no_follow(&dir, opposite) {
-                    Ok(_) => {
-                        return Err(SessionError::EncodingMismatch(format!(
-                            "opposite-encoding artifact for session {}",
-                            key.id
-                        )));
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(error) => return Err(io(error)),
-                }
-            }
+            Ok(dir) => return self.resolve_log_in_dir(key, &dir),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(io(error)),
         }
@@ -1282,6 +1355,20 @@ fn expected_bucket(cwd: Option<&str>) -> Result<String, SessionError> {
             "session cwd must not be empty when deriving its project bucket".into(),
         )),
         Some(cwd) => Ok(path_layout::project_key(cwd)),
+    }
+}
+
+fn ensure_generation_matches(
+    header: &SessionHeader,
+    resolved: &ResolvedLog,
+) -> Result<(), SessionError> {
+    if header.version == resolved.version {
+        Ok(())
+    } else {
+        Err(SessionError::Corruption(format!(
+            "session generation filename v{} disagrees with header v{}",
+            resolved.version, header.version
+        )))
     }
 }
 
@@ -1542,8 +1629,8 @@ fn stream_plain_lines(
                 "empty committed JSONL record".into(),
             ));
         }
-        let events = jsonl::decode_record_line(&line).map_err(map_scan_error)?;
-        crate::session::admission::admit_events(&events)
+        let events = jsonl::decode_record_line(&line, header.version).map_err(map_scan_error)?;
+        crate::session::admission::admit_events_for_version(&events, header.version)
             .map_err(|error| SessionError::Corruption(error.to_string()))?;
         for event in events {
             if event.seq != expected_seq {
@@ -1748,6 +1835,7 @@ mod tests {
                         "content": [{ "type": "text", "text": "ok" }],
                         "source": { "kind": "model", "provider": "t", "model": "m" },
                     },
+                    "stream": [],
                 }),
             )
             .append(Vec::new()),
@@ -1777,7 +1865,7 @@ mod tests {
         let log = root
             .join("--tmp-clat-project--")
             .join("lazy-1")
-            .join("session.jsonl.zstd");
+            .join("session.v2.jsonl.zstd");
         assert!(log.is_file());
         #[cfg(unix)]
         {
@@ -1854,7 +1942,7 @@ mod tests {
         let file = root
             .join("--tmp-clat-project--")
             .join("retry-1")
-            .join("session.jsonl.zstd");
+            .join("session.v2.jsonl.zstd");
         let size_after_first = std::fs::metadata(&file).expect("log exists").len();
 
         backend.inject_faults(FaultHooks {
@@ -1946,7 +2034,7 @@ mod tests {
         let file = root
             .join("--tmp-clat-project--")
             .join("repair-1")
-            .join("session.jsonl.zstd");
+            .join("session.v2.jsonl.zstd");
         let bytes = std::fs::read(&file).expect("read");
         std::fs::write(&file, &bytes[..bytes.len() - 3]).expect("tear");
 
@@ -1999,7 +2087,10 @@ mod tests {
         let result = backend.append_batch(prepared, 0, &turn_events(0, 1));
         assert!(matches!(result, Err(AppendFailure::NotCommitted { .. })));
         assert!(
-            !outside.join("swap-1").join("session.jsonl.zstd").exists(),
+            !outside
+                .join("swap-1")
+                .join("session.v2.jsonl.zstd")
+                .exists(),
             "all materialization operations must remain relative to the held root capability"
         );
 
@@ -2111,7 +2202,7 @@ mod tests {
         assert!(
             root.join("--tmp-clat-project--")
                 .join("raw-1")
-                .join("session.jsonl")
+                .join("session.v2.jsonl")
                 .is_file()
         );
         crate::test_support::cleanup_tree(&root);
@@ -2133,7 +2224,7 @@ mod tests {
         let file = root
             .join("--tmp-clat-project--")
             .join("torn-1")
-            .join("session.jsonl.zstd");
+            .join("session.v2.jsonl.zstd");
         let mut bytes = std::fs::read(&file).expect("read");
         bytes.extend_from_slice(&frame);
         std::fs::write(&file, &bytes).expect("write");
@@ -2158,7 +2249,7 @@ mod tests {
         let file = root
             .join("--tmp-clat-project--")
             .join("drift-1")
-            .join("session.jsonl.zstd");
+            .join("session.v2.jsonl.zstd");
         let foreign = crate::session::zstd_frames::compress_frame(b"{}\n").expect("frame");
         let mut bytes = std::fs::read(&file).expect("read");
         bytes.extend_from_slice(&foreign);
@@ -2187,7 +2278,7 @@ mod tests {
         let log = root
             .join("--tmp-clat-project--")
             .join("swap-1")
-            .join("session.jsonl.zstd");
+            .join("session.v2.jsonl.zstd");
         let outside = root.join("outside-victim");
         std::fs::write(&outside, b"unchanged").expect("victim");
         std::fs::remove_file(&log).expect("remove log entry");
@@ -2225,7 +2316,7 @@ mod tests {
         let log = root
             .join("--tmp-clat-project--")
             .join("repair-swap-1")
-            .join("session.jsonl.zstd");
+            .join("session.v2.jsonl.zstd");
         let outside = root.join("repair-victim");
         std::fs::write(&outside, b"unchanged").expect("victim");
         std::fs::remove_file(&log).expect("remove log entry");
@@ -2259,6 +2350,104 @@ mod tests {
         ));
         let repaired = backend.load(&key, true).expect("cold repair decides");
         assert_eq!(repaired.events.len(), 4);
+        crate::test_support::cleanup_tree(&root);
+    }
+
+    fn write_generation(
+        backend: &JsonlBackend,
+        key: &SessionKey,
+        mut stored_header: SessionHeader,
+        version: u32,
+        events: &[SessionEvent],
+    ) -> PathBuf {
+        stored_header.version = version;
+        stored_header.is_seeded = false;
+        let current = backend.log_path(key);
+        let path = current
+            .parent()
+            .expect("session dir")
+            .join(compat::generation_log_file_name(
+                version,
+                backend.compression,
+            ));
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("layout");
+        let bytes = crate::session::jsonl::materialized_bytes(
+            &stored_header,
+            events,
+            backend.compression,
+            true,
+        )
+        .expect("generation bytes");
+        std::fs::write(&path, bytes).expect("generation file");
+        path
+    }
+
+    /// DV-1 discovery discriminator: a current generation wins over a valid
+    /// released-v0 sibling. Removing the vN filename branch makes this select
+    /// the old header and fail.
+    #[test]
+    fn discovery_selects_the_highest_generation_in_one_encoding_family() {
+        let (backend, root) = backend("generation-highest");
+        let key = key("generation-highest-1");
+        let base = header(&key);
+        let mut old = base.clone();
+        old.created_at = 1;
+        write_generation(
+            &backend,
+            &key,
+            old,
+            0,
+            &[SessionEvent::new(
+                "turn/start",
+                0,
+                1,
+                payloads::turn_start(7),
+            )],
+        );
+        let mut current = base;
+        current.created_at = 2;
+        write_generation(&backend, &key, current, 2, &turn_events(0, 9));
+
+        let snapshot = backend.header_snapshot(&key).expect("highest header");
+        assert_eq!(snapshot.version, 2);
+        assert_eq!(snapshot.created_at, 2);
+        let loaded = backend.load(&key, false).expect("highest events");
+        assert_eq!(loaded.events[0].data["turn"], 9);
+        crate::test_support::cleanup_tree(&root);
+    }
+
+    /// DV-1 zero-user-decision ruling: v0 remains readable but no load,
+    /// recovery, or prepare path may rewrite it or produce an append handle.
+    #[test]
+    fn released_v0_is_read_only_even_when_recovery_would_add_closers() {
+        let (backend, root) = backend("v0-read-only");
+        let key = key("v0-read-only-1");
+        let path = write_generation(
+            &backend,
+            &key,
+            header(&key),
+            0,
+            &[SessionEvent::new(
+                "turn/start",
+                0,
+                1,
+                payloads::turn_start(1),
+            )],
+        );
+        let before = std::fs::read(&path).expect("before");
+        let loaded = backend.load(&key, true).expect("v0 read");
+        assert_eq!(loaded.header.version, 0);
+        assert_eq!(loaded.events.len(), 1);
+        assert!(
+            !loaded.closers.is_empty(),
+            "open turn remains diagnostic only"
+        );
+        assert_eq!(std::fs::read(&path).expect("after"), before);
+        assert!(matches!(
+            backend.prepare(&key),
+            Err(SessionError::UnsupportedFormat(message)) if message.contains("read-only")
+        ));
+        assert_eq!(std::fs::read(&path).expect("after refusal"), before);
         crate::test_support::cleanup_tree(&root);
     }
 

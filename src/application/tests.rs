@@ -668,7 +668,6 @@ fn dual_stream_run_produces_the_dsh_event_family() {
         "tool/result",
         "step/end",
         "step/start",
-        "assistant/chunk",
         "assistant/message",
         "step/end",
         "turn/end",
@@ -3861,8 +3860,8 @@ fn first_entry_registers_lazily_and_second_entry_hits() {
 }
 
 /// MP-1 §4.5 + INV-MP6：v4 旧库（clat.db）在场 → 挂载走升级路径：
-/// 旧库改名保尸（字节原样）、新控制面诞生、既有会话（事实源）被
-/// 收编进新注册表。
+/// 旧库改名保尸（字节原样）、新控制面诞生、既有 v0 会话（事实源）
+/// 仍可发现，但恢复拒绝且不产生新控制面投影。
 #[test]
 fn legacy_sqlite_control_plane_is_upgraded_and_sessions_survive() {
     let (storage_root, project_root) = roots("mp1-legacy-upgrade");
@@ -3882,11 +3881,12 @@ fn legacy_sqlite_control_plane_is_upgraded_and_sessions_survive() {
     std::fs::create_dir_all(&legacy_dir).unwrap();
     {
         use std::io::Write as _;
-        let header = crate::session::header::SessionHeader::new(
+        let mut header = crate::session::header::SessionHeader::new(
             legacy_id.clone(),
             Some(canonical.clone()),
             1_700_000_000_000,
         );
+        header.version = 0;
         let mut line = header.to_line();
         line.push('\n');
         let mut buffer = Vec::new();
@@ -3917,15 +3917,16 @@ fn legacy_sqlite_control_plane_is_upgraded_and_sessions_survive() {
         sessions.iter().any(|summary| summary.id == legacy_id),
         "{sessions:?}"
     );
-    // 恢复旧会话 = 首次耐久激活 → 注册工作区并收编。
-    application.switch_session(legacy_id.clone()).unwrap();
+    // v0 只读：目录事实仍出现在列表，但恢复追加明确拒绝；两阶段
+    // 切换在 prepare 失败，既不改日志，也不为一次失败的恢复新建投影。
+    let error = application
+        .switch_session(legacy_id.clone())
+        .expect_err("released-v0 session is read-only");
+    assert!(error.message.contains("read-only"), "{error:?}");
     let workspaces = application.workspaces().unwrap();
-    assert_eq!(workspaces.len(), 1);
     assert!(
-        workspaces[0]
-            .session_ids
-            .iter()
-            .any(|id| id == legacy_id.as_str())
+        workspaces.is_empty(),
+        "failed resume must not write a projection"
     );
     application.close().unwrap();
     std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();

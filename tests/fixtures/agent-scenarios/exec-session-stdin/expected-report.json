@@ -42,7 +42,6 @@
       "tool/result",
       "step/end",
       "step/start",
-      "assistant/chunk",
       "assistant/message",
       "step/end",
       "turn/end"
@@ -109,7 +108,6 @@
     "tool/result",
     "step/end",
     "step/start",
-    "assistant/chunk",
     "assistant/message",
     "step/end",
     "turn/end"

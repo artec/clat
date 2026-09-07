@@ -91,14 +91,26 @@ pub(crate) fn admit_header(header: &SessionHeader) -> Result<(), AdmissionError>
 /// but does not fold are envelope-checked only — we never misread what we
 /// do not read).
 pub(crate) fn admit_events(events: &[SessionEvent]) -> Result<(), AdmissionError> {
+    admit_events_for_version(events, 0)
+}
+
+/// Version-aware event admission: v0 retains top-level `assistant/chunk`,
+/// while released v2 requires embedded streams and admits `assistant/attempt`.
+pub(crate) fn admit_events_for_version(
+    events: &[SessionEvent],
+    version: u32,
+) -> Result<(), AdmissionError> {
     for event in events {
         if RETIRED_EVENT_TYPES.contains(&event.event_type.as_str()) {
+            return Err(AdmissionError::Retired(event.event_type.clone()));
+        }
+        if version == 2 && event.event_type == "assistant/chunk" {
             return Err(AdmissionError::Retired(event.event_type.clone()));
         }
         if !is_known_type(&event.event_type) && !event.ignorable.unwrap_or(false) {
             return Err(AdmissionError::RequiredUnknown(event.event_type.clone()));
         }
-        if let Err(issue) = validate_payload(event) {
+        if let Err(issue) = validate_payload(event, version) {
             return Err(AdmissionError::MalformedPayload {
                 event_type: event.event_type.clone(),
                 seq: event.seq,
@@ -109,7 +121,7 @@ pub(crate) fn admit_events(events: &[SessionEvent]) -> Result<(), AdmissionError
     Ok(())
 }
 
-fn validate_payload(event: &SessionEvent) -> Result<(), String> {
+fn validate_payload(event: &SessionEvent, version: u32) -> Result<(), String> {
     // Only the vocabulary CLAT folds is structurally validated.
     match event.event_type.as_str() {
         "turn/start" | "turn/end" => {
@@ -144,6 +156,23 @@ fn validate_payload(event: &SessionEvent) -> Result<(), String> {
             }
             require_u64(&event.data, "turn")?;
             require_u64(&event.data, "step")?;
+            if version == 2 {
+                let stream = event
+                    .data
+                    .get("stream")
+                    .ok_or("assistant/message lacks required v2 stream")?;
+                crate::session::assistant_stream::expand_assistant_stream(stream)?;
+            }
+            Ok(())
+        }
+        "assistant/attempt" => {
+            require_u64(&event.data, "turn")?;
+            require_u64(&event.data, "step")?;
+            let stream = event
+                .data
+                .get("stream")
+                .ok_or("assistant/attempt lacks stream")?;
+            crate::session::assistant_stream::expand_assistant_stream(stream)?;
             Ok(())
         }
         "tool/result" => {
@@ -293,6 +322,19 @@ fn validate_payload(event: &SessionEvent) -> Result<(), String> {
         }
         "request/header" => {
             require_object(&event.data, "header")?;
+            if !matches!(
+                event.data.get("reason").and_then(|value| value.as_str()),
+                Some("initial" | "resume" | "change" | "series")
+            ) {
+                return Err("request/header reason is not in the vocabulary".into());
+            }
+            if event
+                .data
+                .get("startsSeries")
+                .is_some_and(|value| value.as_bool() != Some(true))
+            {
+                return Err("request/header startsSeries must be true when present".into());
+            }
             Ok(())
         }
         "session/end-seed" => Ok(()),
@@ -459,6 +501,58 @@ mod tests {
                 payloads::turn_end(1, &crate::session::event::TurnEndReason::Completed),
             ),
         ]
+    }
+
+    /// DV-1 attempt decoder discriminator: the current event is required and
+    /// every embedded record must decode. Removing its payload branch would
+    /// silently admit the malformed control leg.
+    #[test]
+    fn v2_attempt_and_series_header_are_structurally_admitted() {
+        let valid = vec![
+            SessionEvent::new(
+                "request/header",
+                0,
+                1,
+                json!({
+                    "header": {"config": {"provider": "p", "model": "m"}},
+                    "reason": "series",
+                    "startsSeries": true,
+                }),
+            ),
+            SessionEvent::new(
+                "assistant/attempt",
+                1,
+                2,
+                json!({
+                    "turn": 1,
+                    "step": 0,
+                    "stream": [{
+                        "type": "text-chunks", "time0": 1, "index": 0,
+                        "dt": [], "texts": ["partial"]
+                    }],
+                }),
+            ),
+        ];
+        assert_eq!(admit_events_for_version(&valid, 2), Ok(()));
+
+        let malformed = SessionEvent::new(
+            "assistant/attempt",
+            0,
+            1,
+            json!({
+                "turn": 1,
+                "step": 0,
+                "stream": [{
+                    "type": "text-chunks", "time0": 1, "index": 0,
+                    "dt": [], "texts": []
+                }],
+            }),
+        );
+        assert!(matches!(
+            admit_events_for_version(&[malformed], 2),
+            Err(AdmissionError::MalformedPayload { event_type, .. })
+                if event_type == "assistant/attempt"
+        ));
     }
 
     /// M2：image content block 的引用不变量——path 与 mediaType 缺一
@@ -804,7 +898,7 @@ mod tests {
     /// The catalog constants stay honest against the dispatch above.
     #[test]
     fn known_catalog_is_consistent() {
-        assert_eq!(crate::session::catalog::KNOWN_EVENT_TYPES.len(), 53);
+        assert_eq!(crate::session::catalog::KNOWN_EVENT_TYPES.len(), 54);
     }
     /// MM-1A：幂等/元数据字段的 admission 校验——可选字段一旦出现
     /// 必须类型正确且有界（坏 attachmentId/宽高/clientMessageId/

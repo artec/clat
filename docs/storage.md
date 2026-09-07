@@ -35,7 +35,7 @@ Files appear lazily, so a fresh installation may contain only a subset.
 └── sessions/
     └── --<project-key>--/
         └── <encoded-session-id>/
-            ├── session.jsonl.zstd   # authoritative DSH-compatible log
+            ├── session.v2.jsonl.zstd # current authoritative DSH-compatible log
             ├── clat-checkpoint.json # bounded derived projection cache
             └── attachments/
                 ├── .orphan-sweep-cursor-v1 # private bounded-GC progress
@@ -85,17 +85,26 @@ session.
 
 ### Physical encoding
 
-The normal file is `session.jsonl.zstd`. Each committed batch is an independent
-zstd frame with a content checksum. Independent frames make appending cheap and
-limit crash damage to the final incomplete frame.
+New sessions use `session.v2.jsonl.zstd`. Discovery recognizes the canonical
+`session.vN.jsonl[.zstd]` generation family and reads the highest generation in
+a session directory. Each committed batch is an independent zstd frame with a
+content checksum. Independent frames make appending cheap and limit crash
+damage to the final incomplete frame.
 
 Every frame is decoded under a 64 MiB budget. Streamed record reads carry the
 same bound, so a compressed bomb fails with a named error instead of consuming
 unbounded memory.
 
-The session root may contain uncompressed `session.jsonl` from a compatible
+The session root may contain uncompressed generation files from a compatible
 source, but one root cannot mix raw and zstd session encodings. Startup rejects
-an encoding conflict before mounting storage.
+an encoding conflict before mounting storage. Released-v0
+`session.jsonl[.zstd]` remains readable, including when it sits beside v2, but
+CLAT never appends to, repairs, or migrates a v0 log; start a new session to
+continue writing.
+
+V2 stores model deltas inside `assistant/message.stream`; failed model requests
+are retained as `assistant/attempt` with the same embedded stream format.
+`sourceEventSeqs` ranges are expanded before projections see an event.
 
 ### Event admission
 
@@ -109,12 +118,13 @@ payload, fold it into projections/checkpoints, and prove live/replay parity.
 
 ### Crash recovery
 
-On open, CLAT scans frames and events in order. A torn final frame is truncated
+On open, CLAT scans frames and events in order. For writable v2 sessions, a torn final frame is truncated
 to the last durable boundary. If the crash left an open tool/step/turn, recovery
 appends synthetic `tool/result`, `step/end`, and `turn/end` events so later
 folds see a complete state machine.
 
-Recovery does not guess through corruption in an earlier committed frame. A
+Legacy v0 sessions are inspected without these recovery writes. Recovery does
+not guess through corruption in an earlier committed frame. A
 corrupt or unsupported session fails before the active-session pointer moves.
 
 ## Projections and checkpoints

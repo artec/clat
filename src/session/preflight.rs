@@ -19,7 +19,7 @@ pub(crate) enum PreflightError {
     Symlink(String),
     NotADirectory(String),
     UnexpectedEntry(String),
-    /// Both `session.jsonl` and `session.jsonl.zstd` exist in one directory.
+    /// Raw and zstd generation families coexist in one root.
     EncodingConflict(String),
     Io(String),
 }
@@ -177,13 +177,29 @@ fn check_session_dir(dir: &Path) -> Result<(bool, bool), PreflightError> {
         if is_ignorable_os_junk(&name, &file_type) {
             continue;
         }
+        let zstd_generation = crate::session::compat::parse_generation_log_file_name(
+            &name,
+            crate::session::persistence::JsonlCompression::Zstd,
+        );
+        let raw_generation = crate::session::compat::parse_generation_log_file_name(
+            &name,
+            crate::session::persistence::JsonlCompression::None,
+        );
         match name.as_str() {
-            "session.jsonl.zstd" if file_type.is_file() => zstd = true,
-            "session.jsonl" if file_type.is_file() => raw = true,
+            _ if zstd_generation.is_some() && file_type.is_file() => zstd = true,
+            _ if raw_generation.is_some() && file_type.is_file() => raw = true,
             "clat-checkpoint.json" if file_type.is_file() => {}
             // Transient publish artifacts from an interrupted atomic write.
             _ if name.ends_with(".tmp") && file_type.is_file() => {}
-            "session.jsonl.zstd" | "session.jsonl" | "clat-checkpoint.json" => {
+            "clat-checkpoint.json" => {
+                return Err(PreflightError::UnexpectedEntry(format!(
+                    "{} is not a regular file",
+                    path.display()
+                )));
+            }
+            _ if (zstd_generation.is_some() || raw_generation.is_some())
+                && !file_type.is_file() =>
+            {
                 return Err(PreflightError::UnexpectedEntry(format!(
                     "{} is not a regular file",
                     path.display()

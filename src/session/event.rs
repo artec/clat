@@ -111,11 +111,107 @@ impl SessionEvent {
     }
 }
 
+/// Released-v2 physical provenance codec. Bare members remain legal; closed
+/// `[start,end]` pairs expand before the logical event enters the rest of the
+/// Session stack. A range-bearing list must be globally strictly increasing,
+/// and every form rejects duplicates or references to this/future events.
+pub(crate) fn decode_source_event_seqs(value: &Value, event_seq: u64) -> Result<Vec<u64>, String> {
+    const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+    let entries = value
+        .as_array()
+        .ok_or_else(|| "sourceEventSeqs must be an array".to_owned())?;
+    let mut output = Vec::new();
+    let mut has_range = false;
+    for entry in entries {
+        if let Some(source) = entry.as_u64().filter(|value| *value <= MAX_SAFE_INTEGER) {
+            output.push(source);
+            continue;
+        }
+        let pair = entry
+            .as_array()
+            .filter(|pair| pair.len() == 2)
+            .ok_or_else(|| "sourceEventSeqs range must be a [start, end] pair".to_owned())?;
+        let start = pair[0]
+            .as_u64()
+            .filter(|value| *value <= MAX_SAFE_INTEGER)
+            .ok_or_else(|| "sourceEventSeqs range start must be a count".to_owned())?;
+        let end = pair[1]
+            .as_u64()
+            .filter(|value| *value <= MAX_SAFE_INTEGER)
+            .ok_or_else(|| "sourceEventSeqs range end must be a count".to_owned())?;
+        if start > end || end >= event_seq {
+            return Err("sourceEventSeqs range exceeds its event seq".into());
+        }
+        if end - start + 1 > event_seq.saturating_sub(output.len() as u64) {
+            return Err("sourceEventSeqs range exceeds its event seq".into());
+        }
+        output.extend(start..=end);
+        has_range = true;
+    }
+    let mut seen = std::collections::HashSet::new();
+    for source in &output {
+        if *source >= event_seq || !seen.insert(*source) {
+            return Err("sourceEventSeqs ranges must contain unique earlier seqs".into());
+        }
+    }
+    if has_range && output.windows(2).any(|pair| pair[0] >= pair[1]) {
+        return Err("sourceEventSeqs ranges must be strictly increasing".into());
+    }
+    Ok(output)
+}
+
+/// Compact strictly increasing consecutive runs of at least three members;
+/// short runs stay as bare integers exactly like DSH v2 `encodeSeqRanges`.
+pub(crate) fn encode_source_event_seqs(values: &[u64]) -> Value {
+    if values.windows(2).any(|pair| pair[0] >= pair[1]) {
+        return json!(values);
+    }
+    let mut output = Vec::new();
+    let mut index = 0;
+    while index < values.len() {
+        let start = values[index];
+        let mut end = start;
+        while index + 1 < values.len() && values[index + 1] == end + 1 {
+            index += 1;
+            end += 1;
+        }
+        if end - start >= 2 {
+            output.push(json!([start, end]));
+        } else {
+            output.push(json!(start));
+            if end > start {
+                output.push(json!(end));
+            }
+        }
+        index += 1;
+    }
+    Value::Array(output)
+}
+
 pub(crate) fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_millis() as i64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod provenance_tests {
+    use super::*;
+
+    #[test]
+    fn v2_range_pairs_expand_and_encode_losslessly() {
+        let physical = json!([1, [3, 6], 9]);
+        let logical = decode_source_event_seqs(&physical, 10).expect("valid ranges");
+        assert_eq!(logical, vec![1, 3, 4, 5, 6, 9]);
+        assert_eq!(encode_source_event_seqs(&logical), json!([1, [3, 6], 9]));
+    }
+
+    #[test]
+    fn v2_range_pairs_reject_overlap_and_future_refs() {
+        assert!(decode_source_event_seqs(&json!([[1, 3], 3]), 5).is_err());
+        assert!(decode_source_event_seqs(&json!([[1, 5]]), 5).is_err());
+    }
 }
 
 /// Why a turn ended. Merge-extensible in DSH; CLAT produces this subset.
@@ -391,6 +487,11 @@ pub(crate) mod payloads {
                 "content": content,
                 "source": { "kind": "model", "provider": provider, "model": model },
             },
+            // v2 requires the original assistant stream to travel with the
+            // settled message. Callers that only construct a settled message
+            // still produce a valid (empty) stream; the recorder replaces it
+            // with the accumulated records before journaling.
+            "stream": [],
         });
         // DSH `assistant/message.usage`（TokenUsage 形状）：重启后状态栏
         // 的 Cache/Context 由它还原；适配器未上报则整段省略（同 DSH）。

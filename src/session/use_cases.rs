@@ -3288,7 +3288,7 @@ mod tests {
         let log = root
             .join("--tmp-usecases--")
             .join(summary.id.as_str())
-            .join("session.jsonl.zstd");
+            .join("session.v2.jsonl.zstd");
         std::fs::write(&log, b"corrupt").expect("corrupt after commit");
         assert!(service.quiesce_active().is_err());
         wait_for_writer_baseline(baseline);
@@ -3828,7 +3828,7 @@ mod tests {
         let log = root
             .join("--tmp-usecases--")
             .join(summary.id.as_str())
-            .join("session.jsonl.zstd");
+            .join("session.v2.jsonl.zstd");
         let bytes = std::fs::read(&log).expect("read");
         std::fs::write(&log, &bytes[..bytes.len() - 3]).expect("tear");
 
@@ -3877,7 +3877,7 @@ mod tests {
         let log = root
             .join("--tmp-usecases--")
             .join(summary.id.as_str())
-            .join("session.jsonl.zstd");
+            .join("session.v2.jsonl.zstd");
         let mut bytes = std::fs::read(&log).expect("read");
         bytes.extend_from_slice(&frame);
         std::fs::write(&log, &bytes).expect("append");

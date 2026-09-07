@@ -375,17 +375,53 @@ fn scan_bucket(sessions_root: &Path, bucket: &str) -> Result<Vec<ScannedSession>
         let Some(id) = path_layout::decode_segment(&name) else {
             continue;
         };
-        let log = entry.path().join("session.jsonl.zstd");
-        if !log.is_file() {
-            continue;
+        let mut selected: Option<(
+            u32,
+            std::path::PathBuf,
+            crate::session::persistence::JsonlCompression,
+        )> = None;
+        let generation_entries = std::fs::read_dir(entry.path()).map_err(|error| {
+            format!(
+                "cannot scan session directory {}: {error}",
+                entry.path().display()
+            )
+        })?;
+        for generation in generation_entries {
+            let generation = generation.map_err(|error| error.to_string())?;
+            if !generation
+                .file_type()
+                .map_err(|error| error.to_string())?
+                .is_file()
+            {
+                continue;
+            }
+            let filename = generation.file_name().to_string_lossy().into_owned();
+            let candidate = [
+                crate::session::persistence::JsonlCompression::Zstd,
+                crate::session::persistence::JsonlCompression::None,
+            ]
+            .into_iter()
+            .find_map(|compression| {
+                crate::session::compat::parse_generation_log_file_name(&filename, compression)
+                    .map(|version| (version, generation.path(), compression))
+            });
+            if let Some(candidate) = candidate
+                && selected
+                    .as_ref()
+                    .is_none_or(|(version, _, _)| candidate.0 > *version)
+            {
+                selected = Some(candidate);
+            }
         }
+        let Some((generation, log, compression)) = selected else {
+            continue;
+        };
         let (header_cwd, created_at_ms) = match std::fs::File::open(&log) {
             Ok(mut file) => {
-                match crate::session::persistence::read_header_from_reader(
-                    &mut file,
-                    crate::session::persistence::JsonlCompression::Zstd,
-                ) {
-                    Ok(Some(header)) => (header.cwd, header.created_at),
+                match crate::session::persistence::read_header_from_reader(&mut file, compression) {
+                    Ok(Some(header)) if header.version == generation => {
+                        (header.cwd, header.created_at)
+                    }
                     _ => (None, 0),
                 }
             }
@@ -568,7 +604,10 @@ mod tests {
             let dir = bucket_dir.join(path_layout::encode_segment(&format!("session-{id}")));
             std::fs::create_dir_all(&dir).unwrap();
             std::fs::write(
-                dir.join("session.jsonl.zstd"),
+                dir.join(crate::session::compat::generation_log_file_name(
+                    crate::session::compat::SESSION_FORMAT_VERSION,
+                    crate::session::persistence::JsonlCompression::Zstd,
+                )),
                 log_with_header(id, "/proj/a", when),
             )
             .unwrap();
@@ -577,7 +616,10 @@ mod tests {
         let cousin = bucket_dir.join(path_layout::encode_segment("session-cousin"));
         std::fs::create_dir_all(&cousin).unwrap();
         std::fs::write(
-            cousin.join("session.jsonl.zstd"),
+            cousin.join(crate::session::compat::generation_log_file_name(
+                crate::session::compat::SESSION_FORMAT_VERSION,
+                crate::session::persistence::JsonlCompression::Zstd,
+            )),
             log_with_header("cousin", "/somewhere/else", 9),
         )
         .unwrap();

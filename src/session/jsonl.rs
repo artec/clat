@@ -12,16 +12,45 @@ use crate::session::persistence::JsonlCompression;
 /// Decode one complete newline-stripped storage record. Packed chunk rows may
 /// expand to several logical events; callers remain responsible for global
 /// seq continuity across records.
-pub(crate) fn decode_record_line(line: &[u8]) -> Result<Vec<SessionEvent>, String> {
+pub(crate) fn decode_record_line(line: &[u8], version: u32) -> Result<Vec<SessionEvent>, String> {
     let value: serde_json::Value = serde_json::from_slice(line)
         .map_err(|_| "corrupt session log: unparsable committed event".to_string())?;
-    decode_storage_record(value)
+    decode_record_value(value, version)
+}
+
+fn decode_record_value(
+    mut value: serde_json::Value,
+    version: u32,
+) -> Result<Vec<SessionEvent>, String> {
+    if version == 0 {
+        return decode_storage_record(value);
+    }
+    if version != crate::session::compat::SESSION_FORMAT_VERSION {
+        return Err(format!("format-unsupported: v{version}"));
+    }
+    let seq = value
+        .get("seq")
+        .and_then(serde_json::Value::as_u64)
+        .filter(|seq| *seq <= 9_007_199_254_740_991)
+        .ok_or_else(|| "malformed v2 session event: seq must be a count".to_owned())?;
+    value
+        .get("time")
+        .and_then(serde_json::Value::as_i64)
+        .filter(|time| (-9_007_199_254_740_991..=9_007_199_254_740_991).contains(time))
+        .ok_or_else(|| "malformed v2 session event: time must be a safe integer".to_owned())?;
+    if let Some(encoded) = value.get("sourceEventSeqs").cloned() {
+        let decoded = crate::session::event::decode_source_event_seqs(&encoded, seq)?;
+        value["sourceEventSeqs"] = serde_json::json!(decoded);
+    }
+    let event: SessionEvent = serde_json::from_value(value)
+        .map_err(|error| format!("malformed v2 session event: {error}"))?;
+    Ok(vec![event])
 }
 
 /// Serialize an event batch as JSONL lines (no trailing newline). The
 /// caller (backend) appends the final newline.
-pub(crate) fn event_lines(events: &[SessionEvent], pack_chunks: bool) -> String {
-    let records: Vec<StorageRecord> = if pack_chunks {
+pub(crate) fn event_lines(events: &[SessionEvent], pack_chunks: bool, version: u32) -> String {
+    let records: Vec<StorageRecord> = if version == 0 && pack_chunks {
         pack_chunk_runs(events)
     } else {
         events
@@ -31,7 +60,16 @@ pub(crate) fn event_lines(events: &[SessionEvent], pack_chunks: bool) -> String 
     };
     records
         .iter()
-        .map(|record| serde_json::to_string(&storage_record_value(record)).expect("plain JSON"))
+        .map(|record| {
+            let mut value = storage_record_value(record);
+            if version == 2
+                && let StorageRecord::Event(event) = record
+                && let Some(sources) = &event.source_event_seqs
+            {
+                value["sourceEventSeqs"] = crate::session::event::encode_source_event_seqs(sources);
+            }
+            serde_json::to_string(&value).expect("plain JSON")
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -90,7 +128,7 @@ pub(crate) fn scan_raw(buffer: &[u8]) -> Result<LogScan, String> {
                 continue;
             }
         };
-        match decode_storage_record(record) {
+        match decode_record_value(record, header.version) {
             Ok(decoded) => {
                 let reaches_committed_turn_end =
                     decoded.iter().any(|event| event.event_type == "turn/end");
@@ -201,7 +239,7 @@ pub(crate) fn materialized_bytes(
     pack_chunks: bool,
 ) -> Result<Vec<u8>, std::io::Error> {
     let header_line = format!("{}\n", header.to_line());
-    let body = format!("{}\n", event_lines(events, pack_chunks));
+    let body = format!("{}\n", event_lines(events, pack_chunks, header.version));
     match compression {
         JsonlCompression::None => Ok([header_line.into_bytes(), body.into_bytes()].concat()),
         JsonlCompression::Zstd => {
@@ -221,7 +259,14 @@ pub(crate) fn append_batch_bytes(
     compression: JsonlCompression,
     pack_chunks: bool,
 ) -> Result<Vec<u8>, std::io::Error> {
-    let body = format!("{}\n", event_lines(events, pack_chunks));
+    let body = format!(
+        "{}\n",
+        event_lines(
+            events,
+            pack_chunks,
+            crate::session::compat::SESSION_FORMAT_VERSION
+        )
+    );
     match compression {
         JsonlCompression::None => Ok(body.into_bytes()),
         JsonlCompression::Zstd => crate::session::zstd_frames::compress_frame(body.as_bytes()),
@@ -237,6 +282,19 @@ mod tests {
 
     fn header() -> SessionHeader {
         SessionHeader::new(SessionId::new("test-session"), Some("/tmp/p".into()), 1000)
+    }
+
+    #[test]
+    fn v2_writer_compacts_and_reader_expands_source_ranges() {
+        let mut event =
+            SessionEvent::new("user/message", 4, 1004, payloads::user_message("summary"))
+                .append(vec![0, 1, 2, 3]);
+        event.surface_op = Some(crate::session::event::SurfaceOp::Replace { start: 0, end: 3 });
+        let line = event_lines(&[event], true, 2);
+        let physical: serde_json::Value = serde_json::from_str(&line).expect("physical row");
+        assert_eq!(physical["sourceEventSeqs"], json!([[0, 3]]));
+        let decoded = decode_record_line(line.as_bytes(), 2).expect("logical row");
+        assert_eq!(decoded[0].source_event_seqs, Some(vec![0, 1, 2, 3]));
     }
 
     #[test]
@@ -298,7 +356,7 @@ mod tests {
                 json!({"type": "text-delta", "index": 0, "text": "\u{fffd}"}),
             ),
         );
-        assert!(event_lines(&[lone], true).contains('�'));
+        assert!(event_lines(&[lone], true, 0).contains('�'));
 
         let safe = sections["tornTail"]["safePrefix"]
             .as_str()
@@ -421,9 +479,9 @@ mod tests {
     #[test]
     fn event_lines_packing_matches_expected_layout() {
         let events = sample_events();
-        let lines = event_lines(&events, false);
+        let lines = event_lines(&events, false, 2);
         assert_eq!(lines.lines().count(), 3);
-        let packed = event_lines(&events, true);
+        let packed = event_lines(&events, true, 2);
         assert_eq!(packed.lines().count(), 3, "no chunk runs to pack here");
         assert_eq!(lines, packed);
         let _ = json!({});

@@ -39,7 +39,7 @@
     "durable_event_kinds": [
       "turn/start", "user/message", "step/start", "request/header", "assistant/message",
       "approval/asked", "approval/decided", "tool/call", "tool/result", "step/end",
-      "step/start", "assistant/chunk", "assistant/message", "step/end", "turn/end"
+      "step/start", "assistant/message", "step/end", "turn/end"
     ],
     "permission_checks": [{"tool": "exec_command", "decision": "allow"}]
   }

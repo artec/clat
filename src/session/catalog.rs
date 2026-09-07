@@ -14,7 +14,7 @@ pub(crate) const SURFACE_EVENT_TYPES: [&str; 3] =
 /// spend guardrail and `clat/subagent` provenance
 /// events (both written with `ignorable: true`, so older readers may skip
 /// them per the envelope contract).
-pub(crate) const KNOWN_EVENT_TYPES: [&str; 53] = [
+pub(crate) const KNOWN_EVENT_TYPES: [&str; 54] = [
     "agent-preset/selected",
     "clat/budget",
     "clat/subagent",
@@ -22,6 +22,7 @@ pub(crate) const KNOWN_EVENT_TYPES: [&str; 53] = [
     "approval/asked",
     "approval/decided",
     "approval/policy",
+    "assistant/attempt",
     "assistant/chunk",
     "assistant/message",
     "command/done",
@@ -90,7 +91,7 @@ mod tests {
     fn catalog_covers_the_pinned_vocabulary_and_surface_subset() {
         // The upstream set is sorted; every entry is known and the surface
         // subset is exactly the three message types.
-        assert_eq!(KNOWN_EVENT_TYPES.len(), 53);
+        assert_eq!(KNOWN_EVENT_TYPES.len(), 54);
         assert!(is_known_type("user/message"));
         assert!(is_known_type("compaction/summary"));
         assert!(!is_known_type("future/thing"));
@@ -98,6 +99,7 @@ mod tests {
             assert!(is_surface_type(kind));
         }
         assert!(!is_surface_type("assistant/chunk"));
+        assert!(is_known_type("assistant/attempt"));
         assert!(!is_known_type("request/header-delta"));
         // DV-5：DSH 0.1.2-alpha.4+ 的 3 个 v0 必填事件（822d735356）。
         assert!(is_known_type("model/selection"));

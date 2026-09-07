@@ -17,6 +17,7 @@
 use crate::event::{EventSink, RunEvent};
 use crate::model::ModelEvent;
 use crate::permission::{PermissionApprover, PermissionDecision, PermissionRequest};
+use crate::session::assistant_stream::AssistantStreamAccumulator;
 use crate::session::event::{TurnEndReason, payloads};
 use crate::session::run_journal::{NewSessionEvent, RunJournal};
 use serde_json::Value;
@@ -250,7 +251,11 @@ pub(crate) struct SessionRecorder {
     text: String,
     reasoning: String,
     completed_calls: Vec<crate::tool::ToolCall>,
-    chunk_seqs: Vec<u64>,
+    /// Released-v2 compact stream for the current model attempt. Chunks are
+    /// process-local until the attempt settles into one durable message or
+    /// diagnostic attempt event.
+    assistant_stream: AssistantStreamAccumulator,
+    stream_finish: Option<crate::model::FinishReason>,
     /// The step's final token usage (stream-end `ModelEvent::Usage`), landed
     /// on the assistant/message payload (DSH `usage` field). Reset per step.
     stream_usage: Option<crate::model::Usage>,
@@ -307,7 +312,8 @@ impl SessionRecorder {
             text: String::new(),
             reasoning: String::new(),
             completed_calls: Vec::new(),
-            chunk_seqs: Vec::new(),
+            assistant_stream: AssistantStreamAccumulator::default(),
+            stream_finish: None,
             replay_state: None,
             pending_retry_id: None,
             terminal: None,
@@ -420,7 +426,15 @@ impl SessionRecorder {
             return;
         }
         if !self.message_emitted && self.has_partial_message() {
-            self.assistant_message_interrupted(interrupted);
+            let finish = self
+                .stream_finish
+                .clone()
+                .unwrap_or(crate::model::FinishReason::Cancelled);
+            self.assistant_message_interrupted(interrupted, &finish);
+        } else if !self.message_emitted
+            && (!self.assistant_stream.is_empty() || self.stream_finish.is_some())
+        {
+            self.assistant_attempt();
         }
         let (turn, step) = self.state();
         self.append_quietly(NewSessionEvent::new(
@@ -482,7 +496,8 @@ impl SessionRecorder {
         self.text.clear();
         self.reasoning.clear();
         self.completed_calls.clear();
-        self.chunk_seqs.clear();
+        self.assistant_stream = AssistantStreamAccumulator::default();
+        self.stream_finish = None;
         self.replay_state = None;
         self.stream_usage = None;
         self.pending_retry_id = None;
@@ -513,22 +528,12 @@ impl SessionRecorder {
     /// Whether deltas accumulated for the open step have content worth a
     /// partial assistant/message (a step cut short by a stream failure).
     fn has_partial_message(&self) -> bool {
-        !self.text.is_empty() || !self.reasoning.is_empty() || !self.chunk_seqs.is_empty()
+        !self.text.is_empty() || !self.reasoning.is_empty()
     }
 
     fn chunk(&mut self, chunk: Value) {
-        let (turn, step) = {
-            let shared = self.shared.lock().expect("recorder lock");
-            (shared.turn, shared.step)
-        };
-        let event = NewSessionEvent::new(
-            "assistant/chunk",
-            payloads::assistant_chunk(turn, step, chunk),
-        )
-        .log_only();
-        if let Some(seq) = self.append_quietly(event) {
-            self.chunk_seqs.push(seq);
-        }
+        self.assistant_stream
+            .push(crate::session::event::now_ms(), chunk);
     }
 
     /// Streaming deltas of an open step (everything except the retry
@@ -580,9 +585,10 @@ impl SessionRecorder {
             ModelEvent::Usage(usage) => {
                 self.stream_usage = Some(usage.clone());
             }
-            ModelEvent::ResponseStarted { .. }
-            | ModelEvent::ResponseCompleted { .. }
-            | ModelEvent::ProviderEvent { .. } => {}
+            ModelEvent::ResponseCompleted { finish_reason } => {
+                self.stream_finish = Some(finish_reason.clone());
+            }
+            ModelEvent::ResponseStarted { .. } | ModelEvent::ProviderEvent { .. } => {}
             ModelEvent::RetryScheduled { .. } | ModelEvent::RetryStarted { .. } => {}
         }
     }
@@ -593,13 +599,17 @@ impl SessionRecorder {
     }
 
     /// Compose and append the `assistant/message` for the open step.
-    fn assistant_message(&mut self) {
-        self.assistant_message_interrupted(false);
+    fn assistant_message(&mut self, finish: &crate::model::FinishReason) {
+        self.assistant_message_interrupted(false, finish);
     }
 
     /// [`Self::assistant_message`] 的参数化核（B2）：部分产出定稿时
     /// 由取消路径传入 `interrupted: true`。
-    fn assistant_message_interrupted(&mut self, interrupted: bool) {
+    fn assistant_message_interrupted(
+        &mut self,
+        interrupted: bool,
+        finish: &crate::model::FinishReason,
+    ) {
         let (turn, step) = {
             let shared = self.shared.lock().expect("recorder lock");
             (shared.turn, shared.step)
@@ -618,7 +628,6 @@ impl SessionRecorder {
                 &call.arguments,
             ));
         }
-        let sources = std::mem::take(&mut self.chunk_seqs);
         // INV-S6：sampling usage 在 assistant/message 落账点归并（DSH
         // 字节形状不变——只是 usage 数值含桥接调用的 token）。空单元
         // 不落 usage，保持零桥接 run 的 journal 字节与从前一致。
@@ -638,12 +647,15 @@ impl SessionRecorder {
         if let Some(replay) = self.replay_state.take() {
             payload = payloads::with_replay_state(payload, &replay);
         }
+        let replay_state = payload["message"]["source"].get("replayState").cloned();
+        self.finish_embedded_stream(usage.as_ref(), replay_state.as_ref(), finish);
+        payload["stream"] = self.assistant_stream.take_value();
         if interrupted {
             // B2：可选信封级字段（DSH types.ts:277），跨工具读取时取消
             // 前缀可辨。settled 路径永不写入（B2 反向腿测试钉住）。
             payload["interrupted"] = serde_json::json!(true);
         }
-        let event = NewSessionEvent::new("assistant/message", payload).append(sources);
+        let event = NewSessionEvent::new("assistant/message", payload).append(Vec::new());
         self.append_quietly(event);
         // B1/FP-01：落账即累计护栏口径（input+output；缓存命中已在
         // input 内，不重复计），跨 50%/90% 各发一次持久化预警。
@@ -666,6 +678,54 @@ impl SessionRecorder {
                 self.append_quietly(event);
             }
         }
+    }
+
+    fn assistant_attempt(&mut self) {
+        let (turn, step) = self.state();
+        if let Some(finish) = self.stream_finish.clone() {
+            let usage = self.stream_usage.clone();
+            let replay = self.replay_state.clone();
+            self.finish_embedded_stream(usage.as_ref(), replay.as_ref(), &finish);
+        }
+        let payload = serde_json::json!({
+            "turn": turn,
+            "step": step,
+            "stream": self.assistant_stream.take_value(),
+        });
+        self.append_quietly(NewSessionEvent::new("assistant/attempt", payload));
+        self.text.clear();
+        self.reasoning.clear();
+        self.completed_calls.clear();
+        self.stream_usage = None;
+        self.replay_state = None;
+        self.stream_finish = None;
+    }
+
+    fn finish_embedded_stream(
+        &mut self,
+        usage: Option<&crate::model::Usage>,
+        replay_state: Option<&Value>,
+        finish: &crate::model::FinishReason,
+    ) {
+        let time = crate::session::event::now_ms();
+        if let Some(usage) = usage {
+            self.assistant_stream.push(
+                time,
+                serde_json::json!({
+                    "type": "usage",
+                    "usage": usage_value(usage),
+                }),
+            );
+        }
+        let mut chunk = serde_json::json!({
+            "type": "finish",
+            "reason": finish_reason_value(finish),
+        });
+        if let Some(replay_state) = replay_state {
+            chunk["replayState"] = replay_state.clone();
+        }
+        self.assistant_stream.push(time, chunk);
+        self.stream_finish = None;
     }
 
     /// B1：装入花费护栏（run_lifecycle 于 run 组装时调用）。
@@ -782,6 +842,43 @@ fn merged_usage(
     }
 }
 
+fn usage_value(usage: &crate::model::Usage) -> Value {
+    let mut value = serde_json::json!({
+        "inputTokens": usage.input_tokens,
+        "outputTokens": usage.output_tokens,
+    });
+    if let Some(cached) = usage.cached_input_tokens {
+        value["cacheReadTokens"] = serde_json::json!(cached);
+    }
+    if let Some(reasoning) = usage.reasoning_tokens {
+        value["reasoningTokens"] = serde_json::json!(reasoning);
+    }
+    value
+}
+
+fn finish_reason_value(finish: &crate::model::FinishReason) -> Value {
+    use crate::model::FinishReason;
+    match finish {
+        FinishReason::Completed | FinishReason::Refusal | FinishReason::Incomplete => {
+            serde_json::json!({ "kind": "stop" })
+        }
+        FinishReason::ToolCalls => serde_json::json!({ "kind": "tool-calls" }),
+        FinishReason::MaxTokens => serde_json::json!({ "kind": "max-tokens" }),
+        FinishReason::Cancelled => serde_json::json!({
+            "kind": "aborted",
+            "failure": { "message": "model stream cancelled", "code": "CANCELLED" },
+        }),
+        FinishReason::Error => serde_json::json!({
+            "kind": "error",
+            "failure": { "message": "model stream failed", "code": "MODEL_ERROR" },
+        }),
+        FinishReason::Unknown(reason) => serde_json::json!({
+            "kind": "error",
+            "failure": { "message": reason, "code": "UNKNOWN_FINISH_REASON" },
+        }),
+    }
+}
+
 impl SessionRecorder {
     /// FP-09：journal 变换 + 返回待转发事件（终态扣到 `finish`）。
     /// 兼容面：`EventSink::emit` 调它并丢弃返回——recorder 直驱的
@@ -883,6 +980,37 @@ impl SessionRecorder {
                         delay_ms,
                         failure,
                     } => {
+                        // v2 把没有成为最终 assistant/message 的一次模型
+                        // 请求也作为独立 attempt 留在同一条流里；供应商在
+                        // 首字节前失败时，finish 仍明确记下失败边界与原因。
+                        if let Some(usage) = self.stream_usage.as_ref() {
+                            self.assistant_stream.push(
+                                crate::session::event::now_ms(),
+                                serde_json::json!({
+                                    "type": "usage",
+                                    "usage": usage_value(usage),
+                                }),
+                            );
+                        }
+                        let mut attempt_failure = serde_json::json!({
+                            "message": failure.message,
+                            "code": failure.code,
+                        });
+                        if let Some(status) = failure.status {
+                            attempt_failure["status"] = serde_json::json!(status);
+                        }
+                        if let Some(retry_after) = failure.provider_retry_after_ms {
+                            attempt_failure["providerRetryAfterMs"] =
+                                serde_json::json!(retry_after);
+                        }
+                        self.assistant_stream.push(
+                            crate::session::event::now_ms(),
+                            serde_json::json!({
+                                "type": "finish",
+                                "reason": { "kind": "error", "failure": attempt_failure },
+                            }),
+                        );
+                        self.assistant_attempt();
                         // FP-01：失败 attempt 已烧掉的保守成本兑现（预留
                         // 保留给同请求的下一次 attempt，最终成功 attempt
                         // 由 ModelResponded 的 reconcile 替换）。
@@ -938,13 +1066,15 @@ impl SessionRecorder {
                 }
             }
             RunEvent::ModelResponded {
-                provider_replay, ..
+                finish_reason,
+                provider_replay,
+                ..
             } => {
                 self.replay_state = provider_replay
                     .as_ref()
                     .filter(|replay| !replay.is_null())
                     .cloned();
-                self.assistant_message();
+                self.assistant_message(finish_reason);
                 self.message_emitted = true;
             }
             RunEvent::ToolRequested { call } => {
@@ -1485,8 +1615,6 @@ mod tests {
             vec![
                 "step/start",
                 "request/header",
-                "assistant/chunk",
-                "assistant/chunk",
                 "assistant/message",
                 "step/end",
                 "turn/end",
@@ -1503,8 +1631,12 @@ mod tests {
             events[1].1["header"]["tools"][0]["name"],
             json!("read_file")
         );
-        let message = &events[4].1;
+        let message = &events[2].1;
         assert_eq!(message["message"]["content"][0]["text"], "Hey");
+        assert_eq!(message["stream"][0]["type"], "text-chunks");
+        assert_eq!(message["stream"][0]["texts"], json!(["He", "y"]));
+        assert_eq!(message["stream"][1]["type"], "chunk");
+        assert_eq!(message["stream"][1]["chunk"]["type"], "finish");
         assert_eq!(message["message"]["source"]["kind"], "model");
         assert_eq!(message["step"], json!(0));
         // The terminal event reached the UI only after the flush in finish.
@@ -1656,6 +1788,23 @@ mod tests {
         });
         let _ = recorder.finish(TurnEndReason::Completed);
         let events = journal.events();
+        let attempt_index = events
+            .iter()
+            .position(|(kind, _)| kind == "assistant/attempt")
+            .expect("failed model request is journaled as an attempt");
+        let retry_index = events
+            .iter()
+            .position(|(kind, _)| kind == "llm/retry")
+            .expect("llm/retry journaled");
+        assert!(
+            attempt_index < retry_index,
+            "attempt closes before retry metadata"
+        );
+        assert_eq!(events[attempt_index].1["stream"][0]["type"], "chunk");
+        assert_eq!(
+            events[attempt_index].1["stream"][0]["chunk"]["reason"]["failure"]["code"],
+            "transport"
+        );
         let retry = events
             .iter()
             .find(|(kind, _)| kind == "llm/retry")

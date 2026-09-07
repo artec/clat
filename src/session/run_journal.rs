@@ -534,19 +534,19 @@ mod tests {
         for index in 0..5 {
             journal
                 .append(NewSessionEvent::new(
-                    "assistant/chunk",
-                    payloads::assistant_chunk(
-                        1,
-                        0,
-                        json!({ "type": "text-delta", "index": 0, "text": format!("t{index}") }),
-                    ),
+                    "assistant/attempt",
+                    json!({ "turn": 1, "step": index, "stream": [] }),
                 ))
-                .expect("chunk");
+                .expect("attempt");
         }
         // The window has not elapsed: nothing beyond the first batch is
         // durable yet (write-behind, provisional by design).
         let before = backend.load(&key, false).expect("load");
-        assert_eq!(before.events.len(), 2, "chunks are provisional until flush");
+        assert_eq!(
+            before.events.len(),
+            2,
+            "attempts are provisional until flush"
+        );
         journal
             .append(NewSessionEvent::new(
                 "turn/end",
