@@ -39,6 +39,17 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      # rust-toolchain.toml 钉版后，cargo 经 rustup 代理用钉版工具链，
+      # 而上面 action 把交叉 target 装进它装的 stable——两者错位时
+      # host target 恒过、交叉 target 必挂 E0463 "can't find crate for
+      # core"（v1.2.4 的 aarch64-windows / x86_64-darwin 两腿病历，
+      # 2026-09-08）。单一事实源：从 toml 读钉版，给**钉版**装 target。
+      - name: Install the pinned cross target
+        shell: bash
+        run: |
+          channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
+          rustup target add --toolchain "$channel" "${{ matrix.target }}"
+
       # rust-cache 钉 v2.9.2：v2.9.0 起才是 node24 运行时，浮动 @v2
       # 无法保证不回落到 node20 构建并触发弃用警告（与 ci.yml 一致）。
       - uses: Swatinem/rust-cache@v2.9.2
