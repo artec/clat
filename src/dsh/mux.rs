@@ -114,11 +114,17 @@ pub(crate) fn open(
 ) -> Result<MuxController, String> {
     let mut stream = TcpStream::connect(("127.0.0.1", port))
         .map_err(|error| format!("cannot connect /api/remote.mux: {error}"))?;
+    // 握手期用宽超时：Windows runner 满载下服务端首包可晚于紧超时
+    // （v1.3.0 CI 病历：250ms 握手读超时 → mux::open 失败）。握手完成
+    // 后再收紧到 250ms——读循环靠它轮询醒检代际。
     stream
-        .set_read_timeout(Some(Duration::from_millis(250)))
+        .set_read_timeout(Some(Duration::from_secs(5)))
         .map_err(|error| format!("mux read timeout: {error}"))?;
     let host = format!("127.0.0.1:{port}");
     handshake(&mut stream, &host, cookie)?;
+    stream
+        .set_read_timeout(Some(Duration::from_millis(250)))
+        .map_err(|error| format!("mux read timeout: {error}"))?;
     let writer = stream
         .try_clone()
         .map_err(|error| format!("cannot clone the mux socket: {error}"))?;
@@ -1609,6 +1615,43 @@ mod tests {
         assert!(
             error.contains("401") || error.contains("refused"),
             "the refusal surfaces the carrier status: {error}"
+        );
+    }
+
+    /// 握手超时判别（v1.3.0 CI 病历，2026-09-08）：Windows runner 满载下
+    /// 服务端首包可晚于 400ms——握手期必须用宽超时（5s），不得沿用读
+    /// 循环的 250ms 轮询超时（pre-fix：延迟 400ms 的应答即握手超时红）。
+    #[test]
+    fn mux_handshake_tolerates_a_slow_first_response() {
+        use std::io::{Read as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            // 读走请求头。
+            let mut buffer = Vec::new();
+            let mut byte = [0u8; 1];
+            while stream.read(&mut byte).is_ok_and(|n| n == 1) {
+                buffer.push(byte[0]);
+                if buffer.ends_with(b"\r\n\r\n") {
+                    break;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            let _ = stream.write_all(
+                b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n\
+                   Connection: Upgrade\r\nSec-WebSocket-Accept: bogus\r\n\r\n",
+            );
+        });
+        let (events_tx, _events_rx) = std::sync::mpsc::sync_channel(4);
+        let epoch = Arc::new(AtomicU64::new(1));
+        let error = open(port, "dsh-auth-t=v1.s", None, events_tx, 1, &epoch)
+            .expect_err("bogus accept fails the verification");
+        // 延迟 400ms 的应答必须走到"验证拒绝"而不是"读超时"——走到
+        // 验证说明首包已被耐心读完。
+        assert!(
+            !error.contains("cannot read the mux handshake"),
+            "a slow first response must not trip the handshake timeout: {error}"
         );
     }
 
