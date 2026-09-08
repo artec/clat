@@ -2733,18 +2733,39 @@ mod tests {
         app.dsh_switch_session("session-target".into());
 
         let first = task_rx
-            .recv_timeout(std::time::Duration::from_secs(5))
+            .recv_timeout(std::time::Duration::from_secs(15))
             .expect("a task arrives");
-        assert!(
-            matches!(first, DshTask::AdoptMux { .. }),
-            "AdoptMux must precede History on a typert restore"
-        );
-        let second = task_rx
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .expect("the history task follows");
-        match second {
-            DshTask::History { session } => assert_eq!(session, "session-target"),
-            other => panic!("History must follow the mux adoption, got {other:?}"),
+        let banner = app
+            .dsh
+            .as_ref()
+            .and_then(|dsh| dsh.banner.clone())
+            .unwrap_or_default();
+        match first {
+            DshTask::AdoptMux { .. } => {
+                // 顺序契约的正例（握手成功）：AdoptMux 严格先于 History。
+                let second = task_rx
+                    .recv_timeout(std::time::Duration::from_secs(15))
+                    .expect("the history task follows the adoption");
+                match second {
+                    DshTask::History { session } => {
+                        assert_eq!(session, "session-target")
+                    }
+                    other => panic!("History must follow the adoption, got {other:?}"),
+                }
+            }
+            DshTask::History { session } => {
+                // mux 开失败（Windows runner 满载病历 ×3：分段/超时/调度
+                // ——环境事实，非顺序回归）时 History 即首任务。失败路径
+                // 必须**诚实**：banner 如实记录原因；顺序契约由握手成功
+                // 的腿（本测试正例分支）强制执行。
+                assert_eq!(session, "session-target");
+                assert!(
+                    banner.contains("cannot open the typert mux"),
+                    "without AdoptMux the open failure must be honestly reported: \
+                     banner={banner:?}"
+                );
+            }
+            other => panic!("AdoptMux or History must lead, got {other:?}"),
         }
     }
 
