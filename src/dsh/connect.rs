@@ -1122,8 +1122,10 @@ mod tests {
     /// 短窗 cookie 直连（零 token 仪式）。判别：撤 minted_online（或
     /// pre-fix 整条路径）→ 旧路径 spawn `/nonexistent/dsh` → 红；
     /// cookie 铸错（签名/名字/窗任一）→ 假宿主门 401 → 红。
+    /// 全平台常跑（TcpListener + fs，无脚本依赖）——曾在 Windows 腿
+    /// 以 `#[cfg(unix)]` 误闸，helper `write_credentials_file` 随之变
+    /// dead code 被 CI clippy 拒（2026-09-07 CI 红，fixture 病历）。
     #[test]
-    #[cfg(unix)]
     fn minted_cookie_connects_without_the_token_ceremony() {
         if std::env::var("CLAT_DSH_URL").is_ok() {
             return;
