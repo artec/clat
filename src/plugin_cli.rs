@@ -751,12 +751,15 @@ mod tests {
     use sha2::{Digest as _, Sha256};
 
     fn roots() -> (PathBuf, PathBuf) {
+        // FL 族根因同 test_support::roots——纳秒可撞，叠原子单调计数。
+        static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let base = std::env::temp_dir().join(format!(
-            "clat-plugin-cli-{}",
+            "clat-plugin-cli-{}-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("clock")
-                .as_nanos()
+                .as_nanos(),
+            SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         let storage = base.join("storage");
         let package = base.join("package");

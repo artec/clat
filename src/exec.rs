@@ -1758,16 +1758,18 @@ mod tests {
             assert_eq!(captured.output_string(), output);
         }
         let (io, _) = ExecIo::capture(&[]);
-        assert!(matches!(
-            exec(
-                &project,
-                &storage,
-                TestBehavior::Success,
-                args(Some("materialize session")),
-                io
-            ),
-            ExecOutcome::Success { .. }
-        ));
+        let outcome = exec(
+            &project,
+            &storage,
+            TestBehavior::Success,
+            args(Some("materialize session")),
+            io,
+        );
+        // 裸 matches! 断言不打印结果——FL 狩猎中三次空手而归的教训。
+        assert!(
+            matches!(&outcome, ExecOutcome::Success { .. }),
+            "{outcome:?}"
+        );
         let mut app = BootstrapApplication::open(project.clone(), storage.clone())
             .unwrap()
             .into_trusted_with_provider(Arc::new(TestProviderPlugin {

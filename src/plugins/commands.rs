@@ -584,6 +584,18 @@ mod tests {
         // 更强的一侧：一轮真实对话后，dispatch 全部命令不改变 journal。
         configure_test_model(&application);
         run_once(&mut application, "hello there");
+        // 负载敏感病历（FL 族，2026-09-08 以 --test-threads 96 放大复现
+        // 7/8 红）：自动命名是**迟到的 journal 写者**——`before` 快照必须
+        // 等 session/title 落定（本场景恒产标题），否则标题落在
+        // before/after 之间即红。安静机器上标题先于快照，纯属时序侥幸。
+        let title_deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !journal_events(&storage_root).contains(&"session/title".to_owned()) {
+            assert!(
+                std::time::Instant::now() < title_deadline,
+                "the auto title never landed before the snapshot"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
         let before = journal_events(&storage_root);
         for command in [
             "/model",

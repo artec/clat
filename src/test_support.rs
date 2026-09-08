@@ -648,11 +648,17 @@ pub(crate) fn response(text: &str, finish_reason: FinishReason) -> ModelResponse
 
 /// 临时 storage/project 目录对（时间戳 + 纳秒保证唯一）。
 pub(crate) fn roots(name: &str) -> (PathBuf, PathBuf) {
-    let unique = SystemTime::now()
+    // FL 族根因（2026-09-08 定案，96 线程放大环 + 全进程探针实证）：
+    // 唯一性曾只靠 name+纳秒时钟——高并发下兄弟测试读到同一纳秒即
+    // **共享临时根**（同 SessionId 断言、互删目录、根租约 base 冲突
+    // 三证齐）。纳秒之外再叠进程内原子单调计数：同纳秒也不撞。
+    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("clock")
         .as_nanos();
-    let base = std::env::temp_dir().join(format!("clat-application-{name}-{unique}"));
+    let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let base = std::env::temp_dir().join(format!("clat-application-{name}-{nanos}-{sequence}"));
     (base.join("storage"), base.join("project"))
 }
 

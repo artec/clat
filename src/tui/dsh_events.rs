@@ -2589,6 +2589,24 @@ mod tests {
         assert!(!app.dsh.as_ref().unwrap().connected);
     }
 
+    /// 读到 WS 升级请求头完整（`\r\n\r\n`）——**单次 read 会与 TCP
+    /// 分片竞态**：Windows CI 实证（2026-09-08，a45c4c5 腿红）：握手
+    /// 头分片到达 → key 残缺 → accept 错 → mux::open 失败。与
+    /// dsh/tests.rs 的 ws 腿同款字节循环；本仓库假宿主的既定纪律
+    ///（HTTP 面走 dsh::tests::read_http_request，WS 升级面走本件）。
+    fn read_upgrade_request(stream: &mut std::net::TcpStream) -> String {
+        use std::io::Read as _;
+        let mut buffer = Vec::new();
+        let mut byte = [0u8; 1];
+        while stream.read(&mut byte).is_ok_and(|n| n == 1) {
+            buffer.push(byte[0]);
+            if buffer.ends_with(b"\r\n\r\n") {
+                break;
+            }
+        }
+        String::from_utf8_lossy(&buffer).into_owned()
+    }
+
     /// 审计 P2-2 场景腿：mux 握手成功、host 握手被拒（「第一条新 WS
     /// 开成、第二条失败」）——重试必须重新排程，代际已自增（孤儿 mux
     /// 泵属当前代际数据仍可用，下一次重连自增后自然作废）。
@@ -2600,12 +2618,8 @@ mod tests {
         // 每连接一线程：mux 连接握手后要被静默持有，不能阻塞后续
         //（host 路径的）accept——否则客户端的第二次握手永远等不到回音。
         fn serve(mut stream: std::net::TcpStream) {
-            use std::io::{Read, Write};
-            let mut buffer = [0u8; 4096];
-            let Ok(read) = stream.read(&mut buffer) else {
-                return;
-            };
-            let request = String::from_utf8_lossy(&buffer[..read]).into_owned();
+            use std::io::{Read as _, Write};
+            let request = read_upgrade_request(&mut stream);
             let key = request
                 .lines()
                 .find_map(|line| {
@@ -2683,12 +2697,8 @@ mod tests {
             for stream in listener.incoming() {
                 let Ok(mut stream) = stream else { continue };
                 std::thread::spawn(move || {
-                    use std::io::{Read, Write};
-                    let mut buffer = [0u8; 4096];
-                    let Ok(read) = stream.read(&mut buffer) else {
-                        return;
-                    };
-                    let request = String::from_utf8_lossy(&buffer[..read]).into_owned();
+                    use std::io::{Read as _, Write};
+                    let request = read_upgrade_request(&mut stream);
                     let key = request
                         .lines()
                         .find_map(|line| {

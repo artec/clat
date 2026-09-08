@@ -8,6 +8,13 @@
 //! `CLAT_REFRESH_SNAPSHOTS=1 cargo test`，每次刷新必须逐一说明原因。
 
 use super::App;
+
+/// FL 族病历（2026-09-08，--test-threads 96 放大复现）：后台准入/回执
+/// 的进度等待用 2s 硬期限，CPU 饥饿下墙钟到点即假红。进度等待（事件
+/// 必然到达，期限只防挂）统一 60s；**缺席断言**（Timeout => {} 语义）
+/// 不在此列，保持紧期限。
+const ADMISSION_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+
 use super::{conversation_wrap_width, slice_by_columns};
 use crate::dsh::backend::{DshEvent, DshTask, TaskReply};
 use crate::test_support::{LiveGlmProviderPlugin, TestBehavior, TestProviderPlugin, roots};
@@ -413,7 +420,7 @@ fn ctrl_v_text_falls_back_to_ordinary_composer_insertion() {
     harness.key_with_modifiers(KeyCode::Char('v'), KeyModifiers::CONTROL);
     harness.event(
         events
-            .recv_timeout(Duration::from_secs(2))
+            .recv_timeout(ADMISSION_WAIT)
             .expect("Ctrl+V text result"),
     );
 
@@ -437,7 +444,7 @@ fn ctrl_v_empty_clipboard_flashes_status_without_mutating_composer() {
     harness.key_with_modifiers(KeyCode::Char('v'), KeyModifiers::CONTROL);
     harness.event(
         events
-            .recv_timeout(Duration::from_secs(2))
+            .recv_timeout(ADMISSION_WAIT)
             .expect("Ctrl+V empty result"),
     );
 
@@ -510,7 +517,7 @@ fn ctrl_v_remains_available_for_the_running_steering_composer() {
     harness.key_with_modifiers(KeyCode::Char('v'), KeyModifiers::CONTROL);
     harness.event(
         events
-            .recv_timeout(Duration::from_secs(2))
+            .recv_timeout(ADMISSION_WAIT)
             .expect("running Ctrl+V result"),
     );
 
@@ -2787,7 +2794,7 @@ fn attachment_start_failure_restores_the_complete_draft_snapshot() {
     assert!(harness.app.run_start_pending);
     assert!(harness.app.application.is_none());
     let finished = events
-        .recv_timeout(std::time::Duration::from_secs(2))
+        .recv_timeout(ADMISSION_WAIT)
         .expect("background admission failure");
     harness.event(finished);
     assert_eq!(harness.app.input.text(), "retry this exact draft");
@@ -2821,7 +2828,7 @@ fn failed_initial_admission_keeps_core_staged_clipboard_source_retryable() {
     harness.type_text("retry this staged clipboard image");
     harness.key(KeyCode::Enter);
     let finished = events
-        .recv_timeout(std::time::Duration::from_secs(2))
+        .recv_timeout(ADMISSION_WAIT)
         .expect("background admission failure");
     harness.event(finished);
 
@@ -2867,7 +2874,7 @@ fn attachment_admission_handoff_restores_app_before_first_run_event() {
     );
 
     let prepared = events
-        .recv_timeout(std::time::Duration::from_secs(2))
+        .recv_timeout(ADMISSION_WAIT)
         .expect("background admission success");
     assert!(matches!(
         prepared,
@@ -2962,7 +2969,7 @@ fn attachment_steering_admission_handoff_keeps_active_run_live() {
 
     let admitted = loop {
         let event = events
-            .recv_timeout(std::time::Duration::from_secs(2))
+            .recv_timeout(ADMISSION_WAIT)
             .expect("steering admission result");
         if matches!(
             event,
@@ -3046,7 +3053,7 @@ fn cancelled_unclaimed_image_steering_restores_the_exact_retry_draft() {
 
     let admitted = loop {
         let event = events
-            .recv_timeout(Duration::from_secs(2))
+            .recv_timeout(ADMISSION_WAIT)
             .expect("steering admission result");
         if matches!(
             event,
@@ -3627,7 +3634,7 @@ fn sealed_image_steering_admission_falls_back_to_an_ordinary_run() {
     assert_eq!(harness.app.attachments.len(), 1);
 
     let prepared = events
-        .recv_timeout(std::time::Duration::from_secs(2))
+        .recv_timeout(ADMISSION_WAIT)
         .expect("fallback admission result");
     assert!(matches!(
         prepared,
@@ -3686,7 +3693,7 @@ fn ctrl_c_during_admission_waits_to_recover_application_before_exit() {
     assert!(harness.app.quit_after_run_start);
 
     let finished = events
-        .recv_timeout(std::time::Duration::from_secs(2))
+        .recv_timeout(ADMISSION_WAIT)
         .expect("background admission result");
     harness.event(finished);
     assert!(harness.app.application.is_some());

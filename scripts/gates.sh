@@ -35,6 +35,18 @@ cargo fmt --all -- --check
 step "Clippy (cargo clippy --all-targets --all-features -- -D warnings)"
 cargo clippy --all-targets --all-features -- -D warnings
 
+# Windows 静态面（2026-09-08 负责人裁定「本地绿 ⇒ CI 绿」）：CI 的
+# Windows clippy 腿本地原本看不见——cfg 孤儿/dead-code 类两次漏网
+# （d922723 / a45c4c5 病历）。xwin 交叉面把该腿搬进本地门禁；判别
+# 已验证：重加 #[cfg(unix)] 闸 → 本步骤红出与 CI 同款 dead_code。
+# 缺件**硬失败**（软跳过 = 重新打开盲区）。首跑需下 Windows SDK。
+step "Windows static face (cargo xwin clippy --target x86_64-pc-windows-msvc --all-targets)"
+if ! cargo xwin --version >/dev/null 2>&1; then
+    echo "cargo-xwin 缺席：cargo install cargo-xwin && rustup target add x86_64-pc-windows-msvc" >&2
+    exit 1
+fi
+cargo xwin clippy --target x86_64-pc-windows-msvc --all-targets -- -D warnings
+
 step "Rustdoc (RUSTDOCFLAGS=-D warnings cargo doc --no-deps --all-features)"
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
 
