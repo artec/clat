@@ -101,6 +101,15 @@ pub struct WorkbenchSessionSnapshot {
     pub committed_seq: Option<u64>,
 }
 
+/// Bounded, frontend-neutral navigation row for one durable chat message.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MessageOutlineDto {
+    pub seq: u64,
+    pub turn: u64,
+    pub role: String,
+    pub preview: String,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct WorkbenchModelSnapshot {
     pub protocol: crate::model::ModelProtocol,

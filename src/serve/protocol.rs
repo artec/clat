@@ -25,6 +25,7 @@ pub(crate) const RPC_METHODS: &[&str] = &[
     "session.info",
     "session.new",
     "session.switch",
+    "session.history",
     "session.rename",
     "session.compact",
     "model.overrides.set",
@@ -471,6 +472,42 @@ pub(crate) fn dispatch(
             });
             outcome.map_err(session_error)?;
             Ok(json!({}))
+        }
+        "session.history" => {
+            let before_seq = params
+                .get("before_seq")
+                .map(|value| {
+                    value.as_u64().ok_or_else(|| {
+                        RpcError::bad_request("before_seq must be an unsigned integer")
+                    })
+                })
+                .transpose()?;
+            let max_messages = params
+                .get("max_messages")
+                .map(|value| {
+                    value.as_u64().ok_or_else(|| {
+                        RpcError::bad_request("max_messages must be an unsigned integer")
+                    })
+                })
+                .transpose()?
+                .unwrap_or(50);
+            if !(1..=200).contains(&max_messages) {
+                return Err(RpcError::bad_request(
+                    "max_messages must be between 1 and 200",
+                ));
+            }
+            let page = with_app(shared, |app| {
+                app.session_history(before_seq, max_messages as usize)
+            })
+            .map_err(app_error)?;
+            Ok(json!({
+                "events": page
+                    .events
+                    .iter()
+                    .map(super::shapes::replay_event_json)
+                    .collect::<Vec<_>>(),
+                "has_more": page.has_more,
+            }))
         }
         "session.rename" => {
             let id = required_str(params, "id")?;

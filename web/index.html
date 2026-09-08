@@ -130,6 +130,7 @@
     </header>
 
     <div id="transcript-scroll" class="transcript-scroll">
+      <button id="history-status" class="history-status hidden" type="button">Loading earlier messages…</button>
       <div id="empty-state" class="empty-state">
         <span class="empty-index">01</span>
         <p class="eyebrow">READY AT PROJECT ROOT</p>
@@ -142,6 +143,11 @@
       </div>
       <div id="transcript" class="transcript" aria-live="polite" aria-relevant="additions text"></div>
     </div>
+
+    <aside id="message-map" class="message-map hidden" aria-label="Conversation map">
+      <div id="message-map-track" class="message-map-track"></div>
+      <div id="message-map-preview" class="message-map-preview hidden" role="tooltip"></div>
+    </aside>
 
     <section class="composer" aria-label="Message composer">
       <div id="composer-shell" class="composer-shell">

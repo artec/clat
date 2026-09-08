@@ -751,6 +751,18 @@ fn dispatch_covers_the_full_method_set() {
 
     let list = protocol::dispatch("session.list", &serde_json::json!({}), &shared).unwrap();
     assert!(list.get("sessions").unwrap().is_array());
+    let history = protocol::dispatch("session.history", &serde_json::json!({}), &shared).unwrap();
+    assert_eq!(
+        history,
+        serde_json::json!({"events": [], "has_more": false})
+    );
+    let invalid_history = protocol::dispatch(
+        "session.history",
+        &serde_json::json!({"max_messages": 0}),
+        &shared,
+    )
+    .unwrap_err();
+    assert_eq!(invalid_history.code, ErrorCode::BadRequest);
 
     let workbench = protocol::dispatch("workbench.info", &serde_json::json!({}), &shared).unwrap();
     assert_eq!(
@@ -1906,8 +1918,48 @@ fn rpc_selection_errors_publish_the_committed_generation_before_returning() {
     };
 
     materialize(&app, "first session");
+    materialize(&app, "first session follow-up");
     let first = app.lock().unwrap().current_session_id().unwrap();
     let shared = Arc::new(ServeShared::new(Arc::clone(&app), "unit".into(), 0));
+
+    let history = protocol::dispatch(
+        "session.history",
+        &serde_json::json!({"max_messages": 1}),
+        &shared,
+    )
+    .unwrap();
+    assert_eq!(history["has_more"], true);
+    let history_events = history["events"].as_array().unwrap();
+    assert_eq!(
+        history_events
+            .iter()
+            .filter(|event| matches!(
+                event["type"].as_str(),
+                Some("user_message" | "assistant_message")
+            ))
+            .count(),
+        2
+    );
+    assert!(
+        history_events
+            .iter()
+            .all(|event| { event["seq"].is_u64() && event["turn"].is_u64() })
+    );
+    let first_seq = history_events.first().unwrap()["seq"].as_u64().unwrap();
+    let older = protocol::dispatch(
+        "session.history",
+        &serde_json::json!({"before_seq": first_seq, "max_messages": 1}),
+        &shared,
+    )
+    .unwrap();
+    assert_eq!(older["has_more"], false);
+    assert!(
+        older["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|event| event["seq"].as_u64().is_some_and(|seq| seq < first_seq))
+    );
 
     let generation = shared.selection_generation();
     app.lock().unwrap().inject_next_session_quiesce_failure();
@@ -2157,6 +2209,12 @@ fn prompt_settled_covers_all_three_outcomes_exactly_once() {
         Some(prompt_rpc_of(&settled).as_str()),
         "settled 携带受理时的 rpc id"
     );
+    let outline = ctl
+        .get("message_outline")
+        .and_then(serde_json::Value::as_array)
+        .expect("settlement refreshes the durable navigator outline");
+    assert_eq!(outline.len(), 2);
+    assert!(outline.iter().all(|item| item["seq"].is_u64()));
     // 恰一 settled：wait_settled 已取走那一帧，此后不应再出现第二个。
     std::thread::sleep(Duration::from_millis(300));
     client.consume_available();
@@ -2980,7 +3038,7 @@ fn urls_in_line(line: &str) -> Vec<String> {
 
 const E2E_HOST_TIMEOUT: Duration = Duration::from_secs(600);
 
-fn host_serve_for_playwright(key: &str, behavior: TestBehavior) {
+fn host_serve_for_playwright(key: &str, behavior: TestBehavior, seed_turns: usize) {
     // 武装开关：仅当 Playwright（web/e2e/global-setup.js）以
     // CLAT_E2E_HOST=1 拉起时才起服驻留——CI 的 `-- --ignored` 门控面
     // 不带此变量，本测试瞬过不驻留（否则 CI 会在此挂 10 分钟）。
@@ -2990,6 +3048,40 @@ fn host_serve_for_playwright(key: &str, behavior: TestBehavior) {
     }
     let (storage_root, project_root, project) = setup(&format!("serve-e2e-{key}"));
     prepare_storage(&project, &storage_root, behavior.clone());
+    if seed_turns > 0 {
+        fn allow_seed(
+            _: crate::PermissionRequest,
+            _: &crate::model::CancelToken,
+        ) -> crate::PermissionDecision {
+            crate::PermissionDecision::Allow
+        }
+        let bootstrap = BootstrapApplication::open(project.clone(), storage_root.clone()).unwrap();
+        let mut application = bootstrap
+            .with_permission_modes()
+            .into_trusted_with_provider(Arc::new(TestProviderPlugin {
+                behavior: behavior.clone(),
+            }))
+            .unwrap();
+        for turn in 0..seed_turns {
+            let (completion_tx, completion_rx) = std::sync::mpsc::channel();
+            let handle = application
+                .start_run(crate::ApplicationRunRequest {
+                    message: crate::message::PendingMessage::text(format!(
+                        "history question {turn:02}"
+                    )),
+                    approver: Arc::new(allow_seed),
+                    asker: None,
+                    events: Box::new(crate::test_support::SharedEvents(Arc::new(Mutex::new(
+                        Vec::new(),
+                    )))),
+                    completion: completion_tx,
+                })
+                .unwrap();
+            handle.join().unwrap();
+            completion_rx.recv().unwrap().unwrap();
+        }
+        application.close().unwrap();
+    }
     let token = format!("e2e-{key}-{}", uuid::Uuid::new_v4().simple());
     let handle = crate::serve::serve_with_with_queue(
         project,
@@ -3119,7 +3211,7 @@ fn host_live_glm_for_playwright() {
 #[test]
 #[ignore = "Playwright e2e host (needs CLAT_E2E_HOST=1, set by web/e2e/global-setup.js)"]
 fn serve_e2e_host_run_command() {
-    host_serve_for_playwright("run-command", TestBehavior::RunCommand);
+    host_serve_for_playwright("run-command", TestBehavior::RunCommand, 0);
 }
 
 #[test]
@@ -3131,19 +3223,32 @@ fn serve_e2e_host_long_stream() {
             count: 160,
             interval_ms: 50,
         },
+        0,
     );
 }
 
 #[test]
 #[ignore = "Playwright e2e host (needs CLAT_E2E_HOST=1, set by web/e2e/global-setup.js)"]
 fn serve_e2e_host_success() {
-    host_serve_for_playwright("success", TestBehavior::Success);
+    host_serve_for_playwright("success", TestBehavior::Success, 0);
+}
+
+#[test]
+#[ignore = "Playwright e2e host (needs CLAT_E2E_HOST=1, set by web/e2e/global-setup.js)"]
+fn serve_e2e_host_reasoning() {
+    host_serve_for_playwright("reasoning", TestBehavior::ReasoningDeltas, 0);
+}
+
+#[test]
+#[ignore = "Playwright e2e host (needs CLAT_E2E_HOST=1, set by web/e2e/global-setup.js)"]
+fn serve_e2e_host_history() {
+    host_serve_for_playwright("history", TestBehavior::Success, 28);
 }
 
 #[test]
 #[ignore = "Playwright e2e host (needs CLAT_E2E_HOST=1, set by web/e2e/global-setup.js)"]
 fn serve_e2e_host_compact_slow() {
-    host_serve_for_playwright("compact-slow", TestBehavior::SlowCompaction);
+    host_serve_for_playwright("compact-slow", TestBehavior::SlowCompaction, 0);
 }
 
 #[test]

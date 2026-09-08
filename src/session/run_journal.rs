@@ -213,7 +213,7 @@ impl SessionCoordinator {
     /// Publish the one resume seed only after the workspace selection CAS
     /// committed. Queue admission is infallible for a freshly armed,
     /// unclosed coordinator; durability remains on the normal batch lane.
-    pub(crate) fn enqueue_seed_marker_if_needed(&self) {
+    pub(crate) fn enqueue_seed_marker_if_needed(&self) -> bool {
         if self
             .needs_seed_marker
             .swap(false, std::sync::atomic::Ordering::AcqRel)
@@ -225,6 +225,9 @@ impl SessionCoordinator {
                 serde_json::json!({}),
             )])
             .expect("freshly armed session writer accepts its seed marker");
+            true
+        } else {
+            false
         }
     }
 

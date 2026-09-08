@@ -150,6 +150,15 @@ const state = {
   marketFallback: false,
   workbenchRequest: 0,
   transcriptAttachmentUrls: new Set(),
+  history: {
+    hasMore: false,
+    loading: false,
+    firstSeq: null,
+    replayTarget: null,
+    outline: [],
+    jumping: false,
+    replaying: false,
+  },
   draft: {
     clientDraftId: newOpaqueClientId('draft'),
     clientMessageId: newOpaqueClientId('message'),
@@ -171,6 +180,7 @@ for (const id of [
   'project-name', 'project-root', 'session-title', 'conn-status', 'sidebar-connection', 'sidebar-footnote',
   'header-model', 'header-permission', 'new-session', 'session-search', 'session-count',
   'session-list', 'session-empty', 'transcript-scroll', 'empty-state', 'transcript',
+  'history-status', 'message-map', 'message-map-track', 'message-map-preview',
   'prompt', 'send', 'cancel', 'run-state', 'composer-permission', 'composer-shell',
   'attachment-input', 'attachment-open', 'attachment-rail', 'attachment-summary', 'drop-overlay',
   'composer-permission-label', 'plan-mode-badge', 'goal-badge', 'inspector', 'inspector-toggle', 'inspector-close',
@@ -343,10 +353,21 @@ function handleFrame(frame) {
       state.run = null;
       state.runActive = false;
       state.lastUsage = null;
+      state.history.hasMore = Boolean(payload.has_more);
+      state.history.firstSeq = null;
+      state.history.loading = false;
+      state.history.replayTarget = null;
+      state.history.replaying = true;
+      syncHistoryStatus();
       updateRunDetail();
       break;
     case 'replay.end':
       syncEmptyState();
+      dom['transcript-scroll'].style.scrollBehavior = 'auto';
+      dom['transcript-scroll'].scrollTop = dom['transcript-scroll'].scrollHeight;
+      requestAnimationFrame(() => { dom['transcript-scroll'].style.scrollBehavior = ''; });
+      state.history.replaying = false;
+      syncActiveMapItem();
       break;
     default:
       console.warn('[clat] unknown frame type:', frame.event);
@@ -355,13 +376,19 @@ function handleFrame(frame) {
 
 function handleReplay(event) {
   if (!event || !event.type) return;
+  if (Number.isSafeInteger(event.seq)) {
+    state.history.firstSeq = state.history.firstSeq === null
+      ? event.seq : Math.min(state.history.firstSeq, event.seq);
+  }
+  let node = null;
   switch (event.type) {
     case 'user_message':
       settleQueuedDraft(event.client_message_id);
-      addUserMessage(event.text, event.content_blocks);
+      node = addUserMessage(event.text, event.content_blocks);
       break;
     case 'assistant_message': {
       const bubble = addAssistantMessage();
+      node = bubble.node;
       if (event.reasoning) bubble.setReasoning(event.reasoning);
       bubble.appendBody(event.text || '');
       for (const call of event.tool_calls || []) {
@@ -370,22 +397,26 @@ function handleReplay(event) {
       break;
     }
     case 'permission_checked':
-      addNoticeLine(event.tool + ' → ' + decisionText(event.decision), event.type);
+      node = addNoticeLine(event.tool + ' → ' + decisionText(event.decision), event.type);
       break;
     case 'tool_requested':
-      addToolCard(event.call && event.call.name, jsonText(event.call && event.call.arguments), null, false);
+      node = addToolCard(event.call && event.call.name, jsonText(event.call && event.call.arguments), null, false);
       break;
     case 'tool_finished':
-      addToolCard(event.tool, '← ' + jsonText(event.output), null, event.is_error);
+      node = addToolCard(event.tool, '← ' + jsonText(event.output), null, event.is_error);
       break;
     case 'retry_scheduled':
-      addNoticeLine('#' + event.retry + ' in ' + event.delay_ms + 'ms', event.type);
+      node = addNoticeLine('#' + event.retry + ' in ' + event.delay_ms + 'ms', event.type);
       break;
     case 'turn_ended':
-      addNoticeLine('turn ' + event.turn + ' · ' + turnEndText(event.reason), event.type);
+      node = addNoticeLine('turn ' + event.turn + ' · ' + turnEndText(event.reason), event.type);
       break;
-    case 'compaction': addNoticeLine('', event.type); break;
+    case 'compaction': node = addNoticeLine('', event.type); break;
     default: console.warn('[clat] unknown replay type:', event.type);
+  }
+  if (node && Number.isSafeInteger(event.seq)) {
+    node.dataset.seq = String(event.seq);
+    node.dataset.turn = String(event.turn || 0);
   }
 }
 
@@ -417,6 +448,7 @@ function handleLive(event) {
       break;
     }
     case 'model_responded':
+      if (state.run && state.run.assistant) state.run.assistant.finishReasoning();
       addTraceEvent(event.type, turnEndText(event.finish_reason));
       break;
     case 'tool_requested':
@@ -455,6 +487,7 @@ function handleLive(event) {
 }
 
 function finishRun(event) {
+  if (state.run && state.run.assistant) state.run.assistant.finishReasoning();
   state.runActive = false;
   state.run = null;
   const restoredDraft = restoreQueuedDraft();
@@ -475,6 +508,8 @@ function onSubscribed(ctl) {
   if (ctl && Object.prototype.hasOwnProperty.call(ctl, 'session_id')) {
     state.sessionId = ctl.session_id || null;
   }
+  state.history.outline = Array.isArray(ctl && ctl.message_outline) ? ctl.message_outline : [];
+  renderMessageMap();
   syncPlanModeBadge();
   refreshWorkbench();
   refreshSessions();
@@ -523,6 +558,10 @@ function onApprovalRequested(ctl) {
 
 function onSettled(ctl) {
   const outcome = (ctl && ctl.outcome) || {};
+  if (Array.isArray(ctl && ctl.message_outline)) {
+    state.history.outline = ctl.message_outline;
+    renderMessageMap();
+  }
   state.lastUsage = outcome.usage || null;
   switch (outcome.type) {
     case 'completed':
@@ -592,7 +631,7 @@ function onNotice(ctl) {
 
 function appendTranscript(node) {
   hide(dom['empty-state']);
-  dom.transcript.appendChild(node);
+  (state.history.replayTarget || dom.transcript).appendChild(node);
   return node;
 }
 
@@ -717,7 +756,13 @@ function addAssistantMessage() {
   body.appendChild(bodyText);
   const reasoning = el('details', 'reasoning hidden');
   const reasoningSummary = el('summary');
-  reasoningSummary.append(svgIcon('trace'), el('span', null, humanEventName('reasoning_delta')));
+  const reasoningTitle = el('span', 'reasoning-title', 'Think');
+  const reasoningDot = el('span', 'reasoning-dot');
+  const reasoningPreview = el('span', 'reasoning-preview');
+  const reasoningRunning = el('span', 'visually-hidden reasoning-running', 'Thinking in progress');
+  reasoningSummary.append(
+    svgIcon('trace'), reasoningTitle, reasoningDot, reasoningPreview, reasoningRunning,
+  );
   const reasoningCopy = el('pre', 'reasoning-copy');
   const reasoningText = document.createTextNode('');
   reasoningCopy.appendChild(reasoningText);
@@ -725,6 +770,7 @@ function addAssistantMessage() {
   msg.append(reasoning, body);
   appendTranscript(msg);
   return {
+    node: msg,
     // `textContent += delta` serializes and reparses the entire growing
     // transcript on every stream chunk. Native Text append keeps long local
     // streams linear, so attachment fetch completion and input remain live.
@@ -732,14 +778,26 @@ function addAssistantMessage() {
     appendReasoning(text) {
       show(reasoning);
       reasoningText.appendData(text);
+      reasoning.dataset.running = 'true';
+      const lines = reasoningText.data.split(/\r?\n/).filter((line) => line.trim());
+      reasoningPreview.textContent = lines.at(-1) || reasoningText.data;
     },
     setReasoning(text) {
       show(reasoning);
       reasoningText.data = text;
+      delete reasoning.dataset.running;
+      reasoningRunning.textContent = '';
+      reasoningPreview.textContent = text.split(/\r?\n/).find((line) => line.trim()) || text;
     },
     setTraceKind(eventId) {
-      reasoningSummary.querySelector('span').textContent = humanEventName(eventId);
+      reasoningTitle.textContent = eventId === 'reasoning_summary_delta' ? 'Summary' : 'Think';
       reasoningSummary.title = 'Event ID: ' + eventId;
+    },
+    finishReasoning() {
+      delete reasoning.dataset.running;
+      reasoningRunning.textContent = '';
+      const first = reasoningText.data.split(/\r?\n/).find((line) => line.trim());
+      if (first) reasoningPreview.textContent = first;
     },
   };
 }
@@ -872,6 +930,138 @@ function scrollIfNearEnd() {
   const viewport = dom['transcript-scroll'];
   if (nearEnd()) viewport.scrollTop = viewport.scrollHeight;
 }
+
+function syncHistoryStatus() {
+  const status = dom['history-status'];
+  if (!state.history.hasMore && !state.history.loading) {
+    hide(status);
+    return;
+  }
+  show(status);
+  status.disabled = state.history.loading;
+  status.textContent = state.history.loading ? 'Loading earlier messages…' : 'Earlier messages available';
+}
+
+function viewportAnchor() {
+  const viewportTop = dom['transcript-scroll'].getBoundingClientRect().top;
+  const rows = [...dom.transcript.querySelectorAll(':scope > [data-seq]')];
+  return rows.find((row) => row.getBoundingClientRect().bottom >= viewportTop) || rows[0] || null;
+}
+
+async function loadOlderHistory() {
+  if (state.history.loading || !state.history.hasMore || state.history.firstSeq === null) return false;
+  state.history.loading = true;
+  syncHistoryStatus();
+  const anchor = viewportAnchor();
+  const anchorTop = anchor && anchor.getBoundingClientRect().top;
+  const fragment = document.createDocumentFragment();
+  try {
+    const page = await rpc('session.history', {
+      before_seq: state.history.firstSeq,
+      max_messages: 50,
+    });
+    const events = Array.isArray(page.events) ? page.events : [];
+    state.history.replayTarget = fragment;
+    for (const event of events) handleReplay(event);
+    state.history.replayTarget = null;
+    if (fragment.childNodes.length > 0) dom.transcript.insertBefore(fragment, dom.transcript.firstChild);
+    state.history.hasMore = Boolean(page.has_more);
+    if (anchor && anchorTop !== null) {
+      dom['transcript-scroll'].scrollTop += anchor.getBoundingClientRect().top - anchorTop;
+    }
+    syncEmptyState();
+    syncActiveMapItem();
+    return events.length > 0;
+  } catch (error) {
+    console.warn('[clat] earlier history failed:', error.message);
+    updateRunState('earlier history failed: ' + error.message);
+    return false;
+  } finally {
+    state.history.replayTarget = null;
+    state.history.loading = false;
+    syncHistoryStatus();
+  }
+}
+
+function outlinePreview(item) {
+  const sameTurn = state.history.outline.filter((candidate) => candidate.turn === item.turn);
+  const user = sameTurn.find((candidate) => candidate.role === 'user');
+  const assistant = sameTurn.filter((candidate) => candidate.role === 'assistant')
+    .map((candidate) => candidate.preview).filter(Boolean).join('\n');
+  return [user && user.preview, assistant].filter(Boolean).join('\n');
+}
+
+function renderMessageMap() {
+  const track = dom['message-map-track'];
+  track.replaceChildren();
+  const outline = state.history.outline;
+  dom['message-map'].classList.toggle('hidden', outline.length < 2);
+  for (const item of outline) {
+    if (!item || !Number.isSafeInteger(item.seq)) continue;
+    const bar = el('button', `message-map-item ${item.role === 'user' ? 'is-user' : 'is-assistant'}`);
+    bar.type = 'button';
+    bar.dataset.seq = String(item.seq);
+    bar.setAttribute('aria-label', `${item.role || 'message'} at turn ${item.turn || 0}`);
+    bar.addEventListener('mouseenter', () => {
+      dom['message-map-preview'].textContent = outlinePreview(item) || item.preview || 'Empty message';
+      show(dom['message-map-preview']);
+    });
+    bar.addEventListener('focus', () => {
+      dom['message-map-preview'].textContent = outlinePreview(item) || item.preview || 'Empty message';
+      show(dom['message-map-preview']);
+    });
+    bar.addEventListener('click', () => jumpToMessage(item.seq));
+    track.appendChild(bar);
+  }
+  syncActiveMapItem();
+}
+
+async function jumpToMessage(seq) {
+  if (state.history.jumping) return;
+  state.history.jumping = true;
+  const bar = dom['message-map-track'].querySelector(`[data-seq="${seq}"]`);
+  if (bar) bar.classList.add('is-jumping');
+  try {
+    let row = dom.transcript.querySelector(`:scope > [data-seq="${seq}"]`);
+    for (let page = 0; !row && state.history.hasMore && page < 128; page += 1) {
+      if (!await loadOlderHistory()) break;
+      row = dom.transcript.querySelector(`:scope > [data-seq="${seq}"]`);
+    }
+    if (row) row.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  } finally {
+    state.history.jumping = false;
+    if (bar) bar.classList.remove('is-jumping');
+  }
+}
+
+function syncActiveMapItem() {
+  const rows = [...dom.transcript.querySelectorAll(':scope > .msg[data-seq]')];
+  const readingLine = dom['transcript-scroll'].getBoundingClientRect().top + 72;
+  let active = rows[0] || null;
+  for (const row of rows) {
+    if (row.getBoundingClientRect().top <= readingLine) active = row;
+    else break;
+  }
+  for (const bar of dom['message-map-track'].children) {
+    bar.classList.toggle('is-active', Boolean(active) && bar.dataset.seq === active.dataset.seq);
+  }
+  const activeBar = dom['message-map-track'].querySelector('.is-active');
+  if (activeBar && !dom['message-map'].matches(':hover')) {
+    activeBar.scrollIntoView({ block: 'nearest' });
+  }
+}
+
+dom['history-status'].addEventListener('click', () => { void loadOlderHistory(); });
+dom['message-map-track'].addEventListener('mouseleave', () => hide(dom['message-map-preview']));
+dom['message-map-track'].addEventListener('focusout', (event) => {
+  if (!dom['message-map-track'].contains(event.relatedTarget)) hide(dom['message-map-preview']);
+});
+dom['transcript-scroll'].addEventListener('scroll', () => {
+  if (!state.history.replaying && dom['transcript-scroll'].scrollTop <= 512) {
+    void loadOlderHistory();
+  }
+  syncActiveMapItem();
+}, { passive: true });
 
 function jsonText(value) {
   if (value === undefined || value === null) return '';
@@ -1966,6 +2156,16 @@ dom.prompt.addEventListener('keydown', (event) => {
     submitPrompt();
   }
 });
+
+const composerSeat = document.querySelector('.conversation');
+const composer = document.querySelector('.composer');
+if (composerSeat && composer && typeof ResizeObserver === 'function') {
+  const composerObserver = new ResizeObserver(([entry]) => {
+    const height = Math.ceil(entry.borderBoxSize?.[0]?.blockSize || entry.contentRect.height);
+    composerSeat.style.setProperty('--composer-height', `${height}px`);
+  });
+  composerObserver.observe(composer);
+}
 
 dom['attachment-open'].addEventListener('click', () => dom['attachment-input'].click());
 dom['attachment-input'].addEventListener('change', async () => {

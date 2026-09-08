@@ -720,6 +720,38 @@ impl TrustedProjectApplication {
         })
     }
 
+    /// Return a message-aligned backwards page for the active local session.
+    /// The session core owns replay reuse and incremental catch-up; frontends
+    /// only choose the exclusive cursor and page size.
+    pub(crate) fn session_history(
+        &self,
+        before_seq: Option<u64>,
+        max_messages: usize,
+    ) -> Result<crate::session::use_cases::SessionHistoryPage, ApplicationError> {
+        self.sessions
+            .history_active(before_seq, max_messages)
+            .map_err(session_error)
+    }
+
+    pub(crate) fn session_message_outline(
+        &self,
+    ) -> Result<Vec<crate::application::MessageOutlineDto>, ApplicationError> {
+        self.sessions
+            .message_outline_active()
+            .map(|items| {
+                items
+                    .into_iter()
+                    .map(|item| crate::application::MessageOutlineDto {
+                        seq: item.seq,
+                        turn: item.turn,
+                        role: item.role,
+                        preview: item.preview,
+                    })
+                    .collect()
+            })
+            .map_err(session_error)
+    }
+
     pub fn current_session_id(&self) -> Option<SessionId> {
         self.sessions.active_id()
     }

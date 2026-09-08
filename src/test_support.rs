@@ -196,6 +196,10 @@ pub(crate) enum TestBehavior {
         count: usize,
         interval_ms: u64,
     },
+    /// Two reasoning lines with a visible streaming interval, followed by a
+    /// settled answer. The PWA uses this to discriminate latest-line live
+    /// disclosure from first-line settled disclosure.
+    ReasoningDeltas,
     /// steering 确定性门闩：第一次模型调用阻塞到测试线程 steer() 并
     /// 放行（否则按取消退出），第二次调用观测 steering 用户项是否已
     /// 并入 items。
@@ -598,6 +602,22 @@ impl Model for TestModel {
                     std::thread::sleep(std::time::Duration::from_millis(*interval_ms));
                 }
                 Ok(response("done", FinishReason::Completed))
+            }
+            TestBehavior::ReasoningDeltas => {
+                events.emit(ModelEvent::ReasoningDelta {
+                    delta: "first thought\n".into(),
+                });
+                std::thread::sleep(std::time::Duration::from_millis(240));
+                events.emit(ModelEvent::ReasoningDelta {
+                    delta: "latest thought".into(),
+                });
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                events.emit(ModelEvent::TextDelta {
+                    delta: "done".into(),
+                });
+                let mut result = response("done", FinishReason::Completed);
+                result.reasoning = Some("first thought\nlatest thought".into());
+                Ok(result)
             }
             TestBehavior::RunCommand => {
                 let has_command_result = request.items.iter().any(|item| {

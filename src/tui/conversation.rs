@@ -6,8 +6,8 @@
 //! 代数与宽度未变，任何 mutator 置脏，宽度变化全部失效（G3）——
 //! 每帧只克隆视口行，不再全量深拷贝。
 //!
-//! 已知取舍：reasoning 与 tool_calls 存而不显（`/details` 展示是 P2）；
-//! 工具卡在本模块累积状态但 B5 之前不渲染；turn-end 通知 B7 起渲染。
+//! reasoning 默认以一行 Think 摘要披露、Ctrl+R 展开正文；工具调用则
+//! 由工具卡呈现。两者都只消费既有事件，不建立前端持久状态。
 
 use crate::RunEvent;
 use crate::ToolCall;
@@ -17,6 +17,7 @@ use crate::tui::markdown::render_markdown;
 use crate::tui::theme;
 use crate::tui::tool_argument_lines;
 use crate::tui::wrap_text;
+use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use serde_json::Value;
 use std::collections::VecDeque;
@@ -40,6 +41,7 @@ pub(crate) enum ConversationItem {
     Assistant {
         text: String,
         reasoning: Option<String>,
+        reasoning_running: bool,
         tool_calls: Vec<ToolCall>,
         provider: String,
         model: String,
@@ -128,6 +130,9 @@ pub(crate) struct ConversationModel {
     /// 流式 assistant 项前缀的当前活动帧（None=落定 ⏺）：由前端每帧
     /// 设置（run 活动时为 spinner 帧），见 `set_stream_marker`。
     stream_marker: Option<&'static str>,
+    /// Think 披露正文的全局展开态（Ctrl+R）。和工具卡可见性一样只是
+    /// 前端状态，不持久化；默认折叠为一行摘要。
+    reasoning_expanded: bool,
     /// 最近一次 ToolRequested 的 call id：live `PermissionDenied` 不带
     /// call id，只能据此回指。
     last_call_id: Option<String>,
@@ -209,6 +214,7 @@ impl ConversationModel {
         self.push_item(ConversationItem::Assistant {
             text: text.to_owned(),
             reasoning: None,
+            reasoning_running: false,
             tool_calls: Vec::new(),
             provider: "application-test".into(),
             model: "deterministic".into(),
@@ -229,6 +235,7 @@ impl ConversationModel {
             ConversationItem::Assistant {
                 text: String::new(),
                 reasoning: None,
+                reasoning_running: false,
                 tool_calls: Vec::new(),
                 provider,
                 model,
@@ -303,8 +310,30 @@ impl ConversationModel {
     /// chunk 文本增量（`text-delta`）。
     pub(crate) fn append_stream_text(&mut self, delta: &str) {
         self.append_assistant(|item| {
-            if let ConversationItem::Assistant { text, .. } = item {
+            if let ConversationItem::Assistant {
+                text,
+                reasoning_running,
+                ..
+            } = item
+            {
+                *reasoning_running = false;
                 text.push_str(delta);
+            }
+        });
+    }
+
+    /// DSH `reasoning-delta` 的流式入口；本地 RunEvent 走同一字段，最终
+    /// 汇入完全相同的 Think 披露渲染。
+    pub(crate) fn append_stream_reasoning(&mut self, delta: &str) {
+        self.append_assistant(|item| {
+            if let ConversationItem::Assistant {
+                reasoning,
+                reasoning_running,
+                ..
+            } = item
+            {
+                *reasoning_running = true;
+                reasoning.get_or_insert_with(String::new).push_str(delta);
             }
         });
     }
@@ -331,7 +360,13 @@ impl ConversationModel {
             RunEvent::ModelStream { event, .. } => match event {
                 ModelEvent::TextDelta { delta } | ModelEvent::RefusalDelta { delta } => {
                     self.append_assistant(|item| {
-                        if let ConversationItem::Assistant { text, .. } = item {
+                        if let ConversationItem::Assistant {
+                            text,
+                            reasoning_running,
+                            ..
+                        } = item
+                        {
+                            *reasoning_running = false;
                             text.push_str(delta);
                         }
                     });
@@ -339,14 +374,26 @@ impl ConversationModel {
                 ModelEvent::ReasoningDelta { delta }
                 | ModelEvent::ReasoningSummaryDelta { delta } => {
                     self.append_assistant(|item| {
-                        if let ConversationItem::Assistant { reasoning, .. } = item {
+                        if let ConversationItem::Assistant {
+                            reasoning,
+                            reasoning_running,
+                            ..
+                        } = item
+                        {
+                            *reasoning_running = true;
                             reasoning.get_or_insert_with(String::new).push_str(delta);
                         }
                     });
                 }
                 ModelEvent::ToolCallCompleted { call } => {
                     self.append_assistant(|item| {
-                        if let ConversationItem::Assistant { tool_calls, .. } = item {
+                        if let ConversationItem::Assistant {
+                            tool_calls,
+                            reasoning_running,
+                            ..
+                        } = item
+                        {
+                            *reasoning_running = false;
                             tool_calls.push(call.clone());
                         }
                     });
@@ -409,6 +456,7 @@ impl ConversationModel {
                     self.push_item(ConversationItem::Assistant {
                         text: text.clone(),
                         reasoning: reasoning.clone(),
+                        reasoning_running: false,
                         tool_calls: tool_calls.clone(),
                         provider: provider.clone(),
                         model: model.clone(),
@@ -461,7 +509,8 @@ impl ConversationModel {
                 cache.dirty || cache.width != Some(width) || cache.marker != marker
             };
             if needs {
-                let rendered = render_item(&self.items[index].0, width, marker);
+                let rendered =
+                    render_item(&self.items[index].0, width, marker, self.reasoning_expanded);
                 let (_, cache) = &mut self.items[index];
                 cache.lines = rendered;
                 cache.width = Some(width);
@@ -497,9 +546,34 @@ impl ConversationModel {
         if self.stream_marker != marker {
             self.stream_marker = marker;
             if let Some(index) = self.open_assistant_index() {
+                if marker.is_none()
+                    && let ConversationItem::Assistant {
+                        reasoning_running, ..
+                    } = &mut self.items[index].0
+                {
+                    *reasoning_running = false;
+                }
                 self.items[index].1.dirty = true;
             }
         }
+    }
+
+    /// Ctrl+R：所有 Think 行在一行摘要与完整正文之间切换。返回切换后
+    /// 是否展开，供状态栏给出即时反馈。
+    pub(crate) fn toggle_reasoning(&mut self) -> bool {
+        self.reasoning_expanded = !self.reasoning_expanded;
+        for (item, cache) in &mut self.items {
+            if matches!(
+                item,
+                ConversationItem::Assistant {
+                    reasoning: Some(reasoning),
+                    ..
+                } if !reasoning.trim().is_empty()
+            ) {
+                cache.dirty = true;
+            }
+        }
+        self.reasoning_expanded
     }
 
     /// 卡片行数（不物化：折叠 = min(len, budget) + 可能的 1 行标记）。
@@ -698,12 +772,25 @@ fn render_item(
     item: &ConversationItem,
     width: usize,
     stream_marker: Option<&'static str>,
+    reasoning_expanded: bool,
 ) -> Vec<Line<'static>> {
     match item {
         ConversationItem::User { text } | ConversationItem::Compaction { text } => {
             render_user_block(text, width)
         }
-        ConversationItem::Assistant { text, .. } => render_assistant(text, width, stream_marker),
+        ConversationItem::Assistant {
+            text,
+            reasoning,
+            reasoning_running,
+            ..
+        } => render_assistant(
+            text,
+            reasoning.as_deref(),
+            *reasoning_running,
+            reasoning_expanded,
+            width,
+            stream_marker,
+        ),
         ConversationItem::ToolCard {
             tool,
             arguments,
@@ -885,6 +972,9 @@ fn render_user_block(text: &str, width: usize) -> Vec<Line<'static>> {
 
 fn render_assistant(
     text: &str,
+    reasoning: Option<&str>,
+    reasoning_running: bool,
+    reasoning_expanded: bool,
     width: usize,
     stream_marker: Option<&'static str>,
 ) -> Vec<Line<'static>> {
@@ -899,20 +989,92 @@ fn render_assistant(
         ),
         None => Span::styled("⏺ ", theme::style(theme::Role::AssistantMarker)),
     };
-    let text_width = width.saturating_sub(2).max(1);
-    render_markdown(text, text_width)
-        .into_iter()
-        .enumerate()
-        .map(|(index, line)| {
-            let mut spans = vec![if index == 0 {
-                marker.clone()
-            } else {
-                Span::raw("  ")
-            }];
-            spans.extend(line.spans);
-            Line::from(spans)
-        })
-        .collect()
+    let reasoning = reasoning.filter(|value| !value.trim().is_empty());
+    let mut lines = Vec::new();
+    if let Some(reasoning) = reasoning {
+        let summary = if reasoning_running {
+            reasoning.lines().rev().find(|line| !line.trim().is_empty())
+        } else {
+            reasoning.lines().find(|line| !line.trim().is_empty())
+        }
+        .unwrap_or(reasoning)
+        .trim();
+        let disclosure = if reasoning_expanded { "▾" } else { "▸" };
+        let prefix_width = 2 + 2 + UnicodeWidthStr::width("Think · ");
+        let summary = truncate_display_width(summary, width.saturating_sub(prefix_width));
+        lines.push(Line::from(vec![
+            marker.clone(),
+            Span::styled(
+                format!("{disclosure} Think"),
+                theme::style(theme::Role::ThinkingGlyph).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" · ", theme::style(theme::Role::Faint)),
+            Span::styled(summary, theme::style(theme::Role::Faint)),
+        ]));
+        if reasoning_expanded {
+            for line in wrap_text(reasoning, width.saturating_sub(4).max(1)) {
+                lines.push(Line::from(vec![
+                    Span::styled("  │ ", theme::style(theme::Role::ThinkingGlyph)),
+                    Span::styled(line, theme::style(theme::Role::Faint)),
+                ]));
+            }
+        }
+        // Think 是回答前的独立披露区：只在回答正文已经出现时留一行
+        // 呼吸空间。纯思考阶段不凭空增加尾部空行，展开态则在完整推理
+        // 正文之后、正式回答之前保持同一间距。
+        if !text.is_empty() {
+            lines.push(Line::from(""));
+        }
+    }
+
+    if !text.is_empty() {
+        let text_width = width.saturating_sub(2).max(1);
+        let has_reasoning = reasoning.is_some();
+        lines.extend(
+            render_markdown(text, text_width)
+                .into_iter()
+                .enumerate()
+                .map(|(index, line)| {
+                    let mut spans = vec![if index == 0 && !has_reasoning {
+                        marker.clone()
+                    } else {
+                        Span::raw("  ")
+                    }];
+                    spans.extend(line.spans);
+                    Line::from(spans)
+                }),
+        );
+    }
+    // Preserve the existing waiting-first-token marker before either
+    // reasoning or answer text arrives.
+    if lines.is_empty() {
+        lines.push(Line::from(marker));
+    }
+    lines
+}
+
+fn truncate_display_width(text: &str, max: usize) -> String {
+    use unicode_width::UnicodeWidthChar;
+
+    if max == 0 {
+        return String::new();
+    }
+    if UnicodeWidthStr::width(text) <= max {
+        return text.to_owned();
+    }
+    let content_width = max.saturating_sub(1);
+    let mut used = 0usize;
+    let mut out = String::new();
+    for character in text.chars() {
+        let width = UnicodeWidthChar::width(character).unwrap_or(0);
+        if used + width > content_width {
+            break;
+        }
+        used += width;
+        out.push(character);
+    }
+    out.push('…');
+    out
 }
 
 #[cfg(test)]
@@ -960,6 +1122,75 @@ mod tests {
             has(&mut model, "⏺ "),
             "settled assistant keeps the static marker"
         );
+    }
+
+    /// 用户实测：Thinking 阶段只有状态栏动画，对话区没有推理摘要。
+    /// 不变量：开放态展示最新非空行，落定态展示首个非空行；推理正文
+    /// 不得因为 assistant 正文尚为空而消失。预修复渲染器只读取 text，
+    /// 本测试在 `Think`/摘要断言处失败。
+    #[test]
+    fn reasoning_has_a_live_latest_line_and_a_settled_first_line() {
+        let mut model = ConversationModel::new();
+        model.apply_run_event(&RunEvent::ModelRequested {
+            turn: 1,
+            provider: "p".into(),
+            model: "m".into(),
+        });
+        model.apply_run_event(&RunEvent::ModelStream {
+            turn: 1,
+            event: ModelEvent::ReasoningDelta {
+                delta: "first thought\nlatest thought".into(),
+            },
+        });
+        let plain = |model: &mut ConversationModel| {
+            model
+                .visible_lines(0, 20, 60, ToolCardVisibility::Collapsed)
+                .iter()
+                .map(|line| {
+                    line.spans
+                        .iter()
+                        .map(|span| span.content.as_ref())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        model.set_stream_marker(Some("◐"));
+        let live = plain(&mut model);
+        assert!(live.contains("Think"), "{live:?}");
+        assert!(live.contains("latest thought"), "{live:?}");
+
+        model.set_stream_marker(None);
+        let settled = plain(&mut model);
+        assert!(settled.contains("first thought"), "{settled:?}");
+
+        model.apply_run_event(&RunEvent::ModelStream {
+            turn: 1,
+            event: ModelEvent::TextDelta {
+                delta: "final answer".into(),
+            },
+        });
+        let answered = plain(&mut model);
+        assert!(
+            answered.contains("first thought\n\n  final answer"),
+            "Think disclosure and answer need one blank row: {answered:?}"
+        );
+
+        assert!(model.toggle_reasoning(), "first Ctrl+R expands reasoning");
+        let expanded = plain(&mut model);
+        assert!(expanded.contains("│ first thought"), "{expanded:?}");
+        assert!(expanded.contains("│ latest thought"), "{expanded:?}");
+        assert!(
+            expanded.contains("│ latest thought\n\n  final answer"),
+            "expanded reasoning and answer need one blank row: {expanded:?}"
+        );
+        assert!(
+            !model.toggle_reasoning(),
+            "second Ctrl+R collapses reasoning"
+        );
+        let collapsed = plain(&mut model);
+        assert!(!collapsed.contains("│ latest thought"), "{collapsed:?}");
     }
 
     #[test]

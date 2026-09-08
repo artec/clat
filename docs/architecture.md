@@ -256,6 +256,8 @@ derive two intentionally different views:
 
 - the **transcript** preserves the full human-visible history;
 - the **surface** supplies model context and applies compaction shadowing.
+- the bounded **message outline** supplies `{seq, turn, role, preview}` rows
+  for navigation without forcing a browser to hold the full transcript.
 
 Tool-result pruning reduces transient model context. Compaction appends a
 summary marker and shadows older surface ranges without deleting original
@@ -533,6 +535,17 @@ supports versioned NDJSON events, and owns no process-global signal handler.
 bridges permission requests to `approval.requested` events and
 `approval.respond` RPC calls, exposes core command/session/run use cases, and
 uses the same event envelopes as headless JSON output.
+
+The initial SSE replay is a message-aligned 50-message tail page. Every replay
+variant carries its journal `seq` and owning `turn`; `session.history` pages
+backward with an exclusive `before_seq` cursor and never splits a turn. Session
+arming retains the already-folded replay prefix in core, so switching performs
+one full physical scan, older-page requests are memory-only, and freshness
+decodes only a newly committed suffix. Append-only compaction does not
+invalidate existing cursors; the v0-to-v2 `/update` publication naturally
+re-arms a new cache with the new generation. The full bounded message outline
+travels on `subscribed` and refreshes again at each durable `prompt.settled`
+boundary, so live navigation never guesses journal sequence numbers.
 
 Manual PWA compaction is exposed as `session.compact`. Serve owns only a clone
 of the core `CompactHandle` so it can report an `active_compaction` snapshot and

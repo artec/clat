@@ -1,7 +1,7 @@
 //! Projection registry: every derived read model folds from the same
 //! authoritative event log (plan §11). Units: surface (model view),
-//! transcript (CLAT display view — replace never hides), title, todo,
-//! stats, compaction. Checkpoints are derived, droppable, and never lead
+//! transcript (CLAT display view — replace never hides), message outline,
+//! title, todo, stats, compaction. Checkpoints are derived, droppable, and never lead
 //! the log.
 
 use crate::session::event::SessionEvent;
@@ -36,6 +36,7 @@ impl ProjectionRegistry {
             units: vec![
                 Box::new(SurfaceUnit::default()),
                 Box::new(TranscriptUnit::default()),
+                Box::new(MessageOutlineUnit::default()),
                 Box::new(TitleUnit::default()),
                 Box::new(PermissionModeUnit::default()),
                 Box::new(PlanModeUnit::default()),
@@ -894,6 +895,115 @@ impl TranscriptUnit {
     }
 }
 
+/// Bounded preview rows for the PWA message navigator. Unlike transcript,
+/// this unit is intentionally checkpointable: every entry is short and the
+/// registry's whole-record cap remains the final admission authority.
+struct MessageOutlineUnit {
+    entries: Vec<MessageOutlineEntry>,
+    turn: u64,
+    as_of: i64,
+}
+
+impl Default for MessageOutlineUnit {
+    fn default() -> Self {
+        Self {
+            entries: Vec::new(),
+            turn: 0,
+            as_of: -1,
+        }
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct MessageOutlineEntry {
+    seq: u64,
+    turn: u64,
+    role: String,
+    preview: String,
+}
+
+impl ProjectionUnit for MessageOutlineUnit {
+    fn key(&self) -> &'static str {
+        "message-outline"
+    }
+
+    fn state_version(&self) -> u64 {
+        1
+    }
+
+    fn as_of(&self) -> i64 {
+        self.as_of
+    }
+
+    fn fold(&mut self, event: &SessionEvent) -> Result<(), String> {
+        match event.event_type.as_str() {
+            "turn/start" => {
+                if let Some(turn) = event.data.get("turn").and_then(Value::as_u64) {
+                    self.turn = turn;
+                }
+            }
+            "user/message" => self.entries.push(MessageOutlineEntry {
+                seq: event.seq,
+                turn: self.turn,
+                role: "user".into(),
+                preview: preview_lines(&transcript_user_text(&event.data["content"]), 1),
+            }),
+            "assistant/message" => self.entries.push(MessageOutlineEntry {
+                seq: event.seq,
+                turn: event
+                    .data
+                    .get("turn")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(self.turn),
+                role: "assistant".into(),
+                preview: preview_lines(&content_text(&event.data["message"]["content"]), 3),
+            }),
+            _ => {}
+        }
+        self.as_of = event.seq as i64;
+        Ok(())
+    }
+
+    fn snapshot(&self) -> Value {
+        // `turn/start` can be the final event covered by a checkpoint. Keep
+        // that cursor even when no message for the turn exists yet; deriving
+        // it from the last outline row would assign the next user message to
+        // the previous turn after restore.
+        json!({ "entries": self.entries, "turn": self.turn })
+    }
+
+    fn restore(&mut self, row: &CheckpointRow) -> Result<(), String> {
+        #[derive(Deserialize)]
+        struct State {
+            entries: Vec<MessageOutlineEntry>,
+            turn: u64,
+        }
+        let state: State =
+            serde_json::from_value(row.val.clone()).map_err(|error| error.to_string())?;
+        self.entries = state.entries;
+        self.turn = state.turn;
+        self.as_of = row.seq;
+        Ok(())
+    }
+}
+
+fn preview_lines(text: &str, max_lines: usize) -> String {
+    const MAX_CHARS_PER_LINE: usize = 160;
+    text.lines()
+        .take(max_lines)
+        .map(|line| {
+            let mut chars = line.trim().chars();
+            let preview = chars.by_ref().take(MAX_CHARS_PER_LINE).collect::<String>();
+            if chars.next().is_some() {
+                format!("{preview}…")
+            } else {
+                preview
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 struct TitleUnit {
     title: Option<String>,
     source: Option<String>,
@@ -1413,6 +1523,73 @@ fn transcript_user_text(blocks: &Value) -> String {
 mod tests {
     use super::*;
     use crate::session::event::{SurfaceOp, TurnEndReason, payloads};
+
+    #[test]
+    fn message_outline_is_incremental_checkpointable_and_bounded_by_preview_rules() {
+        let events = vec![
+            SessionEvent::new("turn/start", 0, 1, payloads::turn_start(7)),
+            SessionEvent::new(
+                "user/message",
+                1,
+                2,
+                payloads::user_message("question first line\nquestion second line"),
+            )
+            .append(Vec::new()),
+            SessionEvent::new(
+                "assistant/message",
+                2,
+                3,
+                payloads::assistant_message(
+                    7,
+                    0,
+                    vec![payloads::text_block(
+                        "answer one\nanswer two\nanswer three\nanswer four",
+                    )],
+                    "test",
+                    "test",
+                    None,
+                ),
+            )
+            .append(Vec::new()),
+        ];
+        let mut full = MessageOutlineUnit::default();
+        for event in &events {
+            full.fold(event).unwrap();
+        }
+        assert_eq!(
+            full.snapshot(),
+            json!({"entries": [
+                {"seq": 1, "turn": 7, "role": "user", "preview": "question first line"},
+                {"seq": 2, "turn": 7, "role": "assistant", "preview": "answer one\nanswer two\nanswer three"}
+            ], "turn": 7})
+        );
+
+        let mut prefix = MessageOutlineUnit::default();
+        for event in &events[..2] {
+            prefix.fold(event).unwrap();
+        }
+        let row = CheckpointRow {
+            ver: prefix.state_version(),
+            seq: prefix.as_of(),
+            val: prefix.snapshot(),
+        };
+        let mut restored = MessageOutlineUnit::default();
+        restored.restore(&row).unwrap();
+        restored.fold(&events[2]).unwrap();
+        assert_eq!(restored.snapshot(), full.snapshot());
+
+        let mut turn_boundary = MessageOutlineUnit::default();
+        turn_boundary.fold(&events[0]).unwrap();
+        let boundary_row = CheckpointRow {
+            ver: turn_boundary.state_version(),
+            seq: turn_boundary.as_of(),
+            val: turn_boundary.snapshot(),
+        };
+        let mut boundary_restored = MessageOutlineUnit::default();
+        boundary_restored.restore(&boundary_row).unwrap();
+        boundary_restored.fold(&events[1]).unwrap();
+        assert_eq!(boundary_restored.snapshot()["entries"][0]["turn"], 7);
+    }
 
     /// 不变量 PS5（fold 容忍）：`sandbox/mode` latest-wins——后续事件
     /// 覆盖前值；未知词汇（未来 DSH 值/损坏）不推翻上一已知档（收窄

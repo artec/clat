@@ -287,21 +287,136 @@ test('app shell stays bounded under long content', async ({ page }) => {
     LIVE,
   );
 
-  const shell = await page.evaluate(() => {
+  const shell = await page.evaluate(async () => {
     const sc = document.querySelector('.transcript-scroll');
+    sc.style.scrollBehavior = 'auto';
+    sc.scrollTop = sc.scrollHeight;
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     const composer = document.querySelector('.composer').getBoundingClientRect();
+    const messages = [...document.querySelectorAll('.transcript > .msg')];
+    const lastMessage = messages.at(-1)?.getBoundingClientRect();
     return {
       transcriptClient: sc.clientHeight,
       transcriptScroll: sc.scrollHeight,
       composerBottom: composer.bottom,
+      composerPosition: getComputedStyle(document.querySelector('.composer')).position,
+      lastMessageBottom: lastMessage && lastMessage.bottom,
+      composerTop: composer.top,
       viewport: window.innerHeight,
     };
   });
   expect(shell.transcriptClient).toBeLessThan(shell.viewport);
   expect(shell.transcriptScroll).toBeGreaterThan(shell.transcriptClient);
   expect(shell.composerBottom).toBeLessThanOrEqual(shell.viewport);
+  expect(shell.composerPosition).toBe('absolute');
+  expect(shell.lastMessageBottom).toBeLessThanOrEqual(shell.composerTop);
   await page.click('#cancel');
   await expect(page.locator('#cancel')).toBeHidden(LIVE);
+});
+
+test('tail history opens at the newest message and prepends without moving the reading anchor', async ({ page }) => {
+  const entry = hostInfo('history');
+  let historyRequests = 0;
+  page.on('request', (request) => {
+    if (request.url().endsWith('/api/session.history')) historyRequests += 1;
+  });
+  await openWorkbench(page, entry);
+
+  await expect(page.locator('.transcript > .msg')).toHaveCount(50, LIVE);
+  await expect(page.locator('.message-map-item')).toHaveCount(56, LIVE);
+  await expect(page.locator('.msg.user .body').last()).toHaveText('history question 27', LIVE);
+  await expect(page.locator('#history-status')).toBeVisible(LIVE);
+  const anchor = await page.evaluate(() => {
+    const viewport = document.querySelector('#transcript-scroll').getBoundingClientRect();
+    const rows = [...document.querySelectorAll('.transcript > [data-seq]')];
+    const row = rows.find((candidate) => candidate.getBoundingClientRect().bottom >= viewport.top);
+    return { seq: row.dataset.seq, top: row.getBoundingClientRect().top };
+  });
+
+  await page.click('#history-status');
+  await expect(page.locator('.transcript > .msg')).toHaveCount(56, LIVE);
+  await expect(page.locator('#history-status')).toBeHidden(LIVE);
+  const anchoredTop = await page.locator(`.transcript > [data-seq="${anchor.seq}"]`).evaluate(
+    (row) => row.getBoundingClientRect().top,
+  );
+  expect(Math.abs(anchoredTop - anchor.top)).toBeLessThanOrEqual(2);
+  expect(historyRequests).toBe(1);
+});
+
+test('conversation map previews a turn and loads an unloaded message before jumping', async ({ page }) => {
+  const entry = hostInfo('history');
+  let historyRequests = 0;
+  page.on('request', (request) => {
+    if (request.url().endsWith('/api/session.history')) historyRequests += 1;
+  });
+  await openWorkbench(page, entry);
+  const firstBar = page.locator('.message-map-item').first();
+  await firstBar.hover();
+  await expect(page.locator('#message-map-preview')).toContainText('history question 00', LIVE);
+  const seq = await firstBar.getAttribute('data-seq');
+  await firstBar.click();
+  await expect(page.locator(`.transcript > .msg[data-seq="${seq}"]`)).toBeVisible(LIVE);
+  expect(historyRequests).toBe(1);
+});
+
+test('conversation map keeps a safe scrollbar gutter and a continuous hover target', async ({ page }) => {
+  const entry = hostInfo('history');
+  await openWorkbench(page, entry);
+  const bars = page.locator('.message-map-item');
+  await expect(bars).toHaveCount(56, LIVE);
+
+  const geometry = await page.evaluate(() => {
+    const viewport = document.querySelector('#transcript-scroll').getBoundingClientRect();
+    const rail = document.querySelector('#message-map').getBoundingClientRect();
+    return { scrollbarGutter: viewport.right - rail.right };
+  });
+  expect(geometry.scrollbarGutter).toBeGreaterThanOrEqual(20);
+
+  await bars.nth(0).hover();
+  await expect(page.locator('#message-map-preview')).toBeVisible();
+  const first = await bars.nth(0).boundingBox();
+  const second = await bars.nth(1).boundingBox();
+  // Move through the visual space between two strokes. The hit rows must be
+  // continuous, so the preview never blinks off while the pointer is on rail.
+  await page.mouse.move(
+    first.x + first.width / 2,
+    (first.y + first.height + second.y) / 2,
+  );
+  await expect(page.locator('#message-map-preview')).toBeVisible();
+  await page.mouse.move(second.x + second.width / 2, second.y + second.height / 2);
+  await expect(page.locator('#message-map-preview')).toBeVisible();
+});
+
+test('scrolling within 512px of the top automatically loads one earlier page', async ({ page }) => {
+  const entry = hostInfo('history');
+  let historyRequests = 0;
+  page.on('request', (request) => {
+    if (request.url().endsWith('/api/session.history')) historyRequests += 1;
+  });
+  await openWorkbench(page, entry);
+  await expect(page.locator('.transcript > .msg')).toHaveCount(50, LIVE);
+  await page.locator('#transcript-scroll').evaluate((viewport) => { viewport.scrollTop = 400; });
+  await expect(page.locator('.transcript > .msg')).toHaveCount(56, LIVE);
+  expect(historyRequests).toBe(1);
+});
+
+test('Think disclosure follows the latest live line, then the first settled line', async ({ page }) => {
+  const entry = hostInfo('reasoning');
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await openWorkbench(page, entry);
+  await page.fill('#prompt', 'show reasoning');
+  await page.click('#send');
+  const reasoning = page.locator('.msg.assistant .reasoning').last();
+  await expect(reasoning).toHaveAttribute('data-running', 'true', LIVE);
+  expect(await reasoning.locator('summary').evaluate(
+    (summary) => getComputedStyle(summary, '::before').animationName,
+  )).toBe('none');
+  await expect(reasoning.locator('.reasoning-preview')).toHaveText('latest thought', LIVE);
+  await expect(reasoning).not.toHaveAttribute('data-running', 'true', LIVE);
+  await expect(reasoning.locator('.reasoning-preview')).toHaveText('first thought', LIVE);
+  await reasoning.locator('summary').click();
+  await expect(reasoning.locator('.reasoning-copy')).toHaveText('first thought\nlatest thought', LIVE);
+  await expect(page.locator('.message-map-item')).toHaveCount(2, LIVE);
 });
 
 // —— 验收④：双标签页——同 run 双观察；首答即赢；次答者见 not-pending ——

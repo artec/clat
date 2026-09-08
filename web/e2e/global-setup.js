@@ -6,7 +6,7 @@ const os = require('os');
 const path = require('path');
 
 const REPO_ROOT = path.resolve(__dirname, '../..');
-const HOSTS = ['run-command', 'long-stream', 'success', 'compact-slow'];
+const HOSTS = ['run-command', 'long-stream', 'success', 'reasoning', 'history', 'compact-slow'];
 if (process.env.CLAT_LIVE_GLM_E2E === '1') HOSTS.push('live-glm');
 const STARTUP_TIMEOUT_MS = 300_000; // 含 cargo 增量编译
 const SHUTDOWN_TIMEOUT_MS = 60_000;

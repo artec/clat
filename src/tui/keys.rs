@@ -198,6 +198,19 @@ impl App {
             self.flash_status(format!("tool cards: {:?}", self.card_visibility));
             return;
         }
+        // Ctrl+R：Think 披露行全局展开/折叠。与 Ctrl+O 同为纯呈现
+        // 状态；本地与 dsh 共用 ConversationModel，行为天然一致。
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(key.code, KeyCode::Char('r') | KeyCode::Char('R'))
+        {
+            let expanded = self.conversation.toggle_reasoning();
+            self.flash_status(if expanded {
+                "reasoning: expanded"
+            } else {
+                "reasoning: collapsed"
+            });
+            return;
+        }
         // Ctrl+C：**有选区时优先复制**。原因：Cmd+C 被终端自身截留
         //（鼠标上报模式又禁用了终端原生拖选，终端复制的是空选区），
         // 而多数终端把 Ctrl+Shift+C 编码成 ^C——Ctrl+C 是选区复制唯一

@@ -4,7 +4,7 @@
 //! ```text
 //! 1.（三闸，serve.rs）
 //! 2. 注册活流订阅（buffered_at = 此刻 run 缓冲长度）
-//! 3. replay.begin → snapshot().replay 全量 → replay.end（journal 域）
+//! 3. replay.begin → session.history 尾页 → replay.end（journal 域）
 //! 4. subscribed { last_seq }（committed_seq 水位，竞态自检用）
 //! 5. active run 存在 → 直写 run_buffer[0..buffered_at]（事件域）
 //! 6. 泵活流队列 → 实时（recv_timeout 15s → 心跳 comment）
@@ -54,11 +54,20 @@ pub(crate) fn handle(stream: &mut TcpStream, shared: &Arc<ServeShared>) {
     // 的组合由预算封顶）。
     let phase_deadline = Instant::now() + REPLAY_PHASE_BUDGET;
     let replay_result = {
-        let mut app = shared.app.lock().expect("application lock");
-        app.snapshot()
-            .map(|snapshot| (snapshot.replay, app.committed_seq(), snapshot.session_id))
+        let app = shared.app.lock().expect("application lock");
+        app.session_history(None, 50).and_then(|page| {
+            app.session_message_outline().map(|outline| {
+                (
+                    page.events,
+                    page.has_more,
+                    app.committed_seq(),
+                    app.current_session_id(),
+                    outline,
+                )
+            })
+        })
     };
-    let (replay, last_seq, session_id) = match replay_result {
+    let (replay, has_more, last_seq, session_id, outline) = match replay_result {
         Ok(value) => value,
         Err(error) => {
             // 重放源失败：fail-closed——以 notice 形态告知后断流，绝不
@@ -72,7 +81,11 @@ pub(crate) fn handle(stream: &mut TcpStream, shared: &Arc<ServeShared>) {
             return;
         }
     };
-    if connection.write_frame("replay.begin", "{}").is_err() {
+    let replay_begin = serde_json::json!({"has_more": has_more});
+    if connection
+        .write_frame("replay.begin", &replay_begin.to_string())
+        .is_err()
+    {
         connection.cleanup();
         return;
     }
@@ -96,6 +109,12 @@ pub(crate) fn handle(stream: &mut TcpStream, shared: &Arc<ServeShared>) {
     let ctl = serde_json::json!({
         "last_seq": last_seq,
         "session_id": session_id.map(|id| id.as_str().to_owned()),
+        "message_outline": outline.into_iter().map(|item| serde_json::json!({
+            "seq": item.seq,
+            "turn": item.turn,
+            "role": item.role,
+            "preview": item.preview,
+        })).collect::<Vec<_>>(),
         "replaying": false,
     });
     if connection

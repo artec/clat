@@ -66,6 +66,22 @@ pub struct SessionView {
     pub usage: UsageStats,
 }
 
+/// A message-aligned, backwards page over the active session's structured
+/// replay. `before_seq` is an exclusive journal cursor.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SessionHistoryPage {
+    pub events: Vec<ReplayEvent>,
+    pub has_more: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MessageOutlineItem {
+    pub seq: u64,
+    pub turn: u64,
+    pub role: String,
+    pub preview: String,
+}
+
 /// 已通过当前会话可达性与 no-follow 文件栅栏的不可变附件快照。它只在
 /// 受信应用壳与同进程前端之间流转；绝不投影到 journal、SSE 或模型请求，
 /// 也不暴露任何路径。serve 只能按已验证的固定长度分块读取该快照，底层
@@ -157,6 +173,10 @@ struct ActiveSession {
     key: SessionKey,
     coordinator: Arc<SessionCoordinator>,
     projections: Arc<Mutex<ProjectionRegistry>>,
+    /// The replay fold produced by the same physical scan that arms a
+    /// session. Later readers reuse this prefix and only visit a newly
+    /// committed tail.
+    replay: Arc<Mutex<ResumeSink>>,
     /// The one shared folding journal for this session. Every producer
     /// (run recorder, todo, compaction, titles) must append through the
     /// SAME instance: per-handle pending lists interleaving across
@@ -329,6 +349,7 @@ impl SessionService {
             journal: Mutex::new(None),
             coordinator,
             projections: Arc::new(Mutex::new(ProjectionRegistry::clat())),
+            replay: Arc::new(Mutex::new(ResumeSink::new())),
             generation: AtomicU64::new(0),
         });
         Ok(SessionSummary {
@@ -423,13 +444,6 @@ impl SessionService {
             sink = repaired;
         }
         let projections = Arc::new(Mutex::new(registry));
-        let active = ActiveSession {
-            key: key.clone(),
-            journal: Mutex::new(None),
-            coordinator: Arc::clone(&coordinator),
-            projections: Arc::clone(&projections),
-            generation: AtomicU64::new(0),
-        };
         // Catch up what arming committed behind the single pass (torn-tail
         // repair closers): the same channel keeps feeding projections, the
         // replay, and usage — a bounded tail read, never a full re-stream.
@@ -451,7 +465,17 @@ impl SessionService {
                 return Err(error);
             }
         }
-        let ResumeSink { replay, usage, .. } = sink;
+        let replay = sink.replay.clone();
+        let usage = sink.usage.clone();
+        let replay_state = Arc::new(Mutex::new(sink));
+        let active = ActiveSession {
+            key: key.clone(),
+            journal: Mutex::new(None),
+            coordinator: Arc::clone(&coordinator),
+            projections: Arc::clone(&projections),
+            replay: replay_state,
+            generation: AtomicU64::new(0),
+        };
         let mut view =
             match self.view_from(&header, &projections.lock().expect("projections"), replay) {
                 Ok(view) => view,
@@ -499,7 +523,7 @@ impl SessionService {
     /// completed in [`Self::arm_session`].
     pub(crate) fn install_armed(&self, armed: ArmedSession) -> SessionView {
         let ArmedSession { active, view } = armed;
-        active.coordinator.enqueue_seed_marker_if_needed();
+        let seeded = active.coordinator.enqueue_seed_marker_if_needed();
         // The seed marker must be durable before `Application::open`
         // returns: mount 的第一次 snapshot 走 mounted_replay 暂存、不
         // 再重流日志，但后续任何全量读者（下一次 snapshot、下一次冷
@@ -507,7 +531,28 @@ impl SessionService {
         // 写后窗口里时，"open 已返回但日志缺 marker"对它们就是种族。
         // Best effort on purpose: a failed flush keeps the batch on the
         // normal retry lane, and install must stay infallible.
-        let _ = active.coordinator.flush();
+        let flushed = active.coordinator.flush().is_ok();
+        if seeded
+            && flushed
+            && let Some(committed) = active.coordinator.committed_seq()
+        {
+            // session/end-seed is an explicit replay skip. It is the only
+            // event admitted between the arming scan and publication, so the
+            // cached replay can advance its source watermark without another
+            // physical read.
+            active.replay.lock().expect("replay").pushed = committed + 1;
+            let seed = SessionEvent::new(
+                "session/end-seed",
+                committed,
+                now_ms(),
+                serde_json::json!({}),
+            );
+            let _ = active
+                .projections
+                .lock()
+                .expect("projections")
+                .fold_one(&seed);
+        }
         *self.active.lock().expect("active") = Some(active);
         view
     }
@@ -1405,14 +1450,81 @@ impl SessionService {
     pub(crate) fn replay_active_with_usage(
         &self,
     ) -> Result<(Vec<ReplayEvent>, UsageStats), SessionError> {
-        let key = {
+        let (key, committed, replay) = {
             let guard = self.active.lock().expect("active");
             match guard.as_ref() {
-                Some(active) => active.key.clone(),
+                Some(active) => (
+                    active.key.clone(),
+                    active.coordinator.committed_seq(),
+                    Arc::clone(&active.replay),
+                ),
                 None => return Ok((Vec::new(), UsageStats::default())),
             }
         };
-        self.replay_with_usage(&key)
+        catch_up_replay(&self.backend, &key, committed, &replay)?;
+        let replay = replay.lock().expect("replay");
+        Ok((replay.replay.clone(), replay.usage.clone()))
+    }
+
+    /// Tail-oriented replay page for the active session. The arming scan is
+    /// retained in core, so older-page reads never touch the journal again;
+    /// only a newly committed suffix is decoded before slicing.
+    pub(crate) fn history_active(
+        &self,
+        before_seq: Option<u64>,
+        max_messages: usize,
+    ) -> Result<SessionHistoryPage, SessionError> {
+        let (key, committed, replay) = {
+            let guard = self.active.lock().expect("active");
+            match guard.as_ref() {
+                Some(active) => (
+                    active.key.clone(),
+                    active.coordinator.committed_seq(),
+                    Arc::clone(&active.replay),
+                ),
+                None => {
+                    return Ok(SessionHistoryPage {
+                        events: Vec::new(),
+                        has_more: false,
+                    });
+                }
+            }
+        };
+        catch_up_replay(&self.backend, &key, committed, &replay)?;
+        let replay = replay.lock().expect("replay");
+        Ok(paginate_replay(&replay.replay, before_seq, max_messages))
+    }
+
+    pub(crate) fn message_outline_active(&self) -> Result<Vec<MessageOutlineItem>, SessionError> {
+        let guard = self.active.lock().expect("active");
+        let Some(active) = guard.as_ref() else {
+            return Ok(Vec::new());
+        };
+        fold_if_behind(active, &self.backend)?;
+        let projections = active.projections.lock().expect("projections");
+        Ok(projections
+            .state_snapshot("message-outline")
+            .unwrap_or_default()
+            .get("entries")
+            .and_then(Value::as_array)
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter_map(|entry| {
+                        Some(MessageOutlineItem {
+                            seq: entry.get("seq")?.as_u64()?,
+                            turn: entry.get("turn")?.as_u64()?,
+                            role: entry.get("role")?.as_str()?.to_owned(),
+                            preview: entry
+                                .get("preview")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                                .to_owned(),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default())
     }
 
     /// The display transcript of the active session (projection-backed,
@@ -1823,6 +1935,84 @@ fn fold_if_behind(active: &ActiveSession, backend: &JsonlBackend) -> Result<(), 
     Ok(())
 }
 
+fn catch_up_replay(
+    backend: &JsonlBackend,
+    key: &SessionKey,
+    committed: Option<u64>,
+    replay: &Mutex<ResumeSink>,
+) -> Result<(), SessionError> {
+    let mut replay = replay.lock().expect("replay");
+    if !committed.is_some_and(|committed| replay.pushed <= committed) {
+        return Ok(());
+    }
+    let floor = replay.pushed;
+    let ResumeSink {
+        adapter,
+        replay: events,
+        usage,
+        pushed,
+    } = &mut *replay;
+    backend.visit_from(key, floor, &mut |event| {
+        adapter.push(event, events);
+        usage.record(event);
+        *pushed += 1;
+        Ok(())
+    })?;
+    Ok(())
+}
+
+fn paginate_replay(
+    replay: &[ReplayEvent],
+    before_seq: Option<u64>,
+    max_messages: usize,
+) -> SessionHistoryPage {
+    if max_messages == 0 || replay.is_empty() {
+        return SessionHistoryPage {
+            events: Vec::new(),
+            has_more: !replay.is_empty(),
+        };
+    }
+    let mut end = before_seq
+        .map(|before| replay.partition_point(|event| event.seq() < before))
+        .unwrap_or(replay.len());
+    // A caller may present any journal cursor, including one between two
+    // replay-visible events of the same turn. Rewind the upper edge as well
+    // as the lower edge so a malformed or stale cursor can never expose a
+    // partial turn.
+    if end > 0 && end < replay.len() && replay[end - 1].turn() == replay[end].turn() {
+        let turn = replay[end].turn();
+        while end > 0 && replay[end - 1].turn() == turn {
+            end -= 1;
+        }
+    }
+    if end == 0 {
+        return SessionHistoryPage {
+            events: Vec::new(),
+            has_more: false,
+        };
+    }
+
+    let mut start = end;
+    let mut messages = 0usize;
+    while start > 0 {
+        start -= 1;
+        if replay[start].is_message() {
+            messages += 1;
+            if messages == max_messages {
+                let turn = replay[start].turn();
+                while start > 0 && replay[start - 1].turn() == turn {
+                    start -= 1;
+                }
+                break;
+            }
+        }
+    }
+    SessionHistoryPage {
+        events: replay[start..end].to_vec(),
+        has_more: start > 0,
+    }
+}
+
 fn fold_committed(
     active: &ActiveSession,
     backend: &JsonlBackend,
@@ -2019,6 +2209,164 @@ mod tests {
     use super::*;
     use crate::session::event::payloads;
     use crate::session::replay::ReplayTurnEnd;
+
+    fn replay_user(seq: u64, turn: u64, text: &str) -> ReplayEvent {
+        ReplayEvent::UserMessage {
+            seq,
+            turn,
+            time_ms: seq as i64,
+            text: text.into(),
+            content_blocks: Vec::new(),
+            client_message_id: None,
+            receipt: None,
+        }
+    }
+
+    fn replay_assistant(seq: u64, turn: u64, text: &str) -> ReplayEvent {
+        ReplayEvent::AssistantMessage {
+            seq,
+            turn,
+            step: 0,
+            time_ms: seq as i64,
+            reasoning: None,
+            text: text.into(),
+            tool_calls: Vec::new(),
+            provider: "test".into(),
+            model: "test".into(),
+            replay_state: None,
+        }
+    }
+
+    #[test]
+    fn history_pages_use_exclusive_seq_cursors_and_never_split_a_turn() {
+        let replay = vec![
+            replay_user(0, 1, "old question"),
+            replay_assistant(1, 1, "old answer"),
+            ReplayEvent::TurnEnded {
+                seq: 2,
+                turn: 1,
+                time_ms: 2,
+                reason: ReplayTurnEnd::Completed,
+            },
+            replay_user(3, 2, "new question"),
+            replay_assistant(4, 2, "new answer"),
+            ReplayEvent::TurnEnded {
+                seq: 5,
+                turn: 2,
+                time_ms: 5,
+                reason: ReplayTurnEnd::Completed,
+            },
+        ];
+
+        let tail = paginate_replay(&replay, None, 1);
+        assert_eq!(tail.events, replay[3..]);
+        assert!(tail.has_more);
+        let older = paginate_replay(&replay, Some(3), 1);
+        assert_eq!(older.events, replay[..3]);
+        assert!(!older.has_more);
+        assert!(older.events.iter().all(|event| event.seq() < 3));
+
+        let hostile_mid_turn_cursor = paginate_replay(&replay, Some(5), 50);
+        assert_eq!(
+            hostile_mid_turn_cursor.events,
+            replay[..3],
+            "an arbitrary upper cursor cannot split the newer turn"
+        );
+
+        let old_cursor_page = paginate_replay(&replay, Some(3), 50);
+        let mut compacted = replay.clone();
+        compacted.push(ReplayEvent::Compaction {
+            seq: 6,
+            turn: 2,
+            time_ms: 6,
+            summary_text: "summary".into(),
+        });
+        assert_eq!(
+            paginate_replay(&compacted, Some(3), 50),
+            old_cursor_page,
+            "append-only compaction cannot invalidate an older cursor"
+        );
+    }
+
+    #[test]
+    fn armed_replay_is_reused_and_only_a_committed_suffix_is_read() {
+        let (service, root) = service("history-replay-cache");
+        let summary = service.new_session(&project()).expect("session");
+        let key = SessionKey {
+            id: summary.id,
+            project: project(),
+        };
+        let journal = service.journal().expect("journal");
+        journal
+            .append_atomic(&[
+                crate::session::run_journal::NewSessionEvent::new(
+                    "turn/start",
+                    payloads::turn_start(1),
+                )
+                .log_only(),
+                crate::session::run_journal::NewSessionEvent::new(
+                    "user/message",
+                    payloads::user_message("first"),
+                )
+                .append(Vec::new()),
+            ])
+            .unwrap();
+        journal.flush().unwrap();
+        service.quiesce_active().unwrap();
+        service.backend.stream_probe.store(0, Ordering::Relaxed);
+
+        service.resume(&key).expect("resume");
+        let armed_streams = service.backend.stream_probe.load(Ordering::Relaxed);
+        assert!(armed_streams >= 1);
+        assert_eq!(
+            service
+                .history_active(None, 50)
+                .unwrap()
+                .events
+                .iter()
+                .filter(|event| event.is_message())
+                .count(),
+            1
+        );
+        assert_eq!(service.history_active(Some(1), 50).unwrap().events.len(), 0);
+        assert_eq!(
+            service.backend.stream_probe.load(Ordering::Relaxed),
+            armed_streams,
+            "old-page reads reuse the armed prefix"
+        );
+
+        let journal = service.journal().expect("journal");
+        journal
+            .append_atomic(&[
+                crate::session::run_journal::NewSessionEvent::new(
+                    "turn/start",
+                    payloads::turn_start(2),
+                )
+                .log_only(),
+                crate::session::run_journal::NewSessionEvent::new(
+                    "user/message",
+                    payloads::user_message("second"),
+                )
+                .append(Vec::new()),
+            ])
+            .unwrap();
+        journal.flush().unwrap();
+        let page = service.history_active(None, 50).unwrap();
+        assert_eq!(
+            page.events
+                .iter()
+                .filter(|event| event.is_message())
+                .count(),
+            2
+        );
+        assert_eq!(
+            service.backend.stream_probe.load(Ordering::Relaxed),
+            armed_streams + 1,
+            "freshness reads only the newly committed suffix"
+        );
+        service.quiesce_active().unwrap();
+        crate::test_support::cleanup_tree(&root);
+    }
 
     #[test]
     fn legacy_resume_is_read_only_without_changing_any_session_artifact() {

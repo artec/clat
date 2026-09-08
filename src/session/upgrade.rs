@@ -208,6 +208,24 @@ mod tests {
     use super::*;
     use crate::session::event::payloads;
 
+    fn replay_semantics(events: &[SessionEvent]) -> Vec<super::super::replay::ReplayEvent> {
+        let mut replay = super::super::replay::ReplayAdapter::fold(events);
+        for (index, event) in replay.iter_mut().enumerate() {
+            let seq = match event {
+                super::super::replay::ReplayEvent::UserMessage { seq, .. }
+                | super::super::replay::ReplayEvent::AssistantMessage { seq, .. }
+                | super::super::replay::ReplayEvent::PermissionChecked { seq, .. }
+                | super::super::replay::ReplayEvent::ToolRequested { seq, .. }
+                | super::super::replay::ReplayEvent::ToolFinished { seq, .. }
+                | super::super::replay::ReplayEvent::RetryScheduled { seq, .. }
+                | super::super::replay::ReplayEvent::TurnEnded { seq, .. }
+                | super::super::replay::ReplayEvent::Compaction { seq, .. } => seq,
+            };
+            *seq = index as u64;
+        }
+        replay
+    }
+
     pub(crate) fn fixture() -> (SessionHeader, Vec<SessionEvent>) {
         let mut header = SessionHeader::new(
             crate::session::id::SessionId::new("legacy-upgrade"),
@@ -232,8 +250,7 @@ mod tests {
             "role":"user", "content":[{"type":"image", "path":"/fixture/attachments/old.png", "mediaType":"image/png"}],
             "source":{"kind":"user"}
         })).append(vec![]);
-        let original_replay =
-            super::super::replay::ReplayAdapter::fold(std::slice::from_ref(&event));
+        let original_replay = replay_semantics(std::slice::from_ref(&event));
         let line = super::super::jsonl::event_lines(&[event], false, 0);
         let decoded = super::super::jsonl::decode_record_line(line.as_bytes(), 0).unwrap();
         assert_eq!(
@@ -245,10 +262,7 @@ mod tests {
         let (_, upgraded) = convert(&header, &decoded).unwrap();
         let wire = super::super::jsonl::event_lines(&upgraded, false, 2);
         let reread = super::super::jsonl::decode_record_line(wire.as_bytes(), 2).unwrap();
-        assert_eq!(
-            super::super::replay::ReplayAdapter::fold(&reread),
-            original_replay
-        );
+        assert_eq!(replay_semantics(&reread), original_replay);
     }
 
     #[test]
@@ -270,10 +284,7 @@ mod tests {
         );
         assert_eq!(upgraded[2].data["messageSeqs"], json!([0, 1]));
         assert_eq!(upgraded[3].event_type, "assistant/attempt");
-        assert_eq!(
-            super::super::replay::ReplayAdapter::fold(&events),
-            super::super::replay::ReplayAdapter::fold(&upgraded)
-        );
+        assert_eq!(replay_semantics(&events), replay_semantics(&upgraded));
         let mut bad = events.clone();
         bad[3].data["messageSeqs"] = json!([1]);
         assert!(convert(&header, &bad).unwrap_err().contains("consumed"));
@@ -295,8 +306,7 @@ mod tests {
         let source = super::super::jsonl::scan_raw(&plain).unwrap();
         let (_, upgraded) = convert(&source.header, &source.events).unwrap();
         assert!(
-            super::super::replay::ReplayAdapter::fold(&source.events)
-                == super::super::replay::ReplayAdapter::fold(&upgraded),
+            replay_semantics(&source.events) == replay_semantics(&upgraded),
             "private legacy transcript changed during conversion"
         );
         assert!(

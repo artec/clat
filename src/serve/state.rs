@@ -678,6 +678,15 @@ impl ServeShared {
                 };
                 let settled = super::shapes::with_prompt_rpc_id(settled, &rpc_id);
                 let settled = super::shapes::with_admission_receipt(settled, receipt.as_deref());
+                let settled = match shared
+                    .app
+                    .lock()
+                    .expect("application lock")
+                    .session_message_outline()
+                {
+                    Ok(outline) => super::shapes::with_message_outline(settled, &outline),
+                    Err(_) => settled,
+                };
                 shared.finish_run(super::shapes::ctl_data(&settled));
                 let _ = handle.join();
             })

@@ -57,8 +57,9 @@ pub use compaction::{CompactHandle, CompactReport};
 pub use content_views::{GoalViewDto, MemoryEntryDto, MemoryOverviewDto, SubagentStatusDto};
 pub use dto::{
     ContextEstimateSnapshot, ContextSkillDiagnostic, McpServerInfoDto, McpStatusDto,
-    ProjectSnapshot, SessionSnapshot, SkillEntryDto, SkillsOverviewDto, WorkbenchModelSnapshot,
-    WorkbenchProjectSnapshot, WorkbenchSessionSnapshot, WorkbenchSnapshot, WorkspaceInfo,
+    MessageOutlineDto, ProjectSnapshot, SessionSnapshot, SkillEntryDto, SkillsOverviewDto,
+    WorkbenchModelSnapshot, WorkbenchProjectSnapshot, WorkbenchSessionSnapshot, WorkbenchSnapshot,
+    WorkspaceInfo,
 };
 pub(crate) use remote_control::{
     WechatChatReadiness, WechatChatStatus, WechatChatTicket, WechatDeliveryDisposition,

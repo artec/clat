@@ -60,6 +60,7 @@ use std::collections::HashMap;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ReplayEvent {
     UserMessage {
+        seq: u64,
         turn: u64,
         time_ms: i64,
         text: String,
@@ -75,6 +76,7 @@ pub enum ReplayEvent {
         receipt: Option<Box<crate::message::AdmissionReceipt>>,
     },
     AssistantMessage {
+        seq: u64,
         turn: u64,
         step: u64,
         time_ms: i64,
@@ -86,15 +88,21 @@ pub enum ReplayEvent {
         replay_state: Option<Value>,
     },
     PermissionChecked {
+        seq: u64,
+        turn: u64,
         time_ms: i64,
         tool: String,
         decision: PermissionDecision,
     },
     ToolRequested {
+        seq: u64,
+        turn: u64,
         time_ms: i64,
         call: ToolCall,
     },
     ToolFinished {
+        seq: u64,
+        turn: u64,
         time_ms: i64,
         call_id: String,
         tool: String,
@@ -105,6 +113,7 @@ pub enum ReplayEvent {
         content_blocks: Vec<crate::message::ContentBlock>,
     },
     RetryScheduled {
+        seq: u64,
         turn: u64,
         step: u64,
         time_ms: i64,
@@ -114,14 +123,52 @@ pub enum ReplayEvent {
         failure: ReplayRetryFailure,
     },
     TurnEnded {
+        seq: u64,
         turn: u64,
         time_ms: i64,
         reason: ReplayTurnEnd,
     },
     Compaction {
+        seq: u64,
+        turn: u64,
         time_ms: i64,
         summary_text: String,
     },
+}
+
+impl ReplayEvent {
+    pub(crate) fn seq(&self) -> u64 {
+        match self {
+            Self::UserMessage { seq, .. }
+            | Self::AssistantMessage { seq, .. }
+            | Self::PermissionChecked { seq, .. }
+            | Self::ToolRequested { seq, .. }
+            | Self::ToolFinished { seq, .. }
+            | Self::RetryScheduled { seq, .. }
+            | Self::TurnEnded { seq, .. }
+            | Self::Compaction { seq, .. } => *seq,
+        }
+    }
+
+    pub(crate) fn turn(&self) -> u64 {
+        match self {
+            Self::UserMessage { turn, .. }
+            | Self::AssistantMessage { turn, .. }
+            | Self::PermissionChecked { turn, .. }
+            | Self::ToolRequested { turn, .. }
+            | Self::ToolFinished { turn, .. }
+            | Self::RetryScheduled { turn, .. }
+            | Self::TurnEnded { turn, .. }
+            | Self::Compaction { turn, .. } => *turn,
+        }
+    }
+
+    pub(crate) fn is_message(&self) -> bool {
+        matches!(
+            self,
+            Self::UserMessage { .. } | Self::AssistantMessage { .. }
+        )
+    }
 }
 
 /// The failure description recovered from `llm/retry`. `RetryFailure.status`
@@ -236,6 +283,7 @@ impl ReplayAdapter {
                     )))
                 });
                 out.push(ReplayEvent::UserMessage {
+                    seq: event.seq,
                     turn: self.turn,
                     time_ms: event.time,
                     text,
@@ -296,6 +344,8 @@ impl ReplayAdapter {
                         && let Some(call_id) = asked.call_id.clone()
                     {
                         out.push(ReplayEvent::ToolRequested {
+                            seq: event.seq,
+                            turn: self.turn,
                             time_ms: event.time,
                             call: ToolCall {
                                 id: call_id,
@@ -305,6 +355,8 @@ impl ReplayAdapter {
                         });
                     }
                     out.push(ReplayEvent::PermissionChecked {
+                        seq: event.seq,
+                        turn: self.turn,
                         time_ms: event.time,
                         tool: asked.tool,
                         decision: decision_from_outcome(outcome, asked.reason),
@@ -323,6 +375,8 @@ impl ReplayAdapter {
                         .map(parse_json_or_string)
                         .unwrap_or(Value::Null);
                     out.push(ReplayEvent::ToolRequested {
+                        seq: event.seq,
+                        turn: self.turn,
                         time_ms: event.time,
                         call: ToolCall {
                             id: call_id,
@@ -350,6 +404,7 @@ impl ReplayAdapter {
                     .unwrap_or(self.turn);
                 let reason = turn_end_reason(event.data.get("reason"));
                 out.push(ReplayEvent::TurnEnded {
+                    seq: event.seq,
                     turn,
                     time_ms: event.time,
                     reason,
@@ -363,6 +418,8 @@ impl ReplayAdapter {
                     .map(|blocks| blocks_text(blocks))
                     .unwrap_or_default();
                 out.push(ReplayEvent::Compaction {
+                    seq: event.seq,
+                    turn: self.turn,
                     time_ms: event.time,
                     summary_text,
                 });
@@ -425,6 +482,8 @@ impl ReplayAdapter {
             .filter(|block| matches!(block, crate::message::ContentBlock::Image { .. }))
             .collect();
         Some(ReplayEvent::ToolFinished {
+            seq: event.seq,
+            turn: self.turn,
             time_ms: event.time,
             call_id,
             tool,
@@ -474,6 +533,7 @@ fn assistant_message(event: &SessionEvent) -> Option<ReplayEvent> {
     }
     let source = message.get("source")?;
     Some(ReplayEvent::AssistantMessage {
+        seq: event.seq,
         turn,
         step,
         time_ms: event.time,
@@ -490,6 +550,7 @@ fn retry_scheduled(event: &SessionEvent) -> Option<ReplayEvent> {
     let data = &event.data;
     let failure = data.get("failure")?;
     Some(ReplayEvent::RetryScheduled {
+        seq: event.seq,
         turn: data.get("turn").and_then(Value::as_u64)?,
         step: data.get("step").and_then(Value::as_u64)?,
         time_ms: event.time,
@@ -606,6 +667,7 @@ mod tests {
         assert_eq!(
             out,
             vec![ReplayEvent::UserMessage {
+                seq: 1,
                 turn: 3,
                 time_ms: 1001,
                 text: "hello".into(),
@@ -631,6 +693,7 @@ mod tests {
         assert_eq!(
             out,
             vec![ReplayEvent::AssistantMessage {
+                seq: 4,
                 turn: 2,
                 step: 0,
                 time_ms: 1004,
@@ -810,6 +873,8 @@ mod tests {
             out,
             vec![
                 ReplayEvent::ToolRequested {
+                    seq: 5,
+                    turn: 0,
                     time_ms: 1005,
                     call: ToolCall {
                         id: "call-1".into(),
@@ -818,6 +883,8 @@ mod tests {
                     },
                 },
                 ReplayEvent::ToolFinished {
+                    seq: 6,
+                    turn: 0,
                     time_ms: 1006,
                     call_id: "call-1".into(),
                     tool: "read_file".into(),
@@ -845,6 +912,8 @@ mod tests {
         assert_eq!(
             out,
             vec![ReplayEvent::ToolFinished {
+                seq: 3,
+                turn: 0,
                 time_ms: 1003,
                 call_id: "call-x".into(),
                 tool: String::new(),
@@ -881,6 +950,8 @@ mod tests {
         assert_eq!(
             out,
             vec![ReplayEvent::PermissionChecked {
+                seq: 3,
+                turn: 0,
                 time_ms: 1003,
                 tool: "write_file".into(),
                 decision: PermissionDecision::Allow,
@@ -913,6 +984,7 @@ mod tests {
         assert_eq!(
             out,
             vec![ReplayEvent::RetryScheduled {
+                seq: 7,
                 turn: 1,
                 step: 0,
                 time_ms: 1007,
@@ -967,6 +1039,7 @@ mod tests {
             assert_eq!(
                 out,
                 vec![ReplayEvent::TurnEnded {
+                    seq: 2,
                     turn: 1,
                     time_ms: 1002,
                     reason
@@ -984,6 +1057,7 @@ mod tests {
         assert_eq!(
             unknown,
             vec![ReplayEvent::TurnEnded {
+                seq: 2,
                 turn: 1,
                 time_ms: 1002,
                 reason: ReplayTurnEnd::Error {
@@ -1155,6 +1229,8 @@ mod tests {
         assert_eq!(
             out,
             vec![ReplayEvent::Compaction {
+                seq: 9,
+                turn: 0,
                 time_ms: 1009,
                 summary_text: "earlier context".into(),
             }]

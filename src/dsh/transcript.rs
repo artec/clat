@@ -80,13 +80,21 @@ impl DshTranscript {
         let Some(chunk) = event.data.get("chunk") else {
             return;
         };
-        // reasoning/tool-call delta 存而不显（与既有取舍一致）；
-        // block-start/block-end/usage/finish 不驱动渲染。
-        if chunk.get("type").and_then(|value| value.as_str()) == Some("text-delta")
-            && let Some(text) = chunk.get("text").and_then(|value| value.as_str())
-        {
-            model.open_stream_assistant("dsh", "streaming");
-            model.append_stream_text(text);
+        // block-start/block-end/usage/finish 不驱动渲染；text/reasoning
+        // 两种 delta 汇入共享 ConversationModel，由同一披露行呈现。
+        let kind = chunk.get("type").and_then(|value| value.as_str());
+        if let Some(text) = chunk.get("text").and_then(|value| value.as_str()) {
+            match kind {
+                Some("text-delta") => {
+                    model.open_stream_assistant("dsh", "streaming");
+                    model.append_stream_text(text);
+                }
+                Some("reasoning-delta") => {
+                    model.open_stream_assistant("dsh", "streaming");
+                    model.append_stream_reasoning(text);
+                }
+                _ => {}
+            }
         }
     }
 }
@@ -163,6 +171,39 @@ mod tests {
             1,
             "the settled message appears exactly once: {joined}"
         );
+    }
+
+    /// DSH reasoning chunk 不能只推进状态栏 phase；它也必须进入共享
+    /// ConversationModel，供 TUI 的 Think 披露行即时显示。预修复
+    /// `apply_chunk` 只接收 text-delta，本测试得到空对话。
+    #[test]
+    fn reasoning_chunk_is_visible_in_the_conversation() {
+        let mut transcript = DshTranscript::new();
+        let mut model = ConversationModel::new();
+        transcript.apply(
+            &mut model,
+            &event(
+                "assistant/chunk",
+                1,
+                json!({
+                    "turn": 1,
+                    "step": 1,
+                    "chunk": {
+                        "type": "reasoning-delta",
+                        "index": 0,
+                        "text": "checking the durable history"
+                    }
+                }),
+            ),
+        );
+        model.set_stream_marker(Some("◐"));
+        let text = model
+            .visible_lines(0, 10, 60, ToolCardVisibility::Collapsed)
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert!(text.contains("checking the durable history"), "{text:?}");
     }
 
     #[test]

@@ -235,6 +235,7 @@ pub(crate) fn workbench_snapshot_json(
 pub(crate) fn replay_event_json(event: &ReplayEvent) -> Value {
     match event {
         ReplayEvent::UserMessage {
+            seq,
             turn,
             time_ms,
             text,
@@ -249,6 +250,7 @@ pub(crate) fn replay_event_json(event: &ReplayEvent) -> Value {
                 .iter()
                 .any(|block| matches!(block, crate::message::ContentBlock::Image { .. }));
             let mut fields = vec![
+                ("seq", json!(seq)),
                 ("turn", json!(turn)),
                 ("time_ms", json!(time_ms)),
                 ("text", Value::String(text.clone())),
@@ -276,6 +278,7 @@ pub(crate) fn replay_event_json(event: &ReplayEvent) -> Value {
             event_object("user_message", fields)
         }
         ReplayEvent::AssistantMessage {
+            seq,
             turn,
             step,
             time_ms,
@@ -287,6 +290,7 @@ pub(crate) fn replay_event_json(event: &ReplayEvent) -> Value {
             replay_state,
         } => {
             let mut fields = vec![
+                ("seq", json!(seq)),
                 ("turn", json!(turn)),
                 ("step", json!(step)),
                 ("time_ms", json!(time_ms)),
@@ -312,12 +316,16 @@ pub(crate) fn replay_event_json(event: &ReplayEvent) -> Value {
             event_object("assistant_message", fields)
         }
         ReplayEvent::PermissionChecked {
+            seq,
+            turn,
             time_ms,
             tool,
             decision,
         } => event_object(
             "permission_checked",
             vec![
+                ("seq", json!(seq)),
+                ("turn", json!(turn)),
                 ("time_ms", json!(time_ms)),
                 ("tool", Value::String(tool.clone())),
                 (
@@ -326,14 +334,23 @@ pub(crate) fn replay_event_json(event: &ReplayEvent) -> Value {
                 ),
             ],
         ),
-        ReplayEvent::ToolRequested { time_ms, call } => event_object(
+        ReplayEvent::ToolRequested {
+            seq,
+            turn,
+            time_ms,
+            call,
+        } => event_object(
             "tool_requested",
             vec![
+                ("seq", json!(seq)),
+                ("turn", json!(turn)),
                 ("time_ms", json!(time_ms)),
                 ("call", crate::wire::tool_call_to_json(call)),
             ],
         ),
         ReplayEvent::ToolFinished {
+            seq,
+            turn,
             time_ms,
             call_id,
             tool,
@@ -342,6 +359,8 @@ pub(crate) fn replay_event_json(event: &ReplayEvent) -> Value {
             content_blocks,
         } => {
             let mut fields = vec![
+                ("seq", json!(seq)),
+                ("turn", json!(turn)),
                 ("time_ms", json!(time_ms)),
                 ("call_id", Value::String(call_id.clone())),
                 ("tool", Value::String(tool.clone())),
@@ -357,6 +376,7 @@ pub(crate) fn replay_event_json(event: &ReplayEvent) -> Value {
             event_object("tool_finished", fields)
         }
         ReplayEvent::RetryScheduled {
+            seq,
             turn,
             step,
             time_ms,
@@ -367,6 +387,7 @@ pub(crate) fn replay_event_json(event: &ReplayEvent) -> Value {
         } => event_object(
             "retry_scheduled",
             vec![
+                ("seq", json!(seq)),
                 ("turn", json!(turn)),
                 ("step", json!(step)),
                 ("time_ms", json!(time_ms)),
@@ -377,23 +398,29 @@ pub(crate) fn replay_event_json(event: &ReplayEvent) -> Value {
             ],
         ),
         ReplayEvent::TurnEnded {
+            seq,
             turn,
             time_ms,
             reason,
         } => event_object(
             "turn_ended",
             vec![
+                ("seq", json!(seq)),
                 ("turn", json!(turn)),
                 ("time_ms", json!(time_ms)),
                 ("reason", replay_turn_end_json(reason)),
             ],
         ),
         ReplayEvent::Compaction {
+            seq,
+            turn,
             time_ms,
             summary_text,
         } => event_object(
             "compaction",
             vec![
+                ("seq", json!(seq)),
+                ("turn", json!(turn)),
                 ("time_ms", json!(time_ms)),
                 ("summary_text", Value::String(summary_text.clone())),
             ],
@@ -499,6 +526,35 @@ pub(crate) fn settled_failed(error: &str) -> Value {
 pub(crate) fn with_prompt_rpc_id(mut settled: Value, rpc_id: &str) -> Value {
     if let Some(map) = settled.as_object_mut() {
         map.insert("prompt_rpc_id".into(), Value::String(rpc_id.to_owned()));
+    }
+    settled
+}
+
+/// Refresh the full-session navigator at the same durable settlement boundary
+/// that publishes the completed transcript. This keeps the live PWA outline
+/// authoritative without inventing provisional journal sequence numbers in
+/// browser code.
+pub(crate) fn with_message_outline(
+    mut settled: Value,
+    outline: &[crate::MessageOutlineDto],
+) -> Value {
+    if let Some(map) = settled.as_object_mut() {
+        map.insert(
+            "message_outline".into(),
+            Value::Array(
+                outline
+                    .iter()
+                    .map(|item| {
+                        object(vec![
+                            ("seq", json!(item.seq)),
+                            ("turn", json!(item.turn)),
+                            ("role", Value::String(item.role.clone())),
+                            ("preview", Value::String(item.preview.clone())),
+                        ])
+                    })
+                    .collect(),
+            ),
+        );
     }
     settled
 }
@@ -779,58 +835,59 @@ mod tests {
         let replay: Vec<(&str, &str)> = vec![
             (
                 "user",
-                r#"{"type":"user_message","turn":1,"time_ms":1000,"text":"hi"}"#,
+                r#"{"type":"user_message","seq":1,"turn":1,"time_ms":1000,"text":"hi"}"#,
             ),
             (
                 "assistant",
-                r#"{"type":"assistant_message","turn":1,"step":0,"time_ms":2000,"text":"done","tool_calls":[{"id":"c1","name":"read_file","arguments":{"path":"a"}}],"provider":"glm","model":"glm-5.3"}"#,
+                r#"{"type":"assistant_message","seq":2,"turn":1,"step":0,"time_ms":2000,"text":"done","tool_calls":[{"id":"c1","name":"read_file","arguments":{"path":"a"}}],"provider":"glm","model":"glm-5.3"}"#,
             ),
             (
                 "assistant_reasoning",
-                r#"{"type":"assistant_message","turn":1,"step":1,"time_ms":2500,"reasoning":"why","text":"","tool_calls":[],"provider":"glm","model":"glm-5.3","replay_state":{"items":[]}}"#,
+                r#"{"type":"assistant_message","seq":3,"turn":1,"step":1,"time_ms":2500,"reasoning":"why","text":"","tool_calls":[],"provider":"glm","model":"glm-5.3","replay_state":{"items":[]}}"#,
             ),
             (
                 "permission",
-                r#"{"type":"permission_checked","time_ms":2600,"tool":"write_file","decision":{"deny":"too risky"}}"#,
+                r#"{"type":"permission_checked","seq":4,"turn":1,"time_ms":2600,"tool":"write_file","decision":{"deny":"too risky"}}"#,
             ),
             (
                 "tool_requested",
-                r#"{"type":"tool_requested","time_ms":2610,"call":{"id":"c1","name":"write_file","arguments":{"path":"notes.txt"}}}"#,
+                r#"{"type":"tool_requested","seq":5,"turn":1,"time_ms":2610,"call":{"id":"c1","name":"write_file","arguments":{"path":"notes.txt"}}}"#,
             ),
             (
                 "tool_finished",
-                r#"{"type":"tool_finished","time_ms":2620,"call_id":"c1","tool":"write_file","output":{"ok":true},"is_error":false}"#,
+                r#"{"type":"tool_finished","seq":6,"turn":1,"time_ms":2620,"call_id":"c1","tool":"write_file","output":{"ok":true},"is_error":false}"#,
             ),
             (
                 "retry",
-                r#"{"type":"retry_scheduled","turn":2,"step":0,"time_ms":3000,"retry":1,"max_retries":3,"delay_ms":500,"failure":{"message":"upstream 503","code":"server","provider_retry_after_ms":1200}}"#,
+                r#"{"type":"retry_scheduled","seq":7,"turn":2,"step":0,"time_ms":3000,"retry":1,"max_retries":3,"delay_ms":500,"failure":{"message":"upstream 503","code":"server","provider_retry_after_ms":1200}}"#,
             ),
             (
                 "turn_completed",
-                r#"{"type":"turn_ended","turn":2,"time_ms":3100,"reason":"completed"}"#,
+                r#"{"type":"turn_ended","seq":8,"turn":2,"time_ms":3100,"reason":"completed"}"#,
             ),
             (
                 "turn_aborted",
-                r#"{"type":"turn_ended","turn":3,"time_ms":3200,"reason":{"aborted":"user interrupt"}}"#,
+                r#"{"type":"turn_ended","seq":9,"turn":3,"time_ms":3200,"reason":{"aborted":"user interrupt"}}"#,
             ),
             (
                 "turn_error",
-                r#"{"type":"turn_ended","turn":4,"time_ms":3300,"reason":{"error":"model failed"}}"#,
+                r#"{"type":"turn_ended","seq":10,"turn":4,"time_ms":3300,"reason":{"error":"model failed"}}"#,
             ),
             (
                 "compaction",
-                r#"{"type":"compaction","time_ms":4000,"summary_text":"earlier turns summarized"}"#,
+                r#"{"type":"compaction","seq":11,"turn":4,"time_ms":4000,"summary_text":"earlier turns summarized"}"#,
             ),
             // MM-1A additive：含图 user 消息的 golden——blocks 只带
             // descriptor（无字节/路径），幂等键随行；纯文本形态见
             // 上面 "user" 行（零新字段）。
             (
                 "user_image",
-                r#"{"type":"user_message","turn":5,"time_ms":5000,"text":"look","content_blocks":[{"type":"text","text":"look"},{"type":"image","attachment":{"attachment_id":"0f8c2a4e11112222","media_type":"image/png","width":1024,"height":768,"bytes":2048,"display_name":"shot.png"}}],"client_message_id":"client-9","receipt":{"client_message_id":"client-9","state":"committed","committed_message_id":"message-9","attachment_ids":["0f8c2a4e11112222"],"retryable":false}}"#,
+                r#"{"type":"user_message","seq":12,"turn":5,"time_ms":5000,"text":"look","content_blocks":[{"type":"text","text":"look"},{"type":"image","attachment":{"attachment_id":"0f8c2a4e11112222","media_type":"image/png","width":1024,"height":768,"bytes":2048,"display_name":"shot.png"}}],"client_message_id":"client-9","receipt":{"client_message_id":"client-9","state":"committed","committed_message_id":"message-9","attachment_ids":["0f8c2a4e11112222"],"retryable":false}}"#,
             ),
         ];
         let samples: Vec<ReplayEvent> = vec![
             ReplayEvent::UserMessage {
+                seq: 1,
                 turn: 1,
                 time_ms: 1000,
                 text: "hi".into(),
@@ -839,6 +896,7 @@ mod tests {
                 receipt: None,
             },
             ReplayEvent::AssistantMessage {
+                seq: 2,
                 turn: 1,
                 step: 0,
                 time_ms: 2000,
@@ -854,6 +912,7 @@ mod tests {
                 replay_state: None,
             },
             ReplayEvent::AssistantMessage {
+                seq: 3,
                 turn: 1,
                 step: 1,
                 time_ms: 2500,
@@ -865,6 +924,8 @@ mod tests {
                 replay_state: Some(json!({"items": []})),
             },
             ReplayEvent::PermissionChecked {
+                seq: 4,
+                turn: 1,
                 time_ms: 2600,
                 tool: "write_file".into(),
                 decision: PermissionDecision::Deny {
@@ -872,6 +933,8 @@ mod tests {
                 },
             },
             ReplayEvent::ToolRequested {
+                seq: 5,
+                turn: 1,
                 time_ms: 2610,
                 call: ToolCall {
                     id: "c1".into(),
@@ -880,6 +943,8 @@ mod tests {
                 },
             },
             ReplayEvent::ToolFinished {
+                seq: 6,
+                turn: 1,
                 time_ms: 2620,
                 call_id: "c1".into(),
                 tool: "write_file".into(),
@@ -888,6 +953,7 @@ mod tests {
                 content_blocks: Vec::new(),
             },
             ReplayEvent::RetryScheduled {
+                seq: 7,
                 turn: 2,
                 step: 0,
                 time_ms: 3000,
@@ -901,11 +967,13 @@ mod tests {
                 },
             },
             ReplayEvent::TurnEnded {
+                seq: 8,
                 turn: 2,
                 time_ms: 3100,
                 reason: ReplayTurnEnd::Completed,
             },
             ReplayEvent::TurnEnded {
+                seq: 9,
                 turn: 3,
                 time_ms: 3200,
                 reason: ReplayTurnEnd::Aborted {
@@ -913,6 +981,7 @@ mod tests {
                 },
             },
             ReplayEvent::TurnEnded {
+                seq: 10,
                 turn: 4,
                 time_ms: 3300,
                 reason: ReplayTurnEnd::Error {
@@ -920,10 +989,13 @@ mod tests {
                 },
             },
             ReplayEvent::Compaction {
+                seq: 11,
+                turn: 4,
                 time_ms: 4000,
                 summary_text: "earlier turns summarized".into(),
             },
             ReplayEvent::UserMessage {
+                seq: 12,
                 turn: 5,
                 time_ms: 5000,
                 text: "look".into(),
@@ -991,6 +1063,27 @@ mod tests {
         assert_eq!(
             with_prompt_rpc_id(settled_failed("model error"), "prompt-1").to_string(),
             r#"{"prompt_rpc_id":"prompt-1","outcome":{"type":"failed","error":"model error"}}"#
+        );
+        assert_eq!(
+            with_message_outline(
+                with_prompt_rpc_id(settled_completed("done", 2, &usage), "prompt-1"),
+                &[
+                    crate::MessageOutlineDto {
+                        seq: 7,
+                        turn: 2,
+                        role: "user".into(),
+                        preview: "question".into(),
+                    },
+                    crate::MessageOutlineDto {
+                        seq: 9,
+                        turn: 2,
+                        role: "assistant".into(),
+                        preview: "answer".into(),
+                    },
+                ],
+            )
+            .to_string(),
+            r#"{"prompt_rpc_id":"prompt-1","outcome":{"type":"completed","output":"done","turns":2,"usage":{"input_tokens":10,"output_tokens":5,"cached_input_tokens":2}},"message_outline":[{"seq":7,"turn":2,"role":"user","preview":"question"},{"seq":9,"turn":2,"role":"assistant","preview":"answer"}]}"#
         );
 
         // notice kind 是开放枚举，已实现形状进入 golden。

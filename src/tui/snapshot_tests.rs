@@ -77,7 +77,7 @@ use unicode_width::UnicodeWidthStr;
 /// 新场景 help-dialog-end——首页快照只锁命令节，尾页（滚动钳制位）
 /// 补锁 Composer/Keys 节；help-dialog 本身零变化（命令节未动）。
 /// Composer 节改三行短主名（/pi, /paste-image；/ac, /attach-clear,
-/// /attachments clear），Ctrl+V 归位 Keys 节（A4 四组 11 行：输入与
+/// /attachments clear），Ctrl+V 归位 Keys 节（A4 四组 12 行：输入与
 /// 提交 / 运行控制 / 浏览与显示 / 选择与复制）。
 /// 2026-09-02 六次刷新（CP-3 弹窗守卫收窄为仅横向）：21 个含弹窗
 /// 场景重钉——clear_popup_with_guards 不再上下各扩一行，弹框上/下
@@ -1521,9 +1521,11 @@ fn waiting_first_token_snapshot() {
 
 #[test]
 fn thinking_phase_snapshot() {
-    // 刷新 2026-08-19：同 waiting——整词呼吸。
+    // Thinking 不只在状态栏活动：对话区同时给出最新推理行，太阳帧
+    // 表示仍在流式生成；正文默认折叠，Ctrl+R 可展开。
 
     let mut harness = Harness::trusted("snap-thinking", 80, 24);
+    harness.app.running = true;
     harness.run_event(RunEvent::ModelRequested {
         turn: 1,
         provider: "application-test".into(),
@@ -1976,7 +1978,7 @@ fn help_dialog_snapshot_and_paging() {
 
     // 翻页：Down 推进滚动位并钳制在最大值；Esc 关闭并交还输入。
     // CP-2：尾页（钳制位）补钉 help-dialog-end——首页快照只见命令节，
-    // Composer/Keys 节（A4 四组 11 行 + 短主名）由尾页锁定。
+    // Composer/Keys 节（A4 四组 12 行 + 短主名）由尾页锁定。
     harness.key(KeyCode::Down);
     harness.snapshot("help-dialog");
     let max = harness.app.info_scroll_max;

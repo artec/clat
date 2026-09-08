@@ -128,12 +128,18 @@ The main screen has three surfaces:
 | `↑` / `↓` | recall input history; if none, scroll the conversation |
 | `PageUp` / `PageDown` | scroll the conversation |
 | `Shift+Tab` | cycle the active vendor's reasoning level |
+| `Ctrl+R` | expand or collapse Think details in the conversation |
 | mouse wheel | scroll the conversation |
 | mouse drag | select text and copy it with OSC 52 on release |
 | `Cmd+C` / `Ctrl+Shift+C` | copy the current selection again |
 | `Cmd+X` / `Ctrl+Shift+X` | cut the input selection |
 | `Esc` | recall the newest queued steering; otherwise cancel the active run; when idle, clear input |
 | `Ctrl+C` | copy an active selection; otherwise quit |
+
+Reasoning is shown inline in both local and `clat dsh` conversations. While a
+model is thinking, the collapsed `Think` row follows its latest non-empty line;
+after settlement it keeps the first line as the summary. Press `Ctrl+R` to
+expand or collapse the complete reasoning text.
 
 While a permission dialog is open, `Esc` denies that tool call instead of
 cancelling the run. Hold `Shift` while dragging if you want the terminal's own
@@ -807,6 +813,16 @@ control. Completion is journal-backed and therefore visible again after reload.
 Full Access requires both a UI warning acknowledgement and the protocol
 confirmation described in [Permissions](permissions.md).
 
+Conversation history opens on the newest message. The server sends a
+message-aligned tail window (50 messages by default), and the workbench loads
+earlier pages automatically when scrolling within 512 px of the top. Prepending
+keeps the current reading line fixed. A slim map on the right represents every
+user and assistant message in the session; hover or keyboard focus shows a
+bounded turn preview, and selecting an unloaded marker fetches earlier pages
+before jumping. The map hides on narrow mobile layouts. The composer floats
+above the transcript while measured bottom clearance keeps the last message
+fully readable.
+
 Informational slash commands use the same core command catalog. `/context`
 renders its estimate as a readable multi-line breakdown, including plan, goal,
 and memory injection state. Composer badges show **Plan** and an armed **Goal**
@@ -818,7 +834,10 @@ its confirmation message. `workbench.info` adds `plan_mode_active` and
 `goal_armed` booleans. RunEvent and durable event vocabularies are unchanged.
 
 Model lifecycle and reasoning traces use human-readable labels in the visual
-surface (`Model request started`, `Reasoning summary`, and so on). The stable
+surface (`Model request started`, `Reasoning summary`, and so on). Reasoning is
+shown as a compact **Think** disclosure row: while streaming it follows the
+latest line with a reduced-motion-aware sweep; once settled it summarizes with
+the first line, and expanding it reveals the full trace. The stable
 wire event id remains available as diagnostic metadata; the frontend does not
 rename or mutate the underlying `RunEvent` protocol. The workbench uses one
 consistent inline SVG icon language for actions, tools, traces and panel
