@@ -184,6 +184,9 @@ impl AgentRuntime for DefaultAgentRuntime {
         .with_tool_pipeline(&self.pipeline)
         .with_tool_access(request.tool_access)
         .with_tool_definitions(request.tool_definitions)
+        // MS-1：能力快照随 config 进 run——历史图像 × 纯文本模型
+        // 在发前预检明确失败，不透传厂商 400。
+        .with_capabilities(request.config.capabilities.clone())
         .with_instructions(instructions);
         let mut run = match &self.dynamic_instructions {
             Some(source) => run.with_dynamic_instructions(Arc::clone(source)),

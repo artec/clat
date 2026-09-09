@@ -444,6 +444,8 @@ impl ReplayAdapter {
             | "model/selection"
             | "subagent/model-selection-policy"
             | "session-log-deepseek/delivery-accepted"
+            | "feedback/message-put"
+            | "feedback/message-delete"
             | "clat/budget" => {}
             _ => {}
         }

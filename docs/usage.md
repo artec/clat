@@ -414,7 +414,11 @@ stable id. Text-only model routes keep the draft visible but block sending;
 switch to a vision-capable route or remove the images. Vision capability is
 officially-declared for built-in presets (five models across four vendors) and,
 for custom configurations, unlocked only by a passing `/vision-probe`.
-Image-only prompts
+Switching an image-bearing session to a text-only route fails the next run
+before provider I/O with the same actionable guidance (switch back to a vision
+route or start `/new`) instead of forwarding the vendor's 400 — except images
+the visual-context budget already offloaded to notices, which do not block the
+text-only run. Image-only prompts
 are valid. Startup/admission failures restore the text and ordered draft, and
 `Esc` recalls queued image steering with its original sources. If cancellation
 or failure seals the run before a queued steering message is claimed, its exact

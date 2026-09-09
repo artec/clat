@@ -4,8 +4,8 @@
 
 use crate::event::{EventSink, ModelOutcome, RunEvent};
 use crate::model::{
-    CancelToken, FinishReason, Model, ModelEvent, ModelEventSink, ModelItem, ModelOptions,
-    ModelRequest, ModelResponse, Usage,
+    CancelToken, FinishReason, Model, ModelCapabilities, ModelEvent, ModelEventSink, ModelItem,
+    ModelOptions, ModelRequest, ModelResponse, Usage,
 };
 use crate::permission::{PermissionDecision, PermissionPolicy};
 use crate::project::Project;
@@ -141,6 +141,10 @@ pub(crate) struct Run<'a> {
     /// 预警数字与终止文案同源）。每轮模型请求前读；越顶以三要素错误
     /// 终止（教学式文案）。
     spend_ledger: Option<std::sync::Arc<crate::model::RunSpendLedger>>,
+    /// MS-1：活跃模型的模态能力快照，供每轮发前模态预检。默认
+    /// fail-closed 纯文本（与 INV-MM2 口径一致）——未接线的调用方
+    /// 带图请求得到明确预检错误，而非厂商 400 透传。
+    capabilities: ModelCapabilities,
 }
 
 impl<'a> Run<'a> {
@@ -164,6 +168,7 @@ impl<'a> Run<'a> {
             tool_access: crate::tool::ToolAccessPolicy::all(),
             tool_definitions: None,
             spend_ledger: None,
+            capabilities: ModelCapabilities::default(),
         }
     }
 
@@ -206,6 +211,13 @@ impl<'a> Run<'a> {
         ledger: Option<std::sync::Arc<crate::model::RunSpendLedger>>,
     ) -> Self {
         self.spend_ledger = ledger;
+        self
+    }
+
+    /// MS-1：接线活跃模型的能力快照（agent 构造点从 `ModelConfig`
+    /// 传入）。不调用则按纯文本 fail-closed 处理。
+    pub(crate) fn with_capabilities(mut self, capabilities: ModelCapabilities) -> Self {
+        self.capabilities = capabilities;
         self
     }
 
@@ -386,6 +398,26 @@ impl<'a> Run<'a> {
                         ));
                     }
                 };
+
+            // MS-1 发前模态预检：会话历史（或工具结果）中的图片 ×
+            // 纯文本模型在此明确失败，错误指路切回视觉模型或 /new。
+            // 放在投影之后：预算卸载为占位文本的旧图不在请求里，
+            // 不误伤 MM-2 卸载语义；也先于预算预留——不会发出的
+            // 请求不占用账本。
+            if let Err(error) = crate::model::modality_preflight(
+                &request_items,
+                &self.capabilities,
+                self.model.model_id(),
+            ) {
+                return Err(fail(
+                    events,
+                    &self.steering,
+                    error,
+                    turn,
+                    total_usage,
+                    items,
+                ));
+            }
 
             // B1 花费护栏（每轮模型请求前比对；steering 延长的同一 run
             // 继续累计）。FP-01（预留制）：检查通过后先预留保守用量
@@ -1694,8 +1726,16 @@ mod tests {
         let tools = ToolRegistry::new();
         let mut model = ImageProjectionModel { calls: 0 };
         let mut events = Vec::new();
+        // MS-1 后本测试聚焦投影语义：受保护图仍在请求里，模型侧必须
+        // 是已验证视觉能力（默认 fail-closed 纯文本会被发前预检拒绝）。
+        let vision = crate::model::ModelCapabilities {
+            input_modalities: vec![crate::model::Modality::Text, crate::model::Modality::Image],
+            tool_result_modalities: vec![crate::model::Modality::Text],
+            image_input_verified: true,
+        };
         Run::new(&mut model, &tools, &AllowAll, &project)
             .with_model_options(options.clone())
+            .with_capabilities(vision)
             .execute_with_items(
                 vec![
                     ModelItem::User {
@@ -1726,6 +1766,196 @@ mod tests {
             .expect_err("latest-turn images cannot be silently omitted");
         assert_eq!(never_called.calls, 0, "failure happens before model I/O");
         assert!(error.to_string().contains("current turn: 2 images"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 记录 provider 实际看到的图片部件数（MS-1 预检测试的探针模型）。
+    struct ModalityProbeModel {
+        calls: usize,
+        images_seen: usize,
+    }
+
+    impl Model for ModalityProbeModel {
+        fn provider(&self) -> &str {
+            "test"
+        }
+
+        fn model_id(&self) -> &str {
+            "text-only-probe"
+        }
+
+        fn stream(
+            &mut self,
+            request: ModelRequest<'_>,
+            _events: &mut dyn ModelEventSink,
+        ) -> Result<ModelResponse, ModelError> {
+            self.calls += 1;
+            self.images_seen = request
+                .items
+                .iter()
+                .flat_map(crate::model::model_item_image_parts)
+                .count();
+            Ok(ModelResponse {
+                text: "done".into(),
+                tool_calls: Vec::new(),
+                finish_reason: FinishReason::Completed,
+                usage: None,
+                provider_response_id: None,
+                provider_state: Vec::new(),
+                reasoning: None,
+            })
+        }
+    }
+
+    /// 临时目录里放一个最小 PNG 头文件（预算估算走真实文件元数据）。
+    fn image_part_in_temp_dir(tag: &str) -> (std::path::PathBuf, ContentPart) {
+        let dir = std::env::temp_dir().join(format!(
+            "clat-run-modality-{tag}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let image = dir.join("image.png");
+        let mut header = vec![
+            0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n', 0, 0, 0, 13, b'I', b'H', b'D', b'R',
+        ];
+        header.extend_from_slice(&500u32.to_be_bytes());
+        header.extend_from_slice(&500u32.to_be_bytes());
+        header.extend_from_slice(&[8, 6, 0, 0, 0]);
+        std::fs::write(&image, header).unwrap();
+        let part = ContentPart::Image {
+            path: image.to_string_lossy().into_owned(),
+            media_type: "image/png".into(),
+        };
+        (dir, part)
+    }
+
+    /// MS-1 判别腿（pre-fix 红）：多模态会话切到纯文本模型后，历史
+    /// 图像在**发前**被模态预检明确拒绝——不是厂商 400 透传，错误
+    /// 指路（切回视觉模型或 /new），且 provider 零 I/O。
+    #[test]
+    fn modality_preflight_rejects_history_images_before_provider_io() {
+        let (dir, image) = image_part_in_temp_dir("history");
+        let mut model = ModalityProbeModel {
+            calls: 0,
+            images_seen: 0,
+        };
+        let error = Run::new(
+            &mut model,
+            &ToolRegistry::new(),
+            &AllowAll,
+            &Project::new(&dir),
+        )
+        .execute_with_items(
+            vec![
+                ModelItem::User {
+                    content: vec![ContentPart::Text("describe this".into()), image],
+                },
+                ModelItem::User {
+                    content: vec![ContentPart::Text("and now a text follow-up".into())],
+                },
+            ],
+            crate::message::MessageContent::text("and now a text follow-up"),
+            None,
+            &mut Vec::new(),
+        )
+        .expect_err("a text-only model must not receive the session's history image");
+        assert_eq!(
+            model.calls, 0,
+            "the preflight fires before any provider I/O"
+        );
+        let error = error.to_string();
+        assert!(error.contains("does not accept image input"), "{error}");
+        assert!(error.contains("text-only-probe"), "{error}");
+        assert!(error.contains("1 image part"), "{error}");
+        assert!(error.contains("vision model"), "{error}");
+        assert!(error.contains("/new"), "{error}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// MS-1 反向腿：同一请求 × 已验证视觉能力 → 照常发出，模型看到
+    /// 历史图像。预检不得误伤视觉路径。
+    #[test]
+    fn modality_preflight_passes_when_the_model_accepts_images() {
+        let (dir, image) = image_part_in_temp_dir("vision");
+        let vision = crate::model::ModelCapabilities {
+            input_modalities: vec![crate::model::Modality::Text, crate::model::Modality::Image],
+            tool_result_modalities: vec![crate::model::Modality::Text],
+            image_input_verified: true,
+        };
+        let mut model = ModalityProbeModel {
+            calls: 0,
+            images_seen: 0,
+        };
+        let output = Run::new(
+            &mut model,
+            &ToolRegistry::new(),
+            &AllowAll,
+            &Project::new(&dir),
+        )
+        .with_capabilities(vision)
+        .execute_with_items(
+            vec![ModelItem::User {
+                content: vec![ContentPart::Text("describe this".into()), image],
+            }],
+            crate::message::MessageContent::text("describe this"),
+            None,
+            &mut Vec::new(),
+        )
+        .expect("a verified vision model receives the history image");
+        assert_eq!(output.text, "done");
+        assert_eq!(model.calls, 1);
+        assert_eq!(model.images_seen, 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// MS-1 卸载腿：预算压力下被投影替换为占位文本的旧图不在请求
+    /// 里，纯文本模型照常出话——MM-2 卸载语义不因预检收紧（改 bug
+    /// 不改坏既有好逻辑的锁定腿）。
+    #[test]
+    fn offloaded_history_images_do_not_trip_the_modality_preflight() {
+        let (dir, image) = image_part_in_temp_dir("offload");
+        let options = ModelOptions {
+            image_projection: Some(crate::model::ImageProjectionBudget {
+                max_context_tokens: None,
+                max_request_images: 0,
+                max_request_image_bytes: u64::MAX,
+            }),
+            ..ModelOptions::default()
+        };
+        let mut model = ModalityProbeModel {
+            calls: 0,
+            images_seen: 0,
+        };
+        let output = Run::new(
+            &mut model,
+            &ToolRegistry::new(),
+            &AllowAll,
+            &Project::new(&dir),
+        )
+        .with_model_options(options)
+        .execute_with_items(
+            vec![
+                ModelItem::User {
+                    content: vec![image],
+                },
+                ModelItem::User {
+                    content: vec![ContentPart::Text("text-only follow-up".into())],
+                },
+            ],
+            crate::message::MessageContent::text("text-only follow-up"),
+            None,
+            &mut Vec::new(),
+        )
+        .expect("the offloaded image must not fail the text-only run");
+        assert_eq!(output.text, "done");
+        assert_eq!(model.calls, 1);
+        assert_eq!(
+            model.images_seen, 0,
+            "the old image was offloaded to a placeholder"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

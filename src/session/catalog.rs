@@ -10,11 +10,13 @@ pub(crate) const SURFACE_EVENT_TYPES: [&str; 3] =
 /// plus DSH 0.1.1-rc.1's four `team/*` types (B3 re-pin), DSH 0.1.2's three
 /// v0-required additions (DV-5: `model/selection` is unconditionally appended
 /// by session-controller's selection flow, so any 0.1.2+ v0 log where the
-/// user picked a model in web carries it), and CLAT's own `clat/budget`
+/// user picked a model in web carries it), DSH 0.1.3-alpha.2's two
+/// `feedback/message-*` types (DW-1, third DV-5-class recurrence: web message
+/// ratings are required-on-read), and CLAT's own `clat/budget`
 /// spend guardrail and `clat/subagent` provenance
 /// events (both written with `ignorable: true`, so older readers may skip
 /// them per the envelope contract).
-pub(crate) const KNOWN_EVENT_TYPES: [&str; 54] = [
+pub(crate) const KNOWN_EVENT_TYPES: [&str; 56] = [
     "agent-preset/selected",
     "clat/budget",
     "clat/subagent",
@@ -31,6 +33,8 @@ pub(crate) const KNOWN_EVENT_TYPES: [&str; 54] = [
     "compaction/prune",
     "compaction/start",
     "compaction/summary",
+    "feedback/message-delete",
+    "feedback/message-put",
     "feedback/record",
     "goal/change",
     "hook/invoked",
@@ -91,7 +95,7 @@ mod tests {
     fn catalog_covers_the_pinned_vocabulary_and_surface_subset() {
         // The upstream set is sorted; every entry is known and the surface
         // subset is exactly the three message types.
-        assert_eq!(KNOWN_EVENT_TYPES.len(), 54);
+        assert_eq!(KNOWN_EVENT_TYPES.len(), 56);
         assert!(is_known_type("user/message"));
         assert!(is_known_type("compaction/summary"));
         assert!(!is_known_type("future/thing"));
@@ -105,5 +109,9 @@ mod tests {
         assert!(is_known_type("model/selection"));
         assert!(is_known_type("session-log-deepseek/delivery-accepted"));
         assert!(is_known_type("subagent/model-selection-policy"));
+        // DW-1：DSH 0.1.3-alpha.2 的 2 个必填评价事件（web 消息评价
+        // 无 ignorable 落盘）。
+        assert!(is_known_type("feedback/message-put"));
+        assert!(is_known_type("feedback/message-delete"));
     }
 }

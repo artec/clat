@@ -807,6 +807,46 @@ mod tests {
         }
     }
 
+    /// DW-1（DV-5 第三次同类复发）：DSH 0.1.3-alpha.2 落地的 2 个必填
+    /// 评价事件——web 消息评价由 `packages/feedback/message-feedback`
+    /// **必填落盘**（无 ignorable），alpha.2+ 日志只要用户评价过消息
+    /// 即含。不补录则 CLAT 准入层 fail-closed 拒载。payload 形状取自
+    /// DSH 源 `types.ts`（put：sessionId + 完整 item；delete：sessionId
+    /// + messageId）。pre-fix 红：RequiredUnknown。
+    #[test]
+    fn dsh_013a2_feedback_events_are_admitted() {
+        let cases: [(&str, serde_json::Value); 2] = [
+            (
+                "feedback/message-put",
+                json!({
+                    "sessionId": "018f2a64-9d3f-7cde-8123-9a4f2b6c0b05",
+                    "item": {
+                        "messageId": "018f2a64-9d3f-7cde-8123-9a4f2b6c1001",
+                        "rating": "positive",
+                        "note": "sharp and concise",
+                        "version": "018f2a64-9d3f-7cde-8123-9a4f2b6c2001",
+                        "createdAt": 1787385720000u64,
+                        "updatedAt": 1787385720000u64,
+                    },
+                }),
+            ),
+            (
+                "feedback/message-delete",
+                json!({
+                    "sessionId": "018f2a64-9d3f-7cde-8123-9a4f2b6c0b05",
+                    "messageId": "018f2a64-9d3f-7cde-8123-9a4f2b6c1001",
+                }),
+            ),
+        ];
+        for (event_type, data) in cases {
+            let event = SessionEvent::new(event_type, 0, 1, data);
+            assert!(
+                admit_events(&[event]).is_ok(),
+                "{event_type} must be a known type"
+            );
+        }
+    }
+
     #[test]
     fn unknown_required_event_is_rejected_and_ignorable_unknown_passes() {
         let required = SessionEvent::new("future/required", 0, 1, json!({}));
@@ -909,7 +949,7 @@ mod tests {
     /// The catalog constants stay honest against the dispatch above.
     #[test]
     fn known_catalog_is_consistent() {
-        assert_eq!(crate::session::catalog::KNOWN_EVENT_TYPES.len(), 54);
+        assert_eq!(crate::session::catalog::KNOWN_EVENT_TYPES.len(), 56);
     }
     /// MM-1A：幂等/元数据字段的 admission 校验——可选字段一旦出现
     /// 必须类型正确且有界（坏 attachmentId/宽高/clientMessageId/

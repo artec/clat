@@ -653,6 +653,30 @@ pub(crate) fn model_item_image_parts(item: &ModelItem) -> impl Iterator<Item = &
         .filter(|part| matches!(part, ContentPart::Image { .. }))
 }
 
+/// MS-1 发前模态预检：投影后的请求仍含图片部件而活跃模型不收图时
+/// 立即明确失败（DSH `llm-deepseek/adapter.ts` 的 UNSUPPORTED_CONTENT
+/// 同型）——绝不把厂商 400 透传给用户，也绝不静默把图换成文本
+/// （替换文本 = 篡改用户消息，与 `PendingMessage::model_parts` 同一
+/// 立场）。工具结果图像经 [`model_item_image_parts`] 一并计入。
+/// 调用点在图片预算投影**之后**：已被投影卸载为占位文本的旧图不在
+/// 请求里，不触发预检——预算卸载是 MM-2 既有语义，不因纯文本模型
+/// 而收紧。
+pub(crate) fn modality_preflight(
+    items: &[ModelItem],
+    capabilities: &ModelCapabilities,
+    model_id: &str,
+) -> Result<(), String> {
+    let images = items.iter().flat_map(model_item_image_parts).count();
+    if images > 0 && !capabilities.accepts_image_input() {
+        return Err(format!(
+            "this model ({model_id}) does not accept image input but the request still carries \
+             {images} image part(s) (images already in this session's history included); switch \
+             back to a vision model (e.g. GLM 5.3 Flash) or start a fresh session with /new"
+        ));
+    }
+    Ok(())
+}
+
 /// Conservative per-item estimate shared by request preflight, compaction,
 /// `/context`, steering, and goal continuation. Keeping ToolResult images in
 /// this walker closes the otherwise easy-to-miss recursive visual-cost gap.
@@ -1601,6 +1625,54 @@ mod tests {
             "tool-result images consume the same visual budget as top-level images"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// MS-1：发前模态预检的判定面——用户历史图像与工具结果图像都
+    /// 计入；纯文本能力拒绝且错误可行动（点名模型、指路视觉模型与
+    /// /new）；已验证视觉能力放行；纯文本请求不误伤。
+    #[test]
+    fn modality_preflight_counts_user_and_tool_result_images() {
+        let vision = ModelCapabilities {
+            input_modalities: vec![Modality::Text, Modality::Image],
+            tool_result_modalities: vec![Modality::Text],
+            image_input_verified: true,
+        };
+        let image = ContentPart::Image {
+            path: "/tmp/clat-modality-probe.png".into(),
+            media_type: "image/png".into(),
+        };
+        let history = vec![ModelItem::User {
+            content: vec![ContentPart::Text("look".into()), image.clone()],
+        }];
+        // 纯文本请求 × 默认（fail-closed 纯文本）能力：放行。
+        modality_preflight(
+            &[ModelItem::user_text("hi")],
+            &ModelCapabilities::default(),
+            "m",
+        )
+        .expect("a text-only request never trips the preflight");
+        // 历史图像 × 纯文本能力：明确拒绝，错误指路。
+        let error = modality_preflight(&history, &ModelCapabilities::default(), "text-model")
+            .expect_err("a text-only model must not receive images");
+        assert!(error.contains("text-model"), "{error}");
+        assert!(error.contains("1 image part"), "{error}");
+        assert!(error.contains("vision model"), "{error}");
+        assert!(error.contains("/new"), "{error}");
+        // 同一请求 × 已验证视觉能力：放行。
+        modality_preflight(&history, &vision, "vision-model")
+            .expect("a verified vision model receives the image");
+        // 工具结果图像同样计入（行走器覆盖递归视觉成本缺口）。
+        let tool_result = ModelItem::ToolResult(crate::tool::ToolResult {
+            call_id: "call-1".into(),
+            tool_name: "view_image".into(),
+            output: json!({"ok": true}),
+            is_error: false,
+            blocks: Vec::new(),
+            image_parts: vec![image],
+        });
+        let error = modality_preflight(&[tool_result], &ModelCapabilities::default(), "text-model")
+            .expect_err("tool-result images are model-facing input too");
+        assert!(error.contains("1 image part"), "{error}");
     }
 
     #[test]

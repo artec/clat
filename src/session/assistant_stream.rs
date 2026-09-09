@@ -499,6 +499,10 @@ mod tests {
             ]),
             serde_json::json!([{"type":"text-chunks","time0":10,"index":0,"dt":[],"texts":[]}]),
             serde_json::json!([{"type":"reasoning-chunks","time0":10,"index":0,"dt":[1],"texts":["only"]}]),
+            // G1 溢出腿（2026-09-09 SD-C1 审计 Mu-B 不红的缺口）：
+            // time0 本身是安全整数，终时越过安全域——删除借用侧终时
+            // 检查后 validate 会误放行而 expand 拒绝，判决漂移必须红。
+            serde_json::json!([{"type":"text-chunks","time0":9007199254740991i64,"index":0,"dt":[1],"texts":["a","b"]}]),
             serde_json::json!([{"type":"tool-call-chunks","time0":10,"index":0,"dt":[],"id":"","args":["{}"]}]),
             serde_json::json!([{"type":"tool-call-chunks","time0":10,"index":0,"dt":[],"id":"c","name":"","args":["{}"]}]),
             serde_json::json!([{"type":"chunk","time":10,"chunk":"not-an-object"}]),

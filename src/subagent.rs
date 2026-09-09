@@ -412,7 +412,8 @@ impl SubagentService {
             .with_spend_ledger(Some(ledger))
             .with_cancel_token(cancel.clone())
             .with_tool_access(access)
-            .with_instructions(task.role.instructions());
+            .with_instructions(task.role.instructions())
+            .with_capabilities(config.capabilities.clone());
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let mut run = run;
             run.execute_with_items(

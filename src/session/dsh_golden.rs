@@ -35,6 +35,7 @@ mod tests {
     const TEAM_ID: &str = "018f2a64-9d3f-7cde-8123-9a4f2b6c0b02";
     const PLAN_ID: &str = "018f2a64-9d3f-7cde-8123-9a4f2b6c0b03";
     const MODEL_SELECTION_ID: &str = "018f2a64-9d3f-7cde-8123-9a4f2b6c0b04";
+    const FEEDBACK_ID: &str = "018f2a64-9d3f-7cde-8123-9a4f2b6c0b05";
     const V2_ID: &str = "018f2a64-9d3f-7cde-8123-9a4f2b6c0d01";
     const APPROVED_PLAN: &str =
         "Inspect the project, preserve invariants, implement the change, then run focused tests.";
@@ -360,6 +361,67 @@ mod tests {
             replay.len(),
             3,
             "user + assistant + turn/end only — the three additions are skipped: {replay:?}"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// DW-1（DV-5 同型判别腿，第三次复发）：DSH 0.1.3-alpha.2 的 2 个
+    /// 必填评价事件在帧字节中随会话落盘——CLAT 准入放行（删 catalog
+    /// 补录即红：RequiredUnknown 拒载整个会话）、重放跳过不重建。
+    /// fixture 出处见 `gen-dw1-fixture.mjs`：原语级铸造（钉靶写路径
+    /// 只产 v2），payload 形状取自 DSH feedback 包写点（put 后 delete
+    /// 的真实使用顺序）。
+    #[test]
+    fn dsh_013a2_feedback_events_admit_and_replay_skips() {
+        let (root, backend) = mount_fixture("feedback-session.jsonl.zstd", FEEDBACK_ID);
+        let events = load_golden(&backend, FEEDBACK_ID);
+
+        let new_types: Vec<&str> = events
+            .iter()
+            .filter(|event| event.event_type.starts_with("feedback/message-"))
+            .map(|event| event.event_type.as_str())
+            .collect();
+        assert_eq!(
+            new_types,
+            vec!["feedback/message-put", "feedback/message-delete"],
+            "both alpha.2 additions ride in v0 bytes in write order"
+        );
+        for event in &events {
+            assert!(
+                event.ignorable.is_none(),
+                "the fixture carries required envelopes (no ignorable)"
+            );
+        }
+
+        // 重放：user + assistant 还原；两个评价事件跳过不重建。
+        let replay = ReplayAdapter::fold(&events);
+        let user_texts: Vec<&String> = replay
+            .iter()
+            .filter_map(|event| match event {
+                ReplayEvent::UserMessage { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            user_texts,
+            vec!["answer, then the user rates and withdraws the rating"],
+            "the user message restores normally"
+        );
+        let assistant: Vec<&ReplayEvent> = replay
+            .iter()
+            .filter(|event| matches!(event, ReplayEvent::AssistantMessage { .. }))
+            .collect();
+        assert_eq!(assistant.len(), 1, "the assistant reply restores");
+        match assistant[0] {
+            ReplayEvent::AssistantMessage { text, .. } => {
+                assert_eq!(text, "rated, then the rating was withdrawn");
+            }
+            other => panic!("unexpected replay event: {other:?}"),
+        }
+        assert_eq!(
+            replay.len(),
+            3,
+            "user + assistant + turn/end only — both feedback events are skipped: {replay:?}"
         );
         let _ = std::fs::remove_dir_all(root);
     }
