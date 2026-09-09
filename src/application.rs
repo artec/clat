@@ -73,6 +73,13 @@ pub use run_lifecycle::{
 pub(crate) use threads::{EXIT_JOIN_GRACE, join_with_grace};
 pub use vision_probe::{VisionProbeHandle, VisionProbeOutcome, VisionProbeReport};
 
+/// Frontend-local window metadata kept outside the stable public snapshot
+/// DTOs. Full consumers keep their existing shapes and semantics.
+pub(crate) struct HistoryWindow<T> {
+    pub(crate) snapshot: T,
+    pub(crate) has_more: bool,
+}
+
 use title::TitleWorker;
 
 // Narrow compatibility DTO port for the read-only DSH projection. Frontends
@@ -261,16 +268,6 @@ pub struct TrustedProjectApplication {
     /// EXIT_JOIN_GRACE 上限，超时放弃（见 `join_with_grace`）——放弃
     /// 等价于一次失败的自动命名（INV-F 静默语义），线程随进程回收。
     title_worker: Option<TitleWorker>,
-    /// 挂载期 resume 已全量回放出的结构化回放（一次性暂存）：随后第
-    /// 一次 `snapshot()` 直接复用，不再从 0 重放日志——大会话在 debug
-    /// 构建下省掉一整遍 zstd 解码加解析（启动性能）。会话 id 配对防
-    /// 错拿；take 后即失效，后续 snapshot 走正常全量流（freshness 语
-    /// 义不变）。usage 统计与回放同遍折叠，一并暂存。
-    mounted_replay: Option<(
-        SessionId,
-        Vec<crate::session::replay::ReplayEvent>,
-        crate::session::use_cases::UsageStats,
-    )>,
     subscribers: Arc<Mutex<Vec<mpsc::Sender<ApplicationEvent>>>>,
     /// Invalid user-level LSP configuration notice, delivered to the first
     /// frontend subscriber after mount instead of being broadcast before any

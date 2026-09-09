@@ -108,6 +108,12 @@ Running `clat` without a subcommand opens the TUI. The previous session is
 restored in the background; input stays disabled until replay finishes, then
 the conversation becomes interactive.
 
+The TUI materializes the newest 50 messages first for both local sessions and
+`clat dsh`. When you scroll to within roughly one screen of the loaded top, it
+loads one earlier message-aligned page and keeps the current reading line in
+place. A slim line above the transcript shows when earlier messages remain or
+are being loaded.
+
 The main screen has three surfaces:
 
 - **Conversation** — durable user and assistant messages, tool activity, and a

@@ -111,18 +111,22 @@ impl App {
     /// 切换到指定会话（/resume 确认时）：workspace 选择 CAS → 冷恢
     /// 复目标会话（原始事件永不删除，随时可再次 resume）→ 重置视图。
     fn switch_session(&mut self, session_id: SessionId) -> Result<(), String> {
-        let snapshot = self
+        let window = self
             .application
             .as_mut()
             .ok_or_else(|| "project application is unavailable".to_owned())?
-            .switch_session(session_id.clone())
+            .switch_session_tail(session_id.clone(), CONVERSATION_HISTORY_PAGE_MESSAGES)
             .map_err(|error| error.to_string())?;
+        let snapshot = window.snapshot;
         self.session_id = Some(session_id);
         self.session_title = snapshot.session_title;
         // 转录从回放重建（G2/G8）；输入历史随会话切换：恢复目标会话
         // 自己的历史（含内存中未持久化的导航状态一并重置）。
         self.conversation =
             crate::tui::conversation::ConversationModel::from_replay(&snapshot.replay);
+        self.conversation_has_more = window.has_more;
+        self.conversation_history_loading = false;
+        self.conversation_history_windowed = window.has_more;
         self.input = InputBuffer::new(snapshot.input_history);
         self.conversation_scroll_from_bottom = 0;
         // 用量指标归属会话（TUI-L04）：恢复目标会话的 journal 统计
@@ -668,6 +672,9 @@ impl App {
                 self.session_title = None;
                 self.conversation = crate::tui::conversation::ConversationModel::new();
                 self.conversation_scroll_from_bottom = 0;
+                self.conversation_has_more = false;
+                self.conversation_history_loading = false;
+                self.conversation_history_windowed = false;
                 self.input = InputBuffer::new(Vec::new());
                 self.session_usage = Usage::default();
                 self.usage_routes.clear();

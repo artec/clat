@@ -96,6 +96,8 @@ use status::*;
 const WHEEL_SCROLL_ROWS: usize = 2;
 /// Rows moved per PageUp/PageDown.
 const PAGE_SCROLL_ROWS: usize = 8;
+/// Shared with the PWA and DSH's default `session/page` contract.
+const CONVERSATION_HISTORY_PAGE_MESSAGES: usize = 50;
 
 /// 输入框行首前缀（首行 `❯ `，续行两个空格）的显示宽度。文本换行、
 /// 光标定位与鼠标选区映射统一扣除该宽度，保持三者坐标一致。
@@ -348,6 +350,14 @@ struct App {
     /// 帧画了多少东西"漂移。真实时间驱动的帧号对重绘次数彻底不敏感。
     animation_epoch: Instant,
     conversation_scroll_from_bottom: usize,
+    /// Older message-aligned pages exist before the materialized window.
+    conversation_has_more: bool,
+    /// Single-flight guard for older-page loads.
+    conversation_history_loading: bool,
+    /// Keep the history indicator row geometrically stable after the final
+    /// prepend so the explicit `scroll_from_bottom += inserted_lines` anchor
+    /// compensation remains exact.
+    conversation_history_windowed: bool,
     input_area: Rect,
     editor_area: Option<Rect>,
     conversation_area: Rect,
@@ -545,6 +555,9 @@ impl App {
             phases: PhaseTracker::default(),
             animation_epoch: Instant::now(),
             conversation_scroll_from_bottom: 0,
+            conversation_has_more: false,
+            conversation_history_loading: false,
+            conversation_history_windowed: false,
             input_area: Rect::default(),
             editor_area: None,
             conversation_area: Rect::default(),
@@ -645,6 +658,9 @@ impl App {
             phases: PhaseTracker::default(),
             animation_epoch: Instant::now(),
             conversation_scroll_from_bottom: 0,
+            conversation_has_more: false,
+            conversation_history_loading: false,
+            conversation_history_windowed: false,
             input_area: Rect::default(),
             editor_area: None,
             conversation_area: Rect::default(),
@@ -776,17 +792,25 @@ impl App {
 
     /// 从已挂载的 application 读取项目快照并重置前端状态。
     fn adopt_snapshot(&mut self) -> Result<(), String> {
-        let snapshot = match self.application.as_mut().map(|app| app.snapshot()) {
+        let window = match self
+            .application
+            .as_mut()
+            .map(|app| app.snapshot_tail(CONVERSATION_HISTORY_PAGE_MESSAGES))
+        {
             Some(Ok(snapshot)) => snapshot,
             Some(Err(error)) => return Err(error.to_string()),
             None => return Err("project application is unavailable".into()),
         };
+        let snapshot = window.snapshot;
         self.session_id = snapshot.session_id;
         self.session_title = snapshot.session_title;
         // 转录一律从 journal 回放构造（G2/G8）：事件日志是唯一权威，
         // 前端不再维护独立的 TranscriptLine 派生视图。
         self.conversation =
             crate::tui::conversation::ConversationModel::from_replay(&snapshot.replay);
+        self.conversation_has_more = window.has_more;
+        self.conversation_history_loading = false;
+        self.conversation_history_windowed = window.has_more;
         self.input = InputBuffer::new(snapshot.input_history);
         self.config = snapshot.config;
         self.credentials = snapshot.credentials;

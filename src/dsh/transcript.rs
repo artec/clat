@@ -38,6 +38,21 @@ impl DshTranscript {
         }
     }
 
+    /// Fold an older, message-aligned page independently and prepend its
+    /// replay facts. The live-tail adapter and last-seq baseline must remain
+    /// untouched: they continue to own stream settlement and gap detection.
+    pub(crate) fn older_history_replay(
+        &self,
+        events: &[SessionEvent],
+    ) -> Vec<crate::session::replay::ReplayEvent> {
+        let mut adapter = ReplayAdapter::new();
+        let mut replay_events = Vec::new();
+        for event in events {
+            adapter.push(event, &mut replay_events);
+        }
+        replay_events
+    }
+
     /// 应用一条事件（历史与活流共用）。返回 true = 该事件推进了
     /// 转录（供上层决定重绘）。
     pub(crate) fn apply(&mut self, model: &mut ConversationModel, event: &SessionEvent) -> bool {

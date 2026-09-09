@@ -3736,6 +3736,77 @@ fn snapshots_carry_the_structured_replay() {
     std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
 }
 
+/// SD-T1: a TUI-facing snapshot must materialize only the newest 50 messages
+/// while retaining an honest older-page cursor. The ordinary facade remains
+/// full-fidelity for non-windowed consumers.
+#[test]
+fn tail_snapshot_materializes_fifty_messages_without_a_full_transcript_clone() {
+    let (storage_root, project_root) = roots("tail-replay-facade");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let project = Project::new(&project_root);
+    let mut application = mount(&project, &storage_root, TestBehavior::Success);
+    configure_test_model(&application);
+    for turn in 0..30 {
+        run(&mut application, &format!("message {turn}")).unwrap();
+    }
+    let long_session = application.current_session_id().expect("long session");
+
+    let tail = application.snapshot_tail(50).expect("tail snapshot");
+    assert!(tail.has_more, "sixty messages require an older page");
+    let tail = tail.snapshot;
+    assert!(
+        tail.transcript.is_empty(),
+        "windowed TUI does not clone the legacy full transcript"
+    );
+    assert_eq!(
+        tail.replay
+            .iter()
+            .filter(|event| event.is_message())
+            .count(),
+        50,
+        "the visible window is message-bounded"
+    );
+    assert!(
+        tail.replay.iter().any(|event| matches!(
+            event,
+            crate::session::replay::ReplayEvent::UserMessage { text, .. }
+                if text == "message 29"
+        )),
+        "the newest turn stays visible"
+    );
+
+    application.new_session().expect("fresh comparison session");
+    run(&mut application, "short session").unwrap();
+    let switched = application
+        .switch_session_tail(long_session, 50)
+        .expect("windowed switch");
+    assert!(switched.has_more);
+    assert!(switched.snapshot.transcript.is_empty());
+    assert_eq!(
+        switched
+            .snapshot
+            .replay
+            .iter()
+            .filter(|event| event.is_message())
+            .count(),
+        50,
+        "switch_session_tail must not return the full replay"
+    );
+
+    let full = application
+        .snapshot()
+        .expect("full snapshot remains available");
+    assert_eq!(
+        full.replay
+            .iter()
+            .filter(|event| event.is_message())
+            .count(),
+        60
+    );
+    application.close().unwrap();
+    std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
+}
+
 #[test]
 fn new_run_resume_exit_reopen_user_sequence() {
     let (storage_root, project_root) = roots("cutover-sequence");

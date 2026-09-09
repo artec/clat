@@ -124,6 +124,7 @@ const SCENARIOS: &[&str] = &[
     "idle-transcript-40",
     "startup-loading",
     "conversation-with-messages",
+    "conversation-history-window",
     "selection-highlight",
     "trust-dialog",
     "permission-dialog",
@@ -1045,6 +1046,18 @@ fn conversation_with_messages_snapshot() {
     // 刷新 2026-08-19：会话折行宽度 -1（滚动条列专属，宽字符不再铺
     // 进滚动条列）——长行换行点前移一列。
     harness.snapshot("conversation-with-messages");
+}
+
+#[test]
+fn conversation_history_window_snapshot() {
+    let mut harness = Harness::trusted("snap-conversation-window", 80, 24);
+    let mut conversation = ConversationModel::new();
+    conversation.push_user("the newest loaded question".into());
+    conversation.push_assistant_for_test("the newest loaded answer");
+    harness.app.conversation = conversation;
+    harness.app.conversation_has_more = true;
+    harness.app.conversation_history_windowed = true;
+    harness.snapshot("conversation-history-window");
 }
 
 /// 回归（真实事故，用户实测确认规律）：行尾为宽字符（CJK/emoji，占
@@ -3764,6 +3777,8 @@ fn harness_dsh(tag: &str, width: u16, height: u16) -> Harness {
     harness.event(UiEvent::Dsh(DshEvent::Reply(TaskReply::History {
         session: DSH_SNAP_SESSION.into(),
         events: Vec::new(),
+        first_seq: None,
+        has_more: false,
     })));
     harness.settle_dsh_status();
     harness

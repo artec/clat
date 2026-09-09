@@ -113,6 +113,10 @@ impl ToolCardVisibility {
 #[derive(Default)]
 pub(crate) struct ConversationModel {
     items: Vec<(ConversationItem, ItemCache)>,
+    /// Exclusive cursor for loading the page immediately before this model.
+    /// It tracks the earliest replay event even when that event is a
+    /// non-rendered permission/retry record.
+    first_replay_seq: Option<u64>,
     /// 未 claim 的 steering 回显尾部区（纯视图状态，INV-SV1）：FIFO 与
     /// core 队列同序，渲染在全部 items 之后（流式 assistant 仍是最后
     /// 一个 item，续写不被打断，INV-SV6）。claim → `confirm`（front 出
@@ -443,6 +447,10 @@ impl ConversationModel {
 
     pub(crate) fn apply_replay(&mut self, events: &[ReplayEvent]) {
         for event in events {
+            self.first_replay_seq = Some(
+                self.first_replay_seq
+                    .map_or(event.seq(), |first| first.min(event.seq())),
+            );
             match event {
                 ReplayEvent::UserMessage { text, .. } => self.push_user(text.clone()),
                 ReplayEvent::AssistantMessage {
@@ -489,6 +497,29 @@ impl ConversationModel {
                 ReplayEvent::PermissionChecked { .. } | ReplayEvent::RetryScheduled { .. } => {}
             }
         }
+    }
+
+    /// Prepend one complete, message-aligned history page without disturbing
+    /// the live tail, pending steering, stream-open state, or disclosure mode.
+    /// Page boundaries are guaranteed by the session core/DSH `session/page`,
+    /// so tool-card pairing can be folded independently inside the prefix.
+    pub(crate) fn prepend_replay(&mut self, events: &[ReplayEvent]) {
+        if events.is_empty() {
+            return;
+        }
+        let mut prefix = Self::new();
+        prefix.reasoning_expanded = self.reasoning_expanded;
+        prefix.apply_replay(events);
+        prefix.items.append(&mut self.items);
+        self.items = prefix.items;
+        self.first_replay_seq = match (prefix.first_replay_seq, self.first_replay_seq) {
+            (Some(prefix), Some(current)) => Some(prefix.min(current)),
+            (prefix, current) => prefix.or(current),
+        };
+    }
+
+    pub(crate) fn first_replay_seq(&self) -> Option<u64> {
+        self.first_replay_seq
     }
 
     // ---- 渲染（G3 缓存契约）----

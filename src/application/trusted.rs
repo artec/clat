@@ -226,7 +226,6 @@ impl TrustedProjectApplication {
             todo: todo_service,
             titler,
             title_worker: None,
-            mounted_replay: None,
             subscribers,
             language_startup_notice,
             canonical_root: project
@@ -322,19 +321,16 @@ impl TrustedProjectApplication {
         match pointer {
             Some(id) => {
                 let key = self.session_key(&id);
-                match self.sessions.resume(&key) {
+                match self.sessions.resume_windowed(&key) {
                     Ok(view) => {
                         self.selection = Some(id.clone());
                         self.fresh_session_open = true;
                         self.emitted_request_header = self.sessions.last_request_header();
                         self.restore_instruction_sources();
                         self.restore_todo_from(&view);
-                        // arm 阶段已经付过一遍全量回放的成本，把结果
-                        // 递给第一次 snapshot()（同 switch_session 复用
-                        // view.replay 的先例）；usage 统计同遍产出，
-                        // 状态栏 Cache/Context 启动即有值。
-                        let SessionView { replay, usage, .. } = view;
-                        self.mounted_replay = Some((id, replay, usage));
+                        // The active replay/projection caches retain the full
+                        // fold. Frontends choose a full or tail snapshot later,
+                        // so mount never creates a second full transcript copy.
                     }
                     Err(error) => {
                         // 缺失/损坏：不修控制行，逻辑回退 Fresh；诊断经
@@ -677,46 +673,75 @@ impl TrustedProjectApplication {
     }
 
     pub fn snapshot(&mut self) -> Result<ProjectSnapshot, ApplicationError> {
+        self.snapshot_with_history_limit(None)
+            .map(|window| window.snapshot)
+    }
+
+    /// Project snapshot for a windowed transcript frontend. Only the newest
+    /// message-aligned page is materialized; the full replay remains owned by
+    /// SessionService for later page requests and non-windowed consumers.
+    pub(crate) fn snapshot_tail(
+        &mut self,
+        max_messages: usize,
+    ) -> Result<crate::application::HistoryWindow<ProjectSnapshot>, ApplicationError> {
+        self.snapshot_with_history_limit(Some(max_messages))
+    }
+
+    fn snapshot_with_history_limit(
+        &mut self,
+        max_messages: Option<usize>,
+    ) -> Result<crate::application::HistoryWindow<ProjectSnapshot>, ApplicationError> {
         let (config, credentials) = self.model_state()?;
         self.monitor.configure(config.clone(), credentials.clone());
-        let (transcript, replay, usage, input_history, session_id) = match self.sessions.active_id()
-        {
-            Some(id) => {
-                let inputs = self.sessions.recent_inputs(500).map_err(session_error)?;
-                let transcript = self.sessions.transcript_lines().map_err(session_error)?;
-                // 挂载期暂存的回放一次性复用（会话 id 配对）：省掉紧随
-                // mount 的又一整遍全量流式回放。任何后续 snapshot 都走
-                // 正常全量流，freshness 语义不变。
-                let (replay, usage) = match self.mounted_replay.take() {
-                    Some((stash_id, replay, usage)) if stash_id == id => (replay, usage),
-                    _ => self
-                        .sessions
-                        .replay_active_with_usage()
-                        .map_err(session_error)?,
-                };
-                (transcript, replay, usage, inputs, Some(id))
-            }
-            None => (
-                Vec::new(),
-                Vec::new(),
-                crate::session::use_cases::UsageStats::default(),
-                Vec::new(),
-                None,
-            ),
-        };
-        Ok(ProjectSnapshot {
-            session_id,
-            session_title: self.effective_session_title(),
-            transcript,
-            replay,
-            input_history,
-            session_usage: usage.session,
-            usage_routes: usage.routes,
-            last_request_usage: usage.last_request,
-            provider_descriptors: self.providers.descriptors(&credentials),
-            config,
-            credentials,
-            mcp: McpStatusDto::from(self.mcp_status.as_ref()),
+        let (transcript, replay, replay_has_more, usage, input_history, session_id) =
+            match self.sessions.active_id() {
+                Some(id) => {
+                    let inputs = self.sessions.recent_inputs(500).map_err(session_error)?;
+                    let (transcript, replay, replay_has_more, usage) = match max_messages {
+                        Some(max_messages) => {
+                            let (page, usage) = self
+                                .sessions
+                                .history_active_with_usage(None, max_messages)
+                                .map_err(session_error)?;
+                            (Vec::new(), page.events, page.has_more, usage)
+                        }
+                        None => {
+                            let transcript =
+                                self.sessions.transcript_lines().map_err(session_error)?;
+                            let (replay, usage) = self
+                                .sessions
+                                .replay_active_with_usage()
+                                .map_err(session_error)?;
+                            (transcript, replay, false, usage)
+                        }
+                    };
+                    (transcript, replay, replay_has_more, usage, inputs, Some(id))
+                }
+                None => (
+                    Vec::new(),
+                    Vec::new(),
+                    false,
+                    crate::session::use_cases::UsageStats::default(),
+                    Vec::new(),
+                    None,
+                ),
+            };
+        Ok(crate::application::HistoryWindow {
+            snapshot: ProjectSnapshot {
+                session_id,
+                session_title: self.effective_session_title(),
+                transcript,
+                replay,
+                input_history,
+                session_usage: usage.session,
+                usage_routes: usage.routes,
+                last_request_usage: usage.last_request,
+                provider_descriptors: self.providers.descriptors(&credentials),
+                config,
+                credentials,
+                mcp: McpStatusDto::from(self.mcp_status.as_ref()),
+            },
+            has_more: replay_has_more,
         })
     }
 
@@ -1020,6 +1045,26 @@ impl TrustedProjectApplication {
     /// 3. **Swap**: quiesce the old session, then perform an infallible
     ///    in-memory install and release the withheld resume seed.
     pub fn switch_session(&mut self, id: SessionId) -> Result<SessionSnapshot, ApplicationError> {
+        self.switch_session_with_history_limit(id, None)
+            .map(|window| window.snapshot)
+    }
+
+    /// Switch sessions while materializing only the newest replay page for a
+    /// windowed frontend. The prepare scan remains single-pass and the active
+    /// replay cache remains complete; only the duplicate return view is slim.
+    pub(crate) fn switch_session_tail(
+        &mut self,
+        id: SessionId,
+        max_messages: usize,
+    ) -> Result<crate::application::HistoryWindow<SessionSnapshot>, ApplicationError> {
+        self.switch_session_with_history_limit(id, Some(max_messages))
+    }
+
+    fn switch_session_with_history_limit(
+        &mut self,
+        id: SessionId,
+        max_messages: Option<usize>,
+    ) -> Result<crate::application::HistoryWindow<SessionSnapshot>, ApplicationError> {
         self.reject_session_switch_while_busy()?;
         if !self.sessions.has_log(&self.session_key(&id)) {
             return Err(ApplicationError::new(format!(
@@ -1027,19 +1072,39 @@ impl TrustedProjectApplication {
             )));
         }
         if self.sessions.active_id().as_ref() == Some(&id) {
-            let (replay, usage) = self
-                .sessions
-                .replay_active_with_usage()
-                .map_err(session_error)?;
-            return Ok(SessionSnapshot {
-                id,
-                session_title: self.effective_session_title(),
-                transcript: self.sessions.transcript_lines().map_err(session_error)?,
-                replay,
-                session_usage: usage.session,
-                usage_routes: usage.routes,
-                last_request_usage: usage.last_request,
-                input_history: self.sessions.recent_inputs(500).map_err(session_error)?,
+            let (transcript, replay, replay_has_more, usage) = match max_messages {
+                Some(max_messages) => {
+                    let (page, usage) = self
+                        .sessions
+                        .history_active_with_usage(None, max_messages)
+                        .map_err(session_error)?;
+                    (Vec::new(), page.events, page.has_more, usage)
+                }
+                None => {
+                    let (replay, usage) = self
+                        .sessions
+                        .replay_active_with_usage()
+                        .map_err(session_error)?;
+                    (
+                        self.sessions.transcript_lines().map_err(session_error)?,
+                        replay,
+                        false,
+                        usage,
+                    )
+                }
+            };
+            return Ok(crate::application::HistoryWindow {
+                snapshot: SessionSnapshot {
+                    id,
+                    session_title: self.effective_session_title(),
+                    transcript,
+                    replay,
+                    session_usage: usage.session,
+                    usage_routes: usage.routes,
+                    last_request_usage: usage.last_request,
+                    input_history: self.sessions.recent_inputs(500).map_err(session_error)?,
+                },
+                has_more: replay_has_more,
             });
         }
         // Phase 1: full prepare. This replaces the old `has_log`-only
@@ -1051,7 +1116,11 @@ impl TrustedProjectApplication {
         // Finish every fallible storage operation before committing the
         // workspace pointer. A lost CAS closes this empty, unpublished
         // writer and leaves the old active session untouched.
-        let armed = self.sessions.arm_session(staged).map_err(session_error)?;
+        let armed = match max_messages {
+            Some(_) => self.sessions.arm_session_windowed(staged),
+            None => self.sessions.arm_session(staged),
+        }
+        .map_err(session_error)?;
         // Phase 2: commit the pointer (first durable activation in an
         // unregistered workspace also registers it — the target session
         // is by definition adopting-ready).
@@ -1096,16 +1165,29 @@ impl TrustedProjectApplication {
             .map_err(session_error)
             .map_err(ApplicationError::with_selection_changed)?;
         quiesce.map_err(ApplicationError::with_selection_changed)?;
-        let usage = view.usage;
-        Ok(SessionSnapshot {
-            id,
-            session_title: self.effective_session_title(),
-            transcript: view.transcript,
-            replay: view.replay,
-            session_usage: usage.session,
-            usage_routes: usage.routes,
-            last_request_usage: usage.last_request,
-            input_history,
+        let (transcript, replay, replay_has_more, usage) = match max_messages {
+            Some(max_messages) => {
+                let (page, usage) = self
+                    .sessions
+                    .history_active_with_usage(None, max_messages)
+                    .map_err(session_error)
+                    .map_err(ApplicationError::with_selection_changed)?;
+                (Vec::new(), page.events, page.has_more, usage)
+            }
+            None => (view.transcript, view.replay, false, view.usage),
+        };
+        Ok(crate::application::HistoryWindow {
+            snapshot: SessionSnapshot {
+                id,
+                session_title: self.effective_session_title(),
+                transcript,
+                replay,
+                session_usage: usage.session,
+                usage_routes: usage.routes,
+                last_request_usage: usage.last_request,
+                input_history,
+            },
+            has_more: replay_has_more,
         })
     }
 
@@ -1387,7 +1469,6 @@ impl TrustedProjectApplication {
         self.emitted_request_header = self.sessions.last_request_header();
         self.restore_instruction_sources();
         self.restore_todo_from(&view);
-        self.mounted_replay = None;
         Ok(())
     }
 

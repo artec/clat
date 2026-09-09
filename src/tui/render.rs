@@ -2,15 +2,97 @@ use super::*;
 
 impl App {
     pub(super) fn scroll_up(&mut self, amount: usize) {
-        self.conversation_scroll_from_bottom = self
-            .conversation_scroll_from_bottom
-            .saturating_add(amount)
-            .min(10_000);
+        self.conversation_scroll_from_bottom =
+            self.conversation_scroll_from_bottom.saturating_add(amount);
+        self.maybe_load_older_conversation();
     }
 
     pub(super) fn scroll_down(&mut self, amount: usize) {
         self.conversation_scroll_from_bottom =
             self.conversation_scroll_from_bottom.saturating_sub(amount);
+    }
+
+    pub(super) fn conversation_indicator_rows(&self) -> usize {
+        usize::from(self.conversation_history_windowed || self.conversation_history_loading)
+    }
+
+    fn conversation_visible_rows(&self) -> usize {
+        (self.conversation_area.height.saturating_sub(2) as usize)
+            .saturating_sub(self.conversation_indicator_rows())
+    }
+
+    /// Trigger a single older-page load once the reading position is within
+    /// roughly one viewport of the loaded window's top.
+    pub(super) fn maybe_load_older_conversation(&mut self) {
+        if !self.conversation_has_more || self.conversation_history_loading {
+            return;
+        }
+        let visible = self.conversation_visible_rows().max(1);
+        let total = self.conversation_rows;
+        let max_start = total.saturating_sub(visible);
+        let start = max_start.saturating_sub(self.conversation_scroll_from_bottom.min(max_start));
+        if start > visible {
+            return;
+        }
+
+        if self.dsh.is_some() {
+            self.dsh_load_older_history();
+            return;
+        }
+        let Some(before_seq) = self.conversation.first_replay_seq() else {
+            self.conversation_has_more = false;
+            return;
+        };
+        self.conversation_history_loading = true;
+        let page = self
+            .application
+            .as_ref()
+            .ok_or_else(|| "project application is unavailable".to_owned())
+            .and_then(|application| {
+                application
+                    .session_history(Some(before_seq), CONVERSATION_HISTORY_PAGE_MESSAGES)
+                    .map_err(|error| error.to_string())
+            });
+        match page {
+            Ok(page) => self.prepend_conversation_page(&page.events, page.has_more),
+            Err(error) => {
+                self.conversation_history_loading = false;
+                self.flash_status(format!("history load failed: {error}"));
+            }
+        }
+    }
+
+    /// Preserve the viewport's bottom-relative anchor across a prefix insert.
+    /// The line delta is measured after full item rendering, so multi-line
+    /// Think disclosures and wrapped tool cards participate automatically.
+    pub(super) fn prepend_conversation_page(
+        &mut self,
+        events: &[crate::session::replay::ReplayEvent],
+        has_more: bool,
+    ) {
+        let width = conversation_wrap_width(self.conversation_area);
+        self.conversation.ensure_rendered(width);
+        let before = self.conversation.total_lines(self.card_visibility);
+        self.conversation.prepend_replay(events);
+        self.conversation.ensure_rendered(width);
+        let after = self.conversation.total_lines(self.card_visibility);
+        let inserted = after.saturating_sub(before);
+        self.conversation_scroll_from_bottom = self
+            .conversation_scroll_from_bottom
+            .saturating_add(inserted);
+        self.conversation_start = self.conversation_start.saturating_add(inserted);
+        self.conversation_rows = after;
+        if let Some(selection) = self
+            .selection
+            .as_mut()
+            .filter(|selection| selection.kind == SelectionKind::Conversation)
+        {
+            selection.anchor.row = selection.anchor.row.saturating_add(inserted);
+            selection.head.row = selection.head.row.saturating_add(inserted);
+        }
+        self.conversation_has_more = has_more;
+        self.conversation_history_loading = false;
+        self.conversation_history_windowed = true;
     }
 
     /// 输入框文本的可用宽度：内容区宽减去行首前缀（`❯ ` / 两个空格）。
@@ -834,13 +916,22 @@ impl App {
                 .right_aligned(),
             );
         }
+        let inner = block.inner(area);
+        let indicator_rows = self.conversation_indicator_rows() as u16;
+        let content_area = Rect {
+            x: inner.x,
+            y: inner.y.saturating_add(indicator_rows),
+            width: inner.width,
+            height: inner.height.saturating_sub(indicator_rows),
+        };
         // 空会话：LOGO 欢迎页接管会话区（启动 / `/new` / `/clear` 后的
         // 起步画面）。0 行内容与画面一致——无滚动、无选区映射。
         if self.conversation.is_empty() {
             self.conversation_start = 0;
             self.conversation_rows = 0;
             frame.render_widget(&block, area);
-            draw_welcome(frame, block.inner(area));
+            self.draw_history_indicator(frame, inner);
+            draw_welcome(frame, content_area);
             self.draw_dsh_banner(frame, area);
             return;
         }
@@ -848,7 +939,7 @@ impl App {
         // conversation_wrap_width），宽字符字形不再铺进滚动条列。
         let inner_width = conversation_wrap_width(area);
         let total = self.conversation_total_lines(inner_width);
-        let visible = area.height.saturating_sub(2) as usize;
+        let visible = content_area.height as usize;
         let max_start = total.saturating_sub(visible);
         let start = max_start.saturating_sub(self.conversation_scroll_from_bottom.min(max_start));
         // 记录视口信息，供鼠标事件把屏幕坐标映射回内容行。
@@ -876,10 +967,9 @@ impl App {
                 *line = highlight_line(line, highlight_from, highlight_to);
             }
         }
-        frame.render_widget(
-            Paragraph::new(Text::from(visible_lines)).block(block.clone()),
-            area,
-        );
+        frame.render_widget(&block, area);
+        self.draw_history_indicator(frame, inner);
+        frame.render_widget(Paragraph::new(Text::from(visible_lines)), content_area);
 
         let mut scrollbar_state = ScrollbarState::new(total)
             .position(scrollbar_position(start, max_start, total))
@@ -892,10 +982,27 @@ impl App {
                 .track_symbol(Some("│"))
                 .style(theme::style(theme::Role::ScrollTrack))
                 .thumb_style(theme::style(theme::Role::ScrollThumb)),
-            block.inner(area),
+            inner,
             &mut scrollbar_state,
         );
         self.draw_dsh_banner(frame, area);
+    }
+
+    fn draw_history_indicator(&self, frame: &mut Frame, inner: Rect) {
+        if self.conversation_indicator_rows() == 0 || inner.height == 0 {
+            return;
+        }
+        let text = if self.conversation_history_loading {
+            " ↑ loading earlier messages… "
+        } else if self.conversation_has_more {
+            " ↑ scroll up for earlier messages "
+        } else {
+            " ↑ start of conversation "
+        };
+        frame.render_widget(
+            Paragraph::new(Span::styled(text, theme::style(theme::Role::Faint))),
+            Rect { height: 1, ..inner },
+        );
     }
 
     /// dsh 断线/重连中/流错误通知条（§2.2）：会话区顶部第一内行，

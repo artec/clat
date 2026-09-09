@@ -1433,7 +1433,8 @@ mod tests {
             "$events/result carries the args-wrapped answer"
         );
 
-        // History：先切 follow 取得真实游标，再逐页加载到起点。
+        // History：先切 follow 取得真实游标，但首屏只取尾页；上翻再用
+        // beforeSeq 拉一页，worker 不得自行循环到起点。
         let reply = backend::run_task(
             &DshTask::History {
                 session: "session-3".into(),
@@ -1447,28 +1448,53 @@ mod tests {
             Some(&controller),
         );
         match reply {
-            Some(crate::dsh::backend::TaskReply::History { events, .. }) => {
+            Some(crate::dsh::backend::TaskReply::History {
+                events,
+                first_seq,
+                has_more,
+                ..
+            }) => {
                 assert_eq!(
                     events.iter().map(|event| event.seq).collect::<Vec<_>>(),
-                    vec![0, 3],
-                    "all pages load in chronological order"
+                    vec![3],
+                    "initial history materializes only the newest page"
                 );
-                assert_eq!(events[0].data["content"][0]["text"], "earliest");
-                let mut transcript = crate::dsh::transcript::DshTranscript::new();
-                let mut model = crate::tui::conversation::ConversationModel::new();
-                transcript.load_history(&mut model, &events);
-                model.ensure_rendered(80);
-                let visibility = crate::tui::conversation::ToolCardVisibility::Collapsed;
-                let text = (0..model.total_lines(visibility))
-                    .map(|row| model.row_plain_text(row, 80, visibility))
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                assert!(
-                    text.contains("earliest") && text.contains("page"),
-                    "both old and recent messages must render: {text}"
-                );
+                assert_eq!(first_seq, Some(3));
+                assert!(has_more);
             }
             other => panic!("History reply: {other:?}"),
+        }
+        let older = backend::run_task(
+            &DshTask::OlderHistory {
+                session: "session-3".into(),
+                before_seq: 3,
+            },
+            &mut {
+                DshClient::new(host.port)
+                    .with_cookie(&cookie)
+                    .with_typert_era()
+            },
+            &mut port,
+            Some(&controller),
+        );
+        match older {
+            Some(crate::dsh::backend::TaskReply::OlderHistory {
+                requested_before_seq,
+                events,
+                first_seq,
+                has_more,
+                ..
+            }) => {
+                assert_eq!(requested_before_seq, 3);
+                assert_eq!(
+                    events.iter().map(|event| event.seq).collect::<Vec<_>>(),
+                    vec![0]
+                );
+                assert_eq!(first_seq, Some(0));
+                assert!(!has_more);
+                assert_eq!(events[0].data["content"][0]["text"], "earliest");
+            }
+            other => panic!("older History reply: {other:?}"),
         }
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
@@ -1492,6 +1518,11 @@ mod tests {
                         .all(|page| page["args"]["request"]["throughSeq"] == 20)
                 );
                 assert_eq!(pages[1]["args"]["request"]["beforeSeq"], 3);
+                assert!(
+                    pages
+                        .iter()
+                        .all(|page| { page["args"]["request"]["maxMessages"] == 50 })
+                );
                 break;
             }
             assert!(
@@ -1520,18 +1551,23 @@ mod tests {
             .with_cookie("dsh-auth-t=v1.s")
             .with_typert_era();
         let mut port = host.port;
-        for (session, expected) in [
-            ("empty-page", "without backwards progress"),
-            ("repeated-page", "outside the requested cut"),
-        ] {
-            let reply = crate::dsh::backend::run_task(
-                &crate::dsh::backend::DshTask::History {
-                    session: session.into(),
+        for (task, expected) in [
+            (
+                crate::dsh::backend::DshTask::History {
+                    session: "empty-page".into(),
                 },
-                &mut client,
-                &mut port,
-                Some(&controller),
-            );
+                "without backwards progress",
+            ),
+            (
+                crate::dsh::backend::DshTask::OlderHistory {
+                    session: "repeated-page".into(),
+                    before_seq: 3,
+                },
+                "outside the requested cut",
+            ),
+        ] {
+            let reply =
+                crate::dsh::backend::run_task(&task, &mut client, &mut port, Some(&controller));
             assert!(
                 matches!(reply, Some(crate::dsh::backend::TaskReply::Failed(message)) if message.contains(expected)),
                 "bad pagination must fail, not publish partial history"

@@ -243,6 +243,9 @@ pub(crate) struct DshState {
     /// `staged_events` 暂存，回执后统一补放——装载阶段由显式状态表达，
     /// 不再从「视图是否为空」反推。
     history_loading: bool,
+    /// Earliest raw event seq in the loaded DSH page; this is the exclusive
+    /// `beforeSeq` cursor for the next older page.
+    history_before_seq: Option<u64>,
     /// 当前会话的 workspace（会话级真来源，2026-08-24 负责人对齐：
     /// clat dsh 是宿主的终端客户端——和 3080 页面同位，显示的是会话
     /// 所属项目目录，与 clat 的本地运行目录无关；本地目录只在本地
@@ -326,6 +329,7 @@ impl DshState {
             generation: 0,
             epoch: Arc::new(AtomicU64::new(0)),
             history_loading: false,
+            history_before_seq: None,
             staged_events: Vec::new(),
             workspace: None,
             pending_adoption: None,
@@ -894,7 +898,21 @@ impl App {
                     self.dsh_open_downlinks();
                 }
             },
-            TaskReply::History { session, events } => self.dsh_load_history(session, events),
+            TaskReply::History {
+                session,
+                events,
+                first_seq,
+                has_more,
+            } => self.dsh_load_history(session, events, first_seq, has_more),
+            TaskReply::OlderHistory {
+                session,
+                requested_before_seq,
+                events,
+                first_seq,
+                has_more,
+            } => {
+                self.dsh_prepend_history(session, requested_before_seq, events, first_seq, has_more)
+            }
             TaskReply::Created(session) => {
                 // 收养在途：按回执 id 匹配，workspace 跟随目标会话；
                 // 不匹配（/new 的新 id / 陈旧残留）清空不跟随。
@@ -974,7 +992,13 @@ impl App {
     /// 装载阶段由 `history_loading` 显式表达（审计 P1-1）：切换/启动
     /// 的整页回执必走重建支；期间暂存的 live 帧在重建后统一补放
     /// （先到 live 帧后到回执的竞态不再依赖「视图是否为空」猜测）。
-    fn dsh_load_history(&mut self, session: String, events: Vec<SessionEvent>) {
+    fn dsh_load_history(
+        &mut self,
+        session: String,
+        events: Vec<SessionEvent>,
+        first_seq: Option<u64>,
+        has_more: bool,
+    ) {
         let Some(dsh) = self.dsh.as_mut() else {
             return;
         };
@@ -983,7 +1007,8 @@ impl App {
         }
         let was_open = dsh.ws_open;
         let mut staged = None;
-        if dsh.history_loading {
+        let initial_load = dsh.history_loading;
+        if initial_load {
             dsh.history_loading = false;
             staged = Some(std::mem::take(&mut dsh.staged_events));
             dsh.transcript.load_history(&mut self.conversation, &events);
@@ -1002,6 +1027,12 @@ impl App {
                 dsh.transcript.apply(&mut self.conversation, event);
             }
         }
+        if initial_load {
+            dsh.history_before_seq = first_seq;
+            self.conversation_has_more = has_more;
+            self.conversation_history_loading = false;
+            self.conversation_history_windowed = has_more;
+        }
         // 投影 fold 幂等（latest-wins）：整页重放与间隙补齐统一走全量。
         self.dsh_fold_session_projections(&events);
         if let Some(staged) = staged {
@@ -1016,12 +1047,54 @@ impl App {
         }
     }
 
+    fn dsh_prepend_history(
+        &mut self,
+        session: String,
+        requested_before_seq: u64,
+        events: Vec<SessionEvent>,
+        first_seq: Option<u64>,
+        has_more: bool,
+    ) {
+        let Some(dsh) = self.dsh.as_mut() else {
+            return;
+        };
+        if dsh.current_session.as_deref() != Some(session.as_str())
+            || dsh.history_before_seq != Some(requested_before_seq)
+            || !self.conversation_history_loading
+        {
+            return;
+        }
+        let replay = dsh.transcript.older_history_replay(&events);
+        dsh.history_before_seq = first_seq.or(dsh.history_before_seq);
+        self.prepend_conversation_page(&replay, has_more);
+    }
+
+    pub(super) fn dsh_load_older_history(&mut self) {
+        let Some(dsh) = self.dsh.as_mut() else {
+            return;
+        };
+        let Some(session) = dsh.current_session.clone() else {
+            self.conversation_has_more = false;
+            return;
+        };
+        let Some(before_seq) = dsh.history_before_seq else {
+            self.conversation_has_more = false;
+            return;
+        };
+        self.conversation_history_loading = true;
+        dsh.send_task(DshTask::OlderHistory {
+            session,
+            before_seq,
+        });
+    }
+
     /// 装载失败的中止（审计 P2-1）：解除暂存态，已暂存的 live 帧走
     /// 完整归约补放——历史页缺席但近期活动可见，loading 不悬挂。
     fn dsh_abort_history_loading(&mut self) {
         let Some(dsh) = self.dsh.as_mut() else {
             return;
         };
+        self.conversation_history_loading = false;
         if !dsh.history_loading {
             return;
         }
@@ -1108,6 +1181,7 @@ impl App {
             .rev()
             .collect();
         dsh.transcript = DshTranscript::new();
+        dsh.history_before_seq = None;
         dsh.unknown_events = 0;
         dsh.preset = None;
         dsh.context_window = None;
@@ -1126,6 +1200,9 @@ impl App {
         // （fresh transcript 的 gap_before 恒 None），形成跨会话串线。
         self.conversation = ConversationModel::new();
         self.conversation_scroll_from_bottom = 0;
+        self.conversation_has_more = false;
+        self.conversation_history_loading = true;
+        self.conversation_history_windowed = false;
         // 装载阶段显式化：整页回执前 live 帧入暂存区，回执后统一补放。
         dsh.history_loading = true;
         dsh.staged_events.clear();
@@ -1640,6 +1717,9 @@ impl App {
                 // 纯本地：清空会话视图（与 local /clear 语义一致，零 API）。
                 self.conversation = ConversationModel::new();
                 self.conversation_scroll_from_bottom = 0;
+                self.conversation_has_more = false;
+                self.conversation_history_loading = false;
+                self.conversation_history_windowed = false;
                 self.flash_status("cleared");
             }
             "help" => {
@@ -2016,6 +2096,106 @@ mod tests {
         ));
     }
 
+    /// SD-T2: the initial DSH page stays bounded, scrolling near the loaded
+    /// top sends exactly one cursor request, and prepending preserves the
+    /// bottom-relative reading anchor until `hasMore` is exhausted.
+    #[test]
+    fn dsh_history_pages_load_on_scroll_with_single_flight_and_stable_anchor() {
+        let (mut app, task_rx) = dsh_app();
+        event(
+            &mut app,
+            DshEvent::Reply(TaskReply::Created("session-window".into())),
+        );
+        assert!(matches!(
+            task_rx.try_recv(),
+            Ok(DshTask::History { session }) if session == "session-window"
+        ));
+        assert!(matches!(
+            task_rx.try_recv(),
+            Ok(DshTask::ModelNames { session }) if session == "session-window"
+        ));
+        event(
+            &mut app,
+            DshEvent::Reply(TaskReply::History {
+                session: "session-window".into(),
+                events: vec![surface(
+                    "user/message",
+                    10,
+                    json!({"content": [{"type": "text", "text": "newest page"}]}),
+                )],
+                first_seq: Some(10),
+                has_more: true,
+            }),
+        );
+        app.conversation_area = Rect::new(0, 0, 80, 24);
+        app.conversation.ensure_rendered(77);
+        app.conversation_rows = app.conversation.total_lines(app.card_visibility);
+        app.conversation_scroll_from_bottom = 3;
+        assert!(app.conversation.toggle_reasoning());
+        let lines_before = app.conversation_rows;
+
+        app.maybe_load_older_conversation();
+        app.maybe_load_older_conversation();
+        assert!(app.conversation_history_loading);
+        assert!(matches!(
+            task_rx.try_recv(),
+            Ok(DshTask::OlderHistory { session, before_seq })
+                if session == "session-window" && before_seq == 10
+        ));
+        assert!(
+            task_rx.try_recv().is_err(),
+            "an in-flight page suppresses duplicate scroll requests"
+        );
+
+        event(
+            &mut app,
+            DshEvent::Reply(TaskReply::OlderHistory {
+                session: "session-window".into(),
+                requested_before_seq: 10,
+                events: vec![
+                    surface(
+                        "user/message",
+                        0,
+                        json!({"content": [{"type": "text", "text": "oldest page"}]}),
+                    ),
+                    surface(
+                        "assistant/message",
+                        1,
+                        json!({
+                            "turn": 1,
+                            "step": 1,
+                            "message": {
+                                "role": "assistant",
+                                "content": [
+                                    {"type": "reasoning", "text": "first thought\nsecond thought"},
+                                    {"type": "text", "text": "oldest answer"}
+                                ],
+                                "source": {"provider": "deepseek", "model": "test-model"}
+                            }
+                        }),
+                    ),
+                ],
+                first_seq: Some(0),
+                has_more: false,
+            }),
+        );
+        let lines_after = app.conversation_rows;
+        assert_eq!(
+            app.conversation_scroll_from_bottom,
+            3 + lines_after.saturating_sub(lines_before),
+            "prepend line count compensates the bottom anchor"
+        );
+        assert!(!app.conversation_has_more);
+        assert!(!app.conversation_history_loading);
+        let text = rendered_text(&mut app);
+        assert!(text.contains("first thought"), "{text}");
+        assert!(text.contains("second thought"), "{text}");
+        assert!(
+            text.find("oldest page") < text.find("newest page"),
+            "older facts prepend in chronological order: {text}"
+        );
+    }
+
     /// INV-U3（Ctrl+O 同一 ConversationModel 天然继承）：dsh 态三态循环。
     #[test]
     fn ctrl_o_cycles_card_visibility_in_dsh_mode() {
@@ -2376,6 +2556,8 @@ mod tests {
             &mut app,
             DshEvent::Reply(TaskReply::History {
                 session: "session-target".into(),
+                first_seq: Some(5),
+                has_more: false,
                 events: vec![surface(
                     "user/message",
                     5,
@@ -2838,6 +3020,8 @@ mod tests {
             &mut app,
             DshEvent::Reply(TaskReply::History {
                 session: "session-target".into(),
+                first_seq: Some(1),
+                has_more: false,
                 events: vec![session_event(
                     "request/context",
                     1,
@@ -2987,6 +3171,8 @@ mod tests {
             &mut app,
             DshEvent::Reply(TaskReply::History {
                 session: "session-target".into(),
+                first_seq: Some(1),
+                has_more: false,
                 events: vec![session_event(
                     "request/header",
                     1,

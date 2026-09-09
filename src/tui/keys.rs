@@ -963,9 +963,13 @@ impl App {
     /// 按下位置落在哪个组件的内容区内，返回对应的选区类型和内容坐标。
     fn selection_target(&self, x: u16, y: u16) -> Option<(SelectionKind, SelectionPos)> {
         if let Some(pos) = content_pos(self.conversation_area, x, y) {
+            let indicator_rows = self.conversation_indicator_rows();
+            if pos.row < indicator_rows {
+                return None;
+            }
             // 视口内的行号加上滚动偏移才是内容行号。
-            let row =
-                (self.conversation_start + pos.row).min(self.conversation_rows.saturating_sub(1));
+            let row = (self.conversation_start + pos.row - indicator_rows)
+                .min(self.conversation_rows.saturating_sub(1));
             Some((
                 SelectionKind::Conversation,
                 SelectionPos { row, col: pos.col },
@@ -996,8 +1000,9 @@ impl App {
         match kind {
             SelectionKind::Conversation => {
                 let pos = clamped_pos(self.conversation_area, self.conversation_rows, x, y);
-                let row = (self.conversation_start + pos.row)
-                    .min(self.conversation_rows.saturating_sub(1));
+                let row = (self.conversation_start
+                    + pos.row.saturating_sub(self.conversation_indicator_rows()))
+                .min(self.conversation_rows.saturating_sub(1));
                 SelectionPos { row, col: pos.col }
             }
             SelectionKind::Input => {

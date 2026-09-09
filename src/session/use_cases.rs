@@ -366,6 +366,21 @@ impl SessionService {
     /// Reopening the already-active key retires that writer before staging so
     /// the lease is never acquired twice for one physical session.
     pub(crate) fn resume(&self, key: &SessionKey) -> Result<SessionView, SessionError> {
+        self.resume_with_view(key, true)
+    }
+
+    /// Resume while keeping the active replay/projection caches authoritative,
+    /// but do not clone their full frontend views. A windowed frontend can ask
+    /// [`Self::history_active`] for only its first visible page after install.
+    pub(crate) fn resume_windowed(&self, key: &SessionKey) -> Result<SessionView, SessionError> {
+        self.resume_with_view(key, false)
+    }
+
+    fn resume_with_view(
+        &self,
+        key: &SessionKey,
+        materialize_full_view: bool,
+    ) -> Result<SessionView, SessionError> {
         // Reopening the session that is already active must first retire its
         // writer.  Otherwise arming the same physical log would require a
         // second lease in this process and, more importantly, would race the
@@ -382,7 +397,7 @@ impl SessionService {
             self.quiesce_active()?;
         }
         let staged = self.stage_resume(key)?;
-        let armed = self.arm_session(staged)?;
+        let armed = self.arm_session_with_view(staged, materialize_full_view)?;
         if let Err(error) = self.quiesce_active() {
             return match self.discard_armed(armed) {
                 Ok(()) => Err(error),
@@ -411,6 +426,24 @@ impl SessionService {
     /// same physical read — only the torn-tail crash path re-reads once
     /// after repair. Any failure closes the just-created writer.
     pub(crate) fn arm_session(&self, staged: StagedSession) -> Result<ArmedSession, SessionError> {
+        self.arm_session_with_view(staged, true)
+    }
+
+    /// Prepare a resume target without cloning its full replay/transcript into
+    /// the return view. The active session still owns the complete folded
+    /// state, so a later full consumer remains lossless.
+    pub(crate) fn arm_session_windowed(
+        &self,
+        staged: StagedSession,
+    ) -> Result<ArmedSession, SessionError> {
+        self.arm_session_with_view(staged, false)
+    }
+
+    fn arm_session_with_view(
+        &self,
+        staged: StagedSession,
+        materialize_full_view: bool,
+    ) -> Result<ArmedSession, SessionError> {
         let StagedSession { key, header } = staged;
         let arm_header = SessionHeader::new(key.id.clone(), key.project.header_cwd.clone(), 0);
         let mut registry = ProjectionRegistry::clat();
@@ -465,7 +498,11 @@ impl SessionService {
                 return Err(error);
             }
         }
-        let replay = sink.replay.clone();
+        let replay = if materialize_full_view {
+            sink.replay.clone()
+        } else {
+            Vec::new()
+        };
         let usage = sink.usage.clone();
         let replay_state = Arc::new(Mutex::new(sink));
         let active = ActiveSession {
@@ -476,14 +513,18 @@ impl SessionService {
             replay: replay_state,
             generation: AtomicU64::new(0),
         };
-        let mut view =
-            match self.view_from(&header, &projections.lock().expect("projections"), replay) {
-                Ok(view) => view,
-                Err(error) => {
-                    let _ = coordinator.close();
-                    return Err(error);
-                }
-            };
+        let mut view = match self.view_from(
+            &header,
+            &projections.lock().expect("projections"),
+            replay,
+            materialize_full_view,
+        ) {
+            Ok(view) => view,
+            Err(error) => {
+                let _ = coordinator.close();
+                return Err(error);
+            }
+        };
         view.usage = usage;
         // INV-MM1-4：会话打开时的有界 orphan 回收（引用集合来自上方
         // 单遍收集；附件域不存在则跳过——全新会话无附件；失败静默：
@@ -525,9 +566,8 @@ impl SessionService {
         let ArmedSession { active, view } = armed;
         let seeded = active.coordinator.enqueue_seed_marker_if_needed();
         // The seed marker must be durable before `Application::open`
-        // returns: mount 的第一次 snapshot 走 mounted_replay 暂存、不
-        // 再重流日志，但后续任何全量读者（下一次 snapshot、下一次冷
-        // resume 的 prepare 扫描）都会看到磁盘——marker 还在 200ms
+        // returns: active replay caches avoid a second disk stream, but later
+        // cold-resume readers still observe the journal directly——marker 还在 200ms
         // 写后窗口里时，"open 已返回但日志缺 marker"对它们就是种族。
         // Best effort on purpose: a failed flush keeps the batch on the
         // normal retry lane, and install must stay infallible.
@@ -1474,6 +1514,18 @@ impl SessionService {
         before_seq: Option<u64>,
         max_messages: usize,
     ) -> Result<SessionHistoryPage, SessionError> {
+        self.history_active_with_usage(before_seq, max_messages)
+            .map(|(page, _)| page)
+    }
+
+    /// History page plus the usage fold captured by the same replay cache
+    /// lock. Windowed snapshots therefore never need a second full replay
+    /// clone merely to restore status-bar counters.
+    pub(crate) fn history_active_with_usage(
+        &self,
+        before_seq: Option<u64>,
+        max_messages: usize,
+    ) -> Result<(SessionHistoryPage, UsageStats), SessionError> {
         let (key, committed, replay) = {
             let guard = self.active.lock().expect("active");
             match guard.as_ref() {
@@ -1483,16 +1535,22 @@ impl SessionService {
                     Arc::clone(&active.replay),
                 ),
                 None => {
-                    return Ok(SessionHistoryPage {
-                        events: Vec::new(),
-                        has_more: false,
-                    });
+                    return Ok((
+                        SessionHistoryPage {
+                            events: Vec::new(),
+                            has_more: false,
+                        },
+                        UsageStats::default(),
+                    ));
                 }
             }
         };
         catch_up_replay(&self.backend, &key, committed, &replay)?;
         let replay = replay.lock().expect("replay");
-        Ok(paginate_replay(&replay.replay, before_seq, max_messages))
+        Ok((
+            paginate_replay(&replay.replay, before_seq, max_messages),
+            replay.usage.clone(),
+        ))
     }
 
     pub(crate) fn message_outline_active(&self) -> Result<Vec<MessageOutlineItem>, SessionError> {
@@ -1625,6 +1683,7 @@ impl SessionService {
         header: &SessionHeader,
         projections: &ProjectionRegistry,
         replay: Vec<ReplayEvent>,
+        materialize_full_view: bool,
     ) -> Result<SessionView, SessionError> {
         let row = |unit: &str| projections.state_snapshot(unit).unwrap_or_default();
         let title = row("title")
@@ -1646,29 +1705,33 @@ impl SessionService {
                     .collect()
             })
             .unwrap_or_default();
-        let transcript = row("transcript")
-            .get("entries")
-            .and_then(Value::as_array)
-            .map(|entries| {
-                entries
-                    .iter()
-                    .filter_map(|entry| {
-                        Some(TranscriptLine {
-                            kind: entry.get("kind")?.as_str()?.to_owned(),
-                            text: entry
-                                .get("text")
-                                .and_then(Value::as_str)
-                                .unwrap_or_default()
-                                .to_owned(),
-                            is_error: entry
-                                .get("isError")
-                                .and_then(Value::as_bool)
-                                .unwrap_or(false),
+        let transcript = if materialize_full_view {
+            row("transcript")
+                .get("entries")
+                .and_then(Value::as_array)
+                .map(|entries| {
+                    entries
+                        .iter()
+                        .filter_map(|entry| {
+                            Some(TranscriptLine {
+                                kind: entry.get("kind")?.as_str()?.to_owned(),
+                                text: entry
+                                    .get("text")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or_default()
+                                    .to_owned(),
+                                is_error: entry
+                                    .get("isError")
+                                    .and_then(Value::as_bool)
+                                    .unwrap_or(false),
+                            })
                         })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+                        .collect()
+                })
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         let turns = row("stats")
             .get("turns")
             .and_then(Value::as_u64)
@@ -1679,12 +1742,16 @@ impl SessionService {
         // 当前无生产消费者；任何消费者接入前必须改走带栅栏的
         // SessionService::surface_nodes（模型内容的唯一入口栅栏，
         // run 历史与 /context 同源）——届时本注释必须随之删除。
-        let model_items = projections
-            .surface_nodes()
-            .map_err(SessionError::Corruption)?
-            .into_iter()
-            .map(|(_, item)| item)
-            .collect();
+        let model_items = if materialize_full_view {
+            projections
+                .surface_nodes()
+                .map_err(SessionError::Corruption)?
+                .into_iter()
+                .map(|(_, item)| item)
+                .collect()
+        } else {
+            Vec::new()
+        };
         Ok(SessionView {
             header: header.clone(),
             title,

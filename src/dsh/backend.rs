@@ -100,6 +100,10 @@ pub(crate) enum DshTask {
     History {
         session: String,
     },
+    OlderHistory {
+        session: String,
+        before_seq: u64,
+    },
     Models {
         session: Option<String>,
     },
@@ -147,6 +151,15 @@ pub(crate) enum TaskReply {
     History {
         session: String,
         events: Vec<SessionEvent>,
+        first_seq: Option<u64>,
+        has_more: bool,
+    },
+    OlderHistory {
+        session: String,
+        requested_before_seq: u64,
+        events: Vec<SessionEvent>,
+        first_seq: Option<u64>,
+        has_more: bool,
     },
     Status(String),
     Created(String),
@@ -557,82 +570,10 @@ pub(crate) fn run_task(
         }
         DshTask::History { session } => {
             // page 的 throughSeq 是 follow 的真实持久游标；-1 是空
-            // 前缀，不是“最新”。同一截止点向前翻页，避免并发追加漂移。
+            // 前缀，不是“最新”。只取尾部 50 条；更早页由 TUI 上翻
+            // 显式请求，不能在 worker 内急切循环到会话起点。
             if client.era == DshEra::Typert {
-                let through_seq = if let Some(controller) = mux {
-                    match controller.history_cursor(session) {
-                        Ok(cursor) => cursor,
-                        Err(error) => return Some(TaskReply::Failed(error)),
-                    }
-                } else {
-                    return Some(TaskReply::Failed(
-                        "typert history needs the mux controller (AdoptMux missing)".to_owned(),
-                    ));
-                };
-                let mut before_seq = None;
-                let mut events = Vec::new();
-                loop {
-                    let mut request = json!({
-                        "address": {"kind": "session", "sessionId": session},
-                        "throughSeq": through_seq,
-                        "maxMessages": 2000,
-                    });
-                    if let Some(before) = before_seq {
-                        request["beforeSeq"] = json!(before);
-                    }
-                    let payload = era_request_args(client.era, Some("request"), request);
-                    let value = match client.call("session/page", payload) {
-                        Ok(value) => value,
-                        Err(error) => return Some(TaskReply::Failed(error.to_string())),
-                    };
-                    let Some(records) = value.get("records").and_then(Value::as_array) else {
-                        return Some(TaskReply::Failed("session/page reply lacks records".into()));
-                    };
-                    let mut first_seq = None;
-                    for record in records {
-                        let event = match serde_json::from_value::<SessionEvent>(
-                            record.get("event").cloned().unwrap_or(Value::Null),
-                        ) {
-                            Ok(event) => event,
-                            Err(error) => {
-                                return Some(TaskReply::Failed(format!(
-                                    "invalid history event: {error}"
-                                )));
-                            }
-                        };
-                        if i64::try_from(event.seq).map_or(true, |seq| seq > through_seq)
-                            || before_seq.is_some_and(|before| event.seq >= before)
-                        {
-                            return Some(TaskReply::Failed(
-                                "session/page returned an event outside the requested cut".into(),
-                            ));
-                        }
-                        first_seq =
-                            Some(first_seq.map_or(event.seq, |seq: u64| seq.min(event.seq)));
-                        events.push(event);
-                    }
-                    match value.get("hasMore").and_then(Value::as_bool) {
-                        Some(false) => break,
-                        Some(true) => {
-                            let Some(first) = first_seq.filter(|seq| *seq > 0) else {
-                                return Some(TaskReply::Failed(
-                                    "session/page hasMore without backwards progress".into(),
-                                ));
-                            };
-                            before_seq = Some(first);
-                        }
-                        None => {
-                            return Some(TaskReply::Failed(
-                                "session/page reply lacks hasMore".into(),
-                            ));
-                        }
-                    }
-                }
-                events.sort_by_key(|event| event.seq);
-                return Some(TaskReply::History {
-                    session: session.clone(),
-                    events,
-                });
+                return Some(run_typert_history_page(client, mux, session, None));
             }
             let value = match client.call("session.history", json!({"sessionId": session})) {
                 Ok(value) => value,
@@ -651,8 +592,26 @@ pub(crate) fn run_task(
             events.sort_by_key(|event| event.seq);
             Some(TaskReply::History {
                 session: session.clone(),
+                first_seq: events.first().map(|event| event.seq),
                 events,
+                has_more: false,
             })
+        }
+        DshTask::OlderHistory {
+            session,
+            before_seq,
+        } => {
+            if client.era != DshEra::Typert {
+                return Some(TaskReply::Failed(
+                    "older history pages require the DSH session/page protocol".into(),
+                ));
+            }
+            Some(run_typert_history_page(
+                client,
+                mux,
+                session,
+                Some(*before_seq),
+            ))
         }
         DshTask::Models { session } => {
             let Some(session) = session else {
@@ -775,6 +734,81 @@ pub(crate) fn run_task(
         }
         DshTask::AdoptMux { .. } => unreachable!("intercepted by the worker loop"),
         DshTask::Reconnect => unreachable!("handled above"),
+    }
+}
+
+fn run_typert_history_page(
+    client: &DshClient,
+    mux: Option<&MuxController>,
+    session: &str,
+    before_seq: Option<u64>,
+) -> TaskReply {
+    let through_seq = if let Some(controller) = mux {
+        match controller.history_cursor(session) {
+            Ok(cursor) => cursor,
+            Err(error) => return TaskReply::Failed(error),
+        }
+    } else {
+        return TaskReply::Failed(
+            "typert history needs the mux controller (AdoptMux missing)".to_owned(),
+        );
+    };
+    let mut request = json!({
+        "address": {"kind": "session", "sessionId": session},
+        "throughSeq": through_seq,
+        "maxMessages": 50,
+    });
+    if let Some(before) = before_seq {
+        request["beforeSeq"] = json!(before);
+    }
+    let payload = era_request_args(client.era, Some("request"), request);
+    let value = match client.call("session/page", payload) {
+        Ok(value) => value,
+        Err(error) => return TaskReply::Failed(error.to_string()),
+    };
+    let Some(records) = value.get("records").and_then(Value::as_array) else {
+        return TaskReply::Failed("session/page reply lacks records".into());
+    };
+    let Some(has_more) = value.get("hasMore").and_then(Value::as_bool) else {
+        return TaskReply::Failed("session/page reply lacks hasMore".into());
+    };
+    let mut events = Vec::with_capacity(records.len());
+    let mut first_seq = None;
+    for record in records {
+        let event = match serde_json::from_value::<SessionEvent>(
+            record.get("event").cloned().unwrap_or(Value::Null),
+        ) {
+            Ok(event) => event,
+            Err(error) => return TaskReply::Failed(format!("invalid history event: {error}")),
+        };
+        if i64::try_from(event.seq).map_or(true, |seq| seq > through_seq)
+            || before_seq.is_some_and(|before| event.seq >= before)
+        {
+            return TaskReply::Failed(
+                "session/page returned an event outside the requested cut".into(),
+            );
+        }
+        first_seq = Some(first_seq.map_or(event.seq, |seq: u64| seq.min(event.seq)));
+        events.push(event);
+    }
+    if has_more && first_seq.is_none_or(|seq| seq == 0) {
+        return TaskReply::Failed("session/page hasMore without backwards progress".into());
+    }
+    events.sort_by_key(|event| event.seq);
+    match before_seq {
+        Some(requested_before_seq) => TaskReply::OlderHistory {
+            session: session.to_owned(),
+            requested_before_seq,
+            events,
+            first_seq,
+            has_more,
+        },
+        None => TaskReply::History {
+            session: session.to_owned(),
+            events,
+            first_seq,
+            has_more,
+        },
     }
 }
 
