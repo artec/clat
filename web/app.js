@@ -1013,7 +1013,31 @@ function renderMessageMap() {
     bar.addEventListener('click', () => jumpToMessage(item.seq));
     track.appendChild(bar);
   }
+  bindLiveMessageSeqs(outline);
   syncActiveMapItem();
+}
+
+function bindLiveMessageSeqs(outline) {
+  const used = new Set(
+    [...dom.transcript.querySelectorAll(':scope > .msg[data-seq]')]
+      .map((node) => node.dataset.seq),
+  );
+  for (const role of ['user', 'assistant']) {
+    const nodes = [...dom.transcript.querySelectorAll(`:scope > .msg.${role}:not([data-seq])`)];
+    if (nodes.length === 0) continue;
+    const candidates = outline
+      .filter((item) => item && item.role === role && Number.isSafeInteger(item.seq)
+        && !used.has(String(item.seq)))
+      .slice(-nodes.length);
+    const offset = nodes.length - candidates.length;
+    for (let index = 0; index < candidates.length; index += 1) {
+      const node = nodes[offset + index];
+      const item = candidates[index];
+      node.dataset.seq = String(item.seq);
+      node.dataset.turn = String(item.turn || 0);
+      used.add(node.dataset.seq);
+    }
+  }
 }
 
 async function jumpToMessage(seq) {

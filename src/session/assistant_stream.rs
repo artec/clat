@@ -173,6 +173,8 @@ fn member_time(time0: i64, dt: &[i64]) -> Option<i64> {
 /// Decode and expand all four released-v2 record variants. Expansion doubles
 /// as strict shape/timestamp validation while preserving every delta boundary.
 pub(crate) fn expand_assistant_stream(value: &Value) -> Result<Vec<TimedChunk>, String> {
+    #[cfg(test)]
+    EXPANSION_CALLS.with(|calls| calls.set(calls.get() + 1));
     let records = value
         .as_array()
         .ok_or_else(|| "stream must be an array".to_owned())?;
@@ -265,6 +267,121 @@ pub(crate) fn expand_assistant_stream(value: &Value) -> Result<Vec<TimedChunk>, 
         }
     }
     Ok(output)
+}
+
+/// Validate a released-v2 embedded stream without materializing its expanded
+/// chunks. Cold session admission only needs a structural verdict; building a
+/// fresh `TimedChunk` and JSON object for every historical token boundary made
+/// large-session open time proportional to the full stream twice over.
+pub(crate) fn validate_assistant_stream(value: &Value) -> Result<(), String> {
+    let records = value
+        .as_array()
+        .ok_or_else(|| "stream must be an array".to_owned())?;
+    for candidate in records {
+        let object = candidate
+            .as_object()
+            .ok_or_else(|| "Assistant stream record must be an object".to_owned())?;
+        let kind = object
+            .get("type")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "Assistant stream record lacks type".to_owned())?;
+        match kind {
+            "text-chunks" | "reasoning-chunks" => {
+                exact_keys(object, &["type", "time0", "index", "dt", "texts"], kind)?;
+                let time0 = signed_integer(object.get("time0"), "time0")?;
+                count(object.get("index"), "index")?;
+                let dt = integer_values(object.get("dt"), "dt")?;
+                let texts = string_values(object.get("texts"), "texts")?;
+                validate_borrowed_run(dt, texts.len(), time0, kind)?;
+            }
+            "tool-call-chunks" => {
+                let keys: &[&str] = if object.contains_key("name") {
+                    &["type", "time0", "index", "dt", "id", "name", "args"]
+                } else {
+                    &["type", "time0", "index", "dt", "id", "args"]
+                };
+                exact_keys(object, keys, kind)?;
+                let time0 = signed_integer(object.get("time0"), "time0")?;
+                count(object.get("index"), "index")?;
+                non_empty_str(object.get("id"), "id")?;
+                if object.contains_key("name") {
+                    non_empty_str(object.get("name"), "name")?;
+                }
+                let dt = integer_values(object.get("dt"), "dt")?;
+                let args = string_values(object.get("args"), "args")?;
+                validate_borrowed_run(dt, args.len(), time0, kind)?;
+            }
+            "chunk" => {
+                exact_keys(object, &["type", "time", "chunk"], kind)?;
+                signed_integer(object.get("time"), "time")?;
+                if !object.get("chunk").is_some_and(Value::is_object) {
+                    return Err("raw chunk must be an object".to_owned());
+                }
+            }
+            other => return Err(format!("unsupported Assistant stream record `{other}`")),
+        }
+    }
+    Ok(())
+}
+
+fn integer_values<'a>(value: Option<&'a Value>, label: &str) -> Result<&'a [Value], String> {
+    let values = value
+        .and_then(Value::as_array)
+        .ok_or_else(|| format!("{label} must be an integer array"))?;
+    for value in values {
+        signed_integer(Some(value), label)?;
+    }
+    Ok(values)
+}
+
+fn string_values<'a>(value: Option<&'a Value>, label: &str) -> Result<&'a [Value], String> {
+    let values = value
+        .and_then(Value::as_array)
+        .ok_or_else(|| format!("{label} must be a string array"))?;
+    if values.iter().any(|value| !value.is_string()) {
+        return Err(format!("{label} must be a string array"));
+    }
+    Ok(values)
+}
+
+fn validate_borrowed_run(
+    dt: &[Value],
+    members: usize,
+    time0: i64,
+    label: &str,
+) -> Result<(), String> {
+    if members == 0 {
+        return Err(format!("{label} members must be non-empty"));
+    }
+    if dt.len() + 1 != members {
+        return Err(format!("{label} dt length must be one less than members"));
+    }
+    let final_time = dt.iter().try_fold(time0, |time, gap| {
+        time.checked_add(
+            gap.as_i64()
+                .expect("integer_values admitted every timestamp delta"),
+        )
+    });
+    let final_time = final_time.ok_or_else(|| format!("{label} member times overflow"))?;
+    safe_i64(final_time, &format!("{label} member time"))?;
+    Ok(())
+}
+
+fn non_empty_str<'a>(value: Option<&'a Value>, label: &str) -> Result<&'a str, String> {
+    value
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("{label} must be a non-empty string"))
+}
+
+#[cfg(test)]
+thread_local! {
+    static EXPANSION_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn take_expansion_calls_for_test() -> usize {
+    EXPANSION_CALLS.with(|calls| calls.replace(0))
 }
 
 fn validate_run(dt: &[i64], members: usize, time0: i64, label: &str) -> Result<(), String> {
@@ -361,12 +478,39 @@ mod tests {
             {"type":"tool-call-chunks","time0":30,"index":2,"dt":[1],"id":"c","name":"tool","args":["{","}"]},
             {"type":"chunk","time":40,"chunk":{"type":"finish","reason":{"kind":"stop"}}}
         ]);
+        validate_assistant_stream(&stream).expect("valid v2 stream without expansion");
         let expanded = expand_assistant_stream(&stream).expect("valid v2 stream");
         assert_eq!(expanded.len(), 6);
         assert_eq!(expanded[1].time, 12);
         assert_eq!(expanded[1].chunk["text"], "b");
         assert_eq!(expanded[4].chunk["argumentsDelta"], "}");
         assert_eq!(expanded[5].chunk["type"], "finish");
+    }
+
+    #[test]
+    fn validation_only_path_matches_expansion_verdicts() {
+        let cases = [
+            serde_json::json!([]),
+            serde_json::json!([
+                {"type":"text-chunks","time0":10,"index":0,"dt":[2],"texts":["a","b"]},
+                {"type":"reasoning-chunks","time0":20,"index":1,"dt":[],"texts":["r"]},
+                {"type":"tool-call-chunks","time0":30,"index":2,"dt":[],"id":"c","args":["{}"]},
+                {"type":"chunk","time":40,"chunk":{"type":"finish"}}
+            ]),
+            serde_json::json!([{"type":"text-chunks","time0":10,"index":0,"dt":[],"texts":[]}]),
+            serde_json::json!([{"type":"reasoning-chunks","time0":10,"index":0,"dt":[1],"texts":["only"]}]),
+            serde_json::json!([{"type":"tool-call-chunks","time0":10,"index":0,"dt":[],"id":"","args":["{}"]}]),
+            serde_json::json!([{"type":"tool-call-chunks","time0":10,"index":0,"dt":[],"id":"c","name":"","args":["{}"]}]),
+            serde_json::json!([{"type":"chunk","time":10,"chunk":"not-an-object"}]),
+            serde_json::json!([{"type":"future","time":10}]),
+        ];
+        for stream in cases {
+            assert_eq!(
+                validate_assistant_stream(&stream).is_ok(),
+                expand_assistant_stream(&stream).is_ok(),
+                "validation and expansion drifted for {stream}"
+            );
+        }
     }
 
     #[test]

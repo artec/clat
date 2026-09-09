@@ -709,9 +709,15 @@ impl ProjectionUnit for SurfaceUnit {
         self.as_of
     }
     fn fold(&mut self, event: &SessionEvent) -> Result<(), String> {
-        // Keep every event (not only surface ones): provenance checks cite
-        // arbitrary earlier seqs and index into the full log. The
-        // take/apply/restore dance keeps this O(1) amortized — cloning the
+        // Keep a dense seq index, but retain full payloads only for surface
+        // nodes. Provenance validation needs arbitrary earlier seqs to exist;
+        // only tool/result replacement reads an earlier payload, and that
+        // target is itself a surface node. Embedded assistant streams are
+        // transport evidence already validated at admission and never enter a
+        // model request. Copying them into this long-lived projection doubled
+        // the hottest large-session allocation.
+        //
+        // The take/apply/restore dance keeps this O(1) amortized — cloning the
         // whole event vec per event was O(N²) over a long session (audit
         // P1-13).
         let mut events = std::mem::take(&mut self.events);
@@ -723,7 +729,7 @@ impl ProjectionUnit for SurfaceUnit {
         };
         match result {
             Ok(()) => {
-                events.push(event.clone());
+                events.push(surface_index_event(event));
                 self.as_of = event.seq as i64;
                 self.events = events;
                 self.surface = surface;
@@ -769,6 +775,19 @@ impl ProjectionUnit for SurfaceUnit {
             &self.surface,
         ))
     }
+}
+
+fn surface_index_event(event: &SessionEvent) -> SessionEvent {
+    if !crate::session::catalog::is_surface_type(&event.event_type) {
+        return SessionEvent::new(&event.event_type, event.seq, event.time, Value::Null);
+    }
+    let mut retained = event.clone();
+    if retained.event_type == "assistant/message"
+        && let Some(data) = retained.data.as_object_mut()
+    {
+        data.remove("stream");
+    }
+    retained
 }
 
 /// CLAT display view: every surface event stays visible; a replace is
@@ -1676,6 +1695,41 @@ mod tests {
                 payloads::turn_end(1, &TurnEndReason::Completed),
             ),
         ]
+    }
+
+    #[test]
+    fn surface_projection_does_not_retain_transport_only_stream_payloads() {
+        let large_stream = json!([{
+            "type": "reasoning-chunks",
+            "time0": 1,
+            "index": 0,
+            "dt": [1, 1],
+            "texts": ["one", "two", "three"],
+        }]);
+        let attempt = SessionEvent::new(
+            "assistant/attempt",
+            0,
+            1,
+            json!({"turn": 1, "step": 0, "stream": large_stream}),
+        );
+        let mut message = assistant_event(1, "settled", Vec::new());
+        message.data["stream"] = large_stream;
+
+        let mut unit = SurfaceUnit::default();
+        unit.fold(&attempt).expect("attempt index");
+        unit.fold(&message).expect("message surface");
+
+        assert!(unit.events[0].data.is_null());
+        assert!(unit.events[1].data.get("stream").is_none());
+        let nodes = unit
+            .surface_nodes()
+            .expect("surface projection")
+            .expect("surface adapter");
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(
+            nodes[0].1,
+            crate::model::ModelItem::assistant_text("settled")
+        );
     }
 
     fn assistant_event(seq: u64, text: &str, tool_calls: Vec<(&str, &str)>) -> SessionEvent {

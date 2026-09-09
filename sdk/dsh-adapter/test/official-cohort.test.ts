@@ -6,10 +6,11 @@ import test from 'node:test'
 import { runDshCli } from '../src/dsh-cli.js'
 import { scanDshCompatibility } from '../src/scanner.js'
 
-const checkout = process.env['DSH_CHECKOUT'] ?? path.resolve(process.cwd(), '../../../deepseek-harness')
-const available = existsSync(path.join(checkout, 'package.json'))
+const checkout = process.env['DSH_CHECKOUT']?.trim() || undefined
+const available = checkout !== undefined && existsSync(path.join(checkout, 'package.json'))
 
 test('pinned 12-package official DSH cohort keeps its semantic compatibility evidence', { skip: !available }, async () => {
+  assert.ok(checkout, 'DSH_CHECKOUT explicitly arms the official cohort test')
   const cohort = JSON.parse(await readFile(path.join(process.cwd(), 'compat/official-cohort.json'), 'utf8')) as {
     dshRevision: string
     packages: Array<{ directory: string; name: string; status: string; unsupported: string[] }>

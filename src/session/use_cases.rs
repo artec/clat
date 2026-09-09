@@ -3268,6 +3268,10 @@ mod tests {
             project: project(),
         };
         let tool_content = "x".repeat(4 * 1024);
+        let stream_texts = (0..160)
+            .map(|index| format!("stream-{index:03}-{}", "x".repeat(24)))
+            .collect::<Vec<_>>();
+        let stream_dt = vec![1; stream_texts.len() - 1];
         let turns = 400u64;
         for turn in 0..turns {
             let journal = service.journal().expect("journal");
@@ -3278,6 +3282,30 @@ mod tests {
                 reasoning_tokens: None,
             };
             let step = turn + 1;
+            let mut assistant = payloads::assistant_message(
+                step,
+                step,
+                vec![payloads::text_block(&format!(
+                    "turn {turn} plan:\n- read the module\n- patch\n- verify"
+                ))],
+                "deepseek",
+                "deepseek-v4-pro",
+                Some(&usage),
+            );
+            assistant["stream"] = serde_json::json!([
+                {
+                    "type": "reasoning-chunks",
+                    "time0": 1_000,
+                    "index": 0,
+                    "dt": stream_dt,
+                    "texts": stream_texts,
+                },
+                {
+                    "type": "chunk",
+                    "time": 1_160,
+                    "chunk": {"type": "finish", "reason": {"kind": "stop"}},
+                }
+            ]);
             journal
                 .append_atomic(&[
                     crate::session::run_journal::NewSessionEvent::new(
@@ -3291,16 +3319,7 @@ mod tests {
                     .append(Vec::new()),
                     crate::session::run_journal::NewSessionEvent::new(
                         "assistant/message",
-                        payloads::assistant_message(
-                            step,
-                            step,
-                            vec![payloads::text_block(&format!(
-                                "turn {turn} plan:\n- read the module\n- patch\n- verify"
-                            ))],
-                            "deepseek",
-                            "deepseek-v4-pro",
-                            Some(&usage),
-                        ),
+                        assistant,
                     )
                     .append(Vec::new()),
                     crate::session::run_journal::NewSessionEvent::new(

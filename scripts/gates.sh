@@ -14,6 +14,12 @@
 #                                  #   （网络 / 并发 / 时序敏感改动用）
 #   scripts/gates.sh --rust-only   # 跳过 node 两步（无 node 环境时；
 #                                  #   注意这不是完整的 CI 镜像）
+#
+# DSH 互锁与 official-cohort 两条外部 checkout 测试默认跳过，避免兄弟
+# 目录 pull 后把未钉靶的本机状态混入 CLAT 门禁。显式 opt-in：
+#   DSH_CHECKOUT=/absolute/path/to/deepseek-harness scripts/gates.sh
+# 当前 DSH 0.1.5 checkout 首次运行前需在其根目录执行 `pnpm install`，
+# 再执行 `pnpm build:native-system`；具体钉靶 revision 仍由测试断言负责。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

@@ -249,17 +249,19 @@ mod tests {
         crate::test_support::cleanup_tree(&root);
     }
 
-    /// Live DSH leg (self-skips when the maintainer checkout/toolchain is not
-    /// present): each runtime must observe the other's kernel ownership.
+    /// Live DSH leg (explicitly armed with `DSH_CHECKOUT`): each runtime must
+    /// observe the other's kernel ownership. Never auto-discover a sibling
+    /// checkout: its unpinned HEAD and native dependencies are maintainer-local
+    /// state, not part of CLAT's default test surface.
     #[test]
     fn dsh_and_clat_exclude_each_others_session_writer() {
         use std::io::{BufRead as _, Write as _};
         use std::process::{Command, Stdio};
 
         let repo = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let dsh = std::env::var_os("DSH_CHECKOUT")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| repo.parent().unwrap().join("deepseek-harness"));
+        let Some(dsh) = std::env::var_os("DSH_CHECKOUT").map(std::path::PathBuf::from) else {
+            return;
+        };
         let lease_source = dsh.join("packages/session/session-persistence-jsonl/src/lease.ts");
         if !lease_source.is_file() || Command::new("node").arg("--version").output().is_err() {
             return;

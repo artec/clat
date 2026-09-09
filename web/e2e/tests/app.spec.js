@@ -402,6 +402,10 @@ test('scrolling within 512px of the top automatically loads one earlier page', a
 
 test('Think disclosure follows the latest live line, then the first settled line', async ({ page }) => {
   const entry = hostInfo('reasoning');
+  let historyRequests = 0;
+  page.on('request', (request) => {
+    if (request.url().endsWith('/api/session.history')) historyRequests += 1;
+  });
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await openWorkbench(page, entry);
   await page.fill('#prompt', 'show reasoning');
@@ -417,6 +421,18 @@ test('Think disclosure follows the latest live line, then the first settled line
   await reasoning.locator('summary').click();
   await expect(reasoning.locator('.reasoning-copy')).toHaveText('first thought\nlatest thought', LIVE);
   await expect(page.locator('.message-map-item')).toHaveCount(2, LIVE);
+  await expect(page.locator('.msg.user[data-seq]')).toHaveCount(1, LIVE);
+  await expect(page.locator('.msg.assistant[data-seq]')).toHaveCount(1, LIVE);
+  await page.locator('.message-map-item').last().click();
+  expect(historyRequests).toBe(0);
+
+  // Audit F1: this is a fresh replay, not the live node above. Settled Think
+  // must still summarize with its first non-empty line.
+  await page.reload();
+  await expect(page.locator('#conn-status')).toHaveText('live', LIVE);
+  const replayed = page.locator('.msg.assistant .reasoning').last();
+  await expect(replayed.locator('.reasoning-preview')).toHaveText('first thought', LIVE);
+  await expect(replayed.locator('.reasoning-copy')).toHaveText('first thought\nlatest thought', LIVE);
 });
 
 // —— 验收④：双标签页——同 run 双观察；首答即赢；次答者见 not-pending ——

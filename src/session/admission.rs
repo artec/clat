@@ -161,7 +161,7 @@ fn validate_payload(event: &SessionEvent, version: u32) -> Result<(), String> {
                     .data
                     .get("stream")
                     .ok_or("assistant/message lacks required v2 stream")?;
-                crate::session::assistant_stream::expand_assistant_stream(stream)?;
+                crate::session::assistant_stream::validate_assistant_stream(stream)?;
             }
             Ok(())
         }
@@ -172,7 +172,7 @@ fn validate_payload(event: &SessionEvent, version: u32) -> Result<(), String> {
                 .data
                 .get("stream")
                 .ok_or("assistant/attempt lacks stream")?;
-            crate::session::assistant_stream::expand_assistant_stream(stream)?;
+            crate::session::assistant_stream::validate_assistant_stream(stream)?;
             Ok(())
         }
         "tool/result" => {
@@ -508,6 +508,7 @@ mod tests {
     /// silently admit the malformed control leg.
     #[test]
     fn v2_attempt_and_series_header_are_structurally_admitted() {
+        let _ = crate::session::assistant_stream::take_expansion_calls_for_test();
         let valid = vec![
             SessionEvent::new(
                 "request/header",
@@ -534,6 +535,11 @@ mod tests {
             ),
         ];
         assert_eq!(admit_events_for_version(&valid, 2), Ok(()));
+        assert_eq!(
+            crate::session::assistant_stream::take_expansion_calls_for_test(),
+            0,
+            "cold admission must validate embedded streams without rebuilding every chunk"
+        );
 
         let malformed = SessionEvent::new(
             "assistant/attempt",
@@ -553,6 +559,11 @@ mod tests {
             Err(AdmissionError::MalformedPayload { event_type, .. })
                 if event_type == "assistant/attempt"
         ));
+        assert_eq!(
+            crate::session::assistant_stream::take_expansion_calls_for_test(),
+            0,
+            "the malformed leg must remain allocation-free too"
+        );
     }
 
     /// M2：image content block 的引用不变量——path 与 mediaType 缺一
