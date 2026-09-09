@@ -2999,6 +2999,59 @@ mod tests {
         fs::remove_dir_all(project_root).ok();
     }
 
+    /// EX-1: an exec terminal outcome is not publishable until the exact
+    /// storage-root lease owned by its Application has been released. Slow
+    /// autotitle forces the grace-abandon path implicated by the old report;
+    /// the second nonblocking lease acquisition is the direct
+    /// invariant probe, not a sleep or a process-global writer count.
+    #[test]
+    fn exec_success_releases_its_storage_root_lease_before_return() {
+        let (storage_root, project_root, project) = setup("exec-lease-release");
+        prepare_storage(&project, &storage_root, TestBehavior::SlowTitle);
+        let (io, _) = ExecIo::capture(b"");
+        let mut first = args(Some("first"));
+        first.quiet = true;
+        let outcome = exec(&project, &storage_root, TestBehavior::SlowTitle, first, io);
+        assert!(
+            matches!(outcome, ExecOutcome::Success { .. }),
+            "first exec failed: {outcome:?}"
+        );
+
+        let probe_root = storage_root.clone();
+        let released = std::thread::spawn(move || {
+            match crate::session::root_lease::try_acquire(&probe_root)
+                .expect("probe the exact exec storage root")
+            {
+                Some(lease) => {
+                    // Windows named mutexes are reentrant on the acquiring
+                    // thread, so acquire and release inside this distinct
+                    // thread to make the assertion discriminating there too.
+                    drop(lease);
+                    true
+                }
+                None => false,
+            }
+        })
+        .join()
+        .expect("lease probe thread");
+        assert!(
+            released,
+            "exec returned while its storage-root lease was still held"
+        );
+
+        let mut second = args(Some("second"));
+        second.continue_session = true;
+        second.quiet = true;
+        let (io, _) = ExecIo::capture(b"");
+        let outcome = exec(&project, &storage_root, TestBehavior::Success, second, io);
+        assert!(
+            matches!(outcome, ExecOutcome::Success { .. }),
+            "second exec failed after the first returned: {outcome:?}"
+        );
+        fs::remove_dir_all(storage_root).ok();
+        fs::remove_dir_all(project_root).ok();
+    }
+
     // ---- 未配置模型 ----
 
     #[test]
