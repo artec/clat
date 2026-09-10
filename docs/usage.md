@@ -418,8 +418,11 @@ The rail shows its filename, measured dimensions, source size, estimated visual
 tokens, and draft totals. `/image remove` and `/image move` operate on that
 stable id. Text-only model routes keep the draft visible but block sending;
 switch to a vision-capable route or remove the images. Vision capability is
-officially-declared for built-in presets (five models across four vendors) and,
-for custom configurations, unlocked only by a passing `/vision-probe`.
+hardcoded per preset, never probed at runtime: five presets across four
+vendors open image input — officially-declared for `deepseek-flash`,
+`qwen3.8-max`, `qwen3.8-flash`, and `kimi-k3`, probe-verified for
+`glm-5.3-flash` — and, for custom configurations, it is unlocked only by a
+passing `/vision-probe`.
 Switching an image-bearing session to a text-only route fails the next run
 before provider I/O with the same actionable guidance (switch back to a vision
 route or start `/new`) instead of forwarding the vendor's 400 — except images

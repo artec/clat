@@ -116,23 +116,26 @@ pub struct ModelPreset {
 const KIMI_WHITELIST_UA: &str = "claude-cli/2.1.161";
 
 /// Official DeepSeek parameters as documented at
-/// <https://api-docs.deepseek.com> (Models & Pricing, 2026-08):
+/// <https://api-docs.deepseek.com> (Models & Pricing, 2026-08;
+/// 目录注记刷新 2026-09-10, SF-1)：
 ///
-/// - model ids `deepseek-v4-flash` (DeepSeek-V4-Flash-0731),
-///   `deepseek-v4-pro` (DeepSeek-V4-Pro-0813), and
-///   `deepseek-v4-flash-vision-exp` (DeepSeek-V4-Flash-Vision-Exp,
-///   实验性多模态视觉理解模型，2026-08-21 上架；图片按尺寸折算为
-///   token 计费，工具调用/JSON 输出/Anthropic API 均支持，价格与
-///   Flash 同档；并发上限 2500)
+/// - model ids `deepseek-flash` (DeepSeek V4.1 Flash, 2026-09-10 发布)
+///   and `deepseek-v4-pro` (DeepSeek-V4-Pro-0813)。2026-09-10 官方公告：
+///   V4.1 Flash 上架，V4.0 Flash（`deepseek-v4-flash`）与实验性视觉
+///   模型 V4.0 Flash Vision (Exp)（`deepseek-v4-flash-vision-exp`，
+///   2026-08-21 上架）同日下架——预设目录原地升级，旧 id 不做回退。
+///   V4.1 Flash 为多模态模型（官方公告声明视觉理解；视觉位自
+///   vision-exp 继承，能力走 OFFICIAL_VISION_CAPS / VP-2 通道）
 /// - OpenAI-compatible base URL `https://api.deepseek.com`
-/// - 1M context, 384K maximum output（三个模型规格完全相同；最大输出
+/// - 1M context, 384K maximum output（两个模型规格相同；最大输出
 ///   是 GLM 5.3 的 3 倍）
 /// - thinking mode on by default, switched via `{"thinking":
 ///   {"type": "enabled"}}` (per the official thinking-mode guide, agent
 ///   callers should pass it explicitly); `reasoning_effort` 默认 `high`，
 ///   官方归并表：`low`→low，`medium`/`high`/`xhigh`→high，
 ///   `max`→max；官方另有 non-thinking 模式，本项目统一
-///   不提供关闭档（见 `ThinkingLevel`）
+///   不提供关闭档（见 `ThinkingLevel`）。V4.1 Flash 的 thinking/effort
+///   语义按官方公告视为沿用；若实测漂移按参数钉值纪律另开修正小批
 /// - thinking mode ignores `temperature`, `top_p`, `presence_penalty`,
 ///   and `frequency_penalty` (defaults 1, 1, 0, 0), so presets leave
 ///   them unset and rely on server defaults
@@ -204,14 +207,24 @@ const KIMI_WHITELIST_UA: &str = "claude-cli/2.1.161";
 ///   条款边缘操作，用户可在模型编辑器 Extra Headers 覆盖成自己的
 ///   合规选择。
 pub const MODEL_PRESETS: &[ModelPreset] = &[
+    // DeepSeek V4.1 Flash（SF-1，2026-09-10 负责人令，转述当日官方
+    // 公告）：V4.0 Flash 原地升级——官方发布 V4.1 Flash（模型 id
+    // `deepseek-flash`），V4.0 Flash 与 V4.0 Flash Vision (Exp) 同时
+    // 下架。参数全部沿用（端点 / 1M 窗 / 384K 输出 / effort high /
+    // thinking 对象 / include_usage——负责人令=官方口径转述；若实测
+    // thinking/effort 语义漂移，按参数钉值纪律另开修正小批）。
+    // V4.1 Flash 标记多模态 → OFFICIAL_VISION_CAPS（VP-2 先例通道：
+    // 官方文档声明 → officially-declared）。旧 id 的持久化引用不做
+    // 任何回退处理（零用户教法：直接更新；旧 id 失效即失效）。
     ModelPreset {
-        id: "deepseek-v4-flash",
-        capabilities: TEXT_CAPS,
-        name: "DeepSeek V4.0 Flash",
-        description: "Fast, cost-effective DeepSeek V4 for everyday agent work",
+        id: "deepseek-flash",
+        // SF-1 ④：官方公告多模态 → officially-declared（VP-2 通道）。
+        capabilities: OFFICIAL_VISION_CAPS,
+        name: "DeepSeek V4.1 Flash",
+        description: "Fast multimodal DeepSeek V4.1 for everyday agent work (reads images)",
         vendor: "DeepSeek",
         protocol: ModelProtocol::OpenAiCompatible,
-        model: "deepseek-v4-flash",
+        model: "deepseek-flash",
         endpoint: "https://api.deepseek.com",
         request_path: "/chat/completions",
         output_limit: 384 * 1024,
@@ -240,26 +253,9 @@ pub const MODEL_PRESETS: &[ModelPreset] = &[
         include_usage: true,
         user_agent: None,
     },
-    ModelPreset {
-        id: "deepseek-v4-flash-vision-exp",
-        // VP-2（2026-09-03）：官方 API 文档声明视觉输入（实验性多模态
-        // 视觉理解模型，见模块文档 DeepSeek 节）→ officially-declared。
-        capabilities: OFFICIAL_VISION_CAPS,
-        name: "DeepSeek V4.0 Flash Vision (Exp)",
-        description: "Experimental multimodal DeepSeek V4 Flash — reads image input",
-        vendor: "DeepSeek",
-        protocol: ModelProtocol::OpenAiCompatible,
-        model: "deepseek-v4-flash-vision-exp",
-        endpoint: "https://api.deepseek.com",
-        request_path: "/chat/completions",
-        output_limit: 384 * 1024,
-        context_window: 1_000_000,
-        reasoning_effort: Some("high"),
-        preserve_thinking: false,
-        thinking_object: true,
-        include_usage: true,
-        user_agent: None,
-    },
+    // SF-1 ③（2026-09-10）：`deepseek-v4-flash-vision-exp` 条目已删除
+    // ——官方公告 V4.0 Flash Vision (Exp) 与 V4.0 Flash 同日下架，其
+    // 视觉位由 V4.1 Flash（上方）继承。
     ModelPreset {
         id: "glm-5.3",
         capabilities: TEXT_CAPS,
@@ -855,19 +851,28 @@ mod tests {
         );
     }
 
+    /// SF-1（2026-09-10）目录断言：两 id（deepseek-flash + pro）、
+    /// 下架 id 不复现、端点同族。
     #[test]
     fn flash_and_pro_use_the_official_api_names() {
-        let flash = preset_by_id("deepseek-v4-flash").expect("flash");
+        let flash = preset_by_id("deepseek-flash").expect("flash");
         let pro = preset_by_id("deepseek-v4-pro").expect("pro");
-        assert_eq!(flash.model, "deepseek-v4-flash");
+        assert_eq!(flash.model, "deepseek-flash");
         assert_eq!(pro.model, "deepseek-v4-pro");
         assert_eq!(flash.endpoint, "https://api.deepseek.com");
         assert_eq!(pro.endpoint, "https://api.deepseek.com");
+        // 旧 id（V4.0 Flash 与 Vision Exp 同日下架）不复现：零回退，
+        // 持久化引用旧 id 即失效。
+        assert!(preset_by_id("deepseek-v4-flash").is_none());
+        assert!(preset_by_id("deepseek-v4-flash-vision-exp").is_none());
     }
 
     /// TUI-L03：逐模型断言已核验的官方规格，不把"所有未来预设=1M"
     /// 固化进测试——新增预设必须在此显式给出已核验值与来源：
-    /// - deepseek-v4-flash / -pro：1M context / 384K output
+    /// - deepseek-flash：1M context / 384K output（参数全部沿用 V4.0
+    ///   Flash 钉值，2026-09-10 官方公告原地升级，SF-1；api-docs.
+    ///   deepseek.com Models & Pricing，2026-08 核验）
+    /// - deepseek-v4-pro：1M context / 384K output
     ///   （api-docs.deepseek.com Models & Pricing，2026-08 核验）
     /// - glm-5.3：1M context / 128K output
     ///   （docs.z.ai/guides/llm/glm-5.3，08-17/18/19 三次核验一致；
@@ -883,7 +888,7 @@ mod tests {
     ///   docs/research/tc0-probe/manifest.json）
     #[test]
     fn official_context_windows_and_output_limits() {
-        let flash = preset_by_id("deepseek-v4-flash").expect("flash");
+        let flash = preset_by_id("deepseek-flash").expect("flash");
         assert_eq!(flash.context_window, 1_000_000);
         assert_eq!(flash.output_limit, 384 * 1024);
 
@@ -921,7 +926,9 @@ mod tests {
                 "Hy Token Plan",
             ]
         );
-        assert_eq!(presets_by_vendor("DeepSeek").len(), 3);
+        assert_eq!(presets_by_vendor("DeepSeek").len(), 2);
+        // SF-1（2026-09-10）：V4.0 Flash/Vision Exp 下架后 DeepSeek 只
+        // 剩 flash（V4.1）+ pro 两条。
         // MM-2：GLM 5.3 Flash 与 glm-5.3 同 vendor（共享 key 槽/额度
         // 监控接线）。
         assert_eq!(presets_by_vendor("GLM Coding Plan").len(), 2);
@@ -933,12 +940,12 @@ mod tests {
         assert_eq!(presets_by_vendor("Hy Token Plan")[0].id, "hy4-preview");
     }
 
-    /// INV-MM2-1/2（MM-2 W1 红测；VP-2 终态直写 2026-09-03）：全预设
-    /// capability matrix 完备且 sourced——**恰五个** verified 开图
-    /// （四存量 officially-declared：vision-exp / qwen3.8-max /
-    /// kimi-k3，加增量 qwen3.8-flash；glm-5.3-flash 为 MM-0 探针
-    /// 实证），无中间态（unverified 档已退役）；其余全部纯文本。
-    /// 漏配新预设时哨兵断言红。
+    /// INV-MM2-1/2（MM-2 W1 红测；VP-2 终态直写 2026-09-03；SF-1
+    /// 刷新 2026-09-10）：全预设 capability matrix 完备且 sourced——
+    /// **恰五个** verified 开图（officially-declared 四条：deepseek-flash
+    /// （SF-1 继承 vision-exp 视觉位）/ qwen3.8-max / qwen3.8-flash /
+    /// kimi-k3，加 glm-5.3-flash 为 MM-0 探针实证），无中间态
+    ///（unverified 档已退役）；其余全部纯文本。漏配新预设时哨兵断言红。
     #[test]
     fn capability_matrix_is_complete_sourced_and_fail_closed() {
         for preset in MODEL_PRESETS {
@@ -957,11 +964,7 @@ mod tests {
             // INV-MM2-2 的唯一放行位（officially-declared 或探针实证）。
             let expects_images = matches!(
                 preset.id,
-                "deepseek-v4-flash-vision-exp"
-                    | "glm-5.3-flash"
-                    | "qwen3.8-max"
-                    | "qwen3.8-flash"
-                    | "kimi-k3"
+                "deepseek-flash" | "glm-5.3-flash" | "qwen3.8-max" | "qwen3.8-flash" | "kimi-k3"
             );
             assert_eq!(
                 caps.accepts_image_input(),
@@ -970,14 +973,9 @@ mod tests {
                 preset.id
             );
         }
-        // officially-declared 四存量：input [Text, Image] + verified，
+        // officially-declared 存量：input [Text, Image] + verified，
         // tool_result 携图无官方证据 → 仍 [Text]。
-        for id in [
-            "deepseek-v4-flash-vision-exp",
-            "qwen3.8-max",
-            "kimi-k3",
-            "qwen3.8-flash",
-        ] {
+        for id in ["deepseek-flash", "qwen3.8-max", "kimi-k3", "qwen3.8-flash"] {
             let caps = preset_by_id(id).unwrap().owned_capabilities();
             assert_eq!(
                 caps.input_modalities,
@@ -994,12 +992,7 @@ mod tests {
             vec![Modality::Text, Modality::Image]
         );
         // 纯文本预设不含 Image 模态。
-        for id in [
-            "deepseek-v4-flash",
-            "deepseek-v4-pro",
-            "glm-5.3",
-            "hy4-preview",
-        ] {
+        for id in ["deepseek-v4-pro", "glm-5.3", "hy4-preview"] {
             let caps = preset_by_id(id).unwrap().owned_capabilities();
             assert_eq!(caps.input_modalities, vec![Modality::Text], "{id}");
         }
@@ -1007,15 +1000,11 @@ mod tests {
 
     /// VP-2（2026-09-03）判别：officially-declared 存量开图金测——
     /// 四预设的能力位与图片策略逐字段锁定；删任一 verified 翻转
-    /// （或误开 tool_result 图）此测试红。
+    /// （或误开 tool_result 图）此测试红。（SF-1 2026-09-10：
+    /// vision-exp 位由 deepseek-flash 继承。）
     #[test]
     fn officially_declared_vision_presets_carry_the_declared_matrix() {
-        for id in [
-            "deepseek-v4-flash-vision-exp",
-            "qwen3.8-max",
-            "kimi-k3",
-            "qwen3.8-flash",
-        ] {
+        for id in ["deepseek-flash", "qwen3.8-max", "kimi-k3", "qwen3.8-flash"] {
             let preset = preset_by_id(id).unwrap();
             let caps = preset.owned_capabilities();
             assert!(
@@ -1189,16 +1178,38 @@ mod tests {
         );
     }
 
-    /// Vision-Exp 预设：核验过的官方参数落位（1M/384K），model id 与
-    /// 端点同族其余两条共享 DeepSeek 通道。
+    /// SF-1（2026-09-10）：V4.1 Flash 预设金测——参数全部沿用 V4.0
+    /// Flash 官方钉值（负责人令=官方口径转述），多模态走
+    /// OFFICIAL_VISION_CAPS（VP-2 通道）。判别：误改任一沿用参数或
+    /// 误用 TEXT_CAPS 此测试红。
     #[test]
-    fn deepseek_vision_preset_matches_official_parameters() {
-        let preset = preset_by_id("deepseek-v4-flash-vision-exp").expect("preset exists");
-        assert_eq!(preset.model, "deepseek-v4-flash-vision-exp");
+    fn deepseek_flash_preset_upgrades_v4_flash_in_place() {
+        let preset = preset_by_id("deepseek-flash").expect("preset exists");
+        assert_eq!(preset.model, "deepseek-flash");
+        assert_eq!(preset.name, "DeepSeek V4.1 Flash");
         assert_eq!(preset.endpoint, "https://api.deepseek.com");
         assert_eq!(preset.context_window, 1_000_000);
         assert_eq!(preset.output_limit, 384 * 1024);
         assert_eq!(preset.reasoning_effort, Some("high"));
         assert_eq!(preset.vendor, "DeepSeek");
+        assert!(preset.thinking_object);
+        assert!(preset.include_usage);
+        // 多模态：officially-declared（input 开图 + verified；
+        // tool_result 携图无官方证据仍 [Text]）。
+        let caps = preset.owned_capabilities();
+        assert!(caps.accepts_image_input());
+        assert!(caps.image_input_verified);
+        assert_eq!(caps.input_modalities, vec![Modality::Text, Modality::Image]);
+        assert_eq!(caps.tool_result_modalities, vec![Modality::Text]);
+        // 实际 apply：能力与预算种入落位。
+        let mut config = ModelConfig::default();
+        preset.apply(&mut config);
+        assert!(config.capabilities.accepts_image_input());
+        assert_eq!(config.max_context_tokens, Some(1_000_000));
+        assert_eq!(
+            config.extra_body["thinking"]["type"],
+            json!("enabled"),
+            "thinking object rides along unchanged from the V4.0 Flash pinning"
+        );
     }
 }

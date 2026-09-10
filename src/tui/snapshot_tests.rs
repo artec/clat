@@ -111,6 +111,9 @@ use unicode_width::UnicodeWidthStr;
 /// 单空行）；②无数字列行改 ` ✓ 名称`——✓ 前一个空格不顶左缘、✓
 /// 与名称之间恰一个空格（permission-picker、dsh-permission-picker
 /// 重钉；名称仍恒定第 3 列）。
+/// 2026-09-10 刷新（SF-1 DeepSeek V4.1 Flash 预设更新）：model-picker
+/// 重钉——DeepSeek 一级行 "3 models" → "2 models"（V4.0 Flash 与
+/// Vision Exp 官方下架，目录剩 V4.1 Flash + Pro 两模型）。
 const SCENARIOS: &[&str] = &[
     // 2026-09-05 PU-2/3: core-driven Plan/Goal title markers and scrollable
     // read-only command dialogs; existing idle/permission styling is unchanged.

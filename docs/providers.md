@@ -38,9 +38,8 @@ The preset catalog configures the OpenAI-compatible adapter:
 
 | Vendor/preset | Model | Context | Max output | Reasoning default |
 |---|---|---:|---:|---|
-| DeepSeek V4.0 Flash | `deepseek-v4-flash` | 1M | 384K | `high` |
+| DeepSeek V4.1 Flash | `deepseek-flash` | 1M | 384K | `high` |
 | DeepSeek V4.0 Pro | `deepseek-v4-pro` | 1M | 384K | `high` |
-| DeepSeek V4.0 Flash Vision (Exp) | `deepseek-v4-flash-vision-exp` | 1M | 384K | `high` |
 | GLM 5.3 Coding Plan | `glm-5.3` | 1M | 128K | `high` |
 | GLM 5.3 Flash | `glm-5.3-flash` | 1M | 128K | `high` |
 | Qwen3.8 Max Token Plan | `qwen3.8-max` | 1M | 128K | `medium` |
@@ -49,10 +48,17 @@ The preset catalog configures the OpenAI-compatible adapter:
 | Hy 4 Preview · Hy Token Plan | `hy4-preview` | 1M | 64K | — (always on) |
 
 Vision capability is hardcoded per preset, never probed at runtime: the
-five image-input routes are `deepseek-v4-flash-vision-exp`, `glm-5.3-flash`
+five image-input routes are `deepseek-flash`, `glm-5.3-flash`
 (also verified for image tool results), `qwen3.8-max`, `qwen3.8-flash`, and
 `kimi-k3` — the first declared by official vendor documentation, the GLM
 route proven by CLAT's own live probe. All other presets are text-only.
+
+DeepSeek note (2026-09-10): the official V4.1 Flash release replaced the
+retired `deepseek-v4-flash` and experimental `deepseek-v4-flash-vision-exp`
+models; the preset was upgraded in place to `deepseek-flash` with the V4.0
+Flash parameters carried over and the vision slot inherited. Saved
+configurations still referencing the old ids are not migrated — they simply
+stop resolving to a preset.
 
 The context value also seeds automatic compaction. The output value bounds
 request configuration and the aggregated response budget. User edits convert a

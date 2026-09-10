@@ -2489,12 +2489,9 @@ mod tests {
         let credentials = ProviderCredentials::for_protocol(config.protocol);
         let mut editor = ModelEditor::new_with_descriptors(&config, credentials, Vec::new());
         select(&mut editor, RowKind::Preset);
-        // 从 pro 起步，一步右移到 Flash Vision (Exp)。
+        // 从 pro 起步，一步右移到 GLM（SF-1 删除 vision-exp 后的轮转序）。
         editor.handle_key(key(KeyCode::Right));
-        assert_eq!(
-            editor.preset.map(|preset| preset.id),
-            Some("deepseek-v4-flash-vision-exp")
-        );
+        assert_eq!(editor.preset.map(|preset| preset.id), Some("glm-5.3"));
         let (built, _) = editor.build().unwrap();
         assert_eq!(built.thinking_level, None);
     }
@@ -2759,12 +2756,12 @@ mod tests {
         editor.handle_key(key(KeyCode::Right));
         assert_eq!(
             editor.preset.map(|preset| preset.id),
-            Some("deepseek-v4-flash")
+            Some("deepseek-flash")
         );
 
         let (config, _) = editor.build().unwrap();
-        assert_eq!(config.preset.as_deref(), Some("deepseek-v4-flash"));
-        assert_eq!(config.model, "deepseek-v4-flash");
+        assert_eq!(config.preset.as_deref(), Some("deepseek-flash"));
+        assert_eq!(config.model, "deepseek-flash");
         assert_eq!(config.endpoint, "https://api.deepseek.com");
         assert_eq!(config.protocol, ModelProtocol::OpenAiCompatible);
         assert_eq!(config.request_path, "/chat/completions");
@@ -2773,17 +2770,13 @@ mod tests {
         assert_eq!(config.extra_body["reasoning_effort"], "high");
         assert_eq!(config.extra_body["thinking"]["type"], "enabled");
 
-        // Next step lands on Pro, then Flash Vision (Exp), then GLM, then
+        // Next step lands on Pro, then GLM, then GLM Flash, then
         // Qwen, then Kimi, then Tencent, then back to Custom.
+        // （SF-1 2026-09-10：vision-exp 下架，Pro 的下一步直达 GLM。）
         editor.handle_key(key(KeyCode::Right));
         assert_eq!(
             editor.preset.map(|preset| preset.id),
             Some("deepseek-v4-pro")
-        );
-        editor.handle_key(key(KeyCode::Right));
-        assert_eq!(
-            editor.preset.map(|preset| preset.id),
-            Some("deepseek-v4-flash-vision-exp")
         );
         editor.handle_key(key(KeyCode::Right));
         assert_eq!(editor.preset.map(|preset| preset.id), Some("glm-5.3"));
@@ -2880,19 +2873,19 @@ mod tests {
         // 一级：五个厂商 + Custom。
         assert_eq!(picker.row_count(), 6);
 
-        // Enter 进入 DeepSeek 二级（Flash / Pro / Flash Vision (Exp)）。
+        // Enter 进入 DeepSeek 二级（V4.1 Flash / Pro；SF-1 后两模型）。
         assert!(matches!(
             picker.handle_key(picker_key(KeyCode::Enter)),
             PickerAction::Continue
         ));
-        assert_eq!(picker.row_count(), 3);
+        assert_eq!(picker.row_count(), 2);
 
         // 确认第一个模型。
         let action = picker.handle_key(picker_key(KeyCode::Enter));
         let PickerAction::SelectPreset(preset) = action else {
             panic!("expected SelectPreset, got {action:?}");
         };
-        assert_eq!(preset.id, "deepseek-v4-flash");
+        assert_eq!(preset.id, "deepseek-flash");
     }
 
     #[test]

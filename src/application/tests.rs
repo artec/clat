@@ -380,7 +380,7 @@ fn preset_profile_roundtrip_never_refills_keys() {
         .unwrap();
 
     // 预设：DeepSeek 端点 + key（写入厂商记忆库）。
-    let preset = preset_by_id("deepseek-v4-flash").expect("preset");
+    let preset = preset_by_id("deepseek-flash").expect("preset");
     let mut preset_config = ModelConfig::default();
     preset.apply(&mut preset_config);
     let mut preset_credentials = ProviderCredentials::for_protocol(preset_config.protocol);
@@ -550,7 +550,7 @@ fn legacy_single_slot_custom_state_migrates_to_first_profile() {
     let project = Project::new(&project_root);
     let application = mount(&project, &storage_root, TestBehavior::Success);
     let preset = ModelConfig {
-        preset: Some("deepseek-v4-flash".into()),
+        preset: Some("deepseek-flash".into()),
         ..ModelConfig::default()
     };
     application
@@ -600,7 +600,7 @@ fn preset_switch_after_profile_activation_clears_the_active_pointer() {
     // 切预设（actions SelectPreset 同端点路径同形态：preset.apply +
     // save_model_state 直写）。
     let mut preset_config = ModelConfig::default();
-    crate::presets::preset_by_id("deepseek-v4-flash")
+    crate::presets::preset_by_id("deepseek-flash")
         .expect("preset exists")
         .apply(&mut preset_config);
     application
@@ -622,7 +622,7 @@ fn preset_switch_after_profile_activation_clears_the_active_pointer() {
         active.endpoint, preset_config.endpoint,
         "the live preset survives deleting the stale-pointer profile"
     );
-    assert_eq!(active.preset.as_deref(), Some("deepseek-v4-flash"));
+    assert_eq!(active.preset.as_deref(), Some("deepseek-flash"));
     assert!(
         application.list_model_profiles().unwrap().is_empty(),
         "the deleted profile is gone"
@@ -3566,10 +3566,10 @@ fn vendor_keys_survive_model_switches() {
 
     // 切到 DeepSeek：单槽被覆盖（旧行为），但 GLM 的 key 已进记忆库。
     let mut ds_config = ModelConfig {
-        preset: Some("deepseek-v4-flash".into()),
+        preset: Some("deepseek-flash".into()),
         ..ModelConfig::default()
     };
-    preset_by_id("deepseek-v4-flash")
+    preset_by_id("deepseek-flash")
         .expect("preset")
         .apply(&mut ds_config);
     let mut ds_credentials = crate::model::ProviderCredentials::for_protocol(ds_config.protocol);

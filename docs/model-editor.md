@@ -25,9 +25,8 @@ The shipped catalog is the source used by both the picker and runtime:
 
 | Preset | Model id | Endpoint | Context | Max output |
 |---|---|---|---:|---:|
-| DeepSeek V4.0 Flash | `deepseek-v4-flash` | `https://api.deepseek.com` | 1M | 384K |
+| DeepSeek V4.1 Flash | `deepseek-flash` | `https://api.deepseek.com` | 1M | 384K |
 | DeepSeek V4.0 Pro | `deepseek-v4-pro` | `https://api.deepseek.com` | 1M | 384K |
-| DeepSeek V4.0 Flash Vision (Exp) | `deepseek-v4-flash-vision-exp` | `https://api.deepseek.com` | 1M | 384K |
 | GLM 5.3 | `glm-5.3` | `https://open.bigmodel.cn/api/coding/paas/v4` | 1M | 128K |
 | GLM 5.3 Flash | `glm-5.3-flash` | `https://open.bigmodel.cn/api/coding/paas/v4` | 1M | 128K |
 | Qwen3.8 Max | `qwen3.8-max` | `https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1` | 1M | 128K |
@@ -41,11 +40,15 @@ whitelisted coding-agent User-Agent. See [Providers](providers.md#built-in-prese
 before overriding those fields.
 
 GLM 5.3 Flash is currently the only built-in preset with probe-verified native
-image input, and therefore the only picker route that enables the image
-attachments described in [Using CLAT](usage.md#image-attachments). The
-DeepSeek Vision experimental preset and all other presets remain text-only in
-CLAT until their exact route has equivalent evidence. This does not restrict
-images handled wholly inside configured MCP tools.
+image input; the officially-declared vision presets — `deepseek-flash`,
+`qwen3.8-max`, `qwen3.8-flash`, and `kimi-k3` — and GLM 5.3 Flash all enable
+the image attachments described in
+[Using CLAT](usage.md#image-attachments). All other presets remain text-only
+in CLAT. This does not restrict images handled wholly inside configured MCP
+tools. DeepSeek note (2026-09-10): the official V4.1 Flash release retired
+`deepseek-v4-flash` and `deepseek-v4-flash-vision-exp`; the preset was
+upgraded in place to `deepseek-flash` (vision slot inherited), and saved
+configurations referencing the old ids simply stop resolving to a preset.
 
 ## Custom profiles
 

@@ -1881,7 +1881,7 @@ mod tests {
         assert_eq!(thinking_display(&config), Some("Server"));
 
         // 对照腿：DeepSeek 上同样的 override 正常注入。
-        let deepseek = crate::presets::preset_by_id("deepseek-v4-flash").unwrap();
+        let deepseek = crate::presets::preset_by_id("deepseek-flash").unwrap();
         let mut config = ModelConfig::default();
         deepseek.apply(&mut config);
         config.overrides.thinking_level = Override::Set(ThinkingLevel::Max);
