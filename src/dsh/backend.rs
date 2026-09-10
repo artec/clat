@@ -1247,13 +1247,18 @@ mod tests {
             "requestId rides inside args.request: {prompt}"
         );
 
-        run_task(
+        let reply = run_task(
             &DshTask::Cancel {
                 session: "s-1".into(),
             },
             &mut client,
             &mut port,
             None,
+        );
+        assert!(
+            matches!(reply, Some(TaskReply::Status(_))),
+            "cancel reply must not fail silently (a transport failure here once masqueraded \
+             as a missing-method assertion): {reply:?}"
         );
         let reply = run_task(
             &DshTask::Create {
@@ -1303,7 +1308,7 @@ mod tests {
             Some(TaskReply::Selected { effort: Some(e), .. }) if e == "max"
         ));
 
-        run_task(
+        let reply = run_task(
             &DshTask::Rename {
                 session: "s-1".into(),
                 title: "t".into(),
@@ -1311,6 +1316,11 @@ mod tests {
             &mut client,
             &mut port,
             None,
+        );
+        assert!(
+            matches!(&reply, Some(TaskReply::Status(message)) if message == "renamed"),
+            "rename reply must reach the host (CI 2026-09-10: a pooled-connection reuse \
+             failure surfaced as a missing session/rename): {reply:?}"
         );
 
         let methods = host.methods();

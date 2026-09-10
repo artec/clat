@@ -47,6 +47,12 @@ pub(crate) struct DshClient {
 
 impl DshClient {
     pub(crate) fn new(port: u16) -> Self {
+        // 连接池禁用（CI 2026-09-10 病历）：ureq 默认池化 keep-alive
+        // 连接，而宿主随时可能关掉空闲连接（测试假宿主一回包即关；
+        // 真实网关也有空闲超时）——复用一条已被对端关闭的连接时
+        // POST 直接传输失败，且本客户端无重试层兜底（那次 CI 红就是
+        // rename 静默丢失）。DSH 调用是任务粒度、走 loopback，每次
+        // 调用新建连接的成本可忽略；不复用 = 该竞态结构性不存在。
         let agent = ureq::Agent::config_builder()
             .http_status_as_error(false)
             .timeout_global(Some(Duration::from_secs(30)))
@@ -84,6 +90,8 @@ impl DshClient {
         let mut probe = Self::new(port);
         probe.agent = ureq::Agent::config_builder()
             .http_status_as_error(false)
+            .max_idle_connections(0)
+            .max_idle_connections_per_host(0)
             .timeout_global(Some(Duration::from_secs(1)))
             .timeout_connect(Some(Duration::from_secs(1)))
             .build()
@@ -325,6 +333,28 @@ pub(crate) fn looks_like_dsh(describe: &Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// CI 2026-09-10 判别腿：DSH 客户端必须禁用连接池。池化的
+    /// keep-alive 连接随时可能已被宿主关闭（假宿主一回包即关；真实
+    /// 网关有空闲超时），复用即 POST 传输失败，而本客户端无重试层
+    /// ——那次 CI 红就是 rename 静默丢失。行为级竞态窗口无法确定性
+    /// 复现，故在配置层钉死：删 `new`/`probe_describe` 里的
+    /// `max_idle_connections(0)` 本测试红。
+    #[test]
+    fn dsh_client_never_pools_connections() {
+        let client = DshClient::new(0);
+        assert_eq!(
+            client.agent.config().max_idle_connections(),
+            0,
+            "the pool must hold no idle connections (reuse of a host-closed \
+             connection has no retry to absorb it)"
+        );
+        assert_eq!(
+            client.agent.config().max_idle_connections_per_host(),
+            0,
+            "no per-host idle connections either"
+        );
+    }
 
     #[test]
     fn envelope_decode_accepts_value_and_surfaces_business_errors() {
