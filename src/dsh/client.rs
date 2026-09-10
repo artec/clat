@@ -55,6 +55,8 @@ impl DshClient {
         // 调用新建连接的成本可忽略；不复用 = 该竞态结构性不存在。
         let agent = ureq::Agent::config_builder()
             .http_status_as_error(false)
+            .max_idle_connections(0)
+            .max_idle_connections_per_host(0)
             .timeout_global(Some(Duration::from_secs(30)))
             .timeout_connect(Some(Duration::from_secs(3)))
             .build()
