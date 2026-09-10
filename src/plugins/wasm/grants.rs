@@ -1,4 +1,4 @@
-//! WASM 组件的文件系统写授予记录（B5 / C1 定案，2026-08-22）。
+//! WASM-local filesystem grant persistence (B5 / C1, 2026-08-22).
 //!
 //! 病历 W1-15：FullAccess 档下全局安装的组件静默获得项目根与
 //! extra_dirs 写权——对 agent 的信任被批发给第三方供应链代码。

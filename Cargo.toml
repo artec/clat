@@ -127,3 +127,9 @@ windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Secur
 lto = "thin"
 codegen-units = 1
 strip = "symbols"
+
+# Keep the edit/test loop from generating full debug information for the large
+# CLAT test harness. Dependency artifacts and release/debug builds are unchanged.
+# For source-level debugging, temporarily set this package override to 2.
+[profile.test.package.clat]
+debug = 0

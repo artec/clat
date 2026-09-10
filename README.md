@@ -146,6 +146,9 @@ The DSH adapter package also has standalone
 
 ## Development
 
+For short edit feedback use `scripts/gates.sh [test-filter ...]`; run
+`scripts/gates.sh --full` once before delivery. See [Testing](docs/testing.md).
+
 Prerequisites are Git and the current stable Rust toolchain:
 
 ```bash

@@ -1,3 +1,4 @@
+mod dialog_keys;
 use super::*;
 use crate::dsh::backend::DshTask;
 
@@ -191,12 +192,25 @@ impl App {
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
+        // Preserve priority: global presentation/copy-exit, trust, selection,
+        // modal dialogs, then composer. Bracketed paste stays a separate event.
+        if self.handle_global_key(key)
+            || self.handle_trust_key(key)
+            || self.handle_copy_cut_key(key)
+            || self.handle_modal_key(key)
+        {
+            return;
+        }
+        self.handle_composer_key(key);
+    }
+
+    fn handle_global_key(&mut self, key: KeyEvent) -> bool {
         // Ctrl+O：工具卡三态循环（collapsed → expanded → hidden），任何
         // 时刻可用——纯呈现状态，不持久化（G5）。
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('o') {
             self.card_visibility = self.card_visibility.next();
             self.flash_status(format!("tool cards: {:?}", self.card_visibility));
-            return;
+            return true;
         }
         // Ctrl+R：Think 披露行全局展开/折叠。与 Ctrl+O 同为纯呈现
         // 状态；本地与 dsh 共用 ConversationModel，行为天然一致。
@@ -209,7 +223,7 @@ impl App {
             } else {
                 "reasoning: collapsed"
             });
-            return;
+            return true;
         }
         // Ctrl+C：**有选区时优先复制**。原因：Cmd+C 被终端自身截留
         //（鼠标上报模式又禁用了终端原生拖选，终端复制的是空选区），
@@ -224,18 +238,22 @@ impl App {
                 .is_some_and(|selection| !selection.is_empty())
                 && self.copy_selection()
             {
-                return;
+                return true;
             }
             // Shift 组合（Ctrl+Shift+C）意图是复制而非退出：没选中任何
             // 内容时给出提示，不退出。
             if key.modifiers.contains(KeyModifiers::SHIFT) {
                 self.flash_status("nothing selected to copy — drag to select");
-                return;
+                return true;
             }
             self.should_quit = true;
-            return;
+            return true;
         }
 
+        false
+    }
+
+    fn handle_trust_key(&mut self, key: KeyEvent) -> bool {
         // 项目确权门优先于一切按键交互：未信任的目录只认
         // Enter/y（信任并持久化）与 Esc/n（直接退出 CLAT）。
         // 信任成功后才初始化项目资源（会话/历史/MCP），失败保持阻断。
@@ -270,7 +288,7 @@ impl App {
                         self.wire_application_events();
                         if let Err(error) = self.adopt_snapshot() {
                             self.flash_status(format!("failed to trust project: {error}"));
-                            return;
+                            return true;
                         }
                         self.trust_prompt = false;
                         self.flash_status("project trusted — welcome");
@@ -284,9 +302,13 @@ impl App {
             } else if leave {
                 self.should_quit = true;
             }
-            return;
+            return true;
         }
 
+        false
+    }
+
+    fn handle_copy_cut_key(&mut self, key: KeyEvent) -> bool {
         // Cmd+C / Ctrl+Shift+C 复制选区，Cmd+X / Ctrl+Shift+X 剪切输入
         // 选区。没有选区时不拦截，按键走原有处理。Cmd+V / Ctrl+Shift+V
         // 的粘贴由终端通过 bracketed paste（Event::Paste）送达，这里
@@ -297,224 +319,20 @@ impl App {
         if copy_or_cut && self.editor.is_none() && self.picker.is_none() {
             match key.code {
                 KeyCode::Char('c') | KeyCode::Char('C') if self.copy_selection() => {
-                    return;
+                    return true;
                 }
                 KeyCode::Char('x') | KeyCode::Char('X') if self.cut_selection() => {
-                    return;
+                    return true;
                 }
-                KeyCode::Char('v') | KeyCode::Char('V') => return,
+                KeyCode::Char('v') | KeyCode::Char('V') => return true,
                 _ => {}
             }
         }
 
-        // A permission decision is pending: every key belongs to the dialog
-        // until the user allows or denies it.
-        if self.pending_permission.is_some() {
-            // 决策键必须是"裸键"：raw 模式下 Ctrl+W / Alt+Y 等修饰组合也
-            // 以 `Char(..)` 形态到达——不挡住它们，Ctrl+W 就成了"切档并
-            // 放行"的快捷键（对抗审计 2026-08-19）。CLAT 的输入惯例里
-            // Shift/Ctrl/Alt+Enter 都是换行语义，同样不得触发 allow。
-            let plain = !key
-                .modifiers
-                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER);
-            let requested_allow = match key.code {
-                KeyCode::Enter => key.modifiers.is_empty(),
-                KeyCode::Char('y') | KeyCode::Char('Y') => plain,
-                _ => false,
-            };
-            let deny = match key.code {
-                KeyCode::Esc => true,
-                KeyCode::Char('n') | KeyCode::Char('N') => plain,
-                _ => false,
-            };
-            // 升级键（P5）：只对 offered 集合生效；与 allow 同受审阅门
-            //（未读完参数不允许任何放行类回答）；同样要求裸键。
-            let escalate_project_write =
-                plain && matches!(key.code, KeyCode::Char('w') | KeyCode::Char('W'));
-            let escalate_full_access =
-                plain && matches!(key.code, KeyCode::Char('f') | KeyCode::Char('F'));
-            let mut blocked_allow = false;
-            let mut allow = false;
-            let mut escalation: Option<PermissionMode> = None;
-            if let Some(pending) = self.pending_permission.as_mut() {
-                let max_scroll = pending
-                    .argument_line_count
-                    .saturating_sub(pending.argument_page_size.max(1));
-                match key.code {
-                    KeyCode::Down => {
-                        pending.argument_scroll =
-                            pending.argument_scroll.saturating_add(1).min(max_scroll);
-                    }
-                    KeyCode::Up => {
-                        pending.argument_scroll = pending.argument_scroll.saturating_sub(1);
-                    }
-                    KeyCode::PageDown => {
-                        pending.argument_scroll = pending
-                            .argument_scroll
-                            .saturating_add(pending.argument_page_size.max(1))
-                            .min(max_scroll);
-                    }
-                    KeyCode::PageUp => {
-                        pending.argument_scroll = pending
-                            .argument_scroll
-                            .saturating_sub(pending.argument_page_size.max(1));
-                    }
-                    KeyCode::End => pending.argument_scroll = max_scroll,
-                    KeyCode::Home => pending.argument_scroll = 0,
-                    _ => {}
-                }
-                if requested_allow {
-                    allow = pending.reviewed_to_end;
-                    blocked_allow = !allow;
-                }
-                if escalate_project_write || escalate_full_access {
-                    if pending.reviewed_to_end {
-                        if escalate_project_write
-                            && pending.escalations.contains(&PermissionMode::ProjectWrite)
-                        {
-                            escalation = Some(PermissionMode::ProjectWrite);
-                        } else if escalate_full_access
-                            && pending.escalations.contains(&PermissionMode::FullAccess)
-                        {
-                            escalation = Some(PermissionMode::FullAccess);
-                        }
-                    } else {
-                        // 升级键与 allow 同门：未审完参数时提示而不是无声空转。
-                        blocked_allow = true;
-                    }
-                }
-            }
-            if (allow || deny || escalation.is_some())
-                && let Some(pending) = self.pending_permission.take()
-            {
-                // 升级 = 先切共享档位（下一次检查即生效）再放行本次调用。
-                // 持久化失败不拦放行（内存已切换），警告留在最终 flash 里
-                //——先 flash 会被下面的结果 flash 覆盖（对抗审计）。
-                let mut persist_warning = None;
-                if let Some(mode) = escalation
-                    && let Some(application) = &self.application
-                    && let Err(error) = application.set_permission_mode(mode)
-                {
-                    persist_warning = Some(error.to_string());
-                }
-                let decision = if allow || escalation.is_some() {
-                    PermissionDecision::Allow
-                } else {
-                    PermissionDecision::Deny {
-                        reason: "denied by user".into(),
-                    }
-                };
-                let _ = pending.decision_tx.send(decision);
-                if let Some(mode) = escalation {
-                    match persist_warning {
-                        Some(error) => self.flash_status(format!(
-                            "permission mode: {mode} — call allowed (not saved to this session: {error})"
-                        )),
-                        None => {
-                            self.flash_status(format!("permission mode: {mode} — call allowed"));
-                        }
-                    }
-                } else if allow {
-                    self.flash_status("permission granted");
-                } else {
-                    self.flash_status("permission denied — informing the model");
-                }
-            }
-            if blocked_allow {
-                self.flash_status("review all permission arguments before allowing");
-            }
-            return;
-        }
+        false
+    }
 
-        // ask-user 对话框独占按键（S9）：worker 阻塞等待应答，直到选择、
-        // 自定义提交或拒绝。
-        if self.pending_ask_user.is_some() {
-            self.handle_ask_dialog_key(key);
-            return;
-        }
-
-        // 信息弹窗（/help、/mcp）独占按键：Esc/Enter 关闭，↑/↓ 逐行、
-        // PgUp/PgDn 翻页（步长＝绘制期记录的可视行数；钳制在最大滚
-        // 动位）；/mcp 额外接受 `r` 重取状态。
-        if self.info_dialog.is_some() {
-            let max = self.info_scroll_max;
-            let page = self.info_page.max(1);
-            let is_mcp = self
-                .info_dialog
-                .as_ref()
-                .is_some_and(|dialog| dialog.kind == InfoDialogKind::Mcp);
-            let mut close = false;
-            let mut refresh = false;
-            if let Some(dialog) = self.info_dialog.as_mut() {
-                match key.code {
-                    KeyCode::Esc | KeyCode::Enter => close = true,
-                    KeyCode::Char('r') | KeyCode::Char('R') if is_mcp => refresh = true,
-                    KeyCode::Up => dialog.offset = dialog.offset.saturating_sub(1),
-                    KeyCode::Down => dialog.offset = (dialog.offset + 1).min(max),
-                    KeyCode::PageUp => dialog.offset = dialog.offset.saturating_sub(page),
-                    KeyCode::PageDown => dialog.offset = (dialog.offset + page).min(max),
-                    _ => {}
-                }
-            }
-            if close {
-                self.info_dialog = None;
-            }
-            if refresh {
-                self.refresh_mcp_view();
-            }
-            return;
-        }
-
-        // /perm 选择器：独占按键直到选择或取消。
-        if self.permission_picker.is_some() {
-            // 档位数据源（D-2 §2.6）：dsh = preset 投影（sandbox/mode
-            // latest-wins fold 的 journal 值）；local = application 直读。
-            let current = if let Some(dsh) = self.dsh.as_ref() {
-                dsh.preset
-                    .as_deref()
-                    .and_then(PermissionMode::from_journal_value)
-                    .unwrap_or_default()
-            } else {
-                self.application
-                    .as_ref()
-                    .map(|application| application.permission_mode())
-                    .unwrap_or_default()
-            };
-            if let Some(picker) = self.permission_picker.as_mut() {
-                let action = picker.handle_key(key, current);
-                self.apply_permission_picker_action(action);
-            }
-            return;
-        }
-
-        // /rename 弹框：独占按键（完整文本编辑 + Enter 提交 / Esc 取消）。
-        if self.rename_dialog.is_some() {
-            self.handle_rename_dialog_key(key);
-            return;
-        }
-
-        // /resume 会话选择器：独占按键直到恢复或取消。
-        if self.session_picker.is_some() {
-            if let Some(picker) = self.session_picker.as_mut() {
-                let action = picker.handle_key(key);
-                self.apply_resume_action(action);
-            }
-            return;
-        }
-
-        // 二级选择器优先于编辑器接管按键。
-        if let Some(picker) = self.picker.as_mut() {
-            let action = picker.handle_key(key);
-            self.apply_picker_action(action);
-            return;
-        }
-
-        if let Some(editor) = &mut self.editor {
-            let action = editor.handle_key(key);
-            self.apply_editor_action(action);
-            return;
-        }
-
+    fn handle_composer_key(&mut self, key: KeyEvent) {
         // CP-I1/CP-I3: only the explicit, unmodified Ctrl+V chord probes the
         // system clipboard, and only after every modal/editor gate has had
         // first ownership of the key. Terminal bracketed paste remains the

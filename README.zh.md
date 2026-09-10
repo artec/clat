@@ -133,6 +133,9 @@ DSH 适配器包另有独立的[英文](sdk/dsh-adapter/README.md)和
 
 ## 开发
 
+日常编辑用 `scripts/gates.sh [测试过滤词 ...]` 获取定向反馈；交付前
+运行一次 `scripts/gates.sh --full`。见[测试分级](docs/testing.md)。
+
 前置条件只有 Git 与当前稳定版 Rust 工具链：
 
 ```bash

@@ -30,7 +30,6 @@ mod todo;
 mod tools;
 mod view_image;
 mod wasm;
-mod wasm_grants;
 
 #[cfg(test)]
 mod tests;

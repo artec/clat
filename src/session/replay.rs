@@ -249,13 +249,13 @@ impl ReplayAdapter {
     /// One event in, zero or more items out. Malformed producer payloads
     /// (which admission should have rejected) are skipped, never fatal.
     pub(crate) fn push(&mut self, event: &SessionEvent, out: &mut Vec<ReplayEvent>) {
-        match event.event_type.as_str() {
-            "turn/start" => {
+        match crate::session::catalog::replay_kind(&event.event_type) {
+            crate::session::catalog::ReplayKind::TurnStart => {
                 if let Some(turn) = event.data.get("turn").and_then(Value::as_u64) {
                     self.turn = turn;
                 }
             }
-            "user/message" => {
+            crate::session::catalog::ReplayKind::UserMessage => {
                 let text = event
                     .data
                     .get("content")
@@ -292,12 +292,12 @@ impl ReplayAdapter {
                     receipt,
                 });
             }
-            "assistant/message" => {
+            crate::session::catalog::ReplayKind::AssistantMessage => {
                 if let Some(item) = assistant_message(event) {
                     out.push(item);
                 }
             }
-            "approval/asked" => {
+            crate::session::catalog::ReplayKind::ApprovalAsked => {
                 if let (Some(id), Some(tool)) = (
                     event.data.get("id").and_then(Value::as_str),
                     event.data.get("toolName").and_then(Value::as_str),
@@ -329,7 +329,7 @@ impl ReplayAdapter {
                     );
                 }
             }
-            "approval/decided" => {
+            crate::session::catalog::ReplayKind::ApprovalDecided => {
                 let id = event.data.get("id").and_then(Value::as_str);
                 let outcome = event.data.get("outcome").and_then(Value::as_str);
                 if let (Some(id), Some(outcome)) = (id, outcome)
@@ -363,7 +363,7 @@ impl ReplayAdapter {
                     });
                 }
             }
-            "tool/call" => {
+            crate::session::catalog::ReplayKind::ToolCall => {
                 let call_id = string_at(&event.data, &["callId"]);
                 let name = string_at(&event.data, &["name"]);
                 if let (Some(call_id), Some(name)) = (call_id.clone(), name) {
@@ -386,17 +386,17 @@ impl ReplayAdapter {
                     });
                 }
             }
-            "tool/result" => {
+            crate::session::catalog::ReplayKind::ToolResult => {
                 if let Some(item) = self.tool_finished(event) {
                     out.push(item);
                 }
             }
-            "llm/retry" => {
+            crate::session::catalog::ReplayKind::Retry => {
                 if let Some(item) = retry_scheduled(event) {
                     out.push(item);
                 }
             }
-            "turn/end" => {
+            crate::session::catalog::ReplayKind::TurnEnd => {
                 let turn = event
                     .data
                     .get("turn")
@@ -410,7 +410,7 @@ impl ReplayAdapter {
                     reason,
                 });
             }
-            "compaction/summary" => {
+            crate::session::catalog::ReplayKind::Compaction => {
                 let summary_text = event
                     .data
                     .get("summary")
@@ -424,30 +424,7 @@ impl ReplayAdapter {
                     summary_text,
                 });
             }
-            // Explicit skip list — see the module doc for the rationale of
-            // each entry. Unknown ignorable events fall through the same way.
-            "assistant/chunk"
-            | "step/start"
-            | "step/end"
-            | "request/header"
-            | "request/context"
-            | "llm/retry-started"
-            | "compaction/start"
-            | "compaction/end"
-            | "session/title"
-            | "todo/write"
-            | "session/end-seed"
-            | "team/member"
-            | "team/task"
-            | "team/message/queued"
-            | "team/message/delivered"
-            | "model/selection"
-            | "subagent/model-selection-policy"
-            | "session-log-deepseek/delivery-accepted"
-            | "feedback/message-put"
-            | "feedback/message-delete"
-            | "clat/budget" => {}
-            _ => {}
+            crate::session::catalog::ReplayKind::Skip => {}
         }
     }
 

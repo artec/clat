@@ -221,6 +221,14 @@ block outside cooperative cancellation have bounded join policies.
 
 ## Event contracts
 
+The journal catalog owns a static seat for each supported event type:
+payload validation, surface membership, version retirement and replay action
+are declared together. Envelope-only metadata is explicitly preserved without
+interpreting its payload. Adding such a DSH type no longer requires a separate
+replay skip-list edit. Stateful projections still own fold/checkpoint/restore;
+the recorder's RunEvent-to-journal lifecycle and the v1 wire encoder remain
+separate contracts because these vocabularies are not one-to-one.
+
 One run produces two related streams:
 
 - **`RunEvent`** is the live client protocol. `EventSink` receives run start,
@@ -586,6 +594,16 @@ write is the bounded, fail-soft `~/.clat/dsh-last-session` presentation
 preference; it is owned by `dsh/last_session.rs`, not by control storage.
 
 ## Source map
+
+`model.rs` retains the provider-neutral contract while `model/` owns
+configuration, thinking controls, credentials, cancellation, spend accounting
+and context/image projection. `session/use_cases/` keeps lifecycle, attachment,
+history, active-state and folding-journal implementations private to the
+SessionService facade. The active session owns the unique lazy folding journal;
+producers cannot construct independent append/flush lanes. `plugin_host/`
+separates MCP decoding/connection accounting and bounded form interaction from
+shared host semantics; WASM grants are private to `plugins/wasm/`. TUI key routing
+preserves global, trust, selection, modal and composer priority explicitly.
 
 | Path | Responsibility |
 |---|---|

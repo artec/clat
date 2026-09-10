@@ -25,7 +25,7 @@ use super::services::{
     MCP_STATUS_SERVICE, MCP_STATUS_SERVICE_ID, McpServerStatus, PROMPT_SERVICE, PROMPT_SERVICE_ID,
     TOOL_SERVICE, TOOL_SERVICE_ID,
 };
-use super::wasm_grants;
+mod grants;
 use crate::mcp::client::qualify_prefixed_tool_name;
 use crate::model::CancelToken;
 use crate::plugin::{
@@ -38,6 +38,7 @@ use crate::plugin_host::{
 };
 use crate::project::Project;
 use crate::tool::{Tool, ToolDefinition, ToolEffect, ToolError};
+use grants as wasm_grants;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -1595,7 +1596,7 @@ mod tests {
         }
     }
 
-    use super::super::wasm_grants;
+    use super::grants as wasm_grants;
     use super::*;
     use std::time::Duration;
 

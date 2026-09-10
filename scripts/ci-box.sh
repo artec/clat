@@ -46,12 +46,5 @@ docker run --rm --cpus "$cpus" \
         # 源码拷进可写层：剔除宿主 target/.git/node_modules（大且平台不符）
         tar -C /src --exclude=./target --exclude=./.git --exclude=node_modules -cf - . | tar -xf -
         export CARGO_TARGET_DIR=/target
-        echo "== Format"; cargo fmt --all -- --check
-        echo "== Clippy"; cargo clippy --all-targets --all-features -- -D warnings
-        echo "== Rustdoc"; RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
-        echo "== Test"; cargo test --all-targets --all-features
-        echo "== Build dsh-adapter for the gated e2e"; (cd sdk/dsh-adapter && npm ci && npm run build)
-        echo "== Adapter tests"; (cd sdk/dsh-adapter && npm test)
-        echo "== Gated"; cargo test --lib -- --ignored
-        echo "== Linux CI 盒子全绿"
+        scripts/gates.sh --ci
     '
