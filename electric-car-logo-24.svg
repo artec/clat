@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" role="img" aria-labelledby="title desc">
+  <title id="title">电车 LOGO</title>
+  <desc id="desc">一辆带有闪电标记的未来感电动汽车图标。</desc>
+
+  <defs>
+    <linearGradient id="body" x1="3" y1="7" x2="21" y2="18" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#123B57"/>
+      <stop offset="1" stop-color="#071C2D"/>
+    </linearGradient>
+    <linearGradient id="glass" x1="7" y1="8" x2="17" y2="11" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#B9F4FF"/>
+      <stop offset="1" stop-color="#42C7E6"/>
+    </linearGradient>
+    <linearGradient id="bolt" x1="10" y1="10" x2="14" y2="17" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFF36A"/>
+      <stop offset="1" stop-color="#FFC928"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 车身与车窗：深色主体配高亮青色轮廓，缩小后仍保持轮廓清晰。 -->
+  <path d="M4.1 10.75h1.6l1.7-3.1a2.5 2.5 0 0 1 2.19-1.29h4.82a2.5 2.5 0 0 1 2.19 1.29l1.7 3.1h1.6a1.9 1.9 0 0 1 1.9 1.9v3.75a1.6 1.6 0 0 1-1.6 1.6H3.8a1.6 1.6 0 0 1-1.6-1.6v-3.75a1.9 1.9 0 0 1 1.9-1.9Z" fill="url(#body)" stroke="#38D4E9" stroke-width="1.35" stroke-linejoin="round"/>
+  <path d="m7.38 10.7 1.26-2.32a1.1 1.1 0 0 1 .97-.57h4.76a1.1 1.1 0 0 1 .97.57l1.26 2.32H7.38Z" fill="url(#glass)" opacity=".96"/>
+  <path d="M12 7.82v2.88" stroke="#0D5272" stroke-width=".72"/>
+
+  <!-- 闪电：将“电”作为车身的识别核心。 -->
+  <path d="m12.7 9.58-3.05 3.78h2.17l-.55 3.08 3.08-4.05h-2.08l.43-2.81Z" fill="url(#bolt)" stroke="#FFE45B" stroke-width=".35" stroke-linejoin="round"/>
+
+  <!-- 车灯与轮胎。 -->
+  <path d="M3.55 12.65h1.7" stroke="#B9F4FF" stroke-width="1.1" stroke-linecap="round"/>
+  <path d="M18.75 12.65h1.7" stroke="#FFDA4A" stroke-width="1.1" stroke-linecap="round"/>
+  <circle cx="7.1" cy="18.05" r="2.05" fill="#071521" stroke="#38D4E9" stroke-width="1.15"/>
+  <circle cx="16.9" cy="18.05" r="2.05" fill="#071521" stroke="#38D4E9" stroke-width="1.15"/>
+  <circle cx="7.1" cy="18.05" r=".55" fill="#B9F4FF"/>
+  <circle cx="16.9" cy="18.05" r=".55" fill="#B9F4FF"/>
+</svg>

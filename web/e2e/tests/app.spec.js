@@ -628,6 +628,77 @@ test('context is readable and the plan-mode marker appears and clears', async ({
   await expect(badge).toBeHidden(LIVE);
 });
 
+test('stale command completion preserves and submits newer composer input', async ({ page }) => {
+  const entry = hostInfo('run-command');
+  await openWorkbench(page, entry);
+
+  // Plan Mode is durable, so materialize an otherwise fresh session first.
+  await expect(page.locator('#detail-run')).toHaveText('Idle', LIVE);
+  await page.click('#new-session');
+  await expect(page.locator('#send')).toBeEnabled(LIVE);
+  await page.fill('#prompt', 'materialize the FL-F1 regression session');
+  await page.click('#send');
+  const approval = page.locator('.approval-card').first();
+  await expect(approval).toBeVisible(LIVE);
+  await approval.locator('button.ghost').click();
+  await expect(page.locator('.verdict.completed')).toBeVisible(LIVE);
+  await expect(page.locator('#detail-session')).not.toHaveText('Fresh', LIVE);
+
+  let markRefreshBlocked;
+  const refreshBlocked = new Promise((resolve) => { markRefreshBlocked = resolve; });
+  let releaseRefresh;
+  const refreshReleased = new Promise((resolve) => { releaseRefresh = resolve; });
+  let holdNextRefresh = false;
+  let heldRefresh = false;
+  await page.route('**/api/workbench.info', async (route) => {
+    if (!holdNextRefresh || heldRefresh) {
+      await route.continue();
+      return;
+    }
+    heldRefresh = true;
+    const response = await route.fetch();
+    const body = await response.json();
+    body.value.session.title = 'FL-F1 refresh applied';
+    markRefreshBlocked();
+    await refreshReleased;
+    await route.fulfill({ response, json: body });
+  });
+
+  holdNextRefresh = true;
+  await page.fill('#prompt', '/context');
+  await page.click('#send');
+  await refreshBlocked;
+  let sendPressed = false;
+  try {
+    await page.fill('#prompt', '/plan');
+    const sendBox = await page.locator('#send').boundingBox();
+    expect(sendBox).not.toBeNull();
+    await page.mouse.move(sendBox.x + (sendBox.width / 2), sendBox.y + (sendBox.height / 2));
+    await page.mouse.down();
+    sendPressed = true;
+    // Resume the stale /context tail between pointer-down and click. This
+    // deterministically exercises the race seen in the FL-HUNT trace.
+    releaseRefresh();
+
+    // The title proves the old /context tail resumed and completed. It may clear
+    // only the text that /context submitted, never the newer /plan generation.
+    await expect(page.locator('#session-title')).toHaveText('FL-F1 refresh applied', LIVE);
+    await expect(page.locator('#prompt')).toHaveValue('/plan');
+
+    const planRequest = page.waitForRequest((request) => {
+      if (!request.url().endsWith('/api/command.run')) return false;
+      return request.postDataJSON().command === '/plan';
+    });
+    await page.mouse.up();
+    sendPressed = false;
+    await planRequest;
+  } finally {
+    releaseRefresh();
+    if (sendPressed) await page.mouse.up();
+  }
+  await expect(page.locator('#plan-mode-badge')).toBeVisible(LIVE);
+});
+
 test('PU content notices and armed Goal badge follow core workflow state', async ({ page }, testInfo) => {
   await page.emulateMedia({ colorScheme: 'dark' });
   await openWorkbench(page, hostInfo('run-command'));

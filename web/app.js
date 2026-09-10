@@ -149,6 +149,7 @@ const state = {
   marketLoaded: false,
   marketFallback: false,
   workbenchRequest: 0,
+  composerGeneration: 0,
   transcriptAttachmentUrls: new Set(),
   history: {
     hasMore: false,
@@ -1735,6 +1736,7 @@ dom['wechat-unbind'].addEventListener('click', async () => {
 for (const button of document.querySelectorAll('[data-prompt]')) {
   button.addEventListener('click', () => {
     dom.prompt.value = button.dataset.prompt || '';
+    state.composerGeneration += 1;
     resizePrompt();
     dom.prompt.focus();
   });
@@ -2037,12 +2039,20 @@ function resizePrompt() {
   dom.prompt.style.height = Math.min(dom.prompt.scrollHeight, 220) + 'px';
 }
 
+function clearSubmittedPrompt(generation) {
+  if (generation !== state.composerGeneration) return;
+  dom.prompt.value = '';
+  state.composerGeneration += 1;
+  resizePrompt();
+}
+
 async function submitPrompt() {
   if (state.compactionActive || state.switching) {
     updateRunState('wait for history compaction to finish');
     return;
   }
   const text = dom.prompt.value.trim();
+  const composerGeneration = state.composerGeneration;
   const images = state.draft.images;
   if (!text && images.length === 0) return;
   if (state.draft.queuedClientMessageId !== null) {
@@ -2080,8 +2090,7 @@ async function submitPrompt() {
         return;
       }
       addNoticeLine('steering queued');
-      dom.prompt.value = '';
-      resizePrompt();
+      clearSubmittedPrompt(composerGeneration);
       if (images.length > 0 && state.draft.clientMessageId === clientMessageId) {
         state.draft.queuedClientMessageId = clientMessageId;
         for (const image of images) image.status = 'queued';
@@ -2119,13 +2128,11 @@ async function submitPrompt() {
           clientMessageId: state.draft.clientMessageId,
         };
       await rpc('prompt.send', params);
-      dom.prompt.value = '';
-      resizePrompt();
+      clearSubmittedPrompt(composerGeneration);
       if (images.length > 0) clearDraft();
       return;
     }
-    dom.prompt.value = '';
-    resizePrompt();
+    clearSubmittedPrompt(composerGeneration);
   } catch (error) {
     if (error.code === 'busy' && images.length === 0) {
       updateRunState('run active · sending as steering');
@@ -2173,7 +2180,10 @@ function restoreQueuedDraft() {
 }
 
 dom.send.addEventListener('click', submitPrompt);
-dom.prompt.addEventListener('input', resizePrompt);
+dom.prompt.addEventListener('input', () => {
+  state.composerGeneration += 1;
+  resizePrompt();
+});
 dom.prompt.addEventListener('keydown', (event) => {
   if (event.key === 'Enter' && !event.shiftKey) {
     event.preventDefault();

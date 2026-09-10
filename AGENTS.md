@@ -129,3 +129,10 @@ rules exist to break that pattern.
   sequences through the code path by path (resume → exit → reopen),
   not only by the test suite. fmt / clippy / cargo test green is
   hygiene, not evidence of correctness.
+
+## Code Exploration & Analysis (Codegraph)
+
+- **Codegraph Indexing**: This project supports CodeGraph indexing (identified by the `.codegraph/` directory).
+- **Usage**: Always prioritize using `codegraph` to analyze code architecture, query symbol definitions, understand call flows, or determine the blast radius before making code edits.
+- **Agent Tools**: AI agents should use the `codegraph_explore` MCP tool as the primary way to read and understand codebase context instead of relying on traditional `grep` or manual file reading.
+- **Query Discipline**: `explore` is semantic retrieval, not exact file reading. For generic names, provide path plus call-chain anchors and avoid `maxFiles: 1`; use `codegraph node --file` for exact reads. Never mistake ranking noise for an indexing/parser failure. Never mistake ranking noise for an indexing/parser failure. For files or custom configs that Tree-sitter doesn't support, fall back to grep or read_file.

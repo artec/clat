@@ -10,6 +10,7 @@ sdk/dsh-adapter/dist/
 .DS_Store
 
 # Editors and IDEs
+.codegraph/
 .ai-bridge/
 .idea/
 .trae/
@@ -28,6 +29,7 @@ sdk/dsh-adapter/dist/
 *.log
 .tmp/
 tmp/
+output/
 
 # Rust editor/backup artifacts
 **/*.rs.bk
