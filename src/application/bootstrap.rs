@@ -1,6 +1,6 @@
 use crate::Project;
 use crate::control_storage::sentinel;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use crate::plugin::Plugin;
 use std::path::PathBuf;
 
@@ -114,8 +114,8 @@ impl BootstrapApplication {
         )
     }
 
-    #[cfg(test)]
-    pub(crate) fn into_trusted_with_provider(
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn into_trusted_with_provider(
         self,
         provider: Arc<dyn Plugin>,
     ) -> Result<TrustedProjectApplication, ApplicationError> {
@@ -131,8 +131,8 @@ impl BootstrapApplication {
         )
     }
 
-    #[cfg(test)]
-    pub(crate) fn authorize_and_mount_with_provider(
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn authorize_and_mount_with_provider(
         self,
         provider: Arc<dyn Plugin>,
     ) -> Result<TrustedProjectApplication, ApplicationError> {

@@ -1589,7 +1589,12 @@ mod tests {
     fn signed_loopback_index_downloads_and_atomically_installs_a_publisher_package() {
         let root = temp_dir("install-e2e");
         let bundle = root.join("fixture.clatpkg");
-        pack_directory(Path::new("tests/fixtures/market-package"), &bundle).unwrap();
+        pack_directory(
+            &Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
+                .join("tests/fixtures/market-package"),
+            &bundle,
+        )
+        .unwrap();
         let artifact = fs::read(&bundle).unwrap();
         assert_eq!(
             artifact.len(),

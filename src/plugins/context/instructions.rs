@@ -1,13 +1,13 @@
 //! Scope-aware project instruction plugin.
 
-use super::services::{
-    DYNAMIC_INSTRUCTIONS_SERVICE, DYNAMIC_INSTRUCTIONS_SERVICE_ID, TOOL_PIPELINE_SERVICE,
-    TOOL_PIPELINE_SERVICE_ID,
-};
 use crate::Project;
 use crate::plugin::{
     DisposeError, Plugin, PluginContext, PluginDescriptor, PluginError, PluginId, ScopeKind,
     ServiceId,
+};
+use crate::plugins::services::{
+    DYNAMIC_INSTRUCTIONS_SERVICE, DYNAMIC_INSTRUCTIONS_SERVICE_ID, TOOL_PIPELINE_SERVICE,
+    TOOL_PIPELINE_SERVICE_ID,
 };
 use crate::project_instructions::ProjectInstructionService;
 use crate::tool::{ToolInvocation, ToolObserver};
@@ -59,7 +59,7 @@ impl Plugin for ProjectInstructionsPlugin {
                 .revoke()
                 .map_err(|error| DisposeError::new(error.to_string()))
         });
-        let dynamic: Arc<dyn super::services::DynamicInstructions> = service;
+        let dynamic: Arc<dyn crate::plugins::services::DynamicInstructions> = service;
         context
             .provide(DYNAMIC_INSTRUCTIONS_SERVICE, dynamic)
             .map_err(|error| PluginError::new(error.to_string()))

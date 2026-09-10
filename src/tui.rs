@@ -78,9 +78,9 @@ mod run_events;
 mod selection;
 mod status;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "runtime-tests"))]
 use keys::*;
-#[cfg(test)]
+#[cfg(all(test, feature = "runtime-tests"))]
 use render::*;
 
 use bell::*;
@@ -461,7 +461,7 @@ impl App {
     /// 快照测试用可注入 storage root 的同步构造入口（生产路径是
     /// [`Self::open_deferred`]：TUI 先行、会话后台加载；测试需要构
     /// 造即就绪的 App）。
-    #[cfg(test)]
+    #[cfg(all(test, feature = "runtime-tests"))]
     fn open(project: Project, storage_root: Option<PathBuf>) -> Result<Self, String> {
         let mut app = Self::open_minimal(project, storage_root)?;
         if !app.trust_prompt {
@@ -709,7 +709,7 @@ impl App {
     /// 项目级资源初始化：挂载 Trusted Project（已信任路径）并采纳
     /// 快照。同步构造（测试路径）使用；确权流程走
     /// `authorize_and_mount`（见 handle_key 的确权分支）。
-    #[cfg(test)]
+    #[cfg(all(test, feature = "runtime-tests"))]
     fn initialize_project(&mut self) -> Result<(), String> {
         let bootstrap = self
             .bootstrap
@@ -1010,10 +1010,10 @@ impl App {
         self.phases.run_started.map(|since| since.elapsed())
     }
 }
-#[cfg(test)]
+#[cfg(all(test, feature = "runtime-tests"))]
 mod snapshot_tests;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "runtime-tests"))]
 mod tests {
     use super::*;
     use ratatui::Terminal;

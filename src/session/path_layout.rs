@@ -10,7 +10,7 @@ use std::path::PathBuf;
 /// JS (UTF-16) strings: safe code units stay literal, everything else
 /// (including `~`, separators, NUL, and each half of a surrogate pair)
 /// becomes `~XXXX`. `.` and `..` are neutralized so no traversal survives.
-pub(crate) fn encode_segment(raw: &str) -> String {
+pub fn encode_segment(raw: &str) -> String {
     assert!(!raw.is_empty(), "cannot encode an empty path segment");
     if raw == "." {
         return "~002E".into();
@@ -30,7 +30,7 @@ pub(crate) fn encode_segment(raw: &str) -> String {
 /// stripped, empty becomes `root`, and the slug is bounded to 251 UTF-16
 /// units. Bounded with a UTF-16 budget so truncation never splits a
 /// surrogate pair (a >251-unit path is an untested edge; see compat doc §2).
-pub(crate) fn project_key(cwd: &str) -> String {
+pub fn project_key(cwd: &str) -> String {
     assert!(!cwd.is_empty(), "cannot encode an empty project path");
     let mut readable = String::new();
     let mut separator_run = false;

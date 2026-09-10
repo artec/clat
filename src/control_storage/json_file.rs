@@ -11,7 +11,7 @@ use super::timestamp;
 
 /// `unit` 头：每个控制面 JSON 文件的身份与版本（DSH 容器形态）。
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub(crate) struct UnitTag {
+pub struct UnitTag {
     pub name: String,
     pub version: u64,
 }

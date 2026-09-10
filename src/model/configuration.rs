@@ -47,7 +47,7 @@ impl fmt::Display for ModelProtocol {
 /// 状态栏 Cache 口径按它分桶（INV-C1：按路由累计、切换不混合不清零）；
 /// journal 折叠、运行事件活账（RunEvent::ModelRequested）、当前配置
 /// 显示三端共用，防键漂移。
-pub(crate) fn model_route_key(protocol: &str, model: &str) -> String {
+pub fn model_route_key(protocol: &str, model: &str) -> String {
     format!("{protocol}/{model}")
 }
 

@@ -69,6 +69,7 @@ fn is_terminal_frontend(path: &Path) -> bool {
 fn is_local_frontend(path: &Path) -> bool {
     is_terminal_frontend(path)
         || is_src_root_file(path, "exec.rs")
+        || is_under_src_dir(path, "exec")
         || is_src_root_file(path, "serve.rs")
         || is_under_src_dir(path, "serve")
 }
@@ -120,7 +121,7 @@ fn core_modules_do_not_depend_on_local_frontend_code() {
     let mut checked = 0;
     for path in sources {
         let name = path.file_name().and_then(|name| name.to_str());
-        if is_local_frontend(&path) || matches!(name, Some("lib.rs" | "main.rs")) {
+        if is_local_frontend(&path) || matches!(name, Some("lib.rs" | "core.rs" | "main.rs")) {
             continue;
         }
         checked += 1;
@@ -167,7 +168,7 @@ fn local_frontends_do_not_reach_internal_core_owners() {
             "exec",
             frontends
                 .iter()
-                .any(|path| is_src_root_file(path, "exec.rs")),
+                .any(|path| is_src_root_file(path, "exec.rs") || is_under_src_dir(path, "exec")),
         ),
         (
             "serve",
@@ -238,7 +239,9 @@ fn internal_owner_guard_rejects_aliases_and_glob_imports() {
 #[test]
 fn crate_root_does_not_export_internal_core_owners() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let source = fs::read_to_string(root.join("src/lib.rs")).expect("read crate root");
+    let source = ["src/lib.rs", "src/core.rs", "src/client_ports.rs"]
+        .map(|path| fs::read_to_string(root.join(path)).expect("read crate boundary"))
+        .join("\n");
     for statement in source.split(';') {
         let compact = statement.split_whitespace().collect::<String>();
         let reexports = compact.contains("pubuse") || compact.contains("pub(crate)use");
@@ -284,6 +287,96 @@ fn crate_root_does_not_reexport_terminal_frontend_types() {
     }
 }
 
+#[test]
+fn workspace_enforces_terminal_dependency_direction_and_single_binary() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let output = std::process::Command::new("cargo")
+        .args([
+            "metadata",
+            "--no-deps",
+            "--format-version",
+            "1",
+            "--offline",
+        ])
+        .current_dir(root)
+        .output()
+        .expect("cargo metadata");
+    assert!(output.status.success(), "metadata failed");
+    let metadata: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let packages = metadata["packages"].as_array().unwrap();
+    let core = packages.iter().find(|p| p["name"] == "clat-core").unwrap();
+    let app = packages.iter().find(|p| p["name"] == "clat").unwrap();
+    assert_eq!(
+        core["version"], app["version"],
+        "core/client version must be bumped together"
+    );
+    for forbidden in ["clat", "ratatui", "crossterm", "arboard"] {
+        assert!(
+            !core["dependencies"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|d| d["name"] == forbidden),
+            "core must not depend on {forbidden}"
+        );
+    }
+    assert!(
+        app["dependencies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|d| d["name"] == "clat-core")
+    );
+    for package in [core, app] {
+        assert!(
+            metadata["workspace_default_members"]
+                .as_array()
+                .unwrap()
+                .contains(&package["id"]),
+            "default cargo gates must test every product crate"
+        );
+    }
+    let bins = [core, app]
+        .into_iter()
+        .flat_map(|p| p["targets"].as_array().unwrap())
+        .filter(|t| {
+            t["kind"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|kind| kind == "bin")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(bins.len(), 1);
+    assert_eq!(bins[0]["name"], "clat");
+}
+
+#[test]
+fn runtime_projection_vocabulary_has_one_catalog_home() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let catalog = fs::read_to_string(root.join("src/session/catalog/run_events.rs")).unwrap();
+    for tag in [
+        "run_started",
+        "model_requested",
+        "steering_applied",
+        "run_failed",
+    ] {
+        assert!(catalog.contains(&format!("=> \"{tag}\";")));
+    }
+    for path in ["src/wire/mod.rs", "src/session/recorder.rs"] {
+        let source = fs::read_to_string(root.join(path)).unwrap();
+        let source = source.split("\n#[cfg(test)]").next().unwrap();
+        assert!(
+            source.contains("catalog::run_event_seats!"),
+            "{path} bypasses catalog"
+        );
+        assert!(
+            !source.contains("RunEvent::ModelRequested"),
+            "{path} reintroduced projection mirror"
+        );
+    }
+}
+
 /// Frontend styles come from the theme module (phase-1 P0-2): the
 /// production prefix of the terminal frontend files must not mention
 /// `Color::` — every visual style routes through `tui_theme::style(Role)`.
@@ -296,6 +389,7 @@ fn frontend_styles_come_from_the_theme_module() {
         "src/tui.rs",
         "src/tui/markdown.rs",
         "src/tui/model_editor.rs",
+        "src/tui/model_editor/picker.rs",
         "src/tui/session_picker.rs",
         // D-2（INV-U1 撤豁免）：dsh 协议文件不渲染（天然绿），入清单
         // 锁未来——任何新的渲染代码必须走 theme 角色。
@@ -308,7 +402,13 @@ fn frontend_styles_come_from_the_theme_module() {
         "src/dsh/ws.rs",
     ] {
         let source = fs::read_to_string(root.join(name)).expect("read frontend source");
-        let production = source.split("\n#[cfg(test)]").next().unwrap_or("");
+        let production = source
+            .split("\n#[cfg(test)]\nmod ")
+            .next()
+            .unwrap_or("")
+            .split("\n#[cfg(all(test, feature = \"runtime-tests\"))]\nmod ")
+            .next()
+            .unwrap_or("");
         assert!(
             !production.contains("Color::"),
             "{name} production code must use tui_theme roles, not raw Color::"
@@ -381,7 +481,7 @@ fn agent_command_spawning_is_owned_only_by_process_service() {
         "src/plugins/language_intelligence.rs",
         "src/language_intelligence.rs",
         "src/application/run_lifecycle.rs",
-        "src/run.rs",
+        "src/run/mod.rs",
         "src/sandbox.rs",
     ] {
         let source = fs::read_to_string(root.join(name)).expect("read source");
@@ -396,7 +496,7 @@ fn agent_command_spawning_is_owned_only_by_process_service() {
             );
         }
     }
-    let owner = fs::read_to_string(root.join("src/process.rs")).expect("process service");
+    let owner = fs::read_to_string(root.join("src/process/mod.rs")).expect("process service");
     assert!(owner.contains(".group_spawn()"));
     assert!(owner.contains("native_pty_system()"));
 }

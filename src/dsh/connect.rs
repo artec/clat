@@ -28,7 +28,7 @@ impl OwnedDshHost {
         Self { child: Some(child) }
     }
 
-    #[cfg(all(test, unix))]
+    #[cfg(all(test, unix, feature = "runtime-tests"))]
     pub(crate) fn id(&self) -> u32 {
         self.child
             .as_ref()

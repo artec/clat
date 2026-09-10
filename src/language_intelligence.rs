@@ -1378,5 +1378,5 @@ mod tests {
 }
 
 #[cfg(test)]
-#[path = "language_intelligence_protocol_tests.rs"]
+#[path = "language_intelligence/protocol_tests.rs"]
 mod protocol_tests;

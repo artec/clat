@@ -25,7 +25,7 @@ pub(crate) const WORKSPACE_UNIT: (&str, u64) = ("workspace", 2);
 
 /// DSH 五字段 + CLAT 扩展 `activeSessionId`（驼峰对齐 DSH）。
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub(crate) struct WorkspaceRecord {
+pub struct WorkspaceRecord {
     /// 创建时盖章的 realpath 规范形（DSH canon 语义）。
     pub path: String,
     pub title: String,
@@ -48,7 +48,7 @@ pub(crate) struct WorkspaceRecord {
 
 /// DSH global 状态 + CLAT 恢复现场扩展。
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-pub(crate) struct GlobalState {
+pub struct GlobalState {
     #[serde(default)]
     pub initialized: bool,
     #[serde(default, rename = "workspaceIds")]
@@ -70,13 +70,13 @@ pub(crate) struct GlobalState {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub(crate) struct Tables {
+pub struct Tables {
     #[serde(default)]
-    pub(crate) workspaces: BTreeMap<String, WorkspaceRecord>,
+    pub workspaces: BTreeMap<String, WorkspaceRecord>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct WorkspaceFile {
+pub struct WorkspaceFile {
     #[serde(default = "default_unit")]
     pub unit: UnitTag,
     #[serde(default)]

@@ -922,7 +922,8 @@ fn materialize_fake_lsp_command(storage_root: &Path) -> Result<(), String> {
     }
     let helper = storage_root.join(format!("fake-lsp-server{}", std::env::consts::EXE_SUFFIX));
     crate::process::compile_rust_test_helper(
-        &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/lsp/fake_lsp_server.rs"),
+        &Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
+            .join("tests/fixtures/lsp/fake_lsp_server.rs"),
         &helper,
     )?;
     let mut value: serde_json::Value =
@@ -1073,14 +1074,15 @@ mod tests {
     use super::*;
 
     fn fixture(name: &str) -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR"))
+        Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
             .join("tests/fixtures/agent-scenarios")
             .join(name)
     }
 
     #[test]
     fn every_registered_scenario_matches_its_golden_report() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/agent-scenarios");
+        let root = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
+            .join("tests/fixtures/agent-scenarios");
         let mut fixtures = std::fs::read_dir(&root)
             .expect("scenario catalog")
             .collect::<Result<Vec<_>, _>>()

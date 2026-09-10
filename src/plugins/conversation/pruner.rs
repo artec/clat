@@ -5,11 +5,11 @@
 //! 输出被替换为带 head/tail 的截断视图。参数取 DSH tool-result-pruner
 //! 调优值：阈值 8192 chars，head 4096，tail 1024，错误摘要至多 2048。
 
-use super::services::{TOOL_PIPELINE_SERVICE, TOOL_PIPELINE_SERVICE_ID};
 use crate::plugin::{
     DisposeError, Plugin, PluginContext, PluginDescriptor, PluginError, PluginId, ScopeKind,
     ServiceId,
 };
+use crate::plugins::services::{TOOL_PIPELINE_SERVICE, TOOL_PIPELINE_SERVICE_ID};
 use crate::tool::{ToolResult, ToolResultTransformer};
 use serde_json::{Value, json};
 use std::sync::Arc;

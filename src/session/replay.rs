@@ -137,7 +137,7 @@ pub enum ReplayEvent {
 }
 
 impl ReplayEvent {
-    pub(crate) fn seq(&self) -> u64 {
+    pub fn seq(&self) -> u64 {
         match self {
             Self::UserMessage { seq, .. }
             | Self::AssistantMessage { seq, .. }
@@ -150,7 +150,7 @@ impl ReplayEvent {
         }
     }
 
-    pub(crate) fn turn(&self) -> u64 {
+    pub fn turn(&self) -> u64 {
         match self {
             Self::UserMessage { turn, .. }
             | Self::AssistantMessage { turn, .. }
@@ -163,7 +163,7 @@ impl ReplayEvent {
         }
     }
 
-    pub(crate) fn is_message(&self) -> bool {
+    pub fn is_message(&self) -> bool {
         matches!(
             self,
             Self::UserMessage { .. } | Self::AssistantMessage { .. }
@@ -175,9 +175,9 @@ impl ReplayEvent {
 /// (HTTP status) is deliberately not journaled and cannot come back.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReplayRetryFailure {
-    pub(crate) message: String,
-    pub(crate) code: String,
-    pub(crate) provider_retry_after_ms: Option<u64>,
+    pub message: String,
+    pub code: String,
+    pub provider_retry_after_ms: Option<u64>,
 }
 
 /// Why a turn ended, as seen from the journal. The kind set is
@@ -197,7 +197,7 @@ pub enum ReplayTurnEnd {
 /// Incremental fold state. Feed events in seq order; everything positional
 /// (turn numbers, call-id pairing, approval pairing) is derived here, never
 /// re-read from the log.
-pub(crate) struct ReplayAdapter {
+pub struct ReplayAdapter {
     turn: u64,
     calls: HashMap<String, String>,
     /// Awaiting `approval/decided`: approval id → buffered asked facts.
@@ -229,7 +229,7 @@ impl Default for ReplayAdapter {
 }
 
 impl ReplayAdapter {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             turn: 0,
             calls: HashMap::new(),
@@ -237,7 +237,7 @@ impl ReplayAdapter {
         }
     }
 
-    pub(crate) fn fold(events: &[SessionEvent]) -> Vec<ReplayEvent> {
+    pub fn fold(events: &[SessionEvent]) -> Vec<ReplayEvent> {
         let mut adapter = Self::new();
         let mut out = Vec::new();
         for event in events {
@@ -248,7 +248,7 @@ impl ReplayAdapter {
 
     /// One event in, zero or more items out. Malformed producer payloads
     /// (which admission should have rejected) are skipped, never fatal.
-    pub(crate) fn push(&mut self, event: &SessionEvent, out: &mut Vec<ReplayEvent>) {
+    pub fn push(&mut self, event: &SessionEvent, out: &mut Vec<ReplayEvent>) {
         match crate::session::catalog::replay_kind(&event.event_type) {
             crate::session::catalog::ReplayKind::TurnStart => {
                 if let Some(turn) = event.data.get("turn").and_then(Value::as_u64) {

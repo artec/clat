@@ -1,15 +1,15 @@
 //! Durable Plan Mode plugin (Agent phase 3-A).
 
-use super::services::{
-    COMMAND_SERVICE, COMMAND_SERVICE_ID, PLAN_MODE_SERVICE, PLAN_MODE_SERVICE_ID, SESSION_SERVICE,
-    SESSION_SERVICE_ID, TOOL_ACCESS_SERVICE, TOOL_ACCESS_SERVICE_ID, TOOL_SERVICE, TOOL_SERVICE_ID,
-};
 use crate::application::TrustedProjectApplication;
 use crate::command::{CommandError, CommandHandler, CommandOutcome, CommandSpec};
 use crate::plan_mode::PlanModeService;
 use crate::plugin::{
     DisposeError, Plugin, PluginContext, PluginDescriptor, PluginError, PluginId, ScopeKind,
     ServiceId,
+};
+use crate::plugins::services::{
+    COMMAND_SERVICE, COMMAND_SERVICE_ID, PLAN_MODE_SERVICE, PLAN_MODE_SERVICE_ID, SESSION_SERVICE,
+    SESSION_SERVICE_ID, TOOL_ACCESS_SERVICE, TOOL_ACCESS_SERVICE_ID, TOOL_SERVICE, TOOL_SERVICE_ID,
 };
 use crate::{CancelToken, Project, Tool, ToolDefinition, ToolEffect, ToolError};
 use serde_json::{Value, json};

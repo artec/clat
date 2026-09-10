@@ -25,7 +25,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Small fully decodable PNG for provider/session tests. Image projection now
 /// verifies MIME against magic, so tests that claim `image/png` must use an
 /// image fixture instead of arbitrary text bytes.
-pub(crate) fn png_bytes(width: u32, height: u32, color: [u8; 3]) -> Vec<u8> {
+pub fn png_bytes(width: u32, height: u32, color: [u8; 3]) -> Vec<u8> {
     let mut output = std::io::Cursor::new(Vec::new());
     image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
         width,
@@ -57,14 +57,14 @@ const LIVE_GLM_PROVIDER_DESCRIPTOR: PluginDescriptor = PluginDescriptor {
 };
 
 /// 注册脚本化 TestModel 的 provider 插件。
-pub(crate) struct TestProviderPlugin {
-    pub(crate) behavior: TestBehavior,
+pub struct TestProviderPlugin {
+    pub behavior: TestBehavior,
 }
 
 /// Explicitly armed paid-test provider. The Coding Plan key is read only when
 /// a model instance is built and never enters persisted ProviderCredentials.
 /// Tests using this plugin must remain ignored by default.
-pub(crate) struct LiveGlmProviderPlugin;
+pub struct LiveGlmProviderPlugin;
 
 impl crate::plugin::Plugin for LiveGlmProviderPlugin {
     fn descriptor(&self) -> &'static PluginDescriptor {
@@ -122,7 +122,7 @@ impl ModelFactory for LiveGlmFactory {
 /// 路径驱动任意确定步骤，而不是为每个新病历继续扩张 `TestBehavior`
 /// 枚举。实现必须自行串行化 cursor；RetryModel 会为每次请求重建
 /// `TestModel`，所以脚本状态不能放在 model 实例里。
-pub(crate) trait TestModelScript: Send + Sync {
+pub trait TestModelScript: Send + Sync {
     fn stream(
         &self,
         request: ModelRequest<'_>,
@@ -158,7 +158,7 @@ impl crate::plugin::Plugin for TestProviderPlugin {
 
 #[derive(Clone)]
 #[allow(dead_code)]
-pub(crate) enum TestBehavior {
+pub enum TestBehavior {
     Success,
     /// 普通对话快速完成；compaction summary 持续到取消或 3 秒，用于
     /// 浏览器 F5 恢复活动压缩槽与取消控制的确定性验收。
@@ -223,9 +223,9 @@ pub(crate) enum TestBehavior {
 }
 
 /// 脚本化 UserAsker：固定回传一个选项，并记录收到的问题供断言。
-pub(crate) struct ScriptedAsker {
-    pub(crate) selected: String,
-    pub(crate) asked: Mutex<Vec<String>>,
+pub struct ScriptedAsker {
+    pub selected: String,
+    pub asked: Mutex<Vec<String>>,
 }
 
 impl crate::interaction::UserAsker for ScriptedAsker {
@@ -245,14 +245,14 @@ impl crate::interaction::UserAsker for ScriptedAsker {
 /// steer() 必然晚于第一轮 drain），`released` 放行第一次调用返回，
 /// `saw_steering` 由第二次调用回填。
 #[derive(Default)]
-pub(crate) struct SteerGate {
+pub struct SteerGate {
     entered: std::sync::atomic::AtomicBool,
     released: std::sync::atomic::AtomicBool,
-    pub(crate) saw_steering: std::sync::atomic::AtomicBool,
+    pub saw_steering: std::sync::atomic::AtomicBool,
 }
 
 impl SteerGate {
-    pub(crate) fn wait_entered(&self) {
+    pub fn wait_entered(&self) {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         while !self.entered.load(std::sync::atomic::Ordering::Acquire) {
             assert!(std::time::Instant::now() < deadline, "model never started");
@@ -260,7 +260,7 @@ impl SteerGate {
         }
     }
 
-    pub(crate) fn release(&self) {
+    pub fn release(&self) {
         self.released
             .store(true, std::sync::atomic::Ordering::Release);
     }
@@ -650,7 +650,7 @@ impl Model for TestModel {
     }
 }
 
-pub(crate) fn response(text: &str, finish_reason: FinishReason) -> ModelResponse {
+pub fn response(text: &str, finish_reason: FinishReason) -> ModelResponse {
     ModelResponse {
         text: text.into(),
         tool_calls: Vec::new(),
@@ -667,7 +667,7 @@ pub(crate) fn response(text: &str, finish_reason: FinishReason) -> ModelResponse
 }
 
 /// 临时 storage/project 目录对（时间戳 + 纳秒保证唯一）。
-pub(crate) fn roots(name: &str) -> (PathBuf, PathBuf) {
+pub fn roots(name: &str) -> (PathBuf, PathBuf) {
     // FL 族根因（2026-09-08 定案，96 线程放大环 + 全进程探针实证）：
     // 唯一性曾只靠 name+纳秒时钟——高并发下兄弟测试读到同一纳秒即
     // **共享临时根**（同 SessionId 断言、互删目录、根租约 base 冲突
@@ -682,7 +682,7 @@ pub(crate) fn roots(name: &str) -> (PathBuf, PathBuf) {
     (base.join("storage"), base.join("project"))
 }
 
-pub(crate) fn configure_test_model(application: &TrustedProjectApplication) {
+pub fn configure_test_model(application: &TrustedProjectApplication) {
     let config = ModelConfig {
         model: "deterministic".into(),
         endpoint: "https://application-test.invalid".into(),
@@ -703,7 +703,7 @@ pub(crate) fn configure_test_model(application: &TrustedProjectApplication) {
 }
 
 #[allow(dead_code)]
-pub(crate) fn configure_test_model_with_budget(
+pub fn configure_test_model_with_budget(
     application: &TrustedProjectApplication,
     max_context_tokens: u32,
 ) {
@@ -721,7 +721,7 @@ pub(crate) fn configure_test_model_with_budget(
 }
 
 #[derive(Clone)]
-pub(crate) struct SharedEvents(pub(crate) Arc<Mutex<Vec<RunEvent>>>);
+pub struct SharedEvents(pub Arc<Mutex<Vec<RunEvent>>>);
 
 impl EventSink for SharedEvents {
     fn emit(&mut self, event: RunEvent) {
@@ -730,7 +730,7 @@ impl EventSink for SharedEvents {
 }
 
 /// 计数 approver：SessionWrite 免审意味着 todo run 期间零调用。
-pub(crate) struct CountingApprover(pub(crate) Arc<std::sync::atomic::AtomicUsize>);
+pub struct CountingApprover(pub Arc<std::sync::atomic::AtomicUsize>);
 
 impl PermissionApprover for CountingApprover {
     fn decide(
@@ -752,7 +752,7 @@ impl PermissionApprover for CountingApprover {
 /// 一致）；Windows 先短暂重试（后台线程异步关句柄），仍失败则容忍
 /// 残留——清理是卫生不是验证，测试的有效断言此刻已全部通过，一次性
 /// CI runner 上的残留无害。
-pub(crate) fn cleanup_tree(root: &std::path::Path) {
+pub fn cleanup_tree(root: &std::path::Path) {
     for attempt in 0..5 {
         match std::fs::remove_dir_all(root) {
             Ok(()) => return,
@@ -766,4 +766,26 @@ pub(crate) fn cleanup_tree(root: &std::path::Path) {
             Err(_) => std::thread::sleep(std::time::Duration::from_millis(20u64 << attempt)),
         }
     }
+}
+
+pub fn load_replay(storage_root: &std::path::Path) -> Vec<crate::session::replay::ReplayEvent> {
+    let backend = crate::session::persistence::JsonlBackend::new(
+        storage_root.join("sessions"),
+        crate::session::persistence::JsonlCompression::Zstd,
+        false,
+    );
+    let headers = backend.list_headers().expect("headers");
+    let header = headers.first().expect("one session");
+    let key = crate::session::key::SessionKey {
+        project: crate::session::key::ProjectKey::from_cwd(&header.cwd.clone().expect("cwd")),
+        id: header.id.clone(),
+    };
+    let mut events = Vec::new();
+    backend
+        .visit_from(&key, 0, &mut |event| {
+            events.push(event.clone());
+            Ok(())
+        })
+        .expect("visit");
+    crate::session::replay::ReplayAdapter::fold(&events)
 }

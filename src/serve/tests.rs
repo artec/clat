@@ -2959,7 +2959,7 @@ fn get_response_header(addr: SocketAddr, target: &str, wanted: &str) -> String {
 /// 所有本地事实与写操作仍只与自己的 serve 对话。
 #[test]
 fn web_assets_reference_only_the_public_market_endpoint() {
-    let web_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("web");
+    let web_root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../..")).join("web");
     let mut seen = BTreeSet::new();
     let mut offenders = Vec::new();
     scan_web_for_urls(&web_root, &mut seen, &mut offenders);
@@ -3106,7 +3106,9 @@ fn host_serve_for_playwright(key: &str, behavior: TestBehavior, seed_turns: usiz
     // other's live host metadata.
     let e2e_dir = std::env::var_os("CLAT_E2E_RUN_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("web/e2e"));
+        .unwrap_or_else(|| {
+            Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../..")).join("web/e2e")
+        });
     std::fs::create_dir_all(&e2e_dir).expect("create e2e handshake directory");
     let info_path = e2e_dir.join(format!(".serve-{key}.json"));
     let stop_path = e2e_dir.join(format!(".stop-{key}"));
@@ -3184,7 +3186,9 @@ fn host_live_glm_for_playwright() {
     .expect("serve_with live GLM");
     let e2e_dir = std::env::var_os("CLAT_E2E_RUN_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("web/e2e"));
+        .unwrap_or_else(|| {
+            Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../..")).join("web/e2e")
+        });
     std::fs::create_dir_all(&e2e_dir).expect("create live e2e handshake directory");
     let info_path = e2e_dir.join(".serve-live-glm.json");
     let stop_path = e2e_dir.join(".stop-live-glm");
@@ -3261,7 +3265,8 @@ fn serve_e2e_host_live_glm() {
 
 #[test]
 fn cargo_dependencies_stay_minimal() {
-    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+    let manifest =
+        std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../..")).join("Cargo.toml");
     let contents = std::fs::read_to_string(manifest).expect("Cargo.toml");
     let dependencies = contents
         .split("[dependencies]")

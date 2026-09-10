@@ -53,6 +53,23 @@ class SelectionTests(unittest.TestCase):
                 fast.run(["cargo", "test"], True)
             self.assertEqual(result.exception.code, 7)
 
+    def test_harness_ownership_and_unknown_filter_fallback(self):
+        self.assertEqual(fast.packages(["tui::input::", "dsh::"]), ["clat"])
+        self.assertEqual(fast.packages(["session::", "model::"]), ["clat-core"])
+        self.assertEqual(fast.packages(["tui::", "session::"]), ["clat", "clat-core"])
+        self.assertEqual(fast.packages(["future::"]), ["clat", "clat-core"])
+        self.assertEqual(fast.packages(["typo"]), ["clat", "clat-core"])
+        self.assertEqual(fast.packages(None), ["clat", "clat-core"])
+
+    def test_only_known_pure_ui_paths_select_lightweight_harness(self):
+        self.assertEqual(fast.selection(["src/tui/model_editor/picker.rs"]),
+                         ["tui::model_editor::"])
+        self.assertTrue(fast.pure_ui_filters(["tui::model_editor::", "tui::input::"]))
+        for patterns in (None, [], ["tui::"], ["tui::snapshot_tests::"],
+                         ["tui::model_editor::", "session::"],
+                         ["tui::model_editor::tests::manual_extra_body_survives_application_model_state_reload"]):
+            self.assertFalse(fast.pure_ui_filters(patterns))
+
 
 if __name__ == "__main__":
     unittest.main()

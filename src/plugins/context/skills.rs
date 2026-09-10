@@ -1,14 +1,14 @@
 //! Layered Skills plugin (Agent phase 3-B1/B2 + SC-2 `/skill` command).
 
-use super::services::{
-    COMMAND_SERVICE, COMMAND_SERVICE_ID, SANDBOX_SERVICE, SANDBOX_SERVICE_ID,
-    SKILL_CATALOG_SERVICE, SKILL_CATALOG_SERVICE_ID, SKILLS_SERVICE, SKILLS_SERVICE_ID,
-    TOOL_SERVICE, TOOL_SERVICE_ID,
-};
 use crate::command::{CommandError, CommandHandler, CommandOutcome, CommandSpec};
 use crate::plugin::{
     DisposeError, Plugin, PluginContext, PluginDescriptor, PluginError, PluginId, ScopeKind,
     ServiceId,
+};
+use crate::plugins::services::{
+    COMMAND_SERVICE, COMMAND_SERVICE_ID, SANDBOX_SERVICE, SANDBOX_SERVICE_ID,
+    SKILL_CATALOG_SERVICE, SKILL_CATALOG_SERVICE_ID, SKILLS_SERVICE, SKILLS_SERVICE_ID,
+    TOOL_SERVICE, TOOL_SERVICE_ID,
 };
 use crate::skills::{SkillCatalogSlot, SkillsService};
 use crate::{CancelToken, Project, Tool, ToolDefinition, ToolEffect, ToolError};

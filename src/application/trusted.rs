@@ -39,7 +39,7 @@ impl TrustedProjectApplication {
         self.sessions.inject_next_quiesce_failure();
     }
 
-    pub(crate) fn draft_image_store(&self) -> Arc<crate::draft::DraftImageStore> {
+    pub fn draft_image_store(&self) -> Arc<crate::draft::DraftImageStore> {
         Arc::clone(&self.draft_images)
     }
 
@@ -245,7 +245,7 @@ impl TrustedProjectApplication {
             asker_slot,
             plugin_host,
             lease,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             fail_next_run_spawn: false,
             #[cfg(test)]
             fail_next_run_start_receive: false,
@@ -680,7 +680,7 @@ impl TrustedProjectApplication {
     /// Project snapshot for a windowed transcript frontend. Only the newest
     /// message-aligned page is materialized; the full replay remains owned by
     /// SessionService for later page requests and non-windowed consumers.
-    pub(crate) fn snapshot_tail(
+    pub fn snapshot_tail(
         &mut self,
         max_messages: usize,
     ) -> Result<crate::application::HistoryWindow<ProjectSnapshot>, ApplicationError> {
@@ -748,7 +748,7 @@ impl TrustedProjectApplication {
     /// Return a message-aligned backwards page for the active local session.
     /// The session core owns replay reuse and incremental catch-up; frontends
     /// only choose the exclusive cursor and page size.
-    pub(crate) fn session_history(
+    pub fn session_history(
         &self,
         before_seq: Option<u64>,
         max_messages: usize,
@@ -852,8 +852,8 @@ impl TrustedProjectApplication {
     }
 
     /// 注入下一次 run worker spawn 失败（A-03 不变量的测试钩）。
-    #[cfg(test)]
-    pub(crate) fn fail_next_run_spawn_for_test(&mut self) {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn fail_next_run_spawn_for_test(&mut self) {
         self.fail_next_run_spawn = true;
     }
 
@@ -1052,7 +1052,7 @@ impl TrustedProjectApplication {
     /// Switch sessions while materializing only the newest replay page for a
     /// windowed frontend. The prepare scan remains single-pass and the active
     /// replay cache remains complete; only the duplicate return view is slim.
-    pub(crate) fn switch_session_tail(
+    pub fn switch_session_tail(
         &mut self,
         id: SessionId,
         max_messages: usize,

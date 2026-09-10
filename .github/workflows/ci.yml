@@ -30,6 +30,7 @@ jobs:
           node-version: 22
 
       - name: Complete Linux gates
+        # Workspace default-members cover clat-core and the terminal clat crate.
         run: scripts/gates.sh --ci
 
   # F-W1（2026-08-22 复核派工）：Windows 测试腿——收口所有
@@ -57,4 +58,5 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Test
+        # Same product workspace members as Linux; never narrow this to -p clat.
         run: cargo test --all-targets --all-features

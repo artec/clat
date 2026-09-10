@@ -6,14 +6,14 @@
 //! （INV-F1）。标题清洗：取首个非空行、剥包裹引号/Markdown 标记、按
 //! char 边界截断到 16 字符（INV-F2）。
 
-use super::services::{
-    PROVIDER_SERVICE, PROVIDER_SERVICE_ID, ProviderRegistry, SESSION_TITLE_SERVICE,
-    SESSION_TITLE_SERVICE_ID, SessionTitler,
-};
 use crate::model::{
     CancelToken, FinishReason, ModelConfig, ModelOptions, ModelRequest, ProviderCredentials,
 };
 use crate::plugin::{Plugin, PluginContext, PluginDescriptor, PluginError, PluginId, ScopeKind};
+use crate::plugins::services::{
+    PROVIDER_SERVICE, PROVIDER_SERVICE_ID, ProviderRegistry, SESSION_TITLE_SERVICE,
+    SESSION_TITLE_SERVICE_ID, SessionTitler,
+};
 use crate::providers::{ModelBuildFn, RetryPolicy, retry_model_with};
 use std::sync::Arc;
 use std::time::Duration;

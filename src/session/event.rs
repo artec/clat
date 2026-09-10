@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 /// How a surface event joined the ordered surface. `replace` is a closed
 /// range over the first/last shadowed *surface-node seqs* (compat doc §5).
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum SurfaceOp {
+pub enum SurfaceOp {
     Append,
     Replace { start: u64, end: u64 },
 }
@@ -62,31 +62,31 @@ impl<'de> Deserialize<'de> for SurfaceOp {
 /// `extra` (logical equivalence on re-encode; physical bytes may reorder —
 /// plan §2.4 explicitly allows this for ignorable unknown events).
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub(crate) struct SessionEvent {
+pub struct SessionEvent {
     #[serde(rename = "type")]
-    pub(crate) event_type: String,
+    pub event_type: String,
     /// Monotonic, contiguous from 0 (`events[i].seq === i`).
-    pub(crate) seq: u64,
+    pub seq: u64,
     /// Unix epoch milliseconds.
-    pub(crate) time: i64,
-    pub(crate) data: Value,
+    pub time: i64,
+    pub data: Value,
     /// `Some(true)` = readers may skip an unknown type; absent = required.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) ignorable: Option<bool>,
+    pub ignorable: Option<bool>,
     #[serde(rename = "surfaceOp", default, skip_serializing_if = "Option::is_none")]
-    pub(crate) surface_op: Option<SurfaceOp>,
+    pub surface_op: Option<SurfaceOp>,
     #[serde(
         rename = "sourceEventSeqs",
         default,
         skip_serializing_if = "Option::is_none"
     )]
-    pub(crate) source_event_seqs: Option<Vec<u64>>,
+    pub source_event_seqs: Option<Vec<u64>>,
     #[serde(flatten, skip_serializing_if = "serde_json::Map::is_empty", default)]
-    pub(crate) extra: serde_json::Map<String, Value>,
+    pub extra: serde_json::Map<String, Value>,
 }
 
 impl SessionEvent {
-    pub(crate) fn new(event_type: &str, seq: u64, time: i64, data: Value) -> Self {
+    pub fn new(event_type: &str, seq: u64, time: i64, data: Value) -> Self {
         Self {
             event_type: event_type.into(),
             seq,
@@ -99,12 +99,12 @@ impl SessionEvent {
         }
     }
 
-    pub(crate) fn log_only(mut self) -> Self {
+    pub fn log_only(mut self) -> Self {
         self.ignorable = Some(true);
         self
     }
 
-    pub(crate) fn append(mut self, sources: Vec<u64>) -> Self {
+    pub fn append(mut self, sources: Vec<u64>) -> Self {
         self.surface_op = Some(SurfaceOp::Append);
         self.source_event_seqs = (!sources.is_empty()).then_some(sources);
         self

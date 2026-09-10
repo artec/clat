@@ -242,7 +242,8 @@ fn fake_service(
     .unwrap();
     let helper = storage.join(format!("fake-lsp-server{}", std::env::consts::EXE_SUFFIX));
     crate::process::compile_rust_test_helper(
-        std::path::Path::new("tests/fixtures/lsp/fake_lsp_server.rs"),
+        &std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
+            .join("tests/fixtures/lsp/fake_lsp_server.rs"),
         &helper,
     )
     .unwrap();

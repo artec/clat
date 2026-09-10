@@ -1,0 +1,2104 @@
+use super::*;
+use crate::model::{ContentPart, ModelError, ModelEvent, ModelResponse};
+use crate::permission::{AllowAll, SafeByDefault};
+use crate::tool::{
+    Tool, ToolCall, ToolDefinition, ToolEffect, ToolError, ToolInvocation, ToolMiddleware, ToolNext,
+};
+use serde_json::{Value, json};
+
+fn register_test_tool<T: Tool + 'static>(registry: &ToolRegistry, tool: T) {
+    registry
+        .register(
+            crate::plugin::PluginOwner::for_test(crate::plugin::PluginId::new("test.run")),
+            std::sync::Arc::new(tool),
+        )
+        .expect("test tool name is unique");
+}
+
+struct EchoTool;
+
+impl Tool for EchoTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "echo".into(),
+            description: "Echo the input".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {"text": {"type": "string"}},
+                "required": ["text"],
+                "additionalProperties": false
+            }),
+            effect: ToolEffect::Pure,
+            strict: true,
+        }
+    }
+
+    fn invoke(
+        &self,
+        arguments: &Value,
+        _project: &Project,
+        _cancel: &CancelToken,
+    ) -> Result<Value, ToolError> {
+        Ok(arguments["text"].clone())
+    }
+}
+
+/// 返回超阈值输出的工具：锁定 Run → ToolResultTransformer →
+/// items/ToolFinished 的端到端链路。该链路是原生与 MCP 工具的共同
+/// 路径（INV-P4）。
+struct NoisyTool;
+
+impl Tool for NoisyTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "noisy".into(),
+            description: "Returns oversized output".into(),
+            input_schema: json!({"type": "object"}),
+            effect: ToolEffect::Pure,
+            strict: true,
+        }
+    }
+
+    fn invoke(
+        &self,
+        _arguments: &Value,
+        _project: &Project,
+        _cancel: &CancelToken,
+    ) -> Result<Value, ToolError> {
+        Ok(json!({ "log": "x".repeat(20_000) }))
+    }
+}
+
+#[test]
+fn oversized_tool_results_are_pruned_through_the_pipeline() {
+    use crate::plugins::ResultPruner;
+
+    let project = Project::new(".");
+    let permissions = AllowAll;
+    let tools = ToolRegistry::new();
+    register_test_tool(&tools, NoisyTool);
+    let pipeline = ToolExecutionPipeline::new();
+    let _lease = pipeline
+        .register_result_transformer(
+            crate::plugin::PluginOwner::for_test(crate::plugin::PluginId::new("test.pruner")),
+            std::sync::Arc::new(ResultPruner),
+        )
+        .map_err(|error| error.to_string())
+        .expect("register pruner");
+    let mut model = PruningCheckModel { calls: 0 };
+    let mut events = Vec::new();
+
+    let output = Run::new(&mut model, &tools, &permissions, &project)
+        .with_tool_pipeline(&pipeline)
+        .execute("use noisy", &mut events)
+        .expect("run");
+
+    assert_eq!(output.turns, 2);
+    // 持久化 items 中的工具结果与 ToolFinished 事件载荷都是截断视图。
+    let truncated_items = output
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            ModelItem::ToolResult(result) => Some(result),
+            _ => None,
+        })
+        .count();
+    assert_eq!(truncated_items, 1);
+    let finished = events
+        .iter()
+        .find_map(|event| match event {
+            RunEvent::ToolFinished { result } => Some(result),
+            _ => None,
+        })
+        .expect("ToolFinished");
+    assert_eq!(finished.output["clat_truncated"], json!(true));
+    assert!(!finished.output["head"].as_str().expect("head").is_empty());
+}
+
+struct PruningCheckModel {
+    calls: usize,
+}
+
+impl Model for PruningCheckModel {
+    fn provider(&self) -> &str {
+        "test"
+    }
+
+    fn model_id(&self) -> &str {
+        "pruning-check"
+    }
+
+    fn stream(
+        &mut self,
+        request: ModelRequest<'_>,
+        _events: &mut dyn ModelEventSink,
+    ) -> Result<ModelResponse, ModelError> {
+        self.calls += 1;
+        if self.calls == 1 {
+            return Ok(ModelResponse {
+                text: String::new(),
+                tool_calls: vec![ToolCall {
+                    id: "call-noisy".into(),
+                    name: "noisy".into(),
+                    arguments: json!({}),
+                }],
+                finish_reason: FinishReason::ToolCalls,
+                usage: None,
+                provider_response_id: None,
+                provider_state: vec![],
+                reasoning: None,
+            });
+        }
+        // 第二轮：模型看到的是截断视图而非原始洪流。
+        assert!(matches!(
+            request.items.last(),
+            Some(ModelItem::ToolResult(result)) if result.output.get("clat_truncated") == Some(&json!(true))
+        ));
+        Ok(ModelResponse {
+            text: "done".into(),
+            tool_calls: vec![],
+            finish_reason: FinishReason::Completed,
+            usage: None,
+            provider_response_id: None,
+            provider_state: vec![],
+            reasoning: None,
+        })
+    }
+}
+
+struct ScriptedModel {
+    calls: usize,
+}
+
+impl Model for ScriptedModel {
+    fn provider(&self) -> &str {
+        "test"
+    }
+
+    fn model_id(&self) -> &str {
+        "scripted"
+    }
+
+    fn stream(
+        &mut self,
+        request: ModelRequest<'_>,
+        events: &mut dyn ModelEventSink,
+    ) -> Result<ModelResponse, ModelError> {
+        self.calls += 1;
+
+        if let Some(ModelItem::ToolResult(result)) = request.items.last() {
+            let text = format!("tool said: {}", result.output.as_str().unwrap_or_default());
+            events.emit(ModelEvent::TextDelta {
+                delta: text.clone(),
+            });
+            events.emit(ModelEvent::ResponseCompleted {
+                finish_reason: FinishReason::Completed,
+            });
+            return Ok(ModelResponse {
+                text,
+                tool_calls: vec![],
+                finish_reason: FinishReason::Completed,
+                usage: Some(Usage {
+                    input_tokens: 2,
+                    output_tokens: 3,
+                    ..Usage::default()
+                }),
+                provider_response_id: Some("response-2".into()),
+                provider_state: vec![],
+                reasoning: None,
+            });
+        }
+
+        let call = ToolCall {
+            id: "call-1".into(),
+            name: "echo".into(),
+            arguments: json!({"text": "hello"}),
+        };
+        events.emit(ModelEvent::ToolCallCompleted { call: call.clone() });
+        events.emit(ModelEvent::ResponseCompleted {
+            finish_reason: FinishReason::ToolCalls,
+        });
+        Ok(ModelResponse {
+            text: String::new(),
+            tool_calls: vec![call],
+            finish_reason: FinishReason::ToolCalls,
+            usage: Some(Usage {
+                input_tokens: 5,
+                output_tokens: 1,
+                ..Usage::default()
+            }),
+            provider_response_id: Some("response-1".into()),
+            provider_state: vec![],
+            reasoning: None,
+        })
+    }
+}
+
+/// S5/协议顺序：运行中入队的 steering 在下一个模型请求边界 claim——
+/// `SteeringApplied` 夹在上一响应与下一次 `ModelRequested` 之间；模型
+/// 已给出最终回答时本轮延长（不提前 RunCompleted），下一次请求的
+/// items 里带着 steering 用户项。
+struct SteeringModel {
+    steering: SteeringQueue,
+    calls: usize,
+    saw_steering_item: bool,
+}
+
+impl Model for SteeringModel {
+    fn provider(&self) -> &str {
+        "test"
+    }
+
+    fn model_id(&self) -> &str {
+        "steering"
+    }
+
+    fn stream(
+        &mut self,
+        request: ModelRequest<'_>,
+        events: &mut dyn ModelEventSink,
+    ) -> Result<ModelResponse, ModelError> {
+        self.calls += 1;
+        if self.calls == 1 {
+            // 模拟前端在第一个请求进行中 steer()：此刻 turn-1 顶部的
+            // drain 已过，消息只能被下一轮 claim。
+            assert_eq!(
+                self.steering
+                    .try_push(crate::message::PendingMessage::text("also run the tests")),
+                PushOutcome::Accepted,
+                "the queue is open while the run is executing"
+            );
+            events.emit(ModelEvent::TextDelta {
+                delta: "first answer".into(),
+            });
+            return Ok(ModelResponse {
+                text: "first answer".into(),
+                tool_calls: vec![],
+                finish_reason: FinishReason::Completed,
+                usage: None,
+                provider_response_id: None,
+                provider_state: vec![],
+                reasoning: None,
+            });
+        }
+        self.saw_steering_item = request.items.iter().any(|item| {
+            matches!(
+                item,
+                ModelItem::User { content } if content.iter().any(|part| matches!(
+                    part,
+                    crate::model::ContentPart::Text(text) if text == "also run the tests"
+                ))
+            )
+        });
+        events.emit(ModelEvent::TextDelta {
+            delta: "steering handled".into(),
+        });
+        Ok(ModelResponse {
+            text: "steering handled".into(),
+            tool_calls: vec![],
+            finish_reason: FinishReason::Completed,
+            usage: None,
+            provider_response_id: None,
+            provider_state: vec![],
+            reasoning: None,
+        })
+    }
+}
+
+#[test]
+fn steering_extends_a_completed_run_and_feeds_the_next_request() {
+    let project = Project::new(".");
+    let steering = SteeringQueue::new();
+    let mut model = SteeringModel {
+        steering: steering.clone(),
+        calls: 0,
+        saw_steering_item: false,
+    };
+    let mut events = Vec::new();
+
+    let output = Run::new(&mut model, &ToolRegistry::new(), &AllowAll, &project)
+        .with_steering(steering)
+        .execute("start work", &mut events)
+        .expect("run should succeed");
+
+    // S5：第一个 Completed 不终结 run，模型欠用户一个回应。
+    assert_eq!(model.calls, 2, "steering must extend the run");
+    assert_eq!(output.turns, 2);
+    assert_eq!(output.text, "steering handled");
+    assert!(
+        model.saw_steering_item,
+        "the second request must carry the steering user item"
+    );
+    assert!(output.items.iter().any(|item| matches!(
+        item,
+        ModelItem::User { content } if content.iter().any(|part| matches!(
+            part,
+            crate::model::ContentPart::Text(text) if text == "also run the tests"
+        ))
+    )));
+
+    // S1：SteeringApplied 夹在首个 ModelResponded 与第二次
+    // ModelRequested 之间，载荷为原文。
+    let position = |needle: &str| {
+        events
+            .iter()
+            .position(|event| {
+                let variant = match event {
+                    RunEvent::RunStarted { .. } => "RunStarted",
+                    RunEvent::ModelRequested { .. } => "ModelRequested",
+                    RunEvent::ModelStream { .. } => "ModelStream",
+                    RunEvent::ModelResponded { .. } => "ModelResponded",
+                    RunEvent::ToolRequested { .. } => "ToolRequested",
+                    RunEvent::PermissionChecked { .. } => "PermissionChecked",
+                    RunEvent::PermissionDenied { .. } => "PermissionDenied",
+                    RunEvent::ToolStarted { .. } => "ToolStarted",
+                    RunEvent::ToolFinished { .. } => "ToolFinished",
+                    RunEvent::SteeringApplied { .. } => "SteeringApplied",
+                    RunEvent::RunCompleted { .. } => "RunCompleted",
+                    RunEvent::RunCancelled { .. } => "RunCancelled",
+                    RunEvent::RunFailed { .. } => "RunFailed",
+                };
+                variant == needle
+            })
+            .expect(needle)
+    };
+    let applied = events
+        .iter()
+        .position(|event| matches!(
+        event,
+        RunEvent::SteeringApplied { message, .. } if message.plain_text() == "also run the tests"
+    ))
+        .expect("SteeringApplied must be emitted");
+    assert!(applied > position("ModelResponded"));
+    let second_request = events
+        .iter()
+        .position(|event| matches!(event, RunEvent::ModelRequested { turn, .. } if *turn == 2))
+        .expect("second request");
+    assert!(applied < second_request);
+    assert!(matches!(events.last(), Some(RunEvent::RunCompleted { .. })));
+}
+
+struct ProjectionMustFailBeforeModel {
+    calls: usize,
+}
+
+impl Model for ProjectionMustFailBeforeModel {
+    fn provider(&self) -> &str {
+        "test"
+    }
+
+    fn model_id(&self) -> &str {
+        "projection-must-fail"
+    }
+
+    fn stream(
+        &mut self,
+        _request: ModelRequest<'_>,
+        _events: &mut dyn ModelEventSink,
+    ) -> Result<ModelResponse, ModelError> {
+        self.calls += 1;
+        panic!("provider must not be called after an image admission mismatch")
+    }
+}
+
+/// MM-F01：descriptor 与 admitted source 不一致是 core invariant
+/// failure，不能悄悄降级成文本占位符，更不能先持久化
+/// `SteeringApplied` 或触发 provider I/O。
+#[test]
+fn steering_image_projection_mismatch_fails_before_commit_and_provider_io() {
+    use crate::message::{
+        AttachmentDescriptor, ContentBlock, JournalImage, MessageContent, PendingMessage,
+    };
+
+    let descriptor = |attachment_id: &str| AttachmentDescriptor {
+        attachment_id: attachment_id.to_owned(),
+        media_type: "image/png".into(),
+        width: 1,
+        height: 1,
+        bytes: 1,
+        display_name: None,
+        original_width: None,
+        original_height: None,
+    };
+    let steering = SteeringQueue::new();
+    assert_eq!(
+        steering.try_push(PendingMessage {
+            client_message_id: Some("client-mismatch".into()),
+            content: MessageContent::from_blocks(vec![ContentBlock::Image {
+                attachment: descriptor("expected"),
+            }]),
+            staged_attachments: Vec::new(),
+            admitted_images: vec![JournalImage {
+                descriptor: descriptor("other"),
+                path: "/private/provider-source.png".into(),
+            }],
+            submission_digest: None,
+        }),
+        PushOutcome::Accepted
+    );
+
+    let project = Project::new(".");
+    let mut model = ProjectionMustFailBeforeModel { calls: 0 };
+    let mut events = Vec::new();
+    let error = Run::new(&mut model, &ToolRegistry::new(), &AllowAll, &project)
+        .with_steering(steering)
+        .execute("start", &mut events)
+        .expect_err("a mismatched admitted image must fail closed");
+
+    assert_eq!(model.calls, 0, "provider I/O must not begin");
+    assert!(
+        error
+            .to_string()
+            .contains("steering image projection failed: image attachment expected"),
+        "unexpected error: {error}"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, RunEvent::SteeringApplied { .. })),
+        "an invalid steering message must not cross the durable commit point"
+    );
+    assert!(matches!(events.last(), Some(RunEvent::RunFailed { .. })));
+}
+
+/// S4：取消优先于延长。模型在流中先取消令牌、再模拟前端 steer()、
+/// 然后返回最终回答：terminal 门会因队列非空而延长，但下一轮循环
+/// 顶部的 cancel 检查先于 drain，run 以取消收场，消息不被 claim。
+struct CancelsMidAnswerModel {
+    steering: SteeringQueue,
+}
+
+impl Model for CancelsMidAnswerModel {
+    fn provider(&self) -> &str {
+        "test"
+    }
+
+    fn model_id(&self) -> &str {
+        "cancels"
+    }
+
+    fn stream(
+        &mut self,
+        request: ModelRequest<'_>,
+        _events: &mut dyn ModelEventSink,
+    ) -> Result<ModelResponse, ModelError> {
+        request.cancel.cancel();
+        assert_eq!(
+            self.steering
+                .try_push(crate::message::PendingMessage::text("too late")),
+            PushOutcome::Accepted,
+            "cancel sets the flag but does not seal the queue"
+        );
+        Ok(ModelResponse {
+            text: "answer".into(),
+            tool_calls: vec![],
+            finish_reason: FinishReason::Completed,
+            usage: None,
+            provider_response_id: None,
+            provider_state: vec![],
+            reasoning: None,
+        })
+    }
+}
+
+/// 终态事件探针（W1-04）：在事件回调发生的同一时刻尝试迟到入队。
+/// 若封口晚于 RunCancelled/RunFailed，这里会得到 Accepted，精确复现
+/// "终态已对前端可见、却仍接收孤儿 steering" 的窗口。
+struct TerminalSealSink {
+    events: Vec<RunEvent>,
+    steering: SteeringQueue,
+    terminal_push: Option<PushOutcome>,
+}
+
+impl EventSink for TerminalSealSink {
+    fn emit(&mut self, event: RunEvent) {
+        if matches!(
+            event,
+            RunEvent::RunCancelled { .. } | RunEvent::RunFailed { .. }
+        ) {
+            self.terminal_push = Some(
+                self.steering
+                    .try_push(crate::message::PendingMessage::text("after terminal event")),
+            );
+        }
+        self.events.push(event);
+    }
+}
+
+#[test]
+fn cancelled_run_discards_pending_steering() {
+    let project = Project::new(".");
+    let steering = SteeringQueue::new();
+    let mut model = CancelsMidAnswerModel {
+        steering: steering.clone(),
+    };
+    let mut events = TerminalSealSink {
+        events: Vec::new(),
+        steering: steering.clone(),
+        terminal_push: None,
+    };
+
+    let _output = Run::new(&mut model, &ToolRegistry::new(), &AllowAll, &project)
+        .with_steering(steering.clone())
+        .execute("start", &mut events)
+        .expect("cancelled run is a normal outcome");
+
+    assert_eq!(
+        events.terminal_push,
+        Some(PushOutcome::Sealed),
+        "RunCancelled must only be emitted after steering has been sealed"
+    );
+    assert!(
+        matches!(events.events.last(), Some(RunEvent::RunCancelled { .. })),
+        "cancel must win over the steering extension"
+    );
+    assert!(
+        !events
+            .events
+            .iter()
+            .any(|event| matches!(event, RunEvent::SteeringApplied { .. })),
+        "unclaimed steering must not be applied"
+    );
+    // 消息未被 claim（可召回），且队列已封口：run 结束后迟到的
+    // steer 必须得到 Sealed 而不是 Accepted（W1-04）。
+    assert_eq!(
+        steering
+            .recall_last()
+            .map(|message| message.content.plain_text()),
+        Some("too late".to_owned())
+    );
+    assert!(steering.is_sealed(), "a finished run must seal its queue");
+}
+
+/// panic 路径假模型：用于证明 unwind 也会封口 steering。
+struct PanicsDuringStreamModel;
+
+impl Model for PanicsDuringStreamModel {
+    fn provider(&self) -> &str {
+        "test"
+    }
+
+    fn model_id(&self) -> &str {
+        "panic"
+    }
+
+    fn stream(
+        &mut self,
+        _request: ModelRequest<'_>,
+        _events: &mut dyn ModelEventSink,
+    ) -> Result<ModelResponse, ModelError> {
+        panic!("intentional model panic")
+    }
+}
+
+/// W1-04：Application 会 catch_unwind agent panic，因此 Run 自己必须
+/// 在 unwind 途中封口。没有 RAII guard 时，execute_with_items 尾部的
+/// seal 根本执行不到，收尾窗口仍会接受孤儿 steering。
+#[test]
+fn steering_is_sealed_when_the_run_unwinds() {
+    let project = Project::new(".");
+    let steering = SteeringQueue::new();
+    let mut model = PanicsDuringStreamModel;
+    let mut events = Vec::new();
+    let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = Run::new(&mut model, &ToolRegistry::new(), &AllowAll, &project)
+            .with_steering(steering.clone())
+            .execute("panic", &mut events);
+    }));
+    assert!(unwind.is_err(), "the fake model must panic");
+    assert_eq!(
+        steering.try_push(crate::message::PendingMessage::text("late")),
+        PushOutcome::Sealed,
+        "panic unwind must seal steering before Application cleanup"
+    );
+}
+
+#[test]
+fn steering_queue_seals_atomically_against_push() {
+    let queue = SteeringQueue::new();
+    assert_eq!(
+        queue.try_push(crate::message::PendingMessage::text("a")),
+        PushOutcome::Accepted
+    );
+    // 非空 → 终态判定放行失败（消息待 claim）。
+    assert!(
+        !queue.seal_if_empty(),
+        "pending messages must extend the run"
+    );
+    assert_eq!(
+        queue.try_push(crate::message::PendingMessage::text("b")),
+        PushOutcome::Accepted
+    );
+    assert_eq!(
+        queue.pop().map(|message| message.content.plain_text()),
+        Some("a".to_owned())
+    );
+    assert_eq!(
+        queue.pop().map(|message| message.content.plain_text()),
+        Some("b".to_owned())
+    );
+    // 空 → 当场封口放行终态。
+    assert!(queue.seal_if_empty());
+    assert_eq!(
+        queue.try_push(crate::message::PendingMessage::text("late")),
+        PushOutcome::Sealed,
+        "a sealed queue must never accept new steering"
+    );
+    // 无条件封口同样拒绝后续入队，但不影响召回已入队消息。
+    let queue = SteeringQueue::new();
+    assert_eq!(
+        queue.try_push(crate::message::PendingMessage::text("kept")),
+        PushOutcome::Accepted
+    );
+    queue.seal();
+    assert_eq!(
+        queue.try_push(crate::message::PendingMessage::text("late")),
+        PushOutcome::Sealed
+    );
+    assert_eq!(
+        queue
+            .recall_last()
+            .map(|message| message.content.plain_text()),
+        Some("kept".to_owned())
+    );
+}
+
+#[test]
+fn executes_streaming_model_tool_model_loop() {
+    let project = Project::new(".");
+    let permissions = AllowAll;
+    let tools = ToolRegistry::new();
+    register_test_tool(&tools, EchoTool);
+    let mut model = ScriptedModel { calls: 0 };
+    let mut events = Vec::new();
+
+    let output = Run::new(&mut model, &tools, &permissions, &project)
+        .execute("use the echo tool", &mut events)
+        .expect("run should succeed");
+
+    assert_eq!(model.calls, 2);
+    assert_eq!(output.turns, 2);
+    assert_eq!(output.text, "tool said: hello");
+    assert_eq!(output.usage.input_tokens, 7);
+    assert_eq!(output.usage.output_tokens, 4);
+    assert!(events.iter().any(|event| matches!(
+        event,
+        RunEvent::ModelStream {
+            event: ModelEvent::TextDelta { delta },
+            ..
+        } if delta == "tool said: hello"
+    )));
+    assert!(matches!(events.last(), Some(RunEvent::RunCompleted { .. })));
+}
+
+struct ImageProjectionModel {
+    calls: usize,
+}
+
+impl Model for ImageProjectionModel {
+    fn provider(&self) -> &str {
+        "test"
+    }
+
+    fn model_id(&self) -> &str {
+        "image-projection"
+    }
+
+    fn stream(
+        &mut self,
+        request: ModelRequest<'_>,
+        _events: &mut dyn ModelEventSink,
+    ) -> Result<ModelResponse, ModelError> {
+        self.calls += 1;
+        assert_eq!(
+            request
+                .items
+                .iter()
+                .flat_map(crate::model::model_item_image_parts)
+                .count(),
+            1,
+            "the provider sees only the protected latest-turn image"
+        );
+        assert!(matches!(
+            &request.items[0],
+            ModelItem::User { content }
+                if content == &[ContentPart::Text(crate::model::IMAGE_OFFLOAD_PLACEHOLDER.into())]
+        ));
+        Ok(ModelResponse {
+            text: "done".into(),
+            tool_calls: Vec::new(),
+            finish_reason: FinishReason::Completed,
+            usage: None,
+            provider_response_id: None,
+            provider_state: Vec::new(),
+            reasoning: None,
+        })
+    }
+}
+
+#[test]
+fn run_applies_image_projection_before_model_io_and_fails_closed_for_latest_turn() {
+    let dir = std::env::temp_dir().join(format!(
+        "clat-run-image-projection-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let image = dir.join("image.png");
+    let mut header = vec![
+        0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n', 0, 0, 0, 13, b'I', b'H', b'D', b'R',
+    ];
+    header.extend_from_slice(&500u32.to_be_bytes());
+    header.extend_from_slice(&500u32.to_be_bytes());
+    header.extend_from_slice(&[8, 6, 0, 0, 0]);
+    std::fs::write(&image, header).unwrap();
+    let part = || ContentPart::Image {
+        path: image.to_string_lossy().into_owned(),
+        media_type: "image/png".into(),
+    };
+    let options = ModelOptions {
+        image_projection: Some(crate::model::ImageProjectionBudget {
+            max_context_tokens: None,
+            max_request_images: 1,
+            max_request_image_bytes: u64::MAX,
+        }),
+        ..ModelOptions::default()
+    };
+    let project = Project::new(&dir);
+    let tools = ToolRegistry::new();
+    let mut model = ImageProjectionModel { calls: 0 };
+    let mut events = Vec::new();
+    // MS-1 后本测试聚焦投影语义：受保护图仍在请求里，模型侧必须
+    // 是已验证视觉能力（默认 fail-closed 纯文本会被发前预检拒绝）。
+    let vision = crate::model::ModelCapabilities {
+        input_modalities: vec![crate::model::Modality::Text, crate::model::Modality::Image],
+        tool_result_modalities: vec![crate::model::Modality::Text],
+        image_input_verified: true,
+    };
+    Run::new(&mut model, &tools, &AllowAll, &project)
+        .with_model_options(options.clone())
+        .with_capabilities(vision)
+        .execute_with_items(
+            vec![
+                ModelItem::User {
+                    content: vec![part()],
+                },
+                ModelItem::User {
+                    content: vec![ContentPart::Text("latest".into()), part()],
+                },
+            ],
+            crate::message::MessageContent::text("latest"),
+            None,
+            &mut events,
+        )
+        .expect("old image is deterministically omitted");
+    assert_eq!(model.calls, 1);
+
+    let mut never_called = ImageProjectionModel { calls: 0 };
+    let error = Run::new(&mut never_called, &tools, &AllowAll, &project)
+        .with_model_options(options)
+        .execute_with_items(
+            vec![ModelItem::User {
+                content: vec![part(), part()],
+            }],
+            crate::message::MessageContent::text("two new images"),
+            None,
+            &mut Vec::new(),
+        )
+        .expect_err("latest-turn images cannot be silently omitted");
+    assert_eq!(never_called.calls, 0, "failure happens before model I/O");
+    assert!(error.to_string().contains("current turn: 2 images"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 记录 provider 实际看到的图片部件数（MS-1 预检测试的探针模型）。
+struct ModalityProbeModel {
+    calls: usize,
+    images_seen: usize,
+}
+
+impl Model for ModalityProbeModel {
+    fn provider(&self) -> &str {
+        "test"
+    }
+
+    fn model_id(&self) -> &str {
+        "text-only-probe"
+    }
+
+    fn stream(
+        &mut self,
+        request: ModelRequest<'_>,
+        _events: &mut dyn ModelEventSink,
+    ) -> Result<ModelResponse, ModelError> {
+        self.calls += 1;
+        self.images_seen = request
+            .items
+            .iter()
+            .flat_map(crate::model::model_item_image_parts)
+            .count();
+        Ok(ModelResponse {
+            text: "done".into(),
+            tool_calls: Vec::new(),
+            finish_reason: FinishReason::Completed,
+            usage: None,
+            provider_response_id: None,
+            provider_state: Vec::new(),
+            reasoning: None,
+        })
+    }
+}
+
+/// 临时目录里放一个最小 PNG 头文件（预算估算走真实文件元数据）。
+fn image_part_in_temp_dir(tag: &str) -> (std::path::PathBuf, ContentPart) {
+    let dir = std::env::temp_dir().join(format!(
+        "clat-run-modality-{tag}-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let image = dir.join("image.png");
+    let mut header = vec![
+        0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n', 0, 0, 0, 13, b'I', b'H', b'D', b'R',
+    ];
+    header.extend_from_slice(&500u32.to_be_bytes());
+    header.extend_from_slice(&500u32.to_be_bytes());
+    header.extend_from_slice(&[8, 6, 0, 0, 0]);
+    std::fs::write(&image, header).unwrap();
+    let part = ContentPart::Image {
+        path: image.to_string_lossy().into_owned(),
+        media_type: "image/png".into(),
+    };
+    (dir, part)
+}
+
+/// MS-1 判别腿（pre-fix 红）：多模态会话切到纯文本模型后，历史
+/// 图像在**发前**被模态预检明确拒绝——不是厂商 400 透传，错误
+/// 指路（切回视觉模型或 /new），且 provider 零 I/O。
+#[test]
+fn modality_preflight_rejects_history_images_before_provider_io() {
+    let (dir, image) = image_part_in_temp_dir("history");
+    let mut model = ModalityProbeModel {
+        calls: 0,
+        images_seen: 0,
+    };
+    let error = Run::new(
+        &mut model,
+        &ToolRegistry::new(),
+        &AllowAll,
+        &Project::new(&dir),
+    )
+    .execute_with_items(
+        vec![
+            ModelItem::User {
+                content: vec![ContentPart::Text("describe this".into()), image],
+            },
+            ModelItem::User {
+                content: vec![ContentPart::Text("and now a text follow-up".into())],
+            },
+        ],
+        crate::message::MessageContent::text("and now a text follow-up"),
+        None,
+        &mut Vec::new(),
+    )
+    .expect_err("a text-only model must not receive the session's history image");
+    assert_eq!(
+        model.calls, 0,
+        "the preflight fires before any provider I/O"
+    );
+    let error = error.to_string();
+    assert!(error.contains("does not accept image input"), "{error}");
+    assert!(error.contains("text-only-probe"), "{error}");
+    assert!(error.contains("1 image part"), "{error}");
+    assert!(error.contains("vision model"), "{error}");
+    assert!(error.contains("/new"), "{error}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// MS-1 反向腿：同一请求 × 已验证视觉能力 → 照常发出，模型看到
+/// 历史图像。预检不得误伤视觉路径。
+#[test]
+fn modality_preflight_passes_when_the_model_accepts_images() {
+    let (dir, image) = image_part_in_temp_dir("vision");
+    let vision = crate::model::ModelCapabilities {
+        input_modalities: vec![crate::model::Modality::Text, crate::model::Modality::Image],
+        tool_result_modalities: vec![crate::model::Modality::Text],
+        image_input_verified: true,
+    };
+    let mut model = ModalityProbeModel {
+        calls: 0,
+        images_seen: 0,
+    };
+    let output = Run::new(
+        &mut model,
+        &ToolRegistry::new(),
+        &AllowAll,
+        &Project::new(&dir),
+    )
+    .with_capabilities(vision)
+    .execute_with_items(
+        vec![ModelItem::User {
+            content: vec![ContentPart::Text("describe this".into()), image],
+        }],
+        crate::message::MessageContent::text("describe this"),
+        None,
+        &mut Vec::new(),
+    )
+    .expect("a verified vision model receives the history image");
+    assert_eq!(output.text, "done");
+    assert_eq!(model.calls, 1);
+    assert_eq!(model.images_seen, 1);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// MS-1 卸载腿：预算压力下被投影替换为占位文本的旧图不在请求
+/// 里，纯文本模型照常出话——MM-2 卸载语义不因预检收紧（改 bug
+/// 不改坏既有好逻辑的锁定腿）。
+#[test]
+fn offloaded_history_images_do_not_trip_the_modality_preflight() {
+    let (dir, image) = image_part_in_temp_dir("offload");
+    let options = ModelOptions {
+        image_projection: Some(crate::model::ImageProjectionBudget {
+            max_context_tokens: None,
+            max_request_images: 0,
+            max_request_image_bytes: u64::MAX,
+        }),
+        ..ModelOptions::default()
+    };
+    let mut model = ModalityProbeModel {
+        calls: 0,
+        images_seen: 0,
+    };
+    let output = Run::new(
+        &mut model,
+        &ToolRegistry::new(),
+        &AllowAll,
+        &Project::new(&dir),
+    )
+    .with_model_options(options)
+    .execute_with_items(
+        vec![
+            ModelItem::User {
+                content: vec![image],
+            },
+            ModelItem::User {
+                content: vec![ContentPart::Text("text-only follow-up".into())],
+            },
+        ],
+        crate::message::MessageContent::text("text-only follow-up"),
+        None,
+        &mut Vec::new(),
+    )
+    .expect("the offloaded image must not fail the text-only run");
+    assert_eq!(output.text, "done");
+    assert_eq!(model.calls, 1);
+    assert_eq!(
+        model.images_seen, 0,
+        "the old image was offloaded to a placeholder"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Stage-0 protocol characterization. This deliberately locks complete
+/// relative ordering and representative payloads, rather than merely
+/// checking that selected variants appeared somewhere.
+#[test]
+fn run_event_protocol_order_and_payload_remain_compatible() {
+    let project = Project::new("/tmp/clat-event-baseline");
+    let tools = ToolRegistry::new();
+    register_test_tool(&tools, EchoTool);
+    let mut model = ScriptedModel { calls: 0 };
+    let mut events = Vec::new();
+    let output = Run::new(&mut model, &tools, &AllowAll, &project)
+        .execute("use echo", &mut events)
+        .expect("run");
+
+    let variants = events
+        .iter()
+        .map(|event| match event {
+            RunEvent::RunStarted { .. } => "RunStarted",
+            RunEvent::ModelRequested { .. } => "ModelRequested",
+            RunEvent::ModelStream { .. } => "ModelStream",
+            RunEvent::ModelResponded { .. } => "ModelResponded",
+            RunEvent::ToolRequested { .. } => "ToolRequested",
+            RunEvent::PermissionChecked { .. } => "PermissionChecked",
+            RunEvent::PermissionDenied { .. } => "PermissionDenied",
+            RunEvent::ToolStarted { .. } => "ToolStarted",
+            RunEvent::ToolFinished { .. } => "ToolFinished",
+            RunEvent::SteeringApplied { .. } => "SteeringApplied",
+            RunEvent::RunCompleted { .. } => "RunCompleted",
+            RunEvent::RunCancelled { .. } => "RunCancelled",
+            RunEvent::RunFailed { .. } => "RunFailed",
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        variants,
+        [
+            "RunStarted",
+            "ModelRequested",
+            "ModelStream",
+            "ModelStream",
+            "ModelStream",
+            "ModelResponded",
+            "ToolRequested",
+            "PermissionChecked",
+            "ToolStarted",
+            "ToolFinished",
+            "ModelRequested",
+            "ModelStream",
+            "ModelStream",
+            "ModelStream",
+            "ModelResponded",
+            "RunCompleted"
+        ]
+    );
+    assert!(matches!(
+        &events[0],
+        RunEvent::RunStarted { project, message, .. }
+            if project == std::path::Path::new("/tmp/clat-event-baseline")
+                && message.plain_text() == "use echo"
+    ));
+    assert!(matches!(
+        &events[1],
+        RunEvent::ModelRequested { turn: 1, provider, model }
+            if provider == "test" && model == "scripted"
+    ));
+    assert!(matches!(
+        &events[6],
+        RunEvent::ToolRequested { call }
+            if call.id == "call-1" && call.name == "echo"
+                && call.arguments == json!({"text": "hello"})
+    ));
+    assert!(matches!(
+        &events[7],
+        RunEvent::PermissionChecked {
+            tool,
+            decision: PermissionDecision::Allow,
+        } if tool == "echo"
+    ));
+    assert!(matches!(
+        events.last(),
+        Some(RunEvent::RunCompleted { turns: 2, usage, output })
+            if output == "tool said: hello"
+                && usage.input_tokens == 7
+                && usage.output_tokens == 4
+    ));
+    assert_eq!(
+        output.items.last(),
+        Some(&ModelItem::assistant_text("tool said: hello"))
+    );
+}
+
+struct FailsAfterToolModel {
+    calls: usize,
+}
+
+impl Model for FailsAfterToolModel {
+    fn provider(&self) -> &str {
+        "test"
+    }
+
+    fn model_id(&self) -> &str {
+        "fails-after-tool"
+    }
+
+    fn stream(
+        &mut self,
+        request: ModelRequest<'_>,
+        events: &mut dyn ModelEventSink,
+    ) -> Result<ModelResponse, ModelError> {
+        self.calls += 1;
+        if self.calls == 2 {
+            assert!(matches!(
+                request.items.last(),
+                Some(ModelItem::ToolResult(_))
+            ));
+            events.emit(ModelEvent::TextDelta {
+                delta: "partial before disconnect".into(),
+            });
+            return Err(ModelError::new("provider disconnected"));
+        }
+        Ok(ModelResponse {
+            text: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "call-before-failure".into(),
+                name: "echo".into(),
+                arguments: json!({"text": "keep me"}),
+            }],
+            finish_reason: FinishReason::ToolCalls,
+            usage: Some(Usage {
+                input_tokens: 7,
+                output_tokens: 2,
+                ..Usage::default()
+            }),
+            provider_response_id: None,
+            provider_state: vec![],
+            reasoning: None,
+        })
+    }
+}
+
+#[test]
+fn failed_runs_return_items_and_usage_produced_before_failure() {
+    let project = Project::new(".");
+    let tools = ToolRegistry::new();
+    register_test_tool(&tools, EchoTool);
+    let mut model = FailsAfterToolModel { calls: 0 };
+    let steering = SteeringQueue::new();
+    let mut events = TerminalSealSink {
+        events: Vec::new(),
+        steering: steering.clone(),
+        terminal_push: None,
+    };
+
+    let error = Run::new(&mut model, &tools, &AllowAll, &project)
+        .with_steering(steering)
+        .execute("persist the failed run", &mut events)
+        .expect_err("second provider turn fails");
+
+    assert_eq!(error.turns(), 2);
+    assert_eq!(error.usage().input_tokens, 7);
+    assert_eq!(error.usage().output_tokens, 2);
+    assert!(error.items().iter().any(|item| matches!(
+        item,
+        ModelItem::ToolCall(call) if call.id == "call-before-failure"
+    )));
+    assert!(error.items().iter().any(|item| matches!(
+        item,
+        ModelItem::ToolResult(result) if result.call_id == "call-before-failure"
+    )));
+    assert!(error.items().iter().any(|item| matches!(
+        item,
+        ModelItem::Assistant { content, .. }
+            if matches!(content.as_slice(), [ContentPart::Text(text)] if text == "partial before disconnect")
+    )));
+    assert_eq!(
+        events.terminal_push,
+        Some(PushOutcome::Sealed),
+        "RunFailed must only be emitted after steering has been sealed"
+    );
+    assert!(matches!(
+        events.events.last(),
+        Some(RunEvent::RunFailed { .. })
+    ));
+}
+
+struct FailingReadTool;
+
+impl Tool for FailingReadTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "read_missing".into(),
+            description: "Always fails to simulate a recoverable read error".into(),
+            input_schema: json!({"type": "object", "additionalProperties": false}),
+            effect: ToolEffect::Read,
+            strict: true,
+        }
+    }
+
+    fn invoke(
+        &self,
+        _arguments: &Value,
+        _project: &Project,
+        _cancel: &CancelToken,
+    ) -> Result<Value, ToolError> {
+        Err(ToolError::new("file not found"))
+    }
+}
+
+struct RecoveringModel {
+    calls: usize,
+}
+
+impl Model for RecoveringModel {
+    fn provider(&self) -> &str {
+        "test"
+    }
+
+    fn model_id(&self) -> &str {
+        "recovering"
+    }
+
+    fn stream(
+        &mut self,
+        request: ModelRequest<'_>,
+        _events: &mut dyn ModelEventSink,
+    ) -> Result<ModelResponse, ModelError> {
+        self.calls += 1;
+
+        if let Some(ModelItem::ToolResult(result)) = request.items.last() {
+            assert!(result.is_error);
+            assert_eq!(result.output["error"], "file not found");
+            return Ok(ModelResponse {
+                text: "recovered after tool error".into(),
+                tool_calls: vec![],
+                finish_reason: FinishReason::Completed,
+                usage: None,
+                provider_response_id: None,
+                provider_state: vec![],
+                reasoning: None,
+            });
+        }
+
+        Ok(ModelResponse {
+            text: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "call-missing".into(),
+                name: "read_missing".into(),
+                arguments: json!({}),
+            }],
+            finish_reason: FinishReason::ToolCalls,
+            usage: None,
+            provider_response_id: None,
+            provider_state: vec![],
+            reasoning: None,
+        })
+    }
+}
+
+#[test]
+fn tool_execution_errors_are_returned_to_model_for_recovery() {
+    let project = Project::new(".");
+    let permissions = SafeByDefault;
+    let tools = ToolRegistry::new();
+    register_test_tool(&tools, FailingReadTool);
+    let mut model = RecoveringModel { calls: 0 };
+    let mut events = Vec::new();
+
+    let output = Run::new(&mut model, &tools, &permissions, &project)
+        .execute("read a missing file", &mut events)
+        .expect("model should recover from tool error");
+
+    assert_eq!(model.calls, 2);
+    assert_eq!(output.text, "recovered after tool error");
+    assert!(events.iter().any(|event| matches!(
+        event,
+        RunEvent::ToolFinished { result }
+            if result.tool_name == "read_missing" && result.is_error
+    )));
+    assert!(matches!(events.last(), Some(RunEvent::RunCompleted { .. })));
+}
+
+struct WriteTool;
+
+impl Tool for WriteTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "write".into(),
+            description: "A side-effecting tool".into(),
+            input_schema: json!({"type": "object", "additionalProperties": false}),
+            effect: ToolEffect::Write,
+            strict: true,
+        }
+    }
+
+    fn invoke(
+        &self,
+        _arguments: &Value,
+        _project: &Project,
+        _cancel: &CancelToken,
+    ) -> Result<Value, ToolError> {
+        panic!("write tool must not execute before permission is granted")
+    }
+}
+
+struct CountingAllowPolicy(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+impl PermissionPolicy for CountingAllowPolicy {
+    fn check(
+        &self,
+        _project: &Project,
+        _tool: &ToolDefinition,
+        _call: &ToolCall,
+    ) -> PermissionDecision {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        PermissionDecision::Allow
+    }
+}
+
+struct PlanForgedWriteModel {
+    calls: usize,
+}
+
+struct EmptyCatalogModel;
+
+impl Model for EmptyCatalogModel {
+    fn provider(&self) -> &str {
+        "test"
+    }
+
+    fn model_id(&self) -> &str {
+        "frozen-empty-catalog"
+    }
+
+    fn stream(
+        &mut self,
+        request: ModelRequest<'_>,
+        _events: &mut dyn ModelEventSink,
+    ) -> Result<ModelResponse, ModelError> {
+        assert!(
+            request.tools.is_empty(),
+            "the model request must consume the frozen definitions, not re-read the registry"
+        );
+        Ok(ModelResponse {
+            text: "done".into(),
+            tool_calls: vec![],
+            finish_reason: FinishReason::Completed,
+            usage: None,
+            provider_response_id: None,
+            provider_state: vec![],
+            reasoning: None,
+        })
+    }
+}
+
+#[test]
+fn model_request_consumes_the_frozen_tool_definition_snapshot() {
+    let project = Project::new(".");
+    let tools = ToolRegistry::new();
+    register_test_tool(&tools, EchoTool);
+    let mut model = EmptyCatalogModel;
+    let mut events = Vec::new();
+
+    Run::new(&mut model, &tools, &AllowAll, &project)
+        .with_tool_definitions(Vec::<ToolDefinition>::new().into())
+        .execute("use frozen catalog", &mut events)
+        .expect("empty frozen catalog remains authoritative");
+}
+
+impl Model for PlanForgedWriteModel {
+    fn provider(&self) -> &str {
+        "test"
+    }
+
+    fn model_id(&self) -> &str {
+        "plan-forged-write"
+    }
+
+    fn stream(
+        &mut self,
+        request: ModelRequest<'_>,
+        _events: &mut dyn ModelEventSink,
+    ) -> Result<ModelResponse, ModelError> {
+        self.calls += 1;
+        assert!(
+            request
+                .tools
+                .iter()
+                .any(|definition| definition.name == "echo"),
+            "Pure tools remain visible in Plan Mode"
+        );
+        assert!(
+            request
+                .tools
+                .iter()
+                .all(|definition| definition.name != "write"),
+            "Write tools must be structurally absent from the model catalog"
+        );
+        if self.calls == 1 {
+            return Ok(ModelResponse {
+                text: String::new(),
+                tool_calls: vec![ToolCall {
+                    id: "forged-write".into(),
+                    name: "write".into(),
+                    arguments: json!({}),
+                }],
+                finish_reason: FinishReason::ToolCalls,
+                usage: None,
+                provider_response_id: None,
+                provider_state: vec![],
+                reasoning: None,
+            });
+        }
+        let Some(ModelItem::ToolResult(result)) = request.items.last() else {
+            panic!("the forged call must return a recoverable tool result");
+        };
+        assert!(result.is_error);
+        assert_eq!(result.output["error"], "tool unavailable in plan mode");
+        Ok(ModelResponse {
+            text: "continued planning".into(),
+            tool_calls: vec![],
+            finish_reason: FinishReason::Completed,
+            usage: None,
+            provider_response_id: None,
+            provider_state: vec![],
+            reasoning: None,
+        })
+    }
+}
+
+#[test]
+fn plan_mode_blocks_mutation_catalog_and_forged_dispatch_before_permission() {
+    let project = Project::new(".");
+    let tools = ToolRegistry::new();
+    register_test_tool(&tools, EchoTool);
+    register_test_tool(&tools, WriteTool);
+    let permission_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let permissions = CountingAllowPolicy(std::sync::Arc::clone(&permission_calls));
+    let mut model = PlanForgedWriteModel { calls: 0 };
+    let mut events = Vec::new();
+
+    let output = Run::new(&mut model, &tools, &permissions, &project)
+        .with_tool_access(crate::tool::ToolAccessPolicy::plan_mode())
+        .execute("investigate only", &mut events)
+        .expect("the model can recover and continue planning");
+
+    assert_eq!(output.text, "continued planning");
+    assert_eq!(model.calls, 2);
+    assert_eq!(
+        permission_calls.load(std::sync::atomic::Ordering::Acquire),
+        0,
+        "Plan Mode guard must reject hidden tools before the approver/policy path"
+    );
+    assert!(events.iter().any(|event| matches!(
+        event,
+        RunEvent::PermissionDenied { tool, reason }
+            if tool == "write" && reason == "tool unavailable in plan mode"
+    )));
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, RunEvent::ToolStarted { tool, .. } if tool == "write")),
+        "the forged write must never reach invocation"
+    );
+}
+
+struct WriteRequestModel;
+
+impl Model for WriteRequestModel {
+    fn provider(&self) -> &str {
+        "test"
+    }
+
+    fn model_id(&self) -> &str {
+        "write-request"
+    }
+
+    fn stream(
+        &mut self,
+        _request: ModelRequest<'_>,
+        _events: &mut dyn ModelEventSink,
+    ) -> Result<ModelResponse, ModelError> {
+        Ok(ModelResponse {
+            text: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "call-write".into(),
+                name: "write".into(),
+                arguments: json!({}),
+            }],
+            finish_reason: FinishReason::ToolCalls,
+            usage: None,
+            provider_response_id: None,
+            provider_state: vec![],
+            reasoning: None,
+        })
+    }
+}
+
+#[test]
+fn side_effects_stop_at_permission_boundary() {
+    let project = Project::new(".");
+    let permissions = SafeByDefault;
+    let tools = ToolRegistry::new();
+    register_test_tool(&tools, WriteTool);
+    let mut model = WriteRequestModel;
+    let mut events = Vec::new();
+    let middleware_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let pipeline = ToolExecutionPipeline::new();
+    pipeline
+        .register_middleware(
+            crate::plugin::PluginOwner::for_test(crate::plugin::PluginId::new(
+                "test.permission_order",
+            )),
+            std::sync::Arc::new(CountingMiddleware(std::sync::Arc::clone(&middleware_calls))),
+        )
+        .expect("middleware");
+
+    let error = Run::new(&mut model, &tools, &permissions, &project)
+        .with_tool_pipeline(&pipeline)
+        .execute("write something", &mut events)
+        .expect_err("run should require approval");
+
+    assert!(error.to_string().contains("permission required"));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        RunEvent::PermissionChecked {
+            decision: PermissionDecision::Ask { .. },
+            ..
+        }
+    )));
+    assert_eq!(
+        middleware_calls.load(std::sync::atomic::Ordering::Acquire),
+        0,
+        "middleware must be unreachable until permission allows the final call"
+    );
+}
+
+struct CountingMiddleware(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+impl ToolMiddleware for CountingMiddleware {
+    fn execute(
+        &self,
+        invocation: &ToolInvocation<'_>,
+        next: &dyn ToolNext,
+    ) -> Result<Value, ToolError> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        next.execute(invocation)
+    }
+}
+
+struct DenyEverything;
+
+impl PermissionPolicy for DenyEverything {
+    fn check(
+        &self,
+        _project: &Project,
+        tool: &ToolDefinition,
+        _call: &ToolCall,
+    ) -> PermissionDecision {
+        PermissionDecision::Deny {
+            reason: format!("tool `{}` is not allowed", tool.name),
+        }
+    }
+}
+
+struct DenyRecoveringModel;
+
+impl Model for DenyRecoveringModel {
+    fn provider(&self) -> &str {
+        "test"
+    }
+
+    fn model_id(&self) -> &str {
+        "deny-recovering"
+    }
+
+    fn stream(
+        &mut self,
+        request: ModelRequest<'_>,
+        _events: &mut dyn ModelEventSink,
+    ) -> Result<ModelResponse, ModelError> {
+        if let Some(ModelItem::ToolResult(result)) = request.items.last() {
+            assert!(result.is_error);
+            assert!(
+                result.output["error"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("permission denied")
+            );
+            return Ok(ModelResponse {
+                text: "adapted without the write tool".into(),
+                tool_calls: vec![],
+                finish_reason: FinishReason::Completed,
+                usage: None,
+                provider_response_id: None,
+                provider_state: vec![],
+                reasoning: None,
+            });
+        }
+
+        Ok(ModelResponse {
+            text: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "call-write".into(),
+                name: "write".into(),
+                arguments: json!({}),
+            }],
+            finish_reason: FinishReason::ToolCalls,
+            usage: None,
+            provider_response_id: None,
+            provider_state: vec![],
+            reasoning: None,
+        })
+    }
+}
+
+#[test]
+fn permission_denial_is_returned_to_model_for_recovery() {
+    let project = Project::new(".");
+    let permissions = DenyEverything;
+    let tools = ToolRegistry::new();
+    register_test_tool(&tools, WriteTool);
+    let mut model = DenyRecoveringModel;
+    let mut events = Vec::new();
+
+    let output = Run::new(&mut model, &tools, &permissions, &project)
+        .execute("write something", &mut events)
+        .expect("model should recover from a denied tool");
+
+    assert_eq!(output.turns, 2);
+    assert_eq!(output.text, "adapted without the write tool");
+    assert!(events.iter().any(|event| matches!(
+        event,
+        RunEvent::PermissionDenied { tool, .. } if tool == "write"
+    )));
+    assert!(matches!(events.last(), Some(RunEvent::RunCompleted { .. })));
+    // The tool never ran: only the structured denial result reached the model.
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, RunEvent::ToolStarted { .. }))
+    );
+}
+
+struct PanicModel;
+
+impl Model for PanicModel {
+    fn provider(&self) -> &str {
+        "test"
+    }
+
+    fn model_id(&self) -> &str {
+        "panic"
+    }
+
+    fn stream(
+        &mut self,
+        _request: ModelRequest<'_>,
+        _events: &mut dyn ModelEventSink,
+    ) -> Result<ModelResponse, ModelError> {
+        panic!("model must not be called on a cancelled run")
+    }
+}
+
+#[test]
+fn cancellation_before_first_turn_stops_without_calling_model() {
+    let project = Project::new(".");
+    let permissions = AllowAll;
+    let tools = ToolRegistry::new();
+    register_test_tool(&tools, EchoTool);
+    let mut model = PanicModel;
+    let mut events = Vec::new();
+
+    let cancel = CancelToken::new();
+    cancel.cancel();
+    let output = Run::new(&mut model, &tools, &permissions, &project)
+        .with_cancel_token(cancel)
+        .execute("hello", &mut events)
+        .expect("cancellation is a normal outcome, not an error");
+
+    assert!(output.text.is_empty());
+    assert_eq!(output.turns, 1);
+    assert!(matches!(events.last(), Some(RunEvent::RunCancelled { .. })));
+}
+
+struct CancelAfterToolRequestModel {
+    token: CancelToken,
+    calls: usize,
+}
+
+impl Model for CancelAfterToolRequestModel {
+    fn provider(&self) -> &str {
+        "test"
+    }
+
+    fn model_id(&self) -> &str {
+        "cancel-after-tool-request"
+    }
+
+    fn stream(
+        &mut self,
+        _request: ModelRequest<'_>,
+        _events: &mut dyn ModelEventSink,
+    ) -> Result<ModelResponse, ModelError> {
+        self.calls += 1;
+        assert_eq!(self.calls, 1, "model must not be called again after cancel");
+        self.token.cancel();
+        Ok(ModelResponse {
+            text: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "call-write".into(),
+                name: "write".into(),
+                arguments: json!({}),
+            }],
+            finish_reason: FinishReason::ToolCalls,
+            usage: None,
+            provider_response_id: None,
+            provider_state: vec![],
+            reasoning: None,
+        })
+    }
+}
+
+#[test]
+fn cancellation_after_tool_request_skips_tool_execution() {
+    let project = Project::new(".");
+    let permissions = AllowAll;
+    let tools = ToolRegistry::new();
+    // Panics if invoked, proving the cancel check runs before execution.
+    register_test_tool(&tools, WriteTool);
+    let cancel = CancelToken::new();
+    let mut model = CancelAfterToolRequestModel {
+        token: cancel.clone(),
+        calls: 0,
+    };
+    let mut events = Vec::new();
+
+    let output = Run::new(&mut model, &tools, &permissions, &project)
+        .with_cancel_token(cancel)
+        .execute("write something", &mut events)
+        .expect("cancellation is a normal outcome, not an error");
+
+    assert_eq!(model.calls, 1);
+    assert_eq!(output.turns, 1);
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, RunEvent::ToolStarted { .. }))
+    );
+    assert!(matches!(events.last(), Some(RunEvent::RunCancelled { .. })));
+}
+
+struct ReasoningToolModel {
+    calls: usize,
+}
+
+impl Model for ReasoningToolModel {
+    fn provider(&self) -> &str {
+        "test"
+    }
+
+    fn model_id(&self) -> &str {
+        "reasoning-tool"
+    }
+
+    fn stream(
+        &mut self,
+        request: ModelRequest<'_>,
+        _events: &mut dyn ModelEventSink,
+    ) -> Result<ModelResponse, ModelError> {
+        self.calls += 1;
+        if let Some(ModelItem::ToolResult(_)) = request.items.last() {
+            return Ok(ModelResponse {
+                text: "done".into(),
+                tool_calls: vec![],
+                finish_reason: FinishReason::Completed,
+                usage: None,
+                provider_response_id: None,
+                provider_state: vec![],
+                reasoning: Some("final answers need no replay".into()),
+            });
+        }
+        Ok(ModelResponse {
+            text: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "call-r".into(),
+                name: "echo".into(),
+                arguments: json!({}),
+            }],
+            finish_reason: FinishReason::ToolCalls,
+            usage: None,
+            provider_response_id: None,
+            provider_state: vec![],
+            reasoning: Some("why I use the tool".into()),
+        })
+    }
+}
+
+#[test]
+fn reasoning_is_kept_on_tool_turns_and_dropped_on_answer_turns() {
+    let project = Project::new(".");
+    let permissions = AllowAll;
+    let tools = ToolRegistry::new();
+    register_test_tool(&tools, EchoTool);
+    let mut model = ReasoningToolModel { calls: 0 };
+    let mut events = Vec::new();
+
+    let output = Run::new(&mut model, &tools, &permissions, &project)
+        .execute("do the thing", &mut events)
+        .expect("run should succeed");
+
+    assert_eq!(output.text, "done");
+    // The tool-call turn keeps its reasoning on the assistant item...
+    assert!(output.items.iter().any(|item| matches!(
+        item,
+        ModelItem::Assistant { reasoning: Some(reasoning), .. }
+            if reasoning == "why I use the tool"
+    )));
+    // ...while the final answer turn drops it (providers ignore it there).
+    let final_assistant = output
+        .items
+        .iter()
+        .rev()
+        .find(|item| matches!(item, ModelItem::Assistant { .. }));
+    assert!(matches!(
+        final_assistant,
+        Some(ModelItem::Assistant {
+            reasoning: None,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn provider_replay_preserves_every_matching_state_in_order() {
+    let response = ModelResponse {
+        text: String::new(),
+        tool_calls: Vec::new(),
+        finish_reason: FinishReason::Completed,
+        usage: None,
+        provider_response_id: None,
+        provider_state: vec![
+            crate::model::ProviderState {
+                provider: "openai".into(),
+                data: json!({"id": "reasoning-1"}),
+            },
+            crate::model::ProviderState {
+                provider: "other".into(),
+                data: json!({"ignored": true}),
+            },
+            crate::model::ProviderState {
+                provider: "openai".into(),
+                data: json!({"id": "reasoning-2"}),
+            },
+        ],
+        reasoning: None,
+    };
+    assert_eq!(
+        provider_replay(&response, "openai"),
+        Some(json!([
+            {"id": "reasoning-1"},
+            {"id": "reasoning-2"}
+        ]))
+    );
+}
+
+/// B1 花费护栏：小额预算下，第一轮 usage 超顶 → 第二轮请求前的
+/// 检查点以三要素错误终止（已耗/上限/raise via /model）。
+#[test]
+fn run_token_budget_stops_the_loop_with_a_teaching_error() {
+    let project = Project::new(".");
+    let tools = ToolRegistry::new();
+    register_test_tool(&tools, EchoTool);
+    let mut model = ScriptedModel { calls: 0 };
+    let mut events = Vec::new();
+
+    // F-1 后检查点读共享账本：预充值到顶（模拟 recorder 已落账的
+    // 花费——含采样归并的 INV-S6 口径）→ 首个请求前即触发。
+    let ledger = std::sync::Arc::new(crate::model::RunSpendLedger::new(Some(6)));
+    ledger.charge(6);
+    let error = Run::new(&mut model, &tools, &AllowAll, &project)
+        .with_spend_ledger(Some(std::sync::Arc::clone(&ledger)))
+        .execute("use the echo tool", &mut events)
+        .expect_err("the budget must stop the run");
+    let message = error.message.to_string();
+    assert!(
+        message.contains("used"),
+        "three-part message (used): {message}"
+    );
+    assert!(
+        message.contains("cap 6"),
+        "three-part message (cap): {message}"
+    );
+    assert!(
+        message.contains("/model"),
+        "three-part message (raise via /model): {message}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, RunEvent::RunFailed { .. }))
+    );
+    // 已完成轮的产出保留在 error 状态里（fail 的既有契约）。
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, RunEvent::RunFailed { .. }))
+    );
+}
+
+/// B1：`Some(0)` = 显式关闭（effective 层），None = 缺省 10M。
+///（FP-12 改名：原 `…_default_off_and_explicit` 名实不符——缺省
+/// 是开启 10M，显式 0 才是关闭。）
+#[test]
+fn budget_config_semantics_default_on_and_explicit_off() {
+    use crate::model::{ModelConfig, RUN_TOKEN_BUDGET_DEFAULT};
+    let config = ModelConfig::default();
+    assert_eq!(
+        config.effective_run_token_budget(),
+        Some(RUN_TOKEN_BUDGET_DEFAULT)
+    );
+    let off = ModelConfig {
+        run_token_budget: Some(0),
+        ..ModelConfig::default()
+    };
+    assert_eq!(off.effective_run_token_budget(), None);
+    let tight = ModelConfig {
+        run_token_budget: Some(1234),
+        ..ModelConfig::default()
+    };
+    assert_eq!(tight.effective_run_token_budget(), Some(1234));
+}
+
+/// B1：预算关闭（None）时同剧本不设限跑完。
+#[test]
+fn disabled_budget_lets_the_scripted_loop_complete() {
+    let project = Project::new(".");
+    let tools = ToolRegistry::new();
+    register_test_tool(&tools, EchoTool);
+    let mut model = ScriptedModel { calls: 0 };
+    let mut events = Vec::new();
+    let output = Run::new(&mut model, &tools, &AllowAll, &project)
+        .with_spend_ledger(None)
+        .execute("use the echo tool", &mut events)
+        .expect("no budget ⇒ the scripted loop completes");
+    assert_eq!(output.turns, 2);
+}
+
+/// FP-01（前置红，2026-08-22 审计）：provider 完全不报 usage 的
+/// 无界 tool-call 循环也必须被护栏拦住——预留制生效后，首个请求
+/// 的保守预留（input 估算 + output_limit）在下一轮检查点越顶，
+/// 循环在有限请求数内终止。pre-fix：charge 只在 `Some(usage)` 分
+/// 发生 → 账本永远为 0 → 循环跑完不报错。
+#[test]
+fn budget_without_provider_usage_still_stops_the_loop() {
+    struct NoUsageToolLoopModel {
+        calls: std::cell::Cell<usize>,
+    }
+    impl Model for NoUsageToolLoopModel {
+        fn provider(&self) -> &str {
+            "test"
+        }
+        fn model_id(&self) -> &str {
+            "no-usage-loop"
+        }
+        fn stream(
+            &mut self,
+            _request: ModelRequest<'_>,
+            events: &mut dyn ModelEventSink,
+        ) -> Result<ModelResponse, ModelError> {
+            self.calls.set(self.calls.get() + 1);
+            // 判别力防线：若护栏回归失效，这里让循环在第 50 次请求
+            // 后自然终止——测试以 expect_err 干净红，而不是挂死。
+            if self.calls.get() > 50 {
+                events.emit(ModelEvent::TextDelta {
+                    delta: "loop escaped the guard".into(),
+                });
+                events.emit(ModelEvent::ResponseCompleted {
+                    finish_reason: FinishReason::Completed,
+                });
+                return Ok(ModelResponse {
+                    text: "loop escaped the guard".into(),
+                    tool_calls: vec![],
+                    finish_reason: FinishReason::Completed,
+                    usage: None,
+                    provider_response_id: None,
+                    provider_state: vec![],
+                    reasoning: None,
+                });
+            }
+            let call = ToolCall {
+                id: "call-1".into(),
+                name: "echo".into(),
+                arguments: json!({"text": "hello"}),
+            };
+            events.emit(ModelEvent::ToolCallCompleted { call: call.clone() });
+            events.emit(ModelEvent::ResponseCompleted {
+                finish_reason: FinishReason::ToolCalls,
+            });
+            Ok(ModelResponse {
+                text: String::new(),
+                tool_calls: vec![call],
+                finish_reason: FinishReason::ToolCalls,
+                usage: None,
+                provider_response_id: None,
+                provider_state: vec![],
+                reasoning: None,
+            })
+        }
+    }
+
+    let project = Project::new(".");
+    let tools = ToolRegistry::new();
+    register_test_tool(&tools, EchoTool);
+    let mut model = NoUsageToolLoopModel {
+        calls: std::cell::Cell::new(0),
+    };
+    let mut events = Vec::new();
+    let ledger = std::sync::Arc::new(crate::model::RunSpendLedger::new(Some(50)));
+    let error = Run::new(&mut model, &tools, &AllowAll, &project)
+        .with_spend_ledger(Some(std::sync::Arc::clone(&ledger)))
+        .execute("use the echo tool", &mut events)
+        .expect_err("no-usage providers must not bypass the guard");
+    assert!(
+        error
+            .message
+            .to_string()
+            .contains("run token budget exceeded"),
+        "teaching error: {}",
+        error.message
+    );
+    assert!(
+        model.calls.get() <= 2,
+        "the loop must stop within a couple of requests, got {}",
+        model.calls.get()
+    );
+    assert!(ledger.used() > 0, "the reservation must have landed");
+}
+
+/// FIX-1/CA-01（2026-08-24 审计，pre-fix 红）：对端自报 u64::MAX
+/// 不得经 `u64 as i64` 反向清空账本绕过硬顶。pre-fix：reconcile
+/// 把 u64::MAX 记成 -1，`used()` 的 `.max(0)` 裁回 0 → 检查点放行
+/// 模型请求（calls > 0）→ 红。recorder→reconcile 的通路由 recorder
+/// 侧 hostile 测试单独钉住；此处直驱账本锁检查点语义。
+#[test]
+fn hostile_usage_cannot_unspend_the_ledger_or_bypass_the_cap() {
+    let project = Project::new(".");
+    let tools = ToolRegistry::new();
+    register_test_tool(&tools, EchoTool);
+    let mut model = ScriptedModel { calls: 0 };
+    let mut events = Vec::new();
+    let ledger = std::sync::Arc::new(crate::model::RunSpendLedger::new(Some(
+        crate::model::RUN_TOKEN_BUDGET_DEFAULT,
+    )));
+    // 模拟 recorder 落账对端回的 u64::MAX input usage。
+    ledger.reconcile(u64::MAX);
+    let error = Run::new(&mut model, &tools, &AllowAll, &project)
+        .with_spend_ledger(Some(std::sync::Arc::clone(&ledger)))
+        .execute("use the echo tool", &mut events)
+        .expect_err("a hostile u64::MAX report must keep the cap armed");
+    assert!(
+        error
+            .message
+            .to_string()
+            .contains("run token budget exceeded"),
+        "budget error: {}",
+        error.message
+    );
+    assert_eq!(
+        model.calls, 0,
+        "the model request must be rejected before the provider call"
+    );
+    assert!(
+        ledger.used() >= crate::model::RUN_TOKEN_BUDGET_DEFAULT,
+        "the ledger must stay monotonic, used: {}",
+        ledger.used()
+    );
+}
+
+/// FIX-1/CA-01（pre-fix 红）：i64 账本两次 i64::MAX 即溢出（debug
+/// panic）；无符号饱和域下不 panic、不回绕变小、触顶后单调不减。
+#[test]
+fn ledger_accumulation_never_wraps_or_panics_on_hostile_counts() {
+    let ledger = crate::model::RunSpendLedger::new(None);
+    ledger.reconcile(i64::MAX as u64);
+    ledger.charge(i64::MAX as u64);
+    assert_eq!(
+        ledger.committed(),
+        (i64::MAX as u64) * 2,
+        "two i64::MAX-grade reports must sum without panicking or wrapping"
+    );
+    ledger.reconcile(u64::MAX);
+    ledger.charge(1);
+    assert_eq!(
+        ledger.committed(),
+        u64::MAX,
+        "the ledger saturates at the top and stays monotonic"
+    );
+    ledger.reserve(u64::MAX);
+    assert_eq!(ledger.used(), u64::MAX, "the used view saturates too");
+}

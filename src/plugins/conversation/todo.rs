@@ -5,13 +5,13 @@
 //! 特例。执行期在绑定的 RunJournal 上追加一条 `todo/write` 事件；恢复
 //! 走 todo 投影，内存快照只是投影的运行时镜像。
 
-use super::services::{
-    SESSION_SERVICE_ID, TODO_SERVICE, TODO_SERVICE_ID, TOOL_SERVICE, TOOL_SERVICE_ID, TodoEntry,
-    TodoService, TodoStatus,
-};
 use crate::plugin::{
     DisposeError, Plugin, PluginContext, PluginDescriptor, PluginError, PluginId, ScopeKind,
     ServiceId,
+};
+use crate::plugins::services::{
+    SESSION_SERVICE_ID, TODO_SERVICE, TODO_SERVICE_ID, TOOL_SERVICE, TOOL_SERVICE_ID, TodoEntry,
+    TodoService, TodoStatus,
 };
 use crate::{CancelToken, Project, Tool, ToolDefinition, ToolEffect, ToolError};
 use serde_json::{Value, json};

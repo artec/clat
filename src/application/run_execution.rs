@@ -220,7 +220,7 @@ impl RunExecutionEngine {
             }
         };
         let (receiver_closed_sender, receiver_closed_receiver) = mpsc::sync_channel(0);
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         if std::mem::take(&mut application.fail_next_run_spawn) {
             return Err(ApplicationError::new(
                 "intentional run worker spawn failure",

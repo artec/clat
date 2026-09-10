@@ -1406,7 +1406,8 @@ fn dsh_adapter_demo_end_to_end_over_mcp() {
     use crate::mcp::client::{McpServer, McpServerConfig};
     use std::path::Path;
 
-    let bin = Path::new(env!("CARGO_MANIFEST_DIR")).join("sdk/dsh-adapter/tools/demo-bin.mjs");
+    let bin = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
+        .join("sdk/dsh-adapter/tools/demo-bin.mjs");
     assert!(
         bin.exists(),
         "missing {} — build the adapter first: cd sdk/dsh-adapter && npm install && npm run build",
@@ -1415,7 +1416,8 @@ fn dsh_adapter_demo_end_to_end_over_mcp() {
     // 启动器已提交、真正的运行时依赖是构建产物：新鲜克隆/未构建时
     // skip（守卫必须查 import 的目标，而不是启动器本身——否则 node
     // 起来后才在 ERR_MODULE_NOT_FOUND 上炸出误报）。
-    let dist = Path::new(env!("CARGO_MANIFEST_DIR")).join("sdk/dsh-adapter/dist/src/demo.js");
+    let dist = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
+        .join("sdk/dsh-adapter/dist/src/demo.js");
     if !dist.exists() {
         eprintln!(
             "skipped: adapter not built ({}); build with: \
@@ -1562,7 +1564,8 @@ fn dsh_adapter_real_web_search_exa_end_to_end() {
     use crate::mcp::client::{McpServer, McpServerConfig};
     use std::path::Path;
 
-    let bin = Path::new(env!("CARGO_MANIFEST_DIR")).join("sdk/dsh-adapter/examples/exa/bin.mjs");
+    let bin = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
+        .join("sdk/dsh-adapter/examples/exa/bin.mjs");
     assert!(
         bin.exists(),
         "missing {} — build it first: cd sdk/dsh-adapter/examples/exa && npm install --legacy-peer-deps \
@@ -1571,7 +1574,7 @@ fn dsh_adapter_real_web_search_exa_end_to_end() {
     );
     // 真实前置 = examples/exa 的 file: 安装（node_modules 里的 adapter
     // dist 一并就位）；未安装时 skip 而非 ERR_MODULE_NOT_FOUND 误报。
-    let installed = Path::new(env!("CARGO_MANIFEST_DIR")).join(
+    let installed = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../..")).join(
         "sdk/dsh-adapter/examples/exa/node_modules/@artec/clat-dsh-adapter/dist/src/index.js",
     );
     if !installed.exists() {

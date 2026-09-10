@@ -41,7 +41,8 @@ mod tests {
         "Inspect the project, preserve invariants, implement the change, then run focused tests.";
 
     fn fixture_dir() -> std::path::PathBuf {
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dsh-session")
+        std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
+            .join("tests/fixtures/dsh-session")
     }
 
     /// 把 golden 日志按 CLAT 布局放进临时 root（project_key(cwd) /

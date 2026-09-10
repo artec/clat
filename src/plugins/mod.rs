@@ -2,31 +2,25 @@
 //! MCP/WASM adapters, permissions, prompts, commands, compaction, todo,
 //! titles, monitor — capabilities are plugins over the `plugin/` kernel.
 
+mod context;
+use context::{context_inspector, goal, instructions, memory, plan_mode, prompt, skills};
+mod conversation;
+use conversation::{compaction, pruner, title, todo};
+
 mod agent;
 mod apply_patch;
 mod commands;
-mod compaction;
-mod context_inspector;
-mod goal;
-mod instructions;
 mod language_intelligence;
 mod mcp;
-mod memory;
 mod monitor;
 mod permission;
-mod plan_mode;
 mod process;
-mod prompt;
 mod providers;
-mod pruner;
 mod run_scope;
 mod search;
 pub(crate) mod services;
-mod skills;
 mod storage;
 mod subagent;
-mod title;
-mod todo;
 mod tools;
 mod view_image;
 mod wasm;

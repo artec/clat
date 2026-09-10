@@ -131,7 +131,7 @@ impl AttachmentComposer {
             .sum()
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "runtime-tests"))]
     pub(super) fn add_unchecked_for_test(&mut self, path: PathBuf) {
         self.next_id += 1;
         self.entries.push(AttachmentDraft {

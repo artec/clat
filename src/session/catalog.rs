@@ -1,8 +1,10 @@
 //! The pinned journal vocabulary: one seat selects validation, surface and replay.
 //! Envelope-only means preserved without interpreting its payload. New required
 //! DSH metadata belongs here; it does not require a replay skip-list change.
+mod run_events;
 mod validation;
 use crate::session::event::SessionEvent;
+pub(crate) use run_events::run_event_seats;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ReplayKind {
@@ -113,7 +115,7 @@ pub(crate) fn event_spec(event_type: &str) -> Option<&'static EventSpec> {
 pub(crate) fn is_surface_type(event_type: &str) -> bool {
     event_spec(event_type).is_some_and(|spec| spec.surface)
 }
-pub(crate) fn is_known_type(event_type: &str) -> bool {
+pub fn is_known_type(event_type: &str) -> bool {
     event_spec(event_type).is_some()
 }
 pub(crate) fn replay_kind(event_type: &str) -> ReplayKind {

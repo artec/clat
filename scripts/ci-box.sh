@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Product workspace membership is shared with native CI through gates --ci.
 # Linux CI 盒子——在容器里**完整复刻** ci.yml 的 Linux job，收敛两层
 # 本地复刻不了的环境差异（决议档案 docs/research/ci-parity.md）：
 #   1. macOS ↔ Linux 平台语义（flock 文件锁、进程树、TCP 栈行为）

@@ -38,14 +38,14 @@ struct UploadedImage {
     reserved: bool,
 }
 
-pub(crate) struct DraftImageStore {
+pub struct DraftImageStore {
     storage_root: PathBuf,
     root: PathBuf,
     state: Mutex<DraftState>,
 }
 
 impl DraftImageStore {
-    pub(crate) fn new(storage_root: &Path) -> Self {
+    pub fn new(storage_root: &Path) -> Self {
         Self {
             storage_root: storage_root.to_path_buf(),
             root: storage_root
@@ -59,7 +59,7 @@ impl DraftImageStore {
         }
     }
 
-    pub(crate) fn stage_png(&self, bytes: &[u8]) -> Result<PathBuf, String> {
+    pub fn stage_png(&self, bytes: &[u8]) -> Result<PathBuf, String> {
         self.stage_image_bytes(bytes, image::ImageFormat::Png, "clipboard", "png")
     }
 
@@ -164,7 +164,7 @@ impl DraftImageStore {
     /// [`Self::stage_remote_image`]. User-selected `/attach` sources may pass
     /// through the same composer, so an arbitrary path must never become
     /// deletion authority merely because the frontend stopped displaying it.
-    pub(crate) fn release_clipboard_path(&self, path: &Path) -> bool {
+    pub fn release_clipboard_path(&self, path: &Path) -> bool {
         let Ok(mut state) = self.state.lock() else {
             return false;
         };
@@ -180,10 +180,7 @@ impl DraftImageStore {
         true
     }
 
-    pub(crate) fn release_clipboard_paths(
-        &self,
-        paths: impl IntoIterator<Item = PathBuf>,
-    ) -> usize {
+    pub fn release_clipboard_paths(&self, paths: impl IntoIterator<Item = PathBuf>) -> usize {
         paths
             .into_iter()
             .filter(|path| self.release_clipboard_path(path))

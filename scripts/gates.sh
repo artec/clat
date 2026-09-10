@@ -24,6 +24,8 @@
 # 当前 DSH 0.1.5 checkout 首次运行前需在其根目录执行 `pnpm install`，
 # 再执行 `pnpm build:native-system`；具体钉靶 revision 仍由测试断言负责。
 set -euo pipefail
+# Cargo default-members are both product crates (clat-core + clat), not the
+# optional WASI example plugins. All full/CI commands retain that same scope.
 cd "$(dirname "$0")/.."
 
 stress=0

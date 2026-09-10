@@ -1,10 +1,10 @@
-use super::services::{COMMAND_SERVICE, COMMAND_SERVICE_ID};
 use crate::application::TrustedProjectApplication;
 use crate::command::{CommandError, CommandHandler, CommandOutcome, CommandSpec};
 use crate::plugin::{
     DisposeError, Plugin, PluginContext, PluginDescriptor, PluginError, PluginId, ScopeKind,
     ServiceId,
 };
+use crate::plugins::services::{COMMAND_SERVICE, COMMAND_SERVICE_ID};
 use std::sync::Arc;
 
 const ID: PluginId = PluginId::new("builtin.context_inspector");

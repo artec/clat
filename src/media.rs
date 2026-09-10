@@ -20,13 +20,13 @@ use std::path::Path;
 /// MM-3 入口启用后的源图上限。S3 已保证完整解码、长边 2048 resize 与
 /// 单图规范化 ≤4,000,000 bytes，因此源可放宽到冻结方案的 8 MiB；
 /// provider 请求仍只看到规范化后的更窄预算。
-pub(crate) const MAX_ATTACHMENT_BYTES: u64 = 8 * 1024 * 1024;
+pub const MAX_ATTACHMENT_BYTES: u64 = 8 * 1024 * 1024;
 
 /// INV-MM1-2：单图解码像素上限（16M px）。读头阶段先判（方案 MM-1
 /// 硬默认）——这是权威闸。S3 解码器的 Limits 是更宽的内存兜底而非
 /// 同值强制（差异记档见 attachments.rs 的 M1-D 注：能到达解码的
 /// png/jpeg 头尺寸即解码尺寸，已在此拦下）。
-pub(crate) const MAX_DECODED_PIXELS: u64 = 16 * 1024 * 1024;
+pub const MAX_DECODED_PIXELS: u64 = 16 * 1024 * 1024;
 
 /// tile 边长（像素）：视觉模型普遍按 ~512px 网格切块计费。
 const TILE_PIXELS: u64 = 512;
@@ -48,7 +48,7 @@ pub(crate) const IMAGE_TOKEN_ESTIMATOR_VERSION: &str = "tile-512-v1-sf2";
 pub(crate) const IMAGE_TOKEN_CALIBRATION_VERSION: &str = "glm-mm0-2026-08-27-v1";
 
 /// 扩展名 → MIME；不认识的扩展名返回 None（附加入口拒绝）。
-pub(crate) fn media_type_for_path(path: &Path) -> Option<&'static str> {
+pub fn media_type_for_path(path: &Path) -> Option<&'static str> {
     match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
         "png" => Some("image/png"),
         "jpg" | "jpeg" => Some("image/jpeg"),
@@ -142,16 +142,16 @@ pub(crate) fn validate_source(path: &Path) -> Result<(ImageFamily, Option<(u64, 
     validate_source_header(path, &header)
 }
 
-pub(crate) struct ValidatedImageSource {
-    pub(crate) dimensions: Option<(u64, u64)>,
-    pub(crate) bytes: u64,
+pub struct ValidatedImageSource {
+    pub dimensions: Option<(u64, u64)>,
+    pub bytes: u64,
 }
 
 /// TUI preview preflight: open the final path component with OS no-follow,
 /// then derive file type, length, magic and dimensions from that one held
 /// descriptor. This is defense in depth only; core attachment admission
 /// remains the authority and repeats its own descriptor-based validation.
-pub(crate) fn validate_source_nofollow(path: &Path) -> Result<ValidatedImageSource, String> {
+pub fn validate_source_nofollow(path: &Path) -> Result<ValidatedImageSource, String> {
     use std::io::Read as _;
 
     let mut options = std::fs::OpenOptions::new();
@@ -388,7 +388,7 @@ pub(crate) fn estimate_image_tokens(path: &Path) -> u64 {
 
 /// Dimension-only form for callers that already parsed a held descriptor and
 /// must not reopen a mutable path between validation and presentation.
-pub(crate) fn estimate_image_tokens_from_dimensions(dimensions: Option<(u64, u64)>) -> u64 {
+pub fn estimate_image_tokens_from_dimensions(dimensions: Option<(u64, u64)>) -> u64 {
     let Some((width, height)) = dimensions else {
         return FALLBACK_TOKENS * IMAGE_TOKEN_SAFETY_FACTOR;
     };

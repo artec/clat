@@ -67,6 +67,21 @@ crate-private. Frontend implementation trees are not library APIs; crate-root
 exports are limited to the Application facade and deliberately supported
 domain contracts.
 
+The product workspace has two compilation units: `clat` (public facade,
+CLI and TUI/DSH terminal client) depends on `clat-core` (runtime,
+Application and terminal-independent headless/HTTP surfaces). The core
+manifest has no dependency on `clat`, ratatui, crossterm or arboard;
+the dependency direction is enforced by Cargo, not only source inspection.
+Both packages are default workspace members, so ordinary delivery commands
+still cover both. Only `clat` has a binary target. Source remains under
+`src/`; `crates/core/Cargo.toml` explicitly selects `src/core.rs`.
+
+`client_ports` exports only existing client DTOs, replay, path encoding and
+controlled staging/private-file operations. It does not export session,
+storage or composition owners. The explicit `test-support` feature shares
+scripted providers and fixture readers with frontend tests; release builds
+do not enable it. This internal workspace surface is not a stable plugin ABI.
+
 ## Lifetimes and static composition
 
 CLAT uses a Rust-native plugin kernel for compile-time components. Explicit
@@ -612,11 +627,11 @@ preserves global, trust, selection, modal and composer priority explicitly.
 | `src/application/run_context.rs` | request-bound workflow composition, tool view, and durable request-header assembly |
 | `src/application/run_execution.rs` | two-phase run worker activation, round execution, terminal merge, and run-resource cleanup |
 | `src/application/remote_control.rs` | remote binding/pairing/delivery use cases and durable chat-to-session recovery orchestration |
-| `src/run.rs` | agent loop |
+| `src/run/` | agent loop and privately owned, atomically sealed steering queue |
 | `src/model.rs`, `src/providers/` | provider-neutral model contract and adapters |
 | `src/tool.rs`, `src/native_tools.rs`, `src/apply_patch.rs`, `src/search.rs` | tool contract and native coding tools |
-| `src/process.rs`, `src/plugins/process.rs`, `src/sandbox.rs` | run-owned process sessions, exec tools and platform sandbox policy |
-| `src/project_instructions.rs`, `src/plugins/instructions.rs` | scoped project-instruction discovery, caching and observation |
+| `src/process/`, `src/plugins/process.rs`, `src/sandbox.rs` | run-owned process sessions, bounded output cursors, exec tools and platform sandbox policy |
+| `src/project_instructions.rs`, `src/plugins/context/instructions.rs` | scoped project-instruction discovery, caching and observation |
 | `src/permission.rs` | effects, modes, policies, approver port, write scope |
 | `src/event.rs` | RunEvent vocabulary and EventSink |
 | `src/interaction.rs`, `src/media.rs` | user-question port and image preparation |
@@ -629,13 +644,21 @@ preserves global, trust, selection, modal and composer priority explicitly.
 | `src/private_fs.rs` | 0600, symlink-safe atomic publication and platform fsync for CLAT-owned private files |
 | `src/command.rs` | frontend-neutral slash-command contract |
 | `src/tui.rs`, `src/tui/` | terminal frontend and structured image-draft presentation |
-| `src/exec.rs` | headless frontend |
+| `src/exec/` | headless frontend; interruption/late-handle coordination is private to `cancel` |
+| `src/wire/`, `src/session/catalog/` | explicit wire codecs; catalog-owned runtime projection seats generate recorder dispatch, wire encoding/decoding and tags |
 | `src/serve.rs`, `src/serve/`, `web/` | local API, SSE, and embedded PWA |
 | `src/dsh/` | crate-private DSH client protocol, host lifecycle, and client-local last-session preference |
 | `src/demo.rs` | deterministic offline composition |
 | `src/upgrade.rs` | authenticated self-update |
 | `wit/`, `sdk/clat-plugin/` | WASM contract and author SDK |
 | `sdk/dsh-adapter/` | static Cordis/DSH compatibility adapter package |
+
+Built-in context plugins and conversation-maintenance plugins have separate
+families under `plugins/context/` and `plugins/conversation/`; Application
+remains the explicit composition root. WASM's per-invocation clock budget and
+interruptible subscriptions are owned by `plugins/wasm/clock.rs`.
+TUI model picking owns navigation/confirmation independently from the edit
+form, while DSH history loading owns its page/live reconciliation sequence.
 
 Image-bearing TUI starts use an ownership handoff rather than decoding on the
 terminal thread: a bounded frontend worker temporarily owns

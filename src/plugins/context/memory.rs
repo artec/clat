@@ -1,13 +1,13 @@
-use super::services::{
-    COMMAND_SERVICE, COMMAND_SERVICE_ID, MEMORY_SERVICE, MEMORY_SERVICE_ID, TOOL_SERVICE,
-    TOOL_SERVICE_ID,
-};
 use crate::application::TrustedProjectApplication;
 use crate::command::{CommandError, CommandHandler, CommandOutcome, CommandSpec};
 use crate::memory::{MemoryScope, MemoryService};
 use crate::plugin::{
     DisposeError, Plugin, PluginContext, PluginDescriptor, PluginError, PluginId, ScopeKind,
     ServiceId,
+};
+use crate::plugins::services::{
+    COMMAND_SERVICE, COMMAND_SERVICE_ID, MEMORY_SERVICE, MEMORY_SERVICE_ID, TOOL_SERVICE,
+    TOOL_SERVICE_ID,
 };
 use crate::{CancelToken, Project, Tool, ToolDefinition, ToolEffect, ToolError};
 use serde_json::{Value, json};

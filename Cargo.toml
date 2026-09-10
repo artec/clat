@@ -9,7 +9,9 @@ license-file = "LICENSE"
 # workspace 成员（构建它们需要 `rustup target add wasm32-wasip2`，
 # 构建 clat 本体不需要）。根包隐式属于本 workspace。
 [workspace]
+default-members = [".", "crates/core"]
 members = [
+    "crates/core",
     "plugins/digest",
     "plugins/greeter",
     "plugins/probe",
@@ -21,102 +23,37 @@ members = [
 name = "clat"
 path = "src/main.rs"
 
+[features]
+# Ordinary cargo test and every delivery gate retain the integration face.
+# Narrow pure-UI edit loops explicitly disable this harness-only feature.
+default = ["runtime-tests"]
+runtime-tests = []
+
 [dependencies]
-# Official iLink media is AES-128-ECB encrypted. Decryption stays inside the
-# protocol adapter; decrypted bytes immediately enter the existing attachment
-# admission path and are never exposed as a host path.
-aes = "0.8.4"
+clat-core = { path = "crates/core" }
+arboard = { version = "=3.6.1", features = ["wayland-data-control"] }
 base64 = "0.22.1"
-# Capability-relative filesystem operations keep project writes bound to an
-# opened directory handle across symlink and directory-replacement races.
 cap-std = "4.0.2"
-# `cap-std` deliberately exposes only sandboxed relative operations.  The
-# session store also needs an atomic no-follow directory open for each opaque
-# bucket/session component, which is the lower-level primitive re-exported by
-# this companion crate.
-cap-primitives = "4.0.2"
-# Cross-platform process groups (Unix) and Job Objects (Windows) make command
-# timeout/cancellation cover the complete descendant tree.
 command-group = "5.0.1"
-# Agent phase 1 search: Git-aware traversal and bounded compiled glob/regex
-# matching stay inside the Rust binary (no user-installed ripgrep runtime).
-globset = "0.4"
-# DV-10/D: DSH browser-session cookie minting signs with HMAC-SHA256 over the
-# cookie body (mirrors upstream browser-auth.ts). Never hand-roll MAC
-# constructions; this is the standard sha2-composable implementation.
-hmac = "0.12"
-ignore = "0.4.23"
-# Agent phase 2: cross-platform PTY sessions (same pinned crate line as the
-# local Codex reference); compiled into the CLAT binary.
-portable-pty = "=0.9.0"
-regex = "1.12"
-# `clat exec` turns Ctrl-C into a graceful CancelToken trip so partial output
-# still persists; a second press hard-exits 130. Installed once at the
-# process boundary in main.rs (the lib exposes ExecCancel instead).
-# `termination` extends the same process-boundary handler to SIGTERM/SIGHUP on
-# Unix, so launchd/systemd stops take the identical graceful close path as
-# interactive Ctrl-C. No signal handling leaks into the library/frontend.
-ctrlc = { version = "3", features = ["termination"] }
 crossterm = "0.29"
-minisign-verify = "0.2.5"
+ctrlc = { version = "3", features = ["termination"] }
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
+hmac = "0.12"
 ratatui = "0.30.2"
-# Official iLink binding is presented by both the terminal and PWA. Only the
-# QR matrix/renderers are used; image codecs stay disabled.
-qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
 serde = { version = "1", features = ["derive"] }
-# preserve_order keeps json!-built payloads in insertion order, matching
-# DSH's JSON.stringify field order for byte-level wire compat.
 serde_json = { version = "1", features = ["preserve_order"] }
-# AG-3 Skills: standard YAML frontmatter parser; do not hand-roll YAML semantics.
 serde_yaml_ng = "0.10"
 sha2 = "0.10"
 unicode-width = "0.2"
 ureq = { version = "3.3", default-features = false, features = ["rustls"] }
 url = "2"
-# DSH-compatible session logs: every durable append batch is one independent
-# zstd frame with a content checksum
-# (docs/research/dsh-session-compatibility.md §7).
-zstd = "0.13"
-# SessionId / message ids are UUIDs, matching DSH's crypto.randomUUID().
 uuid = { version = "1", features = ["v4"] }
-# W1-10：实现 wasmtime-wasi-io 的 `Pollable` trait（用 async-trait
-# 作者的脱糖形状；已在依赖树内，随 wasmtime-wasi 传递）。
-async-trait = "0.1"
-# WASM 组件插件运行时（插件桥 Phase 2a）。最小特性集（尺寸闸门实测
-# +8.69MB→15.56MB，docs/research/dsh-plugin-bridge.md §3）：cranelift
-# JIT + component-model（WIT）+ 运行时 + wat（测试用文本组件）。
-# 刻意不带 async/pooling/cache 等默认特性——按需再加。
-wasmtime = { version = "48", default-features = false, features = [
-    "cranelift",
-    "component-model",
-    "runtime",
-    "std",
-    "wat",
-] }
-wasmtime-wasi = "48.0.0"
-# W1-10：组装"有界时钟"的 WASI linker 需要逐接口注册（镜像
-# wasmtime-wasi p2 的内部组合、但把 monotonic-clock 宿主换成有界实现），
-# 其中 wasi:io/error 的绑定只由这个伴生 crate 导出（同版本对、
-# wasmtime-wasi 未转出）。已在依赖树内，非新增传递依赖。
-wasmtime-wasi-io = "48.0.0"
-# MM-1 S3 解码库。2026-08-27 负责人裁定（审计 M1-F）：只采购
-# png+jpeg 两 feature——gif/webp 解码器不为全员买单（体积 + 攻击面）；
-# S1 四族 magic 识别保留，接纳侧以点名格式的可行动错误拒绝。
-# 重新加回 webp 的触发条件与体积实测见
-# docs/todo/mm1-attachment-domain.md S3 采购记录。
-image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
-# MM-3 explicit `/paste-image`: OS clipboard access is performed only on a
-# bounded background worker. Default image-data supports macOS/Windows/X11;
-# Wayland data-control is enabled explicitly (unsupported compositors fail with
-# a user-facing message, never a shell fallback).
-arboard = { version = "=3.6.1", features = ["wayland-data-control"] }
 
-# flock-based storage-root lease (Unix); a build-only C dependency at most.
+[dev-dependencies]
+clat-core = { path = "crates/core", features = ["test-support"] }
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
-
-[target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading", "Win32_Storage_FileSystem"] }
 
 # Release 构建优化（2026-08-21）：thin LTO + 单 codegen unit 跨 crate
 # 内联（会话回放的 zstd 解码 / JSON 解析与 markdown 渲染受益），strip
@@ -132,4 +69,7 @@ strip = "symbols"
 # CLAT test harness. Dependency artifacts and release/debug builds are unchanged.
 # For source-level debugging, temporarily set this package override to 2.
 [profile.test.package.clat]
+debug = 0
+
+[profile.test.package.clat-core]
 debug = 0

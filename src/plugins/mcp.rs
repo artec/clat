@@ -770,7 +770,7 @@ mod tests {
             eprintln!("generated_dsh_package: not armed (set CLAT_DSH_ADAPTER_E2E=1 to run it)");
             return;
         }
-        let repository = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let repository = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."));
         let adapter = repository.join("sdk/dsh-adapter");
         let cli = adapter.join("dist/src/dsh-cli.js");
         assert!(

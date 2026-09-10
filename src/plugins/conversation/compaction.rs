@@ -7,16 +7,16 @@
 //! 体 user/message、compaction/end）由 Application 经 RunJournal 原子
 //! 写入——原始事件永不删除，展示历史经 transcript 投影不受遮蔽。
 
-use super::services::{
-    COMPACTION_SERVICE, COMPACTION_SERVICE_ID, CompactionNode, CompactionOutcome,
-    CompactionRequest, HistoryCompactor, PROMPT_SERVICE, PROMPT_SERVICE_ID, PROVIDER_SERVICE,
-    PROVIDER_SERVICE_ID, PromptRegistry, ProviderRegistry, TOOL_SERVICE, TOOL_SERVICE_ID,
-};
 use crate::model::{
     CancelToken, FinishReason, Model, ModelConfig, ModelItem, ModelOptions, ModelRequest, Usage,
 };
 use crate::plugin::{
     Plugin, PluginContext, PluginDescriptor, PluginError, PluginId, ScopeKind, ServiceId,
+};
+use crate::plugins::services::{
+    COMPACTION_SERVICE, COMPACTION_SERVICE_ID, CompactionNode, CompactionOutcome,
+    CompactionRequest, HistoryCompactor, PROMPT_SERVICE, PROMPT_SERVICE_ID, PROVIDER_SERVICE,
+    PROVIDER_SERVICE_ID, PromptRegistry, ProviderRegistry, TOOL_SERVICE, TOOL_SERVICE_ID,
 };
 use crate::providers::{ModelBuildFn, RetryPolicy, retry_model_with};
 use crate::tool::ToolRegistry;

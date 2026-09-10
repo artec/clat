@@ -213,7 +213,7 @@ impl ConversationModel {
     }
 
     /// 测试便利：压入一条已落定的 assistant（占位 provider/model）。
-    #[cfg(test)]
+    #[cfg(all(test, feature = "runtime-tests"))]
     pub(crate) fn push_assistant_for_test(&mut self, text: &str) {
         self.push_item(ConversationItem::Assistant {
             text: text.to_owned(),
@@ -225,7 +225,7 @@ impl ConversationModel {
         });
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "runtime-tests"))]
     pub(crate) fn last_assistant_text(&self) -> Option<&str> {
         self.items.iter().rev().find_map(|(item, _)| match item {
             ConversationItem::Assistant { text, .. } => Some(text.as_str()),
@@ -1108,7 +1108,7 @@ fn truncate_display_width(text: &str, max: usize) -> String {
     out
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "runtime-tests"))]
 mod tests {
     use super::*;
     use crate::test_support::{
@@ -1555,27 +1555,7 @@ mod tests {
             .collect()
     }
 
-    fn load_replay(storage_root: &std::path::Path) -> Vec<ReplayEvent> {
-        let backend = crate::session::persistence::JsonlBackend::new(
-            storage_root.join("sessions"),
-            crate::session::persistence::JsonlCompression::Zstd,
-            false,
-        );
-        let headers = backend.list_headers().expect("headers");
-        let header = headers.first().expect("one session");
-        let key = crate::session::key::SessionKey {
-            project: crate::session::key::ProjectKey::from_cwd(&header.cwd.clone().expect("cwd")),
-            id: header.id.clone(),
-        };
-        let mut events = Vec::new();
-        backend
-            .visit_from(&key, 0, &mut |event| {
-                events.push(event.clone());
-                Ok(())
-            })
-            .expect("visit");
-        crate::session::replay::ReplayAdapter::fold(&events)
-    }
+    use crate::test_support::load_replay;
 
     fn assert_frontend_parity(tag: &str, behavior: TestBehavior, deny: bool) {
         let (storage_root, project_root) = roots(tag);

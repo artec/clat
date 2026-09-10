@@ -17,7 +17,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// temporary file, write + fsync it, reject a destination symlink again,
 /// rename, then fsync the parent directory.  A failed publish removes its
 /// temporary file on a best-effort basis.
-pub(crate) fn write_text_atomic(
+pub fn write_text_atomic(
     dir: &cap_std::fs::Dir,
     parent: &Path,
     name: &str,

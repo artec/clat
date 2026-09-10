@@ -24,6 +24,8 @@ CONSUMERS = {
     "wire": ("wire", "serve", "exec"),
     "exec": ("exec",),
 }
+PURE_UI = {"input", "markdown", "model_editor", "logo", "theme", "popup",
+           "session_picker", "permission_picker"}
 
 
 def run(command, capture=False):
@@ -49,6 +51,11 @@ def selection(paths):
         path = pathlib.PurePosixPath(name)
         if name.startswith("src/") and path.suffix == ".rs":
             domain = path.parts[1].removesuffix(".rs")
+            if domain == "tui" and len(path.parts) > 2:
+                module = path.parts[2].removesuffix(".rs")
+                if module in PURE_UI:
+                    filters.add(f"tui::{module}::")
+                    continue
             if domain in SHARED or domain not in CONSUMERS:
                 return None
             filters.update(f"{item}::" for item in CONSUMERS[domain])
@@ -62,6 +69,29 @@ def selection(paths):
     return sorted(filters)
 
 
+def packages(filters):
+    """Compile only owning harnesses; unknown filters retain both product crates."""
+    if filters is None:
+        return ["clat", "clat-core"]
+    core = set(re.findall(r"^(?:pub(?:\(crate\))? )?mod (\w+);",
+                          (ROOT / "src/core.rs").read_text(), re.MULTILINE))
+    owners = set()
+    for pattern in filters:
+        domain, separator, _ = pattern.partition("::")
+        if not separator or domain not in core | {"tui", "dsh"}:
+            return ["clat", "clat-core"]
+        owners.add("clat" if domain in {"tui", "dsh"} else "clat-core")
+    return sorted(owners)
+
+
+def pure_ui_filters(filters):
+    if not filters:
+        return False
+    return all(any(pattern.startswith(f"tui::{module}::") for module in PURE_UI)
+               and "manual_extra_body_survives_application_model_state_reload" not in pattern
+               for pattern in filters)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("filters", nargs="*", help="explicit Rust test name filters (OR)")
@@ -71,6 +101,11 @@ def main():
     chosen = args.filters or selection(paths)
     print("快速反馈（非完整交付）：", "all Rust targets" if chosen is None else chosen,
           flush=True)
+    owners = packages(chosen)
+    print("测试编译单元：", ", ".join(owners), flush=True)
+    pure_ui = pure_ui_filters(chosen)
+    if pure_ui:
+        print("纯 UI 单元档；运行时集成与快照由普通 cargo test / --full 完整覆盖。", flush=True)
     if args.plan:
         return
     started = time.monotonic()
@@ -79,7 +114,11 @@ def main():
         print("仅文档或无改动：diff 检查完成；未运行 Rust 测试。")
         return
     target = "--all-targets" if chosen is None else "--lib"
-    command = ["cargo", "test", target, "--all-features", "--"] + (chosen or [])
+    command = ["cargo", "test", target,
+               "--no-default-features" if pure_ui else "--all-features"]
+    for package in owners:
+        command += ["-p", package]
+    command += ["--"] + (chosen or [])
     output = run(command + ["--quiet"], True)
     print(output, end="")
     if not any(int(value) for value in re.findall(r"(\d+) passed;", output)):

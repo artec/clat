@@ -258,7 +258,7 @@ mod tests {
         use std::io::{BufRead as _, Write as _};
         use std::process::{Command, Stdio};
 
-        let repo = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let repo = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."));
         let Some(dsh) = std::env::var_os("DSH_CHECKOUT").map(std::path::PathBuf::from) else {
             return;
         };

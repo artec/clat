@@ -60,9 +60,9 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 pub(crate) const ATTACHMENT_ENCODER_VERSION: &str = "clat-image-normalize-v1";
 
 /// 单消息图片张数上限（方案 MM-1 硬默认）。
-pub(crate) const MAX_IMAGES_PER_MESSAGE: usize = 8;
+pub const MAX_IMAGES_PER_MESSAGE: usize = 8;
 /// 单消息原始总量上限。
-pub(crate) const MAX_RAW_BATCH_BYTES: u64 = 32 * 1024 * 1024;
+pub const MAX_RAW_BATCH_BYTES: u64 = 32 * 1024 * 1024;
 /// 单消息规范化总量上限。
 pub(crate) const MAX_NORMALIZED_BATCH_BYTES: u64 = 16 * 1024 * 1024;
 /// 单图规范化字节上限（超过则换编码/降采样）。

@@ -49,150 +49,158 @@ impl App {
                 self.notify();
                 self.flash_status("the model asks a question — answer or Esc to decline");
             }
-            WorkerMessage::ClipboardPastePrepared(result) => {
-                self.clipboard_image_pending = false;
-                match result {
-                    Ok(crate::tui::attachments::PreparedClipboardPaste::Image(path)) => {
-                        let root = self.project.root().to_path_buf();
-                        match self.attachments.add_paths(&root, [path.clone()]) {
-                            Ok(_) => self.flash_status(format!(
-                                "clipboard image attached ({}) — Enter sends · Esc drops draft",
-                                self.attachments.len()
-                            )),
-                            Err(error) => {
-                                self.release_core_staged_attachment_paths([path]);
-                                self.flash_status(format!(
-                                    "clipboard image staging failed: {error}"
-                                ));
-                            }
-                        }
-                    }
-                    Ok(crate::tui::attachments::PreparedClipboardPaste::Text(text)) => {
-                        self.input.insert_str(&text);
-                        self.flash_status("clipboard text pasted");
-                    }
-                    Ok(crate::tui::attachments::PreparedClipboardPaste::Empty) => {
-                        self.flash_status("clipboard is empty or unreadable");
-                    }
-                    Err(error) => self.flash_status(error),
-                }
-            }
-            WorkerMessage::RunStartFinished(finished) => {
-                let RunStartFinished {
-                    application,
-                    prompt,
-                    outcome,
-                } = *finished;
-                self.application = Some(application);
-                self.release_core_staged_attachment_paths(std::iter::empty());
-                self.run_start_pending = false;
-                self.steering_admission_pending = false;
-                let exit_after_start = std::mem::take(&mut self.quit_after_run_start);
-                match outcome {
-                    Ok(started) => {
-                        // W1-13：纪元与全部本地 run 状态必须先于 gate
-                        // 开放；这样首个 RunStarted 不可能被当成空闲态
-                        // 或累加到上一 run 的用量基线。
-                        self.run_epoch += 1;
-                        let epoch = self.run_epoch;
-                        self.conversation.push_user(prompt);
-                        self.conversation_scroll_from_bottom = 0;
-                        self.run_handle = Some(started.handle);
-                        self.running = true;
-                        if exit_after_start && let Some(handle) = &self.run_handle {
-                            handle.cancel();
-                        }
-                        self.run_usage_base = Some(self.session_usage.clone());
-                        self.run_usage_acc = Usage::default();
-                        self.run_routes_base = Some(self.usage_routes.clone());
-                        self.run_route = None;
-                        self.clear_attachment_draft();
-                        self.flash_status("starting model…");
-                        self.restore_next_recovered_steering();
-
-                        let sender = self
-                            .event_sender
-                            .clone()
-                            .expect("event channel is installed by run()");
-                        let completed = started.completed;
-                        // State is now coherent. Release the run worker's
-                        // first event, then bridge its post-persistence result.
-                        started.gate.open();
-                        thread::spawn(move || {
-                            if let Ok(result) = completed.recv() {
-                                let _ = sender
-                                    .send(UiEvent::Worker(WorkerMessage::Done { epoch, result }));
-                            }
-                        });
-                    }
-                    Err(error) => {
-                        // The composer was never mutated during handoff.
-                        // Restore only text; image IDs/order and staged files
-                        // remain byte-for-byte the same for a lossless retry.
-                        self.input.insert_str(&prompt);
-                        self.flash_status(format!("failed to start run: {error}"));
-                    }
-                }
-                if exit_after_start {
-                    self.should_quit = true;
-                }
-            }
+            WorkerMessage::ClipboardPastePrepared(result) => self.apply_clipboard_result(result),
+            WorkerMessage::RunStartFinished(finished) => self.restore_started_run(*finished),
             WorkerMessage::SteeringAdmissionFinished(finished) => {
-                let SteeringAdmissionFinished {
-                    application,
-                    prompt,
-                    outcome,
-                } = *finished;
-                self.application = Some(application);
-                self.release_core_staged_attachment_paths(std::iter::empty());
-                self.run_start_pending = false;
-                self.steering_admission_pending = false;
-                let exit_after_admission = std::mem::take(&mut self.quit_after_run_start);
-                let draft_count = self.attachments.len();
-                match outcome {
-                    SteerOutcome::Queued { .. } => {
-                        let pending = if prompt.is_empty() {
-                            format!("[{draft_count} image(s)]")
-                        } else {
-                            format!("{prompt}\n[{draft_count} image(s)]")
-                        };
-                        self.conversation.push_pending_steering(pending);
-                        self.remember_native_steering(prompt, self.attachments.paths());
-                        self.attachments.clear();
-                        self.flash_status("steering queued — applies at the next model step");
-                    }
-                    SteerOutcome::Refused { reason, .. } => {
-                        self.input.insert_str(&prompt);
-                        self.flash_status(format!("steering refused: {reason}"));
-                    }
-                    // The run sealed while decode/admission was in flight.
-                    // Restore the sole application owner first, then take the
-                    // same ordinary-submit fallback as the synchronous path.
-                    SteerOutcome::NotRunning { .. } => {
-                        if exit_after_admission {
-                            self.input.insert_str(&prompt);
-                        } else {
-                            let fallback = prompt.clone();
-                            let paths = self.attachments.paths();
-                            if !self.start_run(prompt, paths) {
-                                self.input.insert_str(&fallback);
-                            }
-                        }
-                    }
-                }
-                if exit_after_admission {
-                    // Unlike initial admission, an existing run may still be
-                    // live. Cancel it before the normal close path so the
-                    // application cannot retain a detached model worker.
-                    if let Some(handle) = &self.run_handle {
-                        handle.cancel();
-                    }
-                    self.should_quit = true;
-                }
+                self.restore_steering_admission(*finished)
             }
             WorkerMessage::Done { epoch, result } => {
                 self.finish_run(epoch, result);
             }
+        }
+    }
+
+    fn apply_clipboard_result(
+        &mut self,
+        result: Result<crate::tui::attachments::PreparedClipboardPaste, String>,
+    ) {
+        self.clipboard_image_pending = false;
+        match result {
+            Ok(crate::tui::attachments::PreparedClipboardPaste::Image(path)) => {
+                let root = self.project.root().to_path_buf();
+                match self.attachments.add_paths(&root, [path.clone()]) {
+                    Ok(_) => self.flash_status(format!(
+                        "clipboard image attached ({}) — Enter sends · Esc drops draft",
+                        self.attachments.len()
+                    )),
+                    Err(error) => {
+                        self.release_core_staged_attachment_paths([path]);
+                        self.flash_status(format!("clipboard image staging failed: {error}"));
+                    }
+                }
+            }
+            Ok(crate::tui::attachments::PreparedClipboardPaste::Text(text)) => {
+                self.input.insert_str(&text);
+                self.flash_status("clipboard text pasted");
+            }
+            Ok(crate::tui::attachments::PreparedClipboardPaste::Empty) => {
+                self.flash_status("clipboard is empty or unreadable");
+            }
+            Err(error) => self.flash_status(error),
+        }
+    }
+
+    fn restore_started_run(&mut self, finished: RunStartFinished) {
+        let RunStartFinished {
+            application,
+            prompt,
+            outcome,
+        } = finished;
+        self.application = Some(application);
+        self.release_core_staged_attachment_paths(std::iter::empty());
+        self.run_start_pending = false;
+        self.steering_admission_pending = false;
+        let exit_after_start = std::mem::take(&mut self.quit_after_run_start);
+        match outcome {
+            Ok(started) => {
+                // W1-13：纪元与全部本地 run 状态必须先于 gate
+                // 开放；这样首个 RunStarted 不可能被当成空闲态
+                // 或累加到上一 run 的用量基线。
+                self.run_epoch += 1;
+                let epoch = self.run_epoch;
+                self.conversation.push_user(prompt);
+                self.conversation_scroll_from_bottom = 0;
+                self.run_handle = Some(started.handle);
+                self.running = true;
+                if exit_after_start && let Some(handle) = &self.run_handle {
+                    handle.cancel();
+                }
+                self.run_usage_base = Some(self.session_usage.clone());
+                self.run_usage_acc = Usage::default();
+                self.run_routes_base = Some(self.usage_routes.clone());
+                self.run_route = None;
+                self.clear_attachment_draft();
+                self.flash_status("starting model…");
+                self.restore_next_recovered_steering();
+
+                let sender = self
+                    .event_sender
+                    .clone()
+                    .expect("event channel is installed by run()");
+                let completed = started.completed;
+                // State is now coherent. Release the run worker's
+                // first event, then bridge its post-persistence result.
+                started.gate.open();
+                thread::spawn(move || {
+                    if let Ok(result) = completed.recv() {
+                        let _ = sender.send(UiEvent::Worker(WorkerMessage::Done { epoch, result }));
+                    }
+                });
+            }
+            Err(error) => {
+                // The composer was never mutated during handoff.
+                // Restore only text; image IDs/order and staged files
+                // remain byte-for-byte the same for a lossless retry.
+                self.input.insert_str(&prompt);
+                self.flash_status(format!("failed to start run: {error}"));
+            }
+        }
+        if exit_after_start {
+            self.should_quit = true;
+        }
+    }
+
+    fn restore_steering_admission(&mut self, finished: SteeringAdmissionFinished) {
+        let SteeringAdmissionFinished {
+            application,
+            prompt,
+            outcome,
+        } = finished;
+        self.application = Some(application);
+        self.release_core_staged_attachment_paths(std::iter::empty());
+        self.run_start_pending = false;
+        self.steering_admission_pending = false;
+        let exit_after_admission = std::mem::take(&mut self.quit_after_run_start);
+        let draft_count = self.attachments.len();
+        match outcome {
+            SteerOutcome::Queued { .. } => {
+                let pending = if prompt.is_empty() {
+                    format!("[{draft_count} image(s)]")
+                } else {
+                    format!("{prompt}\n[{draft_count} image(s)]")
+                };
+                self.conversation.push_pending_steering(pending);
+                self.remember_native_steering(prompt, self.attachments.paths());
+                self.attachments.clear();
+                self.flash_status("steering queued — applies at the next model step");
+            }
+            SteerOutcome::Refused { reason, .. } => {
+                self.input.insert_str(&prompt);
+                self.flash_status(format!("steering refused: {reason}"));
+            }
+            // The run sealed while decode/admission was in flight.
+            // Restore the sole application owner first, then take the
+            // same ordinary-submit fallback as the synchronous path.
+            SteerOutcome::NotRunning { .. } => {
+                if exit_after_admission {
+                    self.input.insert_str(&prompt);
+                } else {
+                    let fallback = prompt.clone();
+                    let paths = self.attachments.paths();
+                    if !self.start_run(prompt, paths) {
+                        self.input.insert_str(&fallback);
+                    }
+                }
+            }
+        }
+        if exit_after_admission {
+            // Unlike initial admission, an existing run may still be
+            // live. Cancel it before the normal close path so the
+            // application cannot retain a detached model worker.
+            if let Some(handle) = &self.run_handle {
+                handle.cancel();
+            }
+            self.should_quit = true;
         }
     }
 

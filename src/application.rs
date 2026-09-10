@@ -75,16 +75,16 @@ pub use vision_probe::{VisionProbeHandle, VisionProbeOutcome, VisionProbeReport}
 
 /// Frontend-local window metadata kept outside the stable public snapshot
 /// DTOs. Full consumers keep their existing shapes and semantics.
-pub(crate) struct HistoryWindow<T> {
-    pub(crate) snapshot: T,
-    pub(crate) has_more: bool,
+pub struct HistoryWindow<T> {
+    pub snapshot: T,
+    pub has_more: bool,
 }
 
 use title::TitleWorker;
 
 // Narrow compatibility DTO port for the read-only DSH projection. Frontends
 // name the Application boundary, never the control-storage owner module.
-pub(crate) use crate::control_storage::workspace::WorkspaceFile as DshWorkspaceFile;
+pub use crate::control_storage::workspace::WorkspaceFile as DshWorkspaceFile;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ApplicationError {
@@ -316,7 +316,7 @@ pub struct TrustedProjectApplication {
     /// Never read: dropping it releases the flock.
     #[allow(dead_code)]
     lease: StorageRootLease,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fail_next_run_spawn: bool,
     #[cfg(test)]
     fail_next_run_start_receive: bool,
