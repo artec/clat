@@ -209,8 +209,10 @@ boundary. Do not upload the key there.
 
 ### 1. Prepare the tree
 
-- Update the Cargo/package versions and public documentation. Keep the root
-  `clat` and `crates/core/Cargo.toml` versions equal (architecture gates check
+- Bump the version once in the root `Cargo.toml` `[workspace.package]`
+  section — both packages inherit it (`version.workspace = true`), so there
+  is no second copy to keep equal (the architecture gate still asserts
+  lockstep as a belt-and-suspenders check
   this; both embed the release version in protocol/client strings).
 - Run the full Rust and package test gates appropriate to the release.
 - Perform [live-model validation](live-validation.md) when provider/runtime
