@@ -125,7 +125,9 @@ fn core_modules_do_not_depend_on_local_frontend_code() {
             continue;
         }
         checked += 1;
-        let source = fs::read_to_string(&path).expect("read core source");
+        let source = fs::read_to_string(&path)
+            .map(|s| s.replace("\r\n", "\n"))
+            .expect("read core source");
         let relative = relative(root, &path).display();
         for forbidden in [
             "crate::tui",
@@ -183,7 +185,9 @@ fn local_frontends_do_not_reach_internal_core_owners() {
         );
     }
     for path in frontends {
-        let source = fs::read_to_string(&path).expect("read frontend source");
+        let source = fs::read_to_string(&path)
+            .map(|s| s.replace("\r\n", "\n"))
+            .expect("read frontend source");
         let code = without_line_comments(&source);
         let relative = relative(root, &path).display();
         assert!(
@@ -240,7 +244,11 @@ fn internal_owner_guard_rejects_aliases_and_glob_imports() {
 fn crate_root_does_not_export_internal_core_owners() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let source = ["src/lib.rs", "src/core.rs", "src/client_ports.rs"]
-        .map(|path| fs::read_to_string(root.join(path)).expect("read crate boundary"))
+        .map(|path| {
+            fs::read_to_string(root.join(path))
+                .map(|s| s.replace("\r\n", "\n"))
+                .expect("read crate boundary")
+        })
         .join("\n");
     for statement in source.split(';') {
         let compact = statement.split_whitespace().collect::<String>();
@@ -276,7 +284,9 @@ fn crate_root_does_not_export_internal_core_owners() {
 #[test]
 fn crate_root_does_not_reexport_terminal_frontend_types() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let source = fs::read_to_string(root.join("src/lib.rs")).expect("read crate root");
+    let source = fs::read_to_string(root.join("src/lib.rs"))
+        .map(|s| s.replace("\r\n", "\n"))
+        .expect("read crate root");
     for statement in source.split(';') {
         let compact = statement.split_whitespace().collect::<String>();
         let reexports = compact.contains("pubuse") || compact.contains("pub(crate)use");
@@ -354,7 +364,9 @@ fn workspace_enforces_terminal_dependency_direction_and_single_binary() {
 #[test]
 fn runtime_projection_vocabulary_has_one_catalog_home() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let catalog = fs::read_to_string(root.join("src/session/catalog/run_events.rs")).unwrap();
+    let catalog = fs::read_to_string(root.join("src/session/catalog/run_events.rs"))
+        .map(|s| s.replace("\r\n", "\n"))
+        .unwrap();
     for tag in [
         "run_started",
         "model_requested",
@@ -364,7 +376,9 @@ fn runtime_projection_vocabulary_has_one_catalog_home() {
         assert!(catalog.contains(&format!("=> \"{tag}\";")));
     }
     for path in ["src/wire/mod.rs", "src/session/recorder.rs"] {
-        let source = fs::read_to_string(root.join(path)).unwrap();
+        let source = fs::read_to_string(root.join(path))
+            .map(|s| s.replace("\r\n", "\n"))
+            .unwrap();
         let source = source.split("\n#[cfg(test)]").next().unwrap();
         assert!(
             source.contains("catalog::run_event_seats!"),
@@ -401,7 +415,9 @@ fn frontend_styles_come_from_the_theme_module() {
         "src/dsh/transcript.rs",
         "src/dsh/ws.rs",
     ] {
-        let source = fs::read_to_string(root.join(name)).expect("read frontend source");
+        let source = fs::read_to_string(root.join(name))
+            .map(|s| s.replace("\r\n", "\n"))
+            .expect("read frontend source");
         let production = source
             .split("\n#[cfg(test)]\nmod ")
             .next()
@@ -440,7 +456,9 @@ fn terminal_frontend_has_no_core_assembly_or_persistence_entrypoints() {
     assert!(frontends.iter().any(|path| is_clat_tui_frontend(path)));
     assert!(frontends.iter().any(|path| is_under_src_dir(path, "dsh")));
     for path in frontends {
-        let source = fs::read_to_string(&path).expect("read frontend source");
+        let source = fs::read_to_string(&path)
+            .map(|s| s.replace("\r\n", "\n"))
+            .expect("read frontend source");
         let relative = relative(root, &path).display();
         for forbidden in [
             "crate::storage",
@@ -484,7 +502,9 @@ fn agent_command_spawning_is_owned_only_by_process_service() {
         "src/run/mod.rs",
         "src/sandbox.rs",
     ] {
-        let source = fs::read_to_string(root.join(name)).expect("read source");
+        let source = fs::read_to_string(root.join(name))
+            .map(|s| s.replace("\r\n", "\n"))
+            .expect("read source");
         for forbidden in [
             "std::process::Command::new",
             ".group_spawn()",
@@ -496,7 +516,9 @@ fn agent_command_spawning_is_owned_only_by_process_service() {
             );
         }
     }
-    let owner = fs::read_to_string(root.join("src/process/mod.rs")).expect("process service");
+    let owner = fs::read_to_string(root.join("src/process/mod.rs"))
+        .map(|s| s.replace("\r\n", "\n"))
+        .expect("process service");
     assert!(owner.contains(".group_spawn()"));
     assert!(owner.contains("native_pty_system()"));
 }
@@ -540,7 +562,9 @@ fn terminal_frontend_does_not_own_slash_command_dispatch() {
     ];
     let mut checked = 0;
     for path in frontends {
-        let source = fs::read_to_string(&path).expect("read frontend source");
+        let source = fs::read_to_string(&path)
+            .map(|s| s.replace("\r\n", "\n"))
+            .expect("read frontend source");
         let production = source.split("\n#[cfg(test)]").next().unwrap_or("");
         let relative = relative(root, &path).display();
         checked += 1;
