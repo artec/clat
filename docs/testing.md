@@ -73,6 +73,32 @@ build artifacts did not consistently remove the wait and are not part of
 the workflow. No system security settings, provenance or quarantine
 attributes were changed.
 
+The second signing experiment on 2026-09-11 did not justify an automatic
+signing hook. On six disposable arm64 copies of the same 28.5 MB harness,
+linker-signed first launches took 0.415/0.573 s; re-signed launches took
+0.522/0.311 s, plus 0.066/0.058 s for signing. Subsequent launches took
+0.006–0.007 s. Unsigned copies were all killed (exit -9), with no tests run;
+their termination time is not a performance result. Copies can share system
+caches, so this is not an independent cold-start benchmark or proof of
+Gatekeeper causality. Reproduce with:
+
+```bash
+# Obtain the executable from Cargo's compiler-artifact JSON.
+cargo test -p clat --lib --no-default-features --no-run --message-format=json
+python3 scripts/measure-signing.py /absolute/path/to/harness tui::model_editor::
+python3 -m unittest discover -s scripts -p test_measure_signing.py
+```
+
+Two subsequent real expression edits (preallocating the truncation buffer,
+then restoring the original allocation) took 70.182 s and 59.163 s inside
+the measurement script: build 9.570/17.877 s, startup plus 33 passing tests
+60.612/41.286 s. Both artifacts were freshly built, not mtime-only edits.
+Both exceeded the 30 s budget. The temporary source edits were reversed;
+no runtime change, security exemption, signing hook or background daemon
+was adopted. Reusing a resident statically linked test process would test
+old code after an edit; a watcher alone cannot remove that constraint.
+This investigation is closed with the latency target explicitly unmet.
+
 Before handing off a completed batch, run once:
 
 ```bash
