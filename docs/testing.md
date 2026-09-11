@@ -121,3 +121,49 @@ platform semantics need verification. `--stress N` remains available for a
 specific diagnosed timing concern, rather than routine repeated full runs.
 DSH checkout oracles remain opt-in with `DSH_CHECKOUT`; real-model/device
 checks follow [Live validation](live-validation.md).
+
+## Standing test rules (2026-09-11 consolidation)
+
+Test volume is over half the codebase; these rules keep it an asset
+instead of a tax. Each rule was paid for by a real incident.
+
+- **Flake discipline.** Rerun a red test once; a second occurrence of
+  the same signature opens a work case with the captured panic
+  message and a reproduction attempt. A "known flaky" label without
+  a filed case is forbidden. The `typert_era_round_trips…` test was
+  red three times across weeks while carrying that label; the actual
+  cause was silent POST loss on pooled connections (a real product
+  bug), and the label cost two hours of CI ping-pong before someone
+  traced the reply instead of the assertion.
+- **Tests assert invariants, never implementations.** A test
+  transcribed from the code just written shares the author's blind
+  spots and cannot fail when the design is wrong. Every bug fix
+  ships a test that is red on the pre-fix code; during review,
+  spot-check that deleting the specific fix turns its test red
+  (mutation spot-check).
+- **Do not accumulate duplicated scaffolding.** When two test suites
+  share setup/assert sequences (the providers adapters' test sections
+  carried 97 duplicated normalized blocks while the production code
+  was only 5% alike), merge on touch. Helper duplication has already
+  caused one test-infrastructure incident (two copies of a
+  temp-root helper caused cross-test collisions).
+- **Test placement.** Harness-heavy or runtime-backed tests live
+  behind the `runtime-tests` feature so pure-presentation edit loops
+  keep the lightweight harness; delivery gates always enable it. A
+  refactor that moves or splits tests must reconcile counts at
+  delivery — the 2026-09 workspace split was accepted only after
+  328 (root) + 970 (core) was shown to equal the exact pre-split
+  1,298-library-test face.
+- **Source-scanning tests must normalize `\r\n` on read.** Windows
+  autocrlf checkouts rewrite line endings; an exact-string split
+  needle silently matched nothing and the scan covered the whole
+  file including test code, failing CI only on Windows (2026-09-11).
+  Every `fs::read_to_string` feeding a string-shape scan normalizes
+  line endings before matching.
+- **Measurement protocol.** Latency and performance claims need
+  repeated samples in a clean machine state; a single timed run is
+  anecdote, not evidence — one 59–70 s inner-loop sample on 2026-09-11
+  was an environmental outlier while the clean-state acceptance
+  measured 8.2 s for the same edit path. Acceptance numbers are
+  re-measured independently by the reviewer, never copied from the
+  implementer's report.

@@ -670,6 +670,39 @@ returns the same application and leaves the ordered draft untouched. This is
 frontend scheduling only; validation, normalization, persistence, spawning,
 and the commit point remain core-owned.
 
+## Code shape rules (2026-09-11 consolidation)
+
+The 2026-09 refactor campaign established these module shapes; new code
+follows them so the structure does not decay back. `scripts/code-health.py`
+measures the budget at every round close: production functions ≥80 lines
+and the root-directory production share may improve, never regress
+(baseline: 91 / 24% at worst, 48 / 19.7% after the campaign).
+
+- **Seat tables for vocabularies.** Durable journal events and `RunEvent`
+  variants are defined exactly once in the `src/session/catalog/` seat
+  tables: one row carries the payload validator, surface membership,
+  replay kind, retirement flag, and the recorder/wire projections
+  (`run_event_seats!` generates both dispatches with compiler-checked
+  exhaustiveness — a missing variant fails the build). Adding a
+  vocabulary member is one row plus its golden; a new string-match arm
+  elsewhere is a violation the architecture tests reject.
+- **Priority chains for input dispatch.** Frontend key handling is a
+  short chain of ordered handlers (global → trust → copy/cut → modal →
+  composer; see `tui/keys.rs`), each returning whether it consumed the
+  key. The former 461-line `handle_key` match is the cautionary tale.
+- **Per-family files for service groups.** Large service areas split by
+  use-case family into directories (`session/use_cases/`,
+  `src/model/`, `src/plugins/conversation/`), never into one growing
+  file. The `src/` root accepts no new production files — a new domain
+  opens a directory; root files are entry shims only.
+- **Two-crate workspace, one binary.** `clat-core` (terminal-independent
+  runtime, `src/core.rs` entry) and the root `clat` package (facade,
+  TUI/DSH frontends, the binary) share the source tree; the core
+  exposes frontend consumption only through `src/client_ports.rs`.
+  The core→frontend dependency edge does not exist in the cargo graph,
+  and a workspace metadata test pins both the dependency direction and
+  the single-binary deliverable.
+
 ## Adding a core capability
 
 Before adding code, identify its owner and contract:

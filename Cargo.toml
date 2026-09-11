@@ -1,6 +1,6 @@
 [package]
 name = "clat"
-version = "1.3.1"
+version = "1.3.2"
 edition = "2024"
 description = "A rock-solid agent foundation: fast, local-first, one Rust binary"
 license-file = "LICENSE"
