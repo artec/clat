@@ -5,7 +5,9 @@
   "model_steps": [
     {
       "expect": {
-        "available_tools_include": ["search"]
+        "available_tools_include": [
+          "search"
+        ]
       },
       "response": {
         "tool_calls": [
@@ -16,8 +18,12 @@
               "query": "fn needle_(alpha|beta)",
               "path": ".",
               "mode": "regex",
-              "include_globs": ["src/**/*.rs"],
-              "extensions": ["rs"],
+              "include_globs": [
+                "src/**/*.rs"
+              ],
+              "extensions": [
+                "rs"
+              ],
               "respect_gitignore": true,
               "max_results": 10
             }
@@ -28,14 +34,28 @@
     },
     {
       "expect": {
-        "required_tool_results": ["search"],
+        "required_tool_results": [
+          "search"
+        ],
         "required_tool_result_contains": [
-          {"tool": "search", "text": "src/alpha.rs"},
-          {"tool": "search", "text": "src/beta.rs"}
+          {
+            "tool": "search",
+            "text": "src/alpha.rs"
+          },
+          {
+            "tool": "search",
+            "text": "src/beta.rs"
+          }
         ],
         "forbidden_tool_result_contains": [
-          {"tool": "search", "text": "ignored.txt"},
-          {"tool": "search", "text": "README.md"}
+          {
+            "tool": "search",
+            "text": "ignored.txt"
+          },
+          {
+            "tool": "search",
+            "text": "README.md"
+          }
         ]
       },
       "response": {
@@ -63,6 +83,7 @@
       "turn/start",
       "user/message",
       "step/start",
+      "system/message",
       "request/header",
       "assistant/message",
       "tool/call",
@@ -74,7 +95,10 @@
       "turn/end"
     ],
     "permission_checks": [
-      {"tool": "search", "decision": "allow"}
+      {
+        "tool": "search",
+        "decision": "allow"
+      }
     ]
   }
 }

@@ -34,6 +34,39 @@ pub(crate) struct RequestHeaderData {
     pub(crate) base_system: String,
     pub(crate) dynamic_instructions: Option<Arc<dyn crate::plugins::services::DynamicInstructions>>,
     pub(crate) tool_registry: Option<Arc<crate::tool::ToolRegistry>>,
+    /// Cross-run protected-head resume: journal seq and effective prompt of
+    /// the session's existing system head (`None` = no head yet, or the V2
+    /// writer path where no head exists).
+    pub(crate) system_head: Option<(u64, String)>,
+}
+
+/// The request/header body exactly as it persists: the current generation
+/// (V3) strips the retired `header.system` member — the prompt travels as
+/// the protected surface head — and omits exactly the empty `tools:[]` /
+/// `adapterDefaults:{}` optionals (native v3 admission refuses them).
+/// Dedupe comparisons must use this shape on both sides.
+pub(crate) fn persisted_request_header(header: &Value) -> Value {
+    let mut header = header.clone();
+    if crate::session::compat::SYSTEM_PROMPT_AS_SURFACE
+        && let Some(object) = header.as_object_mut()
+    {
+        object.remove("system");
+        if object
+            .get("tools")
+            .and_then(Value::as_array)
+            .is_some_and(std::vec::Vec::is_empty)
+        {
+            object.remove("tools");
+        }
+        if object
+            .get("adapterDefaults")
+            .and_then(Value::as_object)
+            .is_some_and(serde_json::Map::is_empty)
+        {
+            object.remove("adapterDefaults");
+        }
+    }
+    header
 }
 
 /// Shared between the recorder (which stashes `ToolRequested` calls) and
@@ -254,6 +287,12 @@ pub(crate) struct SessionRecorder {
     base_system: String,
     dynamic_instructions: Option<Arc<dyn crate::plugins::services::DynamicInstructions>>,
     tool_registry: Option<Arc<crate::tool::ToolRegistry>>,
+    /// V3 protected-head bookkeeping: the journaled system head's journal
+    /// seq (`None` until the first step) and the prompt text it carries
+    /// (`""` = an empty head). A changed prompt inserts a replacement that
+    /// covers exactly the head and cites it.
+    system_head_seq: Option<u64>,
+    journaled_system_prompt: String,
     step_open: bool,
     /// The open step's assistant/message was already journaled.
     message_emitted: bool,
@@ -303,9 +342,11 @@ impl SessionRecorder {
             published: Vec::new(),
             shared: Arc::new(Mutex::new(SharedCore {
                 turn,
-                // First step is 0 (catalog §3); open_step assigns and
-                // post-increments.
-                step: 0,
+                // First step is 1 (DSH 1-based turn/step coordinates, pinned
+                // by the V0 frozen relationship chain); it advances when the
+                // step closes, so every reader between open and close sees
+                // the same step number.
+                step: 1,
                 ..SharedCore::default()
             })),
             provider: provider.into(),
@@ -315,6 +356,12 @@ impl SessionRecorder {
             base_system: request_header.base_system,
             dynamic_instructions: request_header.dynamic_instructions,
             tool_registry: request_header.tool_registry,
+            system_head_seq: request_header.system_head.as_ref().map(|(seq, _)| *seq),
+            journaled_system_prompt: request_header
+                .system_head
+                .as_ref()
+                .map(|(_, text)| text.clone())
+                .unwrap_or_default(),
             step_open: false,
             message_emitted: false,
             stream_usage: None,
@@ -484,9 +531,9 @@ impl SessionRecorder {
         if self.step_open {
             return;
         }
-        // `shared.step` is the number of the step now opening (0-based,
-        // catalog §3); it advances when the step closes, so every reader
-        // between open and close sees the same step number.
+        // `shared.step` is the number of the step now opening (1-based,
+        // DSH coordinate chain); it advances when the step closes, so every
+        // reader between open and close sees the same step number.
         let (turn, step) = {
             let shared = self.shared.lock().expect("recorder lock");
             (shared.turn, shared.step)
@@ -495,9 +542,17 @@ impl SessionRecorder {
             "step/start",
             payloads::step_start(turn, step),
         ));
+        if crate::session::compat::SYSTEM_PROMPT_AS_SURFACE {
+            self.journal_system_head(turn, step);
+        }
         if let Some(reason) = self.header_reason.take() {
+            // V3: the system prompt travels as the protected surface head,
+            // never as `header.system` (native admission refuses it). The
+            // working copy keeps `system` so the change detector can compare
+            // prompts; only the persisted header is stripped.
+            let header = persisted_request_header(&self.request_header);
             let payload = serde_json::json!({
-                "header": self.request_header.clone(),
+                "header": header,
                 "reason": reason,
             });
             self.append_quietly(NewSessionEvent::new("request/header", payload));
@@ -513,6 +568,49 @@ impl SessionRecorder {
         self.stream_usage = None;
         self.pending_retry_id = None;
         self.next_block_index = 0;
+    }
+
+    /// The V3 protected head: the first step reserves it (empty prompt →
+    /// `content: []`), a changed prompt inserts a replacement covering
+    /// exactly the head and citing it. DSH: "The first `step/start` is
+    /// followed immediately by an empty `system/message` append"; later
+    /// steps never create another head.
+    fn journal_system_head(&mut self, turn: u64, step: u64) {
+        let prompt = self
+            .request_header
+            .get("system")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        if prompt == self.journaled_system_prompt && self.system_head_seq.is_some() {
+            return;
+        }
+        let message = serde_json::json!({
+            "id": uuid::Uuid::new_v4().to_string(),
+            "role": "system",
+            "content": if prompt.is_empty() {
+                Vec::<Value>::new()
+            } else {
+                vec![payloads::text_block(&prompt)]
+            },
+            "source": { "kind": "plugin", "plugin": "clat" },
+        });
+        let event = match self.system_head_seq {
+            None => NewSessionEvent::new(
+                "system/message",
+                serde_json::json!({ "turn": turn, "step": step, "message": message }),
+            )
+            .append(Vec::new()),
+            Some(head) => NewSessionEvent::new(
+                "system/message",
+                serde_json::json!({ "turn": turn, "step": step, "message": message }),
+            )
+            .replace(head, head, vec![head]),
+        };
+        if let Some(seq) = self.append_quietly(event) {
+            self.system_head_seq = Some(seq);
+            self.journaled_system_prompt = prompt;
+        }
     }
 
     fn refresh_dynamic_instructions(&mut self) {
@@ -1010,6 +1108,7 @@ mod tests {
             base_system: "you are clat".into(),
             dynamic_instructions: None,
             tool_registry: None,
+            system_head: None,
         }
     }
 
@@ -1295,6 +1394,42 @@ mod tests {
         );
     }
 
+    /// SV 判别腿：持久 request/header 的 canonical 形——空 tools:[],
+    /// 必须缺省（native V3 admission 拒绝空可选字段）。pre-fix 红：
+    /// 写侧原样落盘空数组，自家准入即拒载。
+    #[test]
+    fn persisted_header_omits_empty_tools() {
+        let journal = RecordingJournal::new();
+        let mut data = header_data();
+        if let Some(object) = data.header.as_object_mut() {
+            object.insert("tools".into(), json!([]));
+        }
+        let mut recorder = SessionRecorder::new(
+            Arc::clone(&journal) as Arc<dyn RunJournal>,
+            data,
+            "prov",
+            "mdl",
+            1,
+            Some("initial"),
+        );
+        recorder.emit(RunEvent::ModelRequested {
+            turn: 1,
+            provider: "p".into(),
+            model: "m".into(),
+        });
+        let _ = recorder.finish(TurnEndReason::Completed);
+        let header = journal
+            .events()
+            .into_iter()
+            .find(|(kind, _)| kind == "request/header")
+            .map(|(_, data)| data)
+            .expect("request/header journaled");
+        assert!(
+            header["header"].get("tools").is_none(),
+            "empty tools must be omitted in the persisted header: {header}"
+        );
+    }
+
     #[test]
     fn text_turn_produces_dsh_event_sequence() {
         let (mut recorder, journal, _seen) = recorder();
@@ -1334,6 +1469,7 @@ mod tests {
             types,
             vec![
                 "step/start",
+                "system/message",
                 "request/header",
                 "assistant/message",
                 "step/end",
@@ -1341,24 +1477,35 @@ mod tests {
             ]
         );
         let events = journal.events();
-        // 首个 step 是 0（pinned catalog），不是 1（审计 P1-14）。
-        assert_eq!(events[0].1["step"], json!(0));
-        // request/header 记录模型实际看到的配置/system/tools。
-        assert_eq!(events[1].1["reason"], json!("initial"));
-        assert_eq!(events[1].1["header"]["config"]["model"], json!("mdl"));
-        assert_eq!(events[1].1["header"]["system"], json!("you are clat"));
+        // 首个 step 是 1（DSH 1 基 turn/step 坐标链，V3 对齐）。
+        assert_eq!(events[0].1["step"], json!(1));
+        // 受保护头随首 step/start 落位并携带系统提示词（V3 面）。
+        let head = &events[1].1;
+        assert_eq!(head["turn"], json!(1));
+        assert_eq!(head["step"], json!(1));
+        assert_eq!(head["message"]["role"], json!("system"));
+        assert_eq!(head["message"]["content"][0]["text"], json!("you are clat"));
         assert_eq!(
-            events[1].1["header"]["tools"][0]["name"],
+            head["message"]["source"],
+            json!({"kind": "plugin", "plugin": "clat"})
+        );
+        // request/header 记录模型实际看到的配置/tools——system 不再进头
+        //（V3 native 准入拒绝），提示词的唯一持久面是受保护头。
+        assert_eq!(events[2].1["reason"], json!("initial"));
+        assert_eq!(events[2].1["header"]["config"]["model"], json!("mdl"));
+        assert!(events[2].1["header"].get("system").is_none());
+        assert_eq!(
+            events[2].1["header"]["tools"][0]["name"],
             json!("read_file")
         );
-        let message = &events[2].1;
+        let message = &events[3].1;
         assert_eq!(message["message"]["content"][0]["text"], "Hey");
         assert_eq!(message["stream"][0]["type"], "text-chunks");
         assert_eq!(message["stream"][0]["texts"], json!(["He", "y"]));
         assert_eq!(message["stream"][1]["type"], "chunk");
         assert_eq!(message["stream"][1]["chunk"]["type"], "finish");
         assert_eq!(message["message"]["source"]["kind"], "model");
-        assert_eq!(message["step"], json!(0));
+        assert_eq!(message["step"], json!(1));
         // The terminal event reached the UI only after the flush in finish.
         let seen = &published;
         assert!(
@@ -1728,6 +1875,7 @@ mod tests {
             types,
             vec![
                 "step/start",
+                "system/message",
                 "request/header",
                 "tool/result",
                 "step/end",

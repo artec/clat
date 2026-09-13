@@ -93,7 +93,18 @@ impl TrustedProjectApplication {
                             .clone()
                             .unwrap_or_else(|| "nothing to compact".into())
                     })?;
+
                     let shadowed = &compaction_nodes[..outcome.shadowed_count];
+                    // SV 最小适配行（S6 例外，docs/todo/session-v3-execution.md）：
+                    // V3 受保护 system 头不得被压缩 shadow——头之前的
+                    // 前缀节点（至多首条用户消息）从遮蔽前缀剔除。
+                    let shadowed = match sessions.last_system_head() {
+                        Some((head, _)) => {
+                            let skip = shadowed.iter().take_while(|node| node.seq <= head).count();
+                            &shadowed[skip..]
+                        }
+                        None => shadowed,
+                    };
                     write_compaction_events(
                         journal.as_ref(),
                         shadowed,
@@ -256,6 +267,16 @@ pub(super) fn run_auto_compaction(
     match &outcome.summary {
         Some(summary) => {
             let shadowed = &compaction_nodes[..outcome.shadowed_count.min(compaction_nodes.len())];
+            // SV 最小适配行（S6 例外，docs/todo/session-v3-execution.md）：
+            // V3 受保护 system 头不得被压缩 shadow——头之前的前缀节点
+            // （至多首条用户消息）从遮蔽前缀剔除。
+            let shadowed = match sessions.last_system_head() {
+                Some((head, _)) => {
+                    let skip = shadowed.iter().take_while(|node| node.seq <= head).count();
+                    &shadowed[skip..]
+                }
+                None => shadowed,
+            };
             let written =
                 write_compaction_events(journal, shadowed, summary, &outcome, config, turn);
             let _ = sessions.sync_active();

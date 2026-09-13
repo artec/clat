@@ -261,6 +261,9 @@ impl TrustedProjectApplication {
             base_system: context.instructions.with_goal.clone(),
             dynamic_instructions: Some(Arc::clone(&self.dynamic_instructions)),
             tool_registry: Some(Arc::clone(&self.tools)),
+            // SV 最小适配行（S6 例外）：跨 run 的受保护头恢复——新 run
+            // 必须替换既有头，绝不追加第二个头。
+            system_head: self.sessions.last_system_head(),
         }
     }
 }

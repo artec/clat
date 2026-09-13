@@ -5,42 +5,82 @@
   "prompt": "Run the bounded-output command and confirm it completed.",
   "model_steps": [
     {
-      "expect": {"available_tools_include": ["exec_command"]},
+      "expect": {
+        "available_tools_include": [
+          "exec_command"
+        ]
+      },
       "response": {
-        "tool_calls": [{
-          "id": "call-ring",
-          "name": "exec_command",
-          "arguments": {
-            "cmd": "head -c 100000 /dev/zero | tr '\\0' x; printf 'done\\n' > ring-marker",
-            "yield_time_ms": 30000,
-            "max_output_tokens": 256
+        "tool_calls": [
+          {
+            "id": "call-ring",
+            "name": "exec_command",
+            "arguments": {
+              "cmd": "head -c 100000 /dev/zero | tr '\\0' x; printf 'done\\n' > ring-marker",
+              "yield_time_ms": 30000,
+              "max_output_tokens": 256
+            }
           }
-        }],
+        ],
         "finish_reason": "tool_calls"
       }
     },
     {
       "expect": {
         "required_tool_result_contains": [
-          {"tool": "exec_command", "text": "\"output_truncated\":true"},
-          {"tool": "exec_command", "text": "\"exit_code\":0"}
+          {
+            "tool": "exec_command",
+            "text": "\"output_truncated\":true"
+          },
+          {
+            "tool": "exec_command",
+            "text": "\"exit_code\":0"
+          }
         ]
       },
-      "response": {"text": "output ring complete", "finish_reason": "completed"}
+      "response": {
+        "text": "output ring complete",
+        "finish_reason": "completed"
+      }
     }
   ],
   "expected": {
     "outcome": "success",
     "event_kinds": [
-      "run_started", "model_requested", "model_responded", "tool_requested",
-      "permission_checked", "tool_started", "tool_finished", "model_requested",
-      "model_stream", "model_responded", "run_completed"
+      "run_started",
+      "model_requested",
+      "model_responded",
+      "tool_requested",
+      "permission_checked",
+      "tool_started",
+      "tool_finished",
+      "model_requested",
+      "model_stream",
+      "model_responded",
+      "run_completed"
     ],
     "durable_event_kinds": [
-      "turn/start", "user/message", "step/start", "request/header", "assistant/message",
-      "approval/asked", "approval/decided", "tool/call", "tool/result", "step/end",
-      "step/start", "assistant/message", "step/end", "turn/end"
+      "turn/start",
+      "user/message",
+      "step/start",
+      "system/message",
+      "request/header",
+      "assistant/message",
+      "approval/asked",
+      "approval/decided",
+      "tool/call",
+      "tool/result",
+      "step/end",
+      "step/start",
+      "assistant/message",
+      "step/end",
+      "turn/end"
     ],
-    "permission_checks": [{"tool": "exec_command", "decision": "allow"}]
+    "permission_checks": [
+      {
+        "tool": "exec_command",
+        "decision": "allow"
+      }
+    ]
   }
 }

@@ -6,7 +6,10 @@
   "model_steps": [
     {
       "expect": {
-        "available_tools_include": ["skill", "exec_command"],
+        "available_tools_include": [
+          "skill",
+          "exec_command"
+        ],
         "instructions_include": [
           "exec-fixture",
           "requires-execution=true"
@@ -27,7 +30,9 @@
     },
     {
       "expect": {
-        "required_tool_results": ["skill"],
+        "required_tool_results": [
+          "skill"
+        ],
         "required_tool_result_contains": [
           {
             "tool": "skill",
@@ -57,7 +62,9 @@
     },
     {
       "expect": {
-        "required_tool_results": ["exec_command"],
+        "required_tool_results": [
+          "exec_command"
+        ],
         "required_tool_result_contains": [
           {
             "tool": "exec_command",
@@ -100,6 +107,7 @@
       "turn/start",
       "user/message",
       "step/start",
+      "system/message",
       "request/header",
       "assistant/message",
       "tool/call",

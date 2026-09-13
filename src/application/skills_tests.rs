@@ -277,8 +277,13 @@ fn skill_header_system_and_tool_result_share_one_frozen_snapshot_and_refresh_nex
         project_header_entry["digest"],
         script.observed_digests.lock().unwrap()[0]
     );
+    // SV 最小适配行（S6 例外）：系统提示词持久于受保护 system 头。
+    let system_head = events
+        .iter()
+        .find(|event| event.event_type == "system/message")
+        .expect("the protected system head");
     assert!(
-        first_header.data["header"]["system"]
+        system_head.data["message"]["content"][0]["text"]
             .as_str()
             .unwrap()
             .contains("source=project")
@@ -564,7 +569,15 @@ fn skill_command_lists_layers_and_invocation_reaches_next_run_assembly() {
         invoking_header.data["header"]["invokedSkill"]["source"],
         json!("project")
     );
-    let system = invoking_header.data["header"]["system"].as_str().unwrap();
+    // SV 最小适配行（S6 例外）：invocation wrapper 断言迁移到 system 头。
+    let system = events
+        .iter()
+        .rfind(|event| event.event_type == "system/message")
+        .expect("a system head")
+        .data["message"]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     assert!(
         system.contains("<skill name=\"invoked-demo\">"),
         "the run assembly embeds the invocation wrapper"

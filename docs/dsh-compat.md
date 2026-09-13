@@ -3,8 +3,11 @@
 CLAT uses DeepSeek Harness (DSH) as the reference implementation for
 interoperable event, session, permission, and plugin surfaces. This document
 states only what executable evidence proves at pinned DSH revision
-`d347e703908d0406b7a7ef80e3a0e594d86b2215` (`dsh-v0.1.3-alpha.1`,
-released session format v2).
+`c291e7961a515f6d7af9304e7fd1d257929aef26` (`dsh-v0.1.5-rc.2-139-gc291e7961a`,
+released session format v3). Rows that predate the V3 alignment pin
+(`d347e70390…`, `dsh-v0.1.3-alpha.1`, released v2) say so in their oracle
+column; their fixtures stay valid because V3 changed no released-v2 read
+semantics.
 
 The status vocabulary is deliberately strict:
 
@@ -31,6 +34,12 @@ are useful diagnostics, but they are not compatibility evidence.
 | Legacy-v0 packed chunk rows and decoder | retired `packages/core/session/src/chunk-rows.ts` at `b150a551b8` | `src/session/chunk_packing.rs` | `tests/fixtures/dsh-oracle/session-jsonl-v0.json` | **compatible** | Frozen read-only legacy leg. It is deliberately excluded from current 0.1.3 regeneration and is never a write target. |
 | JSONL header and torn-tail committed-prefix scan | `packages/session/session-persistence-jsonl/src/format.ts` | `src/session/header.rs`, `src/session/jsonl.rs` | `tests/fixtures/dsh-oracle/session-jsonl.json` | **compatible** | Pins required `isSeeded`, v2 generation filename, and committed byte boundary. Zstandard frame recovery also has real DSH binary goldens. |
 | Interrupted-turn synthetic closers | `packages/core/session/src/repair.ts` | `src/session/recovery.rs` | `tests/fixtures/dsh-oracle/session-jsonl.json` | **compatible** | The oracle section covers an open step without a tool; CLAT has additional branch tests for unknown tool outcomes. |
+| Released-v3 native session (protected system head, head replacement, canonical `startSeq`/`endSeq` envelopes, `request/header` without `system`) | `packages/session/session-format-v2-to-v3/src/{validation,payload,codec}.ts`, `packages/core/agent-loop/src/{agent,runtime-context}.ts` | `src/session/catalog.rs`, `src/session/jsonl.rs`, `src/session/recorder.rs`, `src/session/adapter.rs` | `tests/fixtures/dsh-session/v3-session-0.1.5.jsonl.zstd` | **compatible** | Golden bytes come from the pinned rc.2 SessionStore write path (append-time v3 validation) encoded by the real writer functions; CLAT decodes, admits, folds, and replays them in the always-on suite. CLAT's native writer emits the same family (empty head after the first `step/start`, replacements covering exactly the head, plugin attribution `clat`). |
+| v2→v3 migration edge (head insertion, prompt replacements, reference remap, PTC/preset rename, delivery guards, finite content-kind audit) | `packages/session/session-format-v2-to-v3/README.md` + `src/migration.ts` | `src/session/upgrade/v2_to_v3.rs`, `src/session/upgrade.rs` (`ensure_current`) | `tests/fixtures/dsh-session/v3-migrated-0.1.5.jsonl.zstd` | **compatible** | Discriminating test runs the CLAT transformer on the identical minted v2 input and requires event-for-event equality with the pinned upstream migrator output (synthetic SHA-256 ids included). Refusal legs (reserved PTC tags, unknown events/kinds, v3 watermarks, out-of-step prompt changes) are separately pinned. |
+| `/update` = ensure-current publication | released-format policy + `session-persistence-jsonl` generation publication | `src/session/persistence.rs` (`upgrade_legacy`), `src/session/upgrade.rs` | — | **partial** | In-memory chain, byte roundtrip validation, source revision re-check, no-overwrite publish, idempotency, and zero intermediate generations are locally tested with fault hooks. No live DSH-host publication oracle exists. |
+| v1 generation | retired released generation | `src/session/upgrade.rs`, `src/session/jsonl.rs` | — | **intentional-difference** | v1 is refused explicitly everywhere (unreadable decode, `/update` error points to `/new`); CLAT never wrote v1 and does not synthesize compatibility data. |
+| Seeded-session migration (inherited cut) | `packages/session/session-format-v2-to-v3/README.md` ("Sequence references and inheritance"), `src/migration.ts` | `src/session/upgrade/v2_to_v3.rs` (fail-closed refusal), `src/session/persistence.rs` | — | **intentional-difference** | Upstream stages carry `sourceInheritedEventCount` and derive the exact cut at EOF; CLAT never produces seeded sessions, so a seeded v2 source refuses `/update` outright (source bytes untouched, nothing published) instead of replicating the cut machinery. Discriminated by unit and end-to-end refusal tests. |
+| DSH restore of CLAT-written logs (step numbering and event order) | `packages/session/session-format-v0-to-v1/src/relationships.ts` (frozen), `session-format-v2-to-v3/src/payload.ts` | `src/session/recorder.rs` | — | **intentional-difference** | CLAT writes 1-based turn/step since V3, but its first user message is journaled before the first `step/start` (admission commit point), and migrated pre-V3 prefixes keep source turn/step values. DSH's frozen relationship restore therefore refuses CLAT-origin logs; CLAT itself reads both orderings (per-event admission, no step chaining). Recorded, not repaired silently. |
 | Lone UTF-16 surrogate serialization | JavaScript `JSON.stringify` on DSH session rows | Rust `String` + `serde_json` | `tests/fixtures/dsh-oracle/session-jsonl.json` | **intentional-difference** | JavaScript retains `\\ud800`; Rust strings contain Unicode scalar values only, so an ingress replacement becomes U+FFFD. The difference is explicit and byte-tested. |
 | Workspace v2 record/global schema | `packages/workspace/workspace/src/spec.ts` | `src/control_storage/workspace.rs` | `tests/fixtures/dsh-oracle/workspace-model.json` | **compatible** | CLAT adds optional active-selection fields; DSH's Zod reader strips those unknown extensions. |
 | Workspace realpath identity | `packages/workspace/workspace/src/paths.ts` | Application canonical project root + workspace registry | `tests/fixtures/dsh-oracle/workspace-model.json` | **partial** | The oracle pins dot-segment, symlink, and missing-path behavior, but OC-1 has not added a cross-platform CLAT consumer for every path case. |
@@ -82,6 +91,13 @@ credentials.
 DSH_ROOT=../deepseek-harness npm --prefix sdk/dsh-adapter run oracle:regen
 npm --prefix sdk/dsh-adapter test
 cargo test --all-targets --all-features
+```
+
+The V3 session goldens regenerate against the pinned checkout with:
+
+```bash
+cd ../deepseek-harness && \
+  ./node_modules/.bin/tsx ../clat-v3/tests/fixtures/dsh-session/gen-v3-fixtures.mts
 ```
 
 `oracle:regen` checks the pinned source wiring, runs each generator twice,

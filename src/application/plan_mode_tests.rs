@@ -430,8 +430,13 @@ fn approved_handoff_is_durable_and_unlocks_only_the_next_run() {
 
     let first_header_value = &first_events[first_header].data["header"];
     assert_eq!(first_header_value["plan"]["active"], true);
+    // SV 最小适配行（S6 例外）：plan policy 文本持久于受保护 system 头。
+    let system_head = first_events
+        .iter()
+        .find(|event| event.event_type == "system/message")
+        .expect("the protected system head");
     assert!(
-        first_header_value["system"]
+        system_head.data["message"]["content"][0]["text"]
             .as_str()
             .unwrap_or_default()
             .contains(crate::plan_mode::PLAN_POLICY)
@@ -498,8 +503,13 @@ fn approved_handoff_is_durable_and_unlocks_only_the_next_run() {
         second_header["plan"]["approved"]["eventSeq"],
         approved.event_seq
     );
+    // SV 最小适配行（S6 例外）：plan 文本断言迁移到受保护 system 头。
     assert!(
-        second_header["system"]
+        events
+            .iter()
+            .rfind(|event| event.event_type == "system/message")
+            .expect("a system head")
+            .data["message"]["content"][0]["text"]
             .as_str()
             .unwrap_or_default()
             .contains(PLAN)

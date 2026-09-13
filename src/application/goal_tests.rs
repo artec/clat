@@ -223,18 +223,22 @@ fn explicit_goal_run_continues_durably_until_the_registered_verifier_completes()
         project: ProjectKey::from_cwd(header.cwd.as_ref().unwrap()),
         id: header.id,
     };
-    let request_headers = backend
-        .load(&key, false)
-        .unwrap()
-        .events
-        .into_iter()
+    let events = backend.load(&key, false).unwrap().events;
+    // SV 最小适配行（S6 例外）：V3 起系统提示词持久于受保护 system 头
+    // （request/header 剥离 system），goal revision 的断言随之迁移。
+    let system_heads = events
+        .iter()
+        .filter(|event| event.event_type == "system/message")
+        .collect::<Vec<_>>();
+    let request_headers = events
+        .iter()
         .filter(|event| event.event_type == "request/header")
         .collect::<Vec<_>>();
     assert_eq!(request_headers.len(), 2);
     assert_eq!(request_headers[0].data["header"]["goal"]["revision"], 1);
     assert_eq!(request_headers[1].data["header"]["goal"]["revision"], 2);
     assert!(
-        request_headers[1].data["header"]["system"]
+        system_heads.last().expect("a system head exists").data["message"]["content"][0]["text"]
             .as_str()
             .unwrap()
             .contains("revision=2")

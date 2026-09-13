@@ -95,7 +95,11 @@ pub(crate) fn admit_events(events: &[SessionEvent]) -> Result<(), AdmissionError
 }
 
 /// Version-aware event admission: v0 retains top-level `assistant/chunk`,
-/// while released v2 requires embedded streams and admits `assistant/attempt`.
+/// while released v2/v3 require embedded streams and admit
+/// `assistant/attempt`. Generation windows (catalog §KNOWN_FROM_V3 /
+/// §RETIRED_BY_V3) route younger types through the unknown channel and
+/// refuse required predecessor-PTC occurrences while keeping ignorable
+/// ones opaque.
 pub(crate) fn admit_events_for_version(
     events: &[SessionEvent],
     version: u32,
@@ -104,11 +108,29 @@ pub(crate) fn admit_events_for_version(
         if RETIRED_EVENT_TYPES.contains(&event.event_type.as_str()) {
             return Err(AdmissionError::Retired(event.event_type.clone()));
         }
+        let ignorable = event.ignorable.unwrap_or(false);
         let spec = event_spec(&event.event_type);
-        if version == 2 && spec.is_some_and(|spec| spec.retired_in_v2) {
+        if version >= 2 && spec.is_some_and(|spec| spec.retired_in_v2) {
             return Err(AdmissionError::Retired(event.event_type.clone()));
         }
-        if spec.is_none() && !event.ignorable.unwrap_or(false) {
+        if let Some(refusal) = super::catalog::outside_generation_window(&event.event_type, version)
+        {
+            if !ignorable {
+                return Err(match refusal {
+                    super::catalog::AdmissionRefusal::ForeignToGeneration => {
+                        AdmissionError::RequiredUnknown(event.event_type.clone())
+                    }
+                    super::catalog::AdmissionRefusal::RetiredByGeneration => {
+                        AdmissionError::Retired(event.event_type.clone())
+                    }
+                });
+            }
+            // Ignorable outside its window: envelope-only, opaque — the
+            // payload vocabulary of a foreign/retired generation is never
+            // interpreted.
+            continue;
+        }
+        if spec.is_none() && !ignorable {
             return Err(AdmissionError::RequiredUnknown(event.event_type.clone()));
         }
         if let Some(spec) = spec
@@ -597,7 +619,285 @@ mod tests {
     /// The catalog constants stay honest against the dispatch above.
     #[test]
     fn known_catalog_is_consistent() {
-        assert_eq!(crate::session::catalog::KNOWN_EVENT_TYPES.len(), 56);
+        assert_eq!(crate::session::catalog::KNOWN_EVENT_TYPES.len(), 61);
+    }
+
+    /// SV 批次 2 判别腿：native V3 结构性准入（canonical 形状的拒绝面，
+    /// 全部 pre-fix 红）。
+    #[test]
+    fn v3_structural_admission_refuses_canonical_violations() {
+        let v3_request_header = |header: serde_json::Value| {
+            SessionEvent::new(
+                "request/header",
+                0,
+                1,
+                json!({"header": header, "reason": "initial"}),
+            )
+        };
+        let with_field = |base: &serde_json::Value, key: &str, value: serde_json::Value| {
+            let mut header = base.clone();
+            header[key] = value;
+            header
+        };
+        let base = json!({"config": {"provider": "p", "model": "m"}});
+        // v3：system 头（含空串）拒；v2：CLAT 自己的历史形状，照常放行。
+        for system in [json!("prompt"), json!("")] {
+            assert!(matches!(
+                admit_events_for_version(
+                    &[v3_request_header(with_field(&base, "system", system))],
+                    3
+                ),
+                Err(AdmissionError::MalformedPayload { .. })
+            ));
+        }
+        assert_eq!(
+            admit_events_for_version(
+                &[v3_request_header(with_field(
+                    &base,
+                    "system",
+                    json!("prompt")
+                ))],
+                2
+            ),
+            Ok(())
+        );
+        // v3：空 tools:[] / adapterDefaults:{} 必须缺省。
+        assert!(matches!(
+            admit_events_for_version(
+                &[v3_request_header(with_field(&base, "tools", json!([])))],
+                3
+            ),
+            Err(AdmissionError::MalformedPayload { .. })
+        ));
+        assert!(matches!(
+            admit_events_for_version(
+                &[v3_request_header(with_field(
+                    &base,
+                    "adapterDefaults",
+                    json!({})
+                ))],
+                3
+            ),
+            Err(AdmissionError::MalformedPayload { .. })
+        ));
+        assert_eq!(
+            admit_events_for_version(
+                &[v3_request_header(json!({
+                    "config": {"provider": "p", "model": "m"},
+                    "tools": [{"name": "t"}],
+                }))],
+                3
+            ),
+            Ok(())
+        );
+
+        // v3：assistant/message 禁 sourceEventSeqs（v2 的 DSH 形状带引）。
+        let assistant = |sources: Option<Vec<u64>>| {
+            let mut event = SessionEvent::new(
+                "assistant/message",
+                4,
+                5,
+                json!({
+                    "turn": 1, "step": 1,
+                    "stream": [],
+                    "message": {
+                        "id": "m", "role": "assistant", "content": [],
+                        "source": {"kind": "model", "provider": "p", "model": "m"},
+                    },
+                }),
+            );
+            event.source_event_seqs = sources;
+            event
+        };
+        assert!(matches!(
+            admit_events_for_version(&[assistant(Some(vec![0, 1]))], 3),
+            Err(AdmissionError::MalformedPayload { .. })
+        ));
+        assert_eq!(admit_events_for_version(&[assistant(None)], 3), Ok(()));
+        assert_eq!(
+            admit_events_for_version(&[assistant(Some(vec![0, 1]))], 2),
+            Ok(()),
+            "released v2 assistant provenance citations stay admissible"
+        );
+
+        // v3：data.error 与结果块矛盾即拒，绝不修补。
+        let tool_result = |is_error: bool, extra_error: bool| {
+            let mut data = json!({
+                "turn": 1, "step": 1,
+                "message": {
+                    "id": "m2", "role": "user",
+                    "content": [{
+                        "type": "tool-result", "toolCallId": "c1", "isError": is_error,
+                        "content": [{"type": "text", "text": "boom"}],
+                    }],
+                    "source": {"kind": "tool", "callId": "c1"},
+                },
+            });
+            if extra_error {
+                data["error"] = json!({"code": "boom"});
+            }
+            SessionEvent::new("tool/result", 5, 6, data).append(Vec::new())
+        };
+        assert_eq!(
+            admit_events_for_version(&[tool_result(true, true)], 3),
+            Ok(())
+        );
+        assert!(matches!(
+            admit_events_for_version(&[tool_result(false, true)], 3),
+            Err(AdmissionError::MalformedPayload { .. })
+        ));
+        assert_eq!(
+            admit_events_for_version(&[tool_result(false, true)], 2),
+            Ok(()),
+            "v2 diagnostics are not canonical-error-checked"
+        );
+    }
+
+    /// SV 批次 1 判别腿：V3 词表座位 + 世代窗口。pre-fix 红——
+    /// system/message / ptc-dispatch 在旧目录里是 RequiredUnknown，旧
+    /// PTC 名在 V3 版本参数下被当作普通已知类型放行。
+    #[test]
+    fn v3_vocabulary_admits_by_generation_window() {
+        let system_head = |seq: u64, content: serde_json::Value, op: bool| {
+            let mut event = SessionEvent::new(
+                "system/message",
+                seq,
+                2,
+                json!({
+                    "turn": 1, "step": 1,
+                    "message": {
+                        "id": "m-sys", "role": "system",
+                        "content": content,
+                        "source": { "kind": "plugin", "plugin": "clat" },
+                    },
+                }),
+            );
+            if op {
+                event.surface_op = Some(crate::session::event::SurfaceOp::Append);
+            }
+            event
+        };
+        // v3：受保护头（含空提示头的 content: []）放行；V2 日志里是
+        // 未来类型——required 拒、ignorable 不透明放行。
+        assert_eq!(
+            admit_events_for_version(
+                &[system_head(
+                    1,
+                    json!([{ "type": "text", "text": "instructions" }]),
+                    true
+                )],
+                3
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            admit_events_for_version(&[system_head(1, json!([]), true)], 3),
+            Ok(())
+        );
+        assert_eq!(
+            admit_events_for_version(&[system_head(1, json!([]), true)], 2),
+            Err(AdmissionError::RequiredUnknown("system/message".into()))
+        );
+        let mut ignorable_future = system_head(1, json!([]), true);
+        ignorable_future.ignorable = Some(true);
+        assert_eq!(admit_events_for_version(&[ignorable_future], 2), Ok(()));
+
+        for event_type in [
+            "tool/ptc-dispatch",
+            "tool/ptc-dispatch-start",
+            "deliverables/presented",
+            "subagent/catalog",
+        ] {
+            assert_eq!(
+                admit_events_for_version(
+                    &[SessionEvent::new(event_type, 0, 1, json!({})).log_only()],
+                    3
+                ),
+                Ok(()),
+                "{event_type} must be a known v3 type"
+            );
+            assert_eq!(
+                admit_events_for_version(
+                    &[SessionEvent::new(event_type, 0, 1, json!({})).log_only()],
+                    2
+                ),
+                Ok(()),
+                "ignorable v3-only types stay opaque in older logs"
+            );
+            assert_eq!(
+                admit_events_for_version(&[SessionEvent::new(event_type, 0, 1, json!({}))], 2),
+                Err(AdmissionError::RequiredUnknown(event_type.into()))
+            );
+        }
+
+        // 旧 PTC 名：V2 原样；V3 里 required 拒、ignorable 不透明。
+        for event_type in ["tool/code-dispatch", "tool/code-dispatch-start"] {
+            assert_eq!(
+                admit_events_for_version(&[SessionEvent::new(event_type, 0, 1, json!({}))], 2),
+                Ok(())
+            );
+            assert_eq!(
+                admit_events_for_version(&[SessionEvent::new(event_type, 0, 1, json!({}))], 3),
+                Err(AdmissionError::Retired(event_type.into()))
+            );
+            assert_eq!(
+                admit_events_for_version(
+                    &[SessionEvent::new(event_type, 0, 1, json!({})).log_only()],
+                    3
+                ),
+                Ok(())
+            );
+        }
+        // v0 遗产 chunk 在 v3 里同样退役（不再只是 v2 的规则）。
+        let chunk = SessionEvent::new(
+            "assistant/chunk",
+            0,
+            1,
+            json!({"turn": 1, "step": 0, "chunk": {"type": "text-delta", "index": 0, "text": "x"}}),
+        );
+        assert_eq!(
+            admit_events_for_version(&[chunk], 3),
+            Err(AdmissionError::Retired("assistant/chunk".into()))
+        );
+
+        // 坏载荷 fail-closed：错 role、空 plugin、块缺 type、缺 surfaceOp。
+        let bad = |data: serde_json::Value, op: bool| {
+            let mut event = SessionEvent::new("system/message", 1, 2, data);
+            if op {
+                event.surface_op = Some(crate::session::event::SurfaceOp::Append);
+            }
+            event
+        };
+        for data in [
+            json!({
+                "turn": 1, "step": 1,
+                "message": {"id": "m", "role": "user", "content": [],
+                            "source": {"kind": "plugin", "plugin": "clat"}},
+            }),
+            json!({
+                "turn": 1, "step": 1,
+                "message": {"id": "m", "role": "system", "content": [],
+                            "source": {"kind": "plugin"}},
+            }),
+            json!({
+                "turn": 1, "step": 1,
+                "message": {"id": "m", "role": "system",
+                            "content": [{"text": "no type"}],
+                            "source": {"kind": "plugin", "plugin": "clat"}},
+            }),
+        ] {
+            assert!(
+                matches!(
+                    admit_events_for_version(&[bad(data, true)], 3),
+                    Err(AdmissionError::MalformedPayload { .. })
+                ),
+                "malformed system payload must fail closed"
+            );
+        }
+        assert!(matches!(
+            admit_events_for_version(&[system_head(1, json!([]), false)], 3),
+            Err(AdmissionError::MalformedPayload { .. })
+        ));
     }
     /// MM-1A：幂等/元数据字段的 admission 校验——可选字段一旦出现
     /// 必须类型正确且有界（坏 attachmentId/宽高/clientMessageId/

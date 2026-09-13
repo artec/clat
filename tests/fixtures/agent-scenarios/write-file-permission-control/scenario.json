@@ -5,7 +5,9 @@
   "model_steps": [
     {
       "expect": {
-        "available_tools_include": ["write_file"]
+        "available_tools_include": [
+          "write_file"
+        ]
       },
       "response": {
         "tool_calls": [
@@ -23,7 +25,9 @@
     },
     {
       "expect": {
-        "required_tool_results": ["write_file"]
+        "required_tool_results": [
+          "write_file"
+        ]
       },
       "response": {
         "text": "write complete",
@@ -50,6 +54,7 @@
       "turn/start",
       "user/message",
       "step/start",
+      "system/message",
       "request/header",
       "assistant/message",
       "approval/asked",

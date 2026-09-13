@@ -5,7 +5,9 @@
   "model_steps": [
     {
       "expect": {
-        "available_tools_include": ["apply_patch"]
+        "available_tools_include": [
+          "apply_patch"
+        ]
       },
       "response": {
         "tool_calls": [
@@ -22,7 +24,9 @@
     },
     {
       "expect": {
-        "required_tool_results": ["apply_patch"]
+        "required_tool_results": [
+          "apply_patch"
+        ]
       },
       "response": {
         "text": "patch complete",
@@ -49,6 +53,7 @@
       "turn/start",
       "user/message",
       "step/start",
+      "system/message",
       "request/header",
       "assistant/message",
       "approval/asked",
