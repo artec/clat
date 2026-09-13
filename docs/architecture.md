@@ -154,6 +154,13 @@ an expired route returns an error and never selects another project. Explicit
 mounting a second application writer. The default TUI remains standalone while
 client feature parity and automatic host startup are still in progress.
 
+Attached read-only information dialogs consume existing `command.run` text
+projections; their scroll state and request identity remain frontend-local.
+The core `HostClient` supplies canonical read-only command surface hints;
+the terminal does not own the command-name dispatch table.
+Responses are fenced by connection epoch, selection generation, request number,
+and an open dialog. No new persistence owner or wire method is introduced.
+
 The facade is split structurally:
 
 ```text

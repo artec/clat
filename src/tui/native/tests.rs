@@ -51,6 +51,189 @@ fn clipboard_png() -> Vec<u8> {
     png
 }
 
+#[test]
+fn native_readonly_commands_open_a_local_dialog() {
+    let (mut app, storage) = shell();
+    for command in [
+        "/help", "/skill", "/mem", "/goal", "/sub", "/mcp", "/context",
+    ] {
+        app.submit_native(command.into());
+        assert!(
+            app.info_dialog.is_some(),
+            "attach info dialog missing: {command}"
+        );
+        assert!(app.native.as_ref().unwrap().pending.is_none());
+        app.info_dialog = None;
+    }
+    drop(app);
+    crate::test_support::cleanup_tree(&storage);
+}
+
+#[test]
+fn native_readonly_dialog_replies_are_fenced_and_scroll_locally() {
+    let (mut app, storage) = shell();
+    app.input.insert_str("keep my draft");
+    app.submit_native(" /skills ".into());
+    let request = app.native.as_ref().unwrap().info_request;
+    let text = |app: &App| match app.content_view.as_ref().unwrap() {
+        ContentView::Remote { title, text } => (*title, text.clone()),
+        _ => panic!("remote content"),
+    };
+    let initial = text(&app);
+    for (epoch, selection, request) in [(1, 0, request), (0, 1, request), (0, 0, request + 1)] {
+        app.handle_native_event(NativeEvent::Info(
+            epoch,
+            selection,
+            request,
+            Ok(json!({"message":"stale"})),
+        ));
+        assert_eq!(
+            text(&app),
+            initial,
+            "each fence independently rejects late content"
+        );
+    }
+    app.handle_native_event(NativeEvent::Info(
+        0,
+        0,
+        request,
+        Ok(json!({"message":"host skill catalog"})),
+    ));
+    assert_eq!(text(&app), ("/skill", "host skill catalog".into()));
+    app.info_scroll_max = 40;
+    app.info_page = 5;
+    app.handle_ui_event(UiEvent::Terminal(Event::Key(KeyEvent::new(
+        KeyCode::PageDown,
+        KeyModifiers::NONE,
+    ))));
+    assert_eq!(app.info_dialog.as_ref().unwrap().offset, 5);
+    app.handle_ui_event(UiEvent::Terminal(Event::Key(KeyEvent::new(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+    ))));
+    app.handle_native_event(NativeEvent::Info(
+        0,
+        0,
+        request,
+        Ok(json!({"message":"closed"})),
+    ));
+    assert!(app.info_dialog.is_none());
+    assert_eq!(text(&app).1, "host skill catalog");
+    app.submit_native("/help".into());
+    app.handle_native_event(NativeEvent::Info(
+        0,
+        0,
+        request,
+        Ok(json!({"message":"old skills"})),
+    ));
+    assert_eq!(text(&app).0, "/help");
+    assert!(!text(&app).1.contains("old skills"));
+    let request = app.native.as_ref().unwrap().info_request;
+    app.handle_native_event(NativeEvent::Info(
+        0,
+        0,
+        request,
+        Err("host rejected".into()),
+    ));
+    assert!(text(&app).1.contains("host rejected"));
+    app.start_native();
+    assert!(app.info_dialog.is_none());
+    assert!(app.content_view.is_none());
+    assert_eq!(app.input.text(), "keep my draft");
+    assert!(!app.open_native_info("/goal run"));
+    assert!(!app.open_native_info("/skill invoke"));
+    drop(app);
+    crate::test_support::cleanup_tree(&storage);
+}
+
+#[test]
+fn native_mcp_refresh_keys_replace_only_the_current_read_request() {
+    let (mut app, storage) = shell();
+    app.input.insert_str("draft survives refresh");
+    app.submit_native("/mcp".into());
+    assert!(app.native_info_refreshable());
+    for key in ['r', 'R'] {
+        let old = app.native.as_ref().unwrap().info_request;
+        app.info_dialog.as_mut().unwrap().offset = 7;
+        app.handle_ui_event(UiEvent::Terminal(Event::Key(KeyEvent::new(
+            KeyCode::Char(key),
+            KeyModifiers::NONE,
+        ))));
+        let current = app.native.as_ref().unwrap().info_request;
+        assert_eq!(current, old + 1);
+        assert_eq!(app.info_dialog.as_ref().unwrap().offset, 0);
+        app.handle_native_event(NativeEvent::Info(
+            0,
+            0,
+            old,
+            Ok(json!({"message":"stale MCP"})),
+        ));
+        let Some(ContentView::Remote { text, .. }) = &app.content_view else {
+            panic!("remote view");
+        };
+        assert!(!text.contains("stale MCP"));
+        app.handle_native_event(NativeEvent::Info(
+            0,
+            0,
+            current,
+            Ok(json!({"message":"mcp: 1/2 connected · 1 connecting"})),
+        ));
+        let Some(ContentView::Remote { text, .. }) = &app.content_view else {
+            panic!("remote view");
+        };
+        assert!(text.contains("1/2 connected"));
+    }
+    let backend = ratatui::backend::TestBackend::new(100, 30);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| app.draw_content_dialog(frame))
+        .unwrap();
+    let rendered = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(rendered.contains("r refresh"));
+    assert!(rendered.contains("1/2 connected"));
+    app.submit_native("/help".into());
+    let request = app.native.as_ref().unwrap().info_request;
+    app.handle_ui_event(UiEvent::Terminal(Event::Key(KeyEvent::new(
+        KeyCode::Char('r'),
+        KeyModifiers::NONE,
+    ))));
+    assert_eq!(app.native.as_ref().unwrap().info_request, request);
+    assert!(!app.native_info_refreshable());
+    assert!(!app.open_native_info("/mcp reconnect"));
+    assert_eq!(app.input.text(), "draft survives refresh");
+    assert!(app.application.is_none());
+    drop(app);
+    crate::test_support::cleanup_tree(&storage);
+}
+
+#[test]
+fn native_context_malformed_reply_is_visible_without_losing_the_dialog() {
+    let (mut app, storage) = shell();
+    app.submit_native("/context".into());
+    let request = app.native.as_ref().unwrap().info_request;
+    app.handle_native_event(NativeEvent::Info(
+        0,
+        0,
+        request,
+        Ok(json!({"kind":"context", "context":{}})),
+    ));
+    let Some(ContentView::Remote { title, text }) = &app.content_view else {
+        panic!("context dialog");
+    };
+    assert_eq!(*title, "/context");
+    assert_eq!(text, "Host returned an invalid context estimate");
+    assert!(app.info_dialog.is_some());
+    assert!(!app.native_info_refreshable());
+    drop(app);
+    crate::test_support::cleanup_tree(&storage);
+}
+
 fn question_notice(id: &str) -> Value {
     json!({"kind":"question_requested","payload":{"rpc_id":id,"question":{
         "question":id,"options":[{"label":"stable","description":null}],"allow_custom":true

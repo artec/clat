@@ -404,6 +404,29 @@ automatic compaction triggers near 80% of it. `/compact` forces the same
 process manually. Compaction changes model context, not the human-readable
 transcript or the authoritative journal.
 
+### Attached terminal information dialogs
+
+In the native host-attached TUI, bare `/help`, `/skill` (`/skills`), `/mem`
+(`/memory`), `/goal`, and `/sub` (`/subagents`) open read-only, scrollable
+dialogs populated by the host. Use Up/Down or PageUp/PageDown to scroll;
+Esc or Enter closes the dialog. The composer draft is preserved. Commands
+with arguments retain their existing command behavior.
+
+Bare `/context` opens the host's one-shot context estimate, including prompt
+layers, history, image projection and visual tokens, memory budget, tools,
+skills, and diagnostics. The terminal does not recalculate these values.
+Close and reopen for a new snapshot; malformed responses show an error rather
+than silently substituting zero estimates.
+
+Bare `/mcp` uses the same dialog for host MCP/WASM connection status. Press
+`r` or `R` to read the latest status and reset scrolling; this does not restart
+or reconnect any MCP server. A late reply from an older refresh is discarded.
+
+Closing a dialog, opening another, switching sessions, or reconnecting prevents
+late responses from replacing its contents. Errors remain in the dialog; close
+and reopen to retry. When offline, close the dialog and use `/reconnect` first.
+These views do not mount a local runtime or read session storage directly.
+
 ### Image attachments
 
 Pasting or dragging exactly one existing absolute image path turns it into a

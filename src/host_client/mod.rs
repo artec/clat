@@ -3,8 +3,10 @@
 //! Every mutation is sent once. A transport failure is an uncertain outcome,
 //! not permission to retry or to open another local writer.
 mod attachments;
+mod context;
 mod credentials;
 mod error;
+mod info;
 mod models;
 mod sessions;
 pub use error::HostCallError;

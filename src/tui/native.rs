@@ -3,6 +3,7 @@ use super::*;
 use crate::host::{HostCallError, HostClient, HostEvent, HostEventsInterrupt, decode_host_event};
 use serde_json::{Value, json};
 
+mod info;
 mod models;
 mod profiles;
 mod questions;
@@ -29,6 +30,7 @@ fn image_message_label(text: &str, blocks: &[crate::message::ContentBlock]) -> S
 }
 
 pub(super) enum NativeEvent {
+    Info(u64, u64, u64, Result<Value, HostCallError>),
     Connected(u64, HostEventsInterrupt),
     Frame(u64, HostEvent),
     Offline(u64, String),
@@ -70,6 +72,7 @@ pub(super) struct NativeState {
     editor_pending: bool,
     editor_saved_revision: u64,
     questions: questions::NativeQuestions,
+    info_request: u64,
 }
 
 impl App {
@@ -98,6 +101,7 @@ impl App {
             editor_pending: false,
             editor_saved_revision: 0,
             questions: questions::NativeQuestions::default(),
+            info_request: 0,
         });
         app.default_status = "CLAT host · connecting · Ctrl+C detaches".into();
         app.status = app.default_status.clone();
@@ -105,6 +109,7 @@ impl App {
     }
 
     pub(super) fn start_native(&mut self) {
+        self.close_native_info();
         let (Some(native), Some(ui)) = (&mut self.native, self.event_sender.clone()) else {
             return;
         };
@@ -179,6 +184,9 @@ impl App {
     }
 
     pub(super) fn submit_native(&mut self, text: String) {
+        if self.open_native_info(&text) {
+            return;
+        }
         if text == "/model" {
             self.open_native_models();
             return;
@@ -264,6 +272,9 @@ impl App {
 
     pub(super) fn handle_native_event(&mut self, event: NativeEvent) {
         match event {
+            NativeEvent::Info(epoch, selection, request, result) => {
+                self.native_info_loaded(epoch, selection, request, result)
+            }
             NativeEvent::QuestionReply(epoch, id, answer, result) => {
                 self.native_question_reply(epoch, &id, answer, result)
             }

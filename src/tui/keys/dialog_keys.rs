@@ -20,10 +20,7 @@ impl App {
         if self.info_dialog.is_some() {
             let max = self.info_scroll_max;
             let page = self.info_page.max(1);
-            let is_mcp = self
-                .info_dialog
-                .as_ref()
-                .is_some_and(|dialog| dialog.kind == InfoDialogKind::Mcp);
+            let is_mcp = self.info_dialog_refreshable();
             let mut close = false;
             let mut refresh = false;
             if let Some(dialog) = self.info_dialog.as_mut() {

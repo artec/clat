@@ -274,17 +274,7 @@ impl App {
         if self.pending_permission.is_some() {
             self.draw_permission_dialog(frame);
         }
-        if let Some(dialog) = &self.info_dialog {
-            match dialog.kind {
-                InfoDialogKind::Help => self.draw_help_dialog(frame),
-                InfoDialogKind::Mcp => self.draw_mcp_dialog(frame),
-                InfoDialogKind::Context => self.draw_context_dialog(frame),
-                InfoDialogKind::Skills => self.draw_skills_dialog(frame),
-                InfoDialogKind::Memory | InfoDialogKind::Goal | InfoDialogKind::SubagentStatus => {
-                    self.draw_content_dialog(frame)
-                }
-            }
-        }
+        self.draw_info_dialog(frame);
         if let Some(picker) = &self.permission_picker {
             let current = self
                 .application
@@ -302,6 +292,10 @@ impl App {
     /// （内容行数可能变化，旧滚动位不再有意义）。Application 缺席
     /// （未确权/已关闭）时保留原视图。
     pub(super) fn refresh_mcp_view(&mut self) {
+        if self.native.is_some() {
+            self.refresh_native_info();
+            return;
+        }
         let refreshed = self
             .application
             .as_ref()
@@ -458,6 +452,22 @@ impl App {
         self.draw_readonly_dialog(frame, view.title(), lines);
     }
 
+    fn draw_info_dialog(&mut self, frame: &mut Frame) {
+        let Some(dialog) = &self.info_dialog else {
+            return;
+        };
+        match dialog.kind {
+            InfoDialogKind::Help => self.draw_help_dialog(frame),
+            InfoDialogKind::Mcp => self.draw_mcp_dialog(frame),
+            InfoDialogKind::Context => self.draw_context_dialog(frame),
+            InfoDialogKind::Skills => self.draw_skills_dialog(frame),
+            InfoDialogKind::Memory
+            | InfoDialogKind::Goal
+            | InfoDialogKind::SubagentStatus
+            | InfoDialogKind::Remote => self.draw_content_dialog(frame),
+        }
+    }
+
     fn draw_readonly_dialog(
         &mut self,
         frame: &mut Frame,
@@ -486,9 +496,14 @@ impl App {
         } else {
             " Esc close "
         };
+        let footer = if self.native_info_refreshable() {
+            format!("{} · r refresh", footer.trim())
+        } else {
+            footer.trim().to_owned()
+        };
         body.push(Line::from(""));
         body.push(Line::from(Span::styled(
-            footer.trim(),
+            footer,
             theme::style(theme::Role::Faint),
         )));
         clear_popup_with_guards(frame, dialog);

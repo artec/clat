@@ -38,9 +38,11 @@ pub(super) enum InfoDialogKind {
     Memory,
     Goal,
     SubagentStatus,
+    Remote,
 }
 
 pub(super) enum ContentView {
+    Remote { title: &'static str, text: String },
     Memory(crate::application::MemoryOverviewDto),
     Goal(Box<crate::application::GoalViewDto>),
     SubagentStatus(crate::application::SubagentStatusDto),
@@ -49,6 +51,7 @@ pub(super) enum ContentView {
 impl ContentView {
     pub(super) fn title(&self) -> &'static str {
         match self {
+            Self::Remote { title, .. } => title,
             Self::Memory(_) => "/mem",
             Self::Goal(_) => "/goal",
             Self::SubagentStatus(_) => "/sub",
@@ -57,6 +60,7 @@ impl ContentView {
 
     pub(super) fn lines(&self, width: usize) -> Vec<Line<'static>> {
         let text = match self {
+            Self::Remote { text, .. } => text.clone(),
             Self::Memory(view) => view.to_text(),
             Self::Goal(view) => view.to_text(),
             Self::SubagentStatus(view) => view.to_text(),
