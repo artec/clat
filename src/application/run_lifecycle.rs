@@ -454,9 +454,11 @@ impl TrustedProjectApplication {
         let request_header =
             self.request_header_data(&config, &context, instruction_snapshot.as_ref());
         let header_reason = self.request_header_reason(&request_header.header);
+        // SV 最小适配行（S6 例外）：emitted 侧与持久投影同形（V3 剥
+        // system），否则去重比较两侧形状不一致。
         let emitted_header_value = header_reason
             .is_some()
-            .then(|| request_header.header.clone());
+            .then(|| crate::session::recorder::persisted_request_header(&request_header.header));
 
         let handle = waiting_execution
             .activate(

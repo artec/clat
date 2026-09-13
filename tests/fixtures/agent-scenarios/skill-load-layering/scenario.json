@@ -5,7 +5,9 @@
   "model_steps": [
     {
       "expect": {
-        "available_tools_include": ["skill"],
+        "available_tools_include": [
+          "skill"
+        ],
         "instructions_include": [
           "code-review",
           "Project override for the layered skill Stage-0 fixture.",
@@ -27,7 +29,9 @@
     },
     {
       "expect": {
-        "required_tool_results": ["skill"],
+        "required_tool_results": [
+          "skill"
+        ],
         "required_tool_result_contains": [
           {
             "tool": "skill",
@@ -64,6 +68,7 @@
       "turn/start",
       "user/message",
       "step/start",
+      "system/message",
       "request/header",
       "assistant/message",
       "tool/call",

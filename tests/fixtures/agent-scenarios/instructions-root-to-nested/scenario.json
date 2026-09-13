@@ -5,16 +5,24 @@
   "model_steps": [
     {
       "expect": {
-        "available_tools_include": ["read_file"],
-        "instructions_include": ["root-rule-token"],
-        "instructions_exclude": ["nested-rule-token"]
+        "available_tools_include": [
+          "read_file"
+        ],
+        "instructions_include": [
+          "root-rule-token"
+        ],
+        "instructions_exclude": [
+          "nested-rule-token"
+        ]
       },
       "response": {
         "tool_calls": [
           {
             "id": "call-read-nested",
             "name": "read_file",
-            "arguments": {"path": "src/deep/file.rs"}
+            "arguments": {
+              "path": "src/deep/file.rs"
+            }
           }
         ],
         "finish_reason": "tool_calls"
@@ -22,8 +30,13 @@
     },
     {
       "expect": {
-        "required_tool_results": ["read_file"],
-        "instructions_include": ["root-rule-token", "nested-rule-token"]
+        "required_tool_results": [
+          "read_file"
+        ],
+        "instructions_include": [
+          "root-rule-token",
+          "nested-rule-token"
+        ]
       },
       "response": {
         "text": "instructions complete",
@@ -50,19 +63,24 @@
       "turn/start",
       "user/message",
       "step/start",
+      "system/message",
       "request/header",
       "assistant/message",
       "tool/call",
       "tool/result",
       "step/end",
       "step/start",
+      "system/message",
       "request/header",
       "assistant/message",
       "step/end",
       "turn/end"
     ],
     "permission_checks": [
-      {"tool": "read_file", "decision": "allow"}
+      {
+        "tool": "read_file",
+        "decision": "allow"
+      }
     ]
   }
 }

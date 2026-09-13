@@ -1,11 +1,35 @@
 //! Explicit CLAT v0 → released-v2 conversion. Source bytes are never edited.
 //! Attempt grouping and seq-reference mapping follow pinned DSH's v1→v2 edge;
 //! unsupported lineage/unknown extensions refuse rather than guessing references.
+mod v2_to_v3;
+
 use super::assistant_stream::AssistantStreamAccumulator;
 use super::event::{SessionEvent, SurfaceOp};
 use super::header::SessionHeader;
 use serde_json::{Value, json};
 use std::collections::HashMap;
+
+/// Ensure-current chain (S4): every generation below
+/// `SESSION_FORMAT_VERSION` walks the frozen edges in memory and lands on
+/// exactly one final target generation — `/update` publishes only after the
+/// whole chain validates, so any refusing edge leaves the source untouched.
+/// v1 is a retired generation CLAT never wrote: it refuses explicitly (D3),
+/// never silently.
+pub(crate) fn ensure_current(
+    header: &SessionHeader,
+    events: &[SessionEvent],
+) -> Result<(SessionHeader, Vec<SessionEvent>), String> {
+    match header.version {
+        0 => {
+            let (intermediate, events) = convert(header, events)?;
+            v2_to_v3::convert_v2_to_v3(&intermediate, &events)
+        }
+        2 => v2_to_v3::convert_v2_to_v3(header, events),
+        other => Err(format!(
+            "generation v{other} cannot be upgraded (v1 is retired); start a new session"
+        )),
+    }
+}
 
 #[derive(Default)]
 struct Attempt {

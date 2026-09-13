@@ -20,6 +20,9 @@ pub(crate) trait ProjectionUnit: Send {
     /// Watermark as an i64: -1 means nothing folded yet, so the very
     /// first event (seq 0) folds into a fresh unit.
     fn as_of(&self) -> i64;
+    fn last_system_head(&self) -> Option<(u64, String)> {
+        None
+    }
     fn surface_nodes(&self) -> Option<Result<Vec<(u64, crate::model::ModelItem)>, String>> {
         None
     }
@@ -64,6 +67,13 @@ impl ProjectionRegistry {
             .iter()
             .find_map(|unit| unit.surface_nodes())
             .unwrap_or_else(|| Err("surface projection is not registered".into()))
+    }
+
+    /// The protected system head's journal seq and its effective prompt text
+    /// (latest non-empty system message, else the head's own — possibly
+    /// empty — text). Feeds the recorder's cross-run head resume.
+    pub(crate) fn last_system_head(&self) -> Option<(u64, String)> {
+        self.units.iter().find_map(|unit| unit.last_system_head())
     }
 
     pub(crate) fn fold_all(&mut self, events: &[SessionEvent]) -> Result<(), String> {
@@ -775,6 +785,46 @@ impl ProjectionUnit for SurfaceUnit {
             &self.surface,
         ))
     }
+    fn last_system_head(&self) -> Option<(u64, String)> {
+        system_head_state(&self.events)
+    }
+}
+
+/// Protected-head state machine over the retained surface events: the
+/// first system append reserves the head; a replacement covering exactly
+/// it moves it; later non-head appends only supply the effective text
+/// (DSH `findLast(non-empty) ?? head`).
+fn system_head_state(events: &[SessionEvent]) -> Option<(u64, String)> {
+    let mut head: Option<u64> = None;
+    let mut effective = String::new();
+    let mut has_effective = false;
+    for event in events {
+        if event.event_type != "system/message" {
+            continue;
+        }
+        let text = event.data["message"]["content"]
+            .as_array()
+            .and_then(|blocks| blocks.first())
+            .and_then(|block| block["text"].as_str())
+            .unwrap_or_default()
+            .to_owned();
+        let is_head = match (&event.surface_op, head) {
+            (Some(crate::session::event::SurfaceOp::Append), None) => true,
+            (Some(crate::session::event::SurfaceOp::Replace { start, end }), Some(head_seq)) => {
+                *start == head_seq && *end == head_seq
+            }
+            _ => false,
+        };
+        if is_head {
+            head = Some(event.seq);
+            effective = text;
+            has_effective = true;
+        } else if !text.is_empty() || !has_effective {
+            effective = text;
+            has_effective = true;
+        }
+    }
+    head.map(|seq| (seq, effective))
 }
 
 fn surface_index_event(event: &SessionEvent) -> SessionEvent {

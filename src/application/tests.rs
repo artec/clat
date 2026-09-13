@@ -758,6 +758,7 @@ fn dual_stream_run_produces_the_dsh_event_family() {
         "turn/start",
         "user/message",
         "step/start",
+        "system/message",
         "request/header",
         "assistant/message",
         "approval/asked",

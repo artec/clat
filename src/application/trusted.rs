@@ -326,7 +326,13 @@ impl TrustedProjectApplication {
             });
         }
         match &self.emitted_request_header {
-            Some(previous) if previous != header => Some("change"),
+            // SV 最小适配行（S6 例外）：比较发生在持久形两侧（V3 剥
+            // system，唯一规则在 session::recorder）。
+            Some(previous)
+                if previous != &crate::session::recorder::persisted_request_header(header) =>
+            {
+                Some("change")
+            }
             _ => None,
         }
     }

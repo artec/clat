@@ -22,6 +22,44 @@ pub(super) fn user_message(event: &SessionEvent, _version: u32) -> Result<(), St
     Ok(())
 }
 
+/// The protected system head (format v3): the message is the payload's
+/// carrier with role `system` and a plugin source; empty `content` records
+/// "no system prompt" (upstream `assertSystem`, exact members). An empty
+/// head keeps its surface protection, so surfaceOp presence is required
+/// exactly like the other surface types.
+pub(super) fn system_message(event: &SessionEvent, _version: u32) -> Result<(), String> {
+    require_u64(&event.data, "turn")?;
+    require_u64(&event.data, "step")?;
+    let message = require_object(&event.data, "message")?;
+    if message
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .is_none_or(str::is_empty)
+    {
+        return Err("system message requires a non-empty id".into());
+    }
+    if message.get("role").and_then(|v| v.as_str()) != Some("system") {
+        return Err("system message role must be system".into());
+    }
+    let source = message
+        .get("source")
+        .and_then(serde_json::Value::as_object)
+        .ok_or("system message source must be an object")?;
+    if source.get("kind").and_then(|v| v.as_str()) != Some("plugin")
+        || source
+            .get("plugin")
+            .and_then(serde_json::Value::as_str)
+            .is_none_or(str::is_empty)
+    {
+        return Err("system message requires a non-empty plugin source".into());
+    }
+    require_content_array(message)?;
+    if !is_surface_type(&event.event_type) || event.surface_op.is_none() {
+        return Err("surface event lacks surfaceOp".into());
+    }
+    Ok(())
+}
+
 pub(super) fn assistant_message(event: &SessionEvent, version: u32) -> Result<(), String> {
     let message = require_object(&event.data, "message")?;
     // Content may be empty: a tool-call turn's assistant message is
@@ -44,6 +82,11 @@ pub(super) fn assistant_message(event: &SessionEvent, version: u32) -> Result<()
             .ok_or("assistant/message lacks required v2 stream")?;
         crate::session::assistant_stream::validate_assistant_stream(stream)?;
     }
+    // Canonical v3: the embedded stream replaces provenance citations —
+    // an assistant surface node never carries sourceEventSeqs.
+    if version >= 3 && event.source_event_seqs.is_some() {
+        return Err("assistant/message embeds its stream and cannot carry sourceEventSeqs".into());
+    }
     Ok(())
 }
 
@@ -58,7 +101,7 @@ pub(super) fn assistant_attempt(event: &SessionEvent, _version: u32) -> Result<(
     Ok(())
 }
 
-pub(super) fn tool_result(event: &SessionEvent, _version: u32) -> Result<(), String> {
+pub(super) fn tool_result(event: &SessionEvent, version: u32) -> Result<(), String> {
     let message = require_object(&event.data, "message")?;
     let content = message
         .get("content")
@@ -87,6 +130,17 @@ pub(super) fn tool_result(event: &SessionEvent, _version: u32) -> Result<(), Str
     }
     require_u64(&event.data, "turn")?;
     require_u64(&event.data, "step")?;
+    // Canonical v3: `data.error` is diagnostic metadata that must agree
+    // with the single outcome block — contradictions refuse, never repair
+    // (v2-to-v3 README, "Canonical envelopes and tool errors").
+    if version >= 3 && event.data.get("error").is_some() {
+        let contradictory = content.len() != 1
+            || first.get("type").and_then(|v| v.as_str()) != Some("tool-result")
+            || first.get("isError").and_then(|v| v.as_bool()) != Some(true);
+        if contradictory {
+            return Err("tool/result carries error metadata for a non-error result".into());
+        }
+    }
     Ok(())
 }
 
@@ -218,8 +272,8 @@ pub(super) fn approval(event: &SessionEvent, _version: u32) -> Result<(), String
     Ok(())
 }
 
-pub(super) fn header(event: &SessionEvent, _version: u32) -> Result<(), String> {
-    require_object(&event.data, "header")?;
+pub(super) fn header(event: &SessionEvent, version: u32) -> Result<(), String> {
+    let data = require_object(&event.data, "header")?;
     if !matches!(
         event.data.get("reason").and_then(|value| value.as_str()),
         Some("initial" | "resume" | "change" | "series")
@@ -232,6 +286,28 @@ pub(super) fn header(event: &SessionEvent, _version: u32) -> Result<(), String> 
         .is_some_and(|value| value.as_bool() != Some(true))
     {
         return Err("request/header startsSeries must be true when present".into());
+    }
+    // Canonical v3 (native admission): the system prompt lives in the
+    // message history, so every retired `header.system` refuses — even
+    // empty — and the two empty header optionals must be omitted.
+    if version >= 3 {
+        if data.contains_key("system") {
+            return Err("format v3 request/header rejects retired header.system".into());
+        }
+        if data
+            .get("tools")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(std::vec::Vec::is_empty)
+        {
+            return Err("format v3 request/header must omit empty header.tools".into());
+        }
+        if data
+            .get("adapterDefaults")
+            .and_then(serde_json::Value::as_object)
+            .is_some_and(serde_json::Map::is_empty)
+        {
+            return Err("format v3 request/header must omit empty header.adapterDefaults".into());
+        }
     }
     Ok(())
 }

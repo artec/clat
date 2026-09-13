@@ -6,20 +6,27 @@
 /// Upstream repository.
 pub(crate) const DSH_REPO: &str = "deepseek-ai/deepseek-harness";
 
-/// Pinned upstream revision (dsh-v0.1.3-alpha.1, 2026-09-06 survey target).
-pub(crate) const DSH_REVISION: &str = "d347e703908d0406b7a7ef80e3a0e594d86b2215";
+/// Pinned upstream revision (dsh-v0.1.5-rc.2-139-gc291e7961a, the V3
+/// alignment target, 2026-09-13 survey).
+pub(crate) const DSH_REVISION: &str = "c291e7961a515f6d7af9304e7fd1d257929aef26";
 
 /// On-disk session format version stamped into every new header and enforced
 /// on load. Pre-release: no compatibility implied, incompatible logs rejected.
-pub(crate) const SESSION_FORMAT_VERSION: u32 = 2;
+pub(crate) const SESSION_FORMAT_VERSION: u32 = 3;
+
+/// The system prompt is a message-history surface (the protected head) and
+/// request headers carry no `system` — the structural V3 change. New
+/// writers appear only at the current generation, so this rides the
+/// constant instead of a per-run flag.
+pub(crate) const SYSTEM_PROMPT_AS_SURFACE: bool = SESSION_FORMAT_VERSION >= 3;
 
 /// Current-generation log filename for each physical encoding.
 pub(crate) fn log_file_name(
     compression: crate::session::persistence::JsonlCompression,
 ) -> &'static str {
     match compression {
-        crate::session::persistence::JsonlCompression::Zstd => "session.v2.jsonl.zstd",
-        crate::session::persistence::JsonlCompression::None => "session.v2.jsonl",
+        crate::session::persistence::JsonlCompression::Zstd => "session.v3.jsonl.zstd",
+        crate::session::persistence::JsonlCompression::None => "session.v3.jsonl",
     }
 }
 
@@ -69,7 +76,8 @@ mod tests {
     #[test]
     fn revision_and_version_are_pinned() {
         assert_eq!(DSH_REVISION.len(), 40);
-        assert_eq!(SESSION_FORMAT_VERSION, 2);
+        assert_eq!(SESSION_FORMAT_VERSION, 3);
+        const { assert!(SYSTEM_PROMPT_AS_SURFACE) };
         assert_eq!(
             generation_log_file_name(0, crate::session::persistence::JsonlCompression::Zstd),
             "session.jsonl.zstd"

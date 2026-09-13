@@ -239,20 +239,17 @@ pub(crate) struct JsonlBackend {
 }
 
 impl JsonlBackend {
-    /// Explicit generation publication. The v0 source is retained byte-for-byte;
-    /// the complete v2 file becomes discoverable at one no-overwrite link.
+    /// Explicit ensure-current publication (S4). The v0/v2 source is
+    /// retained byte-for-byte; the complete final generation becomes
+    /// discoverable at one no-overwrite link only after the whole in-memory
+    /// migration chain validates.
     pub(crate) fn upgrade_legacy(&self, key: &SessionKey) -> Result<(), SessionError> {
         let source = self
             .find_log(key)?
             .ok_or_else(|| SessionError::NotFound(key.id.to_string()))?;
         ensure_supported_generation(key, &source)?;
-        if source.version == 2 {
+        if source.version == compat::SESSION_FORMAT_VERSION {
             return Ok(());
-        }
-        if source.version != 0 {
-            return Err(SessionError::UnsupportedFormat(
-                "only v0 can be upgraded".into(),
-            ));
         }
         let dir = self.open_session_dir(key)?;
         let _lease = SessionWriteLease::try_acquire(
@@ -264,7 +261,7 @@ impl JsonlBackend {
             SessionError::Io("session has an active writer; close it before /update".into())
         })?;
         let read = self.read_events(key, true)?;
-        if read.header.version == 2 {
+        if read.header.version == compat::SESSION_FORMAT_VERSION {
             return Ok(());
         }
         if read.truncate_to.is_some() || read.stable_events != read.events.len() {
@@ -272,7 +269,7 @@ impl JsonlBackend {
                 "legacy log has a torn tail; /update will not discard it".into(),
             ));
         }
-        let (header, events) = crate::session::upgrade::convert(&read.header, &read.events)
+        let (header, events) = crate::session::upgrade::ensure_current(&read.header, &read.events)
             .map_err(SessionError::UnsupportedFormat)?;
         let content = if events.is_empty() {
             let plain = format!("{}\n", header.to_line());
@@ -320,7 +317,7 @@ impl JsonlBackend {
             let current = self
                 .resolve_log_in_dir(key, &dir)?
                 .ok_or_else(|| SessionError::NotFound(key.id.to_string()))?;
-            if current.version != 0 || current.name != source.name {
+            if current.name != source.name {
                 return Err(SessionError::Io(
                     "session generation changed during /update".into(),
                 ));
@@ -2111,7 +2108,7 @@ mod tests {
         let log = root
             .join("--tmp-clat-project--")
             .join("lazy-1")
-            .join("session.v2.jsonl.zstd");
+            .join("session.v3.jsonl.zstd");
         assert!(log.is_file());
         #[cfg(unix)]
         assert!(
@@ -2196,7 +2193,7 @@ mod tests {
         let file = root
             .join("--tmp-clat-project--")
             .join("retry-1")
-            .join("session.v2.jsonl.zstd");
+            .join("session.v3.jsonl.zstd");
         let size_after_first = std::fs::metadata(&file).expect("log exists").len();
 
         backend.inject_faults(FaultHooks {
@@ -2291,7 +2288,7 @@ mod tests {
         let file = root
             .join("--tmp-clat-project--")
             .join("repair-1")
-            .join("session.v2.jsonl.zstd");
+            .join("session.v3.jsonl.zstd");
         let bytes = std::fs::read(&file).expect("read");
         std::fs::write(&file, &bytes[..bytes.len() - 3]).expect("tear");
 
@@ -2346,7 +2343,7 @@ mod tests {
         assert!(
             !outside
                 .join("swap-1")
-                .join("session.v2.jsonl.zstd")
+                .join("session.v3.jsonl.zstd")
                 .exists(),
             "all materialization operations must remain relative to the held root capability"
         );
@@ -2459,7 +2456,7 @@ mod tests {
         assert!(
             root.join("--tmp-clat-project--")
                 .join("raw-1")
-                .join("session.v2.jsonl")
+                .join("session.v3.jsonl")
                 .is_file()
         );
         crate::test_support::cleanup_tree(&root);
@@ -2481,7 +2478,7 @@ mod tests {
         let file = root
             .join("--tmp-clat-project--")
             .join("torn-1")
-            .join("session.v2.jsonl.zstd");
+            .join("session.v3.jsonl.zstd");
         let mut bytes = std::fs::read(&file).expect("read");
         bytes.extend_from_slice(&frame);
         std::fs::write(&file, &bytes).expect("write");
@@ -2506,7 +2503,7 @@ mod tests {
         let file = root
             .join("--tmp-clat-project--")
             .join("drift-1")
-            .join("session.v2.jsonl.zstd");
+            .join("session.v3.jsonl.zstd");
         let foreign = crate::session::zstd_frames::compress_frame(b"{}\n").expect("frame");
         let mut bytes = std::fs::read(&file).expect("read");
         bytes.extend_from_slice(&foreign);
@@ -2535,7 +2532,7 @@ mod tests {
         let log = root
             .join("--tmp-clat-project--")
             .join("swap-1")
-            .join("session.v2.jsonl.zstd");
+            .join("session.v3.jsonl.zstd");
         let outside = root.join("outside-victim");
         std::fs::write(&outside, b"unchanged").expect("victim");
         std::fs::remove_file(&log).expect("remove log entry");
@@ -2576,7 +2573,7 @@ mod tests {
         let log = root
             .join("--tmp-clat-project--")
             .join("repair-swap-1")
-            .join("session.v2.jsonl.zstd");
+            .join("session.v3.jsonl.zstd");
         let outside = root.join("repair-victim");
         std::fs::write(&outside, b"unchanged").expect("victim");
         std::fs::remove_file(&log).expect("remove log entry");
@@ -2670,10 +2667,10 @@ mod tests {
         );
         let mut current = base;
         current.created_at = 2;
-        write_generation(&backend, &key, current, 2, &turn_events(0, 9));
+        write_generation(&backend, &key, current, 3, &turn_events(0, 9));
 
         let snapshot = backend.header_snapshot(&key).expect("highest header");
-        assert_eq!(snapshot.version, 2);
+        assert_eq!(snapshot.version, 3);
         assert_eq!(snapshot.created_at, 2);
         let loaded = backend.load(&key, false).expect("highest events");
         assert_eq!(loaded.events[0].data["turn"], 9);
@@ -2682,19 +2679,21 @@ mod tests {
 
     /// DV-2 generation discriminator: a future highest generation is an
     /// actionable hard stop. Removing the explicit gate either falls back to
-    /// v2 or degrades this to a header/parser error and fails these assertions.
+    /// the released prefix or degrades this to a header/parser error and
+    /// fails these assertions. (SV: v3 became a released generation; the
+    /// opaque future leg is now v4 over a released v2.)
     #[test]
     fn newer_highest_generation_refuses_without_fallback_or_lock_artifact() {
         let (backend, root) = backend("generation-future");
         let key = key("generation-future-1");
         let v2 = write_generation(&backend, &key, header(&key), 2, &turn_events(0, 2));
-        let v3 = v2
+        let v4 = v2
             .parent()
             .unwrap()
-            .join(compat::generation_log_file_name(3, backend.compression));
-        std::fs::copy(&v2, &v3).expect("opaque future generation bytes");
+            .join(compat::generation_log_file_name(4, backend.compression));
+        std::fs::copy(&v2, &v4).expect("opaque future generation bytes");
         let before_v2 = std::fs::read(&v2).unwrap();
-        let before_v3 = std::fs::read(&v3).unwrap();
+        let before_v4 = std::fs::read(&v4).unwrap();
 
         for result in [
             backend.header_snapshot(&key).map(|_| ()),
@@ -2704,15 +2703,15 @@ mod tests {
             assert!(matches!(
                 result,
                 Err(SessionError::UnsupportedFormat(message))
-                    if message.contains("newer generation v3")
-                        && message.contains("supports through v2")
+                    if message.contains("newer generation v4")
+                        && message.contains("supports through v3")
                         && message.contains("will not fall back or append")
             ));
         }
         assert_eq!(std::fs::read(&v2).unwrap(), before_v2);
-        assert_eq!(std::fs::read(&v3).unwrap(), before_v3);
+        assert_eq!(std::fs::read(&v4).unwrap(), before_v4);
         assert!(
-            !v3.parent()
+            !v4.parent()
                 .unwrap()
                 .join(write_lease::LEASE_FILENAME)
                 .exists(),
@@ -2839,7 +2838,7 @@ mod tests {
         let original = format!("{}\n", legacy.to_line());
         dir.write("session.jsonl", original.as_bytes()).unwrap();
         backend.upgrade_legacy(&key).unwrap();
-        assert_eq!(backend.header_snapshot(&key).unwrap().version, 2);
+        assert_eq!(backend.header_snapshot(&key).unwrap().version, 3);
         assert_eq!(dir.read("session.jsonl").unwrap(), original.as_bytes());
         dir.write("session.v99.jsonl", b"future").unwrap();
         assert!(backend.upgrade_legacy(&key).is_err());
@@ -2899,7 +2898,7 @@ mod tests {
                 .to_string()
                 .contains("was published")
         );
-        assert_eq!(backend.header_snapshot(&key).unwrap().version, 2);
+        assert_eq!(backend.header_snapshot(&key).unwrap().version, 3);
         let target = std::fs::read(backend.log_path(&key)).unwrap();
         backend.upgrade_legacy(&key).unwrap();
         assert_eq!(std::fs::read(backend.log_path(&key)).unwrap(), target);
@@ -2915,8 +2914,91 @@ mod tests {
                 ],
             )
             .unwrap();
-        assert_eq!(backend.load(&key, false).unwrap().header.version, 2);
+        assert_eq!(backend.load(&key, false).unwrap().header.version, 3);
         drop(prepared);
+        crate::test_support::cleanup_tree(&root);
+    }
+
+    /// SV live/replay 字节 parity（验收"live 写入 → 重放逐字节一致"）：
+    /// V3 写路径产出的完整日志，解码后用同一编码器重拼，字节必须完全
+    /// 一致（确定性编码；surfaceOp startSeq/endSeq 与 provenance 区间压
+    /// 缩都在环回里）。pre-fix 红：V3 信封改名不存在。
+    #[test]
+    fn v3_live_write_round_trips_byte_identically() {
+        let (_, root) = backend("sv-v3-parity");
+        let backend = JsonlBackend::new(&root, JsonlCompression::None, true);
+        let key = key("sv-v3-parity");
+        let prepared = backend.create(key.clone(), header(&key)).expect("create");
+        let events = vec![
+            SessionEvent::new("turn/start", 0, 1, payloads::turn_start(1)),
+            SessionEvent::new("user/message", 1, 2, payloads::user_message("q")).append(vec![]),
+            SessionEvent::new("step/start", 2, 3, payloads::step_start(1, 1)),
+            SessionEvent::new(
+                "system/message",
+                3,
+                4,
+                json!({
+                    "turn": 1, "step": 1,
+                    "message": { "id": "s1", "role": "system",
+                                 "content": [{ "type": "text", "text": "be brief" }],
+                                 "source": { "kind": "plugin", "plugin": "clat" } },
+                }),
+            )
+            .append(vec![]),
+            {
+                let mut replacement = SessionEvent::new(
+                    "system/message",
+                    4,
+                    5,
+                    json!({
+                        "turn": 1, "step": 2,
+                        "message": { "id": "s2", "role": "system",
+                                     "content": [{ "type": "text", "text": "briefly" }],
+                                     "source": { "kind": "plugin", "plugin": "clat" } },
+                    }),
+                );
+                replacement.surface_op =
+                    Some(crate::session::event::SurfaceOp::Replace { start: 3, end: 3 });
+                replacement.source_event_seqs = Some(vec![3]);
+                replacement
+            },
+            {
+                let mut summary = SessionEvent::new(
+                    "user/message",
+                    5,
+                    6,
+                    payloads::compaction_user_message("summarized"),
+                );
+                summary.surface_op =
+                    Some(crate::session::event::SurfaceOp::Replace { start: 1, end: 1 });
+                summary.source_event_seqs = Some(vec![1]);
+                summary
+            },
+            SessionEvent::new(
+                "turn/end",
+                6,
+                7,
+                payloads::turn_end(1, &crate::session::event::TurnEndReason::Completed),
+            ),
+        ];
+        backend
+            .append_batch(prepared, 0, &events)
+            .expect("append commits");
+        let log = backend.session_dir_path(&key).join("session.v3.jsonl");
+        let written = std::fs::read(&log).expect("live bytes");
+
+        let scan = crate::session::jsonl::scan_raw(&written).expect("replay scan");
+        assert_eq!(scan.header.version, 3);
+        let recomposed = format!(
+            "{}\n{}\n",
+            scan.header.to_line(),
+            crate::session::jsonl::event_lines(&scan.events, true, 3)
+        );
+        assert_eq!(
+            recomposed.into_bytes(),
+            written,
+            "live bytes and replay re-encoding must agree byte-for-byte"
+        );
         crate::test_support::cleanup_tree(&root);
     }
 
@@ -2982,5 +3064,243 @@ mod tests {
             "read {} bytes for one raw header line",
             source.read_bytes.get()
         );
+    }
+
+    /// SV ensure-current 判别腿（S4）：v0 /update 一步落 v3——目录里只有
+    /// 源世代与唯一最终世代，绝不残留中间世代文件；转换链在内存完成。
+    /// pre-fix 红：发布的是 v2 或（链式化之前）根本无法产生 v3。
+    #[test]
+    fn ensure_current_publishes_one_final_generation_without_intermediates() {
+        let (_, root) = backend("sv-ensure-current-v0");
+        let backend = JsonlBackend::new(&root, JsonlCompression::None, true);
+        let key = key("sv-ensure-current-v0");
+        let path = write_generation(
+            &backend,
+            &key,
+            {
+                let mut header = header(&key);
+                header.version = 0;
+                header
+            },
+            0,
+            &[
+                SessionEvent::new(
+                    "user/message",
+                    0,
+                    1,
+                    payloads::user_message("legacy question"),
+                )
+                .append(vec![]),
+                SessionEvent::new("step/start", 1, 2, payloads::step_start(1, 0)),
+                SessionEvent::new(
+                    "assistant/chunk",
+                    2,
+                    3,
+                    json!({"turn":1,"step":0,"chunk":{"type":"text-delta","index":0,"text":"legacy answer"}}),
+                ),
+                SessionEvent::new(
+                    "assistant/message",
+                    3,
+                    4,
+                    json!({
+                        "turn": 1, "step": 0,
+                        "message": {
+                            "id": "m0", "role": "assistant",
+                            "content": [{ "type": "text", "text": "legacy answer" }],
+                            "source": { "kind": "model", "provider": "p", "model": "m" },
+                        },
+                    }),
+                )
+                .append(vec![2]),
+                SessionEvent::new("step/end", 4, 5, payloads::step_end(1, 0)),
+            ],
+        );
+        let source_bytes = std::fs::read(&path).unwrap();
+
+        backend.upgrade_legacy(&key).unwrap();
+
+        let dir_entries: Vec<String> = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            dir_entries.iter().any(|name| name == "session.v3.jsonl"),
+            "the final generation is discoverable: {dir_entries:?}"
+        );
+        assert!(
+            !dir_entries
+                .iter()
+                .any(|name| name.starts_with("session.v2")),
+            "no intermediate generation may be published: {dir_entries:?}"
+        );
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            source_bytes,
+            "the v0 source stays byte-for-byte"
+        );
+        let loaded = backend.load(&key, false).unwrap();
+        assert_eq!(loaded.header.version, 3);
+        assert!(
+            loaded
+                .events
+                .iter()
+                .any(|event| event.event_type == "system/message"),
+            "the chain produced the protected head"
+        );
+        assert!(
+            loaded
+                .events
+                .iter()
+                .all(|event| event.data["header"].get("system").is_none()),
+            "request headers lost the retired system member"
+        );
+        // 幂等：再次 /update 零发布、零改动。
+        let before = std::fs::read(backend.log_path(&key)).unwrap();
+        backend.upgrade_legacy(&key).unwrap();
+        assert_eq!(std::fs::read(backend.log_path(&key)).unwrap(), before);
+        crate::test_support::cleanup_tree(&root);
+    }
+
+    /// SV ensure-current 判别腿（S4）：存量 v2 会话 /update 直达 v3，
+    /// v2 源字节不动；request/header 的 system 在目标代被剥离并由受保
+    /// 护头承载。pre-fix 红：v2 会话不在升级范围（only v0）。
+    #[test]
+    fn existing_v2_sessions_upgrade_to_current_with_system_promoted() {
+        let (_, root) = backend("sv-ensure-current-v2");
+        let backend = JsonlBackend::new(&root, JsonlCompression::None, true);
+        let key = key("sv-ensure-current-v2");
+        let path = write_generation(
+            &backend,
+            &key,
+            header(&key),
+            2,
+            &[
+                SessionEvent::new("turn/start", 0, 1, payloads::turn_start(1)),
+                SessionEvent::new("step/start", 1, 2, payloads::step_start(1, 1)),
+                SessionEvent::new(
+                    "request/header",
+                    2,
+                    3,
+                    json!({
+                        "header": { "config": { "provider": "p", "model": "m" },
+                                    "system": "legacy prompt" },
+                        "reason": "initial",
+                    }),
+                ),
+                SessionEvent::new(
+                    "assistant/message",
+                    3,
+                    4,
+                    json!({
+                        "turn": 1, "step": 1, "stream": [],
+                        "message": {
+                            "id": "m1", "role": "assistant",
+                            "content": [{ "type": "text", "text": "answer" }],
+                            "source": { "kind": "model", "provider": "p", "model": "m" },
+                        },
+                    }),
+                )
+                .append(Vec::new()),
+                SessionEvent::new("step/end", 4, 5, payloads::step_end(1, 1)),
+                SessionEvent::new(
+                    "turn/end",
+                    5,
+                    6,
+                    payloads::turn_end(1, &crate::session::event::TurnEndReason::Completed),
+                ),
+            ],
+        );
+        let source_bytes = std::fs::read(&path).unwrap();
+
+        backend.upgrade_legacy(&key).unwrap();
+
+        assert_eq!(std::fs::read(&path).unwrap(), source_bytes);
+        let loaded = backend.load(&key, false).unwrap();
+        assert_eq!(loaded.header.version, 3);
+        let head = loaded
+            .events
+            .iter()
+            .rfind(|event| event.event_type == "system/message")
+            .expect("the promoted head");
+        assert_eq!(
+            head.data["message"]["content"][0]["text"],
+            json!("legacy prompt"),
+            "the source prompt travels as the head replacement"
+        );
+        assert!(
+            loaded
+                .events
+                .iter()
+                .all(|event| event.data["header"].get("system").is_none()),
+        );
+        crate::test_support::cleanup_tree(&root);
+    }
+
+    /// F-V3-1 判别腿：seeded v2 会话拒绝迁移——租约内读后由转换器
+    /// fail-closed 拒绝，源字节不动、零发布。pre-fix 红：链路不查
+    /// seed 位，切点语义被静默丢失并照常发布。
+    #[test]
+    fn seeded_v2_generation_refuses_update_without_publication() {
+        let (_, root) = backend("sv-seeded-v2");
+        let backend = JsonlBackend::new(&root, JsonlCompression::None, true);
+        let key = key("sv-seeded-v2");
+        let dir = backend.create_session_dir(&key).unwrap();
+        let seeded = json!({
+            "type": "session", "version": 2, "id": key.id.as_str(),
+            "createdAt": 1, "isSeeded": true, "delegationDepth": 0,
+            "cwd": "/tmp/clat-project",
+        });
+        let original = format!(
+            "{}\n{}\n{}\n",
+            seeded,
+            json!({ "type": "turn/start", "seq": 0, "time": 1, "data": { "turn": 1 } }),
+            json!({ "type": "session/end-seed", "seq": 1, "time": 2,
+                    "data": { "inherited": true } }),
+        );
+        dir.write("session.v2.jsonl", original.as_bytes()).unwrap();
+        let path = backend.session_dir_path(&key).join("session.v2.jsonl");
+        let source_bytes = std::fs::read(&path).unwrap();
+
+        let error = backend.upgrade_legacy(&key).unwrap_err();
+        assert!(
+            matches!(error, SessionError::UnsupportedFormat(ref message) if message.contains("seeded")),
+            "actionable refusal: {error}"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), source_bytes);
+        assert!(!path.parent().unwrap().join("session.v3.jsonl").exists());
+        crate::test_support::cleanup_tree(&root);
+    }
+
+    /// SV 判别腿（D3）：v1 是退役代——/update 显式拒绝、源字节不动、
+    /// 零发布。pre-fix 红：v1 走 <= 常量通道被当作可升级源。
+    #[test]
+    fn retired_v1_generation_refuses_update_without_publication() {
+        let (_, root) = backend("sv-retired-v1");
+        let backend = JsonlBackend::new(&root, JsonlCompression::None, true);
+        let key = key("sv-retired-v1");
+        let dir = backend.create_session_dir(&key).unwrap();
+        // v1 头不经 CLAT 的 to_line（写侧只产当前代）；手写退役代字节。
+        let retired = json!({
+            "type": "session", "version": 1, "id": key.id.as_str(),
+            "createdAt": 1, "seedLength": 0, "delegationDepth": 0,
+        });
+        let original = format!(
+            "{}\n{}\n",
+            retired,
+            json!({
+                "type": "turn/start", "seq": 0, "time": 1, "data": { "turn": 1 },
+            })
+        );
+        dir.write("session.v1.jsonl", original.as_bytes()).unwrap();
+        let path = backend.session_dir_path(&key).join("session.v1.jsonl");
+        let source_bytes = std::fs::read(&path).unwrap();
+        let error = backend.upgrade_legacy(&key).unwrap_err();
+        assert!(
+            matches!(error, SessionError::UnsupportedFormat(ref message) if message.contains("v1")),
+            "v1 refuses with an actionable message: {error}"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), source_bytes);
+        assert!(!path.parent().unwrap().join("session.v3.jsonl").exists());
+        crate::test_support::cleanup_tree(&root);
     }
 }

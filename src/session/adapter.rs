@@ -114,6 +114,14 @@ pub(crate) fn surface_to_model_items_with_seq(
                     }),
                 ));
             }
+            "system/message" => {
+                // The protected system head is a surface node for surface
+                // math (protected-head shadowing, resume state) but never a
+                // conversation item: CLAT feeds the prompt through the
+                // request's instructions, so mapping it here would duplicate
+                // it in every provider call (and compaction must not shadow
+                // the head — excluded nodes can never enter a cut).
+            }
             other => return Err(format!("surface node {seq} has unexpected type `{other}`")),
         }
     }

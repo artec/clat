@@ -1,8 +1,9 @@
 //! `SessionHeader` and its wire shape. Byte-exact port of
-//! `session-persistence-jsonl/src/format.ts` HeaderLine across released v0
-//! and v2: camelCase fields, optional fields wholly omitted (never null),
+//! `session-persistence-jsonl/src/format.ts` HeaderLine across released v0,
+//! v2 and v3: camelCase fields, optional fields wholly omitted (never null),
 //! `delegationDepth` always written, retired policy fields rejected, and
-//! format-version refusal BEFORE shape validation.
+//! format-version refusal BEFORE shape validation. The released header field
+//! set is identical for v2 and v3 (DSH 0.1.5 changed no header fields).
 
 use crate::session::compat::SESSION_FORMAT_VERSION;
 use crate::session::id::SessionId;
@@ -141,9 +142,10 @@ impl SessionHeader {
                 agent_preset: self.agent_preset.clone(),
             })
             .expect("header is plain JSON"),
-            2 => serde_json::to_string(&V2HeaderLine {
+            // The released field shape is shared by v2 and v3.
+            2 | 3 => serde_json::to_string(&V2HeaderLine {
                 kind: "session".into(),
-                version: 2,
+                version: self.version,
                 id: self.id.clone(),
                 created_at: self.created_at,
                 cwd: self.cwd.clone(),
@@ -169,7 +171,7 @@ impl SessionHeader {
         };
         // Version refusal precedes shape checks (compat doc §1).
         let version = value.get("version").and_then(|v| v.as_u64());
-        if let Some(version) = version.filter(|version| !matches!(*version, 0 | 2)) {
+        if let Some(version) = version.filter(|version| !matches!(*version, 0 | 2 | 3)) {
             return Err(HeaderError::UnsupportedVersion(version as u32));
         }
         for field in RETIRED_FIELDS {
@@ -197,7 +199,7 @@ impl SessionHeader {
                     agent_preset: parsed.agent_preset,
                 }))
             }
-            Some(2) => {
+            Some(version @ (2 | 3)) => {
                 if !is_common_header_line(&value)
                     || !value.get("isSeeded").is_some_and(|v| v.is_boolean())
                     || value.get("seedLength").is_some()
@@ -207,7 +209,7 @@ impl SessionHeader {
                 let parsed: V2HeaderLine = serde_json::from_value(value)
                     .map_err(|error| HeaderError::Malformed(error.to_string()))?;
                 Ok(Some(Self {
-                    version: 2,
+                    version: version as u32,
                     id: parsed.id,
                     created_at: parsed.created_at,
                     cwd: parsed.cwd,
@@ -268,7 +270,7 @@ mod tests {
         let line = sample().to_line();
         assert_eq!(
             line,
-            "{\"type\":\"session\",\"version\":2,\"id\":\"018f2a64-9d3f-7cde-8123-9a4f2b6c0001\",\"createdAt\":1723980000000,\"cwd\":\"/Users/deng/Documents/GitHub/clat\",\"isSeeded\":false,\"delegationDepth\":0}"
+            "{\"type\":\"session\",\"version\":3,\"id\":\"018f2a64-9d3f-7cde-8123-9a4f2b6c0001\",\"createdAt\":1723980000000,\"cwd\":\"/Users/deng/Documents/GitHub/clat\",\"isSeeded\":false,\"delegationDepth\":0}"
         );
         let back = SessionHeader::from_line(&line)
             .expect("parse")
@@ -301,12 +303,26 @@ mod tests {
     #[test]
     fn foreign_version_refuses_before_shape_checks() {
         // Malformed apart from the version: the version refusal must still
-        // win, exactly like DSH's refuseForeignFormatVersion.
-        let line = "{\"type\":\"garbage\",\"version\":3}";
+        // win, exactly like DSH's refuseForeignFormatVersion. Version 3 is
+        // a released generation since the V3 alignment; 99 stays foreign.
+        let line = "{\"type\":\"garbage\",\"version\":99}";
         assert!(matches!(
             SessionHeader::from_line(line),
-            Err(HeaderError::UnsupportedVersion(3))
+            Err(HeaderError::UnsupportedVersion(99))
         ));
+    }
+
+    /// SV：released v3 头字段集与 v2 完全一致（研究档案 §2.1）；同形
+    /// 读写往返。
+    #[test]
+    fn released_v3_header_round_trips_with_the_v2_field_shape() {
+        let line = "{\"type\":\"session\",\"version\":3,\"id\":\"v3\",\"createdAt\":1,\"cwd\":\"/p\",\"isSeeded\":false,\"delegationDepth\":0}";
+        let parsed = SessionHeader::from_line(line).unwrap().unwrap();
+        assert_eq!(parsed.version, 3);
+        assert_eq!(parsed.to_line(), line);
+        // v0 的 seedLength 在 v3 里仍是拒绝形状（非本代字段）。
+        let seeded = line.replace("\"isSeeded\":false", "\"isSeeded\":false,\"seedLength\":4");
+        assert_eq!(SessionHeader::from_line(&seeded).unwrap(), None);
     }
 
     #[test]

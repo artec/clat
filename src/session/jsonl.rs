@@ -11,12 +11,18 @@ use crate::session::persistence::JsonlCompression;
 
 /// Decode one complete newline-stripped storage record. Packed chunk rows may
 /// expand to several logical events; callers remain responsible for global
-/// seq continuity across records.
+/// seq continuity across records. Released generations 2 and 3 share the
+/// physical framing; v3 renames replacement envelope endpoints
+/// (`startSeq`/`endSeq`) which decode back into the logical shape.
 pub(crate) fn decode_record_line(line: &[u8], version: u32) -> Result<Vec<SessionEvent>, String> {
     let value: serde_json::Value = serde_json::from_slice(line)
         .map_err(|_| "corrupt session log: unparsable committed event".to_string())?;
     decode_record_value(value, version)
 }
+
+/// Format generations the reader accepts. v1 is a retired released
+/// generation CLAT never wrote and never decodes.
+pub(crate) const DECODABLE_GENERATIONS: [u32; 2] = [2, 3];
 
 fn decode_record_value(
     mut value: serde_json::Value,
@@ -54,30 +60,64 @@ fn decode_record_value(
         }
         return Ok(events);
     }
-    if version != crate::session::compat::SESSION_FORMAT_VERSION {
+    if !DECODABLE_GENERATIONS.contains(&version) {
         return Err(format!("format-unsupported: v{version}"));
     }
+    let subject = format!("malformed v{version} session event");
     let seq = value
         .get("seq")
         .and_then(serde_json::Value::as_u64)
         .filter(|seq| *seq <= 9_007_199_254_740_991)
-        .ok_or_else(|| "malformed v2 session event: seq must be a count".to_owned())?;
+        .ok_or_else(|| format!("{subject}: seq must be a count"))?;
     value
         .get("time")
         .and_then(serde_json::Value::as_i64)
         .filter(|time| (-9_007_199_254_740_991..=9_007_199_254_740_991).contains(time))
-        .ok_or_else(|| "malformed v2 session event: time must be a safe integer".to_owned())?;
+        .ok_or_else(|| format!("{subject}: time must be a safe integer"))?;
+    if version >= 3 {
+        canonicalize_replacement_keys(&mut value, seq, &subject)?;
+    }
     if let Some(encoded) = value.get("sourceEventSeqs").cloned() {
         let decoded = crate::session::event::decode_source_event_seqs(&encoded, seq)?;
         value["sourceEventSeqs"] = serde_json::json!(decoded);
     }
-    let event: SessionEvent = serde_json::from_value(value)
-        .map_err(|error| format!("malformed v2 session event: {error}"))?;
+    let event: SessionEvent =
+        serde_json::from_value(value).map_err(|error| format!("{subject}: {error}"))?;
     Ok(vec![event])
 }
 
+/// The logical `SurfaceOp` keeps the released v2 member names, so the v3
+/// canonical wire names decode into it before serde parsing. `append` and
+/// envelope keys stay untouched; the exact three-member replace shape is
+/// enforced by the logical deserializer after the rename.
+fn canonicalize_replacement_keys(
+    value: &mut serde_json::Value,
+    seq: u64,
+    subject: &str,
+) -> Result<(), String> {
+    let Some(op) = value.get_mut("surfaceOp") else {
+        return Ok(());
+    };
+    let Some(map) = op.as_object_mut() else {
+        return Ok(());
+    };
+    for (wire, logical) in [("startSeq", "start"), ("endSeq", "end")] {
+        if let Some(endpoint) = map.remove(wire) {
+            if map.contains_key(logical) {
+                return Err(format!(
+                    "{subject} at seq {seq}: duplicate replacement endpoint"
+                ));
+            }
+            map.insert(logical.into(), endpoint);
+        }
+    }
+    Ok(())
+}
+
 /// Serialize an event batch as JSONL lines (no trailing newline). The
-/// caller (backend) appends the final newline.
+/// caller (backend) appends the final newline. Released generations 2 and
+/// 3 share the provenance range compaction; v3 additionally renames
+/// replacement envelope endpoints to the canonical `startSeq`/`endSeq`.
 pub(crate) fn event_lines(events: &[SessionEvent], pack_chunks: bool, version: u32) -> String {
     let records: Vec<StorageRecord> = if version == 0 && pack_chunks {
         pack_chunk_runs(events)
@@ -91,11 +131,27 @@ pub(crate) fn event_lines(events: &[SessionEvent], pack_chunks: bool, version: u
         .iter()
         .map(|record| {
             let mut value = storage_record_value(record);
-            if version == 2
+            if version >= 2
                 && let StorageRecord::Event(event) = record
                 && let Some(sources) = &event.source_event_seqs
             {
                 value["sourceEventSeqs"] = crate::session::event::encode_source_event_seqs(sources);
+            }
+            if version >= 3
+                && let Some(map) = value
+                    .get_mut("surfaceOp")
+                    .and_then(serde_json::Value::as_object_mut)
+                && let Some(endpoint) = map.remove("start")
+            {
+                map.insert("startSeq".into(), endpoint);
+            }
+            if version >= 3
+                && let Some(map) = value
+                    .get_mut("surfaceOp")
+                    .and_then(serde_json::Value::as_object_mut)
+                && let Some(endpoint) = map.remove("end")
+            {
+                map.insert("endSeq".into(), endpoint);
             }
             serde_json::to_string(&value).expect("plain JSON")
         })
@@ -324,6 +380,64 @@ mod tests {
         assert_eq!(physical["sourceEventSeqs"], json!([[0, 3]]));
         let decoded = decode_record_line(line.as_bytes(), 2).expect("logical row");
         assert_eq!(decoded[0].source_event_seqs, Some(vec![0, 1, 2, 3]));
+    }
+
+    /// SV 批次 2 判别腿：v3 信封线形。pre-fix 红——replace 仍写
+    /// start/end 且 v3 记录被 format-unsupported 拒载。canonical v3：
+    /// replace 端点改名 startSeq/endSeq；append 字符串原样；
+    /// sourceEventSeqs 区间压缩（released physical framing）不变；
+    /// v1 保持 format-unsupported。
+    #[test]
+    fn v3_envelope_wire_renames_replacement_endpoints() {
+        let mut replace = SessionEvent::new(
+            "user/message",
+            5,
+            1005,
+            payloads::compaction_user_message("[summary]"),
+        );
+        replace.surface_op = Some(crate::session::event::SurfaceOp::Replace { start: 0, end: 3 });
+        replace.source_event_seqs = Some(vec![0, 1, 2, 3]);
+        let append = SessionEvent::new("user/message", 6, 1006, payloads::user_message("next"))
+            .append(Vec::new());
+        let line = event_lines(&[replace, append.clone()], true, 3);
+        let rows: Vec<serde_json::Value> = line
+            .lines()
+            .map(|row| serde_json::from_str(row).expect("physical v3 row"))
+            .collect();
+        assert_eq!(
+            rows[0]["surfaceOp"],
+            json!({"op": "replace", "startSeq": 0, "endSeq": 3}),
+            "replacement endpoints use the canonical v3 names"
+        );
+        assert_eq!(rows[0]["sourceEventSeqs"], json!([[0, 3]]));
+        assert_eq!(rows[1]["surfaceOp"], json!("append"));
+
+        let decoded: Vec<SessionEvent> = line
+            .lines()
+            .flat_map(|row| decode_record_line(row.as_bytes(), 3).expect("logical v3 row"))
+            .collect();
+        assert_eq!(
+            decoded[0].surface_op,
+            Some(crate::session::event::SurfaceOp::Replace { start: 0, end: 3 })
+        );
+        assert_eq!(
+            decoded[1].surface_op,
+            Some(crate::session::event::SurfaceOp::Append)
+        );
+
+        // 非规范拼写拒绝：混入旧名/重复端点都不是 exact replace 形状。
+        let mut row: serde_json::Value =
+            serde_json::from_str(line.lines().next().unwrap()).unwrap();
+        row["surfaceOp"]["start"] = json!(1);
+        assert!(decode_record_line(serde_json::to_string(&row).unwrap().as_bytes(), 3).is_err());
+
+        // v1 退役代保持拒载。
+        let v2_row = event_lines(&[append], true, 2);
+        assert!(
+            decode_record_line(v2_row.as_bytes(), 1)
+                .unwrap_err()
+                .contains("format-unsupported: v1")
+        );
     }
 
     #[test]

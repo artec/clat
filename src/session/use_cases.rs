@@ -501,6 +501,16 @@ impl SessionService {
 
     /// The last `request/header` body in the active session's log (the
     /// dedupe authority for catalog §2.7).
+    /// The protected system head's journal seq and effective prompt text
+    /// (V3): the recorder seeds its head bookkeeping from this on resume —
+    /// a new run must replace the existing head, never append a second one.
+    pub(crate) fn last_system_head(&self) -> Option<(u64, String)> {
+        let guard = self.active.lock().expect("active");
+        let active = guard.as_ref()?;
+        let projections = active.projections.lock().expect("projections");
+        projections.last_system_head()
+    }
+
     pub(crate) fn last_request_header(&self) -> Option<Value> {
         let guard = self.active.lock().expect("active");
         let active = guard.as_ref()?;

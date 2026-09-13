@@ -496,7 +496,7 @@ mod tests {
         ));
         let key = key_for(CLAT_ID);
         let header = SessionHeader {
-            version: 2,
+            version: crate::session::compat::SESSION_FORMAT_VERSION,
             id: SessionId::new(CLAT_ID),
             created_at: 1_787_400_000_000,
             cwd: Some(FIXTURE_CWD.into()),
@@ -533,6 +533,7 @@ mod tests {
                 base_system: "you are clat".into(),
                 dynamic_instructions: None,
                 tool_registry: None,
+                system_head: None,
             },
             "mock",
             "mock",
@@ -591,6 +592,35 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    /// SV 后端级读腿（bump 后收编）：原生 V3 金样经完整 discover →
+    /// load → admission → 投影路径被 CLAT 接受——与裸字节读腿互补，
+    /// 钉住 ensure_supported_generation 对 v3 的放行与世代发现。
+    /// pre-fix 红：v3 被 ensure_supported_generation 拒为"未来代"。
+    #[test]
+    fn dsh_015_native_v3_backend_load_discovers_and_folds() {
+        let (root, backend) = mount_fixture_generation(
+            "v3-session-0.1.5.jsonl.zstd",
+            "018f2a64-9d3f-7cde-8123-9a4f2b6c0e01",
+            3,
+        );
+        let headers = backend.list_headers().expect("list headers");
+        assert!(
+            headers.iter().any(|header| header.id.as_str()
+                == "018f2a64-9d3f-7cde-8123-9a4f2b6c0e01"
+                && header.version == 3),
+            "the v3 generation is discovered via the layout"
+        );
+        let events = load_golden(&backend, "018f2a64-9d3f-7cde-8123-9a4f2b6c0e01");
+        assert_eq!(events.len(), 16);
+        assert!(
+            events
+                .iter()
+                .any(|event| event.event_type == "system/message"),
+            "the protected head rides the full load path"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     /// 布局推导钉住：fixture 的 cwd 经 CLAT 的 project_key 得到与
     /// mount 一致的目录（发现与装载用同一推导，跨工具目录语义一致）。
     #[test]
@@ -605,5 +635,204 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(root);
         let _ = log_file_name(JsonlCompression::Zstd);
+    }
+
+    // ---- SV（V3 对齐）：0.1.5-rc.2 产物的读腿（gen-v3-fixtures.mts）----
+    //
+    // pre-bump 阶段后端 load 仍拒 v3（ensure_supported_generation），
+    // 这里走裸字节读路径（decode_zstd_log → scan_raw →
+    // admit_events_for_version(3)）；批次 3 bump 后由后端级读腿收编。
+
+    /// 裸字节读：解压 → scan → v3 准入。任何一环拒绝即红。
+    fn load_v3_golden(file: &str) -> (SessionHeader, Vec<SessionEvent>) {
+        let bytes = std::fs::read(fixture_dir().join(file)).expect("golden bytes");
+        let (plain, torn) = crate::session::jsonl::decode_zstd_log(&bytes).expect("zstd frames");
+        assert!(torn.is_none(), "golden has no torn tail");
+        let scan = crate::session::jsonl::scan_raw(&plain).expect("scan");
+        crate::session::admission::admit_events_for_version(&scan.events, 3).expect("v3 admission");
+        crate::session::projection::ProjectionRegistry::clat()
+            .fold_all(&scan.events)
+            .expect("projection fold");
+        (scan.header, scan.events)
+    }
+
+    /// 原生 V3（rc.2 真实 store append 期校验 + 真实 writer 物理编码）：
+    /// 受保护头随首 step/start 落位；提示词变化的替换恰罩头并引用之；
+    /// request/header 全程无 system；canonical 信封 startSeq/endSeq 由
+    /// CLAT 解码回逻辑形状。pre-fix 红：v3 头 format-unsupported，
+    /// system/message / ptc 名 RequiredUnknown。
+    #[test]
+    fn dsh_015_native_v3_fixture_folds_protected_head_and_canonical_envelopes() {
+        let (header, events) = load_v3_golden("v3-session-0.1.5.jsonl.zstd");
+        assert_eq!(header.version, 3);
+        assert!(!header.is_seeded);
+
+        // 受保护头：seq 2（turn/start, step/start 之后立即落位）。
+        let head = events
+            .iter()
+            .find(|event| event.event_type == "system/message")
+            .expect("protected head");
+        assert_eq!(head.seq, 2);
+        assert_eq!(
+            head.surface_op,
+            Some(crate::session::event::SurfaceOp::Append)
+        );
+        assert_eq!(head.source_event_seqs, None, "the first head cites nothing");
+        assert_eq!(head.data["message"]["role"], "system");
+        assert_eq!(
+            head.data["message"]["source"]["plugin"],
+            "@deepseek-ai/dsh-system-prompt"
+        );
+
+        // 头替换：replace 恰罩 head 且引用之（canonical 端点名解码回
+        // 逻辑形状后按 seq 解读）。
+        let replacement = events
+            .iter()
+            .filter(|event| event.event_type == "system/message")
+            .nth(1)
+            .expect("head replacement");
+        assert_eq!(
+            replacement.surface_op,
+            Some(crate::session::event::SurfaceOp::Replace { start: 2, end: 2 })
+        );
+        assert_eq!(replacement.source_event_seqs, Some(vec![2]));
+
+        // request/header 全程无 system（v3 native 准入的面）。
+        for event in events
+            .iter()
+            .filter(|event| event.event_type == "request/header")
+        {
+            assert!(
+                event.data["header"].get("system").is_none(),
+                "v3 request/header must not carry system"
+            );
+        }
+
+        // 表演面：user + assistant 重放还原；system 头跳过不重建。
+        let replay = ReplayAdapter::fold(&events);
+        let kinds: Vec<&str> = replay
+            .iter()
+            .map(|event| match event {
+                ReplayEvent::UserMessage { .. } => "user",
+                ReplayEvent::AssistantMessage { .. } => "assistant",
+                ReplayEvent::TurnEnded { .. } => "turn/end",
+                _ => "other",
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                "user",
+                "assistant",
+                "turn/end",
+                "user",
+                "assistant",
+                "turn/end"
+            ]
+        );
+
+        // surface 投影收编 system 节点（受保护头是节点），但模型上下文
+        // 适配跳过它们（提示词走 request.instructions，不进条目列表）。
+        let mut registry = crate::session::projection::ProjectionRegistry::clat();
+        registry.fold_all(&events).expect("fold");
+        let raw_nodes: Vec<u64> =
+            registry.state_snapshot("surface").expect("surface state")["nodes"]
+                .as_array()
+                .expect("nodes")
+                .iter()
+                .map(|seq| seq.as_u64().expect("seq"))
+                .collect();
+        assert!(
+            raw_nodes.contains(&10) && !raw_nodes.contains(&2),
+            "the replacement splices the head node in place: {raw_nodes:?}"
+        );
+        let item_seqs: Vec<u64> = registry
+            .surface_nodes()
+            .expect("surface nodes")
+            .into_iter()
+            .map(|(seq, _)| seq)
+            .collect();
+        assert_eq!(
+            item_seqs,
+            vec![4, 5, 12, 13],
+            "the model-facing item list skips the system nodes"
+        );
+    }
+
+    /// 迁移 V3（上游 v2-to-v3 迁移器产物）：插入移位后的 seq 空间、
+    /// 合成受保护头、替换引用、重映射后的 compaction 引用全部按 CLAT
+    /// 语义解码。pre-fix 红：同上。
+    #[test]
+    fn dsh_015_migrated_v3_fixture_decodes_remapped_references() {
+        let (header, events) = load_v3_golden("v3-migrated-0.1.5.jsonl.zstd");
+        assert_eq!(header.version, 3);
+        assert_eq!(header.id.as_str(), "018f2a64-9d3f-7cde-8123-9a4f2b6c0e02");
+
+        // 源 14 事件 → 目标 21：+1 首头、两个替换头、（本源无其余插入）。
+        assert_eq!(events.len(), 21);
+        // 迁移语义钉住（上游 spec）：首 step/start 后插入的是**空**头
+        // （content: []，受保护但非模型消息）；源首 request/header 的
+        // 提示词构成一次变化 → 紧邻其前的替换头携带文本并引用空头。
+        let system_seqs: Vec<u64> = events
+            .iter()
+            .filter(|event| event.event_type == "system/message")
+            .map(|event| event.seq)
+            .collect();
+        assert_eq!(
+            system_seqs,
+            vec![2, 3, 9],
+            "synthetic heads sit at the insertion points"
+        );
+        let head = &events[2];
+        assert_eq!(
+            head.data["message"]["content"],
+            serde_json::json!([]),
+            "the initial head is empty"
+        );
+        assert_eq!(head.source_event_seqs, None, "the first head cites nothing");
+        let first_prompt = &events[3];
+        assert_eq!(
+            first_prompt.data["message"]["content"][0]["text"], "first prompt",
+            "the replacement head carries the source prompt"
+        );
+        assert_eq!(first_prompt.source_event_seqs, Some(vec![2]));
+        let second_prompt = &events[9];
+        assert_eq!(
+            second_prompt.data["message"]["content"][0]["text"],
+            "second prompt"
+        );
+
+        // compaction 重映射：源 shadowedRange (3,4) 的目标位置。源 seq 3
+        // (user) 在目标面（含插入）落位由迁移器决定——这里钉住 CLAT 能
+        // 解码并折叠重映射后的引用（投影 fold 已在 helper 内完成）。
+        let summary = events
+            .iter()
+            .find(|event| event.event_type == "compaction/summary")
+            .expect("compaction summary");
+        let start = summary.data["shadowedRange"]["start"]
+            .as_u64()
+            .expect("start");
+        let end = summary.data["shadowedRange"]["end"].as_u64().expect("end");
+        assert!(end > start, "remapped range stays ordered");
+        assert_eq!(
+            summary.data["shadowedSeqs"],
+            serde_json::json!([start, end]),
+            "shadowedSeqs tracks the remapped range"
+        );
+
+        // 表演面折叠：压缩摘要行 + 两条 user + 两条 assistant。
+        let replay = ReplayAdapter::fold(&events);
+        let users: Vec<&String> = replay
+            .iter()
+            .filter_map(|event| match event {
+                ReplayEvent::UserMessage { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            users,
+            vec!["first question", "[compacted earlier context]"],
+            "the compacted summary replaces the earlier question in replay order"
+        );
     }
 }

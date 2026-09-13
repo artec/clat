@@ -6,7 +6,9 @@
   "model_steps": [
     {
       "expect": {
-        "available_tools_include": ["lsp"]
+        "available_tools_include": [
+          "lsp"
+        ]
       },
       "response": {
         "tool_calls": [
@@ -26,7 +28,9 @@
     },
     {
       "expect": {
-        "required_tool_results": ["lsp"],
+        "required_tool_results": [
+          "lsp"
+        ],
         "required_tool_result_contains": [
           {
             "tool": "lsp",
@@ -67,6 +71,7 @@
       "turn/start",
       "user/message",
       "step/start",
+      "system/message",
       "request/header",
       "assistant/message",
       "approval/asked",
