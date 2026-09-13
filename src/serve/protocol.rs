@@ -20,6 +20,10 @@ use std::sync::mpsc;
 /// `workbench.info.methods` 与实际 dispatch 的同仓能力目录。新增方法
 /// 时必须同时进本表；测试钉住全集，避免 PWA 显示不存在的控制面。
 pub(crate) const RPC_METHODS: &[&str] = &[
+    "host.describe",
+    "host.stop",
+    "workspace.list",
+    "workspace.open",
     "workbench.info",
     "session.list",
     "session.info",
@@ -29,6 +33,13 @@ pub(crate) const RPC_METHODS: &[&str] = &[
     "session.rename",
     "session.compact",
     "model.overrides.set",
+    "model.settings.get",
+    "model.profile.get",
+    "model.profile.save",
+    "model.profile.activate",
+    "model.profile.delete",
+    "model.preset.select",
+    "model.thinking.cycle",
     "permission.set",
     "wechat.binding.status",
     "wechat.binding.start",
@@ -43,6 +54,7 @@ pub(crate) const RPC_METHODS: &[&str] = &[
     "steer.send",
     "run.cancel",
     "approval.respond",
+    "question.respond",
 ];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -89,6 +101,12 @@ pub(crate) struct RpcError {
     pub code: ErrorCode,
     pub message: String,
     pub receipt: Option<Box<crate::message::AdmissionReceipt>>,
+}
+
+impl From<ApplicationError> for RpcError {
+    fn from(error: ApplicationError) -> Self {
+        app_error(error)
+    }
 }
 
 impl RpcError {
@@ -267,6 +285,67 @@ pub(crate) fn parse_sse_frames(input: &str) -> Vec<ParsedSseFrame> {
 /// HTTP 层归一为 `{}`）；未知字段一律容忍（amend 政策），除
 /// `approval.respond.escalate_to`（显式保留字段，见 approver 模块）。
 pub(crate) fn dispatch(
+    method: &str,
+    params: &Value,
+    shared: &Arc<ServeShared>,
+) -> Result<Value, RpcError> {
+    if super::workspaces::HOST_METHODS.contains(&method) {
+        let host = shared
+            .host
+            .lock()
+            .expect("host link")
+            .upgrade()
+            .ok_or_else(|| RpcError::not_found("host unavailable"))?;
+        return host.dispatch(method, params);
+    }
+    if method == "question.respond" {
+        return super::questions::respond(shared, params);
+    }
+    if method.starts_with("model.") && method != "model.overrides.set" {
+        return super::models::dispatch(method, params, shared);
+    }
+    // iLink binding/outbound serialization is root-scoped, not project-scoped.
+    // Every project window consumes the original host-owned control lane.
+    if method.starts_with("wechat.")
+        && let Some(host) = shared.host.lock().expect("host link").upgrade()
+    {
+        return dispatch_project(method, params, &host.route("default")?);
+    }
+    dispatch_guarded_project(method, params, shared)
+}
+
+fn dispatch_guarded_project(
+    method: &str,
+    params: &Value,
+    shared: &Arc<ServeShared>,
+) -> Result<Value, RpcError> {
+    let mutating = matches!(
+        method,
+        "session.new"
+            | "session.switch"
+            | "session.rename"
+            | "session.compact"
+            | "permission.set"
+            | "draft.open"
+            | "command.run"
+            | "prompt.send"
+            | "steer.send"
+            | "run.cancel"
+            | "model.overrides.set"
+    );
+    let _mutation = mutating.then(|| shared.rpc_mutations.lock().expect("project RPC mutation"));
+    if mutating
+        && let Some(expected) = params.get("expected_selection_generation")
+        && expected.as_u64() != Some(shared.selection_generation())
+    {
+        return Err(RpcError::busy(
+            "session selection changed; refresh before submitting",
+        ));
+    }
+    dispatch_project(method, params, shared)
+}
+
+fn dispatch_project(
     method: &str,
     params: &Value,
     shared: &Arc<ServeShared>,
@@ -656,26 +735,90 @@ fn model_overrides_set(
     }
 
     let app = shared.app.lock().expect("application lock");
-    let (mut config, credentials) = app.model_state().map_err(app_error)?;
+    app.update_model_config(|config| {
+        let response_override = edit_model_override(config, &field, &state, value)?;
+        config.overrides_version = Some(1);
+        config.apply_overrides();
+        Ok(json!({ "field": field, "override": response_override }))
+    })
+}
+
+fn edit_model_override(
+    config: &mut crate::ModelConfig,
+    field: &str,
+    state: &str,
+    value: Option<&Value>,
+) -> Result<Value, RpcError> {
+    if matches!(field, "output_limit" | "temperature" | "max_context_tokens") {
+        return edit_numeric_override(config, field, state, value);
+    }
     let preset = config
         .preset
         .as_deref()
         .and_then(crate::presets::preset_by_id);
-    let response_override = match field.as_str() {
+    Ok(match field {
+        "parallel_tool_calls" => {
+            config.overrides.parallel_tool_calls = match state {
+                "inherit" => {
+                    config.parallel_tool_calls =
+                        preset.is_none_or(|preset| preset.parallel_managed_default());
+                    crate::Override::Inherit
+                }
+                "clear" => crate::Override::Clear,
+                "set" => crate::Override::Set(value.and_then(Value::as_bool).ok_or_else(|| {
+                    RpcError::bad_request("parallel_tool_calls set value must be boolean")
+                })?),
+                _ => unreachable!(),
+            };
+            super::shapes::override_value(&config.overrides.parallel_tool_calls)
+        }
+        "thinking_level" => {
+            config.overrides.thinking_level = match state {
+                "inherit" => {
+                    config.thinking_level = None;
+                    if let Some(preset) = preset {
+                        config.extra_body = preset.extra_body();
+                    } else if let Some(body) = config.extra_body.as_object_mut() {
+                        body.remove("reasoning_effort");
+                    }
+                    crate::Override::Inherit
+                }
+                "clear" => crate::Override::Clear,
+                "set" => crate::Override::Set(parse_thinking_override(value)?),
+                _ => unreachable!(),
+            };
+            super::shapes::override_value(&config.overrides.thinking_level)
+        }
+
+        _ => return Err(RpcError::bad_request("unknown model override field")),
+    })
+}
+
+fn edit_numeric_override(
+    config: &mut crate::ModelConfig,
+    field: &str,
+    state: &str,
+    value: Option<&Value>,
+) -> Result<Value, RpcError> {
+    let preset = config
+        .preset
+        .as_deref()
+        .and_then(crate::presets::preset_by_id);
+    Ok(match field {
         "output_limit" => {
-            config.overrides.output_limit = match state.as_str() {
+            config.overrides.output_limit = match state {
                 "inherit" => {
                     config.output_limit = preset.map(|preset| preset.output_limit);
                     crate::Override::Inherit
                 }
                 "clear" => crate::Override::Clear,
-                "set" => crate::Override::Set(parse_override_u32(value, field.as_str(), 1)?),
+                "set" => crate::Override::Set(parse_override_u32(value, field, 1)?),
                 _ => unreachable!(),
             };
             super::shapes::override_value(&config.overrides.output_limit)
         }
         "temperature" => {
-            config.overrides.temperature = match state.as_str() {
+            config.overrides.temperature = match state {
                 "inherit" => {
                     config.temperature = None;
                     crate::Override::Inherit
@@ -696,61 +839,21 @@ fn model_overrides_set(
             };
             super::shapes::override_value(&config.overrides.temperature)
         }
-        "parallel_tool_calls" => {
-            config.overrides.parallel_tool_calls = match state.as_str() {
-                "inherit" => {
-                    config.parallel_tool_calls =
-                        preset.is_none_or(|preset| preset.parallel_managed_default());
-                    crate::Override::Inherit
-                }
-                "clear" => crate::Override::Clear,
-                "set" => crate::Override::Set(value.and_then(Value::as_bool).ok_or_else(|| {
-                    RpcError::bad_request("parallel_tool_calls set value must be boolean")
-                })?),
-                _ => unreachable!(),
-            };
-            super::shapes::override_value(&config.overrides.parallel_tool_calls)
-        }
-        "thinking_level" => {
-            config.overrides.thinking_level = match state.as_str() {
-                "inherit" => {
-                    config.thinking_level = None;
-                    if let Some(preset) = preset {
-                        config.extra_body = preset.extra_body();
-                    } else if let Some(body) = config.extra_body.as_object_mut() {
-                        body.remove("reasoning_effort");
-                    }
-                    crate::Override::Inherit
-                }
-                "clear" => crate::Override::Clear,
-                "set" => crate::Override::Set(parse_thinking_override(value)?),
-                _ => unreachable!(),
-            };
-            super::shapes::override_value(&config.overrides.thinking_level)
-        }
         "max_context_tokens" => {
-            config.overrides.max_context_tokens = match state.as_str() {
+            config.overrides.max_context_tokens = match state {
                 "inherit" => {
                     config.max_context_tokens = preset.map(|preset| preset.context_window);
                     crate::Override::Inherit
                 }
                 "clear" => crate::Override::Clear,
-                "set" => crate::Override::Set(parse_override_u32(value, field.as_str(), 4_096)?),
+                "set" => crate::Override::Set(parse_override_u32(value, field, 4_096)?),
                 _ => unreachable!(),
             };
             super::shapes::override_value(&config.overrides.max_context_tokens)
         }
-        _ => {
-            return Err(RpcError::bad_request(
-                "field must be output_limit, temperature, parallel_tool_calls, thinking_level, or max_context_tokens",
-            ));
-        }
-    };
-    config.overrides_version = Some(1);
-    config.apply_overrides();
-    app.save_model_state(&config, &credentials)
-        .map_err(app_error)?;
-    Ok(json!({ "field": field, "override": response_override }))
+
+        _ => unreachable!("numeric family checked by caller"),
+    })
 }
 
 fn parse_override_u32(value: Option<&Value>, field: &str, minimum: u32) -> Result<u32, RpcError> {
@@ -976,14 +1079,17 @@ fn start_goal_run(shared: &Arc<ServeShared>, rpc_id: String) -> Result<Value, Rp
         let message = app.goal_run_message();
         app.start_goal_run(ApplicationRunRequest {
             message: crate::message::PendingMessage::text(String::new()),
-            asker: None,
+            asker: Some(Arc::new(super::questions::ServeAsker::new(shared))),
             approver: Arc::new(approver::ServeApprover::new(Arc::clone(shared))),
             events: Box::new(FanoutSink {
                 shared: Arc::clone(shared),
             }),
             completion: completion_tx,
         })
-        .map(|started| (started, message))
+        .map(|started| {
+            shared.publish_run_boundary(&started.0);
+            (started, message)
+        })
     };
     match started {
         Ok(((handle, _), message)) => {
@@ -1072,29 +1178,19 @@ fn prompt_send(params: &Map<String, Value>, shared: &Arc<ServeShared>) -> Result
             // reservation serialize on the Application lock. A reservation
             // can therefore observe either the old selection/generation or
             // the new pair, never old authority with the new session.
-            let paths = shared
-                .drafts
-                .reserve_uploads(
-                    scope_id,
-                    shared.selection_generation(),
-                    shared.token_generation(),
-                    &upload_ids,
-                )
-                .map_err(|error| {
-                    shared.release_run_claim();
-                    RpcError::bad_request(error)
-                })?;
+            let paths = reserve_prompt_uploads(shared, scope_id, &upload_ids)?;
             message.resolve_staged_attachments(paths);
         }
         app.start_run(ApplicationRunRequest {
             message,
-            asker: None,
+            asker: Some(Arc::new(super::questions::ServeAsker::new(shared))),
             approver: Arc::new(approver::ServeApprover::new(Arc::clone(shared))),
             events: Box::new(FanoutSink {
                 shared: Arc::clone(shared),
             }),
             completion: completion_tx,
         })
+        .inspect(|handle| shared.publish_run_boundary(handle))
     };
     match started {
         Ok(handle) => {
@@ -1128,6 +1224,26 @@ fn prompt_send(params: &Map<String, Value>, shared: &Arc<ServeShared>) -> Result
             Err(RpcError::internal(format!("could not start run: {error}")).with_receipt(receipt))
         }
     }
+}
+
+// Caller holds Application: selection and the reservation share one boundary.
+fn reserve_prompt_uploads(
+    shared: &Arc<ServeShared>,
+    scope_id: &str,
+    upload_ids: &[String],
+) -> Result<Vec<PathBuf>, RpcError> {
+    shared
+        .drafts
+        .reserve_uploads(
+            scope_id,
+            shared.selection_generation(),
+            shared.token_generation(),
+            upload_ids,
+        )
+        .map_err(|error| {
+            shared.release_run_claim();
+            RpcError::bad_request(error)
+        })
 }
 
 /// `steer.send` 的附件版与 prompt 采用同一 opaque draft 协议，但 commit

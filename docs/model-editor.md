@@ -173,3 +173,111 @@ or persist that state as configuration:
 
 This data belongs to the session journal and provider adapter. Switching a
 profile changes future requests but does not rewrite historical events.
+
+## Web workbench settings
+
+Open **Workbench settings → Models** to choose a vendor-grouped preset or
+create, edit, activate, and delete a custom profile without closing the host.
+Model settings are shared by every mounted project. A change is broadcast to
+online clients; already-running requests retain their frozen model configuration.
+
+API keys are write-only. Read responses expose only whether a key is set, never
+its value, extra headers, extra request bodies, or authentication prefixes.
+Leaving the preset key blank uses the remembered key for that vendor. In a
+custom profile, a blank key preserves the old key only if the full route is
+unchanged. Changing protocol, model, endpoint, or request path starts with clean
+credentials and advanced settings; use the clear-key checkbox to remove a key
+explicitly. Saving a profile does not activate it: choose **Use** afterwards.
+
+Choose **New profile** to clear the editor and start a separate profile without
+changing any saved profile. Delayed profile reads cannot replace newer form
+input or reopen an editor after settings have been closed.
+
+Deleting the active profile atomically activates the first remaining profile,
+or returns to an unconfigured model if none remains. Activating a profile and
+updating its active pointer are a single settings-file commit. A vision probe
+that finishes after model settings changed cannot replace the newer settings.
+
+The additive host methods are `model.settings.get`, `model.profile.get`,
+`model.profile.save`, `model.profile.activate`, `model.profile.delete`, and
+`model.preset.select`, plus `model.thinking.cycle`; the secret-free notification is `models`.
+## Attached terminal support
+
+`clat attach` supports the existing `/model` picker for preset selection,
+profile activation and confirmed deletion through the host. The terminal reads
+only redacted model summaries (including the image-input capability), never
+saved credentials. Shift+Tab cycles thinking levels on the host using its latest
+configuration, and applies to the next run. While a change is pending, repeated
+keypresses do not send additional requests. Unsupported models reject the change;
+transport failures require checking host state before retrying. Other clients
+receive the model-settings notification.
+
+The Custom picker can now create and edit basic host profiles in the traditional
+terminal editor: name, model, endpoint, protocol, request path, and API key.
+Hosts advertising `limits` also expose context window, maximum output tokens,
+and per-run token budget with the existing arrow-key choices and Custom input.
+An empty custom output/context value or Ctrl+D removes that limit; a blank
+budget uses the default, and budget **off** is explicit zero. Invalid numbers
+remain in the editor without sending a save request. Older hosts keep the basic form.
+Hosts advertising `tuning` add an **Advanced** section for Temperature,
+Parallel Tool Calls, and Thinking. Enter edits temperature or toggles parallel
+calls; arrow keys cycle thinking levels. Ctrl+D clears a field. A cleared parallel
+setting omits the request parameter, unlike **off**, which sends false. Cleared
+thinking removes the explicit effort override; it does not disable the model's
+own reasoning. Vendor mapping and unsupported-endpoint behavior stay in core.
+Only changed tuning fields are submitted for an unchanged profile route. Saving
+under another name or changing the route carries the visible tuning values,
+but never copies hidden headers, extra JSON, or credentials.
+Confirm a field with Enter before Ctrl+S saves the profile; select **Use** to
+activate it afterwards. Changing the name saves a separate profile without
+deleting the original or copying its hidden credentials and extra settings.
+An untouched key is omitted from the save request. Explicitly confirming an empty
+key clears it. Key input is masked and cleared after a save request is dispatched;
+on failure, check host state and re-enter the key if needed. Newer editor input
+survives a delayed save response. Routes marked `route_redacted` by the host cannot be
+edited here.
+
+Hosts advertising `extra_body_edit_supported` expose **Extra Body JSON** under
+Advanced, with the same write-only, masked, explicit-object replacement workflow
+as headers. Omission/null preserves same-route content; `{}` clears it. Objects
+are limited to 64 KiB encoded JSON and depth 32. Replacing the body relinquishes
+the typed Thinking override so activation/reload cannot rewrite the raw JSON.
+The row says **resets Thinking**, and the Thinking row is hidden while a body
+draft is pending. Core rejects a simultaneous explicit Thinking patch; save
+those changes separately. Other tuning fields remain independent. Dispatch clears
+the secret draft and rebases the tuning form; on failure check host state and
+re-enter the intended edits. Existing provider reserved-field and null-tombstone
+rules still apply. Saving a profile does not activate it.
+
+Hosts advertising `extra_headers_edit_supported` expose **Extra Headers JSON**
+under Advanced. This is a write-only whole-object replacement: existing header
+names and values are never fetched; an untouched draft preserves same-route
+headers, and explicit `{}` clears them. Blank input is invalid. Values must be
+strings with valid HTTP header names/values and no control characters. The host
+limits the object to 128 entries, names to 256 bytes, values to 8192 bytes, and
+encoded JSON to 64 KiB. The row and input popup hide the draft; dispatch clears
+it even if saving fails, so retry requires re-entry. Saving does not activate
+the profile; changing the route never inherits hidden headers.
+Unchanged routes retain their host-owned hidden settings; changing the route
+resets those hidden settings, just as in PWA Models settings.
+The standalone editor described above keeps its existing behavior.
+
+Hosts advertising `auth_edit_supported` also expose **Auth Header** and
+**Auth Prefix** under Advanced. These are write-only replacements, not a view
+of the stored values. Enter opens an empty field; confirming an empty value
+explicitly clears that field. Untouched fields stay omitted. Prefix input is
+masked and preserves trailing spaces (for example `Bearer `). Confirm the field
+before saving; both auth drafts are cleared when the request is dispatched,
+including on failure. Re-enter them for an explicit retry. Core rejects invalid
+HTTP header names, control characters, and oversized values without echoing
+the input. These fields retain their existing provider-specific meaning; they
+do not override adapters that own their authentication format.
+
+On an attached preset row, Enter selects immediately using the host's remembered
+vendor key; **e** opens a masked, key-only editor for that preset. Confirm the key
+with Enter, then Ctrl+S saves **and activates** the preset. The preset ID is fixed;
+no endpoint or other preset-owned fields are sent. Leaving the key untouched uses
+the remembered vendor key. Confirming an empty key clears the current credentials,
+not the remembered vendor cache (a later selection can reuse that cache).
+Cancel does not submit; once dispatched, a save is not cancelled by closing the
+form. The same single-flight, write-only and delayed-response protections apply.

@@ -14,7 +14,6 @@ use crate::plugins::services::{
     ProviderRegistry, SessionTitler, StoreError, TodoService,
 };
 use crate::session::id::SessionId;
-use crate::session::root_lease::StorageRootLease;
 use crate::session::use_cases::SessionService;
 use serde_json::Value;
 use std::fmt;
@@ -31,10 +30,16 @@ mod context_tests;
 mod dto;
 #[cfg(test)]
 mod goal_tests;
+mod host;
+mod host_storage;
+#[cfg(test)]
+mod host_tests;
 #[cfg(test)]
 mod language_intelligence_tests;
 #[cfg(test)]
 mod memory_tests;
+mod model_settings;
+pub use model_settings::{ModelProfileEdit, ModelRouteView, ModelSettingsView};
 #[cfg(test)]
 mod plan_mode_tests;
 mod remote_control;
@@ -61,6 +66,7 @@ pub use dto::{
     WorkbenchModelSnapshot, WorkbenchProjectSnapshot, WorkbenchSessionSnapshot, WorkbenchSnapshot,
     WorkspaceInfo,
 };
+pub use host::HostApplication;
 pub(crate) use remote_control::{
     WechatChatReadiness, WechatChatStatus, WechatChatTicket, WechatDeliveryDisposition,
     WechatNewChatOutcome, WechatPromptStartOutcome, WechatSteerOutcome,
@@ -168,6 +174,8 @@ pub enum CompactionStatus {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ApplicationEvent {
+    /// Root-global model settings changed. Contains no configuration or secrets.
+    ModelsUpdated,
     MonitorUpdated(Option<String>),
     /// 自动压缩的结果提示；绝不携带 RunEvent 语义（协议冻结）。
     CompactionUpdated(CompactionStatus),
@@ -312,10 +320,8 @@ pub struct TrustedProjectApplication {
     /// ask-user 前端插槽：与 `ask_user` 工具共享，每次 run 启动时按
     /// 请求装入（前端 Some / headless None）。
     asker_slot: Arc<crate::interaction::AskUserSlot>,
-    /// Cross-process storage lease, held for the scope lifetime (plan §3.2).
-    /// Never read: dropping it releases the flock.
-    #[allow(dead_code)]
-    lease: StorageRootLease,
+    /// Shared host control-plane owner; released after this project's fields.
+    host_storage: Arc<host_storage::HostStorage>,
     #[cfg(any(test, feature = "test-support"))]
     fail_next_run_spawn: bool,
     #[cfg(test)]

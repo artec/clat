@@ -28,6 +28,7 @@ where
         Some("demo") => run_demo(),
         Some("exec") => run_exec_command(args),
         Some("dsh") => run_dsh_command(args),
+        Some("attach") => run_attach_command(args),
         Some("serve") => run_serve_command(args),
         Some("wechat") => run_wechat_command(args),
         Some("plugin") => run_plugin_command(args),
@@ -64,6 +65,37 @@ where
     }
 }
 
+fn run_attach_command(args: impl Iterator<Item = String>) -> ExitCode {
+    let mut args = args;
+    let mut port = 2691;
+    let mut trust = false;
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--trust" => trust = true,
+            "--port" => match args.next().and_then(|value| value.parse::<u16>().ok()) {
+                Some(value) if value != 0 => port = value,
+                _ => {
+                    eprintln!("clat: attach --port needs a nonzero port");
+                    return ExitCode::from(2);
+                }
+            },
+            _ => {
+                eprintln!("clat: attach accepts --port <n> and --trust");
+                return ExitCode::from(2);
+            }
+        }
+    }
+    let result =
+        Project::current().and_then(|project| clat::tui::run_host_mode(project, port, trust));
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("clat: attach: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn print_help() {
     println!("{NAME} — {TAGLINE}");
     println!();
@@ -73,11 +105,12 @@ fn print_help() {
     println!("Inside the TUI, use `/model` to configure model parameters and credentials.");
     println!();
     println!("Commands:");
-    println!("  exec [PROMPT]     Run one agent turn headlessly and print the reply on stdout");
+    println!("  exec [PROMPT]    Run one agent turn headlessly and print the reply on stdout");
     println!("  dsh              Open the TUI as a client of a local DSH web host");
-    println!("  serve             Serve the local HTTP+SSE API on 127.0.0.1");
+    println!("  attach           Attach the TUI to an existing CLAT host (--port <n>, --trust)");
+    println!("  serve            Serve the local HTTP+SSE API on 127.0.0.1");
     println!("  wechat           Bind, inspect, pair, or unbind the official WeChat channel");
-    println!("  plugin            Inspect, install, update, roll back, or remove plugins");
+    println!("  plugin           Inspect, install, update, roll back, or remove plugins");
     println!("  demo             Run the deterministic model → tool → model loop");
     println!("  upgrade          Upgrade to the latest GitHub release");
     println!();

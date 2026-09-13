@@ -6,6 +6,7 @@ pub(crate) enum PickerAction {
     Continue,
     /// 用户在二级列表确认了某个预设。
     SelectPreset(&'static ModelPreset),
+    OpenPresetKey(&'static ModelPreset),
     /// dsh 形态（D-2 §2.5）：确认了宿主组的某个模型——
     /// `selectModel { provider: group.id, model: model.id }`；effort 是
     /// 高亮行上 Shift+Tab 循环出的待提交档位（档位接入 2026-08-23；
@@ -204,6 +205,7 @@ const MODEL_NAME_COLUMN: usize = 40;
 /// Enter 进入/确认，Esc 在二级返回一级、在一级关闭，数字键 1-9 快选，
 /// 鼠标点击行等价于选中并 Enter。
 pub(crate) struct ModelPicker {
+    remote: bool,
     /// 当前展示的厂商；None 表示一级列表。
     vendor: Option<&'static str>,
     selected: usize,
@@ -247,6 +249,7 @@ impl ModelPicker {
         let active = profiles.iter().find(|profile| profile.active);
         let _ = active;
         Self {
+            remote: false,
             vendor: None,
             selected: 0,
             home_row: 0,
@@ -263,6 +266,7 @@ impl ModelPicker {
     /// dsh 形态构造（两级骨架复用，数据全宿主动态）。
     pub fn new_dsh(data: DshModelData) -> Self {
         Self {
+            remote: false,
             vendor: None,
             selected: 0,
             home_row: 0,
@@ -278,6 +282,20 @@ impl ModelPicker {
 
     pub fn row_count(&self) -> usize {
         self.rows().len()
+    }
+
+    pub(crate) fn new_remote(config: &ModelConfig, profiles: Vec<ProfileSummary>) -> Self {
+        let mut picker = Self::new(config, profiles);
+        picker.remote = true;
+        picker
+    }
+
+    fn preset_footer(&self) -> &'static str {
+        if self.remote {
+            "↑↓ select · Enter confirm · e key · Esc back"
+        } else {
+            "↑↓ select · Enter confirm · Esc back"
+        }
     }
 
     /// 测试探针：当前光标行（INV-U1 原位返回断言用）。
@@ -385,6 +403,10 @@ impl ModelPicker {
                 PickerAction::Continue
             }
             KeyCode::Enter | KeyCode::Right => self.activate(self.selected),
+            KeyCode::Char('e') if self.remote => match self.rows().get(self.selected) {
+                Some(PickerRow::Preset(preset)) => PickerAction::OpenPresetKey(preset),
+                _ => PickerAction::Continue,
+            },
             KeyCode::Char(ch) if ch.is_ascii_digit() && ch != '0' => {
                 let index = (ch as usize - '1' as usize).min(8);
                 if index < self.row_count() {
@@ -695,7 +717,7 @@ impl ModelPicker {
         } else {
             match self.vendor {
                 None => "↑↓ select · Enter open · 1-9 quick pick · Esc close",
-                Some(_) => "↑↓ select · Enter confirm · Esc back",
+                Some(_) => self.preset_footer(),
             }
         };
         // VP-3：能力图例只留此处（local 形态说明行行尾；dsh 不猜能力

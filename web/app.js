@@ -13,6 +13,10 @@ const PRESENTATION_KEY = 'clat.presentation.v1';
 const AUTH_KEY = 'clat.auth.v1';
 const MOBILE_BREAKPOINT = 760;
 const INSPECTOR_DRAWER_BREAKPOINT = 1180;
+const requestedWorkspace = new URLSearchParams(location.search).get('workspace');
+const workspacePrefix = requestedWorkspace === null ? '' : '/workspace/' + (
+  /^(default|[a-f0-9-]{36})$/.test(requestedWorkspace) ? requestedWorkspace : 'invalid'
+);
 
 function el(tag, cls, text) {
   const node = document.createElement(tag);
@@ -217,7 +221,13 @@ applyPresentation();
 /* —— RPC and stream transport ————————————————————————————— */
 
 async function rpc(method, params) {
-  const response = await fetch('/api/' + method, {
+  if (Number.isSafeInteger(state.selectionGeneration) && [
+    'session.new', 'session.switch', 'session.rename', 'session.compact', 'permission.set',
+    'draft.open', 'command.run', 'prompt.send', 'steer.send', 'run.cancel', 'model.overrides.set',
+  ].includes(method)) {
+    params = { ...params, expected_selection_generation: state.selectionGeneration };
+  }
+  const response = await fetch(workspacePrefix + '/api/' + method, {
     method: 'POST',
     headers: {
       Authorization: 'Bearer ' + state.token,
@@ -253,9 +263,11 @@ function parseJson(text) {
 }
 
 async function openStream() {
+  closeQuestionCards();
+  if (state.stream) state.stream.abort();
   const controller = new AbortController();
   state.stream = controller;
-  const response = await fetch('/api/events', {
+  const response = await fetch(workspacePrefix + '/api/events', {
     headers: { Authorization: 'Bearer ' + state.token },
     signal: controller.signal,
   });
@@ -270,6 +282,7 @@ async function openStream() {
   let scanned = 0;
   for (;;) {
     const { done, value } = await reader.read();
+    if (state.stream !== controller) return;
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
     let boundary;
@@ -278,7 +291,7 @@ async function openStream() {
       buffer = buffer.slice(boundary + 2);
       scanned = 0;
       const frame = parseSseBlock(block);
-      if (frame) handleFrame(frame);
+      if (frame && state.stream === controller) handleFrame(frame);
     }
     scanned = Math.max(0, buffer.length - 1);
   }
@@ -300,6 +313,7 @@ async function connect() {
     await openStream();
   } catch (error) {
     if (error.name === 'AbortError') return;
+    closeQuestionCards();
     state.connected = false;
     state.runActive = false;
     updateRunState('');
@@ -319,6 +333,7 @@ async function connect() {
 }
 
 function stopApp() {
+  closeQuestionCards();
   if (state.stream) state.stream.abort();
   clearTranscriptAttachmentUrls();
   hide(dom.app);
@@ -431,7 +446,7 @@ function handleLive(event) {
       syncInteractionControls();
       show(dom.cancel);
       state.run = null;
-      if (!lastUserMessageIs(event.prompt)) addUserMessage(event.prompt, event.content_blocks);
+      addUserMessage(event.prompt, event.content_blocks);
       break;
     case 'model_requested':
       addTraceEvent(event.type, [event.provider, event.model].filter(Boolean).join(' · '));
@@ -502,6 +517,7 @@ function finishRun(event) {
 }
 
 function onSubscribed(ctl) {
+  state.selectionGeneration = ctl.selection_generation;
   state.connected = true;
   state.reconnectDelayMs = 1000;
   setConnStatus('live', 'live');
@@ -514,6 +530,18 @@ function onSubscribed(ctl) {
   syncPlanModeBadge();
   refreshWorkbench();
   refreshSessions();
+}
+
+function onApprovalResolved(ctl) {
+  if (!ctl || !ctl.rpc_id) return;
+  for (const card of document.querySelectorAll('.approval-card')) {
+    if (card.dataset.rpcId !== ctl.rpc_id) continue;
+    // A confirmed local answer owns its final wording. Other clients retain
+    // their late-answer path; the host remains the first-answer-wins arbiter.
+    if (!card.querySelector('.actions button')) continue;
+    card.classList.add('resolved');
+    card.querySelector('.resolution').textContent = 'answered or closed by host';
+  }
 }
 
 function onApprovalRequested(ctl) {
@@ -578,8 +606,23 @@ function onSettled(ctl) {
 }
 
 function onNotice(ctl) {
+  if (onQuestionNotice(ctl)) return;
+  if (ctl && ctl.kind === 'approval_resolved') {
+    onApprovalResolved(ctl.payload);
+    return;
+  }
   const payload = ctl && ctl.payload;
   switch (ctl && ctl.kind) {
+    case 'selection':
+      if (state.stream) state.stream.abort();
+      connect();
+      refreshWorkbench();
+      refreshSessions();
+      break;
+    case 'models':
+      refreshWorkbench();
+      if (dom['settings-dialog'].open) refreshModelSettings();
+      break;
     case 'monitor': updateRunState(typeof payload === 'string' ? payload : ''); break;
     case 'compaction':
       if (payload && payload.status === 'started') {
@@ -630,6 +673,105 @@ function onNotice(ctl) {
 
 /* —— Transcript rendering ———————————————————————————————— */
 
+function resolveQuestionCard(card, message) {
+  card.classList.add('resolved');
+  card.querySelector('.actions').replaceChildren();
+  card.querySelector('.resolution').textContent = message;
+}
+
+function closeQuestionCards() {
+  for (const card of document.querySelectorAll('.question-card:not(.resolved)')) {
+    resolveQuestionCard(card, 'Connection changed — pending questions return after reconnect.');
+  }
+}
+
+function onQuestionNotice(ctl) {
+  if (!ctl || !['question_requested', 'question_resolved'].includes(ctl.kind)) return false;
+  const payload = ctl.payload;
+  if (!payload || typeof payload.rpc_id !== 'string') return true;
+  const existing = [...document.querySelectorAll('.question-card')]
+    .find((card) => card.dataset.rpcId === payload.rpc_id);
+  if (ctl.kind === 'question_resolved') {
+    if (existing && !existing.classList.contains('resolved')) {
+      resolveQuestionCard(existing, 'Answered or closed by host.');
+    }
+  } else if (!existing && payload.question && typeof payload.question.question === 'string') {
+    appendTranscript(createQuestionCard(payload));
+    scrollIfNearEnd();
+  }
+  return true;
+}
+
+function createQuestionCard(payload) {
+  const card = el('section', 'question-card');
+  card.dataset.rpcId = payload.rpc_id;
+  card.setAttribute('aria-label', 'Question from agent');
+  const question = payload.question;
+  const actions = el('form', 'actions');
+  const note = el('div', 'note resolution', 'Shared with connected clients · first answer wins');
+  note.setAttribute('role', 'status');
+  card.append(el('div', 'eyebrow', 'YOUR INPUT'), el('h3', 'title', question.question), actions, note);
+  const options = Array.isArray(question.options) ? question.options : [];
+  for (const option of options) {
+    const button = el('button', 'ghost question-option', option.label);
+    button.type = 'button';
+    button.setAttribute('aria-label', option.label);
+    if (option.description) button.appendChild(el('span', 'question-description', option.description));
+    button.addEventListener('click', () => submitQuestionAnswer(card, {
+      kind: 'selected', value: option.label,
+    }));
+    actions.appendChild(button);
+  }
+  if (question.allow_custom || options.length === 0) {
+    const label = el('label', 'question-custom', 'Your answer');
+    const input = el('textarea');
+    input.rows = 3;
+    label.appendChild(input);
+    const send = el('button', 'primary', 'Send answer');
+    send.type = 'submit';
+    actions.append(label, send);
+    actions.addEventListener('submit', (event) => {
+      event.preventDefault();
+      if (!input.value.trim() || new TextEncoder().encode(input.value).length > 65536) {
+        note.textContent = 'Enter a nonblank answer of at most 64 KiB.';
+        input.focus();
+        return;
+      }
+      submitQuestionAnswer(card, { kind: 'custom', value: input.value });
+    });
+  } else {
+    actions.addEventListener('submit', (event) => event.preventDefault());
+  }
+  const decline = el('button', 'ghost', 'Decline');
+  decline.type = 'button';
+  decline.addEventListener('click', () => submitQuestionAnswer(card, { kind: 'declined' }));
+  actions.appendChild(decline);
+  return card;
+}
+
+async function submitQuestionAnswer(card, answer) {
+  if (card.dataset.sending === 'true' || card.classList.contains('resolved')) return;
+  const stream = state.stream;
+  const current = () => card.isConnected && state.stream === stream
+    && !card.classList.contains('resolved');
+  card.dataset.sending = 'true';
+  const controls = card.querySelectorAll('button, textarea');
+  controls.forEach((control) => { control.disabled = true; });
+  try {
+    await rpc('question.respond', { rpcId: card.dataset.rpcId, answer });
+    if (current()) resolveQuestionCard(card, 'Answer accepted.');
+  } catch (error) {
+    if (!current()) return;
+    if (error.code === 'not-pending') resolveQuestionCard(card, 'Already answered or closed by host.');
+    else {
+      card.querySelector('.resolution').textContent = 'Answer retained. Check the host before retrying: ' + error.message;
+      controls.forEach((control) => { control.disabled = false; });
+    }
+  } finally {
+    card.dataset.sending = 'false';
+  }
+}
+
 function appendTranscript(node) {
   hide(dom['empty-state']);
   (state.history.replayTarget || dom.transcript).appendChild(node);
@@ -639,11 +781,6 @@ function appendTranscript(node) {
 function syncEmptyState() {
   if (dom.transcript.childElementCount === 0) show(dom['empty-state']);
   else hide(dom['empty-state']);
-}
-
-function lastUserMessageIs(text) {
-  const messages = dom.transcript.querySelectorAll('.msg.user .body');
-  return messages.length > 0 && messages[messages.length - 1].textContent === text;
 }
 
 function attachmentBlocks(blocks) {
@@ -668,7 +805,7 @@ async function loadTranscriptImage(img, attachment) {
     // window so an independently scheduled reader never turns that handoff
     // race into a permanent “unavailable” thumbnail.
     for (let attempt = 0; attempt < 8; attempt += 1) {
-      response = await fetch(`/api/attachments/${encodeURIComponent(attachment.attachment_id)}`, {
+      response = await fetch(`${workspacePrefix}/api/attachments/${encodeURIComponent(attachment.attachment_id)}`, {
         headers: { Authorization: 'Bearer ' + state.token },
         cache: 'no-store',
       });
@@ -1583,7 +1720,165 @@ function openSettings() {
   dom['settings-saved'].textContent = '';
   if (!dom['settings-dialog'].open) dom['settings-dialog'].showModal();
   refreshWechatStatus();
+  refreshWorkspaces();
+  refreshModelSettings();
 }
+
+const modelField = (name) => document.getElementById('model-' + name);
+let modelSettingsRefresh = 0;
+let modelProfileGeneration = 0;
+
+modelField('profile-editor').addEventListener('input', () => { modelProfileGeneration++; });
+modelField('profile-editor').addEventListener('change', () => { modelProfileGeneration++; });
+modelField('profile-new').addEventListener('click', () => {
+  modelProfileGeneration++;
+  for (const field of ['name', 'model', 'endpoint', 'key']) modelField('profile-' + field).value = '';
+  modelField('profile-protocol').value = 'open_ai_compatible';
+  modelField('profile-path').value = '/chat/completions';
+  modelField('profile-clear-key').checked = false;
+  modelField('profile-key-state').textContent = '';
+  modelField('settings-saved').textContent = '';
+  modelField('settings-error').textContent = '';
+  modelField('profile-editor').open = true;
+  modelField('profile-name').focus();
+});
+
+async function refreshModelSettings() {
+  const generation = ++modelSettingsRefresh;
+  try {
+    const view = await rpc('model.settings.get', {});
+    if (generation !== modelSettingsRefresh) return;
+    modelField('current').textContent = (view.current.model || 'No model selected') +
+      ' · key ' + (view.current.credential_set ? 'set' : 'not set');
+    const select = modelField('preset');
+    const chosen = select.value || view.current.preset;
+    select.replaceChildren();
+    const groups = new Map();
+    for (const preset of view.presets) {
+      if (!groups.has(preset.vendor)) {
+        const group = document.createElement('optgroup');
+        group.label = preset.vendor;
+        groups.set(preset.vendor, group);
+        select.appendChild(group);
+      }
+      const option = el('option', '', preset.name);
+      option.value = preset.id;
+      groups.get(preset.vendor).appendChild(option);
+    }
+    if (chosen && [...select.options].some((option) => option.value === chosen)) select.value = chosen;
+    modelField('profiles').replaceChildren();
+    for (const name of view.profiles) renderModelProfile(name, name === view.active_profile);
+  } catch (error) { modelField('settings-error').textContent = error.message; }
+}
+
+function renderModelProfile(name, active) {
+  const row = el('div', 'model-profile-row');
+  row.appendChild(el('strong', '', name + (active ? ' · active' : '')));
+  for (const action of ['Use', 'Edit', 'Delete']) {
+    const button = el('button', 'ghost', action);
+    button.type = 'button';
+    button.setAttribute('aria-label', action + ' profile ' + name);
+    button.addEventListener('click', () => modelAction(button, async () => {
+      if (action === 'Edit') return loadModelProfile(name);
+      if (action === 'Delete' && !window.confirm('Delete profile “' + name + '”? An active profile falls back to the next saved profile, or an unconfigured model.')) return;
+      await rpc(action === 'Use' ? 'model.profile.activate' : 'model.profile.delete', { name });
+    }));
+    row.appendChild(button);
+  }
+  modelField('profiles').appendChild(row);
+}
+
+async function loadModelProfile(name) {
+  const generation = ++modelProfileGeneration;
+  const view = await rpc('model.profile.get', { name });
+  if (generation !== modelProfileGeneration || !dom['settings-dialog'].open) return;
+  if (!view) throw new Error('Profile no longer exists');
+  modelField('profile-name').value = name;
+  for (const [field, key] of [['protocol', 'protocol'], ['model', 'model'], ['endpoint', 'endpoint'], ['path', 'request_path']]) {
+    modelField('profile-' + field).value = view[key];
+  }
+  modelField('profile-key').value = '';
+  modelField('profile-clear-key').checked = false;
+  modelField('profile-key-state').textContent = 'Key ' + (view.credential_set ? 'is set' : 'is not set') +
+    (view.advanced_settings_present ? ' · Advanced settings are retained only on an unchanged route.' : '');
+  modelField('profile-editor').open = true;
+}
+
+async function modelAction(button, action) {
+  button.disabled = true;
+  modelField('settings-error').textContent = '';
+  modelField('settings-saved').textContent = '';
+  try {
+    await action();
+    await refreshModelSettings();
+    await refreshWorkbench();
+  } catch (error) { modelField('settings-error').textContent = error.message; }
+  finally { button.disabled = false; }
+}
+
+modelField('preset-select').addEventListener('click', (event) => modelAction(event.currentTarget, async () => {
+  const params = { id: modelField('preset').value };
+  if (modelField('preset-key').value) params.api_key = modelField('preset-key').value;
+  modelField('preset-key').value = '';
+  await rpc('model.preset.select', params);
+  modelField('settings-saved').textContent = 'Preset selected for the next run.';
+}));
+
+modelField('profile-save').addEventListener('click', (event) => modelAction(event.currentTarget, async () => {
+  const params = {};
+  for (const [field, key] of [['name', 'name'], ['protocol', 'protocol'], ['model', 'model'], ['endpoint', 'endpoint'], ['path', 'request_path']]) {
+    params[key] = modelField('profile-' + field).value.trim();
+  }
+  if (modelField('profile-clear-key').checked) params.api_key = '';
+  else if (modelField('profile-key').value) params.api_key = modelField('profile-key').value;
+  modelField('profile-key').value = '';
+  await rpc('model.profile.save', params);
+  modelField('settings-saved').textContent = 'Profile saved. Choose Use to activate it.';
+}));
+
+dom['settings-dialog'].addEventListener('close', () => {
+  modelProfileGeneration++;
+  modelField('profile-key').value = '';
+  modelField('preset-key').value = '';
+});
+
+async function refreshWorkspaces() {
+  const list = document.getElementById('workspace-list');
+  const error = document.getElementById('workspace-error');
+  try {
+    const result = await rpc('workspace.list', {});
+    list.replaceChildren();
+    for (const workspace of result.workspaces) {
+      const link = el('a', 'workspace-link', workspace.root);
+      link.href = '/?workspace=' + encodeURIComponent(workspace.id);
+      link.target = '_blank';
+      link.rel = 'noopener';
+      list.appendChild(link);
+    }
+    error.textContent = '';
+  } catch (failure) { error.textContent = failure.message; }
+}
+
+document.getElementById('workspace-open').addEventListener('click', async () => {
+  const button = document.getElementById('workspace-open');
+  const error = document.getElementById('workspace-error');
+  const root = document.getElementById('workspace-root').value.trim();
+  const trust = document.getElementById('workspace-trust').checked;
+  button.disabled = true;
+  error.textContent = '';
+  try {
+    const result = await rpc('workspace.open', { root, trust });
+    await refreshWorkspaces();
+    // A separate tab keeps this client's draft, stream and selection intact.
+    const link = el('a', 'workspace-link', 'Open project in a new tab');
+    link.href = '/?workspace=' + encodeURIComponent(result.id);
+    link.target = '_blank';
+    link.rel = 'noopener';
+    error.replaceChildren(link);
+    document.getElementById('workspace-trust').checked = false;
+  } catch (failure) { error.textContent = failure.message; }
+  finally { button.disabled = false; }
+});
 
 dom['settings-open'].addEventListener('click', openSettings);
 dom['composer-permission'].addEventListener('click', openSettings);
@@ -1939,7 +2234,7 @@ async function uploadDraftImage(image, epoch) {
   renderDraft();
   try {
     const scope = await ensureDraftScope();
-    const response = await fetch(`/api/drafts/${encodeURIComponent(scope.draftScopeId)}/images`, {
+    const response = await fetch(`${workspacePrefix}/api/drafts/${encodeURIComponent(scope.draftScopeId)}/images`, {
       method: 'POST',
       headers: {
         Authorization: 'Bearer ' + state.token,

@@ -60,6 +60,35 @@ impl Drop for StorageRootLease {
 }
 
 impl StorageRootLease {
+    /// Initialization can create a deeper lock target after acquisition.
+    /// Retain the ancestor lock and cover the new directory before exposing
+    /// a writable control plane. A competing initializer makes this fail closed.
+    #[cfg(unix)]
+    pub(crate) fn cover_initialized_root(&mut self, root: &Path) -> io::Result<()> {
+        use std::os::unix::fs::MetadataExt;
+        let file = open_directory(root)?;
+        let target = file.metadata()?;
+        for held in &self.held {
+            let metadata = held.metadata()?;
+            if metadata.dev() == target.dev() && metadata.ino() == target.ino() {
+                return Ok(());
+            }
+        }
+        if !try_lock_exclusive(&file)? {
+            return Err(io::Error::other(
+                "another CLAT process acquired the initialized storage root",
+            ));
+        }
+        self.held.push(file);
+        Ok(())
+    }
+
+    /// Named mutex identity already includes the missing path suffix.
+    #[cfg(not(unix))]
+    pub(crate) fn cover_initialized_root(&mut self, _root: &Path) -> io::Result<()> {
+        Ok(())
+    }
+
     /// The canonical spelling of the leased root (existing ancestor
     /// canonicalized + the not-yet-existing suffix), for diagnostics.
     pub(crate) fn identity(&self) -> &Path {

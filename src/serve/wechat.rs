@@ -732,6 +732,20 @@ impl WechatBridge {
         }
     }
 
+    // Caller holds Application until both admission and selection are visible.
+    fn publish_prompt_start(
+        &self,
+        outcome: &crate::application::WechatPromptStartOutcome,
+        selection_changed: bool,
+    ) {
+        if let crate::application::WechatPromptStartOutcome::Started { handle, .. } = outcome {
+            self.shared.publish_run_boundary(handle);
+        }
+        if selection_changed {
+            self.shared.advance_selection_generation();
+        }
+    }
+
     fn start_prompt(
         &self,
         target: &ReplyTarget,
@@ -763,9 +777,7 @@ impl WechatBridge {
                     completion: completion_tx,
                 },
             );
-            if started.selection_changed {
-                self.shared.advance_selection_generation();
-            }
+            self.publish_prompt_start(&started.outcome, started.selection_changed);
             started
         };
         match started.outcome {
@@ -2055,6 +2067,23 @@ mod tests {
         };
         assert!(!approval.contains("echo from-serve-test"));
         assert!(!approval.contains("\"command\""));
+        // Reconnect after IM selected/materialized its session: the current
+        // input belongs to the live prefix, never also to journal history.
+        {
+            let application = app.lock().unwrap();
+            let (id, _queue, prefix) = shared.register_replay_subscriber();
+            let prefix = prefix.expect("IM run remains at approval");
+            let page = application.session_history(prefix.before_seq, 50).unwrap();
+            assert!(!page.events.iter().any(|event| matches!(
+                event,
+                crate::session::replay::ReplayEvent::UserMessage { .. }
+            )));
+            assert!(
+                !prefix.frames.is_empty(),
+                "current input is retained in live prefix"
+            );
+            shared.remove_subscriber(id);
+        }
         let request_id = approval
             .lines()
             .find_map(|line| line.strip_prefix("ID: "))

@@ -138,6 +138,22 @@ existing leases.
 
 ## Application boundary
 
+`HostApplication` groups already trusted project runtimes under one storage-root
+owner. That owner retains the kernel lease and exactly one `ControlStorage`
+cache; each canonical project path has one `TrustedProjectApplication`, with
+its own session service, permission state, draft store and plugin composition.
+Dropping a client handle does not remove a hosted project. Explicit host close
+requires client handles to drain before project producers and journals close.
+Fresh-root initialization extends the ancestor lease to the newly created root
+before exposing its writable control plane.
+
+Serve routes additional projects through `/workspace/<id>/api/...`. The default
+project retains `/api/...` compatibility. Routes are process-local identities;
+an expired route returns an error and never selects another project. Explicit
+`clat attach` uses the core's authenticated loopback HTTP/SSE client without
+mounting a second application writer. The default TUI remains standalone while
+client feature parity and automatic host startup are still in progress.
+
 The facade is split structurally:
 
 ```text
@@ -559,6 +575,61 @@ bridges permission requests to `approval.requested` events and
 `approval.respond` RPC calls, exposes core command/session/run use cases, and
 uses the same event envelopes as headless JSON output.
 
+Host runs also inject `ServeAsker` through the existing `UserAsker` port.
+Its project-local pending table arbitrates `question.respond` with first-valid-
+answer semantics. Pending questions replay to new subscribers under the same
+lock ordering used for publication and resolution. Requests/resolutions are
+ephemeral `notice` kinds (`question_requested` / `question_resolved`); original
+tool calls/results own durable history. Attached terminals only own dialog queues
+and response transport, never question arbitration or persistence. PWA renders
+inline question forms over the same notices/RPC, with single-flight submission
+and DOM/connection ownership guards against late replies. Reconnect rebuilds
+pending forms; browser drafts are local, ephemeral, and never authoritative.
+
+Model profile summaries expose a non-secret `limits` object (output tokens,
+context tokens, per-run budget). `model.profile.save` accepts that same object
+as a whole replacement; omitted limits preserve the existing route's settings,
+while null entries remove numeric overrides (budget zero explicitly disables
+the budget). Core validates before mutation and updates typed overrides together
+with effective fields under the host model-update lock. Saving does not activate
+the profile. Headers, extra request bodies and credentials remain unreadable.
+
+The non-secret `tuning` projection/edit carries temperature, parallel-tool calls,
+and thinking level using the existing typed `Override` vocabulary: `{"set":value}`,
+`"clear"`, or `"inherit"` (also the default for omitted patch fields). Core validates
+before mutation and applies only the explicit patch through `ModelConfig`'s
+existing override logic, preserving unrelated overrides and hidden JSON. Attached
+editors submit changed tuning fields only, except a new name/route carries all
+visible tuning values. Thinking clear removes an effort override, not reasoning
+itself; parallel clear means omission, not false. No new vendor rules are in UI.
+
+The `extra_headers_edit_supported` capability enables write-only `extra_headers`
+whole-object replacement. Omission or null preserves the exact same route's
+headers; `{}` clears them. Validation runs before any write and checks string
+values, HTTP syntax, control characters and bounded sizes (128 entries, 256-byte
+names, 8192-byte values, 64-KiB encoded object). Neither summaries nor errors
+contain header names or values. This uses the existing model update lock and
+profile persistence owner, does not activate a saved profile, and does not copy
+hidden fields across routes.
+
+`extra_body_edit_supported` adds a write-only whole-object `extra_body` edit
+(omission/null preserves same-route content; `{}` clears; 64-KiB encoded limit,
+depth 32). Replacement migrates legacy overrides, then sets `thinking_level`
+to None and its override to Inherit, preserving raw JSON through activation and
+reload. Explicit Thinking Set/Clear in the same request is rejected before any
+write; other typed tuning remains independent. This does not change provider
+reserved-field checks or null-tombstone semantics. Terminal JSON drafts share
+masking/parsing/dispatch cleanup; after Body dispatch the tuning form is rebased
+so a later save cannot accidentally generate a Thinking Clear from the reset.
+
+The `auth_edit_supported` capability enables write-only `auth` edits containing
+optional `header` and `prefix` strings. Omitted/null entries preserve the existing
+same-route fields; empty strings explicitly clear them. No auth value appears in
+the read DTO. Core validates HTTP header syntax and size/control-character bounds
+before applying any part of the save, under the existing model-update lock.
+The terminal tracks explicitly edited fields and clears auth drafts on dispatch;
+it never reconstructs unknown secrets from a masked display or retries a save.
+
 The initial SSE replay is a message-aligned 50-message tail page. Every replay
 variant carries its journal `seq` and owning `turn`; `session.history` pages
 backward with an exclusive `before_seq` cursor and never splits a turn. Session
@@ -569,6 +640,13 @@ invalidate existing cursors; the v0-to-v2 `/update` publication naturally
 re-arms a new cache with the new generation. The full bounded message outline
 travels on `subscribed` and refreshes again at each durable `prompt.settled`
 boundary, so live navigation never guesses journal sequence numbers.
+
+When a run is active, reconnect replays history strictly before its initial
+admitted user-message sequence, then the complete captured run-event prefix
+and the queued live suffix. Registration and history capture serialize with
+admission and session selection. The frozen cursor also covers goal continuations
+and WeChat admissions; identical text is not a deduplication key. Once the run
+settles, reconstruction returns to journal-only history.
 
 Manual PWA compaction is exposed as `session.compact`. Serve owns only a clone
 of the core `CompactHandle` so it can report an `active_compaction` snapshot and

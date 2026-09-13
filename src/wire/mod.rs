@@ -153,7 +153,10 @@ fn message_text_fields(
     fields
 }
 
-fn content_block_from_json(value: &Value, event: &'static str) -> Result<ContentBlock, WireError> {
+pub(crate) fn content_block_from_json(
+    value: &Value,
+    event: &'static str,
+) -> Result<ContentBlock, WireError> {
     let object = value.as_object().ok_or(WireError::Field {
         event,
         field: "content_blocks",
@@ -754,7 +757,7 @@ fn finish_reason_from_json(value: &Value, event: &'static str) -> Result<FinishR
     }
 }
 
-fn permission_decision_from_json(
+pub(crate) fn permission_decision_from_json(
     value: &Value,
     event: &'static str,
 ) -> Result<PermissionDecision, WireError> {

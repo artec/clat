@@ -17,6 +17,8 @@ pub(crate) enum EditorAction {
     Save(Box<(ModelConfig, ProviderCredentials)>),
     /// B9：档案模式保存——携档案名与原名（改名 = 存新删旧）。
     SaveProfile(Box<ProfileSave>),
+    SaveRemoteProfile(Value),
+    SaveRemotePreset(Value),
     Cancel,
 }
 
@@ -129,6 +131,14 @@ const BUDGET_DEFAULT: usize = 1;
 const CHOICE_CUSTOM: usize = usize::MAX;
 
 pub(crate) struct ModelEditor {
+    remote: bool,
+    remote_key_edited: bool,
+    remote_limits: bool,
+    remote_tuning: Option<Value>,
+    remote_auth: Option<Value>,
+    remote_headers: Option<bool>,
+    remote_body: Option<bool>,
+    remote_revision: u64,
     protocol: ModelProtocol,
     model: String,
     endpoint: String,
@@ -180,6 +190,14 @@ impl ModelEditor {
         provider_descriptors: Vec<ProviderDescriptor>,
     ) -> Self {
         Self {
+            remote: false,
+            remote_key_edited: false,
+            remote_limits: false,
+            remote_tuning: None,
+            remote_auth: None,
+            remote_headers: None,
+            remote_body: None,
+            remote_revision: 0,
             protocol: config.protocol,
             model: config.model.clone(),
             endpoint: config.endpoint.clone(),
@@ -307,7 +325,11 @@ impl ModelEditor {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> EditorAction {
+        self.remote_revision += 1;
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
+            if self.remote && self.editing.is_some() {
+                return EditorAction::Continue;
+            }
             return self.save_action();
         }
         if self.editing.is_some() {
@@ -363,6 +385,7 @@ impl ModelEditor {
     }
 
     pub fn handle_paste(&mut self, text: &str) {
+        self.remote_revision += 1;
         self.open_popup_for_selected();
         if let Some(popup) = &mut self.editing {
             popup.buffer.push_str(text);
@@ -370,6 +393,7 @@ impl ModelEditor {
     }
 
     pub fn handle_mouse(&mut self, mouse: MouseEvent, area: Rect) -> EditorAction {
+        self.remote_revision += 1;
         if mouse.kind != MouseEventKind::Down(MouseButton::Left) {
             return EditorAction::Continue;
         }
@@ -395,7 +419,7 @@ impl ModelEditor {
         // 弹窗规范统一（2026-08-22 用户反馈）：说明行钉在弹框内底行、
         // Faint 灰、与内容恰好隔一空行——与选择器及其余弹窗一致（此前
         // 编辑器说明行无样式，亮白刺眼且与 picker 不一致）。
-        let block = crate::tui::popup_block("/model");
+        let block = crate::tui::popup_block(&self.editor_title());
         let inner = block.inner(area);
         let [content_area, footer_area] =
             Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(inner);
@@ -429,7 +453,7 @@ impl ModelEditor {
                 crate::tui::theme::style(crate::tui::theme::Role::Error),
             )),
             None => Line::from(Span::styled(
-                "↑↓ select · Enter edit · ←/→ cycle · Ctrl+D clear · Ctrl+S save · Esc cancel",
+                self.editor_footer(),
                 crate::tui::theme::style(crate::tui::theme::Role::Faint),
             )),
         };
@@ -469,7 +493,7 @@ impl ModelEditor {
             ),
             Model => ("Model".into(), display_placeholder(&self.model)),
             Endpoint => ("Endpoint".into(), display_placeholder(&self.endpoint)),
-            ApiKey => (self.credential_label(0), self.credentials.masked_value(0)),
+            ApiKey => (self.credential_label(0), self.key_summary()),
             Advanced => (
                 "[ Advanced ]".into(),
                 if self.show_advanced {
@@ -480,10 +504,10 @@ impl ModelEditor {
             ),
             Protocol => ("Protocol".into(), format!("{}  ←/→", self.protocol)),
             RequestPath => ("Request Path".into(), self.request_path.clone()),
-            AuthHeader => ("Auth Header".into(), self.auth_header.clone()),
-            AuthPrefix => ("Auth Prefix".into(), display_spaces(&self.auth_prefix)),
-            ExtraHeaders => ("Extra Headers JSON".into(), self.extra_headers.clone()),
-            ExtraBody => ("Extra Body JSON".into(), self.extra_body.clone()),
+            AuthHeader => self.auth_row_label(false),
+            AuthPrefix => self.auth_row_label(true),
+            ExtraHeaders => self.json_row_label(false),
+            ExtraBody => self.json_row_label(true),
             OutputLimit => (
                 "Max Output Tokens".into(),
                 self.override_row_value(OutputLimit, self.output_row_value()),
@@ -657,6 +681,9 @@ impl ModelEditor {
 
     fn visible_rows(&self) -> Vec<RowKind> {
         use RowKind::*;
+        if self.remote {
+            return self.remote_rows();
+        }
         if self.profile.is_some() {
             // INV-M5：档案编辑器无 Preset 循环行；INV-M4：三个数值
             // 参数以枚举行出现在基本区；INV-M6：思考档位枚举行。
@@ -739,6 +766,7 @@ impl ModelEditor {
     }
 
     fn commit_edit(&mut self, target: EditTarget, buffer: String) {
+        self.record_remote_auth_edit(target, &buffer);
         let override_row = match target {
             EditTarget::OutputLimit => Some(RowKind::OutputLimit),
             EditTarget::ContextWindow => Some(RowKind::ContextWindow),
@@ -771,15 +799,26 @@ impl ModelEditor {
                     self.thinking_level = None;
                 }
             }
-            EditTarget::ApiKey => self.credentials.set_value(0, buffer),
+            EditTarget::ApiKey => {
+                self.remote_key_edited = true;
+                self.credentials.set_value(0, buffer);
+            }
             EditTarget::RequestPath => {
                 self.request_path = buffer;
                 self.preset = None;
             }
             EditTarget::AuthHeader => self.auth_header = buffer,
             EditTarget::AuthPrefix => self.auth_prefix = buffer,
-            EditTarget::ExtraHeaders => self.extra_headers = buffer,
+            EditTarget::ExtraHeaders => {
+                if let Some(edited) = &mut self.remote_headers {
+                    *edited = true;
+                }
+                self.extra_headers = buffer;
+            }
             EditTarget::ExtraBody => {
+                if let Some(edited) = &mut self.remote_body {
+                    *edited = true;
+                }
                 self.extra_body = buffer;
                 // Extra Body 也是预设整体控制的字段；仅清档位还不够，
                 // preset.apply 会在下次 model_state() 把原始 JSON 整体
@@ -879,7 +918,21 @@ impl ModelEditor {
         let inner = width.saturating_sub(2 + 2 * crate::tui::POPUP_TEXT_PADDING) as usize;
         let popup_area = centered_rect_abs(area, width, 5);
         crate::tui::clear_popup_with_guards(frame, popup_area);
-        let (shown, shown_width) = tail_window(&popup.buffer, inner);
+        let masked;
+        let text = if self.remote
+            && matches!(
+                popup.target,
+                EditTarget::ApiKey
+                    | EditTarget::AuthPrefix
+                    | EditTarget::ExtraHeaders
+                    | EditTarget::ExtraBody
+            ) {
+            masked = "*".repeat(popup.buffer.chars().count());
+            &masked
+        } else {
+            &popup.buffer
+        };
+        let (shown, shown_width) = tail_window(text, inner);
         let lines = vec![
             Line::from(shown),
             Line::from(""),
@@ -1159,6 +1212,9 @@ impl ModelEditor {
     }
 
     fn save_action(&mut self) -> EditorAction {
+        if self.remote {
+            return self.remote_save_action();
+        }
         match self.build() {
             Ok((config, runtime)) => {
                 if let Some(profile) = &self.profile {
@@ -1327,6 +1383,10 @@ impl ModelEditor {
 }
 
 mod picker;
+mod remote;
+mod remote_auth;
+mod remote_json;
+mod remote_tuning;
 pub(crate) use picker::{
     ModelPicker, PickerAction, PickerSnapshot, ProfileSummary, dsh_model_data_from,
 };

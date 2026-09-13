@@ -3,14 +3,14 @@
 //!
 //! ```text
 //! 1.（三闸，serve.rs）
-//! 2. 注册活流订阅（buffered_at = 此刻 run 缓冲长度）
+//! 2. 注册活流订阅并取得此刻 run 缓冲的独立快照
 //! 3. replay.begin → session.history 尾页 → replay.end（journal 域）
 //! 4. subscribed { last_seq }（committed_seq 水位，竞态自检用）
-//! 5. active run 存在 → 直写 run_buffer[0..buffered_at]（事件域）
+//! 5. 直写注册时的 run 前缀快照（事件域）
 //! 6. 泵活流队列 → 实时（recv_timeout 15s → 心跳 comment）
 //! ```
 //!
-//! 步 2 与步 5/6 的衔接靠 buffered_at：重发段与队列在同一锁内取值，
+//! 步 2 与步 5/6 的衔接靠独立快照：重发段与队列在同一锁内取值，
 //! 无重叠无丢失（INV-S4 判别锚）。重连 = 重建：断开后客户端重新
 //! GET /api/events，服务端重走全流程——无续传游标（§7.2）。
 
@@ -28,123 +28,118 @@ use std::time::{Duration, Instant};
 const REPLAY_PHASE_BUDGET: Duration = Duration::from_secs(30);
 
 pub(crate) fn handle(stream: &mut TcpStream, shared: &Arc<ServeShared>) {
-    // 写超时：慢消费者的 OS 缓冲填满后，泵线程的写不至于永久阻塞
-    //（INV-S7 的服务端半边——超时即断连清理）。读超时只服务于
-    // peek 探测（泵不消费客户端字节，保持只写姿态）。
     let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
     let _ = stream.set_read_timeout(Some(Duration::from_secs(1)));
     if super::http::write_sse_head(stream).is_err() {
         return;
     }
-    let (subscriber_id, queue, buffered_at) = shared.register_subscriber();
+    let deadline = Instant::now() + REPLAY_PHASE_BUDGET;
+    // Admission/selection cannot cross registration and history. Registration
+    // releases inner before any Application method is called.
+    let app = shared.app.lock().expect("application lock");
+    let (subscriber_id, queue, prefix) = shared.register_replay_subscriber();
+    let before_seq = prefix.as_ref().and_then(|prefix| prefix.before_seq);
+    let snapshot = replay_snapshot(&app, before_seq, shared.selection_generation());
+    drop(app);
     let mut connection = SseConnection {
         stream,
         seq: 0,
         shared,
         subscriber_id,
     };
-
-    // 步 3：journal 域重放（一次锁内取 snapshot + 水位，避免两读间
-    // 漂移——last_seq 至少覆盖重放尾）。
-    //
-    // PWA2-01：重放+缓冲前缀阶段有**总时长预算**（每帧写另有 10s
-    // 超时）。预算耗尽 → 显式断连——订阅生命周期状态机保证
-    // CONNECT →（REPLAYING）→ SUBSCRIBED 或 FAILED/CLOSED，任何连接
-    // 不得无限停留在「已重放未确认」之间（慢客户端 × 巨 journal
-    // 的组合由预算封顶）。
-    let phase_deadline = Instant::now() + REPLAY_PHASE_BUDGET;
-    let replay_result = {
-        let app = shared.app.lock().expect("application lock");
-        app.session_history(None, 50).and_then(|page| {
-            app.session_message_outline().map(|outline| {
-                (
-                    page.events,
-                    page.has_more,
-                    app.committed_seq(),
-                    app.current_session_id(),
-                    outline,
-                )
-            })
-        })
-    };
-    let (replay, has_more, last_seq, session_id, outline) = match replay_result {
-        Ok(value) => value,
+    match snapshot {
+        Ok(snapshot) => {
+            let frames = prefix.map(|prefix| prefix.frames).unwrap_or_default();
+            if write_reconstruction(&mut connection, snapshot, frames, deadline).is_ok() {
+                pump(&mut connection, &queue);
+            }
+        }
         Err(error) => {
-            // 重放源失败：fail-closed——以 notice 形态告知后断流，绝不
-            // 静默给出半截历史。
             let ctl = serde_json::json!({
-                "kind": "internal",
-                "payload": {"error": error.to_string()},
+                "kind": "internal", "payload": {"error": error.to_string()},
             });
             let _ = connection.write_frame("notice", &super::shapes::ctl_data(&ctl));
-            connection.cleanup();
-            return;
-        }
-    };
-    let replay_begin = serde_json::json!({"has_more": has_more});
-    if connection
-        .write_frame("replay.begin", &replay_begin.to_string())
-        .is_err()
-    {
-        connection.cleanup();
-        return;
-    }
-    for event in &replay {
-        if Instant::now() >= phase_deadline {
-            connection.fail_phase_budget();
-            return;
-        }
-        let data = super::shapes::replay_data(event);
-        if connection.write_frame("replay", &data).is_err() {
-            connection.cleanup();
-            return;
         }
     }
-    if connection.write_frame("replay.end", "{}").is_err() {
-        connection.cleanup();
-        return;
-    }
-
-    // 步 4：订阅确认（last_seq 是诊断辅助，不是正确性依赖——§7.2）。
-    let ctl = serde_json::json!({
-        "last_seq": last_seq,
-        "session_id": session_id.map(|id| id.as_str().to_owned()),
-        "message_outline": outline.into_iter().map(|item| serde_json::json!({
-            "seq": item.seq,
-            "turn": item.turn,
-            "role": item.role,
-            "preview": item.preview,
-        })).collect::<Vec<_>>(),
-        "replaying": false,
-    });
-    if connection
-        .write_frame("subscribed", &super::shapes::ctl_data(&ctl))
-        .is_err()
-    {
-        connection.cleanup();
-        return;
-    }
-
-    // 步 5：active run 的缓冲前缀直写（事件域从 run 头开始，无中段
-    // 截断——INV-S4 判别锚）。同受阶段预算约束（PWA2-01）。
-    if let Some(buffered_at) = buffered_at {
-        for data in shared.run_buffer_prefix(buffered_at) {
-            if Instant::now() >= phase_deadline {
-                connection.fail_phase_budget();
-                return;
-            }
-            if connection.write_frame("event", &data).is_err() {
-                connection.cleanup();
-                return;
-            }
-        }
-    }
-
-    // 步 6：活流泵。
-    pump(&mut connection, &queue);
     connection.cleanup();
 }
 
+struct ReplaySnapshot {
+    events: Vec<crate::session::replay::ReplayEvent>,
+    has_more: bool,
+    subscribed: serde_json::Value,
+}
+
+fn replay_snapshot(
+    app: &crate::TrustedProjectApplication,
+    before_seq: Option<u64>,
+    selection_generation: u64,
+) -> Result<ReplaySnapshot, crate::ApplicationError> {
+    let page = app.session_history(before_seq, 50)?;
+    let outline = app.session_message_outline()?;
+    Ok(ReplaySnapshot {
+        events: page.events,
+        has_more: page.has_more,
+        subscribed: serde_json::json!({
+            "last_seq": app.committed_seq(),
+            "session_id": app.current_session_id().map(|id| id.as_str().to_owned()),
+            "message_outline": outline.into_iter().map(|item| serde_json::json!({
+                "seq": item.seq, "turn": item.turn, "role": item.role, "preview": item.preview,
+            })).collect::<Vec<_>>(),
+            "replaying": false,
+            "selection_generation": selection_generation,
+        }),
+    })
+}
+
+fn write_reconstruction(
+    connection: &mut SseConnection<'_>,
+    snapshot: ReplaySnapshot,
+    prefix: Vec<String>,
+    deadline: Instant,
+) -> std::io::Result<()> {
+    write_before_deadline(
+        connection,
+        "replay.begin",
+        &serde_json::json!({"has_more": snapshot.has_more}).to_string(),
+        deadline,
+    )?;
+    for event in snapshot.events {
+        write_before_deadline(
+            connection,
+            "replay",
+            &super::shapes::replay_data(&event),
+            deadline,
+        )?;
+    }
+    write_before_deadline(connection, "replay.end", "{}", deadline)?;
+    write_before_deadline(
+        connection,
+        "subscribed",
+        &super::shapes::ctl_data(&snapshot.subscribed),
+        deadline,
+    )?;
+    for data in prefix {
+        write_before_deadline(connection, "event", &data, deadline)?;
+    }
+    Ok(())
+}
+
+fn write_before_deadline(
+    connection: &mut SseConnection<'_>,
+    event: &str,
+    data: &str,
+    deadline: Instant,
+) -> std::io::Result<()> {
+    if Instant::now() >= deadline {
+        connection.fail_phase_budget();
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "replay phase budget",
+        ));
+    }
+    connection.write_frame(event, data)
+}
 fn pump(connection: &mut SseConnection<'_>, queue: &Receiver<SseFrame>) {
     loop {
         if connection.shared.is_shutting_down() {

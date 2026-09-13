@@ -23,6 +23,9 @@ use std::time::{Duration, Instant};
 const TEST_TOKEN: &str = "tok-3f9d2c7a-serve-test";
 const WAIT: Duration = Duration::from_secs(30);
 
+#[path = "workspace_tests.rs"]
+mod workspace_tests;
+
 fn setup(name: &str) -> (PathBuf, PathBuf, Project) {
     let (storage_root, project_root) = roots(name);
     std::fs::create_dir_all(&project_root).expect("project dir");
@@ -121,8 +124,13 @@ fn post(
     body: &str,
 ) -> (u16, Result<serde_json::Value, ErrorCode>) {
     let mut stream = connect(addr);
+    let path = if method.starts_with('/') {
+        method.to_owned()
+    } else {
+        format!("/api/{method}")
+    };
     let request = format!(
-        "POST /api/{method} HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "POST {path} HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
     stream.write_all(request.as_bytes()).expect("write request");
@@ -2105,7 +2113,7 @@ fn mid_run_subscription_gets_full_replay_and_complete_run_buffer() {
     prompt_send(handle.addr, "run echo");
     let approval = first.wait_for("approval.requested", WAIT);
 
-    // 中途第二连接：重放族（journal 已有 user_message）+ subscribed +
+    // 中途第二连接：仅回放本轮之前的历史 + subscribed +
     // 本 run 缓冲全量重发（从 run 头开始，无中段截断）。
     let mut second = SseClient::connect(handle.addr);
     // 屏障：重发段覆盖到 tool_requested（审批 pending 期间 RunEvent 流
@@ -2119,8 +2127,8 @@ fn mid_run_subscription_gets_full_replay_and_complete_run_buffer() {
         .map(replay_kind_of)
         .collect();
     assert!(
-        replay_types.iter().any(|kind| kind == "user_message"),
-        "journal 重放覆盖本 run 的 user 骨架: {replay_types:?}"
+        !replay_types.iter().any(|kind| kind == "user_message"),
+        "本轮消息只由 live 前缀承载: {replay_types:?}"
     );
     // 实时族从 run 头开始：第一个事件帧是 run_started。
     let second_events = second.run_events();
@@ -2747,7 +2755,7 @@ fn slow_subscriber_overflow_is_dropped_and_run_buffer_is_intact() {
 
     assert!(shared.try_claim_run("rpc-1", 0));
     let (slow_id, slow_rx, buffered_at) = shared.register_subscriber();
-    assert_eq!(buffered_at, Some(0), "run 已开跑，注册点在队首");
+    assert_eq!(buffered_at, Some(vec![]), "run 已开跑，注册点在队首");
     let (_fast_id, fast_rx, _) = shared.register_subscriber();
 
     // 快订阅者逐帧排空、慢订阅者零排空：前两帧双方存活；第三帧慢
@@ -2783,7 +2791,7 @@ fn slow_subscriber_overflow_is_dropped_and_run_buffer_is_intact() {
         request_digest: None,
         receipt: None,
     });
-    assert_eq!(shared.run_buffer_prefix(usize::MAX).len(), 1);
+    assert_eq!(shared.register_subscriber().2.unwrap().len(), 1);
     shared.release_run_claim();
 
     std::fs::remove_dir_all(storage_root).ok();
@@ -3235,6 +3243,19 @@ fn serve_e2e_host_long_stream() {
 #[ignore = "Playwright e2e host (needs CLAT_E2E_HOST=1, set by web/e2e/global-setup.js)"]
 fn serve_e2e_host_success() {
     host_serve_for_playwright("success", TestBehavior::Success, 0);
+}
+
+#[test]
+#[ignore = "Playwright e2e host (needs CLAT_E2E_HOST=1, set by web/e2e/global-setup.js)"]
+fn serve_e2e_host_question() {
+    host_serve_for_playwright(
+        "question",
+        TestBehavior::AskUser(Arc::new(crate::test_support::ScriptedAsker {
+            selected: "not-used".into(),
+            asked: Mutex::new(vec![]),
+        })),
+        0,
+    );
 }
 
 #[test]

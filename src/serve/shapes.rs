@@ -589,6 +589,10 @@ fn settled_done_fields(output: &str, turns: usize, usage: &Usage) -> Vec<(&'stat
 
 pub(crate) fn notice_ctl(event: &ApplicationEvent) -> Value {
     match event {
+        ApplicationEvent::ModelsUpdated => object(vec![
+            ("kind", Value::String("models".into())),
+            ("payload", Value::Null),
+        ]),
         ApplicationEvent::MonitorUpdated(status) => object(vec![
             ("kind", Value::String("monitor".into())),
             (
@@ -657,27 +661,31 @@ pub(crate) fn notice_ctl(event: &ApplicationEvent) -> Value {
                 ]),
             ),
         ]),
-        ApplicationEvent::VisionProbeNotice { report } => object(vec![
-            ("kind", Value::String("vision_probe".into())),
-            (
-                "payload",
-                object(vec![
-                    ("outcome", Value::String(report.outcome.as_str().into())),
-                    ("model", Value::String(report.model.clone())),
-                    ("expected_code", Value::String(report.expected_code.clone())),
-                    (
-                        "answer_excerpt",
-                        Value::String(report.answer_excerpt.clone()),
-                    ),
-                    ("override_applied", Value::Bool(report.override_applied)),
-                    ("note", Value::String(report.note.clone())),
-                ]),
-            ),
-        ]),
+        ApplicationEvent::VisionProbeNotice { report } => vision_probe_notice(report),
     }
 }
 
 // —— 通用构造 ——————————————————————————————————————————————————————
+
+fn vision_probe_notice(report: &crate::VisionProbeReport) -> Value {
+    object(vec![
+        ("kind", Value::String("vision_probe".into())),
+        (
+            "payload",
+            object(vec![
+                ("outcome", Value::String(report.outcome.as_str().into())),
+                ("model", Value::String(report.model.clone())),
+                ("expected_code", Value::String(report.expected_code.clone())),
+                (
+                    "answer_excerpt",
+                    Value::String(report.answer_excerpt.clone()),
+                ),
+                ("override_applied", Value::Bool(report.override_applied)),
+                ("note", Value::String(report.note.clone())),
+            ]),
+        ),
+    ])
+}
 
 fn object(fields: Vec<(&str, Value)>) -> Value {
     let mut map = Map::new();
@@ -1025,6 +1033,8 @@ mod tests {
             },
         ];
         for ((label, golden), sample) in replay.iter().zip(samples) {
+            let decoded: ReplayEvent = serde_json::from_str(golden).expect("native replay decode");
+            assert_eq!(decoded, sample, "native replay roundtrip for {label}");
             assert_eq!(
                 replay_event_json(&sample).to_string(),
                 *golden,
@@ -1087,6 +1097,10 @@ mod tests {
         );
 
         // notice kind 是开放枚举，已实现形状进入 golden。
+        assert_eq!(
+            notice_ctl(&ApplicationEvent::ModelsUpdated).to_string(),
+            r#"{"kind":"models","payload":null}"#
+        );
         assert_eq!(
             notice_ctl(&ApplicationEvent::MonitorUpdated(Some("GLM 12%".into()))).to_string(),
             r#"{"kind":"monitor","payload":"GLM 12%"}"#

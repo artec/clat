@@ -1830,6 +1830,7 @@ fn rename_facade_gates_journals_and_broadcasts() {
                 }
                 Ok(
                     ApplicationEvent::MonitorUpdated(_)
+                    | ApplicationEvent::ModelsUpdated
                     | ApplicationEvent::CompactionUpdated(_)
                     | ApplicationEvent::TitleUpdated { .. }
                     | ApplicationEvent::McpStartupNotice { .. }

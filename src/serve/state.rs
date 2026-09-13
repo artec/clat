@@ -52,6 +52,12 @@ pub(crate) struct ActiveRun {
     pub rpc_id: String,
     pub started_ms: i64,
     buffer: Vec<String>,
+    replay_before_seq: Option<u64>,
+}
+
+pub(crate) struct RunReplayPrefix {
+    pub frames: Vec<String>,
+    pub before_seq: Option<u64>,
 }
 
 struct ServeInner {
@@ -83,9 +89,12 @@ pub(crate) struct PendingSteeringReceipt {
 
 pub(crate) struct PendingApproval {
     pub decision_tx: std::sync::mpsc::Sender<PermissionDecision>,
+    pub requested_data: String,
 }
 
 pub(crate) struct ServeShared {
+    pub(crate) rpc_mutations: Mutex<()>,
+    pub(crate) host: Mutex<std::sync::Weak<super::workspaces::WorkspaceHost>>,
     pub app: Arc<Mutex<TrustedProjectApplication>>,
     pub(crate) drafts: Arc<crate::draft::DraftImageStore>,
     pub token: String,
@@ -97,6 +106,7 @@ pub(crate) struct ServeShared {
     inner: Mutex<ServeInner>,
     pending_steering: Mutex<HashMap<String, PendingSteeringReceipt>>,
     pub pending: Mutex<HashMap<String, PendingApproval>>,
+    pub(super) questions: super::questions::Questions,
     /// Process-local QR state. The core state machine owns all protocol
     /// semantics; serve only serializes access for its authenticated clients.
     pub(crate) wechat_binding: Mutex<Option<crate::im::BindingSession>>,
@@ -138,7 +148,9 @@ impl ServeShared {
     ) -> Self {
         let drafts = app.lock().expect("application lock").draft_image_store();
         Self {
+            rpc_mutations: Mutex::new(()),
             app,
+            host: Mutex::new(std::sync::Weak::new()),
             drafts,
             token,
             port,
@@ -149,6 +161,7 @@ impl ServeShared {
             }),
             pending_steering: Mutex::new(HashMap::new()),
             pending: Mutex::new(HashMap::new()),
+            questions: super::questions::Questions::default(),
             wechat_binding: Mutex::new(None),
             wechat_outbound: Mutex::new(()),
             active_compaction: Mutex::new(None),
@@ -194,7 +207,14 @@ impl ServeShared {
 
     pub(crate) fn advance_selection_generation(&self) -> u64 {
         self.rollback_pending_steering();
-        self.selection_generation.fetch_add(1, Ordering::AcqRel) + 1
+        let generation = self.selection_generation.fetch_add(1, Ordering::AcqRel) + 1;
+        self.broadcast(SseFrame {
+            event: "notice",
+            data: super::shapes::ctl_data(
+                &serde_json::json!({"kind":"selection", "payload":{"generation":generation}}),
+            ),
+        });
+        generation
     }
 
     pub(crate) fn token_generation(&self) -> u64 {
@@ -245,18 +265,62 @@ impl ServeShared {
 
     // —— 订阅与 fanout ——————————————————————————————————————————————
 
-    /// 注册订阅。返回 `(id, 接收端, buffered_at)`——`buffered_at` 是注册
-    /// 时刻 run 缓冲的长度：SSE 连接先直写 `buffer[0..buffered_at]`，
-    /// 队列天然从 `buffered_at` 接续——两段在同一锁内取值，注册窗口的
-    /// 帧「既在重发段又在队列」的重叠在结构上不可能（§7.2 六步的
-    /// 缝隙消解，INV-S4 判别锚）。
-    pub(crate) fn register_subscriber(&self) -> (u64, Receiver<SseFrame>, Option<usize>) {
+    /// 注册订阅并在同一锁内取得独立 run 前缀。队列从快照尾接续；
+    /// 后续 run 结束或替换都不能改变已返回的前缀。
+    #[cfg(test)]
+    pub(crate) fn register_subscriber(&self) -> (u64, Receiver<SseFrame>, Option<Vec<String>>) {
+        let (id, queue, prefix) = self.register_replay_subscriber();
+        (id, queue, prefix.map(|prefix| prefix.frames))
+    }
+
+    pub(crate) fn register_replay_subscriber(
+        &self,
+    ) -> (u64, Receiver<SseFrame>, Option<RunReplayPrefix>) {
         let (tx, rx) = sync_channel(self.queue_frames);
+        // Same pending → inner lock order as approval publication. A late
+        // subscriber gets each unresolved request before any resolution.
+        let pending = self.pending.lock().expect("serve pending lock");
+        let questions = self.questions.0.lock().expect("questions lock");
         let mut inner = self.inner.lock().expect("serve inner lock");
         let id = self.next_subscriber_id.fetch_add(1, Ordering::Relaxed);
-        let buffered_at = inner.active_run.as_ref().map(|run| run.buffer.len());
+        let prefix = inner.active_run.as_ref().map(|run| RunReplayPrefix {
+            frames: run.buffer.clone(),
+            before_seq: run.replay_before_seq,
+        });
+        for approval in pending.values() {
+            if tx
+                .try_send(SseFrame {
+                    event: "approval.requested",
+                    data: approval.requested_data.clone(),
+                })
+                .is_err()
+            {
+                // Capacity failure closes the stream; never attach with a
+                // silently incomplete pending-interaction snapshot.
+                return (id, rx, prefix);
+            }
+        }
+        for (question_id, question) in questions.iter() {
+            if tx.try_send(question.frame(question_id)).is_err() {
+                return (id, rx, prefix);
+            }
+        }
         inner.subscribers.push(Subscriber { id, tx });
-        (id, rx, buffered_at)
+        (id, rx, prefix)
+    }
+
+    /// Called before releasing Application after successful admission, before
+    /// a settler can release this claim. All prompt entry points share it.
+    pub(crate) fn publish_run_boundary(&self, handle: &crate::RunHandle) {
+        if let Some(run) = self
+            .inner
+            .lock()
+            .expect("serve inner lock")
+            .active_run
+            .as_mut()
+        {
+            run.replay_before_seq = handle.replay_before_seq();
+        }
     }
 
     pub(crate) fn remove_subscriber(&self, id: u64) {
@@ -283,17 +347,6 @@ impl ServeShared {
             .expect("serve inner lock")
             .subscribers
             .len()
-    }
-
-    /// run 缓冲的 `[0..buffered_at]` 前缀（订阅重发段；只读不改）。
-    pub(crate) fn run_buffer_prefix(&self, buffered_at: usize) -> Vec<String> {
-        self.inner
-            .lock()
-            .expect("serve inner lock")
-            .active_run
-            .as_ref()
-            .map(|run| run.buffer[..buffered_at.min(run.buffer.len())].to_vec())
-            .unwrap_or_default()
     }
 
     /// 控制帧广播（approval.requested / prompt.settled / notice / …）：
@@ -358,6 +411,7 @@ impl ServeShared {
             rpc_id: rpc_id.to_owned(),
             started_ms,
             buffer: Vec::new(),
+            replay_before_seq: None,
         });
         true
     }

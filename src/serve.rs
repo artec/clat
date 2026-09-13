@@ -20,7 +20,9 @@
 
 pub(crate) mod approver;
 mod http;
+mod models;
 pub(crate) mod protocol;
+mod questions;
 pub(crate) mod shapes;
 mod sse;
 mod state;
@@ -29,6 +31,7 @@ mod tests;
 mod token;
 mod web_assets;
 mod wechat;
+mod workspaces;
 
 use crate::{BootstrapApplication, Project, TrustedProjectApplication};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -440,23 +443,7 @@ pub(crate) fn serve_with_with_queue<F>(
 where
     F: FnOnce(BootstrapApplication) -> Result<TrustedProjectApplication, crate::ApplicationError>,
 {
-    let bootstrap = match storage_root {
-        Some(root) => BootstrapApplication::open(project.clone(), root),
-        None => BootstrapApplication::open_default(project.clone()),
-    };
-    let bootstrap = bootstrap.map_err(|error| error.to_string())?;
-    let storage_root = bootstrap.storage_root().to_path_buf();
-    let trusted = match bootstrap.is_trusted() {
-        Ok(true) => into_trusted(bootstrap).map_err(|error| error.to_string())?,
-        Ok(false) => {
-            // serve 是常驻服务，不做信任授权交互——信任动作应发生在
-            // 发起它的终端上下文（§9）。
-            return Err("project is not trusted — trust it once from a terminal \
-                 (`clat exec --trust` or open `clat` here), then start serve"
-                .into());
-        }
-        Err(error) => return Err(error.to_string()),
-    };
+    let (trusted, storage_root) = mount_serve_project(project, storage_root, into_trusted)?;
     let wechat_credentials = if matches!(args.im, Some(ImBackend::Wechat)) {
         Some(
             trusted
@@ -486,35 +473,18 @@ where
     let token = resolved.value;
     let token_path = resolved.path;
 
-    let app = Arc::new(Mutex::new(trusted));
-    let mut shared = state::ServeShared::new(Arc::clone(&app), token.clone(), addr.port());
-    shared.queue_frames = queue_frames;
-    let shared = Arc::new(shared);
-    shared.spawn_notice_forwarder();
-    if let Some(credentials) = wechat_credentials {
-        let (bridge, outbox_worker) = wechat::WechatBridge::spawn(
-            Arc::clone(&shared),
-            credentials.clone(),
-            Arc::clone(&shutdown),
-        )?;
-        let handler: Arc<dyn crate::im::AuthorizedMessageHandler> = bridge;
-        let poller = match crate::im::spawn_wechat_host(
-            Arc::clone(&app),
-            credentials,
-            Arc::clone(&shutdown),
-            handler,
-        ) {
-            Ok(worker) => worker,
-            Err(error) => {
-                shutdown.store(true, Ordering::Release);
-                let _ = outbox_worker.join();
-                return Err(error);
-            }
-        };
-        shared.register_worker(outbox_worker);
-        shared.register_worker(poller);
-    }
+    let host = workspaces::WorkspaceHost::new(
+        trusted,
+        token.clone(),
+        addr.port(),
+        queue_frames,
+        Arc::clone(&shutdown),
+    );
+    let shared = host.route("default").expect("default project");
+    let app = Arc::clone(&shared.app);
+    start_wechat_bridge(&shared, &app, &shutdown, wechat_credentials)?;
 
+    drop(app);
     let accept_shared = Arc::clone(&shared);
     let accept_shutdown = Arc::clone(&shutdown);
     let close_outcome = Arc::new(Mutex::new(None));
@@ -525,7 +495,7 @@ where
             accept_loop(
                 listener,
                 accept_shared,
-                app,
+                host,
                 accept_shutdown,
                 accept_close_outcome,
             )
@@ -541,10 +511,71 @@ where
     })
 }
 
+fn mount_serve_project<F>(
+    project: Project,
+    storage_root: Option<PathBuf>,
+    into_trusted: F,
+) -> Result<(TrustedProjectApplication, PathBuf), String>
+where
+    F: FnOnce(BootstrapApplication) -> Result<TrustedProjectApplication, crate::ApplicationError>,
+{
+    let bootstrap = match storage_root {
+        Some(root) => BootstrapApplication::open(project.clone(), root),
+        None => BootstrapApplication::open_default(project.clone()),
+    };
+    let bootstrap = bootstrap.map_err(|error| error.to_string())?;
+    let storage_root = bootstrap.storage_root().to_path_buf();
+    let trusted = match bootstrap.is_trusted() {
+        Ok(true) => into_trusted(bootstrap).map_err(|error| error.to_string())?,
+        Ok(false) => {
+            // serve 是常驻服务，不做信任授权交互——信任动作应发生在
+            // 发起它的终端上下文（§9）。
+            return Err("project is not trusted — trust it once from a terminal \
+                 (`clat exec --trust` or open `clat` here), then start serve"
+                .into());
+        }
+        Err(error) => return Err(error.to_string()),
+    };
+
+    Ok((trusted, storage_root))
+}
+fn start_wechat_bridge(
+    shared: &Arc<state::ServeShared>,
+    app: &Arc<Mutex<TrustedProjectApplication>>,
+    shutdown: &Arc<AtomicBool>,
+    wechat_credentials: Option<crate::im::ilink::Credentials>,
+) -> Result<(), String> {
+    if let Some(credentials) = wechat_credentials {
+        let (bridge, outbox_worker) = wechat::WechatBridge::spawn(
+            Arc::clone(shared),
+            credentials.clone(),
+            Arc::clone(shutdown),
+        )?;
+        let handler: Arc<dyn crate::im::AuthorizedMessageHandler> = bridge;
+        let poller = match crate::im::spawn_wechat_host(
+            Arc::clone(app),
+            credentials,
+            Arc::clone(shutdown),
+            handler,
+        ) {
+            Ok(worker) => worker,
+            Err(error) => {
+                shutdown.store(true, Ordering::Release);
+                let _ = outbox_worker.join();
+                return Err(error);
+            }
+        };
+        shared.register_worker(outbox_worker);
+        shared.register_worker(poller);
+    }
+
+    Ok(())
+}
+
 fn accept_loop(
     listener: TcpListener,
     shared: Arc<state::ServeShared>,
-    app: Arc<Mutex<TrustedProjectApplication>>,
+    host: Arc<workspaces::WorkspaceHost>,
     shutdown: Arc<AtomicBool>,
     close_outcome: Arc<Mutex<Option<Result<(), String>>>>,
 ) -> Result<(), String> {
@@ -588,34 +619,12 @@ fn accept_loop(
         }
     }
 
-    // 关停序列（2026-08-23 修复：归一是有前提的，顺序错了 try_unwrap
-    // 结构性必败——close 沦为 Drop 兜底，错误被吞且每次关停误报
-    // "could not close application cleanly"）：
-    // ①停收新请求；②取消在飞 run、清订阅者；③有界 join 连接与
-    //   worker——notice 转发与 settler 各持 `Arc<ServeShared>`（内嵌
-    //   app 克隆），join 完才释放；④显式 drop 本线程的 shared。此刻
-    //   app 的 Arc 才真正归一，try_unwrap 成功、显式 close 执行且
-    //   错误可上报。残留连接/worker（超宽限期）会让归一失败——降级
-    //   打印，应用随后由 Drop 兜底关闭（进程即将退出，错误被吞）。
-    shared.mark_shutting_down();
-    shared.cancel_active_run();
-    shared.clear_subscribers();
-    shared.drain_connections();
-    shared.drain_workers();
     drop(shared);
-    match Arc::try_unwrap(app)
-        .ok()
-        .and_then(|mutex| mutex.into_inner().ok())
-    {
-        Some(application) => {
-            let outcome = application.close().map_err(|error| error.to_string());
-            if let Err(error) = &outcome {
-                eprintln!("clat: serve: application close failed: {error}");
-            }
-            *close_outcome.lock().expect("serve close outcome lock") = Some(outcome);
-        }
-        None => eprintln!("clat: serve: could not close application cleanly"),
+    let outcome = host.close();
+    if let Err(error) = &outcome {
+        eprintln!("clat: serve: {error}");
     }
+    *close_outcome.lock().expect("serve close outcome lock") = Some(outcome);
     match fatal {
         Some(reason) => Err(reason),
         None => Ok(()),
@@ -745,13 +754,9 @@ fn handle_connection(mut stream: TcpStream, shared: Arc<state::ServeShared>) {
         return;
     }
 
-    // INV-S1b token 闸：非引导请求只认 Bearer，精确匹配；query token
-    // 与 Cookie 均不具有鉴权语义。
-    let provided = http::bearer_token(request.authorization.as_deref());
-    if provided.as_deref() != Some(shared.token.as_str()) {
-        write_unauthorized(&mut stream);
+    let Some(shared) = authenticated_project(&mut stream, &mut request, shared) else {
         return;
-    }
+    };
 
     // Image bytes never travel in the replay/SSE protocol. The sole browser
     // read route accepts an opaque attachment id, resolves it through the
@@ -1032,6 +1037,68 @@ fn handle_connection(mut stream: TcpStream, shared: Arc<state::ServeShared>) {
             );
         }
     }
+}
+
+fn authenticated_project(
+    stream: &mut TcpStream,
+    request: &mut http::HttpRequestHead,
+    shared: Arc<state::ServeShared>,
+) -> Option<Arc<state::ServeShared>> {
+    // INV-S1b token 闸：非引导请求只认 Bearer，精确匹配；query token
+    // 与 Cookie 均不具有鉴权语义。
+    let provided = http::bearer_token(request.authorization.as_deref());
+    if provided.as_deref() != Some(shared.token.as_str()) {
+        write_unauthorized(stream);
+        return None;
+    }
+    if let Some(expected) = &request.expected_instance {
+        let matches = shared
+            .host
+            .lock()
+            .expect("host link")
+            .upgrade()
+            .is_some_and(|host| host.matches_instance(expected));
+        if !matches {
+            let _ = write_json(
+                stream,
+                409,
+                protocol::rpc_result_json(&Err(protocol::RpcError::busy(
+                    "host instance changed; reconnect explicitly",
+                ))),
+            );
+            return None;
+        }
+    }
+
+    let shared = if let Some(tail) = request.path.strip_prefix("/workspace/") {
+        let Some((id, path)) = tail.split_once('/') else {
+            let _ = write_json(
+                stream,
+                404,
+                protocol::rpc_result_json(&Err(protocol::RpcError::not_found(
+                    "invalid workspace route",
+                ))),
+            );
+            return None;
+        };
+        let host = shared.host.lock().expect("host link").upgrade();
+        let resolved = host
+            .ok_or_else(|| protocol::RpcError::not_found("host unavailable"))
+            .and_then(|host| host.route(id));
+        match resolved {
+            Ok(project) => {
+                request.path = format!("/{path}");
+                project
+            }
+            Err(error) => {
+                let _ = write_json(stream, 404, protocol::rpc_result_json(&Err(error)));
+                return None;
+            }
+        }
+    } else {
+        shared
+    };
+    Some(shared)
 }
 
 fn draft_upload_scope(path: &str) -> Option<&str> {

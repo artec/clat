@@ -33,6 +33,7 @@ pub(crate) struct HttpRequestHead {
     pub origin: Option<String>,
     pub content_type: Option<String>,
     pub display_name: Option<String>,
+    pub expected_instance: Option<String>,
     pub content_length: usize,
     /// Header reads may receive the first body bytes in the same TCP packet.
     /// Keep (rather than discard) that bounded prefix for the post-auth body
@@ -103,6 +104,7 @@ pub(crate) fn read_request_head(stream: &mut TcpStream) -> Result<HttpRequestHea
         origin: parsed.origin,
         content_type: parsed.content_type,
         display_name: parsed.display_name,
+        expected_instance: parsed.expected_instance,
         content_length: parsed.content_length,
         body_prefix,
     })
@@ -174,6 +176,7 @@ struct ParsedHead {
     origin: Option<String>,
     content_type: Option<String>,
     display_name: Option<String>,
+    expected_instance: Option<String>,
     content_length: usize,
 }
 
@@ -185,27 +188,13 @@ fn parse_head(head: &str) -> Result<ParsedHead, HttpReadError> {
     if request_line.len() > MAX_REQUEST_LINE_BYTES {
         return Err(HttpReadError::TooLarge("request line"));
     }
-    let mut parts = request_line.split(' ');
-    let method = parts
-        .next()
-        .ok_or(HttpReadError::BadRequest("missing method"))?;
-    let target = parts
-        .next()
-        .ok_or(HttpReadError::BadRequest("missing target"))?;
-    let version = parts
-        .next()
-        .ok_or(HttpReadError::BadRequest("missing version"))?;
-    if !method.is_ascii() || method.is_empty() {
-        return Err(HttpReadError::BadRequest("method must be ASCII"));
-    }
-    if !version.starts_with("HTTP/1.") {
-        return Err(HttpReadError::BadRequest("only HTTP/1.x is supported"));
-    }
+    let (method, target) = parse_request_line(request_line)?;
     let mut host = None;
     let mut authorization = None;
     let mut origin = None;
     let mut content_type = None;
     let mut display_name = None;
+    let mut expected_instance = None;
     let mut content_length = None;
     let mut transfer_encoding = None;
     for line in lines {
@@ -234,6 +223,7 @@ fn parse_head(head: &str) -> Result<ParsedHead, HttpReadError> {
             "origin" => Some(&mut origin),
             "content-type" => Some(&mut content_type),
             "x-clat-display-name" => Some(&mut display_name),
+            "x-clat-host-instance" => Some(&mut expected_instance),
             "transfer-encoding" => Some(&mut transfer_encoding),
             "content-length" => {
                 if content_length.is_some() {
@@ -281,11 +271,31 @@ fn parse_head(head: &str) -> Result<ParsedHead, HttpReadError> {
         origin,
         content_type,
         display_name,
+        expected_instance,
         content_length,
     })
 }
 
 /// URL 只接受 ASCII 可打印且无 `%` 编码残留（§8.1——不解码）。
+fn parse_request_line(request_line: &str) -> Result<(&str, &str), HttpReadError> {
+    let mut parts = request_line.split(' ');
+    let method = parts
+        .next()
+        .ok_or(HttpReadError::BadRequest("missing method"))?;
+    let target = parts
+        .next()
+        .ok_or(HttpReadError::BadRequest("missing target"))?;
+    let version = parts
+        .next()
+        .ok_or(HttpReadError::BadRequest("missing version"))?;
+    if !method.is_ascii() || method.is_empty() {
+        return Err(HttpReadError::BadRequest("method must be ASCII"));
+    }
+    if !version.starts_with("HTTP/1.") {
+        return Err(HttpReadError::BadRequest("only HTTP/1.x is supported"));
+    }
+    Ok((method, target))
+}
 fn split_target(target: &str) -> Result<(String, Option<String>), HttpReadError> {
     if !target.starts_with('/') {
         return Err(HttpReadError::BadRequest("target must start with /"));

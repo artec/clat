@@ -43,10 +43,18 @@ impl App {
             UiEvent::Terminal(event) => self.handle_terminal_event(event),
             UiEvent::Worker(message) => self.handle_worker_message(message),
             UiEvent::Dsh(event) => self.handle_dsh_event(event),
-            UiEvent::Application(ApplicationEvent::MonitorUpdated(value)) => {
+            UiEvent::Application(event) => self.handle_application_event(event),
+            UiEvent::Native(event) => self.handle_native_event(event),
+        }
+    }
+
+    fn handle_application_event(&mut self, event: ApplicationEvent) {
+        match event {
+            ApplicationEvent::ModelsUpdated => self.refresh_model_settings(),
+            ApplicationEvent::MonitorUpdated(value) => {
                 self.balance = value;
             }
-            UiEvent::Application(ApplicationEvent::CompactionUpdated(status)) => match status {
+            ApplicationEvent::CompactionUpdated(status) => match status {
                 CompactionStatus::Started => self.flash_status("compacting…"),
                 CompactionStatus::Finished { note, succeeded } => {
                     self.flash_status(note);
@@ -59,26 +67,26 @@ impl App {
                 }
             },
             // A4-1（W1-21）：MCP/WASM 启动失败一次性响亮提示（详情 /mcp）。
-            UiEvent::Application(ApplicationEvent::McpStartupNotice { failures }) => {
+            ApplicationEvent::McpStartupNotice { failures } => {
                 self.flash_status(format!(
                     "mcp: {failures} tool/server registration issue(s) — /mcp for detail"
                 ));
             }
-            UiEvent::Application(ApplicationEvent::LanguageIntelligenceNotice { message }) => {
+            ApplicationEvent::LanguageIntelligenceNotice { message } => {
                 self.flash_status(message);
             }
             // N2：自动命名/改名落盘成功——右标题即时更新，无需重拉快照。
-            UiEvent::Application(ApplicationEvent::TitleUpdated { title }) => {
+            ApplicationEvent::TitleUpdated { title } => {
                 self.session_title = Some(title);
             }
-            UiEvent::Application(ApplicationEvent::ProcessFinished {
+            ApplicationEvent::ProcessFinished {
                 session_id,
                 exit_code,
                 signal,
                 timed_out,
                 cancelled,
                 terminated,
-            }) => {
+            } => {
                 let state = if timed_out {
                     "timed out".to_owned()
                 } else if cancelled {
@@ -95,10 +103,20 @@ impl App {
             }
             // VP-1：custom 视觉探针判定——状态栏一行摘要（覆盖位已在
             // core 侧落盘，TUI 不触碰持久化）。
-            UiEvent::Application(ApplicationEvent::VisionProbeNotice { report }) => {
+            ApplicationEvent::VisionProbeNotice { report } => {
                 self.flash_status(report.status_text());
             }
         }
+    }
+
+    fn refresh_model_settings(&mut self) {
+        if let Some(application) = &self.application
+            && let Ok((config, credentials)) = application.model_state()
+        {
+            self.config = config;
+            self.credentials = credentials;
+        }
+        self.flash_status("model settings updated");
     }
 
     /// 处理一条终端事件：按键/粘贴/鼠标。
@@ -333,6 +351,25 @@ impl App {
     }
 
     fn handle_composer_key(&mut self, key: KeyEvent) {
+        if self.native.is_some() {
+            if key.code == KeyCode::Enter
+                && !key
+                    .modifiers
+                    .intersects(KeyModifiers::SHIFT | KeyModifiers::ALT)
+            {
+                let text = self.input.take().trim().to_owned();
+                self.submit_native(text);
+                return;
+            }
+            if key.code == KeyCode::Esc && self.running {
+                self.submit_native("/cancel".into());
+                return;
+            }
+        }
+        self.handle_local_composer_key(key);
+    }
+
+    fn handle_local_composer_key(&mut self, key: KeyEvent) {
         // CP-I1/CP-I3: only the explicit, unmodified Ctrl+V chord probes the
         // system clipboard, and only after every modal/editor gate has had
         // first ownership of the key. Terminal bracketed paste remains the
@@ -615,27 +652,33 @@ impl App {
                     }
                     return;
                 }
-                match self
-                    .application
-                    .as_mut()
-                    .map(|application| application.rename_session(&name))
-                {
-                    Some(Ok(RenameOutcome::Renamed { title })) => {
-                        self.session_title = Some(title);
-                        self.rename_dialog = None;
-                        self.flash_status("conversation renamed");
-                    }
-                    Some(Ok(RenameOutcome::Invalid)) => self.flash_status("name is empty"),
-                    Some(Ok(RenameOutcome::NoSession)) => {
-                        self.rename_dialog = None;
-                        self.flash_status("no active conversation");
-                    }
-                    Some(Err(error)) => {
-                        self.flash_status(format!("rename failed: {error}"));
-                    }
-                    None => self.flash_status("project application is unavailable"),
+                if self.native.is_some() {
+                    self.commit_native_rename(name);
+                } else {
+                    self.commit_local_rename(&name);
                 }
             }
+        }
+    }
+
+    fn commit_local_rename(&mut self, name: &str) {
+        match self
+            .application
+            .as_mut()
+            .map(|application| application.rename_session(name))
+        {
+            Some(Ok(RenameOutcome::Renamed { title })) => {
+                self.session_title = Some(title);
+                self.rename_dialog = None;
+                self.flash_status("conversation renamed");
+            }
+            Some(Ok(RenameOutcome::Invalid)) => self.flash_status("name is empty"),
+            Some(Ok(RenameOutcome::NoSession)) => {
+                self.rename_dialog = None;
+                self.flash_status("no active conversation");
+            }
+            Some(Err(error)) => self.flash_status(format!("rename failed: {error}")),
+            None => self.flash_status("project application is unavailable"),
         }
     }
 

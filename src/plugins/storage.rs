@@ -72,6 +72,21 @@ impl ConfigStore for ControlCapabilities {
             .map_err(|error| StoreError::new(error.to_string()))
     }
 
+    fn activate_profile(
+        &self,
+        name: &str,
+    ) -> Result<Option<(ModelConfig, ProviderCredentials)>, StoreError> {
+        self.storage
+            .activate_profile(name)
+            .map_err(|error| StoreError::new(error.to_string()))
+    }
+
+    fn delete_profile_with_fallback(&self, name: &str) -> Result<(), StoreError> {
+        self.storage
+            .delete_profile_with_fallback(name)
+            .map_err(|error| StoreError::new(error.to_string()))
+    }
+
     fn set_active_profile(&self, name: Option<&str>) -> Result<(), StoreError> {
         self.storage
             .set_active_profile(name)

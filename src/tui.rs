@@ -20,6 +20,7 @@ mod input;
 mod logo;
 mod markdown;
 mod model_editor;
+mod native;
 mod permission_picker;
 mod session_picker;
 mod theme;
@@ -128,6 +129,15 @@ pub fn run(project: Project) -> io::Result<()> {
         Err(error) => return Err(io::Error::other(error)),
     };
     run_frontend(app)
+}
+
+/// Explicit native attach during migration. Never opens a local runtime.
+pub fn run_host_mode(project: Project, port: u16, trust: bool) -> io::Result<()> {
+    let client = crate::host::HostClient::connect_local(port).map_err(io::Error::other)?;
+    let client = client
+        .open_project(project.root(), trust)
+        .map_err(io::Error::other)?;
+    run_frontend(App::open_native(project, client).map_err(io::Error::other)?)
 }
 
 /// `clat dsh` 入口（D-2 §1.0）：构造 dsh 态 App（不走本地信任门/存储），
@@ -255,6 +265,7 @@ fn user_facing_error_line(error: &str) -> String {
 }
 
 struct App {
+    native: Option<native::NativeState>,
     project: Project,
     bootstrap: Option<BootstrapApplication>,
     application: Option<TrustedProjectApplication>,
@@ -514,6 +525,7 @@ impl App {
         // 状态栏初始显示当前打开的项目目录（home 缩写为 ~）。
         let status = abbreviate_home(project.root());
         let app = Self {
+            native: None,
             project,
             bootstrap: Some(bootstrap),
             application: None,
@@ -617,6 +629,7 @@ impl App {
         let config = ModelConfig::default();
         let credentials = ProviderCredentials::for_protocol(config.protocol);
         Ok(Self {
+            native: None,
             project,
             bootstrap: None,
             application: None,
@@ -873,6 +886,7 @@ impl App {
         // 启动即挂载（同步 open，测试路径）在这里订阅；后台交接路径
         // 在 poll_loading 完成时订阅——两者共用 wire_application_events。
         self.wire_application_events();
+        self.start_native();
 
         // dsh 连接期启动（D-2 §1.0）：DshEvent 通道 + 转发线程（汇入
         // UiEvent::Dsh）+ ensure_online 连接线程。

@@ -204,7 +204,7 @@ impl App {
         }
     }
 
-    fn handle_run_event(&mut self, event: RunEvent) {
+    pub(super) fn handle_run_event(&mut self, event: RunEvent) {
         // 转录装配的唯一 live 入口（G8）：状态行闪烁等呈现逻辑之外，
         // 事件先喂会话模型。
         self.conversation.apply_run_event(&event);

@@ -893,6 +893,7 @@ Current methods are:
 - `prompt.send`, `steer.send`, `run.cancel`
 - `permission.set`
 - `approval.respond`
+- `question.respond`
 
 `workbench.info` is lightweight: it returns project, active-session, model
 (including all five typed override states), permission, MCP, capability,
@@ -1029,3 +1030,87 @@ rules, and the legacy SQLite cutover.
   [MCP security](mcp.md#security-posture) and
   [WASM write grants](wasm.md#filesystem-write-grants) before adding
   third-party extensions.
+## Multiple projects in the web workbench
+
+Workbench settings includes a Projects section. Enter an absolute local project
+directory; a previously untrusted project requires the explicit trust checkbox.
+Open its link in a new tab. Projects share the host's model configuration and
+credentials, but keep separate sessions, permissions, drafts and event streams.
+Closing a browser tab does not stop the host. Up to 16 projects may remain
+mounted in a host; restart the host to release unused project runtimes.
+
+Authenticated clients can call `host.describe`, `workspace.list`,
+`workspace.open` (`root`, optional boolean `trust`), and `host.stop`.
+`workspace.open` returns an opaque `id` and `api_prefix`; prepend that prefix
+to the existing `/api/...` paths, including events, image uploads and image
+reads. Project identifiers are valid only for the running host; reopen the
+project after a host restart. `host.describe` reports instance, wire and journal
+versions so future native clients can reject incompatible hosts.
+
+`clat attach --port 2691` connects the terminal to an already running local host
+and opens the current project; add `--trust` to explicitly authorize that
+project. It verifies the storage root, instance and protocol versions and reads
+the host's private saved token (an explicit serve token is not saved).
+This initial client supports text and PNG/JPEG submission, streaming, cancellation, session
+commands, shared approvals and ask-user dialogs. `/reconnect` rebuilds a disconnected view;
+uncertain submissions are not automatically resent. Closing the terminal
+disconnects only that client, not the host.
+`/resume` opens the traditional keyboard/mouse session picker using the host's
+session list. `/rename` opens the existing editable title dialog; a selection
+change while it is open prevents a stale rename from reaching another session.
+If an error carries a committed admission receipt, the submitted text is not
+restored as a new draft; any newer input is preserved. Without a valid receipt,
+the text is kept with a warning to check host history before sending it again.
+
+Use `/attach path/to/image.png` (or `@ path/to/image.png`) to prepare images;
+Enter sends them with the text, including an image-only message. Existing image
+list/remove/reorder/clear commands remain local. Files are uploaded to a scoped
+host draft; their local paths are never sent as attachment references. In-run
+image steering waits for durable admission before consuming the draft. Failed
+uploads retain images and text without clearing newer edits; cancellation
+remains available while waiting. Live and replayed messages show image labels.
+
+`Ctrl+V` captures clipboard images or falls back to text; `/pi` and
+`/paste-image` capture images only. Bracketed paste never probes the clipboard.
+Captured images live in a private, client-owned temporary draft: unsuccessful
+submissions retain them, while committed submissions and draft removal release
+only those temporary sources. User-selected source files are never deleted.
+
+`/model` opens the traditional two-level picker using host profile summaries.
+Preset selection, existing-profile activation and confirmed deletion go through
+the host; credentials stay there and changes apply to the next run. Failed
+requests keep the picker open; check host settings before retrying an uncertain
+result. Basic profile creation/editing, write-only API-key entry and Shift+Tab
+thinking levels are supported; see [Model editor](model-editor.md#attached-terminal-support)
+for the save-versus-activate distinction. Advanced profile fields remain pending.
+
+Host ask-user questions open the traditional terminal dialog: arrows and Enter
+select an option, `c` opens custom input when allowed, and Esc backs out of custom
+input or declines the question. Questions without options open directly in text
+input mode. Multiple questions queue without replacing the current answer draft.
+Every attached client can see pending questions; the first valid answer wins and
+closes that question on other clients. A newly attached client receives unanswered
+questions. Closing one terminal does not decline on behalf of other clients.
+Cancellation, loss of all subscribers, or a ten-minute timeout declines the
+question; failed answer requests retain the local answer and are not retried
+automatically. Questions and answers remain ordinary tool history, not new
+journal event types. PWA shows the same pending questions as inline cards: click
+an offered option, enter a custom answer when allowed (or when no options exist),
+or explicitly Decline. All controls are disabled during submission. Request
+failures retain the answer for manual retry; a host resolution closes only its
+matching card. Disconnecting disables old cards without declining; reconnecting
+rebuilds unanswered questions from the host (unsent browser answer drafts are not
+persisted across reconnects or reloads).
+
+For other clients, `question.respond` accepts `rpcId` and `answer`: either
+`{"kind":"selected","value":"exact option label"}`, `{"kind":"custom","value":"text"}`,
+or `{"kind":"declined"}`. It is scoped to the target project and uses normal host
+authentication. Invalid answers leave the question pending; duplicate, cancelled
+or expired answers return `not-pending`. Custom text must be nonblank and at most
+64 KiB. The host admits at most 32 concurrent questions, each at most 64 KiB of
+serialized question data. Live `notice` payloads use `question_requested` (with
+`rpc_id` and `question`) and `question_resolved` (with `rpc_id`).
+
+Full terminal dialog/command parity is still pending;
+this is not yet a replacement for the traditional TUI. Plain `clat` retains its
+standalone behavior. Automatic background-host startup is not implemented yet.

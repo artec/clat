@@ -1,13 +1,12 @@
 use crate::Project;
+use crate::control_storage::ControlStorage;
 use crate::control_storage::workspace::WorkspaceRecord;
-use crate::control_storage::{ControlStorage, sentinel};
 use crate::model::{ModelConfig, ProviderCredentials, ProviderDescriptor};
 use crate::plugin::Plugin;
 use crate::presets::preset_by_id;
 use crate::session::id::SessionId;
 use crate::session::key::{ProjectKey, SessionKey};
 use crate::session::persistence::JsonlCompression;
-use crate::session::root_lease::try_acquire;
 use crate::session::use_cases::{SessionService, SessionSummary, SessionView, SetTitleExpectation};
 use serde_json::Value;
 use std::path::PathBuf;
@@ -59,88 +58,27 @@ impl TrustedProjectApplication {
         provider_plugins: Option<Vec<Arc<dyn Plugin>>>,
         permission_modes: bool,
     ) -> Result<Self, ApplicationError> {
-        // 1. Storage-root lease (kernel flock; blocks cooperating CLAT
-        //    processes, auto-released on crash). Fresh roots are leased
-        //    through their deepest existing ancestor.
-        let lease = match try_acquire(&storage_root) {
-            Ok(Some(lease)) => lease,
-            Ok(None) => {
-                return Err(ApplicationError::new(
-                    "another CLAT process holds this storage root; close it first",
-                ));
-            }
-            Err(error) => {
-                return Err(ApplicationError::new(format!(
-                    "cannot acquire the storage-root lease: {error}"
-                )));
-            }
-        };
-        // 2. Re-classify under the lease (another process may have just
-        //    initialized), then run the zero-write session-root preflight
-        //    BEFORE any commit — Fresh initialize and the legacy-SQLite
-        //    upgrade (rename-and-preserve) both happen only after the
-        //    layout is proven (audit P1-01: a failed startup must leave
-        //    the root byte-identical).
-        let mut status = sentinel::classify(&storage_root);
-        let mut fresh_init = false;
-        match status {
-            sentinel::ControlPlaneStatus::Fresh => {
-                if !authorize {
-                    return Err(ApplicationError::new(
-                        "storage is uninitialized; authorization is required",
-                    ));
-                }
-                fresh_init = true;
-            }
-            sentinel::ControlPlaneStatus::Ready { .. } => {}
-            sentinel::ControlPlaneStatus::LegacySQLite
-            | sentinel::ControlPlaneStatus::LegacyConfigOnly => {}
-            sentinel::ControlPlaneStatus::Unsupported(reason)
-            | sentinel::ControlPlaneStatus::Inconsistent(reason) => {
-                return Err(ApplicationError::new(reason));
-            }
-        }
-        let session_root = storage_root.join(sentinel::SESSION_ROOT_NAME);
-        crate::session::preflight::check_session_root(&session_root)
-            .map_err(|error| ApplicationError::new(error.to_string()))?;
-        // 3. Control-plane commits — only after preflight passed. The
-        //    legacy upgrade renames the v4 SQLite corpse aside and writes
-        //    the new sentinel (zero migration, INV-MP6).
-        if matches!(
-            status,
-            sentinel::ControlPlaneStatus::LegacySQLite
-                | sentinel::ControlPlaneStatus::LegacyConfigOnly
-        ) {
-            sentinel::complete_upgrade(&storage_root).map_err(ApplicationError::new)?;
-            status = sentinel::classify(&storage_root);
-        }
-        match status {
-            sentinel::ControlPlaneStatus::Ready { .. } => {}
-            sentinel::ControlPlaneStatus::Fresh if fresh_init => {}
-            _ => {
-                return Err(ApplicationError::new(
-                    "control plane did not reach Ready after commit completion",
-                ));
-            }
-        }
-        if fresh_init {
-            sentinel::initialize(&storage_root).map_err(ApplicationError::new)?;
-        }
-        let control = Arc::new(
-            ControlStorage::open_ready(&storage_root)
-                .map_err(|error| ApplicationError::new(error.to_string()))?,
-        );
-        // 信任提交：Fresh 初始化后信任库为空，授权路径与首次初始化都
-        // 走 add_trust（幂等 upsert）。
-        if (fresh_init || authorize) && !control.is_project_trusted(project.root()) {
-            control
-                .add_trust(project.root())
-                .map_err(|error| ApplicationError::new(error.to_string()))?;
-        }
-        if !control.is_project_trusted(project.root()) {
-            return Err(ApplicationError::new("project is not trusted"));
-        }
+        let storage = host_storage::HostStorage::open(&storage_root, authorize)?;
+        Self::mount_in_host(
+            project,
+            storage,
+            authorize,
+            provider_plugins,
+            permission_modes,
+        )
+    }
 
+    pub(super) fn mount_in_host(
+        project: Project,
+        storage: Arc<host_storage::HostStorage>,
+        authorize: bool,
+        provider_plugins: Option<Vec<Arc<dyn Plugin>>>,
+        permission_modes: bool,
+    ) -> Result<Self, ApplicationError> {
+        storage.trust_project(&project, authorize)?;
+        let storage_root = storage.root().to_path_buf();
+        let session_root = storage.session_root();
+        let control = Arc::clone(&storage.control);
         // 4. Session service + Trusted Project scope.
         let session_service = Arc::new(
             SessionService::new(session_root, JsonlCompression::Zstd).map_err(session_error)?,
@@ -169,62 +107,68 @@ impl TrustedProjectApplication {
                 subscribers: Arc::clone(&subscribers),
             },
         )?;
-        let super::composition::ProjectPorts {
-            sessions,
-            config,
-            providers,
-            tools,
-            prompts,
-            dynamic_instructions,
-            process_service,
-            plan_mode,
-            tool_access,
-            view_image,
-            skills,
-            skill_catalog,
-            memory,
-            goal,
-            subagents,
-            commands,
-            agent,
-            mcp_status,
-            monitor,
-            compactor,
-            todo: todo_service,
-            titler,
-            language_startup_diagnostic,
-        } = ports;
-        let language_startup_notice = Arc::new(Mutex::new(language_startup_diagnostic));
 
+        let mut application = Self::from_project_ports(
+            project,
+            storage,
+            composition,
+            ports,
+            permission_mode,
+            asker_slot,
+            plugin_host,
+            subscribers,
+            permission_modes,
+        );
+        application.restore_mounted_project()?;
+        application
+            .host_storage
+            .register_models(&application.monitor, &application.subscribers);
+        Ok(application)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn from_project_ports(
+        project: Project,
+        storage: Arc<host_storage::HostStorage>,
+        composition: composition::TrustedProjectComposition,
+        ports: composition::ProjectPorts,
+        permission_mode: Arc<std::sync::RwLock<crate::PermissionMode>>,
+        asker_slot: Arc<crate::interaction::AskUserSlot>,
+        plugin_host: Arc<crate::plugin_host::PluginHostBridge>,
+        subscribers: Arc<Mutex<Vec<mpsc::Sender<ApplicationEvent>>>>,
+        permission_modes: bool,
+    ) -> Self {
+        let language_startup_notice = Arc::new(Mutex::new(ports.language_startup_diagnostic));
+        let control = Arc::clone(&storage.control);
         let draft_images = Arc::new(crate::draft::DraftImageStore::new(control.root_path()));
-        let mut application = Self {
+        Self {
             project: project.clone(),
             composition,
-            sessions,
+            sessions: ports.sessions,
             control,
             draft_images,
-            config,
-            providers,
-            tools,
-            prompts,
-            dynamic_instructions,
-            process_service,
-            plan_mode,
-            tool_access,
-            view_image,
-            skills,
-            skill_catalog,
+            config: ports.config,
+            providers: ports.providers,
+            tools: ports.tools,
+            prompts: ports.prompts,
+            dynamic_instructions: ports.dynamic_instructions,
+            process_service: ports.process_service,
+            plan_mode: ports.plan_mode,
+            tool_access: ports.tool_access,
+            view_image: ports.view_image,
+            skills: ports.skills,
+            skill_catalog: ports.skill_catalog,
             invoked_skill: None,
-            memory,
-            goal,
-            subagents,
-            commands,
-            agent,
-            mcp_status,
-            monitor,
-            compactor,
-            todo: todo_service,
-            titler,
+            memory: ports.memory,
+            goal: ports.goal,
+            subagents: ports.subagents,
+            commands: ports.commands,
+            agent: ports.agent,
+            mcp_status: ports.mcp_status,
+            monitor: ports.monitor,
+            compactor: ports.compactor,
+            todo: ports.todo,
+            titler: ports.titler,
             title_worker: None,
             subscribers,
             language_startup_notice,
@@ -244,29 +188,32 @@ impl TrustedProjectApplication {
             permission_modes_enabled: permission_modes,
             asker_slot,
             plugin_host,
-            lease,
+            host_storage: storage,
             #[cfg(any(test, feature = "test-support"))]
             fail_next_run_spawn: false,
             #[cfg(test)]
             fail_next_run_start_receive: false,
-        };
+        }
+    }
+
+    fn restore_mounted_project(&mut self) -> Result<(), ApplicationError> {
         // 5. 进入工作区（§4.4）：realpath 命中注册表 → 恢复该工作区自己
         //    的当前会话；未命中 = 待注册（首条耐久会话落盘时惰性建区）。
-        application.load_workspace_selection()?;
-        if let Some(diagnostic) = application.memory.take_diagnostic() {
-            application.startup_diagnostic = match application.startup_diagnostic.take() {
+        self.load_workspace_selection()?;
+        if let Some(diagnostic) = self.memory.take_diagnostic() {
+            self.startup_diagnostic = match self.startup_diagnostic.take() {
                 Some(existing) => Some(format!("{existing}; {diagnostic}")),
                 None => Some(diagnostic),
             };
         }
         // 会话边界（mount 恢复）之后对齐档位 cell：恢复的会话用自己的
         // fold，Fresh 回落默认——绝不携带上一个进程的任何档位。
-        application.reseed_permission_mode_from_session();
-        if let Some(titler) = &application.titler {
-            application.title_worker = Some(TitleWorker::spawn(
+        self.reseed_permission_mode_from_session();
+        if let Some(titler) = &self.titler {
+            self.title_worker = Some(TitleWorker::spawn(
                 Arc::clone(titler),
-                Arc::clone(&application.sessions),
-                Arc::clone(&application.subscribers),
+                Arc::clone(&self.sessions),
+                Arc::clone(&self.subscribers),
             )?);
         }
         // B9 迁移腿（INV-M3 升级腿）：旧世界的唯一自定义持久化形态是
@@ -274,8 +221,9 @@ impl TrustedProjectApplication {
         // `preset=None 且 endpoint 非空` 的存量态自动转为第一个档案；
         // 预设态永不迁移；注册表非空时幂等跳过（用户删光档案后活动态
         // 已被回退为出厂默认——endpoint 为空，同样不触发）。
-        application.ensure_custom_profile_migration()?;
-        Ok(application)
+        self.ensure_custom_profile_migration()?;
+
+        Ok(())
     }
 
     /// B9：旧单槽自定义态 → 档案 #1（一次性迁移，见调用点注释）。
@@ -1232,6 +1180,19 @@ impl TrustedProjectApplication {
         config: &ModelConfig,
         credentials: &ProviderCredentials,
     ) -> Result<(), ApplicationError> {
+        let _update = self
+            .host_storage
+            .model_updates
+            .lock()
+            .expect("model updates");
+        self.save_model_state_locked(config, credentials)
+    }
+
+    pub(super) fn save_model_state_locked(
+        &self,
+        config: &ModelConfig,
+        credentials: &ProviderCredentials,
+    ) -> Result<(), ApplicationError> {
         self.config
             .save_model_state(config, credentials)
             .map_err(store_error)?;
@@ -1246,13 +1207,8 @@ impl TrustedProjectApplication {
         {
             let _ = self.config.upsert_vendor_key(vendor, credentials);
         }
-        self.monitor.configure(config.clone(), credentials.clone());
-        // F-B9-1（INV-M2 第四元素）：legacy 直写路径（预设切换/经典
-        // 编辑器保存/档位调整）装入的本就是非档案态——指针必须随之
-        // 清空，否则 ①Custom 列表 ● 标错，②删除「陈旧指针」档案误触
-        // was_active 回退、活预设被静默换掉。档案激活门面在
-        // save_model_state 之后显式 set Some(name)，顺序即语义。
-        self.set_active_model_profile(None)?;
+        self.host_storage.publish_models(config, credentials);
+        // ControlStorage clears the pointer in the same commit as the state.
         Ok(())
     }
 
@@ -1280,9 +1236,26 @@ impl TrustedProjectApplication {
         config: &ModelConfig,
         credentials: &ProviderCredentials,
     ) -> Result<(), ApplicationError> {
+        let _update = self
+            .host_storage
+            .model_updates
+            .lock()
+            .expect("model updates");
+        self.save_model_profile_locked(name, config, credentials)
+    }
+
+    pub(super) fn save_model_profile_locked(
+        &self,
+        name: &str,
+        config: &ModelConfig,
+        credentials: &ProviderCredentials,
+    ) -> Result<(), ApplicationError> {
         self.config
             .save_profile(name, config, credentials)
-            .map_err(store_error)
+            .map_err(store_error)?;
+        let (config, credentials) = self.model_state()?;
+        self.host_storage.publish_models(&config, &credentials);
+        Ok(())
     }
 
     pub fn load_model_profile(
@@ -1299,7 +1272,15 @@ impl TrustedProjectApplication {
     }
 
     pub fn delete_model_profile(&self, name: &str) -> Result<(), ApplicationError> {
-        self.config.delete_profile(name).map_err(store_error)
+        let _update = self
+            .host_storage
+            .model_updates
+            .lock()
+            .expect("model updates");
+        self.config.delete_profile(name).map_err(store_error)?;
+        let (config, credentials) = self.model_state()?;
+        self.host_storage.publish_models(&config, &credentials);
+        Ok(())
     }
 
     /// B9（INV-M2）：激活一个档案 = 原子换装 (config, credentials)——
@@ -1309,11 +1290,24 @@ impl TrustedProjectApplication {
         &self,
         name: &str,
     ) -> Result<Option<(ModelConfig, ProviderCredentials)>, ApplicationError> {
-        let Some((config, credentials)) = self.load_model_profile(name)? else {
+        let _update = self
+            .host_storage
+            .model_updates
+            .lock()
+            .expect("model updates");
+        let Some((config, credentials)) =
+            self.config.activate_profile(name).map_err(store_error)?
+        else {
             return Ok(None);
         };
-        self.save_model_state(&config, &credentials)?;
-        self.set_active_model_profile(Some(name))?;
+        if let Some(vendor) = crate::model::endpoint_vendor(&config.endpoint).storage_key()
+            && credentials
+                .value(0)
+                .is_some_and(|value| !value.trim().is_empty())
+        {
+            let _ = self.config.upsert_vendor_key(vendor, &credentials);
+        }
+        self.host_storage.publish_models(&config, &credentials);
         Ok(Some((config, credentials)))
     }
 
@@ -1321,20 +1315,16 @@ impl TrustedProjectApplication {
     /// 档案 → 激活首个；一个不剩 → 活动态重置为出厂默认（与全新安装
     /// 同态，绝不残留已删除档案的 config/key）。
     pub fn delete_model_profile_with_fallback(&self, name: &str) -> Result<(), ApplicationError> {
-        let was_active = self.active_model_profile()? == Some(name.to_owned());
-        self.delete_model_profile(name)?;
-        if !was_active {
-            return Ok(());
-        }
-        let remaining = self.list_model_profiles()?;
-        if let Some(first) = remaining.first() {
-            self.activate_model_profile(&first.name)?;
-        } else {
-            let config = ModelConfig::default();
-            let credentials = ProviderCredentials::for_protocol(config.protocol);
-            self.save_model_state(&config, &credentials)?;
-            self.set_active_model_profile(None)?;
-        }
+        let _update = self
+            .host_storage
+            .model_updates
+            .lock()
+            .expect("model updates");
+        self.config
+            .delete_profile_with_fallback(name)
+            .map_err(store_error)?;
+        let (config, credentials) = self.model_state()?;
+        self.host_storage.publish_models(&config, &credentials);
         Ok(())
     }
 
@@ -1343,7 +1333,15 @@ impl TrustedProjectApplication {
     }
 
     pub fn set_active_model_profile(&self, name: Option<&str>) -> Result<(), ApplicationError> {
-        self.config.set_active_profile(name).map_err(store_error)
+        let _update = self
+            .host_storage
+            .model_updates
+            .lock()
+            .expect("model updates");
+        self.config.set_active_profile(name).map_err(store_error)?;
+        let (config, credentials) = self.model_state()?;
+        self.host_storage.publish_models(&config, &credentials);
+        Ok(())
     }
 
     pub fn subscribe(&self, sender: mpsc::Sender<ApplicationEvent>) {

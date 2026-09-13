@@ -8,6 +8,7 @@
 
 pub(crate) mod im;
 pub(crate) mod json_file;
+mod models;
 pub(crate) mod projcache;
 pub(crate) mod sentinel;
 pub(crate) mod settings;
@@ -523,15 +524,10 @@ impl ControlStorage {
             self.lock(),
             |state| settings::save_settings(&self.dir, &self.root, &state.settings),
             |state| {
-                let existing_active = state
-                    .settings
-                    .model_state
-                    .as_ref()
-                    .and_then(|row| row.active_profile.clone());
                 state.settings.model_state = Some(settings::ModelStateRow {
                     config: config_value,
                     runtime: runtime_value,
-                    active_profile: existing_active,
+                    active_profile: None,
                     updated_at: timestamp::now_iso8601(),
                 });
             },

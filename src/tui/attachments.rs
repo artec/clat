@@ -109,6 +109,17 @@ impl AttachmentComposer {
         self.next_id = 0;
     }
 
+    /// A failed in-flight submission returns before newer draft images. IDs
+    /// are rebuilt because the new composer may have reused the old numbers.
+    pub(super) fn restore_before(&mut self, mut earlier: Self) {
+        earlier.entries.append(&mut self.entries);
+        for (index, entry) in earlier.entries.iter_mut().enumerate() {
+            entry.id = index as u64 + 1;
+        }
+        earlier.next_id = earlier.entries.len() as u64;
+        *self = earlier;
+    }
+
     pub(super) fn rows(&self) -> impl Iterator<Item = String> + '_ {
         self.entries.iter().map(AttachmentDraft::label)
     }
@@ -216,16 +227,23 @@ impl AttachmentComposer {
 }
 
 impl App {
+    fn attachment_draft_store(&self) -> Option<std::sync::Arc<crate::draft::DraftImageStore>> {
+        self.native_clipboard_drafts().or_else(|| {
+            self.application
+                .as_ref()
+                .map(|application| application.draft_image_store())
+        })
+    }
+
     pub(super) fn release_core_staged_attachment_paths(
         &mut self,
         paths: impl IntoIterator<Item = PathBuf>,
     ) -> usize {
         let mut paths = paths.into_iter().collect::<Vec<_>>();
-        let Some(application) = self.application.as_ref() else {
+        let Some(store) = self.attachment_draft_store() else {
             self.deferred_core_staged_releases.append(&mut paths);
             return 0;
         };
-        let store = application.draft_image_store();
         self.deferred_core_staged_releases.append(&mut paths);
         store.release_clipboard_paths(std::mem::take(&mut self.deferred_core_staged_releases))
     }
@@ -375,10 +393,7 @@ impl App {
             });
             return;
         }
-        let stager = self
-            .application
-            .as_ref()
-            .map(|application| application.draft_image_store());
+        let stager = self.attachment_draft_store();
         if mode == ClipboardPasteMode::ImageOnly && stager.is_none() {
             self.flash_status("system clipboard images are unavailable in clat dsh mode");
             return;

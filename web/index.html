@@ -280,6 +280,51 @@
       </fieldset>
     </section>
 
+    <section class="settings-section">
+      <div class="settings-copy">
+        <h3>Projects</h3>
+        <p>Open another project in a new tab. Each project has its own session and permissions.</p>
+      </div>
+      <div id="workspace-list"></div>
+      <label for="workspace-root">Absolute project directory</label>
+      <input id="workspace-root" type="text" autocomplete="off" placeholder="/path/to/project">
+      <label><input id="workspace-trust" type="checkbox"> I trust this project and authorize its tools and project instructions.</label>
+      <button id="workspace-open" class="primary" type="button">Add project</button>
+      <p id="workspace-error" class="error" role="alert"></p>
+    </section>
+
+    <section class="settings-section model-settings">
+      <div class="settings-copy">
+        <h3>Models <span class="section-kicker">SHARED BY ALL PROJECTS</span></h3>
+        <p>Changes apply to the next run. Running requests keep their current model.</p>
+      </div>
+      <p id="model-current" class="mono-detail" role="status"></p>
+      <div class="model-form-grid">
+        <label>Built-in preset<select id="model-preset" aria-label="Built-in preset"></select></label>
+        <label>Preset API key<input id="model-preset-key" type="password" autocomplete="new-password" placeholder="Blank uses remembered vendor key"></label>
+      </div>
+      <button id="model-preset-select" class="primary" type="button">Use preset</button>
+      <div id="model-profiles" class="model-profiles" aria-label="Saved model profiles"></div>
+      <button id="model-profile-new" class="ghost" type="button">New profile</button>
+      <details id="model-profile-editor">
+        <summary>Create or edit a custom profile</summary>
+        <p class="settings-copy">Keys are write-only. Blank keeps a key only on an unchanged route. Changing the route resets advanced settings and credentials.</p>
+        <div class="model-form-grid">
+          <label>Profile name<input id="model-profile-name" maxlength="128" autocomplete="off"></label>
+          <label>Protocol<select id="model-profile-protocol"><option value="open_ai_compatible">OpenAI Compatible</option><option value="open_ai_responses">OpenAI Responses</option></select></label>
+          <label>Model ID<input id="model-profile-model" maxlength="256" autocomplete="off"></label>
+          <label>Endpoint<input id="model-profile-endpoint" type="url" autocomplete="off" placeholder="Provider base URL"></label>
+          <label>Request path<input id="model-profile-path" value="/chat/completions" autocomplete="off"></label>
+          <label>API key<input id="model-profile-key" type="password" autocomplete="new-password" placeholder="Not returned by the host"></label>
+        </div>
+        <label><input id="model-profile-clear-key" type="checkbox"> Clear the stored API key</label>
+        <p id="model-profile-key-state" role="status"></p>
+        <button id="model-profile-save" class="primary" type="button">Save profile</button>
+      </details>
+      <p id="model-settings-error" class="error" role="alert"></p>
+      <p id="model-settings-saved" role="status"></p>
+    </section>
+
     <section class="settings-section permission-settings">
       <div class="settings-copy">
         <h3>Permission mode</h3>

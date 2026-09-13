@@ -100,6 +100,10 @@ impl App {
             }
             ResumeAction::Open(session_id) => {
                 self.session_picker = None;
+                if self.native.is_some() {
+                    self.submit_native(format!("/resume {}", session_id.as_str()));
+                    return;
+                }
                 match self.switch_session(session_id) {
                     Ok(()) => self.flash_status("conversation resumed"),
                     Err(error) => self.flash_status(format!("failed to resume: {error}")),
@@ -156,6 +160,10 @@ impl App {
     /// 同步（`self.config` 原地更新，重绘即见）。保存失败整体回滚，
     /// 内存与库不出现半套配置。
     pub(super) fn cycle_thinking_level(&mut self) {
+        if self.native.is_some() {
+            self.cycle_native_thinking();
+            return;
+        }
         let vendor = self.config.vendor();
         if thinking_levels(vendor).is_empty() {
             // TC-3：Tencent Hy 思考服务端常开（标题栏 Thinking · Server）
@@ -251,8 +259,16 @@ impl App {
     /// 保存切换；跨厂商或缺密钥 → 转入编辑器补密钥（清空旧厂商密钥，
     /// 避免把一家厂商的 key 发给另一家）。
     pub(super) fn apply_picker_action(&mut self, action: PickerAction) {
+        if self.native.is_some() {
+            self.apply_native_model_action(action);
+        } else {
+            self.apply_local_picker_action(action);
+        }
+    }
+
+    fn apply_local_picker_action(&mut self, action: PickerAction) {
         match action {
-            PickerAction::Continue => {}
+            PickerAction::Continue | PickerAction::OpenPresetKey(_) => {}
             PickerAction::Cancel => {
                 self.picker = None;
                 self.picker_return = None;
@@ -432,8 +448,62 @@ impl App {
     }
 
     pub(super) fn apply_editor_action(&mut self, action: EditorAction) {
+        if self.native.is_some() {
+            self.apply_native_editor_action(action);
+        } else {
+            self.apply_local_editor_action(action);
+        }
+    }
+
+    fn save_local_profile(&mut self, saved: ProfileSave) {
+        let ProfileSave {
+            name,
+            original_name,
+            config,
+            credentials,
+        } = saved;
+        let Some(application) = self.application.as_ref() else {
+            return;
+        };
+        // 改名 = 存新名 + 删旧名（INV-M3：旧档案数据不残留双份）。
+        let renamed = original_name
+            .as_deref()
+            .is_some_and(|original| original != name);
+        let saved = application.save_model_profile(&name, &config, &credentials);
+        let result = match saved {
+            Err(error) => Err(error.to_string()),
+            Ok(()) => {
+                if renamed && let Some(original) = &original_name {
+                    let _ = application.delete_model_profile(original);
+                }
+                // 新建/编辑的档案即刻激活（原子换装）。
+                application
+                    .activate_model_profile(&name)
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            }
+        };
+        match result {
+            Ok(()) => {
+                self.config = config;
+                self.credentials = credentials;
+                self.provider_descriptors = application.provider_descriptors(&self.credentials);
+                self.refresh_balance_now();
+                self.editor = None;
+                self.picker_return = None;
+                self.flash_status(format!("profile {name} saved and activated"));
+            }
+            Err(error) => {
+                self.flash_status(format!("failed to save profile: {error}"));
+            }
+        }
+    }
+
+    fn apply_local_editor_action(&mut self, action: EditorAction) {
         match action {
-            EditorAction::Continue => {}
+            EditorAction::Continue
+            | EditorAction::SaveRemoteProfile(_)
+            | EditorAction::SaveRemotePreset(_) => {}
             EditorAction::Cancel => {
                 self.editor = None;
                 // INV-U1（原位返回）：从 picker 进入的编辑器取消后，
@@ -448,50 +518,7 @@ impl App {
                     self.flash_status("model configuration cancelled");
                 }
             }
-            EditorAction::SaveProfile(saved) => {
-                let ProfileSave {
-                    name,
-                    original_name,
-                    config,
-                    credentials,
-                } = *saved;
-                let Some(application) = self.application.as_ref() else {
-                    return;
-                };
-                // 改名 = 存新名 + 删旧名（INV-M3：旧档案数据不残留双份）。
-                let renamed = original_name
-                    .as_deref()
-                    .is_some_and(|original| original != name);
-                let saved = application.save_model_profile(&name, &config, &credentials);
-                let result = match saved {
-                    Err(error) => Err(error.to_string()),
-                    Ok(()) => {
-                        if renamed && let Some(original) = &original_name {
-                            let _ = application.delete_model_profile(original);
-                        }
-                        // 新建/编辑的档案即刻激活（原子换装）。
-                        application
-                            .activate_model_profile(&name)
-                            .map(|_| ())
-                            .map_err(|error| error.to_string())
-                    }
-                };
-                match result {
-                    Ok(()) => {
-                        self.config = config;
-                        self.credentials = credentials;
-                        self.provider_descriptors =
-                            application.provider_descriptors(&self.credentials);
-                        self.refresh_balance_now();
-                        self.editor = None;
-                        self.picker_return = None;
-                        self.flash_status(format!("profile {name} saved and activated"));
-                    }
-                    Err(error) => {
-                        self.flash_status(format!("failed to save profile: {error}"));
-                    }
-                }
-            }
+            EditorAction::SaveProfile(saved) => self.save_local_profile(*saved),
             EditorAction::Save(saved) => {
                 let (config, credentials) = *saved;
                 match self
@@ -528,6 +555,15 @@ impl App {
     }
 
     pub(super) fn submit_input(&mut self) {
+        if self.native.is_some() {
+            let text = self.input.take().trim().to_owned();
+            self.submit_native(text);
+            return;
+        }
+        self.submit_local_input();
+    }
+
+    fn submit_local_input(&mut self) {
         if self.clipboard_image_pending {
             self.flash_status("wait for clipboard image preparation before sending");
             return;

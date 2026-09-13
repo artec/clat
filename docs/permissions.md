@@ -145,6 +145,14 @@ still required for unattended `--yes` execution.
 client answers through `approval.respond`; the first answer wins and late
 answers receive `not-pending`. Cancellation, a ten-minute timeout, or losing
 all event subscribers while a request is pending resolves it as deny.
+Clients joining while approval is pending receive the unresolved request too.
+Resolution publishes a `notice` with kind `approval_resolved` and the request
+ID, so clients can mark that specific prompt resolved. The PWA retains buttons
+until that client answers: a late answer receives `not-pending` and displays
+“already answered elsewhere”. A confirmed local answer is not overwritten by
+a delayed notification. The attached TUI dismisses its matching dialog. Merely closing
+one client's prompt on disconnect does not submit a denial on another client's
+behalf; the server retains the timeout and all-subscribers-lost policy above.
 
 ### WeChat approval
 

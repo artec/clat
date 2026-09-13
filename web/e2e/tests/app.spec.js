@@ -25,6 +25,279 @@ async function openWorkbench(page, entry) {
 
 const LIVE = { timeout: 30_000 };
 
+test('question cards replay to another client and first answer closes both', async ({ page, context }, testInfo) => {
+  const entry = hostInfo('question');
+  await openWorkbench(page, entry);
+  await page.fill('#prompt', 'ask me');
+  await page.click('#send');
+  const card = page.locator('.question-card').last();
+  await expect(card).toBeVisible(LIVE);
+  await card.getByRole('button', { name: 'Decline', exact: true }).scrollIntoViewIfNeeded();
+  await expect(card.locator('.question-description')).toHaveText('recommended');
+  await page.screenshot({ path: testInfo.outputPath('question-desktop.png'), fullPage: true, animations: 'disabled' });
+  const other = await context.newPage();
+  await other.goto(entry.origin);
+  await expect(other.locator('#conn-status')).toHaveText('live', LIVE);
+  await expect(other.locator('.question-card')).toHaveCount(1);
+  await other.reload();
+  await expect(other.locator('.question-card')).toHaveCount(1, LIVE);
+  await other.locator('.question-card').getByRole('button', { name: 'stable', exact: true }).click();
+  await expect(card.locator('button')).toHaveCount(0, LIVE);
+  await expect(other.locator('.question-card button')).toHaveCount(0, LIVE);
+  await expect(page.locator('#detail-run')).toHaveText('Idle', LIVE);
+  await other.close();
+});
+
+test('question response failure retains custom input and retries only explicitly', async ({ page }) => {
+  const entry = hostInfo('question');
+  await openWorkbench(page, entry);
+  await page.click('#new-session');
+  await expect(page.locator('.msg.user')).toHaveCount(0, LIVE);
+  await page.fill('#prompt', 'ask again');
+  await page.click('#send');
+  const card = page.locator('.question-card').last();
+  await expect(card).toBeVisible(LIVE);
+  let calls = 0;
+  await page.route('**/api/question.respond', async (route) => {
+    calls++;
+    if (calls === 1) await route.fulfill({ status: 503, body: 'temporarily unavailable' });
+    else await route.continue();
+  });
+  await card.getByRole('textbox', { name: 'Your answer' }).fill('my own answer');
+  await card.getByRole('button', { name: 'Send answer', exact: true }).click();
+  await expect(card.locator('.resolution')).toContainText('Answer retained', LIVE);
+  await expect(card.getByRole('textbox')).toHaveValue('my own answer');
+  expect(calls).toBe(1);
+  await card.getByRole('button', { name: 'Send answer', exact: true }).click();
+  await expect(card.locator('button')).toHaveCount(0, LIVE);
+  expect(calls).toBe(2);
+  await expect(page.locator('#detail-run')).toHaveText('Idle', LIVE);
+});
+
+test('question notices deduplicate safely and stale failures cannot reopen a resolved card', async ({ page }, testInfo) => {
+  await openWorkbench(page, hostInfo('success'));
+  await page.setViewportSize({ width: 390, height: 844 });
+  const requested = (id) => ({ kind: 'question_requested', payload: {
+    rpc_id: id, question: { question: '<img src=x onerror=alert(1)>', options: [], allow_custom: false },
+  } });
+  await page.evaluate((notice) => { onNotice(notice); onNotice(notice); }, requested('first'));
+  await expect(page.locator('.question-card')).toHaveCount(1);
+  await expect(page.locator('.question-card img')).toHaveCount(0);
+  let release;
+  const barrier = new Promise((resolve) => { release = resolve; });
+  let started;
+  const inFlight = new Promise((resolve) => { started = resolve; });
+  let calls = 0;
+  await page.route('**/api/question.respond', async (route) => {
+    calls++;
+    started();
+    await barrier;
+    await route.fulfill({ status: 503, body: 'delayed failure' });
+  });
+  const first = page.locator('.question-card').first();
+  await first.getByRole('button', { name: 'Send answer', exact: true }).click();
+  await expect(first.locator('.resolution')).toContainText('nonblank');
+  expect(calls).toBe(0);
+  await first.getByRole('textbox').fill('retained draft');
+  await first.getByRole('button', { name: 'Send answer', exact: true }).click();
+  await inFlight;
+  await expect(first.getByRole('button', { name: 'Decline', exact: true })).toBeDisabled();
+  await page.evaluate((notice) => {
+    onNotice({ kind: 'question_resolved', payload: { rpc_id: 'first' } });
+    onNotice(notice);
+  }, requested('second'));
+  const second = page.locator('.question-card').last();
+  await second.getByRole('textbox').fill('new question draft');
+  await page.screenshot({ path: testInfo.outputPath('question-mobile.png'), fullPage: true, animations: 'disabled' });
+  release();
+  await expect(first).toHaveAttribute('data-sending', 'false');
+  await expect(first.locator('button')).toHaveCount(0);
+  await expect(second.getByRole('textbox')).toHaveValue('new question draft');
+  await page.evaluate(() => closeQuestionCards());
+  await expect(page.locator('.question-card button')).toHaveCount(0);
+  expect(calls).toBe(1);
+});
+
+test('question options without custom input allow explicit decline', async ({ page }) => {
+  await openWorkbench(page, hostInfo('success'));
+  await page.evaluate(() => onNotice({ kind: 'question_requested', payload: {
+    rpc_id: 'options-only', question: { question: 'Proceed?',
+      options: [{ label: 'Yes', description: 'Continue work' }], allow_custom: false },
+  } }));
+  const card = page.locator('.question-card').last();
+  await expect(card.getByRole('textbox')).toHaveCount(0);
+  await page.route('**/api/question.respond', async (route) => {
+    expect(route.request().postDataJSON()).toEqual({ rpcId: 'options-only', answer: { kind: 'declined' } });
+    await route.fulfill({ json: { ok: true, value: {} } });
+  });
+  await card.getByRole('button', { name: 'Decline', exact: true }).click();
+  await expect(card.locator('.resolution')).toHaveText('Answer accepted.');
+  await expect(card.locator('button')).toHaveCount(0);
+});
+
+test('reconnect during approval shows each identical admission once', async ({ page, context }) => {
+  const entry = hostInfo('run-command');
+  await openWorkbench(page, entry);
+  await page.click('#new-session');
+  await expect(page.locator('.msg.user')).toHaveCount(0, LIVE);
+  for (let round = 1; round <= 2; round++) {
+    await expect(page.locator('#detail-run')).toHaveText('Idle', LIVE);
+    await page.fill('#prompt', 'same admitted input');
+    await page.click('#send');
+    await expect(page.locator('.approval-card').last()).toBeVisible(LIVE);
+    const other = await context.newPage();
+    await other.goto(entry.origin);
+    await expect(other.locator('#conn-status')).toHaveText('live', LIVE);
+    await expect(other.locator('.approval-card').last()).toBeVisible(LIVE);
+    await expect(other.locator('.msg.user')).toHaveCount(round, LIVE);
+    await other.reload();
+    await expect(other.locator('#conn-status')).toHaveText('live', LIVE);
+    await expect(other.locator('.approval-card').last()).toBeVisible(LIVE);
+    await expect(other.locator('.msg.user')).toHaveCount(round, LIVE);
+    await other.locator('.approval-card').last().locator('button.ghost').click();
+    await expect(other.locator('#detail-run')).toHaveText('Idle', LIVE);
+    await other.reload();
+    await expect(other.locator('#conn-status')).toHaveText('live', LIVE);
+    await expect(other.locator('.msg.user')).toHaveCount(round, LIVE);
+    await other.close();
+  }
+  // This fixture is shared with the original fresh-session acceptance test.
+  await expect(page.locator('#detail-run')).toHaveText('Idle', LIVE);
+  await page.click('#new-session');
+  await expect(page.locator('.msg.user')).toHaveCount(0, LIVE);
+});
+
+test('model profiles are editable in PWA and broadcast without echoing API keys', async ({ page, context }) => {
+  const entry = hostInfo('success');
+  await openWorkbench(page, entry);
+  await page.click('#settings-open');
+  await expect(page.locator('#model-preset option')).not.toHaveCount(0);
+  const other = await context.newPage();
+  await other.goto(entry.origin);
+  await expect(other.locator('#conn-status')).toHaveText('live', LIVE);
+  await other.click('#settings-open');
+  const name = 'browser-profile-' + Date.now();
+  const secret = 'browser-key-do-not-return';
+  const responses = [];
+  page.on('response', async (response) => {
+    if (response.url().includes('/api/model.')) responses.push(await response.text());
+  });
+  await page.locator('#model-profile-editor summary').click();
+  await page.fill('#model-profile-name', name);
+  await page.fill('#model-profile-model', 'browser-test-model');
+  await page.fill('#model-profile-endpoint', 'https://example.invalid/v1');
+  await page.fill('#model-profile-key', secret);
+  await page.click('#model-profile-save');
+  await expect(page.locator('#model-settings-saved')).toContainText('Profile saved', LIVE);
+  await expect(page.locator('#model-profile-key')).toHaveValue('');
+  await page.getByRole('button', { name: 'Use profile ' + name, exact: true }).click();
+  await expect(other.locator('#model-current')).toContainText('browser-test-model', LIVE);
+  await expect(other.locator('#model-current')).toContainText('key set');
+  await page.getByRole('button', { name: 'Edit profile ' + name, exact: true }).click();
+  await expect(page.locator('#model-profile-key-state')).toContainText('Key is set', LIVE);
+  await expect(page.locator('#model-profile-key')).toHaveValue('');
+  await page.click('#model-profile-save');
+  await expect(page.locator('#model-settings-saved')).toContainText('Profile saved', LIVE);
+  await expect(other.locator('#model-current')).toContainText('key set');
+  await page.check('#model-profile-clear-key');
+  await page.click('#model-profile-save');
+  await expect(page.locator('#model-settings-saved')).toContainText('Profile saved', LIVE);
+  await page.getByRole('button', { name: 'Edit profile ' + name, exact: true }).click();
+  await expect(page.locator('#model-profile-key-state')).toContainText('Key is not set', LIVE);
+  await page.getByRole('button', { name: 'Use profile ' + name, exact: true }).click();
+  await expect(other.locator('#model-current')).toContainText('key not set', LIVE);
+  await page.fill('#model-profile-model', 'browser-edited-model');
+  await page.click('#model-profile-save');
+  await expect(page.locator('#model-settings-saved')).toContainText('Profile saved', LIVE);
+  await page.getByRole('button', { name: 'Use profile ' + name, exact: true }).click();
+  await expect(other.locator('#model-current')).toContainText('browser-edited-model', LIVE);
+  expect(responses.every((response) => !response.includes(secret))).toBeTruthy();
+  page.once('dialog', (dialog) => dialog.accept());
+  await page.getByRole('button', { name: 'Delete profile ' + name, exact: true }).click();
+  await expect(other.getByRole('button', { name: 'Use profile ' + name, exact: true })).toHaveCount(0, LIVE);
+  await other.close();
+});
+
+for (const transition of ['input', 'new', 'close']) {
+test(`delayed profile reads cannot overwrite newer form state: ${transition}`, async ({ page }, testInfo) => {
+  const entry = hostInfo('success');
+  const name = 'mf2-stale-profile';
+  const api = (method, data) => page.request.post(`${entry.origin}/api/${method}`, {
+    headers: { Authorization: `Bearer ${entry.token}` }, data,
+  });
+  await api('model.profile.save', { name, protocol: 'open_ai_compatible', model: 'old-model',
+    endpoint: 'https://example.invalid/v1', request_path: '/chat/completions' });
+  await openWorkbench(page, entry);
+  await page.click('#settings-open');
+  await page.locator('#model-profile-editor summary').click();
+  let release;
+  const barrier = new Promise((resolve) => { release = resolve; });
+  let requested;
+  const started = new Promise((resolve) => { requested = resolve; });
+  await page.route('**/api/model.profile.get', async (route) => {
+    const response = await route.fetch();
+    requested();
+    await barrier;
+    await route.fulfill({ response });
+  });
+  const edit = page.getByRole('button', { name: 'Edit profile ' + name, exact: true });
+  await page.fill('#model-profile-model', 'newer-user-draft');
+  await page.fill('#model-profile-key', 'unsaved-key');
+  await page.check('#model-profile-clear-key');
+  await edit.click();
+  await started;
+  if (transition === 'input') {
+    await page.fill('#model-profile-model', 'newer-user-draft-after-read');
+  } else if (transition === 'new') {
+    await page.click('#model-profile-new');
+    await expect(page.locator('#model-profile-name')).toBeFocused();
+    await expect(page.locator('#model-profile-key')).toHaveValue('');
+    await expect(page.locator('#model-profile-clear-key')).not.toBeChecked();
+  } else if (transition === 'close') {
+    await page.keyboard.press('Escape');
+    await expect(page.locator('#settings-dialog')).not.toBeVisible();
+    await page.click('#settings-open');
+  }
+  release();
+  await expect(edit).toBeEnabled(LIVE);
+  const expected = { input: 'newer-user-draft-after-read', new: '', close: 'newer-user-draft' };
+  await expect(page.locator('#model-profile-model')).toHaveValue(expected[transition]);
+  if (transition === 'new') await page.screenshot({ path: testInfo.outputPath('new-profile.png') });
+  await api('model.profile.delete', { name });
+});
+}
+
+test('project tabs keep drafts and permission state isolated', async ({ page, context }) => {
+  const entry = hostInfo('success');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'clat-project-tab-'));
+  try {
+    await openWorkbench(page, entry);
+    await page.fill('#prompt', 'Keep this draft in the first project');
+    await page.click('#settings-open');
+    await page.fill('#workspace-root', directory);
+    await page.click('#workspace-open');
+    await expect(page.locator('#workspace-error')).toContainText('not trusted', LIVE);
+    await page.check('#workspace-trust');
+    await page.click('#workspace-open');
+    const link = page.locator('#workspace-error a');
+    await expect(link).toBeVisible(LIVE);
+    const other = await context.newPage();
+    await other.goto(entry.origin + await link.getAttribute('href'));
+    await expect(other.locator('#conn-status')).toHaveText('live', LIVE);
+    await other.click('#settings-open');
+    await other.locator('label').filter({ has: other.locator('input[name="permission-mode"][value="read-only"]') }).click();
+    await other.click('#permission-save');
+    await expect(other.locator('#settings-saved')).toContainText('updated', LIVE);
+    await expect(page.locator('#prompt')).toHaveValue('Keep this draft in the first project');
+    await expect(page.locator('input[name="permission-mode"][value="workspace-write"]')).toBeChecked();
+    await other.close();
+    await page.locator('#settings-dialog button[aria-label="Close settings"]').click();
+    await expect(page.locator('#conn-status')).toHaveText('live');
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 function currentRssBytes(pid) {
   const kib = Number.parseInt(
     execFileSync('ps', ['-o', 'rss=', '-p', String(pid)], { encoding: 'utf8' }).trim(),
@@ -460,7 +733,22 @@ test('dual tabs observe the same run; first answer wins', async ({ browser }) =>
   await expect(tabA.locator('.verdict.completed')).toBeVisible(LIVE);
   await expect(tabB.locator('.verdict.completed')).toBeVisible(LIVE); // B 收敛
 
+  // 广播已到达后仍可迟答；不能靠点在广播之前偶然通过。
+  await expect(cardB.locator('.note.resolution')).toHaveText('answered or closed by host', LIVE);
+  await expect(cardB.locator('button.primary')).toBeEnabled({ timeout: 5000 });
+
   await cardB.locator('button.primary').click(); // B 迟到应答 → not-pending
+  await expect(cardB.locator('.note.resolution')).toHaveText('already answered elsewhere', LIVE);
+  await expect(cardA.locator('.note.resolution')).toHaveText('answered: allow', LIVE);
+
+  // 故意在 RPC 已确认后再交付一次通知，钉死另一种网络顺序。
+  for (const tab of [tabA, tabB]) {
+    await tab.evaluate(() => {
+      const rpc_id = document.querySelector('.approval-card').dataset.rpcId;
+      onApprovalResolved({ rpc_id });
+    });
+  }
+  await expect(cardA.locator('.note.resolution')).toHaveText('answered: allow', LIVE);
   await expect(cardB.locator('.note.resolution')).toHaveText('already answered elsewhere', LIVE);
 
   await tabA.close();

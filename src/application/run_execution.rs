@@ -53,6 +53,7 @@ pub(super) struct RunExecutionEngine;
 
 #[derive(Clone)]
 pub struct RunHandle {
+    replay_before_seq: Option<u64>,
     cancel: CancelToken,
     busy: Arc<AtomicBool>,
     join: Arc<Mutex<Option<JoinHandle<()>>>>,
@@ -67,11 +68,18 @@ impl RunHandle {
         steering: crate::run::SteeringQueue,
     ) -> Self {
         Self {
+            replay_before_seq: None,
             cancel,
             busy,
             join,
             steering,
         }
+    }
+
+    /// Exclusive journal cursor for rebuilding history before this execution.
+    /// Frozen at initial admission, including when a goal continues in-worker.
+    pub fn replay_before_seq(&self) -> Option<u64> {
+        self.replay_before_seq
     }
 
     pub fn cancel(&self) {
@@ -297,6 +305,7 @@ impl WaitingRunExecution {
         start: RunExecutionStart,
         asker: Option<Arc<dyn crate::interaction::UserAsker>>,
     ) -> Result<RunHandle, RunActivationError> {
+        self.handle.replay_before_seq = Some(start.prepared.replay_before_seq);
         self.slots
             .tool_access
             .install(start.context.tool_access.clone());
@@ -399,6 +408,7 @@ fn run_worker(
         message: mut current_message,
         client_message_id: mut current_client_id,
         receipt: run_receipt,
+        ..
     } = prepared;
     if let Some(todo_service) = &todo_service {
         todo_service.bind_run(&session_id, Arc::clone(&journal));
@@ -412,12 +422,9 @@ fn run_worker(
             worker_credentials.clone(),
         )
         .err();
-    let captured_text = Arc::new(Mutex::new(String::new()));
-    let ui_events: Box<dyn EventSink + Send> = Box::new(CapturingEventSink {
-        inner: events,
-        text: Arc::clone(&captured_text),
-    });
-    let ui_sink = Arc::new(Mutex::new(ui_events));
+    let capture = CapturingEventSink::new(events);
+    let captured_text = Arc::clone(&capture.text);
+    let ui_sink = Arc::new(Mutex::new(Box::new(capture) as Box<dyn EventSink + Send>));
     let goal_service = Arc::clone(&goal_service);
     let title_config = worker_config.clone();
     let title_credentials = worker_credentials.clone();
@@ -911,6 +918,15 @@ fn run_worker(
 struct CapturingEventSink {
     inner: Box<dyn EventSink + Send>,
     text: Arc<Mutex<String>>,
+}
+
+impl CapturingEventSink {
+    fn new(inner: Box<dyn EventSink + Send>) -> Self {
+        Self {
+            inner,
+            text: Arc::new(Mutex::new(String::new())),
+        }
+    }
 }
 
 impl EventSink for CapturingEventSink {

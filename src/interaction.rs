@@ -10,12 +10,14 @@ use crate::model::CancelToken;
 use std::sync::{Arc, RwLock};
 
 /// 一个可选项：标签是回传给模型的答案，描述仅供人看。
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct AskOption {
     pub label: String,
     pub description: Option<String>,
 }
 
 /// 单问单答的问题（v1：一次调用一问；多问由模型多次调用）。
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct AskQuestion {
     pub question: String,
     pub options: Vec<AskOption>,
@@ -25,6 +27,8 @@ pub struct AskQuestion {
 
 /// 前端应答。`Declined`（拒绝/取消/断连）以 isError 工具结果回给模型，
 /// run 继续。
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum AskAnswer {
     Selected(String),
     Custom(String),

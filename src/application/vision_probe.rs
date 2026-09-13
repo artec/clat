@@ -18,7 +18,7 @@ use crate::model::{
     ContentPart, ImageProjectionBudget, Modality, ModelConfig, ModelError, ModelErrorKind,
     ModelItem, ModelOptions, ModelRequest, ProviderCredentials,
 };
-use crate::plugins::services::{ConfigStore, MonitorService, ProviderRegistry};
+use crate::plugins::services::{ConfigStore, ProviderRegistry};
 use image::ImageEncoder as _;
 use serde_json::json;
 use std::path::Path;
@@ -112,14 +112,10 @@ impl VisionProbeHandle {
 }
 
 impl TrustedProjectApplication {
-    /// 启动一次性视觉探针（异步 worker，立即返回句柄；判定经
-    /// `ApplicationEvent::VisionProbeNotice` 回流）。同一时刻至多一个
-    /// 探针：上一轮未收尾则先 join 它（/compact 同纪律）。
-    pub fn start_vision_probe(&mut self) -> Result<VisionProbeHandle, ApplicationError> {
-        if let Some(previous) = self.active_vision_probe.take() {
-            previous.join()?;
-        }
-        let (config, credentials) = self.model_state()?;
+    fn validated_probe_model(
+        &self,
+    ) -> Result<(ModelConfig, ProviderCredentials, u64), ApplicationError> {
+        let (config, credentials, revision) = self.probe_model_snapshot()?;
         if !config.is_configured() {
             return Err(ApplicationError::new(
                 "model is not configured; configure a model and endpoint first",
@@ -134,10 +130,20 @@ impl TrustedProjectApplication {
                  presets carry officially-declared capabilities",
             ));
         }
+        Ok((config, credentials, revision))
+    }
+    /// 启动一次性视觉探针（异步 worker，立即返回句柄；判定经
+    /// `ApplicationEvent::VisionProbeNotice` 回流）。同一时刻至多一个
+    /// 探针：上一轮未收尾则先 join 它（/compact 同纪律）。
+    pub fn start_vision_probe(&mut self) -> Result<VisionProbeHandle, ApplicationError> {
+        if let Some(previous) = self.active_vision_probe.take() {
+            previous.join()?;
+        }
+        let (config, credentials, revision) = self.validated_probe_model()?;
         let providers = Arc::clone(&self.providers);
         let draft_store = Arc::clone(&self.draft_images);
         let store = Arc::clone(&self.config);
-        let monitor = Arc::clone(&self.monitor);
+        let host_storage = Arc::clone(&self.host_storage);
         let subscribers = Arc::clone(&self.subscribers);
         let evidence_root = self.control.root_path().to_path_buf();
         let busy = Arc::new(AtomicBool::new(true));
@@ -160,7 +166,8 @@ impl TrustedProjectApplication {
                         let (outcome, excerpt) = classify_probe_answer(answer, &code);
                         let persisted = persist_override_if_passed(
                             &store,
-                            &monitor,
+                            &host_storage,
+                            revision,
                             &config,
                             &credentials,
                             outcome,
@@ -410,13 +417,20 @@ pub(crate) fn apply_vision_override(config: &mut ModelConfig) -> Result<(), Stri
 /// 就绝不生效（fail-closed）。
 fn persist_override_if_passed(
     store: &Arc<dyn ConfigStore>,
-    monitor: &Arc<dyn MonitorService>,
+    storage: &Arc<super::host_storage::HostStorage>,
+    revision: u64,
     config: &ModelConfig,
     credentials: &ProviderCredentials,
     outcome: VisionProbeOutcome,
 ) -> Option<Result<(), String>> {
     if outcome != VisionProbeOutcome::Pass {
         return None;
+    }
+    let _update = storage.model_updates.lock().expect("model updates");
+    if storage.model_revision() != revision {
+        return Some(Err(
+            "model settings changed during the probe; result was not applied".into(),
+        ));
     }
     let mut updated = config.clone();
     if let Err(error) = apply_vision_override(&mut updated) {
@@ -425,12 +439,7 @@ fn persist_override_if_passed(
     if let Err(error) = store.save_model_state(&updated, credentials) {
         return Some(Err(error.to_string()));
     }
-    // INV-M2 第四元素：直写路径装入非档案态——指针随保存清空
-    //（应用层 save_model_state 同序；这里在 worker 内以 store 原语复刻）。
-    if let Err(error) = store.set_active_profile(None) {
-        return Some(Err(error.to_string()));
-    }
-    monitor.configure(updated, credentials.clone());
+    storage.publish_models(&updated, credentials);
     Some(Ok(()))
 }
 
@@ -472,6 +481,44 @@ fn bounded_excerpt(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn late_probe_cannot_restore_a_replaced_model() {
+        let (project, storage) = crate::test_support::roots("late-vision-model");
+        std::fs::create_dir_all(&project).unwrap();
+        let app = crate::BootstrapApplication::open(crate::Project::new(&project), storage.clone())
+            .unwrap()
+            .authorize_and_mount(crate::ProjectAuthorization::grant())
+            .unwrap();
+        let first = ModelConfig {
+            model: "before".into(),
+            endpoint: "https://example.invalid".into(),
+            ..ModelConfig::default()
+        };
+        let credentials = ProviderCredentials::for_protocol(first.protocol);
+        app.save_model_state(&first, &credentials).unwrap();
+        let (config, credentials, revision) = app.probe_model_snapshot().unwrap();
+        let next = ModelConfig {
+            model: "after".into(),
+            ..first
+        };
+        app.save_model_state(&next, &credentials).unwrap();
+        let result = persist_override_if_passed(
+            &app.config,
+            &app.host_storage,
+            revision,
+            &config,
+            &credentials,
+            VisionProbeOutcome::Pass,
+        );
+        assert!(result.unwrap().is_err());
+        let current = app.model_state().unwrap().0;
+        assert_eq!(current.model, "after");
+        assert!(!current.capabilities.accepts_image_input());
+        app.close().unwrap();
+        crate::test_support::cleanup_tree(&storage);
+        crate::test_support::cleanup_tree(&project);
+    }
 
     /// VP-1 判别（通用式负断言，协调点裁定）：**任一**内置预设经
     /// 覆盖位通道必须被拒——遍历整个内置预设表，不枚举模型清单，

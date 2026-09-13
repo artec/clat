@@ -218,12 +218,7 @@ impl TrustedProjectApplication {
             ),
         };
         first_batch.push(NewSessionEvent::new("user/message", user_payload).append(Vec::new()));
-        journal
-            .append_atomic(&first_batch)
-            .map_err(|error| ApplicationError::new(format!("session append failed: {error}")))?;
-        journal
-            .flush()
-            .map_err(|error| ApplicationError::new(format!("session flush failed: {error}")))?;
+        let replay_before_seq = commit_admission_batch(journal.as_ref(), &first_batch)?;
 
         // The append+flush above is the sole admission commit point. Build
         // the receipt immediately: every fallible projection below must
@@ -286,6 +281,7 @@ impl TrustedProjectApplication {
             .current_model_history()
             .map_err(|error| post_commit_error(error, "history-rebuild"))?;
         Ok(PreparedRun {
+            replay_before_seq,
             session_id: id,
             turn,
             history,
@@ -674,7 +670,23 @@ pub struct ApplicationRunRequest {
     pub completion: mpsc::Sender<ApplicationRunResult>,
 }
 
+// The final event in the admission batch is user/message. Its assigned seq,
+// not a later journal watermark, separates historical and live presentation.
+fn commit_admission_batch(
+    journal: &dyn RunJournal,
+    batch: &[NewSessionEvent],
+) -> Result<u64, ApplicationError> {
+    let range = journal
+        .append_atomic(batch)
+        .map_err(|error| ApplicationError::new(format!("session append failed: {error}")))?;
+    journal
+        .flush()
+        .map_err(|error| ApplicationError::new(format!("session flush failed: {error}")))?;
+    Ok(range.end_inclusive)
+}
+
 pub(super) struct PreparedRun {
+    pub(super) replay_before_seq: u64,
     pub(super) session_id: SessionId,
     pub(super) turn: u64,
     pub(super) history: Vec<crate::model::ModelItem>,

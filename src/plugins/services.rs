@@ -439,6 +439,11 @@ pub(crate) trait ConfigStore: Send + Sync {
     fn list_profiles(&self)
     -> Result<Vec<crate::control_storage::ModelProfileSummary>, StoreError>;
     fn delete_profile(&self, name: &str) -> Result<(), StoreError>;
+    fn activate_profile(
+        &self,
+        name: &str,
+    ) -> Result<Option<(ModelConfig, ProviderCredentials)>, StoreError>;
+    fn delete_profile_with_fallback(&self, name: &str) -> Result<(), StoreError>;
     fn active_profile(&self) -> Result<Option<String>, StoreError>;
     fn set_active_profile(&self, name: Option<&str>) -> Result<(), StoreError>;
     /// 厂商 key 记忆库（INV-VK1）：记住/取回某厂商的 API key。

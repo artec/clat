@@ -54,10 +54,12 @@ use crate::session::event::SessionEvent;
 use crate::tool::ToolCall;
 use serde_json::Value;
 use std::collections::HashMap;
+mod codec;
 
 /// One reconstructed conversation item. Every variant carries the journal
 /// envelope time so frontends can derive per-step durations later.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum ReplayEvent {
     UserMessage {
         seq: u64,
@@ -67,6 +69,7 @@ pub enum ReplayEvent {
         /// MM-1A：与 live `RunEvent::RunStarted`/`SteeringApplied` 同源的
         /// 内容块（图片以 descriptor 表达）。与 `text` 的关系见
         /// `MessageContent::plain_text`。
+        #[serde(default, deserialize_with = "codec::blocks")]
         content_blocks: Vec<crate::message::ContentBlock>,
         /// 客户端幂等键（journal `clientMessageId`）；core 合成消息为 None。
         client_message_id: Option<String>,
@@ -92,6 +95,7 @@ pub enum ReplayEvent {
         turn: u64,
         time_ms: i64,
         tool: String,
+        #[serde(deserialize_with = "codec::decision")]
         decision: PermissionDecision,
     },
     ToolRequested {
@@ -110,6 +114,7 @@ pub enum ReplayEvent {
         is_error: bool,
         /// Descriptor-only durable result blocks. Bytes and local paths are
         /// intentionally absent from replay/UI protocol surfaces.
+        #[serde(default, deserialize_with = "codec::blocks")]
         content_blocks: Vec<crate::message::ContentBlock>,
     },
     RetryScheduled {
@@ -126,6 +131,7 @@ pub enum ReplayEvent {
         seq: u64,
         turn: u64,
         time_ms: i64,
+        #[serde(deserialize_with = "codec::turn_end")]
         reason: ReplayTurnEnd,
     },
     Compaction {
@@ -173,7 +179,7 @@ impl ReplayEvent {
 
 /// The failure description recovered from `llm/retry`. `RetryFailure.status`
 /// (HTTP status) is deliberately not journaled and cannot come back.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize)]
 pub struct ReplayRetryFailure {
     pub message: String,
     pub code: String,
