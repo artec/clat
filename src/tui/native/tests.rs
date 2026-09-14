@@ -1,6 +1,8 @@
 use super::*;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
+use std::thread;
+use std::time::{Duration, Instant};
 
 fn shell() -> (App, PathBuf) {
     let (storage, project) = crate::test_support::roots("native-shell");
@@ -16,7 +18,7 @@ fn shell() -> (App, PathBuf) {
         "journal_version":3,"instance_id":"11111111-1111-1111-1111-111111111111"
     }})
     .to_string();
-    let server = thread::spawn(move || {
+    let _server = thread::spawn(move || {
         let (stream, _) = listener.accept().unwrap();
         stream
             .set_read_timeout(Some(Duration::from_secs(5)))
@@ -37,12 +39,34 @@ fn shell() -> (App, PathBuf) {
             description
         )
         .unwrap();
+        // Keep the fixture listener alive for subsequent native requests.
+        // Returning an HTTP error is deterministic on every platform and
+        // avoids making failure-path tests depend on how quickly a closed
+        // local port reports ECONNREFUSED/WSAECONNREFUSED.
+        listener.set_nonblocking(true).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let _ = reject_request(&mut stream);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Err(_) => break,
+            }
+        }
     });
     let client = HostClient::connect(port, "test-token".into(), &storage).unwrap();
-    server.join().unwrap();
     let mut app = App::open_native(Project::new(&project), client).unwrap();
     app.focused = Some(true);
     (app, storage)
+}
+
+fn reject_request(stream: &mut TcpStream) -> std::io::Result<()> {
+    stream.write_all(
+        b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+    )
 }
 
 fn clipboard_png() -> Vec<u8> {
