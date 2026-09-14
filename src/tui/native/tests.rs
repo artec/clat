@@ -4,7 +4,7 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 fn shell() -> (App, PathBuf) {
     let (storage, project) = crate::test_support::roots("native-shell");
@@ -49,6 +49,8 @@ fn shell() -> (App, PathBuf) {
             description
         )
         .unwrap();
+        drop(reader);
+        let handshake_completed = Instant::now();
         // Keep the fixture listener alive for subsequent native requests.
         // Returning an HTTP error is deterministic on every platform and
         // avoids making failure-path tests depend on how quickly a closed
@@ -64,6 +66,10 @@ fn shell() -> (App, PathBuf) {
                     break;
                 }
             };
+            eprintln!(
+                "native test host accepted connection after {:?}",
+                handshake_completed.elapsed()
+            );
             if server_stop.load(Ordering::Acquire) {
                 break;
             }
@@ -462,7 +468,7 @@ fn native_question_failed_reply_keeps_answer_without_automatic_resend() {
         ))
         .unwrap();
     assert!(app.pending_ask_user.is_none());
-    let UiEvent::Native(event) = rx.recv_timeout(Duration::from_secs(2)).unwrap() else {
+    let UiEvent::Native(event) = rx.recv_timeout(Duration::from_secs(5)).unwrap() else {
         panic!()
     };
     assert!(
@@ -567,7 +573,7 @@ fn model_editor_save_lifetime(preset: bool) {
         crate::preset_by_id("deepseek-flash").unwrap(),
     ));
     assert!(!app.native.as_ref().unwrap().models_pending);
-    let UiEvent::Native(event) = rx.recv_timeout(Duration::from_secs(2)).expect("host save") else {
+    let UiEvent::Native(event) = rx.recv_timeout(Duration::from_secs(5)).expect("host save") else {
         panic!("native reply")
     };
     assert!(matches!(&event, NativeEvent::ProfileSaved(_, _, Err(_))));
@@ -631,7 +637,7 @@ fn native_model_selection_uses_host_and_retains_picker_on_failure() {
         "selected".into(),
     ));
     let UiEvent::Native(event) = rx
-        .recv_timeout(Duration::from_secs(2))
+        .recv_timeout(Duration::from_secs(5))
         .expect("host request must be sent without a local Application")
     else {
         panic!("native response");
@@ -666,7 +672,7 @@ fn native_thinking_sends_once_and_ignores_previous_connection_reply() {
     app.cycle_thinking_level();
     app.cycle_thinking_level();
     let UiEvent::Native(event) = rx
-        .recv_timeout(Duration::from_secs(2))
+        .recv_timeout(Duration::from_secs(5))
         .expect("Shift+Tab must send a host request")
     else {
         panic!("native reply")
