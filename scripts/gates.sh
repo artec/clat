@@ -45,6 +45,8 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+python3 scripts/check-test-waits.py
+
 if [ "$mode" = fast ]; then
     exec python3 scripts/test-fast.py "${filters[@]}"
 fi
@@ -57,6 +59,7 @@ step() { printf '\n\033[1m== %s\033[0m\n' "$1"; }
 
 step "Test selection contract"
 python3 -m unittest discover -s scripts -p test_test_fast.py -q
+python3 -m unittest discover -s scripts -p test_check_test_waits.py -q
 
 step "Format (cargo fmt --all -- --check)"
 cargo fmt --all -- --check

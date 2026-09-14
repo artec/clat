@@ -10,6 +10,15 @@ scripts/gates.sh                       # choose from changed paths
 python3 scripts/measure-inner-loop.py --package clat tui::model_editor::
 ```
 
+Every gate invocation first checks Rust test code for unregistered blocking
+`.output()`, `wait_with_output()`, `recv()` and `wait()` calls, including inline
+test modules and test helpers. New waits must have deadlines. Existing exceptions
+are recorded individually in `scripts/test-waits.allowlist.tsv`, with a source
+fingerprint and review reason; this inventory is not evidence that legacy waits
+are bounded. There are no file-wide exemptions. Removing or changing a registered
+call requires updating its entry. Run `python3 scripts/check-test-waits.py` to
+check the inventory without compiling.
+
 The quick path runs only matching library tests. It does not also build the
 CLI/integration binaries or run clippy, Windows cross compilation, rustdoc,
 npm or browser E2E. Test output is concise. No matching tests, ignored-only
@@ -40,7 +49,7 @@ It never signs artifacts, changes security settings or removes metadata.
 Automatic selection includes staged, unstaged and untracked files. Known
 domains include their principal consumers; shared contracts, fixtures, build
 inputs and unknown domains fall back to all Rust targets. Documentation-only
-changes need only the diff check. This is a feedback heuristic, not a proof
+changes skip Rust builds after static checks. This is a feedback heuristic, not a proof
 of the complete dependency graph. CodeGraph `affected` is useful when choosing
 an explicit filter, but missing graph edges must not waive delivery checks.
 For adapter or browser edits run that component's targeted tests directly.
@@ -105,7 +114,7 @@ Before handing off a completed batch, run once:
 scripts/gates.sh --full
 ```
 
-This includes selection-script tests, fmt, clippy, local xwin static checks,
+This includes wait-inventory and selection-script tests, fmt, clippy, local xwin static checks,
 rustdoc, all Rust targets, adapter build/tests and the ignored test face.
 After a failure, repair and rerun the failed/affected checks; do not restart
 every already-green check without a reason. Test failures are evidence to
@@ -115,6 +124,7 @@ Linux CI and the Linux container call `scripts/gates.sh --ci`, the same full
 sequence without xwin. Windows CI still runs native clippy and tests on every
 PR/main push. Superseded CI runs for the same ref are cancelled. CI has no
 path-based omissions; it remains the safety net for quick-selection misses.
+Both the Linux gate step and the Windows Test step have a 15-minute CI timeout.
 
 `scripts/ci-box.sh` runs the full Linux gate on a two-CPU container when
 platform semantics need verification. `--stress N` remains available for a

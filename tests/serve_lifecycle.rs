@@ -12,6 +12,104 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const WAIT: Duration = Duration::from_secs(30);
 
+#[path = "support/bounded_process.rs"]
+mod bounded_process;
+use bounded_process::BoundedProcess;
+
+struct HostCleanup<'a> {
+    root: &'a Path,
+    home: &'a Path,
+    project: &'a Path,
+    armed: bool,
+}
+
+fn host_command(home: &Path, project: &Path) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_clat"));
+    command
+        .current_dir(project)
+        .env("HOME", home)
+        .env("USERPROFILE", home)
+        .stdin(Stdio::null());
+    command
+}
+
+impl Drop for HostCleanup<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            let mut command = host_command(self.home, self.project);
+            command.args(["host", "stop"]);
+            match BoundedProcess::spawn(&mut command, self.root, "cleanup-host-stop", WAIT) {
+                Ok(mut process) => eprintln!("host cleanup: {:?}", process.finish()),
+                Err(error) => eprintln!("cannot spawn host cleanup: {error}"),
+            }
+        }
+    }
+}
+
+fn command_output(command: &mut Command, root: &Path, label: &str) -> std::process::Output {
+    BoundedProcess::spawn(command, root, label, WAIT)
+        .unwrap_or_else(|error| panic!("spawn {label}: {error}"))
+        .finish()
+        .unwrap_or_else(|error| panic!("{error}"))
+}
+
+#[test]
+fn bounded_process_timeout_kills_child_and_keeps_diagnostics() {
+    let root = temp_root("deadline-evidence");
+    let endpoint = root.join("home/.clat/host-endpoint.json");
+    std::fs::create_dir_all(endpoint.parent().unwrap()).unwrap();
+    std::fs::write(&endpoint, "endpoint-evidence").unwrap();
+    let ready = root.join("ready");
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command
+        .args(["--exact", "bounded_process_child_fixture", "--nocapture"])
+        .env("CLAT_LIFECYCLE_STALL_READY", &ready)
+        .stdin(Stdio::null());
+    let mut process = BoundedProcess::spawn(&mut command, &root, "stalled-command", WAIT).unwrap();
+    let ready_deadline = Instant::now() + WAIT;
+    while !ready.is_file() {
+        assert!(
+            Instant::now() < ready_deadline,
+            "fixture did not become ready"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    process.shorten_deadline(Duration::from_millis(50));
+    let start = Instant::now();
+    let error = process
+        .finish()
+        .expect_err("a stalled child must not hang the test");
+    assert!(start.elapsed() < Duration::from_secs(2), "{error}");
+    for evidence in [
+        "stalled-command pid=",
+        "deadline exceeded",
+        "try_wait before=Ok(None)",
+        "kill=Ok(())",
+        "after=Ok(Some(",
+        "endpoint-evidence",
+        "stdout-evidence",
+        "stderr-evidence",
+    ] {
+        assert!(error.contains(evidence), "missing {evidence}: {error}");
+    }
+    drop(process);
+    remove_tree(&root);
+}
+
+#[test]
+fn bounded_process_child_fixture() {
+    let Some(ready) = std::env::var_os("CLAT_LIFECYCLE_STALL_READY") else {
+        return;
+    };
+    use std::io::Write as _;
+    println!("stdout-evidence");
+    eprintln!("stderr-evidence");
+    std::io::stdout().flush().unwrap();
+    std::io::stderr().flush().unwrap();
+    std::fs::write(ready, "ready").unwrap();
+    std::thread::sleep(Duration::from_secs(60));
+}
+
 #[test]
 fn host_spawn_or_attach_requires_trust_and_converges_two_launchers() {
     let root = temp_root("spawn-concurrent");
@@ -19,32 +117,35 @@ fn host_spawn_or_attach_requires_trust_and_converges_two_launchers() {
     let project = root.join("project");
     std::fs::create_dir_all(&home).unwrap();
     std::fs::create_dir_all(&project).unwrap();
-    let command = || {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_clat"));
-        cmd.current_dir(&project)
-            .env("HOME", &home)
-            .env("USERPROFILE", &home)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        cmd
+    let command = || host_command(&home, &project);
+    let mut cleanup = HostCleanup {
+        root: &root,
+        home: &home,
+        project: &project,
+        armed: true,
     };
-    let refused = command().args(["host", "start"]).output().unwrap();
+    let refused = command_output(command().args(["host", "start"]), &root, "untrusted-start");
     assert!(!refused.status.success());
     assert!(!home.join(".clat").exists(), "no trust means no writes");
-    let first = command()
-        .args(["host", "start", "--trust"])
-        .spawn()
-        .unwrap();
-    let second = command()
-        .args(["host", "start", "--trust"])
-        .spawn()
-        .unwrap();
-    let first = first.wait_with_output().unwrap();
-    let second = second.wait_with_output().unwrap();
+    let mut first = BoundedProcess::spawn(
+        command().args(["host", "start", "--trust"]),
+        &root,
+        "first-launcher",
+        WAIT,
+    )
+    .unwrap();
+    let mut second = BoundedProcess::spawn(
+        command().args(["host", "start", "--trust"]),
+        &root,
+        "second-launcher",
+        WAIT,
+    )
+    .unwrap();
+    let first = first.finish().unwrap_or_else(|error| panic!("{error}"));
+    let second = second.finish().unwrap_or_else(|error| panic!("{error}"));
     // Stop before assertions so a behavioral failure cannot leave our host running.
-    let status = command().args(["host", "status"]).output().unwrap();
-    let stop = command().args(["host", "stop"]).output().unwrap();
+    let status = command_output(command().args(["host", "status"]), &root, "host-status");
+    let stop = command_output(command().args(["host", "stop"]), &root, "host-stop");
     assert!(
         first.status.success(),
         "{}",
@@ -74,6 +175,7 @@ fn host_spawn_or_attach_requires_trust_and_converges_two_launchers() {
         );
         std::thread::sleep(Duration::from_millis(20));
     }
+    cleanup.armed = false;
     remove_tree(&root);
 }
 
@@ -109,7 +211,7 @@ fn wait_until_listening(child: &mut Child, port: u16) {
         }
         if Instant::now() >= deadline {
             let _ = child.kill();
-            let _ = child.wait();
+            let _ = wait_until_exit(child);
             panic!("serve did not listen within {WAIT:?}");
         }
         std::thread::sleep(Duration::from_millis(20));
@@ -154,15 +256,7 @@ fn host_cli_status_preserves_host_and_stop_closes_it() {
         .unwrap()
         .close()
         .unwrap();
-    let command = || {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_clat"));
-        command
-            .current_dir(&project_root)
-            .env("HOME", &home)
-            .env("USERPROFILE", &home)
-            .stdin(Stdio::null());
-        command
-    };
+    let command = || host_command(&home, &project_root);
     let port = reserve_port().to_string();
     let mut child = command()
         .args(["serve", "--port", &port])
@@ -176,16 +270,16 @@ fn host_cli_status_preserves_host_and_stop_closes_it() {
     while !home.join(".clat/host-endpoint.json").is_file() {
         if child.try_wait().unwrap().is_some() || Instant::now() >= deadline {
             let _ = child.kill();
-            let _ = child.wait();
+            let _ = wait_until_exit(&mut child);
             panic!("host did not publish discovery endpoint");
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    let status = command().args(["host", "status"]).output().unwrap();
+    let status = command_output(command().args(["host", "status"]), &root, "host-status");
     // Always clean up the child, including against a pre-feature binary.
     if !status.status.success() {
         let _ = child.kill();
-        let _ = child.wait();
+        let _ = wait_until_exit(&mut child);
         panic!(
             "host status failed: {}",
             String::from_utf8_lossy(&status.stderr)
@@ -207,10 +301,10 @@ fn host_cli_status_preserves_host_and_stop_closes_it() {
         !output.contains(token.trim()),
         "status must not expose token"
     );
-    let stop = command().args(["host", "stop"]).output().unwrap();
+    let stop = command_output(command().args(["host", "stop"]), &root, "host-stop");
     if !stop.status.success() {
         let _ = child.kill();
-        let _ = child.wait();
+        let _ = wait_until_exit(&mut child);
         panic!(
             "host stop failed: {}",
             String::from_utf8_lossy(&stop.stderr)
@@ -218,7 +312,11 @@ fn host_cli_status_preserves_host_and_stop_closes_it() {
     }
     assert!(String::from_utf8_lossy(&stop.stdout).contains("accepted shutdown"));
     assert!(wait_until_exit(&mut child).success());
-    let stale = command().args(["host", "status"]).output().unwrap();
+    let stale = command_output(
+        command().args(["host", "status"]),
+        &root,
+        "stale-host-status",
+    );
     assert!(
         !stale.status.success(),
         "stale discovery must not start another host"
@@ -360,6 +458,6 @@ fn a_second_serve_process_fails_even_on_a_different_port() {
     );
 
     first.kill().expect("stop first serve");
-    first.wait().expect("reap first serve");
+    wait_until_exit(&mut first);
     remove_tree(&root);
 }
