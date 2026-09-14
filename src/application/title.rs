@@ -2,20 +2,19 @@ use crate::CancelToken;
 use crate::model::{ModelConfig, ProviderCredentials};
 use crate::plugins::services::SessionTitler;
 use crate::session::id::SessionId;
-use crate::session::use_cases::{SessionService, SetTitleExpectation};
+use crate::session::use_cases::SessionService;
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
 use super::*;
 
-/// 自动命名任务（仅排给仍无显式标题的会话；CAS 防覆盖并发手工改名）。
-/// 绑定产生它的会话：期望值与会话不可分（F-A）。
+/// Successful-run notification. The worker reserves budget and captures CAS
+/// and bounded conversation together for this session, immediately before I/O.
 pub(super) struct AutotitleJob {
     pub(super) session_id: SessionId,
     pub(super) config: ModelConfig,
     pub(super) credentials: ProviderCredentials,
-    pub(super) expectation: SetTitleExpectation,
 }
 
 pub(super) struct TitleWorker {
@@ -89,43 +88,40 @@ fn maybe_autotitle(
         session_id,
         config,
         credentials,
-        expectation,
     } = job;
-    // F-A：会话已切换 → 生成与写入都针对错误会话，直接放弃（连模型
-    // 调用也省下）。set_title 侧的会话守卫是第二道门。
-    if sessions.active_id().as_ref() != Some(session_id) {
+    if cancel.is_cancelled() || !titler.enabled() {
         return;
     }
-    // 双发竞争（两次 run 各排一任务，任务 1 已落盘）：排队到执行之间
-    // 标题可能已存在——早退省下一次注定被 CAS 拒绝的 LLM 调用（对抗
-    // 审计 2026-08-19）。
-    if sessions.title_state().1.is_some() {
-        return;
-    }
-    let Some(first_user) = sessions.first_user_text() else {
+    let Ok(Some(attempt)) = sessions.prepare_title_attempt(session_id) else {
         return;
     };
-    let derived = crate::session::projection::fallback_title(&first_user);
-    if derived.is_empty() {
-        return;
-    }
-    let Some(title) = titler.generate_title(config, credentials, &first_user, cancel) else {
+    let Some(generated) = titler.generate_title(config, credentials, &attempt.context, cancel)
+    else {
         return;
     };
-    if !title.is_empty() && title != derived {
+    if !generated.title.is_empty() {
         // provider 派生标题的 source 引用生成它的 provider/model
         // （catalog §2.2，审计 P1-14）。
         let applied = sessions.set_title(
             session_id,
-            expectation.clone(),
-            &title,
+            attempt.expectation,
+            &generated.title,
             crate::session::use_cases::TitleSource::Provider {
-                provider: &config.protocol.to_string(),
-                model: &config.model,
+                provider: &generated.provider,
+                model: &generated.model,
+                message_seqs: Some(&attempt.message_seqs),
             },
         );
         if matches!(applied, Ok(true)) {
-            broadcast_to(subscribers, ApplicationEvent::TitleUpdated { title });
+            broadcast_to(
+                subscribers,
+                ApplicationEvent::TitleUpdated {
+                    title: generated.title,
+                },
+            );
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

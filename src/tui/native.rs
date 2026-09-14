@@ -5,6 +5,7 @@ use serde_json::{Value, json};
 
 mod info;
 mod models;
+mod permissions;
 mod profiles;
 mod questions;
 mod sessions;
@@ -31,6 +32,7 @@ fn image_message_label(text: &str, blocks: &[crate::message::ContentBlock]) -> S
 
 pub(super) enum NativeEvent {
     Info(u64, u64, u64, Result<Value, HostCallError>),
+    PermissionChanged(u64, u64, Result<Value, String>),
     Connected(u64, HostEventsInterrupt),
     Frame(u64, HostEvent),
     Offline(u64, String),
@@ -41,6 +43,7 @@ pub(super) enum NativeEvent {
     Renamed(u64, u64, Result<Value, String>),
     Models(u64, u64, Result<crate::host::HostModelChoices, String>),
     ModelChanged(u64, u64, Result<Value, String>),
+    PromptSuggestion(u64, u64, Result<Value, String>),
     ThinkingChanged(u64, Result<Value, String>),
     ProfileLoaded(u64, u64, String, Result<Value, String>),
     ProfileSaved(u64, u64, Result<Value, String>),
@@ -73,6 +76,7 @@ pub(super) struct NativeState {
     editor_saved_revision: u64,
     questions: questions::NativeQuestions,
     info_request: u64,
+    permissions: permissions::NativePermissions,
 }
 
 impl App {
@@ -102,6 +106,7 @@ impl App {
             editor_saved_revision: 0,
             questions: questions::NativeQuestions::default(),
             info_request: 0,
+            permissions: Default::default(),
         });
         app.default_status = "CLAT host · connecting · Ctrl+C detaches".into();
         app.status = app.default_status.clone();
@@ -110,6 +115,10 @@ impl App {
 
     pub(super) fn start_native(&mut self) {
         self.close_native_info();
+        self.permission_picker = None;
+        if let Some(native) = &mut self.native {
+            native.permissions = Default::default();
+        }
         let (Some(native), Some(ui)) = (&mut self.native, self.event_sender.clone()) else {
             return;
         };
@@ -183,23 +192,63 @@ impl App {
         });
     }
 
-    pub(super) fn submit_native(&mut self, text: String) {
-        if self.open_native_info(&text) {
-            return;
+    fn native_local_command(&mut self, text: &str) -> bool {
+        if HostClient::is_detach_command(text) {
+            self.should_quit = true;
+            return true;
+        }
+        if HostClient::is_permission_dialog_command(text) {
+            self.open_native_permissions();
+            return true;
+        }
+        if self.open_native_info(text) {
+            return true;
         }
         if text == "/model" {
             self.open_native_models();
-            return;
+            return true;
+        }
+        if text == "/suggest" {
+            self.open_native_suggestion();
+            return true;
         }
         if text == "/rename" {
             self.open_native_rename();
-            return;
+            return true;
         }
         if text == "/resume" {
             self.open_native_sessions();
+            return true;
+        }
+        self.handle_attachment_command(text)
+    }
+
+    fn open_native_suggestion(&mut self) {
+        let (Some(native), Some(ui)) = (&self.native, self.event_sender.clone()) else {
+            return;
+        };
+        if native.pending.is_some() || !native.online {
+            self.flash_status("host offline/busy — suggestion kept out of the composer");
             return;
         }
-        if self.handle_attachment_command(&text) {
+        let client = native.client.clone();
+        let (epoch, selection) = (native.epoch, native.selection);
+        thread::spawn(move || {
+            let result = client.call(
+                "prompt.suggest",
+                &json!({"expected_selection_generation": selection}),
+            );
+            let _ = ui.send(UiEvent::Native(NativeEvent::PromptSuggestion(
+                epoch,
+                selection,
+                result.map_err(|error| error.to_string()),
+            )));
+        });
+        self.flash_status("generating a manual suggestion…");
+    }
+
+    pub(super) fn submit_native(&mut self, text: String) {
+        if self.native_local_command(text.trim()) {
             return;
         }
         if text.is_empty() && self.attachments.is_empty() {
@@ -270,8 +319,11 @@ impl App {
         });
     }
 
-    pub(super) fn handle_native_event(&mut self, event: NativeEvent) {
+    fn native_dialog_event(&mut self, event: NativeEvent) -> Option<NativeEvent> {
         match event {
+            NativeEvent::PermissionChanged(epoch, selection, result) => {
+                self.native_permission_changed(epoch, selection, result)
+            }
             NativeEvent::Info(epoch, selection, request, result) => {
                 self.native_info_loaded(epoch, selection, request, result)
             }
@@ -293,9 +345,22 @@ impl App {
             NativeEvent::ModelChanged(epoch, request, result) => {
                 self.native_model_changed(epoch, request, result)
             }
+            NativeEvent::PromptSuggestion(epoch, selection, result) => {
+                self.native_prompt_suggestion(epoch, selection, result)
+            }
             NativeEvent::Renamed(epoch, selection, result) => {
                 self.native_renamed(epoch, selection, result)
             }
+            other => return Some(other),
+        }
+        None
+    }
+
+    pub(super) fn handle_native_event(&mut self, event: NativeEvent) {
+        let Some(event) = self.native_dialog_event(event) else {
+            return;
+        };
+        match event {
             NativeEvent::Sessions(epoch, selection, result)
                 if self
                     .native
@@ -351,6 +416,32 @@ impl App {
         self.flash_status(error);
     }
 
+    fn native_prompt_suggestion(
+        &mut self,
+        epoch: u64,
+        selection: u64,
+        result: Result<Value, String>,
+    ) {
+        if !self
+            .native
+            .as_ref()
+            .is_some_and(|native| native.epoch == epoch && native.selection == selection)
+        {
+            return;
+        }
+        match result {
+            Ok(value) => {
+                if let Some(text) = value.get("text").and_then(Value::as_str) {
+                    self.input.insert_str(text);
+                    self.flash_status("suggestion inserted — edit it, then press Enter to send");
+                } else {
+                    self.flash_status("host returned an empty suggestion");
+                }
+            }
+            Err(error) => self.flash_status(format!("suggestion unavailable: {error}")),
+        }
+    }
+
     pub(super) fn native_clipboard_drafts(
         &self,
     ) -> Option<std::sync::Arc<crate::draft::DraftImageStore>> {
@@ -378,6 +469,8 @@ impl App {
                     self.conversation.push_turn_end(text.into());
                 } else if value.get("sessions").is_some() {
                     self.conversation.push_turn_end(value.to_string());
+                } else if let Some(status) = value["status"].as_str() {
+                    self.flash_status(status);
                 }
                 self.refresh_native();
             }
@@ -402,6 +495,11 @@ impl App {
     }
 
     fn native_snapshot(&mut self, value: Value) {
+        if let Some(native) = &mut self.native {
+            native.permissions.mode = value["permission"]["mode"]
+                .as_str()
+                .and_then(PermissionMode::from_journal_value);
+        }
         self.config.thinking_level =
             serde_json::from_value(value["model"]["thinking_level"].clone()).ok();
         self.session_id = value["session"]["id"]
@@ -467,6 +565,12 @@ impl App {
                 self.refresh_native();
             }
             "notice" if payload["kind"] == "selection" => self.start_native(),
+            "notice" if payload["kind"] == "compaction" => {
+                if let Some(note) = payload["payload"]["note"].as_str() {
+                    self.flash_status(note);
+                }
+                self.refresh_native();
+            }
             "notice" if payload["kind"] == "approval_resolved" => {
                 let native = self.native.as_mut().unwrap();
                 if native.approval_id.as_deref() == payload["payload"]["rpc_id"].as_str() {

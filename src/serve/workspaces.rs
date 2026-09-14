@@ -6,6 +6,7 @@ use crate::application::HostApplication;
 use crate::{Project, ProjectAuthorization, TrustedProjectApplication};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -36,6 +37,9 @@ impl Drop for WorkspaceHost {
 }
 
 impl WorkspaceHost {
+    pub(crate) fn publish_endpoint(&self, root: &Path, port: u16) -> Result<(), String> {
+        crate::host_client::discovery::publish(root, port, &self.instance)
+    }
     pub(crate) fn matches_instance(&self, expected: &str) -> bool {
         self.instance == expected
     }

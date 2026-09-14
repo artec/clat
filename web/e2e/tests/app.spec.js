@@ -218,6 +218,35 @@ test('model profiles are editable in PWA and broadcast without echoing API keys'
   await other.close();
 });
 
+test('companion utility policy and manual suggestion stay preview-only', async ({ page }) => {
+  const entry = hostInfo('success');
+  await openWorkbench(page, entry);
+  await page.click('#new-session');
+  await expect(page.locator('#detail-run')).toHaveText('Idle', LIVE);
+  await page.click('#settings-open');
+  await expect(page.locator('#utility-naming-enabled')).toBeChecked();
+  await page.check('#utility-suggestions-enabled');
+  await page.click('#utility-settings-save');
+  await expect(page.locator('#utility-settings-saved')).toContainText('saved', LIVE);
+  await page.click('#settings-dialog .icon-button');
+  await page.fill('#prompt', 'Review the current session state.');
+  await page.click('#send');
+  await expect(page.locator('.msg.user')).toHaveCount(1, LIVE);
+  await expect(page.locator('#detail-run')).toHaveText('Idle', { timeout: 30_000 });
+  await expect(page.locator('#prompt')).toHaveValue('');
+  await page.click('#suggest');
+  await expect(page.locator('#suggestion-panel')).toBeVisible(LIVE);
+  const suggestion = await page.locator('#suggestion-text').textContent();
+  expect(suggestion.trim()).not.toBe('');
+  await page.click('#suggestion-use');
+  await expect(page.locator('#prompt')).toHaveValue(suggestion.trim());
+  await expect(page.locator('#detail-run')).toHaveText('Idle', LIVE);
+  await page.click('#settings-open');
+  await page.uncheck('#utility-suggestions-enabled');
+  await page.click('#utility-settings-save');
+  await expect(page.locator('#utility-settings-saved')).toContainText('saved', LIVE);
+});
+
 for (const transition of ['input', 'new', 'close']) {
 test(`delayed profile reads cannot overwrite newer form state: ${transition}`, async ({ page }, testInfo) => {
   const entry = hostInfo('success');

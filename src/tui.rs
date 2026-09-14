@@ -137,6 +137,10 @@ pub fn run_host_mode(project: Project, port: u16, trust: bool) -> io::Result<()>
     let client = client
         .open_project(project.root(), trust)
         .map_err(io::Error::other)?;
+    run_host_client(project, client)
+}
+
+pub fn run_host_client(project: Project, client: crate::host::HostClient) -> io::Result<()> {
     run_frontend(App::open_native(project, client).map_err(io::Error::other)?)
 }
 
@@ -308,6 +312,10 @@ struct App {
     /// the worker and terminal input is gated; the structured draft remains
     /// untouched until startup has actually succeeded.
     run_start_pending: bool,
+    /// Manual companion utility request in flight; keeps the application
+    /// facade owned by exactly one worker while provider I/O runs.
+    suggestion_pending: bool,
+    suggestion_text: Option<String>,
     /// Narrows `run_start_pending` to the one handoff that can race a native
     /// `SteeringApplied` event. Ordinary initial attachment admission must not
     /// turn a stale prior-run event into an early-claim credit.
@@ -548,6 +556,8 @@ impl App {
             session_picker: None,
             running: false,
             run_start_pending: false,
+            suggestion_pending: false,
+            suggestion_text: None,
             steering_admission_pending: false,
             quit_after_run_start: false,
             events: None,
@@ -652,6 +662,8 @@ impl App {
             session_picker: None,
             running: false,
             run_start_pending: false,
+            suggestion_pending: false,
+            suggestion_text: None,
             steering_admission_pending: false,
             quit_after_run_start: false,
             events: None,

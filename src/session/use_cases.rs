@@ -11,6 +11,7 @@ mod attachments;
 mod folding_journal;
 mod history;
 mod lifecycle;
+mod utility;
 use active::{ActiveSession, checkpoint_active, fold_if_behind};
 use folding_journal::ProjectionFoldJournal;
 
@@ -166,7 +167,7 @@ pub enum SetTitleExpectation {
     NoTitle,
     /// Matches the seq of the title event being updated.
     Exact(u64),
-    /// Explicit user override; always matches.
+    /// Explicit user override; matches the sequence, not title ownership.
     Force,
 }
 
@@ -174,7 +175,12 @@ pub enum SetTitleExpectation {
 /// model (catalog §2.2); user renames do not.
 pub(crate) enum TitleSource<'a> {
     User,
-    Provider { provider: &'a str, model: &'a str },
+    Provider {
+        provider: &'a str,
+        model: &'a str,
+        /// None retains the existing first-user citation.
+        message_seqs: Option<&'a [u64]>,
+    },
 }
 
 /// A bounded, read-only resume witness. Full streaming projection restore and
@@ -733,22 +739,6 @@ impl SessionService {
         Ok(seq)
     }
 
-    /// The first user message text of the active session (transcript
-    /// projection, compaction-safe) — autotitle input.
-    pub(crate) fn first_user_text(&self) -> Option<String> {
-        let guard = self.active.lock().expect("active");
-        let active = guard.as_ref()?;
-        let projections = active.projections.lock().expect("projections");
-        let transcript = projections.state_snapshot("transcript").unwrap_or_default();
-        transcript
-            .get("entries")
-            .and_then(Value::as_array)?
-            .iter()
-            .filter(|entry| entry.get("kind").and_then(Value::as_str) == Some("user"))
-            .find_map(|entry| entry.get("text").and_then(Value::as_str))
-            .map(str::to_owned)
-    }
-
     /// The model-facing history of the active session: surface nodes with
     /// their seqs (surface projection → ModelItem adapter). The first
     /// element of each pair is the durable event seq, which compaction
@@ -892,37 +882,14 @@ impl SessionService {
         if active.key.id != *session {
             return Ok(false);
         }
-        // 目录 §2.2：provider 派生的标题引用其依据的 user/message seq
-        //（首条消息）并携带 provider/model；手工重命名为 []。
-        let message_seqs;
-        {
-            let projections = active.projections.lock().expect("projections");
-            let state = projections.state_snapshot("title").unwrap_or_default();
-            let current_seq = state.get("eventSeq").and_then(Value::as_u64);
-            // NoTitle 匹配"尚无 title 事件"——派生的 fallback 标题
-            // （首条消息派生）不是显式标题，不参与 CAS。
-            let matches = match expectation {
-                SetTitleExpectation::NoTitle => current_seq.is_none(),
-                SetTitleExpectation::Exact(seq) => current_seq == Some(seq),
-                SetTitleExpectation::Force => true,
-            };
-            if !matches {
-                return Ok(false);
-            }
-            message_seqs = match &source {
-                TitleSource::Provider { .. } => state
-                    .get("firstUserSeq")
-                    .and_then(Value::as_u64)
-                    .into_iter()
-                    .collect(),
-                TitleSource::User => Vec::new(),
-            };
-        }
-        let payload = match &source {
-            TitleSource::Provider { provider, model } => {
-                payloads::session_title_provider(title, message_seqs, provider, model)
-            }
-            TitleSource::User => payloads::session_title(title, message_seqs, "user"),
+        let state = active
+            .projections
+            .lock()
+            .expect("projections")
+            .state_snapshot("title")
+            .unwrap_or_default();
+        let Some(payload) = utility::title_payload(&state, expectation, title, source) else {
+            return Ok(false);
         };
         let event = crate::session::run_journal::NewSessionEvent::new("session/title", payload);
         // The shared session journal (same instance as every producer).

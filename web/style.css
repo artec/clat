@@ -340,6 +340,12 @@ button:disabled { cursor: default; opacity: .45; }
 .attachment-open:hover { color: var(--signal); }
 .attachment-open svg { width: 14px; }
 .attachment-summary { min-width: 0; max-width: 280px; overflow: hidden; color: var(--text-muted); font: 10px var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.suggestion-panel { margin: 8px 0 7px; padding: 9px 10px 10px; border: 1px solid color-mix(in srgb, var(--signal) 46%, var(--line)); border-left: 3px solid var(--signal); border-radius: var(--radius-sm); background: color-mix(in srgb, var(--signal) 6%, var(--surface-raised)); }
+.suggestion-panel-head { display: flex; align-items: center; justify-content: space-between; }
+.suggestion-panel-head .icon-button { width: 24px; height: 24px; font-size: 16px; }
+.suggestion-text { max-height: 92px; margin: 7px 0; overflow: auto; color: var(--text); white-space: pre-wrap; }
+.suggestion-actions { display: flex; gap: 7px; }
+.suggestion-actions .primary, .suggestion-actions .ghost { padding: 6px 9px; font-size: 11px; }
 .composer-row { display: flex; align-items: center; gap: 10px; padding-left: 7px; }
 .composer-hint { min-width: 0; flex: 1; color: var(--text-muted); font-size: 11px; }
 .composer-actions { display: flex; align-items: center; gap: 7px; }
@@ -421,6 +427,13 @@ button:disabled { cursor: default; opacity: .45; }
 .permission-options strong, .permission-options small { display: block; }
 .permission-options small { margin-top: 2px; color: var(--text-muted); }
 .permission-options input:checked + span { border-color: var(--signal); background: color-mix(in srgb, var(--signal) 7%, var(--surface-raised)); }
+.utility-options { display: grid; gap: 8px; padding: 0; border: 0; }
+.utility-options label { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-raised); }
+.utility-options input { margin-top: 3px; accent-color: var(--signal); }
+.utility-options strong, .utility-options small { display: block; }
+.utility-options small, .settings-note { color: var(--text-muted); font-size: 11px; }
+.utility-settings > label { display: grid; gap: 6px; margin-top: 14px; color: var(--text-muted); font-size: 12px; }
+.utility-settings select { padding: 9px; border: 1px solid var(--line); border-radius: 6px; color: var(--text); background: var(--ink-1); }
 .danger-confirm { display: flex; gap: 9px; margin-top: 12px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--danger) 55%, var(--line)); border-radius: var(--radius-sm); color: var(--danger); font-size: 12px; }
 .settings-actions { display: flex; align-items: center; justify-content: flex-end; gap: 12px; margin-top: 16px; }
 .settings-actions > span { flex: 1; color: var(--success); font-size: 12px; }
@@ -469,6 +482,7 @@ button:disabled { cursor: default; opacity: .45; }
   .message-map { display: none; }
   .composer-hint { display: none; }
   .composer-actions { margin-left: auto; }
+  .suggestion-trigger { padding-inline: 7px; }
   .landing { padding: 0; }
   .landing-card { grid-template-columns: 42px 1fr; border: 0; }
   .landing-copy { width: auto; margin: 0; padding: 32px 24px; }
@@ -487,6 +501,9 @@ button:disabled { cursor: default; opacity: .45; }
   .conversation-meta #header-model { max-width: 42vw; overflow: hidden; text-overflow: ellipsis; }
   .settings-section { padding: 18px; }
   .segmented { grid-template-columns: 1fr; }
+  .composer-row { flex-wrap: wrap; gap: 7px; }
+  .composer-hint { order: 4; flex-basis: 100%; }
+  .composer-actions { margin-left: auto; }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -1,6 +1,33 @@
 use super::*;
 use serde_json::json;
 
+#[test]
+fn host_discovery_authenticates_and_rejects_replaced_instance() {
+    use crate::host_client::{HostClient, discovery};
+    let (handle, storage, project) = spawn_serve("host-discovery", TestBehavior::Success);
+    let dir = cap_std::fs::Dir::open_ambient_dir(&storage, cap_std::ambient_authority()).unwrap();
+    // The fixture uses a temporary token: discovery must not bypass credentials.
+    assert!(HostClient::discover(&storage).is_err());
+    crate::private_fs::write_text_atomic(&dir, &storage, "web-token", TEST_TOKEN).unwrap();
+    let client = HostClient::discover(&storage).unwrap();
+    let instance = client.instance_id().to_owned();
+    discovery::publish(
+        &storage,
+        handle.addr.port(),
+        &uuid::Uuid::new_v4().to_string(),
+    )
+    .unwrap();
+    let error = HostClient::discover(&storage).err().unwrap();
+    assert!(error.contains("instance changed"), "{error}");
+    assert!(client.call("host.describe", &json!({})).is_ok());
+    discovery::publish(&storage, handle.addr.port(), &instance).unwrap();
+    assert!(HostClient::discover(&storage).is_ok());
+    crate::private_fs::write_text_atomic(&dir, &storage, "web-token", "wrong-token").unwrap();
+    assert!(HostClient::discover(&storage).is_err());
+    drop(dir);
+    cleanup(handle, &storage, &project);
+}
+
 fn wait_question(client: &mut SseClient) -> serde_json::Value {
     let deadline = Instant::now() + WAIT;
     loop {
@@ -451,6 +478,11 @@ fn model_rpc_keeps_keys_write_only_and_supports_profile_lifecycle() {
     for (method, params) in [
         ("model.profile.save", request),
         ("model.profile.activate", json!({"name":"web"})),
+        (
+            "model.utility.set",
+            json!({"naming_enabled":false,"suggestions_enabled":true,"profile":"web"}),
+        ),
+        ("model.utility.get", json!({})),
         ("model.settings.get", json!({})),
         ("model.profile.get", json!({"name":"web"})),
     ] {
@@ -461,6 +493,12 @@ fn model_rpc_keeps_keys_write_only_and_supports_profile_lifecycle() {
             assert_eq!(value["current"]["model"], "test-model");
             assert_eq!(value["current"]["credential_set"], true);
             assert_eq!(value["active_profile"], "web");
+            assert_eq!(value["utility"]["profile"], "web");
+        }
+        if method == "model.utility.get" {
+            assert_eq!(value["naming_enabled"], false);
+            assert_eq!(value["suggestions_enabled"], true);
+            assert_eq!(value["profile"], "web");
         }
     }
     let client =
@@ -494,6 +532,7 @@ fn model_rpc_keeps_keys_write_only_and_supports_profile_lifecycle() {
         value["active_profile"], "web",
         "deleted profile cannot remain active"
     );
+    assert_eq!(value["utility"]["profile"], serde_json::Value::Null);
     handle.shutdown();
     let exit = handle.join();
     assert!(exit.accept.is_ok());

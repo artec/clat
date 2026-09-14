@@ -15,6 +15,10 @@ use std::time::Duration;
 const NAME: &str = "clat";
 const TAGLINE: &str = "command-line agent";
 
+#[path = "cli/host.rs"]
+mod host_cli;
+use host_cli::run_host_command;
+
 fn main() -> ExitCode {
     run(env::args().skip(1))
 }
@@ -24,7 +28,16 @@ where
     I: Iterator<Item = String>,
 {
     match args.next().as_deref() {
-        None => run_tui(),
+        None => host_cli::run_default_tui(),
+        Some("standalone" | "--standalone") => {
+            if args.next().is_some() {
+                eprintln!("clat: standalone accepts no arguments");
+                ExitCode::from(2)
+            } else {
+                run_tui()
+            }
+        }
+        Some("host") => run_host_command(args),
         Some("demo") => run_demo(),
         Some("exec") => run_exec_command(args),
         Some("dsh") => run_dsh_command(args),
@@ -105,6 +118,9 @@ fn print_help() {
     println!("Inside the TUI, use `/model` to configure model parameters and credentials.");
     println!();
     println!("Commands:");
+    println!("  standalone       Run the traditional TUI without a background host");
+    println!("  host start      Start or attach to the background host [--trust]");
+    println!("  host status|stop Inspect or explicitly stop the host (--port <n>)");
     println!("  exec [PROMPT]    Run one agent turn headlessly and print the reply on stdout");
     println!("  dsh              Open the TUI as a client of a local DSH web host");
     println!("  attach           Attach the TUI to an existing CLAT host (--port <n>, --trust)");
@@ -551,6 +567,19 @@ mod tests {
     fn help_succeeds() {
         let code = run(["--help".to_owned()].into_iter());
         assert_eq!(code, ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn host_and_standalone_usage_errors_do_not_start_a_frontend() {
+        for args in [
+            vec!["host"],
+            vec!["host", "stop", "--force"],
+            vec!["host", "status", "--port", "0"],
+            vec!["standalone", "--unexpected"],
+            vec!["--standalone", "--unexpected"],
+        ] {
+            assert_eq!(run(args.into_iter().map(String::from)), ExitCode::from(2));
+        }
     }
 
     #[test]

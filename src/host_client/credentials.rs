@@ -2,6 +2,11 @@ use std::io::Read;
 use std::path::Path;
 
 pub(super) fn read_token(root: &Path) -> Result<String, String> {
+    let token = read_private_file(root, "web-token", 257)?;
+    Ok(token.strip_suffix('\n').unwrap_or(&token).into())
+}
+
+pub(super) fn read_private_file(root: &Path, name: &str, limit: u64) -> Result<String, String> {
     let dir = cap_std::fs::Dir::open_ambient_dir(root, cap_std::ambient_authority())
         .map_err(|_| "host storage is unavailable")?;
     let mut options = cap_std::fs::OpenOptions::new();
@@ -17,12 +22,12 @@ pub(super) fn read_token(root: &Path) -> Result<String, String> {
         options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
     }
     let file = dir
-        .open_with("web-token", &options)
-        .map_err(|_| "host credential is unavailable; start clat serve first")?;
+        .open_with(name, &options)
+        .map_err(|_| format!("host {name} is unavailable; start clat serve first"))?;
     let meta = file
         .metadata()
         .map_err(|_| "cannot inspect host credential")?;
-    if !meta.is_file() || meta.file_type().is_symlink() || meta.len() > 257 {
+    if !meta.is_file() || meta.file_type().is_symlink() || meta.len() > limit {
         return Err("host credential is not a bounded regular file".into());
     }
     #[cfg(unix)]
@@ -33,13 +38,13 @@ pub(super) fn read_token(root: &Path) -> Result<String, String> {
         }
     }
     let mut token = String::new();
-    file.take(258)
+    file.take(limit + 1)
         .read_to_string(&mut token)
         .map_err(|_| "cannot read host credential")?;
-    if token.len() > 257 {
+    if token.len() as u64 > limit {
         return Err("host credential exceeds the limit".into());
     }
-    Ok(token.strip_suffix('\n').unwrap_or(&token).into())
+    Ok(token)
 }
 
 #[cfg(test)]

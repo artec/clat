@@ -39,7 +39,9 @@ mod language_intelligence_tests;
 #[cfg(test)]
 mod memory_tests;
 mod model_settings;
-pub use model_settings::{ModelProfileEdit, ModelRouteView, ModelSettingsView};
+pub use model_settings::{
+    ModelProfileEdit, ModelRouteView, ModelSettingsView, UtilitySettingsEdit, UtilitySettingsView,
+};
 #[cfg(test)]
 mod plan_mode_tests;
 mod remote_control;
@@ -50,6 +52,7 @@ mod run_lifecycle;
 mod skills_tests;
 #[cfg(test)]
 mod subagent_tests;
+mod suggestion;
 #[cfg(test)]
 mod tests;
 mod threads;
@@ -76,6 +79,7 @@ pub use run_lifecycle::{
     ApplicationRunDone, ApplicationRunFailure, ApplicationRunRequest, ApplicationRunResult,
     RecalledSteering, RenameOutcome, SteerOutcome,
 };
+pub use suggestion::{PreparedPromptSuggestion, PromptSuggestion};
 pub(crate) use threads::{EXIT_JOIN_GRACE, join_with_grace};
 pub use vision_probe::{VisionProbeHandle, VisionProbeOutcome, VisionProbeReport};
 
@@ -270,6 +274,7 @@ pub struct TrustedProjectApplication {
     todo: Option<Arc<TodoService>>,
     /// 可选服务：最小 Catalog（无 SessionTitlePlugin）下为 None。
     titler: Option<Arc<dyn SessionTitler>>,
+    utility: Arc<dyn crate::plugins::services::UtilityModel>,
     /// 单 worker + 容量 1 的旁路标题队列。enqueue 永不阻塞 run，Scope
     /// close 取消并 join 唯一线程——运行期不存在 detached title 任务。
     /// 例外（2026-08-19 退出延迟修复）：进程退出路径上 join 有

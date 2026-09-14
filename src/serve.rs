@@ -25,7 +25,9 @@ pub(crate) mod protocol;
 mod questions;
 pub(crate) mod shapes;
 mod sse;
+mod startup;
 mod state;
+use startup::serve_wechat_credentials;
 #[cfg(test)]
 mod tests;
 mod token;
@@ -219,6 +221,8 @@ pub enum ImBackend {
 
 #[derive(Clone, Debug)]
 pub struct ServeArgs {
+    /// Explicit authorization from the initiating terminal.
+    pub trust: bool,
     /// 绑定端口；缺省 2691；0 = OS 自动分配（测试/显式多实例）。
     pub port: u16,
     /// 显式 token（脚本/测试）；缺省读取/创建 `~/.clat/web-token`。
@@ -232,6 +236,7 @@ pub struct ServeArgs {
 impl Default for ServeArgs {
     fn default() -> Self {
         Self {
+            trust: false,
             port: DEFAULT_SERVE_PORT,
             token: None,
             rotate_token: false,
@@ -251,6 +256,7 @@ where
     let mut iter = args.into_iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
+            "--trust" => parsed.trust = true,
             "--port" => {
                 let value = iter
                     .next()
@@ -443,21 +449,9 @@ pub(crate) fn serve_with_with_queue<F>(
 where
     F: FnOnce(BootstrapApplication) -> Result<TrustedProjectApplication, crate::ApplicationError>,
 {
-    let (trusted, storage_root) = mount_serve_project(project, storage_root, into_trusted)?;
-    let wechat_credentials = if matches!(args.im, Some(ImBackend::Wechat)) {
-        Some(
-            trusted
-                .wechat_binding()
-                .map_err(|error| error.to_string())?
-                .credentials
-                .ok_or_else(|| {
-                    "WeChat IM is not configured yet; complete QR binding before starting with `--im wechat`"
-                        .to_owned()
-                })?,
-        )
-    } else {
-        None
-    };
+    let (trusted, storage_root) =
+        mount_serve_project(project, storage_root, args.trust, into_trusted)?;
+    let wechat_credentials = serve_wechat_credentials(&trusted, &args)?;
     // INV-S1a：只绑 IPv4 loopback。
     let listener = TcpListener::bind(("127.0.0.1", args.port))
         .map_err(|error| format!("could not bind 127.0.0.1:{}: {error}", args.port))?;
@@ -483,6 +477,7 @@ where
     let shared = host.route("default").expect("default project");
     let app = Arc::clone(&shared.app);
     start_wechat_bridge(&shared, &app, &shutdown, wechat_credentials)?;
+    host.publish_endpoint(&storage_root, addr.port())?;
 
     drop(app);
     let accept_shared = Arc::clone(&shared);
@@ -514,6 +509,7 @@ where
 fn mount_serve_project<F>(
     project: Project,
     storage_root: Option<PathBuf>,
+    trust: bool,
     into_trusted: F,
 ) -> Result<(TrustedProjectApplication, PathBuf), String>
 where
@@ -527,6 +523,10 @@ where
     let storage_root = bootstrap.storage_root().to_path_buf();
     let trusted = match bootstrap.is_trusted() {
         Ok(true) => into_trusted(bootstrap).map_err(|error| error.to_string())?,
+        Ok(false) if trust => bootstrap
+            .with_permission_modes()
+            .authorize_and_mount(crate::ProjectAuthorization::grant())
+            .map_err(|error| error.to_string())?,
         Ok(false) => {
             // serve 是常驻服务，不做信任授权交互——信任动作应发生在
             // 发起它的终端上下文（§9）。

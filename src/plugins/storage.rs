@@ -2,7 +2,7 @@
 //! scope. The bootstrap phase is NOT plugin-mounted anymore: it is the
 //! read-only preflight inside `BootstrapApplication` (control_storage).
 
-use super::services::{CONFIG_SERVICE, ConfigStore, SESSION_SERVICE, StoreError};
+use super::services::{CONFIG_SERVICE, ConfigStore, SESSION_SERVICE, StoreError, UtilitySettings};
 use crate::control_storage::ControlStorage;
 use crate::model::{ModelConfig, ProviderCredentials};
 use crate::plugin::{
@@ -90,6 +90,27 @@ impl ConfigStore for ControlCapabilities {
     fn set_active_profile(&self, name: Option<&str>) -> Result<(), StoreError> {
         self.storage
             .set_active_profile(name)
+            .map_err(|error| StoreError::new(error.to_string()))
+    }
+
+    fn load_utility_settings(&self) -> Result<UtilitySettings, StoreError> {
+        self.storage
+            .utility_settings()
+            .map(|settings| UtilitySettings {
+                naming_enabled: settings.naming_enabled,
+                suggestions_enabled: settings.suggestions_enabled,
+                profile: settings.profile,
+            })
+            .map_err(|error| StoreError::new(error.to_string()))
+    }
+
+    fn save_utility_settings(&self, settings: UtilitySettings) -> Result<(), StoreError> {
+        self.storage
+            .set_utility_settings(crate::control_storage::settings::UtilitySettingsRow {
+                naming_enabled: settings.naming_enabled,
+                suggestions_enabled: settings.suggestions_enabled,
+                profile: settings.profile,
+            })
             .map_err(|error| StoreError::new(error.to_string()))
     }
 

@@ -58,6 +58,7 @@ fn spawn_serve_with_queue(
         project,
         Some(storage_root.clone()),
         ServeArgs {
+            trust: false,
             port: 0,
             token: Some(TEST_TOKEN.into()),
             rotate_token: false,
@@ -83,6 +84,7 @@ fn spawn_serve_with_start_receive_failure(name: &str) -> (ServeHandle, PathBuf, 
         project,
         Some(storage_root.clone()),
         ServeArgs {
+            trust: false,
             port: 0,
             token: Some(TEST_TOKEN.into()),
             rotate_token: false,
@@ -549,6 +551,7 @@ fn wechat_switch_is_default_off_and_fails_closed_before_binding_exists() {
         project,
         Some(storage_root.clone()),
         ServeArgs {
+            trust: false,
             port: 0,
             token: None,
             rotate_token: true,
@@ -2033,6 +2036,7 @@ fn persistent_token_survives_restart_and_rotation_revokes_the_old_bearer() {
             project.clone(),
             Some(storage_root.clone()),
             ServeArgs {
+                trust: false,
                 port,
                 token: None,
                 rotate_token,
@@ -3095,6 +3099,7 @@ fn host_serve_for_playwright(key: &str, behavior: TestBehavior, seed_turns: usiz
         project,
         Some(storage_root.clone()),
         ServeArgs {
+            trust: false,
             port: 0,
             token: Some(token.clone()),
             rotate_token: false,
@@ -3178,6 +3183,7 @@ fn host_live_glm_for_playwright() {
         project,
         Some(storage_root.clone()),
         ServeArgs {
+            trust: false,
             port: 0,
             token: Some(token.clone()),
             rotate_token: false,

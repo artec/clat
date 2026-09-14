@@ -136,7 +136,7 @@ fn builtin_specs() -> Vec<CommandSpec> {
             Conversation,
             4,
             &["update"],
-            "upgrade this read-only legacy conversation to v2 (keep original)",
+            "upgrade this read-only legacy conversation to the current format (keep original)",
             run_update,
         ),
         spec(
@@ -249,7 +249,8 @@ fn run_update(application: &mut TrustedProjectApplication) -> Result<CommandOutc
             message: error.to_string(),
         })?;
     Ok(CommandOutcome::Status(
-        "Session upgraded to v2 and is writable; original v0 retained.".into(),
+        "Session is now at the current format and is writable; original generation retained."
+            .into(),
     ))
 }
 

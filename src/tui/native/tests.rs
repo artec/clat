@@ -54,6 +54,129 @@ fn clipboard_png() -> Vec<u8> {
 }
 
 #[test]
+fn native_quit_detaches_even_offline_without_cancelling_host_work() {
+    for command in ["/quit", " /exit "] {
+        let (mut app, storage) = shell();
+        app.running = true;
+        app.native.as_mut().unwrap().pending = Some("in flight".into());
+        app.input.insert_str("newer draft");
+        app.submit_native(command.into());
+        assert!(
+            app.should_quit,
+            "quit must detach an offline or busy client"
+        );
+        assert!(app.running, "detaching is not run cancellation");
+        assert_eq!(app.input.text(), "newer draft");
+        assert_eq!(
+            app.native.as_ref().unwrap().pending.as_deref(),
+            Some("in flight")
+        );
+        drop(app);
+        crate::test_support::cleanup_tree(&storage);
+    }
+}
+
+#[test]
+fn native_compaction_displays_host_receipt_and_completion_without_touching_draft() {
+    let (mut app, storage) = shell();
+    app.input.insert_str("newer draft");
+    app.native.as_mut().unwrap().pending = Some("/compact".into());
+    app.handle_native_event(NativeEvent::Submitted(Ok(json!({"status":"started"}))));
+    assert!(app.native.as_ref().unwrap().pending.is_none());
+    assert_eq!(app.status, "started");
+    assert_eq!(app.input.text(), "newer draft");
+    app.native_control(
+        "notice",
+        json!({"kind":"compaction","payload":{
+            "status":"finished","note":"compaction failed: cancelled","succeeded":false
+        }}),
+    );
+    assert_eq!(app.input.text(), "newer draft");
+    assert_eq!(app.status, "compaction failed: cancelled");
+    drop(app);
+    crate::test_support::cleanup_tree(&storage);
+}
+
+#[test]
+fn native_permission_dialog_requires_host_state_and_full_access_confirmation() {
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+    let (mut app, storage) = shell();
+    app.submit_native("/perm".into());
+    assert!(
+        app.permission_picker.is_none(),
+        "offline must not invent a mode"
+    );
+    app.native.as_mut().unwrap().online = true;
+    app.submit_native("/permission".into());
+    assert!(
+        app.permission_picker.is_none(),
+        "unknown host mode must not default"
+    );
+    app.native_snapshot(json!({"permission":{"mode":"danger-full-access"}}));
+    app.submit_native("/perm".into());
+    assert!(
+        app.permission_picker.is_some(),
+        "host permission picker missing"
+    );
+    app.handle_ui_event(UiEvent::Terminal(Event::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    ))));
+    assert!(
+        app.permission_picker.is_some(),
+        "cached full access still requires explicit confirmation"
+    );
+    assert!(!app.native.as_ref().unwrap().permissions.pending);
+    app.handle_ui_event(UiEvent::Terminal(Event::Key(KeyEvent::new(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+    ))));
+    app.handle_ui_event(UiEvent::Terminal(Event::Key(KeyEvent::new(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+    ))));
+    assert!(app.permission_picker.is_none());
+    assert!(app.application.is_none());
+    drop(app);
+    crate::test_support::cleanup_tree(&storage);
+}
+
+#[test]
+fn native_permission_target_and_replies_are_fenced_without_optimistic_state() {
+    let (mut app, storage) = shell();
+    app.native.as_mut().unwrap().online = true;
+    app.native_snapshot(json!({"permission":{"mode":"read-only"}}));
+    app.submit_native("/perm".into());
+    let (tx, _rx) = mpsc::sync_channel(8);
+    app.event_sender = Some(tx);
+    app.native.as_mut().unwrap().selection += 1;
+    app.apply_native_permission(PermissionMode::FullAccess);
+    assert_eq!(app.status, "permission target changed; reopen /perm");
+    assert!(!app.native.as_ref().unwrap().permissions.pending);
+    app.event_sender = None;
+    app.native.as_mut().unwrap().permissions.pending = true;
+    for (epoch, selection) in [(1, 1), (0, 0)] {
+        app.handle_native_event(NativeEvent::PermissionChanged(
+            epoch,
+            selection,
+            Err("stale".into()),
+        ));
+        assert!(app.native.as_ref().unwrap().permissions.pending);
+        assert_ne!(app.status, "stale");
+    }
+    app.handle_native_event(NativeEvent::PermissionChanged(
+        0,
+        1,
+        Err("save failed".into()),
+    ));
+    assert!(!app.native.as_ref().unwrap().permissions.pending);
+    assert_eq!(app.status, "save failed");
+    assert_eq!(app.current_permission_mode(), PermissionMode::ReadOnly);
+    drop(app);
+    crate::test_support::cleanup_tree(&storage);
+}
+
+#[test]
 fn native_readonly_commands_open_a_local_dialog() {
     let (mut app, storage) = shell();
     for command in [
@@ -329,7 +452,8 @@ fn native_preset_key_entry_opens_without_selecting_or_reading_credentials() {
             "current": {"protocol":"open_ai_compatible", "model":"", "endpoint":"",
                 "request_path":"/chat/completions", "credential_set":true,
                 "advanced_settings_present":false},
-            "active_profile":null, "presets":[], "profiles":[]
+            "active_profile":null, "presets":[], "profiles":[],
+            "utility":{"naming_enabled":true,"suggestions_enabled":false,"profile":null}
         }))
         .unwrap(),
         profiles: vec![],

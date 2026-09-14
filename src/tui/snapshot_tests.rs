@@ -70,7 +70,7 @@ use unicode_width::UnicodeWidthStr;
 /// 含 grill-me，来源层与 requires-execution 呈现）。
 /// 2026-09-02 三次刷新（TC 组 Tencent Hy 接入）：model-picker 与
 /// model-editor-escape 两场景重钉——一级列表新增 Tencent 厂商行
-/// （五厂商 + Custom = 6 行，hy4-preview 条目）。
+/// （五厂商 + Custom = 6 行，Hy4/Hy3 条目）。
 /// 同日四次刷新（TC-2 口径修正）：model-picker 再钉——Tencent 一级
 /// 行更名 "Hy Token Plan"（归队计划名命名模式，负责人二次裁定）。
 /// 2026-09-02 五次刷新与新增（CP-2 帮助归位与命令短名，A4/A5/A6）：

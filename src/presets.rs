@@ -7,6 +7,9 @@
 use crate::{ImageRequestPolicy, Modality, ModelCapabilities, ModelConfig, ModelProtocol};
 use serde_json::{Value, json};
 
+mod companions;
+use companions::{HY3, HY4_PREVIEW, KIMI_FOR_CODING};
+
 /// INV-MM2-1 预设侧能力矩阵（const 友好的静态切片；`apply` 时转入
 /// owned `ModelCapabilities` 持久化）。`image_input_verified` 依据
 /// INV-MM2-2：仅自有 live 探针证据才置 true。
@@ -66,6 +69,9 @@ const GLM_FLASH_VERIFIED_CAPS: PresetCapabilities = PresetCapabilities {
 pub struct ModelPreset {
     /// Stable identifier stored in the saved configuration.
     pub id: &'static str,
+    /// Built-in companion model used by utility tasks. `None` means that the
+    /// preset is already the light/default route and should be used as-is.
+    pub utility_model: Option<&'static str>,
     /// Human-readable name shown in the UI.
     pub name: &'static str,
     pub description: &'static str,
@@ -189,7 +195,8 @@ const KIMI_WHITELIST_UA: &str = "claude-cli/2.1.161";
 /// <https://platform.kimi.com/docs/overview> and Kimi Help Center
 /// "Kimi Code Membership Benefits"（2026-08 抓取）:
 ///
-/// - model id `kimi-k3`（旗舰，1M context、~131K 最大输出；视觉理解）
+/// - model ids `kimi-k3`（旗舰）与 `kimi-for-coding`（K2.8 Preview，均为
+///   1M context、~131K 最大输出；视觉理解）
 /// - Coding 会员 OpenAI 兼容端点 `https://api.kimi.com/coding/v1`
 ///   （订阅额度计量；开放平台按量端点是 `https://api.moonshot.cn/v1`，
 ///   密钥不通用，预设取 Coding 端点与 GLM Coding Plan 同型）
@@ -218,6 +225,7 @@ pub const MODEL_PRESETS: &[ModelPreset] = &[
     // 任何回退处理（零用户教法：直接更新；旧 id 失效即失效）。
     ModelPreset {
         id: "deepseek-flash",
+        utility_model: None,
         // SF-1 ④：官方公告多模态 → officially-declared（VP-2 通道）。
         capabilities: OFFICIAL_VISION_CAPS,
         name: "DeepSeek V4.1 Flash",
@@ -237,6 +245,7 @@ pub const MODEL_PRESETS: &[ModelPreset] = &[
     },
     ModelPreset {
         id: "deepseek-v4-pro",
+        utility_model: Some("deepseek-flash"),
         capabilities: TEXT_CAPS,
         name: "DeepSeek V4.0 Pro",
         description: "DeepSeek V4 Pro for the most complex agent tasks",
@@ -258,6 +267,7 @@ pub const MODEL_PRESETS: &[ModelPreset] = &[
     // 视觉位由 V4.1 Flash（上方）继承。
     ModelPreset {
         id: "glm-5.3",
+        utility_model: Some("glm-5.3-flash"),
         capabilities: TEXT_CAPS,
         name: "GLM 5.3",
         description: "Zhipu flagship coding model via GLM Coding Plan",
@@ -291,6 +301,7 @@ pub const MODEL_PRESETS: &[ModelPreset] = &[
     //   均 [Text, Image]，图片策略 F-2/F-3/F-5。
     ModelPreset {
         id: "glm-5.3-flash",
+        utility_model: None,
         capabilities: GLM_FLASH_VERIFIED_CAPS,
         name: "GLM 5.3 Flash",
         description: "Zhipu multimodal vision model via GLM Coding Plan (reads images)",
@@ -314,6 +325,7 @@ pub const MODEL_PRESETS: &[ModelPreset] = &[
     // 最大输出 131,072 与官方页一致，参数零变化、model id 不变。
     ModelPreset {
         id: "qwen3.8-max",
+        utility_model: Some("qwen3.8-flash"),
         capabilities: OFFICIAL_VISION_CAPS,
         name: "Qwen3.8 Max",
         description: "Alibaba flagship via Qwen Token Plan (implicit context cache, reads images)",
@@ -344,6 +356,7 @@ pub const MODEL_PRESETS: &[ModelPreset] = &[
     //   无 thinking 对象；官方页未详述 flash 差异，异常再调）。
     ModelPreset {
         id: "qwen3.8-flash",
+        utility_model: None,
         capabilities: OFFICIAL_VISION_CAPS,
         name: "Qwen3.8 Flash",
         description: "Alibaba fast tier via Qwen Token Plan (reads images)",
@@ -362,6 +375,7 @@ pub const MODEL_PRESETS: &[ModelPreset] = &[
     },
     ModelPreset {
         id: "kimi-k3",
+        utility_model: Some("kimi-for-coding"),
         // VP-2（2026-09-03）：Kimi K3 视觉输入为官方声明（负责人按
         // Moonshot API 文档核实）→ officially-declared。
         capabilities: OFFICIAL_VISION_CAPS,
@@ -380,51 +394,9 @@ pub const MODEL_PRESETS: &[ModelPreset] = &[
         include_usage: true,
         user_agent: Some(KIMI_WHITELIST_UA),
     },
-    // Tencent Hy4 preview（TC-0/TC-1，2026-09-02；TC-2 口径修正，
-    // 负责人二次裁定）：参数以官方文档口径为准、TC-0 live probe
-    // （docs/research/tc0-probe/manifest.json，授权 key、产物脱敏）
-    // 验证意外：
-    // - 端点：Hy Token Plan 的 OpenAI 兼容端点
-    //   api.lkeap.cloud.tencent.com/plan/v3（负责人裁定只接 Hy Token
-    //   Plan，不接通用 Token Plan；Hy3 同端点可用但不放）；
-    // - vendor "Hy Token Plan"（TC-2 ②）：归队 GLM Coding Plan /
-    //   Qwen Token Plan / Kimi Coding Plan 的计划名命名模式；厂商识别
-    //   与 key 记忆槽仍是 ModelVendor::Tencent（经端点域名推导）；
-    // - thinking 服务端常开（reasoning_content 恒在，disabled 被静默
-    //   忽略）；reasoning_effort 无可复现效果且无效值被静默接受 →
-    //   预设不发 thinking 对象、不发 reasoning_effort，Shift+Tab 无档位
-    //   （ModelVendor::Tencent 的 thinking_levels 为空；标题栏以
-    //   "Thinking · Server" 常开显示，TC-3）；
-    // - output_limit 65,536：网关无上限校验（1,048,576 也受理）、
-    //   max_tokens 遵守（64→length@64），最长自然生成实测 44,240
-    //   token——取其上的下一个 2 的幂留余量；
-    // - context_window 1,000,000（TC-2 ①：官方口径 1M 总窗口，GLM
-    //   同款钉法；接口实给分解 ~960K 输入 + 64K 输出——正好解释
-    //   TC-0 探针的输入 958,177 受理、~1.0M 输入 500 code 20057。
-    //   纪律（负责人 2026-09-02）：官方文档口径优先，探针只验证
-    //   意外，不得拿单样本异常压官方声明）；
-    // - 流式 usage 随每个 chunk（终 chunk 真值）→ include_usage=false；
-    // - 纯文本：**端点对图片部件静默丢弃**（200 + 模型自述看不见图，
-    //   probe fixture image-silent-drop）——CLAT 侧 text-only fail-closed
-    //   是承担拦截责任的一侧。
-    ModelPreset {
-        id: "hy4-preview",
-        capabilities: TEXT_CAPS,
-        name: "Hy 4 Preview",
-        description: "Tencent Hunyuan preview model (always-on thinking)",
-        vendor: "Hy Token Plan",
-        protocol: ModelProtocol::OpenAiCompatible,
-        model: "hy4-preview",
-        endpoint: "https://api.lkeap.cloud.tencent.com/plan/v3",
-        request_path: "/chat/completions",
-        output_limit: 65_536,
-        context_window: 1_000_000,
-        reasoning_effort: None,
-        preserve_thinking: false,
-        thinking_object: false,
-        include_usage: false,
-        user_agent: None,
-    },
+    KIMI_FOR_CODING,
+    HY4_PREVIEW,
+    HY3,
 ];
 
 pub fn preset_by_id(id: &str) -> Option<&'static ModelPreset> {
@@ -879,7 +851,7 @@ mod tests {
     ///   另有项目所有者第一方确认与真实端点实测，见模块文档证据链）
     /// - qwen3.8-max：1M context / 131,072 output
     ///   （help.aliyun.com/zh/model-studio/qwen3-8-max，2026-08 核验）
-    /// - kimi-k3：1M context / 131,072 output
+    /// - kimi-k3 / kimi-for-coding：1M context / 131,072 output
     ///   （platform.kimi.com/docs/overview 与 OpenCode 接入指南，
     ///   2026-08 核验）
     /// - hy4-preview：1M context / 65,536 output（TC-2 ①：官方口径
@@ -908,9 +880,17 @@ mod tests {
         assert_eq!(kimi.context_window, 1_000_000);
         assert_eq!(kimi.output_limit, 131_072);
 
+        let kimi_utility = preset_by_id("kimi-for-coding").expect("kimi utility");
+        assert_eq!(kimi_utility.context_window, 1_000_000);
+        assert_eq!(kimi_utility.output_limit, 131_072);
+
         let hy = preset_by_id("hy4-preview").expect("hy");
         assert_eq!(hy.context_window, 1_000_000);
         assert_eq!(hy.output_limit, 65_536);
+
+        let hy_utility = preset_by_id("hy3").expect("hy utility");
+        assert_eq!(hy_utility.context_window, 256 * 1024);
+        assert_eq!(hy_utility.output_limit, 128 * 1024);
     }
 
     #[test]
@@ -936,15 +916,45 @@ mod tests {
         assert_eq!(presets_by_vendor("Qwen Token Plan").len(), 2);
         assert_eq!(presets_by_vendor("Qwen Token Plan")[0].id, "qwen3.8-max");
         assert_eq!(presets_by_vendor("Qwen Token Plan")[1].id, "qwen3.8-flash");
+        assert_eq!(presets_by_vendor("Kimi Coding Plan").len(), 2);
         assert_eq!(presets_by_vendor("Kimi Coding Plan")[0].id, "kimi-k3");
+        assert_eq!(
+            presets_by_vendor("Kimi Coding Plan")[1].id,
+            "kimi-for-coding"
+        );
+        assert_eq!(presets_by_vendor("Hy Token Plan").len(), 2);
         assert_eq!(presets_by_vendor("Hy Token Plan")[0].id, "hy4-preview");
+        assert_eq!(presets_by_vendor("Hy Token Plan")[1].id, "hy3");
+    }
+
+    #[test]
+    fn utility_companion_mapping_lives_in_the_preset_table() {
+        let expected = [
+            ("deepseek-v4-pro", Some("deepseek-flash")),
+            ("deepseek-flash", None),
+            ("glm-5.3", Some("glm-5.3-flash")),
+            ("glm-5.3-flash", None),
+            ("qwen3.8-max", Some("qwen3.8-flash")),
+            ("qwen3.8-flash", None),
+            ("kimi-k3", Some("kimi-for-coding")),
+            ("kimi-for-coding", None),
+            ("hy4-preview", Some("hy3")),
+            ("hy3", None),
+        ];
+        for (id, utility_model) in expected {
+            assert_eq!(
+                preset_by_id(id).unwrap().utility_model,
+                utility_model,
+                "{id}"
+            );
+        }
     }
 
     /// INV-MM2-1/2（MM-2 W1 红测；VP-2 终态直写 2026-09-03；SF-1
     /// 刷新 2026-09-10）：全预设 capability matrix 完备且 sourced——
-    /// **恰五个** verified 开图（officially-declared 四条：deepseek-flash
+    /// **恰六个** verified 开图（officially-declared 五条：deepseek-flash
     /// （SF-1 继承 vision-exp 视觉位）/ qwen3.8-max / qwen3.8-flash /
-    /// kimi-k3，加 glm-5.3-flash 为 MM-0 探针实证），无中间态
+    /// kimi-k3 / kimi-for-coding，加 glm-5.3-flash 为 MM-0 探针实证），无中间态
     ///（unverified 档已退役）；其余全部纯文本。漏配新预设时哨兵断言红。
     #[test]
     fn capability_matrix_is_complete_sourced_and_fail_closed() {
@@ -964,18 +974,29 @@ mod tests {
             // INV-MM2-2 的唯一放行位（officially-declared 或探针实证）。
             let expects_images = matches!(
                 preset.id,
-                "deepseek-flash" | "glm-5.3-flash" | "qwen3.8-max" | "qwen3.8-flash" | "kimi-k3"
+                "deepseek-flash"
+                    | "glm-5.3-flash"
+                    | "qwen3.8-max"
+                    | "qwen3.8-flash"
+                    | "kimi-k3"
+                    | "kimi-for-coding"
             );
             assert_eq!(
                 caps.accepts_image_input(),
                 expects_images,
-                "{}: vision matrix must match the declared five-model final state",
+                "{}: vision matrix must match the declared six-model final state",
                 preset.id
             );
         }
         // officially-declared 存量：input [Text, Image] + verified，
         // tool_result 携图无官方证据 → 仍 [Text]。
-        for id in ["deepseek-flash", "qwen3.8-max", "kimi-k3", "qwen3.8-flash"] {
+        for id in [
+            "deepseek-flash",
+            "qwen3.8-max",
+            "kimi-k3",
+            "kimi-for-coding",
+            "qwen3.8-flash",
+        ] {
             let caps = preset_by_id(id).unwrap().owned_capabilities();
             assert_eq!(
                 caps.input_modalities,
@@ -992,7 +1013,7 @@ mod tests {
             vec![Modality::Text, Modality::Image]
         );
         // 纯文本预设不含 Image 模态。
-        for id in ["deepseek-v4-pro", "glm-5.3", "hy4-preview"] {
+        for id in ["deepseek-v4-pro", "glm-5.3", "hy4-preview", "hy3"] {
             let caps = preset_by_id(id).unwrap().owned_capabilities();
             assert_eq!(caps.input_modalities, vec![Modality::Text], "{id}");
         }
@@ -1004,7 +1025,13 @@ mod tests {
     /// vision-exp 位由 deepseek-flash 继承。）
     #[test]
     fn officially_declared_vision_presets_carry_the_declared_matrix() {
-        for id in ["deepseek-flash", "qwen3.8-max", "kimi-k3", "qwen3.8-flash"] {
+        for id in [
+            "deepseek-flash",
+            "qwen3.8-max",
+            "kimi-k3",
+            "kimi-for-coding",
+            "qwen3.8-flash",
+        ] {
             let preset = preset_by_id(id).unwrap();
             let caps = preset.owned_capabilities();
             assert!(

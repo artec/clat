@@ -23,6 +23,26 @@ pub fn write_text_atomic(
     name: &str,
     text: &str,
 ) -> Result<(), String> {
+    publish_text(dir, name, text)?;
+    sync_dir(parent).map_err(|error| format!("cannot fsync {}: {error}", parent.display()))
+}
+
+/// Publish and sync through the same directory capability, even if its
+/// ambient path has since been replaced. Unix reopens `.` to avoid O_PATH.
+pub(crate) fn write_text_atomic_in_dir(
+    dir: &cap_std::fs::Dir,
+    name: &str,
+    text: &str,
+) -> Result<(), String> {
+    publish_text(dir, name, text)?;
+    #[cfg(unix)]
+    dir.open(".")
+        .and_then(|file| file.sync_all())
+        .map_err(|error| format!("cannot fsync private directory: {error}"))?;
+    Ok(())
+}
+
+fn publish_text(dir: &cap_std::fs::Dir, name: &str, text: &str) -> Result<(), String> {
     reject_symlink(dir, name)?;
     let temp_name = temp_file_name(name);
     let result = (|| -> Result<(), String> {
@@ -52,7 +72,7 @@ pub fn write_text_atomic(
         let _ = dir.remove_file(&temp_name);
         return Err(error);
     }
-    sync_dir(parent).map_err(|error| format!("cannot fsync {}: {error}", parent.display()))
+    Ok(())
 }
 
 fn reject_symlink(dir: &cap_std::fs::Dir, name: &str) -> Result<(), String> {
@@ -114,6 +134,27 @@ pub(crate) fn sync_dir(path: &Path) -> Result<(), String> {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capability_publication_survives_ambient_parent_replacement() {
+        let base = std::env::temp_dir().join(format!("clat-private-cap-{}", uuid::Uuid::new_v4()));
+        let original = base.join("original");
+        let relocated = base.join("relocated");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(&original).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        let dir =
+            cap_std::fs::Dir::open_ambient_dir(&original, cap_std::ambient_authority()).unwrap();
+        std::fs::rename(&original, &relocated).unwrap();
+        std::os::unix::fs::symlink(&outside, &original).unwrap();
+        write_text_atomic_in_dir(&dir, "budget", "committed").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(relocated.join("budget")).unwrap(),
+            "committed"
+        );
+        assert!(!outside.join("budget").exists());
+        crate::test_support::cleanup_tree(&base);
+    }
 
     #[test]
     fn atomic_private_file_is_created_with_private_mode() {

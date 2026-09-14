@@ -3,12 +3,17 @@
 //! Every mutation is sent once. A transport failure is an uncertain outcome,
 //! not permission to retry or to open another local writer.
 mod attachments;
+mod commands;
 mod context;
 mod credentials;
+pub(crate) mod discovery;
 mod error;
 mod info;
+mod lifecycle;
+pub use lifecycle::HostManagementArgs;
 mod models;
 mod sessions;
+mod startup;
 pub use error::HostCallError;
 pub use models::HostModelChoices;
 mod events;
@@ -42,8 +47,10 @@ impl HostClient {
             self.call_with_receipt(method, &params)
         };
         match text.trim() {
-            "/new" => call("session.new", json!({})),
+            "/new" | "/clear" => call("session.new", json!({})),
             "/cancel" => call("run.cancel", json!({})),
+            "/compact" => call("session.compact", json!({"action":"start"})),
+            "/compact cancel" => call("session.compact", json!({"action":"cancel"})),
             "/model" => Err("Use Workbench settings → Models in the PWA; terminal profile editor is not attached yet".into()),
             text if text.starts_with("/resume ") => call("session.switch", json!({"id":text[8..].trim()})),
             "/resume" => self.call_with_receipt("session.list", &json!({})),

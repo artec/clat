@@ -169,6 +169,7 @@ impl TrustedProjectApplication {
             compactor: ports.compactor,
             todo: ports.todo,
             titler: ports.titler,
+            utility: ports.utility,
             title_worker: None,
             subscribers,
             language_startup_notice,

@@ -1,25 +1,21 @@
 //! 会话标题生成（能力批次 1 / F）。
 //!
-//! `core.session_title` 服务：用已配置模型把首条用户消息提炼为简短标
+//! `core.session_title` 服务：用已配置模型把近期对话提炼为简短标
 //! 题，替换 storage 落库时的"首行截断"默认值。单次小请求（无工具、
-//! 短 deadline、重试一次）；失败返回 None，调用方静默保留既有标题
+//! 短 deadline、单次尝试）；失败返回 None，调用方静默保留既有标题
 //! （INV-F1）。标题清洗：取首个非空行、剥包裹引号/Markdown 标记、按
 //! char 边界截断到 16 字符（INV-F2）。
 
-use crate::model::{
-    CancelToken, FinishReason, ModelConfig, ModelOptions, ModelRequest, ProviderCredentials,
-};
+use crate::model::{CancelToken, ModelConfig, ProviderCredentials};
 use crate::plugin::{Plugin, PluginContext, PluginDescriptor, PluginError, PluginId, ScopeKind};
 use crate::plugins::services::{
-    PROVIDER_SERVICE, PROVIDER_SERVICE_ID, ProviderRegistry, SESSION_TITLE_SERVICE,
-    SESSION_TITLE_SERVICE_ID, SessionTitler,
+    GeneratedTitle, SESSION_TITLE_SERVICE, SESSION_TITLE_SERVICE_ID, SessionTitler,
+    UTILITY_MODEL_SERVICE, UTILITY_MODEL_SERVICE_ID, UtilityModel, UtilityTask,
 };
-use crate::providers::{ModelBuildFn, RetryPolicy, retry_model_with};
 use std::sync::Arc;
-use std::time::Duration;
 
 const ID: PluginId = PluginId::new("builtin.session_title");
-const REQUIRES: &[crate::plugin::ServiceId] = &[PROVIDER_SERVICE_ID];
+const REQUIRES: &[crate::plugin::ServiceId] = &[UTILITY_MODEL_SERVICE_ID];
 const DESCRIPTOR: PluginDescriptor = PluginDescriptor {
     id: ID,
     scope: ScopeKind::TrustedProject,
@@ -28,13 +24,6 @@ const DESCRIPTOR: PluginDescriptor = PluginDescriptor {
     optional: &[],
 };
 
-const TITLE_INSTRUCTIONS: &str = "Generate a concise title (at most 8 words) for a coding \
-assistant conversation that starts with the message below. Use the same language as the \
-message. Output only the title text: no quotes, no trailing punctuation beyond what is \
-natural, no explanation.";
-
-const TITLE_OUTPUT_LIMIT: u32 = 32;
-const TITLE_DEADLINE: Duration = Duration::from_secs(15);
 const TITLE_MAX_CHARS: usize = 16;
 
 pub(crate) struct SessionTitlePlugin;
@@ -45,75 +34,46 @@ impl Plugin for SessionTitlePlugin {
     }
 
     fn mount(&self, context: &mut PluginContext<'_>) -> Result<(), PluginError> {
-        let providers = context
-            .require(PROVIDER_SERVICE)
+        let utility = context
+            .require(UTILITY_MODEL_SERVICE)
             .map_err(|error| PluginError::new(error.to_string()))?;
         context
             .provide(
                 SESSION_TITLE_SERVICE,
-                Arc::new(DefaultSessionTitler { providers }) as Arc<dyn SessionTitler>,
+                Arc::new(DefaultSessionTitler { utility }) as Arc<dyn SessionTitler>,
             )
             .map_err(|error| PluginError::new(error.to_string()))
     }
 }
 
 struct DefaultSessionTitler {
-    providers: Arc<ProviderRegistry>,
+    utility: Arc<dyn UtilityModel>,
 }
 
 impl SessionTitler for DefaultSessionTitler {
+    fn enabled(&self) -> bool {
+        self.utility.enabled(UtilityTask::SessionTitle)
+    }
+
     fn generate_title(
         &self,
         config: &ModelConfig,
         credentials: &ProviderCredentials,
-        first_user_message: &str,
+        conversation: &str,
         cancel: &CancelToken,
-    ) -> Option<String> {
-        let build: ModelBuildFn = {
-            let providers = Arc::clone(&self.providers);
-            let config = config.clone();
-            let credentials = credentials.clone();
-            Box::new(move || providers.build(&config, &credentials))
-        };
-        let mut model = retry_model_with(
-            config.protocol.to_string(),
-            config.model.clone(),
-            build,
-            RetryPolicy {
-                max_attempts: 2,
-                backoff: vec![Duration::from_secs(1)],
-                total_deadline: Some(TITLE_DEADLINE),
-                total_attempt_cap: Some(2),
-                ..RetryPolicy::default()
-            },
-        );
-        let items = [crate::model::ModelItem::user_text(
-            first_user_message.to_owned(),
-        )];
-        let tools: [crate::tool::ToolDefinition; 0] = [];
-        let options = ModelOptions {
-            output_limit: Some(TITLE_OUTPUT_LIMIT),
-            ..ModelOptions::default()
-        };
-        // 请求令牌派生自 worker 的取消令牌并带上 TITLE_DEADLINE：
-        // retry 的 total_deadline 只约束尝试间隔，管不住单次 send 的
-        // connect（30s）/等响应头（60s）阶段——那些阶段不轮询取消标
-        // 志，只有 `remaining()` 的请求级 timeout 能有界化（2026-08-19
-        // 退出延迟诊断）。父取消仍即时生效（Esc/退出）。
-        let request_cancel = cancel.child_with_deadline(std::time::Instant::now() + TITLE_DEADLINE);
-        let request = ModelRequest {
-            instructions: Some(TITLE_INSTRUCTIONS),
-            items: &items,
-            tools: &tools,
-            options: &options,
-            cancel: &request_cancel,
-        };
-        let mut sink = Vec::new();
-        let response = model.stream(request, &mut sink).ok()?;
-        if response.finish_reason == FinishReason::Cancelled {
-            return None;
-        }
-        Some(sanitize_title(&response.text))
+    ) -> Option<GeneratedTitle> {
+        let output = self.utility.generate(
+            UtilityTask::SessionTitle,
+            config,
+            credentials,
+            conversation,
+            cancel,
+        )?;
+        Some(GeneratedTitle {
+            title: sanitize_title(&output.text),
+            provider: output.provider,
+            model: output.model,
+        })
     }
 }
 
@@ -158,11 +118,13 @@ fn strip_wrapping_markup(text: &str) -> Option<&str> {
 mod tests {
     use super::*;
     use crate::model::{
-        Model, ModelError, ModelEventSink, ModelFactory, ModelProtocol, ModelResponse,
+        FinishReason, Model, ModelError, ModelEventSink, ModelFactory, ModelProtocol, ModelRequest,
+        ModelResponse,
     };
     use crate::plugin::{PluginId, PluginManager, PluginOwner};
     use crate::plugins::services::{PROVIDER_SERVICE, ProviderLease};
-    use crate::plugins::{ProviderRegistryPlugin, SessionTitlePlugin};
+    use crate::plugins::{CompanionUtilityPlugin, ProviderRegistryPlugin, SessionTitlePlugin};
+    use std::time::Duration;
 
     #[test]
     fn sanitizer_uses_first_line_strips_markup_and_truncates_on_char_boundary() {
@@ -239,6 +201,7 @@ mod tests {
         manager
             .mount_all(vec![
                 Arc::new(ProviderRegistryPlugin),
+                Arc::new(CompanionUtilityPlugin),
                 Arc::new(SessionTitlePlugin),
             ])
             .expect("mount");
@@ -266,7 +229,7 @@ mod tests {
                 &CancelToken::new(),
             )
             .expect("title");
-        assert_eq!(title, "Fix the login bu");
+        assert_eq!(title.title, "Fix the login bu");
     }
 
     /// 不变量（2026-08-19 退出延迟）：自动标题请求必须携带 deadline
@@ -340,7 +303,7 @@ mod tests {
         );
     }
 
-    struct FailingFactory;
+    struct FailingFactory(Arc<std::sync::atomic::AtomicUsize>);
 
     impl ModelFactory for FailingFactory {
         fn protocol(&self) -> ModelProtocol {
@@ -356,16 +319,19 @@ mod tests {
             _config: &ModelConfig,
             _credentials: &ProviderCredentials,
         ) -> Result<Box<dyn Model>, ModelError> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Err(ModelError::transport("title provider down"))
         }
     }
 
     #[test]
     fn generation_failure_is_silent_none() {
+        let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let mut manager = PluginManager::root(ScopeKind::TrustedProject);
         manager
             .mount_all(vec![
                 Arc::new(ProviderRegistryPlugin),
+                Arc::new(CompanionUtilityPlugin),
                 Arc::new(SessionTitlePlugin),
             ])
             .expect("mount");
@@ -373,7 +339,7 @@ mod tests {
         let _lease: ProviderLease = providers
             .register(
                 PluginOwner::for_test(PluginId::new("test.title")),
-                Arc::new(FailingFactory),
+                Arc::new(FailingFactory(Arc::clone(&attempts))),
             )
             .map_err(|error| error.to_string())
             .expect("register");
@@ -384,6 +350,11 @@ mod tests {
             titler
                 .generate_title(&config, &credentials, "anything", &CancelToken::new())
                 .is_none()
+        );
+        assert_eq!(
+            attempts.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "one budget reservation must permit only one provider attempt"
         );
     }
 }

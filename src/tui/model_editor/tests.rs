@@ -426,7 +426,7 @@ fn cycling_preset_applies_official_deepseek_parameters() {
     assert_eq!(config.extra_body["thinking"]["type"], "enabled");
 
     // Next step lands on Pro, then GLM, then GLM Flash, then
-    // Qwen, then Kimi, then Tencent, then back to Custom.
+    // Qwen, Kimi, Kimi utility, Tencent Hy4, Hy3, then Custom.
     // （SF-1 2026-09-10：vision-exp 下架，Pro 的下一步直达 GLM。）
     editor.handle_key(key(KeyCode::Right));
     assert_eq!(
@@ -451,6 +451,11 @@ fn cycling_preset_applies_official_deepseek_parameters() {
     editor.handle_key(key(KeyCode::Right));
     assert_eq!(editor.preset.map(|preset| preset.id), Some("kimi-k3"));
     editor.handle_key(key(KeyCode::Right));
+    assert_eq!(
+        editor.preset.map(|preset| preset.id),
+        Some("kimi-for-coding")
+    );
+    editor.handle_key(key(KeyCode::Right));
     assert_eq!(editor.preset.map(|preset| preset.id), Some("hy4-preview"));
     // TC-1：循环经过 Tencent 预设——endpoint 为 Hy Token Plan 专用
     // 端点、extra_body 干净（探针实证不发无效果参数）。
@@ -460,6 +465,8 @@ fn cycling_preset_applies_official_deepseek_parameters() {
         "https://api.lkeap.cloud.tencent.com/plan/v3"
     );
     assert_eq!(config.extra_body, serde_json::json!({}));
+    editor.handle_key(key(KeyCode::Right));
+    assert_eq!(editor.preset.map(|preset| preset.id), Some("hy3"));
     editor.handle_key(key(KeyCode::Right));
     assert_eq!(editor.preset, None);
 }

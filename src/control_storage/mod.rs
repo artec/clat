@@ -636,6 +636,7 @@ impl ControlStorage {
                 {
                     row.active_profile = None;
                 }
+                models::clear_utility_profile(&mut state.settings, &name);
             },
         )
     }

@@ -49,12 +49,55 @@ impl ControlStorage {
             |state| settings::save_settings(&self.dir, &self.root, &state.settings),
             |state| {
                 state.settings.profiles.remove(name);
+                clear_utility_profile(&mut state.settings, name);
                 if let Some(row) = &replacement {
                     state.settings.model_state = Some(row.clone());
                 }
             },
         )
     }
+
+    pub(crate) fn utility_settings(&self) -> Result<settings::UtilitySettingsRow, ControlError> {
+        let state = self.lock();
+        let utility = state.settings.utility.clone();
+        if let Some(profile) = utility.profile.as_deref()
+            && !state.settings.profiles.contains_key(profile)
+        {
+            return Err(control_error("utility profile does not exist"));
+        }
+        Ok(utility)
+    }
+
+    pub(crate) fn set_utility_settings(
+        &self,
+        utility: settings::UtilitySettingsRow,
+    ) -> Result<(), ControlError> {
+        let state = self.lock();
+        if let Some(profile) = utility.profile.as_deref()
+            && (!valid_profile_name(profile) || !state.settings.profiles.contains_key(profile))
+        {
+            return Err(control_error("utility profile does not exist"));
+        }
+        self.commit(
+            state,
+            |state| settings::save_settings(&self.dir, &self.root, &state.settings),
+            |state| state.settings.utility = utility,
+        )
+    }
+}
+
+pub(super) fn clear_utility_profile(settings: &mut settings::SettingsFile, removed: &str) {
+    if settings.utility.profile.as_deref() == Some(removed) {
+        settings.utility.profile = None;
+    }
+}
+
+fn valid_profile_name(name: &str) -> bool {
+    !name.trim().is_empty()
+        && name.trim() == name
+        && name.len() <= 128
+        && !is_vendor_slot(name)
+        && !name.chars().any(char::is_control)
 }
 
 fn fallback_row(

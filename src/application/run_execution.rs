@@ -21,7 +21,6 @@ use crate::plugins::services::{AgentFailure, AgentRequest};
 use crate::session::event::{TurnEndCancelCause, TurnEndReason, payloads};
 use crate::session::recorder::{RequestHeaderData, SessionRecorder};
 use crate::session::run_journal::NewSessionEvent;
-use crate::session::use_cases::SetTitleExpectation;
 use serde_json::json;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -888,9 +887,7 @@ fn run_worker(
             failure.usage.add_assign(&sampled);
             failure
         });
-    let (_, title_seq) = sessions.title_state();
-    if title_seq.is_none()
-        && let Ok(done) = &result
+    if let Ok(done) = &result
         && !done.cancelled
         && titler.is_some()
         && let Some(sender) = &title_sender
@@ -899,7 +896,6 @@ fn run_worker(
             session_id: session_id.clone(),
             config: title_config,
             credentials: title_credentials,
-            expectation: SetTitleExpectation::NoTitle,
         });
     }
     let result = result

@@ -31,6 +31,8 @@ pub(crate) struct SettingsFile {
     pub model_state: Option<ModelStateRow>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub profiles: BTreeMap<String, ProfileRow>,
+    #[serde(default, skip_serializing_if = "UtilitySettingsRow::is_default")]
+    pub utility: UtilitySettingsRow,
 }
 
 impl SettingsFile {
@@ -39,6 +41,34 @@ impl SettingsFile {
             unit: UnitTag::new(SETTINGS_UNIT.0, SETTINGS_UNIT.1),
             model_state: None,
             profiles: BTreeMap::new(),
+            utility: UtilitySettingsRow::default(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct UtilitySettingsRow {
+    #[serde(rename = "namingEnabled")]
+    pub naming_enabled: bool,
+    #[serde(rename = "suggestionsEnabled")]
+    pub suggestions_enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+}
+
+impl UtilitySettingsRow {
+    fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+impl Default for UtilitySettingsRow {
+    fn default() -> Self {
+        Self {
+            naming_enabled: true,
+            suggestions_enabled: false,
+            profile: None,
         }
     }
 }

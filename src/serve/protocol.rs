@@ -34,6 +34,8 @@ pub(crate) const RPC_METHODS: &[&str] = &[
     "session.compact",
     "model.overrides.set",
     "model.settings.get",
+    "model.utility.get",
+    "model.utility.set",
     "model.profile.get",
     "model.profile.save",
     "model.profile.activate",
@@ -49,6 +51,7 @@ pub(crate) const RPC_METHODS: &[&str] = &[
     "wechat.user.allow",
     "wechat.user.remove",
     "draft.open",
+    "prompt.suggest",
     "command.run",
     "prompt.send",
     "steer.send",
@@ -327,6 +330,7 @@ fn dispatch_guarded_project(
             | "session.compact"
             | "permission.set"
             | "draft.open"
+            | "prompt.suggest"
             | "command.run"
             | "prompt.send"
             | "steer.send"
@@ -692,6 +696,7 @@ fn dispatch_project(
                 "expiresAt": scope.expires_at,
             }))
         }
+        "prompt.suggest" => prompt_suggest(params, shared),
         "command.run" => command_run(params, shared),
         "prompt.send" => prompt_send(params, shared),
         "steer.send" => steer_send(params, shared),
@@ -703,6 +708,34 @@ fn dispatch_project(
         "approval.respond" => approver::respond(shared, params),
         other => Err(RpcError::bad_request(format!("unknown method: {other}"))),
     }
+}
+
+fn prompt_suggest(
+    params: &Map<String, Value>,
+    shared: &Arc<ServeShared>,
+) -> Result<Value, RpcError> {
+    if params
+        .keys()
+        .any(|key| key != "expected_selection_generation")
+    {
+        return Err(RpcError::bad_request(
+            "prompt suggestion accepts only selection generation",
+        ));
+    }
+    if !shared.active_run_info().is_null() {
+        return Err(RpcError::busy(
+            "prompt suggestions are unavailable while a run is active",
+        ));
+    }
+    let prepared = with_app(shared, |app| app.prepare_prompt_suggestion()).map_err(app_error)?;
+    let suggestion = prepared
+        .generate(&crate::CancelToken::new())
+        .ok_or_else(|| RpcError::internal("prompt suggestion unavailable"))?;
+    Ok(json!({
+        "session_id": suggestion.session_id.as_str(),
+        "selection_generation": shared.selection_generation(),
+        "text": suggestion.text,
+    }))
 }
 
 /// W2b's deliberately narrow model mutation surface. It changes one typed

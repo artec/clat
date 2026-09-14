@@ -3,6 +3,7 @@
 pub use crate::session::id::SessionId;
 pub use crate::session::use_cases::SessionSummary;
 pub mod host {
+    pub use crate::host_client::HostManagementArgs;
     pub use crate::host_client::{
         HOST_PROTOCOL_VERSION, HostCallError, HostClient, HostEvent, HostEvents,
         HostEventsInterrupt, HostModelChoices, decode_host_approval, decode_host_event,

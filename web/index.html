@@ -167,6 +167,11 @@
           <span id="run-state" class="run-state" role="status"></span>
         </div>
         <div id="attachment-rail" class="attachment-rail hidden" aria-label="Staged images"></div>
+        <section id="suggestion-panel" class="suggestion-panel hidden" aria-live="polite" aria-label="Prompt suggestion">
+          <div class="suggestion-panel-head"><span class="section-kicker">COMPANION UTILITY</span><button id="suggestion-dismiss" class="icon-button" type="button" aria-label="Dismiss suggestion">×</button></div>
+          <p id="suggestion-text" class="suggestion-text"></p>
+          <div class="suggestion-actions"><button id="suggestion-use" class="primary" type="button">Use suggestion</button><button id="suggestion-ignore" class="ghost" type="button">Ignore</button></div>
+        </section>
         <textarea id="prompt" rows="2" placeholder="Describe the outcome you want…" aria-label="Message CLAT"></textarea>
         <div class="composer-row">
           <button id="attachment-open" class="attachment-open" type="button">
@@ -176,6 +181,7 @@
           <span id="attachment-summary" class="attachment-summary" role="status"></span>
           <span class="composer-hint"><kbd>Enter</kbd> send · <kbd>Shift Enter</kbd> newline</span>
           <div class="composer-actions">
+            <button id="suggest" class="ghost suggestion-trigger" type="button" title="Generate a manual next-step suggestion">Suggest</button>
             <button id="cancel" class="ghost hidden" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10"/></svg> Stop</button>
             <button id="send" class="send-button" type="button" aria-label="Send message">Send <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5m-5 5 5-5 5 5"/></svg></button>
           </div>
@@ -323,6 +329,21 @@
       </details>
       <p id="model-settings-error" class="error" role="alert"></p>
       <p id="model-settings-saved" role="status"></p>
+    </section>
+
+    <section class="settings-section utility-settings">
+      <div class="settings-copy">
+        <h3>Companion utility <span class="section-kicker">HOST-WIDE</span></h3>
+        <p>Automatic session naming is enabled by default. Suggestions are manual only and never submit or write to the journal.</p>
+      </div>
+      <fieldset class="utility-options" aria-label="Companion utility switches">
+        <label><input id="utility-naming-enabled" type="checkbox"><span><strong>Continuous naming</strong><small>Rename sessions after eligible turns.</small></span></label>
+        <label><input id="utility-suggestions-enabled" type="checkbox"><span><strong>Manual suggestions</strong><small>Show a next-message hint when you press Suggest.</small></span></label>
+      </fieldset>
+      <label for="utility-profile">Utility model profile<select id="utility-profile"><option value="">Use primary model</option></select></label>
+      <p class="settings-note">Cost guard: naming waits five turns and five minutes between successful attempts; each utility has a persistent 20-attempt cap per session.</p>
+      <p id="utility-settings-error" class="error" role="alert"></p>
+      <div class="settings-actions"><span id="utility-settings-saved" role="status"></span><button id="utility-settings-save" class="primary" type="button">Save utility policy</button></div>
     </section>
 
     <section class="settings-section permission-settings">

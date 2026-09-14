@@ -432,6 +432,43 @@ fn model_changes_notify_every_project_and_never_return_secrets() {
 }
 
 #[test]
+fn utility_settings_notify_every_attached_project() {
+    let (root, mut host, first, second) = fixture("utility-settings-notify");
+    let a = host.attach(first).unwrap();
+    let b = host
+        .authorize_and_attach(second, ProjectAuthorization::grant())
+        .unwrap();
+    {
+        let a = a.lock().unwrap();
+        let b = b.lock().unwrap();
+        let (tx_a, rx_a) = mpsc::channel();
+        let (tx_b, rx_b) = mpsc::channel();
+        a.subscribe(tx_a);
+        b.subscribe(tx_b);
+        a.edit_utility_settings(UtilitySettingsEdit {
+            naming_enabled: false,
+            suggestions_enabled: true,
+            profile: None,
+        })
+        .unwrap();
+        for receiver in [&rx_a, &rx_b] {
+            assert!(
+                receiver
+                    .try_iter()
+                    .any(|event| event == ApplicationEvent::ModelsUpdated),
+                "utility settings changes must refresh every attached frontend"
+            );
+        }
+        assert!(!b.utility_settings_view().unwrap().naming_enabled);
+        assert!(b.utility_settings_view().unwrap().suggestions_enabled);
+    }
+    drop((a, b));
+    host.close().unwrap();
+    drop(host);
+    crate::test_support::cleanup_tree(&root);
+}
+
+#[test]
 fn model_profile_headers_replace_preserve_and_reject_without_writes() {
     let (root, mut host, first, _) = fixture("profile-headers");
     let project = host.attach(first).unwrap();

@@ -12,6 +12,71 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const WAIT: Duration = Duration::from_secs(30);
 
+#[test]
+fn host_spawn_or_attach_requires_trust_and_converges_two_launchers() {
+    let root = temp_root("spawn-concurrent");
+    let home = root.join("home");
+    let project = root.join("project");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&project).unwrap();
+    let command = || {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_clat"));
+        cmd.current_dir(&project)
+            .env("HOME", &home)
+            .env("USERPROFILE", &home)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        cmd
+    };
+    let refused = command().args(["host", "start"]).output().unwrap();
+    assert!(!refused.status.success());
+    assert!(!home.join(".clat").exists(), "no trust means no writes");
+    let first = command()
+        .args(["host", "start", "--trust"])
+        .spawn()
+        .unwrap();
+    let second = command()
+        .args(["host", "start", "--trust"])
+        .spawn()
+        .unwrap();
+    let first = first.wait_with_output().unwrap();
+    let second = second.wait_with_output().unwrap();
+    // Stop before assertions so a behavioral failure cannot leave our host running.
+    let status = command().args(["host", "status"]).output().unwrap();
+    let stop = command().args(["host", "stop"]).output().unwrap();
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert!(
+        second.status.success(),
+        "{}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    assert_eq!(
+        first.stdout, second.stdout,
+        "both launchers must attach to one instance"
+    );
+    assert!(status.status.success(), "launcher exit must not close host");
+    assert!(stop.status.success());
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let boot = BootstrapApplication::open(Project::new(&project), home.join(".clat")).unwrap();
+        if let Ok(app) = boot.into_trusted() {
+            app.close().unwrap();
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "host stop must release the lease"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    remove_tree(&root);
+}
+
 fn temp_root(tag: &str) -> PathBuf {
     let root = std::env::temp_dir().join(format!(
         "clat-serve-lifecycle-{tag}-{}-{}",
@@ -42,10 +107,11 @@ fn wait_until_listening(child: &mut Child, port: u16) {
         if let Some(status) = child.try_wait().expect("poll serve child") {
             panic!("serve exited before listening: {status}");
         }
-        assert!(
-            Instant::now() < deadline,
-            "serve did not listen within {WAIT:?}"
-        );
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("serve did not listen within {WAIT:?}");
+        }
         std::thread::sleep(Duration::from_millis(20));
     }
 }
@@ -73,6 +139,102 @@ fn remove_tree(path: &Path) {
         }
     }
     std::fs::remove_dir_all(path).expect("remove test root");
+}
+
+#[test]
+fn host_cli_status_preserves_host_and_stop_closes_it() {
+    let root = temp_root("host-cli");
+    let home = root.join("home");
+    let project_root = root.join("project");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&project_root).unwrap();
+    BootstrapApplication::open(Project::new(&project_root), home.join(".clat"))
+        .unwrap()
+        .authorize_and_mount(ProjectAuthorization::grant())
+        .unwrap()
+        .close()
+        .unwrap();
+    let command = || {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_clat"));
+        command
+            .current_dir(&project_root)
+            .env("HOME", &home)
+            .env("USERPROFILE", &home)
+            .stdin(Stdio::null());
+        command
+    };
+    let port = reserve_port().to_string();
+    let mut child = command()
+        .args(["serve", "--port", &port])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    wait_until_listening(&mut child, port.parse().unwrap());
+    // Binding precedes token publication; a TCP listener alone is not readiness.
+    let deadline = Instant::now() + WAIT;
+    while !home.join(".clat/host-endpoint.json").is_file() {
+        if child.try_wait().unwrap().is_some() || Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("host did not publish discovery endpoint");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let status = command().args(["host", "status"]).output().unwrap();
+    // Always clean up the child, including against a pre-feature binary.
+    if !status.status.success() {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!(
+            "host status failed: {}",
+            String::from_utf8_lossy(&status.stderr)
+        );
+    }
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "status must not stop host"
+    );
+    let output = String::from_utf8(status.stdout).unwrap();
+    assert!(output.contains("online at 127.0.0.1:"));
+    let token = std::fs::read_to_string(home.join(".clat/web-token")).unwrap();
+    let endpoint = std::fs::read_to_string(home.join(".clat/host-endpoint.json")).unwrap();
+    assert!(
+        !endpoint.contains(token.trim()),
+        "discovery must not expose token"
+    );
+    assert!(
+        !output.contains(token.trim()),
+        "status must not expose token"
+    );
+    let stop = command().args(["host", "stop"]).output().unwrap();
+    if !stop.status.success() {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!(
+            "host stop failed: {}",
+            String::from_utf8_lossy(&stop.stderr)
+        );
+    }
+    assert!(String::from_utf8_lossy(&stop.stdout).contains("accepted shutdown"));
+    assert!(wait_until_exit(&mut child).success());
+    let stale = command().args(["host", "status"]).output().unwrap();
+    assert!(
+        !stale.status.success(),
+        "stale discovery must not start another host"
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.join(".clat/host-endpoint.json")).unwrap(),
+        endpoint
+    );
+    // The normal close path must release the writer lease.
+    BootstrapApplication::open(Project::new(&project_root), home.join(".clat"))
+        .unwrap()
+        .into_trusted()
+        .unwrap()
+        .close()
+        .unwrap();
+    remove_tree(&root);
 }
 
 #[cfg(unix)]

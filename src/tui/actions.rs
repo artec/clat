@@ -554,6 +554,63 @@ impl App {
         }
     }
 
+    fn start_prompt_suggestion(&mut self) -> bool {
+        if self.suggestion_pending || self.running || self.run_start_pending {
+            self.flash_status("suggestions are available while idle");
+            return true;
+        }
+        let Some(application) = self.application.take() else {
+            self.flash_status("project application is unavailable");
+            return true;
+        };
+        let Some(sender) = self.event_sender.clone() else {
+            self.application = Some(application);
+            self.flash_status("suggestion channel is unavailable");
+            return true;
+        };
+        let (handoff, received) = mpsc::sync_channel::<TrustedProjectApplication>(0);
+        let spawn = thread::Builder::new()
+            .name("clat-prompt-suggestion".into())
+            .spawn(move || {
+                let Ok(mut application) = received.recv() else {
+                    return;
+                };
+                let outcome = application
+                    .prepare_prompt_suggestion()
+                    .map_err(|error| error.to_string())
+                    .and_then(|prepared| {
+                        prepared
+                            .generate(&crate::CancelToken::new())
+                            .ok_or_else(|| "prompt suggestion unavailable".to_owned())
+                    });
+                let message = UiEvent::Worker(WorkerMessage::PromptSuggestionFinished {
+                    application: Box::new(application),
+                    outcome,
+                });
+                if let Err(error) = sender.send(message)
+                    && let UiEvent::Worker(WorkerMessage::PromptSuggestionFinished {
+                        application,
+                        ..
+                    }) = error.0
+                {
+                    let _ = application.close();
+                }
+            });
+        if let Err(error) = spawn {
+            self.application = Some(application);
+            self.flash_status(format!("failed to start suggestion worker: {error}"));
+            return true;
+        }
+        if let Err(error) = handoff.send(application) {
+            self.application = Some(error.0);
+            self.flash_status("suggestion worker terminated before handoff");
+            return true;
+        }
+        self.suggestion_pending = true;
+        self.flash_status("generating a manual suggestion…");
+        true
+    }
+
     pub(super) fn submit_input(&mut self) {
         if self.native.is_some() {
             let text = self.input.take().trim().to_owned();
@@ -603,6 +660,10 @@ impl App {
         // 命令语义全部在 core 注册表（INV-C1）：这里只剩「分发 → 渲染」。
         // 附件剥离/输入历史等输入路由留在前端。
         if is_command {
+            if value == "/suggest" {
+                let _ = self.start_prompt_suggestion();
+                return;
+            }
             let outcome = match self.application.as_mut() {
                 Some(application) => application.dispatch_command(&value),
                 None => Err(CommandError::Failed {

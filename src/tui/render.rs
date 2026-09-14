@@ -276,11 +276,7 @@ impl App {
         }
         self.draw_info_dialog(frame);
         if let Some(picker) = &self.permission_picker {
-            let current = self
-                .application
-                .as_ref()
-                .map(|application| application.permission_mode())
-                .unwrap_or_default();
+            let current = self.current_permission_mode();
             picker.draw(frame, area, current);
         }
         if self.rename_dialog.is_some() {
@@ -1047,7 +1043,7 @@ impl App {
         self.conversation.total_lines(self.card_visibility)
     }
 
-    pub(super) fn draw_input(&self, frame: &mut Frame, area: Rect) {
+    fn input_block(&self) -> Block<'static> {
         // 标题只有两态：空闲 Message / 运行插话提示。loading 不进输入框
         // 标题——头部状态与底部状态栏已在报 loading，第三处是画蛇添足
         // （2026-08-19 用户反馈；输入禁用本身由 loading 门保证）。dsh 态
@@ -1069,7 +1065,9 @@ impl App {
         let mut block = Block::default()
             .title(format!(" {title} "))
             .borders(Borders::ALL);
-        if let Some(dsh) = &self.dsh {
+        if let Some(badge) = self.native_permission_badge() {
+            block = block.title(badge.right_aligned());
+        } else if let Some(dsh) = &self.dsh {
             if let Some(preset) = &dsh.preset {
                 let style = if preset == "danger-full-access" {
                     theme::style(theme::Role::Warning)
@@ -1113,6 +1111,11 @@ impl App {
             spans.push(Span::styled(format!("{mode} "), style));
             block = block.title(Line::from(spans).right_aligned());
         }
+        block
+    }
+
+    pub(super) fn draw_input(&self, frame: &mut Frame, area: Rect) {
+        let block = self.input_block();
         // 输入框与聊天记录的用户消息同款排版：首行 `❯ ` 前缀，续行
         // 两个空格保持等宽左缩进，文本按扣除前缀后的宽度换行。与
         // 光标定位、鼠标选区映射共用同一换行算法，三者坐标一致。

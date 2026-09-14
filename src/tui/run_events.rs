@@ -54,6 +54,23 @@ impl App {
             WorkerMessage::SteeringAdmissionFinished(finished) => {
                 self.restore_steering_admission(*finished)
             }
+            WorkerMessage::PromptSuggestionFinished {
+                application,
+                outcome,
+            } => {
+                self.application = Some(*application);
+                self.suggestion_pending = false;
+                match outcome {
+                    Ok(suggestion) => {
+                        self.suggestion_text = Some(suggestion.text.clone());
+                        self.input.insert_str(&suggestion.text);
+                        self.flash_status(
+                            "suggestion inserted — edit it, then press Enter to send",
+                        );
+                    }
+                    Err(error) => self.flash_status(error),
+                }
+            }
             WorkerMessage::Done { epoch, result } => {
                 self.finish_run(epoch, result);
             }

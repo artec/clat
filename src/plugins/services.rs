@@ -41,6 +41,7 @@ pub(crate) const MEMORY_SERVICE_ID: ServiceId = ServiceId::new("core.memory");
 pub(crate) const GOAL_SERVICE_ID: ServiceId = ServiceId::new("core.goal");
 pub(crate) const SUBAGENT_SERVICE_ID: ServiceId = ServiceId::new("core.subagent");
 pub(crate) const VIEW_IMAGE_SERVICE_ID: ServiceId = ServiceId::new("core.view_image");
+pub(crate) const UTILITY_MODEL_SERVICE_ID: ServiceId = ServiceId::new("core.utility_model");
 
 pub(crate) const SESSION_SERVICE: ServiceKey<crate::session::use_cases::SessionService> =
     ServiceKey::new(SESSION_SERVICE_ID);
@@ -88,6 +89,8 @@ pub(crate) const SUBAGENT_SERVICE: ServiceKey<crate::subagent::SubagentService> 
     ServiceKey::new(SUBAGENT_SERVICE_ID);
 pub(crate) const VIEW_IMAGE_SERVICE: ServiceKey<crate::view_image::ViewImageState> =
     ServiceKey::new(VIEW_IMAGE_SERVICE_ID);
+pub(crate) const UTILITY_MODEL_SERVICE: ServiceKey<dyn UtilityModel> =
+    ServiceKey::new(UTILITY_MODEL_SERVICE_ID);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct InstructionSourceInfo {
@@ -405,18 +408,59 @@ pub(crate) const SESSION_TITLE_SERVICE_ID: ServiceId = ServiceId::new("core.sess
 pub(crate) const SESSION_TITLE_SERVICE: ServiceKey<dyn SessionTitler> =
     ServiceKey::new(SESSION_TITLE_SERVICE_ID);
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct UtilitySettings {
+    pub(crate) naming_enabled: bool,
+    pub(crate) suggestions_enabled: bool,
+    pub(crate) profile: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum UtilityTask {
+    SessionTitle,
+    PromptSuggestion,
+}
+
+pub(crate) struct UtilityOutput {
+    pub(crate) text: String,
+    pub(crate) provider: String,
+    pub(crate) model: String,
+}
+
+pub(crate) trait UtilityModel: Send + Sync {
+    fn enabled(&self, task: UtilityTask) -> bool;
+    fn generate(
+        &self,
+        task: UtilityTask,
+        primary: &ModelConfig,
+        primary_credentials: &ProviderCredentials,
+        conversation: &str,
+        cancel: &CancelToken,
+    ) -> Option<UtilityOutput>;
+}
+
+pub(crate) struct GeneratedTitle {
+    pub(crate) title: String,
+    pub(crate) provider: String,
+    pub(crate) model: String,
+}
+
 /// 会话标题生成（能力批次 1 / F）。失败必须返回 None（静默，调用方
 /// 保留既有标题）；标题必须已经过清洗（首个非空行、去引号/Markdown、
 /// ≤16 chars）。
 /// `cancel` 与调用方生命周期联动（run worker 旁路线程/close 可取消）。
 pub(crate) trait SessionTitler: Send + Sync {
+    fn enabled(&self) -> bool {
+        true
+    }
+
     fn generate_title(
         &self,
         config: &ModelConfig,
         credentials: &ProviderCredentials,
-        first_user_message: &str,
+        conversation: &str,
         cancel: &crate::CancelToken,
-    ) -> Option<String>;
+    ) -> Option<GeneratedTitle>;
 }
 
 pub(crate) trait ConfigStore: Send + Sync {
@@ -446,6 +490,8 @@ pub(crate) trait ConfigStore: Send + Sync {
     fn delete_profile_with_fallback(&self, name: &str) -> Result<(), StoreError>;
     fn active_profile(&self) -> Result<Option<String>, StoreError>;
     fn set_active_profile(&self, name: Option<&str>) -> Result<(), StoreError>;
+    fn load_utility_settings(&self) -> Result<UtilitySettings, StoreError>;
+    fn save_utility_settings(&self, settings: UtilitySettings) -> Result<(), StoreError>;
     /// 厂商 key 记忆库（INV-VK1）：记住/取回某厂商的 API key。
     fn upsert_vendor_key(
         &self,

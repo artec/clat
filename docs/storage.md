@@ -17,6 +17,7 @@ Files appear lazily, so a fresh installation may contain only a subset.
 ├── memory.json                  # explicit user/project knowledge (0600)
 ├── trust.json                   # canonical project path -> trusted timestamp
 ├── web-token                    # clat serve Bearer credential (0600)
+├── host-endpoint.json            # private host discovery hint, not proof of liveness
 ├── dsh-last-session             # last session id opened by clat dsh
 ├── mcp.json                     # optional, user-managed MCP servers
 ├── lsp.json                     # optional, user-managed read-only LSP servers
@@ -35,9 +36,10 @@ Files appear lazily, so a fresh installation may contain only a subset.
 └── sessions/
     └── --<project-key>--/
         └── <encoded-session-id>/
-            ├── session.v2.jsonl.zstd # current authoritative DSH-compatible log
+            ├── session.v3.jsonl.zstd # current authoritative DSH-compatible log
             ├── session.lock          # POSIX-only stable DSH writer-lock inode
             ├── clat-checkpoint.json # bounded derived projection cache
+            ├── clat-utility-budget.json # private durable model-call attempt budget
             └── attachments/
                 ├── .orphan-sweep-cursor-v1 # private bounded-GC progress
                 ├── blobs/<sha256>   # immutable normalized PNG/JPEG bytes
@@ -61,7 +63,9 @@ installation and never participates in runtime discovery.
 | session log | authoritative conversation facts | fail closed; recover only a torn tail with explicit synthetic closure |
 | settings, credentials, trust, workspace tables | control-plane facts | preserve torn remnant and start an empty replacement with a diagnostic |
 | projection checkpoint/cache | derived | drop and rebuild from facts |
+| `clat-utility-budget.json` | per-session utility attempt counters | bounded regular-file read and atomic private publication; corruption pauses automatic calls; reopening or dropping checkpoints does not reset counters |
 | `web-token` | local API credential | validate regular 0600 file; create/rotate atomically |
+| `host-endpoint.json` | host port and instance hint | host publishes atomically under root lease; authenticated discovery validates instance/root/versions; stale hints survive shutdown |
 | `memory.json` | authoritative explicit knowledge | version/CAS/path validation fail closed; never inferred from model output |
 | extension manifests | user input | isolate configuration/plugin failure where possible |
 | plugin registry | authoritative activation pointers | version/digest/signature mismatch fails closed; never reset or guess |
@@ -86,7 +90,7 @@ session.
 
 ### Physical encoding
 
-New sessions use `session.v2.jsonl.zstd`. Discovery recognizes the canonical
+New sessions use `session.v3.jsonl.zstd`. Discovery recognizes the canonical
 `session.vN.jsonl[.zstd]` generation family and reads the highest generation in
 a session directory. Each committed batch is an independent zstd frame with a
 content checksum. Independent frames make appending cheap and limit crash
@@ -99,16 +103,19 @@ unbounded memory.
 The session root may contain uncompressed generation files from a compatible
 source, but one root cannot mix raw and zstd session encodings. Startup rejects
 an encoding conflict before mounting storage. Released-v0
-`session.jsonl[.zstd]` remains readable, including when it sits beside v2, but
-CLAT opens v0 sessions read-only through normal startup and `/resume`. Reading
+`session.jsonl[.zstd]` remains readable, including beside newer generations, but
+CLAT opens older supported formats (v0/v2) read-only through normal startup and `/resume`. Reading
 and closing do not repair the source, append a seed, write a checkpoint, or
 clean attachments. Runs and persisted session edits are rejected.
 
 Only while a legacy local session is selected, `/update` appears in the command
-menu. It converts the complete history to `session.v2.jsonl[.zstd]`, preserving
-the original v0 file and attachment paths, and reopens the same session for
+menu. It ensures the complete history is at the current format (V3), preserving
+the original generation and attachment paths, and reopens the same session for
 normal read/write use. The command disappears after upgrading and is absent
-and unavailable in new/v2 sessions. It is not a binary updater and does not
+and unavailable in new/current-format sessions. The migration chain runs in
+memory and publishes only `session.v3.jsonl[.zstd]`, with no intermediate
+generation files. Ensuring an already-current generation is a no-op; retired
+v1 is rejected with guidance to use `/new`. It is not a binary updater and does not
 migrate a remote DSH host's files.
 
 Pre-attachment-ID image records retain their original fenced paths and receive
@@ -117,27 +124,32 @@ their images; missing image files are not reconstructed from the journal.
 
 Upgrade holds the session writer lease and atomically publishes the validated
 new log without overwriting an existing generation. Before-publication failure
-leaves v0 selected; a reported post-publication failure can be recovered by
+leaves the original generation selected; a reported post-publication failure can be recovered by
 retrying or reopening. Torn logs, unsupported lineage, unknown extensions, and
 unresolvable references are refused instead of silently discarding history.
-Close old CLAT processes first. The retained v0 is a pre-upgrade backup, not a
-synchronized copy of later v2 messages. Alternatively, use `/new` to leave the
+Close old CLAT processes first. The retained source is a pre-upgrade backup, not a
+synchronized copy of later messages. Alternatively, use `/new` to leave the
 old conversation untouched.
 
-If the highest canonical filename names a generation newer than v2, CLAT
+If the highest canonical filename names a generation newer than V3, CLAT
 refuses inspection/resume with an upgrade-or-new-session diagnostic. It never
 falls back to the older sibling, because doing so would split one conversation
 into two invisible histories.
 
-Every writable v2 handle also owns DSH's per-session kernel lease for its full
+Every writable current-format handle also owns DSH's per-session kernel lease for its full
 lifetime. POSIX uses non-blocking `flock` on the stable `session.lock` inode;
 Windows uses DSH's case-folded path-derived named semaphore and creates no lock
 file. Readers stay lock-free, while first materialization, append, and repair
 all require the lease. A crashed process releases it through the kernel.
 
-V2 stores model deltas inside `assistant/message.stream`; failed model requests
+V3 retains model deltas inside `assistant/message.stream`; failed model requests
 are retained as `assistant/attempt` with the same embedded stream format.
 `sourceEventSeqs` ranges are expanded before projections see an event.
+
+New turn/step coordinates are 1-based. Migration preserves source coordinates,
+including older CLAT logs' 0-based coordinates. Request headers no longer persist
+`system`; the prompt is represented by a protected `system/message` head,
+initialized immediately after `step/start` and replaced when the prompt changes.
 
 ### Event admission
 
@@ -151,12 +163,12 @@ payload, fold it into projections/checkpoints, and prove live/replay parity.
 
 ### Crash recovery
 
-On open, CLAT scans frames and events in order. For writable v2 sessions, a torn final frame is truncated
+On open, CLAT scans frames and events in order. For writable current-format sessions, a torn final frame is truncated
 to the last durable boundary. If the crash left an open tool/step/turn, recovery
 appends synthetic `tool/result`, `step/end`, and `turn/end` events so later
 folds see a complete state machine.
 
-Legacy v0 sessions are inspected without these recovery writes. Recovery does
+Legacy v0/v2 sessions are inspected without these recovery writes. Recovery does
 not guess through corruption in an earlier committed frame. A
 corrupt or unsupported session fails before the active-session pointer moves.
 
@@ -312,7 +324,7 @@ refused rather than guess-migrated.
 | File | Content | Kind |
 |---|---|---|
 | `config.json` | five-field control-format sentinel | publication marker |
-| `settings.json` | active model, named profiles, active-profile pointer | fact |
+| `settings.json` | active model, named profiles, active-profile pointer, host-wide companion utility policy | fact |
 | `credentials.json` | per-vendor remembered API keys | fact |
 | `trust.json` | canonical project path and trust time | fact |
 | `storages/workspace.json` | workspace tables and current session pointers | facts plus projections |
@@ -326,6 +338,17 @@ and mount diagnostics explain what was lost. The remnant remains for manual
 salvage.
 
 A torn projection cache is deleted or replaced from authoritative sources.
+
+The optional `settings.json.utility` row contains only `naming_enabled`,
+`suggestions_enabled`, and an optional saved-profile name. It is a full
+replacement under the same control-storage lock and atomic publication path as
+model settings. A saved-profile reference must resolve to a regular profile;
+deleting that profile clears the reference in the same commit. No API key or
+provider secret is projected into the row. The per-session
+`clat-utility-budget.json` sidecar is separate from the journal: its bounded
+reader rejects links, special files, malformed/unknown data, and oversized
+content, while each reservation is atomically published before any provider
+request. Reopening a session never resets either utility's attempt counter.
 The `sessions/` directory wins over list caches and derived session-id arrays.
 
 ### Workspace registry

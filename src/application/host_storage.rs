@@ -83,6 +83,23 @@ impl HostStorage {
             });
     }
 
+    pub(super) fn publish_model_settings(&self) {
+        self.model_revision
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.model_consumers
+            .lock()
+            .expect("model consumers")
+            .retain(|(monitor, subscribers)| {
+                let (Some(_monitor), Some(subscribers)) =
+                    (monitor.upgrade(), subscribers.upgrade())
+                else {
+                    return false;
+                };
+                super::broadcast_to(&subscribers, ApplicationEvent::ModelsUpdated);
+                true
+            });
+    }
+
     pub(super) fn model_revision(&self) -> u64 {
         self.model_revision
             .load(std::sync::atomic::Ordering::SeqCst)

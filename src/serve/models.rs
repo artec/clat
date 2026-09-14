@@ -22,6 +22,19 @@ pub(crate) fn dispatch(
         }
         "model.settings.get" => serde_json::to_value(app.model_settings_view().map_err(failure)?)
             .map_err(|_| RpcError::internal("model settings unavailable")),
+        "model.utility.get" => {
+            if !params.is_empty() {
+                return Err(RpcError::bad_request("utility get accepts no fields"));
+            }
+            serde_json::to_value(app.utility_settings_view().map_err(failure)?)
+                .map_err(|_| RpcError::internal("utility settings unavailable"))
+        }
+        "model.utility.set" => {
+            let edit = serde_json::from_value(Value::Object(params.clone()))
+                .map_err(|_| RpcError::bad_request("invalid utility settings fields"))?;
+            app.edit_utility_settings(edit).map_err(failure)?;
+            Ok(json!({"saved": true}))
+        }
         "model.profile.get" => {
             serde_json::to_value(app.model_profile_view(name(params)?).map_err(failure)?)
                 .map_err(|_| RpcError::internal("model profile unavailable"))

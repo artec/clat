@@ -8,9 +8,43 @@ runner, local web workbench, and DSH client. Configuration internals belong in
 
 ## Choose an interface
 
+`clat standalone` (also `clat --standalone`) explicitly opens the traditional
+in-process TUI without starting a background host. It retains the normal trust
+prompt and exclusive storage lease; it cannot run alongside a host using that
+same storage root.
+
+Running `clat` without arguments now discovers or starts a background host, then
+opens the traditional TUI as its client. An untrusted project requires an explicit
+`y` confirmation before startup; declining writes nothing. Closing the TUI leaves
+the host running. Scripts should use `clat exec`; default startup requires a TTY.
+`clat host start [--trust]` performs the same spawn-or-attach without opening a TUI.
+The explicit `--trust` authorizes the current project; omit it for already trusted
+projects. The host alone persists this authorization after storage preflight.
+
+`clat host status [--port <n>]` checks an existing local host. Without `--port`,
+it discovers the port from the storage root's private `host-endpoint.json` file;
+an explicit port bypasses discovery.
+`clat host stop [--port <n>]` explicitly requests graceful shutdown of that host,
+including all its projects; every connected frontend will disconnect. Stop reports
+acceptance, not completed shutdown. These commands authenticate using the current
+storage root's persistent web token and verify protocol/storage identity. They
+never spawn a host or retry a failed stop. Hosts started with a temporary `--token`
+need matching credentials; these commands do not accept tokens on the command line.
+Exiting an attached TUI with `/quit` remains client-only and does not stop the host.
+
+Discovery also verifies the recorded instance ID against the authenticated host.
+The file contains only a port and instance ID, never credentials. It may remain
+after shutdown or a crash; a stale, missing or invalid record fails closed, without
+falling back to another port. A newly started `serve` replaces it while holding the
+exclusive storage lease. At initial startup only, a free root lease permits one
+background launch on an OS-selected loopback port; concurrent launchers converge
+on the winning host. An occupied lease never permits another writer. Startup
+failure reports an error, never falls back to standalone; reconnect does not spawn.
+`clat serve --trust` explicitly authorizes its current project when needed.
+
 | Need | Command | State owner |
 |---|---|---|
-| Interactive work in the current repository | `clat` | local CLAT |
+| Interactive work in the current repository | `clat` | background CLAT host |
 | One run for a script or CI job | `clat exec [PROMPT]` | local CLAT |
 | Browser workbench or local API | `clat serve` | local CLAT |
 | CLAT TUI connected to DeepSeek Harness | `clat dsh` | DSH host |
@@ -160,7 +194,7 @@ model → safety → extensions → experiments → meta):
 |---|---|
 | `/new`, `/clear` | start a fresh, lazily materialized conversation |
 | `/resume` | switch to a prior conversation in this project |
-| `/update` | shown only in a selected legacy local session: retain v0, upgrade it to writable v2; disappears after success |
+| `/update` | shown only in a selected legacy local session: retain the original generation, upgrade supported older formats to the current writable format (V3); disappears after success |
 | `/rename` | replace the current conversation title |
 | `/compact` | summarize older context in the background; original history remains on disk |
 | `/context` | inspect a one-shot estimated model-context breakdown |
@@ -441,9 +475,9 @@ The rail shows its filename, measured dimensions, source size, estimated visual
 tokens, and draft totals. `/image remove` and `/image move` operate on that
 stable id. Text-only model routes keep the draft visible but block sending;
 switch to a vision-capable route or remove the images. Vision capability is
-hardcoded per preset, never probed at runtime: five presets across four
+hardcoded per preset, never probed at runtime: six presets across four
 vendors open image input — officially-declared for `deepseek-flash`,
-`qwen3.8-max`, `qwen3.8-flash`, and `kimi-k3`, probe-verified for
+`qwen3.8-max`, `qwen3.8-flash`, `kimi-k3`, and `kimi-for-coding`, probe-verified for
 `glm-5.3-flash` — and, for custom configurations, it is unlocked only by a
 passing `/vision-probe`.
 Switching an image-bearing session to a text-only route fails the next run
@@ -685,6 +719,23 @@ clat serve --port 0 --token temporary-secret   # OS-assigned test port
 
 `--rotate-token` and `--token` are mutually exclusive. `--token` is a
 process-only override; it neither reads nor changes the persistent token.
+
+### Companion utility and manual suggestions
+
+The Workbench settings panel exposes a host-wide companion utility policy.
+Continuous session naming is on by default; it uses a bounded, persistent
+sidecar budget and never changes a user-owned title. Manual prompt suggestions
+are off by default. When enabled, press **Suggest** (or enter `/suggest` in the
+TUI) to request one next-message hint. The hint is a preview only: it is never
+submitted or written to the session journal until you edit it and send it as a
+normal prompt. Switching sessions, starting a run, or editing the composer
+invalidates an in-flight result. The utility profile may be the primary model
+or an explicitly saved model profile; credentials remain write-only.
+
+Naming waits at least five ended turns and five minutes between successful
+attempts, while both naming and manual suggestions have an independent
+persistent cap of 20 attempts per session. Failed calls consume an attempt;
+sidecar corruption pauses utility calls until repaired by the user.
 
 ### WeChat remote control
 
@@ -1078,9 +1129,32 @@ This initial client supports text and PNG/JPEG submission, streaming, cancellati
 commands, shared approvals and ask-user dialogs. `/reconnect` rebuilds a disconnected view;
 uncertain submissions are not automatically resent. Closing the terminal
 disconnects only that client, not the host.
+`/quit` and `/exit` also detach locally, even while offline or a host run is
+active. `/compact` starts host-owned history compaction; `/compact cancel`
+requests cancellation. Start/cancel results and completion notices appear in
+the status line. `/cancel` still cancels a run, not compaction. These operations
+do not delete the original history or automatically retry uncertain requests.
+`/perm` (`/permission`) opens the traditional permission selector using the
+host's current mode. Full Access requires a second confirmation, including
+when the last received snapshot already shows Full Access. A disconnected
+client cannot change permissions; a session change invalidates an open picker.
 `/resume` opens the traditional keyboard/mouse session picker using the host's
 session list. `/rename` opens the existing editable title dialog; a selection
 change while it is open prevents a stale rename from reaching another session.
+Once you rename a session, model-generated titles cannot replace your title,
+including after the session is reopened.
+Automatic naming follows recent conversation after a successful run. It may
+update a model-generated title after at least five more completed turns and
+five minutes. Each session permits at most 20 naming attempts, including failed
+requests; reopening the session does not reset this budget. Each request uses
+at most 12 recent user/assistant messages and 6000 characters, without tools.
+An unreadable or damaged budget file pauses automatic naming.
+Built-in DeepSeek, GLM, Qwen, Kimi, and Hy routes use the table-declared
+companion for naming (for example, `kimi-k3` uses `kimi-for-coding` and
+`hy4-preview` uses `hy3`); other models and customized routes use the primary
+model. Companion requests
+keep the same endpoint and credentials, use the companion's model settings,
+and record the actual model in the title's source.
 If an error carries a committed admission receipt, the submitted text is not
 restored as a new draft; any newer input is preserved. Without a valid receipt,
 the text is kept with a warning to check host history before sending it again.

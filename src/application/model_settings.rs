@@ -16,6 +16,22 @@ pub struct ModelSettingsView {
     pub active_profile: Option<String>,
     pub profiles: Vec<String>,
     pub presets: Vec<ModelPresetView>,
+    pub utility: UtilitySettingsView,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
+pub struct UtilitySettingsView {
+    pub naming_enabled: bool,
+    pub suggestions_enabled: bool,
+    pub profile: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UtilitySettingsEdit {
+    pub naming_enabled: bool,
+    pub suggestions_enabled: bool,
+    pub profile: Option<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -170,7 +186,47 @@ impl TrustedProjectApplication {
                     vendor: preset.vendor.into(),
                 })
                 .collect(),
+            utility: self.utility_settings_view_locked()?,
         })
+    }
+
+    pub fn utility_settings_view(&self) -> Result<UtilitySettingsView, ApplicationError> {
+        let _update = self
+            .host_storage
+            .model_updates
+            .lock()
+            .expect("model updates");
+        self.utility_settings_view_locked()
+    }
+
+    fn utility_settings_view_locked(&self) -> Result<UtilitySettingsView, ApplicationError> {
+        let settings = self.config.load_utility_settings().map_err(store_error)?;
+        Ok(UtilitySettingsView {
+            naming_enabled: settings.naming_enabled,
+            suggestions_enabled: settings.suggestions_enabled,
+            profile: settings.profile,
+        })
+    }
+
+    pub fn edit_utility_settings(&self, edit: UtilitySettingsEdit) -> Result<(), ApplicationError> {
+        let _update = self
+            .host_storage
+            .model_updates
+            .lock()
+            .expect("model updates");
+        let profile = edit
+            .profile
+            .map(|name| name.trim().to_owned())
+            .filter(|name| !name.is_empty());
+        self.config
+            .save_utility_settings(crate::plugins::services::UtilitySettings {
+                naming_enabled: edit.naming_enabled,
+                suggestions_enabled: edit.suggestions_enabled,
+                profile,
+            })
+            .map_err(store_error)?;
+        self.host_storage.publish_model_settings();
+        Ok(())
     }
 
     pub fn model_profile_view(

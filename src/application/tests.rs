@@ -73,7 +73,18 @@ fn legacy_session_update_is_contextual_and_survives_reopen() {
     assert!(application.dispatch_command("/update").is_err());
     assert!(application.session_is_read_only());
     assert!(!path.join("session.v2.jsonl.zstd").exists());
-    assert!(application.dispatch_command("/update").is_ok());
+    assert!(application.command_catalog().iter().any(|command| {
+        command.name == "update" && command.description.contains("current format")
+    }));
+    let crate::command::CommandOutcome::Status(message) =
+        application.dispatch_command("/update").unwrap()
+    else {
+        panic!("expected upgrade status");
+    };
+    assert_eq!(
+        message,
+        "Session is now at the current format and is writable; original generation retained."
+    );
     assert!(!application.session_is_read_only());
     assert!(
         !application
@@ -487,6 +498,114 @@ fn deleting_the_active_profile_falls_back_cleanly() {
         "no key residue from the deleted profile"
     );
     assert!(application.list_model_profiles().unwrap().is_empty());
+    application.close().unwrap();
+}
+
+#[test]
+fn utility_settings_are_host_owned_persistent_and_clear_deleted_profile_refs() {
+    use crate::application::UtilitySettingsEdit;
+    use crate::model::{ModelConfig, ProviderCredentials};
+
+    let (storage_root, project_root) = roots("utility-settings");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let project = Project::new(&project_root);
+    let application = mount(&project, &storage_root, TestBehavior::Success);
+    let defaults = application.utility_settings_view().unwrap();
+    assert!(defaults.naming_enabled);
+    assert!(!defaults.suggestions_enabled);
+    assert_eq!(defaults.profile, None);
+
+    let config = ModelConfig {
+        preset: None,
+        endpoint: "https://utility.example/v1".into(),
+        model: "utility-small".into(),
+        ..ModelConfig::default()
+    };
+    let mut credentials = ProviderCredentials::for_protocol(config.protocol);
+    credentials.set_value(0, "utility-secret".into());
+    application
+        .save_model_profile("small", &config, &credentials)
+        .unwrap();
+    application
+        .edit_utility_settings(UtilitySettingsEdit {
+            naming_enabled: false,
+            suggestions_enabled: true,
+            profile: Some("small".into()),
+        })
+        .unwrap();
+    let view = application.model_settings_view().unwrap();
+    assert_eq!(view.utility.profile.as_deref(), Some("small"));
+    assert!(!view.utility.naming_enabled);
+    assert!(view.utility.suggestions_enabled);
+    assert!(
+        !serde_json::to_string(&view)
+            .unwrap()
+            .contains("utility-secret"),
+        "utility settings are secret-free"
+    );
+    application.close().unwrap();
+
+    let application = mount(&project, &storage_root, TestBehavior::Success);
+    assert_eq!(
+        application.utility_settings_view().unwrap(),
+        crate::application::UtilitySettingsView {
+            naming_enabled: false,
+            suggestions_enabled: true,
+            profile: Some("small".into()),
+        }
+    );
+    application
+        .delete_model_profile_with_fallback("small")
+        .unwrap();
+    assert_eq!(application.utility_settings_view().unwrap().profile, None);
+    assert!(
+        application
+            .edit_utility_settings(UtilitySettingsEdit {
+                naming_enabled: true,
+                suggestions_enabled: false,
+                profile: Some("missing".into()),
+            })
+            .is_err(),
+        "a dangling utility profile is never persisted"
+    );
+    application.close().unwrap();
+}
+
+#[test]
+fn manual_prompt_suggestion_uses_shared_utility_without_journal_writes() {
+    let (storage_root, project_root) = roots("utility-suggestion");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let project = Project::new(&project_root);
+    let mut application = mount(&project, &storage_root, TestBehavior::Success);
+    configure_test_model(&application);
+    run(&mut application, "what should I do next?").unwrap();
+    assert!(
+        application.prepare_prompt_suggestion().is_err(),
+        "suggestions default off"
+    );
+    application
+        .edit_utility_settings(crate::application::UtilitySettingsEdit {
+            naming_enabled: false,
+            suggestions_enabled: true,
+            profile: None,
+        })
+        .unwrap();
+    let before = application.committed_seq();
+    let suggestion = application
+        .prepare_prompt_suggestion()
+        .unwrap()
+        .generate(&crate::CancelToken::new())
+        .expect("deterministic utility response");
+    assert_eq!(suggestion.text, "done");
+    assert_eq!(
+        Some(suggestion.session_id),
+        application.current_session_id()
+    );
+    assert_eq!(
+        application.committed_seq(),
+        before,
+        "suggestions are never durable events"
+    );
     application.close().unwrap();
 }
 

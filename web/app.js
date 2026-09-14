@@ -154,6 +154,10 @@ const state = {
   marketFallback: false,
   workbenchRequest: 0,
   composerGeneration: 0,
+  suggestionRequest: 0,
+  suggestionPending: false,
+  suggestion: null,
+  utilitySettings: null,
   transcriptAttachmentUrls: new Set(),
   history: {
     hasMore: false,
@@ -186,12 +190,15 @@ for (const id of [
   'header-model', 'header-permission', 'new-session', 'session-search', 'session-count',
   'session-list', 'session-empty', 'transcript-scroll', 'empty-state', 'transcript',
   'history-status', 'message-map', 'message-map-track', 'message-map-preview',
-  'prompt', 'send', 'cancel', 'run-state', 'composer-permission', 'composer-shell',
+  'prompt', 'send', 'suggest', 'cancel', 'run-state', 'composer-permission', 'composer-shell',
   'attachment-input', 'attachment-open', 'attachment-rail', 'attachment-summary', 'drop-overlay',
+  'suggestion-panel', 'suggestion-text', 'suggestion-use', 'suggestion-ignore', 'suggestion-dismiss',
   'composer-permission-label', 'plan-mode-badge', 'goal-badge', 'inspector', 'inspector-toggle', 'inspector-close',
   'detail-run', 'detail-seq', 'detail-session', 'detail-model', 'detail-protocol',
   'detail-context', 'detail-budget', 'compact-session', 'capability-list', 'detail-mcp', 'mcp-servers',
   'settings-open', 'settings-dialog', 'theme-options', 'permission-options',
+  'utility-naming-enabled', 'utility-suggestions-enabled', 'utility-profile',
+  'utility-settings-save', 'utility-settings-error', 'utility-settings-saved',
   'full-access-confirm-row', 'full-access-confirm', 'settings-error', 'settings-saved',
   'wechat-status', 'wechat-counts', 'wechat-qr', 'wechat-qr-image', 'wechat-qr-state',
   'wechat-verify-row', 'wechat-verify-code', 'wechat-verify-submit', 'wechat-pairing',
@@ -223,7 +230,7 @@ applyPresentation();
 async function rpc(method, params) {
   if (Number.isSafeInteger(state.selectionGeneration) && [
     'session.new', 'session.switch', 'session.rename', 'session.compact', 'permission.set',
-    'draft.open', 'command.run', 'prompt.send', 'steer.send', 'run.cancel', 'model.overrides.set',
+    'draft.open', 'prompt.suggest', 'command.run', 'prompt.send', 'steer.send', 'run.cancel', 'model.overrides.set',
   ].includes(method)) {
     params = { ...params, expected_selection_generation: state.selectionGeneration };
   }
@@ -440,6 +447,7 @@ function handleLive(event) {
   if (!event || !event.type) return;
   switch (event.type) {
     case 'run_started':
+      invalidateSuggestion();
       state.runActive = true;
       updateRunState('running');
       updateRunDetail();
@@ -503,6 +511,7 @@ function handleLive(event) {
 }
 
 function finishRun(event) {
+  invalidateSuggestion();
   if (state.run && state.run.assistant) state.run.assistant.finishReasoning();
   state.runActive = false;
   state.run = null;
@@ -517,6 +526,7 @@ function finishRun(event) {
 }
 
 function onSubscribed(ctl) {
+  invalidateSuggestion();
   state.selectionGeneration = ctl.selection_generation;
   state.connected = true;
   state.reconnectDelayMs = 1000;
@@ -529,6 +539,7 @@ function onSubscribed(ctl) {
   renderMessageMap();
   syncPlanModeBadge();
   refreshWorkbench();
+  refreshUtilitySettings();
   refreshSessions();
 }
 
@@ -614,6 +625,7 @@ function onNotice(ctl) {
   const payload = ctl && ctl.payload;
   switch (ctl && ctl.kind) {
     case 'selection':
+      invalidateSuggestion();
       if (state.stream) state.stream.abort();
       connect();
       refreshWorkbench();
@@ -621,7 +633,11 @@ function onNotice(ctl) {
       break;
     case 'models':
       refreshWorkbench();
+      refreshUtilitySettings();
       if (dom['settings-dialog'].open) refreshModelSettings();
+      break;
+    case 'run':
+      invalidateSuggestion();
       break;
     case 'monitor': updateRunState(typeof payload === 'string' ? payload : ''); break;
     case 'compaction':
@@ -1381,6 +1397,18 @@ async function refreshSessions() {
   }
 }
 
+async function refreshUtilitySettings() {
+  try {
+    state.utilitySettings = await rpc('model.utility.get', {});
+    renderUtilitySettings(state.utilitySettings);
+    syncSuggestionControl();
+  } catch (error) {
+    state.utilitySettings = null;
+    syncSuggestionControl();
+    if (dom['utility-settings-error']) dom['utility-settings-error'].textContent = error.message;
+  }
+}
+
 function renderSessions() {
   const query = dom['session-search'].value.trim().toLocaleLowerCase();
   const filtered = state.sessions.filter((session) => {
@@ -1418,6 +1446,31 @@ function setSwitching(active) {
   if (active) updateRunState('switching session');
 }
 
+function invalidateSuggestion() {
+  state.suggestionRequest += 1;
+  state.suggestionPending = false;
+  state.suggestion = null;
+  hide(dom['suggestion-panel']);
+  dom['suggestion-text'].textContent = '';
+  syncInteractionControls();
+}
+
+function renderSuggestion() {
+  if (!state.suggestion) {
+    hide(dom['suggestion-panel']);
+    return;
+  }
+  dom['suggestion-text'].textContent = state.suggestion.text;
+  show(dom['suggestion-panel']);
+}
+
+function syncSuggestionControl() {
+  const enabled = Boolean(state.utilitySettings && state.utilitySettings.suggestions_enabled);
+  dom.suggest.disabled = state.suggestionPending || !enabled || state.runActive
+    || state.compactionActive || state.switching || !state.sessionId;
+  dom.suggest.textContent = state.suggestionPending ? 'Thinking…' : 'Suggest';
+}
+
 function syncInteractionControls() {
   const locked = state.switching || state.compactionActive;
   dom.send.disabled = locked;
@@ -1431,6 +1484,7 @@ function syncInteractionControls() {
   dom['compact-session'].disabled = state.switching
     || !state.sessionId
     || (state.runActive && !state.compactionActive);
+  syncSuggestionControl();
   renderDraft();
 }
 
@@ -1768,7 +1822,26 @@ async function refreshModelSettings() {
     if (chosen && [...select.options].some((option) => option.value === chosen)) select.value = chosen;
     modelField('profiles').replaceChildren();
     for (const name of view.profiles) renderModelProfile(name, name === view.active_profile);
+    state.utilitySettings = view.utility || null;
+    renderUtilitySettings(state.utilitySettings, view.profiles || []);
+    syncSuggestionControl();
   } catch (error) { modelField('settings-error').textContent = error.message; }
+}
+
+function renderUtilitySettings(settings, profiles = []) {
+  if (!settings) return;
+  dom['utility-naming-enabled'].checked = settings.naming_enabled !== false;
+  dom['utility-suggestions-enabled'].checked = settings.suggestions_enabled === true;
+  const select = dom['utility-profile'];
+  const chosen = settings.profile || '';
+  select.replaceChildren(el('option', '', 'Use primary model'));
+  select.options[0].value = '';
+  for (const name of profiles) {
+    const option = el('option', '', name);
+    option.value = name;
+    select.appendChild(option);
+  }
+  select.value = chosen;
 }
 
 function renderModelProfile(name, active) {
@@ -1841,6 +1914,31 @@ dom['settings-dialog'].addEventListener('close', () => {
   modelField('profile-key').value = '';
   modelField('preset-key').value = '';
 });
+
+async function saveUtilitySettings(button) {
+  button.disabled = true;
+  dom['utility-settings-error'].textContent = '';
+  dom['utility-settings-saved'].textContent = '';
+  try {
+    const settings = {
+      naming_enabled: dom['utility-naming-enabled'].checked,
+      suggestions_enabled: dom['utility-suggestions-enabled'].checked,
+      profile: dom['utility-profile'].value || null,
+    };
+    await rpc('model.utility.set', settings);
+    state.utilitySettings = settings;
+    renderUtilitySettings(settings, [...dom['utility-profile'].options].slice(1).map((option) => option.value));
+    dom['utility-settings-saved'].textContent = 'Utility policy saved for every connected frontend.';
+    syncSuggestionControl();
+    await refreshWorkbench();
+  } catch (error) {
+    dom['utility-settings-error'].textContent = error.message;
+  } finally {
+    button.disabled = false;
+  }
+}
+
+dom['utility-settings-save'].addEventListener('click', (event) => saveUtilitySettings(event.currentTarget));
 
 async function refreshWorkspaces() {
   const list = document.getElementById('workspace-list');
@@ -2341,6 +2439,50 @@ function clearSubmittedPrompt(generation) {
   resizePrompt();
 }
 
+async function requestSuggestion() {
+  if (state.suggestionPending || dom.suggest.disabled) return;
+  const request = ++state.suggestionRequest;
+  const sessionId = state.sessionId;
+  const selectionGeneration = state.selectionGeneration;
+  const composerGeneration = state.composerGeneration;
+  state.suggestionPending = true;
+  syncSuggestionControl();
+  try {
+    const result = await rpc('prompt.suggest', {});
+    if (request !== state.suggestionRequest || sessionId !== state.sessionId
+      || selectionGeneration !== state.selectionGeneration) return;
+    if (result.session_id !== sessionId || result.selection_generation !== selectionGeneration) return;
+    state.suggestion = { text: String(result.text || ''), composerGeneration };
+    renderSuggestion();
+  } catch (error) {
+    if (request === state.suggestionRequest) updateRunState('suggestion unavailable: ' + error.message);
+  } finally {
+    if (request === state.suggestionRequest) {
+      state.suggestionPending = false;
+      syncSuggestionControl();
+    }
+  }
+}
+
+function useSuggestion() {
+  if (!state.suggestion || state.suggestion.composerGeneration !== state.composerGeneration) {
+    hide(dom['suggestion-panel']);
+    return;
+  }
+  dom.prompt.value = state.suggestion.text;
+  state.composerGeneration += 1;
+  resizePrompt();
+  dom.prompt.focus();
+  state.suggestion = null;
+  hide(dom['suggestion-panel']);
+}
+
+dom.suggest.addEventListener('click', requestSuggestion);
+dom['suggestion-use'].addEventListener('click', useSuggestion);
+for (const id of ['suggestion-ignore', 'suggestion-dismiss']) {
+  dom[id].addEventListener('click', () => { state.suggestion = null; hide(dom['suggestion-panel']); });
+}
+
 async function submitPrompt() {
   if (state.compactionActive || state.switching) {
     updateRunState('wait for history compaction to finish');
@@ -2477,6 +2619,7 @@ function restoreQueuedDraft() {
 dom.send.addEventListener('click', submitPrompt);
 dom.prompt.addEventListener('input', () => {
   state.composerGeneration += 1;
+  if (state.suggestionPending || state.suggestion) invalidateSuggestion();
   resizePrompt();
 });
 dom.prompt.addEventListener('keydown', (event) => {

@@ -62,6 +62,7 @@ pub(super) struct ProjectPorts {
     pub(super) compactor: Option<Arc<dyn HistoryCompactor>>,
     pub(super) todo: Option<Arc<TodoService>>,
     pub(super) titler: Option<Arc<dyn SessionTitler>>,
+    pub(super) utility: Arc<dyn crate::plugins::services::UtilityModel>,
     pub(super) language_startup_diagnostic: Option<String>,
 }
 
@@ -235,6 +236,7 @@ fn project_catalog(input: &mut CompositionInput) -> Vec<Arc<dyn Plugin>> {
         Arc::new(crate::plugins::ToolResultPrunerPlugin),
         Arc::new(crate::plugins::CompactionPlugin),
         Arc::new(crate::plugins::TodoPlugin),
+        Arc::new(crate::plugins::CompanionUtilityPlugin),
         Arc::new(crate::plugins::SessionTitlePlugin),
         Arc::new(crate::plugins::DefaultAgentPlugin::new(
             input.project.clone(),
@@ -309,6 +311,7 @@ fn resolve_and_freeze(
         compactor: manager.require(COMPACTION_SERVICE).ok(),
         todo: manager.require(TODO_SERVICE).ok(),
         titler: manager.require(SESSION_TITLE_SERVICE).ok(),
+        utility: required(manager, crate::plugins::services::UTILITY_MODEL_SERVICE)?,
         language_startup_diagnostic: language_intelligence.diagnostics().first().cloned(),
     })
 }

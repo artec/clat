@@ -47,16 +47,12 @@ impl App {
         if self.permission_picker.is_some() {
             // 档位数据源（D-2 §2.6）：dsh = preset 投影（sandbox/mode
             // latest-wins fold 的 journal 值）；local = application 直读。
-            let current = if let Some(dsh) = self.dsh.as_ref() {
-                dsh.preset
-                    .as_deref()
-                    .and_then(PermissionMode::from_journal_value)
-                    .unwrap_or_default()
+            // Another client may have downgraded since our snapshot. Always
+            // require full-access confirmation on a host-attached client.
+            let current = if self.native.is_some() {
+                PermissionMode::ReadOnly
             } else {
-                self.application
-                    .as_ref()
-                    .map(|application| application.permission_mode())
-                    .unwrap_or_default()
+                self.current_permission_mode()
             };
             if let Some(picker) = self.permission_picker.as_mut() {
                 let action = picker.handle_key(key, current);

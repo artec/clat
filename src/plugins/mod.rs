@@ -5,7 +5,7 @@
 mod context;
 use context::{context_inspector, goal, instructions, memory, plan_mode, prompt, skills};
 mod conversation;
-use conversation::{compaction, pruner, title, todo};
+use conversation::{compaction, pruner, title, todo, utility};
 
 mod agent;
 mod apply_patch;
@@ -61,6 +61,7 @@ pub(crate) use todo::TodoPlugin;
 pub(crate) use tools::{
     NativeInteractionToolsPlugin, NativeReadToolsPlugin, NativeWriteToolsPlugin, ToolRegistryPlugin,
 };
+pub(crate) use utility::CompanionUtilityPlugin;
 pub(crate) use view_image::ViewImagePlugin;
 pub(crate) use wasm::WasmAdapterPlugin;
 

@@ -351,6 +351,10 @@ impl App {
     }
 
     fn handle_composer_key(&mut self, key: KeyEvent) {
+        if self.suggestion_pending {
+            self.flash_status("suggestion is still generating");
+            return;
+        }
         if self.native.is_some() {
             if key.code == KeyCode::Enter
                 && !key
@@ -555,6 +559,10 @@ impl App {
             }
             PermissionPickerAction::Apply(mode) => {
                 self.permission_picker = None;
+                if self.native.is_some() {
+                    self.apply_native_permission(mode);
+                    return;
+                }
                 // dsh（§2.5 拍板通道核实）：/permission 走 prompt 通道
                 //（web 客户端 PermissionSelect 同款），宿主落定文本经
                 // 事件流回显、preset 投影由 sandbox/mode fold 刷新。

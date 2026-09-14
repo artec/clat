@@ -793,6 +793,282 @@ fn run_turn(service: &SessionService, text: &str) -> Result<(), SessionError> {
 }
 
 #[test]
+fn utility_title_budget_requires_both_intervals_and_survives_reopen() {
+    let (service, root) = service("utility-budget");
+    let summary = service.new_session(&project()).unwrap();
+    let id = &summary.id;
+    run_turn(&service, "initial conversation").unwrap();
+    assert!(
+        service
+            .prepare_title_attempt_at(id, 1_000_000)
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        service
+            .prepare_title_attempt_at(id, 1_300_000)
+            .unwrap()
+            .is_none(),
+        "time alone cannot grant a call"
+    );
+    for _ in 0..5 {
+        run_turn(&service, "progress").unwrap();
+    }
+    assert!(
+        service
+            .prepare_title_attempt_at(id, 1_299_999)
+            .unwrap()
+            .is_none(),
+        "turns alone cannot grant a call"
+    );
+    assert!(
+        service
+            .prepare_title_attempt_at(id, 999_999)
+            .unwrap()
+            .is_none(),
+        "clock rollback cannot grant a call"
+    );
+    assert!(
+        service
+            .prepare_title_attempt_at(id, 1_300_000)
+            .unwrap()
+            .is_some()
+    );
+    // None of these reservations writes a title: provider failure still costs.
+    for attempt in 2..20 {
+        for _ in 0..5 {
+            run_turn(&service, "progress").unwrap();
+        }
+        assert!(
+            service
+                .prepare_title_attempt_at(id, 1_000_000 + attempt * 300_000)
+                .unwrap()
+                .is_some()
+        );
+    }
+    for _ in 0..5 {
+        run_turn(&service, "progress").unwrap();
+    }
+    let key = SessionKey {
+        project: project(),
+        id: id.clone(),
+    };
+    service.quiesce_active().unwrap();
+    drop(service);
+    let reopened = SessionService::new(root.clone(), JsonlCompression::Zstd).unwrap();
+    reopened.resume(&key).unwrap();
+    assert!(
+        reopened
+            .prepare_title_attempt_at(id, 99_000_000)
+            .unwrap()
+            .is_none(),
+        "restart must not reset attempts"
+    );
+    reopened.quiesce_active().unwrap();
+    crate::test_support::cleanup_tree(&root);
+}
+
+#[test]
+fn manual_suggestion_budget_is_independent_bounded_and_survives_reopen() {
+    let (service, root) = service("utility-suggestion-budget");
+    let summary = service.new_session(&project()).unwrap();
+    run_turn(&service, "suggest my next step").unwrap();
+    for _ in 0..20 {
+        let attempt = service
+            .prepare_suggestion_attempt(&summary.id)
+            .unwrap()
+            .expect("twenty manual attempts are available");
+        assert!(attempt.context.contains("suggest my next step"));
+    }
+    assert!(
+        service
+            .prepare_suggestion_attempt(&summary.id)
+            .unwrap()
+            .is_none(),
+        "the twenty-first suggestion is rejected before provider I/O"
+    );
+    assert!(
+        service
+            .prepare_title_attempt_at(&summary.id, 1_000_000)
+            .unwrap()
+            .is_some(),
+        "suggestions never consume the naming allowance"
+    );
+    let key = SessionKey {
+        project: project(),
+        id: summary.id,
+    };
+    service.quiesce_active().unwrap();
+    drop(service);
+    let reopened = SessionService::new(root.clone(), JsonlCompression::Zstd).unwrap();
+    reopened.resume(&key).unwrap();
+    assert!(
+        reopened
+            .prepare_suggestion_attempt(&key.id)
+            .unwrap()
+            .is_none(),
+        "restart must not reset suggestion attempts"
+    );
+    reopened.quiesce_active().unwrap();
+    crate::test_support::cleanup_tree(&root);
+}
+
+#[test]
+fn utility_context_is_recent_bounded_and_user_rename_stops_reservations() {
+    let (service, root) = service("utility-context");
+    let summary = service.new_session(&project()).unwrap();
+    for i in 0..13 {
+        run_turn(&service, &format!("topic-{i}")).unwrap();
+    }
+    let attempt = service
+        .prepare_title_attempt_at(&summary.id, 1_000_000)
+        .unwrap()
+        .unwrap();
+    assert!(!attempt.context.contains("topic-0\n"));
+    assert!(attempt.context.contains("topic-12\n"));
+    assert_eq!(attempt.message_seqs.len(), 12);
+    assert!(
+        attempt
+            .message_seqs
+            .windows(2)
+            .all(|seqs| seqs[0] < seqs[1])
+    );
+    assert!(
+        service
+            .set_title(
+                &summary.id,
+                attempt.expectation,
+                "provider title",
+                TitleSource::Provider {
+                    provider: "test",
+                    model: "small",
+                    message_seqs: Some(&attempt.message_seqs)
+                }
+            )
+            .unwrap()
+    );
+    for _ in 0..5 {
+        run_turn(&service, &"中".repeat(8000)).unwrap();
+    }
+    let next = service
+        .prepare_title_attempt_at(&summary.id, 1_300_000)
+        .unwrap()
+        .unwrap();
+    assert!(
+        matches!(next.expectation, SetTitleExpectation::Exact(_)),
+        "provider titles can continue updating"
+    );
+    assert!(next.context.chars().count() <= 6000);
+    assert!(next.context.contains("中"));
+    service
+        .set_title(
+            &summary.id,
+            SetTitleExpectation::Force,
+            "my title",
+            TitleSource::User,
+        )
+        .unwrap();
+    for _ in 0..5 {
+        run_turn(&service, "new topic").unwrap();
+    }
+    assert!(
+        service
+            .prepare_title_attempt_at(&summary.id, 1_600_000)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        !service
+            .set_title(
+                &summary.id,
+                SetTitleExpectation::Force,
+                "late title",
+                TitleSource::Provider {
+                    provider: "test",
+                    model: "small",
+                    message_seqs: Some(&next.message_seqs)
+                }
+            )
+            .unwrap()
+    );
+    service.quiesce_active().unwrap();
+    let other = service.new_session(&project()).unwrap();
+    run_turn(&service, "other conversation").unwrap();
+    assert!(
+        service
+            .prepare_title_attempt_at(&summary.id, 2_000_000)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        service
+            .prepare_title_attempt_at(&other.id, 2_000_000)
+            .unwrap()
+            .is_some(),
+        "stale job must not consume another session's budget"
+    );
+    service.quiesce_active().unwrap();
+    crate::test_support::cleanup_tree(&root);
+}
+
+#[test]
+fn utility_budget_corruption_is_not_treated_as_unused_allowance() {
+    let (service, root) = service("utility-corrupt");
+    let summary = service.new_session(&project()).unwrap();
+    run_turn(&service, "hello").unwrap();
+    let key = SessionKey {
+        project: project(),
+        id: summary.id.clone(),
+    };
+    let dir = service.backend.open_session_dir(&key).unwrap();
+    for bytes in [
+        "{broken".to_string(),
+        " ".repeat(1025),
+        r#"{"version":999,"title_attempts":0,"last_title_turn":0,"last_title_ms":0}"#.into(),
+    ] {
+        dir.write("clat-utility-budget.json", bytes).unwrap();
+        assert!(
+            service
+                .prepare_title_attempt_at(&summary.id, 1_000_000)
+                .is_err()
+        );
+    }
+    service.quiesce_active().unwrap();
+    crate::test_support::cleanup_tree(&root);
+}
+
+#[cfg(unix)]
+#[test]
+fn utility_budget_rejects_links_and_fifo_without_opening_external_content() {
+    use std::os::unix::fs::symlink;
+    let (service, root) = service("utility-links");
+    let summary = service.new_session(&project()).unwrap();
+    run_turn(&service, "hello").unwrap();
+    let path = root
+        .join(&project().bucket)
+        .join(crate::session::path_layout::encode_segment(
+            summary.id.as_str(),
+        ))
+        .join("clat-utility-budget.json");
+    symlink("missing-target", &path).unwrap();
+    assert!(
+        service
+            .prepare_title_attempt_at(&summary.id, 1_000_000)
+            .is_err()
+    );
+    std::fs::remove_file(&path).unwrap();
+    let fifo = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+    assert!(
+        service
+            .prepare_title_attempt_at(&summary.id, 1_000_000)
+            .is_err()
+    );
+    service.quiesce_active().unwrap();
+    crate::test_support::cleanup_tree(&root);
+}
+
+#[test]
 fn global_admission_owner_scan_outlives_receipt_window_and_rejects_duplicates() {
     let (service, root) = service("global-admission-owner");
     let project = project();
@@ -1690,6 +1966,72 @@ fn staging_is_read_only_and_failed_resume_keeps_the_active_session() {
 }
 
 #[test]
+fn provider_titles_cannot_override_user_titles_even_after_resume() {
+    let (service, root) = service("title-user-ownership");
+    let project = project();
+    let session = service.new_session(&project).expect("new").id;
+    run_turn(&service, "discuss the project").expect("run");
+    service.sync_active().expect("sync");
+    let automatic = |expectation, title| {
+        service
+            .set_title(
+                &session,
+                expectation,
+                title,
+                TitleSource::Provider {
+                    provider: "test",
+                    model: "utility",
+                    message_seqs: None,
+                },
+            )
+            .expect("automatic write")
+    };
+    assert!(automatic(SetTitleExpectation::NoTitle, "first topic"));
+    let first_seq = service.title_state().1.expect("provider seq");
+    assert!(automatic(
+        SetTitleExpectation::Exact(first_seq),
+        "new topic"
+    ));
+    assert!(!automatic(
+        SetTitleExpectation::Exact(first_seq),
+        "stale topic"
+    ));
+    service
+        .set_title(
+            &session,
+            SetTitleExpectation::Force,
+            "my title",
+            TitleSource::User,
+        )
+        .expect("manual rename");
+    let key = SessionKey {
+        project,
+        id: session.clone(),
+    };
+    for resumed in [false, true] {
+        if resumed {
+            service.quiesce_active().expect("detach");
+            service.resume(&key).expect("resume");
+        }
+        let user_seq = service.title_state().1.expect("user seq");
+        assert!(
+            !automatic(SetTitleExpectation::Exact(user_seq), "overwrite"),
+            "a matching sequence does not transfer user ownership"
+        );
+        assert!(
+            !automatic(SetTitleExpectation::Force, "force overwrite"),
+            "Force is not authority for a provider to replace a user title"
+        );
+        assert_eq!(
+            service.title_state(),
+            (Some("my title".into()), Some(user_seq))
+        );
+    }
+    service.quiesce_active().expect("close");
+    crate::test_support::cleanup_tree(&root);
+}
+
+#[test]
 fn title_cas_rejects_stale_and_accepts_force() {
     let (service, root) = service("title");
     let project = project();
@@ -1718,6 +2060,7 @@ fn title_cas_rejects_stale_and_accepts_force() {
                 TitleSource::Provider {
                     provider: "prov",
                     model: "mdl",
+                    message_seqs: None,
                 },
             )
             .expect("cas check"),
@@ -1767,6 +2110,7 @@ fn stale_title_jobs_never_write_into_the_switched_to_session() {
                 TitleSource::Provider {
                     provider: "prov",
                     model: "mdl",
+                    message_seqs: None,
                 },
             )
             .expect("stale job is a no-op, not an error")
