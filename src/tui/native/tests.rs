@@ -1,8 +1,10 @@
 use super::*;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 fn shell() -> (App, PathBuf) {
     let (storage, project) = crate::test_support::roots("native-shell");
@@ -18,6 +20,14 @@ fn shell() -> (App, PathBuf) {
         "journal_version":3,"instance_id":"11111111-1111-1111-1111-111111111111"
     }})
     .to_string();
+    let stop = Arc::new(AtomicBool::new(false));
+    let wake = Arc::clone(&stop);
+    thread::spawn(move || {
+        thread::sleep(Duration::from_secs(3));
+        wake.store(true, Ordering::Release);
+        let _ = TcpStream::connect(("127.0.0.1", port));
+    });
+    let server_stop = Arc::clone(&stop);
     let _server = thread::spawn(move || {
         let (stream, _) = listener.accept().unwrap();
         stream
@@ -42,18 +52,27 @@ fn shell() -> (App, PathBuf) {
         // Keep the fixture listener alive for subsequent native requests.
         // Returning an HTTP error is deterministic on every platform and
         // avoids making failure-path tests depend on how quickly a closed
-        // local port reports ECONNREFUSED/WSAECONNREFUSED.
-        listener.set_nonblocking(true).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(3);
-        while Instant::now() < deadline {
-            match listener.accept() {
-                Ok((mut stream, _)) => {
-                    let _ = reject_request(&mut stream);
+        // local port reports ECONNREFUSED/WSAECONNREFUSED. Keep accept
+        // blocking: on Windows an accepted socket may inherit a listener's
+        // nonblocking mode, so this fixture never enters that path and also
+        // explicitly restores blocking mode below.
+        loop {
+            let (mut stream, _) = match listener.accept() {
+                Ok(connection) => connection,
+                Err(error) => {
+                    eprintln!("native test host accept failed: {error}");
+                    break;
                 }
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    thread::sleep(Duration::from_millis(5));
-                }
-                Err(_) => break,
+            };
+            if server_stop.load(Ordering::Acquire) {
+                break;
+            }
+            if let Err(error) = stream.set_nonblocking(false) {
+                eprintln!("native test host socket mode failed: {error}");
+                continue;
+            }
+            if let Err(error) = reject_request(&mut stream) {
+                eprintln!("native test host rejection failed: {error}");
             }
         }
     });
