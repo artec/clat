@@ -146,6 +146,10 @@ Dropping a client handle does not remove a hosted project. Explicit host close
 requires client handles to drain before project producers and journals close.
 Fresh-root initialization extends the ancestor lease to the newly created root
 before exposing its writable control plane.
+On Windows, the named mutex hashes a case-folded canonical ancestor plus the
+missing suffix in one trailing-separator directory form. Its name remains
+stable when the root is created, and retains compatibility with existing-root
+leases held by older processes. Identity discovery never creates storage.
 
 Serve routes additional projects through `/workspace/<id>/api/...`. The default
 project retains `/api/...` compatibility. Routes are process-local identities;

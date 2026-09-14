@@ -83,7 +83,8 @@ impl StorageRootLease {
         Ok(())
     }
 
-    /// Named mutex identity already includes the missing path suffix.
+    /// The normalized mutex name includes the missing suffix and stays stable
+    /// when initialization replaces that suffix with a canonical directory.
     #[cfg(not(unix))]
     pub(crate) fn cover_initialized_root(&mut self, _root: &Path) -> io::Result<()> {
         Ok(())
@@ -210,15 +211,13 @@ pub(crate) fn try_acquire(root: &Path) -> io::Result<Option<StorageRootLease>> {
 
 #[cfg(windows)]
 fn acquire_windows(root: &Path, blocking: bool) -> io::Result<Option<StorageRootLease>> {
-    use sha2::{Digest as _, Sha256};
     use windows_sys::Win32::Foundation::{
         CloseHandle, WAIT_ABANDONED, WAIT_OBJECT_0, WAIT_TIMEOUT,
     };
     use windows_sys::Win32::System::Threading::{CreateMutexW, INFINITE, WaitForSingleObject};
 
     let identity = root_identity(root)?;
-    let digest = Sha256::digest(identity.to_string_lossy().to_lowercase().as_bytes());
-    let name = format!("Local\\CLAT-StorageRoot-{:x}", digest);
+    let name = windows_mutex_name(&identity);
     let mut wide: Vec<u16> = name.encode_utf16().collect();
     wide.push(0);
     // SAFETY: null security attributes, a valid NUL-terminated UTF-16 name,
@@ -240,6 +239,19 @@ fn acquire_windows(root: &Path, blocking: bool) -> io::Result<Option<StorageRoot
             Err(io::Error::last_os_error())
         }
     }
+}
+
+// Also built in tests so the naming invariant can be checked off Windows.
+#[cfg(any(windows, test))]
+fn windows_mutex_name(identity: &Path) -> String {
+    use sha2::{Digest as _, Sha256};
+    // join(empty suffix) adds a separator only once the root exists. Hash a
+    // single directory spelling in both states. Retain the trailing separator
+    // used by existing roots so pre-fix Windows processes still share our lock.
+    let mut directory: PathBuf = identity.components().collect();
+    directory.push("");
+    let digest = Sha256::digest(directory.to_string_lossy().to_lowercase().as_bytes());
+    format!("Local\\CLAT-StorageRoot-{:x}", digest)
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -348,6 +360,92 @@ mod tests {
         // The identity keeps the suffix so diagnostics show the real root.
         assert!(lease.identity().ends_with(".clat"));
         drop(lease);
+        crate::test_support::cleanup_tree(&parent);
+    }
+
+    #[test]
+    fn windows_mutex_name_survives_root_initialization() {
+        let parent = temp_dir("mutex-identity");
+        for suffix in ["state", "a/b/.clat"] {
+            let root = parent.join(suffix);
+            let before = root_identity(&root).unwrap();
+            std::fs::create_dir_all(&root).unwrap();
+            let after = root_identity(&root).unwrap();
+            let before_name = windows_mutex_name(&before);
+            let after_name = windows_mutex_name(&after);
+            eprintln!(
+                "missing identity={before:?}, mutex={before_name}; \
+                 initialized identity={after:?}, mutex={after_name}"
+            );
+            assert_eq!(
+                before_name, after_name,
+                "initialization must retain the mutex"
+            );
+        }
+        crate::test_support::cleanup_tree(&parent);
+    }
+
+    #[test]
+    fn windows_mutex_name_preserves_existing_root_names_and_aliases() {
+        use sha2::{Digest as _, Sha256};
+        let parent = temp_dir("mutex-aliases");
+        let root = parent.join("state");
+        std::fs::create_dir_all(&root).unwrap();
+        let identity = root_identity(&root).unwrap();
+        // Ready-root names must still conflict with pre-fix Windows processes.
+        let legacy_digest = Sha256::digest(identity.to_string_lossy().to_lowercase().as_bytes());
+        let legacy_name = format!("Local\\CLAT-StorageRoot-{:x}", legacy_digest);
+        for alias in [root.clone(), root.join(""), root.join(".")] {
+            assert_eq!(
+                windows_mutex_name(&root_identity(&alias).unwrap()),
+                legacy_name
+            );
+        }
+        crate::test_support::cleanup_tree(&parent);
+    }
+
+    #[test]
+    fn initialized_root_keeps_lease_exclusive_across_threads() {
+        let parent = temp_dir("initialized-exclusion");
+        let root = parent.join("a/b/state");
+        let mut lease = try_acquire(&root).unwrap().expect("lease before creation");
+        assert!(
+            !root.exists(),
+            "acquiring a lease must not initialize storage"
+        );
+        std::fs::create_dir_all(&root).unwrap();
+        lease.cover_initialized_root(&root).unwrap();
+        let after = root_identity(&root).unwrap();
+        eprintln!(
+            "held identity={:?}, mutex={}; initialized identity={after:?}, mutex={}",
+            lease.identity(),
+            windows_mutex_name(lease.identity()),
+            windows_mutex_name(&after)
+        );
+        let probe = root.clone();
+        let blocked = std::thread::spawn(move || try_acquire(&probe).unwrap().is_none())
+            .join()
+            .unwrap();
+        assert!(
+            blocked,
+            "creating the root must not bypass a surviving lease"
+        );
+        drop(lease);
+        let available = std::thread::spawn(move || {
+            for _ in 0..100 {
+                if try_acquire(&root).unwrap().is_some() {
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            false
+        })
+        .join()
+        .unwrap();
+        assert!(
+            available,
+            "dropping the lease must permit another thread to acquire"
+        );
         crate::test_support::cleanup_tree(&parent);
     }
 
