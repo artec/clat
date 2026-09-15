@@ -136,7 +136,9 @@ impl App {
         } else {
             self.attachments.len() + 1
         };
-        let input_rows = (self.input.line_count(input_width) + 2 + attachment_rows).clamp(3, 14);
+        let input_rows =
+            (self.input.line_count(input_width) + 2 + attachment_rows + self.suggestion_rows())
+                .clamp(3, 14);
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -156,51 +158,7 @@ impl App {
         // （Wallet/Token · Cache% · Context current/total）。窄终端时
         // 左侧保底 MIN_STATUS_LEFT，右侧按优先级让位（TUI-L02）。
         // 左右各留 1 列边距，文字不贴终端边缘。
-        let bar = chunks[3].inner(Margin::new(1, 0));
-        // dsh 态右侧段：Wallet 隐藏（余额是本地 Monitor 对本地 key 的
-        // 监视，与宿主模型无关），Cache/Context 按 DSH 口径投影（§2.4）；
-        // 数据缺席整段隐藏（INV-U7）。
-        let segments = if self.dsh.is_some() {
-            self.dsh_status_segments()
-        } else {
-            status_suffix_segments(
-                &self.config,
-                &self.balance,
-                // INV-C1：Cache 口径取当前模型路由的桶。桶缺席 = 该路由尚无
-                // 数据（刚切来的模型），`--%` 是诚实值。
-                current_route_usage(&self.usage_routes, &self.config),
-                self.last_turn_usage.as_ref(),
-            )
-        };
-        let budget = (bar.width.saturating_sub(MIN_STATUS_LEFT + 2)) as usize;
-        let suffix = fit_status_suffix(&segments, budget);
-        let status_line = if let Some(phase) = self.phases.phase {
-            phase_line(
-                tick,
-                phase,
-                self.phase_elapsed(),
-                self.run_elapsed(),
-                self.conversation.pending_steering_count(),
-            )
-        } else {
-            Line::from(self.status.as_str())
-        };
-        if suffix.is_empty() {
-            frame.render_widget(Paragraph::new(status_line), bar);
-        } else {
-            // 右侧后缀按内容宽度分配，剩余空间全部留给左侧状态。
-            let suffix_width = UnicodeWidthStr::width(suffix.as_str()) as u16;
-            let status_width = bar.width.saturating_sub(suffix_width + 2);
-            let columns = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([Constraint::Length(status_width), Constraint::Min(0)])
-                .split(bar);
-            frame.render_widget(
-                Paragraph::new(status_line).wrap(Wrap { trim: false }),
-                columns[0],
-            );
-            frame.render_widget(Paragraph::new(suffix).right_aligned(), columns[1]);
-        }
+        self.draw_status_bar(frame, chunks[3], tick);
 
         // 统一模态压暗层（弹窗规范 2026-08-19）：所有弹窗——异步的
         // 权限/ask 与同步的选择器/编辑器——绘制前全屏叠加 DIM，只降
@@ -253,7 +211,11 @@ impl App {
             // 输入被禁用，不显示光标（不暗示可输入）。
             if self.input_area.width > 2 && self.input_area.height > 2 && self.loading.is_none() {
                 let (row, column) = self.input.cursor_position(self.input_text_width());
-                let visible_rows = self.input_area.height.saturating_sub(2) as usize;
+                let visible_rows = self
+                    .input_area
+                    .height
+                    .saturating_sub(2 + self.suggestion_rows() as u16)
+                    as usize;
                 let row = row.min(visible_rows.saturating_sub(1));
                 // 光标跳过行首箭头前缀（`❯ ` / 两个空格）与附件徽标行。
                 let attachment_offset = if self.attachments.is_empty() {
@@ -781,10 +743,8 @@ impl App {
     }
 
     pub(super) fn draw_header(&self, frame: &mut Frame, area: Rect) {
-        // 数据源参数化（§2.1）：local 走 config（预设名/档位），dsh 走
-        // DshState（model_label、无档位、宿主 cwd 第二行、●/○ 在线点）。
-        // 前缀：local 裸 `CLAT`；dsh `CLAT ●/○ dsh`（绿实心/红空心在线
-        // 点——◆ 菱形方案 2026-08-23 负责人 dogfood 后撤下，仅留 ●）。
+        // 数据源参数化（§2.1）：standalone 走 config 且保持裸 CLAT；
+        // native/dsh 复用绿实心在线、红空心离线的唯一视觉语法。
         let connecting = self.dsh.is_none() && self.dsh_connect.is_some();
         let loading = self.loading.is_some() || self.run_start_pending || connecting;
         let state = if loading {
@@ -844,7 +804,7 @@ impl App {
                 None,
             )
         } else {
-            let (model, level) = if self.config.is_configured() {
+            let (model, level) = if self.model_ready() {
                 let name = match self.config.preset.as_deref().and_then(preset_by_id) {
                     // 预设模型的 name 与 model id 重复（仅大小写不同），只展示名称。
                     Some(preset) => preset.name.to_owned(),
@@ -854,15 +814,29 @@ impl App {
             } else {
                 ("not configured — /model".to_owned(), None)
             };
+            let prefix = match self.native_online() {
+                Some(online) => vec![
+                    Span::styled("CLAT", theme::style(theme::Role::Bold)),
+                    Span::styled(
+                        if online { " ● host" } else { " ○ host" },
+                        theme::style(if online {
+                            theme::Role::Success
+                        } else {
+                            theme::Role::Error
+                        }),
+                    ),
+                ],
+                None => vec![Span::styled("CLAT", theme::style(theme::Role::Bold))],
+            };
             (
-                vec![Span::styled("CLAT", theme::style(theme::Role::Bold))],
+                prefix,
                 format!("project: {}", self.project.root().display()),
                 model,
                 level,
             )
         };
-        // 首行内容预算按前缀实际显示宽度扣除（local "CLAT" 4 列 /
-        // dsh "CLAT ● dsh" 10 列）；宽度不足时逐级退化（TUI-L02），
+        // 首行内容预算按前缀实际显示宽度扣除（standalone "CLAT" 4 列，
+        // native/dsh 在线前缀各 11/10 列）；宽度不足时逐级退化（TUI-L02），
         // 档位优先于模型名保留。
         let prefix_width = prefix
             .iter()
@@ -1115,15 +1089,29 @@ impl App {
     }
 
     pub(super) fn draw_input(&self, frame: &mut Frame, area: Rect) {
-        let block = self.input_block();
+        let width = area
+            .width
+            .saturating_sub(2 + INPUT_MARKER_WIDTH as u16)
+            .max(1) as usize;
+        let mut lines = self.composer_lines(width);
+        let preview = self.suggestion_lines(width);
+        if !preview.is_empty() {
+            let available = area.height.saturating_sub(2) as usize;
+            let body = available.saturating_sub(preview.len());
+            lines.truncate(body);
+            lines.resize(body, Line::from(""));
+            lines.extend(preview);
+        }
+        frame.render_widget(
+            Paragraph::new(Text::from(lines)).block(self.input_block()),
+            area,
+        );
+    }
+
+    fn composer_lines(&self, width: usize) -> Vec<Line<'static>> {
         // 输入框与聊天记录的用户消息同款排版：首行 `❯ ` 前缀，续行
         // 两个空格保持等宽左缩进，文本按扣除前缀后的宽度换行。与
         // 光标定位、鼠标选区映射共用同一换行算法，三者坐标一致。
-        let width = area
-            .width
-            .saturating_sub(2)
-            .saturating_sub(INPUT_MARKER_WIDTH as u16)
-            .max(1) as usize;
         let mut lines: Vec<Line<'static>> = self
             .input
             .visual_rows(width)
@@ -1136,24 +1124,9 @@ impl App {
             .collect();
         // 结构化附件 rail：稳定 [Image #N] 身份与顺序独立于可编辑文本，
         // 因此删改正文不会悄悄重绑图片。每图一行，末行给批次预算。
-        if !self.attachments.is_empty() {
-            let mut rail = self
-                .attachments
-                .rows()
-                .map(|row| Line::from(Span::styled(row, theme::style(theme::Role::Faint))))
-                .collect::<Vec<_>>();
-            rail.push(Line::from(Span::styled(
-                format!(
-                    "{} image(s) · {} source · ~{} visual tokens · /image remove|move",
-                    self.attachments.len(),
-                    crate::tui::attachments::human_bytes(self.attachments.total_source_bytes()),
-                    self.attachments.total_estimated_tokens()
-                ),
-                theme::style(theme::Role::Faint),
-            )));
-            rail.extend(lines);
-            lines = rail;
-        }
+        let mut rail = self.attachment_rail();
+        rail.extend(lines);
+        lines = rail;
         if let Some((from, to)) = self
             .selection
             .filter(|selection| selection.kind == SelectionKind::Input && !selection.is_empty())
@@ -1177,7 +1150,70 @@ impl App {
                 *line = highlight_line(line, highlight_from, highlight_to);
             }
         }
-        frame.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
+        lines
+    }
+
+    fn attachment_rail(&self) -> Vec<Line<'static>> {
+        if self.attachments.is_empty() {
+            return Vec::new();
+        }
+        let mut rail = self
+            .attachments
+            .rows()
+            .map(|row| Line::from(Span::styled(row, theme::style(theme::Role::Faint))))
+            .collect::<Vec<_>>();
+        rail.push(Line::from(Span::styled(
+            format!(
+                "{} image(s) · {} source · ~{} visual tokens · /image remove|move",
+                self.attachments.len(),
+                crate::tui::attachments::human_bytes(self.attachments.total_source_bytes()),
+                self.attachments.total_estimated_tokens()
+            ),
+            theme::style(theme::Role::Faint),
+        )));
+        rail
+    }
+
+    fn draw_status_bar(&self, frame: &mut Frame, area: Rect, tick: u64) {
+        let bar = area.inner(Margin::new(1, 0));
+        let segments = if self.dsh.is_some() {
+            self.dsh_status_segments()
+        } else {
+            status_suffix_segments(
+                &self.config,
+                &self.balance,
+                current_route_usage(&self.usage_routes, &self.config),
+                self.last_turn_usage.as_ref(),
+            )
+        };
+        let budget = bar.width.saturating_sub(MIN_STATUS_LEFT + 2) as usize;
+        let suffix = fit_status_suffix(&segments, budget);
+        let status_line = if let Some(phase) = self.phases.phase {
+            phase_line(
+                tick,
+                phase,
+                self.phase_elapsed(),
+                self.run_elapsed(),
+                self.conversation.pending_steering_count(),
+            )
+        } else {
+            Line::from(self.status.as_str())
+        };
+        if suffix.is_empty() {
+            frame.render_widget(Paragraph::new(status_line), bar);
+        } else {
+            let suffix_width = UnicodeWidthStr::width(suffix.as_str()) as u16;
+            let status_width = bar.width.saturating_sub(suffix_width + 2);
+            let columns = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Length(status_width), Constraint::Min(0)])
+                .split(bar);
+            frame.render_widget(
+                Paragraph::new(status_line).wrap(Wrap { trim: false }),
+                columns[0],
+            );
+            frame.render_widget(Paragraph::new(suffix).right_aligned(), columns[1]);
+        }
     }
 }
 

@@ -35,8 +35,15 @@ impl HostManagementArgs {
 
     pub fn execute(&self) -> Result<String, String> {
         let client = match self.port {
-            Some(port) => HostClient::connect_local(port)?,
-            None => HostClient::discover_local()?,
+            Some(port) => {
+                let root = crate::control_storage::sentinel::default_storage_root()?;
+                HostClient::connect_for_management(
+                    port,
+                    super::credentials::read_token(&root)?,
+                    &root,
+                )?
+            }
+            None => HostClient::discover_local_for_management()?,
         };
         if self.stop {
             let result = client.call("host.stop", &json!({}))?;

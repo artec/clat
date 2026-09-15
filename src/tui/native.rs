@@ -43,7 +43,7 @@ pub(super) enum NativeEvent {
     Renamed(u64, u64, Result<Value, String>),
     Models(u64, u64, Result<crate::host::HostModelChoices, String>),
     ModelChanged(u64, u64, Result<Value, String>),
-    PromptSuggestion(u64, u64, Result<Value, String>),
+    PromptSuggestion(u64, u64, u64, Result<Value, String>),
     ThinkingChanged(u64, Result<Value, String>),
     ProfileLoaded(u64, u64, String, Result<Value, String>),
     ProfileSaved(u64, u64, Result<Value, String>),
@@ -80,6 +80,21 @@ pub(super) struct NativeState {
 }
 
 impl App {
+    pub(super) fn native_online(&self) -> Option<bool> {
+        self.native.as_ref().map(|native| native.online)
+    }
+
+    #[cfg(all(test, feature = "runtime-tests"))]
+    pub(super) fn set_native_online_for_snapshot(&mut self, online: bool) {
+        self.native.as_mut().expect("native snapshot shell").online = online;
+    }
+
+    pub(super) fn native_selection_identity(&self) -> Option<(u64, u64)> {
+        self.native
+            .as_ref()
+            .map(|native| (native.epoch, native.selection))
+    }
+
     pub(super) fn open_native(project: Project, client: HostClient) -> Result<Self, String> {
         let mut app = Self::open_minimal(project, Some(client.storage_root().to_path_buf()))?;
         // Bootstrap was read-only; this shell must never mount a local writer.
@@ -227,12 +242,17 @@ impl App {
         let (Some(native), Some(ui)) = (&self.native, self.event_sender.clone()) else {
             return;
         };
-        if native.pending.is_some() || !native.online {
+        if native.pending.is_some() || !native.online || self.suggestions.pending() || self.running
+        {
             self.flash_status("host offline/busy — suggestion kept out of the composer");
             return;
         }
         let client = native.client.clone();
         let (epoch, selection) = (native.epoch, native.selection);
+        let (request, _) = self
+            .suggestions
+            .begin(self.input.generation())
+            .expect("idle suggestion slot");
         thread::spawn(move || {
             let result = client.call(
                 "prompt.suggest",
@@ -241,6 +261,7 @@ impl App {
             let _ = ui.send(UiEvent::Native(NativeEvent::PromptSuggestion(
                 epoch,
                 selection,
+                request,
                 result.map_err(|error| error.to_string()),
             )));
         });
@@ -345,8 +366,8 @@ impl App {
             NativeEvent::ModelChanged(epoch, request, result) => {
                 self.native_model_changed(epoch, request, result)
             }
-            NativeEvent::PromptSuggestion(epoch, selection, result) => {
-                self.native_prompt_suggestion(epoch, selection, result)
+            NativeEvent::PromptSuggestion(epoch, selection, request, result) => {
+                self.native_prompt_suggestion(epoch, selection, request, result)
             }
             NativeEvent::Renamed(epoch, selection, result) => {
                 self.native_renamed(epoch, selection, result)
@@ -420,26 +441,28 @@ impl App {
         &mut self,
         epoch: u64,
         selection: u64,
+        request: u64,
         result: Result<Value, String>,
     ) {
-        if !self
+        let valid = self
             .native
             .as_ref()
             .is_some_and(|native| native.epoch == epoch && native.selection == selection)
-        {
-            return;
-        }
-        match result {
-            Ok(value) => {
-                if let Some(text) = value.get("text").and_then(Value::as_str) {
-                    self.input.insert_str(text);
-                    self.flash_status("suggestion inserted — edit it, then press Enter to send");
-                } else {
-                    self.flash_status("host returned an empty suggestion");
-                }
-            }
-            Err(error) => self.flash_status(format!("suggestion unavailable: {error}")),
-        }
+            && result.as_ref().map_or(true, |value| {
+                value["selection_generation"].as_u64() == Some(selection)
+                    && value["session_id"].as_str()
+                        == self.session_id.as_ref().map(SessionId::as_str)
+            });
+        self.finish_suggestion(
+            request,
+            valid,
+            result.and_then(|value| {
+                value["text"]
+                    .as_str()
+                    .map(str::to_owned)
+                    .ok_or_else(|| "host returned an empty suggestion".to_owned())
+            }),
+        );
     }
 
     pub(super) fn native_clipboard_drafts(
@@ -507,6 +530,10 @@ impl App {
             .map(|id| SessionId::new(id.to_owned()));
         self.session_title = value["session"]["title"].as_str().map(str::to_owned);
         self.config.model = value["model"]["model"].as_str().unwrap_or_default().into();
+        // preset 也随快照回填：标题按 preset 查显示名（缺了就退回
+        // "协议 · 模型名"，attach 壳里会恒走退回分支——2026-09-15
+        // 负责人实机：标题多出 "OpenAI Compatible" 前缀）。
+        self.config.preset = value["model"]["preset"].as_str().map(str::to_owned);
         if let Ok(protocol) = serde_json::from_value(value["model"]["protocol"].clone()) {
             self.config.protocol = protocol;
         }

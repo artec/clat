@@ -104,6 +104,19 @@ ensure-current）；两仓源码地图见 `references/repo-map.md`。按阶段�
 - 退役代（如 v1）显式拒绝并指路 /new，绝不静默收下或跳过。
 - 旧代**只读打开**（错误信息指路 /update 或 /new），普通路径
   零副作用：不补 end-seed、不修复、不写 checkpoint、不建 writer；
+- **bump 会制造"新的旧代"（2026-09-15 缺陷入册）**：常量每进一代，
+  上一代就从"可写"翻成"可解码但不可写"。按版本号路由读写状态的
+  地方（协调器只读分支、写路门槛、命令可见性）一律用**"凡低于
+  `SESSION_FORMAT_VERSION`"**表达，禁止写死具体版本号——只读分支
+  写死 `== 0` 的债在 V3 bump 后爆雷：v2 打不开、/update 又只在
+  legacy 会话内可达，"打不开就没法 update"死锁（合并后实机发现）。
+- **结构性改名会从宿主的"事件服务面"漏进客户端 wire 缝（2026-09-15
+  缺陷入册）**：新代的信封/字段改名不只存在于 journal 文件——宿主的
+  `session/page`、live `session/event` 把各代事件**原样**发给客户端，
+  且不带世代标签。任何把 journal 事件当 wire 载荷消费的客户端
+  （`clat dsh`、将来桌面端）都要在解析缝做**形状驱动**的信封规范化
+  （V3 `startSeq`/`endSeq` → 逻辑 `start`/`end`）。一条解析失败 =
+  整页历史被拒 → 转录只剩暂存 live 帧（"打开会话只见最后一条"）。
 - 迁移 = 租约内读 → **纯转换器** → 发布前**字节往返验证** →
   源 revision 复验 → **no-overwrite 原子发布** → 目录 fsync →
   **重武装**（世代重排由整体重建吸收，不做水位算术；投影永远由
@@ -122,6 +135,11 @@ ensure-current）；两仓源码地图见 `references/repo-map.md`。按阶段�
   step/start 之前，rc.2 迁移器按规格拒绝（提示词变化在开放 step
   外）。拒绝类要**复刻并钉判别测试**；上游自己的测试铸造法
   （migration.spec.ts 的合成源）是金样源的合法替代。
+- **bump 批次的必备判别腿（2026-09-15 补）**：经协调器**真实 resume
+  路径**（不是 upgrade 自读）只读打开一个**上一发布代**会话——成功、
+  零副作用（源字节不动、无锁/检查点/seed/writer 残留）、写面拒绝
+  指路 /update、/update 后同一会话当场可写。ensure-current/金样/
+  准入测试全绿不覆盖这条腿（V3 批漏网实录）。
 - **重映射只做同名工件引用表**（surface 信封/sourceEventSeqs/
   command.done/compaction Range+Seqs/title messageSeqs），其余一律
   保真；单遍走日志即可——引用只指向前方，走到时映射必已建立，
@@ -196,6 +214,15 @@ clamp**（头之前的前缀节点从遮蔽前缀剔除），绝不为过 fold �
     拒绝；金样源按上游测试铸造法造，真实日志的拒绝类另钉测试；
 12. 忽略 `--ignored` 测试面 → 写侧/准入不对称的真 bug（空 tools
     违规）漏到全量门禁才炸；ignored 面交付前必绿。
+13. 只读路由写死旧代版本号（`version == 0`）→ bump 后新旧代打不开、
+    /update 不可达，死锁（2026-09-15 实机发现）；条件用
+    `< SESSION_FORMAT_VERSION`，测试带"旧代只读 resume → /update
+    可写"腿。
+14. 新代信封改名只对齐 journal 读侧、漏掉 dsh 客户端 wire 缝 →
+    宿主 `session/page`/live 帧里一条 V3 形替换事件让整页
+    "invalid history event"，TUI 只剩最后一条消息（2026-09-15
+    实机发现）；wire 无世代标签，按形状在解析缝规范化
+    （`dsh::frames::canonicalize_wire_event`）。
 
 ## 关键落点速查（详见 references/repo-map.md）
 

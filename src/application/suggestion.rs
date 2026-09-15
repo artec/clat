@@ -34,6 +34,11 @@ impl PreparedPromptSuggestion {
 }
 
 impl TrustedProjectApplication {
+    #[cfg(test)]
+    pub(crate) fn set_utility_for_test(&mut self, utility: Arc<dyn UtilityModel>) {
+        self.utility = utility;
+    }
+
     pub fn prepare_prompt_suggestion(
         &mut self,
     ) -> Result<PreparedPromptSuggestion, ApplicationError> {

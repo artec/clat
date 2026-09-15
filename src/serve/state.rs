@@ -118,12 +118,13 @@ pub(crate) struct ServeShared {
     /// run. Keeping the cancellable handle here makes F5/reconnect and
     /// duplicate-start behavior frontend-neutral rather than browser-local.
     active_compaction: Mutex<Option<ActiveCompaction>>,
-    shutting_down: AtomicBool,
+    shutting_down: Arc<AtomicBool>,
     /// settler / notice 转发（关停时统一有界 join）。
     workers: Mutex<Vec<JoinHandle<()>>>,
     connections: Mutex<Vec<JoinHandle<()>>>,
     next_subscriber_id: AtomicU64,
     selection_generation: AtomicU64,
+    last_access: AtomicU64,
     token_generation: u64,
     active_uploads: AtomicUsize,
     active_attachment_downloads: AtomicUsize,
@@ -165,11 +166,12 @@ impl ServeShared {
             wechat_binding: Mutex::new(None),
             wechat_outbound: Mutex::new(()),
             active_compaction: Mutex::new(None),
-            shutting_down: AtomicBool::new(false),
+            shutting_down: Arc::new(AtomicBool::new(false)),
             workers: Mutex::new(Vec::new()),
             connections: Mutex::new(Vec::new()),
             next_subscriber_id: AtomicU64::new(1),
             selection_generation: AtomicU64::new(1),
+            last_access: AtomicU64::new(now_ms() as u64),
             token_generation: uuid::Uuid::new_v4().as_u128() as u64,
             active_uploads: AtomicUsize::new(0),
             active_attachment_downloads: AtomicUsize::new(0),
@@ -201,8 +203,36 @@ impl ServeShared {
         self.shutting_down.load(Ordering::SeqCst)
     }
 
+    pub(crate) fn is_idle_for_reclaim(&self) -> bool {
+        let inner = self.inner.lock().expect("serve inner lock");
+        let idle = inner.active_run.is_none() && inner.subscribers.is_empty();
+        drop(inner);
+        idle && Arc::strong_count(&self.app) == 2
+            && self.active_compaction_info().is_null()
+            && self.pending.lock().expect("approvals").is_empty()
+            && self.questions.0.lock().expect("questions").is_empty()
+            && self
+                .pending_steering
+                .lock()
+                .expect("steering receipts")
+                .is_empty()
+            && self.wechat_binding.lock().expect("binding").is_none()
+            && self.active_connections.load(Ordering::Acquire) == 0
+            && self.active_uploads.load(Ordering::Acquire) == 0
+            && self.active_attachment_downloads.load(Ordering::Acquire) == 0
+            && !self.drafts.has_live_drafts()
+    }
+
     pub(crate) fn selection_generation(&self) -> u64 {
         self.selection_generation.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn touch(&self) {
+        self.last_access.store(now_ms() as u64, Ordering::Release);
+    }
+
+    pub(crate) fn last_access(&self) -> u64 {
+        self.last_access.load(Ordering::Acquire)
     }
 
     pub(crate) fn advance_selection_generation(&self) -> u64 {
@@ -658,7 +688,8 @@ impl ServeShared {
             let app = self.app.lock().expect("application lock");
             app.subscribe(tx);
         }
-        let shared = Arc::clone(self);
+        let shared = Arc::downgrade(self);
+        let shutdown = self.shutting_down.clone();
         let handle = std::thread::Builder::new()
             .name("clat-serve-notice".into())
             .spawn(move || {
@@ -669,6 +700,9 @@ impl ServeShared {
                     // 断开判断会永久挂起。
                     match rx.recv_timeout(Duration::from_millis(200)) {
                         Ok(event) => {
+                            let Some(shared) = shared.upgrade() else {
+                                return;
+                            };
                             if matches!(
                                 event,
                                 ApplicationEvent::CompactionUpdated(
@@ -684,7 +718,7 @@ impl ServeShared {
                             });
                         }
                         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                            if shared.is_shutting_down() {
+                            if shutdown.load(Ordering::SeqCst) {
                                 return;
                             }
                         }

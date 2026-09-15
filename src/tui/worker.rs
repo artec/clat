@@ -46,10 +46,9 @@ pub(crate) enum WorkerMessage {
     /// events while the application is temporarily owned by this worker; the
     /// frontend gates new input until this message restores that sole owner.
     SteeringAdmissionFinished(Box<SteeringAdmissionFinished>),
-    /// Manual companion suggestion. The application facade is transferred to
-    /// one bounded worker so provider I/O never blocks the terminal loop.
+    /// Manual preview reply; the worker owns only a prepared utility request.
     PromptSuggestionFinished {
-        application: Box<crate::TrustedProjectApplication>,
+        request: u64,
         outcome: Result<crate::application::PromptSuggestion, String>,
     },
     /// W1-13：完成消息携带 run 纪元（TUI 本地单调计数）。收尾窗口里

@@ -105,3 +105,15 @@
 - **模型请求路径不变**：提示词的 journal 表示变了（system/message 面），
   但 CLAT 仍经 `ModelRequest.instructions` 供词——surface→ModelItem
   适配器跳过 system 节点（压缩 shadow 因此天然不碰头）。
+
+## 交付后缺陷（2026-09-15，合并后负责人实机发现）
+
+- **v2 会话打不开 → /update 不可达，死锁**：协调器只读路由写死
+  `version == 0`（round-11 时代 v0 是唯一旧代的债）；bump 制造的
+  "可解码但不可写" v2 状态无路可走，resume 被写路门槛拒绝，而
+  /update 只在已打开的 legacy 会话内可用。修复 = 路由条件泛化为
+  "凡低于 `SESSION_FORMAT_VERSION`" + 必备判别腿（旧代只读
+  resume → /update 可写，pre-fix 红在生产报错原文）。全记录见任务书
+  `session-v3-migration.md` §5；已入 SKILL.md 第 4 阶段与冤枉路 13。
+  教训：bump 的自查面不止"常量传播三点"（S5），还有"按版本号路由的
+  状态机是否笼统覆盖了全部旧代"。

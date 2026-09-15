@@ -16,6 +16,9 @@ const WAIT: Duration = Duration::from_secs(30);
 mod bounded_process;
 use bounded_process::BoundedProcess;
 
+#[path = "support/incompatible_host.rs"]
+mod incompatible_host;
+
 struct HostCleanup<'a> {
     root: &'a Path,
     home: &'a Path,

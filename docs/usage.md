@@ -17,6 +17,9 @@ Running `clat` without arguments now discovers or starts a background host, then
 opens the traditional TUI as its client. An untrusted project requires an explicit
 `y` confirmation before startup; declining writes nothing. Closing the TUI leaves
 the host running. Scripts should use `clat exec`; default startup requires a TTY.
+The attached TUI title uses `CLAT ● host` in green while connected and
+`CLAT ○ host` in red while connecting or offline. Standalone remains bare `CLAT`;
+the DSH client retains its corresponding `CLAT ●/○ dsh` marker.
 `clat host start [--trust]` performs the same spawn-or-attach without opening a TUI.
 The explicit `--trust` authorizes the current project; omit it for already trusted
 projects. The host alone persists this authorization after storage preflight.
@@ -41,6 +44,12 @@ background launch on an OS-selected loopback port; concurrent launchers converge
 on the winning host. An occupied lease never permits another writer. Startup
 failure reports an error, never falls back to standalone; reconnect does not spawn.
 `clat serve --trust` explicitly authorizes its current project when needed.
+The host snapshots a path-independent build fingerprint before accepting clients.
+If a later native CLAT build finds the same live, same-protocol host, startup
+refuses to attach and tells the developer to run `clat host stop` explicitly;
+it never kills an active run or disconnects frontends automatically. Explicit
+`host status` and `host stop` remain able to manage that old build. Legacy hosts
+that do not advertise the additive field remain compatible for rollout.
 
 | Need | Command | State owner |
 |---|---|---|
@@ -727,8 +736,11 @@ Continuous session naming is on by default; it uses a bounded, persistent
 sidecar budget and never changes a user-owned title. Manual prompt suggestions
 are off by default. When enabled, press **Suggest** (or enter `/suggest` in the
 TUI) to request one next-message hint. The hint is a preview only: it is never
-submitted or written to the session journal until you edit it and send it as a
-normal prompt. Switching sessions, starting a run, or editing the composer
+submitted or written to the session journal until you adopt it and send it as a
+normal prompt. In the TUI, **Ctrl+Y** replaces the composer with the preview;
+**Esc** ignores it without changing your text. Generation does not lock editing,
+and each terminal allows only one outstanding suggestion request.
+Switching sessions, starting a run, or editing the composer
 invalidates an in-flight result. The utility profile may be the primary model
 or an explicitly saved model profile; credentials remain write-only.
 
@@ -1111,20 +1123,31 @@ directory; a previously untrusted project requires the explicit trust checkbox.
 Open its link in a new tab. Projects share the host's model configuration and
 credentials, but keep separate sessions, permissions, drafts and event streams.
 Closing a browser tab does not stop the host. Up to 16 projects may remain
-mounted in a host; restart the host to release unused project runtimes.
+mounted at once. When capacity is reached, the host reclaims an idle additional
+project runtime; connected event streams, active operations and live drafts
+prevent reclamation. Session history and trust remain on disk, and the host
+keeps its storage-root lease. If every project is active, opening another
+project fails with a capacity error rather than disrupting existing work.
 
 Authenticated clients can call `host.describe`, `workspace.list`,
 `workspace.open` (`root`, optional boolean `trust`), and `host.stop`.
 `workspace.open` returns an opaque `id` and `api_prefix`; prepend that prefix
 to the existing `/api/...` paths, including events, image uploads and image
-reads. Project identifiers are valid only for the running host; reopen the
-project after a host restart. `host.describe` reports instance, wire and journal
-versions so future native clients can reject incompatible hosts.
+reads. Project identifiers are temporary; reopen the project after an idle
+runtime is reclaimed or after a host restart. `host.describe` reports instance,
+wire, journal and additive build-fingerprint identities so native clients can
+reject incompatible or stale builds. Browser/raw HTTP clients do not present or
+compare a CLAT executable identity and continue to attach normally.
+Automatic startup rejects a live, authenticated, identity-matched incompatible
+host or different advertised build immediately. It never stops that host or
+starts a replacement writer; stop the old host explicitly before upgrading or
+testing a newly rebuilt development binary.
 
 `clat attach --port 2691` connects the terminal to an already running local host
 and opens the current project; add `--trust` to explicitly authorize that
-project. It verifies the storage root, instance and protocol versions and reads
-the host's private saved token (an explicit serve token is not saved).
+project. It verifies the storage root, instance, protocol versions and any
+advertised build fingerprint, then reads the host's private saved token (an
+explicit serve token is not saved).
 This initial client supports text and PNG/JPEG submission, streaming, cancellation, session
 commands, shared approvals and ask-user dialogs. `/reconnect` rebuilds a disconnected view;
 uncertain submissions are not automatically resent. Closing the terminal

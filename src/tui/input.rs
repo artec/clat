@@ -7,6 +7,7 @@ pub(crate) struct InputBuffer {
     history: Vec<String>,
     history_index: Option<usize>,
     draft: String,
+    generation: u64,
 }
 
 impl InputBuffer {
@@ -18,6 +19,7 @@ impl InputBuffer {
     }
 
     pub fn clear(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
         self.text.clear();
         self.cursor = 0;
         self.history_index = None;
@@ -25,6 +27,7 @@ impl InputBuffer {
     }
 
     pub fn take(&mut self) -> String {
+        self.generation = self.generation.wrapping_add(1);
         let value = std::mem::take(&mut self.text);
         self.cursor = 0;
         self.history_index = None;
@@ -35,6 +38,10 @@ impl InputBuffer {
     /// 只读视图（弹框预填/提交校验用；不改变光标与历史状态）。
     pub fn text(&self) -> &str {
         &self.text
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     pub fn remember(&mut self, value: String) {
@@ -49,6 +56,7 @@ impl InputBuffer {
     }
 
     pub fn insert_char(&mut self, ch: char) {
+        self.generation = self.generation.wrapping_add(1);
         self.leave_history();
         self.text.insert(self.cursor, ch);
         self.cursor += ch.len_utf8();
@@ -61,6 +69,7 @@ impl InputBuffer {
     }
 
     pub fn insert_str(&mut self, value: &str) {
+        self.generation = self.generation.wrapping_add(1);
         self.leave_history();
         self.text.insert_str(self.cursor, value);
         self.cursor += value.len();
@@ -85,6 +94,7 @@ impl InputBuffer {
             return;
         }
         let previous = previous_boundary(&self.text, self.cursor);
+        self.generation = self.generation.wrapping_add(1);
         self.text.drain(previous..self.cursor);
         self.cursor = previous;
     }
@@ -95,6 +105,7 @@ impl InputBuffer {
             return;
         }
         let next = next_boundary(&self.text, self.cursor);
+        self.generation = self.generation.wrapping_add(1);
         self.text.drain(self.cursor..next);
     }
 
@@ -131,6 +142,7 @@ impl InputBuffer {
             Some(index) => index - 1,
         };
         self.history_index = Some(next);
+        self.generation = self.generation.wrapping_add(1);
         self.text = self.history[next].clone();
         self.cursor = self.text.len();
     }
@@ -147,6 +159,7 @@ impl InputBuffer {
             self.history_index = None;
             self.text = std::mem::take(&mut self.draft);
         }
+        self.generation = self.generation.wrapping_add(1);
         self.cursor = self.text.len();
     }
 
@@ -260,6 +273,7 @@ impl InputBuffer {
     pub fn remove_range(&mut self, start: usize, end: usize) -> String {
         self.leave_history();
         let removed = self.text.drain(start..end).collect();
+        self.generation = self.generation.wrapping_add(1);
         self.cursor = start;
         removed
     }

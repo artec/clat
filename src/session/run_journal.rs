@@ -152,8 +152,13 @@ impl SessionCoordinator {
         header: SessionHeader,
         visitor: &mut dyn FnMut(&SessionEvent) -> Result<(), String>,
     ) -> Result<(Arc<Self>, bool), SessionError> {
+        // Every decodable generation below the writable current one opens
+        // read-only: the legacy source must stay byte-exact and free of
+        // writer artifacts so /update can publish the final current
+        // generation from it. Newer-than-current generations refuse in
+        // header_snapshot and never take this branch.
         if let Ok(stored) = backend.header_snapshot(&key)
-            && stored.version == 0
+            && stored.version < crate::session::compat::SESSION_FORMAT_VERSION
         {
             let mut next_seq = 0;
             backend.visit_from(&key, 0, &mut |event| {

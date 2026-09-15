@@ -54,22 +54,11 @@ impl App {
             WorkerMessage::SteeringAdmissionFinished(finished) => {
                 self.restore_steering_admission(*finished)
             }
-            WorkerMessage::PromptSuggestionFinished {
-                application,
-                outcome,
-            } => {
-                self.application = Some(*application);
-                self.suggestion_pending = false;
-                match outcome {
-                    Ok(suggestion) => {
-                        self.suggestion_text = Some(suggestion.text.clone());
-                        self.input.insert_str(&suggestion.text);
-                        self.flash_status(
-                            "suggestion inserted — edit it, then press Enter to send",
-                        );
-                    }
-                    Err(error) => self.flash_status(error),
-                }
+            WorkerMessage::PromptSuggestionFinished { request, outcome } => {
+                let valid = outcome.as_ref().map_or(true, |suggestion| {
+                    self.session_id.as_ref() == Some(&suggestion.session_id)
+                });
+                self.finish_suggestion(request, valid, outcome.map(|suggestion| suggestion.text));
             }
             WorkerMessage::Done { epoch, result } => {
                 self.finish_run(epoch, result);

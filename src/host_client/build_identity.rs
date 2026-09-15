@@ -1,0 +1,96 @@
+//! Process build identity used only to prevent stale native-host attachment.
+//! The host snapshots it before accepting clients; later executable replacement
+//! therefore cannot make an old process impersonate the newly built client.
+
+use sha2::{Digest as _, Sha256};
+use std::sync::OnceLock;
+
+static CURRENT: OnceLock<Result<String, String>> = OnceLock::new();
+
+pub(crate) fn current() -> Result<&'static str, String> {
+    match CURRENT.get_or_init(compute) {
+        Ok(identity) => Ok(identity.as_str()),
+        Err(error) => Err(error.clone()),
+    }
+}
+
+pub(super) fn verify_advertised(
+    description: &serde_json::Value,
+) -> Result<(), super::discovery::DiscoveryFailure> {
+    let Some(advertised) = description.get("build_fingerprint") else {
+        // Additive rollout: old hosts and protocol fixtures remain attachable.
+        return Ok(());
+    };
+    let advertised = advertised.as_str().ok_or_else(|| {
+        super::discovery::DiscoveryFailure::Incompatible(
+            "host build fingerprint is invalid; stop that host explicitly".into(),
+        )
+    })?;
+    let current = current().map_err(super::discovery::DiscoveryFailure::Incompatible)?;
+    if advertised == current {
+        return Ok(());
+    }
+    Err(super::discovery::DiscoveryFailure::Incompatible(
+        "a different CLAT build is already hosting this storage root; run `clat host stop` explicitly, then retry (active runs and connected frontends will be disconnected)".into(),
+    ))
+}
+
+fn compute() -> Result<String, String> {
+    let executable = std::env::current_exe()
+        .map_err(|error| format!("cannot locate this CLAT build: {error}"))?;
+    let metadata = std::fs::metadata(&executable)
+        .map_err(|error| format!("cannot inspect this CLAT build: {error}"))?;
+    let modified = metadata
+        .modified()
+        .and_then(|time| {
+            time.duration_since(std::time::UNIX_EPOCH)
+                .map_err(std::io::Error::other)
+        })
+        .map_err(|error| format!("cannot inspect this CLAT build: {error}"))?;
+    // Integers only: no path spelling, inode/dev identity, case folding or
+    // Windows 8.3 aliases enter the cross-platform wire value. A rebuild or
+    // replacement changes this coordinate even when the product version does
+    // not; hashing keeps local filesystem timestamps out of the response.
+    let material = format!(
+        "v1\0{}\0{}\0{}\0{}\0{}",
+        env!("CARGO_PKG_VERSION"),
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        metadata.len(),
+        modified.as_nanos()
+    );
+    Ok(format!(
+        "build-v1-sha256:{:x}",
+        Sha256::digest(material.as_bytes())
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn process_identity_is_cached_and_path_independent() {
+        let first = current().unwrap();
+        let second = current().unwrap();
+        assert!(
+            std::ptr::eq(first, second),
+            "one process caches one identity"
+        );
+        assert!(
+            first.strip_prefix("build-v1-sha256:").is_some_and(
+                |digest| digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit())
+            ),
+            "identity is a hashed build coordinate, not a platform path: {first}"
+        );
+    }
+
+    #[test]
+    fn advertised_identity_is_additive_and_same_build_is_accepted() {
+        assert!(verify_advertised(&serde_json::json!({})).is_ok());
+        assert!(
+            verify_advertised(&serde_json::json!({"build_fingerprint":current().unwrap()})).is_ok(),
+            "the same build attaches without stopping or replacing its host"
+        );
+    }
+}

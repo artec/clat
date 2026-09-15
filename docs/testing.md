@@ -40,6 +40,14 @@ remain in the default `runtime-tests` feature. An explicit persistence-test
 filter selects the full harness. Ordinary Cargo tests, mixed filters and
 delivery/CI gates retain these tests; the quick tier does not delete coverage.
 
+Runtime-backed snapshot fixtures authorize through the real TUI confirmation
+gate and retain that single mounted application. Do not pre-authorize by
+mounting, closing and immediately reopening the same storage root: that
+introduces a lease-release visibility window under parallel macOS load.
+Production lease acquisition remains one-shot and fail-closed; fixture fixes
+must not add sleeps or silently retry a busy root. The fixture structure and
+retained cross-thread exclusion have a regression guard.
+
 The measurement command reports build time, startup plus tests, artifact
 size, cache freshness and total time. Run it immediately after an actual
 edit. `--rebuild src/tui/model_editor.rs` explicitly requests a synthetic

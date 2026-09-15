@@ -94,6 +94,161 @@ fn reject_request(stream: &mut TcpStream) -> std::io::Result<()> {
     )
 }
 
+#[test]
+fn suggestion_is_preview_until_explicit_accept_and_never_sends() {
+    for attached in [false, true] {
+        let (mut app, storage, request) = suggestion_shell(attached);
+        suggestion_reply(&mut app, request, "next question");
+        assert_eq!(
+            app.input.text(),
+            "",
+            "provider replies must not edit the composer"
+        );
+        app.handle_ui_event(UiEvent::Terminal(Event::Key(KeyEvent::new(
+            KeyCode::Char('y'),
+            KeyModifiers::CONTROL,
+        ))));
+        assert_eq!(app.input.text(), "next question");
+        assert!(!app.running, "accept is not send");
+        assert!(
+            app.native
+                .as_ref()
+                .is_none_or(|native| native.pending.is_none())
+        );
+        assert!(
+            app.application.is_none(),
+            "reply must not introduce a local writer"
+        );
+        app.handle_ui_event(UiEvent::Terminal(Event::Key(KeyEvent::from(
+            KeyCode::Char('!'),
+        ))));
+        assert_eq!(app.input.text(), "next question!");
+        drop(app);
+        crate::test_support::cleanup_tree(&storage);
+    }
+}
+
+#[test]
+fn suggestion_in_flight_does_not_freeze_editing_or_append_a_stale_reply() {
+    for attached in [false, true] {
+        let (mut app, storage, request) = suggestion_shell(attached);
+        app.handle_ui_event(UiEvent::Terminal(Event::Key(KeyEvent::from(
+            KeyCode::Char('x'),
+        ))));
+        assert_eq!(app.input.text(), "x", "suggestion must not freeze editing");
+        suggestion_reply(&mut app, request, "stale");
+        assert_eq!(
+            app.input.text(),
+            "x",
+            "a late suggestion cannot modify newer input"
+        );
+        assert!(app.suggestions.preview.is_none());
+        assert!(!app.suggestions.pending());
+        drop(app);
+        crate::test_support::cleanup_tree(&storage);
+    }
+}
+
+fn suggestion_shell(attached: bool) -> (App, PathBuf, u64) {
+    let (mut app, storage) = shell();
+    if !attached {
+        app.native = None;
+    }
+    app.session_id = Some(SessionId::new("hint-session"));
+    let (request, _) = app.suggestions.begin(app.input.generation()).unwrap();
+    (app, storage, request)
+}
+
+fn suggestion_reply(app: &mut App, request: u64, text: &str) {
+    let event = if app.native.is_some() {
+        UiEvent::Native(NativeEvent::PromptSuggestion(
+            0,
+            0,
+            request,
+            Ok(json!({"text":text,"session_id":"hint-session","selection_generation":0})),
+        ))
+    } else {
+        UiEvent::Worker(WorkerMessage::PromptSuggestionFinished {
+            request,
+            outcome: Ok(crate::application::PromptSuggestion {
+                session_id: SessionId::new("hint-session"),
+                text: text.into(),
+            }),
+        })
+    };
+    app.handle_ui_event(event);
+}
+
+#[test]
+fn suggestion_ignore_and_edit_back_to_same_text_preserve_composer() {
+    for attached in [false, true] {
+        let (mut app, storage, request) = suggestion_shell(attached);
+        suggestion_reply(&mut app, request, "ignore me");
+        app.handle_ui_event(UiEvent::Terminal(Event::Key(KeyEvent::from(KeyCode::Esc))));
+        assert_eq!(app.input.text(), "");
+        assert!(app.suggestions.preview.is_none());
+        let (request, _) = app.suggestions.begin(app.input.generation()).unwrap();
+        app.handle_ui_event(UiEvent::Terminal(Event::Paste("temporary".into())));
+        for _ in 0..9 {
+            app.handle_ui_event(UiEvent::Terminal(Event::Key(KeyEvent::from(
+                KeyCode::Backspace,
+            ))));
+        }
+        assert_eq!(app.input.text(), "");
+        suggestion_reply(&mut app, request, "ABA-stale");
+        assert!(
+            app.suggestions.preview.is_none(),
+            "text equality is not an input generation fence"
+        );
+        drop(app);
+        crate::test_support::cleanup_tree(&storage);
+    }
+}
+
+#[test]
+fn suggestion_preview_is_rendered_without_changing_input() {
+    use ratatui::{Terminal, backend::TestBackend};
+    for attached in [false, true] {
+        let (mut app, storage, request) = suggestion_shell(attached);
+        suggestion_reply(&mut app, request, "visible preview");
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(screen.contains("visible preview"));
+        assert!(screen.contains("Ctrl+Y use suggestion"));
+        assert_eq!(app.input.text(), "");
+        drop(app);
+        crate::test_support::cleanup_tree(&storage);
+    }
+}
+
+#[test]
+fn native_suggestion_has_one_request_in_flight() {
+    let (mut app, storage) = shell();
+    app.native.as_mut().unwrap().online = true;
+    let (sender, received) = ui_event_channel();
+    app.event_sender = Some(sender);
+    app.open_native_suggestion();
+    app.open_native_suggestion();
+    let first = received.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert!(matches!(
+        first,
+        UiEvent::Native(NativeEvent::PromptSuggestion(..))
+    ));
+    assert!(
+        received.recv_timeout(Duration::from_millis(200)).is_err(),
+        "a duplicate trigger must not launch another utility request"
+    );
+    drop(app);
+    crate::test_support::cleanup_tree(&storage);
+}
+
 fn clipboard_png() -> Vec<u8> {
     let mut png = Vec::new();
     image::DynamicImage::ImageRgba8(image::RgbaImage::new(2, 2))
@@ -658,6 +813,44 @@ fn native_model_thinking_never_claims_a_local_only_configuration_change() {
     let before = serde_json::to_value(&app.config).unwrap();
     app.cycle_thinking_level();
     assert_eq!(serde_json::to_value(&app.config).unwrap(), before);
+    drop(app);
+    crate::test_support::cleanup_tree(&storage);
+}
+
+/// 缺陷修复判别腿（2026-09-15，负责人实机）：attach 壳的宿主投影**从不
+/// 携带 endpoint**（路由脱敏纪律），快照报了模型名即代表宿主已配置。
+/// 旧判定直接用本地 `is_configured()`（要求本地 endpoint 非空）→ 默认
+/// 拓扑下标题恒 "not configured — /model"、prompt 提交恒被拒、/model
+/// 选完也不变——"进去就没选中模型，选择也无效"。pre-fix 红 = 谓词缺席
+/// （编译红）+ 实机 PTY 取证（标题原文与提交拒绝文案）。
+#[test]
+fn native_snapshot_reported_model_satisfies_the_submit_gate_without_endpoint() {
+    let (mut app, storage) = shell();
+    app.native_snapshot(json!({
+        "model": {"protocol":"open_ai_compatible","model":"deepseek-flash",
+                  "preset":"deepseek-flash","thinking_level":null},
+        "session": {},
+        "permission": {"mode":"workspace-write"}
+    }));
+    assert_eq!(app.config.model, "deepseek-flash");
+    assert_eq!(
+        app.config.preset.as_deref(),
+        Some("deepseek-flash"),
+        "the preset rides the snapshot so the title resolves its display name \
+         instead of the 'protocol · model' fallback"
+    );
+    assert!(
+        app.config.endpoint.is_empty(),
+        "the host projection never carries the endpoint"
+    );
+    assert!(
+        !app.config.is_configured(),
+        "the local predicate must stay false; the gate must not depend on it"
+    );
+    assert!(
+        app.model_ready(),
+        "a host-reported model satisfies the submit gate in attach mode"
+    );
     drop(app);
     crate::test_support::cleanup_tree(&storage);
 }

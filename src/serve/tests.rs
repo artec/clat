@@ -26,6 +26,9 @@ const WAIT: Duration = Duration::from_secs(30);
 #[path = "workspace_tests.rs"]
 mod workspace_tests;
 
+#[path = "suggestion_tests.rs"]
+mod suggestion_tests;
+
 fn setup(name: &str) -> (PathBuf, PathBuf, Project) {
     let (storage_root, project_root) = roots(name);
     std::fs::create_dir_all(&project_root).expect("project dir");

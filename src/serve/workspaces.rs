@@ -11,6 +11,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 const MAX_MOUNTED_PROJECTS: usize = 16;
+#[cfg(test)]
+mod lifecycle_tests;
+mod reclaim;
 pub(crate) const HOST_METHODS: &[&str] = &[
     "host.describe",
     "host.stop",
@@ -26,6 +29,7 @@ struct Projects {
 pub(crate) struct WorkspaceHost {
     projects: Mutex<Projects>,
     instance: String,
+    build_fingerprint: String,
     shutdown: Arc<AtomicBool>,
 }
 
@@ -48,6 +52,7 @@ impl WorkspaceHost {
         token: String,
         port: u16,
         queue_frames: usize,
+        build_fingerprint: String,
         shutdown: Arc<AtomicBool>,
     ) -> Arc<Self> {
         let project = application.project().clone();
@@ -64,6 +69,7 @@ impl WorkspaceHost {
                 routes: BTreeMap::from([("default".into(), shared.clone())]),
             }),
             instance: uuid::Uuid::new_v4().to_string(),
+            build_fingerprint,
             shutdown,
         });
         *shared.host.lock().expect("host link") = Arc::downgrade(&host);
@@ -77,7 +83,10 @@ impl WorkspaceHost {
             .expect("host projects")
             .routes
             .get(id)
-            .cloned()
+            .map(|shared| {
+                shared.touch();
+                shared.clone()
+            })
             .ok_or_else(|| RpcError::not_found("workspace is not mounted"))
     }
 
@@ -101,7 +110,8 @@ impl WorkspaceHost {
             "host.describe" => Ok(json!({"protocol_version": 1, "instance_id": self.instance,
                 "storage_root": projects.application.storage_root(), "methods": HOST_METHODS,
                 "wire_version": crate::wire::WIRE_VERSION,
-                "journal_version": crate::session::compat::SESSION_FORMAT_VERSION})),
+                "journal_version": crate::session::compat::SESSION_FORMAT_VERSION,
+                "build_fingerprint": self.build_fingerprint})),
             "workspace.list" => Ok(
                 json!({"workspaces": projects.routes.iter().map(|(id, shared)| {
                 let app = shared.app.lock().expect("application lock");
@@ -141,11 +151,9 @@ impl WorkspaceHost {
                 .as_ref()
                 == Some(&root)
             {
+                shared.touch();
                 return Ok(json!({"id": id, "api_prefix": format!("/workspace/{id}")}));
             }
-        }
-        if projects.routes.len() >= MAX_MOUNTED_PROJECTS {
-            return Err(RpcError::busy("mounted project limit reached"));
         }
         // A transport credential alone is not project trust. Consent is explicit.
         let authorize = match params.get("trust") {
@@ -153,6 +161,21 @@ impl WorkspaceHost {
             Some(Value::Bool(true)) => true,
             _ => return Err(RpcError::bad_request("trust must be a boolean")),
         };
+        if !root.is_dir() {
+            return Err(RpcError::bad_request("project must be a directory"));
+        }
+        if !authorize
+            && !projects
+                .application
+                .is_project_trusted(&Project::new(&root))
+        {
+            return Err(RpcError::bad_request(
+                "project is not trusted; explicit consent is required",
+            ));
+        }
+        if projects.routes.len() >= MAX_MOUNTED_PROJECTS {
+            self.reclaim_one(projects)?;
+        }
         let app = if authorize {
             projects
                 .application
@@ -161,15 +184,24 @@ impl WorkspaceHost {
             projects.application.attach(Project::new(root))
         }
         .map_err(|error| RpcError::bad_request(error.to_string()))?;
+        let shared = self.shared_for(projects, app);
+        let id = uuid::Uuid::new_v4().to_string();
+        projects.routes.insert(id.clone(), shared);
+        Ok(json!({"id": id, "api_prefix": format!("/workspace/{id}")}))
+    }
+
+    fn shared_for(
+        self: &Arc<Self>,
+        projects: &Projects,
+        app: Arc<Mutex<TrustedProjectApplication>>,
+    ) -> Arc<ServeShared> {
         let default = projects.routes.get("default").expect("default route");
         let mut shared = ServeShared::new(app, default.token.clone(), default.port);
         shared.queue_frames = default.queue_frames;
         let shared = Arc::new(shared);
         *shared.host.lock().expect("host link") = Arc::downgrade(self);
         shared.spawn_notice_forwarder();
-        let id = uuid::Uuid::new_v4().to_string();
-        projects.routes.insert(id.clone(), shared);
-        Ok(json!({"id": id, "api_prefix": format!("/workspace/{id}")}))
+        shared
     }
 
     pub(crate) fn close(&self) -> Result<(), String> {

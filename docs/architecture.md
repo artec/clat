@@ -152,11 +152,37 @@ stable when the root is created, and retains compatibility with existing-root
 leases held by older processes. Identity discovery never creates storage.
 
 Serve routes additional projects through `/workspace/<id>/api/...`. The default
-project retains `/api/...` compatibility. Routes are process-local identities;
+project retains `/api/...` compatibility. The 16-project bound applies to
+simultaneously mounted domains, not historical visits. Capacity pressure
+reclaims idle non-default domains after checking transport ownership, runs,
+compaction, arbitration, drafts and remote bindings. Atomic `Arc` extraction
+fences concurrent `Weak` upgrades; reclamation drains producers and removes
+both the route and core project owner without deleting history or releasing
+the host's root lease. Routes are process-local identities;
 an expired route returns an error and never selects another project. Explicit
 `clat attach` uses the core's authenticated loopback HTTP/SSE client without
-mounting a second application writer. The default TUI remains standalone while
-client feature parity and automatic host startup are still in progress.
+mounting a second application writer. The default TUI uses spawn-or-attach;
+`--standalone` explicitly selects a process-local application. Startup treats
+an authenticated, root/instance-matched incompatible description as terminal,
+distinct from an unavailable or stale endpoint hint. Before a host accepts
+clients it caches a build fingerprint derived from version, target, executable
+length and modification time, with only the hash crossing the wire; paths,
+inode/device identities, case and Windows short names never enter the value.
+Native clients reject a different advertised build but never replace it
+automatically. The explicit status/stop control path ignores only that build
+difference so the old host remains safely manageable; protocol and root fences
+still apply. Missing fingerprints remain additive-rollout compatible, and raw
+HTTP/PWA clients have no executable identity to compare. Host lifetime remains
+independent of attached frontends. The native title marker consumes the existing
+connection projection (`CLAT ● host` online, `CLAT ○ host` offline); standalone
+and DSH keep their existing identities.
+
+Manual suggestion admission freezes session identity, selection generation,
+context and budget under the project's short mutation lock. Provider I/O runs
+outside that lock, so another client can send, cancel or switch sessions.
+Terminals retain composer ownership during generation and publish replies only
+as request- and input-generation-fenced previews; adoption is explicit and
+never submits a run.
 
 Attached read-only information dialogs consume existing `command.run` text
 projections; their scroll state and request identity remain frontend-local.

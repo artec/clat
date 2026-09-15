@@ -11,6 +11,24 @@ use crate::session::catalog::is_known_type;
 use crate::session::event::SessionEvent;
 use serde_json::Value;
 
+/// DSH wire 事件是"任意世代"的：V3 宿主把 replace 信封规范化为
+/// `startSeq`/`endSeq`（CLAT 逻辑信封是 `start`/`end`；journal 读侧的
+/// 同款改名见 `session::jsonl` 的 canonicalize_replacement_keys）。
+/// wire 上没有世代标签，按**形状**驱动改名——幂等，对 V2 形零操作，
+/// `op` 与既有逻辑键不动。必须在每个 DSH→SessionEvent 解析点先走
+/// 这里：任何一条事件解析失败会让整页历史被拒（"invalid history
+/// event"）、live 帧断流——2026-09-15 `clat dsh` 实机缺陷的根因。
+pub(crate) fn canonicalize_wire_event(event: &mut Value) {
+    const WIRE_ENDPOINTS: [(&str, &str); 2] = [("startSeq", "start"), ("endSeq", "end")];
+    if let Some(op) = event.get_mut("surfaceOp").and_then(Value::as_object_mut) {
+        for (wire_name, logical_name) in WIRE_ENDPOINTS {
+            if let Some(value) = op.remove(wire_name) {
+                op.entry(logical_name.to_owned()).or_insert(value);
+            }
+        }
+    }
+}
+
 /// 一条下行帧（mux + host 合流后的统一形态）。
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum DshFrame {
@@ -123,7 +141,8 @@ pub(crate) fn parse_frame(text: &str) -> DshFrame {
             last_seq: payload.get("lastSeq").and_then(Value::as_i64).unwrap_or(-1),
         },
         "session/event" => {
-            let event_value = payload.get("event").cloned().unwrap_or(Value::Null);
+            let mut event_value = payload.get("event").cloned().unwrap_or(Value::Null);
+            canonicalize_wire_event(&mut event_value);
             match serde_json::from_value::<SessionEvent>(event_value) {
                 Ok(event) => DshFrame::SessionEvent {
                     session_id: session_id(),
@@ -269,6 +288,32 @@ mod tests {
         assert_eq!(session_id, "s1");
         assert_eq!(event.event_type, "user/message");
         assert_eq!(event.seq, 42);
+    }
+
+    /// 缺陷修复判别腿（2026-09-15，负责人 `clat dsh` 实机发现）：DSH
+    /// wire 事件是"任意世代"的——V3 宿主把 replace 信封规范成
+    /// `startSeq`/`endSeq`（V2 形是 `start`/`end`）。live 帧路径上一条
+    /// V3 形替换（如压缩摘要实时发生）pre-fix 直接 StreamError 断流，
+    /// post-fix 按形状改名后照常进入转录。
+    #[test]
+    fn session_event_frame_canonicalizes_the_v3_replacement_envelope() {
+        let frame = parse_frame(&envelope(
+            "session/event",
+            json!({"sessionId": "s1", "event": {
+                "type": "user/message", "seq": 7, "time": 1700000000000i64,
+                "data": {"content": [{"type": "text", "text": "summary"}]},
+                "surfaceOp": {"op": "replace", "startSeq": 1, "endSeq": 2},
+                "sourceEventSeqs": [1, 2]
+            }}),
+        ));
+        let DshFrame::SessionEvent { event, .. } = frame else {
+            panic!("a v3-shaped replacement must parse on the live wire");
+        };
+        assert_eq!(
+            event.surface_op,
+            Some(crate::session::event::SurfaceOp::Replace { start: 1, end: 2 })
+        );
+        assert_eq!(event.source_event_seqs, Some(vec![1, 2]));
     }
 
     #[test]

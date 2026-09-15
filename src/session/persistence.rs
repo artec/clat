@@ -1032,9 +1032,10 @@ impl JsonlBackend {
         match self.stream_events(key, 0, visitor) {
             Ok(scan) => {
                 if scan.header.version == 0 {
-                    return Err(SessionError::UnsupportedFormat(
-                        "legacy v0 sessions are read-only; start a new v2 session".into(),
-                    ));
+                    return Err(SessionError::UnsupportedFormat(format!(
+                        "legacy v0 sessions are read-only; start a new v{} session",
+                        crate::session::compat::SESSION_FORMAT_VERSION
+                    )));
                 }
                 return self
                     .prepare_from_stream(key, scan, Arc::clone(&lease))
@@ -1047,9 +1048,10 @@ impl JsonlBackend {
         // appending behind a torn tail would concatenate garbage.
         let mut read = self.read_events(key, true)?;
         if read.header.version == 0 {
-            return Err(SessionError::UnsupportedFormat(
-                "legacy v0 sessions are read-only; start a new v2 session".into(),
-            ));
+            return Err(SessionError::UnsupportedFormat(format!(
+                "legacy v0 sessions are read-only; start a new v{} session",
+                crate::session::compat::SESSION_FORMAT_VERSION
+            )));
         }
         let mut closers = interrupted_turn_closers(&read.events);
         if read.truncate_to.is_some() || !closers.is_empty() {

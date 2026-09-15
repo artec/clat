@@ -330,7 +330,6 @@ fn dispatch_guarded_project(
             | "session.compact"
             | "permission.set"
             | "draft.open"
-            | "prompt.suggest"
             | "command.run"
             | "prompt.send"
             | "steer.send"
@@ -722,18 +721,31 @@ fn prompt_suggest(
             "prompt suggestion accepts only selection generation",
         ));
     }
-    if !shared.active_run_info().is_null() {
-        return Err(RpcError::busy(
-            "prompt suggestions are unavailable while a run is active",
-        ));
-    }
-    let prepared = with_app(shared, |app| app.prepare_prompt_suggestion()).map_err(app_error)?;
+    let (prepared, selection) = {
+        let _mutation = shared.rpc_mutations.lock().expect("project RPC mutation");
+        let selection = shared.selection_generation();
+        if let Some(expected) = params.get("expected_selection_generation")
+            && expected.as_u64() != Some(selection)
+        {
+            return Err(RpcError::busy(
+                "session selection changed; refresh before submitting",
+            ));
+        }
+        if !shared.active_run_info().is_null() {
+            return Err(RpcError::busy(
+                "prompt suggestions are unavailable while a run is active",
+            ));
+        }
+        let prepared =
+            with_app(shared, |app| app.prepare_prompt_suggestion()).map_err(app_error)?;
+        (prepared, selection)
+    };
     let suggestion = prepared
         .generate(&crate::CancelToken::new())
         .ok_or_else(|| RpcError::internal("prompt suggestion unavailable"))?;
     Ok(json!({
         "session_id": suggestion.session_id.as_str(),
-        "selection_generation": shared.selection_generation(),
+        "selection_generation": selection,
         "text": suggestion.text,
     }))
 }

@@ -78,6 +78,7 @@ mod render;
 mod run_events;
 mod selection;
 mod status;
+mod suggestion;
 
 #[cfg(all(test, feature = "runtime-tests"))]
 use keys::*;
@@ -312,10 +313,8 @@ struct App {
     /// the worker and terminal input is gated; the structured draft remains
     /// untouched until startup has actually succeeded.
     run_start_pending: bool,
-    /// Manual companion utility request in flight; keeps the application
-    /// facade owned by exactly one worker while provider I/O runs.
-    suggestion_pending: bool,
-    suggestion_text: Option<String>,
+    /// Client-local single-flight request and optional composer preview.
+    suggestions: suggestion::SuggestionState,
     /// Narrows `run_start_pending` to the one handoff that can race a native
     /// `SteeringApplied` event. Ordinary initial attachment admission must not
     /// turn a stale prior-run event into an early-claim credit.
@@ -556,8 +555,7 @@ impl App {
             session_picker: None,
             running: false,
             run_start_pending: false,
-            suggestion_pending: false,
-            suggestion_text: None,
+            suggestions: Default::default(),
             steering_admission_pending: false,
             quit_after_run_start: false,
             events: None,
@@ -662,8 +660,7 @@ impl App {
             session_picker: None,
             running: false,
             run_start_pending: false,
-            suggestion_pending: false,
-            suggestion_text: None,
+            suggestions: Default::default(),
             steering_admission_pending: false,
             quit_after_run_start: false,
             events: None,

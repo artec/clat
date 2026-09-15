@@ -165,6 +165,9 @@ const SCENARIOS: &[&str] = &[
     "attachment-multi",
     "attachment-steering",
     "attachment-failure-restore",
+    // MF-DEV-1：native 宿主壳复用 dsh 的连接状态视觉语法。
+    "native-host-online",
+    "native-host-offline",
     // D-2 §7.2：dsh 快照族（App 单壳——同一 draw 管线，事件/状态注入）。
     "dsh-connecting",
     "dsh-idle",
@@ -529,6 +532,39 @@ fn ctrl_v_remains_available_for_the_running_steering_composer() {
     assert!(harness.app.attachments.is_empty());
 }
 
+#[test]
+fn trusted_harness_never_closes_an_authorizer_and_reacquires_its_lease() {
+    // Structural fixture invariant, not a probabilistic kernel timing test:
+    // setup must never release one writer just to construct a second writer.
+    let source = include_str!("snapshot_tests.rs").replace("\r\n", "\n");
+    let setup = source
+        .split_once("\nfn harness(tag:")
+        .expect("harness setup")
+        .1
+        .split_once("\nimpl Harness {")
+        .expect("harness methods")
+        .0;
+    assert!(
+        !setup.contains(".close()"),
+        "fixture setup must authorize and retain one writer, never close then reacquire its lease"
+    );
+    let harness = Harness::trusted("single-authorizer", 80, 24);
+    assert!(!harness.app.trust_prompt);
+    assert!(harness.app.application.is_some());
+    let project = Project::new(&harness.project_root);
+    let storage = harness.storage_root.clone();
+    let error = std::thread::spawn(move || {
+        BootstrapApplication::open(project, storage)
+            .and_then(|bootstrap| bootstrap.into_trusted())
+            .err()
+            .map(|error| error.to_string())
+    })
+    .join()
+    .expect("competing opener")
+    .expect("the fixture must retain exclusive ownership");
+    assert!(error.contains("another CLAT process holds this storage root"));
+}
+
 fn harness(tag: &str, width: u16, height: u16, trusted: bool) -> Harness {
     let (storage_root, project_root) = roots(tag);
     std::fs::create_dir_all(&project_root).expect("project dir");
@@ -541,22 +577,22 @@ fn harness(tag: &str, width: u16, height: u16, trusted: bool) -> Harness {
     } else {
         std::path::PathBuf::from("/home/dev/example-project")
     };
-    if trusted {
-        // 预授权 storage root（挂载一次以写入信任行后立即关闭），再以
-        // 生产构造路径打开 App。受信路径挂载完整生产插件目录——MCP
-        // 配置来自 storage root，临时根下为空，不会拉起真实子进程。
-        let bootstrap =
-            BootstrapApplication::open(Project::new(&project_root), storage_root.clone())
-                .expect("open bootstrap");
-        let application = bootstrap
-            .authorize_and_mount_with_provider(std::sync::Arc::new(TestProviderPlugin {
-                behavior: TestBehavior::Success,
-            }))
-            .expect("authorize");
-        application.close().expect("close authorizer");
-    }
     let mut app =
         App::open(Project::new(&project_for_app), Some(storage_root.clone())).expect("app opens");
+    if trusted {
+        // FL-W2: confirm through the real TUI trust gate and keep that writer.
+        // No pre-authorizer close/reopen interval, sleeps or lease retries.
+        // The production plugin catalog is mounted once; this root has no MCP
+        // configuration, so setup cannot launch actual external servers.
+        app.handle_ui_event(UiEvent::Terminal(Event::Key(KeyEvent::from(
+            KeyCode::Char('y'),
+        ))));
+        assert!(!app.trust_prompt, "fixture authorizes: {}", app.status);
+        assert!(
+            app.application.is_some(),
+            "fixture owns the mounted application"
+        );
+    }
     app.test_freeze_tick = true;
     // FIX-5/CA-08：记录 sink——快照/单元测试不写真实终端或系统剪贴板
     //（鼠标释放自动复制路径因此零副作用）。
@@ -652,6 +688,35 @@ impl Harness {
         let projection = self.draw_projection();
         check_or_refresh(name, &projection);
     }
+}
+
+fn harness_native(tag: &str, online: bool) -> Harness {
+    let (storage_root, project_root) = roots(tag);
+    std::fs::create_dir_all(&storage_root).expect("storage dir");
+    std::fs::create_dir_all(&project_root).expect("project dir");
+    let client = crate::host::HostClient::fixture_for_frontend_tests(&storage_root);
+    let mut app = App::open_native(Project::new(&project_root), client).expect("native shell");
+    app.set_native_online_for_snapshot(online);
+    app.test_freeze_tick = true;
+    app.clipboard_writer = recording_clipboard_sink;
+    app.default_status = "<HOST-ROOT>".into();
+    app.status = "<HOST-ROOT>".into();
+    Harness {
+        app,
+        terminal: Terminal::new(TestBackend::new(80, 24)).expect("test terminal"),
+        project_root,
+        storage_root,
+    }
+}
+
+#[test]
+fn native_host_online_snapshot() {
+    harness_native("snap-native-host-online", true).snapshot("native-host-online");
+}
+
+#[test]
+fn native_host_offline_snapshot() {
+    harness_native("snap-native-host-offline", false).snapshot("native-host-offline");
 }
 
 /// 三道环境归一化，保证 fixture 与开发机/CI、crate 版本解耦：

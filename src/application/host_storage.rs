@@ -56,10 +56,11 @@ impl HostStorage {
         monitor: &Arc<dyn MonitorService>,
         subscribers: &Arc<Subscribers>,
     ) {
-        self.model_consumers
-            .lock()
-            .expect("model consumers")
-            .push((Arc::downgrade(monitor), Arc::downgrade(subscribers)));
+        let mut consumers = self.model_consumers.lock().expect("model consumers");
+        consumers.retain(|(monitor, subscribers)| {
+            monitor.strong_count() > 0 && subscribers.strong_count() > 0
+        });
+        consumers.push((Arc::downgrade(monitor), Arc::downgrade(subscribers)));
     }
 
     pub(super) fn publish_models(

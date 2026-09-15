@@ -9,7 +9,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 /// The unique collection of project runtimes for an already mounted root.
-/// Closing a frontend drops its handle; projects remain owned by this host.
+/// Closing a frontend drops its handle; idle projects can be unmounted without
+/// dropping this host's storage-root lease.
 pub struct HostApplication {
     projects: BTreeMap<PathBuf, Arc<Mutex<TrustedProjectApplication>>>,
     storage: Arc<HostStorage>,
@@ -75,6 +76,49 @@ impl HostApplication {
 
     pub fn project_roots(&self) -> Vec<PathBuf> {
         self.projects.keys().cloned().collect()
+    }
+
+    pub fn is_project_trusted(&self, project: &Project) -> bool {
+        self.storage.control.is_project_trusted(project.root())
+    }
+
+    /// Unmount only a quiescent, uniquely owned project. Failure to obtain
+    /// unique ownership leaves the registry intact, including Weak-upgrade races.
+    pub fn unmount_idle(&mut self, root: &Path) -> Result<bool, ApplicationError> {
+        let Some(project) = self.projects.get(root) else {
+            return Ok(false);
+        };
+        if Arc::strong_count(project) != 1 {
+            return Ok(false);
+        }
+        {
+            let app = project.lock().expect("application lock");
+            if app
+                .active_run
+                .as_ref()
+                .is_some_and(|run| !run.is_finished())
+                || app
+                    .active_compaction
+                    .as_ref()
+                    .is_some_and(|compact| !compact.is_finished())
+                || app.draft_images.has_live_drafts()
+            {
+                return Ok(false);
+            }
+        }
+        let project = self.projects.remove(root).expect("mounted project");
+        let project = match Arc::try_unwrap(project) {
+            Ok(project) => project,
+            Err(project) => {
+                self.projects.insert(root.to_path_buf(), project);
+                return Ok(false);
+            }
+        };
+        project
+            .into_inner()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .close()?;
+        Ok(true)
     }
 
     /// Stop project producers while retaining the root lease. Outstanding

@@ -33,7 +33,7 @@ impl HostClient {
         }
         let root = crate::control_storage::sentinel::default_storage_root()?;
         super::discovery::validate_existing(&root)?;
-        if let Ok(client) = Self::discover(&root) {
+        if let Some(client) = Self::discover_for_startup(&root)? {
             return client.open_project(project.root(), trust);
         }
         let executable = std::env::current_exe().map_err(|error| error.to_string())?;
@@ -41,14 +41,16 @@ impl HostClient {
         let mut child = None;
         let mut attempted = false;
         loop {
-            if let Ok(client) = Self::discover(&root) {
-                if let Some(mut child) = child.take() {
-                    // Reap a losing child or the long-lived host when it eventually exits.
-                    std::thread::spawn(move || {
-                        let _ = std::process::Child::wait(&mut child);
-                    });
+            match Self::discover_for_startup(&root) {
+                Ok(Some(client)) => {
+                    reap_host_child(child.take());
+                    return client.open_project(project.root(), trust);
                 }
-                return client.open_project(project.root(), trust);
+                Err(error) => {
+                    reap_host_child(child.take());
+                    return Err(error);
+                }
+                Ok(None) => {}
             }
             if !attempted {
                 let lease = crate::session::root_lease::try_acquire(&root)
@@ -60,15 +62,23 @@ impl HostClient {
                 }
             }
             if Instant::now() >= deadline {
-                if let Some(mut child) = child {
-                    std::thread::spawn(move || {
-                        let _ = child.wait();
-                    });
+                reap_host_child(child);
+                if !attempted {
+                    return Err("storage root is busy with another writer; stop that writer explicitly before starting a host".into());
                 }
                 return Err("host startup did not become ready; no operation retried. Check `clat host status` or run `clat serve` explicitly".into());
             }
             std::thread::sleep(Duration::from_millis(100));
         }
+    }
+}
+
+fn reap_host_child(child: Option<std::process::Child>) {
+    if let Some(mut child) = child {
+        // Reap a losing child or the long-lived host when it eventually exits.
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
     }
 }
 

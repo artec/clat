@@ -467,11 +467,15 @@ where
     let token = resolved.value;
     let token_path = resolved.path;
 
+    // Snapshot before publishing or accepting: cargo may replace the executable
+    // while this long-lived process is still serving an older build.
+    let build_fingerprint = crate::host_client::build_identity::current()?.to_owned();
     let host = workspaces::WorkspaceHost::new(
         trusted,
         token.clone(),
         addr.port(),
         queue_frames,
+        build_fingerprint,
         Arc::clone(&shutdown),
     );
     let shared = host.route("default").expect("default project");

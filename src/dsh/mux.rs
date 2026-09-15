@@ -1082,6 +1082,22 @@ mod tests {
                 reply["result"]["value"]["records"][0]["event"]["seq"] = json!(3);
                 reply["result"]["value"]["hasMore"] = json!(true);
             }
+            if target == "v3-shape-page" {
+                // V3 宿主的规范信封（startSeq/endSeq）+ 一条普通 append。
+                reply["result"]["value"]["records"] = json!([
+                    {"type": "event", "event": {
+                        "type": "user/message", "seq": 2, "time": 1, "surfaceOp": "append",
+                        "data": {"content": [{"type": "text", "text": "before cut"}], "source": {"kind": "user"}}
+                    }},
+                    {"type": "event", "event": {
+                        "type": "user/message", "seq": 3, "time": 2,
+                        "surfaceOp": {"op": "replace", "startSeq": 2, "endSeq": 2},
+                        "sourceEventSeqs": [2],
+                        "data": {"content": [{"type": "text", "text": "summary"}], "source": {"kind": "plugin", "plugin": "compaction"}}
+                    }}
+                ]);
+                reply["result"]["value"]["hasMore"] = json!(false);
+            }
             let response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                 reply.to_string().len(),
@@ -1572,6 +1588,59 @@ mod tests {
                 matches!(reply, Some(crate::dsh::backend::TaskReply::Failed(message)) if message.contains(expected)),
                 "bad pagination must fail, not publish partial history"
             );
+        }
+    }
+
+    /// 缺陷修复判别腿（2026-09-15，负责人 `clat dsh` 实机发现）：V3 宿主
+    /// 的历史页携带规范信封（`startSeq`/`endSeq`）的替换事件（压缩摘要）。
+    /// pre-fix 整页 Failed（一条解析失败 = 全页拒绝）→ TUI 只剩暂存的
+    /// live 帧 → "打开会话只见最后一条消息"；post-fix 按形状改名后整页
+    /// 正常装载。
+    #[test]
+    fn typert_history_page_canonicalizes_the_v3_replacement_envelope() {
+        let host = MuxHost::spawn();
+        let (events_tx, _events_rx) = std::sync::mpsc::sync_channel(32);
+        let epoch = Arc::new(AtomicU64::new(1));
+        let controller = open(
+            host.port,
+            "dsh-auth-t=v1.s",
+            Some("session-9"),
+            events_tx,
+            1,
+            &epoch,
+        )
+        .unwrap();
+        let mut client = crate::dsh::client::DshClient::new(host.port)
+            .with_cookie("dsh-auth-t=v1.s")
+            .with_typert_era();
+        let mut port = host.port;
+        let reply = crate::dsh::backend::run_task(
+            &crate::dsh::backend::DshTask::History {
+                session: "v3-shape-page".into(),
+            },
+            &mut client,
+            &mut port,
+            Some(&controller),
+        );
+        match reply {
+            Some(crate::dsh::backend::TaskReply::History {
+                events,
+                first_seq,
+                has_more,
+                ..
+            }) => {
+                assert_eq!(events.len(), 2, "the whole page loads: {events:?}");
+                assert_eq!(events[0].seq, 2);
+                assert_eq!(first_seq, Some(2));
+                assert!(!has_more);
+                assert_eq!(
+                    events[1].surface_op,
+                    Some(crate::session::event::SurfaceOp::Replace { start: 2, end: 2 }),
+                    "the v3 envelope arrives under the logical start/end names"
+                );
+                assert_eq!(events[1].source_event_seqs, Some(vec![2]));
+            }
+            other => panic!("v3-shaped page must load, not fail: {other:?}"),
         }
     }
 

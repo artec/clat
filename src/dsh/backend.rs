@@ -582,9 +582,9 @@ pub(crate) fn run_task(
             let mut events = Vec::new();
             if let Some(items) = value.get("events").and_then(Value::as_array) {
                 for item in items {
-                    if let Ok(event) = serde_json::from_value::<SessionEvent>(
-                        item.get("event").cloned().unwrap_or(Value::Null),
-                    ) {
+                    let mut event_value = item.get("event").cloned().unwrap_or(Value::Null);
+                    crate::dsh::frames::canonicalize_wire_event(&mut event_value);
+                    if let Ok(event) = serde_json::from_value::<SessionEvent>(event_value) {
                         events.push(event);
                     }
                 }
@@ -775,9 +775,9 @@ fn run_typert_history_page(
     let mut events = Vec::with_capacity(records.len());
     let mut first_seq = None;
     for record in records {
-        let event = match serde_json::from_value::<SessionEvent>(
-            record.get("event").cloned().unwrap_or(Value::Null),
-        ) {
+        let mut event_value = record.get("event").cloned().unwrap_or(Value::Null);
+        crate::dsh::frames::canonicalize_wire_event(&mut event_value);
+        let event = match serde_json::from_value::<SessionEvent>(event_value) {
             Ok(event) => event,
             Err(error) => return TaskReply::Failed(format!("invalid history event: {error}")),
         };

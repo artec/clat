@@ -39,6 +39,7 @@ pub(super) fn pasted_image_path(text: &str) -> Option<std::path::PathBuf> {
 
 impl App {
     pub(super) fn handle_ui_event(&mut self, event: UiEvent) {
+        let identity = (self.session_id.clone(), self.native_selection_identity());
         match event {
             UiEvent::Terminal(event) => self.handle_terminal_event(event),
             UiEvent::Worker(message) => self.handle_worker_message(message),
@@ -46,6 +47,11 @@ impl App {
             UiEvent::Application(event) => self.handle_application_event(event),
             UiEvent::Native(event) => self.handle_native_event(event),
         }
+        let changed = identity != (self.session_id.clone(), self.native_selection_identity());
+        if changed || self.running || self.should_quit {
+            self.suggestions.invalidate();
+        }
+        self.invalidate_edited_suggestion();
     }
 
     fn handle_application_event(&mut self, event: ApplicationEvent) {
@@ -351,8 +357,7 @@ impl App {
     }
 
     fn handle_composer_key(&mut self, key: KeyEvent) {
-        if self.suggestion_pending {
-            self.flash_status("suggestion is still generating");
+        if self.handle_suggestion_key(key) {
             return;
         }
         if self.native.is_some() {

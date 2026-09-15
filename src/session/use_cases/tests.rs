@@ -200,6 +200,128 @@ fn legacy_resume_is_read_only_without_changing_any_session_artifact() {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// 缺陷修复判别腿（2026-09-15，负责人实机发现）：存量 v2 会话（上一发
+/// 布代的产物）必须只读打开——不变量：任何可解码且低于
+/// SESSION_FORMAT_VERSION 的世代都走只读协调器，打开零副作用；写面
+/// （journal 获取）拒绝并指路 /update；从该状态 /update 发布唯一当前
+/// 代后同一会话当场恢复可写。pre-fix 红在 resume 直接被写路门槛拒绝
+/// （"legacy v2 sessions are read-only"），/update 因此不可达（它只
+/// 服务已打开的 legacy 会话——死锁）。事件形状与
+/// `existing_v2_sessions_upgrade_to_current_with_system_promoted` 同源。
+#[test]
+fn legacy_v2_sessions_resume_read_only_then_update_reaches_writable_v3() {
+    let (service, root) = service("legacy-v2-read-only-update");
+    let key = SessionKey {
+        project: project(),
+        id: SessionId::new("legacy-v2"),
+    };
+    let mut header = SessionHeader::new(key.id.clone(), key.project.header_cwd.clone(), 1);
+    header.version = 2;
+    let events = vec![
+        SessionEvent::new("turn/start", 0, 1, payloads::turn_start(1)),
+        SessionEvent::new("step/start", 1, 2, payloads::step_start(1, 1)),
+        SessionEvent::new(
+            "request/header",
+            2,
+            3,
+            serde_json::json!({
+                "header": { "config": { "provider": "p", "model": "m" },
+                            "system": "legacy prompt" },
+                "reason": "initial",
+            }),
+        ),
+        SessionEvent::new(
+            "assistant/message",
+            3,
+            4,
+            serde_json::json!({
+                "turn": 1, "step": 1, "stream": [],
+                "message": {
+                    "id": "m1", "role": "assistant",
+                    "content": [{ "type": "text", "text": "answer" }],
+                    "source": { "kind": "model", "provider": "p", "model": "m" },
+                },
+            }),
+        )
+        .append(Vec::new()),
+        SessionEvent::new("step/end", 4, 5, payloads::step_end(1, 1)),
+        SessionEvent::new(
+            "turn/end",
+            5,
+            6,
+            payloads::turn_end(1, &crate::session::event::TurnEndReason::Completed),
+        ),
+    ];
+    let dir = service.backend.create_session_dir(&key).unwrap();
+    let bytes =
+        crate::session::jsonl::materialized_bytes(&header, &events, JsonlCompression::Zstd, false)
+            .unwrap();
+    dir.write("session.v2.jsonl.zstd", &bytes).unwrap();
+
+    let view = service
+        .resume(&key)
+        .expect("legacy v2 must open read-only, not refuse");
+    assert!(service.is_read_only(), "the resumed session is read-only");
+    assert!(
+        view.replay
+            .iter()
+            .any(|event| matches!(event, ReplayEvent::AssistantMessage { .. }),)
+    );
+    let journal_error = match service.journal() {
+        Err(error) => format!("{error}"),
+        Ok(_) => panic!("read-only sessions must refuse journal acquisition"),
+    };
+    assert!(
+        journal_error.contains("/update"),
+        "the refusal must point at /update: {journal_error}"
+    );
+    assert_eq!(
+        dir.read("session.v2.jsonl.zstd").unwrap(),
+        bytes,
+        "a read-only open never grows or rewrites the legacy source"
+    );
+    assert_eq!(
+        dir.entries().unwrap().count(),
+        1,
+        "no lock, checkpoint, seed, writer artifacts, and no published generation"
+    );
+
+    service
+        .upgrade_active()
+        .expect("update publishes v3 and re-arms");
+    assert!(
+        !service.is_read_only(),
+        "the same session is writable after the upgrade"
+    );
+    let journal = service
+        .journal()
+        .expect("writable sessions admit a journal");
+    drop(journal);
+    let names: Vec<String> = dir
+        .entries()
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        names.iter().any(|name| name == "session.v3.jsonl.zstd"),
+        "exactly the final current generation is published: {names:?}"
+    );
+    assert!(
+        !names.iter().any(|name| name.starts_with("session.v")
+            && !name.starts_with("session.v2.")
+            && !name.starts_with("session.v3.")),
+        "no intermediate generation may appear: {names:?}"
+    );
+    assert_eq!(
+        dir.read("session.v2.jsonl.zstd").unwrap(),
+        bytes,
+        "the v2 source stays byte-for-byte after the upgrade"
+    );
+    assert_eq!(service.backend.header_snapshot(&key).unwrap().version, 3);
+    service.quiesce_active().unwrap();
+    crate::test_support::cleanup_tree(&root);
+}
+
 fn service(tag: &str) -> (SessionService, std::path::PathBuf) {
     let root = std::env::temp_dir().join(format!(
         "clat-usecases-{tag}-{}",

@@ -2,6 +2,46 @@ use super::*;
 use serde_json::json;
 
 #[test]
+fn sequential_workspace_visits_over_capacity_preserve_connected_project() {
+    use crate::host_client::HostClient;
+    let (handle, storage, project) = spawn_serve("workspace-capacity", TestBehavior::Success);
+    let client = HostClient::connect(handle.addr.port(), TEST_TOKEN.into(), &storage).unwrap();
+    let pinned_root = project.join("pinned");
+    std::fs::create_dir_all(&pinned_root).unwrap();
+    let pinned = client.open_project(&pinned_root, true).unwrap();
+    let mut events = pinned.events().unwrap();
+    let mut subscribed = false;
+    for _ in 0..32 {
+        if events.next_frame().unwrap().0 == "subscribed" {
+            subscribed = true;
+            break;
+        }
+    }
+    assert!(
+        subscribed,
+        "fixture project must be subscribed before capacity pressure"
+    );
+    let mut roots = Vec::new();
+    for index in 0..32 {
+        let root = project.join(format!("visit-{index}"));
+        std::fs::create_dir_all(&root).unwrap();
+        roots.push(root.clone());
+        client
+            .open_project(&root, true)
+            .unwrap_or_else(|error| panic!("visit {index}: {error}"));
+    }
+    let mounted = client.call("workspace.list", &json!({})).unwrap();
+    assert!(mounted["workspaces"].as_array().unwrap().len() <= 16);
+    assert!(
+        pinned.call("workbench.info", &json!({})).is_ok(),
+        "connected project must survive eviction"
+    );
+    client.open_project(&roots[0], false).unwrap();
+    drop(events);
+    cleanup(handle, &storage, &project);
+}
+
+#[test]
 fn host_discovery_authenticates_and_rejects_replaced_instance() {
     use crate::host_client::{HostClient, discovery};
     let (handle, storage, project) = spawn_serve("host-discovery", TestBehavior::Success);
@@ -424,6 +464,42 @@ fn native_client_checks_host_identity_and_detaches_without_stopping_it() {
     assert_eq!(exit.close, Some(Ok(())));
     crate::test_support::cleanup_tree(&storage);
     crate::test_support::cleanup_tree(&project);
+}
+
+#[test]
+fn host_description_golden_is_additive_and_http_clients_need_no_build_identity() {
+    let (handle, storage, project) = spawn_serve("host-description-golden", TestBehavior::Success);
+    let (_, description) = post(handle.addr, TEST_TOKEN, "host.describe", "{}");
+    let description = description.unwrap();
+    let instance = description["instance_id"].clone();
+    let described_root = description["storage_root"].clone();
+    assert_eq!(
+        std::path::Path::new(described_root.as_str().unwrap())
+            .canonicalize()
+            .unwrap(),
+        storage.canonicalize().unwrap()
+    );
+    let expected = json!({
+        "protocol_version": 1,
+        "instance_id": instance,
+        "storage_root": described_root,
+        "methods": ["host.describe", "host.stop", "workspace.list", "workspace.open"],
+        "wire_version": crate::wire::WIRE_VERSION,
+        "journal_version": crate::session::compat::SESSION_FORMAT_VERSION,
+        "build_fingerprint": crate::host_client::build_identity::current().unwrap(),
+    });
+    assert_eq!(
+        serde_json::to_string(&description).unwrap(),
+        serde_json::to_string(&expected).unwrap(),
+        "host.describe additive wire golden"
+    );
+    let (_, workspaces) = post(handle.addr, TEST_TOKEN, "workspace.list", "{}");
+    assert_eq!(
+        workspaces.unwrap()["workspaces"].as_array().unwrap().len(),
+        1,
+        "PWA/raw HTTP clients do not present or compare a CLAT build identity"
+    );
+    cleanup(handle, &storage, &project);
 }
 
 #[test]

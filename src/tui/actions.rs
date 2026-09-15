@@ -555,58 +555,52 @@ impl App {
     }
 
     fn start_prompt_suggestion(&mut self) -> bool {
-        if self.suggestion_pending || self.running || self.run_start_pending {
+        if self.suggestions.pending() || self.running || self.run_start_pending {
             self.flash_status("suggestions are available while idle");
             return true;
         }
-        let Some(application) = self.application.take() else {
-            self.flash_status("project application is unavailable");
-            return true;
-        };
         let Some(sender) = self.event_sender.clone() else {
-            self.application = Some(application);
             self.flash_status("suggestion channel is unavailable");
             return true;
         };
-        let (handoff, received) = mpsc::sync_channel::<TrustedProjectApplication>(0);
+        let prepared = self
+            .application
+            .as_mut()
+            .ok_or_else(|| "project application is unavailable".to_owned())
+            .and_then(|application| {
+                application
+                    .prepare_prompt_suggestion()
+                    .map_err(|error| error.to_string())
+            });
+        let prepared = match prepared {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                self.flash_status(error);
+                return true;
+            }
+        };
+        let (request, cancel) = self
+            .suggestions
+            .begin(self.input.generation())
+            .expect("idle suggestion slot");
         let spawn = thread::Builder::new()
             .name("clat-prompt-suggestion".into())
             .spawn(move || {
-                let Ok(mut application) = received.recv() else {
-                    return;
-                };
-                let outcome = application
-                    .prepare_prompt_suggestion()
-                    .map_err(|error| error.to_string())
-                    .and_then(|prepared| {
-                        prepared
-                            .generate(&crate::CancelToken::new())
-                            .ok_or_else(|| "prompt suggestion unavailable".to_owned())
-                    });
-                let message = UiEvent::Worker(WorkerMessage::PromptSuggestionFinished {
-                    application: Box::new(application),
-                    outcome,
-                });
-                if let Err(error) = sender.send(message)
-                    && let UiEvent::Worker(WorkerMessage::PromptSuggestionFinished {
-                        application,
-                        ..
-                    }) = error.0
-                {
-                    let _ = application.close();
-                }
+                let outcome = prepared
+                    .generate(&cancel)
+                    .ok_or_else(|| "prompt suggestion unavailable".to_owned());
+                let message =
+                    UiEvent::Worker(WorkerMessage::PromptSuggestionFinished { request, outcome });
+                let _ = sender.send(message);
             });
         if let Err(error) = spawn {
-            self.application = Some(application);
-            self.flash_status(format!("failed to start suggestion worker: {error}"));
+            self.finish_suggestion(
+                request,
+                true,
+                Err(format!("failed to start suggestion worker: {error}")),
+            );
             return true;
         }
-        if let Err(error) = handoff.send(application) {
-            self.application = Some(error.0);
-            self.flash_status("suggestion worker terminated before handoff");
-            return true;
-        }
-        self.suggestion_pending = true;
         self.flash_status("generating a manual suggestion…");
         true
     }
@@ -960,6 +954,20 @@ impl App {
         true
     }
 
+    /// "已配置"判定按数据源分家。经典模式本地 `config` 全量在握
+    /// （model + endpoint）；attach 壳的宿主投影从不携带 endpoint
+    /// （路由脱敏纪律），配置权威在宿主——快照报了模型名即为可用，
+    /// 不能拿本地缺 endpoint 否决宿主事实（2026-09-15 实机缺陷：默认
+    /// 拓扑下标题恒 "not configured"、prompt 提交恒被拒、/model 选完
+    /// 也不变）。
+    pub(in crate::tui) fn model_ready(&self) -> bool {
+        if self.native.is_some() {
+            !self.config.model.trim().is_empty()
+        } else {
+            self.config.is_configured()
+        }
+    }
+
     /// 把一次普通 run 的完整 pre-commit admission 交给有界 worker。
     ///
     /// 返回 true 只表示 handoff 已建立；附件在 RunStartFinished 成功时
@@ -970,7 +978,7 @@ impl App {
         prompt: String,
         attachments: Vec<std::path::PathBuf>,
     ) -> bool {
-        if !self.config.is_configured() {
+        if !self.model_ready() {
             self.flash_status("model is not configured — run /model first");
             return false;
         }
@@ -1119,7 +1127,7 @@ impl App {
     }
 
     fn start_goal_run(&mut self) -> bool {
-        if !self.config.is_configured() {
+        if !self.model_ready() {
             self.flash_status("model is not configured — run /model first");
             return false;
         }

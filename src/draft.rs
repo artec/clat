@@ -59,6 +59,17 @@ impl DraftImageStore {
         }
     }
 
+    /// Empty scope metadata is not an unsent message; actual sources pin the
+    /// project until consumed, explicitly released or expired by the usual TTL.
+    pub(crate) fn has_live_drafts(&self) -> bool {
+        let Ok(mut state) = self.state.lock() else {
+            return true;
+        };
+        sweep_expired_locked(&self.root, &mut state, now_ms());
+        !state.clipboard_files.is_empty()
+            || state.scopes.values().any(|scope| !scope.uploads.is_empty())
+    }
+
     pub fn stage_png(&self, bytes: &[u8]) -> Result<PathBuf, String> {
         self.stage_image_bytes(bytes, image::ImageFormat::Png, "clipboard", "png")
     }
