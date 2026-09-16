@@ -56,9 +56,21 @@ impl HostClient {
                 let lease = crate::session::root_lease::try_acquire(&root)
                     .map_err(|error| format!("cannot inspect host lease: {error}"))?;
                 if let Some(lease) = lease {
+                    ensure_background_port_available()?;
                     drop(lease);
                     child = Some(spawn_host(&executable, project.root(), trust)?);
                     attempted = true;
+                }
+            }
+            if let Some(status) = child_exit_status(&mut child)?
+                && !status.success()
+            {
+                let lease = crate::session::root_lease::try_acquire(&root)
+                    .map_err(|error| format!("cannot inspect host lease: {error}"))?;
+                if let Some(lease) = lease {
+                    let port = ensure_background_port_available();
+                    drop(lease);
+                    port?;
                 }
             }
             if Instant::now() >= deadline {
@@ -70,6 +82,35 @@ impl HostClient {
             }
             std::thread::sleep(Duration::from_millis(100));
         }
+    }
+}
+
+fn child_exit_status(
+    child: &mut Option<std::process::Child>,
+) -> Result<Option<std::process::ExitStatus>, String> {
+    let Some(process) = child.as_mut() else {
+        return Ok(None);
+    };
+    let status = process
+        .try_wait()
+        .map_err(|error| format!("cannot inspect background host: {error}"))?;
+    if status.is_some() {
+        child.take();
+    }
+    Ok(status)
+}
+
+fn ensure_background_port_available() -> Result<(), String> {
+    let port = super::DEFAULT_HOST_PORT;
+    match std::net::TcpListener::bind(("127.0.0.1", port)) {
+        Ok(listener) => {
+            drop(listener);
+            Ok(())
+        }
+        Err(error) => Err(format!(
+            "background host requires 127.0.0.1:{port}, but that port cannot be bound: {error}. \
+             Free port {port}, or run `clat serve --port <n>` explicitly for a custom port"
+        )),
     }
 }
 
@@ -89,7 +130,9 @@ fn spawn_host(
 ) -> Result<std::process::Child, String> {
     let mut command = Command::new(executable);
     command
-        .args(["serve", "--port", "0"])
+        .arg("serve")
+        .arg("--port")
+        .arg(super::DEFAULT_HOST_PORT.to_string())
         .current_dir(project)
         .stdin(Stdio::null())
         .stdout(Stdio::null())

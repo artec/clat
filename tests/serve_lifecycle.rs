@@ -8,9 +8,11 @@ use clat::{BootstrapApplication, Project, ProjectAuthorization};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const WAIT: Duration = Duration::from_secs(30);
+static FIXED_BACKGROUND_PORT: Mutex<()> = Mutex::new(());
 
 #[path = "support/bounded_process.rs"]
 mod bounded_process;
@@ -115,6 +117,7 @@ fn bounded_process_child_fixture() {
 
 #[test]
 fn host_spawn_or_attach_requires_trust_and_converges_two_launchers() {
+    let _port = FIXED_BACKGROUND_PORT.lock().unwrap();
     let root = temp_root("spawn-concurrent");
     let home = root.join("home");
     let project = root.join("project");
@@ -163,6 +166,11 @@ fn host_spawn_or_attach_requires_trust_and_converges_two_launchers() {
         first.stdout, second.stdout,
         "both launchers must attach to one instance"
     );
+    assert!(
+        String::from_utf8_lossy(&first.stdout)
+            .contains(&format!("127.0.0.1:{}", clat::serve::DEFAULT_SERVE_PORT)),
+        "default background launch must stay on the stable PWA port"
+    );
     assert!(status.status.success(), "launcher exit must not close host");
     assert!(stop.status.success());
     let deadline = Instant::now() + WAIT;
@@ -177,6 +185,151 @@ fn host_spawn_or_attach_requires_trust_and_converges_two_launchers() {
             "host stop must release the lease"
         );
         std::thread::sleep(Duration::from_millis(20));
+    }
+    cleanup.armed = false;
+    remove_tree(&root);
+}
+
+#[test]
+fn background_host_refuses_a_non_clat_occupant_on_the_fixed_port() {
+    let _port = FIXED_BACKGROUND_PORT.lock().unwrap();
+    let listener = TcpListener::bind(("127.0.0.1", clat::serve::DEFAULT_SERVE_PORT))
+        .expect("fixed background port is available for the occupancy fixture");
+    let root = temp_root("fixed-port-occupied");
+    let home = root.join("home");
+    let project = root.join("project");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&project).unwrap();
+    let start = Instant::now();
+    let output = command_output(
+        host_command(&home, &project).args(["host", "start", "--trust"]),
+        &root,
+        "fixed-port-occupied",
+    );
+    drop(listener);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "occupied 2691 must fail, not hop ports"
+    );
+    assert!(
+        stderr.contains(&format!("127.0.0.1:{}", clat::serve::DEFAULT_SERVE_PORT)),
+        "error must name the stable background address: {stderr}"
+    );
+    assert!(
+        stderr.contains("Free port") && stderr.contains("clat serve --port <n>"),
+        "error must explain how to recover without silently changing ports: {stderr}"
+    );
+    assert!(
+        start.elapsed() < Duration::from_secs(5),
+        "known port conflict should fail promptly, not wait for the 30s startup timeout"
+    );
+    remove_tree(&root);
+}
+
+#[test]
+fn background_host_restart_reuses_the_stable_pwa_port() {
+    let _port = FIXED_BACKGROUND_PORT.lock().unwrap();
+    let root = temp_root("fixed-port-restart");
+    let home = root.join("home");
+    let project = root.join("project");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&project).unwrap();
+    let command = || host_command(&home, &project);
+    let mut cleanup = HostCleanup {
+        root: &root,
+        home: &home,
+        project: &project,
+        armed: true,
+    };
+
+    let first = command_output(
+        command().args(["host", "start", "--trust"]),
+        &root,
+        "fixed-port-first-start",
+    );
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let fixed = format!("127.0.0.1:{}", clat::serve::DEFAULT_SERVE_PORT);
+    let first_stdout = String::from_utf8_lossy(&first.stdout);
+    assert!(first_stdout.contains(&fixed), "{first_stdout}");
+    TcpStream::connect(("127.0.0.1", clat::serve::DEFAULT_SERVE_PORT))
+        .expect("the first background host listens on the stable PWA address");
+
+    let stop = command_output(
+        command().args(["host", "stop"]),
+        &root,
+        "fixed-port-first-stop",
+    );
+    assert!(
+        stop.status.success(),
+        "{}",
+        String::from_utf8_lossy(&stop.stderr)
+    );
+    let deadline = Instant::now() + WAIT;
+    loop {
+        match BootstrapApplication::open(Project::new(&project), home.join(".clat"))
+            .and_then(|boot| boot.into_trusted())
+        {
+            Ok(app) => {
+                app.close().unwrap();
+                break;
+            }
+            Err(_) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "stopped host must release the root lease before restart"
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+    }
+
+    let second = command_output(
+        command().args(["host", "start"]),
+        &root,
+        "fixed-port-second-start",
+    );
+    assert!(
+        second.status.success(),
+        "{}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    let second_stdout = String::from_utf8_lossy(&second.stdout);
+    assert!(second_stdout.contains(&fixed), "{second_stdout}");
+    assert_ne!(
+        first.stdout, second.stdout,
+        "restart must create a new host instance while preserving the browser address"
+    );
+    TcpStream::connect(("127.0.0.1", clat::serve::DEFAULT_SERVE_PORT))
+        .expect("the old bookmarked PWA address still reaches the restarted host");
+
+    let stop = command_output(
+        command().args(["host", "stop"]),
+        &root,
+        "fixed-port-second-stop",
+    );
+    assert!(stop.status.success());
+    let deadline = Instant::now() + WAIT;
+    loop {
+        match BootstrapApplication::open(Project::new(&project), home.join(".clat"))
+            .and_then(|boot| boot.into_trusted())
+        {
+            Ok(app) => {
+                app.close().unwrap();
+                break;
+            }
+            Err(_) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "restarted host must release the root lease before test cleanup"
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
     }
     cleanup.armed = false;
     remove_tree(&root);

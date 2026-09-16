@@ -40,9 +40,12 @@ The file contains only a port and instance ID, never credentials. It may remain
 after shutdown or a crash; a stale, missing or invalid record fails closed, without
 falling back to another port. A newly started `serve` replaces it while holding the
 exclusive storage lease. At initial startup only, a free root lease permits one
-background launch on an OS-selected loopback port; concurrent launchers converge
-on the winning host. An occupied lease never permits another writer. Startup
-failure reports an error, never falls back to standalone; reconnect does not spawn.
+background launch on the stable `127.0.0.1:2691` address; concurrent launchers
+converge on the winning host. If another process already owns port 2691, startup
+fails loudly instead of hopping to a random port. Explicit `clat serve --port 0`
+or another custom port remains available for tests and intentional multi-instance
+use. An occupied lease never permits another writer. Startup failure reports an
+error, never falls back to standalone; reconnect does not spawn.
 `clat serve --trust` explicitly authorizes its current project when needed.
 The host snapshots a path-independent build fingerprint before accepting clients.
 If a later native CLAT build finds the same live, same-protocol host, startup

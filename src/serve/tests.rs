@@ -507,6 +507,13 @@ fn parse_serve_args_defaults_to_2691_and_accepts_explicit_controls() {
     assert!(!parsed.rotate_token);
     assert_eq!(parsed.im, None);
     assert_eq!(
+        super::parse_serve_args(["--port".into(), "0".into()])
+            .unwrap()
+            .port,
+        0,
+        "explicit OS-assigned ports remain available; MF-1b only fixes background auto-start"
+    );
+    assert_eq!(
         super::parse_serve_args(["--im".into(), "wechat".into()])
             .unwrap()
             .im,

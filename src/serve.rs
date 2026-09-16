@@ -44,7 +44,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 /// `clat serve` 的已解析参数。
-pub const DEFAULT_SERVE_PORT: u16 = 2691;
+pub const DEFAULT_SERVE_PORT: u16 = crate::host_client::DEFAULT_HOST_PORT;
 
 /// Terminal control surface for the core-owned WeChat binding/pairing state.
 /// QR payloads are rendered directly and never printed as text or persisted.

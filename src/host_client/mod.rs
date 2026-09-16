@@ -25,6 +25,8 @@ use std::path::{Path, PathBuf};
 pub use transport::{HostEvents, HostEventsInterrupt};
 
 pub const HOST_PROTOCOL_VERSION: u64 = 1;
+/// Stable loopback port used by automatic background-host startup.
+pub const DEFAULT_HOST_PORT: u16 = 2691;
 
 #[derive(Clone, Copy)]
 pub(crate) enum BuildMatchPolicy {
