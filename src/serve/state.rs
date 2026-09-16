@@ -223,6 +223,24 @@ impl ServeShared {
             && !self.drafts.has_live_drafts()
     }
 
+    pub(crate) fn is_idle_for_takeover(&self) -> bool {
+        let inner = self.inner.lock().expect("serve inner lock");
+        let idle = inner.active_run.is_none();
+        drop(inner);
+        idle && self.active_compaction_info().is_null()
+            && self.pending.lock().expect("approvals").is_empty()
+            && self.questions.0.lock().expect("questions").is_empty()
+            && self
+                .pending_steering
+                .lock()
+                .expect("steering receipts")
+                .is_empty()
+            && self.wechat_binding.lock().expect("binding").is_none()
+            && self.active_uploads.load(Ordering::Acquire) == 0
+            && self.active_attachment_downloads.load(Ordering::Acquire) == 0
+            && !self.drafts.has_live_drafts()
+    }
+
     pub(crate) fn selection_generation(&self) -> u64 {
         self.selection_generation.load(Ordering::Acquire)
     }
@@ -252,6 +270,9 @@ impl ServeShared {
     }
 
     pub(crate) fn try_upload_permit(self: &Arc<Self>) -> Option<UploadPermit> {
+        if self.is_shutting_down() {
+            return None;
+        }
         let mut current = self.active_uploads.load(Ordering::Acquire);
         loop {
             if current >= MAX_CONCURRENT_UPLOADS {
@@ -264,6 +285,10 @@ impl ServeShared {
                 Ordering::Acquire,
             ) {
                 Ok(_) => {
+                    if self.is_shutting_down() {
+                        self.active_uploads.fetch_sub(1, Ordering::AcqRel);
+                        return None;
+                    }
                     return Some(UploadPermit {
                         shared: Arc::clone(self),
                     });
@@ -860,6 +885,9 @@ fn acquire_permit<T>(
     limit: usize,
     build: impl FnOnce(Arc<ServeShared>) -> T,
 ) -> Option<T> {
+    if shared.is_shutting_down() {
+        return None;
+    }
     let mut current = counter.load(Ordering::Acquire);
     loop {
         if current >= limit {
@@ -871,7 +899,13 @@ fn acquire_permit<T>(
             Ordering::AcqRel,
             Ordering::Acquire,
         ) {
-            Ok(_) => return Some(build(Arc::clone(shared))),
+            Ok(_) => {
+                if shared.is_shutting_down() {
+                    counter.fetch_sub(1, Ordering::AcqRel);
+                    return None;
+                }
+                return Some(build(Arc::clone(shared)));
+            }
             Err(observed) => current = observed,
         }
     }

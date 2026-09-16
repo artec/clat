@@ -483,9 +483,10 @@ fn host_description_golden_is_additive_and_http_clients_need_no_build_identity()
         "protocol_version": 1,
         "instance_id": instance,
         "storage_root": described_root,
-        "methods": ["host.describe", "host.stop", "workspace.list", "workspace.open"],
+        "methods": ["host.describe", "host.stop", "host.takeover", "workspace.list", "workspace.open"],
         "wire_version": crate::wire::WIRE_VERSION,
         "journal_version": crate::session::compat::SESSION_FORMAT_VERSION,
+        "product_version": crate::host_client::build_identity::product_version(),
         "build_fingerprint": crate::host_client::build_identity::current().unwrap(),
     });
     assert_eq!(
@@ -550,7 +551,7 @@ fn model_rpc_keeps_keys_write_only_and_supports_profile_lifecycle() {
     let (handle, storage, project) = spawn_serve("model-settings", TestBehavior::Success);
     let request = json!({"name":"web", "protocol":"open_ai_compatible",
         "model":"test-model", "endpoint":"https://example.invalid/v1",
-        "request_path":"/chat/completions", "api_key":"do-not-return-this-key"});
+        "request_path":"/chat/completions", "api_key":"fixture"});
     for (method, params) in [
         ("model.profile.save", request),
         ("model.profile.activate", json!({"name":"web"})),

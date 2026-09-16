@@ -22,6 +22,7 @@ use std::sync::mpsc;
 pub(crate) const RPC_METHODS: &[&str] = &[
     "host.describe",
     "host.stop",
+    "host.takeover",
     "workspace.list",
     "workspace.open",
     "workbench.info",
@@ -337,6 +338,11 @@ fn dispatch_guarded_project(
             | "model.overrides.set"
     );
     let _mutation = mutating.then(|| shared.rpc_mutations.lock().expect("project RPC mutation"));
+    if mutating && shared.is_shutting_down() {
+        return Err(RpcError::busy(
+            "host is shutting down; refresh after the replacement host is online",
+        ));
+    }
     if mutating
         && let Some(expected) = params.get("expected_selection_generation")
         && expected.as_u64() != Some(shared.selection_generation())

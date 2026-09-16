@@ -8,6 +8,7 @@ const FILE_NAME: &str = "host-endpoint.json";
 pub(super) enum DiscoveryFailure {
     Unavailable(String),
     Incompatible(String),
+    Upgradeable { host_version: String },
 }
 
 impl From<String> for DiscoveryFailure {
@@ -26,6 +27,9 @@ impl DiscoveryFailure {
     pub(super) fn message(self) -> String {
         match self {
             Self::Unavailable(message) | Self::Incompatible(message) => message,
+            Self::Upgradeable { host_version } => format!(
+                "CLAT {host_version} is hosting this storage root; restart through a newer client to take over when idle"
+            ),
         }
     }
 }
@@ -65,6 +69,12 @@ pub(crate) fn publish(root: &Path, port: u16, instance: &str) -> Result<(), Stri
     crate::private_fs::write_text_atomic(&dir, root, FILE_NAME, &text)
 }
 
+pub(super) enum StartupDiscovery {
+    Missing,
+    Compatible(HostClient),
+    Upgradeable { host_version: String },
+}
+
 impl HostClient {
     pub fn discover_local() -> Result<Self, String> {
         let root = crate::control_storage::sentinel::default_storage_root()?;
@@ -82,15 +92,18 @@ impl HostClient {
             .map_err(DiscoveryFailure::message)
     }
 
-    pub(super) fn discover_for_startup(root: &Path) -> Result<Option<Self>, String> {
+    pub(super) fn discover_for_startup(root: &Path) -> Result<StartupDiscovery, String> {
         match Self::discover_checked(root, BuildMatchPolicy::RequireIfAdvertised) {
-            Ok(client) => Ok(Some(client)),
-            Err(DiscoveryFailure::Unavailable(_)) => Ok(None),
+            Ok(client) => Ok(StartupDiscovery::Compatible(client)),
+            Err(DiscoveryFailure::Unavailable(_)) => Ok(StartupDiscovery::Missing),
+            Err(DiscoveryFailure::Upgradeable { host_version }) => {
+                Ok(StartupDiscovery::Upgradeable { host_version })
+            }
             Err(DiscoveryFailure::Incompatible(message)) => Err(message),
         }
     }
 
-    fn discover_for_management(root: &Path) -> Result<Self, String> {
+    pub(super) fn discover_for_management(root: &Path) -> Result<Self, String> {
         Self::discover_checked(root, BuildMatchPolicy::Ignore).map_err(DiscoveryFailure::message)
     }
 
@@ -139,6 +152,7 @@ mod tests {
                 "protocol_version":if identity == "different-build" {super::super::HOST_PROTOCOL_VERSION} else {0},
                 "wire_version":if identity == "different-build" {crate::wire::WIRE_VERSION} else {0},
                 "journal_version":if identity == "different-build" {crate::session::compat::SESSION_FORMAT_VERSION} else {0},
+                "product_version":if identity == "different-build" {super::super::build_identity::product_version()} else {"0.0.0"},
                 "build_fingerprint":if identity == "different-build" {"build-v1-sha256:0000000000000000000000000000000000000000000000000000000000000000"} else {"legacy-fixture"}
             }}).to_string();
             let request_count = if identity == "different-build" { 3 } else { 1 };
@@ -204,8 +218,8 @@ mod tests {
                 assert!(
                     result
                         .err()
-                        .is_some_and(|message| message.contains("different CLAT build")),
-                    "a new client must not silently attach to an old same-protocol build"
+                        .is_some_and(|message| message.contains("same CLAT version")),
+                    "a same-version different build must retain explicit-stop protection"
                 );
                 assert!(
                     management.unwrap().is_ok(),
@@ -213,7 +227,7 @@ mod tests {
                 );
             } else {
                 assert!(
-                    matches!(result, Ok(None)),
+                    matches!(result, Ok(StartupDiscovery::Missing)),
                     "unmatched identity is only a stale hint"
                 );
             }
@@ -221,7 +235,10 @@ mod tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         publish(&root, listener.local_addr().unwrap().port(), &instance).unwrap();
         drop(listener);
-        assert!(matches!(HostClient::discover_for_startup(&root), Ok(None)));
+        assert!(matches!(
+            HostClient::discover_for_startup(&root),
+            Ok(StartupDiscovery::Missing)
+        ));
         drop(dir);
         crate::test_support::cleanup_tree(&root);
     }

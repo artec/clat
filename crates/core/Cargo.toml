@@ -58,6 +58,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 # AG-3 Skills: standard YAML frontmatter parser; do not hand-roll YAML semantics.
 serde_yaml_ng = "0.10"
+semver.workspace = true
 sha2 = "0.10"
 unicode-width = "0.2"
 ureq = { version = "3.3", default-features = false, features = ["rustls"] }

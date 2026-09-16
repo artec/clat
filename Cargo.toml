@@ -23,6 +23,9 @@ members = [
     "sdk/clat-plugin",
 ]
 
+[workspace.dependencies]
+semver = "1"
+
 [[bin]]
 name = "clat"
 path = "src/main.rs"
@@ -47,6 +50,7 @@ ratatui = "0.30.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 serde_yaml_ng = "0.10"
+semver.workspace = true
 sha2 = "0.10"
 unicode-width = "0.2"
 ureq = { version = "3.3", default-features = false, features = ["rustls"] }

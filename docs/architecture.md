@@ -168,11 +168,21 @@ distinct from an unavailable or stale endpoint hint. Before a host accepts
 clients it caches a build fingerprint derived from version, target, executable
 length and modification time, with only the hash crossing the wire; paths,
 inode/device identities, case and Windows short names never enter the value.
-Native clients reject a different advertised build but never replace it
-automatically. The explicit status/stop control path ignores only that build
-difference so the old host remains safely manageable; protocol and root fences
-still apply. Missing fingerprints remain additive-rollout compatible, and raw
-HTTP/PWA clients have no executable identity to compare. Host lifetime remains
+The description also carries the plain product version as an additive field.
+When fingerprints differ but protocol/root/instance still match, a strictly
+newer native client may request an instance-fenced takeover. The host accepts
+only a semantically newer replacement and only when every mounted project has
+no active run, compaction, approval/question wait, pending steering, remote
+binding, upload/download or live draft. It marks all routes shutting down before
+acknowledging, so later mutations cannot enter the yielded process. Busy hosts,
+same-version alternate builds and older clients remain attached/refused under
+the existing explicit-stop policy rather than being replaced automatically.
+The startup client waits for the storage-root lease and fixed port to be released
+before spawning the replacement. The explicit status/stop control path ignores
+only build difference so the old host remains safely manageable; protocol and
+root fences still apply. Missing version/fingerprint fields retain additive
+rollout compatibility, and raw HTTP/PWA clients have no executable identity to
+compare. Host lifetime remains
 independent of attached frontends. The native title marker consumes the existing
 connection projection (`CLAT ● host` online, `CLAT ○ host` offline); standalone
 and DSH keep their existing identities.

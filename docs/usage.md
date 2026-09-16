@@ -47,12 +47,18 @@ or another custom port remains available for tests and intentional multi-instanc
 use. An occupied lease never permits another writer. Startup failure reports an
 error, never falls back to standalone; reconnect does not spawn.
 `clat serve --trust` explicitly authorizes its current project when needed.
-The host snapshots a path-independent build fingerprint before accepting clients.
-If a later native CLAT build finds the same live, same-protocol host, startup
-refuses to attach and tells the developer to run `clat host stop` explicitly;
-it never kills an active run or disconnects frontends automatically. Explicit
-`host status` and `host stop` remain able to manage that old build. Legacy hosts
-that do not advertise the additive field remain compatible for rollout.
+The host snapshots a path-independent build fingerprint and advertises its
+human-readable product version before accepting clients. If a later native CLAT
+build finds the same live, same-protocol host with a different fingerprint,
+startup compares semantic product versions. A strictly newer client asks an idle
+old host to yield, waits for the storage-root lease and stable `127.0.0.1:2691`
+address to be released, then starts the replacement there; existing browser pages
+can reconnect to the same address. Active work refuses automatic takeover and
+leaves the old host running. A same-version different build or an older client
+also retains the explicit `clat host stop` path instead of replacing the host.
+Explicit `host status` and `host stop` ignore only build differences so the old
+host remains manageable. Hosts that predate the additive version/fingerprint
+fields retain the existing rollout-compatibility behavior.
 
 | Need | Command | State owner |
 |---|---|---|
@@ -729,8 +735,8 @@ clat serve
 # pair once with the token in ~/.clat/web-token
 
 clat serve --rotate-token
-clat serve --port 8099 --token temporary-secret
-clat serve --port 0 --token temporary-secret   # OS-assigned test port
+clat serve --port 8099 --token <token>
+clat serve --port 0 --token <token>   # OS-assigned test port
 ```
 
 `--rotate-token` and `--token` are mutually exclusive. `--token` is a

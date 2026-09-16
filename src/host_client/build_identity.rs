@@ -7,6 +7,17 @@ use std::sync::OnceLock;
 
 static CURRENT: OnceLock<Result<String, String>> = OnceLock::new();
 
+pub(crate) fn product_version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+}
+
+pub(crate) fn compare_product_versions(
+    candidate: &str,
+    host: &str,
+) -> Result<std::cmp::Ordering, semver::Error> {
+    Ok(semver::Version::parse(candidate)?.cmp(&semver::Version::parse(host)?))
+}
+
 pub(crate) fn current() -> Result<&'static str, String> {
     match CURRENT.get_or_init(compute) {
         Ok(identity) => Ok(identity.as_str()),
@@ -18,7 +29,7 @@ pub(super) fn verify_advertised(
     description: &serde_json::Value,
 ) -> Result<(), super::discovery::DiscoveryFailure> {
     let Some(advertised) = description.get("build_fingerprint") else {
-        // Additive rollout: old hosts and protocol fixtures remain attachable.
+        // Additive rollout: hosts predating build fingerprints remain attachable.
         return Ok(());
     };
     let advertised = advertised.as_str().ok_or_else(|| {
@@ -30,9 +41,28 @@ pub(super) fn verify_advertised(
     if advertised == current {
         return Ok(());
     }
-    Err(super::discovery::DiscoveryFailure::Incompatible(
-        "a different CLAT build is already hosting this storage root; run `clat host stop` explicitly, then retry (active runs and connected frontends will be disconnected)".into(),
-    ))
+
+    let host_version = description["product_version"].as_str().ok_or_else(|| {
+        super::discovery::DiscoveryFailure::Incompatible(
+            "a different CLAT build is hosting this storage root but did not advertise a product version; run `clat host stop` explicitly, then retry".into(),
+        )
+    })?;
+    let order = compare_product_versions(product_version(), host_version).map_err(|_| {
+        super::discovery::DiscoveryFailure::Incompatible(
+            "host product version is invalid; automatic host takeover is disabled".into(),
+        )
+    })?;
+    match order {
+        std::cmp::Ordering::Greater => Err(super::discovery::DiscoveryFailure::Upgradeable {
+            host_version: host_version.to_owned(),
+        }),
+        std::cmp::Ordering::Equal => Err(super::discovery::DiscoveryFailure::Incompatible(
+            "a different build of the same CLAT version is already hosting this storage root; run `clat host stop` explicitly, then retry".into(),
+        )),
+        std::cmp::Ordering::Less => Err(super::discovery::DiscoveryFailure::Incompatible(format!(
+            "a newer CLAT {host_version} host is already running; upgrade this client instead of replacing that host"
+        ))),
+    }
 }
 
 fn compute() -> Result<String, String> {
@@ -92,5 +122,38 @@ mod tests {
             verify_advertised(&serde_json::json!({"build_fingerprint":current().unwrap()})).is_ok(),
             "the same build attaches without stopping or replacing its host"
         );
+    }
+
+    #[test]
+    fn different_builds_are_upgradeable_only_when_the_client_version_is_newer() {
+        let different =
+            "build-v1-sha256:0000000000000000000000000000000000000000000000000000000000000000";
+        let current_version = semver::Version::parse(product_version()).unwrap();
+        assert!(current_version > semver::Version::new(0, 0, 0));
+
+        assert!(matches!(
+            verify_advertised(&serde_json::json!({
+                "build_fingerprint":different,
+                "product_version":"0.0.0"
+            })),
+            Err(super::super::discovery::DiscoveryFailure::Upgradeable { host_version })
+                if host_version == "0.0.0"
+        ));
+        assert!(matches!(
+            verify_advertised(&serde_json::json!({
+                "build_fingerprint":different,
+                "product_version":product_version()
+            })),
+            Err(super::super::discovery::DiscoveryFailure::Incompatible(message))
+                if message.contains("same CLAT version")
+        ));
+        assert!(matches!(
+            verify_advertised(&serde_json::json!({
+                "build_fingerprint":different,
+                "product_version":"999.0.0"
+            })),
+            Err(super::super::discovery::DiscoveryFailure::Incompatible(message))
+                if message.contains("newer CLAT 999.0.0 host")
+        ));
     }
 }

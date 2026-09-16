@@ -17,6 +17,7 @@ mod reclaim;
 pub(crate) const HOST_METHODS: &[&str] = &[
     "host.describe",
     "host.stop",
+    "host.takeover",
     "workspace.list",
     "workspace.open",
 ];
@@ -102,6 +103,9 @@ impl WorkspaceHost {
             self.shutdown.store(true, Ordering::SeqCst);
             return Ok(json!({"stopping": true}));
         }
+        if method == "host.takeover" {
+            return self.takeover(params);
+        }
         let mut projects = self.projects.lock().expect("host projects");
         if self.shutdown.load(Ordering::SeqCst) {
             return Err(RpcError::busy("host is shutting down"));
@@ -111,6 +115,7 @@ impl WorkspaceHost {
                 "storage_root": projects.application.storage_root(), "methods": HOST_METHODS,
                 "wire_version": crate::wire::WIRE_VERSION,
                 "journal_version": crate::session::compat::SESSION_FORMAT_VERSION,
+                "product_version": crate::host_client::build_identity::product_version(),
                 "build_fingerprint": self.build_fingerprint})),
             "workspace.list" => Ok(
                 json!({"workspaces": projects.routes.iter().map(|(id, shared)| {
@@ -121,6 +126,52 @@ impl WorkspaceHost {
             "workspace.open" => self.open(&mut projects, params),
             _ => Err(RpcError::bad_request("unknown host method")),
         }
+    }
+
+    fn takeover(&self, params: &serde_json::Map<String, Value>) -> Result<Value, RpcError> {
+        let expected = params
+            .get("expected_instance_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| RpcError::bad_request("expected_instance_id is required"))?;
+        if expected != self.instance {
+            return Err(RpcError::busy(
+                "host instance changed; refresh before requesting takeover",
+            ));
+        }
+        let replacement = params
+            .get("replacement_product_version")
+            .and_then(Value::as_str)
+            .ok_or_else(|| RpcError::bad_request("replacement_product_version is required"))?;
+        let order = crate::host_client::build_identity::compare_product_versions(
+            replacement,
+            crate::host_client::build_identity::product_version(),
+        )
+        .map_err(|_| RpcError::bad_request("replacement_product_version is invalid"))?;
+        if order != std::cmp::Ordering::Greater {
+            return Err(RpcError::bad_request(
+                "replacement_product_version must be newer than the running host",
+            ));
+        }
+
+        let projects = self.projects.lock().expect("host projects");
+        if self.shutdown.load(Ordering::SeqCst) {
+            return Ok(json!({"stopping": true}));
+        }
+        let routes = projects.routes.values().cloned().collect::<Vec<_>>();
+        let _mutations = routes
+            .iter()
+            .map(|shared| shared.rpc_mutations.lock().expect("project RPC mutation"))
+            .collect::<Vec<_>>();
+        if routes.iter().any(|shared| !shared.is_idle_for_takeover()) {
+            return Err(RpcError::busy(
+                "host has active work; finish or cancel it before upgrading",
+            ));
+        }
+        for shared in &routes {
+            shared.mark_shutting_down();
+        }
+        self.shutdown.store(true, Ordering::SeqCst);
+        Ok(json!({"stopping": true}))
     }
 
     fn open(

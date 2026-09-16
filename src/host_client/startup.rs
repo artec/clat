@@ -33,26 +33,31 @@ impl HostClient {
         }
         let root = crate::control_storage::sentinel::default_storage_root()?;
         super::discovery::validate_existing(&root)?;
-        if let Some(client) = Self::discover_for_startup(&root)? {
-            return client.open_project(project.root(), trust);
-        }
         let executable = std::env::current_exe().map_err(|error| error.to_string())?;
         let deadline = Instant::now() + Duration::from_secs(30);
         let mut child = None;
         let mut attempted = false;
+        let mut takeover_from = None;
         loop {
-            match Self::discover_for_startup(&root) {
-                Ok(Some(client)) => {
+            let host_missing = match Self::discover_for_startup(&root) {
+                Ok(super::discovery::StartupDiscovery::Compatible(client)) => {
                     reap_host_child(child.take());
                     return client.open_project(project.root(), trust);
                 }
+                Ok(super::discovery::StartupDiscovery::Upgradeable { host_version }) => {
+                    if takeover_from.is_none() {
+                        request_upgrade_takeover(&root, &host_version)?;
+                        takeover_from = Some(host_version);
+                    }
+                    false
+                }
+                Ok(super::discovery::StartupDiscovery::Missing) => true,
                 Err(error) => {
                     reap_host_child(child.take());
                     return Err(error);
                 }
-                Ok(None) => {}
-            }
-            if !attempted {
+            };
+            if host_missing && !attempted {
                 let lease = crate::session::root_lease::try_acquire(&root)
                     .map_err(|error| format!("cannot inspect host lease: {error}"))?;
                 if let Some(lease) = lease {
@@ -75,6 +80,11 @@ impl HostClient {
             }
             if Instant::now() >= deadline {
                 reap_host_child(child);
+                if let Some(version) = takeover_from {
+                    return Err(format!(
+                        "CLAT {version} host accepted upgrade takeover but did not release the storage root; inspect `clat host status` before retrying"
+                    ));
+                }
                 if !attempted {
                     return Err("storage root is busy with another writer; stop that writer explicitly before starting a host".into());
                 }
@@ -83,6 +93,27 @@ impl HostClient {
             std::thread::sleep(Duration::from_millis(100));
         }
     }
+}
+
+fn request_upgrade_takeover(root: &Path, host_version: &str) -> Result<(), String> {
+    let client = HostClient::discover_for_management(root)?;
+    let instance = client.instance_id().to_owned();
+    let result = client.call(
+        "host.takeover",
+        &serde_json::json!({
+            "expected_instance_id": instance,
+            "replacement_product_version": super::build_identity::product_version()
+        }),
+    )?;
+    if result["stopping"] != true {
+        return Err("old host did not acknowledge upgrade takeover; no stop was retried".into());
+    }
+    eprintln!(
+        "clat: upgrading idle background host CLAT {host_version} → CLAT {}; PWA remains at http://127.0.0.1:{}",
+        super::build_identity::product_version(),
+        super::DEFAULT_HOST_PORT
+    );
+    Ok(())
 }
 
 fn child_exit_status(
