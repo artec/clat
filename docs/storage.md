@@ -477,8 +477,9 @@ The user re-enters model configuration and re-approves project trust. Existing
 DSH-format session logs survive and are adopted when each project opens.
 
 An interrupted rename-before-sentinel window is idempotent on the next mount.
-Older SQLite formats that stored conversations in `sessions`/`messages` tables
-are refused rather than silently losing or partially converting data.
+The legacy database file is never opened or interpreted — the SQLite
+dependency is gone entirely — so any pre-cutover variant is preserved
+byte-for-byte rather than partially converted or refused on content.
 
 ## Runtime commit ordering
 

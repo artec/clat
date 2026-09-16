@@ -154,8 +154,9 @@ MCP annotations are untrusted effect hints:
 |---|---|
 | read-only + closed world | `ExternalRead` |
 | read-only + open world | `Network` |
-| non-read-only + non-destructive | `Write` |
 | destructive, missing, or ambiguous | `Destructive` |
+| non-destructive + open world (`openWorldHint` defaults to true) | `Network` |
+| non-destructive + closed world | `Write` |
 
 No remote tool can claim the native `Read` effect. The resulting effect flows
 through the normal mode table; see [Permissions](permissions.md#mcp-effects).

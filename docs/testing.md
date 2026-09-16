@@ -135,7 +135,8 @@ path-based omissions; it remains the safety net for quick-selection misses.
 Both the Linux gate step and the Windows Test step have a 15-minute CI timeout.
 
 `scripts/ci-box.sh` runs the full Linux gate on a two-CPU container when
-platform semantics need verification. `--stress N` remains available for a
+platform semantics need verification (its only flag is `--cpus N`).
+`scripts/gates.sh --stress N` remains available for a
 specific diagnosed timing concern, rather than routine repeated full runs.
 DSH checkout oracles remain opt-in with `DSH_CHECKOUT`; real-model/device
 checks follow [Live validation](live-validation.md).

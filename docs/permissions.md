@@ -350,8 +350,9 @@ MCP annotations are untrusted hints used only to choose a conservative effect:
 |---|---|
 | read-only, closed world | `ExternalRead` |
 | read-only, open world | `Network` |
-| non-read-only, non-destructive | `Write` |
 | destructive or missing/ambiguous | `Destructive` |
+| non-destructive, open world (`openWorldHint` defaults to true) | `Network` |
+| non-destructive, closed world | `Write` |
 
 An MCP server cannot claim the auto-allowed native `Read` effect. Under Read
 Only every MCP call asks. Under Project Write, ExternalRead, Network, and Write

@@ -187,6 +187,7 @@ The main screen has three surfaces:
 | `PageUp` / `PageDown` | scroll the conversation |
 | `Shift+Tab` | cycle the active vendor's reasoning level |
 | `Ctrl+R` | expand or collapse Think details in the conversation |
+| `Alt+S` | request one manual prompt suggestion when the utility policy allows it |
 | mouse wheel | scroll the conversation |
 | mouse drag | select text and copy it with OSC 52 on release |
 | `Cmd+C` / `Ctrl+Shift+C` | copy the current selection again |
@@ -995,13 +996,23 @@ Current methods are:
 
 - `workbench.info`
 - `session.list`, `session.info`, `session.new`, `session.switch`,
-  `session.rename`, `session.compact`
-- `model.overrides.set`
-- `draft.open`
-- `prompt.send`, `steer.send`, `run.cancel`
+  `session.history`, `session.rename`, `session.compact`
+- `model.overrides.set`, `model.settings.get`, `model.utility.get`,
+  `model.utility.set`, `model.profile.get`, `model.profile.save`,
+  `model.profile.activate`, `model.profile.delete`,
+  `model.preset.select`, `model.thinking.cycle`
 - `permission.set`
+- `wechat.binding.status`, `wechat.binding.start`, `wechat.binding.poll`,
+  `wechat.binding.unbind`, `wechat.pairing.create`, `wechat.user.allow`,
+  `wechat.user.remove`
+- `draft.open`
+- `prompt.suggest`, `command.run`, `prompt.send`, `steer.send`, `run.cancel`
 - `approval.respond`
 - `question.respond`
+
+The host-level `host.*` and `workspace.*` methods are listed under
+[Multiple projects in the web workbench](#multiple-projects-in-the-web-workbench)
+below.
 
 `workbench.info` is lightweight: it returns project, active-session, model
 (including all five typed override states), permission, MCP, capability,
@@ -1153,6 +1164,9 @@ project fails with a capacity error rather than disrupting existing work.
 
 Authenticated clients can call `host.describe`, `workspace.list`,
 `workspace.open` (`root`, optional boolean `trust`), and `host.stop`.
+`host.takeover` additionally requires the exact instance id and a strictly
+newer product version; it serves the native startup upgrade flow described
+earlier and is rejected for same-version or older clients.
 `workspace.open` returns an opaque `id` and `api_prefix`; prepend that prefix
 to the existing `/api/...` paths, including events, image uploads and image
 reads. Project identifiers are temporary; reopen the project after an idle
@@ -1254,5 +1268,6 @@ serialized question data. Live `notice` payloads use `question_requested` (with
 `rpc_id` and `question`) and `question_resolved` (with `rpc_id`).
 
 Full terminal dialog/command parity is still pending;
-this is not yet a replacement for the traditional TUI. Plain `clat` retains its
-standalone behavior. Automatic background-host startup is not implemented yet.
+this is not yet a replacement for the traditional TUI. Plain `clat` opens this
+attached mode by default — it discovers or starts the background host before
+showing the TUI — while `clat standalone` keeps the traditional in-process TUI.

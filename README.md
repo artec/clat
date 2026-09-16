@@ -91,7 +91,10 @@ it remains off unless serve is started with `--im wechat`.
   publisher/revocation checks, capability review and rollback.
 - **Client-neutral core** — the TUI, headless runner, local server, and optional
   WeChat frontend consume the same Application facade, permission pipeline,
-  attachment admission, and event vocabulary.
+  attachment admission, and event vocabulary. By default `clat` discovers or
+  starts one background host on `127.0.0.1:2691`, so the terminal UI and the
+  web workbench can stay open on the same sessions at the same time;
+  `clat standalone` keeps the traditional in-process TUI.
 
 ## Install
 

@@ -30,18 +30,24 @@ The shipped catalog is the source used by both the picker and runtime:
 | GLM 5.3 | `glm-5.3` | `https://open.bigmodel.cn/api/coding/paas/v4` | 1M | 128K |
 | GLM 5.3 Flash | `glm-5.3-flash` | `https://open.bigmodel.cn/api/coding/paas/v4` | 1M | 128K |
 | Qwen3.8 Max | `qwen3.8-max` | `https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1` | 1M | 128K |
+| Qwen3.8 Flash | `qwen3.8-flash` | `https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1` | 1M | 128K |
 | Kimi K3 | `kimi-k3` | `https://api.kimi.com/coding/v1` | 1M | 128K |
+| Kimi for Coding | `kimi-for-coding` | `https://api.kimi.com/coding/v1` | 1M | 128K |
+| Hy 4 Preview | `hy4-preview` | `https://api.lkeap.cloud.tencent.com/plan/v3` | 1M | 64K |
+| Hy 3 | `hy3` | `https://api.lkeap.cloud.tencent.com/plan/v3` | 256K | 128K |
 
 All use the OpenAI-compatible protocol. The catalog also owns request paths,
 reasoning parameters, usage streaming, context-window seeds, and vendor-specific
 headers. For example, GLM preserves thinking, Qwen uses its
-`low`/`medium`/`xhigh` ladder, and the Kimi Coding endpoint requires a
-whitelisted coding-agent User-Agent. See [Providers](providers.md#built-in-presets)
+`low`/`medium`/`xhigh` ladder, the Kimi Coding endpoints require a
+whitelisted coding-agent User-Agent, and the Hy presets always think
+server-side (no ladder). See [Providers](providers.md#built-in-presets)
 before overriding those fields.
 
 GLM 5.3 Flash is currently the only built-in preset with probe-verified native
 image input; the officially-declared vision presets — `deepseek-flash`,
-`qwen3.8-max`, `qwen3.8-flash`, and `kimi-k3` — and GLM 5.3 Flash all enable
+`qwen3.8-max`, `qwen3.8-flash`, `kimi-k3`, and `kimi-for-coding` — and
+GLM 5.3 Flash all enable
 the image attachments described in
 [Using CLAT](usage.md#image-attachments). All other presets remain text-only
 in CLAT. This does not restrict images handled wholly inside configured MCP
@@ -49,6 +55,14 @@ tools. DeepSeek note (2026-09-10): the official V4.1 Flash release retired
 `deepseek-v4-flash` and `deepseek-v4-flash-vision-exp`; the preset was
 upgraded in place to `deepseek-flash` (vision slot inherited), and saved
 configurations referencing the old ids simply stop resolving to a preset.
+
+Most presets also declare a companion utility model used only for automatic
+session naming and manual prompt suggestions: `deepseek-v4-pro` uses
+`deepseek-flash`, `glm-5.3` uses `glm-5.3-flash`, `qwen3.8-max` uses
+`qwen3.8-flash`, `kimi-k3` uses `kimi-for-coding`, and `hy4-preview` uses
+`hy3`; every other preset uses the primary model itself. See
+[Using CLAT](usage.md#companion-utility-and-manual-suggestions) for the
+budget and preview semantics.
 
 ## Custom profiles
 

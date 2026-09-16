@@ -226,8 +226,9 @@ cd sdk/dsh-adapter
 npm run scan -- /path/to/deepseek-harness --output /tmp/dsh-compat.json
 ```
 
-对本页钉定的 `b150a551…` checkout，v2 扫描到 249 个 package，其中
-234 个含插件候选证据：2 `portable`、171 `partial`、61 `unsupported`、
+v2 扫描数字的钉靶是 `b150a551…` checkout（0.1.1-rc.2 时代的旧钉靶，
+早于本页 OC-1 重钉，重钉后未重扫）：该 checkout 扫描到 249 个 package，
+其中 234 个含插件候选证据：2 `portable`、171 `partial`、61 `unsupported`、
 15 `not-plugin`。完整矩阵的稳定 SHA-256 为
 `0328b3b3eea092d261df1f93b7bd9185dcf42a1ebbed76e1639cd37e21219d71`。
 成员级判断比 v1 更严格，所以 `unsupported` 增多不代表兼容性倒退。

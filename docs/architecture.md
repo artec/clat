@@ -67,9 +67,11 @@ crate-private. Frontend implementation trees are not library APIs; crate-root
 exports are limited to the Application facade and deliberately supported
 domain contracts.
 
-The product workspace has two compilation units: `clat` (public facade,
+The product itself ships two compilation units: `clat` (public facade,
 CLI and TUI/DSH terminal client) depends on `clat-core` (runtime,
-Application and terminal-independent headless/HTTP surfaces). The core
+Application and terminal-independent headless/HTTP surfaces); the repo
+workspace additionally contains non-default dev-only members (example
+plugins and the plugin SDK). The core
 manifest has no dependency on `clat`, ratatui, crossterm or arboard;
 the dependency direction is enforced by Cargo, not only source inspection.
 Both packages are default workspace members, so ordinary delivery commands
@@ -225,7 +227,8 @@ write path.
 `TrustedProjectApplication` exposes use cases rather than subsystems. Examples
 include:
 
-- `session_list`, `session_info`, `new_session`, `switch_session`, and rename;
+- `list_sessions`, `session_history`, `new_session`, `switch_session`, and
+  `rename_session`;
 - model state/profile reads and writes;
 - `dispatch_command` for the shared slash-command catalog;
 - permission-mode get/set through the core mode cell;
@@ -438,7 +441,9 @@ owns the service; each active Run binds a fresh generation and session id.
 Process ids never cross that boundary, at most eight jobs run concurrently,
 and run cancellation/terminal, TTL, explicit termination and Application
 close all terminate the owned process group and ordinary descendants. Each
-stdout, stderr and PTY stream has a 256 KiB transient ring; tool results are
+stdout, stderr and PTY stream has a 256 KiB transient ring; the LSP
+managed-stdio channel uses separate dedicated buffers from the same service
+(its stdout ring and stdin-write cap are larger); tool results are
 separately bounded. Raw streams and stdin have no persistence path. `write_stdin`
 redacts its characters from the durable `tool/call` while permission review
 and invocation still see the complete arguments.
@@ -613,7 +618,7 @@ adapter translate core requests into dialog state.
 
 ### Headless runner
 
-`exec.rs` maps stdout/stderr/stdin to the same Application ports. It injects a
+`exec/` maps stdout/stderr/stdin to the same Application ports. It injects a
 request-scoped terminal approver, denies side effects when stdin is not a TTY,
 supports versioned NDJSON events, and owns no process-global signal handler.
 `main.rs` translates Ctrl-C into an injected `ExecCancel`.
@@ -686,7 +691,8 @@ backward with an exclusive `before_seq` cursor and never splits a turn. Session
 arming retains the already-folded replay prefix in core, so switching performs
 one full physical scan, older-page requests are memory-only, and freshness
 decodes only a newly committed suffix. Append-only compaction does not
-invalidate existing cursors; the v0-to-v2 `/update` publication naturally
+invalidate existing cursors; the `/update` ensure-current publication
+(v0 or v2 sources upgraded to the current V3 generation) naturally
 re-arms a new cache with the new generation. The full bounded message outline
 travels on `subscribed` and refreshes again at each durable `prompt.settled`
 boundary, so live navigation never guesses journal sequence numbers.
@@ -804,7 +810,10 @@ The 2026-09 refactor campaign established these module shapes; new code
 follows them so the structure does not decay back. `scripts/code-health.py`
 measures the budget at every round close: production functions ≥80 lines
 and the root-directory production share may improve, never regress
-(baseline: 91 / 24% at worst, 48 / 19.7% after the campaign).
+(2026-09 campaign: 91 / 24% at worst → 48 / 19.7% at close; measured
+2026-09-16: 132 / 18.4% — the giant-function count has regrown well past
+the campaign close, so the budget anchor is the latest recorded value, not
+the campaign minimum).
 
 - **Seat tables for vocabularies.** Durable journal events and `RunEvent`
   variants are defined exactly once in the `src/session/catalog/` seat

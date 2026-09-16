@@ -45,12 +45,15 @@ The preset catalog configures the OpenAI-compatible adapter:
 | Qwen3.8 Max Token Plan | `qwen3.8-max` | 1M | 128K | `medium` |
 | Qwen3.8 Flash Token Plan | `qwen3.8-flash` | 1M | 128K | `medium` |
 | Kimi K3 Coding Plan | `kimi-k3` | 1M | 128K | `high` |
+| Kimi for Coding · Kimi Coding Plan | `kimi-for-coding` | 1M | 128K | `high` |
 | Hy 4 Preview · Hy Token Plan | `hy4-preview` | 1M | 64K | — (always on) |
+| Hy 3 · Hy Token Plan | `hy3` | 256K | 128K | — (always on) |
 
 Vision capability is hardcoded per preset, never probed at runtime: the
-five image-input routes are `deepseek-flash`, `glm-5.3-flash`
-(also verified for image tool results), `qwen3.8-max`, `qwen3.8-flash`, and
-`kimi-k3` — the first declared by official vendor documentation, the GLM
+six image-input routes are `deepseek-flash`, `qwen3.8-max`,
+`qwen3.8-flash`, `kimi-k3`, and `kimi-for-coding`, plus `glm-5.3-flash`
+(also verified for image tool results) — the first five declared by
+official vendor documentation, the GLM
 route proven by CLAT's own live probe. All other presets are text-only.
 
 DeepSeek note (2026-09-10): the official V4.1 Flash release replaced the
@@ -66,7 +69,7 @@ preset to Custom so the label cannot outlive its owned parameters.
 
 ### DeepSeek
 
-The three presets use `https://api.deepseek.com` and explicitly send:
+Both presets use `https://api.deepseek.com` and explicitly send:
 
 ```json
 {
@@ -77,10 +80,9 @@ The three presets use `https://api.deepseek.com` and explicitly send:
 ```
 
 Thinking mode ignores sampling fields such as temperature, so the presets leave
-them unset. Usage parsing recognizes DeepSeek's cache-hit token field. The
-Vision experimental preset uses the same protocol with native image input,
-declared by the official API documentation, so attach admission is open on
-that route.
+them unset. Usage parsing recognizes DeepSeek's cache-hit token field. Native
+image input is officially declared on `deepseek-flash` itself, so attach
+admission is open on that route.
 
 DeepSeek streams chain-of-thought as `delta.reasoning_content`. CLAT accumulates
 it and attaches it only to an assistant item that made tool calls. On the next
@@ -291,7 +293,8 @@ token is their outer lifetime. Internal model consumers use explicit budgets:
 
 | Consumer | Total deadline | Underlying attempt cap |
 |---|---:|---:|
-| automatic session title | 15 s | 2 |
+| automatic session title | 15 s | 1 |
+| manual prompt suggestion (utility) | 15 s | 1 |
 | compaction map/reduce | 60 s | 8 |
 
 A deadline is attached to a child `CancelToken`, not only to retry sleep. It

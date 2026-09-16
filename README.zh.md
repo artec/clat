@@ -82,7 +82,10 @@ clat upgrade --check
   事务型插件管理器安装 WASM 与可执行 MCP 包，并提供签名市场发现、依赖求解、
   发布者/撤销校验、能力复审与回滚。
 - **前端中立核心**——TUI、无头运行器、本地服务和可选微信前端共享同一个
-  Application 门面、权限管道、附件 admission 与事件词汇。
+  Application 门面、权限管道、附件 admission 与事件词汇。默认情况下
+  `clat` 会发现或启动一个 `127.0.0.1:2691` 上的后台宿主，终端 UI 与
+  Web 工作台可同时在线使用同一批会话；`clat standalone` 保留传统进程内
+  TUI。
 
 ## 安装
 

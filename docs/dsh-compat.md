@@ -47,7 +47,7 @@ are useful diagnostics, but they are not compatibility evidence.
 | Full current JSONL session artifact, header, zstd, resume | session + JSONL packages | `src/session/*` | `tests/fixtures/dsh-oracle/session-jsonl.json`, `tests/fixtures/dsh-session/v2-session-0.1.3.jsonl.zstd` | **compatible** | OC-1 pins the v2 plaintext codec; the B8 fixture comes from DSH's real 0.1.3 zstd write path and is decoded by CLAT. Live concurrent-process ownership is the separate lease row below. |
 | Per-session write ownership (`session.lock`) | `packages/session/session-persistence-jsonl/src/lease.ts`, `win32.ts` | `src/session/write_lease.rs`, `src/session/persistence.rs` | — | **partial** | Exact POSIX filename/flock/inode verification and Windows semaphore-name algorithm are mirrored and locally tested, including an independent process. No committed executable DSH-process fixture is possible for a kernel-lifetime behavior. |
 | `plan/mode` approved-plan extension | DSH `plan/mode` vocabulary | `src/plan_mode.rs`, session projection | — | **intentional-difference** | CLAT adds bounded approved text/digest fields accepted as an extensible payload; not an upstream feature. |
-| Goal state and bounded continuation | DSH goal plugin/round driver | `src/goal.rs`, `src/plugins/goal.rs`, Application run worker | — | **intentional-difference** | CLAT uses one whole-snapshot `goal/change` state with revision CAS and process-local explicit arming. No DSH runtime oracle currently proves behavioral compatibility. |
+| Goal state and bounded continuation | DSH goal plugin/round driver | `src/goal.rs`, `src/plugins/context/goal.rs`, Application run worker | — | **intentional-difference** | CLAT uses one whole-snapshot `goal/change` state with revision CAS and process-local explicit arming. No DSH runtime oracle currently proves behavioral compatibility. |
 | One-shot subagent descriptor | DSH subagent v2 descriptor | `src/subagent.rs`, `src/plugins/subagent.rs` | — | **partial** | CLAT emits the DSH v2 descriptor shape, but records it in the parent log because v1 has no resumable child session; source mapping and local admission tests are not a runtime oracle. |
 | CLAT subagent lifecycle/provenance | DSH subagent lifecycle concepts | `clat/subagent` event and projection | — | **intentional-difference** | CLAT adds an ignorable strict start/end fact with hashes, limits, usage, and three-tool project-confined provenance. Children are fixed-role, depth 1, default off, and cannot resume or recurse. |
 | Permission vocabulary and approval journaling | DSH permission/approval packages | `src/permission.rs`, `src/session/recorder.rs` | — | **partial** | Mappings are source-reviewed and tested locally; no pinned runtime oracle yet covers the end-to-end policy decision. |
@@ -58,7 +58,7 @@ are useful diagnostics, but they are not compatibility evidence.
 | `ctx.fs` host mirror | DSH filesystem service | adapter host services + native CLAT tools | — | **intentional-difference** | Project-root only, 64 KiB complete reads, no atomic `expected` version guard. |
 | `ctx.shell` host mirror | DSH shell service | adapter host services + ProcessService | — | **intentional-difference** | Foreground only; fixed cwd; no arbitrary env/stdin/background start. |
 | `ctx.sessions` / `ctx.agents` | DSH session/agent services | bounded read-only run mirror | — | **intentional-difference** | No creation, mutation, resume, live stream, or child orchestration through the adapter. |
-| Market package/signature contract | DSH plugin packages and CLAT market format | `src/market.rs`, schemas, release tooling | — | **unresearched** | CLAT owns a different signed package contract; package quantity is not evidence. |
+| Market package/signature contract | DSH plugin packages and CLAT market format | `src/plugin/market.rs`, schemas, release tooling | — | **unresearched** | CLAT owns a different signed package contract; package quantity is not evidence. |
 
 ## Remote mux session subscriptions
 
@@ -94,19 +94,21 @@ npm --prefix sdk/dsh-adapter test
 cargo test --all-targets --all-features
 ```
 
-The V3 session goldens regenerate against the pinned checkout with:
+The V3 session goldens regenerate against the pinned checkout with (adjust
+`../clat` to wherever your CLAT checkout lives; the recorded command used a
+sibling checkout named `clat-v3` during the V3 migration):
 
 ```bash
 cd ../deepseek-harness && \
-  ./node_modules/.bin/tsx ../clat-v3/tests/fixtures/dsh-session/gen-v3-fixtures.mts
+  ./node_modules/.bin/tsx ../clat/tests/fixtures/dsh-session/gen-v3-fixtures.mts
 ```
 
 `oracle:regen` checks the pinned source wiring, runs each generator twice,
 requires byte-identical output, and writes generator/checker/fixture SHA-256
 values to `tests/fixtures/dsh-oracle/manifest.json`. Generators import only the
 pinned upstream checkout; CLAT code is used solely by consumer tests. Fixtures
-are registered `text eol=lf` in `.gitattributes` because they are textual
-goldens consumed as exact bytes.
+are registered `-text` in `.gitattributes` (no line-ending translation on any
+platform) because they are goldens consumed as exact bytes.
 
 ## Re-pinning
 
