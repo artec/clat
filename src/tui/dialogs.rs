@@ -154,10 +154,10 @@ pub(super) fn draw_welcome(frame: &mut Frame, inner: Rect) {
 /// Composer 节与键位节保持前端本地（INV-SC-3：附件草稿是 TUI 状态，
 /// 不进 core `CommandRegistry`——命令真实存在于 attachments.rs 的
 /// 本地拦截，不列死条目）。Composer 条目主名在前、别名随后（CP-2
-/// A5/A6）；键位节十一行按任务域四组排布（CP-2 A4：输入与提交 /
+/// A5/A6）；键位节按任务域四组排布（CP-2 A4：输入与提交 /
 /// 运行控制 / 浏览与显示 / 选择与复制，组序即行序——与命令节七组
 /// 的"组序即序"设计语言统一），Ctrl+V 归位 Keys 节；Think 披露新增
-/// Ctrl+R 后为十二行。
+/// Ctrl+R 后为十二行；2026-09-16 增加 Alt+S 手动建议入口。
 pub(super) fn help_dialog_lines(width: usize, commands: &[CommandInfo]) -> Vec<Line<'static>> {
     let composer: &[(&str, &str)] = &[
         (
@@ -179,6 +179,7 @@ pub(super) fn help_dialog_lines(width: usize, commands: &[CommandInfo]) -> Vec<L
         ("Enter", "submit; while a run is active, submit steering"),
         ("Shift+Enter, Alt+Enter, Ctrl+J", "insert a line break"),
         ("Ctrl+V", "paste clipboard image or text"),
+        ("Alt+S", "request a prompt suggestion while idle"),
         (
             "Up / Down",
             "recall input history (or scroll the conversation)",

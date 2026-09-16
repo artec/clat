@@ -184,8 +184,11 @@ Terminals retain composer ownership during generation and publish replies only
 as request- and input-generation-fenced previews; adoption is explicit and
 never submits a run.
 
-Attached read-only information dialogs consume existing `command.run` text
-projections; their scroll state and request identity remain frontend-local.
+Attached read-only information dialogs consume existing `command.run`
+projections; `/help` carries the structured host command catalog so the TUI can
+append its frontend-local Composer and Keys sections, while the other dialogs
+retain their text projections. Scroll state and request identity remain
+frontend-local.
 The core `HostClient` supplies canonical read-only command surface hints;
 the terminal does not own the command-name dispatch table.
 Responses are fenced by connection epoch, selection generation, request number,

@@ -2059,7 +2059,7 @@ fn help_dialog_snapshot_and_paging() {
 
     // 翻页：Down 推进滚动位并钳制在最大值；Esc 关闭并交还输入。
     // CP-2：尾页（钳制位）补钉 help-dialog-end——首页快照只见命令节，
-    // Composer/Keys 节（A4 四组 12 行 + 短主名）由尾页锁定。
+    // Composer/Keys 节（A4 四组 + Alt+S 建议入口 + 短主名）由尾页锁定。
     harness.key(KeyCode::Down);
     harness.snapshot("help-dialog");
     let max = harness.app.info_scroll_max;
@@ -2145,6 +2145,10 @@ fn help_dialog_lines_carry_the_frontend_local_composer_section() {
     assert!(
         text.contains("Ctrl+V — paste clipboard image or text"),
         "Ctrl+V is listed in the Keys section"
+    );
+    assert!(
+        text.contains("Alt+S — request a prompt suggestion while idle"),
+        "the manual suggestion shortcut is discoverable"
     );
     // 三条命令真实存在于 TUI 本地拦截（attachments.rs），不是死条目；
     // 短主名与旧名（A5 旧名纪律）全部可达。

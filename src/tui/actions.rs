@@ -554,7 +554,7 @@ impl App {
         }
     }
 
-    fn start_prompt_suggestion(&mut self) -> bool {
+    pub(super) fn start_prompt_suggestion(&mut self) -> bool {
         if self.suggestions.pending() || self.running || self.run_start_pending {
             self.flash_status("suggestions are available while idle");
             return true;

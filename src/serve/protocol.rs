@@ -1008,7 +1008,18 @@ fn command_run(params: &Map<String, Value>, shared: &Arc<ServeShared>) -> Result
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
-            Ok(json!({ "kind": "status", "message": message }))
+            let commands = commands
+                .iter()
+                .map(|info| {
+                    json!({
+                        "name": info.name,
+                        "aliases": info.aliases,
+                        "description": info.description,
+                        "group": info.group.as_str(),
+                    })
+                })
+                .collect::<Vec<_>>();
+            Ok(json!({ "kind": "help", "commands": commands, "message": message }))
         }
         crate::CommandOutcome::ShowMcpStatus(status) => {
             let mut lines = vec![format!(

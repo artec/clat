@@ -158,6 +158,7 @@ const state = {
   suggestionPending: false,
   suggestion: null,
   utilitySettings: null,
+  modelSelectionPending: false,
   transcriptAttachmentUrls: new Set(),
   history: {
     hasMore: false,
@@ -191,6 +192,9 @@ for (const id of [
   'session-list', 'session-empty', 'transcript-scroll', 'empty-state', 'transcript',
   'history-status', 'message-map', 'message-map-track', 'message-map-preview',
   'prompt', 'send', 'suggest', 'cancel', 'run-state', 'composer-permission', 'composer-shell',
+  'model-picker-trigger', 'model-picker-label', 'model-picker', 'model-picker-close',
+  'model-picker-current', 'model-picker-list', 'model-picker-key', 'model-picker-error',
+  'model-picker-manage',
   'attachment-input', 'attachment-open', 'attachment-rail', 'attachment-summary', 'drop-overlay',
   'suggestion-panel', 'suggestion-text', 'suggestion-use', 'suggestion-ignore', 'suggestion-dismiss',
   'composer-permission-label', 'plan-mode-badge', 'goal-badge', 'inspector', 'inspector-toggle', 'inspector-close',
@@ -634,7 +638,7 @@ function onNotice(ctl) {
     case 'models':
       refreshWorkbench();
       refreshUtilitySettings();
-      if (dom['settings-dialog'].open) refreshModelSettings();
+      if (dom['settings-dialog'].open || modelPickerOpen()) refreshModelSettings();
       break;
     case 'run':
       invalidateSuggestion();
@@ -1320,6 +1324,8 @@ async function refreshWorkbench() {
       model.model || 'model unavailable',
       Boolean(model.image_input),
     );
+    dom['model-picker-label'].textContent = model.model || 'Choose model';
+    dom['model-picker-trigger'].title = `Model for next run: ${model.model || 'not configured'}`;
     const modeLabel = permission.label || PERMISSION_LABELS[permission.mode] || 'Permission mode';
     dom['header-permission'].textContent = modeLabel;
     dom['composer-permission-label'].textContent = modeLabel;
@@ -1466,9 +1472,16 @@ function renderSuggestion() {
 
 function syncSuggestionControl() {
   const enabled = Boolean(state.utilitySettings && state.utilitySettings.suggestions_enabled);
-  dom.suggest.disabled = state.suggestionPending || !enabled || state.runActive
+  const disabled = state.suggestionPending || !enabled || state.runActive
     || state.compactionActive || state.switching || !state.sessionId;
-  dom.suggest.textContent = state.suggestionPending ? 'Thinking…' : 'Suggest';
+  dom.suggest.disabled = disabled;
+  dom.suggest.dataset.pending = String(state.suggestionPending);
+  dom.suggest.setAttribute('aria-busy', String(state.suggestionPending));
+  if (state.suggestionPending) dom.suggest.title = 'Generating a prompt suggestion…';
+  else if (!enabled) dom.suggest.title = 'Enable manual suggestions in Workbench settings';
+  else if (!state.sessionId) dom.suggest.title = 'Start a session before requesting a suggestion';
+  else if (state.runActive || state.compactionActive || state.switching) dom.suggest.title = 'Suggestions are available while idle';
+  else dom.suggest.title = 'Generate prompt suggestion';
 }
 
 function syncInteractionControls() {
@@ -1476,6 +1489,7 @@ function syncInteractionControls() {
   dom.send.disabled = locked;
   dom.prompt.disabled = locked;
   dom['attachment-open'].disabled = locked;
+  dom['model-picker-trigger'].disabled = locked || state.modelSelectionPending;
   dom['new-session'].disabled = locked;
   dom['session-title'].disabled = locked || !state.sessionId;
   dom['compact-session'].textContent = state.compactionActive
@@ -1768,6 +1782,7 @@ function updateFullAccessConfirmation() {
 }
 
 function openSettings() {
+  closeModelPicker();
   const mode = state.workbench && state.workbench.permission && state.workbench.permission.mode;
   selectPermissionMode(mode || 'workspace-write');
   dom['settings-error'].textContent = '';
@@ -1804,28 +1819,102 @@ async function refreshModelSettings() {
     if (generation !== modelSettingsRefresh) return;
     modelField('current').textContent = (view.current.model || 'No model selected') +
       ' · key ' + (view.current.credential_set ? 'set' : 'not set');
-    const select = modelField('preset');
-    const chosen = select.value || view.current.preset;
-    select.replaceChildren();
-    const groups = new Map();
-    for (const preset of view.presets) {
-      if (!groups.has(preset.vendor)) {
-        const group = document.createElement('optgroup');
-        group.label = preset.vendor;
-        groups.set(preset.vendor, group);
-        select.appendChild(group);
-      }
-      const option = el('option', '', preset.name);
-      option.value = preset.id;
-      groups.get(preset.vendor).appendChild(option);
-    }
-    if (chosen && [...select.options].some((option) => option.value === chosen)) select.value = chosen;
+    renderModelPicker(view);
     modelField('profiles').replaceChildren();
     for (const name of view.profiles) renderModelProfile(name, name === view.active_profile);
     state.utilitySettings = view.utility || null;
     renderUtilitySettings(state.utilitySettings, view.profiles || []);
     syncSuggestionControl();
-  } catch (error) { modelField('settings-error').textContent = error.message; }
+  } catch (error) {
+    if (dom['settings-dialog'].open) modelField('settings-error').textContent = error.message;
+    if (modelPickerOpen()) dom['model-picker-error'].textContent = error.message;
+  }
+}
+
+function modelPickerOpen() {
+  return !dom['model-picker'].classList.contains('hidden');
+}
+
+function closeModelPicker({ focus = false } = {}) {
+  hide(dom['model-picker']);
+  dom['model-picker-trigger'].setAttribute('aria-expanded', 'false');
+  dom['model-picker-key'].value = '';
+  dom['model-picker-error'].textContent = '';
+  if (focus) dom['model-picker-trigger'].focus();
+}
+
+async function openModelPicker() {
+  if (modelPickerOpen()) {
+    closeModelPicker({ focus: true });
+    return;
+  }
+  show(dom['model-picker']);
+  dom['model-picker-trigger'].setAttribute('aria-expanded', 'true');
+  dom['model-picker-error'].textContent = '';
+  dom['model-picker-list'].replaceChildren(el('p', 'model-picker-current', 'Loading model routes…'));
+  await refreshModelSettings();
+  if (modelPickerOpen()) dom['model-picker-close'].focus();
+}
+
+function renderModelPicker(view) {
+  dom['model-picker-current'].textContent = `Current · ${view.current.model || 'not configured'}`;
+  dom['model-picker-list'].replaceChildren();
+  const presets = (view.presets || []).map((preset) => ({
+    label: preset.name,
+    detail: `${preset.vendor} · built-in preset`,
+    active: !view.active_profile && view.current.preset === preset.id,
+    method: 'model.preset.select',
+    params: { id: preset.id },
+    preset: true,
+  }));
+  appendModelChoiceGroup('Built-in presets', presets);
+  const profiles = (view.profiles || []).map((name) => ({
+    label: name,
+    detail: 'Saved profile',
+    active: view.active_profile === name,
+    method: 'model.profile.activate',
+    params: { name },
+    preset: false,
+  }));
+  appendModelChoiceGroup('Saved profiles', profiles);
+}
+
+function appendModelChoiceGroup(label, choices) {
+  if (choices.length === 0) return;
+  dom['model-picker-list'].appendChild(el('p', 'model-picker-group', label));
+  for (const choice of choices) {
+    const button = el('button', 'model-choice');
+    button.type = 'button';
+    button.setAttribute('role', 'radio');
+    button.setAttribute('aria-checked', String(choice.active));
+    button.setAttribute('aria-label', `Use ${choice.label}`);
+    const copy = el('span');
+    copy.append(el('strong', '', choice.label), el('small', '', choice.detail));
+    button.append(copy, el('span', 'model-choice-mark', choice.active ? '●' : ''));
+    button.addEventListener('click', () => selectModelChoice(choice));
+    dom['model-picker-list'].appendChild(button);
+  }
+}
+
+async function selectModelChoice(choice) {
+  if (state.modelSelectionPending) return;
+  state.modelSelectionPending = true;
+  dom['model-picker-error'].textContent = '';
+  syncInteractionControls();
+  const params = { ...choice.params };
+  if (choice.preset && dom['model-picker-key'].value) params.api_key = dom['model-picker-key'].value;
+  dom['model-picker-key'].value = '';
+  try {
+    await rpc(choice.method, params);
+    closeModelPicker();
+    await refreshModelSettings();
+    await refreshWorkbench();
+  } catch (error) {
+    dom['model-picker-error'].textContent = error.message;
+  } finally {
+    state.modelSelectionPending = false;
+    syncInteractionControls();
+  }
 }
 
 function renderUtilitySettings(settings, profiles = []) {
@@ -1847,14 +1936,14 @@ function renderUtilitySettings(settings, profiles = []) {
 function renderModelProfile(name, active) {
   const row = el('div', 'model-profile-row');
   row.appendChild(el('strong', '', name + (active ? ' · active' : '')));
-  for (const action of ['Use', 'Edit', 'Delete']) {
+  for (const action of ['Edit', 'Delete']) {
     const button = el('button', 'ghost', action);
     button.type = 'button';
     button.setAttribute('aria-label', action + ' profile ' + name);
     button.addEventListener('click', () => modelAction(button, async () => {
       if (action === 'Edit') return loadModelProfile(name);
       if (action === 'Delete' && !window.confirm('Delete profile “' + name + '”? An active profile falls back to the next saved profile, or an unconfigured model.')) return;
-      await rpc(action === 'Use' ? 'model.profile.activate' : 'model.profile.delete', { name });
+      await rpc('model.profile.delete', { name });
     }));
     row.appendChild(button);
   }
@@ -1889,14 +1978,6 @@ async function modelAction(button, action) {
   finally { button.disabled = false; }
 }
 
-modelField('preset-select').addEventListener('click', (event) => modelAction(event.currentTarget, async () => {
-  const params = { id: modelField('preset').value };
-  if (modelField('preset-key').value) params.api_key = modelField('preset-key').value;
-  modelField('preset-key').value = '';
-  await rpc('model.preset.select', params);
-  modelField('settings-saved').textContent = 'Preset selected for the next run.';
-}));
-
 modelField('profile-save').addEventListener('click', (event) => modelAction(event.currentTarget, async () => {
   const params = {};
   for (const [field, key] of [['name', 'name'], ['protocol', 'protocol'], ['model', 'model'], ['endpoint', 'endpoint'], ['path', 'request_path']]) {
@@ -1912,7 +1993,6 @@ modelField('profile-save').addEventListener('click', (event) => modelAction(even
 dom['settings-dialog'].addEventListener('close', () => {
   modelProfileGeneration++;
   modelField('profile-key').value = '';
-  modelField('preset-key').value = '';
 });
 
 async function saveUtilitySettings(button) {
@@ -1980,6 +2060,12 @@ document.getElementById('workspace-open').addEventListener('click', async () => 
 
 dom['settings-open'].addEventListener('click', openSettings);
 dom['composer-permission'].addEventListener('click', openSettings);
+dom['model-picker-trigger'].addEventListener('click', openModelPicker);
+dom['model-picker-close'].addEventListener('click', () => closeModelPicker({ focus: true }));
+dom['model-picker-manage'].addEventListener('click', openSettings);
+document.addEventListener('pointerdown', (event) => {
+  if (modelPickerOpen() && !event.target.closest('.model-picker-seat')) closeModelPicker();
+});
 dom['permission-options'].addEventListener('change', updateFullAccessConfirmation);
 
 dom['theme-options'].addEventListener('change', () => {
@@ -2147,7 +2233,10 @@ document.addEventListener('keydown', (event) => {
     }
     setTimeout(() => dom['session-search'].focus(), 0);
   }
-  if (event.key === 'Escape' && dom['market-dialog'].open) {
+  if (event.key === 'Escape' && modelPickerOpen()) {
+    event.preventDefault();
+    closeModelPicker({ focus: true });
+  } else if (event.key === 'Escape' && dom['market-dialog'].open) {
     dom['market-dialog'].close();
   } else if (event.key === 'Escape' && !dom['settings-dialog'].open) {
     closeMobileSidebar();
@@ -2541,7 +2630,7 @@ async function submitPrompt() {
       resubscribe();
     } else if (text.startsWith('/')) {
       const value = await rpc('command.run', { command: text });
-      if (value && ['status', 'memory', 'goal', 'subagent_status', 'goal_run'].includes(value.kind)) {
+      if (value && ['status', 'help', 'memory', 'goal', 'subagent_status', 'goal_run'].includes(value.kind)) {
         const notice = addNoticeLine(value.message || 'command completed');
         if (['memory', 'goal', 'subagent_status'].includes(value.kind)) {
           notice.classList.add('content-notice');

@@ -455,6 +455,10 @@ dialogs populated by the host. Use Up/Down or PageUp/PageDown to scroll;
 Esc or Enter closes the dialog. The composer draft is preserved. Commands
 with arguments retain their existing command behavior.
 
+`/help` combines the host's authoritative command catalog with the terminal's
+local Composer and Keys sections, so attachment commands and keyboard shortcuts
+remain available after the default TUI attaches to the background host.
+
 Bare `/context` opens the host's one-shot context estimate, including prompt
 layers, history, image projection and visual tokens, memory budget, tools,
 skills, and diagnostics. The terminal does not recalculate these values.
@@ -734,12 +738,15 @@ process-only override; it neither reads nor changes the persistent token.
 The Workbench settings panel exposes a host-wide companion utility policy.
 Continuous session naming is on by default; it uses a bounded, persistent
 sidecar budget and never changes a user-owned title. Manual prompt suggestions
-are off by default. When enabled, press **Suggest** (or enter `/suggest` in the
-TUI) to request one next-message hint. The hint is a preview only: it is never
-submitted or written to the session journal until you adopt it and send it as a
-normal prompt. In the TUI, **Ctrl+Y** replaces the composer with the preview;
-**Esc** ignores it without changing your text. Generation does not lock editing,
-and each terminal allows only one outstanding suggestion request.
+are off by default. In the PWA, the sparkle button at the upper-right of the
+composer is muted and disabled until the policy, session, and idle state allow
+a request; when enabled, press it to request one next-message hint. In the TUI,
+press **Alt+S** or enter `/suggest`. The composer border shows the faint shortcut,
+then a generating or ready state; **Ctrl+Y** adopts the preview. The hint is a
+preview only: it is never submitted or written to the session journal until you
+adopt it and send it as a normal prompt. In the TUI, **Esc** ignores it without
+changing your text. Generation does not lock editing, and each terminal allows
+only one outstanding suggestion request.
 Switching sessions, starting a run, or editing the composer
 invalidates an in-flight result. The utility profile may be the primary model
 or an explicitly saved model profile; credentials remain write-only.
@@ -902,6 +909,12 @@ become drawers. Browser storage is limited to presentation preferences and the
 pairing credential; session content, run state, permission mode, model state,
 and MCP facts are rebuilt from authenticated snapshots, journal replay, and
 live events.
+
+The active model is chosen from the compact picker immediately before **Send**;
+built-in presets and saved profiles share that next-run menu, while write-only
+preset keys may be supplied there. Workbench settings retain profile creation,
+editing, and deletion, but no longer hide the everyday model switch among
+configuration controls. Running requests keep the route they started with.
 
 The workbench supports streaming responses, tool cards, approvals, new/switch/
 rename session actions, permission-mode changes, cancellation, in-run steering,

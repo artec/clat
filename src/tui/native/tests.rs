@@ -222,6 +222,7 @@ fn suggestion_preview_is_rendered_without_changing_input() {
             .collect();
         assert!(screen.contains("visible preview"));
         assert!(screen.contains("Ctrl+Y use suggestion"));
+        assert!(screen.contains("✦ ready · Ctrl+Y"));
         assert_eq!(app.input.text(), "");
         drop(app);
         crate::test_support::cleanup_tree(&storage);
@@ -234,8 +235,12 @@ fn native_suggestion_has_one_request_in_flight() {
     app.native.as_mut().unwrap().online = true;
     let (sender, received) = ui_event_channel();
     app.event_sender = Some(sender);
-    app.open_native_suggestion();
-    app.open_native_suggestion();
+    for _ in 0..2 {
+        app.handle_ui_event(UiEvent::Terminal(Event::Key(KeyEvent::new(
+            KeyCode::Char('s'),
+            KeyModifiers::ALT,
+        ))));
+    }
     let first = received.recv_timeout(Duration::from_secs(5)).unwrap();
     assert!(matches!(
         first,
@@ -394,6 +399,69 @@ fn native_readonly_commands_open_a_local_dialog() {
         assert!(app.native.as_ref().unwrap().pending.is_none());
         app.info_dialog = None;
     }
+    drop(app);
+    crate::test_support::cleanup_tree(&storage);
+}
+
+#[test]
+fn native_connection_state_keeps_the_project_directory_resident() {
+    let (mut app, storage) = shell();
+    let directory = abbreviate_home(app.project.root());
+    assert_eq!(app.default_status, directory);
+    assert!(app.status.contains("connecting"));
+
+    app.native_control("subscribed", json!({"selection_generation": 7}));
+    assert_eq!(app.default_status, directory);
+    app.status_until = Some(Instant::now() - Duration::from_millis(1));
+    app.expire_status();
+    assert_eq!(app.status, directory);
+
+    app.native_offline("connection lost".into());
+    assert_eq!(app.default_status, directory);
+    app.status_until = Some(Instant::now() - Duration::from_millis(1));
+    app.expire_status();
+    assert_eq!(app.status, directory);
+    drop(app);
+    crate::test_support::cleanup_tree(&storage);
+}
+
+#[test]
+fn native_help_combines_host_commands_with_terminal_help() {
+    let (mut app, storage) = shell();
+    app.submit_native("/help".into());
+    let request = app.native.as_ref().unwrap().info_request;
+    app.handle_native_event(NativeEvent::Info(
+        0,
+        0,
+        request,
+        Ok(json!({
+            "kind": "help",
+            "commands": [{
+                "name": "help",
+                "aliases": [],
+                "description": "open the command and key reference",
+                "group": "meta"
+            }],
+            "message": "/help — open the command and key reference"
+        })),
+    ));
+    assert!(
+        app.info_dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.kind == InfoDialogKind::Help)
+    );
+    assert!(app.content_view.is_none());
+    let lines = help_dialog_lines(76, &app.help_commands);
+    let text = lines
+        .iter()
+        .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(text.contains("Commands"));
+    assert!(text.contains("Composer"));
+    assert!(text.contains("/attach PATH"));
+    assert!(text.contains("Keys"));
+    assert!(text.contains("Ctrl+V"));
     drop(app);
     crate::test_support::cleanup_tree(&storage);
 }

@@ -995,6 +995,20 @@ fn dispatch_covers_the_full_method_set() {
     .unwrap();
     assert_eq!(context["kind"], "context");
     assert!(context["context"]["memory_budget_bytes"].as_u64().unwrap() > 0);
+    let help = protocol::dispatch(
+        "command.run",
+        &serde_json::json!({"command": "/help"}),
+        &shared,
+    )
+    .unwrap();
+    assert_eq!(help["kind"], "help");
+    assert!(help["message"].as_str().unwrap().contains("/help"));
+    let commands = help["commands"].as_array().unwrap();
+    assert!(commands.iter().any(|command| {
+        command["name"] == "help"
+            && command["description"].is_string()
+            && command["group"] == "meta"
+    }));
     assert_eq!(
         protocol::dispatch(
             "command.run",

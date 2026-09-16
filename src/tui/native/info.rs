@@ -93,12 +93,24 @@ impl App {
         {
             return;
         }
-        let Some(ContentView::Remote { text, .. }) = &mut self.content_view else {
+        let Some(ContentView::Remote { .. }) = self.content_view.as_ref() else {
             return;
         };
-        *text = match result {
-            Ok(value) => HostClient::info_dialog_text(&value).unwrap_or_else(|error| error),
+        let display = match result {
+            Ok(value) => match HostClient::help_commands(&value) {
+                Ok(Some(commands)) => {
+                    self.help_commands = commands;
+                    self.info_dialog = Some(InfoDialog::new(InfoDialogKind::Help));
+                    self.content_view = None;
+                    return;
+                }
+                Ok(_) => HostClient::info_dialog_text(&value).unwrap_or_else(|error| error),
+                Err(error) => error,
+            },
             Err(error) => format!("{error} · close and reopen to retry"),
         };
+        if let Some(ContentView::Remote { text, .. }) = &mut self.content_view {
+            *text = display;
+        }
     }
 }

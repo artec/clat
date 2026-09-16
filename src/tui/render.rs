@@ -1037,7 +1037,7 @@ impl App {
         // application（单一数据源）；dsh 显示 preset 投影（journal 值 →
         // web 端产品标签，§2.6）。
         let mut block = Block::default()
-            .title(format!(" {title} "))
+            .title(self.suggestion_input_title(title))
             .borders(Borders::ALL);
         if let Some(badge) = self.native_permission_badge() {
             block = block.title(badge.right_aligned());

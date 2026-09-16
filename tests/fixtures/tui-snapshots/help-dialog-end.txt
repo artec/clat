@@ -4,13 +4,13 @@ scroll 0
 000| ┌──────────────────────────────────────────────────────────────────────────────┐  ⟦0..79 DIM⟧
 001| │ CLAT v<VERSION>  ready  ·  not configured — /model                               │  ⟦0..1 DIM · 2..5 BOLD+DIM · 6..24 DIM · 25..47 fg=Cyan+DIM · 48..79 DIM⟧
 002| └──── ┌ /help ───────────────────────────────────────────────────────────┐ ────┘  ⟦0..4 DIM · 6..6 fg=Yellow · 7..13 fg=Yellow+BOLD · 14..73 fg=Yellow · 75..79 DIM⟧
-003| ┌ Con │ nto the draft                                                    │ ────┐  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
-004| │     │   /ac, /attach-clear — clear the current structured image draft  │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
-005| │     │                                                                  │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
-006| │     │ Keys                                                             │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 8..11 BOLD · 73..73 fg=Yellow · 75..79 DIM⟧
-007| │     │   Enter — submit; while a run is active, submit steering         │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
-008| │     │   Shift+Enter, Alt+Enter, Ctrl+J — insert a line break           │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
-009| │     │   Ctrl+V — paste clipboard image or text                         │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+003| ┌ Con │   /ac, /attach-clear — clear the current structured image draft  │ ────┐  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+004| │     │                                                                  │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+005| │     │ Keys                                                             │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 8..11 BOLD · 73..73 fg=Yellow · 75..79 DIM⟧
+006| │     │   Enter — submit; while a run is active, submit steering         │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+007| │     │   Shift+Enter, Alt+Enter, Ctrl+J — insert a line break           │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+008| │     │   Ctrl+V — paste clipboard image or text                         │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+009| │     │   Alt+S — request a prompt suggestion while idle                 │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
 010| │     │   Up / Down — recall input history (or scroll the conversation)  │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
 011| │     │   Esc — cancel the running request; otherwise clear input        │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
 012| │     │   Shift+Tab — cycle the thinking level                           │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧

@@ -357,6 +357,9 @@ impl App {
     }
 
     fn handle_composer_key(&mut self, key: KeyEvent) {
+        if self.handle_suggestion_trigger_key(key) {
+            return;
+        }
         if self.handle_suggestion_key(key) {
             return;
         }

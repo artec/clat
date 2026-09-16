@@ -10,7 +10,7 @@ license-file = "LICENSE"
 # 构建 clat 本体不需要）。根包隐式属于本 workspace。
 # 版本唯一权威：升版本只改这里一处（两包经 version.workspace 继承）。
 [workspace.package]
-version = "1.3.2"
+version = "1.4.0"
 
 [workspace]
 default-members = [".", "crates/core"]

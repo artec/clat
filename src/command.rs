@@ -54,6 +54,20 @@ impl CommandGroup {
             Self::Meta => "meta",
         }
     }
+
+    /// Parse the stable wire identifier emitted by [`Self::as_str`].
+    pub fn from_wire(value: &str) -> Option<Self> {
+        Some(match value {
+            "conversation" => Self::Conversation,
+            "context" => Self::Context,
+            "model" => Self::Model,
+            "safety" => Self::Safety,
+            "extensions" => Self::Extensions,
+            "experiments" => Self::Experiments,
+            "meta" => Self::Meta,
+            _ => return None,
+        })
+    }
 }
 
 /// 帮助/目录 DTO（INV-C4：`command_catalog()` 是帮助表与未知命令提示的

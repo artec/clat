@@ -23,6 +23,13 @@ async function openWorkbench(page, entry) {
   await expect(page.locator('#conn-status')).toHaveText('live', LIVE);
 }
 
+async function chooseModel(page, label) {
+  await page.click('#model-picker-trigger');
+  await expect(page.locator('#model-picker')).toBeVisible(LIVE);
+  await page.getByRole('radio', { name: 'Use ' + label, exact: true }).click();
+  await expect(page.locator('#model-picker')).not.toBeVisible(LIVE);
+}
+
 const LIVE = { timeout: 30_000 };
 
 test('question cards replay to another client and first answer closes both', async ({ page, context }, testInfo) => {
@@ -170,17 +177,19 @@ test('reconnect during approval shows each identical admission once', async ({ p
 test('model profiles are editable in PWA and broadcast without echoing API keys', async ({ page, context }) => {
   const entry = hostInfo('success');
   await openWorkbench(page, entry);
+  await page.click('#model-picker-trigger');
+  await expect(page.locator('#model-picker-list .model-choice')).not.toHaveCount(0);
+  await page.click('#model-picker-close');
   await page.click('#settings-open');
-  await expect(page.locator('#model-preset option')).not.toHaveCount(0);
   const other = await context.newPage();
   await other.goto(entry.origin);
   await expect(other.locator('#conn-status')).toHaveText('live', LIVE);
   await other.click('#settings-open');
   const name = 'browser-profile-' + Date.now();
   const secret = 'browser-key-do-not-return';
-  const responses = [];
-  page.on('response', async (response) => {
-    if (response.url().includes('/api/model.')) responses.push(await response.text());
+  const responseBodies = [];
+  page.on('response', (response) => {
+    if (response.url().includes('/api/model.')) responseBodies.push(response.text());
   });
   await page.locator('#model-profile-editor summary').click();
   await page.fill('#model-profile-name', name);
@@ -190,9 +199,11 @@ test('model profiles are editable in PWA and broadcast without echoing API keys'
   await page.click('#model-profile-save');
   await expect(page.locator('#model-settings-saved')).toContainText('Profile saved', LIVE);
   await expect(page.locator('#model-profile-key')).toHaveValue('');
-  await page.getByRole('button', { name: 'Use profile ' + name, exact: true }).click();
+  await page.locator('#settings-dialog button[aria-label="Close settings"]').click();
+  await chooseModel(page, name);
   await expect(other.locator('#model-current')).toContainText('browser-test-model', LIVE);
   await expect(other.locator('#model-current')).toContainText('key set');
+  await page.click('#settings-open');
   await page.getByRole('button', { name: 'Edit profile ' + name, exact: true }).click();
   await expect(page.locator('#model-profile-key-state')).toContainText('Key is set', LIVE);
   await expect(page.locator('#model-profile-key')).toHaveValue('');
@@ -204,17 +215,25 @@ test('model profiles are editable in PWA and broadcast without echoing API keys'
   await expect(page.locator('#model-settings-saved')).toContainText('Profile saved', LIVE);
   await page.getByRole('button', { name: 'Edit profile ' + name, exact: true }).click();
   await expect(page.locator('#model-profile-key-state')).toContainText('Key is not set', LIVE);
-  await page.getByRole('button', { name: 'Use profile ' + name, exact: true }).click();
+  await page.locator('#settings-dialog button[aria-label="Close settings"]').click();
+  await chooseModel(page, name);
   await expect(other.locator('#model-current')).toContainText('key not set', LIVE);
+  await page.click('#settings-open');
+  await page.getByRole('button', { name: 'Edit profile ' + name, exact: true }).click();
   await page.fill('#model-profile-model', 'browser-edited-model');
   await page.click('#model-profile-save');
   await expect(page.locator('#model-settings-saved')).toContainText('Profile saved', LIVE);
-  await page.getByRole('button', { name: 'Use profile ' + name, exact: true }).click();
+  await page.locator('#settings-dialog button[aria-label="Close settings"]').click();
+  await chooseModel(page, name);
   await expect(other.locator('#model-current')).toContainText('browser-edited-model', LIVE);
+  const responses = await Promise.all(responseBodies);
   expect(responses.every((response) => !response.includes(secret))).toBeTruthy();
+  await page.click('#settings-open');
   page.once('dialog', (dialog) => dialog.accept());
   await page.getByRole('button', { name: 'Delete profile ' + name, exact: true }).click();
-  await expect(other.getByRole('button', { name: 'Use profile ' + name, exact: true })).toHaveCount(0, LIVE);
+  await other.locator('#settings-dialog button[aria-label="Close settings"]').click();
+  await other.click('#model-picker-trigger');
+  await expect(other.getByRole('radio', { name: 'Use ' + name, exact: true })).toHaveCount(0, LIVE);
   await other.close();
 });
 
@@ -223,6 +242,9 @@ test('companion utility policy and manual suggestion stay preview-only', async (
   await openWorkbench(page, entry);
   await page.click('#new-session');
   await expect(page.locator('#detail-run')).toHaveText('Idle', LIVE);
+  await expect(page.locator('#suggest')).toBeDisabled();
+  await expect(page.locator('#suggest')).toHaveAccessibleName('Generate prompt suggestion');
+  await expect(page.locator('#suggest svg')).toHaveCount(1);
   await page.click('#settings-open');
   await expect(page.locator('#utility-naming-enabled')).toBeChecked();
   await page.check('#utility-suggestions-enabled');
@@ -234,6 +256,7 @@ test('companion utility policy and manual suggestion stay preview-only', async (
   await expect(page.locator('.msg.user')).toHaveCount(1, LIVE);
   await expect(page.locator('#detail-run')).toHaveText('Idle', { timeout: 30_000 });
   await expect(page.locator('#prompt')).toHaveValue('');
+  await expect(page.locator('#suggest')).toBeEnabled();
   await page.click('#suggest');
   await expect(page.locator('#suggestion-panel')).toBeVisible(LIVE);
   const suggestion = await page.locator('#suggestion-text').textContent();
@@ -245,6 +268,28 @@ test('companion utility policy and manual suggestion stay preview-only', async (
   await page.uncheck('#utility-suggestions-enabled');
   await page.click('#utility-settings-save');
   await expect(page.locator('#utility-settings-saved')).toContainText('saved', LIVE);
+  await page.click('#settings-dialog .icon-button');
+  await expect(page.locator('#suggest')).toBeDisabled();
+});
+
+test('composer keeps suggestion in context and model selection directly before Send', async ({ page }, testInfo) => {
+  await openWorkbench(page, hostInfo('success'));
+  const order = await page.evaluate(() => ({
+    suggestParent: document.querySelector('#suggest').parentElement.className,
+    pickerBeforeSend: document.querySelector('#model-picker-trigger')
+      .compareDocumentPosition(document.querySelector('#send')) & Node.DOCUMENT_POSITION_FOLLOWING,
+    settingsHasActivation: Boolean(document.querySelector('#model-preset-select'))
+      || Boolean(document.querySelector('[aria-label^="Use profile "]')),
+  }));
+  expect(order).toEqual({ suggestParent: 'composer-context', pickerBeforeSend: 4, settingsHasActivation: false });
+  await page.click('#model-picker-trigger');
+  await expect(page.locator('#model-picker')).toBeVisible();
+  await expect(page.locator('#model-picker')).toContainText('Built-in presets');
+  await expect(page.locator('#model-picker')).toContainText('NEXT RUN');
+  await page.screenshot({ path: testInfo.outputPath('composer-model-picker.png'), animations: 'disabled' });
+  await page.keyboard.press('Escape');
+  await expect(page.locator('#model-picker')).not.toBeVisible();
+  await expect(page.locator('#model-picker-trigger')).toBeFocused();
 });
 
 for (const transition of ['input', 'new', 'close']) {
@@ -1030,6 +1075,8 @@ test('PU content notices and armed Goal badge follow core workflow state', async
     await page.click('#send');
     await expect(page.locator('#prompt')).toHaveValue('', LIVE);
   };
+  await command('/help');
+  await expect(page.locator('.notice-line', { hasText: '/help' }).last()).toBeVisible(LIVE);
   await command('/mem add project PU first line\nPU second line');
   await command('/mem list');
   const memory = page.locator('.content-notice[aria-label="memory"]').last();

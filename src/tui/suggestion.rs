@@ -50,6 +50,41 @@ impl SuggestionState {
 }
 
 impl App {
+    pub(super) fn suggestion_input_title(&self, title: &'static str) -> Line<'static> {
+        let mut spans = vec![Span::raw(format!(" {title} "))];
+        if self.running || self.session_id.is_none() || self.dsh.is_some() {
+            return Line::from(spans);
+        }
+        let (label, role) = if self.suggestions.preview.is_some()
+            && self.suggestions.generation == self.input.generation()
+        {
+            ("✦ ready · Ctrl+Y ", theme::Role::Success)
+        } else if self.suggestions.pending() {
+            ("✦ suggesting… ", theme::Role::ModelAccent)
+        } else {
+            ("✦ Alt+S ", theme::Role::Faint)
+        };
+        spans.push(Span::styled("· ", theme::style(theme::Role::Faint)));
+        spans.push(Span::styled(label, theme::style(role)));
+        Line::from(spans)
+    }
+
+    pub(super) fn handle_suggestion_trigger_key(&mut self, key: KeyEvent) -> bool {
+        if key.modifiers != KeyModifiers::ALT
+            || !matches!(key.code, KeyCode::Char('s') | KeyCode::Char('S'))
+        {
+            return false;
+        }
+        if self.dsh.is_some() {
+            self.flash_status("suggestions are unavailable in dsh mode");
+        } else if self.native.is_some() {
+            self.open_native_suggestion();
+        } else {
+            let _ = self.start_prompt_suggestion();
+        }
+        true
+    }
+
     pub(super) fn suggestion_rows(&self) -> usize {
         if self.suggestions.preview.is_some()
             && self.suggestions.generation == self.input.generation()

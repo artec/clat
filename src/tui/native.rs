@@ -123,8 +123,10 @@ impl App {
             info_request: 0,
             permissions: Default::default(),
         });
-        app.default_status = "CLAT host · connecting · Ctrl+C detaches".into();
-        app.status = app.default_status.clone();
+        // The title already carries the host connection marker. Keep the
+        // resident status as the project directory and use this only as a
+        // transient connection notice.
+        app.status = "CLAT host · connecting · Ctrl+C detaches".into();
         Ok(app)
     }
 
@@ -238,7 +240,7 @@ impl App {
         self.handle_attachment_command(text)
     }
 
-    fn open_native_suggestion(&mut self) {
+    pub(super) fn open_native_suggestion(&mut self) {
         let (Some(native), Some(ui)) = (&self.native, self.event_sender.clone()) else {
             return;
         };
@@ -433,7 +435,6 @@ impl App {
         self.native.as_mut().unwrap().approval_id = None;
         self.pending_permission = None;
         self.clear_native_questions();
-        self.default_status = "HOST OFFLINE · /reconnect · no writes retried".into();
         self.flash_status(error);
     }
 
@@ -577,7 +578,6 @@ impl App {
                 self.native.as_mut().unwrap().online = true;
                 self.native.as_mut().unwrap().selection =
                     payload["selection_generation"].as_u64().unwrap_or(0);
-                self.default_status = "CLAT host · online · Ctrl+C detaches".into();
                 self.flash_status("attached to CLAT host");
             }
             "prompt.settled" => {
