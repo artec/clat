@@ -382,11 +382,11 @@
     <header class="hero">
       <img class="big" src="../logo.png" alt="CLAT logo">
       <h1>CLAT</h1>
-      <div><a class="release-pill" href="https://github.com/artec/clat/releases/latest" data-release>v1.2.0 — 最新版本</a></div>
+      <div><a class="release-pill" href="https://github.com/artec/clat/releases/latest" data-release>v1.4.0 — 最新版本</a></div>
       <p class="tagline">稳如磐石的 Agent 底座 · DSH 的 TUI 客户端 · Rust 单文件</p>
       <div class="term">
         <div class="row"><span class="p">❯</span><span>clat</span></div>
-        <div class="row"><span class="dim"># 在当前项目目录启动交互式 TUI</span></div>
+        <div class="row"><span class="dim"># 启动后台宿主，TUI 作为客户端接入</span></div>
         <div class="row"><span class="p">❯</span><span>clat dsh</span></div>
         <div class="row"><span class="dim"># 把同一套 TUI 变成 DSH 宿主的终端客户端</span></div>
         <div class="row"><span class="p">❯</span><span>clat plugin</span></div>
@@ -398,11 +398,11 @@
         <a class="btn" href="#install">安装</a>
         <a class="btn" href="https://github.com/artec/clat">View on GitHub</a>
       </div>
-      <!-- 数据带：数字须真实。下载体积 = macOS tar.gz 压缩包大小（v1.2.0 实测 9.0 MiB），
+      <!-- 数据带：数字须真实。下载体积 = macOS tar.gz 压缩包大小（v1.4.0 实测 9.7 MiB），
            发布时复核压缩包即可。 -->
       <div class="stats">
         <div class="stat">
-          <div class="stat-number">9.0 MB</div>
+          <div class="stat-number">9.7 MB</div>
           <div class="stat-label">下载体积：单二进制，无需 Node / Python</div>
         </div>
         <div class="stat">
@@ -473,8 +473,8 @@
         </div>
         <div class="feature-cell">
           <p class="feature-label">03 — 交互</p>
-          <h3>交互式询问与会话转向</h3>
-          <p>模型遇到该由你拍板的事会停下来提问；运行中也能随时插入转向消息，改变当前任务的方向。</p>
+          <h3>问答、转向与思考流</h3>
+          <p>模型遇到该由你拍板的事会停下来提问；运行中也能随时插入转向消息，改变当前任务的方向。思考过程内联为可折叠的 Think 行（Ctrl+R 展开），<code>/suggest</code> 按需生成下一条消息的提示预览，采纳后才会发送。</p>
         </div>
         <div class="feature-cell">
           <p class="feature-label">04 — 运行</p>
@@ -499,7 +499,7 @@
         <div class="feature-cell">
           <p class="feature-label">08 — 持久化</p>
           <h3>崩溃安全的会话持久化</h3>
-          <p>完整对话写入 append-only 日志，先落盘再调用模型，崩溃后自动恢复到最近的完整批次；日志为 DSH 兼容格式，可被兼容工具直接读取。模型自动起标题，<code>/rename</code> 随时改。</p>
+          <p>完整对话写入 append-only 日志，先落盘再调用模型，崩溃后自动恢复到最近的完整批次；日志为 DSH 兼容格式，可被兼容工具直接读取，旧格式会话经 <code>/update</code> 一键升级。模型自动起标题，<code>/rename</code> 随时改。</p>
         </div>
         <div class="feature-cell">
           <p class="feature-label">09 — 技能</p>
@@ -518,8 +518,8 @@
         </div>
         <div class="feature-cell">
           <p class="feature-label">12 — 前端</p>
-          <h3>Web 工作台与微信遥控</h3>
-          <p><code>clat serve</code> 在本机启动 HTTP+SSE 服务，浏览器打开即是可安装的三栏 PWA 工作台，插件市场内嵌其中；<code>--im wechat</code> 绑定微信后，随时在微信里发文字、传图片、插话转向、审批操作，人不在电脑前也能推进任务。</p>
+          <h3>后台宿主与多端挂接</h3>
+          <p><code>clat</code> 启动的是后台宿主：TUI、Web 工作台、微信遥控都作为客户端挂接同一批会话，关掉 TUI 宿主照常运行，任务不断线；宿主常驻 127.0.0.1:2691，新版 CLAT 会自动平滑替换闲置的旧宿主，浏览器页面原地重连。</p>
         </div>
       </div>
     </section>

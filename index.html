@@ -390,11 +390,11 @@
     <header class="hero">
       <img class="big" src="logo.png" alt="CLAT logo">
       <h1>CLAT</h1>
-      <div><a class="release-pill" href="https://github.com/artec/clat/releases/latest" data-release>v1.2.0 — Latest release</a></div>
+      <div><a class="release-pill" href="https://github.com/artec/clat/releases/latest" data-release>v1.4.0 — Latest release</a></div>
       <p class="tagline">A rock-solid agent foundation · The TUI client for DSH · A single Rust file</p>
       <div class="term">
         <div class="row"><span class="p">❯</span><span>clat</span></div>
-        <div class="row"><span class="dim"># start the interactive TUI in the current project</span></div>
+        <div class="row"><span class="dim"># start the background host and attach the TUI as its client</span></div>
         <div class="row"><span class="p">❯</span><span>clat dsh</span></div>
         <div class="row"><span class="dim"># turn the same TUI into a client for a local DSH host</span></div>
         <div class="row"><span class="p">❯</span><span>clat plugin</span></div>
@@ -406,11 +406,11 @@
         <a class="btn" href="#install">Install</a>
         <a class="btn" href="https://github.com/artec/clat">View on GitHub</a>
       </div>
-      <!-- 数据带：数字须真实。下载体积 = macOS tar.gz 压缩包大小（v1.2.0 实测 9.0 MiB），
+      <!-- 数据带：数字须真实。下载体积 = macOS tar.gz 压缩包大小（v1.4.0 实测 9.7 MiB），
            发布时复核压缩包即可。 -->
       <div class="stats">
         <div class="stat">
-          <div class="stat-number">9.0 MB</div>
+          <div class="stat-number">9.7 MB</div>
           <div class="stat-label">Download size: one binary, no Node / Python required</div>
         </div>
         <div class="stat">
@@ -481,8 +481,8 @@
         </div>
         <div class="feature-cell">
           <p class="feature-label">03 — Interaction</p>
-          <h3>Questions &amp; steering</h3>
-          <p>The model stops to ask when a decision is yours to make; while a run is active you can send steering messages that change its direction.</p>
+          <h3>Questions, steering &amp; thinking</h3>
+          <p>The model stops to ask when a decision is yours to make; while a run is active you can send steering messages that change its direction. Reasoning renders inline as a collapsible Think row (Ctrl+R expands), and <code>/suggest</code> previews a next-message hint on demand — sent only when you adopt it.</p>
         </div>
         <div class="feature-cell">
           <p class="feature-label">04 — Runtime</p>
@@ -507,7 +507,7 @@
         <div class="feature-cell">
           <p class="feature-label">08 — Persistence</p>
           <h3>Crash-safe sessions</h3>
-          <p>Every conversation is written to an append-only log, flushed before the model is called; after a crash it recovers to the last complete batch. Logs use the DSH-compatible format, readable by other compatible tools. The model titles each session — <code>/rename</code> to edit.</p>
+          <p>Every conversation is written to an append-only log, flushed before the model is called; after a crash it recovers to the last complete batch. Logs use the DSH-compatible format, readable by other compatible tools, and legacy sessions upgrade in one step with <code>/update</code>. The model titles each session — <code>/rename</code> to edit.</p>
         </div>
         <div class="feature-cell">
           <p class="feature-label">09 — Skills</p>
@@ -526,8 +526,8 @@
         </div>
         <div class="feature-cell">
           <p class="feature-label">12 — Frontends</p>
-          <h3>Web workbench &amp; WeChat remote</h3>
-          <p><code>clat serve</code> starts the local HTTP+SSE service; open a browser for the installable three-panel PWA workbench with the plugin market embedded. With <code>--im wechat</code> bound, send text and images, steer runs, and approve actions right from WeChat — keep tasks moving while away from the keyboard.</p>
+          <h3>Background host &amp; multi-frontend</h3>
+          <p><code>clat</code> now starts a background host: the TUI, web workbench, and WeChat remote all attach to the same sessions as clients — close the TUI and the host keeps running, so tasks never drop. The host lives on 127.0.0.1:2691; a newer CLAT smoothly replaces an idle old host, and browser pages reconnect in place.</p>
         </div>
       </div>
     </section>
