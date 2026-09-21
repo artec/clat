@@ -235,11 +235,15 @@ fn native_suggestion_has_one_request_in_flight() {
     app.native.as_mut().unwrap().online = true;
     let (sender, received) = ui_event_channel();
     app.event_sender = Some(sender);
-    for _ in 0..2 {
+    for (code, modifiers) in [('g', KeyModifiers::CONTROL), ('s', KeyModifiers::ALT)] {
         app.handle_ui_event(UiEvent::Terminal(Event::Key(KeyEvent::new(
-            KeyCode::Char('s'),
-            KeyModifiers::ALT,
+            KeyCode::Char(code),
+            modifiers,
         ))));
+        assert!(
+            app.suggestions.pending(),
+            "both shortcuts must trigger a suggestion"
+        );
     }
     let first = received.recv_timeout(Duration::from_secs(5)).unwrap();
     assert!(matches!(
@@ -421,6 +425,74 @@ fn native_connection_state_keeps_the_project_directory_resident() {
     app.status_until = Some(Instant::now() - Duration::from_millis(1));
     app.expire_status();
     assert_eq!(app.status, directory);
+    drop(app);
+    crate::test_support::cleanup_tree(&storage);
+}
+
+#[test]
+fn native_status_restores_monitor_cache_and_context_from_host_snapshot() {
+    let (mut app, storage) = shell();
+    let mut snapshot = json!({
+        "model": {"vendor":"DeepSeek", "model":"test", "protocol":"open_ai_compatible", "max_context_tokens":128000},
+        "telemetry": {"monitor":"89.35", "route_usage":{"input_tokens":100,"output_tokens":10,"cached_input_tokens":75},
+            "last_request_usage":{"input_tokens":1000,"output_tokens":200}}
+    });
+    app.native_snapshot(snapshot.clone());
+    assert_eq!(
+        app.native_status_segments(),
+        ["Wallet: ￥89.35", "Cache: 75.00%", "Context: 1k/128k"]
+    );
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 30)).unwrap();
+    terminal.draw(|frame| app.draw(frame)).unwrap();
+    let screen: String = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    // TestBackend includes the continuation cell of the full-width ￥ glyph.
+    let screen: String = screen.split_whitespace().collect();
+    for segment in ["Wallet: ￥89.35", "Cache: 75.00%", "Context: 1k/128k"] {
+        let rendered: String = segment.split_whitespace().collect();
+        assert!(
+            screen.contains(&rendered),
+            "missing rendered telemetry: {segment}"
+        );
+    }
+    app.native_frame(HostEvent::Run(RunEvent::RunStarted {
+        project: app.project.root().to_path_buf(),
+        message: crate::message::MessageContent::text("next"),
+        client_message_id: None,
+    }));
+    app.native_frame(HostEvent::Run(RunEvent::ModelRequested {
+        turn: 1,
+        provider: app.config.protocol.to_string(),
+        model: "test".into(),
+    }));
+    app.native_frame(HostEvent::Run(RunEvent::ModelStream {
+        turn: 1,
+        event: ModelEvent::Usage(Usage {
+            input_tokens: 100,
+            output_tokens: 10,
+            cached_input_tokens: Some(25),
+            ..Usage::default()
+        }),
+    }));
+    assert!(
+        app.native_status_segments()
+            .contains(&"Cache: 50.00%".into()),
+        "live usage must extend the restored route bucket without double counting"
+    );
+    snapshot["model"]["vendor"] = json!("Glm");
+    snapshot["telemetry"]["monitor"] = json!("87%");
+    snapshot["telemetry"]["route_usage"] = Value::Null;
+    snapshot["telemetry"]["last_request_usage"] = Value::Null;
+    app.native_snapshot(snapshot);
+    assert_eq!(
+        app.native_status_segments(),
+        ["Token: 87%", "Cache: --%", "Context: 0/128k"]
+    );
     drop(app);
     crate::test_support::cleanup_tree(&storage);
 }

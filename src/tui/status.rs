@@ -269,14 +269,37 @@ pub(super) fn status_suffix_segments(
     route_usage: Option<&Usage>,
     last_turn_usage: Option<&Usage>,
 ) -> Vec<String> {
+    let window = config.max_context_tokens.map(u64::from).or_else(|| {
+        config
+            .preset
+            .as_deref()
+            .and_then(preset_by_id)
+            .map(|preset| preset.context_window as u64)
+    });
+    status_telemetry_segments(
+        config.vendor(),
+        balance,
+        route_usage,
+        last_turn_usage,
+        window,
+    )
+}
+
+pub(super) fn status_telemetry_segments(
+    vendor: ModelVendor,
+    balance: &Option<String>,
+    route_usage: Option<&Usage>,
+    last_turn_usage: Option<&Usage>,
+    window: Option<u64>,
+) -> Vec<String> {
     let mut parts = Vec::new();
-    if config.vendor() == ModelVendor::Other {
+    if vendor == ModelVendor::Other {
         return parts;
     }
     // DeepSeek 槽位存余额文本，加 Wallet 标签与货币符号；GLM 槽位存
     // 5 小时窗口剩余额度百分比（如 "87%"），加 Token 标签。
     if let Some(balance) = balance {
-        if config.vendor() == ModelVendor::DeepSeek {
+        if vendor == ModelVendor::DeepSeek {
             parts.push(format!("Wallet: ￥{balance}"));
         } else {
             parts.push(format!("Token: {balance}"));
@@ -291,11 +314,6 @@ pub(super) fn status_suffix_segments(
     // Context 当前值 ≈ 最近一次模型请求的 input+output（下一次请求
     // 的近似起点）；分母是预设的官方上下文窗口，自定义端点未知则
     // 省略整段。新会话无请求历史时按 0 计。
-    let window = config
-        .preset
-        .as_deref()
-        .and_then(preset_by_id)
-        .map(|preset| preset.context_window);
     if let Some(window) = window {
         let current = last_turn_usage
             .map(|usage| usage.input_tokens.saturating_add(usage.output_tokens))
@@ -303,7 +321,7 @@ pub(super) fn status_suffix_segments(
         parts.push(format!(
             "Context: {}/{}",
             format_tokens(current),
-            format_tokens(window as u64)
+            format_tokens(window)
         ));
     }
     parts

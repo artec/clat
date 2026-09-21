@@ -1,4 +1,4 @@
-//! CLAT-private utility budget. Attempts are committed before any model I/O.
+//! CLAT-private utility scheduling. Same-turn naming is coalesced before I/O.
 use super::*;
 use cap_std::fs::{Dir, OpenOptions};
 use serde::{Deserialize, Serialize};
@@ -6,9 +6,6 @@ use std::io::Read as _;
 
 const BUDGET_FILE: &str = "clat-utility-budget.json";
 const BYTE_CAP: u64 = 1024;
-const ATTEMPT_CAP: u64 = 20;
-const TURN_INTERVAL: u64 = 5;
-const TIME_INTERVAL_MS: i64 = 300_000;
 const CONTEXT_CHARS: usize = 6000;
 const CONTEXT_MESSAGES: usize = 12;
 
@@ -87,11 +84,7 @@ impl SessionService {
         }
         let dir = self.backend.open_session_dir(&active.key)?;
         let mut budget = read_budget(&dir)?;
-        if budget.title_attempts >= ATTEMPT_CAP
-            || (budget.title_attempts > 0
-                && (turns.saturating_sub(budget.last_title_turn) < TURN_INTERVAL
-                    || time_ms.saturating_sub(budget.last_title_ms) < TIME_INTERVAL_MS))
-        {
+        if budget.title_attempts > 0 && turns <= budget.last_title_turn {
             return Ok(None);
         }
         catch_up_replay(
@@ -105,7 +98,7 @@ impl SessionService {
         if context.is_empty() {
             return Ok(None);
         }
-        budget.title_attempts += 1;
+        budget.title_attempts = budget.title_attempts.saturating_add(1);
         budget.last_title_turn = turns;
         budget.last_title_ms = time_ms;
         write_budget(&dir, &budget)?;
@@ -128,11 +121,6 @@ impl SessionService {
             return Ok(None);
         }
         fold_if_behind(active, &self.backend)?;
-        let dir = self.backend.open_session_dir(&active.key)?;
-        let mut budget = read_budget(&dir)?;
-        if budget.suggestion_attempts >= ATTEMPT_CAP {
-            return Ok(None);
-        }
         catch_up_replay(
             &self.backend,
             &active.key,
@@ -143,8 +131,6 @@ impl SessionService {
         if context.is_empty() {
             return Ok(None);
         }
-        budget.suggestion_attempts += 1;
-        write_budget(&dir, &budget)?;
         Ok(Some(SuggestionAttempt { context }))
     }
 }
@@ -200,10 +186,7 @@ fn read_budget(dir: &Dir) -> Result<UtilityBudget, SessionError> {
     }
     let budget: UtilityBudget = serde_json::from_slice(&bytes)
         .map_err(|error| SessionError::Corruption(format!("invalid utility budget: {error}")))?;
-    if budget.version != 1
-        || budget.title_attempts > ATTEMPT_CAP
-        || budget.suggestion_attempts > ATTEMPT_CAP
-    {
+    if budget.version != 1 {
         return Err(SessionError::Corruption(
             "unsupported utility budget".into(),
         ));
@@ -228,7 +211,12 @@ fn bounded_context(replay: &[ReplayEvent]) -> (String, Vec<u64>) {
         if remaining <= overhead {
             break;
         }
-        let clipped: String = text.chars().take(remaining - overhead).collect();
+        // Give recent user intent a seat even after a very long assistant reply.
+        // A per-message excerpt bounds tokens without limiting feature usage.
+        let clipped: String = text
+            .chars()
+            .take((remaining - overhead).min(1000))
+            .collect();
         let row = format!("{prefix}{clipped}\n");
         remaining -= row.chars().count();
         rows.push((seq, row));

@@ -2147,7 +2147,7 @@ fn help_dialog_lines_carry_the_frontend_local_composer_section() {
         "Ctrl+V is listed in the Keys section"
     );
     assert!(
-        text.contains("Alt+S — request a prompt suggestion while idle"),
+        text.contains("Ctrl+G — request a prompt suggestion while idle"),
         "the manual suggestion shortcut is discoverable"
     );
     // 三条命令真实存在于 TUI 本地拦截（attachments.rs），不是死条目；

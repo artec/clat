@@ -45,6 +45,22 @@ pub(crate) fn workbench_snapshot_json(
     active_compaction: Value,
     methods: &[&str],
 ) -> Value {
+    let mut value = workbench_base_json(snapshot, active_run, active_compaction, methods);
+    value["model"]["vendor"] = json!(snapshot.model.vendor.storage_key());
+    value["telemetry"] = json!({
+        "monitor": snapshot.monitor_status,
+        "route_usage": snapshot.route_usage.as_ref().map(crate::wire::usage_to_json),
+        "last_request_usage": snapshot.last_request_usage.as_ref().map(crate::wire::usage_to_json),
+    });
+    value
+}
+
+fn workbench_base_json(
+    snapshot: &WorkbenchSnapshot,
+    active_run: Value,
+    active_compaction: Value,
+    methods: &[&str],
+) -> Value {
     let model_protocol = match snapshot.model.protocol {
         crate::ModelProtocol::OpenAiResponses => "open_ai_responses",
         crate::ModelProtocol::OpenAiCompatible => "open_ai_compatible",
@@ -785,6 +801,9 @@ mod tests {
         );
 
         let workbench = WorkbenchSnapshot {
+            monitor_status: Some("87%".into()),
+            route_usage: None,
+            last_request_usage: None,
             project: crate::WorkbenchProjectSnapshot {
                 root: std::path::PathBuf::from("/work/repo"),
                 name: "repo".into(),
@@ -796,6 +815,7 @@ mod tests {
                 committed_seq: Some(42),
             },
             model: crate::WorkbenchModelSnapshot {
+                vendor: crate::ModelVendor::DeepSeek,
                 protocol: crate::ModelProtocol::OpenAiResponses,
                 model: "deepseek-v3".into(),
                 preset: Some("deepseek".into()),
@@ -829,8 +849,16 @@ mod tests {
                 }],
             },
         };
+        let with_telemetry = workbench_snapshot_json(&workbench, Value::Null, Value::Null, &[]);
+        assert_eq!(with_telemetry["model"]["vendor"], "DeepSeek");
         assert_eq!(
-            workbench_snapshot_json(
+            with_telemetry["telemetry"],
+            json!({
+                "monitor": "87%", "route_usage": null, "last_request_usage": null,
+            })
+        );
+        assert_eq!(
+            workbench_base_json(
                 &workbench,
                 json!({"prompt_rpc_id": "prompt-1", "started": 99}),
                 json!({"started": 98}),

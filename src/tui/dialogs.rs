@@ -179,7 +179,7 @@ pub(super) fn help_dialog_lines(width: usize, commands: &[CommandInfo]) -> Vec<L
         ("Enter", "submit; while a run is active, submit steering"),
         ("Shift+Enter, Alt+Enter, Ctrl+J", "insert a line break"),
         ("Ctrl+V", "paste clipboard image or text"),
-        ("Alt+S", "request a prompt suggestion while idle"),
+        ("Ctrl+G", "request a prompt suggestion while idle"),
         (
             "Up / Down",
             "recall input history (or scroll the conversation)",

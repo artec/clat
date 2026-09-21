@@ -3777,6 +3777,9 @@ fn snapshot_restores_usage_stats_from_the_journal() {
     assert_eq!(snapshot.session_usage.input_tokens, 240);
     assert_eq!(snapshot.session_usage.output_tokens, 60);
     assert_eq!(snapshot.session_usage.cached_input_tokens, Some(200));
+    let workbench = application.workbench_snapshot().unwrap();
+    assert_eq!(workbench.route_usage, Some(snapshot.session_usage.clone()));
+    assert_eq!(workbench.last_request_usage, snapshot.last_request_usage);
     let last = snapshot.last_request_usage.expect("last request usage");
     assert_eq!(
         (last.input_tokens, last.output_tokens),
@@ -3785,6 +3788,36 @@ fn snapshot_restores_usage_stats_from_the_journal() {
     );
     application.close().unwrap();
     std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
+}
+
+#[test]
+fn subscribing_a_host_client_configures_monitor_without_terminal_snapshot() {
+    struct Monitor(std::sync::Mutex<Option<String>>);
+    impl crate::plugins::services::MonitorService for Monitor {
+        fn configure(&self, config: ModelConfig, _: crate::ProviderCredentials) {
+            *self.0.lock().unwrap() = Some(config.model);
+        }
+        fn subscribe(&self, _: std::sync::mpsc::Sender<ApplicationEvent>) {}
+        fn refresh(&self) {}
+    }
+    let (storage_root, project_root) = roots("host-monitor-subscribe");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let mut app = mount(
+        &Project::new(&project_root),
+        &storage_root,
+        TestBehavior::Success,
+    );
+    configure_test_model(&app);
+    let monitor = Arc::new(Monitor(std::sync::Mutex::new(None)));
+    app.monitor = monitor.clone();
+    let (tx, _rx) = std::sync::mpsc::channel();
+    app.subscribe(tx);
+    assert_eq!(
+        *monitor.0.lock().unwrap(),
+        Some(app.model_state().unwrap().0.model)
+    );
+    app.close().unwrap();
+    crate::test_support::cleanup_tree(storage_root.parent().unwrap());
 }
 
 /// 启动性能回归：挂载路径 resume 时已经全量流式回放过一次日志

@@ -915,7 +915,7 @@ fn run_turn(service: &SessionService, text: &str) -> Result<(), SessionError> {
 }
 
 #[test]
-fn utility_title_budget_requires_both_intervals_and_survives_reopen() {
+fn utility_title_has_no_quota_or_cooldown_and_coalesces_same_turn_after_reopen() {
     let (service, root) = service("utility-budget");
     let summary = service.new_session(&project()).unwrap();
     let id = &summary.id;
@@ -933,43 +933,15 @@ fn utility_title_budget_requires_both_intervals_and_survives_reopen() {
             .is_none(),
         "time alone cannot grant a call"
     );
-    for _ in 0..5 {
+    for attempt in 1..25 {
         run_turn(&service, "progress").unwrap();
-    }
-    assert!(
-        service
-            .prepare_title_attempt_at(id, 1_299_999)
-            .unwrap()
-            .is_none(),
-        "turns alone cannot grant a call"
-    );
-    assert!(
-        service
-            .prepare_title_attempt_at(id, 999_999)
-            .unwrap()
-            .is_none(),
-        "clock rollback cannot grant a call"
-    );
-    assert!(
-        service
-            .prepare_title_attempt_at(id, 1_300_000)
-            .unwrap()
-            .is_some()
-    );
-    // None of these reservations writes a title: provider failure still costs.
-    for attempt in 2..20 {
-        for _ in 0..5 {
-            run_turn(&service, "progress").unwrap();
-        }
         assert!(
             service
-                .prepare_title_attempt_at(id, 1_000_000 + attempt * 300_000)
+                .prepare_title_attempt_at(id, 1_000_000 - attempt)
                 .unwrap()
-                .is_some()
+                .is_some(),
+            "each new turn is eligible, even beyond 20 calls or after clock rollback"
         );
-    }
-    for _ in 0..5 {
-        run_turn(&service, "progress").unwrap();
     }
     let key = SessionKey {
         project: project(),
@@ -984,30 +956,41 @@ fn utility_title_budget_requires_both_intervals_and_survives_reopen() {
             .prepare_title_attempt_at(id, 99_000_000)
             .unwrap()
             .is_none(),
-        "restart must not reset attempts"
+        "restart must not duplicate the last turn's request"
     );
+    run_turn(&reopened, "new topic after reopening").unwrap();
+    assert!(reopened.prepare_title_attempt_at(id, 1).unwrap().is_some());
     reopened.quiesce_active().unwrap();
     crate::test_support::cleanup_tree(&root);
 }
 
 #[test]
-fn manual_suggestion_budget_is_independent_bounded_and_survives_reopen() {
+fn manual_suggestions_remain_available_beyond_twenty_and_after_reopen() {
     let (service, root) = service("utility-suggestion-budget");
     let summary = service.new_session(&project()).unwrap();
     run_turn(&service, "suggest my next step").unwrap();
-    for _ in 0..20 {
+    let dir = service
+        .backend
+        .open_session_dir(&SessionKey {
+            project: project(),
+            id: summary.id.clone(),
+        })
+        .unwrap();
+    dir.write("clat-utility-budget.json",
+        r#"{"version":1,"title_attempts":20,"suggestion_attempts":20,"last_title_turn":0,"last_title_ms":999999999999}"#).unwrap();
+    for _ in 0..25 {
         let attempt = service
             .prepare_suggestion_attempt(&summary.id)
             .unwrap()
-            .expect("twenty manual attempts are available");
+            .expect("manual requests have no lifetime allowance");
         assert!(attempt.context.contains("suggest my next step"));
     }
     assert!(
         service
             .prepare_suggestion_attempt(&summary.id)
             .unwrap()
-            .is_none(),
-        "the twenty-first suggestion is rejected before provider I/O"
+            .is_some(),
+        "manual requests remain available"
     );
     assert!(
         service
@@ -1028,8 +1011,8 @@ fn manual_suggestion_budget_is_independent_bounded_and_survives_reopen() {
         reopened
             .prepare_suggestion_attempt(&key.id)
             .unwrap()
-            .is_none(),
-        "restart must not reset suggestion attempts"
+            .is_some(),
+        "reopening does not reinstate the old quota"
     );
     reopened.quiesce_active().unwrap();
     crate::test_support::cleanup_tree(&root);
@@ -1148,13 +1131,59 @@ fn utility_budget_corruption_is_not_treated_as_unused_allowance() {
         " ".repeat(1025),
         r#"{"version":999,"title_attempts":0,"last_title_turn":0,"last_title_ms":0}"#.into(),
     ] {
-        dir.write("clat-utility-budget.json", bytes).unwrap();
+        dir.write("clat-utility-budget.json", &bytes).unwrap();
         assert!(
             service
                 .prepare_title_attempt_at(&summary.id, 1_000_000)
                 .is_err()
         );
+        assert!(
+            service
+                .prepare_suggestion_attempt(&summary.id)
+                .unwrap()
+                .is_some(),
+            "manual suggestions must not depend on the retired quota file"
+        );
+        assert_eq!(
+            dir.read("clat-utility-budget.json").unwrap(),
+            bytes.as_bytes()
+        );
     }
+    service.quiesce_active().unwrap();
+    crate::test_support::cleanup_tree(&root);
+}
+
+#[test]
+fn utility_context_keeps_user_intent_after_a_long_assistant_response() {
+    let (service, root) = service("utility-long-response");
+    let summary = service.new_session(&project()).unwrap();
+    run_turn(&service, "请重点解决输入框丢字").unwrap();
+    let journal = service.journal().unwrap();
+    journal
+        .append_atomic(&[crate::session::run_journal::NewSessionEvent::new(
+            "assistant/message",
+            payloads::assistant_message(
+                1,
+                1,
+                vec![payloads::text_block(&"解释".repeat(8000))],
+                "test",
+                "small",
+                None,
+            ),
+        )
+        .append(Vec::new())])
+        .unwrap();
+    journal.flush().unwrap();
+    let attempt = service
+        .prepare_suggestion_attempt(&summary.id)
+        .unwrap()
+        .unwrap();
+    assert!(attempt.context.contains("请重点解决输入框丢字"));
+    assert!(attempt.context.contains("assistant: 解释"));
+    assert!(
+        attempt.context.chars().count() < 1200,
+        "one long response should not force a full 6000-character request"
+    );
     service.quiesce_active().unwrap();
     crate::test_support::cleanup_tree(&root);
 }

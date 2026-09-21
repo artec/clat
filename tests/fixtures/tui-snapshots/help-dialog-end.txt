@@ -10,7 +10,7 @@ scroll 0
 006| │     │   Enter — submit; while a run is active, submit steering         │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
 007| │     │   Shift+Enter, Alt+Enter, Ctrl+J — insert a line break           │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
 008| │     │   Ctrl+V — paste clipboard image or text                         │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
-009| │     │   Alt+S — request a prompt suggestion while idle                 │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+009| │     │   Ctrl+G — request a prompt suggestion while idle                │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
 010| │     │   Up / Down — recall input history (or scroll the conversation)  │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
 011| │     │   Esc — cancel the running request; otherwise clear input        │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
 012| │     │   Shift+Tab — cycle the thinking level                           │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧

@@ -63,21 +63,11 @@ fn utility_worker_updates_provider_titles_but_manual_rename_ends_model_calls() {
     assert_eq!(
         titler.0.lock().unwrap().len(),
         1,
-        "queued work cannot bypass the interval"
+        "duplicate notifications for the same turn must not call the model twice"
     );
     for turn in 2..=6 {
         completed_turn(&sessions, turn, "changed topic");
     }
-    // Deterministic five-minute advance without changing process clocks.
-    let budget = root
-        .join(&project.bucket)
-        .join(crate::session::path_layout::encode_segment(id.as_str()))
-        .join("clat-utility-budget.json");
-    std::fs::write(
-        &budget,
-        r#"{"version":1,"title_attempts":1,"last_title_turn":1,"last_title_ms":0}"#,
-    )
-    .unwrap();
     maybe_autotitle(&titler, &sessions, &job, &cancel, &subscribers);
     assert_eq!(
         sessions.title_state().0.as_deref(),

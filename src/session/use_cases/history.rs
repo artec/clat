@@ -2,6 +2,21 @@
 use super::*;
 
 impl SessionService {
+    /// Read the usage fold without cloning the full conversation for UI polling.
+    pub(crate) fn active_usage(&self) -> Result<UsageStats, SessionError> {
+        let guard = self.active.lock().expect("active");
+        let Some(active) = guard.as_ref() else {
+            return Ok(UsageStats::default());
+        };
+        catch_up_replay(
+            &self.backend,
+            &active.key,
+            active.coordinator.committed_seq(),
+            &active.replay,
+        )?;
+        Ok(active.replay.lock().expect("replay").usage.clone())
+    }
+
     /// Structured replay of a session journal — the frontend transcript
     /// rebuild input. A pure fold of the durable log: deleting checkpoints
     /// changes nothing (invariant I4). Lazy sessions without a log replay

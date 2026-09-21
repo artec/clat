@@ -1178,6 +1178,8 @@ impl App {
         let bar = area.inner(Margin::new(1, 0));
         let segments = if self.dsh.is_some() {
             self.dsh_status_segments()
+        } else if self.native.is_some() {
+            self.native_status_segments()
         } else {
             status_suffix_segments(
                 &self.config,

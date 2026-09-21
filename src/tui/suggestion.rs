@@ -62,7 +62,7 @@ impl App {
         } else if self.suggestions.pending() {
             ("✦ suggesting… ", theme::Role::ModelAccent)
         } else {
-            ("✦ Alt+S ", theme::Role::Faint)
+            ("✦ Ctrl+G ", theme::Role::Faint)
         };
         spans.push(Span::styled("· ", theme::style(theme::Role::Faint)));
         spans.push(Span::styled(label, theme::style(role)));
@@ -70,9 +70,11 @@ impl App {
     }
 
     pub(super) fn handle_suggestion_trigger_key(&mut self, key: KeyEvent) -> bool {
-        if key.modifiers != KeyModifiers::ALT
-            || !matches!(key.code, KeyCode::Char('s') | KeyCode::Char('S'))
-        {
+        let primary = key.modifiers == KeyModifiers::CONTROL
+            && matches!(key.code, KeyCode::Char('g') | KeyCode::Char('G'));
+        let legacy = key.modifiers == KeyModifiers::ALT
+            && matches!(key.code, KeyCode::Char('s') | KeyCode::Char('S'));
+        if !primary && !legacy {
             return false;
         }
         if self.dsh.is_some() {

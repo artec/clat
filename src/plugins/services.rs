@@ -981,6 +981,13 @@ pub(crate) struct McpServerStatus {
 }
 
 pub(crate) trait MonitorService: Send + Sync {
+    fn snapshot(
+        &self,
+        _config: &ModelConfig,
+        _credentials: &ProviderCredentials,
+    ) -> Option<String> {
+        None
+    }
     fn configure(&self, config: ModelConfig, credentials: ProviderCredentials);
     fn subscribe(&self, sender: std::sync::mpsc::Sender<crate::application::ApplicationEvent>);
     fn refresh(&self);

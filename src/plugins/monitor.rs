@@ -49,18 +49,24 @@ impl Plugin for MonitorPlugin {
 }
 
 struct CoreMonitor {
+    latest: MonitorSnapshot,
     commands: Sender<Command>,
     handle: Mutex<Option<JoinHandle<()>>>,
 }
 
+type MonitorSnapshot = Arc<Mutex<Option<(ModelConfig, ProviderCredentials, Option<String>)>>>;
+
 impl CoreMonitor {
     fn start() -> Result<Self, PluginError> {
         let (commands, receiver) = mpsc::channel();
+        let latest = Arc::new(Mutex::new(None));
+        let worker_latest = Arc::clone(&latest);
         let handle = std::thread::Builder::new()
             .name("clat-provider-monitor".into())
-            .spawn(move || monitor_loop(receiver))
+            .spawn(move || monitor_loop(receiver, worker_latest))
             .map_err(|error| PluginError::new(format!("spawn provider monitor: {error}")))?;
         Ok(Self {
+            latest,
             commands,
             handle: Mutex::new(Some(handle)),
         })
@@ -87,6 +93,16 @@ impl CoreMonitor {
 }
 
 impl MonitorService for CoreMonitor {
+    fn snapshot(&self, config: &ModelConfig, credentials: &ProviderCredentials) -> Option<String> {
+        self.latest
+            .lock()
+            .expect("monitor snapshot")
+            .as_ref()
+            .filter(|(previous, keys, _)| {
+                previous.endpoint == config.endpoint && keys == credentials
+            })
+            .and_then(|(_, _, value)| value.clone())
+    }
     fn configure(&self, config: ModelConfig, credentials: ProviderCredentials) {
         let _ = self
             .commands
@@ -102,7 +118,7 @@ impl MonitorService for CoreMonitor {
     }
 }
 
-fn monitor_loop(receiver: Receiver<Command>) {
+fn monitor_loop(receiver: Receiver<Command>, latest: MonitorSnapshot) {
     let mut state: Option<(ModelConfig, ProviderCredentials)> = None;
     let mut subscribers: Vec<Sender<ApplicationEvent>> = Vec::new();
     let mut next_sweep = Instant::now() + REFRESH_INTERVAL;
@@ -127,6 +143,9 @@ fn monitor_loop(receiver: Receiver<Command>) {
         }
         next_sweep = Instant::now() + REFRESH_INTERVAL;
         let value = state.as_ref().and_then(fetch_value);
+        *latest.lock().expect("monitor snapshot") = state
+            .as_ref()
+            .map(|(config, credentials)| (config.clone(), credentials.clone(), value.clone()));
         subscribers.retain(|sender| {
             sender
                 .send(ApplicationEvent::MonitorUpdated(value.clone()))
@@ -178,6 +197,31 @@ fn fetch_value((config, credentials): &(ModelConfig, ProviderCredentials)) -> Op
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cached_monitor_snapshot_is_read_only_and_bound_to_endpoint_and_credentials() {
+        let monitor = CoreMonitor::start().unwrap();
+        let mut config = ModelConfig::default();
+        let mut credentials = ProviderCredentials::for_protocol(config.protocol);
+        credentials.set_value(0, "first-key".into());
+        *monitor.latest.lock().unwrap() =
+            Some((config.clone(), credentials.clone(), Some("87%".into())));
+        assert_eq!(
+            monitor.snapshot(&config, &credentials).as_deref(),
+            Some("87%")
+        );
+        config.model = "another model on the same account".into();
+        assert_eq!(
+            monitor.snapshot(&config, &credentials).as_deref(),
+            Some("87%")
+        );
+        let mut other_keys = credentials.clone();
+        other_keys.set_value(0, "second-key".into());
+        assert!(monitor.snapshot(&config, &other_keys).is_none());
+        config.endpoint = "https://other.invalid".into();
+        assert!(monitor.snapshot(&config, &credentials).is_none());
+        monitor.shutdown().unwrap();
+    }
 
     #[test]
     fn shutdown_is_idempotent_and_joins_the_monitor_thread() {

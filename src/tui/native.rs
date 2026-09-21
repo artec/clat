@@ -56,6 +56,8 @@ pub(super) enum NativeEvent {
 }
 
 pub(super) struct NativeState {
+    vendor: crate::ModelVendor,
+    context_window: Option<u64>,
     client: HostClient,
     epoch: u64,
     interrupt: Option<HostEventsInterrupt>,
@@ -101,6 +103,8 @@ impl App {
         app.bootstrap = None;
         app.trust_prompt = false;
         app.native = Some(NativeState {
+            vendor: crate::ModelVendor::Other,
+            context_window: None,
             client,
             epoch: 0,
             interrupt: None,
@@ -538,6 +542,7 @@ impl App {
         if let Ok(protocol) = serde_json::from_value(value["model"]["protocol"].clone()) {
             self.config.protocol = protocol;
         }
+        self.native_telemetry(&value);
     }
 
     fn native_frame(&mut self, frame: HostEvent) {
@@ -556,6 +561,9 @@ impl App {
             HostEvent::Run(event) => {
                 if let RunEvent::RunStarted { message, .. } = &event {
                     self.running = true;
+                    self.run_usage_acc = Usage::default();
+                    self.run_routes_base = Some(self.usage_routes.clone());
+                    self.run_route = None;
                     self.conversation
                         .push_user(image_message_label(&message.plain_text(), &message.blocks));
                 }
@@ -621,6 +629,51 @@ impl App {
 }
 
 impl App {
+    fn native_telemetry(&mut self, value: &Value) {
+        let Some(native) = self.native.as_mut() else {
+            return;
+        };
+        native.vendor = match value["model"]["vendor"].as_str() {
+            Some("DeepSeek") => crate::ModelVendor::DeepSeek,
+            Some("Glm") => crate::ModelVendor::Glm,
+            Some("Kimi") => crate::ModelVendor::Kimi,
+            Some("Qwen") => crate::ModelVendor::Qwen,
+            Some("Tencent") => crate::ModelVendor::Tencent,
+            _ => crate::ModelVendor::Other,
+        };
+        native.context_window = value["model"]["max_context_tokens"].as_u64().or_else(|| {
+            value["model"]["preset"]
+                .as_str()
+                .and_then(crate::presets::preset_by_id)
+                .map(|preset| preset.context_window as u64)
+        });
+        self.balance = value["telemetry"]["monitor"].as_str().map(str::to_owned);
+        self.usage_routes.clear();
+        if let Some(usage) = telemetry_usage(&value["telemetry"]["route_usage"]) {
+            self.usage_routes.insert(
+                crate::model::model_route_key(
+                    &self.config.protocol.to_string(),
+                    &self.config.model,
+                ),
+                usage,
+            );
+        }
+        self.last_turn_usage = telemetry_usage(&value["telemetry"]["last_request_usage"]);
+    }
+
+    pub(super) fn native_status_segments(&self) -> Vec<String> {
+        let Some(native) = self.native.as_ref() else {
+            return Vec::new();
+        };
+        status_telemetry_segments(
+            native.vendor,
+            &self.balance,
+            current_route_usage(&self.usage_routes, &self.config),
+            self.last_turn_usage.as_ref(),
+            native.context_window,
+        )
+    }
+
     fn native_approval(&mut self, payload: Value) {
         let (id, request) = match crate::host::decode_host_approval(&payload) {
             Ok(request) => request,
@@ -659,4 +712,13 @@ impl App {
             let _ = ui.send(UiEvent::Native(NativeEvent::ApprovalReply(result)));
         });
     }
+}
+
+fn telemetry_usage(value: &Value) -> Option<Usage> {
+    Some(Usage {
+        input_tokens: value["input_tokens"].as_u64()?,
+        output_tokens: value["output_tokens"].as_u64()?,
+        cached_input_tokens: value["cached_input_tokens"].as_u64(),
+        reasoning_tokens: value["reasoning_tokens"].as_u64(),
+    })
 }

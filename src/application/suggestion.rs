@@ -68,7 +68,7 @@ impl TrustedProjectApplication {
             .prepare_suggestion_attempt(&session_id)
             .map_err(|error| ApplicationError::new(error.to_string()))?
             .ok_or_else(|| {
-                ApplicationError::new("prompt suggestion budget exhausted or conversation empty")
+                ApplicationError::new("conversation has no text for a prompt suggestion")
             })?;
         Ok(PreparedPromptSuggestion {
             utility: Arc::clone(&self.utility),

@@ -71,11 +71,15 @@ pub struct SkillEntryDto {
 
 /// 轻量、前端中立的工作台读模型。
 ///
-/// 与 [`ProjectSnapshot`] 的边界刻意不同：这里不读 transcript/replay，
+/// 与 [`ProjectSnapshot`] 的边界刻意不同：这里不复制 transcript/replay，
+/// 仅增量追平用量折叠并读取已缓存的额度；
 /// 不携带 credentials，也不触发 monitor 配置。PWA、未来桌面端和 IDE
 /// 可用它绘制应用壳；会话正文仍只从 journal replay / RunEvent 获得。
 #[derive(Clone, Debug, PartialEq)]
 pub struct WorkbenchSnapshot {
+    pub monitor_status: Option<String>,
+    pub route_usage: Option<crate::model::Usage>,
+    pub last_request_usage: Option<crate::model::Usage>,
     pub project: WorkbenchProjectSnapshot,
     pub session: WorkbenchSessionSnapshot,
     pub model: WorkbenchModelSnapshot,
@@ -112,6 +116,7 @@ pub struct MessageOutlineDto {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct WorkbenchModelSnapshot {
+    pub vendor: crate::model::ModelVendor,
     pub protocol: crate::model::ModelProtocol,
     pub model: String,
     pub preset: Option<String>,

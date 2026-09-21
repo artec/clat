@@ -39,7 +39,7 @@ Files appear lazily, so a fresh installation may contain only a subset.
             ├── session.v3.jsonl.zstd # current authoritative DSH-compatible log
             ├── session.lock          # POSIX-only stable DSH writer-lock inode
             ├── clat-checkpoint.json # bounded derived projection cache
-            ├── clat-utility-budget.json # private durable model-call attempt budget
+            ├── clat-utility-budget.json # private same-turn naming deduplication state (legacy filename)
             └── attachments/
                 ├── .orphan-sweep-cursor-v1 # private bounded-GC progress
                 ├── blobs/<sha256>   # immutable normalized PNG/JPEG bytes
@@ -63,7 +63,7 @@ installation and never participates in runtime discovery.
 | session log | authoritative conversation facts | fail closed; recover only a torn tail with explicit synthetic closure |
 | settings, credentials, trust, workspace tables | control-plane facts | preserve torn remnant and start an empty replacement with a diagnostic |
 | projection checkpoint/cache | derived | drop and rebuild from facts |
-| `clat-utility-budget.json` | per-session utility attempt counters | bounded regular-file read and atomic private publication; corruption pauses automatic calls; reopening or dropping checkpoints does not reset counters |
+| `clat-utility-budget.json` | per-session naming scheduling state, retaining legacy counters | bounded regular-file read and atomic private publication; corruption pauses naming; counters no longer impose call quotas; suggestions do not access this file |
 | `web-token` | local API credential | validate regular 0600 file; create/rotate atomically |
 | `host-endpoint.json` | host port and instance hint | host publishes atomically under root lease; authenticated discovery validates instance/root/versions; stale hints survive shutdown |
 | `memory.json` | authoritative explicit knowledge | version/CAS/path validation fail closed; never inferred from model output |
@@ -348,7 +348,10 @@ provider secret is projected into the row. The per-session
 `clat-utility-budget.json` sidecar is separate from the journal: its bounded
 reader rejects links, special files, malformed/unknown data, and oversized
 content, while each reservation is atomically published before any provider
-request. Reopening a session never resets either utility's attempt counter.
+request. Legacy counters remain readable, including exhausted budgets, but no
+longer limit calls. Naming deduplicates only the same or older ended turn;
+the timestamp is informational, not a cooldown. Suggestions bypass this file
+entirely, avoiding per-click disk writes and leaving old counters untouched.
 The `sessions/` directory wins over list caches and derived session-id arrays.
 
 ### Workspace registry

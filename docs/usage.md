@@ -187,7 +187,7 @@ The main screen has three surfaces:
 | `PageUp` / `PageDown` | scroll the conversation |
 | `Shift+Tab` | cycle the active vendor's reasoning level |
 | `Ctrl+R` | expand or collapse Think details in the conversation |
-| `Alt+S` | request one manual prompt suggestion when the utility policy allows it |
+| `Ctrl+G` (also `Alt+S`) | request one manual prompt suggestion when the utility policy allows it |
 | mouse wheel | scroll the conversation |
 | mouse drag | select text and copy it with OSC 52 on release |
 | `Cmd+C` / `Ctrl+Shift+C` | copy the current selection again |
@@ -601,6 +601,11 @@ level for the next run and persists the effective model configuration:
 Cache and context values are session facts restored from journal usage events.
 Where supported, DeepSeek shows wallet balance and GLM/Kimi show remaining
 plan quota. Missing provider data is shown as unknown rather than fabricated.
+The host-attached TUI receives these values from the host, including when
+attaching to existing history; it does not run a second quota monitor.
+`workbench.info` exposes this as the additive `model.vendor` and `telemetry`
+fields (`monitor`, current-route `route_usage`, and `last_request_usage`).
+These contain display data only, never endpoint credentials.
 
 ## Headless runner (`clat exec`)
 
@@ -746,12 +751,14 @@ process-only override; it neither reads nor changes the persistent token.
 ### Companion utility and manual suggestions
 
 The Workbench settings panel exposes a host-wide companion utility policy.
-Continuous session naming is on by default; it uses a bounded, persistent
-sidecar budget and never changes a user-owned title. Manual prompt suggestions
+Continuous session naming is on by default; it coalesces duplicate notifications
+for the same ended turn and never changes a user-owned title. Manual prompt suggestions
 are off by default. In the PWA, the sparkle button at the upper-right of the
 composer is muted and disabled until the policy, session, and idle state allow
 a request; when enabled, press it to request one next-message hint. In the TUI,
-press **Alt+S** or enter `/suggest`. The composer border shows the faint shortcut,
+press **Ctrl+G** (Control, not Command, on macOS) or enter `/suggest`.
+This shortcut does not require configuring Option as Meta in the terminal;
+**Alt+S** remains a compatible alias. The composer border shows the faint shortcut,
 then a generating or ready state; **Ctrl+Y** adopts the preview. The hint is a
 preview only: it is never submitted or written to the session journal until you
 adopt it and send it as a normal prompt. In the TUI, **Esc** ignores it without
@@ -761,10 +768,13 @@ Switching sessions, starting a run, or editing the composer
 invalidates an in-flight result. The utility profile may be the primary model
 or an explicitly saved model profile; credentials remain write-only.
 
-Naming waits at least five ended turns and five minutes between successful
-attempts, while both naming and manual suggestions have an independent
-persistent cap of 20 attempts per session. Failed calls consume an attempt;
-sidecar corruption pauses utility calls until repaired by the user.
+Neither naming nor manual suggestions has a per-session call quota. Naming
+can update after every new completed turn, without a five-turn or five-minute
+cooldown. Duplicate notifications for an already attempted turn do not issue
+another request; failures can retry on the next completed turn. Suggestions
+do not read or write the old attempt-budget file. Requests use short excerpts
+of recent messages, so a long assistant reply cannot crowd out the user's
+recent intent. Cancellation, request deadlines, and output-size bounds remain.
 
 ### WeChat remote control
 
@@ -1214,11 +1224,12 @@ change while it is open prevents a stale rename from reaching another session.
 Once you rename a session, model-generated titles cannot replace your title,
 including after the session is reopened.
 Automatic naming follows recent conversation after a successful run. It may
-update a model-generated title after at least five more completed turns and
-five minutes. Each session permits at most 20 naming attempts, including failed
-requests; reopening the session does not reset this budget. Each request uses
-at most 12 recent user/assistant messages and 6000 characters, without tools.
-An unreadable or damaged budget file pauses automatic naming.
+update a model-generated title after each newly completed turn, without lifetime
+quotas or time-based cooldowns. The scheduling sidecar prevents duplicate calls
+for the same turn after reopening. Each request uses at most 12 recent
+user/assistant messages, 1000 characters per message and 6000 characters total,
+without tools. An unreadable or damaged scheduling file pauses automatic naming,
+but does not disable manual suggestions.
 Built-in DeepSeek, GLM, Qwen, Kimi, and Hy routes use the table-declared
 companion for naming (for example, `kimi-k3` uses `kimi-for-coding` and
 `hy4-preview` uses `hy3`); other models and customized routes use the primary

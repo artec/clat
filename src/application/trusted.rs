@@ -764,10 +764,11 @@ impl TrustedProjectApplication {
         McpStatusDto::from(self.mcp_status.as_ref())
     }
 
-    /// 面向应用壳的轻量只读快照（RF-2）：不读取 transcript/replay，
+    /// 面向应用壳的轻量只读快照：增量追平用量折叠，不克隆 transcript/replay，
     /// 不返回 credentials，不配置 monitor，也不改变任何会话状态。
     pub fn workbench_snapshot(&self) -> Result<crate::WorkbenchSnapshot, ApplicationError> {
-        let (config, _credentials) = self.model_state()?;
+        let (config, credentials) = self.model_state()?;
+        let usage = self.sessions.active_usage().map_err(session_error)?;
         let root = self.canonical_root.clone();
         let name = root
             .file_name()
@@ -776,6 +777,15 @@ impl TrustedProjectApplication {
             .map(str::to_owned)
             .unwrap_or_else(|| root.display().to_string());
         Ok(crate::WorkbenchSnapshot {
+            monitor_status: self.monitor.snapshot(&config, &credentials),
+            route_usage: usage
+                .routes
+                .get(&crate::model::model_route_key(
+                    &config.protocol.to_string(),
+                    &config.model,
+                ))
+                .cloned(),
+            last_request_usage: usage.last_request,
             project: crate::WorkbenchProjectSnapshot {
                 root,
                 name,
@@ -787,6 +797,7 @@ impl TrustedProjectApplication {
                 committed_seq: self.committed_seq(),
             },
             model: crate::WorkbenchModelSnapshot {
+                vendor: config.vendor(),
                 protocol: config.protocol,
                 model: config.model.clone(),
                 preset: config.preset.clone(),
@@ -1361,6 +1372,12 @@ impl TrustedProjectApplication {
             let _ = sender.send(ApplicationEvent::LanguageIntelligenceNotice { message });
         }
         self.monitor.subscribe(sender);
+        // Attached clients need monitoring without invoking the standalone
+        // terminal's heavyweight snapshot path. Configure is idempotent for
+        // an unchanged endpoint/account; another frontend does not refetch.
+        if let Ok((config, credentials)) = self.model_state() {
+            self.monitor.configure(config, credentials);
+        }
     }
 
     pub fn refresh_monitor(&self) {
