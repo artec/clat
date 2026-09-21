@@ -35,6 +35,20 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # 发布身份守卫（2026-09-21 v1.4.1 事故）：tag 与 workspace 版本
+      # 不一致即拒绝出产物。说谎的发布（tag 1.4.1 / 二进制自报 1.4.0）
+      # 会让升级链与宿主接管（MF-1c 按二进制自报版本比较）全部失真。
+      # 版本唯一权威在 Cargo.toml [workspace.package]（两包继承）。
+      - name: Refuse tags that do not match the workspace version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
+          if [ "$tag" != "$version" ]; then
+            echo "::error::tag v$tag does not match workspace version ${version:-<none>} — bump the [workspace.package] version before tagging" >&2
+            exit 1
+          fi
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}

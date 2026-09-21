@@ -321,7 +321,7 @@ dependencies = [
 
 [[package]]
 name = "clat"
-version = "1.4.0"
+version = "1.4.2"
 dependencies = [
  "arboard",
  "base64 0.22.1",
@@ -347,7 +347,7 @@ dependencies = [
 
 [[package]]
 name = "clat-core"
-version = "1.4.0"
+version = "1.4.2"
 dependencies = [
  "aes",
  "async-trait",
