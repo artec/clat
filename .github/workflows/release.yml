@@ -41,11 +41,14 @@ jobs:
       # 版本唯一权威在 Cargo.toml [workspace.package]（两包继承）。
       - name: Refuse tags that do not match the workspace version
         if: startsWith(github.ref, 'refs/tags/')
+        # shell 必须显式 bash：Windows runner 的 run: 默认 pwsh，
+        # bash 参数展开与 [ ] 测试语法在 pwsh 下必炸（v1.4.2 两跑
+        # Windows 腿红的真因；首诊误记 autocrlf/sed——那只是并存
+        # 的潜在问题，shell 错配才是首死因）。
+        shell: bash
         run: |
           tag="${GITHUB_REF_NAME#v}"
-          # 无 $ 行尾锚 + .* 吞尾：Windows runner 的 autocrlf checkout 会给
-          # Cargo.toml 行尾添 \r，锚定 $ 的模式提取为空、守卫误拒全部
-          # Windows 腿（v1.4.2 首跑两红的事后病历，autocrlf 老病新发）。
+          # 无 $ 行尾锚 + .* 吞尾：autocrlf checkout 可给行尾添 \r。
           version="$(sed -n 's/^version = "\(.*\)".*/\1/p' Cargo.toml | head -n 1)"
           if [ "$tag" != "$version" ]; then
             echo "::error::tag v$tag does not match workspace version ${version:-<none>} — bump the [workspace.package] version before tagging" >&2
