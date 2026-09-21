@@ -376,7 +376,7 @@ button:disabled { cursor: default; opacity: .45; }
 .model-choice small { margin-top: 1px; color: var(--text-muted); font: 9px var(--font-mono); }
 .model-choice-mark { color: var(--signal); font: 700 12px var(--font-mono); }
 .model-picker-key { display: grid; gap: 5px; margin-top: 12px; color: var(--text-muted); font-size: 10px; }
-.model-picker-key input { min-width: 0; width: 100%; padding: 8px 9px; border: 1px solid var(--line); border-radius: 6px; color: var(--text); background: var(--surface-input); }
+.model-picker-key input, .model-picker-key select { min-width: 0; width: 100%; padding: 8px 9px; border: 1px solid var(--line); border-radius: 6px; color: var(--text); background: var(--surface-input); font: inherit; }
 .model-picker-error { min-height: 1.4em; margin: 7px 0 0; font-size: 10px; }
 .model-picker-manage { width: 100%; padding: 8px 9px 2px; color: var(--text-muted); font: 10px var(--font-mono); text-align: left; }
 .model-picker-manage:hover { color: var(--signal); }
@@ -441,12 +441,35 @@ button:disabled { cursor: default; opacity: .45; }
 .market-panel > footer svg { color: var(--success); }
 
 /* Settings */
-.settings-dialog { width: min(680px, calc(100% - 32px)); max-height: min(780px, calc(100% - 32px)); padding: 0; overflow: auto; color: var(--text); background: var(--surface); border: 1px solid var(--line-strong); border-radius: var(--radius-lg); box-shadow: var(--shadow); }
+.settings-dialog { width: min(900px, calc(100% - 32px)); max-height: min(780px, calc(100% - 32px)); padding: 0; overflow: auto; color: var(--text); background: var(--surface); border: 1px solid var(--line-strong); border-radius: var(--radius-lg); box-shadow: var(--shadow); }
+.settings-panel { display: grid; grid-template-columns: 170px minmax(0, 1fr); }
+.settings-panel > header { grid-column: 1 / -1; }
+.settings-nav { padding: 18px 12px; border-right: 1px solid var(--line); display: flex; flex-direction: column; gap: 4px; }
+.settings-nav button { text-align: left; padding: 12px; border: 0; border-radius: 8px; background: transparent; color: var(--text-muted); }
+.settings-nav button[aria-current] { background: var(--surface-raised); color: var(--text); box-shadow: inset 2px 0 var(--signal); }
+.settings-content { min-height: 420px; min-width: 0; }
+.inspector-toolbar { padding: 14px; display: grid; gap: 8px; border-bottom: 1px solid var(--line); }
+.inspector-toolbar [role="status"] { font-size: 11px; color: var(--text-muted); }
+.session-list li { position: relative; }
+.session-item { padding-right: 36px; }
+.session-more { position: absolute; right: 6px; top: 12px; border: 0; background: transparent; color: var(--text-muted); font-size: 20px; border-radius: 6px; }
+.session-context-menu { position: fixed; z-index: 100; display: grid; min-width: 190px; padding: 6px; background: var(--surface); border: 1px solid var(--line-strong); border-radius: 10px; box-shadow: var(--shadow); }
+.session-context-menu button { text-align: left; padding: 10px 12px; background: transparent; border: 0; border-radius: 6px; color: var(--text); }
+.session-context-menu button:hover, .session-context-menu button:focus-visible { background: var(--surface-raised); outline: 1px solid var(--signal); }
+.session-context-menu button:disabled { opacity: .4; }
+.settings-section[hidden] { display: none; }
+@media (max-width: 600px) {
+  .settings-panel { grid-template-columns: minmax(0, 1fr); }
+  .settings-nav { flex-direction: row; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--line); padding: 10px; }
+  .settings-nav button { flex-shrink: 0; }
+  .settings-content { min-height: 300px; }
+}
 .settings-dialog::backdrop { background: rgb(4 7 8 / 72%); backdrop-filter: blur(5px); }
 .settings-panel > header { display: flex; align-items: center; justify-content: space-between; padding: 20px 22px; border-bottom: 1px solid var(--line); }
 .settings-panel h2 { margin: 5px 0 0; font-size: 22px; letter-spacing: -.03em; }
 .settings-section { padding: 22px; border-bottom: 1px solid var(--line); }
 .settings-copy h3 { margin: 0; font-size: 14px; }
+.settings-copy h3 .section-kicker { display: inline-block; margin-left: 6px; }
 .settings-copy p { margin: 4px 0 14px; color: var(--text-muted); font-size: 12px; }
 .segmented { display: grid; grid-template-columns: repeat(3, 1fr); padding: 3px; border: 1px solid var(--line); border-radius: 9px; }
 .segmented input, .permission-options input { position: absolute; opacity: 0; pointer-events: none; }

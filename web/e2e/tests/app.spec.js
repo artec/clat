@@ -32,6 +32,126 @@ async function chooseModel(page, label) {
 
 const LIVE = { timeout: 30_000 };
 
+test('settings categories isolate panels and composer links select their destination', async ({ page }, testInfo) => {
+  await openWorkbench(page, hostInfo('success'));
+  await page.click('#settings-open');
+  for (const category of ['appearance', 'projects', 'models', 'utility', 'permissions', 'wechat']) {
+    await page.click(`[data-settings-category="${category}"]`);
+    await expect(page.locator('[data-settings-panel]:visible')).toHaveCount(1);
+    await expect(page.locator(`[data-settings-panel="${category}"]`)).toBeVisible();
+  }
+  await page.keyboard.press('Escape');
+  await page.click('#composer-permission');
+  await expect(page.locator('[data-settings-panel="permissions"]')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await page.click('#model-picker-trigger');
+  await page.click('#model-picker-manage');
+  await expect(page.locator('[data-settings-panel="models"]')).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath('categorized-settings.png'), fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.click('[data-settings-category="permissions"]');
+  await expect(page.locator('[data-settings-panel="permissions"]')).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath('mobile-settings.png'), fullPage: true });
+});
+
+test('session actions support right click keyboard and more button', async ({ page, context }, testInfo) => {
+  await openWorkbench(page, hostInfo('history'));
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  const row = page.locator('.session-item').first();
+  await expect(row).toBeVisible(LIVE);
+  await row.click({ button: 'right' });
+  await expect(page.getByRole('menu', { name: 'Session actions' })).toBeVisible();
+  await expect(page.getByRole('menuitem', { name: 'Copy session ID' })).toBeEnabled();
+  await page.screenshot({ path: testInfo.outputPath('session-actions.png'), fullPage: true });
+  await page.keyboard.press('Escape');
+  await expect(row).toBeFocused();
+  await page.keyboard.press('Shift+F10');
+  await expect(page.getByRole('menu')).toBeVisible();
+  await page.getByRole('menuitem', { name: 'Copy session ID' }).click();
+  const copied = await page.evaluate(() => navigator.clipboard.readText());
+  expect(copied).toMatch(/^[0-9a-f-]+$/i);
+  expect(copied.length).toBeGreaterThan(16);
+  await page.locator('.session-more').first().click();
+  const prompt = page.waitForEvent('dialog');
+  await Promise.all([
+    page.getByRole('menuitem', { name: 'Rename session' }).click(),
+    prompt.then(async (dialog) => {
+      expect(dialog.message()).toBe('Session title');
+      await dialog.dismiss();
+    }),
+  ]);
+  await page.locator('.session-more').first().click();
+  await page.getByRole('menuitem', { name: 'Open session' }).click();
+  await expect(page.getByRole('menu')).toHaveCount(0);
+});
+
+test('model intensity uses host choices and preserves the composer', async ({ page }, testInfo) => {
+  let intensity = 'high';
+  await page.route('**/api/model.settings.get', async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    body.value.current.thinking_levels = ['low', 'high', 'max'];
+    body.value.current.thinking_level = intensity;
+    await route.fulfill({ response, json: body });
+  });
+  await page.route('**/api/model.overrides.set', async (route) => {
+    expect(route.request().postDataJSON()).toMatchObject({ field: 'thinking_level', state: 'set', value: 'max' });
+    intensity = 'max';
+    await route.fulfill({ json: { ok: true, value: {} } });
+  });
+  await openWorkbench(page, hostInfo('success'));
+  await page.fill('#prompt', 'Keep this draft');
+  await page.click('#model-picker-trigger');
+  await expect(page.locator('#model-thinking')).toHaveValue('high', LIVE);
+  await page.selectOption('#model-thinking', 'max');
+  await expect(page.locator('#model-thinking')).toBeEnabled(LIVE);
+  await expect(page.locator('#model-thinking')).toHaveValue('max');
+  await expect(page.locator('#prompt')).toHaveValue('Keep this draft');
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await page.screenshot({ path: testInfo.outputPath('model-intensity-dark.png'), fullPage: true });
+});
+
+test('unsupported thinking stays legible and details actions preserve drafts', async ({ page }) => {
+  await openWorkbench(page, hostInfo('success'));
+  await page.fill('#prompt', 'Do not submit this draft');
+  await page.click('#model-picker-trigger');
+  await expect(page.locator('#model-thinking')).toBeDisabled();
+  await expect(page.locator('#model-thinking option:checked')).toHaveText('Not adjustable');
+  await page.click('#model-picker-close');
+  if (await page.locator('#inspector-toggle').getAttribute('aria-expanded') !== 'true') {
+    await page.click('#inspector-toggle');
+  }
+  await page.click('#inspector-refresh');
+  await expect(page.locator('#inspector-refresh')).toBeEnabled(LIVE);
+  await page.click('#inspector-context');
+  await expect(page.locator('.context-notice')).toHaveCount(1, LIVE);
+  await expect(page.locator('#prompt')).toHaveValue('Do not submit this draft');
+  await page.click('#inspector-models');
+  await expect(page.locator('[data-settings-panel="models"]')).toBeVisible();
+});
+
+test('details context response cannot land in a newly selected session', async ({ page }) => {
+  await openWorkbench(page, hostInfo('success'));
+  let release;
+  const barrier = new Promise((resolve) => { release = resolve; });
+  let received;
+  const arrived = new Promise((resolve) => { received = resolve; });
+  await page.route('**/api/command.run', async (route) => {
+    const response = await route.fetch();
+    received();
+    await barrier;
+    await route.fulfill({ response });
+  });
+  await page.click('#inspector-context');
+  await arrived;
+  await page.click('#new-session');
+  await expect(page.locator('#new-session')).toBeEnabled(LIVE);
+  release();
+  await expect(page.locator('#inspector-context')).toBeEnabled(LIVE);
+  await expect(page.locator('.context-notice')).toHaveCount(0);
+  await expect(page.locator('#inspector-feedback')).toBeEmpty();
+});
+
 test('question cards replay to another client and first answer closes both', async ({ page, context }, testInfo) => {
   const entry = hostInfo('question');
   await openWorkbench(page, entry);
@@ -181,10 +301,12 @@ test('model profiles are editable in PWA and broadcast without echoing API keys'
   await expect(page.locator('#model-picker-list .model-choice')).not.toHaveCount(0);
   await page.click('#model-picker-close');
   await page.click('#settings-open');
+  await page.click('[data-settings-category="models"]');
   const other = await context.newPage();
   await other.goto(entry.origin);
   await expect(other.locator('#conn-status')).toHaveText('live', LIVE);
   await other.click('#settings-open');
+  await other.click('[data-settings-category="models"]');
   const name = 'browser-profile-' + Date.now();
   const secret = 'browser-key-do-not-return';
   const responseBodies = [];
@@ -204,6 +326,7 @@ test('model profiles are editable in PWA and broadcast without echoing API keys'
   await expect(other.locator('#model-current')).toContainText('browser-test-model', LIVE);
   await expect(other.locator('#model-current')).toContainText('key set');
   await page.click('#settings-open');
+  await page.click('[data-settings-category="models"]');
   await page.getByRole('button', { name: 'Edit profile ' + name, exact: true }).click();
   await expect(page.locator('#model-profile-key-state')).toContainText('Key is set', LIVE);
   await expect(page.locator('#model-profile-key')).toHaveValue('');
@@ -219,6 +342,7 @@ test('model profiles are editable in PWA and broadcast without echoing API keys'
   await chooseModel(page, name);
   await expect(other.locator('#model-current')).toContainText('key not set', LIVE);
   await page.click('#settings-open');
+  await page.click('[data-settings-category="models"]');
   await page.getByRole('button', { name: 'Edit profile ' + name, exact: true }).click();
   await page.fill('#model-profile-model', 'browser-edited-model');
   await page.click('#model-profile-save');
@@ -229,6 +353,7 @@ test('model profiles are editable in PWA and broadcast without echoing API keys'
   const responses = await Promise.all(responseBodies);
   expect(responses.every((response) => !response.includes(secret))).toBeTruthy();
   await page.click('#settings-open');
+  await page.click('[data-settings-category="models"]');
   page.once('dialog', (dialog) => dialog.accept());
   await page.getByRole('button', { name: 'Delete profile ' + name, exact: true }).click();
   await other.locator('#settings-dialog button[aria-label="Close settings"]').click();
@@ -246,6 +371,7 @@ test('companion utility policy and manual suggestion stay preview-only', async (
   await expect(page.locator('#suggest')).toHaveAccessibleName('Generate prompt suggestion');
   await expect(page.locator('#suggest svg')).toHaveCount(1);
   await page.click('#settings-open');
+  await page.click('[data-settings-category="utility"]');
   await expect(page.locator('#utility-naming-enabled')).toBeChecked();
   await page.check('#utility-suggestions-enabled');
   await page.click('#utility-settings-save');
@@ -265,7 +391,75 @@ test('companion utility policy and manual suggestion stay preview-only', async (
   await expect(page.locator('#prompt')).toHaveValue(suggestion.trim());
   await expect(page.locator('#detail-run')).toHaveText('Idle', LIVE);
   await page.click('#settings-open');
+  await page.click('[data-settings-category="utility"]');
   await page.uncheck('#utility-suggestions-enabled');
+  await page.click('#utility-settings-save');
+  await expect(page.locator('#utility-settings-saved')).toContainText('saved', LIVE);
+  await page.click('#settings-dialog .icon-button');
+  await expect(page.locator('#suggest')).toBeDisabled();
+});
+
+test('delayed utility policy reads cannot overwrite a saved policy', async ({ page }) => {
+  await openWorkbench(page, hostInfo('success'));
+  await page.click('#new-session');
+  await expect(page.locator('#detail-run')).toHaveText('Idle', LIVE);
+  await expect(page.locator('#suggest')).toBeDisabled();
+
+  // 2026-09-16 病历的两类全量负载时序，本测试各钉一条：
+  // ①保存前发出的策态读取在保存完成后才落地（晚于保存触发的新鲜
+  //   重取），旧响应成为最后一次写入，把刚保存的策略打回旧值；
+  // ②后台刷新重绘表单，把用户未保存的编辑（uncheck）复位。
+  const gates = [];
+  await page.route('**/api/model.utility.get', async (route) => {
+    const gate = gates.shift();
+    if (!gate) {
+      await route.continue();
+      return;
+    }
+    const response = await route.fetch();
+    await gate.promise;
+    await route.fulfill({ response });
+  });
+
+  await page.click('#settings-open');
+  await page.click('[data-settings-category="utility"]');
+  await expect(page.locator('#utility-naming-enabled')).toBeChecked();
+
+  let releaseStaleRead;
+  gates.push({ promise: new Promise((resolve) => { releaseStaleRead = resolve; }) });
+  await page.evaluate(() => { refreshUtilitySettings() });
+  await page.check('#utility-suggestions-enabled');
+  await page.click('#utility-settings-save');
+  await expect(page.locator('#utility-settings-saved')).toContainText('saved', LIVE);
+  await page.click('#settings-dialog .icon-button');
+  await page.fill('#prompt', 'Review the current session state.');
+  await page.click('#send');
+  await expect(page.locator('.msg.user')).toHaveCount(1, LIVE);
+  await expect(page.locator('#detail-run')).toHaveText('Idle', { timeout: 30_000 });
+  await expect(page.locator('#prompt')).toHaveValue('');
+  await expect(page.locator('#suggest')).toBeEnabled();
+  let releaseFreshRead;
+  gates.push({ promise: new Promise((resolve) => { releaseFreshRead = resolve; }) });
+  await page.evaluate(() => { refreshUtilitySettings() });
+  releaseStaleRead();
+  // 让扣住的旧响应落地并被消费——未修复时它会把策态打回旧值。
+  await page.waitForTimeout(500);
+  await expect(page.locator('#suggest')).toBeEnabled();
+  releaseFreshRead();
+
+  // ②后台重绘不覆盖用户未保存的编辑：扣住保存后的新鲜读取（内容为
+  // ON），uncheck 之后放行——重绘不得把勾选框复位。
+  let releasePostEditRead;
+  gates.push({ promise: new Promise((resolve) => { releasePostEditRead = resolve; }) });
+  await page.evaluate(() => { refreshUtilitySettings() });
+  await page.click('#settings-open');
+  await page.click('[data-settings-category="utility"]');
+  await expect(page.locator('#utility-suggestions-enabled')).toBeChecked();
+  await page.uncheck('#utility-suggestions-enabled');
+  releasePostEditRead();
+  // 未修复时这条新鲜读取落地会把勾选框复位成 ON（渲染覆盖用户编辑）
+  await page.waitForTimeout(500);
+  await expect(page.locator('#utility-suggestions-enabled')).not.toBeChecked();
   await page.click('#utility-settings-save');
   await expect(page.locator('#utility-settings-saved')).toContainText('saved', LIVE);
   await page.click('#settings-dialog .icon-button');
@@ -303,6 +497,7 @@ test(`delayed profile reads cannot overwrite newer form state: ${transition}`, a
     endpoint: 'https://example.invalid/v1', request_path: '/chat/completions' });
   await openWorkbench(page, entry);
   await page.click('#settings-open');
+  await page.click('[data-settings-category="models"]');
   await page.locator('#model-profile-editor summary').click();
   let release;
   const barrier = new Promise((resolve) => { release = resolve; });
@@ -331,6 +526,7 @@ test(`delayed profile reads cannot overwrite newer form state: ${transition}`, a
     await page.keyboard.press('Escape');
     await expect(page.locator('#settings-dialog')).not.toBeVisible();
     await page.click('#settings-open');
+    await page.click('[data-settings-category="models"]');
   }
   release();
   await expect(edit).toBeEnabled(LIVE);
@@ -348,6 +544,7 @@ test('project tabs keep drafts and permission state isolated', async ({ page, co
     await openWorkbench(page, entry);
     await page.fill('#prompt', 'Keep this draft in the first project');
     await page.click('#settings-open');
+    await page.click('[data-settings-category="projects"]');
     await page.fill('#workspace-root', directory);
     await page.click('#workspace-open');
     await expect(page.locator('#workspace-error')).toContainText('not trusted', LIVE);
@@ -359,6 +556,7 @@ test('project tabs keep drafts and permission state isolated', async ({ page, co
     await other.goto(entry.origin + await link.getAttribute('href'));
     await expect(other.locator('#conn-status')).toHaveText('live', LIVE);
     await other.click('#settings-open');
+    await other.click('[data-settings-category="permissions"]');
     await other.locator('label').filter({ has: other.locator('input[name="permission-mode"][value="read-only"]') }).click();
     await other.click('#permission-save');
     await expect(other.locator('#settings-saved')).toContainText('updated', LIVE);
@@ -567,6 +765,7 @@ test('settings expose the default-deny WeChat binding surface', async ({ page })
   await openWorkbench(page, entry);
 
   await page.click('#settings-open');
+  await page.click('[data-settings-category="wechat"]');
   await expect(page.locator('#settings-dialog')).toBeVisible(LIVE);
   await expect(page.locator('.wechat-settings h3')).toHaveText('WeChat remote control');
   await expect(page.locator('#wechat-status')).toHaveText('Not bound', LIVE);
@@ -1290,6 +1489,7 @@ test('full access paints the permission text warning yellow', async ({ page }) =
   const badge = page.locator('#header-permission');
 
   await page.click('#settings-open');
+  await page.click('[data-settings-category="permissions"]');
   await expect(page.locator('#settings-dialog')).toBeVisible(LIVE);
   // The dialog is a live view: an async workbench refresh re-renders the
   // radios from host state and can land between our clicks. Retry the whole

@@ -202,6 +202,9 @@
                   <button id="model-picker-close" class="icon-button" type="button" aria-label="Close model picker">×</button>
                 </header>
                 <p id="model-picker-current" class="model-picker-current" role="status"></p>
+                <label class="model-picker-key">Thinking intensity
+                  <select id="model-thinking" aria-label="Thinking intensity" disabled><option>Not adjustable</option></select>
+                </label>
                 <div id="model-picker-list" class="model-picker-list" role="radiogroup" aria-label="Available models"></div>
                 <label class="model-picker-key">Preset API key
                   <input id="model-picker-key" type="password" autocomplete="new-password"
@@ -229,6 +232,10 @@
       </button>
     </header>
     <div class="inspector-scroll">
+      <div class="inspector-toolbar">
+        <button id="inspector-refresh" class="ghost" type="button">Refresh details</button>
+        <span id="inspector-feedback" role="status"></span>
+      </div>
       <section class="inspector-section">
         <h2>Session</h2>
         <dl>
@@ -237,11 +244,13 @@
           <div><dt>Session ID</dt><dd id="detail-session" class="mono-detail">Fresh</dd></div>
         </dl>
         <button id="compact-session" class="ghost inspector-action" type="button">Compact history</button>
+        <button id="inspector-context" class="ghost inspector-action" type="button">Inspect context usage</button>
       </section>
       <section class="inspector-section">
         <h2>Model route</h2>
         <strong id="detail-model" class="model-identity model-route-row">—</strong>
         <p id="detail-protocol">—</p>
+        <button id="inspector-models" class="ghost inspector-action" type="button">Manage model profiles</button>
         <div class="metric-grid">
           <div><span>Context</span><strong id="detail-context">—</strong></div>
           <div><span>Run guard</span><strong id="detail-budget">—</strong></div>
@@ -302,7 +311,16 @@
       </button>
     </header>
 
-    <section class="settings-section">
+    <nav class="settings-nav" aria-label="Settings categories">
+      <button type="button" data-settings-category="appearance" aria-current="page">Appearance</button>
+      <button type="button" data-settings-category="projects">Projects</button>
+      <button type="button" data-settings-category="models">Models</button>
+      <button type="button" data-settings-category="utility">Companion</button>
+      <button type="button" data-settings-category="permissions">Permissions</button>
+      <button type="button" data-settings-category="wechat">WeChat</button>
+    </nav>
+    <div class="settings-content">
+    <section class="settings-section" data-settings-panel="appearance">
       <div class="settings-copy">
         <h3>Appearance</h3>
         <p>Stored only in this browser. Session content is never cached here.</p>
@@ -314,7 +332,7 @@
       </fieldset>
     </section>
 
-    <section class="settings-section">
+    <section class="settings-section" data-settings-panel="projects" hidden>
       <div class="settings-copy">
         <h3>Projects</h3>
         <p>Open another project in a new tab. Each project has its own session and permissions.</p>
@@ -327,7 +345,7 @@
       <p id="workspace-error" class="error" role="alert"></p>
     </section>
 
-    <section class="settings-section model-settings">
+    <section class="settings-section model-settings" data-settings-panel="models" hidden>
       <div class="settings-copy">
         <h3>Model profiles <span class="section-kicker">SHARED BY ALL PROJECTS</span></h3>
         <p>Create and maintain routes here. Choose the active model beside Send in the composer.</p>
@@ -354,7 +372,7 @@
       <p id="model-settings-saved" role="status"></p>
     </section>
 
-    <section class="settings-section utility-settings">
+    <section class="settings-section utility-settings" data-settings-panel="utility" hidden>
       <div class="settings-copy">
         <h3>Companion utility <span class="section-kicker">HOST-WIDE</span></h3>
         <p>Automatic session naming is enabled by default. Suggestions are manual only and never submit or write to the journal.</p>
@@ -369,7 +387,7 @@
       <div class="settings-actions"><span id="utility-settings-saved" role="status"></span><button id="utility-settings-save" class="primary" type="button">Save utility policy</button></div>
     </section>
 
-    <section class="settings-section permission-settings">
+    <section class="settings-section permission-settings" data-settings-panel="permissions" hidden>
       <div class="settings-copy">
         <h3>Permission mode</h3>
         <p>This is a session property. Changes apply at the next tool permission check.</p>
@@ -399,7 +417,7 @@
       </div>
     </section>
 
-    <section class="settings-section wechat-settings">
+    <section class="settings-section wechat-settings" data-settings-panel="wechat" hidden>
       <div class="settings-copy">
         <h3>WeChat remote control</h3>
         <p>Uses the official iLink API. Bot binding and user authorization are separate; an empty authorization set denies everyone.</p>
@@ -429,6 +447,7 @@
         <button id="wechat-unbind" class="danger-button" type="button">Unbind</button>
       </div>
     </section>
+    </div>
   </form>
 </dialog>
 

@@ -334,6 +334,12 @@ fn thinking_cycle_uses_shared_current_model_and_keeps_frozen_snapshot() {
             crate::effective_thinking_level(&current),
             Some(crate::ThinkingLevel::Low)
         );
+        let route = a.model_settings_view().unwrap().current;
+        assert_eq!(
+            route.thinking_levels,
+            crate::thinking_levels(current.vendor())
+        );
+        assert_eq!(route.thinking_level, Some(crate::ThinkingLevel::Low));
         assert!(
             rx.try_iter()
                 .any(|event| event == ApplicationEvent::ModelsUpdated)
@@ -341,6 +347,13 @@ fn thinking_cycle_uses_shared_current_model_and_keeps_frozen_snapshot() {
         current.endpoint = "https://example.invalid/v1".into();
         current.preset = None;
         a.save_model_state(&current, &credentials).unwrap();
+        assert!(
+            a.model_settings_view()
+                .unwrap()
+                .current
+                .thinking_levels
+                .is_empty()
+        );
         let before = serde_json::to_value(&a.model_state().unwrap().0).unwrap();
         assert!(b.cycle_model_thinking().is_err());
         assert_eq!(

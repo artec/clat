@@ -45,6 +45,10 @@ pub struct ModelPresetView {
 /// may contain secrets. Those fields never enter any transport read surface.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ModelRouteView {
+    #[serde(default)]
+    pub thinking_levels: Vec<crate::ThinkingLevel>,
+    #[serde(default)]
+    pub thinking_level: Option<crate::ThinkingLevel>,
     pub protocol: ModelProtocol,
     pub model: String,
     pub endpoint: String,
@@ -313,6 +317,8 @@ impl TrustedProjectApplication {
 
 fn route_view(config: &ModelConfig, credentials: &ProviderCredentials) -> ModelRouteView {
     ModelRouteView {
+        thinking_levels: crate::thinking_levels(config.vendor()).to_vec(),
+        thinking_level: crate::effective_thinking_level(config),
         auth_edit_supported: true,
         extra_headers_edit_supported: true,
         extra_body_edit_supported: true,

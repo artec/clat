@@ -913,6 +913,17 @@ port has separate pairing state.
 
 ### Web workbench
 
+The settings window groups Appearance, Projects, Models, Companion,
+Permissions, and WeChat into separate categories. The composer permission
+control opens Permissions directly; Manage model profiles opens Models.
+Session rows provide a more-actions button and a right-click menu, also
+accessible with Shift+F10. The current session can be renamed from that menu.
+The composer model picker exposes the current route's host-reported thinking
+intensities; models without adjustable thinking show a disabled control.
+The details sidebar offers refresh, context inspection, and model-profile
+management. Context inspection adds a read-only breakdown to the conversation
+without sending the composer draft or making a model request.
+
 The embedded zero-build PWA provides a session sidebar, conversation surface,
 and project/model/run/MCP inspector. On narrow screens the side surfaces
 become drawers. Browser storage is limited to presentation preferences and the

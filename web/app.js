@@ -1324,7 +1324,8 @@ async function refreshWorkbench() {
       model.model || 'model unavailable',
       Boolean(model.image_input),
     );
-    dom['model-picker-label'].textContent = model.model || 'Choose model';
+    dom['model-picker-label'].textContent = (model.model || 'Choose model')
+      + (model.thinking_level ? ' · ' + model.thinking_level : '');
     dom['model-picker-trigger'].title = `Model for next run: ${model.model || 'not configured'}`;
     const modeLabel = permission.label || PERMISSION_LABELS[permission.mode] || 'Permission mode';
     dom['header-permission'].textContent = modeLabel;
@@ -1404,11 +1405,21 @@ async function refreshSessions() {
 }
 
 async function refreshUtilitySettings() {
+  // 代次围栏：本函数与保存共享策态。保存前发出、保存后落地的响应
+  // 会拿旧策略把刚保存的值打回去（2026-09-16 病历：全量 e2e ~50%
+  // 偶发红）；落地前校验代次，过期即弃。
+  const generation = ++utilitySettingsRefresh;
+  const formGeneration = utilityFormGeneration;
   try {
-    state.utilitySettings = await rpc('model.utility.get', {});
+    const settings = await rpc('model.utility.get', {});
+    if (generation !== utilitySettingsRefresh) return;
+    if (formGeneration !== utilityFormGeneration) return;
+    state.utilitySettings = settings;
     renderUtilitySettings(state.utilitySettings);
     syncSuggestionControl();
   } catch (error) {
+    if (generation !== utilitySettingsRefresh) return;
+    if (formGeneration !== utilityFormGeneration) return;
     state.utilitySettings = null;
     syncSuggestionControl();
     if (dom['utility-settings-error']) dom['utility-settings-error'].textContent = error.message;
@@ -1416,6 +1427,7 @@ async function refreshUtilitySettings() {
 }
 
 function renderSessions() {
+  closeSessionMenu();
   const query = dom['session-search'].value.trim().toLocaleLowerCase();
   const filtered = state.sessions.filter((session) => {
     const title = session.title || 'untitled';
@@ -1439,11 +1451,82 @@ function renderSessions() {
     button.append(glyph, copy);
     button.addEventListener('click', () => switchSession(session.id));
     item.appendChild(button);
+    const more = el('button', 'session-more', '⋯');
+    more.type = 'button';
+    more.setAttribute('aria-label', `Actions for ${title}`);
+    more.setAttribute('aria-haspopup', 'menu');
+    more.addEventListener('click', () => {
+      const bounds = more.getBoundingClientRect();
+      openSessionMenu(session, bounds.right, bounds.bottom, more);
+    });
+    button.addEventListener('contextmenu', (event) => {
+      event.preventDefault();
+      openSessionMenu(session, event.clientX, event.clientY, button);
+    });
+    button.addEventListener('keydown', (event) => {
+      if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
+        event.preventDefault();
+        const bounds = button.getBoundingClientRect();
+        openSessionMenu(session, bounds.left, bounds.bottom, button);
+      }
+    });
+    item.appendChild(more);
     dom['session-list'].appendChild(item);
   }
   if (filtered.length === 0 && state.sessions.length > 0) show(dom['session-empty']);
   else hide(dom['session-empty']);
 }
+
+let sessionMenu = null;
+function closeSessionMenu() {
+  if (sessionMenu) sessionMenu.remove();
+  sessionMenu = null;
+}
+
+function openSessionMenu(session, x, y, source) {
+  closeSessionMenu();
+  const menu = el('div', 'session-context-menu');
+  menu.setAttribute('role', 'menu');
+  menu.setAttribute('aria-label', 'Session actions');
+  const actions = [
+    ['Open session', () => switchSession(session.id), state.switching || state.compactionActive],
+    ['Rename session', () => dom['session-title'].click(), session.id !== state.sessionId || state.switching || state.compactionActive],
+    ['Copy session ID', () => navigator.clipboard.writeText(session.id), false],
+  ];
+  for (const [label, action, disabled] of actions) {
+    const button = el('button', '', label);
+    button.type = 'button';
+    button.setAttribute('role', 'menuitem');
+    button.disabled = disabled;
+    button.addEventListener('click', async () => {
+      closeSessionMenu();
+      source.focus();
+      try { await action(); } catch (error) { updateRunState(error.message); }
+    });
+    menu.appendChild(button);
+  }
+  menu.addEventListener('keydown', (event) => {
+    const buttons = [...menu.querySelectorAll('button:not(:disabled)')];
+    const index = buttons.indexOf(document.activeElement);
+    if (event.key === 'Escape' || event.key === 'Tab') {
+      closeSessionMenu();
+      if (event.key === 'Escape') { event.preventDefault(); source.focus(); }
+    } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      buttons[(index + (event.key === 'ArrowDown' ? 1 : buttons.length - 1)) % buttons.length]?.focus();
+    }
+  });
+  document.body.appendChild(menu);
+  sessionMenu = menu;
+  menu.style.left = Math.max(8, Math.min(x, innerWidth - menu.offsetWidth - 8)) + 'px';
+  menu.style.top = Math.max(8, Math.min(y, innerHeight - menu.offsetHeight - 8)) + 'px';
+  menu.querySelector('button:not(:disabled)')?.focus();
+}
+
+document.addEventListener('pointerdown', (event) => {
+  if (sessionMenu && !sessionMenu.contains(event.target)) closeSessionMenu();
+});
+window.addEventListener('resize', closeSessionMenu);
 
 function setSwitching(active) {
   state.switching = active;
@@ -1490,6 +1573,9 @@ function syncInteractionControls() {
   dom.prompt.disabled = locked;
   dom['attachment-open'].disabled = locked;
   dom['model-picker-trigger'].disabled = locked || state.modelSelectionPending;
+  const thinking = document.getElementById('model-thinking');
+  thinking.disabled = locked || state.runActive || state.modelSelectionPending
+    || thinking.dataset.adjustable !== 'true';
   dom['new-session'].disabled = locked;
   dom['session-title'].disabled = locked || !state.sessionId;
   dom['compact-session'].textContent = state.compactionActive
@@ -1781,7 +1867,18 @@ function updateFullAccessConfirmation() {
   }
 }
 
-function openSettings() {
+function selectSettingsCategory(category) {
+  for (const panel of document.querySelectorAll('[data-settings-panel]')) {
+    panel.hidden = panel.dataset.settingsPanel !== category;
+  }
+  for (const button of document.querySelectorAll('[data-settings-category]')) {
+    if (button.dataset.settingsCategory === category) button.setAttribute('aria-current', 'page');
+    else button.removeAttribute('aria-current');
+  }
+}
+
+function openSettings(category = 'appearance') {
+  selectSettingsCategory(typeof category === 'string' ? category : 'appearance');
   closeModelPicker();
   const mode = state.workbench && state.workbench.permission && state.workbench.permission.mode;
   selectPermissionMode(mode || 'workspace-write');
@@ -1795,6 +1892,8 @@ function openSettings() {
 
 const modelField = (name) => document.getElementById('model-' + name);
 let modelSettingsRefresh = 0;
+let utilitySettingsRefresh = 0;
+let utilityFormGeneration = 0;
 let modelProfileGeneration = 0;
 
 modelField('profile-editor').addEventListener('input', () => { modelProfileGeneration++; });
@@ -1814,6 +1913,7 @@ modelField('profile-new').addEventListener('click', () => {
 
 async function refreshModelSettings() {
   const generation = ++modelSettingsRefresh;
+  const utilityFormGenerationAtIssue = utilityFormGeneration;
   try {
     const view = await rpc('model.settings.get', {});
     if (generation !== modelSettingsRefresh) return;
@@ -1822,8 +1922,12 @@ async function refreshModelSettings() {
     renderModelPicker(view);
     modelField('profiles').replaceChildren();
     for (const name of view.profiles) renderModelProfile(name, name === view.active_profile);
-    state.utilitySettings = view.utility || null;
-    renderUtilitySettings(state.utilitySettings, view.profiles || []);
+    // 表单代次围栏（与 profile 编辑器同款）：用户已动过的表单不被
+    // 迟到的读取重绘——策态（#suggest 门）仍随最新数据更新。
+    if (utilityFormGenerationAtIssue === utilityFormGeneration) {
+      state.utilitySettings = view.utility || null;
+      renderUtilitySettings(state.utilitySettings, view.profiles || []);
+    }
     syncSuggestionControl();
   } catch (error) {
     if (dom['settings-dialog'].open) modelField('settings-error').textContent = error.message;
@@ -1857,6 +1961,28 @@ async function openModelPicker() {
 }
 
 function renderModelPicker(view) {
+  const thinking = document.getElementById('model-thinking');
+  thinking.replaceChildren();
+  const levels = view.current.thinking_levels || [];
+  thinking.dataset.adjustable = String(levels.length > 0);
+  for (const level of levels) {
+    const option = el('option', '', level.charAt(0).toUpperCase() + level.slice(1));
+    option.value = level;
+    thinking.appendChild(option);
+  }
+  if (!levels.length) {
+    const option = el('option', '', 'Not adjustable');
+    option.value = '';
+    thinking.appendChild(option);
+  } else if (!view.current.thinking_level) {
+    const option = el('option', '', 'Choose intensity');
+    option.value = '';
+    option.disabled = true;
+    thinking.prepend(option);
+  }
+  thinking.value = view.current.thinking_level || '';
+  thinking.disabled = !levels.length || state.modelSelectionPending || state.runActive
+    || state.switching || state.compactionActive;
   dom['model-picker-current'].textContent = `Current · ${view.current.model || 'not configured'}`;
   dom['model-picker-list'].replaceChildren();
   const presets = (view.presets || []).map((preset) => ({
@@ -2006,6 +2132,10 @@ async function saveUtilitySettings(button) {
       profile: dom['utility-profile'].value || null,
     };
     await rpc('model.utility.set', settings);
+    // 作废保存前的在途策态/模型设置读取：晚到的旧响应不得覆盖刚
+    // 保存的策略（保存后的 models 通知会带新策略重取）。
+    modelSettingsRefresh++;
+    utilitySettingsRefresh++;
     state.utilitySettings = settings;
     renderUtilitySettings(settings, [...dom['utility-profile'].options].slice(1).map((option) => option.value));
     dom['utility-settings-saved'].textContent = 'Utility policy saved for every connected frontend.';
@@ -2019,6 +2149,12 @@ async function saveUtilitySettings(button) {
 }
 
 dom['utility-settings-save'].addEventListener('click', (event) => saveUtilitySettings(event.currentTarget));
+// 用户动过的表单不被迟到的后台读取重绘（profile 编辑器同款围栏）：
+// uncheck/check 到 save 之间落地的旧响应不得复位勾选（2026-09-16 病历）。
+for (const field of ['utility-naming-enabled', 'utility-suggestions-enabled', 'utility-profile']) {
+  dom[field].addEventListener('input', () => { utilityFormGeneration++; });
+  dom[field].addEventListener('change', () => { utilityFormGeneration++; });
+}
 
 async function refreshWorkspaces() {
   const list = document.getElementById('workspace-list');
@@ -2058,11 +2194,54 @@ document.getElementById('workspace-open').addEventListener('click', async () => 
   finally { button.disabled = false; }
 });
 
-dom['settings-open'].addEventListener('click', openSettings);
-dom['composer-permission'].addEventListener('click', openSettings);
+dom['settings-open'].addEventListener('click', () => openSettings());
+document.getElementById('inspector-models').addEventListener('click', () => openSettings('models'));
+document.getElementById('inspector-refresh').addEventListener('click', async (event) => {
+  event.currentTarget.disabled = true;
+  try { await refreshWorkbench(); }
+  finally { document.getElementById('inspector-refresh').disabled = false; }
+});
+document.getElementById('inspector-context').addEventListener('click', async (event) => {
+  const button = event.currentTarget;
+  const session = state.sessionId;
+  const selection = state.selectionGeneration;
+  const isCurrent = () => session === state.sessionId && selection === state.selectionGeneration;
+  button.disabled = true;
+  const feedback = document.getElementById('inspector-feedback');
+  feedback.textContent = 'Reading context…';
+  try {
+    const value = await rpc('command.run', { command: '/context' });
+    if (!isCurrent()) return;
+    if (value.kind !== 'context') throw new Error('Context is unavailable');
+    addContextSnapshot(value.context);
+    feedback.textContent = 'Context breakdown added to conversation';
+  } catch (error) { if (isCurrent()) feedback.textContent = error.message; }
+  finally {
+    if (!isCurrent()) feedback.textContent = '';
+    button.disabled = false;
+  }
+});
+document.getElementById('model-thinking').addEventListener('change', async (event) => {
+  if (state.modelSelectionPending) return;
+  state.modelSelectionPending = true;
+  event.target.disabled = true;
+  try {
+    await rpc('model.overrides.set', { field: 'thinking_level', state: 'set', value: event.target.value });
+    await refreshWorkbench();
+  } catch (error) { dom['model-picker-error'].textContent = error.message; }
+  finally {
+    state.modelSelectionPending = false;
+    await refreshModelSettings();
+    syncInteractionControls();
+  }
+});
+dom['composer-permission'].addEventListener('click', () => openSettings('permissions'));
 dom['model-picker-trigger'].addEventListener('click', openModelPicker);
 dom['model-picker-close'].addEventListener('click', () => closeModelPicker({ focus: true }));
-dom['model-picker-manage'].addEventListener('click', openSettings);
+dom['model-picker-manage'].addEventListener('click', () => openSettings('models'));
+for (const button of document.querySelectorAll('[data-settings-category]')) {
+  button.addEventListener('click', () => selectSettingsCategory(button.dataset.settingsCategory));
+}
 document.addEventListener('pointerdown', (event) => {
   if (modelPickerOpen() && !event.target.closest('.model-picker-seat')) closeModelPicker();
 });
