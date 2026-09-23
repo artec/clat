@@ -29,6 +29,31 @@ test('systemPrompt orders sections and contexts and interpolates strict variable
   )
 })
 
+test('literal prompt sections retain unknown placeholders through assembly and rendering', async () => {
+  const { prompt, events } = seam()
+  const literal = { name: 'literal', order: 1, text: 'Use {{unknown}} as sample syntax.', interpolate: false } as const
+  prompt.section(literal)
+  events.on('system-prompt/assemble', async (assembly, _context, next) => {
+    const value = await (next as () => Promise<{ sections: { name: string; text: string; interpolate?: boolean }[] }>)()
+    assert.equal(value.sections[0]?.interpolate, false)
+    return value
+  })
+  const rendered = await prompt.render()
+  assert.equal(rendered.prompt, literal.text)
+  assert.equal((rendered.assembly.sections[0] as { interpolate?: boolean } | undefined)?.interpolate, false)
+})
+
+test('complete literal section keeps its interpolation flag after filtering', async () => {
+  const { prompt } = seam()
+  prompt.section({ name: 'ignored', order: 0, text: 'ignored' })
+  prompt.section({ name: 'complete', order: 1, text: '{{unknown}}', complete: true, interpolate: false })
+  const rendered = await prompt.render()
+  assert.equal(rendered.prompt, '{{unknown}}')
+  assert.deepEqual(rendered.assembly.sections, [
+    { name: 'complete', text: '{{unknown}}', interpolate: false },
+  ])
+})
+
 test('systemPrompt duplicate, invalid order, undefined variable, and complete-section rules', async () => {
   const { prompt } = seam()
   prompt.section({ name: 'x', order: 1, text: '{{model}}' })

@@ -1,4 +1,4 @@
-// 真实 web-search-exa 验收（免网络）：npm 发布物 0.0.1-rc.1 原样挂载，
+// 真实 web-search-exa 验收（免网络）：npm 发布物 0.1.7-alpha.2 原样挂载，
 // 断言 inject=['web'] 被接受、web_search 面板出现、无 API key 时
 // WEB_PROVIDER_UNAVAILABLE 正确上抛。带 key 的联网冒烟见 README（手动）。
 import assert from 'node:assert/strict'

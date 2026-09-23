@@ -10,6 +10,11 @@
 适配器运行在插件作者自己的发行物中。CLAT 不内嵌 JavaScript 运行时；
 对终端用户而言，产物只是一个普通 MCP server。
 
+**实验性预览版（`0.1.0-rc.1`，npm `next` 标签）。** 固定兼容 cohort
+钉在 DSH `dsh-v0.1.5-rc.3`；另有 0.1.7-alpha.2 官方 Exa 发布物的
+隔离、免网络挂载测试。这不代表全部 DSH alpha 插件兼容。发行移植版前
+请核对下方收窄项。
+
 ## 适合使用吗？
 
 工具、system prompt、模型采样、用户问题、web provider、fs/shell、只读
@@ -19,6 +24,14 @@ CLAT 先提供对应原生宿主能力，或在该边界拆分插件。
 
 完整兼容矩阵与迁移方法见
 [移植指南](https://github.com/artec/clat/blob/main/docs/dsh-plugins.md)。
+
+发布后可用 `npm install @artec/clat-dsh-adapter@next` 安装预览版。
+如不安装到项目，可用
+`npm exec --package=@artec/clat-dsh-adapter@next -- clat-dsh help`。
+包有两个可执行命令；主命令 `clat-dsh` 提供 `scan`、`inspect`、
+`port`、`test`、`package` 子命令。
+注意区分 `clat dsh`（空格）：它用 CLAT TUI 连接 DSH 宿主；
+`clat-dsh`（连字符）供插件作者移植 DSH 插件，产物交给 MCP 宿主运行。
 
 ## 快速开始
 
@@ -165,6 +178,11 @@ Hint 会转为 MCP annotations；最终 effect 映射与权限策略仍由宿主
 - `multiSelect` 问题降级为逗号分隔文本。
 - 一次 ask 最多 16 问、每问最多 16 个选项。
 - `exec.deferContext()` 与 `exec.concludeTurn()` 是警告 + no-op seam。
+- `ctx.systemPrompt.section({ interpolate: false })` 保留 `{{...}}`
+  原文；其他 section 仍执行严格插值。
+- DSH `deferLoading` 工具提示不映射到当前 MCP 工具面，工具仍被
+  提前列出。带 `projectContent` 或 `finalizeContent` 回调的工具在
+  注册时明确拒绝，不静默跳过结果策略。
 - `web_fetch` 输出最多 100,000 字符，不复刻 DSH 完整 HTML→Markdown 管线。
 - session/agent 修改与实时事件、subagent、permission/settings/commands/UI、
   后台 shell、fs 原子版本 guard 与 scoped prompt shadowing 仍属原生宿主职责。
@@ -210,14 +228,12 @@ MCP `command` 指向这个可执行文件。运行时已经打入产物，终端
   fork（修改日志 #1–#18）复核：全部分歧（loader/HMR 事务化、处置
   加固、配置调和）都落在子集仿真面之外——进程内派发、effect 与
   基础生命周期语义未变。
-- API 钉靶：`dsh-v0.1.3-alpha.1`，源提交
-  `d347e703908d0406b7a7ef80e3a0e594d86b2215`。2026-09-07 完成 OC-1
-  重钉；adapter 映射的插件面缝
-  （`defineTool`、`ctx.tools.register`、`ctx.systemPrompt`、llm
-  采样、web/fs/shell/sessions/agents 面）未变；`sessionProjections` 是
-  0.1.3 新增的宿主服务，依赖它的 cohort 包明确保留为 partial。0.1.3
-  的会话格式 v2、持久化接缝与 Gateway/SDK 重构是宿主侧事务，不在
-  adapter 子集内；v2 session oracle 已成为现行金样，v0 金样仅保留遗产读腿。
+- 当前兼容 cohort 钉靶：`dsh-v0.1.5-rc.3`，源提交
+  `a4c74a91e06b00fe0b0937bde982170c526cc842`（12 个包入口逐一
+  inspect 钉定）。DSH 0.1.7-alpha.2 又加入 literal prompt 选项、
+  `deferLoading`、`projectContent` 与更多宿主服务；adapter 已对齐
+  literal section，其他新增面遵守上文的收窄。alpha.2 Exa 冒烟只覆盖
+  该插件的注册及无 key 错误路径。
 - 验收 fixture：npm 发布物 `@deepseek-ai/dsh-web-search-exa` 在
   [`examples/exa`](https://github.com/artec/clat/tree/main/sdk/dsh-adapter/examples/exa)
   中原样挂载。
@@ -228,12 +244,11 @@ npm test
 npm run scan -- /path/to/deepseek-harness --output /tmp/dsh-compat.json
 ```
 
-v2 扫描器使用 TypeScript AST/来源证明和成员级 host seam。钉定
-checkout 上共 249 包/234 候选：2 portable、171 partial、61 unsupported、
-15 not-plugin；字节稳定矩阵 SHA-256 为
-`0328b3b3eea092d261df1f93b7bd9185dcf42a1ebbed76e1639cd37e21219d71`。
-已提交的 12 包 cohort 覆盖主要 portable、host-bridged 和 partial 家族。
-静态证据仍不能替代 fixture 与端到端验收。
+v2 扫描器使用 TypeScript AST/来源证明和成员级 host seam。rc.3
+整仓扫描 290 包/237 候选：55 portable、5 host-bridged、152 partial、
+25 unsupported、53 not-plugin。这些数字只供探索：逐包 `inspect` 跟踪
+主入口，是钉定 12 包 cohort 的依据。两种扫描都不能证明运行时行为；
+仓库中的 Exa fixture 与隔离的 alpha.2 npm 包测试提供范围更窄的执行证据。
 
 仓库：[artec/clat](https://github.com/artec/clat) ·
 [sdk/dsh-adapter](https://github.com/artec/clat/tree/main/sdk/dsh-adapter)

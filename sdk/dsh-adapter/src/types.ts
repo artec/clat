@@ -1,7 +1,9 @@
 /**
  * Runtime shapes of the DeepSeek Harness (DSH) plugin API exposed by the
- * adapter. Pinned to DSH revision `d347e703908d0406b7a7ef80e3a0e594d86b2215`
- * (`dsh-v0.1.3-alpha.1`, the released-v2 contract target).
+ * adapter. Originally modeled from DSH `dsh-v0.1.3-alpha.1`; the pinned
+ * 12-package cohort now targets `dsh-v0.1.5-rc.3` at
+ * `a4c74a91e06b00fe0b0937bde982170c526cc842`. Later alpha-only
+ * fields are modeled individually when the adapter supports their semantics.
  *
  * These are deliberately structural: a real plugin brings its own types via
  * `@deepseek-ai/cordis` / `@deepseek-ai/dsh-tools` type-only imports; at
@@ -110,6 +112,7 @@ export interface PromptSectionLike {
   readonly name: string
   readonly order: number
   readonly text: string | ((context: AssembleContextLike) => string)
+  readonly interpolate?: boolean
   readonly complete?: boolean
 }
 
@@ -131,7 +134,7 @@ export interface ToolProviderResultLike {
 }
 
 export interface PromptAssemblyLike {
-  sections: { name: string; text: string }[]
+  sections: { name: string; text: string; interpolate?: boolean }[]
   contexts: { name: string; text: string }[]
   tools: ToolSchemaLike[]
   variables: Record<string, string | undefined>

@@ -73,6 +73,16 @@ test('tools: register, list, call, and rejections', async () => {
     'uncompiled parameters guide to defineTool',
   )
   assert.throws(() => ctx.tools.register({ ...echoTool('noexec'), execute: undefined as unknown as ToolDefinitionLike['execute'] }), /execute/)
+  assert.throws(
+    () => ctx.tools.register({ ...echoTool('prepared'), projectContent: () => [] }),
+    /projectContent/,
+    'content preparation must not be silently skipped',
+  )
+  assert.throws(
+    () => ctx.tools.register({ ...echoTool('finalized'), finalizeContent: () => [] }),
+    /finalizeContent/,
+    'content finalization must not be silently skipped',
+  )
   dispose()
   assert.equal(shim.listTools().length, 0)
 })

@@ -810,10 +810,10 @@ The 2026-09 refactor campaign established these module shapes; new code
 follows them so the structure does not decay back. `scripts/code-health.py`
 measures the budget at every round close: production functions ≥80 lines
 and the root-directory production share may improve, never regress
-(2026-09 campaign: 91 / 24% at worst → 48 / 19.7% at close; measured
-2026-09-16: 132 / 18.4% — the giant-function count has regrown well past
-the campaign close, so the budget anchor is the latest recorded value, not
-the campaign minimum).
+(hand-counted production giants: 91 / 24% at worst → 48 / 19.7% at the
+campaign close; the script-measured series — a different口径, not directly
+comparable — kept improving after it: 139 / 19.67% on 2026-09-11 →
+132 / 18.38% on 2026-09-22, v1.4.2).
 
 - **Seat tables for vocabularies.** Durable journal events and `RunEvent`
   variants are defined exactly once in the `src/session/catalog/` seat

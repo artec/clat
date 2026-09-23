@@ -1,10 +1,23 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import test from 'node:test'
 import { runDshCli } from '../src/dsh-cli.js'
+
+test('npm-style symlink invokes the clat-dsh executable', { skip: process.platform === 'win32' }, async () => {
+  const base = await mkdtemp(path.join(process.cwd(), '.tmp-clat-dsh-bin-'))
+  try {
+    const bin = path.join(base, 'clat-dsh')
+    await symlink(path.join(process.cwd(), 'dist/src/dsh-cli.js'), bin)
+    const result = spawnSync(process.execPath, [bin, '--help'], { encoding: 'utf8' })
+    assert.equal(result.status, 0, result.stderr)
+    assert.match(result.stdout, /^Usage: clat-dsh <COMMAND>/)
+  } finally {
+    await rm(base, { recursive: true, force: true })
+  }
+})
 
 async function fixture(): Promise<{ base: string; source: string; port: string; artifact: string }> {
   // Keep the fixture under this package so the generated wrapper can resolve
@@ -145,7 +158,7 @@ test('published official Exa plugin ports and packages without source modificati
       version?: string
     }
     assert.equal(manifest.id, 'dsh.deepseek-ai.dsh-web-search-exa')
-    assert.equal(manifest.version, '0.0.1-rc.1')
+    assert.equal(manifest.version, '0.1.7-alpha.2')
   } finally {
     await rm(base, { recursive: true, force: true })
   }

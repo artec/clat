@@ -11,6 +11,12 @@ plugin itself.
 The adapter runs in the plugin author's distribution. CLAT does not embed a
 JavaScript runtime; to the end user, the result is an ordinary MCP server.
 
+**Experimental preview (`0.1.0-rc.1`, npm `next` tag).** The pinned
+compatibility cohort targets DSH `dsh-v0.1.5-rc.3`. The published Exa plugin
+at `0.1.7-alpha.2` also passed an isolated network-free mount test; this is
+not a promise that all DSH alpha plugins work. Review the limitations below
+before distributing a port.
+
 ## Is this adapter a fit?
 
 Good fits contribute tools, system-prompt material, model sampling, user
@@ -21,6 +27,15 @@ CLAT host capability or must be split at that boundary.
 
 For the complete compatibility matrix and migration guidance, read the
 [porting guide](https://github.com/artec/clat/blob/main/docs/dsh-plugins.md).
+
+After publication, install the preview with
+`npm install @artec/clat-dsh-adapter@next`. To run the main command without
+installing it into a project, use
+`npm exec --package=@artec/clat-dsh-adapter@next -- clat-dsh help`.
+The package has two executables; `clat-dsh` provides `scan`, `inspect`,
+`port`, `test`, and `package` subcommands.
+Do not confuse it with `clat dsh` (with a space): that CLAT command connects
+the TUI to a DSH host, while `clat-dsh` ports DSH plugins for MCP hosts.
 
 ## Quick start
 
@@ -177,6 +192,12 @@ permission policy.
 - `multiSelect` questions become comma-separated text.
 - One ask contains at most 16 questions and 16 options per question.
 - `exec.deferContext()` and `exec.concludeTurn()` are warning + no-op seams.
+- A section registered with `ctx.systemPrompt.section({ interpolate: false })`
+  keeps literal `{{...}}` text; other sections still use strict interpolation.
+- DSH's `deferLoading` tool hint is not exposed over this MCP tool surface;
+  tools are listed eagerly. Tools with `projectContent` or `finalizeContent`
+  callbacks are rejected at registration rather than silently bypassing
+  their result policy.
 - `web_fetch` caps rendered content at 100,000 characters and does not reproduce
   DSH's complete HTML-to-Markdown pipeline.
 - Session/agent mutations and live events, subagents, permission/settings/
@@ -229,16 +250,13 @@ artifact, so end users install no JavaScript environment.
   (loader/HMR transactions, disposal hardening, config reconciliation)
   outside the subset's emulated surface — process-local dispatch, effects,
   and basic lifecycle semantics are unchanged.
-- API target: `dsh-v0.1.3-alpha.1`, source revision
-  `d347e703908d0406b7a7ef80e3a0e594d86b2215`. OC-1 was re-pinned on
-  2026-09-07; the plugin-facing seams the
-  adapter maps (`defineTool`, `ctx.tools.register`, `ctx.systemPrompt`,
-  llm sampling, web/fs/shell/sessions/agents surfaces) are unchanged;
-  `sessionProjections` is a new host service and remains explicitly partial
-  for the cohort packages that require it. 0.1.3's session-format v2,
-  persistence seam, and Gateway/SDK refactor are host-side concerns outside
-  the adapter subset. The v2 session oracle is now current; the v0 fixture
-  remains only as a legacy-read leg.
+- Current compatibility cohort: `dsh-v0.1.5-rc.3`, source revision
+  `a4c74a91e06b00fe0b0937bde982170c526cc842` (12 package entrypoints
+  inspected and pinned). DSH `0.1.7-alpha.2` adds a literal-prompt option,
+  `deferLoading`, `projectContent`, and additional host services. The adapter
+  now preserves literal prompt sections; the other new surfaces retain the
+  narrowings listed above. The `0.1.7-alpha.2` Exa smoke test covers only
+  that plugin's registration and no-key error path.
 - Acceptance fixture: the npm-published
   `@deepseek-ai/dsh-web-search-exa` mounts unmodified under
   [`examples/exa`](https://github.com/artec/clat/tree/main/sdk/dsh-adapter/examples/exa).
@@ -250,12 +268,12 @@ npm run scan -- /path/to/deepseek-harness --output /tmp/dsh-compat.json
 ```
 
 The v2 scanner uses TypeScript AST/provenance and member-level host seams. On
-the pinned checkout it reports 249 packages / 234 candidates: 2 portable, 171
-partial, 61 unsupported, and 15 non-plugins. The byte-stable matrix SHA-256 is
-`0328b3b3eea092d261df1f93b7bd9185dcf42a1ebbed76e1639cd37e21219d71`.
-The committed 12-package cohort covers the main portable, host-bridged, and
-partial families. Static evidence still does not replace fixture and
-end-to-end acceptance.
+the rc.3 checkout, the whole-tree scan reports 290 packages / 237 candidates:
+55 portable, 5 host-bridged, 152 partial, 25 unsupported, and 53 non-plugins.
+These counts are exploratory: per-package `inspect` follows the main entrypoint
+and is the basis of the pinned 12-package cohort. Neither scan certifies runtime
+behavior; the committed Exa fixture and the isolated alpha.2 npm package smoke
+provide narrower execution evidence.
 
 Repository: [artec/clat](https://github.com/artec/clat) ·
 [sdk/dsh-adapter](https://github.com/artec/clat/tree/main/sdk/dsh-adapter)

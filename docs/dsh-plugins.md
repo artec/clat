@@ -5,15 +5,18 @@ CLAT 把 DeepSeek Harness（DSH）作为插件协议参考实现，但不在 Rus
 带权限与生命周期的插件内核；`@artec/clat-dsh-adapter` 在独立进程中加载
 原 DSH 插件，把可移植能力映射为 MCP。
 
-本文当前钉在 DSH `dsh-v0.1.3-alpha.1`，源代码提交
-`d347e703908d0406b7a7ef80e3a0e594d86b2215`。2026-09-07 完成 OC-1
-重钉：下表所列插件面缝
-（`defineTool`、`ctx.tools.register`、`ctx.systemPrompt`、llm 采样、
-web/fs/shell/sessions/agents 面）在 rc.2→0.1.3 区间未变；`sessionProjections`
-是 0.1.3 新增的宿主服务，当前 adapter 对依赖它的 todo/agent-loop/subagent
-包明确保留为 `partial`；0.1.3 的
-大改（会话格式 v2、持久化接缝、Gateway/SDK、tools 展示层 code→ptc
-内部改名）都在宿主侧或子集仿真面之外，兼容行为逐项仍然成立。DSH Web
+注意区分两个入口：`clat dsh`（空格）是 CLAT TUI 连接 DSH 宿主；
+`clat-dsh`（连字符）是这个 npm 适配器给插件作者使用的移植命令，
+负责检查、移植和打包 DSH 插件供 MCP 宿主运行。
+
+本文的固定 12 包兼容 cohort 钉在 DSH `dsh-v0.1.5-rc.3`，源提交
+`a4c74a91e06b00fe0b0937bde982170c526cc842`。另用真实 npm
+发布物 `@deepseek-ai/dsh-web-search-exa@0.1.7-alpha.2` 做了隔离、免
+网络 MCP 挂载测试。alpha.2 还新增 `systemPrompt.section` 的
+`interpolate: false`（adapter 已对齐），以及 `deferLoading`、
+`projectContent` 等工具语义和新的宿主服务（见下方收窄）；不能把
+Exa 一项通过外推成整个 alpha 生态兼容。`sessionProjections` 等
+宿主脊柱依赖仍为 `partial`。DSH Web
 设置中看到的 147 项是 preset、base bundle 与 Web patch 组装后的插件
 配置项，不等同于
 147 个彼此独立的 npm 包。兼容目标是尽量让这些配置背后的插件原样加载，
@@ -150,6 +153,11 @@ stderr 通道。包级 API 和双语示例见
 - `ask({ agent })` 不支持；multi-select 降为逗号分隔文本。
 - 一次 ask 最多 16 问，每问最多 16 个选项。
 - `exec.deferContext()` 与 `exec.concludeTurn()` 是带警告的 no-op。
+- `ctx.systemPrompt.section({ interpolate: false })` 保留字面
+  `{{...}}`，普通 section 仍执行严格变量插值。
+- DSH `deferLoading` 不投影到当前 MCP 工具列表，工具提前列出；
+  带 `projectContent` 或 `finalizeContent` 的工具在注册时明确拒绝，
+  避免跳过结果策略却宣称兼容。
 - `web_fetch` 返回 provider 的规范化文本并限制为 100,000 字符；不会复刻
   DSH 完整的 HTML 到 Markdown 清洗管线。
 - event 的 context filter、`global` 过滤与 scoped shadowing 在单插件进程内
@@ -226,15 +234,14 @@ cd sdk/dsh-adapter
 npm run scan -- /path/to/deepseek-harness --output /tmp/dsh-compat.json
 ```
 
-v2 扫描数字的钉靶是 `b150a551…` checkout（0.1.1-rc.2 时代的旧钉靶，
-早于本页 OC-1 重钉，重钉后未重扫）：该 checkout 扫描到 249 个 package，
-其中 234 个含插件候选证据：2 `portable`、171 `partial`、61 `unsupported`、
-15 `not-plugin`。完整矩阵的稳定 SHA-256 为
-`0328b3b3eea092d261df1f93b7bd9185dcf42a1ebbed76e1639cd37e21219d71`。
-成员级判断比 v1 更严格，所以 `unsupported` 增多不代表兼容性倒退。
+在 `dsh-v0.1.5-rc.3` 的整仓扫描中，290 个 package 含 237 个插件
+候选：55 `portable`、5 `host-bridged`、152 `partial`、25
+`unsupported`、53 `not-plugin`。整仓扫描覆盖的源码比逐包
+`inspect` 主入口图更广；它不能替代逐包的兼容证据，也不能把这些
+静态分类当成运行通过率。
 
 主插件移植只分析 package 默认入口及其相对 import graph，不会因为独立的
-`./invariant` companion export 把主入口误判为 partial。钉定的 12 包代表
+`./invariant` companion export 把主入口误判为 partial。rc.3 钉定的 12 包代表
 cohort 覆盖 web、LLM、用户提问、todo、fs、agent loop、shell、subagent、
 skill 与 storage，证据位于 `sdk/dsh-adapter/compat/official-cohort.json`。
 

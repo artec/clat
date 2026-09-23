@@ -350,6 +350,13 @@ export class Shim {
     if (tool.output === null || typeof tool.output !== 'object' || typeof tool.output.render !== 'function') {
       throw new AdapterError('BAD_TOOL_DEFINITION', `ctx.tools.register: tool "${tool.name}" has no output.render()`)
     }
+    if (tool.projectContent !== undefined || tool.finalizeContent !== undefined) {
+      const callback = tool.projectContent !== undefined ? 'projectContent' : 'finalizeContent'
+      throw new AdapterError(
+        'UNSUPPORTED_TOOL_PROJECTION',
+        `ctx.tools.register: tool "${tool.name}" uses ${callback}; the MCP adapter cannot preserve DSH tool-result policy semantics`,
+      )
+    }
     if (this.#tools.has(tool.name)) {
       throw new AdapterError('DUPLICATE_TOOL', `ctx.tools.register: tool "${tool.name}" is already registered`)
     }

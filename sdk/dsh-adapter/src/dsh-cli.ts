@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { createHash, randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
+import { realpathSync } from 'node:fs'
 import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -591,7 +592,7 @@ async function main(): Promise<void> {
 }
 
 const invoked = process.argv[1] !== undefined
-  && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+  && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)
 if (invoked) void main()
 
 // Exported only for black-box tests that need isolated scratch directories.

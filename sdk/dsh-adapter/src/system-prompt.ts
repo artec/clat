@@ -112,6 +112,7 @@ export class SystemPromptSeam implements SystemPromptLike {
     const sections = definitions.map(section => ({
       name: section.name,
       text: typeof section.text === 'function' ? section.text(context) : section.text,
+      ...(section.interpolate !== undefined ? { interpolate: section.interpolate } : {}),
     }))
     const contexts = this.#runtimeContextSuppressors > 0 ? [] : [...this.#contexts.values()]
       .sort((a, b) => a.order - b.order)
@@ -145,7 +146,7 @@ export class SystemPromptSeam implements SystemPromptLike {
   }> {
     const assembly = await this.assemble(context)
     const prompt = assembly.sections
-      .map(section => interpolate(section, assembly.variables, 'section'))
+      .map(section => section.interpolate === false ? section.text : interpolate(section, assembly.variables, 'section'))
       .filter(text => text.length > 0)
       .join('\n\n')
     const body = assembly.contexts
