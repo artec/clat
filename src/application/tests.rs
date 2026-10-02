@@ -3392,11 +3392,8 @@ fn ask_user_tool_round_trips_through_the_journal() {
         })
         .expect("ask_user tool/result journaled");
     assert!(call_index < result_index);
-    assert_eq!(
-        events[result_index].data["message"]["content"][0]["isError"],
-        false
-    );
-    let answer_text = events[result_index].data["message"]["content"][0]["content"][0]["text"]
+    assert_eq!(events[result_index].data["message"]["isError"], false);
+    let answer_text = events[result_index].data["message"]["content"][0]["text"]
         .as_str()
         .unwrap_or_default();
     assert!(
@@ -3455,8 +3452,8 @@ fn ask_user_without_a_frontend_degrades_to_an_error_result() {
                 && event.data["message"]["source"]["callId"] == "call-ask"
         })
         .expect("headless ask_user error result journaled");
-    assert_eq!(result.data["message"]["content"][0]["isError"], true);
-    let message = result.data["message"]["content"][0]["content"][0]["text"]
+    assert_eq!(result.data["message"]["isError"], true);
+    let message = result.data["message"]["content"][0]["text"]
         .as_str()
         .unwrap_or_default();
     assert!(
@@ -3588,7 +3585,7 @@ fn automatic_compaction_is_durable_and_survives_cold_reopen() {
         })
         .expect("compaction family is contiguous and durable");
     assert!(
-        family[2].data["source"]["plugin"] == json!("compaction"),
+        family[2].data["source"]["kind"] == json!("compact-checkpoint"),
         "the replace carrier is distinguishable from a human message"
     );
     assert!(
@@ -5502,7 +5499,7 @@ fn view_image_is_fenced_provider_visible_and_cold_replayable() {
                     == Some("view-project")
         })
         .expect("successful visual result journaled");
-    let durable = &result_event.data["message"]["content"][0]["content"];
+    let durable = &result_event.data["message"]["content"];
     let image = durable
         .as_array()
         .unwrap()
@@ -5622,14 +5619,15 @@ fn live_glm_application_calls_view_image_and_consumes_its_typed_result() {
     let result_event = events
         .iter()
         .find(|event| {
-            event.event_type == "tool/result" && !event.data["isError"].as_bool().unwrap_or(false)
+            event.event_type == "tool/result"
+                && !event.data["message"]["isError"].as_bool().unwrap_or(false)
         })
         .expect("successful live view_image result is durable");
     let durable = serde_json::to_string(result_event).unwrap();
     assert!(durable.contains("\"type\":\"image\""));
     assert!(!durable.contains(project_root.to_string_lossy().as_ref()));
     assert!(
-        result_event.data["message"]["content"][0]["content"]
+        result_event.data["message"]["content"]
             .as_array()
             .is_some_and(|blocks| blocks.iter().all(|block| block.get("path").is_none())),
         "typed result blocks remain ref-only even though the user-visible display name is durable"

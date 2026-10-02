@@ -874,9 +874,16 @@ impl App {
             && self
                 .application
                 .as_ref()
+                .is_some_and(|app| app.session_is_legacy_read_only())
+        {
+            " Conversation · read-only legacy · /update "
+        } else if self.dsh.is_none()
+            && self
+                .application
+                .as_ref()
                 .is_some_and(|app| app.session_is_read_only())
         {
-            " Conversation · read-only v0 · /update "
+            " Conversation · read-only V4 · /new "
         } else {
             " Conversation "
         };

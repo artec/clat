@@ -2,6 +2,7 @@
 //! Attempt grouping and seq-reference mapping follow pinned DSH's v1→v2 edge;
 //! unsupported lineage/unknown extensions refuse rather than guessing references.
 mod v2_to_v3;
+mod v3_to_v4;
 
 use super::assistant_stream::AssistantStreamAccumulator;
 use super::event::{SessionEvent, SurfaceOp};
@@ -22,9 +23,14 @@ pub(crate) fn ensure_current(
     match header.version {
         0 => {
             let (intermediate, events) = convert(header, events)?;
-            v2_to_v3::convert_v2_to_v3(&intermediate, &events)
+            let (intermediate, events) = v2_to_v3::convert_v2_to_v3(&intermediate, &events)?;
+            v3_to_v4::convert_v3_to_v4(&intermediate, &events)
         }
-        2 => v2_to_v3::convert_v2_to_v3(header, events),
+        2 => {
+            let (intermediate, events) = v2_to_v3::convert_v2_to_v3(header, events)?;
+            v3_to_v4::convert_v3_to_v4(&intermediate, &events)
+        }
+        3 => v3_to_v4::convert_v3_to_v4(header, events),
         other => Err(format!(
             "generation v{other} cannot be upgraded (v1 is retired); start a new session"
         )),

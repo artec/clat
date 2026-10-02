@@ -60,7 +60,8 @@ impl std::fmt::Display for AdmissionError {
 impl std::error::Error for AdmissionError {}
 
 /// Capability matrix (plan §2.4): CLAT resumes only top-level sessions it
-/// produced — no subagent origin, no delegation, no agent presets.
+/// produced — no subagent origin or delegation. V4 agent presets are
+/// admitted for reading, but never continued by CLAT's writer.
 pub(crate) fn admit_header(header: &SessionHeader) -> Result<(), AdmissionError> {
     if header.origin.is_some() {
         return Err(AdmissionError::UnsupportedCapability(
@@ -76,6 +77,7 @@ pub(crate) fn admit_header(header: &SessionHeader) -> Result<(), AdmissionError>
         .agent_preset
         .as_deref()
         .filter(|preset| !preset.is_empty())
+        && header.version < 4
     {
         return Err(AdmissionError::UnsupportedCapability(format!(
             "unknown agentPreset `{preset}`"
@@ -151,6 +153,21 @@ pub(crate) fn admit_events_for_version(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn v4_rejects_tool_change_blocks_outside_developer_role() {
+        let mut user = SessionEvent::new(
+            "user/message",
+            0,
+            1,
+            crate::session::event::payloads::user_message("hello"),
+        );
+        user.surface_op = Some(crate::session::event::SurfaceOp::Append);
+        user.data["content"] = serde_json::json!([
+            {"type":"tool-addition","toolName":"search"}
+        ]);
+        assert!(admit_events_for_version(&[user], 4).is_err());
+    }
     use crate::session::event::{SessionEvent, payloads};
     use crate::session::id::SessionId;
     use serde_json::json;
@@ -610,6 +627,8 @@ mod tests {
         ));
         let mut preset = header();
         preset.agent_preset = Some("foreign-agent".into());
+        assert!(admit_header(&preset).is_ok(), "V4 preset is readable");
+        preset.version = 3;
         assert!(matches!(
             admit_header(&preset),
             Err(AdmissionError::UnsupportedCapability(_))
@@ -619,7 +638,7 @@ mod tests {
     /// The catalog constants stay honest against the dispatch above.
     #[test]
     fn known_catalog_is_consistent() {
-        assert_eq!(crate::session::catalog::KNOWN_EVENT_TYPES.len(), 61);
+        assert_eq!(crate::session::catalog::KNOWN_EVENT_TYPES.len(), 64);
     }
 
     /// SV 批次 2 判别腿：native V3 结构性准入（canonical 形状的拒绝面，

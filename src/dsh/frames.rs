@@ -11,7 +11,7 @@ use crate::session::catalog::is_known_type;
 use crate::session::event::SessionEvent;
 use serde_json::Value;
 
-/// DSH wire 事件是"任意世代"的：V3 宿主把 replace 信封规范化为
+/// DSH wire 事件是"任意世代"的：V3/V4 宿主把 replace 信封规范化为
 /// `startSeq`/`endSeq`（CLAT 逻辑信封是 `start`/`end`；journal 读侧的
 /// 同款改名见 `session::jsonl` 的 canonicalize_replacement_keys）。
 /// wire 上没有世代标签，按**形状**驱动改名——幂等，对 V2 形零操作，
@@ -314,6 +314,48 @@ mod tests {
             Some(crate::session::event::SurfaceOp::Replace { start: 1, end: 2 })
         );
         assert_eq!(event.source_event_seqs, Some(vec![1, 2]));
+    }
+
+    #[test]
+    fn v4_tool_role_and_developer_surface_survive_live_wire_ingress() {
+        let tool = parse_frame(&envelope(
+            "session/event",
+            json!({
+                "sessionId":"s1", "event":{
+                    "type":"tool/result", "seq":7, "time":42,
+                    "data":{"turn":1,"step":1,"message":{
+                        "id":"result-1","role":"tool","source":{"kind":"tool","callId":"c1"},
+                        "toolCallId":"c1","content":[{"type":"text","text":"ok"}],"isError":false}},
+                    "surfaceOp":"append"
+                }
+            }),
+        ));
+        let DshFrame::SessionEvent { event, .. } = tool else {
+            panic!("V4 tool event must survive");
+        };
+        assert_eq!(event.data["message"]["role"], "tool");
+        assert_eq!(event.data["message"]["toolCallId"], "c1");
+        let developer = parse_frame(&envelope(
+            "session/event",
+            json!({
+                "sessionId":"s1", "event":{
+                    "type":"developer/message", "seq":8, "time":43,
+                    "data":{"turn":1,"step":1,"message":{
+                        "id":"dev-1","role":"developer","source":{"kind":"runtime-context"},
+                        "content":[{"type":"text","text":"policy"}]}},
+                    "surfaceOp":{"op":"replace","startSeq":2,"endSeq":2},
+                    "sourceEventSeqs":[2]
+                }
+            }),
+        ));
+        let DshFrame::SessionEvent { event, .. } = developer else {
+            panic!("V4 developer event must survive");
+        };
+        assert_eq!(event.event_type, "developer/message");
+        assert_eq!(
+            event.surface_op,
+            Some(crate::session::event::SurfaceOp::Replace { start: 2, end: 2 })
+        );
     }
 
     #[test]

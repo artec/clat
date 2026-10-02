@@ -43,6 +43,10 @@ const KNOWN_FROM_V3: [&str; 5] = [
     "tool/ptc-dispatch-start",
 ];
 
+/// The upstream released-V3 list already includes image/offload and
+/// workspace/changes. Only developer/message is new to the V4 window.
+const KNOWN_FROM_V4: [&str; 1] = ["developer/message"];
+
 /// Released types retired by format v3: the predecessor PTC names. In v3
 /// logs a required occurrence refuses (an opaque source extension must not
 /// acquire current lifecycle meaning through any path); an ignorable one
@@ -58,6 +62,9 @@ pub(crate) fn outside_generation_window(
     version: u32,
 ) -> Option<AdmissionRefusal> {
     if version < 3 && KNOWN_FROM_V3.contains(&event_type) {
+        return Some(AdmissionRefusal::ForeignToGeneration);
+    }
+    if version < 4 && KNOWN_FROM_V4.contains(&event_type) {
         return Some(AdmissionRefusal::ForeignToGeneration);
     }
     if version >= 3 && RETIRED_BY_V3.contains(&event_type) {
@@ -108,12 +115,14 @@ vocabulary! {
     "compaction/start" => (Some(validation::compaction), false, Skip, false),
     "compaction/summary" => (Some(validation::summary), false, Compaction, false),
     "deliverables/presented" => (None, false, Skip, false),
+    "developer/message" => (Some(validation::developer_message), true, Skip, false),
     "feedback/message-delete" => (None, false, Skip, false),
     "feedback/message-put" => (None, false, Skip, false),
     "feedback/record" => (None, false, Skip, false),
     "goal/change" => (Some(validation::goal), false, Skip, false),
     "hook/invoked" => (None, false, Skip, false),
     "hook/result" => (None, false, Skip, false),
+    "image/offload" => (None, false, Skip, false),
     "llm/retry" => (None, false, Retry, false),
     "llm/retry-started" => (None, false, Skip, false),
     "model/selection" => (None, false, Skip, false),
@@ -152,12 +161,15 @@ vocabulary! {
     "turn/start" => (Some(validation::turn), false, TurnStart, false),
     "user/message" => (Some(validation::user_message), true, UserMessage, false),
     "web/deepseek-search-llm-request" => (None, false, Skip, false),
+    "workspace/changes" => (None, false, Skip, false),
 }
 
-/// The four released surface types. `system/message` joins with v3 (DSH
-/// 0.1.5): the system prompt is surface node zero, the protected head.
-pub(crate) const SURFACE_EVENT_TYPES: [&str; 4] = [
+/// The five released surface types. `system/message` joins with v3 (DSH
+/// 0.1.5); `developer/message` joins with v4. The system prompt remains
+/// surface node zero, the protected head.
+pub(crate) const SURFACE_EVENT_TYPES: [&str; 5] = [
     "system/message",
+    "developer/message",
     "user/message",
     "assistant/message",
     "tool/result",
@@ -185,13 +197,13 @@ mod tests {
         // The upstream set is sorted; every entry is known and the surface
         // subset is exactly the four message types (v3 adds the protected
         // system head).
-        assert_eq!(KNOWN_EVENT_TYPES.len(), 61);
+        assert_eq!(KNOWN_EVENT_TYPES.len(), 64);
         assert_eq!(
             KNOWN_EVENT_TYPES
                 .iter()
                 .collect::<std::collections::BTreeSet<_>>()
                 .len(),
-            61,
+            64,
             "each vocabulary seat must be unique"
         );
         assert!(is_known_type("user/message"));
@@ -220,6 +232,13 @@ mod tests {
             );
             assert_eq!(outside_generation_window(kind, 3), None);
         }
+        assert_eq!(
+            outside_generation_window("developer/message", 3),
+            Some(AdmissionRefusal::ForeignToGeneration)
+        );
+        assert_eq!(outside_generation_window("developer/message", 4), None);
+        assert_eq!(outside_generation_window("image/offload", 3), None);
+        assert_eq!(outside_generation_window("workspace/changes", 3), None);
         for kind in RETIRED_BY_V3 {
             assert!(is_known_type(kind), "{kind} keeps its v2 seat");
             assert_eq!(outside_generation_window(kind, 2), None);

@@ -20,7 +20,11 @@ impl SessionService {
     ) -> Result<Vec<crate::message::JournalImage>, SessionError> {
         if self.is_read_only() {
             return Err(SessionError::UnsupportedFormat(
-                "legacy session is read-only; use /update first".into(),
+                if self.is_legacy_read_only() {
+                    "legacy session is read-only; use /update first".into()
+                } else {
+                    "this V4 session is read-only; use /new for attachments".into()
+                },
             ));
         }
         if sources.is_empty() {
@@ -220,7 +224,11 @@ impl SessionService {
     ) -> Result<crate::session::attachments::AttachmentStore, SessionError> {
         if self.is_read_only() {
             return Err(SessionError::UnsupportedFormat(
-                "legacy session is read-only; use /update first".into(),
+                if self.is_legacy_read_only() {
+                    "legacy session is read-only; use /update first".into()
+                } else {
+                    "this V4 session is read-only; use /new for attachments".into()
+                },
             ));
         }
         let active = self.active.lock().expect("active");

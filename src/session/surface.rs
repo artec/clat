@@ -136,17 +136,7 @@ impl Surface {
                         if previous.event_type != "tool/result" {
                             return Err("tool/result replace target must be a tool/result".into());
                         }
-                        let new_content = event
-                            .data
-                            .pointer("/message/content/0/content")
-                            .cloned()
-                            .unwrap_or(serde_json::Value::Null);
-                        let old_content = previous
-                            .data
-                            .pointer("/message/content/0/content")
-                            .cloned()
-                            .unwrap_or(serde_json::Value::Null);
-                        if new_content != old_content {
+                        if tool_result_rest(&event.data) != tool_result_rest(&previous.data) {
                             return Err("tool/result replace may only change result content".into());
                         }
                     }
@@ -194,6 +184,19 @@ impl Surface {
     }
 }
 
+fn tool_result_rest(data: &serde_json::Value) -> serde_json::Value {
+    let mut rest = data.clone();
+    let pointer = if rest["message"]["role"] == "tool" {
+        "/message/content"
+    } else {
+        "/message/content/0/content"
+    };
+    if let Some(content) = rest.pointer_mut(pointer) {
+        *content = serde_json::Value::Null;
+    }
+    rest
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -239,6 +242,29 @@ mod tests {
         assert_eq!(messages.len(), 3);
         assert_eq!(messages[0]["source"]["kind"], "user");
         assert_eq!(messages[1]["content"][0]["text"], "hello");
+    }
+
+    #[test]
+    fn v4_tool_result_replacement_can_change_content_but_not_outcome() {
+        let original = SessionEvent::new(
+            "tool/result",
+            0,
+            1,
+            json!({
+                "turn":1,"step":1,"message":{
+                    "id":"r1","role":"tool","source":{"kind":"tool","callId":"c1"},
+                    "toolCallId":"c1","isError":false,
+                    "content":[{"type":"text","text":"old"}]}
+            }),
+        )
+        .append(Vec::new());
+        let mut changed_content = original.clone();
+        changed_content.seq = 1;
+        changed_content.data["message"]["content"] = json!([{"type":"text","text":"new"}]);
+        changed_content.surface_op = Some(SurfaceOp::Replace { start: 0, end: 0 });
+        assert!(Surface::fold(&[original.clone(), changed_content.clone()]).is_ok());
+        changed_content.data["message"]["isError"] = json!(true);
+        assert!(Surface::fold(&[original, changed_content]).is_err());
     }
 
     #[test]

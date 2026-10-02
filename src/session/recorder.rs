@@ -593,7 +593,7 @@ impl SessionRecorder {
             } else {
                 vec![payloads::text_block(&prompt)]
             },
-            "source": { "kind": "plugin", "plugin": "clat" },
+            "source": { "kind": "plugin:clat" },
         });
         let event = match self.system_head_seq {
             None => NewSessionEvent::new(
@@ -1485,10 +1485,7 @@ mod tests {
         assert_eq!(head["step"], json!(1));
         assert_eq!(head["message"]["role"], json!("system"));
         assert_eq!(head["message"]["content"][0]["text"], json!("you are clat"));
-        assert_eq!(
-            head["message"]["source"],
-            json!({"kind": "plugin", "plugin": "clat"})
-        );
+        assert_eq!(head["message"]["source"], json!({"kind": "plugin:clat"}));
         // request/header 记录模型实际看到的配置/tools——system 不再进头
         //（V3 native 准入拒绝），提示词的唯一持久面是受保护头。
         assert_eq!(events[2].1["reason"], json!("initial"));
@@ -1730,11 +1727,8 @@ mod tests {
             .iter()
             .find(|(kind, _)| kind == "tool/result")
             .unwrap();
-        assert_eq!(result.1["message"]["content"][0]["toolCallId"], "call-1");
-        assert_eq!(
-            result.1["message"]["content"][0]["content"][0]["text"],
-            "body"
-        );
+        assert_eq!(result.1["message"]["toolCallId"], "call-1");
+        assert_eq!(result.1["message"]["content"][0]["text"], "body");
     }
 
     #[test]
@@ -1811,7 +1805,7 @@ mod tests {
             "deny path journals no tool/call"
         );
         assert_eq!(events[1].1["outcome"], "rejected");
-        assert_eq!(events[2].1["message"]["content"][0]["isError"], json!(true));
+        assert_eq!(events[2].1["message"]["isError"], json!(true));
     }
 
     #[test]
@@ -1886,7 +1880,7 @@ mod tests {
             .iter()
             .find(|(kind, _)| kind == "tool/result")
             .unwrap();
-        assert_eq!(result.1["message"]["content"][0]["isError"], json!(true));
+        assert_eq!(result.1["message"]["isError"], json!(true));
     }
 
     /// B1：50%/90% 预警各恰好一次、`clat/budget` 信封 ignorable、跨步

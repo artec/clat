@@ -1,9 +1,9 @@
 //! `SessionHeader` and its wire shape. Byte-exact port of
 //! `session-persistence-jsonl/src/format.ts` HeaderLine across released v0,
-//! v2 and v3: camelCase fields, optional fields wholly omitted (never null),
+//! v2 through v4: camelCase fields, optional fields wholly omitted (never null),
 //! `delegationDepth` always written, retired policy fields rejected, and
 //! format-version refusal BEFORE shape validation. The released header field
-//! set is identical for v2 and v3 (DSH 0.1.5 changed no header fields).
+//! set is identical from v2 through v4 (V4 retains optional agentPreset).
 
 use crate::session::compat::SESSION_FORMAT_VERSION;
 use crate::session::id::SessionId;
@@ -142,8 +142,8 @@ impl SessionHeader {
                 agent_preset: self.agent_preset.clone(),
             })
             .expect("header is plain JSON"),
-            // The released field shape is shared by v2 and v3.
-            2 | 3 => serde_json::to_string(&V2HeaderLine {
+            // The released physical field shape is shared by v2 through v4.
+            2..=4 => serde_json::to_string(&V2HeaderLine {
                 kind: "session".into(),
                 version: self.version,
                 id: self.id.clone(),
@@ -171,7 +171,7 @@ impl SessionHeader {
         };
         // Version refusal precedes shape checks (compat doc §1).
         let version = value.get("version").and_then(|v| v.as_u64());
-        if let Some(version) = version.filter(|version| !matches!(*version, 0 | 2 | 3)) {
+        if let Some(version) = version.filter(|version| !matches!(*version, 0 | 2 | 3 | 4)) {
             return Err(HeaderError::UnsupportedVersion(version as u32));
         }
         for field in RETIRED_FIELDS {
@@ -199,7 +199,7 @@ impl SessionHeader {
                     agent_preset: parsed.agent_preset,
                 }))
             }
-            Some(version @ (2 | 3)) => {
+            Some(version @ (2..=4)) => {
                 if !is_common_header_line(&value)
                     || !value.get("isSeeded").is_some_and(|v| v.is_boolean())
                     || value.get("seedLength").is_some()
@@ -270,7 +270,7 @@ mod tests {
         let line = sample().to_line();
         assert_eq!(
             line,
-            "{\"type\":\"session\",\"version\":3,\"id\":\"018f2a64-9d3f-7cde-8123-9a4f2b6c0001\",\"createdAt\":1723980000000,\"cwd\":\"/Users/deng/Documents/GitHub/clat\",\"isSeeded\":false,\"delegationDepth\":0}"
+            "{\"type\":\"session\",\"version\":4,\"id\":\"018f2a64-9d3f-7cde-8123-9a4f2b6c0001\",\"createdAt\":1723980000000,\"cwd\":\"/Users/deng/Documents/GitHub/clat\",\"isSeeded\":false,\"delegationDepth\":0}"
         );
         let back = SessionHeader::from_line(&line)
             .expect("parse")

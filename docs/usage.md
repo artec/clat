@@ -213,7 +213,7 @@ model → safety → extensions → experiments → meta):
 |---|---|
 | `/new`, `/clear` | start a fresh, lazily materialized conversation |
 | `/resume` | switch to a prior conversation in this project |
-| `/update` | shown only in a selected legacy local session: retain the original generation, upgrade supported older formats to the current writable format (V3); disappears after success |
+| `/update` | shown only in a selected legacy local session: retain the original generation, upgrade supported older formats to the current writable format (V4); disappears after success. A current V4 session with unsupported developer context or preset is read-only and cannot use `/update` |
 | `/rename` | replace the current conversation title |
 | `/compact` | summarize older context in the background; original history remains on disk |
 | `/context` | inspect a one-shot estimated model-context breakdown |

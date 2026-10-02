@@ -3,6 +3,9 @@
 pub use crate::session::id::SessionId;
 pub use crate::session::use_cases::SessionSummary;
 pub mod host {
+    pub fn journal_format_version() -> u32 {
+        crate::session::compat::SESSION_FORMAT_VERSION
+    }
     pub use crate::host_client::HostManagementArgs;
     pub use crate::host_client::{
         HOST_PROTOCOL_VERSION, HostCallError, HostClient, HostEvent, HostEvents,

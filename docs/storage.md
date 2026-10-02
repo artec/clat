@@ -36,7 +36,7 @@ Files appear lazily, so a fresh installation may contain only a subset.
 └── sessions/
     └── --<project-key>--/
         └── <encoded-session-id>/
-            ├── session.v3.jsonl.zstd # current authoritative DSH-compatible log
+            ├── session.v4.jsonl.zstd # current authoritative DSH-compatible log
             ├── session.lock          # POSIX-only stable DSH writer-lock inode
             ├── clat-checkpoint.json # bounded derived projection cache
             ├── clat-utility-budget.json # private same-turn naming deduplication state (legacy filename)
@@ -90,7 +90,7 @@ session.
 
 ### Physical encoding
 
-New sessions use `session.v3.jsonl.zstd`. Discovery recognizes the canonical
+New sessions use `session.v4.jsonl.zstd`. Discovery recognizes the canonical
 `session.vN.jsonl[.zstd]` generation family and reads the highest generation in
 a session directory. Each committed batch is an independent zstd frame with a
 content checksum. Independent frames make appending cheap and limit crash
@@ -104,16 +104,16 @@ The session root may contain uncompressed generation files from a compatible
 source, but one root cannot mix raw and zstd session encodings. Startup rejects
 an encoding conflict before mounting storage. Released-v0
 `session.jsonl[.zstd]` remains readable, including beside newer generations, but
-CLAT opens older supported formats (v0/v2) read-only through normal startup and `/resume`. Reading
+CLAT opens older supported formats (v0/v2/v3) read-only through normal startup and `/resume`. Reading
 and closing do not repair the source, append a seed, write a checkpoint, or
 clean attachments. Runs and persisted session edits are rejected.
 
 Only while a legacy local session is selected, `/update` appears in the command
-menu. It ensures the complete history is at the current format (V3), preserving
+menu. It ensures the complete history is at the current format (V4), preserving
 the original generation and attachment paths, and reopens the same session for
 normal read/write use. The command disappears after upgrading and is absent
 and unavailable in new/current-format sessions. The migration chain runs in
-memory and publishes only `session.v3.jsonl[.zstd]`, with no intermediate
+memory and publishes only `session.v4.jsonl[.zstd]`, with no intermediate
 generation files. Ensuring an already-current generation is a no-op; retired
 v1 is rejected with guidance to use `/new`. It is not a binary updater and does not
 migrate a remote DSH host's files.
@@ -131,7 +131,7 @@ Close old CLAT processes first. The retained source is a pre-upgrade backup, not
 synchronized copy of later messages. Alternatively, use `/new` to leave the
 old conversation untouched.
 
-If the highest canonical filename names a generation newer than V3, CLAT
+If the highest canonical filename names a generation newer than V4, CLAT
 refuses inspection/resume with an upgrade-or-new-session diagnostic. It never
 falls back to the older sibling, because doing so would split one conversation
 into two invisible histories.
@@ -142,7 +142,7 @@ Windows uses DSH's case-folded path-derived named semaphore and creates no lock
 file. Readers stay lock-free, while first materialization, append, and repair
 all require the lease. A crashed process releases it through the kernel.
 
-V3 retains model deltas inside `assistant/message.stream`; failed model requests
+V4 retains model deltas inside `assistant/message.stream`; failed model requests
 are retained as `assistant/attempt` with the same embedded stream format.
 `sourceEventSeqs` ranges are expanded before projections see an event.
 
@@ -150,6 +150,14 @@ New turn/step coordinates are 1-based. Migration preserves source coordinates,
 including older CLAT logs' 0-based coordinates. Request headers no longer persist
 `system`; the prompt is represented by a protected `system/message` head,
 initialized immediately after `step/start` and replaced when the prompt changes.
+V4 stores tool results as `role:"tool"` messages with message-level `toolCallId`
+and optional `isError`; the V3 `tool-result` content wrapper is retired.
+Producer attribution uses direct source kinds (for example `plugin:clat`)
+instead of V3's `{kind:"plugin",plugin:...}` wrapper. CLAT accepts but does
+not produce V4 `developer/message`, `image/offload`, or `workspace/changes`.
+Sessions containing developer messages or a nonempty `agentPreset` open
+read-only: CLAT cannot continue their model/deferred-tool context safely.
+`/update` is only for older generations and is unavailable in those V4 sessions.
 
 ### Event admission
 

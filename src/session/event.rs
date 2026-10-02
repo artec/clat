@@ -432,7 +432,7 @@ pub(crate) mod payloads {
             "id": uuid::Uuid::new_v4().to_string(),
             "role": "user",
             "content": [{ "type": "text", "text": summary }],
-            "source": { "kind": "plugin", "plugin": "compaction" },
+            "source": { "kind": "compact-checkpoint" },
         })
     }
 
@@ -566,11 +566,10 @@ pub(crate) mod payloads {
             "turn": turn, "step": step,
             "message": {
                 "id": uuid::Uuid::new_v4().to_string(),
-                "role": "user",
-                "content": [{
-                    "type": "tool-result", "toolCallId": call_id,
-                    "content": content, "isError": is_error,
-                }],
+                "role": "tool",
+                "toolCallId": call_id,
+                "content": content,
+                "isError": is_error,
                 "source": { "kind": "tool", "callId": call_id },
             },
         })

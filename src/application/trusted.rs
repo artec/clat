@@ -1434,7 +1434,7 @@ impl TrustedProjectApplication {
         input: &str,
     ) -> Result<crate::command::CommandOutcome, crate::command::CommandError> {
         let (name, args) = crate::command::parse_command_input(input)?;
-        if name == "update" && !self.sessions.is_read_only() {
+        if name == "update" && !self.sessions.is_legacy_read_only() {
             return Err(crate::command::CommandError::NotFound {
                 input: input.to_owned(),
             });
@@ -1475,12 +1475,16 @@ impl TrustedProjectApplication {
         self.commands
             .catalog()
             .into_iter()
-            .filter(|entry| entry.name != "update" || self.sessions.is_read_only())
+            .filter(|entry| entry.name != "update" || self.sessions.is_legacy_read_only())
             .collect()
     }
 
     pub fn session_is_read_only(&self) -> bool {
         self.sessions.is_read_only()
+    }
+
+    pub fn session_is_legacy_read_only(&self) -> bool {
+        self.sessions.is_legacy_read_only()
     }
 
     pub fn update_legacy_session(&mut self) -> Result<(), ApplicationError> {

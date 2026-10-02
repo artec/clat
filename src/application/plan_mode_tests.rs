@@ -418,7 +418,7 @@ fn approved_handoff_is_durable_and_unlocks_only_the_next_run() {
         .iter()
         .position(|event| {
             event.event_type == "tool/result"
-                && event.data["message"]["content"][0]["toolCallId"] == "call-exit-plan"
+                && event.data["message"]["toolCallId"] == "call-exit-plan"
         })
         .expect("exit_plan_mode tool/result");
     assert!(tool_call < approval && approval < tool_result);

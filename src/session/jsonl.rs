@@ -22,7 +22,7 @@ pub(crate) fn decode_record_line(line: &[u8], version: u32) -> Result<Vec<Sessio
 
 /// Format generations the reader accepts. v1 is a retired released
 /// generation CLAT never wrote and never decodes.
-pub(crate) const DECODABLE_GENERATIONS: [u32; 2] = [2, 3];
+pub(crate) const DECODABLE_GENERATIONS: [u32; 3] = [2, 3, 4];
 
 fn decode_record_value(
     mut value: serde_json::Value,

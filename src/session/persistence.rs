@@ -146,6 +146,11 @@ pub(crate) struct PreparedSession {
     pub(crate) needs_seed_marker: bool,
 }
 
+pub(crate) enum PrepareOutcome {
+    Writable(PreparedSession, bool),
+    ReadOnly(SessionHeader, u64),
+}
+
 impl PreparedSession {
     pub(crate) fn next_seq(&self) -> u64 {
         self.next_seq
@@ -297,7 +302,7 @@ impl JsonlBackend {
             || roundtrip.committed_plain_bytes != plain.len()
         {
             return Err(SessionError::Corruption(
-                "v2 conversion failed byte-codec roundtrip validation".into(),
+                "current-generation conversion failed byte-codec roundtrip validation".into(),
             ));
         }
         let hooks = std::mem::take(&mut *self.faults.lock().expect("faults"));
@@ -338,12 +343,12 @@ impl JsonlBackend {
             dir.hard_link(&temp, &dir, target).map_err(io)?;
             if hooks.fail_upgrade_after_publish {
                 return Err(SessionError::Io(
-                    "v2 was published; injected directory sync failure; retry /update".into(),
+                    "v4 was published; injected directory sync failure; retry /update".into(),
                 ));
             }
             crate::session::root_dir::sync_dir(&dir).map_err(|error| {
                 SessionError::Io(format!(
-                    "v2 was published but directory sync failed; retry /update: {error}"
+                    "v4 was published but directory sync failed; retry /update: {error}"
                 ))
             })?;
             Ok(())
@@ -997,8 +1002,12 @@ impl JsonlBackend {
     /// refuses while poisoned — an indeterminate commit means the cursor
     /// cannot be trusted until `load(repair)` has run.
     pub(crate) fn prepare(&self, key: &SessionKey) -> Result<PreparedSession, SessionError> {
-        self.prepare_with_visitor(key, &mut |_| Ok(()))
-            .map(|(prepared, _)| prepared)
+        match self.prepare_with_visitor(key, &mut |_| Ok(()))? {
+            PrepareOutcome::Writable(prepared, _) => Ok(prepared),
+            PrepareOutcome::ReadOnly(_, _) => Err(SessionError::UnsupportedFormat(
+                "V4 developer messages require read-only resume".into(),
+            )),
+        }
     }
 
     /// [`Self::prepare`] 的单遍变体（R-1）：balanced 流式路径上的每个
@@ -1013,39 +1022,65 @@ impl JsonlBackend {
         &self,
         key: &SessionKey,
         visitor: &mut dyn FnMut(&SessionEvent) -> Result<(), String>,
-    ) -> Result<(PreparedSession, bool), SessionError> {
+    ) -> Result<PrepareOutcome, SessionError> {
         if self.poisoned.lock().expect("poisoned").contains(key) {
             return Err(SessionError::Conflict(format!(
                 "session \"{}\" is poisoned after an indeterminate commit; load(repair) first",
                 key.id
             )));
         }
-        // Resolve before locking so legacy v0 and unsupported newer
-        // generations fail without leaving a lock artifact. Once admitted,
-        // retain this one lease through streaming, repair, and every clone of
-        // the returned PreparedSession.
-        let lease = self.acquire_existing_write_lease(key)?;
-        // Balanced logs take the constant-memory streaming path. A physically
+        // Balanced logs take the constant-memory streaming path before a
+        // write lease: native V4 developer context must stay artifact-free
+        // when opened read-only. A physically
         // torn final frame/line falls back to the compatibility repair reader,
         // whose extra allocation is limited to the exceptional crash-repair
         // path rather than every cold resume.
-        match self.stream_events(key, 0, visitor) {
+        let mut saw_developer = false;
+        let streamed = self.stream_events(key, 0, &mut |event| {
+            saw_developer |= event.event_type == "developer/message";
+            visitor(event)
+        });
+        match streamed {
             Ok(scan) => {
+                if scan.header.version == 4 && saw_developer {
+                    // The scan already populated the resume visitor. No
+                    // lease, repair, seed, or append occurred.
+                    return Ok(PrepareOutcome::ReadOnly(
+                        scan.header,
+                        scan.tracker.next_seq(),
+                    ));
+                }
                 if scan.header.version == 0 {
                     return Err(SessionError::UnsupportedFormat(format!(
                         "legacy v0 sessions are read-only; start a new v{} session",
                         crate::session::compat::SESSION_FORMAT_VERSION
                     )));
                 }
+                let lease = self.acquire_existing_write_lease(key)?;
+                self.verify_stream_revision(key, &scan)?;
                 return self
                     .prepare_from_stream(key, scan, Arc::clone(&lease))
-                    .map(|prepared| (prepared, true));
+                    .map(|prepared| PrepareOutcome::Writable(prepared, true));
+            }
+            Err(SessionError::Io(error)) if saw_developer => {
+                return Err(SessionError::Io(format!(
+                    "V4 developer session cannot be repaired for writable resume: {error}"
+                )));
             }
             Err(SessionError::Io(_)) => {}
             Err(error) => return Err(error),
         }
         // The writable path commits pending recovery first (DSH prepare):
         // appending behind a torn tail would concatenate garbage.
+        let lease = self.acquire_existing_write_lease(key)?;
+        self.prepare_from_repair(key, lease)
+    }
+
+    fn prepare_from_repair(
+        &self,
+        key: &SessionKey,
+        lease: Arc<SessionWriteLease>,
+    ) -> Result<PrepareOutcome, SessionError> {
         let mut read = self.read_events(key, true)?;
         if read.header.version == 0 {
             return Err(SessionError::UnsupportedFormat(format!(
@@ -1073,7 +1108,7 @@ impl JsonlBackend {
                 },
             );
         }
-        Ok((
+        Ok(PrepareOutcome::Writable(
             PreparedSession {
                 path: read.path.clone(),
                 dir: Some(std::sync::Arc::clone(&read.dir)),
@@ -1087,6 +1122,25 @@ impl JsonlBackend {
             },
             false,
         ))
+    }
+
+    fn verify_stream_revision(
+        &self,
+        key: &SessionKey,
+        scan: &StreamRead,
+    ) -> Result<(), SessionError> {
+        let resolved = self
+            .resolve_log_in_dir(key, &scan.dir)?
+            .ok_or_else(|| SessionError::NotFound(key.id.to_string()))?;
+        let file = open_read_no_follow(&scan.dir, &resolved.name).map_err(io)?;
+        let current =
+            matching_handle_and_path_revision(&file, &scan.dir, &resolved.name).map_err(io)?;
+        if current != scan.revision {
+            return Err(SessionError::Conflict(
+                "session log changed between read-only scan and writer lease; retry resume".into(),
+            ));
+        }
+        Ok(())
     }
 
     fn prepare_from_stream(
@@ -2110,7 +2164,7 @@ mod tests {
         let log = root
             .join("--tmp-clat-project--")
             .join("lazy-1")
-            .join("session.v3.jsonl.zstd");
+            .join("session.v4.jsonl.zstd");
         assert!(log.is_file());
         #[cfg(unix)]
         assert!(
@@ -2195,7 +2249,7 @@ mod tests {
         let file = root
             .join("--tmp-clat-project--")
             .join("retry-1")
-            .join("session.v3.jsonl.zstd");
+            .join("session.v4.jsonl.zstd");
         let size_after_first = std::fs::metadata(&file).expect("log exists").len();
 
         backend.inject_faults(FaultHooks {
@@ -2290,7 +2344,7 @@ mod tests {
         let file = root
             .join("--tmp-clat-project--")
             .join("repair-1")
-            .join("session.v3.jsonl.zstd");
+            .join("session.v4.jsonl.zstd");
         let bytes = std::fs::read(&file).expect("read");
         std::fs::write(&file, &bytes[..bytes.len() - 3]).expect("tear");
 
@@ -2345,7 +2399,7 @@ mod tests {
         assert!(
             !outside
                 .join("swap-1")
-                .join("session.v3.jsonl.zstd")
+                .join("session.v4.jsonl.zstd")
                 .exists(),
             "all materialization operations must remain relative to the held root capability"
         );
@@ -2458,7 +2512,7 @@ mod tests {
         assert!(
             root.join("--tmp-clat-project--")
                 .join("raw-1")
-                .join("session.v3.jsonl")
+                .join("session.v4.jsonl")
                 .is_file()
         );
         crate::test_support::cleanup_tree(&root);
@@ -2480,7 +2534,7 @@ mod tests {
         let file = root
             .join("--tmp-clat-project--")
             .join("torn-1")
-            .join("session.v3.jsonl.zstd");
+            .join("session.v4.jsonl.zstd");
         let mut bytes = std::fs::read(&file).expect("read");
         bytes.extend_from_slice(&frame);
         std::fs::write(&file, &bytes).expect("write");
@@ -2505,7 +2559,7 @@ mod tests {
         let file = root
             .join("--tmp-clat-project--")
             .join("drift-1")
-            .join("session.v3.jsonl.zstd");
+            .join("session.v4.jsonl.zstd");
         let foreign = crate::session::zstd_frames::compress_frame(b"{}\n").expect("frame");
         let mut bytes = std::fs::read(&file).expect("read");
         bytes.extend_from_slice(&foreign);
@@ -2534,7 +2588,7 @@ mod tests {
         let log = root
             .join("--tmp-clat-project--")
             .join("swap-1")
-            .join("session.v3.jsonl.zstd");
+            .join("session.v4.jsonl.zstd");
         let outside = root.join("outside-victim");
         std::fs::write(&outside, b"unchanged").expect("victim");
         std::fs::remove_file(&log).expect("remove log entry");
@@ -2575,7 +2629,7 @@ mod tests {
         let log = root
             .join("--tmp-clat-project--")
             .join("repair-swap-1")
-            .join("session.v3.jsonl.zstd");
+            .join("session.v4.jsonl.zstd");
         let outside = root.join("repair-victim");
         std::fs::write(&outside, b"unchanged").expect("victim");
         std::fs::remove_file(&log).expect("remove log entry");
@@ -2669,10 +2723,10 @@ mod tests {
         );
         let mut current = base;
         current.created_at = 2;
-        write_generation(&backend, &key, current, 3, &turn_events(0, 9));
+        write_generation(&backend, &key, current, 4, &turn_events(0, 9));
 
         let snapshot = backend.header_snapshot(&key).expect("highest header");
-        assert_eq!(snapshot.version, 3);
+        assert_eq!(snapshot.version, 4);
         assert_eq!(snapshot.created_at, 2);
         let loaded = backend.load(&key, false).expect("highest events");
         assert_eq!(loaded.events[0].data["turn"], 9);
@@ -2689,13 +2743,13 @@ mod tests {
         let (backend, root) = backend("generation-future");
         let key = key("generation-future-1");
         let v2 = write_generation(&backend, &key, header(&key), 2, &turn_events(0, 2));
-        let v4 = v2
+        let v5 = v2
             .parent()
             .unwrap()
-            .join(compat::generation_log_file_name(4, backend.compression));
-        std::fs::copy(&v2, &v4).expect("opaque future generation bytes");
+            .join(compat::generation_log_file_name(5, backend.compression));
+        std::fs::copy(&v2, &v5).expect("opaque future generation bytes");
         let before_v2 = std::fs::read(&v2).unwrap();
-        let before_v4 = std::fs::read(&v4).unwrap();
+        let before_v5 = std::fs::read(&v5).unwrap();
 
         for result in [
             backend.header_snapshot(&key).map(|_| ()),
@@ -2705,15 +2759,15 @@ mod tests {
             assert!(matches!(
                 result,
                 Err(SessionError::UnsupportedFormat(message))
-                    if message.contains("newer generation v4")
-                        && message.contains("supports through v3")
+                    if message.contains("newer generation v5")
+                        && message.contains("supports through v4")
                         && message.contains("will not fall back or append")
             ));
         }
         assert_eq!(std::fs::read(&v2).unwrap(), before_v2);
-        assert_eq!(std::fs::read(&v4).unwrap(), before_v4);
+        assert_eq!(std::fs::read(&v5).unwrap(), before_v5);
         assert!(
-            !v4.parent()
+            !v5.parent()
                 .unwrap()
                 .join(write_lease::LEASE_FILENAME)
                 .exists(),
@@ -2840,7 +2894,7 @@ mod tests {
         let original = format!("{}\n", legacy.to_line());
         dir.write("session.jsonl", original.as_bytes()).unwrap();
         backend.upgrade_legacy(&key).unwrap();
-        assert_eq!(backend.header_snapshot(&key).unwrap().version, 3);
+        assert_eq!(backend.header_snapshot(&key).unwrap().version, 4);
         assert_eq!(dir.read("session.jsonl").unwrap(), original.as_bytes());
         dir.write("session.v99.jsonl", b"future").unwrap();
         assert!(backend.upgrade_legacy(&key).is_err());
@@ -2900,7 +2954,7 @@ mod tests {
                 .to_string()
                 .contains("was published")
         );
-        assert_eq!(backend.header_snapshot(&key).unwrap().version, 3);
+        assert_eq!(backend.header_snapshot(&key).unwrap().version, 4);
         let target = std::fs::read(backend.log_path(&key)).unwrap();
         backend.upgrade_legacy(&key).unwrap();
         assert_eq!(std::fs::read(backend.log_path(&key)).unwrap(), target);
@@ -2916,20 +2970,20 @@ mod tests {
                 ],
             )
             .unwrap();
-        assert_eq!(backend.load(&key, false).unwrap().header.version, 3);
+        assert_eq!(backend.load(&key, false).unwrap().header.version, 4);
         drop(prepared);
         crate::test_support::cleanup_tree(&root);
     }
 
     /// SV live/replay 字节 parity（验收"live 写入 → 重放逐字节一致"）：
-    /// V3 写路径产出的完整日志，解码后用同一编码器重拼，字节必须完全
+    /// V4 写路径产出的完整日志，解码后用同一编码器重拼，字节必须完全
     /// 一致（确定性编码；surfaceOp startSeq/endSeq 与 provenance 区间压
     /// 缩都在环回里）。pre-fix 红：V3 信封改名不存在。
     #[test]
-    fn v3_live_write_round_trips_byte_identically() {
-        let (_, root) = backend("sv-v3-parity");
+    fn v4_live_write_round_trips_byte_identically() {
+        let (_, root) = backend("sv-v4-parity");
         let backend = JsonlBackend::new(&root, JsonlCompression::None, true);
-        let key = key("sv-v3-parity");
+        let key = key("sv-v4-parity");
         let prepared = backend.create(key.clone(), header(&key)).expect("create");
         let events = vec![
             SessionEvent::new("turn/start", 0, 1, payloads::turn_start(1)),
@@ -2943,7 +2997,7 @@ mod tests {
                     "turn": 1, "step": 1,
                     "message": { "id": "s1", "role": "system",
                                  "content": [{ "type": "text", "text": "be brief" }],
-                                 "source": { "kind": "plugin", "plugin": "clat" } },
+                                 "source": { "kind": "plugin:clat" } },
                 }),
             )
             .append(vec![]),
@@ -2956,7 +3010,7 @@ mod tests {
                         "turn": 1, "step": 2,
                         "message": { "id": "s2", "role": "system",
                                      "content": [{ "type": "text", "text": "briefly" }],
-                                     "source": { "kind": "plugin", "plugin": "clat" } },
+                                     "source": { "kind": "plugin:clat" } },
                     }),
                 );
                 replacement.surface_op =
@@ -2986,15 +3040,15 @@ mod tests {
         backend
             .append_batch(prepared, 0, &events)
             .expect("append commits");
-        let log = backend.session_dir_path(&key).join("session.v3.jsonl");
+        let log = backend.session_dir_path(&key).join("session.v4.jsonl");
         let written = std::fs::read(&log).expect("live bytes");
 
         let scan = crate::session::jsonl::scan_raw(&written).expect("replay scan");
-        assert_eq!(scan.header.version, 3);
+        assert_eq!(scan.header.version, 4);
         let recomposed = format!(
             "{}\n{}\n",
             scan.header.to_line(),
-            crate::session::jsonl::event_lines(&scan.events, true, 3)
+            crate::session::jsonl::event_lines(&scan.events, true, 4)
         );
         assert_eq!(
             recomposed.into_bytes(),
@@ -3126,7 +3180,7 @@ mod tests {
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
         assert!(
-            dir_entries.iter().any(|name| name == "session.v3.jsonl"),
+            dir_entries.iter().any(|name| name == "session.v4.jsonl"),
             "the final generation is discoverable: {dir_entries:?}"
         );
         assert!(
@@ -3141,7 +3195,7 @@ mod tests {
             "the v0 source stays byte-for-byte"
         );
         let loaded = backend.load(&key, false).unwrap();
-        assert_eq!(loaded.header.version, 3);
+        assert_eq!(loaded.header.version, 4);
         assert!(
             loaded
                 .events
@@ -3218,7 +3272,7 @@ mod tests {
 
         assert_eq!(std::fs::read(&path).unwrap(), source_bytes);
         let loaded = backend.load(&key, false).unwrap();
-        assert_eq!(loaded.header.version, 3);
+        assert_eq!(loaded.header.version, 4);
         let head = loaded
             .events
             .iter()
@@ -3269,7 +3323,7 @@ mod tests {
             "actionable refusal: {error}"
         );
         assert_eq!(std::fs::read(&path).unwrap(), source_bytes);
-        assert!(!path.parent().unwrap().join("session.v3.jsonl").exists());
+        assert!(!path.parent().unwrap().join("session.v4.jsonl").exists());
         crate::test_support::cleanup_tree(&root);
     }
 
@@ -3302,7 +3356,7 @@ mod tests {
             "v1 refuses with an actionable message: {error}"
         );
         assert_eq!(std::fs::read(&path).unwrap(), source_bytes);
-        assert!(!path.parent().unwrap().join("session.v3.jsonl").exists());
+        assert!(!path.parent().unwrap().join("session.v4.jsonl").exists());
         crate::test_support::cleanup_tree(&root);
     }
 }

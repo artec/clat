@@ -15,9 +15,9 @@ fn shell() -> (App, PathBuf) {
     // user's storage, launch providers, or connect to an existing host.
     let description = json!({"ok":true,"value":{
         "storage_root":storage, "protocol_version":1,"wire_version":1,
-        // SV 最小适配行（S6 例外，见 docs/todo/session-v3-execution.md）：
-        // 握手判据 journal_version 随 SESSION_FORMAT_VERSION bump 到 3。
-        "journal_version":3,"instance_id":"11111111-1111-1111-1111-111111111111"
+        // 握手样本必须随当前 journal 世代变化，不能钉死旧版。
+        "journal_version":crate::host::journal_format_version(),
+        "instance_id":"11111111-1111-1111-1111-111111111111"
     }})
     .to_string();
     let stop = Arc::new(AtomicBool::new(false));

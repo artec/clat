@@ -132,9 +132,10 @@ impl RecoveryTracker {
                         "turn": turn, "step": pending_call.step,
                         "message": {
                             "id": format!("interrupted-tool-result-{call_id}-{next_seq}"),
-                            "role": "user",
-                            "content": [{ "type": "tool-result", "toolCallId": call_id,
-                                "isError": true, "content": [{ "type": "text", "text": text }] }],
+                            "role": "tool",
+                            "toolCallId": call_id,
+                            "isError": true,
+                            "content": [{ "type": "text", "text": text }],
                             "source": { "kind": "tool", "callId": call_id },
                         },
                         "error": error,
@@ -248,10 +249,7 @@ mod tests {
             closers[1].data["error"]["code"], TOOL_NOT_STARTED,
             "never-started call → not started"
         );
-        assert_eq!(
-            closers[0].data["message"]["content"][0]["toolCallId"],
-            "call-a"
-        );
+        assert_eq!(closers[0].data["message"]["toolCallId"], "call-a");
         // Times reuse the last real event's time; seqs stay contiguous.
         for closer in &closers {
             assert_eq!(closer.time, 104);

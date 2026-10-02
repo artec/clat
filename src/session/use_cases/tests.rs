@@ -200,6 +200,85 @@ fn legacy_resume_is_read_only_without_changing_any_session_artifact() {
     let _ = std::fs::remove_dir_all(root);
 }
 
+#[test]
+fn v4_unsupported_context_resumes_read_only_without_mutating_the_log() {
+    for mode in ["developer", "preset"] {
+        let (service, root) = service(&format!("v4-read-only-{mode}"));
+        let key = SessionKey {
+            project: project(),
+            id: SessionId::new(format!("v4-{mode}")),
+        };
+        let mut header = SessionHeader::new(key.id.clone(), key.project.header_cwd.clone(), 1);
+        if mode == "preset" {
+            header.agent_preset = Some("foreign-agent".into());
+        }
+        let mut events = vec![SessionEvent::new(
+            "turn/start",
+            0,
+            2,
+            serde_json::json!({"turn":1}),
+        )];
+        if mode == "developer" {
+            events.push(SessionEvent::new(
+                "step/start",
+                1,
+                3,
+                serde_json::json!({"turn":1,"step":1}),
+            ));
+            let mut developer = SessionEvent::new(
+                "developer/message",
+                2,
+                4,
+                serde_json::json!({
+                    "turn":1,"step":1,
+                    "message":{"id":"dev-1","role":"developer",
+                        "source":{"kind":"runtime-context"},
+                        "content":[{"type":"text","text":"foreign developer context"}]}
+                }),
+            );
+            developer.surface_op = Some(crate::session::event::SurfaceOp::Append);
+            events.push(developer);
+            events.push(SessionEvent::new(
+                "step/end",
+                3,
+                5,
+                serde_json::json!({"turn":1,"step":1}),
+            ));
+            events.push(SessionEvent::new(
+                "turn/end",
+                4,
+                6,
+                serde_json::json!({"turn":1,"reason":{"kind":"completed"}}),
+            ));
+        } else {
+            events.push(SessionEvent::new(
+                "turn/end",
+                1,
+                3,
+                serde_json::json!({"turn":1,"reason":{"kind":"completed"}}),
+            ));
+        }
+        let dir = service.backend.create_session_dir(&key).unwrap();
+        let bytes = crate::session::jsonl::materialized_bytes(
+            &header,
+            &events,
+            JsonlCompression::Zstd,
+            true,
+        )
+        .unwrap();
+        dir.write("session.v4.jsonl.zstd", &bytes).unwrap();
+        service.resume(&key).expect("V4 context is readable");
+        assert!(service.is_read_only());
+        assert!(!service.is_legacy_read_only());
+        assert!(service.journal().is_err());
+        assert!(service.upgrade_active().is_err());
+        service.quiesce_active().unwrap();
+        assert_eq!(dir.read("session.v4.jsonl.zstd").unwrap(), bytes);
+        assert_eq!(dir.entries().unwrap().count(), 1);
+        crate::test_support::cleanup_tree(&root);
+    }
+}
+
 /// 缺陷修复判别腿（2026-09-15，负责人实机发现）：存量 v2 会话（上一发
 /// 布代的产物）必须只读打开——不变量：任何可解码且低于
 /// SESSION_FORMAT_VERSION 的世代都走只读协调器，打开零副作用；写面
@@ -209,7 +288,7 @@ fn legacy_resume_is_read_only_without_changing_any_session_artifact() {
 /// 服务已打开的 legacy 会话——死锁）。事件形状与
 /// `existing_v2_sessions_upgrade_to_current_with_system_promoted` 同源。
 #[test]
-fn legacy_v2_sessions_resume_read_only_then_update_reaches_writable_v3() {
+fn legacy_v2_sessions_resume_read_only_then_update_reaches_writable_v4() {
     let (service, root) = service("legacy-v2-read-only-update");
     let key = SessionKey {
         project: project(),
@@ -288,7 +367,7 @@ fn legacy_v2_sessions_resume_read_only_then_update_reaches_writable_v3() {
 
     service
         .upgrade_active()
-        .expect("update publishes v3 and re-arms");
+        .expect("update publishes v4 and re-arms");
     assert!(
         !service.is_read_only(),
         "the same session is writable after the upgrade"
@@ -303,13 +382,13 @@ fn legacy_v2_sessions_resume_read_only_then_update_reaches_writable_v3() {
         .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
     assert!(
-        names.iter().any(|name| name == "session.v3.jsonl.zstd"),
+        names.iter().any(|name| name == "session.v4.jsonl.zstd"),
         "exactly the final current generation is published: {names:?}"
     );
     assert!(
         !names.iter().any(|name| name.starts_with("session.v")
             && !name.starts_with("session.v2.")
-            && !name.starts_with("session.v3.")),
+            && !name.starts_with("session.v4.")),
         "no intermediate generation may appear: {names:?}"
     );
     assert_eq!(
@@ -317,7 +396,7 @@ fn legacy_v2_sessions_resume_read_only_then_update_reaches_writable_v3() {
         bytes,
         "the v2 source stays byte-for-byte after the upgrade"
     );
-    assert_eq!(service.backend.header_snapshot(&key).unwrap().version, 3);
+    assert_eq!(service.backend.header_snapshot(&key).unwrap().version, 4);
     service.quiesce_active().unwrap();
     crate::test_support::cleanup_tree(&root);
 }
@@ -2006,7 +2085,7 @@ fn quiesce_fold_error_still_joins_the_writer() {
     let log = root
         .join("--tmp-usecases--")
         .join(summary.id.as_str())
-        .join("session.v3.jsonl.zstd");
+        .join("session.v4.jsonl.zstd");
     std::fs::write(&log, b"corrupt").expect("corrupt after commit");
     assert!(service.quiesce_active().is_err());
     wait_for_writer_baseline(baseline);
@@ -2606,7 +2685,7 @@ fn torn_tail_resume_counts_the_interrupted_turn() {
     let log = root
         .join("--tmp-usecases--")
         .join(summary.id.as_str())
-        .join("session.v3.jsonl.zstd");
+        .join("session.v4.jsonl.zstd");
     let bytes = std::fs::read(&log).expect("read");
     std::fs::write(&log, &bytes[..bytes.len() - 3]).expect("tear");
 
@@ -2655,7 +2734,7 @@ fn staging_a_corrupt_target_fails_without_leaking_a_writer() {
     let log = root
         .join("--tmp-usecases--")
         .join(summary.id.as_str())
-        .join("session.v3.jsonl.zstd");
+        .join("session.v4.jsonl.zstd");
     let mut bytes = std::fs::read(&log).expect("read");
     bytes.extend_from_slice(&frame);
     std::fs::write(&log, &bytes).expect("append");

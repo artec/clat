@@ -16,6 +16,7 @@ sdk/dsh-adapter/dist/
 .trae/
 .vscode/
 .zcode/
+.zcodeignore
 *.swp
 *.swo
 *~

@@ -7,7 +7,9 @@
 use crate::session::event::{SessionEvent, SurfaceOp};
 use crate::session::header::SessionHeader;
 use crate::session::key::SessionKey;
-use crate::session::persistence::{AppendFailure, JsonlBackend, PreparedSession, SessionError};
+use crate::session::persistence::{
+    AppendFailure, JsonlBackend, PrepareOutcome, PreparedSession, SessionError,
+};
 use crate::session::write_behind::{SessionWriteBehind, WRITE_BATCH_MAX_DELAY};
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
@@ -157,36 +159,31 @@ impl SessionCoordinator {
         // writer artifacts so /update can publish the final current
         // generation from it. Newer-than-current generations refuse in
         // header_snapshot and never take this branch.
-        if let Ok(stored) = backend.header_snapshot(&key)
-            && stored.version < crate::session::compat::SESSION_FORMAT_VERSION
-        {
-            let mut next_seq = 0;
-            backend.visit_from(&key, 0, &mut |event| {
-                visitor(event)?;
-                next_seq = event.seq + 1;
-                Ok(())
-            })?;
-            return Ok((
-                Arc::new(Self {
-                    key,
-                    header: stored,
-                    backend,
-                    inner: Arc::new(Mutex::new(CoordinatorCore {
-                        handle: None,
-                        next_seq,
-                        fatal: None,
-                    })),
-                    transaction: Mutex::new(()),
-                    writer: None,
-                    needs_seed_marker: std::sync::atomic::AtomicBool::new(false),
-                }),
-                true,
-            ));
+        if let Ok(stored) = backend.header_snapshot(&key) {
+            let current = stored.version == crate::session::compat::SESSION_FORMAT_VERSION;
+            if stored.version < crate::session::compat::SESSION_FORMAT_VERSION
+                || current
+                    && stored
+                        .agent_preset
+                        .as_deref()
+                        .is_some_and(|preset| !preset.is_empty())
+            {
+                let mut next_seq = 0;
+                backend.visit_from(&key, 0, &mut |event| {
+                    visitor(event)?;
+                    next_seq = event.seq + 1;
+                    Ok(())
+                })?;
+                return Ok((Self::read_only(backend, key, stored, next_seq), true));
+            }
         }
         // Resume an existing log, or keep the freshly created lazy handle
         // (materialization happens on the first durable batch).
         let (handle, visitor_applied) = match backend.prepare_with_visitor(&key, visitor) {
-            Ok((handle, applied)) => (handle, applied),
+            Ok(PrepareOutcome::Writable(handle, applied)) => (handle, applied),
+            Ok(PrepareOutcome::ReadOnly(stored, next_seq)) => {
+                return Ok((Self::read_only(backend, key, stored, next_seq), true));
+            }
             Err(SessionError::NotFound(_)) => (backend.create(key.clone(), header)?, true),
             Err(error) => return Err(error),
         };
@@ -213,6 +210,27 @@ impl SessionCoordinator {
             needs_seed_marker: std::sync::atomic::AtomicBool::new(needs_seed_marker),
         });
         Ok((coordinator, visitor_applied))
+    }
+
+    fn read_only(
+        backend: Arc<JsonlBackend>,
+        key: SessionKey,
+        header: SessionHeader,
+        next_seq: u64,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            key,
+            header,
+            backend,
+            inner: Arc::new(Mutex::new(CoordinatorCore {
+                handle: None,
+                next_seq,
+                fatal: None,
+            })),
+            transaction: Mutex::new(()),
+            writer: None,
+            needs_seed_marker: std::sync::atomic::AtomicBool::new(false),
+        })
     }
 
     /// Publish the one resume seed only after the workspace selection CAS
@@ -254,6 +272,10 @@ impl SessionCoordinator {
         self.writer.is_none()
     }
 
+    pub(crate) fn is_legacy(&self) -> bool {
+        self.header.version < crate::session::compat::SESSION_FORMAT_VERSION
+    }
+
     fn enqueue_atomic(&self, events: Vec<SessionEvent>) -> Result<SeqRange, String> {
         let _transaction = self.transaction.lock().expect("journal transaction");
         self.enqueue_atomic_locked(events)
@@ -263,7 +285,7 @@ impl SessionCoordinator {
         let writer = self
             .writer
             .as_ref()
-            .ok_or("legacy session is read-only; use /update to upgrade or /new")?;
+            .ok_or("session is read-only; use /update for a legacy generation, or /new")?;
         if events.is_empty() {
             return Err("cannot append an empty event group".into());
         }
@@ -783,18 +805,20 @@ mod tests {
 
         // 3. (Tool::invoke happens here.) Result afterwards:
         journal
-            .append(NewSessionEvent::new(
-                "tool/result",
-                json!({
-                    "turn": 1, "step": 0,
-                    "message": {
-                        "id": "m1", "role": "user",
-                        "content": [{ "type": "tool-result", "toolCallId": "call-1", "isError": false,
-                                      "content": [{ "type": "text", "text": "written" }] }],
-                        "source": { "kind": "tool", "callId": "call-1" },
-                    },
-                }),
-            ).append(Vec::new()))
+            .append(
+                NewSessionEvent::new(
+                    "tool/result",
+                    json!({
+                        "turn": 1, "step": 0,
+                        "message": {
+                            "id": "m1", "role": "tool", "toolCallId": "call-1", "isError": false,
+                            "content": [{ "type": "text", "text": "written" }],
+                            "source": { "kind": "tool", "callId": "call-1" },
+                        },
+                    }),
+                )
+                .append(Vec::new()),
+            )
             .expect("result");
         journal.flush().expect("result durable");
         // Repair is a write operation. Retire the coordinator before asking

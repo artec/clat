@@ -692,7 +692,7 @@ arming retains the already-folded replay prefix in core, so switching performs
 one full physical scan, older-page requests are memory-only, and freshness
 decodes only a newly committed suffix. Append-only compaction does not
 invalidate existing cursors; the `/update` ensure-current publication
-(v0 or v2 sources upgraded to the current V3 generation) naturally
+(v0, v2, or v3 sources upgraded to the current V4 generation) naturally
 re-arms a new cache with the new generation. The full bounded message outline
 travels on `subscribed` and refreshes again at each durable `prompt.settled`
 boundary, so live navigation never guesses journal sequence numbers.

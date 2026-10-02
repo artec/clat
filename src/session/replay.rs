@@ -435,13 +435,12 @@ impl ReplayAdapter {
     }
 
     fn tool_finished(&mut self, event: &SessionEvent) -> Option<ReplayEvent> {
-        let block = event.data.pointer("/message/content/0").or_else(|| {
-            event
-                .data
-                .pointer("/message/content")
-                .and_then(Value::as_array)
-                .and_then(|blocks| blocks.first())
-        })?;
+        let message = event.data.get("message")?;
+        let block = if message.get("role").and_then(Value::as_str) == Some("tool") {
+            message
+        } else {
+            message.get("content")?.as_array()?.first()?
+        };
         let call_id = block
             .get("toolCallId")
             .or_else(|| event.data.pointer("/message/source/callId"))

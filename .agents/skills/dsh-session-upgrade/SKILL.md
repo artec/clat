@@ -8,7 +8,8 @@ description: CLAT 跟随 DSH（deepseek-harness）版本升级的操作手册—
 本手册源自 CLAT 第十一轮 DSH 0.1.3 对齐实战（2026-09，DV-1..11，
 12 份审计）与 0.1.5 预研。完整案例见 `references/case-study-round-11.md`
 （v0→v2 剧本）与 `references/case-study-round-12-v3.md`（V3 对齐 +
-ensure-current）；两仓源码地图见 `references/repo-map.md`。按阶段执行，勿跳步。
+ensure-current），V4 的裁决与 oracle 见
+`references/case-study-v4.md`；两仓源码地图见 `references/repo-map.md`。按阶段执行，勿跳步。
 
 ## 第 0 阶段：版本事实核查（动手前必做）
 
@@ -48,7 +49,9 @@ ensure-current）；两仓源码地图见 `references/repo-map.md`。按阶段�
   （如 `system/message` 从 v3 起、旧 PTC 名被 v3 退役）。座位表旁
   落两张窗口表：越代类型走 unknown 通道（ignorable 信封级放行、
   required 拒），退役代 required 拒 / ignorable 不透明——与上游
-  per-generation known-event-types 对表，不做成单一布尔。
+  per-generation known-event-types 对表，不做成单一布尔。**出生代须
+  查上游冻结的源代和目标代词表**；“CLAT 首次收编”不等于“上游
+  此代新增”（V4 的两个 envelope-only 事件实际已在 V3 词表）。
 - 独立易项并行一波；主战役（格式读写）单列；迁移/升级（如有）
   依赖格式读写完成后收尾。**版本常量 bump 与迁移边必须同批落地**
   （V3 教训：写侧已是 v3、转换器还产 v2 → 文件名与头版本自相矛盾）。
@@ -61,6 +64,8 @@ ensure-current）；两仓源码地图见 `references/repo-map.md`。按阶段�
   写者（宪法 State discipline 全文适用）。
 - **字节级金样**是安全网：对齐过程中金样零变更是行为保持的
   证据；新格式的金样按 DSH 真实产物铸造（原语级生成脚本）。
+  生成脚本应钉上游 revision，并固定非语义随机量（如消息 ID、
+  时间）；连续重生两次比对字节哈希，避免不可复现的 golden。
 - **fixture 铸造脚本随上游版本重验**（V3 教训）：上一代能跑的
   生成脚本会在新代失效——rc.2 把 SessionStore 与
   JsonlSessionPersistence 解耦（B8 剧本的 persistence.load 消失）、
@@ -81,7 +86,8 @@ ensure-current）；两仓源码地图见 `references/repo-map.md`。按阶段�
   的真 bug（V3 批的空 tools 违规就是它抓到的）。交付前必须
   让它们也绿。
 - **真实互锁测试**：`DSH_CHECKOUT=<钉靶路径>` 跑 write_lease
-  互锁与 cohort 钉靶（DW-3 后显式 opt-in）。
+  互锁。其他包若有独立钉靶 cohort（如 DSH 适配器），按其自身
+  版本单独验收；不要把新 `DSH_CHECKOUT` 全局灌给旧 cohort。
 - **预言机重钉**决策：compat oracle 是否推进到新靶由负责人定。
 - **zstd 物理事实**：会话是单一顺序压缩流——尾部读取也要从头
   解压，**不存在也不需要反向读**（0.1.3 调研定案，勿再发明）。
@@ -104,6 +110,12 @@ ensure-current）；两仓源码地图见 `references/repo-map.md`。按阶段�
 - 退役代（如 v1）显式拒绝并指路 /new，绝不静默收下或跳过。
 - 旧代**只读打开**（错误信息指路 /update 或 /new），普通路径
   零副作用：不补 end-seed、不修复、不写 checkpoint、不建 writer；
+- **当前代也可能只读**：若新语义可读却不能由 CLAT 保真续写
+  （V4 `developer/message`、非空 `agentPreset` 是实例），在运行和
+  工具副作用前拒写；不要向用户提供会改写当前代的 `/update`。
+  读侧收编事件不等于授权生产该事件；当前代只读打开也不得留下
+  写租约等 artifact。若为此先扫描再取得写租约，取得后须复验
+  源 revision，避免扫描与写入间的竞态。
 - **bump 会制造"新的旧代"（2026-09-15 缺陷入册）**：常量每进一代，
   上一代就从"可写"翻成"可解码但不可写"。按版本号路由读写状态的
   地方（协调器只读分支、写路门槛、命令可见性）一律用**"凡低于
@@ -186,9 +198,13 @@ clamp**（头之前的前缀节点从遮蔽前缀剔除），绝不为过 fold �
 - 前置红测试 + 变异抽查（删实现臂必红，恢复必绿）；
 - **迁移边的上游 oracle 对拍**（存在上游迁移器时：同输入逐事件
   等价，V3 批建立的最强判别）；
+- wire 缝按形状验原生页和 live 帧；若旧解析器已兼容，补判别测试
+  即可，不为版本号造多余的生产分支；
 - 测试数对账（重构/拆包不得丢测试）；
 - **形状预算复查**（`code-health.py` 长函数数与根占比不劣于基点）；
 - 全脸 `gates.sh --full`（含 `--ignored` 面）+ 互锁腿；
+- 全量生命周期测试占用固定端口时，先核实占用者；停止其他进程
+  需当前任务的明确授权，未获授权则如实列为环境边界；
 - 真实旧资产副本演练（不改用户原数据）。
 
 ## 冤枉路清单（前人已走过，勿重复）

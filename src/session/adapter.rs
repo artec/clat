@@ -86,12 +86,17 @@ pub(crate) fn surface_to_model_items_with_seq(
                 }
             }
             "tool/result" => {
-                let block = &event.data["message"]["content"][0];
-                let blocks = content_blocks(&block["content"])
+                let message = &event.data["message"];
+                let result = if message["role"] == "tool" {
+                    message
+                } else {
+                    &message["content"][0]
+                };
+                let blocks = content_blocks(&result["content"])
                     .into_iter()
                     .filter(|block| matches!(block, crate::message::ContentBlock::Image { .. }))
                     .collect();
-                let image_parts = content_parts(&block["content"])
+                let image_parts = content_parts(&result["content"])
                     .into_iter()
                     .filter(|part| matches!(part, crate::model::ContentPart::Image { .. }))
                     .collect();
@@ -100,14 +105,14 @@ pub(crate) fn surface_to_model_items_with_seq(
                     ModelItem::ToolResult(crate::tool::ToolResult {
                         blocks,
                         image_parts,
-                        call_id: block
+                        call_id: result
                             .get("toolCallId")
                             .and_then(Value::as_str)
                             .ok_or("tool-result block without toolCallId")?
                             .to_owned(),
                         tool_name: String::new(),
-                        output: content_text(&block["content"]).into(),
-                        is_error: block
+                        output: content_text(&result["content"]).into(),
+                        is_error: result
                             .get("isError")
                             .and_then(Value::as_bool)
                             .unwrap_or(false),
@@ -121,6 +126,10 @@ pub(crate) fn surface_to_model_items_with_seq(
                 // request's instructions, so mapping it here would duplicate
                 // it in every provider call (and compaction must not shadow
                 // the head — excluded nodes can never enter a cut).
+            }
+            "developer/message" => {
+                // CLAT preserves developer history but does not implement
+                // deferred tool-schema mutation in provider requests.
             }
             other => return Err(format!("surface node {seq} has unexpected type `{other}`")),
         }

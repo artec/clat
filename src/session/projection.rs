@@ -911,15 +911,21 @@ impl ProjectionUnit for TranscriptUnit {
                 }
             }
             "tool/result" => {
+                let message = &event.data["message"];
+                let v4 = message["role"] == "tool";
                 self.entries.push(TranscriptEntry {
                     seq: event.seq,
                     kind: "tool".into(),
-                    text: content_text(&event.data["message"]["content"]),
-                    is_error: event
-                        .data
-                        .pointer("/message/content/0/isError")
-                        .and_then(Value::as_bool)
-                        .unwrap_or(false),
+                    text: if v4 {
+                        content_text(&message["content"])
+                    } else {
+                        content_text(&message["content"][0]["content"])
+                    },
+                    is_error: if v4 {
+                        message["isError"].as_bool().unwrap_or(false)
+                    } else {
+                        message["content"][0]["isError"].as_bool().unwrap_or(false)
+                    },
                     shadowed: None,
                 });
             }

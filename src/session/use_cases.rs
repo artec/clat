@@ -426,7 +426,11 @@ impl SessionService {
             .ok_or_else(|| SessionError::NotFound("no active session".into()))?;
         if session.coordinator.is_read_only() {
             return Err(SessionError::UnsupportedFormat(
-                "legacy session is read-only; use /update to upgrade or /new".into(),
+                if session.coordinator.is_legacy() {
+                    "legacy session is read-only; use /update to upgrade or /new".into()
+                } else {
+                    "this V4 session requires capabilities CLAT cannot continue; open /new".into()
+                },
             ));
         }
         Ok(session.shared_journal(&self.backend))
@@ -440,6 +444,16 @@ impl SessionService {
             .is_some_and(|active| active.coordinator.is_read_only())
     }
 
+    pub(crate) fn is_legacy_read_only(&self) -> bool {
+        self.active
+            .lock()
+            .expect("active")
+            .as_ref()
+            .is_some_and(|active| {
+                active.coordinator.is_read_only() && active.coordinator.is_legacy()
+            })
+    }
+
     pub(crate) fn upgrade_active(&self) -> Result<SessionView, SessionError> {
         let key = {
             let guard = self.active.lock().expect("active");
@@ -451,6 +465,12 @@ impl SessionService {
                     "/update is only available in legacy sessions".into(),
                 ));
             }
+            if !active.coordinator.is_legacy() {
+                return Err(SessionError::UnsupportedFormat(
+                    "/update cannot rewrite a current V4 session with unsupported capabilities"
+                        .into(),
+                ));
+            }
             active.key.clone()
         };
         self.backend.upgrade_legacy(&key)?;
@@ -459,13 +479,13 @@ impl SessionService {
             .and_then(|staged| self.arm_session(staged))
             .map_err(|error| {
                 SessionError::Io(format!(
-                    "v2 has been published; reopen the session or retry /update: {error}"
+                    "v4 has been published; reopen the session or retry /update: {error}"
                 ))
             })?;
         if let Err(error) = self.quiesce_active() {
             let cleanup = self.discard_armed(armed);
             return Err(SessionError::Io(format!(
-                "v2 has been published; reopen the session after detach failure: {error}; target close: {cleanup:?}"
+                "v4 has been published; reopen the session after detach failure: {error}; target close: {cleanup:?}"
             )));
         }
         Ok(self.install_armed(armed))
@@ -1150,6 +1170,10 @@ fn collect_event_attachment_ids(
             collect_content_attachment_ids(event.data.pointer("/message/content"), referenced)
         }
         "tool/result" => {
+            if event.data["message"]["role"] == "tool" {
+                collect_content_attachment_ids(event.data.pointer("/message/content"), referenced);
+                return;
+            }
             let Some(parts) = event
                 .data
                 .pointer("/message/content")

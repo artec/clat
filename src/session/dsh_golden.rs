@@ -28,6 +28,7 @@ mod tests {
     use crate::session::path_layout::{log_path, project_key};
     use crate::session::persistence::{JsonlBackend, JsonlCompression};
     use crate::session::replay::{ReplayAdapter, ReplayEvent};
+    use crate::session::use_cases::SessionService;
 
     /// fixture 头部由生成脚本固定（见 gen-dsh-fixtures.mts）。
     const FIXTURE_CWD: &str = "/Users/deng/Documents/GitHub/clat";
@@ -619,6 +620,96 @@ mod tests {
             "the protected head rides the full load path"
         );
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn dsh_020_v4_native_codec_fixture_reads_tool_and_developer_roles() {
+        const ID: &str = "018f2a64-9d3f-7cde-8123-9a4f2b6c0e04";
+        let (root, backend) = mount_fixture_generation("v4-native-0.2.0.jsonl.zstd", ID, 4);
+        let events = load_golden(&backend, ID);
+        assert_eq!(events.len(), 9);
+        let result = events
+            .iter()
+            .find(|event| event.event_type == "tool/result")
+            .unwrap();
+        assert_eq!(result.data["message"]["role"], "tool");
+        assert_eq!(result.data["message"]["toolCallId"], "call-1");
+        let developer = events
+            .iter()
+            .find(|event| event.event_type == "developer/message")
+            .unwrap();
+        assert_eq!(developer.data["message"]["role"], "developer");
+        assert_eq!(
+            developer.data["message"]["source"]["kind"],
+            "runtime-context"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn dsh_native_v4_developer_session_resumes_without_writer_artifacts() {
+        const ID: &str = "018f2a64-9d3f-7cde-8123-9a4f2b6c0e04";
+        let (root, _) = mount_fixture_generation("v4-native-0.2.0.jsonl.zstd", ID, 4);
+        let key = key_for(ID);
+        let log = log_path(&root, Some(FIXTURE_CWD), &key.id, JsonlCompression::Zstd);
+        let bytes = std::fs::read(&log).expect("DSH V4 source bytes");
+        let service = SessionService::new(root.clone(), JsonlCompression::Zstd).expect("service");
+        let view = service.resume(&key).expect("open native DSH V4");
+        assert!(service.is_read_only());
+        assert!(!service.is_legacy_read_only());
+        assert!(
+            !view.replay.is_empty(),
+            "ordinary conversation remains visible"
+        );
+        assert!(service.journal().is_err());
+        service.quiesce_active().expect("close read-only session");
+        assert_eq!(std::fs::read(&log).unwrap(), bytes);
+        assert_eq!(std::fs::read_dir(log.parent().unwrap()).unwrap().count(), 1);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn dsh_native_v3_resumes_read_only_then_updates_once_to_writable_v4() {
+        const ID: &str = "018f2a64-9d3f-7cde-8123-9a4f2b6c0e01";
+        let (root, _) = mount_fixture_generation("v3-session-0.1.5.jsonl.zstd", ID, 3);
+        let key = key_for(ID);
+        let source = log_path(&root, Some(FIXTURE_CWD), &key.id, JsonlCompression::Zstd)
+            .with_file_name("session.v3.jsonl.zstd");
+        let original = std::fs::read(&source).expect("V3 source");
+        let service = SessionService::new(root.clone(), JsonlCompression::Zstd).expect("service");
+        service.resume(&key).expect("open DSH V3");
+        assert!(service.is_legacy_read_only());
+        assert!(service.journal().is_err());
+        assert_eq!(std::fs::read(&source).unwrap(), original);
+        service.upgrade_active().expect("publish V4");
+        assert!(!service.is_read_only());
+        assert_eq!(std::fs::read(&source).unwrap(), original);
+        assert!(log_path(&root, Some(FIXTURE_CWD), &key.id, JsonlCompression::Zstd).exists());
+        service.quiesce_active().expect("close writer");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn v3_to_v4_matches_pinned_dsh_migration_event_for_event() {
+        const ID: &str = "018f2a64-9d3f-7cde-8123-9a4f2b6c0e02";
+        let (source_header, source_events) = load_v3_golden("v3-migrated-0.1.5.jsonl.zstd");
+        let (actual_header, actual) =
+            crate::session::upgrade::ensure_current(&source_header, &source_events)
+                .expect("CLAT adjacent edge");
+        let bytes = std::fs::read(fixture_dir().join("v4-migrated-0.2.0.jsonl.zstd"))
+            .expect("DSH V4 migrated bytes");
+        let (plain, torn) = crate::session::jsonl::decode_zstd_log(&bytes).expect("V4 frames");
+        assert!(torn.is_none());
+        let scan = crate::session::jsonl::scan_raw(&plain).expect("V4 scan");
+        crate::session::admission::admit_events_for_version(&scan.events, 4).expect("V4 admission");
+        let expected_header = scan.header;
+        let expected = scan.events;
+        assert_eq!(actual_header.version, expected_header.version);
+        assert_eq!(actual_header.id, expected_header.id);
+        assert_eq!(
+            actual, expected,
+            "CLAT migration must match DSH's released V3→V4 edge"
+        );
     }
 
     /// 布局推导钉住：fixture 的 cwd 经 CLAT 的 project_key 得到与

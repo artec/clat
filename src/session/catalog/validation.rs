@@ -13,8 +13,15 @@ pub(super) fn step(event: &SessionEvent, _version: u32) -> Result<(), String> {
     Ok(())
 }
 
-pub(super) fn user_message(event: &SessionEvent, _version: u32) -> Result<(), String> {
-    require_message(&event.data)?;
+pub(super) fn user_message(event: &SessionEvent, version: u32) -> Result<(), String> {
+    let message = require_message(&event.data)?;
+    if version >= 4 {
+        if message.get("role").and_then(|value| value.as_str()) != Some("user") {
+            return Err("v4 user/message requires user role".into());
+        }
+        require_v4_source(require_object(&event.data, "source")?)?;
+        validate_v4_blocks(message, false)?;
+    }
     require_admission_metadata(&event.data)?;
     if !is_surface_type(&event.event_type) || event.surface_op.is_none() {
         return Err("surface event lacks surfaceOp".into());
@@ -27,7 +34,7 @@ pub(super) fn user_message(event: &SessionEvent, _version: u32) -> Result<(), St
 /// "no system prompt" (upstream `assertSystem`, exact members). An empty
 /// head keeps its surface protection, so surfaceOp presence is required
 /// exactly like the other surface types.
-pub(super) fn system_message(event: &SessionEvent, _version: u32) -> Result<(), String> {
+pub(super) fn system_message(event: &SessionEvent, version: u32) -> Result<(), String> {
     require_u64(&event.data, "turn")?;
     require_u64(&event.data, "step")?;
     let message = require_object(&event.data, "message")?;
@@ -45,7 +52,9 @@ pub(super) fn system_message(event: &SessionEvent, _version: u32) -> Result<(), 
         .get("source")
         .and_then(serde_json::Value::as_object)
         .ok_or("system message source must be an object")?;
-    if source.get("kind").and_then(|v| v.as_str()) != Some("plugin")
+    if version >= 4 {
+        require_v4_source(source)?;
+    } else if source.get("kind").and_then(|v| v.as_str()) != Some("plugin")
         || source
             .get("plugin")
             .and_then(serde_json::Value::as_str)
@@ -54,8 +63,85 @@ pub(super) fn system_message(event: &SessionEvent, _version: u32) -> Result<(), 
         return Err("system message requires a non-empty plugin source".into());
     }
     require_content_array(message)?;
+    if version >= 4 {
+        validate_v4_blocks(message, false)?;
+    }
     if !is_surface_type(&event.event_type) || event.surface_op.is_none() {
         return Err("surface event lacks surfaceOp".into());
+    }
+    Ok(())
+}
+
+pub(super) fn developer_message(event: &SessionEvent, version: u32) -> Result<(), String> {
+    if version < 4 {
+        return Err("developer/message requires v4".into());
+    }
+    for field in ["turn", "step"] {
+        if require_u64(&event.data, field)? == 0 {
+            return Err(format!("developer/message {field} must be positive"));
+        }
+    }
+    let message = require_object(&event.data, "message")?;
+    if message.get("role").and_then(|v| v.as_str()) != Some("developer") {
+        return Err("developer/message requires developer role".into());
+    }
+    if message
+        .get("id")
+        .and_then(|v| v.as_str())
+        .is_none_or(str::is_empty)
+    {
+        return Err("developer/message requires a non-empty id".into());
+    }
+    let source = require_object(&event.data["message"], "source")?;
+    require_v4_source(source)?;
+    require_content_array(message)?;
+    validate_v4_blocks(message, true)?;
+    let additions = message["content"].as_array().is_some_and(|blocks| {
+        blocks
+            .iter()
+            .any(|block| block.get("type").and_then(|v| v.as_str()) == Some("tool-addition"))
+    });
+    if additions != event.data.get("headerSeq").is_some() {
+        return Err("developer/message headerSeq must occur exactly with tool additions".into());
+    }
+    if additions {
+        require_u64(&event.data, "headerSeq")?;
+    }
+    if event.surface_op.is_none() {
+        return Err("developer/message lacks surfaceOp".into());
+    }
+    Ok(())
+}
+
+fn require_v4_source(source: &serde_json::Map<String, serde_json::Value>) -> Result<(), String> {
+    match source.get("kind").and_then(|value| value.as_str()) {
+        Some(kind) if !kind.is_empty() && kind != "plugin" => Ok(()),
+        _ => Err("v4 message requires a producer-owned source kind".into()),
+    }
+}
+
+fn validate_v4_blocks(
+    message: &serde_json::Map<String, serde_json::Value>,
+    developer: bool,
+) -> Result<(), String> {
+    for block in require_content_array(message)? {
+        let kind = block.get("type").and_then(|value| value.as_str());
+        if !matches!(kind, Some("tool-addition" | "tool-removal")) {
+            continue;
+        }
+        if !developer {
+            return Err("tool-change blocks require developer role".into());
+        }
+        if block
+            .get("toolName")
+            .and_then(|value| value.as_str())
+            .is_none_or(str::is_empty)
+        {
+            return Err("tool-change block requires nonempty toolName".into());
+        }
+        if kind == Some("tool-addition") && block.get("tool").is_some() {
+            return Err("tool-addition must omit inline tool definition".into());
+        }
     }
     Ok(())
 }
@@ -66,6 +152,9 @@ pub(super) fn assistant_message(event: &SessionEvent, version: u32) -> Result<()
     // an empty carrier — the calls live in the following tool/call
     // events (CLAT's own production shape).
     require_content_array(message)?;
+    if version >= 4 {
+        validate_v4_blocks(message, false)?;
+    }
     let source = message
         .get("source")
         .and_then(serde_json::Value::as_object)
@@ -103,6 +192,41 @@ pub(super) fn assistant_attempt(event: &SessionEvent, _version: u32) -> Result<(
 
 pub(super) fn tool_result(event: &SessionEvent, version: u32) -> Result<(), String> {
     let message = require_object(&event.data, "message")?;
+    if version >= 4 {
+        let source = require_object(&event.data["message"], "source")?;
+        if message
+            .get("id")
+            .and_then(|v| v.as_str())
+            .is_none_or(str::is_empty)
+            || message.get("role").and_then(|v| v.as_str()) != Some("tool")
+            || source.get("kind").and_then(|v| v.as_str()) != Some("tool")
+            || message
+                .get("toolCallId")
+                .and_then(|v| v.as_str())
+                .is_none_or(str::is_empty)
+            || message.get("toolCallId") != source.get("callId")
+        {
+            return Err("v4 tool/result requires a matching first-class tool message".into());
+        }
+        require_content_array(message)?;
+        validate_v4_blocks(message, false)?;
+        if message["content"].as_array().is_some_and(|blocks| {
+            blocks
+                .iter()
+                .any(|block| block.get("type").and_then(|v| v.as_str()) == Some("tool-result"))
+        }) {
+            return Err("v4 tool/result rejects a retired wrapper".into());
+        }
+        if message.get("isError").is_some_and(|v| !v.is_boolean())
+            || (event.data.get("error").is_some()
+                && message.get("isError").and_then(|v| v.as_bool()) != Some(true))
+        {
+            return Err("v4 tool/result has contradictory error metadata".into());
+        }
+        require_u64(&event.data, "turn")?;
+        require_u64(&event.data, "step")?;
+        return Ok(());
+    }
     let content = message
         .get("content")
         .and_then(|value| value.as_array())
