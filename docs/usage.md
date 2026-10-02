@@ -577,6 +577,8 @@ Each write may idle for at most 15 seconds and the full response is capped at
 Assistant Markdown supports fenced code, inline code, emphasis, headings,
 lists, blockquotes, links, and horizontal rules. Unsupported syntax degrades
 to plain text; model output is never interpreted as terminal control input.
+Tool cards stay visually secondary: their status heading and successful output
+text are dim, only the successful checkmark is green, and failures remain red.
 
 CLAT plays a focus-aware notification when an unattended run finishes or a
 permission/question dialog needs attention. Set `CLAT_NO_BELL=1` to disable
@@ -940,6 +942,10 @@ become drawers. Browser storage is limited to presentation preferences and the
 pairing credential; session content, run state, permission mode, model state,
 and MCP facts are rebuilt from authenticated snapshots, journal replay, and
 live events.
+Message bodies render a safe Markdown subset (headings, lists, tables, quotes,
+fenced and inline code, emphasis, links, and rules) after a response settles; active
+streams remain plain text. Raw HTML and remote Markdown images are never
+interpreted, and only HTTP(S) links become clickable.
 
 The active model is chosen from the compact picker immediately before **Send**;
 built-in presets and saved profiles share that next-run menu, while write-only
@@ -961,8 +967,12 @@ message-aligned tail window (50 messages by default), and the workbench loads
 earlier pages automatically when scrolling within 512 px of the top. Prepending
 keeps the current reading line fixed. A slim map on the right represents every
 user and assistant message in the session; hover or keyboard focus shows a
-bounded turn preview, and selecting an unloaded marker fetches earlier pages
-before jumping. The map hides on narrow mobile layouts. The composer floats
+bounded turn preview without Markdown punctuation, and selecting an unloaded
+marker fetches earlier pages before jumping. The preview distinguishes your
+message in primary text from the agent reply in softer gray. For long sessions it renders only
+the visible marker window, while retaining the full scroll range and per-message
+positions; the focused map can be browsed with arrow, Page, Home, and End keys.
+The map hides on narrow mobile layouts. The composer floats
 above the transcript while measured bottom clearance keeps the last message
 fully readable.
 

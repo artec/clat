@@ -3,8 +3,8 @@
  * RF-1/RF-5: browser persistence contains presentation preferences and one
  * origin-scoped pairing token. The origin includes the serve port, so another
  * local HTTP service cannot read it. Session content, run state, permission mode, model and MCP
- * state are rebuilt from serve. Dynamic model/tool text is always written
- * through textContent; this file never uses innerHTML.
+ * state are rebuilt from serve. Dynamic model/tool text is written through
+ * text nodes and DOM construction; this file never uses innerHTML.
  */
 
 'use strict';
@@ -13,6 +13,9 @@ const PRESENTATION_KEY = 'clat.presentation.v1';
 const AUTH_KEY = 'clat.auth.v1';
 const MOBILE_BREAKPOINT = 760;
 const INSPECTOR_DRAWER_BREAKPOINT = 1180;
+const MAP_ITEM_HEIGHT = 9;
+const MAP_FULL_RENDER_LIMIT = 120;
+const MAP_OVERSCAN = 12;
 const requestedWorkspace = new URLSearchParams(location.search).get('workspace');
 const workspacePrefix = requestedWorkspace === null ? '' : '/workspace/' + (
   /^(default|[a-f0-9-]{36})$/.test(requestedWorkspace) ? requestedWorkspace : 'invalid'
@@ -23,6 +26,207 @@ function el(tag, cls, text) {
   if (cls) node.className = cls;
   if (text !== undefined) node.textContent = text;
   return node;
+}
+
+// A deliberately small Markdown surface: no raw HTML, remote images, or
+// arbitrary URL schemes. The DOM is assembled from text nodes only.
+const INLINE_MARKDOWN = /(`[^`\n]+`|\*\*[^*\n]+\*\*|__[^_\n]+__|~~[^~\n]+~~|\*[^*\n]+\*|_[^_\n]+_|\[[^\]\n]+\]\(https?:\/\/[^\s)\n]+\))/g;
+
+function appendInlineMarkdown(parent, text) {
+  let offset = 0;
+  for (const match of text.matchAll(INLINE_MARKDOWN)) {
+    parent.append(document.createTextNode(text.slice(offset, match.index)));
+    const token = match[0];
+    let node;
+    if (token.startsWith('`')) node = el('code', null, token.slice(1, -1));
+    else if (token.startsWith('**') || token.startsWith('__')) node = el('strong', null, token.slice(2, -2));
+    else if (token.startsWith('~~')) node = el('del', null, token.slice(2, -2));
+    else if (token.startsWith('*') || token.startsWith('_')) node = el('em', null, token.slice(1, -1));
+    else {
+      const parts = /^\[([^\]]+)\]\(([^)]+)\)$/.exec(token);
+      const url = parts && parts[2];
+      if (url && /^https?:\/\//i.test(url)) {
+        node = el('a', null, parts[1]);
+        node.href = url;
+        node.target = '_blank';
+        node.rel = 'noopener noreferrer';
+      } else node = document.createTextNode(token);
+    }
+    parent.append(node);
+    offset = match.index + token.length;
+  }
+  parent.append(document.createTextNode(text.slice(offset)));
+}
+
+function markdownBlockStart(line) {
+  return /^ {0,3}(?:#{1,4}\s+|>|[-*+]\s+|\d+[.)]\s+|`{3,}|~{3,})/.test(line)
+    || /^ {0,3}(?:-{3,}|\*{3,}|_{3,})\s*$/.test(line);
+}
+
+function tableCells(line) {
+  const source = line.trim();
+  const cells = [''];
+  let codeTicks = 0;
+  let hasPipe = false;
+  let lastDelimiter = false;
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index];
+    if (char === '\\' && source[index + 1] === '|') {
+      cells[cells.length - 1] += '|';
+      index += 1;
+    } else if (char === '`') {
+      const run = /^`+/.exec(source.slice(index))[0];
+      if (codeTicks === 0) codeTicks = run.length;
+      else if (codeTicks === run.length) codeTicks = 0;
+      cells[cells.length - 1] += run;
+      index += run.length - 1;
+    } else if (char === '|' && codeTicks === 0) {
+      cells.push('');
+      hasPipe = true;
+      lastDelimiter = true;
+      continue;
+    } else cells[cells.length - 1] += char;
+    lastDelimiter = false;
+  }
+  if (!hasPipe) return null;
+  if (source.startsWith('|')) cells.shift();
+  if (lastDelimiter) cells.pop();
+  return cells.map((cell) => cell.trim());
+}
+
+function tableDefinition(lines, index) {
+  if (index + 1 >= lines.length) return null;
+  const header = tableCells(lines[index]);
+  const separators = tableCells(lines[index + 1]);
+  if (!header || !separators || header.length === 0 || header.length !== separators.length
+    || !separators.every((cell) => /^:?-{3,}:?$/.test(cell))) return null;
+  const alignments = separators.map((cell) => cell.startsWith(':') && cell.endsWith(':')
+    ? 'center' : cell.endsWith(':') ? 'right' : 'left');
+  return { header, alignments };
+}
+
+function renderMarkdownTable(lines, index, definition) {
+  const table = el('table');
+  const head = el('thead');
+  const heading = el('tr');
+  definition.header.forEach((value, column) => {
+    const cell = el('th');
+    cell.style.textAlign = definition.alignments[column];
+    appendInlineMarkdown(cell, value);
+    heading.append(cell);
+  });
+  head.append(heading);
+  const body = el('tbody');
+  index += 2;
+  while (index < lines.length && lines[index].trim()) {
+    const values = tableCells(lines[index]);
+    if (!values) break;
+    const row = el('tr');
+    definition.header.forEach((_header, column) => {
+      const cell = el('td');
+      cell.style.textAlign = definition.alignments[column];
+      appendInlineMarkdown(cell, values[column] || '');
+      row.append(cell);
+    });
+    body.append(row);
+    index += 1;
+  }
+  table.append(head, body);
+  const scroll = el('div', 'table-scroll');
+  scroll.append(table);
+  return { node: scroll, nextIndex: index };
+}
+
+function renderFencedCode(lines, index, fence) {
+  const marker = fence[1];
+  const codeLines = [];
+  index += 1;
+  while (index < lines.length) {
+    const close = lines[index].trim();
+    if (close.length >= marker.length && [...close].every((char) => char === marker[0])) {
+      index += 1;
+      break;
+    }
+    codeLines.push(lines[index]);
+    index += 1;
+  }
+  const pre = el('pre');
+  pre.append(el('code', null, codeLines.join('\n')));
+  return { node: pre, nextIndex: index };
+}
+
+function renderMarkdown(container, source) {
+  const lines = String(source || '').replace(/\r\n?/g, '\n').split('\n');
+  const fragment = document.createDocumentFragment();
+  for (let index = 0; index < lines.length;) {
+    const line = lines[index];
+    if (!line.trim()) { index += 1; continue; }
+    const fence = /^ {0,3}(`{3,}|~{3,})/.exec(line);
+    if (fence) {
+      const rendered = renderFencedCode(lines, index, fence);
+      fragment.append(rendered.node);
+      index = rendered.nextIndex;
+      continue;
+    }
+    const definition = tableDefinition(lines, index);
+    if (definition) {
+      const rendered = renderMarkdownTable(lines, index, definition);
+      fragment.append(rendered.node);
+      index = rendered.nextIndex;
+      continue;
+    }
+    const heading = /^ {0,3}(#{1,4})\s+(.+?)\s*#*\s*$/.exec(line);
+    if (heading) {
+      const node = el(`h${Math.min(heading[1].length + 1, 5)}`);
+      appendInlineMarkdown(node, heading[2]);
+      fragment.append(node);
+      index += 1;
+      continue;
+    }
+    if (/^ {0,3}(?:-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
+      fragment.append(el('hr'));
+      index += 1;
+      continue;
+    }
+    const list = /^ {0,3}([-*+]|\d+[.)])\s+(.+)$/.exec(line);
+    if (list) {
+      const ordered = /\d/.test(list[1][0]);
+      const group = el(ordered ? 'ol' : 'ul');
+      while (index < lines.length) {
+        const item = /^ {0,3}([-*+]|\d+[.)])\s+(.+)$/.exec(lines[index]);
+        if (!item || /\d/.test(item[1][0]) !== ordered) break;
+        const row = el('li');
+        appendInlineMarkdown(row, item[2]);
+        group.append(row);
+        index += 1;
+      }
+      fragment.append(group);
+      continue;
+    }
+    if (/^ {0,3}>/.test(line)) {
+      const quote = el('blockquote');
+      const copy = [];
+      while (index < lines.length && /^ {0,3}>/.test(lines[index])) {
+        copy.push(lines[index].replace(/^ {0,3}>\s?/, ''));
+        index += 1;
+      }
+      appendInlineMarkdown(quote, copy.join(' '));
+      fragment.append(quote);
+      continue;
+    }
+    const paragraph = [];
+    while (index < lines.length && lines[index].trim()
+      && (paragraph.length === 0
+        || (!markdownBlockStart(lines[index]) && !tableDefinition(lines, index)))) {
+      paragraph.push(lines[index].trim());
+      index += 1;
+    }
+    const node = el('p');
+    appendInlineMarkdown(node, paragraph.join(' '));
+    fragment.append(node);
+  }
+  container.replaceChildren(fragment);
+  container.classList.add('is-rendered');
 }
 
 const ICON_PATHS = {
@@ -166,6 +370,12 @@ const state = {
     firstSeq: null,
     replayTarget: null,
     outline: [],
+    mapItems: [],
+    mapSpace: null,
+    mapRange: null,
+    mapSeqToIndex: new Map(),
+    mapPreviewByTurn: new Map(),
+    activeMapSeq: null,
     jumping: false,
     replaying: false,
   },
@@ -418,6 +628,7 @@ function handleReplay(event) {
       node = bubble.node;
       if (event.reasoning) bubble.setReasoning(event.reasoning);
       bubble.appendBody(event.text || '');
+      bubble.finishBody();
       for (const call of event.tool_calls || []) {
         addToolCard(call.name, jsonText(call.arguments), null, false);
       }
@@ -476,7 +687,10 @@ function handleLive(event) {
       break;
     }
     case 'model_responded':
-      if (state.run && state.run.assistant) state.run.assistant.finishReasoning();
+      if (state.run && state.run.assistant) {
+        state.run.assistant.finishReasoning();
+        state.run.assistant.finishBody();
+      }
       addTraceEvent(event.type, turnEndText(event.finish_reason));
       break;
     case 'tool_requested':
@@ -516,7 +730,10 @@ function handleLive(event) {
 
 function finishRun(event) {
   invalidateSuggestion();
-  if (state.run && state.run.assistant) state.run.assistant.finishReasoning();
+  if (state.run && state.run.assistant) {
+    state.run.assistant.finishReasoning();
+    state.run.assistant.finishBody();
+  }
   state.runActive = false;
   state.run = null;
   const restoredDraft = restoreQueuedDraft();
@@ -897,7 +1114,8 @@ function addUserMessage(text, blocks) {
   const msg = el('div', 'msg user');
   const marker = el('span', 'marker');
   marker.appendChild(svgIcon('user'));
-  const body = el('div', 'body' + (text ? '' : ' image-only'), text);
+  const body = el('div', 'body rich-text' + (text ? '' : ' image-only'));
+  renderMarkdown(body, text);
   const attachments = addMessageAttachments(attachmentBlocks(blocks));
   msg.append(marker, body);
   if (attachments) msg.appendChild(attachments);
@@ -909,8 +1127,10 @@ function addAssistantMessage() {
   const marker = el('span', 'marker');
   marker.appendChild(svgIcon('agent'));
   msg.append(marker);
-  const body = el('div', 'body');
-  const bodyText = document.createTextNode('');
+  const body = el('div', 'body rich-text');
+  let bodyText = document.createTextNode('');
+  const bodyChunks = [];
+  let bodyRendered = false;
   body.appendChild(bodyText);
   const reasoning = el('details', 'reasoning hidden');
   const reasoningSummary = el('summary');
@@ -932,7 +1152,21 @@ function addAssistantMessage() {
     // `textContent += delta` serializes and reparses the entire growing
     // transcript on every stream chunk. Native Text append keeps long local
     // streams linear, so attachment fetch completion and input remain live.
-    appendBody(text) { bodyText.appendData(text); },
+    appendBody(text) {
+      if (bodyRendered) {
+        bodyText = document.createTextNode(bodyChunks.join(''));
+        body.replaceChildren(bodyText);
+        body.classList.remove('is-rendered');
+        bodyRendered = false;
+      }
+      bodyChunks.push(text);
+      bodyText.appendData(text);
+    },
+    finishBody() {
+      if (bodyRendered) return;
+      renderMarkdown(body, bodyChunks.join(''));
+      bodyRendered = true;
+    },
     appendReasoning(text) {
       show(reasoning);
       reasoningText.appendData(text);
@@ -1141,37 +1375,99 @@ async function loadOlderHistory() {
   }
 }
 
-function outlinePreview(item) {
-  const sameTurn = state.history.outline.filter((candidate) => candidate.turn === item.turn);
-  const user = sameTurn.find((candidate) => candidate.role === 'user');
-  const assistant = sameTurn.filter((candidate) => candidate.role === 'assistant')
-    .map((candidate) => candidate.preview).filter(Boolean).join('\n');
-  return [user && user.preview, assistant].filter(Boolean).join('\n');
+function plainOutlinePreview(value) {
+  return String(value || '').replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .split('\n').map((line) => line
+      .replace(/^\s{0,3}(?:#{1,6}\s+|[-*+]\s+|\d+[.)]\s+|>\s?)/, '')
+      .replace(/^(`{3,}|~{3,}).*$/, '')
+      .replace(/`([^`]+)`/g, '$1')
+      .replace(/\*\*([^*]+)\*\*|__([^_]+)__|~~([^~]+)~~/g,
+        (_match, strong, underline, deleted) => strong || underline || deleted)
+      .replace(/\*([^*]+)\*|_([^_]+)_/g, (_match, star, underscore) => star || underscore)
+      .trim())
+    .filter(Boolean).join('\n');
+}
+
+function buildMapPreviews(outline) {
+  const turns = new Map();
+  for (const item of outline) {
+    const turn = item.turn || 0;
+    if (!turns.has(turn)) turns.set(turn, { user: '', assistant: [] });
+    const preview = plainOutlinePreview(item.preview);
+    const entry = turns.get(turn);
+    if (item.role === 'user' && !entry.user) entry.user = preview;
+    if (item.role === 'assistant' && preview) {
+      entry.assistant.push(preview);
+      if (entry.assistant.length > 3) entry.assistant.shift();
+    }
+  }
+  return new Map([...turns].map(([turn, entry]) => [turn,
+    [
+      entry.user && { role: 'user', text: entry.user },
+      entry.assistant.length > 0 && { role: 'assistant', text: entry.assistant.join('\n') },
+    ].filter(Boolean)]));
+}
+
+function showMapPreview(item) {
+  const rows = state.history.mapPreviewByTurn.get(item.turn || 0);
+  const fallback = [{ role: item.role, text: plainOutlinePreview(item.preview) || 'Empty message' }];
+  const fragment = document.createDocumentFragment();
+  for (const row of rows && rows.length > 0 ? rows : fallback) {
+    const line = el('div', `map-preview-row ${row.role === 'user' ? 'is-user' : 'is-assistant'}`);
+    line.append(el('span', 'map-preview-role', row.role === 'user' ? 'You' : 'Agent'));
+    line.append(el('span', 'map-preview-text', row.text));
+    fragment.append(line);
+  }
+  dom['message-map-preview'].replaceChildren(fragment);
+  show(dom['message-map-preview']);
+}
+
+function renderMapWindow() {
+  const { mapItems, mapSpace } = state.history;
+  if (!mapSpace) return;
+  const track = dom['message-map-track'];
+  const first = mapItems.length <= MAP_FULL_RENDER_LIMIT ? 0
+    : Math.max(0, Math.floor(track.scrollTop / MAP_ITEM_HEIGHT) - MAP_OVERSCAN);
+  const last = mapItems.length <= MAP_FULL_RENDER_LIMIT ? mapItems.length
+    : Math.min(mapItems.length,
+      Math.ceil((track.scrollTop + track.clientHeight) / MAP_ITEM_HEIGHT) + MAP_OVERSCAN);
+  if (state.history.mapRange && state.history.mapRange[0] === first
+    && state.history.mapRange[1] === last) return;
+  state.history.mapRange = [first, last];
+  const fragment = document.createDocumentFragment();
+  for (let index = first; index < last; index += 1) {
+    const item = mapItems[index];
+    const bar = el('button', `message-map-item ${item.role === 'user' ? 'is-user' : 'is-assistant'}`);
+    bar.type = 'button';
+    bar.style.top = `${index * MAP_ITEM_HEIGHT}px`;
+    bar.dataset.seq = String(item.seq);
+    bar.setAttribute('aria-label', `${item.role || 'message'} at turn ${item.turn || 0}`);
+    const preview = () => showMapPreview(item);
+    bar.addEventListener('mouseenter', preview);
+    bar.addEventListener('focus', preview);
+    bar.addEventListener('click', () => jumpToMessage(item.seq));
+    if (String(item.seq) === state.history.activeMapSeq) bar.classList.add('is-active');
+    fragment.appendChild(bar);
+  }
+  mapSpace.replaceChildren(fragment);
 }
 
 function renderMessageMap() {
   const track = dom['message-map-track'];
-  track.replaceChildren();
+  const oldScroll = track.scrollTop;
   const outline = state.history.outline;
-  dom['message-map'].classList.toggle('hidden', outline.length < 2);
-  for (const item of outline) {
-    if (!item || !Number.isSafeInteger(item.seq)) continue;
-    const bar = el('button', `message-map-item ${item.role === 'user' ? 'is-user' : 'is-assistant'}`);
-    bar.type = 'button';
-    bar.dataset.seq = String(item.seq);
-    bar.setAttribute('aria-label', `${item.role || 'message'} at turn ${item.turn || 0}`);
-    bar.addEventListener('mouseenter', () => {
-      dom['message-map-preview'].textContent = outlinePreview(item) || item.preview || 'Empty message';
-      show(dom['message-map-preview']);
-    });
-    bar.addEventListener('focus', () => {
-      dom['message-map-preview'].textContent = outlinePreview(item) || item.preview || 'Empty message';
-      show(dom['message-map-preview']);
-    });
-    bar.addEventListener('click', () => jumpToMessage(item.seq));
-    track.appendChild(bar);
-  }
-  bindLiveMessageSeqs(outline);
+  const items = outline.filter((item) => item && Number.isSafeInteger(item.seq));
+  state.history.mapItems = items;
+  state.history.mapSeqToIndex = new Map(items.map((item, index) => [String(item.seq), index]));
+  state.history.mapPreviewByTurn = buildMapPreviews(items);
+  state.history.mapRange = null;
+  state.history.mapSpace = el('div', 'message-map-space');
+  state.history.mapSpace.style.height = `${items.length * MAP_ITEM_HEIGHT}px`;
+  track.replaceChildren(state.history.mapSpace);
+  dom['message-map'].classList.toggle('hidden', items.length < 2);
+  track.scrollTop = oldScroll;
+  renderMapWindow();
+  bindLiveMessageSeqs(items);
   syncActiveMapItem();
 }
 
@@ -1212,24 +1508,39 @@ async function jumpToMessage(seq) {
     if (row) row.scrollIntoView({ block: 'center', behavior: 'smooth' });
   } finally {
     state.history.jumping = false;
-    if (bar) bar.classList.remove('is-jumping');
+    dom['message-map-track'].querySelector(`[data-seq="${seq}"]`)?.classList.remove('is-jumping');
   }
 }
 
 function syncActiveMapItem() {
-  const rows = [...dom.transcript.querySelectorAll(':scope > .msg[data-seq]')];
   const readingLine = dom['transcript-scroll'].getBoundingClientRect().top + 72;
-  let active = rows[0] || null;
-  for (const row of rows) {
-    if (row.getBoundingClientRect().top <= readingLine) active = row;
-    else break;
+  const rows = dom.transcript.children;
+  let low = 0;
+  let high = rows.length;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    if (rows[middle].getBoundingClientRect().top <= readingLine) low = middle + 1;
+    else high = middle;
   }
-  for (const bar of dom['message-map-track'].children) {
-    bar.classList.toggle('is-active', Boolean(active) && bar.dataset.seq === active.dataset.seq);
+  let active = null;
+  for (let index = Math.min(low, rows.length) - 1; index >= 0; index -= 1) {
+    if (rows[index].matches('.msg[data-seq]')) { active = rows[index]; break; }
   }
-  const activeBar = dom['message-map-track'].querySelector('.is-active');
-  if (activeBar && !dom['message-map'].matches(':hover')) {
-    activeBar.scrollIntoView({ block: 'nearest' });
+  if (!active) active = dom.transcript.querySelector(':scope > .msg[data-seq]');
+  const seq = active && active.dataset.seq;
+  state.history.activeMapSeq = seq || null;
+  const track = dom['message-map-track'];
+  const index = state.history.mapSeqToIndex.get(seq);
+  if (index !== undefined && !dom['message-map'].matches(':hover')
+    && !track.contains(document.activeElement)) {
+    const top = index * MAP_ITEM_HEIGHT;
+    if (top < track.scrollTop || top + MAP_ITEM_HEIGHT > track.scrollTop + track.clientHeight) {
+      track.scrollTop = Math.max(0, top - Math.floor(track.clientHeight / 2));
+    }
+  }
+  renderMapWindow();
+  for (const bar of track.querySelectorAll('.message-map-item')) {
+    bar.classList.toggle('is-active', bar.dataset.seq === seq);
   }
 }
 
@@ -1237,6 +1548,21 @@ dom['history-status'].addEventListener('click', () => { void loadOlderHistory();
 dom['message-map-track'].addEventListener('mouseleave', () => hide(dom['message-map-preview']));
 dom['message-map-track'].addEventListener('focusout', (event) => {
   if (!dom['message-map-track'].contains(event.relatedTarget)) hide(dom['message-map-preview']);
+});
+dom['message-map-track'].addEventListener('scroll', renderMapWindow, { passive: true });
+dom['message-map-track'].addEventListener('keydown', (event) => {
+  const track = dom['message-map-track'];
+  const steps = {
+    ArrowUp: -MAP_ITEM_HEIGHT,
+    ArrowDown: MAP_ITEM_HEIGHT,
+    PageUp: -track.clientHeight,
+    PageDown: track.clientHeight,
+    Home: -track.scrollHeight,
+    End: track.scrollHeight,
+  };
+  if (event.target !== track || !Object.hasOwn(steps, event.key)) return;
+  event.preventDefault();
+  track.scrollTop += steps[event.key];
 });
 dom['transcript-scroll'].addEventListener('scroll', () => {
   if (!state.history.replaying && dom['transcript-scroll'].scrollTop <= 512) {
@@ -2424,6 +2750,7 @@ document.addEventListener('keydown', (event) => {
 });
 
 window.addEventListener('resize', () => {
+  renderMapWindow();
   if (!isMobile()) closeMobileSidebar();
   if (window.innerWidth <= INSPECTOR_DRAWER_BREAKPOINT && state.inspector === 'open') {
     setInspector('closed');

@@ -750,8 +750,13 @@ test.describe('acceptance ① approval + run lifecycle', () => {
     //（tool_finished 才带结果体）。
     await expect(page.locator('.tool-card')).toHaveCount(1);
 
-    // 侧栏两个会话（同一 journal 事实源——验收②）。
-    await expect(page.locator('#session-list li')).toHaveCount(2, LIVE);
+    // 当前会话进入侧栏，刷新后仍能从 journal 重建。宿主在其他
+    // 用例中也会产生会话，不能把整个侧栏数量钉为 2。
+    await expect(page.locator('#session-list li.active')).toHaveCount(1, LIVE);
+    await page.reload();
+    await expect(page.locator('#conn-status')).toHaveText('live', LIVE);
+    await expect(page.locator('#session-list li.active')).toHaveCount(1, LIVE);
+    await expect(page.locator('.msg.user .body').last()).toHaveText('try a command', LIVE);
 
     // 重命名（对话窗 handle prompt 对话框）。
     page.once('dialog', (dialog) => dialog.accept('renamed by e2e'));
@@ -931,6 +936,100 @@ test('conversation map keeps a safe scrollbar gutter and a continuous hover targ
   await expect(page.locator('#message-map-preview')).toBeVisible();
   await page.mouse.move(second.x + second.width / 2, second.y + second.height / 2);
   await expect(page.locator('#message-map-preview')).toBeVisible();
+});
+
+test('message Markdown is readable without turning model text into executable HTML', async ({ page }, testInfo) => {
+  await openWorkbench(page, hostInfo('success'));
+  await page.evaluate(() => {
+    const bubble = addAssistantMessage();
+    bubble.node.dataset.web2 = 'markdown';
+    bubble.appendBody('**streaming**');
+    window.web2Bubble = bubble;
+  });
+  const body = page.locator('[data-web2="markdown"] .body');
+  await expect(body).toHaveText('**streaming**');
+  await expect(body.locator('strong')).toHaveCount(0);
+  await page.evaluate(() => {
+    window.web2Bubble.appendBody('\n\n## Result\n- one\n- two\n\n```js\nconst x = 1\n```'
+      + '\n\n<script id="web2-attack">alert(1)</script>'
+      + '\n\n[bad](javascript:alert(1)) [good](https://example.com)'
+      + '\n\n| Name | Count |\n| :--- | ---: |\n| **Ada** | 2 |'
+      + '\n| `a\\|b` | <img id="table-attack" src=x onerror=alert(1)> |');
+    window.web2Bubble.finishBody();
+  });
+  await expect(body.locator('strong').first()).toHaveText('streaming');
+  await expect(body.locator('h3')).toHaveText('Result');
+  await expect(body.locator('li')).toHaveCount(2);
+  await expect(body.locator('pre code')).toHaveText('const x = 1');
+  expect(await body.locator('pre code').evaluate((node) => getComputedStyle(node).borderTopWidth)).toBe('0px');
+  await expect(body).toContainText('<script id="web2-attack">');
+  await expect(page.locator('#web2-attack')).toHaveCount(0);
+  await expect(body.locator('a')).toHaveCount(1);
+  await expect(body.locator('a')).toHaveAttribute('href', 'https://example.com');
+  await expect(body.locator('table')).toHaveCount(1);
+  await expect(body.locator('th')).toHaveCount(2);
+  await expect(body.locator('tbody tr')).toHaveCount(2);
+  await expect(body.locator('tbody tr').last().locator('code')).toHaveText('a|b');
+  await expect(body.locator('tbody tr').last()).toContainText('<img id="table-attack"');
+  await expect(page.locator('#table-attack')).toHaveCount(0);
+  expect(await body.locator('th').last().evaluate((node) => getComputedStyle(node).textAlign)).toBe('right');
+  await page.screenshot({ path: testInfo.outputPath('web2-markdown.png'), fullPage: true });
+
+  // A later model phase may resume the same bubble after an earlier response.
+  await page.evaluate(() => {
+    window.web2Bubble.appendBody('\n\nFinal `note`');
+    window.web2Bubble.finishBody();
+  });
+  await expect(body.locator('code')).toHaveCount(3);
+  await expect(body).toContainText('Final note');
+});
+
+test('long conversation map keeps bounded DOM and can jump from a virtual window', async ({ page }, testInfo) => {
+  await openWorkbench(page, hostInfo('history'));
+  const target = await page.locator('.msg.user[data-seq]').last().getAttribute('data-seq');
+  await page.evaluate((targetSeq) => {
+    state.history.outline = Array.from({ length: 5000 }, (_, index) => ({
+      seq: index === 2500 ? Number(targetSeq) : 10000 + index,
+      turn: Math.floor(index / 2) + 1,
+      role: index % 2 ? 'assistant' : 'user',
+      preview: index === 2500 ? '## **Jump** [here](https://example.com)' : `message ${index}`,
+    }));
+    renderMessageMap();
+    const track = document.querySelector('#message-map-track');
+    track.scrollTop = 2500 * MAP_ITEM_HEIGHT;
+  }, target);
+  const bars = page.locator('.message-map-item');
+  await expect(page.locator(`.message-map-item[data-seq="${target}"]`)).toBeVisible(LIVE);
+  expect(await bars.count()).toBeLessThanOrEqual(120);
+  const selected = page.locator(`.message-map-item[data-seq="${target}"]`);
+  await selected.hover();
+  await expect(page.locator('#message-map-preview')).toContainText('Jump here');
+  await expect(page.locator('#message-map-preview')).not.toContainText('**');
+  const userPreview = page.locator('#message-map-preview .map-preview-row.is-user');
+  const agentPreview = page.locator('#message-map-preview .map-preview-row.is-assistant');
+  await expect(userPreview).toContainText('Jump here');
+  await expect(agentPreview).toContainText('message 2501');
+  const previewColors = await page.locator('#message-map-preview').evaluate((preview) => ({
+    user: getComputedStyle(preview.querySelector('.is-user')).color,
+    assistant: getComputedStyle(preview.querySelector('.is-assistant')).color,
+  }));
+  expect(previewColors.user).not.toBe(previewColors.assistant);
+  await page.screenshot({ path: testInfo.outputPath('web2-map-preview.png'), fullPage: true });
+  await page.evaluate(() => { document.documentElement.dataset.theme = 'dark'; });
+  await page.screenshot({ path: testInfo.outputPath('web2-map-preview-dark.png'), fullPage: true });
+  await selected.click();
+  await expect(page.locator(`.transcript > .msg[data-seq="${target}"]`)).toBeVisible(LIVE);
+  expect(await bars.count()).toBeLessThanOrEqual(120);
+  await page.locator('#message-map-track').focus();
+  await page.keyboard.press('Home');
+  await expect(page.locator('.message-map-item[data-seq="10000"]')).toBeVisible(LIVE);
+  await page.keyboard.press('End');
+  await expect(page.locator('.message-map-item[data-seq="14999"]')).toBeVisible(LIVE);
+  await page.locator('#message-map-track').evaluate((track) => { track.scrollTop = 2500 * 9; });
+  await page.setViewportSize({ width: 1440, height: 1100 });
+  const bottomVisibleSeq = await page.locator('#message-map-track').evaluate((track) =>
+    10000 + Math.ceil((track.scrollTop + track.clientHeight) / 9) - 1);
+  await expect(page.locator(`.message-map-item[data-seq="${bottomVisibleSeq}"]`)).toBeAttached(LIVE);
 });
 
 test('scrolling within 512px of the top automatically loads one earlier page', async ({ page }) => {

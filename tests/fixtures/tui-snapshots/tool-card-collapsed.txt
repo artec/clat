@@ -7,13 +7,13 @@ scroll 0
 003| ┌ Conversation ────────────────────────────────────────────────────────────────┐
 004| │❯ please write the file                                                      ▲│  ⟦1..2 fg=Yellow+bg=Rgb(48, 50, 60)+BOLD · 3..77 fg=Rgb(233, 234, 239)+bg=Rgb(48, 50, 60) · 78..78 fg=DarkGray⟧
 005| │                                                                             ┃│  ⟦78..78 fg=Cyan⟧
-006| │● Tool / write_file                                                          ┃│  ⟦1..19 fg=Green · 78..78 fg=Cyan⟧
+006| │● Tool / write_file                                                          ┃│  ⟦1..19 DIM · 78..78 fg=Cyan⟧
 007| │  write src/lib.rs (147 bytes)                                               ┃│  ⟦1..30 BOLD · 78..78 fg=Cyan⟧
 008| │  fn main() {                                                                ┃│  ⟦78..78 fg=Cyan⟧
 009| │  … +7 lines (Ctrl+O to expand)                                              ┃│  ⟦1..31 DIM · 78..78 fg=Cyan⟧
 010| │  }                                                                          ┃│  ⟦78..78 fg=Cyan⟧
 011| │                                                                             ┃│  ⟦78..78 fg=Cyan⟧
-012| │✓ written 1 file                                                             ┃│  ⟦1..16 fg=Green · 78..78 fg=Cyan⟧
+012| │✓ written 1 file                                                             ┃│  ⟦1..1 fg=Green · 2..16 DIM · 78..78 fg=Cyan⟧
 013| │                                                                             ││  ⟦78..78 fg=DarkGray⟧
 014| │⏺ write attempted                                                            ││  ⟦1..2 fg=Gray · 78..78 fg=DarkGray⟧
 015| │                                                                             ││  ⟦78..78 fg=DarkGray⟧

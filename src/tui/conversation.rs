@@ -861,10 +861,10 @@ fn render_tool_card(
     width: usize,
 ) -> Vec<Line<'static>> {
     let (glyph, role) = match state {
-        CardState::Pending => ("○", theme::Role::Warning),
+        CardState::Pending => ("○", theme::Role::Dim),
         CardState::Settled {
             is_error: false, ..
-        } => ("●", theme::Role::Success),
+        } => ("●", theme::Role::Dim),
         CardState::Settled { is_error: true, .. } | CardState::Denied { .. } => {
             ("✗", theme::Role::Error)
         }
@@ -885,16 +885,20 @@ fn render_tool_card(
     match state {
         CardState::Pending => {}
         CardState::Settled { output, is_error } => {
-            let mark = if *is_error { "✗" } else { "✓" };
-            let role = if *is_error {
-                theme::Role::Error
+            if *is_error {
+                lines.push(Line::from(Span::styled(
+                    format!("✗ {}", value_display_text(output)),
+                    theme::style(theme::Role::Error),
+                )));
             } else {
-                theme::Role::Success
-            };
-            lines.push(Line::from(Span::styled(
-                format!("{mark} {}", value_display_text(output)),
-                theme::style(role),
-            )));
+                lines.push(Line::from(vec![
+                    Span::styled("✓", theme::style(theme::Role::Success)),
+                    Span::styled(
+                        format!(" {}", value_display_text(output)),
+                        theme::style(theme::Role::Dim),
+                    ),
+                ]));
+            }
         }
         CardState::Denied { reason } => {
             lines.push(Line::from(Span::styled(
@@ -1116,6 +1120,42 @@ mod tests {
     };
     use crate::{BootstrapApplication, Project};
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn tool_card_success_emphasizes_only_the_checkmark() {
+        let lines = render_tool_card(
+            "read_file",
+            &serde_json::json!({"path":"demo.rs"}),
+            &CardState::Settled {
+                output: Value::String("contents".into()),
+                is_error: false,
+            },
+            60,
+        );
+        assert_eq!(lines[0].spans[0].style, theme::style(theme::Role::Dim));
+        let result = lines.last().expect("result row");
+        assert_eq!(result.spans[0].content, "✓");
+        assert_eq!(result.spans[0].style, theme::style(theme::Role::Success));
+        assert_eq!(result.spans[1].content, " contents");
+        assert_eq!(result.spans[1].style, theme::style(theme::Role::Dim));
+
+        let pending = render_tool_card("read_file", &Value::Null, &CardState::Pending, 60);
+        assert_eq!(pending[0].spans[0].style, theme::style(theme::Role::Dim));
+        let failed = render_tool_card(
+            "read_file",
+            &Value::Null,
+            &CardState::Settled {
+                output: Value::String("failed".into()),
+                is_error: true,
+            },
+            60,
+        );
+        assert_eq!(failed[0].spans[0].style, theme::style(theme::Role::Error));
+        assert_eq!(
+            failed.last().unwrap().spans[0].style,
+            theme::style(theme::Role::Error)
+        );
+    }
 
     #[test]
     fn streaming_assistant_marker_spins_while_open_and_settles_when_closed() {

@@ -7,7 +7,7 @@ scroll 0
 003| ┌ Conversation ────────────────────────────────────────────────────────────────┐
 004| │⏺                                                                            ▲│  ⟦1..2 fg=Gray · 78..78 fg=DarkGray⟧
 005| │                                                                             ┃│  ⟦78..78 fg=Cyan⟧
-006| │○ Tool / read_file                                                           ┃│  ⟦1..18 fg=Yellow · 78..78 fg=Cyan⟧
+006| │○ Tool / read_file                                                           ┃│  ⟦1..18 DIM · 78..78 fg=Cyan⟧
 007| │{  "path": "src/lib.rs"}                                                     ┃│  ⟦1..24 DIM · 78..78 fg=Cyan⟧
 008| │                                                                             ┃│  ⟦78..78 fg=Cyan⟧
 009| │                                                                             ┃│  ⟦78..78 fg=Cyan⟧

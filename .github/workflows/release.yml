@@ -114,7 +114,9 @@ jobs:
   stage-draft:
     name: Stage unsigned draft
     needs: build
-    runs-on: ubuntu-latest
+    # 钉版（同 ci.yml 与资产矩阵先例）：ubuntu-latest 将于 2026-10-19
+    # 迁往 Ubuntu 26；平台变更须显式验证后再切换，不随 label 漂移。
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:

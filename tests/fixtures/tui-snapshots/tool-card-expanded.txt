@@ -16,7 +16,7 @@ scroll 0
 012| │      println!("g");                                                         ┃│  ⟦78..78 fg=Cyan⟧
 013| │  }                                                                          ┃│  ⟦78..78 fg=Cyan⟧
 014| │                                                                             ┃│  ⟦78..78 fg=Cyan⟧
-015| │✓ written 1 file                                                             ┃│  ⟦1..16 fg=Green · 78..78 fg=Cyan⟧
+015| │✓ written 1 file                                                             ┃│  ⟦1..1 fg=Green · 2..16 DIM · 78..78 fg=Cyan⟧
 016| │                                                                             ┃│  ⟦78..78 fg=Cyan⟧
 017| │⏺ write attempted                                                            ┃│  ⟦1..2 fg=Gray · 78..78 fg=Cyan⟧
 018| │                                                                             ▼│  ⟦78..78 fg=DarkGray⟧

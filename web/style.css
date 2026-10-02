@@ -216,15 +216,22 @@ button:disabled { cursor: default; opacity: .45; }
 .history-status { position: sticky; z-index: 6; top: 10px; display: block; width: fit-content; margin: 0 auto -28px; padding: 5px 10px; border: 1px solid color-mix(in srgb, var(--signal) 32%, var(--line)); border-radius: 99px; color: var(--text-muted); background: color-mix(in srgb, var(--surface-raised) 92%, transparent); box-shadow: 0 8px 24px rgb(0 0 0 / 12%); backdrop-filter: blur(12px); font: 10px/1.4 var(--font-mono); }
 .history-status:not(:disabled):hover { color: var(--signal); border-color: var(--signal); }
 .message-map { position: absolute; z-index: 9; top: 88px; right: 28px; bottom: calc(var(--composer-height) + 22px); display: grid; width: 24px; place-items: center; pointer-events: none; }
-.message-map-track { display: flex; width: 24px; max-height: 100%; padding-block: 18px; overflow-y: auto; align-items: center; flex-direction: column; gap: 0; pointer-events: auto; scrollbar-width: none; mask-image: linear-gradient(transparent, #000 20px, #000 calc(100% - 20px), transparent); }
+.message-map-track { width: 24px; max-height: 100%; padding-block: 18px; overflow-y: auto; pointer-events: auto; scrollbar-width: none; mask-image: linear-gradient(transparent, #000 20px, #000 calc(100% - 20px), transparent); }
 .message-map-track::-webkit-scrollbar { display: none; }
-.message-map-item { position: relative; flex: 0 0 9px; width: 24px; height: 9px; padding: 0; border: 0; outline: none; background: transparent; }
+.message-map-space { position: relative; width: 24px; }
+.message-map-item { position: absolute; left: 0; width: 24px; height: 9px; padding: 0; border: 0; outline: none; background: transparent; }
 .message-map-item::before { position: absolute; top: 3px; left: 50%; width: 12px; height: 3px; border-radius: 99px; background: color-mix(in srgb, var(--text-muted) 54%, transparent); content: ""; opacity: .55; transform: translateX(-50%); transition: width 140ms var(--ease), opacity 140ms var(--ease), background 140ms var(--ease), transform 140ms var(--ease); }
 .message-map-item.is-user::before { width: 17px; background: color-mix(in srgb, var(--accent) 58%, var(--text-muted)); }
 .message-map-item:hover::before, .message-map-item:focus-visible::before { width: 20px; opacity: 1; background: var(--signal); }
 .message-map-item.is-active::before { width: 20px; opacity: 1; background: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 13%, transparent); }
 .message-map-item.is-jumping::before { animation: map-pulse 720ms ease-in-out infinite alternate; }
 .message-map-preview { position: absolute; right: 34px; top: 50%; width: min(310px, calc(100vw - 100px)); max-height: 122px; padding: 10px 12px; overflow: hidden; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); color: var(--text-soft); background: color-mix(in srgb, var(--surface-raised) 96%, transparent); box-shadow: 0 16px 44px rgb(0 0 0 / 28%); transform: translateY(-50%); white-space: pre-wrap; font: 11px/1.45 var(--font-mono); pointer-events: none; }
+.map-preview-row { display: grid; grid-template-columns: 38px minmax(0, 1fr); gap: 7px; }
+.map-preview-row + .map-preview-row { margin-top: 7px; padding-top: 7px; border-top: 1px solid var(--line); }
+.map-preview-row.is-user { color: var(--text); }
+.map-preview-row.is-assistant { color: var(--text-soft); }
+.map-preview-role { color: var(--text-muted); font: 700 9px/1.7 var(--font-mono); text-transform: uppercase; letter-spacing: .04em; }
+.map-preview-text { min-width: 0; overflow-wrap: anywhere; }
 @keyframes map-pulse { to { transform: scaleX(1.24); filter: brightness(1.4); } }
 .empty-state { position: relative; padding-top: clamp(56px, 12vh, 130px); padding-bottom: 70px; }
 .empty-index { position: absolute; top: 48px; right: 34px; color: var(--line-strong); font: 700 72px/1 var(--font-mono); }
@@ -241,6 +248,28 @@ button:disabled { cursor: default; opacity: .45; }
 .msg.user .body { font-weight: 560; }
 .msg.user .body.image-only { display: none; }
 .msg.assistant .body { color: var(--text-soft); }
+.msg .rich-text { line-height: 1.68; }
+.msg .rich-text.is-rendered { white-space: normal; }
+.rich-text > :first-child { margin-top: 0; }
+.rich-text > :last-child { margin-bottom: 0; }
+.rich-text p { margin: 0 0 .8em; white-space: pre-wrap; }
+.rich-text h2, .rich-text h3, .rich-text h4, .rich-text h5 { margin: 1.15em 0 .45em; color: var(--text); font-weight: 720; line-height: 1.22; letter-spacing: -.025em; }
+.rich-text h2 { font-size: 1.34em; }
+.rich-text h3 { font-size: 1.18em; }
+.rich-text h4, .rich-text h5 { font-size: 1.06em; }
+.rich-text ul, .rich-text ol { margin: .25em 0 .85em; padding-left: 1.55em; }
+.rich-text li { padding-left: .12em; margin: .2em 0; }
+.rich-text blockquote { margin: .65em 0 .85em; padding: .18em 0 .18em .9em; border-left: 2px solid var(--signal); color: var(--text-muted); }
+.rich-text pre { max-width: 100%; margin: .65em 0 .9em; padding: 13px 15px; overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-input); font: 12px/1.55 var(--font-mono); white-space: pre; }
+.rich-text pre code { padding: 0; border: 0; border-radius: 0; background: none; font: inherit; }
+.rich-text :not(pre) > code { padding: .12em .36em; border: 1px solid var(--line); border-radius: 4px; background: var(--surface-input); font: .91em var(--font-mono); }
+.rich-text a { color: var(--signal); text-decoration-thickness: 1px; text-underline-offset: .18em; }
+.rich-text hr { height: 1px; margin: 1em 0; border: 0; background: var(--line-strong); }
+.rich-text .table-scroll { max-width: 100%; margin: .7em 0 1em; overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius-sm); }
+.rich-text table { width: 100%; min-width: max-content; border-collapse: collapse; font: .91em/1.5 var(--font-ui); }
+.rich-text th, .rich-text td { padding: .48em .75em; border-bottom: 1px solid var(--line); white-space: pre-wrap; }
+.rich-text th { color: var(--text); background: var(--surface-input); font-weight: 700; }
+.rich-text tr:last-child td { border-bottom: 0; }
 .message-attachments { grid-column: 2; display: flex; flex-wrap: wrap; gap: 8px; margin-top: 9px; }
 .message-attachment { position: relative; display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 8px; align-items: center; max-width: min(360px, 100%); padding: 5px; overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius-sm); color: var(--text-soft); background: var(--surface-raised); text-align: left; }
 .message-attachment:hover { border-color: var(--signal); }
