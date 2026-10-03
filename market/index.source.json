@@ -5,8 +5,60 @@
     "name": "CLAT Plugin Index",
     "homepage": "https://pi.at.cn"
   },
-  "publishers": [],
-  "packages": [],
+  "publishers": [
+    {
+      "id": "artec",
+      "name": "artec",
+      "status": "trusted",
+      "reviewUrl": "https://pi.at.cn/publishers/artec.html",
+      "keys": [
+        {
+          "id": "artec-2026",
+          "publicKey": "RWTE0ea94HIhauKyGQMuQ1Sn3uYtzoskNWDsv+MEE66Y2lzpofS4v7p3",
+          "status": "active",
+          "notBeforeUnix": 1791044573,
+          "notAfterUnix": 1822580633
+        }
+      ]
+    }
+  ],
+  "packages": [
+    {
+      "id": "io.artec.dsh-official-web",
+      "name": "DSH official web search and fetch",
+      "summary": "Official DSH web search and HTTP fetch in one executable; no Node or Bun needed after installation.",
+      "homepage": "https://github.com/artec/clat/tree/main/sdk/dsh-adapter/examples/official-web",
+      "tags": [
+        "MCP"
+      ],
+      "versions": [
+        {
+          "version": "0.1.0",
+          "runtime": "mcp-stdio",
+          "publisher": "artec",
+          "publisherKey": "artec-2026",
+          "publishedAtUnix": 1791044633,
+          "capabilities": {
+            "tools": true,
+            "prompts": true
+          },
+          "dependencies": {},
+          "compatibility": {
+            "dshRevision": "639ed015397290b3745d163aafe02ffee4aa3f84"
+          },
+          "yanked": false,
+          "artifacts": [
+            {
+              "target": "aarch64-apple-darwin",
+              "url": "packages/io.artec.dsh-official-web-0.1.0-aarch64-apple-darwin.clatpkg",
+              "sha256": "d13064dbdf1defd78c086f63d1e40a71c308f3df5ddc6582ba9c1ef9a41b472f",
+              "bytes": 64398586
+            }
+          ]
+        }
+      ]
+    }
+  ],
   "revocations": [],
   "vulnerabilities": []
 }

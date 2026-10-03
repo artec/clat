@@ -26,6 +26,10 @@ sdk/dsh-adapter/dist/
 .env.*
 /.release-secrets/
 
+# Market artifacts: immutable originals live on pi.at.cn, not in git
+# (records in market/index.source.json and market/catalog.json ARE tracked).
+market/packages/*.clatpkg
+
 # Logs and local scratch
 *.log
 .tmp/
