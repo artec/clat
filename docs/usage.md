@@ -187,6 +187,7 @@ The main screen has three surfaces:
 | `PageUp` / `PageDown` | scroll the conversation |
 | `Shift+Tab` | cycle the active vendor's reasoning level |
 | `Ctrl+R` | expand or collapse Think details in the conversation |
+| `Ctrl+F` | find original user/agent body text in the loaded conversation window |
 | `Ctrl+G` (also `Alt+S`) | request one manual prompt suggestion when the utility policy allows it |
 | mouse wheel | scroll the conversation |
 | mouse drag | select text and copy it with OSC 52 on release |
@@ -203,6 +204,25 @@ expand or collapse the complete reasoning text.
 While a permission dialog is open, `Esc` denies that tool call instead of
 cancelling the run. Hold `Shift` while dragging if you want the terminal's own
 selection behavior instead of CLAT's mouse handling.
+
+Typing `/` opens commands and a separate Skills section from the current host's
+read-only catalog. Narrow the name or description, use ↑/↓, and select with
+Tab/Enter; selection only fills editable input, never executes the command.
+Press Enter again after editing to submit, or Esc to dismiss. A trailing space
+also dismisses discovery, so `/help ` followed by Enter directly runs `/help`.
+Skill rows show their source and `requires-execution` constraint; unavailable
+rows explain why. Pasted paths and input-history recall do not open discovery.
+DSH attachment uses its existing host command catalog; that host does not yet
+expose structured skill discovery.
+
+In conversation find, Enter/Shift+Enter visits the next/previous match, Alt+L
+loads one earlier page, and Esc closes find without changing the composer.
+The panel distinguishes the loaded window from all-loaded history, excludes
+Think/tool output, and preserves the selected message across prefix loading
+and new tokens. Raw Markdown matches that are not visible in rendered text
+anchor the message body and appear in the source preview. `/resume` supports
+title/ID filtering: press `/`, type or paste a filter, Enter to browse results,
+and Esc to clear the filter before closing the picker. Empty results are explicit.
 
 ### Slash commands
 
@@ -979,6 +999,48 @@ Message bodies render a safe Markdown subset (headings, lists, tables, quotes,
 fenced and inline code, emphasis, links, and rules) after a response settles; active
 streams remain plain text. Raw HTML and remote Markdown images are never
 interpreted, and only HTTP(S) links become clickable.
+
+Unsent PWA text stays with its project/session in this page's memory; switching
+back restores it. Each **New conversation** starts a separate draft, and the
+first accepted message transfers its identity to the materialized session.
+Reloading or closing the page discards these drafts. Draft images are not
+restored across sessions: changing sessions asks before releasing them, and
+cancelling preserves both text and images. A submitted attachment must finish
+its admission receipt before switching. Late completions cannot clear a newer
+draft or restore already-acknowledged text as an unsent message.
+
+Settled replies and fenced code have **Copy reply** / **Copy code** actions
+that copy their original text, including Markdown/code line breaks. Selecting
+body text exposes **Quote selection**, which appends an editable quote without
+replacing the current draft. Clipboard failures are reported on the button.
+
+The PWA `/` picker shares the structured command/skill catalog and fill-only
+keyboard behavior above. Model, permission, resume, rename and compact entries
+instead navigate to their existing controls; choosing them does not perform
+the action. IME composition and pasted paths do not submit a candidate.
+
+Use the conversation's Find button or Ctrl/Cmd+F to search original user/agent
+body text. Enter/Shift+Enter and the arrow buttons visit matches; **Earlier**
+reads one older page, and Close/Esc cancels find. The scope label says whether
+earlier messages remain unloaded. Prefix pages and streaming tokens preserve
+the selected message; the preview shows the exact source occurrence. This is
+not cross-session full-text search. Sidebar search only filters session titles
+and IDs, not their message content. Both frontends display up to 2,000 matches.
+
+**Workspace changes** opens a read-only file list and loads a selected file's
+staged/unstaged diff on demand. It shows current project working-tree facts,
+including pre-existing user edits and changes left after failed/cancelled runs;
+it does not attribute them to this agent or turn. Refresh after further edits.
+Git is optional: missing Git, a non-repository project and a failed query are
+explicit states, not “no changes.” This view has no stage/commit/revert/push.
+The list is capped at 500 files (with a truncation label); Git output is bounded
+to 512 KiB for status and 128 KiB per patch, with a three-second child-process
+deadline and only one review query in progress. Untracked text previews use the
+same 128-KiB limit; binary/conflict/submodule and oversized results explain the
+fallback. Symlink untracked previews and paths outside the project are refused.
+External diff, textconv, fsmonitor and configured clean/process filters are
+disabled for review, as is lazy object fetching; incomplete repositories may
+therefore report an error rather than trigger a fetch.
 
 The active model is chosen from the compact picker immediately before **Send**;
 built-in presets and saved profiles share that next-run menu, while write-only

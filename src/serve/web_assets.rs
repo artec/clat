@@ -10,6 +10,10 @@ use std::borrow::Cow;
 
 const INDEX: &[u8] = include_bytes!("../../web/index.html");
 const APP_JS: &[u8] = include_bytes!("../../web/app.js");
+const COMPOSER_UX: &[u8] = include_bytes!("../../web/composer-ux.js");
+const COMMAND_PICKER: &[u8] = include_bytes!("../../web/command-picker.js");
+const CONVERSATION_FIND: &[u8] = include_bytes!("../../web/conversation-find.js");
+const WORKSPACE_REVIEW: &[u8] = include_bytes!("../../web/workspace-review.js");
 const STYLE_CSS: &[u8] = include_bytes!("../../web/style.css");
 const MANIFEST: &[u8] = include_bytes!("../../web/manifest.webmanifest");
 const ICON_192: &[u8] = include_bytes!("../../web/icons/icon-192.png");
@@ -20,7 +24,13 @@ pub(crate) fn asset(path: &str) -> Option<(Cow<'static, [u8]>, &'static str)> {
     match path {
         "/" => Some((Cow::Borrowed(INDEX), "text/html; charset=utf-8")),
         "/app.js" => Some((Cow::Borrowed(APP_JS), "application/javascript")),
+        "/composer-ux.js" => Some((Cow::Borrowed(COMPOSER_UX), "application/javascript")),
+        "/command-picker.js" => Some((Cow::Borrowed(COMMAND_PICKER), "application/javascript")),
+        "/conversation-find.js" => {
+            Some((Cow::Borrowed(CONVERSATION_FIND), "application/javascript"))
+        }
         "/style.css" => Some((Cow::Borrowed(STYLE_CSS), "text/css; charset=utf-8")),
+        "/workspace-review.js" => Some((Cow::Borrowed(WORKSPACE_REVIEW), "application/javascript")),
         "/manifest.webmanifest" => Some((Cow::Borrowed(MANIFEST), "application/manifest+json")),
         "/icons/icon-192.png" => Some((Cow::Borrowed(ICON_192), "image/png")),
         "/icons/icon-512.png" => Some((Cow::Borrowed(ICON_512), "image/png")),

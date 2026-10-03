@@ -13,6 +13,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
+mod capture;
+pub(crate) use capture::capture_command;
 
 const STREAM_RING_BYTES: usize = 256 * 1024;
 const MANAGED_STDOUT_RING_BYTES: usize = 4 * 1024 * 1024 + 64 * 1024;

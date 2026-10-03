@@ -26,6 +26,9 @@ pub(crate) const RPC_METHODS: &[&str] = &[
     "workspace.list",
     "workspace.open",
     "workbench.info",
+    "interaction.catalog",
+    "workspace.changes",
+    "workspace.diff",
     "session.list",
     "session.info",
     "session.new",
@@ -372,6 +375,9 @@ fn dispatch_project(
                 RPC_METHODS,
             ))
         }
+        "interaction.catalog" | "workspace.changes" | "workspace.diff" => {
+            dispatch_read_discovery(shared, method, params)
+        }
         "wechat.binding.status" => {
             let status = with_app(shared, |app| app.wechat_binding())
                 .map_err(app_error)?
@@ -561,42 +567,7 @@ fn dispatch_project(
             outcome.map_err(session_error)?;
             Ok(json!({}))
         }
-        "session.history" => {
-            let before_seq = params
-                .get("before_seq")
-                .map(|value| {
-                    value.as_u64().ok_or_else(|| {
-                        RpcError::bad_request("before_seq must be an unsigned integer")
-                    })
-                })
-                .transpose()?;
-            let max_messages = params
-                .get("max_messages")
-                .map(|value| {
-                    value.as_u64().ok_or_else(|| {
-                        RpcError::bad_request("max_messages must be an unsigned integer")
-                    })
-                })
-                .transpose()?
-                .unwrap_or(50);
-            if !(1..=200).contains(&max_messages) {
-                return Err(RpcError::bad_request(
-                    "max_messages must be between 1 and 200",
-                ));
-            }
-            let page = with_app(shared, |app| {
-                app.session_history(before_seq, max_messages as usize)
-            })
-            .map_err(app_error)?;
-            Ok(json!({
-                "events": page
-                    .events
-                    .iter()
-                    .map(super::shapes::replay_event_json)
-                    .collect::<Vec<_>>(),
-                "has_more": page.has_more,
-            }))
-        }
+        "session.history" => dispatch_history(params, shared),
         "session.rename" => {
             let id = required_str(params, "id")?;
             let title = required_str(params, "title")?;
@@ -713,6 +684,48 @@ fn dispatch_project(
         "approval.respond" => approver::respond(shared, params),
         other => Err(RpcError::bad_request(format!("unknown method: {other}"))),
     }
+}
+
+fn dispatch_history(
+    params: &Map<String, Value>,
+    shared: &Arc<ServeShared>,
+) -> Result<Value, RpcError> {
+    let before_seq = params
+        .get("before_seq")
+        .map(|value| {
+            value
+                .as_u64()
+                .ok_or_else(|| RpcError::bad_request("before_seq must be an unsigned integer"))
+        })
+        .transpose()?;
+    let max_messages = params
+        .get("max_messages")
+        .map(|value| {
+            value
+                .as_u64()
+                .ok_or_else(|| RpcError::bad_request("max_messages must be an unsigned integer"))
+        })
+        .transpose()?
+        .unwrap_or(50);
+    if !(1..=200).contains(&max_messages) {
+        return Err(RpcError::bad_request(
+            "max_messages must be between 1 and 200",
+        ));
+    }
+    let page = with_app(shared, |app| {
+        if params
+            .get("expected_selection_generation")
+            .is_some_and(|expected| expected.as_u64() != Some(shared.selection_generation()))
+        {
+            return Err(RpcError::busy("session selection changed; refresh history"));
+        }
+        app.session_history(before_seq, max_messages as usize)
+            .map_err(app_error)
+    })?;
+    Ok(json!({
+        "events": page.events.iter().map(super::shapes::replay_event_json).collect::<Vec<_>>(),
+        "has_more": page.has_more,
+    }))
 }
 
 fn prompt_suggest(
@@ -1478,6 +1491,31 @@ fn committed_retry_check(
         "duplicate": true,
         "receipt": super::shapes::admission_receipt_value(&record.receipt),
     })))
+}
+
+fn dispatch_read_discovery(
+    shared: &Arc<ServeShared>,
+    method: &str,
+    params: &Map<String, Value>,
+) -> Result<Value, RpcError> {
+    if method == "interaction.catalog" {
+        let catalog = with_app(shared, |app| app.interaction_catalog()).map_err(app_error)?;
+        return serde_json::to_value(catalog).map_err(|e| RpcError::internal(e.to_string()));
+    }
+    let reader = with_app(shared, |app| Ok(app.workspace_review())).map_err(app_error)?;
+    if method == "workspace.changes" {
+        serde_json::to_value(reader.changes()).map_err(|e| RpcError::internal(e.to_string()))
+    } else {
+        let path = params
+            .get("path")
+            .and_then(Value::as_str)
+            .ok_or_else(|| RpcError::bad_request("path must be a string"))?;
+        if path.len() > 4096 {
+            return Err(RpcError::bad_request("path is too long"));
+        }
+        let diff = reader.diff(path).map_err(RpcError::bad_request)?;
+        serde_json::to_value(diff).map_err(|e| RpcError::internal(e.to_string()))
+    }
 }
 
 fn with_app<T>(

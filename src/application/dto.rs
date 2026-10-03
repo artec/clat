@@ -43,7 +43,7 @@ pub struct ContextEstimateSnapshot {
     pub skill_diagnostics: Vec<ContextSkillDiagnostic>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 pub struct ContextSkillDiagnostic {
     pub source: String,
     pub name: Option<String>,
@@ -54,13 +54,13 @@ pub struct ContextSkillDiagnostic {
 /// `/skill` 列表投影（SC-2）：三层 catalog 的 display-ready 条目加发现
 /// 诊断。正文与 digest 不进 DTO——加载仍走 run 冻结 catalog 的 `skill`
 /// 工具/调用解析，列表只回答"有哪些、来自哪层、什么约束"。
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 pub struct SkillsOverviewDto {
     pub entries: Vec<SkillEntryDto>,
     pub diagnostics: Vec<ContextSkillDiagnostic>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 pub struct SkillEntryDto {
     pub name: String,
     /// "bundled" | "user" | "project"

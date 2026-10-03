@@ -126,8 +126,7 @@ impl App {
         self.session_title = snapshot.session_title;
         // 转录从回放重建（G2/G8）；输入历史随会话切换：恢复目标会话
         // 自己的历史（含内存中未持久化的导航状态一并重置）。
-        self.conversation =
-            crate::tui::conversation::ConversationModel::from_replay(&snapshot.replay);
+        self.conversation = self.discovery.reset_conversation(&snapshot.replay);
         self.conversation_has_more = window.has_more;
         self.conversation_history_loading = false;
         self.conversation_history_windowed = window.has_more;
@@ -692,7 +691,7 @@ impl App {
         match outcome {
             CommandOutcome::Status(message) => self.flash_status(message),
             CommandOutcome::ShowHelp { commands } => {
-                self.help_commands = commands;
+                self.discovery.help_commands = commands;
                 self.info_dialog = Some(InfoDialog::new(InfoDialogKind::Help));
             }
             CommandOutcome::ShowMcpStatus(view) => {
@@ -761,7 +760,7 @@ impl App {
                 // 新会话从零累计；路由桶同清（INV-C1 随会话归属）。
                 self.session_id = None;
                 self.session_title = None;
-                self.conversation = crate::tui::conversation::ConversationModel::new();
+                self.conversation = self.discovery.reset_conversation(&[]);
                 self.conversation_scroll_from_bottom = 0;
                 self.conversation_has_more = false;
                 self.conversation_history_loading = false;

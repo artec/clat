@@ -14,7 +14,9 @@ use crate::tui::worker::{
     ChannelApprover, ChannelEventSink, ChannelUserAsker, DeferredChannelEventSink, PreparedTuiRun,
     RunStartFinished, RunStartGate, SteeringAdmissionFinished, UiEvent, WorkerMessage,
 };
+mod command_picker;
 pub(crate) mod conversation;
+mod conversation_find;
 mod dsh_events;
 mod input;
 mod logo;
@@ -405,7 +407,7 @@ struct App {
     content_view: Option<ContentView>,
     /// /help 打开时缓存的命令目录（`ShowHelp` 载荷，INV-C4）：帮助表
     /// 行从它派生，新增命令不改前端。
-    help_commands: Vec<CommandInfo>,
+    discovery: command_picker::DiscoveryUi,
     /// 余额/额度当前值：核心 Monitor 插件经 ApplicationEvent 写回，状态栏读取。
     balance: Option<String>,
     /// 本会话累计 token 用量，用于状态栏缓存命中百分比。journal 还原
@@ -592,7 +594,7 @@ impl App {
             context_view: None,
             skills_view: None,
             content_view: None,
-            help_commands: Vec::new(),
+            discovery: command_picker::DiscoveryUi::default(),
             balance: None,
             session_usage: Usage::default(),
             usage_routes: BTreeMap::new(),
@@ -697,7 +699,7 @@ impl App {
             context_view: None,
             skills_view: None,
             content_view: None,
-            help_commands: Vec::new(),
+            discovery: command_picker::DiscoveryUi::default(),
             balance: None,
             session_usage: Usage::default(),
             usage_routes: BTreeMap::new(),
@@ -828,8 +830,7 @@ impl App {
         self.session_title = snapshot.session_title;
         // 转录一律从 journal 回放构造（G2/G8）：事件日志是唯一权威，
         // 前端不再维护独立的 TranscriptLine 派生视图。
-        self.conversation =
-            crate::tui::conversation::ConversationModel::from_replay(&snapshot.replay);
+        self.conversation = self.discovery.reset_conversation(&snapshot.replay);
         self.conversation_has_more = window.has_more;
         self.conversation_history_loading = false;
         self.conversation_history_windowed = window.has_more;

@@ -641,6 +641,33 @@ inline question forms over the same notices/RPC, with single-flight submission
 and DOM/connection ownership guards against late replies. Reconnect rebuilds
 pending forms; browser drafts are local, ephemeral, and never authoritative.
 
+Read-only `interaction.catalog` projects the core command registry and existing
+skill overview as structured metadata (names, aliases, descriptions, argument
+hints, source/constraints and diagnostics), never skill bodies or an invocation.
+TUI/PWA own filtering and focus; selecting a candidate only edits input or opens
+an existing dedicated UI. Browser text drafts and conversation-find identities
+are page-local, non-durable UX state. Text draft ownership follows project,
+session selection and lazy session materialization; monotonic composer
+generation fences late submission/suggestion/upload completion. Find uses raw
+user/assistant body data and frontend-stable message identities, not DOM text
+or a second journal projection. `session.history` optionally checks
+`expected_selection_generation` under the Application lock; clients additionally
+discard responses after selection/connection changes. No new durable events or
+RunEvent variants are introduced.
+
+`workspace.changes` / `workspace.diff` use core-owned `WorkspaceReview`, cloned
+from a trusted project's capability before bounded Git I/O outside the
+Application lock. A try-lock admits one query at a time; child deadlines and
+output/file caps bound resource use. Queries strip inherited `GIT_*` redirection,
+use literal project-relative paths, disable optional index writes, external
+diff/textconv/fsmonitor/filter drivers and lazy fetching, and cannot stage,
+commit, revert or push. Untracked preview reads use the existing fenced Project
+reader. Errors/non-Git/missing-Git/truncation remain explicit. These DTOs report
+working-tree state, including prior or externally produced edits; agent/run
+attribution needs a separate captured-baseline/operation/disk model and is not
+inferred here. The RPC method catalog registers all three additive methods;
+frontends only present the facts and do not spawn Git or persist review data.
+
 Model profile summaries expose a non-secret `limits` object (output tokens,
 context tokens, per-run budget). `model.profile.save` accepts that same object
 as a whole replacement; omitted limits preserve the existing route's settings,

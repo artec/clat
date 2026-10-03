@@ -31,6 +31,8 @@ fn image_message_label(text: &str, blocks: &[crate::message::ContentBlock]) -> S
 }
 
 pub(super) enum NativeEvent {
+    History(u64, u64, Result<Value, String>),
+    Discovery(u64, u64, u64, Result<Value, String>),
     Info(u64, u64, u64, Result<Value, HostCallError>),
     PermissionChanged(u64, u64, Result<Value, String>),
     Connected(u64, HostEventsInterrupt),
@@ -348,6 +350,12 @@ impl App {
 
     fn native_dialog_event(&mut self, event: NativeEvent) -> Option<NativeEvent> {
         match event {
+            NativeEvent::History(epoch, selection, result) => {
+                self.native_history_loaded(epoch, selection, result)
+            }
+            NativeEvent::Discovery(epoch, selection, request, result) => {
+                self.discovery_loaded(epoch, selection, request, result)
+            }
             NativeEvent::PermissionChanged(epoch, selection, result) => {
                 self.native_permission_changed(epoch, selection, result)
             }
@@ -575,7 +583,13 @@ impl App {
 
     fn native_control(&mut self, kind: &str, payload: Value) {
         match kind {
-            "replay.begin" => self.native.as_mut().unwrap().replay.clear(),
+            "replay.begin" => {
+                self.native.as_mut().unwrap().replay.clear();
+                self.discovery.reset_transient();
+                self.conversation_has_more = payload["has_more"].as_bool().unwrap_or(false);
+                self.conversation_history_windowed = self.conversation_has_more;
+                self.conversation_history_loading = false;
+            }
             "replay.end" => {
                 self.conversation = crate::tui::conversation::ConversationModel::from_replay(
                     &self.native.as_ref().unwrap().replay,

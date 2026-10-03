@@ -22,6 +22,8 @@ use ratatui::text::{Line, Span};
 use serde_json::Value;
 use std::collections::VecDeque;
 use unicode_width::UnicodeWidthStr;
+mod find;
+pub(crate) use find::BodyMatch;
 
 /// 工具卡状态：`Pending`（○ 模型已发起）→ `Settled`（● 已有结果）或
 /// `Denied`（权限拒绝——journal 拒绝路径无 tool/call，回放侧以
@@ -67,6 +69,7 @@ pub(crate) enum ConversationItem {
 /// 逐 item 渲染缓存：`lines` 只在（内容代数, 宽度）匹配时有效。
 #[derive(Clone, Debug, Default)]
 struct ItemCache {
+    identity: u64,
     dirty: bool,
     width: Option<usize>,
     /// 流式 assistant 项渲染时使用的活动帧字形（None=落定 ⏺）。帧变
@@ -77,7 +80,9 @@ struct ItemCache {
 
 impl ItemCache {
     fn fresh() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         Self {
+            identity: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             dirty: true,
             ..Self::default()
         }

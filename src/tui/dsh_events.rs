@@ -20,7 +20,6 @@ use crate::dsh::frames::{DshFrame, event_vocabulary_violation};
 use crate::dsh::transcript::DshTranscript;
 use crate::interaction::AskAnswer;
 use crate::session::event::SessionEvent;
-use crate::tui::conversation::ConversationModel;
 use serde_json::Value;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -1497,7 +1496,7 @@ impl App {
             }
             "clear" => {
                 // 纯本地：清空会话视图（与 local /clear 语义一致，零 API）。
-                self.conversation = ConversationModel::new();
+                self.conversation = self.discovery.reset_conversation(&[]);
                 self.conversation_scroll_from_bottom = 0;
                 self.conversation_has_more = false;
                 self.conversation_history_loading = false;
@@ -1507,7 +1506,7 @@ impl App {
             "help" => {
                 // InfoDialog(Help) 复用（§2.5）：命令清单按 dsh 表标注
                 // 可用性（映射/本地 + 置灰全集不出现——弹框只列可用集）。
-                self.help_commands = vec![
+                self.discovery.help_commands = vec![
                     CommandInfo {
                         name: "new".into(),
                         aliases: Vec::new(),

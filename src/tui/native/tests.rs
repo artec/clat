@@ -6,6 +6,41 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
+#[test]
+fn native_history_pages_decode_and_reject_old_connection_or_selection() {
+    let (mut app, storage) = shell();
+    let current =
+        json!({"type":"user_message","seq":100,"turn":2,"time_ms":0,"text":"latest needle"});
+    let events =
+        serde_json::from_value::<Vec<crate::session::replay::ReplayEvent>>(json!([current]))
+            .unwrap();
+    app.conversation = crate::tui::conversation::ConversationModel::from_replay(&events);
+    app.conversation_has_more = true;
+    app.conversation_history_loading = true;
+    let page = json!({"events":[
+        {"type":"user_message","seq":1,"turn":1,"time_ms":0,"text":"earlier needle"},
+        {"type":"assistant_message","seq":2,"turn":1,"step":1,"time_ms":0,
+         "text":"old answer","reasoning":"private needle","tool_calls":[],"provider":"test","model":"test"}
+    ],"has_more":false});
+    for (epoch, selection) in [(1, 0), (0, 1)] {
+        app.handle_native_event(NativeEvent::History(epoch, selection, Ok(page.clone())));
+        assert_eq!(app.conversation.first_replay_seq(), Some(100));
+        assert!(app.conversation_history_loading);
+    }
+    app.handle_native_event(NativeEvent::History(0, 0, Ok(page)));
+    assert_eq!(app.conversation.first_replay_seq(), Some(1));
+    assert!(!app.conversation_has_more);
+    assert!(!app.conversation_history_loading);
+    assert_eq!(
+        app.conversation
+            .find_body("needle", 40, conversation::ToolCardVisibility::Collapsed)
+            .len(),
+        2
+    );
+    drop(app);
+    crate::test_support::cleanup_tree(&storage);
+}
+
 fn shell() -> (App, PathBuf) {
     let (storage, project) = crate::test_support::roots("native-shell");
     std::fs::create_dir_all(&storage).unwrap();
@@ -523,7 +558,7 @@ fn native_help_combines_host_commands_with_terminal_help() {
             .is_some_and(|dialog| dialog.kind == InfoDialogKind::Help)
     );
     assert!(app.content_view.is_none());
-    let lines = help_dialog_lines(76, &app.help_commands);
+    let lines = help_dialog_lines(76, &app.discovery.help_commands);
     let text = lines
         .iter()
         .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))

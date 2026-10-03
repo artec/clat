@@ -104,6 +104,9 @@ impl DshResumeData {
 }
 
 pub(crate) struct SessionPicker {
+    all_sessions: Vec<SessionSummary>,
+    filter: String,
+    filtering: bool,
     sessions: Vec<SessionSummary>,
     selected: usize,
     /// 当前会话 id，列表中标记 current。
@@ -113,8 +116,104 @@ pub(crate) struct SessionPicker {
 }
 
 impl SessionPicker {
+    pub(super) fn paste_filter(&mut self, text: &str) {
+        self.filtering = true;
+        self.filter.extend(
+            text.chars()
+                .filter(|c| !c.is_control())
+                .take(256usize.saturating_sub(self.filter.chars().count())),
+        );
+        self.apply_filter();
+    }
+
+    fn handle_filter_key(&mut self, key: KeyEvent) -> bool {
+        if !self.filtering {
+            if key.code == KeyCode::Char('/') {
+                self.filtering = true;
+                return true;
+            }
+            if key.code == KeyCode::Esc && !self.filter.is_empty() {
+                self.filter.clear();
+                self.apply_filter();
+                return true;
+            }
+            return false;
+        }
+        match key.code {
+            KeyCode::Esc => {
+                self.filtering = false;
+                self.filter.clear();
+            }
+            KeyCode::Enter => {
+                self.filtering = false;
+            }
+            KeyCode::Backspace => {
+                self.filter.pop();
+            }
+            KeyCode::Char(ch)
+                if !key.modifiers.intersects(
+                    crossterm::event::KeyModifiers::CONTROL | crossterm::event::KeyModifiers::ALT,
+                ) =>
+            {
+                self.filter.push(ch);
+            }
+            _ => {}
+        }
+        self.apply_filter();
+        true
+    }
+
+    fn apply_filter(&mut self) {
+        let query = self.filter.to_lowercase();
+        self.sessions = self
+            .all_sessions
+            .iter()
+            .filter(|session| {
+                format!("{} {}", session.title.as_deref().unwrap_or(""), session.id)
+                    .to_lowercase()
+                    .contains(&query)
+            })
+            .cloned()
+            .collect();
+        self.selected = 0;
+        if let Some(dsh) = self.dsh.as_mut() {
+            dsh.rows.clear();
+            let mut groups = Vec::new();
+            for row in &dsh.all_rows {
+                if !groups.contains(&row.workspace_path) {
+                    groups.push(row.workspace_path.clone());
+                }
+            }
+            for path in groups {
+                let indices: Vec<_> = dsh
+                    .all_rows
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, row)| {
+                        row.workspace_path == path
+                            && format!("{} {}", row.display_title(), row.session_id)
+                                .to_lowercase()
+                                .contains(&query)
+                    })
+                    .map(|(i, _)| i)
+                    .collect();
+                if let Some(first) = indices.first() {
+                    dsh.rows.push(DshPickerRow::Group(
+                        dsh.all_rows[*first].workspace_title.clone(),
+                    ));
+                    dsh.rows
+                        .extend(indices.into_iter().map(DshPickerRow::Session));
+                }
+            }
+            self.selected = dsh.session_positions().first().copied().unwrap_or(0);
+        }
+    }
+
     pub fn new(sessions: Vec<SessionSummary>, current: Option<SessionId>) -> Self {
         Self {
+            all_sessions: sessions.clone(),
+            filter: String::new(),
+            filtering: false,
             sessions,
             selected: 0,
             current,
@@ -167,6 +266,9 @@ impl SessionPicker {
             .or(first_session_row)
             .unwrap_or(0);
         Self {
+            all_sessions: Vec::new(),
+            filter: String::new(),
+            filtering: false,
             sessions: Vec::new(),
             selected,
             current: None,
@@ -185,7 +287,14 @@ impl SessionPicker {
         }
     }
 
+    pub(super) fn display_row_count(&self) -> usize {
+        self.row_count() + usize::from(self.filtering || !self.filter.is_empty())
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent) -> ResumeAction {
+        if self.handle_filter_key(key) {
+            return ResumeAction::Continue;
+        }
         if let Some(data) = self.dsh.take() {
             let mut data = data;
             let action = self.handle_key_dsh(&mut data, key);
@@ -194,7 +303,8 @@ impl SessionPicker {
         }
         if self.sessions.is_empty() {
             return match key.code {
-                KeyCode::Esc | KeyCode::Enter => ResumeAction::Cancel,
+                KeyCode::Esc => ResumeAction::Cancel,
+                KeyCode::Enter if self.filter.is_empty() => ResumeAction::Cancel,
                 _ => ResumeAction::Continue,
             };
         }
@@ -226,7 +336,8 @@ impl SessionPicker {
         let positions = dsh.session_positions();
         if positions.is_empty() {
             return match key.code {
-                KeyCode::Esc | KeyCode::Enter => ResumeAction::Cancel,
+                KeyCode::Esc => ResumeAction::Cancel,
+                KeyCode::Enter if self.filter.is_empty() => ResumeAction::Cancel,
                 _ => ResumeAction::Continue,
             };
         }
@@ -275,7 +386,11 @@ impl SessionPicker {
         if mouse.row <= area.y || mouse.row >= area.y + area.height.saturating_sub(1) {
             return ResumeAction::Continue;
         }
-        let row = mouse.row.saturating_sub(area.y + 1) as usize;
+        let header = u16::from(self.filtering || !self.filter.is_empty());
+        if mouse.row <= area.y + header {
+            return ResumeAction::Continue;
+        }
+        let row = mouse.row.saturating_sub(area.y + 1 + header) as usize;
         match self.dsh.as_deref() {
             Some(dsh) => match dsh.session_at(row) {
                 Some(row_data) => ResumeAction::OpenDsh(Box::new(row_data.clone())),
@@ -293,10 +408,20 @@ impl SessionPicker {
         let block = crate::tui::popup_block("/resume");
         let row_width = block.inner(area).width as usize;
         let mut lines = Vec::new();
+        if self.filtering || !self.filter.is_empty() {
+            lines.push(Line::from(format!(
+                "Filter title / ID: {} · Enter browse · Esc clear",
+                self.filter
+            )));
+        }
         if let Some(dsh) = self.dsh.as_deref() {
             self.draw_dsh(dsh, &mut lines, row_width);
         } else if self.sessions.is_empty() {
-            lines.push(Line::from("no previous conversations in this project"));
+            lines.push(Line::from(if self.filter.is_empty() {
+                "no previous conversations in this project"
+            } else {
+                "no matching conversations (title / ID)"
+            }));
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
                 "Esc close",
@@ -325,7 +450,7 @@ impl SessionPicker {
             }
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
-                "↑↓ select · Enter resume · 1-9 quick pick · Esc close",
+                "↑↓ select · Enter resume · 1-9 quick pick · / filter · Esc close",
                 Style::default().add_modifier(Modifier::DIM),
             )));
         }
@@ -342,7 +467,11 @@ impl SessionPicker {
     /// 行内不再带标签；✓ 锚定名称，居数字列之后（VP-3 四轮定稿）。
     fn draw_dsh(&self, dsh: &DshResumeData, lines: &mut Vec<Line<'static>>, row_width: usize) {
         if dsh.rows.is_empty() {
-            lines.push(Line::from("no dsh sessions — /new to start one"));
+            lines.push(Line::from(if self.filter.is_empty() {
+                "no dsh sessions — /new to start one"
+            } else {
+                "no matching conversations (title / ID)"
+            }));
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
                 "Esc close",
@@ -388,7 +517,7 @@ impl SessionPicker {
         }
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            "↑↓ select · Enter resume · 1-9 quick pick · Esc close",
+            "↑↓ select · Enter resume · 1-9 quick pick · / filter · Esc close",
             Style::default().add_modifier(Modifier::DIM),
         )));
     }
@@ -426,6 +555,46 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn resume_filter_preserves_identity_and_is_recoverable_from_empty_results() {
+        let sessions = [("id-one", "中文设计"), ("id-two", "Fix the parser")]
+            .into_iter()
+            .map(|(id, title)| SessionSummary {
+                id: SessionId::new(id),
+                title: Some(title.into()),
+                created_at_ms: 0,
+                last_activity_ms: 0,
+                message_count: 2,
+                turns: 1,
+            })
+            .collect();
+        let mut picker = SessionPicker::new(sessions, None);
+        picker.paste_filter("中文");
+        assert_eq!(picker.sessions.len(), 1);
+        picker.handle_key(KeyEvent::from(KeyCode::Enter));
+        assert!(
+            matches!(picker.handle_key(KeyEvent::from(KeyCode::Enter)), ResumeAction::Open(id) if id.as_str() == "id-one")
+        );
+        picker.filter = "id-two".into();
+        picker.apply_filter();
+        assert_eq!(picker.sessions[0].id.as_str(), "id-two");
+        picker.filter = "missing".into();
+        picker.apply_filter();
+        assert!(picker.sessions.is_empty());
+        assert!(matches!(
+            picker.handle_key(KeyEvent::from(KeyCode::Enter)),
+            ResumeAction::Continue
+        ));
+        picker.handle_key(KeyEvent::from(KeyCode::Esc));
+        assert_eq!(picker.sessions.len(), 2);
+        let mut dsh = SessionPicker::new_dsh(fixture_rows(), None);
+        dsh.paste_filter("adapter");
+        assert_eq!(dsh.dsh.as_ref().unwrap().session_positions().len(), 1);
+        dsh.handle_key(KeyEvent::from(KeyCode::Enter));
+        assert!(
+            matches!(dsh.handle_key(KeyEvent::from(KeyCode::Enter)), ResumeAction::OpenDsh(row) if row.session_id == "session-b1")
+        );
+    }
 
     /// 活跃时间格式：固定 epoch 的稳定输出（快照确定性锚）。
     #[test]

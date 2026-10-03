@@ -497,7 +497,7 @@ fn ctrl_v_respects_modal_key_ownership() {
         probe_count.fetch_add(1, Ordering::SeqCst);
         Ok(PreparedClipboardPaste::Text("must not paste".into()))
     });
-    harness.type_text("/help");
+    harness.type_text("/help ");
     harness.key(KeyCode::Enter);
     assert!(harness.app.info_dialog.is_some());
 
@@ -707,6 +707,59 @@ fn harness_native(tag: &str, online: bool) -> Harness {
         project_root,
         storage_root,
     }
+}
+
+#[test]
+fn ux_discovery_uses_real_keys_without_dispatching_selection() {
+    let mut harness = Harness::trusted("ux-discovery-keys", 100, 30);
+    harness.type_text("/new");
+    assert!(harness.app.discovery.picker.is_some());
+    let selection = harness
+        .app
+        .application
+        .as_ref()
+        .unwrap()
+        .current_session_id();
+    harness.key(KeyCode::Enter);
+    assert_eq!(harness.app.input.text(), "/new ");
+    assert_eq!(
+        harness
+            .app
+            .application
+            .as_ref()
+            .unwrap()
+            .current_session_id(),
+        selection
+    );
+    harness.app.input.clear();
+    harness.type_text("/model");
+    harness.key(KeyCode::Esc);
+    assert!(harness.app.discovery.picker.is_none());
+    assert_eq!(harness.app.input.text(), "/model");
+    harness.event(UiEvent::Terminal(Event::Paste("/tmp/ordinary-path".into())));
+    assert!(harness.app.discovery.picker.is_none());
+}
+
+#[test]
+fn ux_find_keys_and_paste_preserve_composer_and_navigate_loaded_message_data() {
+    let mut harness = Harness::trusted("ux-find-keys", 100, 30);
+    harness.app.conversation.push_user("first needle".into());
+    harness.app.conversation.push_user("second needle".into());
+    harness.app.input.insert_str("未发送草稿");
+    harness.draw_projection();
+    harness.key_with_modifiers(KeyCode::Char('f'), KeyModifiers::CONTROL);
+    harness.event(UiEvent::Terminal(Event::Paste("needle".into())));
+    assert_eq!(harness.app.input.text(), "未发送草稿");
+    assert!(harness.draw_projection().contains("1/2"));
+    harness.key(KeyCode::Enter);
+    assert!(harness.draw_projection().contains("2/2"));
+    harness.key_with_modifiers(KeyCode::Enter, KeyModifiers::SHIFT);
+    assert!(harness.draw_projection().contains("1/2"));
+    harness.app.conversation_has_more = true;
+    assert!(harness.draw_projection().contains("loaded window only"));
+    harness.key(KeyCode::Esc);
+    assert!(harness.app.discovery.find.is_none());
+    assert_eq!(harness.app.input.text(), "未发送草稿");
 }
 
 #[test]
@@ -1060,7 +1113,7 @@ fn pu_content_dialogs_use_real_dispatch_and_scroll_without_editing() {
         .unwrap()
         .dispatch_command("/goal create inspect the current changes")
         .unwrap();
-    harness.type_text("/goal");
+    harness.type_text("/goal ");
     harness.key(KeyCode::Enter);
     assert!(
         harness
@@ -1075,7 +1128,7 @@ fn pu_content_dialogs_use_real_dispatch_and_scroll_without_editing() {
     view.goal.as_mut().unwrap().id = "goal-example".into();
     harness.snapshot("goal-dialog");
     harness.key(KeyCode::Esc);
-    harness.type_text("/sub");
+    harness.type_text("/sub ");
     harness.key(KeyCode::Enter);
     assert!(
         harness
@@ -1680,7 +1733,7 @@ fn model_picker_snapshot() {
     // 刷新 2026-08-22：键位说明行统一弹窗规范——Faint 灰（fg=DarkGray）
     // + 钉在弹框内底行（此前 DIM 修饰符与其余弹窗不一致）。
     let mut harness = Harness::trusted("snap-model-picker", 80, 24);
-    harness.type_text("/model");
+    harness.type_text("/model ");
     harness.key(KeyCode::Enter);
     let projection = harness.draw_projection();
     check_or_refresh("model-picker", &projection);
@@ -1701,7 +1754,7 @@ fn model_picker_snapshot() {
 fn model_picker_never_touches_screen_edges() {
     for width in [80u16, 120, 200] {
         let mut harness = Harness::trusted("snap-picker-edges", width, 24);
-        harness.type_text("/model");
+        harness.type_text("/model ");
         harness.key(KeyCode::Enter);
         harness.project();
         let buffer = harness.terminal.backend().buffer();
@@ -1736,7 +1789,7 @@ fn model_picker_never_touches_screen_edges() {
 #[test]
 fn model_editor_escape_returns_to_the_picker_in_place() {
     let mut harness = Harness::trusted("snap-model-editor-back", 80, 24);
-    harness.type_text("/model");
+    harness.type_text("/model ");
     harness.key(KeyCode::Enter);
     for _ in 0..5 {
         harness.key(KeyCode::Down);
@@ -1770,7 +1823,7 @@ fn model_editor_escape_returns_to_the_picker_in_place() {
 #[test]
 fn model_picker_vendor_level_snapshot() {
     let mut harness = Harness::trusted("snap-model-picker-vendor", 80, 24);
-    harness.type_text("/model");
+    harness.type_text("/model ");
     harness.key(KeyCode::Enter);
     for _ in 0..2 {
         harness.key(KeyCode::Down);
@@ -2044,7 +2097,7 @@ fn ask_dialog_options_snapshot() {
 #[test]
 fn help_dialog_snapshot_and_paging() {
     let mut harness = Harness::trusted("snap-help", 80, 24);
-    harness.type_text("/help");
+    harness.type_text("/help ");
     harness.key(KeyCode::Enter);
     assert!(harness.app.info_dialog.is_some(), "the help dialog opens");
     harness.project();
@@ -2086,7 +2139,7 @@ fn help_dialog_snapshot_and_paging() {
 #[test]
 fn context_dialog_snapshot_and_modal_gate() {
     let mut harness = Harness::trusted("snap-context", 80, 24);
-    harness.type_text("/context");
+    harness.type_text("/context ");
     harness.key(KeyCode::Enter);
     assert!(
         harness
@@ -2168,7 +2221,7 @@ fn help_dialog_lines_carry_the_frontend_local_composer_section() {
 #[test]
 fn skills_dialog_snapshot_and_modal_gate() {
     let mut harness = Harness::trusted("snap-skills", 80, 24);
-    harness.type_text("/skill");
+    harness.type_text("/skill ");
     harness.key(KeyCode::Enter);
     assert!(
         harness
@@ -2210,7 +2263,7 @@ fn skills_dialog_snapshot_and_modal_gate() {
 #[test]
 fn mcp_dialog_snapshot_and_refresh() {
     let mut harness = Harness::trusted("snap-mcp", 80, 24);
-    harness.type_text("/mcp");
+    harness.type_text("/mcp ");
     harness.key(KeyCode::Enter);
     assert!(
         harness
@@ -2291,7 +2344,7 @@ fn fake_mcp_view() -> crate::McpStatusDto {
 #[test]
 fn permission_picker_snapshot() {
     let mut harness = Harness::trusted("snap-perm-picker", 80, 24);
-    harness.type_text("/perm");
+    harness.type_text("/perm ");
     harness.key(KeyCode::Enter);
     assert!(
         harness.app.permission_picker.is_some(),
@@ -2304,7 +2357,7 @@ fn permission_picker_snapshot() {
     harness.key(KeyCode::Esc);
     assert!(harness.app.permission_picker.is_none(), "Esc closes it");
     // 长名别名同样打开。
-    harness.type_text("/permission");
+    harness.type_text("/permission ");
     harness.key(KeyCode::Enter);
     assert!(
         harness.app.permission_picker.is_some(),
@@ -2316,7 +2369,7 @@ fn permission_picker_snapshot() {
 #[test]
 fn permission_confirm_full_snapshot() {
     let mut harness = Harness::trusted("snap-perm-full", 80, 24);
-    harness.type_text("/perm");
+    harness.type_text("/perm ");
     harness.key(KeyCode::Enter);
     harness.key(KeyCode::Down);
     harness.key(KeyCode::Down);
@@ -2520,7 +2573,7 @@ fn permission_dialog_decision_keys_require_plain_modifiers() {
 #[test]
 fn permission_picker_enter_requires_a_plain_key() {
     let mut harness = Harness::trusted("perm-picker-plain", 80, 24);
-    harness.type_text("/perm");
+    harness.type_text("/perm ");
     harness.key(KeyCode::Enter);
     assert!(harness.app.permission_picker.is_some());
     // 选中 Full Access 行（第三行）。
@@ -2553,7 +2606,7 @@ fn permission_picker_enter_requires_a_plain_key() {
         "Shift+Enter must not have armed the Full Access confirm state"
     );
     // 重开：裸 Enter 才进入 FA 确认子态，再按一次生效（P4）。
-    harness.type_text("/perm");
+    harness.type_text("/perm ");
     harness.key(KeyCode::Enter);
     harness.key(KeyCode::Down);
     harness.key(KeyCode::Down);
@@ -2620,7 +2673,7 @@ fn rename_dialog_snapshot() {
 #[test]
 fn rename_not_named_snapshot() {
     let mut harness = Harness::trusted("snap-rename-gate", 80, 24);
-    harness.type_text("/rename");
+    harness.type_text("/rename ");
     harness.key(KeyCode::Enter);
     assert!(
         harness.app.rename_dialog.is_none(),
@@ -3574,7 +3627,7 @@ fn live_glm_tui_manual_compaction_cold_reopen_and_continue() {
         .adopt_snapshot()
         .expect("adopt seeded session before compact");
 
-    harness.type_text("/compact");
+    harness.type_text("/compact ");
     harness.key(KeyCode::Enter);
     let compact = harness
         .app

@@ -207,7 +207,7 @@ impl App {
         // 视图立即接管为空白（审计 P1-1）：旧会话内容绝不显示在新会话
         // 标题下——此前残留内容会把整页装载误判成间隙补齐而全数跳过
         // （fresh transcript 的 gap_before 恒 None），形成跨会话串线。
-        self.conversation = ConversationModel::new();
+        self.conversation = self.discovery.reset_conversation(&[]);
         self.conversation_scroll_from_bottom = 0;
         self.conversation_has_more = false;
         self.conversation_history_loading = true;

@@ -16,7 +16,7 @@ impl App {
         usize::from(self.conversation_history_windowed || self.conversation_history_loading)
     }
 
-    fn conversation_visible_rows(&self) -> usize {
+    pub(super) fn conversation_visible_rows(&self) -> usize {
         (self.conversation_area.height.saturating_sub(2) as usize)
             .saturating_sub(self.conversation_indicator_rows())
     }
@@ -37,6 +37,10 @@ impl App {
 
         if self.dsh.is_some() {
             self.dsh_load_older_history();
+            return;
+        }
+        if self.native.is_some() {
+            self.native_load_older_history();
             return;
         }
         let Some(before_seq) = self.conversation.first_replay_seq() else {
@@ -150,16 +154,23 @@ impl App {
             .split(area);
         self.input_area = chunks[2];
         self.conversation_area = chunks[1];
+        self.sync_find_anchor();
 
         self.draw_header(frame, chunks[0]);
         self.draw_conversation(frame, chunks[1]);
         self.draw_input(frame, chunks[2]);
+        self.draw_command_picker(frame);
+        self.draw_conversation_find(frame);
         // 状态栏：左边是 storage 等常规状态，最右边是模型遥测
         // （Wallet/Token · Cache% · Context current/total）。窄终端时
         // 左侧保底 MIN_STATUS_LEFT，右侧按优先级让位（TUI-L02）。
         // 左右各留 1 列边距，文字不贴终端边缘。
         self.draw_status_bar(frame, chunks[3], tick);
 
+        self.draw_modal_layer(frame, area);
+    }
+
+    fn draw_modal_layer(&mut self, frame: &mut Frame, area: Rect) {
         // 统一模态压暗层（弹窗规范 2026-08-19）：所有弹窗——异步的
         // 权限/ask 与同步的选择器/编辑器——绘制前全屏叠加 DIM，只降
         // 亮度、不清内容；弹窗保持全亮。起因是真实事故：权限框与背景
@@ -181,7 +192,7 @@ impl App {
         }
 
         if let Some(picker) = &self.session_picker {
-            let height = (picker.row_count() as u16 + 4).min(popup_height_cap(area));
+            let height = (picker.display_row_count() as u16 + 4).min(popup_height_cap(area));
             let picker_area = centered_rect(84, height.max(6), area);
             self.editor_area = Some(picker_area);
             picker.draw(frame, picker_area);
@@ -230,6 +241,10 @@ impl App {
             }
         }
 
+        self.draw_runtime_dialogs(frame, area);
+    }
+
+    fn draw_runtime_dialogs(&mut self, frame: &mut Frame, area: Rect) {
         if self.pending_ask_user.is_some() {
             self.draw_ask_dialog(frame);
         }
@@ -244,6 +259,20 @@ impl App {
         if self.rename_dialog.is_some() {
             self.draw_rename_dialog(frame);
         }
+        if !self.discovery_modal_open() {
+            self.find_cursor(frame);
+        }
+    }
+
+    pub(super) fn discovery_modal_open(&self) -> bool {
+        self.pending_permission.is_some()
+            || self.pending_ask_user.is_some()
+            || self.session_picker.is_some()
+            || self.picker.is_some()
+            || self.editor.is_some()
+            || self.info_dialog.is_some()
+            || self.permission_picker.is_some()
+            || self.rename_dialog.is_some()
     }
 
     /// /mcp 弹窗内 `r` 刷新：从 Application 重取 MCP 状态并复位滚动
@@ -277,7 +306,7 @@ impl App {
     pub(super) fn draw_help_dialog(&mut self, frame: &mut Frame) {
         let area = frame.area();
         let inner_width = popup_inner_width(84, area);
-        let commands = self.help_commands.clone();
+        let commands = self.discovery.help_commands.clone();
         let lines = help_dialog_lines(inner_width, &commands);
         let dialog = centered_rect(84, content_dialog_height(lines.len(), area), area);
         // 可视行数：内框（去边框）减空行与脚注各一行。
@@ -867,6 +896,11 @@ impl App {
     }
 
     pub(super) fn draw_conversation(&mut self, frame: &mut Frame, area: Rect) {
+        let block = self.conversation_block(area);
+        self.draw_conversation_body(frame, area, block);
+    }
+
+    fn conversation_block(&self, area: Rect) -> Block<'static> {
         // 会话右标题（用户指定布局）：左上角 Conversation、右上角对称
         // 放当前会话名（effective：LLM/用户标题，否则首条消息派生）。
         // 超宽截断保头（标题语义在头部），留出左标题与边框的余量。
@@ -908,6 +942,10 @@ impl App {
                 .right_aligned(),
             );
         }
+        block
+    }
+
+    fn draw_conversation_body(&mut self, frame: &mut Frame, area: Rect, block: Block<'static>) {
         let inner = block.inner(area);
         let indicator_rows = self.conversation_indicator_rows() as u16;
         let content_area = Rect {
@@ -941,6 +979,7 @@ impl App {
         let mut visible_lines =
             self.conversation
                 .visible_lines(start, visible, inner_width, self.card_visibility);
+        self.highlight_find_match(&mut visible_lines, start);
         // 会话选区按内容行号高亮，滚动后依然正确。
         if let Some((from, to)) = self
             .selection

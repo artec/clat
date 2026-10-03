@@ -2,6 +2,78 @@
 use super::*;
 
 impl App {
+    pub(in crate::tui) fn native_load_older_history(&mut self) {
+        let Some(before) = self.conversation.first_replay_seq() else {
+            return;
+        };
+        let Some(native) = self.native.as_ref().filter(|n| n.online) else {
+            return;
+        };
+        let Some(ui) = self.event_sender.clone() else {
+            return;
+        };
+        let (client, epoch, selection) = (native.client.clone(), native.epoch, native.selection);
+        self.conversation_history_loading = true;
+        thread::spawn(move || {
+            let result = client.call(
+                "session.history",
+                &serde_json::json!({"before_seq": before, "max_messages": 50, "expected_selection_generation": selection}),
+            );
+            let _ = ui.send(UiEvent::Native(NativeEvent::History(
+                epoch, selection, result,
+            )));
+        });
+    }
+
+    pub(in crate::tui) fn native_history_loaded(
+        &mut self,
+        epoch: u64,
+        selection: u64,
+        result: Result<Value, String>,
+    ) {
+        if !self.native_discovery_matches(epoch, selection) {
+            return;
+        }
+        self.conversation_history_loading = false;
+        match result {
+            Ok(value) => match serde_json::from_value::<Vec<crate::session::replay::ReplayEvent>>(
+                value["events"].clone(),
+            ) {
+                Ok(events) => self.prepend_conversation_page(
+                    &events,
+                    value["has_more"].as_bool().unwrap_or(false),
+                ),
+                Err(error) => self.flash_status(format!("history decode failed: {error}")),
+            },
+            Err(error) => self.flash_status(format!("history load failed: {error}")),
+        }
+    }
+
+    pub(in crate::tui) fn request_command_discovery(&self, request: u64) -> Result<(), String> {
+        let native = self.native.as_ref().ok_or("No host")?;
+        if !native.online {
+            return Err("Host offline · /reconnect".into());
+        }
+        let ui = self
+            .event_sender
+            .clone()
+            .ok_or("Host transport unavailable")?;
+        let (client, epoch, selection) = (native.client.clone(), native.epoch, native.selection);
+        thread::spawn(move || {
+            let result = client.call("interaction.catalog", &serde_json::json!({}));
+            let _ = ui.send(UiEvent::Native(NativeEvent::Discovery(
+                epoch, selection, request, result,
+            )));
+        });
+        Ok(())
+    }
+
+    pub(in crate::tui) fn native_discovery_matches(&self, epoch: u64, selection: u64) -> bool {
+        self.native
+            .as_ref()
+            .is_some_and(|n| n.epoch == epoch && n.selection == selection)
+    }
+
     pub(in crate::tui) fn info_dialog_refreshable(&self) -> bool {
         self.info_dialog
             .as_ref()
@@ -99,7 +171,7 @@ impl App {
         let display = match result {
             Ok(value) => match HostClient::help_commands(&value) {
                 Ok(Some(commands)) => {
-                    self.help_commands = commands;
+                    self.discovery.help_commands = commands;
                     self.info_dialog = Some(InfoDialog::new(InfoDialogKind::Help));
                     self.content_view = None;
                     return;

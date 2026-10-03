@@ -809,6 +809,38 @@ fn dispatch_covers_the_full_method_set() {
             .any(|capability| capability == "permission-modes")
     );
     let encoded_workbench = workbench.to_string();
+    let discovery =
+        protocol::dispatch("interaction.catalog", &serde_json::json!({}), &shared).unwrap();
+    assert!(
+        discovery["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["name"] == "model" && c["usage"] == "/model")
+    );
+    assert!(discovery["skills"]["entries"].is_array());
+    assert!(discovery["skills"]["diagnostics"].is_array());
+    assert!(!discovery.to_string().contains("test-key"));
+    let changes = protocol::dispatch("workspace.changes", &serde_json::json!({}), &shared).unwrap();
+    assert_eq!(changes["scope"], "workspace");
+    assert!(changes["files"].is_array());
+    let invalid_diff = protocol::dispatch(
+        "workspace.diff",
+        &serde_json::json!({"path":"../secret"}),
+        &shared,
+    )
+    .unwrap_err();
+    assert_eq!(invalid_diff.code, ErrorCode::BadRequest);
+    for method in ["interaction.catalog", "workspace.changes", "workspace.diff"] {
+        assert!(protocol::RPC_METHODS.contains(&method));
+    }
+    let stale_history = protocol::dispatch(
+        "session.history",
+        &serde_json::json!({"expected_selection_generation": shared.selection_generation() + 1}),
+        &shared,
+    )
+    .unwrap_err();
+    assert_eq!(stale_history.code, ErrorCode::Busy);
     assert!(!encoded_workbench.contains("test-key"));
     assert!(!encoded_workbench.contains("credentials"));
     assert!(

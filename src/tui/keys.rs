@@ -225,7 +225,19 @@ impl App {
         {
             return;
         }
+        if self.handle_conversation_find_key(key) || self.handle_command_picker_key(key) {
+            return;
+        }
+        let opens = key.code == KeyCode::Char('/')
+            && self.input.text().is_empty()
+            && !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
         self.handle_composer_key(key);
+        if opens {
+            self.open_command_picker();
+        }
+        self.update_command_query();
     }
 
     fn handle_global_key(&mut self, key: KeyEvent) -> bool {
@@ -520,6 +532,14 @@ impl App {
     }
 
     fn handle_paste(&mut self, text: &str) {
+        self.discovery.picker = None;
+        if let Some(picker) = self.session_picker.as_mut() {
+            picker.paste_filter(text);
+            return;
+        }
+        if !self.discovery_modal_open() && self.paste_conversation_find(text) {
+            return;
+        }
         // 选择器、问答对话框、信息弹窗与权限选择器没有文本输入目标，
         // 忽略粘贴；/rename 弹框有自己的编辑目标。
         if self.picker.is_none()

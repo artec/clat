@@ -57,11 +57,12 @@ pub use application::{
     ApplicationError, ApplicationEvent, ApplicationRunDone, ApplicationRunFailure,
     ApplicationRunRequest, ApplicationRunResult, BootstrapApplication, CompactHandle,
     CompactReport, CompactionStatus, ContextEstimateSnapshot, ContextSkillDiagnostic,
-    McpServerInfoDto, McpStatusDto, MessageOutlineDto, ProjectAuthorization, ProjectSnapshot,
-    RecalledSteering, RenameOutcome, RunHandle, SessionSnapshot, SkillEntryDto, SkillsOverviewDto,
-    SteerOutcome, TrustedProjectApplication, VisionProbeHandle, VisionProbeOutcome,
-    VisionProbeReport, WorkbenchModelSnapshot, WorkbenchProjectSnapshot, WorkbenchSessionSnapshot,
-    WorkbenchSnapshot,
+    InteractionCatalog, InteractionCommand, McpServerInfoDto, McpStatusDto, MessageOutlineDto,
+    ProjectAuthorization, ProjectSnapshot, RecalledSteering, RenameOutcome, RunHandle,
+    SessionSnapshot, SkillEntryDto, SkillsOverviewDto, SteerOutcome, TrustedProjectApplication,
+    VisionProbeHandle, VisionProbeOutcome, VisionProbeReport, WorkbenchModelSnapshot,
+    WorkbenchProjectSnapshot, WorkbenchSessionSnapshot, WorkbenchSnapshot, WorkspaceChanges,
+    WorkspaceDiff, WorkspaceReview,
 };
 pub use command::{CommandError, CommandGroup, CommandInfo, CommandOutcome};
 pub use control_storage::ModelProfileSummary;

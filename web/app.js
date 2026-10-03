@@ -152,6 +152,7 @@ function renderFencedCode(lines, index, fence) {
   }
   const pre = el('pre');
   pre.append(el('code', null, codeLines.join('\n')));
+  pre.appendChild(copyTextButton('Copy code', () => codeLines.join('\n')));
   return { node: pre, nextIndex: index };
 }
 
@@ -594,6 +595,7 @@ function handleFrame(frame) {
     case 'prompt.settled': onSettled(payload.ctl); break;
     case 'notice': onNotice(payload.ctl); break;
     case 'replay.begin':
+      resetConversationFind();
       clearTranscriptAttachmentUrls();
       dom.transcript.replaceChildren();
       show(dom['empty-state']);
@@ -665,6 +667,7 @@ function handleReplay(event) {
   if (node && Number.isSafeInteger(event.seq)) {
     node.dataset.seq = String(event.seq);
     node.dataset.turn = String(event.turn || 0);
+    updateConversationFind();
   }
 }
 
@@ -758,6 +761,9 @@ function finishRun(event) {
 
 function onSubscribed(ctl) {
   invalidateSuggestion();
+  observeComposerSession(ctl.session_id || null, ctl.selection_generation);
+  closeCommandPanel();
+  refreshCommandCatalog();
   state.selectionGeneration = ctl.selection_generation;
   state.connected = true;
   state.reconnectDelayMs = 1000;
@@ -1170,6 +1176,7 @@ function addUserMessage(text, blocks) {
   const attachments = addMessageAttachments(attachmentBlocks(blocks));
   msg.append(marker, body);
   if (attachments) msg.appendChild(attachments);
+  rememberFindMessage(msg, 'User', () => String(text || ''));
   return appendTranscript(msg);
 }
 
@@ -1182,6 +1189,7 @@ function addAssistantMessage() {
   const body = el('div', 'body rich-text');
   let bodyText = document.createTextNode('');
   const bodyChunks = [];
+  rememberFindMessage(msg, 'Agent', () => bodyChunks.join(''));
   let bodyRendered = false;
   body.appendChild(bodyText);
   const reasoning = el('details', 'reasoning hidden');
@@ -1213,11 +1221,13 @@ function addAssistantMessage() {
       }
       bodyChunks.push(text);
       bodyText.appendData(text);
+      updateConversationFind();
     },
     finishBody() {
       if (bodyRendered) return;
       renderMarkdown(body, bodyChunks.join(''));
       bodyRendered = true;
+      addReplyActions(msg, () => bodyChunks.join(''));
     },
     appendReasoning(text) {
       show(reasoning);
@@ -1373,6 +1383,7 @@ function nearEnd() {
 }
 
 function scrollIfNearEnd() {
+  if (findActive && !document.getElementById('find-bar').classList.contains('hidden')) return;
   const viewport = dom['transcript-scroll'];
   if (nearEnd()) viewport.scrollTop = viewport.scrollHeight;
 }
@@ -1395,17 +1406,21 @@ function viewportAnchor() {
 }
 
 async function loadOlderHistory() {
-  if (state.history.loading || !state.history.hasMore || state.history.firstSeq === null) return false;
+  if (state.switching || state.history.loading || !state.history.hasMore || state.history.firstSeq === null) return false;
   state.history.loading = true;
   syncHistoryStatus();
   const anchor = viewportAnchor();
   const anchorTop = anchor && anchor.getBoundingClientRect().top;
   const fragment = document.createDocumentFragment();
+  const selection = state.selectionGeneration;
+  const stream = state.stream;
   try {
     const page = await rpc('session.history', {
       before_seq: state.history.firstSeq,
       max_messages: 50,
+      expected_selection_generation: selection,
     });
+    if (selection !== state.selectionGeneration || stream !== state.stream) return false;
     const events = Array.isArray(page.events) ? page.events : [];
     state.history.replayTarget = fragment;
     for (const event of events) handleReplay(event);
@@ -1419,13 +1434,16 @@ async function loadOlderHistory() {
     syncActiveMapItem();
     return events.length > 0;
   } catch (error) {
+    if (selection !== state.selectionGeneration || stream !== state.stream) return false;
     console.warn('[clat] earlier history failed:', error.message);
     updateRunState('earlier history failed: ' + error.message);
     return false;
   } finally {
+    if (selection !== state.selectionGeneration || stream !== state.stream) return;
     state.history.replayTarget = null;
     state.history.loading = false;
     syncHistoryStatus();
+    updateConversationFind();
   }
 }
 
@@ -1681,14 +1699,16 @@ function updateDocumentTitle(sessionTitle) {
 
 async function refreshWorkbench() {
   const request = ++state.workbenchRequest;
+  const selection = state.selectionGeneration;
   try {
     const info = await rpc('workbench.info', {});
-    if (request !== state.workbenchRequest) return;
+    if (request !== state.workbenchRequest || state.switching || selection !== state.selectionGeneration) return;
     state.workbench = info;
     const project = info.project || {};
     const session = info.session || {};
     const model = info.model || {};
     const permission = info.permission || {};
+    observeComposerSession(session.id || null, state.selectionGeneration);
     state.sessionId = session.id || null;
     state.runActive = Boolean(info.active_run);
     state.compactionActive = Boolean(info.active_compaction);
@@ -2000,10 +2020,10 @@ async function switchSession(id) {
     closeMobileSidebar();
     return;
   }
+  if (!confirmAttachmentSelection()) return;
   setSwitching(true);
   try {
     await rpc('session.switch', { id });
-    clearDraft();
     closeMobileSidebar();
     resubscribe();
   } catch (error) {
@@ -2013,10 +2033,10 @@ async function switchSession(id) {
 }
 
 dom['new-session'].addEventListener('click', async () => {
+  if (!confirmAttachmentSelection()) return;
   setSwitching(true);
   try {
     await rpc('session.new', {});
-    clearDraft();
     closeMobileSidebar();
     resubscribe();
   } catch (error) {
@@ -3016,7 +3036,12 @@ function moveDraftImage(from, to) {
 
 async function ensureDraftScope() {
   if (state.draft.scope) return state.draft.scope;
-  const scope = await rpc('draft.open', { clientDraftId: state.draft.clientDraftId });
+  const epoch = state.draft.epoch;
+  const clientDraftId = state.draft.clientDraftId;
+  const scope = await rpc('draft.open', { clientDraftId });
+  if (epoch !== state.draft.epoch || clientDraftId !== state.draft.clientDraftId) {
+    throw new Error('draft owner changed');
+  }
   if (!scope || typeof scope.draftScopeId !== 'string') throw new Error('invalid draft scope response');
   state.draft.scope = scope;
   return scope;
@@ -3028,6 +3053,7 @@ async function uploadDraftImage(image, epoch) {
   renderDraft();
   try {
     const scope = await ensureDraftScope();
+    if (epoch !== state.draft.epoch || !state.draft.images.includes(image)) return;
     const response = await fetch(`${workspacePrefix}/api/drafts/${encodeURIComponent(scope.draftScopeId)}/images`, {
       method: 'POST',
       headers: {
@@ -3132,6 +3158,7 @@ function clearSubmittedPrompt(generation) {
   if (generation !== state.composerGeneration) return;
   dom.prompt.value = '';
   state.composerGeneration += 1;
+  saveComposerText();
   resizePrompt();
 }
 
@@ -3187,6 +3214,8 @@ async function submitPrompt() {
   const text = dom.prompt.value.trim();
   const composerGeneration = state.composerGeneration;
   const images = state.draft.images;
+  const draftEpoch = state.draft.epoch;
+  const owner = composerScope;
   if (!text && images.length === 0) return;
   if (state.draft.queuedClientMessageId !== null) {
     updateRunState('steering is queued; waiting for the active run');
@@ -3206,81 +3235,27 @@ async function submitPrompt() {
   }
   state.draft.sending = images.length > 0;
   renderDraft();
+  const submission = { text, composerGeneration, images, draftEpoch, owner };
   try {
     if (state.runActive) {
-      const clientMessageId = state.draft.clientMessageId;
-      const params = images.length === 0
-        ? { text }
-        : {
-          text,
-          draftScopeId: state.draft.scope && state.draft.scope.draftScopeId,
-          attachments: images.map((image) => image.uploadId),
-          clientMessageId: state.draft.clientMessageId,
-        };
-      const value = await rpc('steer.send', params);
-      if (!value || value.outcome !== 'queued') {
-        updateRunState('run ended before steering was accepted; draft retained');
-        return;
-      }
-      addNoticeLine('steering queued');
-      clearSubmittedPrompt(composerGeneration);
-      if (images.length > 0 && state.draft.clientMessageId === clientMessageId) {
-        state.draft.queuedClientMessageId = clientMessageId;
-        for (const image of images) image.status = 'queued';
-        state.draft.notice = 'steering accepted; holding the local draft until durable claim';
-      }
+      await submitComposerSteering(submission);
       return;
-    } else if (text === '/new' || text === '/clear') {
-      await rpc('session.new', {});
-      addNoticeLine('new conversation');
-      await loadSessions();
-      resubscribe();
     } else if (text.startsWith('/')) {
-      const value = await rpc('command.run', { command: text });
-      if (value && ['status', 'help', 'memory', 'goal', 'subagent_status', 'goal_run'].includes(value.kind)) {
-        const notice = addNoticeLine(value.message || 'command completed');
-        if (['memory', 'goal', 'subagent_status'].includes(value.kind)) {
-          notice.classList.add('content-notice');
-          notice.setAttribute('aria-label', value.kind.replaceAll('_', ' '));
-        }
-      } else if (value && value.kind === 'context') {
-        addContextSnapshot(value.context);
-      } else if (value && value.kind === 'session_reset') {
-        addNoticeLine('new conversation');
-        await loadSessions();
-        resubscribe();
-      }
-      await refreshWorkbench();
+      if (!await submitComposerCommand(submission)) return;
     } else {
-      const params = images.length === 0
-        ? { text }
-        : {
-          text,
-          draftScopeId: state.draft.scope && state.draft.scope.draftScopeId,
-          attachments: images.map((image) => image.uploadId),
-          clientMessageId: state.draft.clientMessageId,
-        };
-      await rpc('prompt.send', params);
-      clearSubmittedPrompt(composerGeneration);
-      if (images.length > 0) clearDraft();
+      await rpc('prompt.send', composerSubmissionParams(text, images));
+      clearOwnedSubmittedText(owner, composerGeneration);
+      if (images.length > 0 && draftEpoch === state.draft.epoch) clearDraft();
       return;
     }
-    clearSubmittedPrompt(composerGeneration);
+    clearOwnedSubmittedText(owner, composerGeneration);
   } catch (error) {
-    if (error.code === 'busy' && images.length === 0) {
-      updateRunState('run active · sending as steering');
-      try {
-        const value = await rpc('steer.send', { text });
-        addNoticeLine('steering ' + (value && value.outcome === 'queued' ? 'queued' : 'not running'));
-      } catch (steerError) {
-        updateRunState('steering failed: ' + steerError.message);
-      }
-    } else {
-      updateRunState('send failed: ' + error.message);
-    }
+    await recoverComposerSubmission(error, submission);
   } finally {
-    state.draft.sending = false;
-    renderDraft();
+    if (draftEpoch === state.draft.epoch) {
+      state.draft.sending = false;
+      renderDraft();
+    }
   }
 }
 
@@ -3315,15 +3290,20 @@ function restoreQueuedDraft() {
 dom.send.addEventListener('click', submitPrompt);
 dom.prompt.addEventListener('input', () => {
   state.composerGeneration += 1;
+  saveComposerText();
   if (state.suggestionPending || state.suggestion) invalidateSuggestion();
   resizePrompt();
 });
 dom.prompt.addEventListener('keydown', (event) => {
-  if (event.key === 'Enter' && !event.shiftKey) {
+  if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
     event.preventDefault();
     submitPrompt();
   }
 });
+installSelectionQuote();
+installCommandPicker();
+installConversationFind();
+installWorkspaceReview();
 
 const composerSeat = document.querySelector('.conversation');
 const composer = document.querySelector('.composer');

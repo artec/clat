@@ -6,22 +6,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const zlib = require('zlib');
-
-function hostInfo(key) {
-  const stateDir = process.env.CLAT_E2E_RUN_DIR || path.join(__dirname, '..');
-  return JSON.parse(
-    fs.readFileSync(path.join(stateDir, `.serve-${key}.json`), 'utf8'),
-  );
-}
-
-async function openWorkbench(page, entry) {
-  await page.goto(`${entry.origin}/`);
-  await expect(page).toHaveURL(`${entry.origin}/`);
-  await expect(page.locator('#landing')).toBeVisible(LIVE);
-  await page.fill('#connect-token', entry.token);
-  await page.click('#connect-form button[type="submit"]');
-  await expect(page.locator('#conn-status')).toHaveText('live', LIVE);
-}
+const { LIVE, hostInfo, openWorkbench } = require('../helpers/workbench');
 
 async function chooseModel(page, label) {
   await page.click('#model-picker-trigger');
@@ -42,7 +27,81 @@ async function revealWorkRecord(record) {
   if (await group.getAttribute('open') === null) await group.locator(':scope > summary').click();
 }
 
-const LIVE = { timeout: 30_000 };
+test('UX-1 text drafts stay with their session while switching', async ({ page }) => {
+  await openWorkbench(page, hostInfo('success'));
+  const materialize = async (text) => {
+    await page.click('#new-session');
+    await expect(page.locator('#send')).toBeEnabled(LIVE);
+    await expect(page.locator('.msg')).toHaveCount(0, LIVE);
+    await page.fill('#prompt', text);
+    await page.click('#send');
+    await expect(page.locator('.msg.assistant').last()).toBeVisible(LIVE);
+    await expect(page.locator('#cancel')).not.toBeVisible(LIVE);
+    await page.evaluate(() => refreshWorkbench());
+    await expect.poll(() => page.evaluate(() => state.sessionId), LIVE).not.toBeNull();
+    return page.evaluate(() => state.sessionId);
+  };
+  const first = await materialize('UX first session');
+  const second = await materialize('UX second session');
+  await page.locator(`[data-session-id="${first}"] .session-item`).click();
+  await expect(page.locator('#send')).toBeEnabled(LIVE);
+  await page.fill('#prompt', '仅属于第一会话的未发送文本');
+  await page.locator(`[data-session-id="${second}"] .session-item`).click();
+  await expect(page.locator('#send')).toBeEnabled(LIVE);
+  await expect(page.locator('#prompt')).toHaveValue('');
+  await page.fill('#prompt', '第二会话草稿');
+  await page.locator(`[data-session-id="${first}"] .session-item`).click();
+  await expect(page.locator('#prompt')).toHaveValue('仅属于第一会话的未发送文本', LIVE);
+  const saved = await page.evaluate(() => Object.keys(localStorage).filter((key) => /draft/i.test(key)));
+  expect(saved).toEqual([]);
+});
+
+test('UX-1 copies original Markdown and code and quotes without losing a newer draft', async ({ page }) => {
+  await page.addInitScript(() => {
+    window.copiedText = [];
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText: async (text) => window.copiedText.push(text) }, configurable: true,
+    });
+  });
+  await openWorkbench(page, hostInfo('success'));
+  const text = '## 原始回答\n\n```rust\nlet x = "中文";\n```\n\n| A | B |\n|---|---|\n| 1 | 2 |';
+  await page.evaluate((value) => {
+    handleReplay({ type: 'assistant_message', seq: 991991, text: value });
+  }, text);
+  const reply = page.locator('.msg.assistant[data-seq="991991"]');
+  await reply.getByRole('button', { name: 'Copy reply', exact: true }).click();
+  await reply.getByRole('button', { name: 'Copy code', exact: true }).click();
+  expect(await page.evaluate(() => window.copiedText)).toEqual([text, 'let x = "中文";']);
+  await page.fill('#prompt', '保留用户自己的草稿');
+  const generation = await page.evaluate(() => state.composerGeneration);
+  await page.evaluate(() => {
+    const body = document.querySelector('.msg.assistant[data-seq="991991"] .body');
+    const range = document.createRange();
+    range.selectNodeContents(body.firstElementChild);
+    const selection = window.getSelection(); selection.removeAllRanges(); selection.addRange(range);
+    document.dispatchEvent(new Event('selectionchange'));
+  });
+  await page.getByRole('button', { name: 'Quote selection', exact: true }).click();
+  await expect(page.locator('#prompt')).toHaveValue(/保留用户自己的草稿[\s\S]*> 原始回答/);
+  await page.evaluate((old) => clearSubmittedPrompt(old), generation);
+  await expect(page.locator('#prompt')).toHaveValue(/原始回答/);
+});
+
+test('UX-1 cancelled attachment switch leaves text and staged images untouched', async ({ page }) => {
+  await openWorkbench(page, hostInfo('success'));
+  await page.fill('#prompt', '附件草稿');
+  await page.evaluate(() => {
+    state.draft.images.push({ id: 'protected-image', url: '', type: 'image/png', name: 'one.png',
+      file: new File(['bytes'], 'one.png', { type: 'image/png' }), size: 5, status: 'failed' });
+    renderDraft();
+  });
+  let confirmed = false;
+  page.once('dialog', (dialog) => { confirmed = true; return dialog.dismiss(); });
+  await page.click('#new-session');
+  expect(confirmed).toBe(true);
+  await expect(page.locator('#prompt')).toHaveValue('附件草稿');
+  expect(await page.evaluate(() => state.draft.images.length)).toBe(1);
+});
 
 test('WEB-3 conversation defaults to open reading space and respects saved details', async ({ page }) => {
   await openWorkbench(page, hostInfo('success'));
@@ -2412,8 +2471,11 @@ test('failed image staging keeps the draft and retry reuses the original file', 
 });
 
 test('switching sessions revokes the local image draft instead of carrying it across', async ({ page }) => {
-  const entry = hostInfo('run-command');
+  const entry = hostInfo('success');
   await openWorkbench(page, entry);
+  await page.fill('#prompt', 'materialize attachment switch target');
+  await page.click('#send');
+  await expect(page.locator('.verdict.completed')).toBeVisible(LIVE);
   await page.click('#new-session');
   await expect(page.locator('#send')).toBeEnabled(LIVE);
   await page.setInputFiles('#attachment-input', path.join(__dirname, '..', '..', 'icons', 'icon-192.png'));
@@ -2421,9 +2483,16 @@ test('switching sessions revokes the local image draft instead of carrying it ac
 
   const previous = page.locator('#session-list li:not(.active) .session-item').first();
   await expect(previous).toBeVisible(LIVE);
+  let confirmed = false;
+  page.once('dialog', async (dialog) => {
+    expect(dialog.message()).toContain('releases these draft images');
+    confirmed = true;
+    await dialog.accept();
+  });
   await previous.click();
   await expect(page.locator('#send')).toBeEnabled(LIVE);
   await expect(page.locator('.attachment-chip')).toHaveCount(0, LIVE);
+  expect(confirmed).toBe(true);
   await expect(page.locator('#attachment-rail')).toBeHidden(LIVE);
 });
 

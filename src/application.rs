@@ -21,10 +21,14 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, mpsc};
 
 mod bootstrap;
+mod changes;
 mod compaction;
 mod composition;
 mod content_views;
 mod context;
+mod discovery;
+pub use changes::{WorkspaceChanges, WorkspaceDiff, WorkspaceReview};
+pub use discovery::{InteractionCatalog, InteractionCommand};
 #[cfg(test)]
 mod context_tests;
 mod dto;
