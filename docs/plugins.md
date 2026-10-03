@@ -13,6 +13,9 @@ CLAT-native packages without pretending that JavaScript and Rust share an ABI.
 | DSH/Cordis adapter | MCP stdio + CLAT host extension | reusing existing DSH TypeScript plugins |
 | General MCP | stdio or Streamable HTTP | services in any language or hosted capabilities |
 
+The [official DSH web recipe](web.md) composes pinned, unchanged npm packages
+and builds a standalone MCP executable plus manifest for runtime-free installs.
+
 Rust developers can therefore implement the same language-neutral behavior as
 a DSH plugin: tools, prompts, sampling, elicitation, host context, filesystem,
 shell, and the documented read-only session/agent mirrors. They do not

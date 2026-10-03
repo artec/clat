@@ -113,6 +113,15 @@ fallback；这不等于 adapter 子进程本身被沙箱化。其中 fs 投影�
 
 ## 最小移植
 
+不需要自己写 wrapper 的官方 web 四件套配方见 [Web 工具](web.md)：
+原样消费钉版 npm 包，生成用户侧免 Node/Bun 的 MCP 可执行文件及插件包。
+该配方需要本仓库新增的静态接口；已发布的 adapter 0.1.0-rc.2 尚不包含。
+官方 WebRuntime 可以接管空的 web 叶子服务槽，其他宿主服务不可覆盖。
+`tools.get` 在单 adapter 作用域内查询工具，`getSectionOrder` 使用钉靶的
+静态排序表。`agents.currentInitiator()` 返回 undefined，因为这里没有执行中
+的 DSH Agent；现有只读 CLAT agent 镜像不变，上游可选 request-journal hook
+不执行，不代表获得了会话写入能力。
+
 原插件继续保留自己的 DSH/Cordis 入口，只增加一个 MCP bin：
 
 ```ts

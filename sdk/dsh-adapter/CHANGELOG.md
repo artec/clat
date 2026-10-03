@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased — official web quartet recipe
+
+- Allows an unchanged static web service to own the empty web leaf slot, while
+  protecting adapter host services and retaining lease cleanup.
+- Adds single-scope `tools.get`, pinned `systemPrompt.getSectionOrder`, and an
+  explicitly absent DSH `agents.currentInitiator` (no writable DSH journal).
+- Adds the locked official 0.2.0-rc.2 web quartet recipe, network-free fixtures,
+  CLAT permission/cancellation acceptance and a standalone package build.
+- Reuses the author bundler's static package-metadata handling for the recipe;
+  its executable disables `.env` and bunfig autoloading and is smoke-tested.
+
 ## 0.1.0-rc.2 — DSH 0.2.0-rc.2 alignment
 
 - Preserves `deferLoading: true` in system-prompt tool schemas.

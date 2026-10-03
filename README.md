@@ -133,6 +133,7 @@ Start with the document that matches your task:
 | Configure a preset or custom model | [Model editor](docs/model-editor.md) |
 | Understand approvals, modes, and path boundaries | [Permissions](docs/permissions.md) |
 | Configure MCP servers | [MCP integration](docs/mcp.md) |
+| Use official DSH web search and fetch | [Web tools](docs/web.md) |
 | Understand plugin runtimes, packages, and the signed market | [CLAT plugins](docs/plugins.md) |
 | Install or author a WASM component | [WASM plugins](docs/wasm.md) |
 | Port a DSH/Cordis plugin | [DSH plugin compatibility guide](docs/dsh-plugins.md) |

@@ -216,9 +216,7 @@ export class Shim {
   buildContext(): DshContext {
     if (this.#context !== undefined) return this.#context
     const services: DshContext = {
-      tools: {
-        register: (tool: ToolDefinitionLike) => this.#registerTool(tool),
-      },
+      tools: this.#toolService(),
       llm: {
         stream: (options: GenerateOptionsLike) => this.#llmStream(options),
       },
@@ -277,10 +275,10 @@ export class Shim {
       get(target, property, receiver) {
         if (property === 'then') return undefined
         if (typeof property === 'symbol') return Reflect.get(target, property, receiver)
+        if (provided.has(property)) return provided.get(property)
         if ((SERVICE_KEYS as readonly string[]).includes(property)) {
           return Reflect.get(target, property, receiver)
         }
-        if (provided.has(property)) return provided.get(property)
         throw new AdapterError(
           'SPINE_SERVICE',
           `ctx.${String(property)} is not provided by @artec/clat-dsh-adapter (supported: ` +
@@ -300,6 +298,7 @@ export class Shim {
   }
 
   #get(key: string): unknown {
+    if (this.#provided.has(key)) return this.#provided.get(key)
     if ((INJECTABLE_KEYS as readonly string[]).includes(key)) {
       return (this.#context as unknown as Record<string, unknown> | undefined)?.[key]
     }
@@ -314,7 +313,11 @@ export class Shim {
   #provide(key: string, value?: unknown, check?: () => boolean): () => void {
     this.#assertLive()
     if (typeof key !== 'string' || key === '') throw new TypeError('ctx.provide: key must be a non-empty string')
-    if ((INJECTABLE_KEYS as readonly string[]).includes(key) || this.#provided.has(key)) {
+    // `web` is a replaceable leaf seam, unlike permission-bearing host services.
+    // Only an empty fallback can be replaced; never strand its provider leases.
+    const reserved = (SERVICE_KEYS as readonly string[]).includes(key) && key !== 'web'
+    const populatedWeb = key === 'web' && (this.#web.hasSearchProvider() || this.#web.hasFetchProvider())
+    if (reserved || populatedWeb || this.#provided.has(key)) {
       throw new Error(`service "${key}" is already provided`)
     }
     if (check !== undefined && check.call(value) === false) {
@@ -325,13 +328,20 @@ export class Shim {
     const dispose = () => {
       if (!active) return
       active = false
-      if (this.#provided.get(key) === value) this.#provided.delete(key)
+      this.#provided.delete(key)
     }
     this.#trackCleanup(dispose)
     return dispose
   }
 
   // ---- ctx.tools ----------------------------------------------------------
+
+  #toolService(): DshContext['tools'] {
+    return {
+      register: tool => this.#registerTool(tool),
+      get: name => this.#tools.get(name) ?? this.#builtinTool(name),
+    }
+  }
 
   #registerTool(tool: ToolDefinitionLike): () => void {
     this.#assertLive()

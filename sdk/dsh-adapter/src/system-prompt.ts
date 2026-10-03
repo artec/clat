@@ -8,6 +8,7 @@
  */
 
 import type { EventBus } from './events.js'
+import { SECTION_ORDERS, type PromptSectionOrderName } from './section-orders.js'
 import type {
   AssembleContextLike,
   PromptAssemblyLike,
@@ -51,6 +52,10 @@ export class SystemPromptSeam implements SystemPromptLike {
     this.#sections.set(section.name, section)
     this.#changed()
     return this.#trackedDisposer(() => this.#sections.delete(section.name))
+  }
+
+  getSectionOrder(name: PromptSectionOrderName): number {
+    return SECTION_ORDERS[name]
   }
 
   context(context: PromptContextLike): () => void {

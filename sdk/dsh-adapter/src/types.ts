@@ -143,6 +143,7 @@ export interface PromptAssemblyLike {
 
 /** DSH `ctx.systemPrompt` service surface implemented by the adapter. */
 export interface SystemPromptLike {
+  getSectionOrder(name: import('./section-orders.js').PromptSectionOrderName): number
   section(section: PromptSectionLike): () => void
   context(context: PromptContextLike): () => void
   suppressRuntimeContext(): () => void
@@ -241,6 +242,8 @@ export interface AgentMirrorLike {
 }
 
 export interface AgentRegistryLike {
+  /** There is no executing DSH Agent in an MCP adapter. */
+  currentInitiator(): undefined
   get(id: string): AgentMirrorLike | undefined
   list(): AgentMirrorLike[]
   roots(): AgentMirrorLike[]
@@ -297,7 +300,10 @@ export interface LoggerLike {
 
 /** The ctx the adapter hands to `apply()` (Proxy behind this interface). */
 export interface DshContext {
-  tools: { register(tool: ToolDefinitionLike): () => void }
+  tools: {
+    register(tool: ToolDefinitionLike): () => void
+    get(name: string, scope?: unknown): ToolDefinitionLike | undefined
+  }
   llm: { stream(options: GenerateOptionsLike): AsyncIterable<StreamChunk> }
   userQuestions: {
     ask(request: AskRequestLike): Promise<AskAnswerLike>

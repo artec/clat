@@ -39,6 +39,12 @@ the TUI to a DSH host, while `clat-dsh` ports DSH plugins for MCP hosts.
 
 ## Quick start
 
+For the unchanged official DSH web quartet, use the repository
+[standalone recipe](examples/official-web/README.md). It includes locked npm
+inputs, credential/prompt/provider/cancellation fixtures and a runtime-free
+package build. It needs the local adapter sources; the published 0.1.0-rc.2
+does not yet include these new static seams.
+
 Given an existing plugin:
 
 ```ts

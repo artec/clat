@@ -16,6 +16,13 @@ function seam(): { prompt: SystemPromptSeam; events: EventBus } {
   }
 }
 
+test('named section placements preserve DSH web guidance order', () => {
+  const { prompt } = seam()
+  const positions = prompt as unknown as { getSectionOrder(name: string): number }
+  assert.equal(positions.getSectionOrder('TOOL_WEB_SEARCH'), 2000)
+  assert.equal(positions.getSectionOrder('TOOL_WEB_FETCH'), 2100)
+})
+
 test('systemPrompt orders sections and contexts and interpolates strict variables', async () => {
   const { prompt } = seam()
   prompt.section({ name: 'later', order: 20, text: 'cwd={{cwd}}' })

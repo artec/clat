@@ -3,7 +3,8 @@
 #   1. python3：gated 假 server 需要（bookworm 基础面不保证带）；
 #   2. node 22：gated 的 dsh-adapter e2e 腿 spawn node（CI 的
 #      "Build dsh-adapter for the gated e2e" 步骤即为此；bookworm 自带
-#      nodejs 18 太旧，用 nodesource 22）；
+#      nodejs 18 太旧，用 nodesource 22；PLG-1 真实 npm 四件套也由共享
+#      gates 安装并用 node 测试，免公网 fixture，不需容器安装 Bun）；
 #   3. 非 root 用户 ci：GitHub runner 是非特权用户——root 会绕过
 #      chmod 只读目录，application 的「只读存储目录」类测试假红
 #      （2026-09-07 首跑实证：new_session_write_failure_keeps_the_old_

@@ -329,7 +329,7 @@ async function runProcess(command: string, args: string[], cwd: string, timeoutM
 const BUN_BUILD_DRIVER = `
 import path from 'node:path'
 import { existsSync, readFileSync } from 'node:fs'
-const [wrapper, outfile] = process.argv.slice(2)
+const [wrapper, outfile, isolatedConfig] = process.argv.slice(2)
 if (!wrapper || !outfile) throw new Error('build driver requires wrapper and outfile')
 const packageJsonPlugin = {
   name: 'clat-static-package-json',
@@ -356,7 +356,7 @@ const result = await Bun.build({
   entrypoints: [wrapper],
   target: 'bun',
   plugins: [packageJsonPlugin],
-  compile: { outfile },
+  compile: { outfile, ...(isolatedConfig === 'isolated' ? { autoloadDotenv: false, autoloadBunfig: false } : {}) },
 })
 if (!result.success) {
   for (const log of result.logs) console.error(log)
@@ -364,18 +364,19 @@ if (!result.success) {
 }
 `
 
-async function compileWithBun(bun: string, wrapper: string, entry: string, cwd: string): Promise<void> {
+// Internal author tooling shared with repository recipes; not the public server API.
+export async function compileWithBun(bun: string, wrapper: string, entry: string, cwd: string, isolatedConfig = false): Promise<void> {
   const scratch = await mkdtemp(path.join(os.tmpdir(), 'clat-dsh-bun-build-'))
   try {
     const driver = path.join(scratch, 'build.mjs')
     await writeFile(driver, BUN_BUILD_DRIVER, 'utf8')
-    await runProcess(bun, [driver, wrapper, entry], cwd, 120_000)
+    await runProcess(bun, [driver, wrapper, entry, isolatedConfig ? 'isolated' : 'ambient'], cwd, 120_000)
   } finally {
     await rm(scratch, { recursive: true, force: true })
   }
 }
 
-async function smoke(command: string, args: string[], cwd: string): Promise<void> {
+export async function smoke(command: string, args: string[], cwd: string): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     const child = spawn(command, args, { cwd, stdio: ['pipe', 'pipe', 'pipe'] })
     let stdout = ''

@@ -1,0 +1,22 @@
+{
+  "name": "@artec/clat-dsh-official-web-recipe",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test.mjs",
+    "test:compiled": "node --test compiled.test.mjs",
+    "serve": "node bin.mjs",
+    "package": "node package.mjs"
+  },
+  "dependencies": {
+    "@artec/clat-dsh-adapter": "file:../..",
+    "@deepseek-ai/dsh-web": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-web-search-deepseek": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-web-fetch-http": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-tool-web": "0.2.0-rc.2"
+  },
+  "devDependencies": {
+    "@deepseek-ai/dsh-web-search-exa": "0.2.0-rc.2"
+  }
+}

@@ -326,6 +326,7 @@ export class HostServicesSeam {
 
   private buildAgents(): AgentRegistryLike {
     return {
+      currentInitiator: () => undefined,
       get: id => this.#agent?.id === id ? this.#agent : undefined,
       list: () => this.#agent === undefined ? [] : [this.#agent],
       roots: () => this.#agent === undefined ? [] : [this.#agent],

@@ -4,6 +4,10 @@ use super::*;
 #[path = "workbench_tests.rs"]
 mod workbench;
 
+#[cfg(unix)]
+#[path = "official_web_tests.rs"]
+mod official_web;
+
 #[test]
 fn legacy_session_update_is_contextual_and_survives_reopen() {
     let (storage_root, project_root) = roots("legacy-update-command");

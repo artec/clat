@@ -57,6 +57,64 @@ function collect<T>(stream: AsyncIterable<T>): Promise<T[]> {
   })()
 }
 
+test('static web service owns its slot, rejects duplicates and revokes on disposal', async () => {
+  const shim = new Shim(fakeHost(), 'service-composition')
+  const ctx = shim.buildContext()
+  const web = { marker: 'official' }
+  const fallback = ctx.web
+  const revoke = ctx.reflect.provide('web', web)
+  assert.equal(ctx.web, web)
+  assert.equal(ctx.get('web'), web)
+  assert.throws(() => ctx.reflect.provide('web', web), /already provided/)
+  for (const key of ['tools', 'systemPrompt', 'fs', 'clat', 'agents', 'reflect', 'get', 'effect', 'logger']) {
+    assert.throws(() => ctx.reflect.provide(key, {}), /already provided/)
+  }
+  revoke()
+  assert.equal(ctx.web, fallback)
+  const nextRevoke = ctx.reflect.provide('web', web)
+  revoke()
+  assert.equal(ctx.web, web, 'an expired lease cannot revoke the next owner')
+  ctx.set('web', { marker: 'updated' })
+  nextRevoke()
+  assert.equal(ctx.get('web'), fallback, 'setting a service retains its original registration lease')
+  ctx.reflect.provide('web', web)
+  await shim.disposeAll()
+  assert.equal(ctx.get('web'), fallback)
+})
+
+test('static web service cannot strand fallback provider leases', async () => {
+  const shim = new Shim(fakeHost(), 'provider-ownership')
+  const ctx = shim.buildContext()
+  const revoke = ctx.web.registerSearchProvider({
+    id: 'fixture', available: () => true,
+    search: async () => ({ sources: [], truncated: false }),
+  })
+  assert.throws(() => ctx.reflect.provide('web', {}), /already provided/)
+  revoke()
+  ctx.reflect.provide('web', {})
+  await shim.disposeAll()
+})
+
+test('tools.get follows registration leases', async () => {
+  const shim = new Shim(fakeHost(), 'query')
+  const ctx = shim.buildContext()
+  const tool = echoTool()
+  const revoke = ctx.tools.register(tool)
+  const query = ctx.tools as unknown as { get(name: string): ToolDefinitionLike | undefined }
+  assert.equal(query.get('echo'), tool)
+  assert.equal(query.get('absent'), undefined)
+  revoke()
+  assert.equal(query.get('echo'), undefined)
+  await shim.disposeAll()
+})
+
+test('no executing DSH initiator or writable journal is invented by the mirror', async () => {
+  const shim = new Shim(fakeHost(), 'query')
+  const ctx = shim.buildContext()
+  assert.equal(ctx.agents.currentInitiator(), undefined)
+  await shim.disposeAll()
+})
+
 test('tools: register, list, call, and rejections', async () => {
   const host = fakeHost()
   const shim = new Shim(host, 'p')

@@ -124,6 +124,13 @@ scripts/gates.sh --full
 
 This includes wait-inventory and selection-script tests, fmt, clippy, local xwin static checks,
 rustdoc, all Rust targets, adapter build/tests and the ignored test face.
+The adapter face also installs the exact-version official DSH web recipe and
+runs its mocked MCP tests before the ignored Application tests. These use a
+loopback DeepSeek-shaped server, temporary storage and fake credentials;
+they never read the user's MCP configuration or call a paid provider.
+For compiled-artifact acceptance and the additional Node-free/ambient-file/EOF
+check, see [Official web tools](web.md#verification). Bun is required only
+when building that artifact, not by the default CI fixture.
 After a failure, repair and rerun the failed/affected checks; do not restart
 every already-green check without a reason. Test failures are evidence to
 investigate, not permission to retry until green.
