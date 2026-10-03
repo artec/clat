@@ -1130,21 +1130,33 @@ impl App {
                 }
             }
             DshFrame::SessionAdded { .. } | DshFrame::SessionRemoved { .. } => {}
-            DshFrame::StreamError { message } => {
-                let mut flash = None;
-                if let Some(dsh) = self.dsh.as_mut()
-                    && dsh.connected
-                {
-                    dsh.connected = false;
-                    dsh.reconnect_at = Some(Instant::now() + DSH_RECONNECT_INTERVAL);
-                    dsh.banner = Some(format!("stream error ({message}) — reconnecting…"));
-                    flash = Some("stream error — reconnecting…".to_owned());
-                }
-                if let Some(text) = flash {
-                    self.flash_status(text);
-                }
+            DshFrame::StreamError { message, retryable } => {
+                self.handle_dsh_stream_error(message, retryable);
             }
             DshFrame::Unknown { .. } => {}
+        }
+    }
+
+    /// Gateway 流错误的唯一 UI 归口：暂态重连，契约/请求错误停住。
+    fn handle_dsh_stream_error(&mut self, message: String, retryable: bool) {
+        let mut flash = None;
+        if let Some(dsh) = self.dsh.as_mut()
+            && dsh.connected
+        {
+            dsh.connected = false;
+            dsh.reconnect_at = retryable.then(|| Instant::now() + DSH_RECONNECT_INTERVAL);
+            let suffix = if retryable {
+                "reconnecting…"
+            } else {
+                "check host compatibility or request, then restart"
+            };
+            dsh.banner = Some(format!("stream error ({message}) — {suffix}"));
+            flash = Some(format!("stream error — {suffix}"));
+        }
+        if let Some(text) = flash {
+            self.running = false;
+            self.phases.finish();
+            self.flash_status(text);
         }
     }
 

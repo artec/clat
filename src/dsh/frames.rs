@@ -83,9 +83,11 @@ pub(crate) enum DshFrame {
     SessionRemoved {
         session_id: String,
     },
-    /// 流/宿主级错误（连接代际终结信号）。
+    /// 流/宿主级错误（连接代际终结信号）。非重试错误要求用户
+    /// 修正请求/版本后再连接，不能在原错误上无限重连。
     StreamError {
         message: String,
+        retryable: bool,
     },
     /// 未知帧类型（词汇漂移）：保留类型名，前端提示。
     Unknown {
@@ -108,6 +110,7 @@ pub(crate) fn parse_frame(text: &str) -> DshFrame {
         Err(error) => {
             return DshFrame::StreamError {
                 message: format!("malformed frame: {error}"),
+                retryable: true,
             };
         }
     };
@@ -115,6 +118,7 @@ pub(crate) fn parse_frame(text: &str) -> DshFrame {
     if kind != "server-request" {
         return DshFrame::StreamError {
             message: format!("unexpected envelope type {kind:?}"),
+            retryable: true,
         };
     }
     let rpc_id = value
@@ -150,6 +154,7 @@ pub(crate) fn parse_frame(text: &str) -> DshFrame {
                 },
                 Err(error) => DshFrame::StreamError {
                     message: format!("session/event payload is not a SessionEvent: {error}"),
+                    retryable: true,
                 },
             }
         }
@@ -226,6 +231,7 @@ pub(crate) fn parse_frame(text: &str) -> DshFrame {
                 .and_then(Value::as_str)
                 .unwrap_or("stream error")
                 .to_owned(),
+            retryable: true,
         },
         _ => DshFrame::Unknown { method },
     }

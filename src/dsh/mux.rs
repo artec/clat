@@ -13,7 +13,7 @@
 //! 的间隙检测按陈旧丢弃（与旧 mux 基线重放同一语义）。
 
 use crate::dsh::backend::DshEvent;
-use crate::dsh::frames::DshFrame;
+use crate::dsh::frames::{DshFrame, canonicalize_wire_event};
 use crate::dsh::ws::{self, FrameAssembler, WsMessage};
 use crate::session::event::SessionEvent;
 use serde_json::{Value, json};
@@ -22,8 +22,12 @@ use std::net::TcpStream;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, Sender, channel};
-use std::time::Duration;
+use std::sync::mpsc::{Receiver, Sender, SyncSender, channel};
+use std::time::{Duration, Instant};
+
+/// 0.2.0 宿主每 2 秒 ping，连续两次未获 pong 会终止连接。
+/// 客户端给四个周期的余量，以便识别只剩 TCP 外壳的半开连接。
+const HEARTBEAT_SILENCE_LIMIT: Duration = Duration::from_secs(8);
 
 /// mux 逻辑流的稳定标识（同一连接内不复用活跃 id）。
 const STREAM_FOLLOW: &str = "follow";
@@ -322,32 +326,16 @@ fn run_reader(
     let mut pending: std::collections::HashMap<String, &'static str> =
         std::collections::HashMap::new();
     let mut buffer = [0u8; 16 * 1024];
+    let mut last_host_frame = Instant::now();
     loop {
         if epoch.load(Ordering::SeqCst) != generation {
             return; // 旧代际退役（不发 LinkDown——新流接管）。
         }
-        let read = match stream.read(&mut buffer) {
-            Ok(0) => {
-                let _ = events.send(DshEvent::LinkDown {
-                    generation,
-                    reason: "mux connection closed by the host".to_owned(),
-                });
-                return;
-            }
-            Ok(read) => read,
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ) =>
-            {
-                continue; // 250ms 轮询窗：回到代际检查。
-            }
-            Err(error) => {
-                let _ = events.send(DshEvent::LinkDown {
-                    generation,
-                    reason: format!("mux read failed: {error}"),
-                });
+        let read = match read_with_heartbeat(&mut stream, &mut buffer, &last_host_frame) {
+            Ok(Some(read)) => read,
+            Ok(None) => continue,
+            Err(reason) => {
+                let _ = events.send(DshEvent::LinkDown { generation, reason });
                 return;
             }
         };
@@ -361,6 +349,9 @@ fn run_reader(
                 return;
             }
         };
+        if !messages.is_empty() {
+            last_host_frame = Instant::now();
+        }
         for message in messages {
             match message {
                 WsMessage::Text(text) => {
@@ -401,10 +392,8 @@ fn run_reader(
                         }
                         frames
                     };
-                    for frame in frames {
-                        if events.send(DshEvent::Frame { generation, frame }).is_err() {
-                            return;
-                        }
+                    if !forward_mux_frames(frames, &events, generation, &pong_writer) {
+                        return;
                     }
                 }
                 WsMessage::Ping(payload) => {
@@ -425,6 +414,65 @@ fn run_reader(
     }
 }
 
+/// 将一批翻译帧按序交给前端；不可恢复错误终止该物理连接，但不再
+/// 额外发 LinkDown（否则会把前端刚停止的重连重新武装）。
+fn forward_mux_frames(
+    frames: Vec<DshFrame>,
+    events: &SyncSender<DshEvent>,
+    generation: u64,
+    writer: &Mutex<TcpStream>,
+) -> bool {
+    let terminal = frames.iter().any(|frame| {
+        matches!(
+            frame,
+            DshFrame::StreamError {
+                retryable: false,
+                ..
+            }
+        )
+    });
+    for frame in frames {
+        if events.send(DshEvent::Frame { generation, frame }).is_err() {
+            return false;
+        }
+    }
+    if terminal {
+        let _ = writer
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .shutdown(std::net::Shutdown::Both);
+    }
+    !terminal
+}
+
+/// 250ms 代际轮询窗中区分正常空读、半开心跳与真实读错误。
+fn read_with_heartbeat(
+    stream: &mut TcpStream,
+    buffer: &mut [u8],
+    last_host_frame: &Instant,
+) -> Result<Option<usize>, String> {
+    if last_host_frame.elapsed() >= HEARTBEAT_SILENCE_LIMIT {
+        return Err("mux heartbeat timeout".to_owned());
+    }
+    match stream.read(buffer) {
+        Ok(0) => Err("mux connection closed by the host".to_owned()),
+        Ok(read) => Ok(Some(read)),
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+            ) =>
+        {
+            if last_host_frame.elapsed() >= HEARTBEAT_SILENCE_LIMIT {
+                Err("mux heartbeat timeout".to_owned())
+            } else {
+                Ok(None)
+            }
+        }
+        Err(error) => Err(format!("mux read failed: {error}")),
+    }
+}
+
 /// 一条 mux 文本消息 → 若干 DshFrame（外层 open/cancel 不下行；item/
 /// error/end 按 streamId 路由）。纯翻译核心，单测直攻。
 fn translate_mux_text(
@@ -439,6 +487,7 @@ fn translate_mux_text(
         Err(error) => {
             return vec![DshFrame::StreamError {
                 message: format!("malformed mux frame: {error}"),
+                retryable: false,
             }];
         }
     };
@@ -459,18 +508,37 @@ fn translate_mux_text(
                 _ => translate_follow_item(&item, follow_session),
             }
         }
-        // 流级错误按旧语义上浮为代际错误（App 重开整对连接即全恢）。
-        "error" => vec![DshFrame::StreamError {
-            message: value
-                .pointer("/error/message")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-                .unwrap_or_else(|| format!("stream {stream_id} failed")),
-        }],
+        "error" => vec![stream_error(stream_id, &value)],
         "end" => Vec::new(),
         other => vec![DshFrame::Unknown {
             method: format!("mux.{other}"),
         }],
+    }
+}
+
+/// 0.2.0 的 Gateway 错误按恢复责任分类。仅明确的宿主服务/上下文
+/// 暂不可用可在新代际重试；包括 invocation-unavailable（真实宿主对
+/// 不存在端点实测）的其余错误，重连不会令请求变得有效。
+fn stream_error(stream_id: &str, value: &Value) -> DshFrame {
+    let code = value
+        .pointer("/error/code")
+        .and_then(Value::as_str)
+        .unwrap_or("gateway/protocol");
+    let message = value
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or("remote stream failed");
+    let (category, retryable) = match code {
+        "gateway/context-unavailable" | "gateway/service-unavailable" => ("transient", true),
+        "gateway/context-not-found" | "gateway/lookup-not-found" | "gateway/cancelled" => {
+            ("request", false)
+        }
+        code if code.starts_with("session/") => ("request", false),
+        _ => ("protocol", false),
+    };
+    DshFrame::StreamError {
+        message: format!("{stream_id} {code} ({category}): {message}"),
+        retryable,
     }
 }
 
@@ -556,8 +624,9 @@ fn translate_follow_item(item: &Value, follow_session: &mut String) -> Vec<DshFr
 
 /// `{type:'event', event}` → SessionEvent 帧（serde 同形，B8 已证）。
 fn record_event_frame(record: &Value, follow_session: &str) -> Option<DshFrame> {
-    let event = record.get("event")?;
-    let parsed: SessionEvent = serde_json::from_value(event.clone()).ok()?;
+    let mut event = record.get("event")?.clone();
+    canonicalize_wire_event(&mut event);
+    let parsed: SessionEvent = serde_json::from_value(event).ok()?;
     Some(DshFrame::SessionEvent {
         session_id: follow_session.to_owned(),
         event: parsed,
@@ -879,6 +948,24 @@ mod tests {
             matches!(&frames[0], DshFrame::ApprovalResolved { approval_id, outcome, .. }
             if approval_id == "ap-1" && outcome == "allowed-once")
         );
+    }
+
+    /// 0.2.0/V4 follow 使用 wire 的 startSeq/endSeq；实时流与分页
+    /// 必须得到同一个逻辑 replace 操作，不能静默丢弃事件。
+    #[test]
+    fn follow_v4_replace_event_is_canonicalized_before_decoding() {
+        let item = json!({"type":"item", "streamId":"follow", "value": {
+            "type":"event", "event": {
+                "type":"developer/message", "seq": 4, "time": 2,
+                "surfaceOp":{"op":"replace", "startSeq":2, "endSeq":3},
+                "sourceEventSeqs":[2,3],
+                "data":{"content":[{"type":"text", "text":"summary"}]}
+            }
+        }});
+        let frames = frames(&item.to_string());
+        assert!(matches!(&frames[..], [DshFrame::SessionEvent { event, .. }]
+            if event.event_type == "developer/message"
+                && event.surface_op == Some(crate::session::event::SurfaceOp::Replace { start: 2, end: 3 })));
     }
 
     /// $events：ready 学 clientId；waterfall → ApprovalRequested
@@ -1316,6 +1403,45 @@ mod tests {
         }
         frame.extend_from_slice(payload);
         frame
+    }
+
+    /// 假宿主完成握手后保持 TCP 打开，却不再送任何心跳或数据：
+    /// 客户端必须识别半开连接，不能永久维持“已连接”。
+    #[test]
+    fn silent_mux_host_triggers_link_down() {
+        use crate::dsh::backend::DshEvent;
+        use std::sync::atomic::AtomicU64;
+        use std::sync::mpsc;
+
+        let host = MuxHost::spawn();
+        let (events_tx, events_rx) = mpsc::sync_channel(16);
+        let epoch = Arc::new(AtomicU64::new(1));
+        let _controller = open(
+            host.port,
+            "dsh-auth-t=v1.s",
+            Some("session-9"),
+            events_tx,
+            1,
+            &epoch,
+        )
+        .expect("mux opens");
+        let deadline = Instant::now() + Duration::from_secs(9);
+        let mut link_down = None;
+        while Instant::now() < deadline {
+            match events_rx.recv_timeout(Duration::from_millis(250)) {
+                Ok(DshEvent::LinkDown { reason, .. }) => {
+                    link_down = Some(reason);
+                    break;
+                }
+                Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        assert!(
+            link_down
+                .as_deref()
+                .is_some_and(|reason| reason.contains("heartbeat"))
+        );
     }
 
     /// S3 集成判别：握手带 cookie → 三流 open 上行 → 下行翻译进
@@ -1801,6 +1927,43 @@ mod tests {
         let error = json!({"type": "error", "streamId": "follow",
             "error": {"code": "gateway/internal", "message": "boom", "details": {}}});
         assert!(matches!(&frames(&error.to_string())[0],
-            DshFrame::StreamError { message } if message == "boom"));
+            DshFrame::StreamError { message, retryable: false }
+            if message == "follow gateway/internal (protocol): boom"));
+    }
+
+    /// 三类错误的恢复责任：短暂服务故障重连；请求缺目标由用户处理；
+    /// 协议/签名漂移 fail-fast。错误码保留在可见文本中。
+    #[test]
+    fn gateway_error_categories_keep_reconnect_and_fail_fast_distinct() {
+        for (code, category, retryable) in [
+            ("gateway/ambiguous-endpoint", "protocol", false),
+            ("gateway/arguments-invalid", "protocol", false),
+            ("gateway/binding-invalid", "protocol", false),
+            ("gateway/context-failed", "protocol", false),
+            ("gateway/context-not-found", "request", false),
+            ("gateway/context-unavailable", "transient", true),
+            ("gateway/definition-unavailable", "protocol", false),
+            ("gateway/input-invalid", "protocol", false),
+            ("gateway/lookup-not-found", "request", false),
+            ("gateway/invocation-unavailable", "protocol", false),
+            ("gateway/lookup-failed", "protocol", false),
+            ("gateway/lookup-unavailable", "protocol", false),
+            ("gateway/method-unavailable", "protocol", false),
+            ("gateway/protocol", "protocol", false),
+            ("gateway/provider-mismatch", "protocol", false),
+            ("gateway/result-invalid", "protocol", false),
+            ("gateway/service-unavailable", "transient", true),
+            ("gateway/signature-invalid", "protocol", false),
+            ("gateway/uplink-overflow", "protocol", false),
+            ("gateway/cancelled", "request", false),
+            ("session/not-found", "request", false),
+            ("gateway/new-unknown", "protocol", false),
+        ] {
+            let error = json!({"type":"error", "streamId":"follow",
+                "error":{"code":code, "message":"fault", "details":{"endpoint":"session/follow"}}});
+            assert!(matches!(&frames(&error.to_string())[..],
+                [DshFrame::StreamError { message, retryable: actual }]
+                if *actual == retryable && message.contains(code) && message.contains(category)));
+        }
     }
 }

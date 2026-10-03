@@ -1,5 +1,5 @@
-//! DV-9/S4：真实 Typert 宿主 gated e2e——bunx `@deepseek-ai/dsh@latest`
-//! （本机缓存即 0.1.2-rc.1）起真宿主，跑 S1–S3 全链：就绪行 token 捕获
+//! D-1v3：真实 Typert 宿主 gated e2e——bunx 固定
+//! `@deepseek-ai/dsh@0.2.0-rc.2`，跑 S1–S3 全链：就绪行 token 捕获
 //! → cookie 交换 → 能力面探测 → session/list/create/rename → mux 连接
 //! + follow 快照。审批/prompt 腿需要已配置的模型供应商，不属本腿。
 //!
@@ -16,6 +16,7 @@ use std::sync::atomic::AtomicU64;
 use std::time::{Duration, Instant};
 
 const READY_TIMEOUT: Duration = Duration::from_secs(45);
+const PINNED_DSH_PACKAGE: &str = "@deepseek-ai/dsh@0.2.0-rc.2";
 
 #[test]
 #[ignore = "live: set CLAT_LIVE_DSH_E2E=1 with bunx available"]
@@ -47,7 +48,7 @@ fn live_typert_host_round_trip() {
     use command_group::CommandGroup as _;
     let mut child = std::process::Command::new("bunx")
         .env("DSH_HOME", &home)
-        .args(["@deepseek-ai/dsh@latest", "web", "--no-open"])
+        .args([PINNED_DSH_PACKAGE, "web", "--no-open"])
         .arg("--port")
         .arg(port.to_string())
         .stdout(std::process::Stdio::piped())
@@ -100,8 +101,14 @@ fn live_typert_host_round_trip() {
 
     // S1：token → cookie → 能力面。
     let cookie = exchange_token(port, &token).expect("live token exchange");
+    assert!(cookie.starts_with("dsh-auth-"));
+    assert_eq!(cookie.matches('=').count(), 1, "only one cookie name=value");
     let client = DshClient::new(port).with_cookie(&cookie).with_typert_era();
     probe_typert(&client).expect("live capability probe");
+    let legacy_describe = client
+        .call("host.describe", json!({}))
+        .expect_err("0.2.0-rc.2 no longer serves the legacy fingerprint");
+    assert_eq!(legacy_describe.code, "http-404");
 
     // S2：会话面单发（载荷与 run_task 同源：args 包裹在传输缝、参数名
     // = TS 参数名——list(_request)/其余 request）。
@@ -153,6 +160,86 @@ fn live_typert_host_round_trip() {
         std::thread::sleep(Duration::from_millis(50));
     }
     drop(controller);
+    let (fault_code, heartbeat_interval) = observe_mux_wire(port, &cookie);
+    assert!(fault_code.starts_with("gateway/"), "{fault_code}");
+    assert!(
+        (Duration::from_secs(1)..=Duration::from_secs(4)).contains(&heartbeat_interval),
+        "host heartbeat interval: {heartbeat_interval:?}"
+    );
+    eprintln!(
+        "live 0.2.0-rc.2 mux: unknown endpoint={fault_code}, ping interval={heartbeat_interval:?}"
+    );
+}
+
+/// 独立原始 WS 探针：验证带 cookie 的 101、逻辑流错误形状和服务端
+/// ping 周期。只返回结构数据，不泄露 launch token 或签名 cookie。
+fn observe_mux_wire(port: u16, cookie: &str) -> (String, Duration) {
+    use crate::dsh::ws::{self, FrameAssembler, WsMessage};
+    use std::io::Write as _;
+    let mut socket = std::net::TcpStream::connect(("127.0.0.1", port)).expect("mux TCP");
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .expect("probe timeout");
+    let key = ws::base64_encode(&ws::uuid_key_bytes());
+    let request = format!(
+        "GET /api/remote.mux HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\
+         Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {key}\r\n\
+         Sec-WebSocket-Version: 13\r\nCookie: {cookie}\r\n\r\n"
+    );
+    socket.write_all(request.as_bytes()).expect("mux request");
+    let mut header = Vec::new();
+    let mut byte = [0u8; 1];
+    while !header.ends_with(b"\r\n\r\n") {
+        socket.read_exact(&mut byte).expect("mux response header");
+        header.push(byte[0]);
+        assert!(header.len() < 4096, "bounded mux handshake");
+    }
+    ws::verify_handshake(&String::from_utf8_lossy(&header), &key).expect("101 accept");
+    socket
+        .write_all(&ws::encode_client_text(
+            &json!({"type":"open", "streamId":"bad", "endpoint":"session/notAMethod",
+                "payload":{"args":{}}})
+            .to_string(),
+        ))
+        .expect("bad stream open");
+    let mut assembler = FrameAssembler::new();
+    let mut buffer = [0u8; 4096];
+    let mut fault_code = None;
+    let mut first_ping = None;
+    let mut interval = None;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while (fault_code.is_none() || interval.is_none()) && Instant::now() < deadline {
+        let read = socket.read(&mut buffer).expect("mux probe read");
+        assert!(read > 0, "host closed mux before probe completed");
+        for message in assembler.push(&buffer[..read]).expect("WS frame") {
+            match message {
+                WsMessage::Text(text) => {
+                    let frame: serde_json::Value = serde_json::from_str(&text).expect("mux JSON");
+                    if frame["type"] == "error" && frame["streamId"] == "bad" {
+                        fault_code = frame["error"]["code"].as_str().map(str::to_owned);
+                    }
+                }
+                WsMessage::Ping(payload) => {
+                    let now = Instant::now();
+                    if let Some(first) = first_ping {
+                        interval = Some(now.duration_since(first));
+                    } else {
+                        first_ping = Some(now);
+                    }
+                    socket
+                        .write_all(&ws::encode_client_pong(&payload))
+                        .expect("pong");
+                }
+                WsMessage::Closed(reason) | WsMessage::Failed(reason) => {
+                    panic!("mux probe closed: {reason}")
+                }
+            }
+        }
+    }
+    (
+        fault_code.expect("error code"),
+        interval.expect("two pings"),
+    )
 }
 
 fn bunx_available() -> bool {
@@ -228,7 +315,7 @@ fn live_minted_cookie_connects_to_a_real_host() {
     drop(scratch);
     let mut child = std::process::Command::new("bunx")
         .env("DSH_HOME", &home)
-        .args(["@deepseek-ai/dsh@latest", "web", "--no-open"])
+        .args([PINNED_DSH_PACKAGE, "web", "--no-open"])
         .arg("--port")
         .arg(port.to_string())
         .stdout(std::process::Stdio::null())

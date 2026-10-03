@@ -1102,7 +1102,8 @@ clat dsh --port 3080
 ```
 
 Two host generations are supported. Legacy DSH (0.1.1-rc.2 era) is detected
-through the old `host.describe` fingerprint. DSH 0.1.2+ speaks the Typert
+through the old `host.describe` fingerprint. DSH 0.1.2+ (including
+0.2.0-rc.2, where `host.describe` is absent) speaks the Typert
 Gateway (`/api/remote.mux` with browser-session authentication); for those
 hosts CLAT authenticates through one of two paths:
 
@@ -1140,8 +1141,11 @@ back to the newest host session.
 The shared commands are `/new`, `/resume`, `/model`, `/perm`, `/rename`,
 `/clear`, `/help`, and `/quit`. `/compact` and `/mcp` are unavailable because
 those concerns belong to the host. The DSH client reconnects after transport
-loss, forwards prompts/steering/cancellation/approval answers through the API,
-and shows host-reported usage without inventing local wallet data.
+loss or a temporary host-service failure, but stops retrying on a protocol or
+request error and shows the host error code. It forwards
+prompts/steering/cancellation/approval answers through the API and shows
+host-reported usage without inventing local wallet data. A prompt whose
+receipt was lost during disconnection is never sent automatically again.
 
 ## Session and workspace behavior
 

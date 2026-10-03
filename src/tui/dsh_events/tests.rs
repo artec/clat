@@ -115,6 +115,33 @@ fn link_down_schedules_and_poll_fires_a_single_reconnect() {
     assert!(app.dsh.as_ref().unwrap().reconnecting);
 }
 
+/// Gateway 错误处置必须真正到达前端：暂态重连，契约错误停住并
+/// 保留错误码。删掉 `retryable` 分支时至少一腿会红。
+#[test]
+fn stream_fault_disposition_controls_reconnect_schedule() {
+    for (retryable, code) in [
+        (true, "gateway/service-unavailable"),
+        (false, "gateway/invocation-unavailable"),
+    ] {
+        let (mut app, _task_rx) = dsh_app();
+        frame(
+            &mut app,
+            DshFrame::StreamError {
+                message: format!("follow {code}: fault"),
+                retryable,
+            },
+        );
+        let dsh = app.dsh.as_ref().expect("state");
+        assert!(!dsh.connected);
+        assert_eq!(dsh.reconnect_deadline().is_some(), retryable);
+        assert!(
+            dsh.banner
+                .as_deref()
+                .is_some_and(|text| text.contains(code))
+        );
+    }
+}
+
 /// §0-5 + INV-U7（usage 口径与诚实呈现）：DSH 三计数不相交 →
 /// Cache = cacheRead/(input+cacheRead)；contextWindow 缺席整段
 /// 隐藏、出席显示 input+cacheRead 分子（判别：用本地口径公式即红）。
