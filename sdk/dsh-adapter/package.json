@@ -1,6 +1,6 @@
 {
   "name": "@artec/clat-dsh-adapter",
-  "version": "0.1.0-rc.2",
+  "version": "0.1.0-rc.3",
   "description": "Serve portable DeepSeek Harness (DSH) plugin capabilities as an MCP stdio server for CLAT and any MCP host",
   "type": "module",
   "license": "MIT",
@@ -41,7 +41,8 @@
     "test": "npm run build && node --test dist/test/*.test.js",
     "oracle:regen": "node scripts/oracle/regen.mjs",
     "scan": "npm run build && node dist/src/dsh-cli.js scan",
-    "inspect": "npm run build && node dist/src/dsh-cli.js inspect"
+    "inspect": "npm run build && node dist/src/dsh-cli.js inspect",
+    "prepack": "npm run build"
   },
   "keywords": [
     "clat",

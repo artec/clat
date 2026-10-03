@@ -11,7 +11,7 @@ plugin itself.
 The adapter runs in the plugin author's distribution. CLAT does not embed a
 JavaScript runtime; to the end user, the result is an ordinary MCP server.
 
-**Experimental preview (`0.1.0-rc.2`, npm `next` tag).** The pinned
+**Experimental preview (`0.1.0-rc.3`, npm `next` tag).** The pinned
 compatibility cohort targets DSH `dsh-v0.2.0-rc.2`. The published Exa plugin
 at `0.2.0-rc.2` also passed an isolated network-free mount test; this is
 not a promise that all DSH plugins work. Review the limitations below
@@ -42,8 +42,8 @@ the TUI to a DSH host, while `clat-dsh` ports DSH plugins for MCP hosts.
 For the unchanged official DSH web quartet, use the repository
 [standalone recipe](examples/official-web/README.md). It includes locked npm
 inputs, credential/prompt/provider/cancellation fixtures and a runtime-free
-package build. It needs the local adapter sources; the published 0.1.0-rc.2
-does not yet include these new static seams.
+package build. Adapter `0.1.0-rc.3` includes the required static seams;
+use that version or later when distributing the recipe.
 
 Given an existing plugin:
 

@@ -1,7 +1,8 @@
 # Changelog
 
-## Unreleased — official web quartet recipe
+## 0.1.0-rc.3 — official web quartet recipe (2026-10-03)
 
+- Rebuilds distribution files before packing or publishing.
 - Allows an unchanged static web service to own the empty web leaf slot, while
   protecting adapter host services and retaining lease cleanup.
 - Adds single-scope `tools.get`, pinned `systemPrompt.getSectionOrder`, and an

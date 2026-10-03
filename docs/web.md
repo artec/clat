@@ -3,9 +3,9 @@
 CLAT can use the unchanged official DSH web quartet through the MCP adapter:
 `@deepseek-ai/dsh-web`, `dsh-web-search-deepseek`, `dsh-web-fetch-http`, and
 `dsh-tool-web`, all pinned to **0.2.0-rc.2**. The recipe is under
-`sdk/dsh-adapter/examples/official-web`; it requires the adapter sources in this
-checkout, including the static web-service and prompt-query support. The
-published adapter `0.1.0-rc.2` predates these additions.
+`sdk/dsh-adapter/examples/official-web`; it requires the static web-service and prompt-query support. The
+adapter `0.1.0-rc.3` includes these additions. Use that version or later
+when distributing the recipe after the owner publishes it.
 
 The two tools appear as `mcp_<server>_web_search` and
 `mcp_<server>_web_fetch`. Both have **Network** effect and use ordinary CLAT

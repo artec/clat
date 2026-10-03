@@ -5,7 +5,9 @@
 Compose the unchanged official web service, DeepSeek search provider, HTTP
 fetch provider and model-visible tools, pinned to DSH 0.2.0-rc.2. This is a
 private repository recipe, not a published npm package. It uses the local
-adapter build; the published 0.1.0-rc.2 lacks the newly required static seams.
+adapter build; adapter `0.1.0-rc.3` includes the required static seams.
+For an external recipe, replace the adapter file dependency with
+`"@artec/clat-dsh-adapter": "0.1.0-rc.3"` after the owner publishes it.
 
 Build the adapter first (`npm ci --ignore-scripts && npm run build` in `../..`),
 then run here:
