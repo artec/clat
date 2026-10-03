@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<meta name="theme-color" content="#121619">
+<meta name="theme-color" content="#1b1d1b">
 <title>CLAT · local agent workbench</title>
 <link rel="stylesheet" href="/style.css">
 <link rel="icon" href="/icons/icon-192.png">
@@ -43,7 +43,7 @@
   </main>
 </div>
 
-<div id="app" class="app hidden" data-sidebar="expanded" data-inspector="open" data-mobile-sidebar="closed">
+<div id="app" class="app hidden" data-sidebar="expanded" data-inspector="closed" data-mobile-sidebar="closed">
   <aside id="sidebar" class="sidebar" aria-label="Project and sessions">
     <div class="sidebar-head">
       <div class="brand-lockup">
@@ -74,6 +74,11 @@
       <span class="sidebar-expanded-only">New session</span>
     </button>
 
+    <button id="sessions-open" class="sessions-open" type="button" title="Open sessions"
+            aria-label="Open sessions" aria-controls="session-list" aria-expanded="false">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v12H9l-5 4V4Z"/><path d="M8 8h8M8 12h5"/></svg>
+    </button>
+
     <label class="session-search sidebar-expanded-only" for="session-search">
       <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="m16 16 4 4"/></svg>
       <input id="session-search" type="search" placeholder="Find a session" autocomplete="off"
@@ -81,7 +86,7 @@
       <kbd>/</kbd>
     </label>
 
-    <nav class="session-nav" aria-label="Sessions">
+    <nav class="session-nav sidebar-expanded-only" aria-label="Sessions">
       <div class="section-row sidebar-expanded-only">
         <span class="section-kicker">SESSIONS</span>
         <span id="session-count">0</span>
@@ -121,9 +126,9 @@
         </div>
       </div>
       <div class="header-actions">
-        <span id="header-permission" class="permission-badge">Project Write</span>
+        <span id="header-permission" class="permission-badge hidden">Project Write</span>
         <button id="inspector-toggle" class="icon-button" type="button"
-                aria-label="Toggle workbench details" aria-expanded="true">
+                aria-label="Toggle workbench details" aria-expanded="false">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h18v14H3zM15 5v14M18 9h-1m1 3h-1"/></svg>
         </button>
       </div>
@@ -132,9 +137,8 @@
     <div id="transcript-scroll" class="transcript-scroll">
       <button id="history-status" class="history-status hidden" type="button">Loading earlier messages…</button>
       <div id="empty-state" class="empty-state">
-        <span class="empty-index">01</span>
-        <p class="eyebrow">READY AT PROJECT ROOT</p>
-        <h2>What should we<br>work through?</h2>
+        <p class="eyebrow">Your project, ready to work</p>
+        <h2>What should we work through?</h2>
         <p>Ask CLAT to inspect, change, and verify the repository. Tool effects remain governed by the active permission mode.</p>
         <div class="prompt-suggestions" aria-label="Prompt suggestions">
           <button type="button" data-prompt="Map the architecture and identify the highest-risk boundary.">Map the architecture</button>
@@ -158,10 +162,6 @@
           <span>PNG or JPEG · up to 8 images</span>
         </div>
         <div class="composer-context">
-          <button id="composer-permission" class="context-pill" type="button" title="Change permission mode">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 20 7v5c0 5-3.4 8-8 10-4.6-2-8-5-8-10V7z"/></svg>
-            <span id="composer-permission-label">Project Write</span>
-          </button>
           <span id="plan-mode-badge" class="workflow-badge plan-mode-badge hidden" role="status">Plan</span>
           <span id="goal-badge" class="workflow-badge goal-badge hidden" role="status">Goal</span>
           <span id="run-state" class="run-state" role="status"></span>
@@ -181,12 +181,15 @@
         </section>
         <textarea id="prompt" rows="2" placeholder="Describe the outcome you want…" aria-label="Message CLAT"></textarea>
         <div class="composer-row">
-          <button id="attachment-open" class="attachment-open" type="button">
+          <button id="attachment-open" class="attachment-open" type="button" aria-label="Add images" title="Add images">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
             <span>Add images</span>
           </button>
           <span id="attachment-summary" class="attachment-summary" role="status"></span>
-          <span class="composer-hint"><kbd>Enter</kbd> send · <kbd>Shift Enter</kbd> newline</span>
+          <button id="composer-permission" class="context-pill" type="button" title="Change permission mode">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 20 7v5c0 5-3.4 8-8 10-4.6-2-8-5-8-10V7z"/></svg>
+            <span id="composer-permission-label">Project Write</span>
+          </button>
           <div class="composer-actions">
             <button id="cancel" class="ghost hidden" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10"/></svg> Stop</button>
             <div class="model-picker-seat">
@@ -330,6 +333,19 @@
         <label><input type="radio" name="theme" value="light"><span>Light</span></label>
         <label><input type="radio" name="theme" value="dark"><span>Dark</span></label>
       </fieldset>
+      <div id="reading-options" class="reading-options">
+        <fieldset class="segmented reading-choice" aria-label="Message layout">
+          <legend>Message layout</legend>
+          <label><input type="radio" name="messageLayout" value="bubbles" checked><span>User bubbles</span></label>
+          <label><input type="radio" name="messageLayout" value="column"><span>Single column</span></label>
+        </fieldset>
+        <fieldset class="segmented reading-choice" aria-label="Process display">
+          <legend>Process display</legend>
+          <label><input type="radio" name="processView" value="summaries" checked><span>Work summaries</span></label>
+          <label><input type="radio" name="processView" value="expanded"><span>All steps</span></label>
+        </fieldset>
+        <p class="settings-note">Compare these views on the same conversation. Summaries retain every record; approvals, questions and errors always stay visible.</p>
+      </div>
     </section>
 
     <section class="settings-section" data-settings-panel="projects" hidden>

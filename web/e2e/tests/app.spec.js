@@ -30,7 +30,436 @@ async function chooseModel(page, label) {
   await expect(page.locator('#model-picker')).not.toBeVisible(LIVE);
 }
 
+async function openDetails(page) {
+  if (await page.locator('#inspector-toggle').getAttribute('aria-expanded') !== 'true') {
+    await page.click('#inspector-toggle');
+  }
+}
+
+async function revealWorkRecord(record) {
+  await expect(record).toBeAttached(LIVE);
+  const group = record.locator('xpath=ancestor::details[contains(@class,"work-summary")]');
+  if (await group.getAttribute('open') === null) await group.locator(':scope > summary').click();
+}
+
 const LIVE = { timeout: 30_000 };
+
+test('WEB-3 conversation defaults to open reading space and respects saved details', async ({ page }) => {
+  await openWorkbench(page, hostInfo('success'));
+  await expect(page.locator('#inspector-toggle')).toHaveAttribute('aria-expanded', 'false');
+  await expect(page.locator('#inspector')).toHaveAttribute('inert', '');
+  await page.click('#inspector-toggle');
+  await page.reload();
+  await expect(page.locator('#conn-status')).toHaveText('live', LIVE);
+  await expect(page.locator('#inspector-toggle')).toHaveAttribute('aria-expanded', 'true');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.reload();
+  await expect(page.locator('#conn-status')).toHaveText('live', LIVE);
+  await expect(page.locator('#inspector-toggle')).toHaveAttribute('aria-expanded', 'false');
+});
+
+test('WEB-3 idle session switch clears its progress label without erasing a newer notice', async ({ page }) => {
+  await openWorkbench(page, hostInfo('success'));
+  await page.click('#new-session');
+  await expect(page.locator('#send')).toBeEnabled(LIVE);
+  await expect(page.locator('#run-state')).toBeEmpty();
+  await page.evaluate(() => {
+    setSwitching(true);
+    updateRunState('send failed: retain this notice');
+    setSwitching(false);
+  });
+  await expect(page.locator('#run-state')).toHaveText('send failed: retain this notice');
+});
+
+test('WEB-3 process grouping agrees in live and replay and does not span a history fragment', async ({ page }) => {
+  await openWorkbench(page, hostInfo('success'));
+  const result = await page.evaluate(() => {
+    const call = { name: 'read_file', arguments: { path: 'file.rs' } };
+    const reset = () => handleFrame({ event: 'replay.begin', data: '{}' });
+    const live = [
+      { type: 'tool_requested', call },
+      { type: 'permission_checked', tool: 'read_file', decision: { allow: null } },
+      { type: 'tool_finished', result: { tool_name: 'read_file', output: 'ok', is_error: false } },
+    ];
+    const replay = [
+      { type: 'tool_requested', call },
+      { type: 'permission_checked', tool: 'read_file', decision: { allow: null } },
+      { type: 'tool_finished', tool: 'read_file', output: 'ok', is_error: false },
+    ];
+    const snapshot = () => [...dom.transcript.querySelectorAll('.work-records > *')]
+      .map((node) => [node.className, node.textContent]);
+    reset(); live.forEach(handleLive); const liveView = snapshot();
+    reset(); replay.forEach(handleReplay); const replayView = snapshot();
+    const tail = dom.transcript.lastElementChild;
+    tail.open = true;
+    const fragment = document.createDocumentFragment();
+    state.history.replayTarget = fragment;
+    replay.forEach(handleReplay);
+    state.history.replayTarget = null;
+    const separate = fragment.lastElementChild !== tail && tail.dataset.records === '3';
+    dom.transcript.prepend(fragment);
+    handleLive({ type: 'tool_requested', call });
+    return { liveView, replayView, separate, groups: dom.transcript.childElementCount,
+      tailKept: dom.transcript.lastElementChild === tail && tail.open && tail.dataset.records === '4' };
+  });
+  expect(result.liveView).toEqual(result.replayView);
+  expect(result.separate).toBe(true);
+  expect(result.groups).toBe(2);
+  expect(result.tailKept).toBe(true);
+});
+
+test('WEB-3 display preferences survive reload without storing conversation content', async ({ page }) => {
+  await openWorkbench(page, hostInfo('success'));
+  await page.click('#settings-open');
+  await page.getByText('Single column', { exact: true }).click();
+  await page.getByText('All steps', { exact: true }).click();
+  const saved = await page.evaluate(() => JSON.parse(localStorage.getItem('clat.presentation.v1')));
+  expect(saved).toMatchObject({ messageLayout: 'column', processView: 'expanded' });
+  expect(Object.keys(saved).sort()).toEqual(['inspector', 'messageLayout', 'processView', 'sidebar', 'theme']);
+  await page.reload();
+  await expect(page.locator('#conn-status')).toHaveText('live', LIVE);
+  await expect(page.locator('#app')).toHaveAttribute('data-message-layout', 'column');
+  await page.evaluate(() => addToolCard('read_file', 'file.rs', null, false));
+  await expect(page.locator('.work-summary').last()).toHaveAttribute('open', '');
+});
+
+test('WEB-3 background session repaint restores its own focus and never steals the draft focus', async ({ page }) => {
+  await openWorkbench(page, hostInfo('history'));
+  await expect(page.locator('.session-item').first()).toBeVisible(LIVE);
+  const focus = await page.evaluate(() => {
+    const button = dom['session-list'].querySelector('.session-item');
+    openSessionMenu(state.sessions[0], 20, 20, button);
+    renderSessions();
+    const returned = document.activeElement === dom['session-list'].querySelector('.session-item');
+    openSessionMenu(state.sessions[0], 20, 20, dom['session-list'].querySelector('.session-item'));
+    window.dispatchEvent(new Event('resize'));
+    const resized = document.activeElement === dom['session-list'].querySelector('.session-item');
+    dom.prompt.focus();
+    renderSessions();
+    return { returned, resized, retained: document.activeElement === dom.prompt };
+  });
+  expect(focus).toEqual({ returned: true, resized: true, retained: true });
+});
+
+test('WEB-3 reading scale and small text contrast hold across themes and mobile', async ({ page }) => {
+  await openWorkbench(page, hostInfo('success'));
+  await page.evaluate(() => {
+    addUserMessage('请解释这个表格，并保留中文标题。');
+    const reply = addAssistantMessage();
+    reply.appendBody('## 判断\n正文可读。\n\n| 项目 | 结论 |\n| --- | --- |\n| 本地 | 保留 |\n\n```rust\nlet ready = true;\n```');
+    reply.finishBody();
+  });
+  await expect(page.locator('.msg.assistant .body').last()).toHaveCSS('font-size', '16px');
+  await expect(page.locator('.rich-text pre').last()).toHaveCSS('font-size', '14px');
+  await expect(page.locator('.rich-text table').last()).toHaveCSS('font-size', '15px');
+  for (const theme of ['light', 'dark', 'system']) {
+    await page.emulateMedia({ colorScheme: 'light' });
+    const ratios = await page.evaluate((value) => {
+      document.documentElement.dataset.theme = value;
+      const styles = getComputedStyle(document.documentElement);
+      const luminance = (name) => {
+        const hex = styles.getPropertyValue(name).trim().slice(1);
+        const rgb = [0, 2, 4].map((offset) => parseInt(hex.slice(offset, offset + 2), 16) / 255)
+          .map((v) => v <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4);
+        return rgb[0] * .2126 + rgb[1] * .7152 + rgb[2] * .0722;
+      };
+      const text = luminance('--text-muted');
+      return ['--ink-1', '--ink-2', '--surface-input', '--sidebar-bg'].map((name) => {
+        const bg = luminance(name);
+        return (Math.max(text, bg) + .05) / (Math.min(text, bg) + .05);
+      });
+    }, theme);
+    for (const ratio of ratios) expect(ratio).toBeGreaterThanOrEqual(4.5);
+  }
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.locator('#prompt')).toHaveCSS('font-size', '16px');
+  await expect(page.locator('#composer-permission')).toBeVisible();
+  await expect(page.locator('#send')).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
+
+test('WEB-3 layout variants preserve drafts and disclosure node identity', async ({ page }) => {
+  await openWorkbench(page, hostInfo('success'));
+  await page.evaluate(() => {
+    addUserMessage('长中文提问 '.repeat(20));
+    addToolCard('read_file', 'file.rs', null, false);
+    addNoticeLine('read_file → allowed', 'permission_checked');
+    const reply = addAssistantMessage();
+    reply.appendBody('结论'); reply.finishBody();
+  });
+  const group = page.locator('.work-summary').last();
+  await expect(group).toBeAttached({ timeout: 3000 });
+  await expect(group).not.toHaveAttribute('open');
+  await group.locator(':scope > summary').click();
+  await group.locator('.tool-card summary').click();
+  await page.fill('#prompt', '尚未提交的草稿');
+  await page.click('#settings-open');
+  await page.getByText('Single column', { exact: true }).click();
+  await page.getByText('All steps', { exact: true }).click();
+  await expect(page.locator('#app')).toHaveAttribute('data-message-layout', 'column');
+  await expect(group.locator('.tool-card')).toHaveAttribute('open', '');
+  await page.getByText('Work summaries', { exact: true }).click();
+  await page.getByText('User bubbles', { exact: true }).click();
+  await page.keyboard.press('Escape');
+  await expect(page.locator('#prompt')).toHaveValue('尚未提交的草稿');
+  await expect(page.locator('#app')).toHaveAttribute('data-message-layout', 'bubbles');
+  await expect(group.locator('.tool-card')).toHaveAttribute('open', '');
+});
+
+test('WEB-3 work summaries never contain answers interactive cards errors or retry signals', async ({ page }) => {
+  await openWorkbench(page, hostInfo('success'));
+  await page.evaluate(() => {
+    handleFrame({ event: 'replay.begin', data: '{}' });
+    const events = [
+      { type: 'user_message', seq: 1, turn: 1, text: 'inspect' },
+      { type: 'tool_requested', seq: 2, call: { name: 'read_file', arguments: {} } },
+      { type: 'permission_checked', seq: 3, tool: 'read_file', decision: 'allow' },
+      { type: 'tool_finished', seq: 4, tool: 'read_file', output: 'ok' },
+      { type: 'assistant_message', seq: 5, text: 'answer' },
+      { type: 'permission_checked', seq: 6, tool: 'bash', decision: 'deny' },
+      { type: 'retry_scheduled', seq: 7, retry: 1, delay_ms: 10 },
+      { type: 'tool_finished', seq: 8, tool: 'bash', output: 'broken', is_error: true },
+      { type: 'turn_ended', seq: 9, turn: 1, reason: { error: 'failed on replay' } },
+      { type: 'turn_ended', seq: 10, turn: 1, reason: 'blocked' },
+      { type: 'turn_ended', seq: 11, turn: 1, reason: { aborted: 'user' } },
+      { type: 'turn_ended', seq: 12, turn: 1, reason: 'max_tokens' },
+      { type: 'turn_ended', seq: 13, turn: 1, reason: 'interrupted' },
+    ];
+    events.forEach(handleReplay);
+    onApprovalRequested({ rpc_id: 'web3-approval', request: { tool: 'bash' } });
+    onQuestionNotice({ kind: 'question_requested', payload: {
+      rpc_id: 'web3-question', question: { question: '继续吗？', options: [], allow_custom: true },
+    } });
+  });
+  await expect(page.locator('.work-summary')).toHaveCount(1);
+  await expect(page.locator('.work-summary .tool-card')).toHaveCount(2);
+  await expect(page.locator('.work-summary .msg, .work-summary .approval-card, .work-summary .question-card')).toHaveCount(0);
+  await expect(page.locator('.tool-card.is-error')).toBeVisible();
+  await expect(page.locator('.trace-event', { hasText: 'Retry' })).toBeVisible();
+  await expect(page.locator('.trace-event', { hasText: 'bash' })).toBeVisible();
+  await expect(page.locator('.trace-event', { hasText: 'failed on replay' })).toBeVisible();
+  for (const reason of ['Blocked', 'Aborted', 'Max Tokens', 'Interrupted']) {
+    await expect(page.locator('.trace-event', { hasText: reason })).toBeVisible();
+  }
+  await expect(page.locator('.approval-card')).toBeVisible();
+  await expect(page.locator('.question-card')).toBeVisible();
+  await expect(page.locator('.transcript > .msg[data-seq="5"]')).toBeVisible();
+});
+
+test('WEB-3 same-content visual matrix keeps wide content and composer inside the viewport', async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.route('**/api/workbench.info', async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    body.value.model.model = '中文长模型名 · DeepSeek-V4-Long-Context-Preview';
+    await route.fulfill({ response, json: body });
+  });
+  await openWorkbench(page, hostInfo('success'));
+  await page.click('#new-session');
+  await expect(page.locator('.msg.user')).toHaveCount(0, LIVE);
+  await expect(page.locator('#send')).toBeEnabled(LIVE);
+  await page.evaluate(() => {
+    dom['transcript-scroll'].style.scrollBehavior = 'auto';
+    addUserMessage('请检查项目的权限边界，并用表格说明结论。\n\n我们希望保留本地优先、零构建和历史定位，长中文内容不能挤压输入区。');
+    for (let index = 0; index < 8; index++) {
+      handleReplay({ type: 'tool_requested', seq: index + 2, call: {
+        name: index % 2 ? 'read_file' : 'search', arguments: { path: 'src/serve/permissions.rs' },
+      } });
+      handleReplay({ type: 'tool_finished', tool: index % 2 ? 'read_file' : 'search', output: '已核对读写者与失败路径。' });
+    }
+    const reply = addAssistantMessage();
+    reply.setReasoning('先核对状态归属，再检查权限失败路径。\n不会仅凭绿色检查宣称真实设备验收通过。');
+    reply.appendBody('## 结论：保留边界，简化呈现\n\n这是同一份内容的设计走查。正文、过程和输入区应有稳定的位置，中文段落保持适当行距。审批和错误仍然需要让人及时看见。\n\n'
+      + '| 对象 | 当前状态 | 判断 |\n| --- | --- | --- |\n| 会话与草稿 | 由宿主和当前输入归属管理 | 不改变持久化语义 |\n| 工具与权限 | 请求和结果可追溯 | 普通过程可以折叠 |\n| 历史与地图 | 分页加载，角色明确 | 保留阅读位置 |\n\n'
+      + '### 验证路径\n\n```rust\nlet policy = InteractivePermissionPolicy::new(approver);\n// 这条较长的代码只应在代码块内部横向滚动，不应撑宽整张页面。\n```\n\n'
+      + '| 宽表验证 | 长路径 | 版本 | 备注 | 预期行为 |\n| --- | --- | --- | --- | --- |\n| 模型与工具边界 | src/very_long_directory_name/a_very_long_file_name.rs | session.v4 | 中文说明中文说明中文说明 | 表格内部滚动，不改变页面宽度 |\n\n'
+      + '### 后续工作\n\n- 负责人用四个动作比较：找结论、读表格、看工具结果、输入下一句。\n- 流式正文、安全链接和图片附件不改变。\n- 真机键盘与长时间阅读仍需实际使用反馈。\n\n'
+      + ('普通中文段落用于检验长会话的阅读节奏。信息不应依赖炫目的颜色，也不应因为弱化过程而隐藏待处理事项。\n\n').repeat(4));
+    reply.finishBody();
+    addVerdict('completed', 'completed · 1 turn · local scripted fixture');
+  });
+  const shot = async (name) => page.screenshot({ path: testInfo.outputPath(name + '.png'), animations: 'disabled' });
+  const scrollTo = async (selector) => {
+    await page.locator('#transcript-scroll').evaluate(async (viewport, targetSelector) => {
+      viewport.style.scrollBehavior = 'auto';
+      const target = targetSelector ? [...viewport.querySelectorAll(targetSelector)].at(-1) : null;
+      viewport.scrollTop = target ? viewport.scrollTop + target.getBoundingClientRect().top
+        - viewport.getBoundingClientRect().top - 16 : 0;
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    }, selector);
+  };
+  await page.click('#settings-open');
+  await page.getByText('Light', { exact: true }).click();
+  await page.keyboard.press('Escape');
+  await scrollTo(null);
+  await shot('desktop-light-bubbles');
+  await page.locator('.work-summary > summary').click();
+  await page.locator('.tool-card').first().locator('summary').click();
+  await shot('desktop-light-expanded-tools');
+  await page.locator('.work-summary > summary').click();
+  await page.click('#settings-open');
+  await page.getByText('Single column', { exact: true }).click();
+  await page.keyboard.press('Escape');
+  await shot('desktop-light-column');
+  await page.click('#settings-open');
+  await page.getByText('User bubbles', { exact: true }).click();
+  await page.getByText('Dark', { exact: true }).click();
+  await page.keyboard.press('Escape');
+  await shot('desktop-dark-bubbles');
+  for (const width of [390, 320, 768]) {
+    await page.setViewportSize({ width, height: 844 });
+    await page.fill('#prompt', '下一句：请继续核对失败路径。');
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    const bodyBox = await page.locator('.msg.assistant .body').last().boundingBox();
+    expect(bodyBox.width).toBeGreaterThan(width < 760 ? width - 50 : 300);
+    for (const selector of ['#prompt', '#send', '#composer-permission', '#model-picker-trigger']) {
+      const box = await page.locator(selector).boundingBox();
+      expect(box.x).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width).toBeLessThanOrEqual(width);
+      expect(box.y + box.height).toBeLessThanOrEqual(844);
+    }
+    const model = await page.locator('#model-picker-trigger').boundingBox();
+    const send = await page.locator('#send').boundingBox();
+    expect(model.x + model.width).toBeLessThanOrEqual(send.x);
+    await page.evaluate(() => show(dom.cancel));
+    const activeModel = await page.locator('#model-picker-trigger').boundingBox();
+    const activeSend = await page.locator('#send').boundingBox();
+    const stop = await page.locator('#cancel').boundingBox();
+    expect(stop.x + stop.width).toBeLessThanOrEqual(activeModel.x);
+    expect(activeModel.x + activeModel.width).toBeLessThanOrEqual(activeSend.x);
+    expect(activeSend.x + activeSend.width).toBeLessThanOrEqual(width);
+    await page.evaluate(() => hide(dom.cancel));
+    await scrollTo(null);
+    await shot('responsive-' + width);
+    await scrollTo('.rich-text .table-scroll');
+    const table = await page.locator('.rich-text .table-scroll').last().boundingBox();
+    const tableComposer = await page.locator('#composer-shell').boundingBox();
+    expect(table.y).toBeGreaterThanOrEqual(0);
+    expect(table.y + table.height).toBeLessThan(tableComposer.y);
+    await shot('wide-table-' + width);
+    await page.locator('#transcript-scroll').evaluate((node) => { node.scrollTop = node.scrollHeight; });
+    const lastLine = await page.locator('.verdict.completed').boundingBox();
+    const composer = await page.locator('#composer-shell').boundingBox();
+    expect(lastLine.y + lastLine.height).toBeLessThan(composer.y);
+  }
+  // A 640×450 CSS viewport exercises the reflow space of a 1280×900 window
+  // at 200% desktop zoom. This is not a claim of native browser zoom acceptance.
+  await page.setViewportSize({ width: 640, height: 450 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  const zoomModel = await page.locator('#model-picker-trigger').boundingBox();
+  const zoomSend = await page.locator('#send').boundingBox();
+  expect(zoomModel.x + zoomModel.width).toBeLessThanOrEqual(zoomSend.x);
+  for (const selector of ['#mobile-sidebar-open', '#inspector-toggle', '#prompt', '#send']) {
+    const box = await page.locator(selector).boundingBox();
+    expect(box.x).toBeGreaterThanOrEqual(0);
+    expect(box.x + box.width).toBeLessThanOrEqual(640);
+    expect(box.y + box.height).toBeLessThanOrEqual(450);
+  }
+  await scrollTo('.rich-text .table-scroll');
+  await shot('desktop-200-percent-equivalent');
+  await page.evaluate(() => {
+    addToolCard('run_command', '← permission failed', null, true);
+    onApprovalRequested({ rpc_id: 'visual-approval', request: {
+      tool: 'run_command', effect: 'workspace write', reason: '等待你的确认', arguments: { command: 'echo inspect' },
+    } });
+    onQuestionNotice({ kind: 'question_requested', payload: {
+      rpc_id: 'visual-question', question: { question: '下一步检查哪个边界？',
+        options: [{ label: '权限', description: '核对拒绝与失效路径' }], allow_custom: true },
+    } });
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await scrollTo('.tool-card.is-error');
+  await shot('mobile-approval-and-error');
+  await scrollTo('.question-card');
+  const question = await page.locator('.question-card').boundingBox();
+  const questionComposer = await page.locator('#composer-shell').boundingBox();
+  expect(question.y).toBeGreaterThanOrEqual(0);
+  expect(question.y + question.height).toBeLessThan(questionComposer.y);
+  await shot('mobile-question');
+  await page.evaluate(() => addUserMessage('这是一条长中文提问，用来比较用户消息中的代码与长文本。'.repeat(8)
+    + '\n\n```rust\nlet permission = InteractivePermissionPolicy::new(approver);\n```'));
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await scrollTo('.msg.user');
+  await shot('desktop-long-user-code');
+  await page.click('#settings-open');
+  await page.getByText('Single column', { exact: true }).click();
+  await page.keyboard.press('Escape');
+  await shot('desktop-long-user-code-column');
+});
+
+test('model picker hit area follows its label while long labels stay bounded beside Send', async ({ page }, testInfo) => {
+  let model = { model: 'Qwen', thinking_level: 'low' };
+  await page.route('**/api/workbench.info', async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    Object.assign(body.value.model, model);
+    await route.fulfill({ response, json: body });
+  });
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await openWorkbench(page, hostInfo('success'));
+  await expect(page.locator('#model-picker-label')).toHaveText('Qwen · low', LIVE);
+  await page.fill('#prompt', '模型切换不能改变这条草稿');
+  const trigger = page.locator('#model-picker-trigger');
+  const short = await trigger.boundingBox();
+  const chevron = await trigger.locator('.picker-chevron').boundingBox();
+  // Short labels must not leave a large invisible clickable tail after the arrow.
+  expect(short.x + short.width - chevron.x - chevron.width).toBeLessThanOrEqual(10);
+  await trigger.hover();
+  await page.screenshot({ path: testInfo.outputPath('short-label-hover.png'), animations: 'disabled' });
+  model = { model: 'DeepSeek', thinking_level: 'medium' };
+  await page.evaluate(() => refreshWorkbench());
+  await expect(page.locator('#model-picker-label')).toHaveText('DeepSeek · medium');
+  const medium = await trigger.boundingBox();
+  expect(medium.width).toBeGreaterThan(short.width + 8);
+  await page.screenshot({ path: testInfo.outputPath('medium-label-hover.png'), animations: 'disabled' });
+  model = { model: 'Qwen', thinking_level: 'low' };
+  await page.evaluate(() => refreshWorkbench());
+  expect((await trigger.boundingBox()).width).toBeCloseTo(short.width, 0);
+  await trigger.click();
+  await expect(page.locator('#model-picker')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(trigger).toBeFocused();
+  model = { model: '中文长模型名 · DeepSeek-V4-Long-Context-Preview', thinking_level: 'high' };
+  await page.evaluate(() => refreshWorkbench());
+  for (const width of [1280, 768, 640, 390, 320]) {
+    await page.setViewportSize({ width, height: 844 });
+    for (const running of [false, true]) {
+      await page.evaluate((active) => active ? show(dom.cancel) : hide(dom.cancel), running);
+      const picker = await trigger.boundingBox();
+      const seat = await page.locator('.model-picker-seat').boundingBox();
+      const send = await page.locator('#send').boundingBox();
+      expect(picker.width).toBeLessThanOrEqual(width <= 420 ? 112 : width <= 760 ? 148 : 210);
+      expect(picker.x).toBeGreaterThanOrEqual(0);
+      expect(picker.x + picker.width).toBeCloseTo(seat.x + seat.width, 0);
+      expect(send.x - picker.x - picker.width).toBeGreaterThanOrEqual(5);
+      expect(send.x - picker.x - picker.width).toBeLessThanOrEqual(7);
+      expect(send.x + send.width).toBeLessThanOrEqual(width);
+      expect(await page.locator('#model-picker-label').evaluate((node) => node.scrollWidth > node.clientWidth)).toBe(true);
+      if (running) {
+        const stop = await page.locator('#cancel').boundingBox();
+        expect(stop.x + stop.width).toBeLessThanOrEqual(picker.x);
+      }
+    }
+  }
+  await page.screenshot({ path: testInfo.outputPath('long-label-mobile.png'), animations: 'disabled' });
+  for (const viewport of [{ width: 640, height: 450 }, { width: 390, height: 844 }, { width: 320, height: 844 }]) {
+    await page.setViewportSize(viewport);
+    await trigger.click();
+    await expect(page.locator('#model-picker')).toBeVisible();
+    await expect(page.locator('#model-picker-list .model-choice')).not.toHaveCount(0, LIVE);
+    const popup = await page.locator('#model-picker').boundingBox();
+    const header = await page.locator('.conversation-header').boundingBox();
+    const composer = await page.locator('#composer-shell').boundingBox();
+    expect(popup.x).toBeGreaterThanOrEqual(0);
+    expect(popup.x + popup.width).toBeLessThanOrEqual(viewport.width);
+    expect(popup.y).toBeGreaterThanOrEqual(header.y + header.height);
+    expect(popup.y + popup.height).toBeLessThan(composer.y);
+    await page.screenshot({ path: testInfo.outputPath('mobile-picker-open-' + viewport.width + '.png'), animations: 'disabled' });
+    await page.keyboard.press('Escape');
+    await expect(trigger).toBeFocused();
+  }
+  await expect(page.locator('#prompt')).toHaveValue('模型切换不能改变这条草稿');
+});
 
 test('settings categories isolate panels and composer links select their destination', async ({ page }, testInfo) => {
   await openWorkbench(page, hostInfo('success'));
@@ -64,6 +493,12 @@ test('session actions support right click keyboard and more button', async ({ pa
   await expect(page.getByRole('menuitem', { name: 'Copy session ID' })).toBeEnabled();
   await page.screenshot({ path: testInfo.outputPath('session-actions.png'), fullPage: true });
   await page.keyboard.press('Escape');
+  await expect(row).toBeFocused();
+  // A background snapshot may close a now-stale menu and repaint its source.
+  // Keyboard focus must return to the same session, not to a detached button.
+  await page.keyboard.press('Shift+F10');
+  await expect(page.getByRole('menu')).toBeVisible();
+  await page.evaluate(() => renderSessions());
   await expect(row).toBeFocused();
   await page.keyboard.press('Shift+F10');
   await expect(page.getByRole('menu')).toBeVisible();
@@ -118,9 +553,7 @@ test('unsupported thinking stays legible and details actions preserve drafts', a
   await expect(page.locator('#model-thinking')).toBeDisabled();
   await expect(page.locator('#model-thinking option:checked')).toHaveText('Not adjustable');
   await page.click('#model-picker-close');
-  if (await page.locator('#inspector-toggle').getAttribute('aria-expanded') !== 'true') {
-    await page.click('#inspector-toggle');
-  }
+  await openDetails(page);
   await page.click('#inspector-refresh');
   await expect(page.locator('#inspector-refresh')).toBeEnabled(LIVE);
   await page.click('#inspector-context');
@@ -132,6 +565,7 @@ test('unsupported thinking stays legible and details actions preserve drafts', a
 
 test('details context response cannot land in a newly selected session', async ({ page }) => {
   await openWorkbench(page, hostInfo('success'));
+  await openDetails(page);
   let release;
   const barrier = new Promise((resolve) => { release = resolve; });
   let received;
@@ -719,10 +1153,11 @@ test.describe('acceptance ① approval + run lifecycle', () => {
     await expect(card.locator('.title')).toContainText('run_command', LIVE);
     await card.locator('button.primary').click(); // Allow
 
-    await expect(
-      page.locator('.tool-card', { hasText: 'run_command' }),
-    ).toBeVisible(LIVE);
     await expect(page.locator('.verdict.completed')).toBeVisible(LIVE);
+    const results = page.locator('.tool-card', { hasText: 'run_command' });
+    await expect(results).toHaveCount(2, LIVE);
+    await revealWorkRecord(results.last());
+    await expect(results.last()).toBeVisible(LIVE);
   });
 
   // —— 验收①的 Deny 腿 + 验收②：会话管理（新会话 → 拒绝 → 侧栏/重命名）
@@ -1182,6 +1617,7 @@ test('model trace renders human-readable event names instead of raw protocol ids
   await page.fill('#prompt', 'trace labels');
   await page.click('#send');
   const trace = page.locator('.trace-event', { hasText: 'Model request started' }).first();
+  await revealWorkRecord(trace);
   await expect(trace).toBeVisible(LIVE);
   await expect(trace).toHaveAttribute('title', 'Event ID: model_requested');
   await expect(trace).not.toContainText('model_requested');
@@ -1411,7 +1847,7 @@ test('PU content notices and armed Goal badge follow core workflow state', async
   const goalBadge = page.locator('#goal-badge');
   await expect(goalBadge).toBeVisible(LIVE);
   await expect(goalBadge).toHaveText('Goal');
-  await expect(goalBadge).toHaveCSS('color', 'rgb(92, 240, 125)');
+  await expect(goalBadge).toHaveCSS('color', 'rgb(127, 219, 152)');
   await expect(page.locator('#plan-mode-badge')).toBeHidden();
   await page.emulateMedia({ colorScheme: 'light' });
   await expect(goalBadge).toHaveCSS('color', 'rgb(33, 114, 59)');
@@ -1431,10 +1867,9 @@ test('PU content notices and armed Goal badge follow core workflow state', async
   await expect(page.locator('#goal-badge')).toBeHidden();
 });
 
-// PU-5（F-1 返工）：权限 pill 是 composer 行的左锚点，徽标按
-// 「权限 · Plan · Goal」镜像序向右递进（TUI 锚右，序恰相反）。
-// 徽标激活时不得把 pill 锚点向右推：间距只能长在 margin-left。
-test('permission pill stays the left anchor before the Plan and Goal badges', async ({ page }) => {
+// WEB-3: workflow badges stay in context, permission is an always-visible
+// toolbar control. Activating a badge must not move the permission control.
+test('permission stays in the toolbar while Plan and Goal preserve their workflow order', async ({ page }) => {
   await openWorkbench(page, hostInfo('success'));
   const order = await page.evaluate(() => {
     const ids = ['composer-permission', 'plan-mode-badge', 'goal-badge'];
@@ -1443,14 +1878,16 @@ test('permission pill stays the left anchor before the Plan and Goal badges', as
     const follows = (a, b) =>
       Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
     return {
-      permissionBeforePlan: follows(nodes[0], nodes[1]),
-      permissionBeforeGoal: follows(nodes[0], nodes[2]),
+      permissionParent: nodes[0].parentElement.className,
+      planParent: nodes[1].parentElement.className,
+      goalParent: nodes[2].parentElement.className,
       planBeforeGoal: follows(nodes[1], nodes[2]),
     };
   });
   expect(order).toEqual({
-    permissionBeforePlan: true,
-    permissionBeforeGoal: true,
+    permissionParent: 'composer-row',
+    planParent: 'composer-context',
+    goalParent: 'composer-context',
     planBeforeGoal: true,
   });
   for (const id of ['plan-mode-badge', 'goal-badge']) {
@@ -1512,9 +1949,67 @@ test('sidebar connection indicator matches footer icon geometry and follows conn
   expect(footBox.width).toBeCloseTo(mktBox.width, 1);
 });
 
-// PU-7（附加工单 2026-09-06 负责人验收附加）：收起态侧栏是单一图标
-// 网格——logo 与展开钮对轨心，新建会话/会话块/底部按钮同列同宽，
-// 会话字块在块内双向居中且与新建按钮同高。
+test('collapsed sessions entry is a full tile and opens named sessions without changing the draft', async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await openWorkbench(page, hostInfo('history'));
+  await expect(page.locator('.session-item').first()).toBeVisible(LIVE);
+  await page.fill('#prompt', '打开列表不是切换会话，也不能清草稿');
+  const selected = await page.evaluate(() => state.sessionId);
+  await page.click('#sidebar-toggle');
+  await expect(page.locator('#app')).toHaveAttribute('data-sidebar', 'collapsed');
+  await expect.poll(async () => (await page.locator('#sidebar').boundingBox()).width).toBe(68);
+  await page.screenshot({ path: testInfo.outputPath('rail-before-open.png'), animations: 'disabled' });
+  const entry = page.locator('#sessions-open');
+  await expect(entry).toBeVisible({ timeout: 3000 });
+  await expect(entry).toHaveAccessibleName('Open sessions');
+  await expect(page.locator('.session-more').first()).toBeHidden();
+  const tile = await entry.boundingBox();
+  expect(tile.width).toBeGreaterThanOrEqual(44);
+  expect(tile.height).toBeGreaterThanOrEqual(44);
+  const original = await entry.evaluate((node) => getComputedStyle(node).backgroundColor);
+  await page.mouse.move(tile.x + 3, tile.y + 3);
+  await expect.poll(() => entry.evaluate((node) => getComputedStyle(node).backgroundColor)).not.toBe(original);
+  expect(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.closest('button')?.id,
+    { x: tile.x + 3, y: tile.y + 3 })).toBe('sessions-open');
+  await page.screenshot({ path: testInfo.outputPath('rail-entry-hover.png'), animations: 'disabled' });
+  await page.mouse.click(tile.x + 3, tile.y + 3);
+  await expect(page.locator('#app')).toHaveAttribute('data-sidebar', 'expanded');
+  await expect(page.locator('#session-search')).toBeFocused();
+  await expect(page.locator('.session-copy strong').first()).toBeVisible();
+  expect(await page.evaluate(() => state.sessionId)).toBe(selected);
+  await expect(page.locator('#prompt')).toHaveValue('打开列表不是切换会话，也不能清草稿');
+  const more = page.locator('.session-more').first();
+  await expect.poll(async () => (await page.locator('#sidebar').boundingBox()).width).toBe(258);
+  const moreBox = await more.boundingBox();
+  expect(moreBox.width).toBeGreaterThanOrEqual(32);
+  expect(moreBox.height).toBeGreaterThanOrEqual(32);
+  await page.mouse.click(moreBox.x + 3, moreBox.y + 3);
+  await expect(page.getByRole('menu', { name: 'Session actions' })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(more).toBeFocused();
+  await page.click('#sidebar-toggle');
+  await entry.focus();
+  await page.keyboard.press('Enter');
+  await expect(page.locator('#session-search')).toBeFocused();
+  await page.click('#sidebar-toggle');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.click('#mobile-sidebar-open');
+  await expect(page.locator('.session-copy strong').first()).toBeVisible();
+  await expect(entry).toBeHidden();
+  const search = await page.locator('.session-search').evaluate((node) => {
+    const centers = [...node.children].map((child) => {
+      const rect = child.getBoundingClientRect();
+      return rect.y + rect.height / 2;
+    });
+    return Math.max(...centers) - Math.min(...centers);
+  });
+  expect(search).toBeLessThanOrEqual(1);
+  await page.screenshot({ path: testInfo.outputPath('phone-named-sessions.png'), animations: 'disabled' });
+  await expect(page.locator('#prompt')).toHaveValue('打开列表不是切换会话，也不能清草稿');
+});
+
+// PU-7 的图标轨对齐继续保持；2026-10-03 负责人反馈后，收起态
+// 会话字块改为单一会话列表入口，单条会话只在展开列表中呈现。
 test('collapsed rail centers the brand and toggle and unifies the icon grid', async ({ page }) => {
   await openWorkbench(page, hostInfo('success'));
   // Seed one real session so the tile row exists before collapsing.
@@ -1546,8 +2041,8 @@ test('collapsed rail centers the brand and toggle and unifies the icon grid', as
       brand: box('.brand-icon'),
       toggle: box('#sidebar-toggle'),
       fresh: box('#new-session'),
-      tile: box('.session-item'),
-      glyph: box('.session-glyph'),
+      tile: box('#sessions-open'),
+      glyph: box('#sessions-open > svg'),
       settings: box('#settings-open'),
     };
   });
@@ -1611,8 +2106,8 @@ test('full access paints the permission text warning yellow', async ({ page }) =
   };
   await expect(restoreWrite).toPass({ timeout: 30_000 });
   await expect(page.locator('#settings-saved')).toHaveText('Permission mode updated.', LIVE);
-  await expect(pill).toHaveCSS('color', 'rgb(116, 128, 127)', LIVE);
-  await expect(badge).toHaveCSS('color', 'rgb(174, 183, 182)', LIVE);
+  await expect(pill).toHaveCSS('color', 'rgb(155, 163, 150)', LIVE);
+  await expect(badge).toHaveCSS('color', 'rgb(191, 197, 187)', LIVE);
 });
 
 // Manual history compaction is a first-class PWA surface, not a slash-command
@@ -1621,6 +2116,7 @@ test('full access paints the permission text warning yellow', async ({ page }) =
 test('history compaction completes, cold-replays, and allows the next run', async ({ page }) => {
   const entry = hostInfo('success');
   await openWorkbench(page, entry);
+  await openDetails(page);
   await page.click('#new-session');
   await expect(page.locator('#send')).toBeEnabled(LIVE);
 
@@ -1661,6 +2157,7 @@ test('history compaction completes, cold-replays, and allows the next run', asyn
 test('active history compaction survives refresh and remains cancellable', async ({ page }) => {
   const entry = hostInfo('compact-slow');
   await openWorkbench(page, entry);
+  await openDetails(page);
   await page.click('#new-session');
   await expect(page.locator('#send')).toBeEnabled(LIVE);
 
@@ -1697,7 +2194,7 @@ test('active history compaction survives refresh and remains cancellable', async
 // MM-4：浏览器文件不以路径进入 RPC；先上传到 server-minted draft scope，
 // prompt 只携带 opaque upload id。回放/实时消息再经受 Bearer 保护的
 // attachment endpoint 取回 blob URL，页面不把 token 塞进图片 URL。
-test('image draft stages, sends image-only, and rebuilds a protected history preview', async ({ page }) => {
+test('image draft stages, sends image-only, and rebuilds a protected history preview', async ({ page }, testInfo) => {
   const entry = hostInfo('run-command');
   const attachmentRequests = [];
   page.on('request', (request) => {
@@ -1711,11 +2208,14 @@ test('image draft stages, sends image-only, and rebuilds a protected history pre
   await expect(page.locator('.attachment-chip')).toHaveCount(1, LIVE);
   await expect(page.locator('.attachment-chip .attachment-state')).toHaveText('staged locally', LIVE);
   await expect(page.locator('#attachment-summary')).toContainText('ready', LIVE);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({ path: testInfo.outputPath('mobile-image-draft.png'), animations: 'disabled' });
 
   await page.click('#send');
   const preview = page.locator('.msg.user .message-attachment-preview').last();
   await expect(preview).toBeVisible(LIVE);
   await expect(preview).toHaveAttribute('src', /^blob:/, LIVE);
+  await page.screenshot({ path: testInfo.outputPath('mobile-image-message.png'), animations: 'disabled' });
   await preview.click();
   await expect(page.locator('#image-lightbox')).toBeVisible(LIVE);
   await expect(page.locator('#image-lightbox .image-lightbox-image')).toHaveAttribute('src', /^blob:/, LIVE);

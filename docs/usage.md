@@ -930,11 +930,44 @@ Permissions, and WeChat into separate categories. The composer permission
 control opens Permissions directly; Manage model profiles opens Models.
 Session rows provide a more-actions button and a right-click menu, also
 accessible with Shift+F10. The current session can be renamed from that menu.
+When the desktop sidebar is collapsed, a full 44 px **Open sessions** tile
+replaces individual session rows. Clicking it expands the named list and focuses
+search without switching sessions or clearing the draft. Three dots remain a
+separate, centered more-actions button only in the expanded list. Phone drawers
+always show session titles, even if this browser last used a collapsed desktop rail.
+If a background snapshot closes a stale session menu, keyboard focus returns
+to that session's current row rather than a detached element.
 The composer model picker exposes the current route's host-reported thinking
 intensities; models without adjustable thinking show a disabled control.
+Its clickable width follows the model/intensity label, bounded on narrow screens
+with an ellipsis so it stays separate from Send and Stop. On phones, the menu
+opens above the composer and scrolls within the available viewport height.
 The details sidebar offers refresh, context inspection, and model-profile
 management. Context inspection adds a read-only breakdown to the conversation
 without sending the composer draft or making a model request.
+
+The conversation is the default reading space: details start closed in a new
+browser, while an existing desktop open/closed preference is respected. Phone
+drawers start closed. Neutral controls and a restrained warm-gray light / dark
+palette keep answers prominent; body text is 16 px, tables 15 px, and fenced
+code 14 px. Wide tables and code scroll within their own containers.
+The permission control remains visible next to the composer tools; Plan, Goal,
+run status, attachments and cancellation retain their existing behavior.
+
+Appearance offers **User bubbles** (default) and **Single column** for comparing
+role layouts on the same conversation. **Work summaries** (default) collapse
+adjacent ordinary process records; expand a summary, then a tool, to inspect its
+arguments or output. **All steps** starts those summaries expanded. Changing
+these views keeps the current draft and existing tool nodes intact. Record
+counts include separate requests/results, not inferred tool-call or turn counts.
+Answers, pending approvals/questions, failed tools, permission decisions other
+than Allow, retries, command output and cancellation/failure outcomes remain
+outside the collapsed summaries.
+Non-completed replay turn endings likewise remain visible, including blocked,
+aborted, error, token-limit and interrupted endings. Grouping follows visible message and
+interactive/error boundaries, including history-page boundaries; it does not
+change runtime events, permission authority or replay content. The layout and
+process-display choices are browser-only preferences, not session policy.
 
 The embedded zero-build PWA provides a session sidebar, conversation surface,
 and project/model/run/MCP inspector. On narrow screens the side surfaces

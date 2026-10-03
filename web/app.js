@@ -331,6 +331,8 @@ function savePresentationPreference() {
     theme: state.theme,
     sidebar: state.sidebar,
     inspector: state.inspector,
+    messageLayout: state.messageLayout,
+    processView: state.processView,
   }));
 }
 
@@ -352,7 +354,9 @@ const state = {
   sidebar: presentation.sidebar === 'collapsed' ? 'collapsed' : 'expanded',
   inspector: window.innerWidth <= INSPECTOR_DRAWER_BREAKPOINT
     ? 'closed'
-    : (presentation.inspector === 'closed' ? 'closed' : 'open'),
+    : (presentation.inspector === 'open' ? 'open' : 'closed'),
+  messageLayout: presentation.messageLayout === 'column' ? 'column' : 'bubbles',
+  processView: presentation.processView === 'expanded' ? 'expanded' : 'summaries',
   marketPackages: [],
   marketLoaded: false,
   marketFallback: false,
@@ -398,7 +402,7 @@ for (const id of [
   'landing', 'connect-form', 'connect-token', 'connect-error', 'app', 'sidebar',
   'sidebar-toggle', 'mobile-sidebar-open', 'mobile-sidebar-close', 'sidebar-backdrop',
   'project-name', 'project-root', 'session-title', 'conn-status', 'sidebar-connection', 'sidebar-footnote',
-  'header-model', 'header-permission', 'new-session', 'session-search', 'session-count',
+  'header-model', 'header-permission', 'new-session', 'sessions-open', 'session-search', 'session-count',
   'session-list', 'session-empty', 'transcript-scroll', 'empty-state', 'transcript',
   'history-status', 'message-map', 'message-map-track', 'message-map-preview',
   'prompt', 'send', 'suggest', 'cancel', 'run-state', 'composer-permission', 'composer-shell',
@@ -410,7 +414,7 @@ for (const id of [
   'composer-permission-label', 'plan-mode-badge', 'goal-badge', 'inspector', 'inspector-toggle', 'inspector-close',
   'detail-run', 'detail-seq', 'detail-session', 'detail-model', 'detail-protocol',
   'detail-context', 'detail-budget', 'compact-session', 'capability-list', 'detail-mcp', 'mcp-servers',
-  'settings-open', 'settings-dialog', 'theme-options', 'permission-options',
+  'settings-open', 'settings-dialog', 'theme-options', 'reading-options', 'permission-options',
   'utility-naming-enabled', 'utility-suggestions-enabled', 'utility-profile',
   'utility-settings-save', 'utility-settings-error', 'utility-settings-saved',
   'full-access-confirm-row', 'full-access-confirm', 'settings-error', 'settings-saved',
@@ -427,13 +431,19 @@ function applyPresentation() {
   document.documentElement.dataset.theme = state.theme;
   dom.app.dataset.sidebar = state.sidebar;
   dom.app.dataset.inspector = state.inspector;
+  dom.app.dataset.messageLayout = state.messageLayout;
   dom['sidebar-toggle'].setAttribute('aria-expanded', String(state.sidebar === 'expanded'));
   dom['sidebar-toggle'].setAttribute(
     'aria-label', state.sidebar === 'expanded' ? 'Collapse sidebar' : 'Expand sidebar',
   );
+  dom['sessions-open'].setAttribute('aria-expanded', String(state.sidebar === 'expanded'));
   dom['inspector-toggle'].setAttribute('aria-expanded', String(state.inspector === 'open'));
   const themeRadio = document.querySelector(`input[name="theme"][value="${state.theme}"]`);
   if (themeRadio) themeRadio.checked = true;
+  for (const key of ['messageLayout', 'processView']) {
+    const radio = dom['reading-options'].querySelector(`input[name="${key}"][value="${state[key]}"]`);
+    if (radio) radio.checked = true;
+  }
   syncPanelAccessibility();
 }
 
@@ -635,7 +645,7 @@ function handleReplay(event) {
       break;
     }
     case 'permission_checked':
-      node = addNoticeLine(event.tool + ' → ' + decisionText(event.decision), event.type);
+      node = addPermissionNotice(event);
       break;
     case 'tool_requested':
       node = addToolCard(event.call && event.call.name, jsonText(event.call && event.call.arguments), null, false);
@@ -647,7 +657,7 @@ function handleReplay(event) {
       node = addNoticeLine('#' + event.retry + ' in ' + event.delay_ms + 'ms', event.type);
       break;
     case 'turn_ended':
-      node = addNoticeLine('turn ' + event.turn + ' · ' + turnEndText(event.reason), event.type);
+      node = addTurnEndNotice(event);
       break;
     case 'compaction': node = addNoticeLine('', event.type); break;
     default: console.warn('[clat] unknown replay type:', event.type);
@@ -698,7 +708,7 @@ function handleLive(event) {
       addToolCard(event.call && event.call.name, jsonText(event.call && event.call.arguments), null, false);
       break;
     case 'permission_checked':
-      addNoticeLine(event.tool + ' → ' + decisionText(event.decision), event.type);
+      addPermissionNotice(event);
       break;
     case 'permission_denied':
       addNoticeLine(event.tool + ' — ' + (event.reason || ''), event.type);
@@ -1015,6 +1025,46 @@ function appendTranscript(node) {
   return node;
 }
 
+// Group only adjacent, ordinary process records. No run/turn inference: the
+// message, interactive-card, error and history-fragment boundaries stay intact.
+// Moving neither answers nor existing nodes keeps map seqs and tool state stable.
+function appendWorkRecord(node, toolName) {
+  const target = state.history.replayTarget || dom.transcript;
+  let group = target.lastElementChild;
+  if (!group || !group.classList.contains('work-summary')) {
+    group = el('details', 'work-summary');
+    group.open = state.processView === 'expanded';
+    group.dataset.records = '0';
+    const summary = el('summary');
+    summary.append(svgIcon('tool'), el('span', 'work-summary-label'));
+    group.append(summary, el('div', 'work-records'));
+    appendTranscript(group);
+  }
+  group.querySelector('.work-records').appendChild(node);
+  const records = Number(group.dataset.records) + 1;
+  group.dataset.records = String(records);
+  if (toolName) group.dataset.tool = toolName;
+  group.querySelector('.work-summary-label').textContent = 'Work · ' + records
+    + (records === 1 ? ' record' : ' records') + (group.dataset.tool ? ' · ' + group.dataset.tool : '');
+  return node;
+}
+
+function addPermissionNotice(event) {
+  const decision = event.decision;
+  const kind = typeof decision === 'string' ? decision : Object.keys(decision || {})[0];
+  const allowed = kind === 'allow';
+  const line = addNoticeLine(event.tool + ' → ' + decisionText(decision), event.type, allowed);
+  if (!allowed) line.classList.add('is-warning');
+  return line;
+}
+
+function addTurnEndNotice(event) {
+  const completed = event.reason === 'completed';
+  const line = addNoticeLine('turn ' + event.turn + ' · ' + turnEndText(event.reason), event.type, completed);
+  if (!completed) line.classList.add(event.reason?.error ? 'is-error' : 'is-warning');
+  return line;
+}
+
 function syncEmptyState() {
   if (dom.transcript.childElementCount === 0) show(dom['empty-state']);
   else hide(dom['empty-state']);
@@ -1111,7 +1161,8 @@ function openImageLightbox(src, label) {
 }
 
 function addUserMessage(text, blocks) {
-  const msg = el('div', 'msg user');
+  const msg = el('article', 'msg user');
+  msg.setAttribute('aria-label', 'Your message');
   const marker = el('span', 'marker');
   marker.appendChild(svgIcon('user'));
   const body = el('div', 'body rich-text' + (text ? '' : ' image-only'));
@@ -1123,7 +1174,8 @@ function addUserMessage(text, blocks) {
 }
 
 function addAssistantMessage() {
-  const msg = el('div', 'msg assistant');
+  const msg = el('article', 'msg assistant');
+  msg.setAttribute('aria-label', 'Agent reply');
   const marker = el('span', 'marker');
   marker.appendChild(svgIcon('agent'));
   msg.append(marker);
@@ -1214,7 +1266,7 @@ function addToolCard(name, argsText, outputText, isError) {
   if (argsText) body.appendChild(el('div', null, argsText));
   if (outputText) body.appendChild(el('div', null, outputText));
   card.append(summary, body);
-  return appendTranscript(card);
+  return isError ? appendTranscript(card) : appendWorkRecord(card, name);
 }
 
 function addVerdict(kind, text) {
@@ -1222,7 +1274,7 @@ function addVerdict(kind, text) {
   scrollIfNearEnd();
 }
 
-function addNoticeLine(text, eventId) {
+function addNoticeLine(text, eventId, ordinary = ['model_requested', 'model_responded'].includes(eventId)) {
   const line = el('div', 'notice-line');
   line.appendChild(svgIcon(eventId ? 'trace' : 'info'));
   const label = eventId ? humanEventName(eventId) : text;
@@ -1236,7 +1288,9 @@ function addNoticeLine(text, eventId) {
     copy.textContent = text;
   }
   line.appendChild(copy);
-  appendTranscript(line);
+  if (['permission_denied', 'retry_scheduled'].includes(eventId)) line.classList.add('is-warning');
+  if (ordinary) appendWorkRecord(line);
+  else appendTranscript(line);
   return line;
 }
 
@@ -1753,6 +1807,7 @@ async function refreshUtilitySettings() {
 }
 
 function renderSessions() {
+  const focus = rememberSessionFocus();
   closeSessionMenu();
   const query = dom['session-search'].value.trim().toLocaleLowerCase();
   const filtered = state.sessions.filter((session) => {
@@ -1763,6 +1818,7 @@ function renderSessions() {
   dom['session-count'].textContent = String(state.sessions.length);
   for (const session of filtered) {
     const item = el('li', session.id === state.sessionId ? 'active' : '');
+    item.dataset.sessionId = session.id;
     const button = el('button', 'session-item');
     button.type = 'button';
     button.disabled = state.switching || state.compactionActive;
@@ -1780,6 +1836,7 @@ function renderSessions() {
     const more = el('button', 'session-more', '⋯');
     more.type = 'button';
     more.setAttribute('aria-label', `Actions for ${title}`);
+    more.title = `More actions for ${title}`;
     more.setAttribute('aria-haspopup', 'menu');
     more.addEventListener('click', () => {
       const bounds = more.getBoundingClientRect();
@@ -1801,12 +1858,30 @@ function renderSessions() {
   }
   if (filtered.length === 0 && state.sessions.length > 0) show(dom['session-empty']);
   else hide(dom['session-empty']);
+  restoreSessionFocus(focus);
 }
 
 let sessionMenu = null;
+let sessionMenuSource = null;
+
+function rememberSessionFocus() {
+  const active = document.activeElement;
+  const source = sessionMenu?.contains(active) ? sessionMenuSource : active;
+  if (!source || !dom['session-list'].contains(source)) return null;
+  return { id: source.closest('li')?.dataset.sessionId, more: source.classList.contains('session-more') };
+}
+
+function restoreSessionFocus(focus) {
+  if (!focus) return;
+  const item = [...dom['session-list'].children].find((row) => row.dataset.sessionId === focus.id);
+  const button = item?.querySelector(focus.more ? '.session-more' : '.session-item');
+  if (button && !button.disabled) button.focus({ preventScroll: true });
+}
+
 function closeSessionMenu() {
   if (sessionMenu) sessionMenu.remove();
   sessionMenu = null;
+  sessionMenuSource = null;
 }
 
 function openSessionMenu(session, x, y, source) {
@@ -1844,6 +1919,7 @@ function openSessionMenu(session, x, y, source) {
   });
   document.body.appendChild(menu);
   sessionMenu = menu;
+  sessionMenuSource = source;
   menu.style.left = Math.max(8, Math.min(x, innerWidth - menu.offsetWidth - 8)) + 'px';
   menu.style.top = Math.max(8, Math.min(y, innerHeight - menu.offsetHeight - 8)) + 'px';
   menu.querySelector('button:not(:disabled)')?.focus();
@@ -1852,13 +1928,18 @@ function openSessionMenu(session, x, y, source) {
 document.addEventListener('pointerdown', (event) => {
   if (sessionMenu && !sessionMenu.contains(event.target)) closeSessionMenu();
 });
-window.addEventListener('resize', closeSessionMenu);
+window.addEventListener('resize', () => {
+  const focus = rememberSessionFocus();
+  closeSessionMenu();
+  restoreSessionFocus(focus);
+});
 
 function setSwitching(active) {
   state.switching = active;
   syncInteractionControls();
   renderSessions();
   if (active) updateRunState('switching session');
+  else if (dom['run-state'].textContent === 'switching session') updateRunState('');
 }
 
 function invalidateSuggestion() {
@@ -2153,6 +2234,13 @@ dom['sidebar-toggle'].addEventListener('click', () => {
   state.sidebar = state.sidebar === 'expanded' ? 'collapsed' : 'expanded';
   applyPresentation();
   savePresentationPreference();
+});
+
+dom['sessions-open'].addEventListener('click', () => {
+  state.sidebar = 'expanded';
+  applyPresentation();
+  savePresentationPreference();
+  dom['session-search'].focus();
 });
 
 dom['mobile-sidebar-open'].addEventListener('click', () => {
@@ -2576,6 +2664,19 @@ dom['permission-options'].addEventListener('change', updateFullAccessConfirmatio
 dom['theme-options'].addEventListener('change', () => {
   const radio = document.querySelector('input[name="theme"]:checked');
   state.theme = radio ? radio.value : 'system';
+  applyPresentation();
+  savePresentationPreference();
+});
+
+dom['reading-options'].addEventListener('change', (event) => {
+  const { name, value } = event.target;
+  if (!['messageLayout', 'processView'].includes(name)) return;
+  state[name] = value;
+  if (name === 'processView') {
+    for (const group of dom.transcript.querySelectorAll('.work-summary')) {
+      group.open = value === 'expanded';
+    }
+  }
   applyPresentation();
   savePresentationPreference();
 });
