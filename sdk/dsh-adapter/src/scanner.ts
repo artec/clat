@@ -39,7 +39,7 @@ export interface CompatibilityMatrix {
 }
 
 const PORTABLE = new Set([
-  'tools', 'llm', 'userQuestions', 'web', 'systemPrompt',
+  'tools', 'llm', 'userQuestions', 'userQuestions.ask', 'web', 'systemPrompt',
   'reflect', 'get', 'set', 'provide', 'effect', 'logger', 'inject',
   'on', 'once', 'emit', 'parallel', 'serial', 'bail', 'waterfall',
 ])
@@ -216,7 +216,7 @@ function addContextSeam(seams: Set<string>, chain: string[]): void {
   if (root === undefined) return
   seams.add(root)
   const member = chain[1]
-  if (member !== undefined && HOST_BRIDGED.has(root)) seams.add(`${root}.${member}`)
+  if (member !== undefined && (HOST_BRIDGED.has(root) || root === 'userQuestions')) seams.add(`${root}.${member}`)
 }
 
 function analyzeSource(file: string, source: string): SourceAnalysis {

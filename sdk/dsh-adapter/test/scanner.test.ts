@@ -49,3 +49,16 @@ test('scanner emits deterministic seam classifications and ignores test-only usa
     await rm(root, { recursive: true, force: true })
   }
 })
+
+test('scanner distinguishes blocking questions from Agent-owned timed questions', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'clat-dsh-questions-'))
+  try {
+    await fixture(root, 'legacy', '@fixture/legacy', `export function apply(ctx) { ctx.userQuestions.ask({}) }`)
+    await fixture(root, 'timed', '@fixture/timed', `export function apply(ctx) { ctx.userQuestions.askTimed({}, 'call', 1000) }`)
+    const matrix = await scanDshCompatibility(root)
+    assert.equal(matrix.packages.find(p => p.name === '@fixture/legacy')?.status, 'portable')
+    assert.deepEqual(matrix.packages.find(p => p.name === '@fixture/timed')?.unsupportedSeams, ['userQuestions.askTimed'])
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})

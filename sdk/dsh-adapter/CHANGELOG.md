@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.0-rc.2 — DSH 0.2.0-rc.2 alignment
+
+- Preserves `deferLoading: true` in system-prompt tool schemas.
+- Rejects direct timed-question requests with an actionable error; MCP ports
+  use `tool-ask-user` legacy mode.
+- Classifies `userQuestions.askTimed` as unsupported in semantic scans.
+- Pins the 12-package cohort to DSH `dsh-v0.2.0-rc.2`
+  (`639ed015397290b3745d163aafe02ffee4aa3f84`) and replaces the old
+  DeepSeek transport entry with its API-key registration plugin.
+- Updates the real Exa npm acceptance fixture to `0.2.0-rc.2`.
+
 ## 0.1.0-rc.1 — first public preview
 
 - Publishes the author-side DSH-to-MCP adapter and porting commands under

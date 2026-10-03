@@ -85,3 +85,13 @@ test('systemPrompt assemble waterfall and runtime-context suppression match DSH'
   suppress()
   assert.match((await prompt.render()).context, /runtime/)
 })
+
+test('tool prompt projection preserves deferred loading and detaches parameters', async () => {
+  const { prompt } = seam()
+  const schema = { name: 'deferred', description: 'd', parameters: { type: 'object' }, deferLoading: true as const }
+  prompt.tools(() => ({ schemas: [schema] }))
+  const assembly = await prompt.assemble()
+  assert.deepEqual(assembly.tools, [schema])
+  assembly.tools[0]!.parameters['type'] = 'changed'
+  assert.equal(schema.parameters.type, 'object')
+})

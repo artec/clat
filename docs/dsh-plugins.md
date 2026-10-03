@@ -9,13 +9,13 @@ CLAT 把 DeepSeek Harness（DSH）作为插件协议参考实现，但不在 Rus
 `clat-dsh`（连字符）是这个 npm 适配器给插件作者使用的移植命令，
 负责检查、移植和打包 DSH 插件供 MCP 宿主运行。
 
-本文的固定 12 包兼容 cohort 钉在 DSH `dsh-v0.1.5-rc.3`，源提交
-`a4c74a91e06b00fe0b0937bde982170c526cc842`。另用真实 npm
-发布物 `@deepseek-ai/dsh-web-search-exa@0.1.7-alpha.2` 做了隔离、免
-网络 MCP 挂载测试。alpha.2 还新增 `systemPrompt.section` 的
+本文的固定 12 包兼容 cohort 钉在 DSH `dsh-v0.2.0-rc.2`，源提交
+`639ed015397290b3745d163aafe02ffee4aa3f84`。另用真实 npm
+发布物 `@deepseek-ai/dsh-web-search-exa@0.2.0-rc.2` 做了隔离、免
+网络 MCP 挂载测试。新版包含 `systemPrompt.section` 的
 `interpolate: false`（adapter 已对齐），以及 `deferLoading`、
 `projectContent` 等工具语义和新的宿主服务（见下方收窄）；不能把
-Exa 一项通过外推成整个 alpha 生态兼容。`sessionProjections` 等
+Exa 一项通过外推成全部新版插件和配置兼容。`sessionProjections` 等
 宿主脊柱依赖仍为 `partial`。DSH Web
 设置中看到的 147 项是 preset、base bundle 与 Web patch 组装后的插件
 配置项，不等同于
@@ -155,7 +155,7 @@ stderr 通道。包级 API 和双语示例见
 - `exec.deferContext()` 与 `exec.concludeTurn()` 是带警告的 no-op。
 - `ctx.systemPrompt.section({ interpolate: false })` 保留字面
   `{{...}}`，普通 section 仍执行严格变量插值。
-- DSH `deferLoading` 不投影到当前 MCP 工具列表，工具提前列出；
+- 提示词工具 schema 保留 `deferLoading: true`；MCP 工具列表仍提前列出；
   带 `projectContent` 或 `finalizeContent` 的工具在注册时明确拒绝，
   避免跳过结果策略却宣称兼容。
 - `web_fetch` 返回 provider 的规范化文本并限制为 100,000 字符；不会复刻
@@ -234,14 +234,16 @@ cd sdk/dsh-adapter
 npm run scan -- /path/to/deepseek-harness --output /tmp/dsh-compat.json
 ```
 
-在 `dsh-v0.1.5-rc.3` 的整仓扫描中，290 个 package 含 237 个插件
-候选：55 `portable`、5 `host-bridged`、152 `partial`、25
-`unsupported`、53 `not-plugin`。整仓扫描覆盖的源码比逐包
-`inspect` 主入口图更广；它不能替代逐包的兼容证据，也不能把这些
-静态分类当成运行通过率。
+整仓扫描不能替代逐包兼容证据，静态分类不是运行通过率。
+新版 `tool-ask-user` 的 timed 模式依赖 DSH Agent/会话和迟到答案路由，
+该包归为 `partial`。MCP 移植使用 `{ "mode": "legacy" }`；直接调用
+`ctx.userQuestions.askTimed()` 明确拒绝并返回 `TIMED_ASK_UNSUPPORTED`。
+`llm-deepseek` 已拆为传输库，cohort 改用注册插件
+`llm-deepseek-api-key`（仍为 `partial`，依赖 `fiber`）。
+提示词工具 schema 保留 `deferLoading`，MCP `tools/list` 仍提前列出工具。
 
 主插件移植只分析 package 默认入口及其相对 import graph，不会因为独立的
-`./invariant` companion export 把主入口误判为 partial。rc.3 钉定的 12 包代表
+`./invariant` companion export 把主入口误判为 partial。rc.2 钉定的 12 包代表
 cohort 覆盖 web、LLM、用户提问、todo、fs、agent loop、shell、subagent、
 skill 与 storage，证据位于 `sdk/dsh-adapter/compat/official-cohort.json`。
 

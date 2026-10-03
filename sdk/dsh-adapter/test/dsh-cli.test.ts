@@ -158,7 +158,7 @@ test('published official Exa plugin ports and packages without source modificati
       version?: string
     }
     assert.equal(manifest.id, 'dsh.deepseek-ai.dsh-web-search-exa')
-    assert.equal(manifest.version, '0.1.7-alpha.2')
+    assert.equal(manifest.version, '0.2.0-rc.2')
   } finally {
     await rm(base, { recursive: true, force: true })
   }

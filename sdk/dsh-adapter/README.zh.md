@@ -10,9 +10,9 @@
 适配器运行在插件作者自己的发行物中。CLAT 不内嵌 JavaScript 运行时；
 对终端用户而言，产物只是一个普通 MCP server。
 
-**实验性预览版（`0.1.0-rc.1`，npm `next` 标签）。** 固定兼容 cohort
-钉在 DSH `dsh-v0.1.5-rc.3`；另有 0.1.7-alpha.2 官方 Exa 发布物的
-隔离、免网络挂载测试。这不代表全部 DSH alpha 插件兼容。发行移植版前
+**实验性预览版（`0.1.0-rc.2`，npm `next` 标签）。** 固定兼容 cohort
+钉在 DSH `dsh-v0.2.0-rc.2`；另有 0.2.0-rc.2 官方 Exa 发布物的
+隔离、免网络挂载测试。这不代表全部新版 DSH 插件兼容。发行移植版前
 请核对下方收窄项。
 
 ## 适合使用吗？
@@ -180,7 +180,8 @@ Hint 会转为 MCP annotations；最终 effect 映射与权限策略仍由宿主
 - `exec.deferContext()` 与 `exec.concludeTurn()` 是警告 + no-op seam。
 - `ctx.systemPrompt.section({ interpolate: false })` 保留 `{{...}}`
   原文；其他 section 仍执行严格插值。
-- DSH `deferLoading` 工具提示不映射到当前 MCP 工具面，工具仍被
+- 提示词工具 schema 保留 `deferLoading: true`；当前 MCP 工具面不映射
+  该提示，工具仍被
   提前列出。带 `projectContent` 或 `finalizeContent` 回调的工具在
   注册时明确拒绝，不静默跳过结果策略。
 - `web_fetch` 输出最多 100,000 字符，不复刻 DSH 完整 HTML→Markdown 管线。
@@ -228,12 +229,13 @@ MCP `command` 指向这个可执行文件。运行时已经打入产物，终端
   fork（修改日志 #1–#18）复核：全部分歧（loader/HMR 事务化、处置
   加固、配置调和）都落在子集仿真面之外——进程内派发、effect 与
   基础生命周期语义未变。
-- 当前兼容 cohort 钉靶：`dsh-v0.1.5-rc.3`，源提交
-  `a4c74a91e06b00fe0b0937bde982170c526cc842`（12 个包入口逐一
-  inspect 钉定）。DSH 0.1.7-alpha.2 又加入 literal prompt 选项、
-  `deferLoading`、`projectContent` 与更多宿主服务；adapter 已对齐
-  literal section，其他新增面遵守上文的收窄。alpha.2 Exa 冒烟只覆盖
-  该插件的注册及无 key 错误路径。
+- 当前兼容 cohort 钉靶：`dsh-v0.2.0-rc.2`，源提交
+  `639ed015397290b3745d163aafe02ffee4aa3f84`（12 个包主入口）。
+  `tool-ask-user` 为 partial：`mode: legacy` 使用 MCP elicitation；
+  `mode: timed` 依赖 DSH Agent/会话及迟到答案路由，不能原样运行。
+  `llm-deepseek` 已改为传输库，cohort 改查注册插件
+  `llm-deepseek-api-key`，仍为 partial（`fiber`）。
+  literal section 与提示词 schema 的 `deferLoading` 均保留。
 - 验收 fixture：npm 发布物 `@deepseek-ai/dsh-web-search-exa` 在
   [`examples/exa`](https://github.com/artec/clat/tree/main/sdk/dsh-adapter/examples/exa)
   中原样挂载。
@@ -244,13 +246,16 @@ npm test
 npm run scan -- /path/to/deepseek-harness --output /tmp/dsh-compat.json
 ```
 
-v2 扫描器使用 TypeScript AST/来源证明和成员级 host seam。rc.3
-整仓扫描 290 包/237 候选：55 portable、5 host-bridged、152 partial、
-25 unsupported、53 not-plugin。这些数字只供探索：逐包 `inspect` 跟踪
-主入口，是钉定 12 包 cohort 的依据。两种扫描都不能证明运行时行为；
-仓库中的 Exa fixture 与隔离的 alpha.2 npm 包测试提供范围更窄的执行证据。
+v2 扫描器使用 TypeScript AST/来源证明与成员级 seam，包含
+`userQuestions.askTimed`。整仓扫描只供探索；逐包 `inspect` 跟踪主入口，
+是钉定 12 包 cohort 的依据。两种扫描都不能证明运行时行为或全部配置。
+Exa fixture 的执行证据只覆盖注册和无 key 错误路径。
 
 仓库：[artec/clat](https://github.com/artec/clat) ·
 [sdk/dsh-adapter](https://github.com/artec/clat/tree/main/sdk/dsh-adapter)
 
 MIT
+
+超时问答不会降级成阻塞 elicitation。请把 `tool-ask-user` 配置设为
+`{ "mode": "legacy" }`；直接调用 `ctx.userQuestions.askTimed()` 会在
+请求用户输入前抛出 `TIMED_ASK_UNSUPPORTED`。

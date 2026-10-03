@@ -11,10 +11,10 @@ plugin itself.
 The adapter runs in the plugin author's distribution. CLAT does not embed a
 JavaScript runtime; to the end user, the result is an ordinary MCP server.
 
-**Experimental preview (`0.1.0-rc.1`, npm `next` tag).** The pinned
-compatibility cohort targets DSH `dsh-v0.1.5-rc.3`. The published Exa plugin
-at `0.1.7-alpha.2` also passed an isolated network-free mount test; this is
-not a promise that all DSH alpha plugins work. Review the limitations below
+**Experimental preview (`0.1.0-rc.2`, npm `next` tag).** The pinned
+compatibility cohort targets DSH `dsh-v0.2.0-rc.2`. The published Exa plugin
+at `0.2.0-rc.2` also passed an isolated network-free mount test; this is
+not a promise that all DSH plugins work. Review the limitations below
 before distributing a port.
 
 ## Is this adapter a fit?
@@ -194,7 +194,8 @@ permission policy.
 - `exec.deferContext()` and `exec.concludeTurn()` are warning + no-op seams.
 - A section registered with `ctx.systemPrompt.section({ interpolate: false })`
   keeps literal `{{...}}` text; other sections still use strict interpolation.
-- DSH's `deferLoading` tool hint is not exposed over this MCP tool surface;
+- System-prompt tool schemas preserve `deferLoading: true`. This hint is
+  not exposed over MCP `tools/list`;
   tools are listed eagerly. Tools with `projectContent` or `finalizeContent`
   callbacks are rejected at registration rather than silently bypassing
   their result policy.
@@ -250,13 +251,13 @@ artifact, so end users install no JavaScript environment.
   (loader/HMR transactions, disposal hardening, config reconciliation)
   outside the subset's emulated surface — process-local dispatch, effects,
   and basic lifecycle semantics are unchanged.
-- Current compatibility cohort: `dsh-v0.1.5-rc.3`, source revision
-  `a4c74a91e06b00fe0b0937bde982170c526cc842` (12 package entrypoints
-  inspected and pinned). DSH `0.1.7-alpha.2` adds a literal-prompt option,
-  `deferLoading`, `projectContent`, and additional host services. The adapter
-  now preserves literal prompt sections; the other new surfaces retain the
-  narrowings listed above. The `0.1.7-alpha.2` Exa smoke test covers only
-  that plugin's registration and no-key error path.
+- Current compatibility cohort: `dsh-v0.2.0-rc.2`, revision
+  `639ed015397290b3745d163aafe02ffee4aa3f84` (12 package entrypoints).
+  `tool-ask-user` is partial: use `mode: legacy` for MCP elicitation;
+  `mode: timed` requires DSH Agent/session late-answer routing and is unsupported.
+  `llm-deepseek` is now a transport library; the cohort inspects the replacement
+  `llm-deepseek-api-key` registration plugin, which remains partial (`fiber`).
+  Literal prompt sections and prompt-schema `deferLoading` are preserved.
 - Acceptance fixture: the npm-published
   `@deepseek-ai/dsh-web-search-exa` mounts unmodified under
   [`examples/exa`](https://github.com/artec/clat/tree/main/sdk/dsh-adapter/examples/exa).
@@ -267,15 +268,17 @@ npm test
 npm run scan -- /path/to/deepseek-harness --output /tmp/dsh-compat.json
 ```
 
-The v2 scanner uses TypeScript AST/provenance and member-level host seams. On
-the rc.3 checkout, the whole-tree scan reports 290 packages / 237 candidates:
-55 portable, 5 host-bridged, 152 partial, 25 unsupported, and 53 non-plugins.
-These counts are exploratory: per-package `inspect` follows the main entrypoint
-and is the basis of the pinned 12-package cohort. Neither scan certifies runtime
-behavior; the committed Exa fixture and the isolated alpha.2 npm package smoke
-provide narrower execution evidence.
+The v2 scanner uses TypeScript AST/provenance and member-level seams, including
+`userQuestions.askTimed`. Whole-tree scans are exploratory; per-package `inspect`
+follows the main entrypoint and is the basis of the pinned 12-package cohort.
+Neither scan certifies runtime behavior or every configuration. The Exa fixture
+provides execution evidence for registration and the no-key error path only.
 
 Repository: [artec/clat](https://github.com/artec/clat) ·
 [sdk/dsh-adapter](https://github.com/artec/clat/tree/main/sdk/dsh-adapter)
 
 MIT
+
+Timed questions are not mapped to blocking elicitation. Set `tool-ask-user`
+config to `{ "mode": "legacy" }`; direct `ctx.userQuestions.askTimed()` calls
+fail with `TIMED_ASK_UNSUPPORTED` before requesting user input.

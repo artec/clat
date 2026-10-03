@@ -124,6 +124,7 @@ export class SystemPromptSeam implements SystemPromptLike {
       name: schema.name,
       description: schema.description,
       parameters: structuredClone(schema.parameters),
+      ...(schema.deferLoading === true ? { deferLoading: true as const } : {}),
     }))).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)
     const assembly: PromptAssemblyLike = { sections, contexts, tools, variables }
     const transformed = await this.#events.waterfall(

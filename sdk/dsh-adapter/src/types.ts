@@ -1,8 +1,8 @@
 /**
  * Runtime shapes of the DeepSeek Harness (DSH) plugin API exposed by the
  * adapter. Originally modeled from DSH `dsh-v0.1.3-alpha.1`; the pinned
- * 12-package cohort now targets `dsh-v0.1.5-rc.3` at
- * `a4c74a91e06b00fe0b0937bde982170c526cc842`. Later alpha-only
+ * 12-package cohort now targets `dsh-v0.2.0-rc.2` at
+ * `639ed015397290b3745d163aafe02ffee4aa3f84`. Later alpha-only
  * fields are modeled individually when the adapter supports their semantics.
  *
  * These are deliberately structural: a real plugin brings its own types via
@@ -126,6 +126,7 @@ export interface ToolSchemaLike {
   name: string
   description: string
   parameters: Record<string, unknown>
+  deferLoading?: true
 }
 
 export interface ToolProviderResultLike {
@@ -298,7 +299,10 @@ export interface LoggerLike {
 export interface DshContext {
   tools: { register(tool: ToolDefinitionLike): () => void }
   llm: { stream(options: GenerateOptionsLike): AsyncIterable<StreamChunk> }
-  userQuestions: { ask(request: AskRequestLike): Promise<AskAnswerLike> }
+  userQuestions: {
+    ask(request: AskRequestLike): Promise<AskAnswerLike>
+    askTimed(...args: unknown[]): Promise<never>
+  }
   web: {
     registerSearchProvider(provider: WebSearchProviderLike): () => void
     registerFetchProvider(provider: WebFetchProviderLike): () => void

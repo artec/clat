@@ -224,6 +224,12 @@ export class Shim {
       },
       userQuestions: {
         ask: (request: AskRequestLike) => this.#ask(request),
+        askTimed: async () => {
+          throw new AdapterError(
+            'TIMED_ASK_UNSUPPORTED',
+            'timed questions require DSH Agent/session reply routing; configure tool-ask-user mode: legacy for MCP elicitation',
+          )
+        },
       },
       web: {
         registerSearchProvider: provider => this.#trackedRegistration(

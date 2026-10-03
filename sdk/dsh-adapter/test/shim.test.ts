@@ -507,3 +507,14 @@ test('ask: decline/cancel and validation failures', async () => {
     { code: 'TOO_MANY_QUESTIONS' },
   )
 })
+
+test('timed questions reject without creating an elicitation request', async () => {
+  const host = fakeHost()
+  const shim = new Shim(host, 'timed')
+  const questions = shim.buildContext().userQuestions as unknown as {
+    askTimed(...args: unknown[]): Promise<unknown>
+  }
+  await assert.rejects(async () => questions.askTimed({}, 'call', 1000), /TIMED_ASK_UNSUPPORTED|timed questions.*mode.*legacy/)
+  assert.equal(host.params.elicitation.length, 0)
+  await shim.disposeAll()
+})
