@@ -712,7 +712,7 @@ fn harness_native(tag: &str, online: bool) -> Harness {
 #[test]
 fn ux_discovery_uses_real_keys_without_dispatching_selection() {
     let mut harness = Harness::trusted("ux-discovery-keys", 100, 30);
-    harness.type_text("/new");
+    harness.type_text("/ne");
     assert!(harness.app.discovery.picker.is_some());
     let selection = harness
         .app
@@ -738,6 +738,53 @@ fn ux_discovery_uses_real_keys_without_dispatching_selection() {
     assert_eq!(harness.app.input.text(), "/model");
     harness.event(UiEvent::Terminal(Event::Paste("/tmp/ordinary-path".into())));
     assert!(harness.app.discovery.picker.is_none());
+}
+
+#[test]
+fn tui2_complete_command_and_alias_enter_submit_without_escaping_picker() {
+    for command in ["/quit", "/exit"] {
+        let mut harness = Harness::trusted("tui2-complete-command", 100, 30);
+        harness.type_text(command);
+        assert!(harness.app.discovery.picker.is_some());
+        assert!(!harness.app.should_quit);
+        harness.key(KeyCode::Enter);
+        assert!(
+            harness.app.should_quit,
+            "{command} must submit on first Enter"
+        );
+        assert!(harness.app.discovery.picker.is_none());
+    }
+}
+
+#[test]
+fn tui2_tab_and_incomplete_enter_only_fill_without_dispatch() {
+    for (text, key) in [("/qui", KeyCode::Enter), ("/quit", KeyCode::Tab)] {
+        let mut harness = Harness::trusted("tui2-fill-only", 100, 30);
+        harness.type_text(text);
+        harness.key(key);
+        assert_eq!(harness.app.input.text(), "/quit ");
+        assert!(!harness.app.should_quit);
+        assert!(harness.app.discovery.picker.is_none());
+        harness.key(KeyCode::Enter);
+        assert!(harness.app.should_quit);
+    }
+}
+
+#[test]
+fn tui2_dsh_has_no_command_picker_before_or_after_help() {
+    let mut harness = harness_dsh("tui2-dsh-discovery", 100, 30);
+    harness.type_text("/");
+    assert!(harness.app.discovery.picker.is_none());
+    assert_eq!(harness.app.input.text(), "/");
+    harness.type_text("help");
+    harness.key(KeyCode::Enter);
+    assert!(harness.app.info_dialog.is_some());
+    assert!(!harness.app.discovery.help_commands.is_empty());
+    harness.key(KeyCode::Esc);
+    harness.type_text("/exit");
+    assert!(harness.app.discovery.picker.is_none());
+    harness.key(KeyCode::Enter);
+    assert!(harness.app.should_quit);
 }
 
 #[test]

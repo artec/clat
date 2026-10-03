@@ -1,6 +1,6 @@
-//! Input discovery only: choosing a row never dispatches a command.
+//! Selecting a row fills input; Enter on an already complete command submits normally.
 use super::*;
-use serde_json::{Value, json};
+use serde_json::Value;
 
 /// One frontend-only discovery state: shared help catalog, picker and find panel.
 #[derive(Default)]
@@ -158,10 +158,27 @@ impl CommandPicker {
             .filter(|entry| !entry.unavailable)
             .map(|entry| entry.text.clone())
     }
+
+    fn selected_command_matches(&self, input: &str) -> bool {
+        self.filtered().get(self.selected).is_some_and(|entry| {
+            !entry.unavailable
+                && !entry.skill
+                && (entry.text.trim() == input
+                    || input.strip_prefix('/').is_some_and(|name| {
+                        entry.aliases.split_whitespace().any(|alias| alias == name)
+                    }))
+        })
+    }
 }
 
 impl App {
     pub(super) fn open_command_picker(&mut self) {
+        // DSH has no structured discovery feed. Keep '/' as ordinary input,
+        // including after /help has populated its presentation-only catalog.
+        if self.dsh.is_some() {
+            self.discovery.picker = None;
+            return;
+        }
         let request = self.input.generation();
         let mut picker = CommandPicker::new(request);
         if self.native.is_some() {
@@ -177,20 +194,6 @@ impl App {
                 Ok(value) => picker.load(&value),
                 Err(error) => picker.status = error.to_string(),
             }
-        } else if self.dsh.is_some() {
-            let entries = self
-                .discovery
-                .help_commands
-                .iter()
-                .map(|command| {
-                    json!({
-                        "name": command.name, "description": command.description,
-                    })
-                })
-                .collect::<Vec<_>>();
-            picker.load(&json!({ "commands": entries }));
-            picker.status =
-                "No matching host command; skills discovery not exposed by this host".into();
         }
         self.discovery.picker = Some(picker);
     }
@@ -232,6 +235,11 @@ impl App {
                 true
             }
             KeyCode::Enter | KeyCode::Tab => {
+                if key.code == KeyCode::Enter && picker.selected_command_matches(self.input.text())
+                {
+                    self.discovery.picker = None;
+                    return false;
+                }
                 let text = picker.selected_text();
                 if let Some(text) = text {
                     self.input.clear();
@@ -296,7 +304,9 @@ impl App {
         if lines.is_empty() {
             lines.push(Line::from(picker.status.clone()));
         }
-        lines.push(Line::from("↑↓ browse · Tab/Enter fill only · Esc close"));
+        lines.push(Line::from(
+            "↑↓ browse · Tab fill · Enter fill/submit exact command · Esc close",
+        ));
         let height = (lines.len() as u16 + 2).min(self.input_area.y);
         if height < 3 {
             return;
@@ -318,6 +328,24 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+    #[test]
+    fn exact_submit_requires_selected_available_command_not_skill_or_prefix() {
+        let mut picker = CommandPicker::new(1);
+        picker.load(&json!({"commands":[{"name":"quit", "aliases":["exit"]}],
+            "skills":{"entries":[{"name":"audit"}]}}));
+        assert!(picker.selected_command_matches("/quit"));
+        assert!(picker.selected_command_matches("/exit"));
+        assert!(!picker.selected_command_matches("/qui"));
+        assert!(!picker.selected_command_matches("/exit later"));
+        assert!(!picker.selected_command_matches("/quit\n"));
+        picker.query = "audit".into();
+        assert!(!picker.selected_command_matches("/skill audit"));
+        picker.load(&json!({"commands":[{"name":"quit", "unavailable_reason":"busy"}]}));
+        picker.query.clear();
+        assert!(!picker.selected_command_matches("/quit"));
+    }
+
     #[test]
     fn discovery_selects_text_not_execution_and_filters_skills() {
         let mut picker = CommandPicker::new(1);

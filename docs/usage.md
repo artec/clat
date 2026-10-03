@@ -207,13 +207,17 @@ selection behavior instead of CLAT's mouse handling.
 
 Typing `/` opens commands and a separate Skills section from the current host's
 read-only catalog. Narrow the name or description, use ↑/↓, and select with
-Tab/Enter; selection only fills editable input, never executes the command.
-Press Enter again after editing to submit, or Esc to dismiss. A trailing space
+Tab/Enter. Tab always fills editable input; Enter fills an incomplete choice
+without executing it. If the input already exactly matches the selected
+available command or its alias (for example `/quit` or `/exit`), Enter submits
+that input directly. Skill selection only fills input. Press Enter after
+editing to submit, or Esc to dismiss. A trailing space
 also dismisses discovery, so `/help ` followed by Enter directly runs `/help`.
 Skill rows show their source and `requires-execution` constraint; unavailable
 rows explain why. Pasted paths and input-history recall do not open discovery.
-DSH attachment uses its existing host command catalog; that host does not yet
-expose structured skill discovery.
+In `clat dsh`, `/` stays ordinary input and does not open a candidate panel:
+structured discovery is not exposed by that host. Use `/help` for the existing
+DSH-mode command list, or type a complete command and press Enter.
 
 In conversation find, Enter/Shift+Enter visits the next/previous match, Alt+L
 loads one earlier page, and Esc closes find without changing the composer.
