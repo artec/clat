@@ -1,3 +1,4 @@
+import { notices } from './notices.mjs'
 import { compileWithBun, smoke } from '../../dist/src/dsh-cli.js'
 import { createHash } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, rename, rm, writeFile, lstat } from 'node:fs/promises'
@@ -27,15 +28,17 @@ try {
     id: 'io.artec.dsh-official-web',
     name: 'DSH official web search and fetch',
     version: '0.1.0',
+    description: 'Official DSH web search and HTTP fetch in one executable; no Node or Bun needed after installation.',
     runtime: { kind: 'mcp-stdio', entry, sha256 },
     capabilities: { tools: true, prompts: true },
     compatibility: { kind: 'dsh-v0.2.0-rc.2', revision: '639ed015397290b3745d163aafe02ffee4aa3f84' },
     configSchema: {
       type: 'object', additionalProperties: false,
-      properties: { apiKey: { type: 'string' }, apiKeyEnv: { type: 'string' } },
+      properties: { apiKey: { type: 'string', title: 'DeepSeek API key', writeOnly: true, description: 'Used for web search. Saved only in your local CLAT private configuration.' }, apiKeyEnv: { type: 'string', title: 'API key environment variable', description: 'Optional alternative to entering a key. Defaults to DEEPSEEK_API_KEY on the local host.' } },
     },
   }
   await writeFile(path.join(staging, 'clat-plugin.json'), `${JSON.stringify(manifest, null, 2)}\n`)
+  await writeFile(path.join(staging, 'LICENSES.txt'), await notices(root))
   await rename(staging, destination)
   console.log(`Package: ${destination}`)
 } finally {

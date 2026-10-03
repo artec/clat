@@ -78,6 +78,54 @@ pub(super) struct MountedRunScope {
 }
 
 impl TrustedProjectComposition {
+    pub(super) fn stop_external_plugins(&mut self) -> Result<(), ApplicationError> {
+        self.manager
+            .as_mut()
+            .ok_or_else(|| ApplicationError::new("project scope is closed"))?
+            .remove_plugins(&[
+                crate::plugin::PluginId::new("builtin.mcp_adapter"),
+                crate::plugin::PluginId::new("builtin.wasm_adapter"),
+            ])
+            .map_err(|e| ApplicationError::new(e.to_string()))
+    }
+
+    pub(super) fn restart_external_plugins(
+        &mut self,
+        root: PathBuf,
+        project: &Project,
+        control: &Arc<ControlStorage>,
+        host: &Arc<crate::plugin_host::PluginHostBridge>,
+        permission_mode: Option<Arc<RwLock<crate::permission::PermissionMode>>>,
+    ) -> Result<Arc<McpStatus>, ApplicationError> {
+        let manager = self
+            .manager
+            .as_mut()
+            .ok_or_else(|| ApplicationError::new("project scope is closed"))?;
+        let tools = required(manager, TOOL_SERVICE)?;
+        let prompts = required(manager, PROMPT_SERVICE)?;
+        tools
+            .reopen_for_plugin_reload()
+            .map_err(|e| ApplicationError::new(e.to_string()))?;
+        prompts.reopen_for_plugin_reload();
+        manager
+            .mount_additional(vec![
+                Arc::new(crate::plugins::McpAdapterPlugin::with_project_root(
+                    root.clone(),
+                    project.root().to_owned(),
+                    super::trusted::glm_mcp_pack_from_control(control),
+                    Arc::clone(host),
+                )),
+                Arc::new(crate::plugins::WasmAdapterPlugin::new(
+                    root,
+                    Arc::clone(host),
+                    project.root().to_owned(),
+                    permission_mode,
+                )),
+            ])
+            .map_err(|e| ApplicationError::new(e.to_string()))?;
+        required(manager, MCP_STATUS_SERVICE)
+    }
+
     pub(super) fn mount(
         mut input: CompositionInput,
     ) -> Result<(Self, ProjectPorts), ApplicationError> {

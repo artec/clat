@@ -9,7 +9,8 @@ the production index.
 A publisher request must include:
 
 - a stable lowercase id and public identity/contact URL;
-- one Minisign public key generated and stored independently of CLAT;
+- one Minisign public key held by the publisher (a separate key is preferred;
+  an owner-approved reuse of the release key must be recorded at `reviewUrl`);
 - proof that the requester controls the linked source repository;
 - the package source revision, reproducible build instructions and license;
 - an explicit runtime class: capability-bounded `wasm-component` or

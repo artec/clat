@@ -7,6 +7,7 @@ const path = require('path');
 
 const REPO_ROOT = path.resolve(__dirname, '../..');
 const HOSTS = ['run-command', 'long-stream', 'success', 'reasoning', 'history', 'compact-slow', 'question', 'native-write'];
+if (process.env.CLAT_PLG2_MARKET_URL) HOSTS.push('plugin-market');
 if (process.env.CLAT_LIVE_GLM_E2E === '1') HOSTS.push('live-glm');
 const STARTUP_TIMEOUT_MS = 300_000; // 含 cargo 增量编译
 const SHUTDOWN_TIMEOUT_MS = 60_000;
@@ -34,7 +35,7 @@ async function globalSetup() {
 
   const cargoArgs = ['test'];
   if (process.env.CLAT_E2E_RELEASE === '1') cargoArgs.push('--release');
-  cargoArgs.push('--lib', '--', '--ignored', 'serve_e2e_host', '--nocapture');
+  cargoArgs.push('--lib', '--', '--ignored', 'serve_e2e_host', '--nocapture', '--test-threads=' + (HOSTS.length + 1));
   const child = spawn(
     'cargo',
     cargoArgs,

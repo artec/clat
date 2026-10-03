@@ -252,10 +252,52 @@ honestly labelled preview catalog entries. A preview does not become remotely
 installable until a reviewed publisher, signed index record and immutable
 artifact are deployed together.
 
-The local PWA exposes a searchable read-only market panel and an external
-`pi.at.cn` entry. Its cross-origin catalog request uses no credentials or local
-Bearer token. Installation deliberately remains in the local CLI (or a future
-permission-gated local control plane), never a public website action.
+## Install and manage from the PWA
+
+Open **Plugin Index** in the local PWA, choose an available package, review its
+permissions and native-process risk, enter any configuration, and select
+**Install**. The same panel lists installed packages with Configure, Disable,
+Enable, Update, Roll back and Uninstall controls. Changes become available in
+all mounted projects without restarting CLAT; finish active runs or compaction
+before preparing or committing changes, and wait for plugin startup to settle.
+
+The public catalog is a display surface. Its cross-origin request uses no
+credentials or local Bearer token. Download, signature verification, publisher
+trust checks, capability consent and installation belong to the authenticated
+local host. The public website cannot install or remove anything. Unsupported
+platforms, revoked publishers, expired indexes and known vulnerabilities fail
+closed; vulnerability overrides remain an explicit CLI operation.
+
+Preparing an install downloads and verifies the complete dependency solution
+without running it. A single-use, 15-minute review ticket binds the package
+trees and installed-registry revision. Commit rechecks the index lifetime and
+publisher identities; changed state requires a new review. Cancelled or expired
+reviews never activate a package. Enable, rollback and configuration changes
+also require consent; disable and uninstall revoke contributions before
+registry publication and artifact cleanup.
+
+Configuration values are write-only in the UI and travel only in a local POST
+body into the owner-only package registry. The form is cleared on submission or
+close; values never appear in management replies, the catalog, browser storage
+or installation events. Authors should annotate secret schema properties with
+`writeOnly: true` (or `format: "password"`) and provide a clear title and
+description. Flat object properties have a guided form; other shapes accept
+JSON. On update, leave configuration blank to retain existing values; entered
+configuration replaces it. Configure replaces the complete object.
+
+Installed packages continue to work with the market offline. Configure, Enable,
+Disable, rollback and Uninstall use local state only. Runtime startup failures
+are reported separately from a committed installation; inspect MCP status and
+configuration if a package starts unsuccessfully.
+
+The additive local RPC amendment adds `plugin.list`, `plugin.prepare`,
+`plugin.commit`, `plugin.cancel` and `plugin.remove`. These are host-scoped
+methods, independent of session selection, journal events and `RunEvent`.
+`plugin.prepare` takes an id and action (`install`, `update`, `enable`,
+`rollback`, `configure`); `plugin.commit` takes the returned ticket,
+`accept_capabilities: true` and optional `configs` keyed by package id.
+`plugin.remove` takes an id and `disable` or `uninstall`. A lost response is
+reconciled with `plugin.list`, never an optimistic browser installation cache.
 
 See [WASM authoring](wasm.md), [DSH porting](dsh-plugins.md),
 [MCP integration](mcp.md), and [architecture](architecture.md).

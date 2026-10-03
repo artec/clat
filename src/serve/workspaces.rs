@@ -15,6 +15,11 @@ const MAX_MOUNTED_PROJECTS: usize = 16;
 mod lifecycle_tests;
 mod reclaim;
 pub(crate) const HOST_METHODS: &[&str] = &[
+    "plugin.list",
+    "plugin.prepare",
+    "plugin.commit",
+    "plugin.cancel",
+    "plugin.remove",
     "host.describe",
     "host.stop",
     "host.takeover",
@@ -109,6 +114,9 @@ impl WorkspaceHost {
         let mut projects = self.projects.lock().expect("host projects");
         if self.shutdown.load(Ordering::SeqCst) {
             return Err(RpcError::busy("host is shutting down"));
+        }
+        if method.starts_with("plugin.") {
+            return super::plugins::dispatch(&mut projects.application, method, params);
         }
         match method {
             "host.describe" => Ok(json!({"protocol_version": 1, "instance_id": self.instance,

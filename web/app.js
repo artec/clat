@@ -2115,6 +2115,8 @@ const MARKET_FALLBACK = [
   },
 ];
 
+const pluginMarket = installPluginMarket();
+
 function renderMarket() {
   const query = dom['market-search'].value.trim().toLocaleLowerCase();
   const packages = state.marketPackages.filter((plugin) => {
@@ -2142,6 +2144,7 @@ function renderMarket() {
       el('p', 'market-summary', plugin.summary || 'No summary provided.'),
       tags,
     );
+    pluginMarket.decorate(card, plugin);
     dom['market-list'].appendChild(card);
   }
   if (packages.length === 0) {
@@ -2232,7 +2235,8 @@ function normalizeMarketCatalog(catalog) {
 function openMarket() {
   dom['market-search'].value = '';
   if (!dom['market-dialog'].open) dom['market-dialog'].showModal();
-  loadMarket();
+  void loadMarket();
+  void pluginMarket.refresh();
   setTimeout(() => dom['market-search'].focus(), 0);
 }
 

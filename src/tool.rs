@@ -661,6 +661,15 @@ impl ToolRegistry {
         Ok(())
     }
 
+    /// Core composition opens registration only while every project run is idle.
+    pub(crate) fn reopen_for_plugin_reload(&self) -> Result<(), ToolRegistryError> {
+        self.inner
+            .write()
+            .map_err(|_| ToolRegistryError::Poisoned)?
+            .frozen = false;
+        Ok(())
+    }
+
     pub(crate) fn definitions(&self) -> Vec<ToolDefinition> {
         let Ok(state) = self.inner.read() else {
             return Vec::new();

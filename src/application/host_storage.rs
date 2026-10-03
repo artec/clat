@@ -18,7 +18,9 @@ pub(super) struct HostStorage {
     model_revision: std::sync::atomic::AtomicU64,
     // Mutex supplies Sync on Windows without changing the lease's Send-only
     // ownership contract. No caller accesses or reacquires this lease.
-    _lease: Mutex<StorageRootLease>,
+    pub(super) lease: Arc<Mutex<StorageRootLease>>,
+    #[cfg(test)]
+    pub(super) plugin_market_fixture: Mutex<Option<Arc<crate::plugin::Market>>>,
 }
 
 impl HostStorage {
@@ -36,6 +38,7 @@ impl HostStorage {
         lease
             .cover_initialized_root(root)
             .map_err(|error| ApplicationError::new(error.to_string()))?;
+        crate::plugin::cleanup_market_downloads(root).map_err(ApplicationError::new)?;
         let control = ControlStorage::open_ready(root)
             .map_err(|error| ApplicationError::new(error.to_string()))?;
         Ok(Arc::new(Self {
@@ -43,7 +46,9 @@ impl HostStorage {
             model_updates: Mutex::new(()),
             model_consumers: Mutex::new(Vec::new()),
             model_revision: std::sync::atomic::AtomicU64::new(0),
-            _lease: Mutex::new(lease),
+            lease: Arc::new(Mutex::new(lease)),
+            #[cfg(test)]
+            plugin_market_fixture: Mutex::new(None),
         }))
     }
 

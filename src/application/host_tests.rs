@@ -1,7 +1,14 @@
 use super::*;
 use crate::test_support::{TestBehavior, TestProviderPlugin};
 
-fn fixture(label: &str) -> (PathBuf, HostApplication, Project, Project) {
+pub(super) fn fixture(label: &str) -> (PathBuf, HostApplication, Project, Project) {
+    fixture_with_behavior(label, TestBehavior::Success)
+}
+
+pub(super) fn fixture_with_behavior(
+    label: &str,
+    behavior: TestBehavior,
+) -> (PathBuf, HostApplication, Project, Project) {
     let (root, _) = crate::test_support::roots(label);
     let first = root.join("first");
     let second = root.join("second");
@@ -12,9 +19,7 @@ fn fixture(label: &str) -> (PathBuf, HostApplication, Project, Project) {
     let application = BootstrapApplication::open(first.clone(), root.join("state"))
         .unwrap()
         .with_permission_modes()
-        .authorize_and_mount_with_provider(Arc::new(TestProviderPlugin {
-            behavior: TestBehavior::Success,
-        }))
+        .authorize_and_mount_with_provider(Arc::new(TestProviderPlugin { behavior }))
         .unwrap();
     (root, HostApplication::new(application), first, second)
 }

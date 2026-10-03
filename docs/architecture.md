@@ -138,6 +138,13 @@ tools and prompts freeze only after the first run's bounded MCP/DSH startup
 wait, so asynchronous contributions are complete. Teardown can still revoke
 existing leases.
 
+The host plugin control plane pauses external-plugin mutation until every
+mounted project is idle and MCP startup is settled. Under the ordered project
+locks it revokes MCP/WASM adapters, atomically publishes the package registry,
+reopens tool/prompt registration and remounts only those adapters. Core services,
+sessions and drafts retain their owners. The next run freezes the new tool
+surface; management replies remain outside the durable run vocabulary.
+
 ## Application boundary
 
 `HostApplication` groups already trusted project runtimes under one storage-root

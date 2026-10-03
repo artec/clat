@@ -701,3 +701,17 @@ button:disabled { cursor: default; opacity: .45; }
   .file-range input { width: 72px; }
   #tools-open, #find-open { min-width: 40px; min-height: 40px; }
 }
+
+.plugin-installed, .plugin-review { margin: 0 26px; padding: 16px 0; border-bottom: 1px solid var(--line); }
+#market-dialog .plugin-installed .market-list { padding: 0; }
+.plugin-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.plugin-actions button { padding: 7px 12px; }
+.plugin-review { margin-bottom: 16px; }
+.plugin-config { border: 0; padding: 8px 0; margin: 8px 0; }
+.plugin-config-field { display: grid; gap: 6px; margin: 10px 0; }
+.plugin-config-field input:not([type=checkbox]), .plugin-config-field select, .plugin-config-field textarea { width: 100%; padding: 9px; }
+.plugin-config-field small { color: var(--text-muted); }
+.plugin-native-risk { padding: 12px; border-left: 3px solid #b88a3c; }
+.plugin-consent { display: flex; align-items: flex-start; gap: 10px; padding: 12px 0; }
+.plugin-consent input { width: auto; }
+@media (max-width: 540px) { .plugin-installed, .plugin-review { margin-inline: 16px; } }

@@ -49,6 +49,7 @@ mod language_intelligence_tests;
 #[cfg(test)]
 mod memory_tests;
 mod model_settings;
+mod plugin_control;
 pub use model_settings::{
     ModelProfileEdit, ModelRouteView, ModelSettingsView, UtilitySettingsEdit, UtilitySettingsView,
 };

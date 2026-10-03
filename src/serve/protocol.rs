@@ -20,6 +20,11 @@ use std::sync::mpsc;
 /// `workbench.info.methods` 与实际 dispatch 的同仓能力目录。新增方法
 /// 时必须同时进本表；测试钉住全集，避免 PWA 显示不存在的控制面。
 pub(crate) const RPC_METHODS: &[&str] = &[
+    "plugin.list",
+    "plugin.prepare",
+    "plugin.commit",
+    "plugin.cancel",
+    "plugin.remove",
     "host.describe",
     "host.stop",
     "host.takeover",

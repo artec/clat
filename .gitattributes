@@ -28,3 +28,6 @@ web/session-organization.js text eol=lf
 web/workflow-details.js text eol=lf
 web/navigation-help.js text eol=lf
 web/task-review.js text eol=lf
+
+# Embedded plugin control asset uses LF on every platform.
+web/plugin-market.js text eol=lf

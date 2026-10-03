@@ -3109,6 +3109,37 @@ fn urls_in_line(line: &str) -> Vec<String> {
 
 const E2E_HOST_TIMEOUT: Duration = Duration::from_secs(600);
 
+fn plugin_market_for_playwright() -> Option<crate::plugin::Market> {
+    let base = std::env::var("CLAT_PLG2_MARKET_URL").ok()?;
+    let key_path = std::env::var("CLAT_PLG2_MARKET_PUBLIC_KEY").expect("test market public key");
+    let text = std::fs::read_to_string(key_path).unwrap();
+    let encoded = text
+        .lines()
+        .find(|line| !line.starts_with("untrusted comment:") && !line.trim().is_empty())
+        .unwrap();
+    let key = minisign_verify::PublicKey::from_base64(encoded).unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    Some(crate::plugin::Market::load_with_key(&base, &key, now).expect("signed staging index"))
+}
+
+fn mount_playwright_application(
+    bootstrap: BootstrapApplication,
+    key: &str,
+    behavior: TestBehavior,
+) -> Result<crate::TrustedProjectApplication, crate::ApplicationError> {
+    let app =
+        bootstrap.authorize_and_mount_with_provider(Arc::new(TestProviderPlugin { behavior }))?;
+    if key == "plugin-market" {
+        app.set_plugin_market_fixture(
+            plugin_market_for_playwright().expect("configure PLG-2 staging market"),
+        );
+    }
+    Ok(app)
+}
+
 fn host_serve_for_playwright(key: &str, behavior: TestBehavior, seed_turns: usize) {
     // 武装开关：仅当 Playwright（web/e2e/global-setup.js）以
     // CLAT_E2E_HOST=1 拉起时才起服驻留——CI 的 `-- --ignored` 门控面
@@ -3164,9 +3195,7 @@ fn host_serve_for_playwright(key: &str, behavior: TestBehavior, seed_turns: usiz
             rotate_token: false,
             im: None,
         },
-        |bootstrap| {
-            bootstrap.authorize_and_mount_with_provider(Arc::new(TestProviderPlugin { behavior }))
-        },
+        |bootstrap| mount_playwright_application(bootstrap, key, behavior),
         Arc::new(AtomicBool::new(false)),
         super::state::SUBSCRIBER_QUEUE_FRAMES,
     )
@@ -3300,6 +3329,19 @@ fn serve_e2e_host_long_stream() {
             count: 160,
             interval_ms: 50,
         },
+        0,
+    );
+}
+
+#[test]
+#[ignore = "PLG-2 signed staging Playwright host, armed by explicit test environment"]
+fn serve_e2e_host_plugin_market() {
+    if std::env::var_os("CLAT_PLG2_MARKET_URL").is_none() {
+        return;
+    }
+    host_serve_for_playwright(
+        "plugin-market",
+        TestBehavior::Scripted(Arc::new(super::plugins::e2e::PluginSearchScript)),
         0,
     );
 }

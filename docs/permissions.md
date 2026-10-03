@@ -396,6 +396,13 @@ separate hash/directory-bound grant. For MCP packages, capability review cannot
 sandbox arbitrary executable code; the package trust label and MCP security
 posture remain visible distinctions. See [CLAT plugins](plugins.md).
 
+PWA package management uses the same review requirement. Its local host first
+verifies a package proposal, then requires explicit approval of the reviewed
+capabilities and native executable access before activation. Consent to install
+does not approve later Network/Write/Execute tool calls: they continue through
+the ordinary per-run permission policy. Management credentials never go to the
+public market. See [PWA plugin control](plugins.md#install-and-manage-from-the-pwa).
+
 ## Core design
 
 Each Run Scope creates `InteractivePermissionPolicy` around one classifier:

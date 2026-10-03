@@ -122,7 +122,7 @@ irm https://raw.githubusercontent.com/artec/clat/main/install.ps1 | iex
 | 理解审批、权限档位与路径边界 | [权限](docs/permissions.md) |
 | 配置 MCP server | [MCP 集成](docs/mcp.md) |
 | 使用 DSH 官方 web 搜索与抓取 | [Web 工具](docs/web.md) |
-| 理解插件运行时、包格式与签名市场 | [CLAT 插件](docs/plugins.md) |
+| 在 PWA 或 CLI 安装和管理插件 | [CLAT 插件](docs/plugins.md) |
 | 安装或编写 WASM 组件 | [WASM 插件](docs/wasm.md) |
 | 移植 DSH/Cordis 插件 | [DSH 插件兼容指南](docs/dsh-plugins.md) |
 | 审核有运行时证据的 DSH 兼容声明 | [DSH 兼容证据矩阵](docs/dsh-compat.md) |

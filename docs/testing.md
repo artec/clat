@@ -221,3 +221,24 @@ instead of a tax. Each rule was paid for by a real incident.
   measured 8.2 s for the same edit path. Acceptance numbers are
   re-measured independently by the reviewer, never copied from the
   implementer's report.
+
+### Signed plugin-market acceptance
+
+The PLG-2 browser runner uses ephemeral fixture keys, a loopback market/provider,
+a compiled native package and fresh host storage. Production binaries have no
+market trust override. After building CLAT, the adapter and recipe, run:
+
+```bash
+node web/e2e/plugin-market-staging.mjs \
+  --package /absolute/compiled-package-directory \
+  --clat /absolute/path/clat --target aarch64-apple-darwin
+```
+
+Author-side Node/Bun, Minisign and Playwright dependencies are required. The
+runner copies the package, signs that private copy, and removes test keys and
+publication files on completion. It exercises consent refusal, private local
+configuration, a real MCP process/search fixture, disable/enable and clean
+uninstall after an earlier run froze tool registration. It also tests optional
+configuration omission versus `false`. This establishes local staging behavior
+on the package's platform; production signing, HTTP headers, FTP deployment,
+other platforms and a paid-provider call remain separate acceptance steps.

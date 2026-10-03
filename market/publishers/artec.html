@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>artec 发布者复核记录 · CLAT Plugin Index</title>
+  <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+  <header class="site-header"><a class="brand" href="/">CLAT Plugin Index</a></header>
+  <main class="catalog-section">
+    <p class="eyebrow">PUBLISHER REVIEW / ARTEC</p>
+    <h2>artec 发布者记录</h2>
+    <p>身份与包源码：<a href="https://github.com/artec/clat">github.com/artec/clat</a>。是否可安装，以负责人签署的有效市场索引为准。</p>
+    <h3>公钥</h3>
+    <p>负责人指定 release/minisign.pub 作为 artec 包签名公钥；市场索引使用同一正式信任锚。两种签名分别校验包与货架，使用不同的签名消息。</p>
+    <pre>untrusted comment: minisign public key 6A2172E0BDE6D1C4
+RWTE0ea94HIhauKyGQMuQ1Sn3uYtzoskNWDsv+MEE66Y2lzpofS4v7p3</pre>
+    <h3>首包：io.artec.dsh-official-web 0.1.0</h3>
+    <p><a href="https://github.com/artec/clat/tree/main/sdk/dsh-adapter/examples/official-web">构建配方、锁文件和测试</a>使用 @artec/clat-dsh-adapter 0.1.0-rc.3，组合 DSH 的 web、web-search-deepseek、web-fetch-http、tool-web 四个 MIT 包。</p>
+    <p>固定上游版本 0.2.0-rc.2，revision 639ed015397290b3745d163aafe02ffee4aa3f84。作者使用 Node 22.19+ / Bun 构建单一可执行文件；终端用户无需额外语言运行时。首期验收平台为 aarch64-apple-darwin，其他平台须另行构建与验证。</p>
+    <p><a href="https://github.com/artec/clat/blob/main/docs/dsh-compat.md">兼容矩阵</a>说明支持范围；<a href="https://github.com/artec/clat/blob/main/docs/web.md">使用指南</a>说明搜索密钥配置。</p>
+    <h3>原生进程与权限</h3>
+    <p>运行时为 mcp-stdio，具有当前用户的文件、网络与进程权限。能力声明提供工具及系统指令，不申请 CLAT 宿主工具、sampling、elicitation 或 host context。签名验证身份与完整性，不提供原生代码沙箱。</p>
+    <p>搜索访问 DeepSeek 服务并使用用户在本机配置的密钥；HTTP fetch 访问用户或模型指定的 URL。插件继承本机进程环境。调用仍受 CLAT 的工具权限模型控制；没有安装钩子。卸载撤销工具、提示词与 MCP 进程，并删除包配置和工件。</p>
+    <h3>验证与发布边界</h3>
+    <p>本机已通过编译包的 MCP smoke 和签名暂存市场验收：本地 PWA 审阅权限、配置、安装、搜索 fixture、停用、启用、卸载。fixture 验证协议和操作链路；不代表真实付费搜索服务或其他平台验收。</p>
+    <p>上线前由负责人复核源码、许可证、平台工件、兼容报告、签名与摘要，并签署有效索引。此页面不授予安装权限，也不收集密钥或本地配对凭据。</p>
+  </main>
+</body>
+</html>

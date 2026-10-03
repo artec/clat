@@ -13,7 +13,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+mod install;
+pub(crate) use install::PreparedMarketInstall;
 use ureq::Agent;
 use url::Url;
 
@@ -242,7 +244,7 @@ impl Market {
     }
 
     #[cfg(test)]
-    fn load_with_key(
+    pub(crate) fn load_with_key(
         base: &str,
         public_key: &minisign_verify::PublicKey,
         now: u64,
@@ -250,6 +252,13 @@ impl Market {
         let base = parse_market_base(base)?;
         let (index, signature) = fetch_pair(&network_agent(), &base)?;
         let index = verify_signed_index_with_key(&index, &signature, now, public_key)?;
+        // Historical signed fixture is verified at its recorded clock above;
+        // download/commit tests then use a fresh in-memory acceptance window.
+        let mut index = index;
+        if index.market.expires_at_unix < now_unix().unwrap() {
+            index.market.generated_at_unix = now_unix().unwrap();
+            index.market.expires_at_unix = now_unix().unwrap() + 60;
+        }
         Ok(Self { base, index })
     }
 
@@ -480,98 +489,9 @@ impl Market {
         storage_root: &Path,
         options: MarketInstallOptions,
     ) -> Result<Vec<PackageMutation>, String> {
-        let selections = self.solve(&options.root_id, &options.version)?;
         let mut store = PackageStore::open(storage_root)?;
-        let installed = store
-            .list()
-            .into_iter()
-            .map(|entry| (entry.id, entry.version))
-            .collect::<BTreeMap<_, _>>();
-        match options.root_kind {
-            InstallKind::Install if installed.contains_key(&options.root_id) => {
-                return Err(format!(
-                    "plugin `{}` is already installed; use `clat plugin market update`",
-                    options.root_id
-                ));
-            }
-            InstallKind::Update if !installed.contains_key(&options.root_id) => {
-                return Err(format!(
-                    "plugin `{}` is not installed; use `clat plugin market install`",
-                    options.root_id
-                ));
-            }
-            _ => {}
-        }
-        if !options.accept_vulnerabilities {
-            let mut blocked = Vec::new();
-            for selection in &selections {
-                for advisory in &self.index.vulnerabilities {
-                    if advisory.package == selection.package.id
-                        && version_matches(&selection.version.version, &advisory.affected)?
-                    {
-                        blocked.push(format!(
-                            "{} {} ({:?}: {})",
-                            advisory.id, selection.package.id, advisory.severity, advisory.summary
-                        ));
-                    }
-                }
-            }
-            if !blocked.is_empty() {
-                return Err(format!(
-                    "known vulnerabilities block installation: {}; retry only after review with \
-                     `--accept-vulnerabilities`",
-                    blocked.join("; ")
-                ));
-            }
-        }
-        let root_staging = storage_root.join("plugin-market-staging");
-        create_private_dir(&root_staging)?;
-        let transaction = root_staging.join(uuid::Uuid::new_v4().to_string());
-        create_private_dir(&transaction)?;
-        let result = (|| {
-            let started = Instant::now();
-            let mut requests = Vec::new();
-            for selection in selections {
-                if started.elapsed() > MAX_INSTALL_WALL_TIME {
-                    return Err("market install exceeded the 15 minute transaction limit".into());
-                }
-                if installed
-                    .get(&selection.package.id)
-                    .is_some_and(|version| version == &selection.version.version)
-                {
-                    continue;
-                }
-                let bundle = transaction.join(format!("{}.clatpkg", selection.package.id));
-                self.download_artifact(&selection.artifact, &bundle)?;
-                let package_root = transaction.join(format!("package-{}", selection.package.id));
-                unpack_bundle(&bundle, &package_root)?;
-                let inspection = PackageStore::inspect(&package_root)?;
-                validate_downloaded_package(&self.index, &selection, &inspection, now_unix()?)?;
-                let kind = if installed.contains_key(&selection.package.id) {
-                    InstallKind::Update
-                } else {
-                    InstallKind::Install
-                };
-                requests.push(PackageInstallRequest {
-                    path: package_root,
-                    config: if selection.package.id == options.root_id {
-                        options.config.clone()
-                    } else {
-                        None
-                    },
-                    accept_capabilities: options.accept_capabilities,
-                    kind,
-                });
-            }
-            if requests.is_empty() {
-                return Err("selected market versions are already installed".into());
-            }
-            store.install_batch(requests)
-        })();
-        if transaction.exists() {
-            let _ = fs::remove_dir_all(&transaction);
-        }
-        result
+        let mut prepared = self.prepare(storage_root, &store, &options)?;
+        prepared.commit(&mut store, options.config, options.accept_capabilities)
     }
 
     fn download_artifact(&self, artifact: &MarketArtifact, output: &Path) -> Result<(), String> {
@@ -1666,6 +1586,87 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    pub(super) fn prepared_fixture(label: &str) -> (PathBuf, PackageStore, PreparedMarketInstall) {
+        let root = temp_dir(label);
+        let bundle = root.join("fixture.clatpkg");
+        pack_directory(
+            &Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
+                .join("tests/fixtures/market-package"),
+            &bundle,
+        )
+        .unwrap();
+        let (base, server) = market_server(fs::read(bundle).unwrap());
+        let market = Market::load_with_key(&base, &test_public_key(), 3).unwrap();
+        let store = PackageStore::open(&root.join("storage")).unwrap();
+        let prepared = market
+            .prepare(
+                &root.join("storage"),
+                &store,
+                &MarketInstallOptions {
+                    root_id: "dev.clat.market-fixture".into(),
+                    version: "*".into(),
+                    config: None,
+                    accept_capabilities: false,
+                    accept_vulnerabilities: false,
+                    root_kind: InstallKind::Install,
+                },
+            )
+            .unwrap();
+        server.join().unwrap();
+        (root, store, prepared)
+    }
+
+    #[test]
+    fn prepared_install_does_not_activate_before_consent_and_cleans_cancelled_downloads() {
+        let (root, mut store, mut prepared) = prepared_fixture("prepare-consent");
+        let review = prepared.review();
+        assert_eq!(review["packages"][0]["id"], "dev.clat.market-fixture");
+        assert!(store.list().is_empty());
+        assert!(prepared.commit(&mut store, None, false).is_err());
+        assert!(store.list().is_empty());
+        drop(prepared);
+        assert_eq!(
+            fs::read_dir(root.join("storage/plugin-market-staging"))
+                .unwrap()
+                .count(),
+            0
+        );
+        drop(store);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn prepared_install_revalidates_index_expiry_before_commit() {
+        let (root, mut store, mut prepared) = prepared_fixture("prepare-expiry");
+        prepared.index.market.expires_at_unix = now_unix().unwrap() - 1;
+        assert!(
+            prepared
+                .commit(&mut store, None, true)
+                .unwrap_err()
+                .contains("expired")
+        );
+        assert!(store.list().is_empty());
+        drop(prepared);
+        drop(store);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn prepared_install_rejects_different_tree_than_the_reviewed_proposal() {
+        let (root, mut store, mut prepared) = prepared_fixture("prepare-tree");
+        prepared.inspections[0].tree_sha256 = "0".repeat(64);
+        assert!(
+            prepared
+                .commit(&mut store, None, true)
+                .unwrap_err()
+                .contains("changed")
+        );
+        assert!(store.list().is_empty());
+        drop(prepared);
+        drop(store);
         fs::remove_dir_all(root).unwrap();
     }
 

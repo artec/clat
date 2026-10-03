@@ -259,25 +259,33 @@ impl PluginManager {
         let order = plan(&catalog, self.scope, &self.registry)?;
 
         for index in order {
-            let plugin = &catalog[index];
-            let descriptor = plugin.descriptor();
-            let mut context = PluginContext::new(
-                descriptor.id,
-                self.scope,
-                Arc::clone(&self.registry),
-                descriptor
-                    .requires
-                    .iter()
-                    .chain(descriptor.optional)
-                    .copied(),
-            );
-            let mount_result = catch_unwind(AssertUnwindSafe(|| plugin.mount(&mut context)))
-                .map_err(|payload| {
-                    PluginError::new(format!("mount panicked: {}", panic_message(payload)))
-                })
-                .and_then(|result| result);
-            let expected = descriptor.provides.iter().copied().collect::<BTreeSet<_>>();
-            let mount_result = mount_result.and_then(|()| {
+            if let Err(mut error) = self.mount_one(&catalog[index]) {
+                if let PluginManagerError::Start(start) = &mut error {
+                    start.rollback_failures.extend(self.rollback_mounted());
+                }
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
+    fn mount_one(&mut self, plugin: &Arc<dyn Plugin>) -> Result<(), PluginManagerError> {
+        let descriptor = plugin.descriptor();
+        let mut context = PluginContext::new(
+            descriptor.id,
+            self.scope,
+            Arc::clone(&self.registry),
+            descriptor
+                .requires
+                .iter()
+                .chain(descriptor.optional)
+                .copied(),
+        );
+        let result = catch_unwind(AssertUnwindSafe(|| plugin.mount(&mut context)))
+            .map_err(|p| PluginError::new(format!("mount panicked: {}", panic_message(p))))
+            .and_then(|result| result)
+            .and_then(|()| {
+                let expected = descriptor.provides.iter().copied().collect::<BTreeSet<_>>();
                 if context.provided() == &expected {
                     Ok(())
                 } else {
@@ -288,21 +296,65 @@ impl PluginManager {
                     )))
                 }
             });
-
-            match mount_result {
-                Ok(()) => self.mounted.push(MountedPlugin {
+        match result {
+            Ok(()) => {
+                self.mounted.push(MountedPlugin {
                     id: descriptor.id,
                     effects: context.into_effects(),
-                }),
-                Err(primary) => {
-                    let mut rollback_failures = context.rollback();
-                    rollback_failures.extend(self.rollback_mounted());
-                    return Err(PluginManagerError::Start(PluginStartError {
-                        plugin: descriptor.id,
-                        primary,
-                        rollback_failures,
-                    }));
-                }
+                });
+                Ok(())
+            }
+            Err(primary) => Err(PluginManagerError::Start(PluginStartError {
+                plugin: descriptor.id,
+                primary,
+                rollback_failures: context.rollback(),
+            })),
+        }
+    }
+
+    pub(crate) fn remove_plugins(&mut self, ids: &[PluginId]) -> Result<(), ScopeCloseError> {
+        let children = self.children.load(Ordering::Acquire);
+        if children != 0 {
+            return Err(ScopeCloseError::ActiveChildren(children));
+        }
+        let mut errors = Vec::new();
+        for index in (0..self.mounted.len()).rev() {
+            if !ids.contains(&self.mounted[index].id) {
+                continue;
+            }
+            let mut mounted = self.mounted.remove(index);
+            if let Err(e) = mounted.effects.close() {
+                errors.extend(e.into_errors());
+            }
+            if let Err(e) = self.registry.remove_owner(mounted.id) {
+                errors.push(DisposeError::new(e.to_string()));
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(ScopeCloseError::Cleanup(DisposeErrors::new(errors)))
+        }
+    }
+
+    pub(crate) fn mount_additional(
+        &mut self,
+        catalog: Vec<Arc<dyn Plugin>>,
+    ) -> Result<(), PluginManagerError> {
+        if self.closed {
+            return Err(PluginManagerError::Closed);
+        }
+        let ids = catalog
+            .iter()
+            .map(|p| p.descriptor().id)
+            .collect::<Vec<_>>();
+        if self.mounted.iter().any(|p| ids.contains(&p.id)) {
+            return Err(PluginManagerError::AlreadyMounted);
+        }
+        for index in plan(&catalog, self.scope, &self.registry)? {
+            if let Err(error) = self.mount_one(&catalog[index]) {
+                let _ = self.remove_plugins(&ids);
+                return Err(error);
             }
         }
         Ok(())

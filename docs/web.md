@@ -13,6 +13,19 @@ approval rules. The official tool guidance is automatically imported through
 the marked DSH system prompt. Startup, discovery and prompt assembly make no
 network requests; search and fetch access the network only when invoked.
 
+## Install from the local PWA
+
+1. Open **Plugin Index** in CLAT’s local PWA and select the available **DSH official web search and fetch** package.
+2. Review Tools, System instructions and native executable access; enter your DeepSeek API key and confirm **Install**.
+3. Ask CLAT to search or fetch a web page. Use the installed card to configure, disable, update or uninstall.
+
+The four upstream packages arrive as one reviewed capability bundle. The user
+needs no Node, Bun or build commands. The market release must include a signed
+index and an artifact for the current platform; preview entries are not
+installable. Keys stay in the local private registry. If using a host-side
+`DEEPSEEK_API_KEY` instead, leave the key field blank. Configuration changes
+and installation refresh the external runtime after active work finishes.
+
 ## Build once, install without a language runtime
 
 Plugin authors or operators build the package on each destination platform.

@@ -21,7 +21,8 @@ pub(crate) use effect::DisposeError;
 pub(crate) use id::{PluginId, PluginOwner, ServiceId};
 pub(crate) use manager::PluginManager;
 pub(crate) use market::{
-    DEFAULT_MARKET_URL, Market, MarketAuditFinding, MarketInstallOptions, VulnerabilitySeverity,
+    DEFAULT_MARKET_URL, Market, MarketAuditFinding, MarketInstallOptions, PreparedMarketInstall,
+    VulnerabilitySeverity,
 };
 pub(crate) use package::{
     ManifestPrompt, PluginCapabilities, PluginPackageManifest, PluginRuntimeKind,
@@ -29,7 +30,8 @@ pub(crate) use package::{
 pub(crate) use service::ServiceKey;
 pub(crate) use store::{
     InstallKind, PackageInspection, PackageInstallRequest, PackageMutation, PackageStore,
-    PublisherIdentity, TrustLabel, active_packages_for_runtime_excluding, installed_packages,
+    PublisherIdentity, TrustLabel, active_packages_for_runtime_excluding, cleanup_market_downloads,
+    installed_packages,
 };
 
 use std::fmt;

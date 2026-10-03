@@ -159,6 +159,44 @@ pub(crate) fn redact_secrets(text: &str) -> String {
     output
 }
 
+/// Exact values from a plugin's private configuration supplement token
+/// heuristics. The values never leave the owning transport.
+pub(crate) fn plugin_config_values(env: &[(String, String)]) -> Vec<String> {
+    fn collect(value: &serde_json::Value, output: &mut Vec<String>) {
+        match value {
+            serde_json::Value::String(s) if !s.is_empty() => output.push(s.clone()),
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    collect(item, output);
+                }
+            }
+            serde_json::Value::Object(items) => {
+                for item in items.values() {
+                    collect(item, output);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut values = Vec::new();
+    for (key, value) in env {
+        if key == "CLAT_PLUGIN_CONFIG"
+            && let Ok(config) = serde_json::from_str(value)
+        {
+            collect(&config, &mut values);
+        }
+    }
+    values.sort_by_key(|s| std::cmp::Reverse(s.len()));
+    values.dedup();
+    values
+}
+
+pub(crate) fn redact_known_values(text: &str, values: &[String]) -> String {
+    values.iter().fold(text.to_owned(), |output, value| {
+        output.replace(value, REDACTED)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

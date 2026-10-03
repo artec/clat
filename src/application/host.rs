@@ -12,8 +12,9 @@ use std::sync::{Arc, Mutex};
 /// Closing a frontend drops its handle; idle projects can be unmounted without
 /// dropping this host's storage-root lease.
 pub struct HostApplication {
-    projects: BTreeMap<PathBuf, Arc<Mutex<TrustedProjectApplication>>>,
-    storage: Arc<HostStorage>,
+    pub(super) projects: BTreeMap<PathBuf, Arc<Mutex<TrustedProjectApplication>>>,
+    pub(super) storage: Arc<HostStorage>,
+    pub(super) plugin_reviews: BTreeMap<String, super::plugin_control::PluginReview>,
 }
 
 impl HostApplication {
@@ -22,7 +23,11 @@ impl HostApplication {
         let storage = Arc::clone(&application.host_storage);
         let key = application.canonical_root.clone();
         let projects = BTreeMap::from([(key, Arc::new(Mutex::new(application)))]);
-        Self { projects, storage }
+        Self {
+            projects,
+            storage,
+            plugin_reviews: BTreeMap::new(),
+        }
     }
 
     pub fn storage_root(&self) -> &Path {
@@ -133,6 +138,7 @@ impl HostApplication {
                 "host still has attached project handles",
             ));
         }
+        self.plugin_reviews.clear();
         let mut errors = Vec::new();
         for (_, project) in std::mem::take(&mut self.projects) {
             let application = Arc::try_unwrap(project)

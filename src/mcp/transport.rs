@@ -307,6 +307,33 @@ pub struct StdioSession {
     /// [`push_diagnostic`]）。
     stderr_tail: Arc<Mutex<VecDeque<String>>>,
     next_id: AtomicU64,
+    private_config_values: Vec<String>,
+}
+
+fn spawn_stderr_drain(
+    stderr: std::process::ChildStderr,
+    tail: Arc<Mutex<VecDeque<String>>>,
+    private_values: Vec<String>,
+) -> std::io::Result<JoinHandle<()>> {
+    std::thread::Builder::new()
+        .name("mcp-stderr".into())
+        .spawn(move || {
+            let mut reader = BufReader::new(stderr);
+            loop {
+                match read_capped_line(&mut reader, MAX_FRAME_BYTES) {
+                    Ok(Some(line)) if !line.trim().is_empty() => push_diagnostic(
+                        &tail,
+                        crate::redact::redact_known_values(&line, &private_values),
+                    ),
+                    Ok(None) => break,
+                    Ok(Some(_)) => continue,
+                    Err(error) => {
+                        push_diagnostic(&tail, format!("stderr reader stopping: {error}"));
+                        break;
+                    }
+                }
+            }
+        })
 }
 
 impl StdioSession {
@@ -418,40 +445,20 @@ impl StdioSession {
         // stderr 排水线程：持续读并截留到尾缓冲。管道不排会被子进程
         // 写满阻塞（cap 沿用帧上限）；EOF/异常时自然结束，shutdown
         // 与 stdout reader 一并 join。
-        let drain_tail = Arc::clone(&stderr_tail);
-        let stderr_handle =
-            match std::thread::Builder::new()
-                .name("mcp-stderr".into())
-                .spawn(move || {
-                    let mut reader = BufReader::new(stderr);
-                    loop {
-                        match read_capped_line(&mut reader, MAX_FRAME_BYTES) {
-                            Ok(Some(line)) if !line.trim().is_empty() => {
-                                push_diagnostic(&drain_tail, line);
-                            }
-                            // 空行跳过；EOF（Ok(None)）结束排水——continue
-                            // 会在流结束后忙循环（100% CPU，2026-08-20
-                            // 实测抓到）。
-                            Ok(None) => break,
-                            Ok(Some(_)) => continue,
-                            Err(error) => {
-                                push_diagnostic(
-                                    &drain_tail,
-                                    format!("stderr reader stopping: {error}"),
-                                );
-                                break;
-                            }
-                        }
-                    }
-                }) {
-                Ok(handle) => handle,
-                Err(error) => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    let _ = reader_handle.join();
-                    return Err(McpError::new(format!("spawn MCP stderr thread: {error}")));
-                }
-            };
+        let private_config_values = crate::redact::plugin_config_values(env);
+        let stderr_handle = match spawn_stderr_drain(
+            stderr,
+            Arc::clone(&stderr_tail),
+            private_config_values.clone(),
+        ) {
+            Ok(handle) => handle,
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = reader_handle.join();
+                return Err(McpError::new(format!("spawn MCP stderr thread: {error}")));
+            }
+        };
 
         // 只允许一个待写帧排队；若服务卡住读取，后续调用快速失败，
         // 不能把最多 4 MiB 的帧无限堆进内存。
@@ -555,6 +562,7 @@ impl StdioSession {
             pending,
             server_requests,
             stderr_tail,
+            private_config_values,
             next_id: AtomicU64::new(1),
         })
     }
@@ -738,7 +746,7 @@ impl StdioSession {
             map.remove(&id);
         }
         match outcome {
-            Ok(result) => result.map_err(McpError::new),
+            Ok(result) => result.map_err(|error| self.private_error(&error)),
             Err(std::sync::mpsc::RecvTimeoutError::Timeout)
                 if cancel.is_some_and(CancelToken::is_cancelled) =>
             {
@@ -800,6 +808,13 @@ impl StdioSession {
         };
         let (result, _ignored) = mpsc::channel();
         let _ = writer.try_send(WriterRequest { frame, result });
+    }
+
+    fn private_error(&self, error: &str) -> McpError {
+        McpError::new(crate::redact::redact_known_values(
+            error,
+            &self.private_config_values,
+        ))
     }
 
     /// Idempotently stop accepting calls, wake pending callers, close stdin,
@@ -1254,6 +1269,52 @@ mod tests {
         assert_eq!(value["id"], "req-1");
         assert_eq!(value["error"]["code"], -32601);
         assert_eq!(value["error"]["message"], "method not found");
+    }
+
+    #[test]
+    #[ignore = "spawns a python3 subprocess; run explicitly with --ignored"]
+    fn private_plugin_configuration_is_redacted_from_stderr_and_rpc_errors() {
+        let script = r#"
+import json, os, sys
+secret = json.loads(os.environ['CLAT_PLUGIN_CONFIG'])['nested']['credential']
+print('configuration rejected: ' + secret, file=sys.stderr, flush=True)
+for line in sys.stdin:
+    message = json.loads(line)
+    if 'id' in message:
+        print(json.dumps({'jsonrpc':'2.0','id':message['id'],'error':{'code':-1,'message':'invalid ' + secret}}), flush=True)
+"#;
+        let secret = "private.value!without-token-markers";
+        let mut session = StdioSession::spawn(
+            "python3",
+            &["-u".into(), "-c".into(), script.into()],
+            &[(
+                "CLAT_PLUGIN_CONFIG".into(),
+                serde_json::json!({"nested":{"credential":secret}}).to_string(),
+            )],
+            &std::env::temp_dir(),
+        )
+        .unwrap();
+        let error = session
+            .call("probe", serde_json::json!({}), Duration::from_secs(2))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            !error.contains(secret),
+            "private config may not enter durable tool errors"
+        );
+        for _ in 0..100 {
+            if !session.stderr_tail().is_empty() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let tail = session.stderr_tail().join("\n");
+        assert!(tail.contains("configuration rejected"));
+        assert!(
+            !tail.contains(secret),
+            "private config may not enter status/notice diagnostics"
+        );
+        session.shutdown().unwrap();
     }
 
     /// stderr 截留（2026-08-20 修复回归）：子进程的 stderr 必须被

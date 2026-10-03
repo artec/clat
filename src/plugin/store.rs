@@ -202,6 +202,7 @@ pub(crate) struct PackageStore {
     store_root: PathBuf,
     registry: PackageRegistry,
     _leases: Vec<StorageRootLease>,
+    _host_lease: Option<std::sync::Arc<std::sync::Mutex<StorageRootLease>>>,
     #[cfg(test)]
     fault_before_registry_publish: bool,
 }
@@ -237,6 +238,34 @@ impl PackageStore {
         let storage_root = storage_root
             .canonicalize()
             .map_err(|error| format!("canonicalize storage root: {error}"))?;
+        cleanup_market_downloads(&storage_root)?;
+        Self::open_leased(&storage_root, leases, None)
+    }
+
+    /// Only the host owning this exact kernel lease may reuse it. Host callers
+    /// serialize mutations and keep project readers quiescent for publication.
+    pub(crate) fn open_in_host(
+        root: &Path,
+        lease: std::sync::Arc<std::sync::Mutex<StorageRootLease>>,
+    ) -> Result<Self, String> {
+        reject_final_symlink(root, "storage root")?;
+        let root = root.canonicalize().map_err(|e| e.to_string())?;
+        if lease
+            .lock()
+            .map_err(|_| "storage lease poisoned")?
+            .identity()
+            != root
+        {
+            return Err("storage lease belongs to a different root".into());
+        }
+        Self::open_leased(&root, Vec::new(), Some(lease))
+    }
+
+    fn open_leased(
+        storage_root: &Path,
+        leases: Vec<StorageRootLease>,
+        host_lease: Option<std::sync::Arc<std::sync::Mutex<StorageRootLease>>>,
+    ) -> Result<Self, String> {
         let store_root = storage_root.join(STORE_DIR);
         ensure_store_layout(&store_root)?;
         cleanup_staging(&store_root.join(STAGING_DIR))?;
@@ -247,6 +276,7 @@ impl PackageStore {
             store_root,
             registry,
             _leases: leases,
+            _host_lease: host_lease,
             #[cfg(test)]
             fault_before_registry_publish: false,
         })
@@ -472,6 +502,74 @@ impl PackageStore {
 
     pub(crate) fn list(&self) -> Vec<PackageListEntry> {
         registry_list(&self.registry)
+    }
+
+    pub(crate) fn revision(&self) -> String {
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&self.registry).expect("registry JSON"))
+        )
+    }
+
+    pub(crate) fn review_manifest(
+        &self,
+        id: &str,
+        rollback: bool,
+    ) -> Result<PluginPackageManifest, String> {
+        let plugin = self
+            .registry
+            .packages
+            .get(id)
+            .ok_or("plugin is not installed")?;
+        let activation = if rollback {
+            plugin
+                .rollback
+                .as_ref()
+                .ok_or("plugin has no rollback version")?
+        } else {
+            &plugin.active
+        };
+        let artifact = plugin
+            .artifacts
+            .get(&activation.artifact)
+            .ok_or("missing artifact")?;
+        verify_artifact_record(&self.store_root, id, artifact)?;
+        Ok(artifact.manifest.clone())
+    }
+
+    pub(crate) fn configuration(&self, id: &str) -> Option<Value> {
+        self.registry
+            .packages
+            .get(id)
+            .and_then(|p| p.active.config.clone())
+    }
+
+    pub(crate) fn publisher(&self, id: &str) -> Option<String> {
+        self.registry
+            .packages
+            .get(id)
+            .and_then(|p| p.artifacts.get(&p.active.artifact))
+            .and_then(|a| a.publisher.as_ref())
+            .map(|p| p.publisher.clone())
+    }
+
+    pub(crate) fn configure(&mut self, id: &str, config: Value) -> Result<PackageMutation, String> {
+        if serde_json::to_vec(&config)
+            .map_err(|_| "invalid configuration")?
+            .len()
+            > MAX_PLUGIN_CONFIG_BYTES
+        {
+            return Err("plugin configuration exceeds 64 KiB".into());
+        }
+        self.review_manifest(id, false)?
+            .validate_config(Some(&config))?;
+        let mut next = self.registry.clone();
+        let plugin = next.packages.get_mut(id).ok_or("plugin is not installed")?;
+        plugin.active.config = Some(config);
+        let mutation = mutation_for(id, plugin, "configured")?;
+        write_registry(&self.store_root, &next)?;
+        self.registry = next;
+        Ok(mutation)
     }
 
     pub(crate) fn set_enabled(
@@ -1421,6 +1519,14 @@ fn publish_artifact(
         .map_err(|error| format!("fsync artifact parent {}: {error}", parent.display()))
 }
 
+/// Startup only, after acquiring an exclusive root lease. Never call this
+/// while the host owns live review tickets.
+pub(crate) fn cleanup_market_downloads(root: &Path) -> Result<(), String> {
+    let staging = root.join("plugin-market-staging");
+    reject_final_symlink(&staging, "market staging directory")?;
+    cleanup_staging(&staging)
+}
+
 fn cleanup_staging(staging: &Path) -> Result<(), String> {
     if !staging.exists() {
         return Ok(());
@@ -1531,6 +1637,36 @@ fn reject_final_symlink(path: &Path, subject: &str) -> Result<(), String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[cfg(unix)]
+    #[test]
+    fn interrupted_market_cleanup_rejects_parent_links_and_unlinks_child_links() {
+        use std::os::unix::fs::symlink;
+        let fixture = root("market-cleanup-fence");
+        let storage = fixture.join("storage");
+        drop(PackageStore::open(&storage).unwrap());
+        let outside = fixture.join("outside");
+        fs::create_dir(&outside).unwrap();
+        let marker = outside.join("keep");
+        fs::write(&marker, "outside user data").unwrap();
+        let staging = storage.join("plugin-market-staging");
+        symlink(&outside, &staging).unwrap();
+        assert!(
+            PackageStore::open(&storage).is_err(),
+            "must reject staging directory symlink"
+        );
+        assert!(
+            marker.exists(),
+            "startup cleanup must not delete external data"
+        );
+        fs::remove_file(&staging).unwrap();
+        fs::create_dir(&staging).unwrap();
+        symlink(&outside, staging.join("child")).unwrap();
+        drop(PackageStore::open(&storage).unwrap());
+        assert!(marker.exists());
+        assert_eq!(fs::read_dir(&staging).unwrap().count(), 0);
+        fs::remove_dir_all(fixture).unwrap();
+    }
 
     fn root(name: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!(

@@ -27,3 +27,5 @@ The package command refuses an existing output, uses the adapter's shared
 metadata bundler, disables `.env`/bunfig autoloading, and smoke-tests the binary
 before publication. No upstream sources are changed. See the complete
 [setup, permission and validation guide](../../../../docs/web.md).
+
+The package includes LICENSES.txt with installed dependency copyright notices.

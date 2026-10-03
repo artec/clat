@@ -714,6 +714,11 @@ impl PromptRegistry {
         })
     }
 
+    pub(crate) fn reopen_for_plugin_reload(&self) {
+        self.frozen
+            .store(false, std::sync::atomic::Ordering::Release);
+    }
+
     pub(crate) fn freeze(&self) {
         self.frozen
             .store(true, std::sync::atomic::Ordering::Release);
@@ -841,9 +846,11 @@ impl McpStatus {
     }
 
     /// 全部 server 落定（成功/失败皆计）；无配置时 mount 后立即为真。
-    #[cfg(test)]
     pub(crate) fn is_settled(&self) -> bool {
-        self.inner.lock().map(|inner| inner.settled).unwrap_or(true)
+        self.inner
+            .lock()
+            .map(|inner| inner.settled)
+            .unwrap_or(false)
     }
 
     /// 有界等待落定。返回 false = 超时（调用方以现状冻结，INV-M3 的

@@ -21,6 +21,7 @@
 pub(crate) mod approver;
 mod http;
 mod models;
+mod plugins;
 pub(crate) mod protocol;
 mod questions;
 pub(crate) mod shapes;

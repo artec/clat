@@ -11,6 +11,8 @@ for (const file of ['index.html', 'style.css', 'app.js', 'catalog.json', '_heade
   await cp(resolve(root, file), resolve(dist, file))
 }
 
+await cp(resolve(root, 'publishers'), resolve(dist, 'publishers'), { recursive: true })
+
 const packageSource = resolve(root, 'packages')
 const packageFiles = await readdir(packageSource).catch((error) => {
   if (error.code === 'ENOENT') return []

@@ -44,6 +44,8 @@ await mkdir(dist, { recursive: true })
 for (const file of ['index.html', 'style.css', 'app.js', 'catalog.json', '_headers']) {
   await cp(resolve(root, file), resolve(dist, file))
 }
+await cp(resolve(root, 'publishers'), resolve(dist, 'publishers'), { recursive: true })
+
 const indexPath = resolve(dist, 'index.json')
 const signaturePath = resolve(dist, 'index.json.minisig')
 await writeFile(indexPath, `${JSON.stringify(index)}\n`, { flag: 'wx' }).catch(async (error) => {

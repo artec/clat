@@ -7,6 +7,7 @@
     "build": "node scripts/build.mjs",
     "validate": "node scripts/validate.mjs",
     "release-index": "node scripts/release-index.mjs",
-    "sign-package": "node scripts/sign-package.mjs"
+    "sign-package": "node scripts/sign-package.mjs",
+    "stage-package": "node scripts/stage-package.mjs"
   }
 }
