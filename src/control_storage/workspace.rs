@@ -44,6 +44,19 @@ pub struct WorkspaceRecord {
         skip_serializing_if = "Option::is_none"
     )]
     pub active_session_id: Option<String>,
+    /// CLAT-owned explicit organization; never a session deletion policy.
+    #[serde(
+        default,
+        rename = "sessionFlags",
+        skip_serializing_if = "BTreeMap::is_empty"
+    )]
+    pub session_flags: BTreeMap<String, SessionFlags>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SessionFlags {
+    pub pinned: bool,
+    pub archived: bool,
 }
 
 /// DSH global 状态 + CLAT 恢复现场扩展。
@@ -182,6 +195,7 @@ impl WorkspaceRegistry {
                 created_at: now.clone(),
                 updated_at: now,
                 active_session_id: None,
+                session_flags: BTreeMap::new(),
             },
         );
         self.file.global.initialized = true;
@@ -329,7 +343,11 @@ impl WorkspaceRegistry {
         Ok(report)
     }
 
-    fn touch(&mut self, workspace_id: String, mutate: impl FnOnce(&mut WorkspaceRecord)) {
+    pub(super) fn touch(
+        &mut self,
+        workspace_id: String,
+        mutate: impl FnOnce(&mut WorkspaceRecord),
+    ) {
         if let Some(record) = self.file.tables.workspaces.get_mut(&workspace_id) {
             mutate(record);
             record.updated_at = timestamp::now_iso8601();

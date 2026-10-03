@@ -27,8 +27,14 @@ mod composition;
 mod content_views;
 mod context;
 mod discovery;
+mod files;
+mod session_organization;
+mod tasks;
+mod workflow;
 pub use changes::{WorkspaceChanges, WorkspaceDiff, WorkspaceReview};
 pub use discovery::{InteractionCatalog, InteractionCommand};
+pub use files::FileBrowser;
+pub use tasks::TaskReader;
 #[cfg(test)]
 mod context_tests;
 mod dto;

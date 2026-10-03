@@ -143,6 +143,20 @@ checks follow [Live validation](live-validation.md).
 
 ## Standing test rules (2026-09-11 consolidation)
 
+The workbench tool suite covers native commit capture through real tools,
+dirty baselines, failure/cancellation/restart, later-user conflicts, created-file
+takeover, partial recovery/retry and no-follow/no-clobber races. File-browser
+tests cover sensitive/traversal/symlink/binary/size/range/staleness limits;
+organization tests exercise durable reload without deleting or deselecting chat.
+Workflow action tests distinguish recreated goal identity from equal revision.
+Process review tests pin owner/generation, bounded UTF-8-lossy tails and unchanged
+output cursors/activity. Run relevant filters with `scripts/gates.sh` while editing.
+`web/e2e/tests/workbench-tools.spec.js` exercises real-host PWA recovery, file
+quotes, archive/restore and workflow controls, plus controlled notification and
+task-rendering fixtures. Those fixtures do not prove native OS notification
+delivery or mobile background execution; native ProcessService tests own log
+semantics. Delivery still requires the full gate and native Windows CI.
+
 Test volume is over half the codebase; these rules keep it an asset
 instead of a tax. Each rule was paid for by a real incident.
 
@@ -160,6 +174,20 @@ instead of a tax. Each rule was paid for by a real incident.
   ships a test that is red on the pre-fix code; during review,
   spot-check that deleting the specific fix turns its test red
   (mutation spot-check).
+- **Mutation builds must be isolated too.** An isolated source copy must
+  use its own `CARGO_TARGET_DIR`, never the working tree's target directory.
+  Identical local package identities and relative dependency paths can reuse
+  a binary built from a different copy; reverting the source does not prove
+  that binary was rebuilt. Require a successful compilation followed by the
+  intended behavioral failure, then a rebuilt green restoration. If legacy
+  shared-target experiments have contaminated the cache, invalidate the
+  affected package's build artifacts and rebuild the authoritative tree
+  before delivery, including the default-feature test face.
+- **Serialize fixed-port lifecycle suites.** Do not launch two complete
+  Cargo test faces concurrently: their separate test processes share port
+  2691, but an in-process test mutex cannot serialize them. Run these faces
+  sequentially; otherwise an address-in-use panic can also poison the
+  remaining lifecycle tests in that process.
 - **Do not accumulate duplicated scaffolding.** When two test suites
   share setup/assert sequences (the providers adapters' test sections
   carried 97 duplicated normalized blocks while the production code

@@ -29,6 +29,9 @@ mod workspace_tests;
 #[path = "suggestion_tests.rs"]
 mod suggestion_tests;
 
+#[path = "workbench_tests.rs"]
+mod workbench;
+
 fn setup(name: &str) -> (PathBuf, PathBuf, Project) {
     let (storage_root, project_root) = roots(name);
     std::fs::create_dir_all(&project_root).expect("project dir");
@@ -3305,6 +3308,12 @@ fn serve_e2e_host_long_stream() {
 #[ignore = "Playwright e2e host (needs CLAT_E2E_HOST=1, set by web/e2e/global-setup.js)"]
 fn serve_e2e_host_success() {
     host_serve_for_playwright("success", TestBehavior::Success, 0);
+}
+
+#[test]
+#[ignore = "Playwright e2e host (needs CLAT_E2E_HOST=1, set by web/e2e/global-setup.js)"]
+fn serve_e2e_host_native_write() {
+    host_serve_for_playwright("native-write", TestBehavior::WriteFile, 0);
 }
 
 #[test]

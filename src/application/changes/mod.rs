@@ -9,6 +9,7 @@ mod git;
 mod parse;
 #[cfg(test)]
 mod tests;
+mod turn;
 
 const FILE_CAP: usize = 500;
 const DIFF_CAP: usize = 128 * 1024;

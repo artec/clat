@@ -11,6 +11,7 @@ pub(crate) mod json_file;
 mod models;
 pub(crate) mod projcache;
 pub(crate) mod sentinel;
+mod session_flags;
 pub(crate) mod settings;
 pub(crate) mod timestamp;
 pub(crate) mod workspace;
@@ -901,7 +902,7 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    fn temp_root(tag: &str) -> PathBuf {
+    pub(super) fn temp_root(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "clat-control-{tag}-{}",
             std::time::SystemTime::now()

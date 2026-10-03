@@ -12,15 +12,38 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
+mod browser;
+pub(crate) mod review;
+mod write;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct Project {
     root: PathBuf,
+    review: Option<std::sync::Arc<review::FileReview>>,
 }
+
+impl PartialEq for Project {
+    fn eq(&self, other: &Self) -> bool {
+        self.root == other.root
+    }
+}
+impl Eq for Project {}
 
 impl Project {
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        Self {
+            root: root.into(),
+            review: None,
+        }
+    }
+
+    pub(crate) fn with_file_review(mut self, storage: &Path) -> io::Result<Self> {
+        self.review = Some(review::FileReview::open(storage, &self.root)?);
+        Ok(self)
+    }
+
+    pub(crate) fn file_review(&self) -> Option<std::sync::Arc<review::FileReview>> {
+        self.review.clone()
     }
 
     pub fn current() -> io::Result<Self> {
@@ -97,6 +120,7 @@ impl Project {
             return Ok(WritableTarget {
                 parent: parent_dir,
                 file_name: file_name.to_os_string(),
+                capture: None,
             });
         }
 
@@ -120,6 +144,10 @@ impl Project {
         Ok(WritableTarget {
             parent: parent_dir,
             file_name: file_name.to_os_string(),
+            capture: self
+                .review
+                .clone()
+                .map(|review| (review, requested.to_string_lossy().into_owned())),
         })
     }
 
@@ -205,6 +233,7 @@ impl Project {
 pub(crate) struct WritableTarget {
     parent: Dir,
     file_name: OsString,
+    capture: Option<(std::sync::Arc<review::FileReview>, String)>,
 }
 
 impl WritableTarget {
@@ -258,32 +287,9 @@ impl WritableTarget {
                 ));
             }
         }
-
-        let temp_name = self.create_temp_file_name();
-        let result = (|| -> io::Result<()> {
-            let mut options = OpenOptions::new();
-            options.write(true).create_new(true);
-            let mut temp = self.parent.open_with(&temp_name, &options)?;
-            temp.write_all(content.as_bytes())?;
-            if let Some(metadata) = metadata
-                && metadata.is_file()
-            {
-                temp.set_permissions(metadata.permissions())?;
-            }
-            temp.sync_all()?;
-            drop(temp);
-
-            // 在 rename 的最后时刻再次拒绝最终符号链接。即使非合作
-            // 进程随后插入链接，rename 也只会替换目录项本身，不会
-            // 跟随链接写入其目标。
-            self.reject_final_symlink()?;
-            self.parent
-                .rename(&temp_name, &self.parent, &self.file_name)
-        })();
-        if let Err(error) = result {
-            let _ = self.parent.remove_file(&temp_name);
-            return Err(error);
-        }
+        let capture = self.prepare_capture(content)?;
+        let stamp = self.publish(content, metadata)?;
+        self.finish_capture(capture, stamp)?;
         Ok(existed)
     }
 

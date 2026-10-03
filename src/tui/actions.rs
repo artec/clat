@@ -89,6 +89,11 @@ impl App {
     pub(super) fn apply_resume_action(&mut self, action: ResumeAction) {
         match action {
             ResumeAction::Continue => {}
+            ResumeAction::Organize {
+                id,
+                pinned,
+                archived,
+            } => self.organize_picker_session(id, pinned, archived),
             ResumeAction::Cancel => {
                 self.session_picker = None;
             }

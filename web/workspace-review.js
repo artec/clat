@@ -71,7 +71,7 @@ function installWorkspaceReview() {
   const patch = el('section', 'review-patch'); patch.id = 'review-patch'; patch.setAttribute('aria-label', 'File diff');
   body.append(files, patch); reviewDialog.append(header, note, status, body); document.body.appendChild(reviewDialog);
   close.addEventListener('click', () => reviewDialog.close());
-  reviewDialog.addEventListener('close', () => { reviewRequest += 1; reviewFileRequest += 1; document.getElementById('review-open').focus(); });
+  reviewDialog.addEventListener('close', () => { reviewRequest += 1; reviewFileRequest += 1; focusWorkbenchTool(document.getElementById('review-open')); });
   refresh.addEventListener('click', () => { void refreshWorkspaceReview(); });
   document.getElementById('review-open').addEventListener('click', () => { reviewDialog.showModal(); void refreshWorkspaceReview(); });
 }

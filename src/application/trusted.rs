@@ -77,6 +77,9 @@ impl TrustedProjectApplication {
     ) -> Result<Self, ApplicationError> {
         storage.trust_project(&project, authorize)?;
         let storage_root = storage.root().to_path_buf();
+        let project = project
+            .with_file_review(&storage_root)
+            .map_err(|e| ApplicationError::new(format!("file recovery store: {e}")))?;
         let session_root = storage.session_root();
         let control = Arc::clone(&storage.control);
         // 4. Session service + Trusted Project scope.
@@ -846,7 +849,7 @@ impl TrustedProjectApplication {
     }
 
     /// INV-T3：活动 Run 或压缩期间拒绝会话切换（new/switch）。
-    fn reject_session_switch_while_busy(&self) -> Result<(), ApplicationError> {
+    pub(super) fn reject_session_switch_while_busy(&self) -> Result<(), ApplicationError> {
         if self
             .active_run
             .as_ref()
@@ -953,10 +956,11 @@ impl TrustedProjectApplication {
     }
 
     pub fn list_sessions(&self) -> Result<Vec<SessionSummary>, ApplicationError> {
-        let summaries = self
+        let mut summaries = self
             .sessions
             .list_sessions(&self.project_key())
             .map_err(session_error)?;
+        self.organize_summaries(&mut summaries);
         // 投影缓存顺势刷新（纯缓存，best-effort——事实源在会话日志）。
         if let Some(workspace_id) = &self.workspace_id {
             let _ = self.control.update_projcache(workspace_id, &summaries);

@@ -655,6 +655,27 @@ or a second journal projection. `session.history` optionally checks
 discard responses after selection/connection changes. No new durable events or
 RunEvent variants are introduced.
 
+Workbench tool RPCs extend the native host method catalog, not the DSH journal
+or RunEvent vocabulary. `turn.changes` / `turn.restore` use a core-owned private
+native commit ledger bound before each run round, populated at `WritableTarget`
+publish (write/edit/patch). Baseline, captured after and current disk checks are
+separate facts. Recovery is confirmed, idle-only, selection/revision fenced,
+no-follow and no-clobber; durable per-file partial status and retained detached
+material handle conflicts/crashes without claiming universal undo.
+`files.search` / `files.preview` / `files.reference` clone a project-scoped
+reader for bounded I/O; quoted input is a rechecked fixed editable snapshot.
+
+`session.organize` updates workspace-owned explicit pinned/archived flags;
+TUI and PWA share them without altering session selection or deleting journal
+content. `workflow.details` composes existing Plan Mode/approved plan, TodoService
+and GoalViewDto facts; confirmed Goal command actions CAS both goal id and
+revision under the Application lock. `tasks.list` / `tasks.logs` expose the
+selected current ProcessService generation with bounded, non-consuming tails;
+they introduce no process lifecycle or cancellation authority. Browser requests
+also fence late UI completions by project, selection and request generation.
+Online page notifications remain opt-in presentation of live control facts,
+deduplicated by host invocation ids rather than connection-local SSE sequence.
+
 `workspace.changes` / `workspace.diff` use core-owned `WorkspaceReview`, cloned
 from a trusted project's capability before bounded Git I/O outside the
 Application lock. A try-lock admits one query at a time; child deadlines and

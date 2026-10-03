@@ -172,6 +172,18 @@ pub(super) fn help_dialog_lines(width: usize, commands: &[CommandInfo]) -> Vec<L
             "/ac, /attach-clear",
             "clear the current structured image draft",
         ),
+        (
+            "/plan",
+            "Plan Mode policy and approved plan; separate from Goal and todos",
+        ),
+        (
+            "/goal",
+            "inspect objective, acceptance, phase, budgets and stop reason; /goal run explicitly continues",
+        ),
+        (
+            "/resume",
+            "P pin; A twice archives without deleting chat; F2 archived list; A restores",
+        ),
     ];
     // CP-2 A4（2026-09-02 负责人拍板的权威顺序表）：行 1-4 输入与提交，
     // 5-6 运行控制，7-9 浏览与显示，10-12 选择与复制。

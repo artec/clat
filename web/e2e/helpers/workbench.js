@@ -35,4 +35,9 @@ async function openWorkbench(page, entry) {
   }
 }
 
-module.exports = { LIVE, hostInfo, openWorkbench };
+async function openWorkbenchTool(page, id) {
+  if (!await page.locator('#' + id).isVisible()) await page.click('#tools-open');
+  await page.click('#' + id);
+}
+
+module.exports = { LIVE, hostInfo, openWorkbench, openWorkbenchTool };

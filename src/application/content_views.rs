@@ -160,6 +160,7 @@ impl GoalViewDto {
         if let Some(result) = &state.last_result {
             text.push_str(&format!("\n\nLast result\n{result}"));
         }
+        text.push_str(&format!("\n\nAcceptance: {:?}\n\n/goal run: explicitly start bounded execution\n/goal resume: state only, not execution\n/goal clear: remove goal state, not chat history", state.acceptance));
         text
     }
 }

@@ -1,6 +1,9 @@
 use super::trusted::glm_mcp_pack_from_control;
 use super::*;
 
+#[path = "workbench_tests.rs"]
+mod workbench;
+
 #[test]
 fn legacy_session_update_is_contextual_and_survives_reopen() {
     let (storage_root, project_root) = roots("legacy-update-command");

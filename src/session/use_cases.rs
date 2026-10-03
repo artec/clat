@@ -41,6 +41,8 @@ pub struct SessionSummary {
     pub last_activity_ms: i64,
     pub message_count: u64,
     pub turns: u64,
+    pub pinned: bool,
+    pub archived: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -354,6 +356,8 @@ impl SessionService {
             last_activity_ms: header.created_at,
             message_count: 0,
             turns: 0,
+            pinned: false,
+            archived: false,
         })
     }
 
@@ -411,6 +415,8 @@ impl SessionService {
                 last_activity_ms: last_activity,
                 message_count,
                 turns,
+                pinned: false,
+                archived: false,
             });
         }
         summaries.sort_by_key(|summary| std::cmp::Reverse(summary.last_activity_ms));

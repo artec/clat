@@ -680,3 +680,24 @@ button:disabled { cursor: default; opacity: .45; }
 .review-diff .removed { background: rgb(180 70 60 / 12%); }
 .review-diff .hunk { color: var(--accent); }
 @media (max-width: 640px) { .review-body { grid-template-columns: 1fr; } .review-files { max-height: 22dvh; } .review-patch { max-height: 38dvh; } .find-bar { padding: 8px; } }
+.workflow-details { width: min(760px, calc(100vw - 28px)); max-height: calc(100dvh - 32px); overflow: auto; padding: 20px; }
+.workflow-details h3 { margin-top: 24px; font-size: 14px; }
+.workflow-details, .workspace-review { color: var(--text); background: var(--surface); border: 1px solid var(--line-strong); border-radius: var(--radius-lg); box-shadow: var(--shadow); }
+.workflow-details::backdrop, .workspace-review::backdrop { background: rgb(4 7 8 / 55%); backdrop-filter: blur(3px); }
+.file-range input, .review-header input { color: var(--text); background: var(--surface-input); border: 1px solid var(--line); border-radius: var(--radius-sm); }
+.file-range { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+.file-range input { width: 92px; min-height: 40px; padding: 8px; }
+.file-range button { min-height: 40px; }
+.review-header { flex-wrap: wrap; }
+.review-header input { min-width: 160px; min-height: 40px; padding: 8px; flex: 1; }
+.workbench-tools { position: absolute; z-index: 24; top: 54px; right: 12px; display: grid; min-width: 220px; padding: 8px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); box-shadow: 0 12px 32px rgb(0 0 0 / 28%); }
+.workbench-tools button { min-height: 42px; text-align: left; padding: 8px 12px; }
+.back-to-latest { position: absolute; z-index: 12; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--surface); border: 1px solid var(--line); border-radius: 999px; padding: 8px 16px; }
+@media (max-width: 760px) {
+  .workflow-details, .workspace-review { padding: 12px; }
+  .review-body { grid-template-columns: minmax(0, 1fr); }
+  .review-files { max-height: 24dvh; }
+  .review-patch { max-height: 48dvh; }
+  .file-range input { width: 72px; }
+  #tools-open, #find-open { min-width: 40px; min-height: 40px; }
+}

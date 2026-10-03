@@ -367,7 +367,10 @@ The `sessions/` directory wins over list caches and derived session-id arrays.
 `storages/workspace.json` is field-for-field compatible with DSH's workspace
 unit: `unit`, `global`, and `tables.workspaces` with camelCase path/title/
 session/time fields. CLAT adds optional active-workspace and active-session
-pointers.
+pointers, and per-workspace `sessionFlags` keyed by session id with `pinned` /
+`archived` booleans. Missing flags mean false; explicit organization is shared
+frontend state, not deletion authority or journal vocabulary. CLAT writes its
+own registry only, not a DSH installation's files.
 
 Project paths are canonical real paths. On mount, reconciliation:
 
@@ -379,6 +382,28 @@ Project paths are canonical real paths. On mount, reconciliation:
 
 Each project remembers its own active session. Switching projects therefore
 restores the conversation last selected in that project.
+
+### Native file recovery evidence
+
+`file-review/<sha256(canonical-project)>/<sha256(session)>-<turn>.json` stores
+CLAT-private version-1 native commit evidence, separate from interoperable
+session JSONL. It retains pre-operation text (including existing dirty edits),
+captured after text, file identity/metadata/hash, mixed-writer indication and
+prepared/captured/restoring/restored status. A prepared follow-up also retains
+the last confirmed result separately from the unconfirmed intent.
+Capabilities/no-follow protect the
+private store; records are bounded and atomically persisted before/after native
+publish. Crash uncertainty fails closed rather than claiming recovery safety.
+Backup this directory along with sessions to retain recovery evidence.
+
+Recovery directories `.clat-restore-<uuid>` inside the affected file's parent
+hold detached `after` and, for existing files, reconstructed `before` material.
+They are private and retained even after success. Reported partial/conflict
+states may require manual reconciliation; remove retained material yourself only
+after inspecting it and keeping any needed backup. No automatic cleanup policy
+is introduced. Shell/MCP, absolute-path writes, directory creation and external
+effects are outside this ledger. It neither rewrites history nor stores a whole
+workspace or Git snapshot.
 
 ### Workflow and intelligence state
 

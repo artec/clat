@@ -8,6 +8,7 @@ mod models;
 mod permissions;
 mod profiles;
 mod questions;
+mod session_organization;
 mod sessions;
 #[cfg(all(test, feature = "runtime-tests"))]
 mod tests;
@@ -403,10 +404,7 @@ impl App {
                     .is_some_and(|n| n.epoch == epoch && n.selection == selection) =>
             {
                 match result {
-                    Ok(rows) => {
-                        self.session_picker =
-                            Some(SessionPicker::new(rows, self.session_id.clone()))
-                    }
+                    Ok(rows) => self.refresh_picker_sessions(rows),
                     Err(error) => self.flash_status(error),
                 }
             }

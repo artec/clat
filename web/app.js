@@ -455,7 +455,7 @@ applyPresentation();
 async function rpc(method, params) {
   if (Number.isSafeInteger(state.selectionGeneration) && [
     'session.new', 'session.switch', 'session.rename', 'session.compact', 'permission.set',
-    'draft.open', 'prompt.suggest', 'command.run', 'prompt.send', 'steer.send', 'run.cancel', 'model.overrides.set',
+    'draft.open', 'prompt.suggest', 'command.run', 'prompt.send', 'steer.send', 'run.cancel', 'model.overrides.set', 'turn.restore', 'session.organize',
   ].includes(method)) {
     params = { ...params, expected_selection_generation: state.selectionGeneration };
   }
@@ -587,6 +587,7 @@ function handleFrame(frame) {
     console.warn('[clat] non-JSON frame dropped:', frame.event);
     return;
   }
+  observePageNotification(frame.event, payload.ctl);
   switch (frame.event) {
     case 'replay': handleReplay(payload.replay); break;
     case 'event': handleLive(payload.event); break;
@@ -1795,8 +1796,10 @@ function updateRunDetail(serverActive) {
 }
 
 async function refreshSessions() {
+  const owner = [workspacePrefix, state.stream, state.selectionGeneration];
   try {
     const value = await rpc('session.list', {});
+    if (!owner.every((v,i) => v === [workspacePrefix, state.stream, state.selectionGeneration][i])) return;
     state.sessions = value.sessions || [];
     renderSessions();
   } catch (error) {
@@ -1831,6 +1834,7 @@ function renderSessions() {
   closeSessionMenu();
   const query = dom['session-search'].value.trim().toLocaleLowerCase();
   const filtered = state.sessions.filter((session) => {
+    if (Boolean(session.archived) !== Boolean(showArchivedSessions) && session.id !== state.sessionId) return false;
     const title = session.title || 'untitled';
     return !query || title.toLocaleLowerCase().includes(query) || session.id.toLocaleLowerCase().includes(query);
   });
@@ -1847,7 +1851,7 @@ function renderSessions() {
     const glyph = el('span', 'session-glyph', title.trim().slice(0, 1).toLocaleUpperCase() || '·');
     const copy = el('span', 'session-copy');
     copy.append(
-      el('strong', null, title),
+      el('strong', null, `${session.pinned ? '★ ' : ''}${title}${session.archived ? ' · archived' : ''}`),
       el('small', null, `${session.turns || 0} turns · ${session.message_count || 0} messages`),
     );
     button.append(glyph, copy);
@@ -1913,6 +1917,8 @@ function openSessionMenu(session, x, y, source) {
     ['Open session', () => switchSession(session.id), state.switching || state.compactionActive],
     ['Rename session', () => dom['session-title'].click(), session.id !== state.sessionId || state.switching || state.compactionActive],
     ['Copy session ID', () => navigator.clipboard.writeText(session.id), false],
+    [session.pinned ? 'Unpin session' : 'Pin session', () => organizeSession(session, { pinned: !session.pinned }), state.runActive || state.switching || state.compactionActive],
+    [session.archived ? 'Restore archived session' : 'Archive session…', () => organizeSession(session, { archived: !session.archived }), state.runActive || state.switching || state.compactionActive],
   ];
   for (const [label, action, disabled] of actions) {
     const button = el('button', '', label);
@@ -3303,7 +3309,14 @@ dom.prompt.addEventListener('keydown', (event) => {
 installSelectionQuote();
 installCommandPicker();
 installConversationFind();
-installWorkspaceReview();
+  installWorkspaceReview();
+  installTurnReview();
+  installFileBrowser();
+  installSessionOrganization();
+  installWorkflowDetails();
+  installNavigationHelp();
+  installTaskReview();
+  installWorkbenchTools();
 
 const composerSeat = document.querySelector('.conversation');
 const composer = document.querySelector('.composer');

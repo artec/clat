@@ -129,14 +129,28 @@ struct RunSlots {
     tool_access: Arc<crate::tool::ToolAccessSlot>,
     skill_catalog: Arc<crate::skills::SkillCatalogSlot>,
     view_image: Arc<crate::view_image::ViewImageState>,
+    file_review: Option<Arc<crate::project::review::FileReview>>,
 }
 
 impl RunSlots {
+    fn from_application(app: &TrustedProjectApplication) -> Self {
+        Self {
+            plugin_host: Arc::clone(&app.plugin_host),
+            tool_access: Arc::clone(&app.tool_access),
+            skill_catalog: Arc::clone(&app.skill_catalog),
+            view_image: Arc::clone(&app.view_image),
+            file_review: app.project.file_review(),
+        }
+    }
+
     fn clear(&self) {
         self.plugin_host.clear();
         self.tool_access.clear();
         self.skill_catalog.clear();
         self.view_image.clear();
+        if let Some(review) = &self.file_review {
+            review.end();
+        }
     }
 }
 
@@ -197,12 +211,7 @@ impl RunExecutionEngine {
             Arc::clone(&join_slot),
             steering.clone(),
         );
-        let slots = RunSlots {
-            plugin_host: Arc::clone(&application.plugin_host),
-            tool_access: Arc::clone(&application.tool_access),
-            skill_catalog: Arc::clone(&application.skill_catalog),
-            view_image: Arc::clone(&application.view_image),
-        };
+        let slots = RunSlots::from_application(application);
         let host = RunHostDeps {
             providers: Arc::clone(&application.providers),
             config: spec.config.clone(),
@@ -518,7 +527,13 @@ fn run_worker(
             None
         };
         durable_request_header = round_request_header.clone();
-        let process_generation = process_service.bind_run(session_id.as_str(), cancel.clone());
+        let (process_generation, file_capture_error) = bind_round_services(
+            &process_service,
+            &slots,
+            session_id.as_str(),
+            current_turn,
+            &cancel,
+        );
         let (mut recorder_core, journaling_approver) = SessionRecorder::with_approver(
             Arc::clone(&journal),
             Arc::clone(&request_approver),
@@ -549,30 +564,13 @@ fn run_worker(
         let approver: Arc<dyn PermissionApprover> = Arc::new(journaling_approver);
         let panic_text_slot = Arc::clone(&captured_text);
         let execution = catch_unwind(AssertUnwindSafe(|| {
-            if let Some(error) = &goal_refresh_error {
-                return Err(AgentFailure {
-                    error: crate::RunError::new(error.clone()),
-                });
-            }
-            if let Some(error) = &subagent_bind_error {
-                return Err(AgentFailure {
-                    error: crate::RunError::new(format!(
-                        "subagent service could not bind this run: {error}"
-                    )),
-                });
-            }
-            if let Some(error) = &subagent_round_error {
-                return Err(AgentFailure {
-                    error: crate::RunError::new(format!(
-                        "subagent accounting could not bind this round: {error}"
-                    )),
-                });
-            }
-            process_generation.as_ref().map_err(|error| AgentFailure {
-                error: crate::RunError::new(format!(
-                    "process service could not bind this run: {error}"
-                )),
-            })?;
+            check_round_bindings(
+                goal_refresh_error.as_ref(),
+                subagent_bind_error.as_ref(),
+                subagent_round_error.as_ref(),
+                process_generation.as_ref().err(),
+                file_capture_error.as_ref(),
+            )?;
             agent.execute(AgentRequest {
                 config: worker_config.clone(),
                 spend_ledger: Some(Arc::clone(&spend_ledger)),
@@ -909,6 +907,48 @@ fn run_worker(
         });
     busy.store(false, Ordering::Release);
     let _ = completion.send(result);
+}
+
+fn bind_round_services(
+    process: &crate::process::ProcessService,
+    slots: &RunSlots,
+    session: &str,
+    turn: u64,
+    cancel: &CancelToken,
+) -> (Result<u64, String>, Option<String>) {
+    let process = process.bind_run(session, cancel.clone());
+    let capture_error = slots
+        .file_review
+        .as_ref()
+        .and_then(|r| r.begin(session, turn).err())
+        .map(|e| format!("file capture could not bind: {e}"));
+    (process, capture_error)
+}
+
+fn check_round_bindings(
+    goal: Option<&String>,
+    subagent: Option<&String>,
+    accounting: Option<&String>,
+    process: Option<&String>,
+    capture: Option<&String>,
+) -> Result<(), AgentFailure> {
+    for (prefix, error) in [
+        ("", goal),
+        ("subagent service could not bind this run: ", subagent),
+        (
+            "subagent accounting could not bind this round: ",
+            accounting,
+        ),
+        ("process service could not bind this run: ", process),
+        ("", capture),
+    ] {
+        if let Some(error) = error {
+            return Err(AgentFailure {
+                error: crate::RunError::new(format!("{prefix}{error}")),
+            });
+        }
+    }
+    Ok(())
 }
 
 struct CapturingEventSink {

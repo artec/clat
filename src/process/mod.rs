@@ -14,6 +14,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 mod capture;
+pub(crate) mod review;
 pub(crate) use capture::capture_command;
 
 const STREAM_RING_BYTES: usize = 256 * 1024;

@@ -1027,6 +1027,9 @@ the selected message; the preview shows the exact source occurrence. This is
 not cross-session full-text search. Sidebar search only filters session titles
 and IDs, not their message content. Both frontends display up to 2,000 matches.
 
+The header **Tools** menu groups Workspace changes, Captured operations, Files,
+Plan / Goal, Tasks and Help without crowding the reading surface.
+
 **Workspace changes** opens a read-only file list and loads a selected file's
 staged/unstaged diff on demand. It shows current project working-tree facts,
 including pre-existing user edits and changes left after failed/cancelled runs;
@@ -1041,6 +1044,67 @@ fallback. Symlink untracked previews and paths outside the project are refused.
 External diff, textconv, fsmonitor and configured clean/process filters are
 disabled for review, as is lazy object fetching; incomplete repositories may
 therefore report an error rather than trigger a fetch.
+
+**Captured operations** is a separate, session/turn-owned native-file ledger.
+It distinguishes the pre-operation baseline (including your existing dirty
+edits), captured native result, and current disk identity/content check. It
+covers relative-path `write_file`, `edit_file` and native patch commits only:
+shell/MCP writes, absolute paths, directory creation and external effects are
+not undone or attributed. Empty capture does not prove no workspace changes.
+Records survive failed/cancelled runs and restart. Files are limited to 1 MiB
+of UTF-8 text per baseline/result; binary baselines are refused. An unfinished
+follow-up write preserves the last confirmed result separately from its intent.
+There are limits of 100 files and 16 MiB serialized record per turn; capture
+persistence failure refuses the native commit rather than proceeding without evidence.
+
+**Restore captured files…** requires confirmation and an idle host, and is
+unavailable in Read Only mode. The host rechecks the ledger revision, path,
+identity, metadata and content before each restoration. Conflicts stop the batch;
+partial results are persisted, and retries skip already restored entries.
+Recovery never overwrites a new occupant: it detaches and checks the captured
+file, then publishes into an absent name. Private `.clat-restore-*` directories
+retain recovery bytes; no automatic cleanup deletes them. Interrupted or racing
+non-cooperating edits may require manual inspection of that reported directory.
+This is not an atomic multi-file transaction or a general undo of a run.
+
+**Files** searches the current project (100 results; at most 10,000 entries,
+depth 32 and a 200-ms scan budget). Preview is UTF-8 text, up to a 256-KiB prefix
+and 200 lines. Binary/non-UTF-8 files use an explicit unsupported state; images
+retain the existing attachment workflow. All symlink components, traversal,
+the actual configured CLAT storage tree (even if nested inside the project),
+private recovery paths and common secrets such as `.env`, `.pem`, `.key`
+and SSH keys are refused. This exclusion list is not comprehensive secret
+detection: check file contents yourself before quoting them.
+The preview carries a project-relative path, range, read time and version.
+**Read / recheck** refreshes it; **Quote snapshot to draft** rechecks the version
+and appends an editable fixed text snapshot (at most 32 KiB) without replacing
+your draft. Later file changes do not update that quote at send time. Narrow the
+range for larger files; PDF/Office/video parsing is not provided.
+
+Session menus provide **Pin**, explicit **Archive**, and **Restore**. Organization
+is saved by the core for the workspace and shared with TUI; it is not a browser
+hide preference. **Archived sessions** opens the recoverable list. Archiving
+retains chat and leaves the selected conversation selected; the current row
+stays visible. Organization is unavailable while a run/compaction owns the
+session. TUI `/resume`: P toggles pin, A twice confirms archive, F2 switches the
+archived list, and A restores an archived entry. `/` filtering takes precedence.
+
+**Tasks** reads only the selected current run generation's ProcessService
+commands, running/completed status, exit code and bounded stdout/stderr/PTY
+tails (16 KiB each). Refresh explicitly; consumed entries may disappear on the
+next spawn, and run cleanup/restart removes all entries. No cross-run history,
+background jobs, stdin or process-specific cancel controls are added. Viewing
+logs does not consume the tool's output cursor or extend a process lifetime.
+
+**Help** explains current shortcuts and optional online page notifications.
+Notifications are off by default and require a user click plus browser permission;
+completion, failure, approval and questions come only from live host facts and
+are deduplicated in this page. Focused pages use inline status; notifications do
+not include prompt/file text. There is no Web Push or closed-browser delivery,
+and mobile/background browser restrictions apply. **Latest messages** returns
+from older text to the bottom; Find remains available on mobile. The project-name
+area links directly to project selection. Browser Ctrl/Cmd+L and IME keys are
+not repurposed.
 
 The active model is chosen from the compact picker immediately before **Send**;
 built-in presets and saved profiles share that next-run menu, while write-only
@@ -1080,6 +1144,16 @@ from command text. The command bridge adds `memory`, `goal`, and `subagent_statu
 result kinds with read-only DTOs and a text `message`; `goal_run` also includes
 its confirmation message. `workbench.info` adds `plan_mode_active` and
 `goal_armed` booleans. RunEvent and durable event vocabularies are unchanged.
+
+Click either badge or **Tools → Plan / Goal** for structured details: Plan Mode
+policy, approved plan text, model-maintained todos and durable bounded Goal are
+four distinct sections. Todo shows at most 100 entries, with a truncation label.
+Goal details include acceptance, budgets, phase and stop reason.
+Exit Plan Mode, start bounded continuation, resume state (does not
+run) and clear Goal reuse existing core commands, require confirmation and are
+disabled while busy. Goal actions check both target ID and revision; stale
+details cannot operate on a recreated goal. TUI `/help` advertises `/plan` and
+`/goal`; `/goal` includes the same budgets, acceptance and action guidance.
 
 Model lifecycle and reasoning traces use human-readable labels in the visual
 surface (`Model request started`, `Reasoning summary`, and so on). Reasoning is

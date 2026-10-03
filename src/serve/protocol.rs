@@ -29,12 +29,21 @@ pub(crate) const RPC_METHODS: &[&str] = &[
     "interaction.catalog",
     "workspace.changes",
     "workspace.diff",
+    "turn.changes",
+    "turn.restore",
+    "files.search",
+    "files.preview",
+    "files.reference",
+    "workflow.details",
+    "tasks.list",
+    "tasks.logs",
     "session.list",
     "session.info",
     "session.new",
     "session.switch",
     "session.history",
     "session.rename",
+    "session.organize",
     "session.compact",
     "model.overrides.set",
     "model.settings.get",
@@ -331,6 +340,7 @@ fn dispatch_guarded_project(
         "session.new"
             | "session.switch"
             | "session.rename"
+            | "session.organize"
             | "session.compact"
             | "permission.set"
             | "draft.open"
@@ -339,6 +349,7 @@ fn dispatch_guarded_project(
             | "steer.send"
             | "run.cancel"
             | "model.overrides.set"
+            | "turn.restore"
     );
     let _mutation = mutating.then(|| shared.rpc_mutations.lock().expect("project RPC mutation"));
     if mutating && shared.is_shutting_down() {
@@ -365,16 +376,11 @@ fn dispatch_project(
     let params = params
         .as_object()
         .ok_or_else(|| RpcError::bad_request("params must be an object"))?;
+    if let Some(result) = dispatch_workbench_tools(shared, method, params) {
+        return result;
+    }
     match method {
-        "workbench.info" => {
-            let snapshot = with_app(shared, |app| app.workbench_snapshot()).map_err(app_error)?;
-            Ok(super::shapes::workbench_snapshot_json(
-                &snapshot,
-                shared.active_run_info(),
-                shared.active_compaction_info(),
-                RPC_METHODS,
-            ))
-        }
+        "workbench.info" => workbench_info(shared),
         "interaction.catalog" | "workspace.changes" | "workspace.diff" => {
             dispatch_read_discovery(shared, method, params)
         }
@@ -983,7 +989,7 @@ fn command_run(params: &Map<String, Value>, shared: &Arc<ServeShared>) -> Result
     {
         return Err(RpcError::busy("another run is already active"));
     }
-    let outcome = match with_app(shared, |app| app.dispatch_command(trimmed)) {
+    let outcome = match with_app(shared, |app| dispatch_checked_command(app, trimmed, params)) {
         Ok(outcome) => outcome,
         Err(error) => {
             if claimed_goal_run.is_some() {
@@ -1491,6 +1497,182 @@ fn committed_retry_check(
         "duplicate": true,
         "receipt": super::shapes::admission_receipt_value(&record.receipt),
     })))
+}
+
+fn dispatch_workbench_tools(
+    shared: &Arc<ServeShared>,
+    method: &str,
+    params: &Map<String, Value>,
+) -> Option<Result<Value, RpcError>> {
+    Some(match method {
+        "turn.changes" | "turn.restore" => dispatch_turn_review(shared, method, params),
+        "files.search" | "files.preview" | "files.reference" => {
+            dispatch_files(shared, method, params)
+        }
+        "session.organize" => dispatch_organization(shared, params),
+        "workflow.details" => with_app(shared, |app| app.workflow_details()).map_err(app_error),
+        "tasks.list" | "tasks.logs" => dispatch_tasks(shared, method, params),
+        _ => return None,
+    })
+}
+
+fn dispatch_tasks(
+    shared: &Arc<ServeShared>,
+    method: &str,
+    params: &Map<String, Value>,
+) -> Result<Value, RpcError> {
+    let reader = with_app(shared, |app| app.task_reader()).map_err(app_error)?;
+    match method {
+        "tasks.list" => Ok(reader.list()),
+        "tasks.logs" => {
+            let unsigned = |name: &str| {
+                params
+                    .get(name)
+                    .and_then(Value::as_u64)
+                    .ok_or_else(|| RpcError::bad_request("task id/generation required"))
+            };
+            reader
+                .logs(unsigned("generation")?, unsigned("id")?)
+                .map_err(RpcError::bad_request)
+        }
+        _ => Err(RpcError::bad_request("unknown task method")),
+    }
+}
+
+fn workbench_info(shared: &Arc<ServeShared>) -> Result<Value, RpcError> {
+    let snapshot = with_app(shared, |app| app.workbench_snapshot()).map_err(app_error)?;
+    Ok(super::shapes::workbench_snapshot_json(
+        &snapshot,
+        shared.active_run_info(),
+        shared.active_compaction_info(),
+        RPC_METHODS,
+    ))
+}
+
+fn dispatch_checked_command(
+    app: &mut crate::TrustedProjectApplication,
+    command: &str,
+    params: &Map<String, Value>,
+) -> Result<crate::CommandOutcome, crate::CommandError> {
+    if let Some(expected) = params.get("expected_goal_revision") {
+        let goal = app.goal().map_err(|e| crate::CommandError::Failed {
+            message: e.to_string(),
+        })?;
+        if expected.as_u64().is_none()
+            || goal.as_ref().map(|g| g.state.revision) != expected.as_u64()
+            || goal.as_ref().map(|g| g.state.id.as_str())
+                != params.get("expected_goal_id").and_then(Value::as_str)
+        {
+            return Err(crate::CommandError::Failed {
+                message: "Goal changed; reopen details before acting".into(),
+            });
+        }
+    }
+    app.dispatch_command(command)
+}
+
+fn dispatch_organization(
+    shared: &Arc<ServeShared>,
+    params: &Map<String, Value>,
+) -> Result<Value, RpcError> {
+    let boolean = |name: &str| {
+        params
+            .get(name)
+            .map(|v| {
+                v.as_bool()
+                    .ok_or_else(|| RpcError::bad_request("organization flag must be boolean"))
+            })
+            .transpose()
+    };
+    let pinned = boolean("pinned")?;
+    let archived = boolean("archived")?;
+    if pinned.is_none() && archived.is_none() {
+        return Err(RpcError::bad_request("pinned or archived required"));
+    }
+    let id = required_str(params, "id")?;
+    with_app(shared, |app| {
+        app.set_session_organization(
+            &id,
+            pinned,
+            archived,
+            params.get("confirmed").and_then(Value::as_bool) == Some(true),
+        )
+    })
+    .map_err(session_error)?;
+    Ok(json!({"organized":true}))
+}
+
+fn dispatch_files(
+    shared: &Arc<ServeShared>,
+    method: &str,
+    params: &Map<String, Value>,
+) -> Result<Value, RpcError> {
+    let browser = with_app(shared, |app| app.file_browser());
+    let result = match method {
+        "files.search" => browser.search(&optional_str(params, "query")?.unwrap_or_default()),
+        "files.preview" | "files.reference" => {
+            let path = required_str(params, "path")?;
+            let line = |name: &str, default| {
+                params
+                    .get(name)
+                    .map(|v| {
+                        v.as_u64()
+                            .ok_or_else(|| RpcError::bad_request("line must be unsigned"))
+                    })
+                    .transpose()
+                    .map(|v| v.unwrap_or(default))
+            };
+            let start = line("start_line", 1)?;
+            let end = line("end_line", start.saturating_add(199))?;
+            if method == "files.preview" {
+                browser.preview(&path, start, end)
+            } else {
+                browser.reference(&path, start, end, &required_str(params, "version")?)
+            }
+        }
+        _ => return Err(RpcError::bad_request("unknown files method")),
+    };
+    result.map_err(RpcError::bad_request)
+}
+
+fn dispatch_turn_review(
+    shared: &Arc<ServeShared>,
+    method: &str,
+    params: &Map<String, Value>,
+) -> Result<Value, RpcError> {
+    let turn = params
+        .get("turn")
+        .map(|v| {
+            v.as_u64()
+                .ok_or_else(|| RpcError::bad_request("turn must be unsigned"))
+        })
+        .transpose()?;
+    with_app(shared, |app| {
+        if params
+            .get("expected_selection_generation")
+            .is_some_and(|v| v.as_u64() != Some(shared.selection_generation()))
+        {
+            return Err(RpcError::busy("session selection changed; refresh review"));
+        }
+        if method == "turn.changes" {
+            app.turn_changes(turn, optional_str(params, "path")?.as_deref())
+                .map_err(app_error)
+        } else {
+            if params
+                .get("expected_selection_generation")
+                .and_then(Value::as_u64)
+                .is_none()
+            {
+                return Err(RpcError::bad_request("selection generation required"));
+            }
+            app.restore_turn_files(
+                turn.ok_or_else(|| RpcError::bad_request("turn required"))?,
+                &required_str(params, "revision")?,
+                params.get("confirmed").and_then(Value::as_bool) == Some(true),
+            )
+            .map_err(app_error)
+        }
+    })
 }
 
 fn dispatch_read_discovery(

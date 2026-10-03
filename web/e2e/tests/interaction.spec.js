@@ -2,7 +2,7 @@ const { test, expect } = require('@playwright/test');
 const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
-const { LIVE, hostInfo, openWorkbench } = require('../helpers/workbench');
+const { LIVE, hostInfo, openWorkbench, openWorkbenchTool } = require('../helpers/workbench');
 test.setTimeout(45_000);
 
 async function open(page, host = 'success') {
@@ -160,7 +160,7 @@ test('UX-3 Unicode case expansion keeps offsets in the original source', async (
 
 test('CAP-1 non-Git is explicit and file diffs stay safe and lazy', async ({ page }) => {
   await open(page);
-  await page.click('#review-open');
+  await openWorkbenchTool(page, 'review-open');
   await expect(page.locator('#review-files')).toContainText('not_repository', LIVE);
   await page.getByRole('button', { name: 'Close workspace review' }).click();
   await page.evaluate(() => {
@@ -176,7 +176,7 @@ test('CAP-1 non-Git is explicit and file diffs stay safe and lazy', async ({ pag
       return original(method, params);
     };
   });
-  await page.click('#review-open');
+  await openWorkbenchTool(page, 'review-open');
   await expect(page.locator('.review-file')).toContainText('<script>.txt');
   expect(await page.evaluate(() => window.reviewCalls)).toEqual([]);
   await page.locator('.review-file').click();
@@ -205,7 +205,7 @@ test('CAP-1 real Git dirty files and external edits survive a cancelled run', as
   execFileSync(process.execPath, ['-e', 'require("fs").writeFileSync(process.argv[1], "external process edit\\n")', path.join(root, 'external-edit.txt')], { timeout: 5000 });
   await page.click('#cancel');
   await expect(page.locator('#cancel')).toBeHidden(LIVE);
-  await page.click('#review-open');
+  await openWorkbenchTool(page, 'review-open');
   await expect(page.locator('#review-files')).toContainText('prior-user-edit.txt', LIVE);
   await expect(page.locator('#review-files')).toContainText('external-edit.txt');
   await expect(page.locator('#review-status')).toContainText('not agent or run attribution');

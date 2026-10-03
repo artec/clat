@@ -35,6 +35,8 @@ fn decode_sessions(value: Value) -> Result<Vec<SessionSummary>, String> {
                 last_activity_ms: timestamp("last_activity_ms")?,
                 message_count: integer("message_count")?,
                 turns: integer("turns")?,
+                pinned: row["pinned"].as_bool().unwrap_or(false),
+                archived: row["archived"].as_bool().unwrap_or(false),
             })
         })
         .collect()

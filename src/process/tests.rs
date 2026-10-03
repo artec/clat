@@ -1,7 +1,7 @@
 use super::*;
 use crate::sandbox::{SandboxModeSource, SandboxService};
 
-fn fixture(tag: &str, limits: ProcessLimits) -> (PathBuf, Arc<ProcessService>) {
+pub(super) fn fixture(tag: &str, limits: ProcessLimits) -> (PathBuf, Arc<ProcessService>) {
     let root = std::env::temp_dir().join(format!(
         "clat-process-{tag}-{}-{}",
         std::process::id(),

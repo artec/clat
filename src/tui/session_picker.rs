@@ -25,6 +25,11 @@ pub(crate) enum ResumeAction {
     Continue,
     /// 用户确认恢复某个会话。
     Open(SessionId),
+    Organize {
+        id: SessionId,
+        pinned: Option<bool>,
+        archived: Option<bool>,
+    },
     /// dsh 形态：恢复某个宿主会话（携带收养所需的 workspace_path）。
     OpenDsh(Box<DshResumeRow>),
     Cancel,
@@ -113,6 +118,8 @@ pub(crate) struct SessionPicker {
     current: Option<SessionId>,
     /// dsh 数据形态（Some 时行为/渲染切 dsh 分支，local 字段不读）。
     dsh: Option<Box<DshResumeData>>,
+    show_archived: bool,
+    archive_confirmation: Option<SessionId>,
 }
 
 impl SessionPicker {
@@ -169,6 +176,11 @@ impl SessionPicker {
             .all_sessions
             .iter()
             .filter(|session| {
+                if session.archived != self.show_archived
+                    && Some(&session.id) != self.current.as_ref()
+                {
+                    return false;
+                }
                 format!("{} {}", session.title.as_deref().unwrap_or(""), session.id)
                     .to_lowercase()
                     .contains(&query)
@@ -210,7 +222,7 @@ impl SessionPicker {
     }
 
     pub fn new(sessions: Vec<SessionSummary>, current: Option<SessionId>) -> Self {
-        Self {
+        let mut picker = Self {
             all_sessions: sessions.clone(),
             filter: String::new(),
             filtering: false,
@@ -218,6 +230,24 @@ impl SessionPicker {
             selected: 0,
             current,
             dsh: None,
+            show_archived: false,
+            archive_confirmation: None,
+        };
+        picker.apply_filter();
+        picker
+    }
+
+    pub(in crate::tui) fn replace_sessions(&mut self, sessions: Vec<SessionSummary>) {
+        let selected = self.sessions.get(self.selected).map(|s| s.id.clone());
+        self.all_sessions = sessions;
+        self.archive_confirmation = None;
+        self.apply_filter();
+        if let Some(selected) = selected {
+            self.selected = self
+                .sessions
+                .iter()
+                .position(|s| s.id == selected)
+                .unwrap_or(0);
         }
     }
 
@@ -272,6 +302,8 @@ impl SessionPicker {
             sessions: Vec::new(),
             selected,
             current: None,
+            show_archived: false,
+            archive_confirmation: None,
             dsh: Some(Box::new(DshResumeData {
                 all_rows,
                 rows: flat,
@@ -299,6 +331,9 @@ impl SessionPicker {
             let mut data = data;
             let action = self.handle_key_dsh(&mut data, key);
             self.dsh = Some(data);
+            return action;
+        }
+        if let Some(action) = self.organization_key(key) {
             return action;
         }
         if self.sessions.is_empty() {
@@ -405,7 +440,12 @@ impl SessionPicker {
 
     pub fn draw(&self, frame: &mut Frame, area: Rect) {
         crate::tui::clear_popup_with_guards(frame, area);
-        let block = crate::tui::popup_block("/resume");
+        let title = if self.show_archived {
+            "/resume · archived"
+        } else {
+            "/resume"
+        };
+        let block = crate::tui::popup_block(title);
         let row_width = block.inner(area).width as usize;
         let mut lines = Vec::new();
         if self.filtering || !self.filter.is_empty() {
@@ -416,7 +456,19 @@ impl SessionPicker {
         }
         if let Some(dsh) = self.dsh.as_deref() {
             self.draw_dsh(dsh, &mut lines, row_width);
-        } else if self.sessions.is_empty() {
+        } else {
+            self.draw_local(&mut lines, row_width);
+        }
+        frame.render_widget(
+            Paragraph::new(lines)
+                .block(block)
+                .wrap(Wrap { trim: false }),
+            area,
+        );
+    }
+
+    fn draw_local(&self, lines: &mut Vec<Line<'static>>, row_width: usize) {
+        if self.sessions.is_empty() {
             lines.push(Line::from(if self.filter.is_empty() {
                 "no previous conversations in this project"
             } else {
@@ -439,7 +491,12 @@ impl SessionPicker {
                 } else {
                     " ".to_owned()
                 };
-                let title = session.title.clone().unwrap_or_else(|| "(untitled)".into());
+                let title = format!(
+                    "{}{}{}",
+                    if session.pinned { "★ " } else { "" },
+                    session.title.as_deref().unwrap_or("(untitled)"),
+                    if session.archived { " [archived]" } else { "" }
+                );
                 let current = Some(&session.id) == self.current.as_ref();
                 // VP-3 四轮定稿：✓ 锚定名称——数字列之后、标题之前。
                 let body = format!("{title:<32}{} msgs", session.message_count);
@@ -450,16 +507,16 @@ impl SessionPicker {
             }
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
-                "↑↓ select · Enter resume · 1-9 quick pick · / filter · Esc close",
+                if self.archive_confirmation.is_some() {
+                    "A again: confirm archive (content retained) · Esc cancel"
+                } else if self.show_archived {
+                    "↑↓ · Enter open · / find · P pin · A restore · F2 active · Esc"
+                } else {
+                    "↑↓ · Enter open · / find · P pin · A archive · F2 archived · Esc"
+                },
                 Style::default().add_modifier(Modifier::DIM),
             )));
         }
-        frame.render_widget(
-            Paragraph::new(lines)
-                .block(block)
-                .wrap(Wrap { trim: false }),
-            area,
-        );
     }
 
     /// dsh 行：分组头（Faint，不可选）+ 会话行
@@ -523,6 +580,39 @@ impl SessionPicker {
     }
 }
 
+impl SessionPicker {
+    fn organization_key(&mut self, key: KeyEvent) -> Option<ResumeAction> {
+        if key.code == KeyCode::F(2) {
+            self.show_archived = !self.show_archived;
+            self.archive_confirmation = None;
+            self.apply_filter();
+            return Some(ResumeAction::Continue);
+        }
+        let session = self.sessions.get(self.selected)?;
+        if key.code == KeyCode::Char('p') || key.code == KeyCode::Char('P') {
+            self.archive_confirmation = None;
+            return Some(ResumeAction::Organize {
+                id: session.id.clone(),
+                pinned: Some(!session.pinned),
+                archived: None,
+            });
+        }
+        if key.code == KeyCode::Char('a') || key.code == KeyCode::Char('A') {
+            if session.archived || self.archive_confirmation.as_ref() == Some(&session.id) {
+                return Some(ResumeAction::Organize {
+                    id: session.id.clone(),
+                    pinned: None,
+                    archived: Some(!session.archived),
+                });
+            }
+            self.archive_confirmation = Some(session.id.clone());
+            return Some(ResumeAction::Continue);
+        }
+        self.archive_confirmation = None;
+        None
+    }
+}
+
 /// 活跃时间的稳定呈现：epoch ms → `MM-DD HH:MM`（UTC，纯函数——
 /// 相对时间会随真实时钟漂移，快照需要确定性）。
 fn format_activity(epoch_ms: i64) -> String {
@@ -556,6 +646,54 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 mod tests {
     use super::*;
     #[test]
+    fn explicit_archive_confirmation_filter_precedence_and_restore_are_distinct() {
+        let row = |id: &str, archived| SessionSummary {
+            id: SessionId::new(id),
+            title: Some(id.into()),
+            created_at_ms: 0,
+            last_activity_ms: 0,
+            message_count: 2,
+            turns: 1,
+            pinned: false,
+            archived,
+        };
+        let mut picker = SessionPicker::new(vec![row("active", false), row("old", true)], None);
+        assert_eq!(picker.row_count(), 1);
+        assert!(matches!(
+            picker.handle_key(KeyEvent::from(KeyCode::Char('a'))),
+            ResumeAction::Continue
+        ));
+        assert!(matches!(
+            picker.handle_key(KeyEvent::from(KeyCode::Char('a'))),
+            ResumeAction::Organize {
+                archived: Some(true),
+                ..
+            }
+        ));
+        picker.handle_key(KeyEvent::from(KeyCode::F(2)));
+        assert_eq!(picker.sessions[0].id.as_str(), "old");
+        assert!(matches!(
+            picker.handle_key(KeyEvent::from(KeyCode::Char('a'))),
+            ResumeAction::Organize {
+                archived: Some(false),
+                ..
+            }
+        ));
+        picker.paste_filter("old");
+        picker.replace_sessions(vec![row("active", false), row("old", true)]);
+        assert!(picker.show_archived);
+        assert_eq!(picker.filter, "old");
+        assert_eq!(picker.sessions[0].id.as_str(), "old");
+        picker.handle_key(KeyEvent::from(KeyCode::Esc));
+        picker.handle_key(KeyEvent::from(KeyCode::Char('/')));
+        assert!(matches!(
+            picker.handle_key(KeyEvent::from(KeyCode::Char('p'))),
+            ResumeAction::Continue
+        ));
+        assert_eq!(picker.filter, "p");
+        assert!(picker.sessions.is_empty());
+    }
+    #[test]
     fn resume_filter_preserves_identity_and_is_recoverable_from_empty_results() {
         let sessions = [("id-one", "中文设计"), ("id-two", "Fix the parser")]
             .into_iter()
@@ -566,6 +704,8 @@ mod tests {
                 last_activity_ms: 0,
                 message_count: 2,
                 turns: 1,
+                pinned: false,
+                archived: false,
             })
             .collect();
         let mut picker = SessionPicker::new(sessions, None);

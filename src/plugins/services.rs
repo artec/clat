@@ -351,8 +351,7 @@ impl TodoService {
         Some(text)
     }
 
-    /// 仅供测试检视（application 的 todo 断言走这里）。
-    #[cfg(test)]
+    /// Read-only model-maintained todo projection for tests and workflow views.
     pub(crate) fn snapshot(&self) -> Vec<TodoEntry> {
         self.inner.lock().expect("todo lock").entries.clone()
     }

@@ -32,6 +32,8 @@ pub(crate) fn session_summary_json(summary: &SessionSummary) -> Value {
     fields.push(("last_activity_ms", json!(summary.last_activity_ms)));
     fields.push(("message_count", json!(summary.message_count)));
     fields.push(("turns", json!(summary.turns)));
+    fields.push(("pinned", json!(summary.pinned)));
+    fields.push(("archived", json!(summary.archived)));
     object(fields)
 }
 
@@ -794,10 +796,12 @@ mod tests {
             last_activity_ms: 1_755_900_999_000,
             message_count: 12,
             turns: 3,
+            pinned: false,
+            archived: false,
         };
         assert_eq!(
             session_summary_json(&summary).to_string(),
-            r#"{"id":"0f8c2a4e-1111-2222-3333-444455556666","title":"review the diff","created_at_ms":1755900000000,"last_activity_ms":1755900999000,"message_count":12,"turns":3}"#
+            r#"{"id":"0f8c2a4e-1111-2222-3333-444455556666","title":"review the diff","created_at_ms":1755900000000,"last_activity_ms":1755900999000,"message_count":12,"turns":3,"pinned":false,"archived":false}"#
         );
 
         let workbench = WorkbenchSnapshot {
