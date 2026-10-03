@@ -390,7 +390,7 @@
     <header class="hero">
       <img class="big" src="logo.png" alt="CLAT logo">
       <h1>CLAT</h1>
-      <div><a class="release-pill" href="https://github.com/artec/clat/releases/latest" data-release>v1.4.0 — Latest release</a></div>
+      <div><a class="release-pill" href="https://github.com/artec/clat/releases/latest" data-release>v1.6.0 — Latest release</a></div>
       <p class="tagline">A rock-solid agent foundation · The TUI client for DSH · A single Rust file</p>
       <div class="term">
         <div class="row"><span class="p">❯</span><span>clat</span></div>
@@ -406,11 +406,11 @@
         <a class="btn" href="#install">Install</a>
         <a class="btn" href="https://github.com/artec/clat">View on GitHub</a>
       </div>
-      <!-- 数据带：数字须真实。下载体积 = macOS tar.gz 压缩包大小（v1.4.0 实测 9.7 MiB），
+      <!-- 数据带：数字须真实。下载体积 = macOS tar.gz 压缩包大小（v1.6.0 实测 9.9 MiB），
            发布时复核压缩包即可。 -->
       <div class="stats">
         <div class="stat">
-          <div class="stat-number">9.7 MB</div>
+          <div class="stat-number">9.9 MB</div>
           <div class="stat-label">Download size: one binary, no Node / Python required</div>
         </div>
         <div class="stat">
@@ -439,7 +439,7 @@
         </div>
         <div class="card">
           <h3>Safe by default</h3>
-          <p>Entering a new directory passes a trust gate first. Permissions switch between read-only, project-write, and full-access; at the default level every file write and command asks first, and paths stay inside the project root.</p>
+          <p>Entering a new directory passes a trust gate first. Permissions switch between read-only, project-write, and full-access; at the default level every file write and command asks first, and paths stay inside the project root — every file operation is tracked for review and recovery.</p>
         </div>
       </div>
     </section>
@@ -527,7 +527,7 @@
         <div class="feature-cell">
           <p class="feature-label">12 — Frontends</p>
           <h3>Background host &amp; multi-frontend</h3>
-          <p><code>clat</code> now starts a background host: the TUI, web workbench, and WeChat remote all attach to the same sessions as clients — close the TUI and the host keeps running, so tasks never drop. The host lives on 127.0.0.1:2691; a newer CLAT smoothly replaces an idle old host, and browser pages reconnect in place.</p>
+          <p><code>clat</code> now starts a background host: the TUI, web workbench, and WeChat remote all attach to the same sessions as clients — close the TUI and the host keeps running, and a newer CLAT smoothly replaces an idle old host. The workbench ships workspace review (git status &amp; diff), a file browser, task logs, conversation search, and a command palette.</p>
         </div>
       </div>
     </section>
