@@ -1,0 +1,5 @@
+// Isolated author probe. No production plugin ABI change.
+package clat:http-probe@0.1.0;
+world consumer {
+    export run: func(stage: string, order: string, trigger: string) -> string;
+}

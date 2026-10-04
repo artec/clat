@@ -31,3 +31,17 @@ web/task-review.js text eol=lf
 
 # Embedded plugin control asset uses LF on every platform.
 web/plugin-market.js text eol=lf
+
+# PLG-3 author probe inputs are compiled verbatim and source-hashed.
+sdk/dsh-wasm-spike/*.mjs text eol=lf
+sdk/wit-proposals/**/*.wit text eol=lf
+sdk/wit-proposals/**/*.mjs text eol=lf
+sdk/dsh-wasm-spike/package*.json text eol=lf
+sdk/wit-proposals/http-consumer-host/Cargo.lock text eol=lf
+sdk/wit-proposals/engine-patches/*.patch text eol=lf
+sdk/wit-proposals/task-consumer/*.cpp text eol=lf
+sdk/wit-proposals/http-consumer-host/src/dns_authority/data/*.xml -text
+sdk/wit-proposals/http-consumer-host/src/dns_authority/data/*.json text eol=lf
+sdk/wit-proposals/http-consumer-host/src/**/*.rs text eol=lf
+# PLG-4 author-only TLS fixture; public test key, never production credentials.
+sdk/wit-proposals/http-consumer-host/test-data/tls/*.der -text

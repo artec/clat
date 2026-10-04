@@ -1,0 +1,21 @@
+// Scheduling probe only. No production ABI or network authority is exposed.
+package clat:net-task-probe@0.1.0;
+
+interface tasks {
+    use wasi:io/poll@0.2.10.{pollable};
+    enum phase { dns, headers, body }
+    enum failure { cancelled, deadline-exceeded, limit-exceeded }
+    resource job {
+        // Nonblocking. A ready result may be consumed only once.
+        get: func() -> option<result<string, failure>>;
+        subscribe: func() -> pollable;
+        cancel: func();
+    }
+    // Bounded immediate submission, never a blocking lookup or request.
+    start: func(phase: phase) -> result<job, failure>;
+}
+
+world consumer {
+    import tasks;
+    export run: func(phase: string, order: string, trigger: string) -> string;
+}

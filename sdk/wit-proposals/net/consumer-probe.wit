@@ -1,0 +1,5 @@
+// Author-only cancellation discriminator. Not a production plugin world.
+world consumer-probe {
+    import egress;
+    export run: func(phase: string) -> string;
+}

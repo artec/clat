@@ -542,15 +542,23 @@ impl TrustedProjectApplication {
         mode: crate::permission::PermissionMode,
     ) -> Result<(), ApplicationError> {
         if !self.permission_modes_enabled {
-            *self.permission_mode.write().expect("permission mode lock") = mode;
+            self.publish_permission_mode(mode);
             return Ok(());
         }
         match self.sessions.record_permission_mode(mode) {
             Ok(_) => {
-                *self.permission_mode.write().expect("permission mode lock") = mode;
+                self.publish_permission_mode(mode);
                 Ok(())
             }
             Err(error) => Err(session_error(error)),
+        }
+    }
+
+    fn publish_permission_mode(&self, mode: crate::permission::PermissionMode) {
+        let mut current = self.permission_mode.write().expect("permission mode lock");
+        if *current != mode {
+            self.plugin_host.invalidate_network_context();
+            *current = mode;
         }
     }
 
@@ -627,7 +635,7 @@ impl TrustedProjectApplication {
             return;
         }
         let mode = self.sessions.permission_mode_state().unwrap_or_default();
-        *self.permission_mode.write().expect("permission mode lock") = mode;
+        self.publish_permission_mode(mode);
     }
 
     pub fn snapshot(&mut self) -> Result<ProjectSnapshot, ApplicationError> {
@@ -946,8 +954,7 @@ impl TrustedProjectApplication {
         // 新会话从默认档起步：上一个会话的档位绝不跨 /new 携带（PS1
         // 的进程内变体）；物化前 /perm 的选择仍是出生档（PS7）。
         if self.permission_modes_enabled {
-            *self.permission_mode.write().expect("permission mode lock") =
-                crate::permission::PermissionMode::default();
+            self.publish_permission_mode(crate::permission::PermissionMode::default());
         }
         if let Some(todo_service) = &self.todo {
             todo_service.restore(None, &[]);

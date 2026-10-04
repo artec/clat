@@ -62,6 +62,10 @@ struct DefaultPermissionFactory {
 }
 
 impl PermissionPolicyFactory for DefaultPermissionFactory {
+    fn revision(&self) -> u64 {
+        self.access.as_ref().map_or(0, |access| access.revision())
+    }
+
     fn create(
         &self,
         approver: Arc<dyn PermissionApprover>,
@@ -109,6 +113,29 @@ impl PermissionPolicy for ToolAccessGuardPolicy {
         }
         self.inner.check(project, tool, call)
     }
+}
+
+#[cfg(test)]
+pub(crate) fn network_test_factory(
+    cell: Arc<std::sync::RwLock<crate::PermissionMode>>,
+    plan: bool,
+) -> Arc<dyn PermissionPolicyFactory> {
+    let access = crate::tool::ToolAccessSlot::shared();
+    if plan {
+        access.install(crate::tool::ToolAccessPolicy::plan_mode());
+    }
+    network_test_factory_with_access(cell, access)
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn network_test_factory_with_access(
+    cell: Arc<std::sync::RwLock<crate::PermissionMode>>,
+    access: Arc<crate::tool::ToolAccessSlot>,
+) -> Arc<dyn PermissionPolicyFactory> {
+    Arc::new(DefaultPermissionFactory {
+        source: ModeSource::Shared(cell),
+        access: Some(access),
+    })
 }
 
 #[cfg(test)]

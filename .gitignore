@@ -1,5 +1,5 @@
-# Rust build output
-/target/
+# Rust build output（非锚定：作者侧独立 crate 的嵌套 target 同样不入库）
+target/
 
 # Node（sdk/dsh-adapter 作者侧适配器：依赖与构建产物不入库）
 node_modules/

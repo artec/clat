@@ -5794,3 +5794,75 @@ fn text_only_model_catalog_hides_view_image() {
     application.close().unwrap();
     std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
 }
+
+#[test]
+fn core_network_application_publication_tracks_aba_session_and_failed_commit() {
+    use crate::PermissionMode;
+    let (storage_root, project_root) = roots("network-publication");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let mut application = mount_modes_from_storage(
+        &Project::new(&project_root),
+        &storage_root,
+        TestBehavior::Success,
+    );
+    configure_test_model(&application);
+    let initial = application.plugin_host.network_revision_for_test();
+    application
+        .set_permission_mode(PermissionMode::ReadOnly)
+        .unwrap();
+    assert_eq!(
+        application.plugin_host.network_revision_for_test(),
+        initial + 1
+    );
+    run(&mut application, "materialize readonly session").unwrap();
+    let session = application.snapshot().unwrap().session_id.unwrap();
+    application
+        .set_permission_mode(PermissionMode::FullAccess)
+        .unwrap();
+    application
+        .set_permission_mode(PermissionMode::ReadOnly)
+        .unwrap();
+    assert_eq!(
+        application.plugin_host.network_revision_for_test(),
+        initial + 3,
+        "ABA must advance twice"
+    );
+    application
+        .set_permission_mode(PermissionMode::ReadOnly)
+        .unwrap();
+    assert_eq!(
+        application.plugin_host.network_revision_for_test(),
+        initial + 3,
+        "same value is not a change"
+    );
+    application.new_session().unwrap();
+    assert_eq!(
+        application.plugin_host.network_revision_for_test(),
+        initial + 4
+    );
+    application.switch_session(session).unwrap();
+    assert_eq!(
+        application.plugin_host.network_revision_for_test(),
+        initial + 5,
+        "reseed publishes a new permission generation"
+    );
+    application.sessions.inject_persistence_faults(FaultHooks {
+        fail_batch_write: true,
+        ..FaultHooks::default()
+    });
+    assert!(
+        application
+            .set_permission_mode(PermissionMode::FullAccess)
+            .is_err()
+    );
+    assert_eq!(
+        application.plugin_host.network_revision_for_test(),
+        initial + 5,
+        "failed journal commit cannot publish authority"
+    );
+    application
+        .sessions
+        .inject_persistence_faults(FaultHooks::default());
+    application.close().unwrap();
+    std::fs::remove_dir_all(storage_root.parent().unwrap()).unwrap();
+}

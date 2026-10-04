@@ -1,0 +1,22 @@
+{
+  "name": "@artec/clat-dsh-wasm-spike",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test regex-lowering.test.mjs test.mjs",
+    "probe": "node run.mjs"
+  },
+  "devDependencies": {
+    "@bytecodealliance/componentize-js": "0.23.0",
+    "@bytecodealliance/jco": "1.35.0",
+    "acorn": "8.18.0",
+    "esbuild": "0.28.2",
+    "regenerate-unicode-properties": "10.2.2",
+    "regexpu-core": "6.5.2"
+  },
+  "overrides": {
+    "@bytecodealliance/componentize-js": "$@bytecodealliance/componentize-js",
+    "regenerate-unicode-properties": "10.2.2"
+  }
+}

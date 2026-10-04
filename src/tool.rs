@@ -187,36 +187,8 @@ impl Default for ToolAccessPolicy {
     }
 }
 
-/// Project-owned slot read by permission policies and the PluginHost bridge.
-/// Application writes one immutable snapshot at run start and resets it after
-/// teardown. The slot is not a second registry and cannot add authority.
-#[derive(Default)]
-pub(crate) struct ToolAccessSlot {
-    current: RwLock<ToolAccessPolicy>,
-}
-
-impl ToolAccessSlot {
-    pub(crate) fn shared() -> Arc<Self> {
-        Arc::new(Self::default())
-    }
-
-    pub(crate) fn install(&self, policy: ToolAccessPolicy) {
-        if let Ok(mut current) = self.current.write() {
-            *current = policy;
-        }
-    }
-
-    pub(crate) fn clear(&self) {
-        self.install(ToolAccessPolicy::all());
-    }
-
-    pub(crate) fn snapshot(&self) -> ToolAccessPolicy {
-        self.current
-            .read()
-            .map(|value| value.clone())
-            .unwrap_or_default()
-    }
-}
+mod access;
+pub(crate) use access::ToolAccessSlot;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ToolDefinition {

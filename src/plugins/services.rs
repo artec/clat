@@ -638,6 +638,11 @@ impl ProviderLease {
 }
 
 pub(crate) trait PermissionPolicyFactory: Send + Sync {
+    /// Changes revoke previously issued network authority, including policy ABA.
+    fn revision(&self) -> u64 {
+        0
+    }
+
     /// W1-17/A1：`cancel` 是本次 run 的取消令牌——审批等待必须能被它
     /// 解开（经 InteractivePermissionPolicy 传给 approver）。
     fn create(

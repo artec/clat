@@ -1,0 +1,33 @@
+# Isolated author harness; not a CLAT runtime dependency or workspace member.
+[package]
+name = "clat-plg4-http-consumer-host"
+version = "0.1.0"
+edition = "2024"
+publish = false
+default-run = "clat-plg4-http-consumer-host"
+
+[workspace]
+
+[dependencies]
+bytes = "1"
+http = "1"
+http-body = "1"
+http-body-util = "0.1"
+serde_json = "1"
+tokio = { version = "1", features = ["time", "rt", "sync", "macros", "net", "io-util"] }
+url = "=2.5.8"
+wasmtime = { version = "=48.0.0", default-features = false, features = ["cranelift", "component-model", "runtime", "std", "wat"] }
+wasmtime-wasi = "=48.0.0"
+wasmtime-wasi-http = { version = "=48.0.0", default-features = false, features = ["p2"] }
+
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+webpki-roots = "1"
+# Actual permission semantics, author-only; no dependency from core to this harness.
+clat-core = { path = "../../../crates/core" }
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+
+[dev-dependencies]
+# Opaque access to the real Factory/lease/executor, only in author tests.
+clat-core = { path = "../../../crates/core", features = ["test-support"] }

@@ -96,6 +96,8 @@ if [ "$rust_only" -eq 0 ]; then
     (cd sdk/dsh-adapter && npm ci && npm test)
     step "Pinned official DSH web quartet (no public network fixtures)"
     (cd sdk/dsh-adapter/examples/official-web && npm ci --ignore-scripts && npm test)
+    step "PLG-3 isolated JS component experiment (originals unchanged)"
+    (cd sdk/dsh-wasm-spike && npm ci --ignore-scripts && npm test)
 else
     echo "--rust-only：跳过 npm 测试——这不是完整的 CI 镜像"
 fi

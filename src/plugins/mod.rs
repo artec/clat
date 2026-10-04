@@ -79,3 +79,8 @@ pub(crate) fn run_catalog(
 ) -> Vec<Arc<dyn Plugin>> {
     vec![Arc::new(RunScopePlugin::new(cancel, approver))]
 }
+
+#[cfg(test)]
+pub(crate) use permission::network_test_factory;
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) use permission::network_test_factory_with_access;

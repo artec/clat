@@ -1,0 +1,10 @@
+// Syntax/toolchain discriminator only, not a proposed production contract.
+package clat:net-probe@0.1.0;
+interface egress {
+    dns-resolve: async func(origin: string) -> list<string>;
+    http-request: async func(url: string) -> string;
+}
+world consumer {
+    import egress;
+    export run: func() -> string;
+}

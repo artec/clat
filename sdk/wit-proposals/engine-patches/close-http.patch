@@ -1,0 +1,192 @@
+diff --git a/builtins/web/fetch/request-response.cpp b/builtins/web/fetch/request-response.cpp
+index 965f4c4..4bab4ea 100644
+--- a/builtins/web/fetch/request-response.cpp
++++ b/builtins/web/fetch/request-response.cpp
+@@ -25,6 +25,7 @@
+ #include "js/Stream.h"
+ #include "js/experimental/TypedData.h"
+ #include "mozilla/ResultVariant.h"
++#include "mozilla/WeakPtr.h"
+ 
+ #include "../worker-location.h"
+ 
+@@ -77,6 +78,10 @@ public:
+     handle_ = res.unwrap();
+   }
+ 
++  ~BodyFutureTask() override {
++    if (handle_ != INVALID_POLLABLE_HANDLE) { incoming_body_->unsubscribe(); }
++  }
++
+   [[nodiscard]] bool run(api::Engine *engine) override {
+     // MOZ_ASSERT(ready());
+     JSContext *cx = engine->cx();
+@@ -125,8 +130,8 @@ public:
+   }
+ 
+   [[nodiscard]] bool cancel(api::Engine *engine) override {
+-    // TODO(TS): implement
+-    handle_ = -1;
++    incoming_body_->unsubscribe();
++    handle_ = INVALID_POLLABLE_HANDLE;
+     return true;
+   }
+ 
+@@ -1007,7 +1012,14 @@ bool do_body_source_pull(JSContext *cx, HandleObject source, HandleObject body_o
+     return true;
+   }
+ 
+-  ENGINE->queue_async_task(js_new<BodyFutureTask>(source));
++  auto task = RefPtr<BodyFutureTask>(js_new<BodyFutureTask>(source));
++  auto weak = mozilla::WeakPtr<BodyFutureTask>(task.get());
++  RequestOrResponse::incoming_body_handle(body_owner)->set_cancel_task([weak]() {
++    if (auto *pending = weak.get()) {
++      ENGINE->cancel_async_task(pending);
++    }
++  });
++  ENGINE->queue_async_task(task);
+   return true;
+ }
+ 
+@@ -2766,7 +2778,14 @@ struct ResponseAborter : abort::AbortAlgorithm {
+     RootedObject response_obj(cx, response);
+     RootedValue error(cx, AbortSignal::reason(signal));
+ 
+-    return abort_fetch(cx, promise_obj, nullptr, response_obj, error);
++    if (!abort_fetch(cx, promise_obj, nullptr, response_obj, error)) {
++      return false;
++    }
++    auto *body = RequestOrResponse::incoming_body_handle(response_obj);
++    if (body && body->valid()) {
++      return !body->close().is_err();
++    }
++    return true;
+   }
+ 
+   void trace(JSTracer *trc) override {
+@@ -2824,8 +2843,8 @@ bool ResponseFutureTask::run(api::Engine *engine) {
+ }
+ 
+ bool ResponseFutureTask::cancel(api::Engine *engine) {
+-  // TODO(TS): implement
+-  handle_ = -1;
++  future_->cancel();
++  handle_ = INVALID_POLLABLE_HANDLE;
+   return true;
+ }
+ 
+@@ -2840,9 +2859,7 @@ bool ResponseFutureTask::abort(api::Engine *engine) {
+     return false;
+   }
+ 
+-  future_->unsubscribe();
+-  handle_ = INVALID_POLLABLE_HANDLE;
+-  return true;
++  return engine->cancel_async_task(this);
+ }
+ 
+ namespace request_response {
+diff --git a/host-apis/wasi-0.2.0/handles.h b/host-apis/wasi-0.2.0/handles.h
+index 74fbf1a..4b91cde 100644
+--- a/host-apis/wasi-0.2.0/handles.h
++++ b/host-apis/wasi-0.2.0/handles.h
+@@ -225,6 +225,14 @@ public:
+     stream_handle_ = stream;
+   }
+ 
++  ~IncomingBodyHandle() override {
++    if (pollable_handle_ != INVALID_POLLABLE_HANDLE) {
++      wasi_io_poll_pollable_drop_own(own_pollable_t{pollable_handle_});
++    }
++    wasi_io_streams_input_stream_drop_own(stream_handle_);
++    if (valid()) { wasi_http_types_incoming_body_drop_own(take()); }
++  }
++
+   static IncomingBodyHandle *cast(HandleState *handle) {
+     return reinterpret_cast<IncomingBodyHandle *>(handle);
+   }
+diff --git a/host-apis/wasi-0.2.0/host_api.cpp b/host-apis/wasi-0.2.0/host_api.cpp
+index 9e0f875..047aeb9 100644
+--- a/host-apis/wasi-0.2.0/host_api.cpp
++++ b/host-apis/wasi-0.2.0/host_api.cpp
+@@ -786,6 +786,7 @@ bool Resource::valid() const {
+ 
+ Result<HttpIncomingBody::ReadResult> HttpIncomingBody::read(uint32_t chunk_size) {
+   typedef Result<ReadResult> Res;
++  if (!valid()) { return Res::ok(ReadResult(true, nullptr, 0)); }
+ 
+   bindings_list_u8_t ret{};
+   wasi_io_streams_stream_error_t err{};
+@@ -802,13 +803,22 @@ Result<HttpIncomingBody::ReadResult> HttpIncomingBody::read(uint32_t chunk_size)
+   return Res::ok(ReadResult(false, unique_ptr<uint8_t[]>(ret.ptr), ret.len));
+ }
+ 
+-// TODO: implement
+-Result<Void> HttpIncomingBody::close() { return {}; }
++Result<Void> HttpIncomingBody::close() {
++  if (!valid()) { return {}; }
++  if (cancel_task_) {
++    auto callback = std::move(cancel_task_);
++    callback();
++  }
++  unsubscribe();
++  handle_state_.reset();
++  return {};
++}
+ 
+ Result<PollableHandle> HttpIncomingBody::subscribe() {
+   auto body_handle = IncomingBodyHandle::cast(handle_state_.get());
+   auto borrow = Borrow<InputStream>(body_handle->stream_handle_);
+   auto pollable = wasi_io_streams_method_input_stream_subscribe(borrow);
++  body_handle->pollable_handle_ = pollable.__handle;
+   return Result<PollableHandle>::ok(pollable.__handle);
+ }
+ void HttpIncomingBody::unsubscribe() {
+@@ -852,6 +862,15 @@ Result<PollableHandle> FutureHttpIncomingResponse::subscribe() {
+   }
+   return Result<PollableHandle>::ok(pollable_handle_);
+ }
++void FutureHttpIncomingResponse::cancel() {
++  unsubscribe();
++  if (valid()) {
++    auto owned = WASIHandle<FutureHttpIncomingResponse>::cast(handle_state_.get())->take();
++    wasi_http_types_future_incoming_response_drop_own(owned);
++  }
++  handle_state_.reset();
++}
++
+ void FutureHttpIncomingResponse::unsubscribe() {
+   if (pollable_handle_ != INVALID_POLLABLE_HANDLE) {
+     wasi_io_poll_pollable_drop_own(own_pollable_t{pollable_handle_});
+diff --git a/include/host_api.h b/include/host_api.h
+index 422b8f4..8404472 100644
+--- a/include/host_api.h
++++ b/include/host_api.h
+@@ -2,6 +2,7 @@
+ #define JS_RUNTIME_HOST_API_H
+ 
+ #include <cstdint>
++#include <functional>
+ #include <optional>
+ #include <span>
+ #include <string>
+@@ -244,7 +245,9 @@ public:
+ void block_on_pollable_handle(PollableHandle handle);
+ 
+ class HttpIncomingBody final : public Pollable {
++  std::function<void()> cancel_task_;
+ public:
++  void set_cancel_task(std::function<void()> callback) { cancel_task_ = std::move(callback); }
+   HttpIncomingBody() = delete;
+   explicit HttpIncomingBody(std::unique_ptr<HandleState> handle);
+ 
+@@ -327,6 +330,9 @@ public:
+   FutureHttpIncomingResponse() = delete;
+   explicit FutureHttpIncomingResponse(std::unique_ptr<HandleState> handle);
+ 
++  /// Release the pending request, after dropping its subscription. Idempotent.
++  void cancel();
++
+   /// Returns the response if it is ready, or `nullopt` if it is not.
+   Result<optional<HttpIncomingResponse *>> maybe_response();
+ 

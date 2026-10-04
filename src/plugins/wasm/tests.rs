@@ -2035,3 +2035,9 @@ fn tool_metadata_is_sanitized_with_diagnostics() {
             .any(|message| message.contains("badschema") && message.contains("not registered"))
     );
 }
+
+#[cfg(feature = "test-support")]
+mod plg3_tests;
+
+#[cfg(feature = "test-support")]
+mod plg4_tests;

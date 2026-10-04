@@ -294,3 +294,20 @@ preset 的 147 个配置行冒充 147 个已行为验收包。
 
 CLAT 插件包、Rust/WASM 原生插件与远程市场的统一身份模型见
 [CLAT 插件与包格式](plugins.md)。
+
+### PLG-3: JavaScript inside a WASM component
+
+The [isolated author experiment](../sdk/dsh-wasm-spike/README.md) tests the
+unchanged official web quartet and existing adapter with ComponentizeJS.
+Promise/async-generator engine probes are distinct from full adapter/provider
+compatibility. The current direct conversion does not produce a usable package:
+provider HTTP/DNS, Undici and async-context dependencies lack an equivalent
+transport in `clat:plugin@0.1.0`. The existing Bun/MCP recipe remains the supported
+quartet route. A future sandbox variant requires reviewed host egress and full
+provider/lifecycle plus signed staging acceptance; it will use an independent
+package id so both editions can coexist.
+
+The experiment's author compiler now lowers the original XID property literals
+without editing upstream inputs. Exhaustive native Bun membership comparisons
+and guest composition cases pass. The lowered bundle reaches the missing Node
+module error; it still does not constitute an installable quartet.

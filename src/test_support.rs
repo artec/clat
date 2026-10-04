@@ -22,6 +22,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub mod network;
+
 /// Small fully decodable PNG for provider/session tests. Image projection now
 /// verifies MIME against magic, so tests that claim `image/png` must use an
 /// image fixture instead of arbitrary text bytes.

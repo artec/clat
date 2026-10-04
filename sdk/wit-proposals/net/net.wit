@@ -1,0 +1,71 @@
+// PLG-4 D1 candidate only: not registered in the production CLAT linker.
+package clat:net@0.1.0;
+
+/// HTTP/DNS semantic capability; never a socket or generic Node stream.
+interface egress {
+    enum failure {
+        invalid-request,
+        no-active-run,
+        capability-denied,
+        permission-denied,
+        blocked-address,
+        name-resolution-failed,
+        invalid-resolution,
+        deadline-exceeded,
+        cancelled,
+        transport-failed,
+        tls-failed,
+        limit-exceeded,
+        unsupported,
+    }
+
+    enum address-family { ipv4, ipv6 }
+    record address { ip: string, family: address-family }
+    record header { name: string, value: string }
+    enum method { get, head, post, put, patch, delete, options }
+
+    /// Policy-checked origin resolution. Private pins are stored by the host.
+    /// Resources are bound to plugin/store/run/policy generation and expire.
+    resource resolution {
+        addresses: func() -> result<list<address>, failure>;
+        /// Actual fixed-name RFC7050 discovery answers, not arbitrary DNS.
+        /// This getter is read-only: discovery happened during dns-resolve.
+        dns64-answers: func() -> result<list<address>, failure>;
+    }
+
+    /// Total timeout begins on entry, includes permission and DNS waits.
+    /// origin must be an HTTP(S) origin, with no path/query/userinfo/fragment.
+    dns-resolve: func(origin: string, timeout-ms: u32) -> result<resolution, failure>;
+
+    record request {
+        url: string,
+        verb: method,
+        headers: list<header>,
+        body: list<u8>,
+        /// A ceiling only; a caller cannot extend the resource's deadline.
+        timeout-ms: u32,
+        max-response-bytes: u32,
+    }
+
+    /// Manual redirects only. The host never follows Location or resolves
+    /// again: connection uses the resource's private validated pin set.
+    /// Once attempted, the resolution is consumed even on failure.
+    http-request: func(target: borrow<resolution>, request: request) -> result<response, failure>;
+
+    /// A bounded HTTP entity, not a general-purpose byte transport.
+    /// The initial request's absolute deadline applies to every read.
+    resource response {
+        status: func() -> result<u16, failure>;
+        headers: func() -> result<list<header>, failure>;
+        /// At most 64KiB; empty means EOF. Reads are sequential.
+        /// The host also enforces the total encoded and decoded byte limits.
+        read-body: func(max-bytes: u32) -> result<list<u8>, failure>;
+        /// Abort/release connection; safe to repeat, no network authorization.
+        cancel: func();
+    }
+}
+
+/// Standalone syntax-validation world, not an installable plugin contract.
+world net-client {
+    import egress;
+}

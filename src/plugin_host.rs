@@ -18,6 +18,8 @@ use crate::Project;
 use crate::interaction::{AskAnswer, AskOption, AskQuestion, UserAsker};
 mod elicitation;
 mod mcp_wire;
+#[allow(dead_code)] // Private net contract; WIT activation awaits D2 safety gates.
+pub(crate) mod network;
 use crate::model::{
     CancelToken, FinishReason, ModelConfig, ModelItem, ModelOptions, ModelRequest,
     ProviderCredentials, Usage,
@@ -484,6 +486,7 @@ pub struct PluginHostBridge {
     /// 结束"（clear 置 None 或新 run 已装入都表现为失配）。
     context: RwLock<Option<(u64, RunHostContext)>>,
     epoch: AtomicU64,
+    network_generation: AtomicU64,
     sampling_seq: AtomicU64,
     host_tool_seq: AtomicU64,
     project_services: RwLock<Option<HostProjectServices>>,
@@ -532,6 +535,7 @@ impl PluginHostBridge {
         Arc::new(Self {
             context: RwLock::new(None),
             epoch: AtomicU64::new(0),
+            network_generation: AtomicU64::new(0),
             sampling_seq: AtomicU64::new(0),
             host_tool_seq: AtomicU64::new(0),
             project_services: RwLock::new(None),
@@ -552,6 +556,7 @@ impl PluginHostBridge {
         permissions: Arc<dyn PermissionPolicyFactory>,
     ) {
         if let Ok(mut services) = self.project_services.write() {
+            self.invalidate_network_context();
             *services = Some(HostProjectServices {
                 project,
                 tools,

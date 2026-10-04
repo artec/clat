@@ -242,3 +242,30 @@ uninstall after an earlier run froze tool registration. It also tests optional
 configuration omission versus `false`. This establishes local staging behavior
 on the package's platform; production signing, HTTP headers, FTP deployment,
 other platforms and a paid-provider call remain separate acceptance steps.
+
+### PLG-3 author experiment
+
+`scripts/gates.sh --full` / `--ci` install the locked `sdk/dsh-wasm-spike`
+compiler toolchain and run `npm test` there after the official web recipe. The
+suite preserves the original inputs, captures strict original bundling and
+componentization failures, and creates an isolated JS engine component. It arms
+`plg3_component_engine_probe` with an absolute temporary component path and the
+core's `test-support` feature; exactly one Rust test must run. That test uses the
+existing production WIT/WASI linker, memory/fuel limits and cancel watcher.
+An unarmed ignored Rust invocation is not evidence of engine acceptance.
+
+The engine probe checks Promise/generator/EventBus primitives, private config
+states, host write denial, a bounded fuel-burning computation, epoch cancellation
+and the disabled HTTP trap. It does not certify the complete Shim lifecycle or
+official search. Optional repeated measurements and retained failure artifacts
+are documented in [the experiment README](../sdk/dsh-wasm-spike/README.md).
+No experimental component or test publisher key is shipped in production market
+metadata. Windows's Rust suite still covers compilation; the JS experiment's
+author-toolchain execution runs on the Linux gates job and local author machine.
+
+The author suite also compares both lowered XID classes against native Bun over
+all Unicode code points, including surrogates. Locked property tables and actual
+membership digests detect drift; runtime version metadata alone is insufficient.
+The guest executes representative original-pattern compositions, and a separate
+unlowered build must fail at initialization. This syntax acceptance does not
+certify HTTP/DNS or async-context compatibility.

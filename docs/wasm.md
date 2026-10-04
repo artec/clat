@@ -315,3 +315,27 @@ records:
 
 These failure boundaries make WASM suitable for local extensions, but not a
 substitute for reviewing third-party code and declared effects.
+
+## DSH JavaScript component experiment
+
+The private [PLG-3 author experiment](../sdk/dsh-wasm-spike/README.md) keeps the
+existing Bun/MCP recipe intact and tests the original DSH web quartet against
+this WIT contract. Its engine probe is a real JavaScript WASM component; it is
+not an installable WASM edition of the quartet.
+
+The direct conversion currently fails: the official providers need HTTP/DNS
+and Node's Undici transport, while this WIT contract has no HTTP/DNS interface.
+The adapter also requires async-context ownership. A sandbox edition needs an
+explicitly reviewed egress contract and equivalent runtime semantics before
+it can pass the signed market/PWA acceptance flow. Keep using the published
+Bun/MCP recipe for the official quartet. CLAT continues to support both MCP
+packages and ordinary WASM component packages.
+
+The experiment now lowers the original XID regex literals during author-side
+compilation. Native Bun character membership and guest composition probes pass;
+this removes a syntax blocker while retaining the original files. It does not
+provide the missing HTTP/DNS or Node async-context services.
+
+The [proposed network contract](wasm-net.md) specifies an additive, bounded
+`clat:net@0.1.0` capability. It is a design-review draft; the production linker
+does not implement it and installed components cannot use it yet.

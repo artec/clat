@@ -145,7 +145,7 @@ fn installed_bridge(
     installed_bridge_with_mode(providers, approver, asker, None)
 }
 
-fn installed_bridge_with_mode(
+pub(super) fn installed_bridge_with_mode(
     providers: Arc<ProviderRegistry>,
     approver: Arc<dyn PermissionApprover>,
     asker: Option<Arc<dyn UserAsker>>,
