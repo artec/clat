@@ -67,7 +67,7 @@ impl Fence {
         }
         list.iter().map(|value| Origin::parse(value)).collect()
     }
-    pub(super) fn check(&self, origin: &Origin) -> Result<(), Failure> {
+    pub(crate) fn check(&self, origin: &Origin) -> Result<(), Failure> {
         self.allowed
             .contains(origin)
             .then_some(())

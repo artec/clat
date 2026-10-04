@@ -12,7 +12,7 @@ struct Body {
     pending: Bytes,
     received: usize,
 }
-pub(crate) struct StreamResponse {
+pub struct StreamResponse {
     status: u16,
     headers: http::HeaderMap,
     body: Option<Body>,

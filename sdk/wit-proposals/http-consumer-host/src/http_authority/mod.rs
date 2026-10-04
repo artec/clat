@@ -200,4 +200,4 @@ pub(crate) mod network;
 #[allow(dead_code)]
 pub(crate) mod permission;
 #[allow(dead_code)]
-mod transport;
+pub(crate) mod transport;

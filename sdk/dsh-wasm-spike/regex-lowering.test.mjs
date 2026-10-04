@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { codePointDigest } from './regex-oracle.mjs'
 import { lowerUnicodeProperties, loweredUnicodeVersion } from './regex-lowering.mjs'
@@ -11,16 +12,33 @@ function lowerRegex(regex) {
   return new Function(`return ${result.code}`)()
 }
 
+// The native Bun oracle is pinned to regex-oracle.expected.json (CI runners
+// have no Bun). Every assertion below always runs against the pinned digests;
+// when a local Bun IS present it must reproduce them exactly, so drift in the
+// pinned tables or in Bun itself still fails the suite on developer machines.
+function pinnedOracle() {
+  const pinned = JSON.parse(readFileSync(new URL('./regex-oracle.expected.json', import.meta.url), 'utf8'))
+  assert.equal(pinned.digests.length, 2)
+  try {
+    execFileSync('bun', ['--version'], { stdio: 'ignore' })
+  } catch {
+    console.error('bun oracle absent (CI runner); comparing against pinned digests only — cross-check skipped')
+    return pinned
+  }
+  const live = JSON.parse(execFileSync('bun', [fileURLToPath(new URL('./regex-oracle.mjs', import.meta.url))], { encoding: 'utf8' }))
+  assert.deepEqual(live.digests, pinned.digests, 'live Bun oracle drifted from the pinned fixture; regenerate with: bun regex-oracle.mjs > regex-oracle.expected.json')
+  return live
+}
+
 test('Unicode tables are pinned; native oracle membership detects runtime drift', () => {
   assert.equal(loweredUnicodeVersion, '17.0.0')
-  const oracle = JSON.parse(execFileSync('bun', [fileURLToPath(new URL('./regex-oracle.mjs', import.meta.url))], { encoding: 'utf8' }))
+  pinnedOracle()
   // Bun reports ICU 15.1 here, but its regex engine's XID membership matches 17.0.
   // Metadata is insufficient: only the exhaustive native digest below is acceptance.
-  assert.equal(oracle.digests.length, 2)
 })
 
 test('XID lowering preserves every Unicode code point, including surrogates', () => {
-  const oracle = JSON.parse(execFileSync('bun', [fileURLToPath(new URL('./regex-oracle.mjs', import.meta.url))], { encoding: 'utf8' }))
+  const oracle = pinnedOracle()
   const digests = [/^\p{XID_Start}$/u, /^\p{XID_Continue}$/u].map(regex => codePointDigest(lowerRegex(regex)))
   assert.deepEqual(digests, oracle.digests)
 })

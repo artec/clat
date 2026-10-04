@@ -2041,3 +2041,22 @@ mod plg3_tests;
 
 #[cfg(feature = "test-support")]
 mod plg4_tests;
+
+#[test]
+fn plg4_legacy_linker_does_not_register_network_candidate() {
+    let engine = Engine::default();
+    let linker = legacy_linker(&engine).unwrap();
+    let component = wasmtime::component::Component::new(
+        &engine,
+        r#"(component
+      (type $net (instance (export "dns-start" (func (param "x" u32) (result u32)))))
+      (import "clat:net-task/egress@0.1.0" (instance (type $net))))"#,
+    )
+    .unwrap();
+    let mut store = Store::new(&engine, clock_state(&CancelToken::new()));
+    let error = linker.instantiate(&mut store, &component).unwrap_err();
+    assert!(
+        format!("{error:#}").contains("function implementation is missing"),
+        "legacy must not have the candidate namespace: {error:#}"
+    );
+}

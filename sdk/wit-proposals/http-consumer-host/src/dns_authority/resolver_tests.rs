@@ -909,3 +909,61 @@ fn tool_entry_deadline_includes_dns_wait_and_cannot_rebase() {
     assert!(matches!(job.get(), Some(Err(Failure::DeadlineExceeded))));
     fixture.release();
 }
+
+#[test]
+fn resource_task_dns_transfers_only_private_resolution_once() {
+    let fixture = Fixture::new(false, false, 1, 2);
+    let (_core, _run, scope) = core_scope(
+        PermissionMode::FullAccess,
+        false,
+        allow(),
+        Duration::from_secs(2),
+    );
+    let scope = std::sync::Arc::new(scope);
+    let mut task = crate::network_resources::Task::dns(
+        scope.clone(),
+        fixture.dns.clone(),
+        origin(),
+        Duration::from_secs(1),
+    )
+    .unwrap();
+    assert!(task.get().is_none());
+    assert!(fixture.names().is_empty());
+    runtime().block_on(task.ready());
+    let crate::network_resources::Outcome::Resolution(resolution) = task.get().unwrap().unwrap()
+    else {
+        panic!("typed DNS result expected")
+    };
+    assert_eq!(
+        resolution.addresses(scope.scope()).unwrap(),
+        vec!["8.8.8.8".parse::<IpAddr>().unwrap()]
+    );
+    assert!(task.get().unwrap().is_err());
+    assert_eq!(fixture.names(), ["api.example.com"]);
+}
+
+#[test]
+fn resource_task_ready_resolution_revoked_before_get_grants_nothing() {
+    let fixture = Fixture::new(false, false, 1, 2);
+    let (_core, run, scope) = core_scope(
+        PermissionMode::FullAccess,
+        false,
+        allow(),
+        Duration::from_secs(2),
+    );
+    let mut task = crate::network_resources::Task::dns(
+        std::sync::Arc::new(scope),
+        fixture.dns.clone(),
+        origin(),
+        Duration::from_secs(1),
+    )
+    .unwrap();
+    runtime().block_on(task.ready());
+    run.invalidate();
+    assert!(matches!(
+        task.get(),
+        Some(Err(crate::network_resources::task::Error::Authority(
+            Failure::Cancelled
+        )))
+    ));
+}

@@ -15,6 +15,8 @@ pub struct Resolution {
     addresses: Vec<IpAddr>,
     discovery: Vec<IpAddr>,
     consumed: AtomicBool,
+    #[cfg(test)]
+    loopback_fixture: bool,
 }
 impl Resolution {
     pub(super) fn new(
@@ -33,6 +35,8 @@ impl Resolution {
             addresses,
             discovery,
             consumed: AtomicBool::new(false),
+            #[cfg(test)]
+            loopback_fixture: false,
         }
     }
     fn check_identity(&self, scope: &Scope) -> Result<(), Failure> {
@@ -79,6 +83,8 @@ impl Resolution {
             deadline: self.deadline,
             addresses: self.addresses.clone(),
             _slot: self.slot.clone(),
+            #[cfg(test)]
+            loopback_fixture: self.loopback_fixture,
         })
     }
 }
@@ -90,6 +96,8 @@ pub struct ConnectionPins {
     deadline: Instant,
     addresses: Vec<IpAddr>,
     _slot: Arc<Slot>,
+    #[cfg(test)]
+    loopback_fixture: bool,
 }
 impl ConnectionPins {
     pub(crate) fn restrict_deadline(&mut self, deadline: Instant) {
@@ -145,4 +153,22 @@ pub(crate) fn test_resolution(
         addresses,
         vec![],
     )
+}
+
+#[cfg(test)]
+impl Resolution {
+    pub(crate) fn with_loopback_fixture(mut self) -> Self {
+        self.loopback_fixture = true;
+        self
+    }
+}
+#[cfg(test)]
+impl ConnectionPins {
+    pub(crate) fn fixture_addresses(&self, addresses: Vec<IpAddr>) -> Vec<IpAddr> {
+        if self.loopback_fixture {
+            vec!["127.0.0.1".parse().unwrap()]
+        } else {
+            addresses
+        }
+    }
 }

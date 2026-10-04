@@ -3,6 +3,7 @@ import { cp, mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { spawnSync } from 'node:child_process'
 import { resolve } from 'node:path'
 import './validate.mjs'
+import { validateIndexGeneration } from './index-generation.mjs'
 
 const root = resolve(import.meta.dirname, '..')
 const dist = resolve(root, 'dist')
@@ -13,6 +14,7 @@ if (keyFlag < 0 || !process.argv[keyFlag + 1]) {
 const secretKey = resolve(process.argv[keyFlag + 1])
 const now = Math.floor(Date.now() / 1000)
 const source = JSON.parse(await readFile(resolve(root, 'index.source.json'), 'utf8'))
+validateIndexGeneration(source, 1)
 const index = {
   ...source,
   market: {

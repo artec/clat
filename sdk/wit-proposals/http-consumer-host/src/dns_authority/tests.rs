@@ -150,3 +150,26 @@ fn nat64_nonzero_reserved_octet_and_suffix_are_rejected() {
         }
     }
 }
+
+#[test]
+fn original_provider_shared_pin_vectors_match_host_full_set_policy() {
+    let cases: serde_json::Value =
+        serde_json::from_str(include_str!("../../../../dsh-wasm-flavor/pin-cases.json")).unwrap();
+    for row in cases.as_array().unwrap() {
+        let parse = |name: &str| {
+            row[name]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|value| ip(value.as_str().unwrap()))
+                .collect()
+        };
+        let outcome = validate_addresses(parse("addresses"), parse("discovery"));
+        assert_eq!(
+            outcome.is_ok(),
+            row["allow"].as_bool().unwrap(),
+            "{}: {outcome:?}",
+            row["id"]
+        );
+    }
+}

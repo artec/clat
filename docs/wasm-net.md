@@ -1,46 +1,37 @@
 # WASM 网络宿主协议提案（PLG-4 D1）
 
-状态：**D1设计审计已通过；D2异步复审已批准，双探针已出证据。**
-原生 async import 在锁定作者编译器中不支持；受控 wasi:http 探针经隔离引擎
-修复后通过21项取消/连续调用检查。该探针使用无网络的有界传输夹具，未实现真实
-DNS、统一授权链或24项宿主安全卷，不能据此宣称四件套兼容或进入映射层。
-有限原生任务桥的调度腿也已实跑：DNS/HTTP语义夹具共用任务机制，21项通过；
-删去事件循环取消动作时，六处等待取消和三处连续调用取消均暴露残留资源。
-它证明独立任务可由原生poll等待，尚未形成携带私有resolution的正式传输接口。
-作者宿主现增加真实系统DNS后端、固定8 worker/8排队池、完整地址/NAT64校验、
-Store/run失效和私有单次消费凭证。33项纯宿主判别绿，21个独立删除点均以行为
-断言失败。真实组件也接入系统DNS等待：本机TUN Fake-IP返回198.18.*，五次连续
-调用验证拒绝/取消与资源清空，**没有取得公网DNS或实际DNS64验收**。
-负责人明确免做本机真实DNS测试；不为Fake-IP放宽公网规则。
-下述作者接线继续补齐核心审批与 HTTP；正式 WIT 入口、统一预算与完整24项
-攻击卷仍待完成；以上33项不是那份24项总卷。
-作者侧 HTTP 请求前置现增加精确 origin+method 围栏、配置求交、不可变请求对象、
-URL/头/body 预算与控制头拒绝；9项请求卷通过（加原DNS卷共42项）。审批摘要
-只输出方法和声明origin，不输出路径/query/header/body；尚无发送或授权入口。
-候选方法暂只支持 GET/HEAD/POST/PUT/PATCH/DELETE/OPTIONS，扩展方法需后续
-兼容复审；这些请求校验不能替代生产审批、TLS或完整24项攻击卷。
-作者候选现已将请求origin与私有凭证绑定，单次消费后以数值SocketAddr连接，
-原域名用于TLS SNI/证书身份校验；默认WebPKI根，无代理或再次DNS解析路径。
-10项离线/回环连接测试通过（作者lib合计52项）：真实TCP/TLS握手、正确SNI、
-错误域名/不可信证书拒绝、取消后物理socket关闭、原期限与迟到成功拒绝。
-11个连接防线删除点均行为红。该connector保持私有，由下述作者HTTP后端调用；
-正式WIT入口与统一预算尚未完成，不能开放到生产linker。
-回环证书与私钥仅为公开测试夹具，不能用作生产信任根。
-作者HTTP后端现要求注入权威接口；测试构建通过core test-support的opaque适配器
-消费真实PermissionFactory/Plan guard、租约与8worker/8排队审批器。等待用宿主
-50ms定时检查同一租约/CancelToken（不消耗guest fuel）。私有HTTP/1候选已发送真实回环请求并读取响应：原Host/target/auth保持，
-审批仅安全摘要；3xx直接返回，identity实体≤8MiB，其他编码明确拒绝；64响应头、
-32KiB头缓冲、8个16MiB实体预约许可，响应保留许可直到drop。driver与读取同一
-future驱动，无分离后台任务。当前作者lib88项通过；不是24项安全总卷。
-core租约的权限ABA、服务刷新、clear/new run、父取消及期限失效已验证在header/body
-等待期间物理关闭socket；Resolve/HTTP动作均经过真实Factory与Plan guard。
-**仍未接正式WIT联网入口、正式tool期限来源、
-实际工具调用边界、任务/订阅与WIT资源表统一核算**；上述模块私有，不能开放生产linker。
-作者响应现支持状态/头先返回与有界分块read，尚未接正式WIT资源接口；只实测回环HTTP及独立TLS
-握手，未做公网provider/四件套兼容验收。
-下文保留已审策略；同步 WIT 仅为淘汰候选，异步等待机制须承载同一策略。
-候选 [WIT 全文](../sdk/wit-proposals/net/net.wit) 位于 author SDK，
-不进入现有 `wit/plugin.wit` 或生产 linker。Bun/MCP 配方和正式市场数据不变。
+状态：**D1 审计及异步复审已通过；D2 第二风味已完成实现与本地判别，待独立审计。**
+
+官方四件套 0.2.0-rc.2 的源码保持原样。第二风味以显式 context scope 替代
+ALS，闭集 DNS/HTTP 适配消费宿主私有、单次使用的 resolution；网络、审批、
+期限、取消和资源释放走同一权威链。锁定的原生任务桥引擎打入组件，终端用户
+不需要安装新的运行时。同步 import 候选因冻结 guest 取消而淘汰，历史证据保留。
+
+真实 Wasmtime 组件已验证原工具发现、provided WebRuntime 的 child scope 清理、
+未声明域拒绝、原 DeepSeek 搜索 POST/响应读取、原 HTTP 成功抓取与同域重定向、
+跨域拒绝、headers/body 等待时取消及物理连接关闭。第二风味还直接导出现有
+`clat:plugin/tools@0.1.0`，通过原 tools/list、tools/call 及错误结果契约，
+其 config import 仅由可信宿主提供插件自身配置。
+Bun 原件与 WASM 宿主使用同一份 29 组公网/混私网/NAT64 六布局数据判别。
+
+本地交付：作者 Rust 147 项普通测试通过，10 项需显式武装的测试不混算；
+JS/发布隔离 23 项及原 Bun 配方 9 项通过；完整仓库门禁通过。
+D1 的 24 行攻击有逐行删除红点与对应作者绿卷，供独立审计复核；
+该账本不宣称穷尽全部攻击或取得生产验收。
+
+**D3 尚未实施成品接线与发布**：生产仍使用现有 Bun/MCP；原正式 WIT、
+v1 linker 的注册集合、已发布工件与市场索引字节不变。新网络库是独立作者宿主，
+尚未进入正式安装/运行路径。签名包安装、v2 catalog 成品、PLG-2 staging/PWA、
+全配方/编码兼容卷、公网服务 fuel/墙钟/体积重复测量属于 D3。
+精确 origin 限制依旧生效，任意 URL 抓取不能宣称无差异兼容。
+其他响应编码目前明确拒绝 unsupported，不能把它计为与 Bun 的解码等价。
+
+真实 DNS 按负责人决定免测；原 HTTP 成功卷以测试专属的固定数字回环路由运行，
+宿主向原包投影固定公网测试地址，cfg(test) 外不存在该路由。它证明消费者与
+资源链的语义，不证明公网连接或真实 DNS64 可用性；生产地址围栏未放宽。
+完整的源码、构建与武装命令见 [第二风味说明](../sdk/dsh-wasm-flavor/README.md)
+和 [作者宿主说明](../sdk/wit-proposals/README.md)。后文施工段落按历史阶段保留，
+当前状态以本节为准。
 
 ## 决策与适用范围
 
@@ -267,7 +258,7 @@ clear、新run、权限A→B→A、服务配置刷新、取消和过期均撤销
 必须再次检查。权限journal写入失败不会发布新档位或撤销代际。
 核心租约与执行器由16项测试及22项隔离行为删除验证覆盖（含配置刷新交错、
 ToolAccessSlot 策略 revision、Plan 开关 ABA 与审批期间切入 Plan 的迟到 Allow）。
-作者网络库现88项测试，已通过测试适配器消费真实租约与审批句柄。
+作者网络库现110项测试，已通过测试适配器消费真实租约与审批句柄。
 默认core构建不导出test-support测试面，没有注册WIT联网入口。实际
 实际工具调用期限来源、WIT任务/订阅资源仍待接线；D2未完成，
 四件套继续通过原Bun/MCP机制使用。复现命令见作者探针说明。
@@ -300,3 +291,121 @@ NetworkScope.begin_tool 接收host期限，DNS等待与HTTP请求取原期限的
 88项作者测试含13项新增预算/分块判别，无真实DNS、无四件套WASM兼容宣称。
 闲置响应仍由下一次使用或资源销毁清理，正式run/Store卸载须销毁全部资源；
 这部分WIT所有权和统一任务接线未完成，D2仍未完成。
+
+
+作者 typed task/资源 owner 现以真实 Wasmtime ResourceTable 保存任务、resolution、
+response与WASI pollable；每个实际entry计入16上限，包括订阅。句柄验证owner、
+代际与类型，拒绝错类型销毁及回收旧句柄；删除父任务先清订阅。DNS/HTTP/read
+共用同一Task/Pollable机制，只在宿主等待中推进future，没有新后台spawn。
+get不等待、终态单消费；任务cancel/drop丢弃进行中的操作及未消费结果。
+WASI ready/poll丢弃一次等待不会取消任务；显式拥有操作的等待future销毁才终止它。
+Owner在宿主边界检查同一scope/core guard，失效即清表；显式close及drop也清表。
+回环测试覆盖未读完的闲置HTTP在工具owner销毁、run/Plan检查、close/drop时物理
+关闭socket并释放预约。DNS结果只转移宿主私有resolution，没有guest pin入口。
+当前120项作者测试（另有需显式组件产物的consumer测试），已接生成的类型化
+候选WIT Host和受owner管理的WASI poll。canonical ABI的宿主rep用跨owner不重复的单调ID，
+不把可回收的ResourceTable index交给guest；WASI drop同步归还entry账目。
+候选clat:net-task的http-start/read-start以owned资源转移确保凭证只用一次、读取
+顺序化；结果get仍为类型化私有Resolution/Response/Chunk，没有JSON pin回灌。
+生产工具invoke与正式WIT/linker仍未接，不能宣布生产自动清理或D2完成；原生桥作者接线见下。
+纯闲置时的失效需要正式host调用边界/生命周期调用close，不能靠无后台任务的
+owner自己主动轮询；后续实际WIT/Store所有者必须接入这一点。
+
+
+作者调度宿主另接最小 WASI clocks、io/streams/error 和 stderr，全部使用同一
+Owner，未添加第二张资源表或默认 WASI 网络/文件/环境入口。时钟隐藏根和
+pollable 分别计入 16 项上限；订阅失败回滚，pollable 销毁释放隐藏根，Owner
+关闭仍按子先父后清理。等待结束再次检查 scope，撤销时在返回 guest 前清表。
+非零计时器到期首次 ready 返回 true，零计时器让出调度一次以免饿死 IO。
+诊断流仅共享 32KiB 内存缓冲，重开不重置额度，错误转换不分配隐藏 error 资源。
+真实作者组件在同一实例连续九次调用，覆盖引擎原生定时器、typed DNS 完成和
+取消，每次实际资源表为空；DNS 使用 fake Lookup，仍走原有地址与权限 authority。
+这只是调度资源接线验证：net Promise 桥和 AbortSignal 四顺序另由下述原生消费者验证，
+生产时钟能力裁决、正式工具生命周期及 D1 总卷仍未完成；正式生命周期需显式关闭 owner。
+
+
+作者原生 typed bridge 已接到同一 Task：DNS 交付 opaque resolution，HTTP 以 owned
+凭证发 HTTP 并交付 opaque response；顺序 read 以 owned response 返回 response 与
+最多 64KiB Uint8Array，空块表示真实 EOF。对象使用私有 class/slot、无公开构造器，
+不向 guest 暴露数值 handle；HTTP/read 提交前使旧包装失效，预取消保留未转移输入。
+资源包装和 chunk 的原型为 null，Promise 交付不调用 ambient Object.prototype.then。
+订阅失败释放 task；AbortSignal 拒绝 Promise 同时移除 native AsyncTask，清订阅和
+task，不能只发 AbortError。释放 C ABI 列表内存与移交 owned 结果分开处理。
+
+原生 DNS 消费者使用 fake Lookup 和真实 DNS authority/审批；13 次同实例调用覆盖
+四顺序、微任务/原生定时器、并行、HTTP fence 拒绝、旧句柄/伪造对象、配额、原型污染
+和取消后再次成功，并读取模拟 RFC7050 发现答案及 IPv6 地址族。
+HTTP/read 消费者另有 26 次同实例回环调用，使用仅 cfg(test)
+可构造的私有 transport credential fixture（0 Lookup），覆盖四顺序、headers/status、
+Uint8Array/顺序 read/EOF、输入单次转移、原型污染和 Store 销毁前 socket EOF；新增七种
+方法、重复请求头、二进制请求体、提交后的源修改、参数额度、getter 重入/预取消，
+以及宿主方法围栏和控制头拒绝。
+该回环 fixture 不经过解析器，因此不是 DNS 允许 localhost 或端到端 DNS→HTTP
+安全验收。未执行系统 DNS、真实 provider 或官方四件套兼容测试。
+
+作者 API `clatNetRequest(resolution, url, method, headers, body, timeoutMs, maxBytes, signal)`
+接收七种大写方法、最多64对请求头/32KiB总字节、最多1MiB Uint8Array；URL沿用
+保守ASCII边界，请求头按UTF-8传递，嵌入NUL拒绝。body在读取header前独立复制；
+全部转换后复验resource/AbortSignal，防getter重入导致旧凭证再次提交。转换失败保留
+输入，宿主拒绝已转移输入则释放；`clatNetHttp` 保留GET快捷方式。
+`clatNetHeaders` 返回response头的独立副本，`clatNetAddresses`/`clatNetDns64` 返回
+宿主元数据的 `[ip, family]` 副本（family为ipv4/ipv6）；旧info/status接口保留。
+这些仍是隔离作者API。生产 invoke 生命周期/时钟能力、v2 能力组合与市场隔离、
+D1 24 项 host 总卷、shim/mapping 和原包组件化仍待完成。没有 GC finalizer 中的
+host 调用：lost guest wrapper 的资源由配额约束，并需正式工具生命周期 close 回收。
+生产 WIT/linker/市场及 Bun/MCP 兜底均未改变。
+
+## 作者能力构造入口与独立时钟声明
+
+隔离作者宿主现在从一个已校验的能力描述符构造 DNS Fence、HTTP Fence 和时钟授权。
+该描述符不是已发布的 manifest schema，也没有发行签名或安装复核效力；生产 v1
+加载器与索引仍保持原样。候选描述符要求 manifestVersion=2、network protocol为
+`clat:net-task@0.1.0`，字段和协议闭集，重复字段/非法类型/无效配置均拒绝。
+配置的 origin 与 method 仅同声明求交；显式空 origin 集合拒绝全部。网络声明或
+运行配置中出现任何 hostTools/preopens 均拒绝，保守限制也包含只读工具，尚不开放
+安全工具例外。sampling 单独声明，出口说明区分受限HTTP/DNS和宿主模型服务；
+作者 net linker 本身没有新增 sampling 或 host.call-tool 接口。
+
+时钟不是 network 附赠能力。必须独立声明
+`"clock":{"protocol":"wasi:clocks@0.2.10"}`；配置 `"clock":false` 可禁用，
+配置不能补授未声明的 clock，也不能更换协议。未声明时 wall/monotonic 的读取、
+分辨率和订阅均在分配资源前拒绝；实际 WIT import 不授予权限。声明后仍沿用同一
+Owner 的绝对期限、取消、16个实际表项、零计时器让出及订阅子先父后清理。
+
+作者常规卷现131项（另4项显式组件测试）；11项新增覆盖版本/组合/收窄/独立时钟，
+其中真实小组件分别验证未声明拒绝、已声明成功。未声明时钟的两个原行为红已保留，
+16处能力防线删除均编译成功并产生行为失败。既有39次消费者调用以显式clock声明
+复跑通过。以上不替代正式manifest/签名市场隔离、工具生命周期或D1安全总卷。
+
+## 作者网络调用的生命周期边界
+
+隔离网络候选入口只缓存已编译的组件与 linker，每次调用创建新的 Store 和 guest。
+它主动关闭同一个资源 Owner 并撤销 scope，覆盖正常返回、guest trap、初始化失败和
+宿主 unwind；遗失的 JS opaque wrapper 不依赖 dispose 或 GC finalizer 回收。结束后
+原 guest 的 JS 全局状态、canonical handle 表和 native task roots 随 Store 一起销毁。
+现有生产 v1 的实例缓存与 Bun/MCP 入口保持原样。
+
+同一 run 跨调用保留累计 DNS/HTTP 尝试预算；新工具不退还 run 额度。入场、返回前及
+CPU epoch 都复验原 authority、取消和绝对期限，撤销后不能交付成功结果，也能中断
+不再调用宿主的 guest 循环。单 Store 最多一个 memory、256MiB，fuel 仍有上限；
+有限 epoch ticker 由候选 lane 持有，lane 销毁时结束并 join。
+
+生命周期常规用例另验证真实回环闲置响应在 Store 存活时 EOF、错误/异常出口、共享
+run 预算和 guest 状态隔离；故意丢失 wrapper 的 native consumer 分别正常返回或
+抛异常。仍是作者隔离入口，尚未接生产插件工具 invoke；签名 manifest/市场 v2 隔离、
+D1 24 项总卷、shim v2 与官方原包组件化继续按后续门禁推进。无系统 DNS 测试。
+
+当前作者常规142项（另5项显式组件用例），生命周期新增11项；8处独立边界删除
+均编译后行为红，恢复后全绿。新消费者组件实际执行6次遗失包装/异常场景，并复跑
+原DNS13/HTTP26次；共45次通过。完整项目门禁通过，不替代 Windows 真正 CI 或
+生产/官方包验收。
+
+The D2 author lane now derives an explicit-scope flavor without editing the Bun
+Shim or official package sources (`sdk/dsh-wasm-flavor`). Its real component
+lifecycle oracle passes overlapping injections, asynchronous generator cleanup,
+LIFO and failure isolation. The four original packages also componentize through
+a closed semantic adapter set. Actual discovery and undeclared-origin denial now pass after fixing Web-standard
+compatibility gaps in the pinned engine. The original search provider also sends its POST and reads a real numeric-loopback
+test response in the actual component. HTTP-provider pin and cancellation
+equivalence remain under verification; componentization therefore does
+not establish quartet compatibility or D2 completion. Production installation and the v2 catalog remain unimplemented.

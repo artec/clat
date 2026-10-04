@@ -289,3 +289,18 @@ impl wasmtime_wasi::p2::Pollable for DnsJob {
 #[cfg(test)]
 #[path = "resolver_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+impl SystemDns {
+    pub(crate) fn fake(
+        lookup: impl Fn(&str) -> Result<Vec<IpAddr>, Failure> + Send + Sync + 'static,
+    ) -> Arc<Self> {
+        struct Fake<F>(F);
+        impl<F: Fn(&str) -> Result<Vec<IpAddr>, Failure> + Send + Sync + 'static> Lookup for Fake<F> {
+            fn lookup(&self, host: &str) -> Result<Vec<IpAddr>, Failure> {
+                (self.0)(host)
+            }
+        }
+        Self::pool(Arc::new(Fake(lookup)), 1, 8).unwrap()
+    }
+}

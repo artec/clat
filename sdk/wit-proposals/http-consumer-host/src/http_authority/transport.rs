@@ -18,7 +18,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 const HEADER_COUNT: usize = 64;
 const LIMIT: usize = 8 * 1024 * 1024;
 #[derive(Clone, Debug, PartialEq)]
-pub(super) enum Failure {
+pub(crate) enum Failure {
     Authority(AuthorityFailure),
     Permission(permission::Failure),
     Transport,
@@ -37,7 +37,8 @@ impl From<AuthorityFailure> for Failure {
     }
 }
 mod stream;
-pub(super) use stream::{StreamResponse, open};
+pub use stream::StreamResponse;
+pub(crate) use stream::open;
 pub(super) async fn execute(
     request: PreparedRequest,
     resolution: &Resolution,
@@ -110,4 +111,4 @@ fn wire_request(request: &PreparedRequest) -> Result<http::Request<Full<Bytes>>,
     Ok(output)
 }
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

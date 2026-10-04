@@ -1,0 +1,53 @@
+// Author-only asynchronous successor candidate; production WIT remains unchanged.
+package clat:net-task@0.1.0;
+interface egress {
+    use wasi:io/poll@0.2.10.{pollable};
+    enum failure {
+        invalid-request, capability-denied, permission-denied, blocked-address,
+        name-resolution-failed, invalid-resolution, deadline-exceeded, cancelled,
+        transport-failed, limit-exceeded, unsupported, consumed,
+    }
+    enum address-family { ipv4, ipv6 }
+    record address { ip: string, family: address-family }
+    record header { name: string, value: string }
+    enum method { get, head, post, put, patch, delete, options }
+    record request {
+        url: string, verb: method, headers: list<header>, body: list<u8>,
+        timeout-ms: u32, max-response-bytes: u32,
+    }
+    resource resolution {
+        addresses: func() -> result<list<address>, failure>;
+        dns64-answers: func() -> result<list<address>, failure>;
+    }
+    resource response {
+        status: func() -> result<u16, failure>;
+        headers: func() -> result<list<header>, failure>;
+        cancel: func();
+    }
+    record chunk { response: response, bytes: list<u8> }
+    variant outcome { resolved(resolution), headers(response), body(chunk) }
+    resource task {
+        get: func() -> option<result<outcome, failure>>;
+        subscribe: func() -> result<pollable, failure>;
+        cancel: func();
+    }
+    dns-start: func(origin: string, timeout-ms: u32) -> result<task, failure>;
+    // Owned transfer: credentials cannot be reused; read ownership is sequential.
+    http-start: func(target: resolution, request: request) -> result<task, failure>;
+    read-start: func(response: response, max-bytes: u32) -> result<task, failure>;
+}
+world typed-client {
+    import egress;
+    export run: func(scenario: string) -> string;
+}
+
+world plugin-client {
+ import egress;
+ import clat:plugin/config@0.1.0;
+ export clat:plugin/tools@0.1.0;
+}
+
+world tools-consumer {
+ import clat:plugin/config@0.1.0;
+ export clat:plugin/tools@0.1.0;
+}

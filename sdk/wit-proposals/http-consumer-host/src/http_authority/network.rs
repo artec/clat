@@ -100,3 +100,24 @@ impl NetworkScope {
         admission.submit(dns).map_err(Error::Authority)
     }
 }
+
+impl NetworkScope {
+    pub(crate) async fn http(
+        &self,
+        request: super::PreparedRequest,
+        resolution: &crate::dns_authority::Resolution,
+        timeout: Duration,
+        max: usize,
+    ) -> Result<super::transport::StreamResponse, super::transport::Failure> {
+        super::transport::open(
+            request,
+            resolution,
+            &self.scope,
+            &self.gate,
+            &self.cancel,
+            timeout,
+            max,
+        )
+        .await
+    }
+}

@@ -11,7 +11,7 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
 };
-static LOCK: Mutex<()> = Mutex::new(());
+pub(crate) static LOCK: Mutex<()> = Mutex::new(());
 #[test]
 fn core_gate_dns_http_share_actual_factory_plan_guard_and_safe_fields() {
     let _lock = LOCK.lock().unwrap();

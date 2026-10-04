@@ -350,3 +350,236 @@ fn stream_dropped_read_future_aborts_response_before_resource_drop() {
         .unwrap();
     });
 }
+
+#[test]
+fn resource_owner_closes_idle_http_on_close_drop_run_or_plan() {
+    let _lock = LOCK.lock().unwrap();
+    runtime().block_on(async {
+        for trigger in 0..5 {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let origin = format!(
+                "http://stream.invalid:{}",
+                listener.local_addr().unwrap().port()
+            );
+            let (run, scope, request, res) = setup(&origin, Duration::from_secs(2));
+            let (gate, _) = gate(PermissionMode::FullAccess, true, false);
+            let server = async {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                read_request(&mut socket).await;
+                socket
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nx")
+                    .await
+                    .unwrap();
+                let mut rest = vec![];
+                tokio::time::timeout(Duration::from_millis(250), socket.read_to_end(&mut rest))
+                    .await
+                    .expect("owner boundary must close idle socket without body read")
+                    .unwrap();
+            };
+            let client = async {
+                let response = open(
+                    request,
+                    &res,
+                    &scope,
+                    &gate,
+                    &CancelToken::new(),
+                    Duration::from_secs(1),
+                    2,
+                )
+                .await
+                .unwrap();
+                let network = crate::http_authority::network::NetworkScope::begin_tool(
+                    &run,
+                    Fence::new(Some(&[origin.as_str()]), None).unwrap(),
+                    Arc::new(gate.clone()),
+                    CancelToken::new(),
+                    Instant::now() + Duration::from_secs(1),
+                )
+                .unwrap();
+                let mut owner = crate::network_resources::Owner::new(network.scope());
+                owner.insert(response).unwrap();
+                match trigger {
+                    0 => {
+                        owner.close().unwrap();
+                        assert_eq!(owner.len(), 0);
+                    }
+                    1 => drop(owner),
+                    2 => {
+                        run.invalidate();
+                        assert!(owner.check().is_err());
+                        assert_eq!(owner.len(), 0);
+                    }
+                    3 => {
+                        gate.fixture.as_ref().unwrap().set_plan(true);
+                        assert!(owner.check().is_err());
+                        assert_eq!(owner.len(), 0);
+                    }
+                    _ => {
+                        drop(network);
+                        assert!(owner.check().is_err());
+                        assert_eq!(owner.len(), 0);
+                    }
+                }
+                let held: Vec<_> = (0..8).map(|_| reserve().unwrap()).collect();
+                drop(held);
+            };
+            tokio::time::timeout(Duration::from_secs(2), async {
+                tokio::join!(client, server);
+            })
+            .await
+            .unwrap();
+        }
+    });
+}
+
+#[test]
+fn resource_task_read_ready_drop_cancels_real_socket_and_discards_result() {
+    let _lock = LOCK.lock().unwrap();
+    runtime().block_on(async {
+        for ready_then_cancel in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let origin = format!(
+                "http://stream.invalid:{}",
+                listener.local_addr().unwrap().port()
+            );
+            let (_run, scope, request, res) = setup(&origin, Duration::from_secs(2));
+            let (gate, _) = gate(PermissionMode::FullAccess, true, false);
+            let server = async {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                read_request(&mut socket).await;
+                socket
+                    .write_all(if ready_then_cancel {
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nx"
+                    } else {
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n"
+                    })
+                    .await
+                    .unwrap();
+                let mut rest = vec![];
+                tokio::time::timeout(Duration::from_millis(250), socket.read_to_end(&mut rest))
+                    .await
+                    .unwrap()
+                    .unwrap();
+            };
+            let client = async {
+                let response = open(
+                    request,
+                    &res,
+                    &scope,
+                    &gate,
+                    &CancelToken::new(),
+                    Duration::from_secs(1),
+                    2,
+                )
+                .await
+                .unwrap();
+                let mut task = crate::network_resources::Task::read(
+                    &scope,
+                    response,
+                    1,
+                    Instant::now() + Duration::from_secs(1),
+                );
+                if ready_then_cancel {
+                    task.ready().await;
+                    task.cancel();
+                } else {
+                    assert!(
+                        tokio::time::timeout(Duration::from_millis(20), task.ready())
+                            .await
+                            .is_err()
+                    );
+                }
+                assert!(matches!(task.get(), Some(Err(_))));
+                let held: Vec<_> = (0..8).map(|_| reserve().unwrap()).collect();
+                drop(held);
+            };
+            tokio::time::timeout(Duration::from_secs(2), async {
+                tokio::join!(client, server);
+            })
+            .await
+            .unwrap();
+        }
+    });
+}
+
+#[test]
+fn resource_task_http_and_read_share_typed_private_result_chain() {
+    let _lock = LOCK.lock().unwrap();
+    runtime().block_on(async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!(
+            "http://stream.invalid:{}",
+            listener.local_addr().unwrap().port()
+        );
+        let (run, _old_scope, request, _old_res) = setup(&origin, Duration::from_secs(2));
+        let (gate, _) = gate(PermissionMode::FullAccess, true, false);
+        let network = Arc::new(
+            crate::http_authority::network::NetworkScope::begin_tool(
+                &run,
+                Fence::new(Some(&[origin.as_str()]), None).unwrap(),
+                Arc::new(gate),
+                CancelToken::new(),
+                Instant::now() + Duration::from_secs(1),
+            )
+            .unwrap(),
+        );
+        let resolution = test_resolution(
+            network.scope(),
+            Origin::parse(&origin).unwrap(),
+            vec!["127.0.0.1".parse().unwrap()],
+            Instant::now() + Duration::from_secs(1),
+        );
+        let server = async {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            read_request(&mut socket).await;
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nx")
+                .await
+                .unwrap();
+            let mut rest = vec![];
+            tokio::time::timeout(Duration::from_millis(250), socket.read_to_end(&mut rest))
+                .await
+                .unwrap()
+                .unwrap();
+        };
+        let client = async {
+            let mut task = crate::network_resources::Task::http(
+                network.clone(),
+                resolution,
+                request,
+                Duration::from_secs(1),
+                2,
+            )
+            .unwrap();
+            assert!(task.get().is_none());
+            task.ready().await;
+            let crate::network_resources::Outcome::Response(mut response) =
+                task.get().unwrap().unwrap()
+            else {
+                panic!("typed response expected")
+            };
+            assert_eq!(response.status().unwrap(), 200);
+            assert!(task.get().unwrap().is_err());
+            let mut read = crate::network_resources::Task::read(
+                network.scope(),
+                response,
+                1,
+                Instant::now() + Duration::from_secs(1),
+            );
+            read.ready().await;
+            let crate::network_resources::Outcome::Read(response, bytes) =
+                read.get().unwrap().unwrap()
+            else {
+                panic!("typed read expected")
+            };
+            assert_eq!(bytes, b"x");
+            assert!(read.get().unwrap().is_err());
+            drop(response);
+        };
+        tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(client, server);
+        })
+        .await
+        .unwrap();
+    });
+}

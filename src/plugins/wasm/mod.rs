@@ -974,6 +974,23 @@ impl WasmAdapterPlugin {
     }
 }
 
+fn legacy_linker(engine: &Engine) -> Result<Linker<PluginState>, PluginError> {
+    let mut linker: Linker<PluginState> = Linker::new(engine);
+    // WASI 接口（能力边界在 WasiCtx：preopen 授予按档位求值，
+    // INV-G1/G2）。W1-10：monotonic-clock 换有界实现（默认实现对
+    // 远期时长永久阻塞宿主线程，取消/燃料不可达）。
+    add_wasi_to_linker_bounded_clocks(&mut linker)
+        .map_err(|error| PluginError::new(format!("wasi linker: {error}")))?;
+    // v48 绑定约定：D = HasSelf<PluginState>（Data<'a> = &'a mut
+    // PluginState，Host 经 &mut 转发到 PluginState 的实现）。
+    Plugin::add_to_linker::<PluginState, wasmtime::component::HasSelf<PluginState>>(
+        &mut linker,
+        |state: &mut PluginState| state,
+    )
+    .map_err(|error| PluginError::new(format!("wasm linker: {error}")))?;
+    Ok(linker)
+}
+
 impl PluginTrait for WasmAdapterPlugin {
     fn descriptor(&self) -> &'static PluginDescriptor {
         &DESCRIPTOR
@@ -1012,19 +1029,7 @@ impl PluginTrait for WasmAdapterPlugin {
         let engine = Engine::new(&engine_config)
             .map_err(|error| PluginError::new(format!("wasmtime engine: {error}")))?;
 
-        let mut linker: Linker<PluginState> = Linker::new(&engine);
-        // WASI 接口（能力边界在 WasiCtx：preopen 授予按档位求值，
-        // INV-G1/G2）。W1-10：monotonic-clock 换有界实现（默认实现对
-        // 远期时长永久阻塞宿主线程，取消/燃料不可达）。
-        add_wasi_to_linker_bounded_clocks(&mut linker)
-            .map_err(|error| PluginError::new(format!("wasi linker: {error}")))?;
-        // v48 绑定约定：D = HasSelf<PluginState>（Data<'a> = &'a mut
-        // PluginState，Host 经 &mut 转发到 PluginState 的实现）。
-        Plugin::add_to_linker::<PluginState, wasmtime::component::HasSelf<PluginState>>(
-            &mut linker,
-            |state: &mut PluginState| state,
-        )
-        .map_err(|error| PluginError::new(format!("wasm linker: {error}")))?;
+        let linker = legacy_linker(&engine)?;
         let linker = Arc::new(linker);
 
         // 逐插件加载（INV-W5：失败隔离——坏插件记入状态，其余照常）。

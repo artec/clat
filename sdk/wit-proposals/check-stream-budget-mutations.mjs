@@ -1,3 +1,4 @@
+import {copyAuthor} from './author-copy.mjs'
 // Author-only deletion checks. Never mutate the shared working tree.
 import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
@@ -59,7 +60,8 @@ const temporary = await mkdtemp(path.join(tmpdir(), 'clat-network-http-deletion-
 const evidence = []
 try {
   const copy = path.join(temporary, 'host')
-  await cp(source, copy, { recursive: true })
+  await copyAuthor(source, copy, root)
+  await cp(path.join(here, 'typed-task'), path.join(temporary, 'typed-task'), { recursive: true })
   // Cargo can reuse a same-name standalone crate's fingerprint in a shared target.
   // Give the isolated mutant its own package/artifact identity; share dependencies only.
   const packageName = 'clat-plg4-http-consumer-host'
@@ -87,11 +89,11 @@ try {
   const final = await run(path.join(source, 'Cargo.toml'), '')
   await writeFile(path.join(output, 'canonical-green.log'), final.log)
   assert.equal(final.code, 0)
-  assert.match(final.log, /88 passed; 0 failed/)
+  assert.match(final.log, /147 passed; 0 failed/)
   for (const [file, original] of originals) {
     assert.equal(await readSource(path.join(source, 'src', file)), original, 'shared source unchanged')
   }
-  await writeFile(path.join(output, 'report.json'), JSON.stringify({ deletions: evidence, canonicalPassed: 88,
+  await writeFile(path.join(output, 'report.json'), JSON.stringify({ deletions: evidence, canonicalPassed: 147,
     fullD1AttackMatrixComplete: false }, null, 2)+'\n')
 } finally {
   await rm(temporary, { recursive: true, force: true })
