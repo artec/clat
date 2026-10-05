@@ -25,20 +25,19 @@
       </div>
       <p class="eyebrow">A local agent, at the project boundary</p>
       <h1>Return to your<br><em>working context.</em></h1>
-      <p class="landing-intro">Pair this browser once with the local token stored at
-        <code>~/.clat/web-token</code>. The credential stays out of the URL and is retained only
-        for this exact local origin.</p>
+      <p class="landing-intro">Remote access requires the credential supplied privately by your
+        host operator. Local access connects automatically.</p>
       <form id="connect-form">
-        <label for="connect-token">Local pairing token</label>
+        <label for="connect-token">Remote access credential</label>
         <div class="connect-row">
-          <input id="connect-token" type="password" placeholder="Paste ~/.clat/web-token"
+          <input id="connect-token" type="password" placeholder="Enter access credential"
                  autocomplete="off" spellcheck="false" aria-describedby="connect-help">
-          <button type="submit" class="primary">Pair browser</button>
+          <button type="submit" class="primary">Connect securely</button>
         </div>
       </form>
       <p id="connect-error" class="error" role="alert"></p>
       <p id="connect-help" class="landing-hint"><code>clat serve</code> · loopback only ·
-        default port 2691 · rotate with <code>--rotate-token</code></p>
+        default port 2691 · local access is automatic</p>
     </section>
   </main>
 </div>

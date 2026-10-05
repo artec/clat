@@ -3,7 +3,7 @@
 //! 便利在资产个位数时不值一个依赖）。
 //!
 //! 静态 shell 不含凭据，可从固定的干净 URL 冷启动；API 与 SSE 仍在
-//! Bearer token 闸之后。资产不做运行期替换，因此 token 不可能进入
+//! 本地信任/远程凭证闸之后。资产不做运行期替换，因此 token 不可能进入
 //! manifest、图标 URL、浏览历史或 referrer。
 
 use std::borrow::Cow;

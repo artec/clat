@@ -1,8 +1,8 @@
 /* CLAT web workbench — a thin projection of Application/RPC/SSE facts.
  *
  * RF-1/RF-5: browser persistence contains presentation preferences and one
- * origin-scoped pairing token. The origin includes the serve port, so another
- * local HTTP service cannot read it. Session content, run state, permission mode, model and MCP
+ * private HttpOnly browser session. Raw credentials are never newly persisted.
+ * Local requests enter through the host protocol trust fence. Session content, run state, permission mode, model and MCP
  * state are rebuilt from serve. Dynamic model/tool text is written through
  * text nodes and DOM construction; this file never uses innerHTML.
  */
@@ -307,16 +307,14 @@ function show(node) { node.classList.remove('hidden'); }
 function hide(node) { node.classList.add('hidden'); }
 
 function readAuthToken() {
-  const token = localStorage.getItem(AUTH_KEY);
-  return token && token.trim() ? token : '';
-}
-
-function saveAuthToken(token) {
-  localStorage.setItem(AUTH_KEY, token);
+  try {
+    const token = localStorage.getItem(AUTH_KEY);
+    return token && token.trim() ? token : '';
+  } catch (_) { return ''; }
 }
 
 function clearAuthToken() {
-  localStorage.removeItem(AUTH_KEY);
+  try { localStorage.removeItem(AUTH_KEY); } catch (_) { /* migration storage is optional */ }
 }
 
 function readPresentationPreference() {
@@ -452,6 +450,10 @@ applyPresentation();
 
 /* —— RPC and stream transport ————————————————————————————— */
 
+function authHeaders() {
+  return state.token ? { Authorization: 'Bearer ' + state.token } : {};
+}
+
 async function rpc(method, params) {
   if (Number.isSafeInteger(state.selectionGeneration) && [
     'session.new', 'session.switch', 'session.rename', 'session.compact', 'permission.set',
@@ -462,7 +464,7 @@ async function rpc(method, params) {
   const response = await fetch(workspacePrefix + '/api/' + method, {
     method: 'POST',
     headers: {
-      Authorization: 'Bearer ' + state.token,
+      ...authHeaders(),
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(params || {}),
@@ -474,6 +476,7 @@ async function rpc(method, params) {
   if (body.ok) return body.value;
   const error = new Error((body.error && body.error.message) || 'request failed');
   error.code = (body.error && body.error.code) || 'internal';
+  error.authentication = body.error && body.error.authentication;
   throw error;
 }
 
@@ -500,12 +503,14 @@ async function openStream() {
   const controller = new AbortController();
   state.stream = controller;
   const response = await fetch(workspacePrefix + '/api/events', {
-    headers: { Authorization: 'Bearer ' + state.token },
+    headers: authHeaders(),
     signal: controller.signal,
   });
   if (!response.ok || !response.body) {
+    const reply = await response.json().catch(() => null);
     throw Object.assign(new Error('event stream rejected: HTTP ' + response.status), {
-      code: response.status === 401 || response.status === 403 ? 'unauthorized' : 'internal',
+      code: reply?.error?.code || 'internal',
+      authentication: reply?.error?.authentication,
     });
   }
   const reader = response.body.getReader();
@@ -550,11 +555,10 @@ async function connect() {
     state.runActive = false;
     updateRunState('');
     updateRunDetail();
-    if (error.code === 'unauthorized') {
-      setConnStatus('pairing required', 'failed');
+    if (error.authentication === 'invalid_credentials') {
       state.token = '';
       clearAuthToken();
-      stopApp();
+      await boot();
       return;
     }
     setConnStatus('reconnecting…', 'reconnecting');
@@ -1100,7 +1104,7 @@ async function loadTranscriptImage(img, attachment) {
     // race into a permanent “unavailable” thumbnail.
     for (let attempt = 0; attempt < 8; attempt += 1) {
       response = await fetch(`${workspacePrefix}/api/attachments/${encodeURIComponent(attachment.attachment_id)}`, {
-        headers: { Authorization: 'Bearer ' + state.token },
+        headers: authHeaders(),
         cache: 'no-store',
       });
       if (response.ok || (response.status !== 404 && response.status !== 503)) break;
@@ -3068,7 +3072,7 @@ async function uploadDraftImage(image, epoch) {
     const response = await fetch(`${workspacePrefix}/api/drafts/${encodeURIComponent(scope.draftScopeId)}/images`, {
       method: 'POST',
       headers: {
-        Authorization: 'Bearer ' + state.token,
+        ...authHeaders(),
         'Content-Type': image.type,
         'X-CLAT-Display-Name': image.uploadName,
       },
@@ -3370,56 +3374,77 @@ dom.cancel.addEventListener('click', async () => {
 
 /* —— Landing and boot ————————————————————————————————————— */
 
+async function authenticate(credential = '') {
+  const response = await fetch('/auth', {
+    method: 'POST', credentials: 'same-origin',
+    headers: credential ? { Authorization: 'Bearer ' + credential } : {}, body: '',
+  });
+  if (response.ok) return;
+  const reply = await response.json().catch(() => null);
+  throw Object.assign(new Error(reply?.error?.message || 'HTTP ' + response.status), {
+    code: reply?.error?.code || 'internal', authentication: reply?.error?.authentication,
+  });
+}
+
+function enterWorkbench() {
+  state.token = '';
+  hide(dom.landing);
+  show(dom.app);
+  connect();
+}
+
 dom['connect-form'].addEventListener('submit', async (event) => {
   event.preventDefault();
-  const token = dom['connect-token'].value.trim();
+  const credential = dom['connect-token'].value.trim();
   dom['connect-error'].textContent = '';
-  if (!token) {
-    dom['connect-error'].textContent = 'Paste the token from ~/.clat/web-token.';
+  if (!credential) {
+    dom['connect-error'].textContent = 'Enter the access credential supplied by your host operator.';
     return;
   }
   const button = dom['connect-form'].querySelector('button[type="submit"]');
   button.disabled = true;
   try {
-    const response = await fetch('/auth', {
-      method: 'POST',
-      headers: { Authorization: 'Bearer ' + token },
-      body: '',
-    });
-    if (!response.ok) {
-      dom['connect-error'].textContent = response.status === 401
-        ? 'That token does not match this CLAT server.'
-        : 'Pairing failed: HTTP ' + response.status + '.';
-      return;
-    }
+    await authenticate(credential);
+    clearAuthToken(); // successful migration never retains the raw credential
+    dom['connect-token'].value = '';
+    enterWorkbench();
   } catch (error) {
-    dom['connect-error'].textContent = 'Pairing failed: ' + error.message;
-    return;
+    if (error.authentication === 'invalid_credentials') clearAuthToken();
+    dom['connect-error'].textContent = 'Connection failed: ' + error.message;
   } finally {
     button.disabled = false;
   }
-  saveAuthToken(token);
-  state.token = token;
-  dom['connect-token'].value = '';
-  hide(dom.landing);
-  show(dom.app);
-  connect();
 });
 
-(function boot() {
-  // Migrate an already-installed pre-clean-URL PWA without treating its old
-  // query token as a credential. The public shell can now load and pair.
+async function boot() {
   sessionStorage.removeItem('clat.connect');
   const current = new URL(location.href);
   if (current.searchParams.has('t')) {
     current.searchParams.delete('t');
     history.replaceState(null, '', current.pathname + current.search + current.hash);
   }
-  state.token = readAuthToken();
-  if (!state.token) {
-    show(dom.landing);
-    return;
+  state.token = readAuthToken(); // one-time migration of pre-UX-1 installations
+  try {
+    try { await authenticate(state.token); }
+    catch (error) {
+      if (error.authentication !== 'invalid_credentials' || !state.token) throw error;
+      clearAuthToken();
+      state.token = '';
+      await authenticate(); // local trust recovers silently from stale credentials
+    }
+    if (state.token) clearAuthToken();
+    enterWorkbench();
+  } catch (error) {
+    if (error.authentication === 'invalid_credentials') clearAuthToken();
+    if (error.code === 'forbidden' || error.authentication === 'invalid_credentials') {
+      dom['connect-error'].textContent = error.authentication === 'untrusted_request'
+        ? 'This request did not pass the host security checks.' : '';
+      stopApp();
+    } else {
+      show(dom.app);
+      setConnStatus('reconnecting…', 'reconnecting');
+      setTimeout(boot, 3000);
+    }
   }
-  show(dom.app);
-  connect();
-})();
+}
+boot();

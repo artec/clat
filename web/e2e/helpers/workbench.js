@@ -22,9 +22,7 @@ async function openWorkbench(page, entry) {
   try {
     await page.goto(`${entry.origin}/`);
     await expect(page).toHaveURL(`${entry.origin}/`);
-    await expect(page.locator('#landing')).toBeVisible(LIVE);
-    await page.fill('#connect-token', entry.token);
-    await page.click('#connect-form button[type="submit"]');
+    await expect(page.locator('#landing')).toBeHidden(LIVE);
     await expect(page.locator('#conn-status')).toHaveText('live', LIVE);
   } catch (error) {
     console.error('Workbench startup diagnostics:', JSON.stringify(diagnostics));
@@ -40,4 +38,19 @@ async function openWorkbenchTool(page, id) {
   await page.click('#' + id);
 }
 
-module.exports = { LIVE, hostInfo, openWorkbench, openWorkbenchTool };
+// route.fetch uses an API client; forward the original complete browser
+// headers explicitly, including Fetch Metadata required by the CSRF fence.
+async function fetchBrowserRequest(route) {
+  const request = route.request();
+  const headers = await request.allHeaders();
+  // Chromium omits Fetch Metadata on intercepted requests. Restore same-origin
+  // metadata only when both the actual frame and Origin agree with the target.
+  const target = new URL(request.url()).origin;
+  if (!headers['sec-fetch-site'] && headers.origin === target
+      && new URL(request.frame().url()).origin === target) {
+    headers['sec-fetch-site'] = 'same-origin';
+  }
+  return route.fetch({ headers });
+}
+
+module.exports = { LIVE, hostInfo, openWorkbench, openWorkbenchTool, fetchBrowserRequest };

@@ -326,3 +326,18 @@ lookups. Cache tests must release directory capabilities before removing their
 fixture trees. The cache ownership regression keeps both compiled and loaded
 components alive while replacing and deleting cache artifacts, then instantiates
 both components to verify that production code owns no cache file handles.
+
+### Local browser authentication and handoff
+
+The web E2E helper opens a fresh local workbench without pairing or seeded
+credentials. Browser authentication tests cover silent session exchange,
+localhost canonicalization, legacy storage migration/unavailability, and
+credential-error classification. Intercepted Chromium requests omit Fetch
+Metadata: `fetchBrowserRequest` forwards full headers and restores same-origin
+metadata only when the real frame, Origin, and target agree. It never changes
+the production fence. Socket tests independently reject absent browser metadata,
+cross-site requests, and unknown uncredentialed authorities before body reads.
+The macOS lifecycle probe records the system opener instead of opening windows;
+ordinary lifecycle children suppress browser handoff. Manual GUI validation
+checks the real default browser separately. A stop response precedes complete
+teardown, so fixed-port tests wait for both listener and storage lease release.

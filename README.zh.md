@@ -46,9 +46,10 @@ clat upgrade --check
 | 插件管理器 | 浏览签名市场，安装、更新、审计或回滚插件包 | `clat plugin` / [pi.at.cn](https://pi.at.cn) |
 | 离线演示 | 无凭据验证核心循环 | `clat demo` |
 
-`clat serve` 默认只绑定 `127.0.0.1:2691`。API 使用持久化的
-`~/.clat/web-token` Bearer 凭据，token 不进入 URL；同一个二进制还会
-直接服务响应式三栏 PWA。
+`clat serve` 默认只绑定 `127.0.0.1:2691`，并自动用默认浏览器打开
+响应式 PWA。本地通过 Host/Origin/Fetch Metadata 三查后无感进入；远程
+authority 必须持有效凭据。浏览器只保存私有 HttpOnly 会话，凭据不进入
+URL。使用 `--no-open` 可关闭自动打开浏览器。
 可选的微信前端只走官方 iLink；必须显式扫码绑定、配对用户，并以
 `clat serve --im wechat` 启动，否则保持关闭。
 

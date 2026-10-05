@@ -2,14 +2,15 @@
 //!
 //! 给已存在的 Application facade 开一扇网络的窗：四象限 RPC、事件流
 //! 即 PWA-1 的 v1 wire 换载体（INV-S2 零转译）、审批回调即 approver
-//! 注入点的网络化（INV-S3）。全部新代码落在本前端层，依赖方向
-//! serve → core 单向。
+//! 注入点的网络化（INV-S3）。本模块属于 clat-core 的宿主协议入口，
+//! 不依赖终端 frontend。
 //!
 //! 不变量（INV-S1…S8，oracle 见设计文档 §10）：
 //! - INV-S1 三闸 fail-closed：只绑 127.0.0.1（无 `--host`——安全边界
-//!   不是配置项）；API 请求必须精确匹配 Bearer；缺省
+//!   不是配置项）；本地 Host/Origin/Fetch Metadata 三查通过即无感访问；
+//!   远程 authority 须精确 Bearer 或签名会话，跨站凭证不豁免；
 //!   token 仅持久化为 `~/.clat/web-token` 0600，不进 URL/日志/journal；
-//!   带 Origin 必属允许集，不发 CORS 头。
+//!   浏览器只持 HttpOnly 会话，不发 CORS 头。
 //! - INV-S6 单 run 互斥：busy 即拒；每次受理恰一 `prompt.settled`。
 //! - INV-S7 背压有界：SSE 每连接 1024 帧，满即断连；run worker 永不
 //!   因慢消费者阻塞。
@@ -19,6 +20,7 @@
 //! Ctrl-C 处理器）注入（exec 同款纪律）。
 
 pub(crate) mod approver;
+mod auth;
 mod http;
 mod models;
 mod plugins;
@@ -230,6 +232,8 @@ pub struct ServeArgs {
     pub token: Option<String>,
     /// 显式轮换持久 token；与 `--token` 互斥。
     pub rotate_token: bool,
+    /// Suppress automatic system browser handoff.
+    pub no_open: bool,
     /// 显式启用的 IM 前端。缺省 None，保证普通 serve 零 IM 路径。
     pub im: Option<ImBackend>,
 }
@@ -241,6 +245,7 @@ impl Default for ServeArgs {
             port: DEFAULT_SERVE_PORT,
             token: None,
             rotate_token: false,
+            no_open: false,
             im: None,
         }
     }
@@ -258,6 +263,7 @@ where
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--trust" => parsed.trust = true,
+            "--no-open" => parsed.no_open = true,
             "--port" => {
                 let value = iter
                     .next()
@@ -298,6 +304,7 @@ where
 
 /// 生产入口（main.rs 挂 `Some("serve")`）。阻塞直到关停旗置位。
 pub fn run_serve_with_shutdown(args: ServeArgs, shutdown: Arc<AtomicBool>) -> i32 {
+    let no_open = args.no_open;
     let project = match Project::current() {
         Ok(project) => project,
         Err(error) => {
@@ -323,13 +330,10 @@ pub fn run_serve_with_shutdown(args: ServeArgs, shutdown: Arc<AtomicBool>) -> i3
         "clat serve listening on http://127.0.0.1:{}/",
         handle.addr.port()
     );
-    match &handle.token_path {
-        Some(path) => println!(
-            "Pair this browser once with the token in {}.",
-            path.display()
-        ),
-        None => println!("Pair this browser once with the explicit --token value."),
-    }
+    crate::host_client::browser::open(
+        &format!("http://127.0.0.1:{}/", handle.addr.port()),
+        no_open,
+    );
     println!("Press Ctrl-C to stop.");
     serve_join_exit(handle)
 }
@@ -663,99 +667,7 @@ fn handle_connection(mut stream: TcpStream, shared: Arc<state::ServeShared>) {
         Err(http::HttpReadError::Io) => return,
     };
 
-    // DNS-rebinding fence: loopback bind alone is not enough when a hostile
-    // hostname resolves to 127.0.0.1. The browser-visible authority must be
-    // one of the two exact origins we advertise, including the bound port.
-    let allowed_hosts = [
-        format!("localhost:{}", shared.port),
-        format!("127.0.0.1:{}", shared.port),
-    ];
-    if !allowed_hosts.contains(&request.host.to_ascii_lowercase()) {
-        let _ = write_json(
-            &mut stream,
-            403,
-            protocol::rpc_result_json(&Err(protocol::RpcError {
-                code: protocol::ErrorCode::Forbidden,
-                message: "host is not allowed".into(),
-                receipt: None,
-            })),
-        );
-        return;
-    }
-
-    // INV-S1c Origin 闸：带头必属允许集（跨站 fetch/form 必带 Origin
-    // 且为外域值——此闸对浏览器内恶意页成立）；不带（curl/同源导航）
-    // 放行至 token 闸。
-    if let Some(origin) = &request.origin {
-        let allowed = [
-            format!("http://localhost:{}", shared.port),
-            format!("http://127.0.0.1:{}", shared.port),
-        ];
-        if !allowed.contains(origin) {
-            let _ = write_json(
-                &mut stream,
-                403,
-                protocol::rpc_result_json(&Err(protocol::RpcError {
-                    code: protocol::ErrorCode::Forbidden,
-                    message: "origin is not allowed".into(),
-                    receipt: None,
-                })),
-            );
-            return;
-        }
-    }
-
-    // 静态 shell 是无凭据引导面：它不含 token、不暴露 API 数据，允许
-    // PWA 从干净 URL 冷启动并呈现一次配对页。Origin 闸仍先执行。
-    if request.method == "GET"
-        && let Some((bytes, content_type)) = web_assets::asset(&request.path)
-    {
-        let _ = http::write_response_with_headers(
-            &mut stream,
-            200,
-            content_type,
-            &bytes,
-            &[
-                (
-                    "Content-Security-Policy",
-                    "default-src 'self'; img-src 'self' blob:; connect-src 'self' https://pi.at.cn; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'",
-                ),
-                ("Cache-Control", "no-store"),
-                ("Referrer-Policy", "no-referrer"),
-                ("X-Content-Type-Options", "nosniff"),
-            ],
-        );
-        return;
-    }
-
-    // 浏览器一次配对验证：只校验 Bearer、不回显 token。前端成功后把
-    // token 保存在当前 origin（包含端口）的 localStorage，后续仍只发
-    // Authorization。token 从不进入 URL 或 Cookie。
-    if request.method == "POST" && request.path == "/auth" {
-        if http::bearer_token(request.authorization.as_deref()).as_deref()
-            != Some(shared.token.as_str())
-        {
-            write_unauthorized(&mut stream);
-            return;
-        }
-        if request.content_length != 0 {
-            let _ = write_json(
-                &mut stream,
-                400,
-                protocol::rpc_result_json(&Err(protocol::RpcError::bad_request(
-                    "auth request body must be empty",
-                ))),
-            );
-            return;
-        }
-        let body = br#"{"ok":true}"#;
-        let _ = http::write_response_with_headers(
-            &mut stream,
-            200,
-            "application/json",
-            body,
-            &[("Cache-Control", "no-store")],
-        );
+    if !auth::admit(&mut stream, &request, &shared) {
         return;
     }
 
@@ -1049,13 +961,6 @@ fn authenticated_project(
     request: &mut http::HttpRequestHead,
     shared: Arc<state::ServeShared>,
 ) -> Option<Arc<state::ServeShared>> {
-    // INV-S1b token 闸：非引导请求只认 Bearer，精确匹配；query token
-    // 与 Cookie 均不具有鉴权语义。
-    let provided = http::bearer_token(request.authorization.as_deref());
-    if provided.as_deref() != Some(shared.token.as_str()) {
-        write_unauthorized(stream);
-        return None;
-    }
     if let Some(expected) = &request.expected_instance {
         let matches = shared
             .host
@@ -1115,18 +1020,6 @@ fn draft_upload_scope(path: &str) -> Option<&str> {
 fn attachment_read_id(path: &str) -> Option<&str> {
     let attachment_id = path.strip_prefix("/api/attachments/")?;
     (!attachment_id.is_empty() && !attachment_id.contains('/')).then_some(attachment_id)
-}
-
-fn write_unauthorized(stream: &mut TcpStream) {
-    let _ = write_json(
-        stream,
-        401,
-        protocol::rpc_result_json(&Err(protocol::RpcError {
-            code: protocol::ErrorCode::Unauthorized,
-            message: "missing or invalid authentication".into(),
-            receipt: None,
-        })),
-    );
 }
 
 fn write_json(stream: &mut TcpStream, status: u16, body: String) -> std::io::Result<()> {

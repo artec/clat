@@ -141,6 +141,15 @@ still required for unattended `--yes` execution.
 
 ### Server approval
 
+Local browser access is automatic behind exact loopback Host, matching or
+absent Origin, and non-cross-site Fetch Metadata checks. With Origin present,
+missing Fetch Metadata fails closed. Remote authorities require an explicit
+Bearer credential or an authority-bound, expiring HttpOnly session cookie;
+credentials never bypass cross-site checks. Browser localStorage no longer
+stores new raw access credentials. This authentication boundary does not grant
+project trust, approve tools, or change the permission mode. See
+[local server security](usage.md#security-boundary).
+
 `clat serve` publishes an `approval.requested` SSE frame. An authenticated
 client answers through `approval.respond`; the first answer wins and late
 answers receive `not-pending`. Cancellation, a ten-minute timeout, or losing
@@ -269,7 +278,7 @@ typed image tool result to the provider; journal and client events retain only
 the fenced reference and metadata, never the host path or image bytes.
 
 PWA draft upload ids follow a different boundary. They are random, short-lived,
-Bearer- and selection-generation-bound capabilities for pre-admission raw
+Host-authentication- and selection-generation-bound capabilities for pre-admission raw
 files. `prompt.send` and `steer.send` may reference those ids, but the browser
 cannot name a server path or turn an upload id into a durable attachment
 without core validation and the journal commit point. Session/project switch,

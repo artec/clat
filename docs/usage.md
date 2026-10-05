@@ -764,7 +764,8 @@ Start the loopback server from a trusted project:
 ```bash
 clat serve
 # listening on http://127.0.0.1:2691/
-# pair once with the token in ~/.clat/web-token
+# your default browser opens directly into the workbench
+clat serve --no-open             # print the URL without opening a browser
 
 clat serve --rotate-token
 clat serve --port 8099 --token <token>
@@ -930,22 +931,41 @@ owner.
   `0600` file, and reused across restarts.
 - `--rotate-token` atomically replaces it and revokes previously paired
   clients after the new server starts listening.
-- Credentials are never accepted in URL queries, cookies, manifests, static
-  assets, logs, or journals. Authenticated requests use
-  `Authorization: Bearer <token>`.
-- Requests carrying `Origin` must match the server's exact origin. No CORS
-  headers are emitted by the local server. The static shell CSP permits one
-  outbound public-data origin, `https://pi.at.cn`; its catalog request omits
-  credentials and cannot call the local API on behalf of that origin.
-- The token grants the entire local API. This is a single-user, local-machine
-  boundary, not multi-tenant authentication.
+- Long-lived credentials never appear in URL queries, cookies, manifests,
+  assets, logs, journals, or new browser storage. Script clients retain
+  `Authorization: Bearer <token>` support.
+- Local access is automatic when Host is exactly `127.0.0.1:<bound-port>` or
+  `localhost:<bound-port>`, Origin is absent or equals `http://<Host>`, and
+  Sec-Fetch-Site is `same-origin`, `same-site`, or `none`. Missing Fetch Metadata
+  is accepted only when Origin is absent (local command-line clients).
+  Cross-site requests and mismatched Origins are rejected even with credentials.
+- Other authorities require a valid Bearer credential or an unexpired signed
+  browser session bound to that exact authority. This reserves a remote access
+  gate; it does not add a remote listener or a `--host` option. An SSH-forwarded
+  loopback connection is treated as local; only forward it to trusted users.
+- No CORS headers are emitted. The shell CSP permits the public catalog at
+  `https://pi.at.cn`; catalog requests omit credentials.
+- The credential grants the entire API. This is a single-user boundary;
+  local processes are trusted, rather than authenticated as separate users.
 
-The static pairing shell and assets are intentionally accessible without a
-credential so an installed PWA can always open `/`. They expose no project or
-session data. On first use, paste the token from `~/.clat/web-token`; the app
-checks it through `POST /auth` and stores its paired copy only in
-origin-scoped browser localStorage. An origin includes the port, so a custom
-port has separate pairing state.
+`POST /auth` silently establishes a local browser session. Remote pairing
+accepts an operator-supplied credential in Authorization and exchanges it for
+an authority-bound, 30-day HMAC-SHA256 session cookie: HttpOnly, SameSite=Strict,
+host-only, and separately named per port. The cookie contains no original
+credential. Rotation revokes remote sessions; local access recovers silently.
+Old browser localStorage credentials migrate once and are removed after a
+successful exchange. Explicit `invalid_credentials` errors clear legacy
+credentials; an ordinary unauthorized/policy error retains them and retries.
+Credentials for remote access must be delivered privately out of band, never
+in a URL. Remote TLS/Secure-cookie deployment remains a separate feature.
+
+Static navigation through localhost redirects to 127.0.0.1, preserving the
+workspace selector and discarding credential query parameters. Both spellings
+enter automatically. `clat serve` opens the clean URL in the system default
+browser; `clat host start [--trust] [--no-open]` opens only when it starts a new
+host. Automatic TUI host startup does not open a browser. SSH, CI, and detected
+non-graphical sessions suppress the handoff; opener failure falls back to the
+printed URL. Use `--no-open` for supervised services.
 
 ### Web workbench
 
@@ -995,8 +1015,8 @@ process-display choices are browser-only preferences, not session policy.
 
 The embedded zero-build PWA provides a session sidebar, conversation surface,
 and project/model/run/MCP inspector. On narrow screens the side surfaces
-become drawers. Browser storage is limited to presentation preferences and the
-pairing credential; session content, run state, permission mode, model state,
+become drawers. Browser storage is limited to presentation preferences and a
+private HttpOnly session cookie; session content, run state, permission mode, model state,
 and MCP facts are rebuilt from authenticated snapshots, journal replay, and
 live events.
 Message bodies render a safe Markdown subset (headings, lists, tables, quotes,
@@ -1179,12 +1199,12 @@ signed local `clat plugin market` workflow documented in
 
 The manifest and all asset URLs are credential-free. With the default stable
 port and persistent token, an installed PWA survives normal server restarts.
-Token rotation returns it to the pairing screen. There is no offline data
+Local access survives credential rotation silently; remote sessions need a new credential exchange. There is no offline data
 mode; without a running server the shell cannot load conversations.
 
 Changing the port changes the browser origin. An app installed from the old
 port keeps opening that old origin; it is not redirected automatically. Open
-the new `http://127.0.0.1:<port>/` in a browser, pair again for that origin, and
+the new `http://127.0.0.1:<port>/` in a browser, connect automatically, and
 install that origin as a separate app if a standalone window is desired. The
 old app can then be removed independently.
 

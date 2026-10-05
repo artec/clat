@@ -119,7 +119,7 @@ fn print_help() {
     println!();
     println!("Commands:");
     println!("  standalone       Run the traditional TUI without a background host");
-    println!("  host start      Start or attach to the background host [--trust]");
+    println!("  host start      Start or attach to the background host [--trust] [--no-open]");
     println!("  host status|stop Inspect or explicitly stop the host (--port <n>)");
     println!("  exec [PROMPT]    Run one agent turn headlessly and print the reply on stdout");
     println!("  dsh              Open the TUI as a client of a local DSH web host");
@@ -135,6 +135,7 @@ fn print_help() {
     println!("  -V, --version    Print version");
     println!();
     println!("Serve options:");
+    println!("  --no-open        Print the URL without opening the system browser");
     println!("  --port <n>       Port to bind on 127.0.0.1 (default 2691; 0 = pick free)");
     println!("  --token <t>      Temporary auth token (default: ~/.clat/web-token)");
     println!("  --rotate-token   Replace the persistent web token and revoke old clients");
@@ -179,7 +180,7 @@ where
     ExitCode::from(outcome.exit_code)
 }
 
-/// `clat serve [--port <n>] [--token <t> | --rotate-token]`：本地
+/// `clat serve [--no-open] [--port <n>] [--token <t> | --rotate-token]`：本地
 /// HTTP+SSE 前端。
 /// 信号处理器在进程边界安装一次：Ctrl-C 以及 Unix SIGTERM/SIGHUP
 /// 第一次触发优雅关停（accept 循环完整走关停序列），第二次强退。

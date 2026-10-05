@@ -6,7 +6,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const zlib = require('zlib');
-const { LIVE, hostInfo, openWorkbench } = require('../helpers/workbench');
+const { LIVE, hostInfo, openWorkbench, fetchBrowserRequest } = require('../helpers/workbench');
 
 async function chooseModel(page, label) {
   await page.click('#model-picker-trigger');
@@ -308,7 +308,7 @@ test('WEB-3 work summaries never contain answers interactive cards errors or ret
 test('WEB-3 same-content visual matrix keeps wide content and composer inside the viewport', async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.route('**/api/workbench.info', async (route) => {
-    const response = await route.fetch();
+    const response = await fetchBrowserRequest(route);
     const body = await response.json();
     body.value.model.model = '中文长模型名 · DeepSeek-V4-Long-Context-Preview';
     await route.fulfill({ response, json: body });
@@ -449,7 +449,7 @@ test('WEB-3 same-content visual matrix keeps wide content and composer inside th
 test('model picker hit area follows its label while long labels stay bounded beside Send', async ({ page }, testInfo) => {
   let model = { model: 'Qwen', thinking_level: 'low' };
   await page.route('**/api/workbench.info', async (route) => {
-    const response = await route.fetch();
+    const response = await fetchBrowserRequest(route);
     const body = await response.json();
     Object.assign(body.value.model, model);
     await route.fulfill({ response, json: body });
@@ -582,7 +582,7 @@ test('session actions support right click keyboard and more button', async ({ pa
 test('model intensity uses host choices and preserves the composer', async ({ page }, testInfo) => {
   let intensity = 'high';
   await page.route('**/api/model.settings.get', async (route) => {
-    const response = await route.fetch();
+    const response = await fetchBrowserRequest(route);
     const body = await response.json();
     body.value.current.thinking_levels = ['low', 'high', 'max'];
     body.value.current.thinking_level = intensity;
@@ -630,7 +630,7 @@ test('details context response cannot land in a newly selected session', async (
   let received;
   const arrived = new Promise((resolve) => { received = resolve; });
   await page.route('**/api/command.run', async (route) => {
-    const response = await route.fetch();
+    const response = await fetchBrowserRequest(route);
     received();
     await barrier;
     await route.fulfill({ response });
@@ -909,7 +909,7 @@ test('delayed utility policy reads cannot overwrite a saved policy', async ({ pa
       await route.continue();
       return;
     }
-    const response = await route.fetch();
+    const response = await fetchBrowserRequest(route);
     await gate.promise;
     await route.fulfill({ response });
   });
@@ -997,7 +997,7 @@ test(`delayed profile reads cannot overwrite newer form state: ${transition}`, a
   let requested;
   const started = new Promise((resolve) => { requested = resolve; });
   await page.route('**/api/model.profile.get', async (route) => {
-    const response = await route.fetch();
+    const response = await fetchBrowserRequest(route);
     requested();
     await barrier;
     await route.fulfill({ response });
@@ -1811,7 +1811,7 @@ test('stale command completion preserves and submits newer composer input', asyn
       return;
     }
     heldRefresh = true;
-    const response = await route.fetch();
+    const response = await fetchBrowserRequest(route);
     const body = await response.json();
     body.value.session.title = 'FL-F1 refresh applied';
     markRefreshBlocked();
@@ -1965,23 +1965,7 @@ test('sidebar connection indicator matches footer icon geometry and follows conn
   const footnote = page.locator('#sidebar-footnote');
   const footnoteIcon = page.locator('#sidebar-footnote > svg');
 
-  // 无 token：HTML 初始态 connecting，警告色图标已在 17px 网格上。
   await page.goto(`${entry.origin}/`);
-  await expect(page.locator('#landing')).toBeVisible(LIVE);
-  await expect(footnote).toHaveAttribute('data-state', 'connecting');
-  await expect(footnoteIcon).toHaveCSS('width', '17px');
-  await expect(footnoteIcon).toHaveCSS('color', 'rgb(240, 189, 90)');
-
-  // 假 token：自动重连被 401 拒绝 → failed 态（真实断线路径）。
-  await page.evaluate((token) => localStorage.setItem('clat.auth.v1', token), 'not-a-real-token');
-  await page.reload();
-  await expect(page.locator('#landing')).toBeVisible(LIVE);
-  await expect(footnote).toHaveAttribute('data-state', 'failed', LIVE);
-  await expect(footnoteIcon).toHaveCSS('color', 'rgb(255, 123, 112)');
-
-  // 真 token：live 态 + 与上方两枚操作图标同宽同列、行高同网格。
-  await page.fill('#connect-token', entry.token);
-  await page.click('#connect-form button[type="submit"]');
   await expect(page.locator('#conn-status')).toHaveText('live', LIVE);
   await expect(footnote).toHaveAttribute('data-state', 'live');
   await expect(footnoteIcon).toHaveCSS('color', 'rgb(127, 219, 152)');
@@ -2282,7 +2266,7 @@ test('image draft stages, sends image-only, and rebuilds a protected history pre
   await expect(page.locator('#image-lightbox')).toBeHidden(LIVE);
   await expect(page.locator('.attachment-chip')).toHaveCount(0, LIVE);
   expect(attachmentRequests).not.toHaveLength(0);
-  expect(attachmentRequests[0].headers().authorization).toBe(`Bearer ${entry.token}`);
+  expect(attachmentRequests[0].headers().authorization).toBeUndefined();
   expect(attachmentRequests[0].url()).not.toContain(entry.token);
 
   // 服务端 TestProvider 会请求 run_command；拒绝即可收束本用例，不让
@@ -2338,7 +2322,7 @@ test('durable image steering claim can beat its RPC acknowledgement without rest
   let releaseSteerResponse;
   const steerResponseReleased = new Promise((resolve) => { releaseSteerResponse = resolve; });
   await page.route('**/api/steer.send', async (route) => {
-    const response = await route.fetch();
+    const response = await fetchBrowserRequest(route);
     markSteerProcessed();
     await steerResponseReleased;
     await route.fulfill({ response });

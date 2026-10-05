@@ -26,11 +26,14 @@ const FILE_RESPONSE_TIMEOUT: Duration = Duration::from_secs(60);
 pub(crate) struct HttpRequestHead {
     pub method: String,
     pub path: String,
+    pub workspace_query: Option<String>,
     pub host: String,
     /// `Authorization` 原值（小写头名归一后取值不变）。
     pub authorization: Option<String>,
     /// `Origin` 原值。
     pub origin: Option<String>,
+    pub cookie: Option<String>,
+    pub fetch_site: Option<String>,
     pub content_type: Option<String>,
     pub display_name: Option<String>,
     pub expected_instance: Option<String>,
@@ -89,7 +92,7 @@ pub(crate) fn read_request_head(stream: &mut TcpStream) -> Result<HttpRequestHea
     let body_prefix = buffered[head_end + 4..].to_vec();
     let parsed = parse_head(&head)?;
 
-    let (path, _query) = split_target(&parsed.target)?;
+    let (path, query) = split_target(&parsed.target)?;
     if body_prefix.len() > parsed.content_length {
         return Err(HttpReadError::BadRequest(
             "request contained bytes beyond Content-Length",
@@ -99,9 +102,25 @@ pub(crate) fn read_request_head(stream: &mut TcpStream) -> Result<HttpRequestHea
     Ok(HttpRequestHead {
         method: parsed.method,
         path,
+        workspace_query: query
+            .as_deref()
+            .and_then(|query| {
+                query
+                    .split('&')
+                    .find_map(|pair| pair.strip_prefix("workspace="))
+            })
+            .map(|id| {
+                if id == "default" || uuid::Uuid::parse_str(id).is_ok() {
+                    id.to_owned()
+                } else {
+                    "invalid".to_owned()
+                }
+            }),
         host: parsed.host,
         authorization: parsed.authorization,
         origin: parsed.origin,
+        cookie: parsed.cookie,
+        fetch_site: parsed.fetch_site,
         content_type: parsed.content_type,
         display_name: parsed.display_name,
         expected_instance: parsed.expected_instance,
@@ -174,6 +193,8 @@ struct ParsedHead {
     host: String,
     authorization: Option<String>,
     origin: Option<String>,
+    cookie: Option<String>,
+    fetch_site: Option<String>,
     content_type: Option<String>,
     display_name: Option<String>,
     expected_instance: Option<String>,
@@ -189,66 +210,22 @@ fn parse_head(head: &str) -> Result<ParsedHead, HttpReadError> {
         return Err(HttpReadError::TooLarge("request line"));
     }
     let (method, target) = parse_request_line(request_line)?;
-    let mut host = None;
-    let mut authorization = None;
-    let mut origin = None;
-    let mut content_type = None;
-    let mut display_name = None;
-    let mut expected_instance = None;
-    let mut content_length = None;
-    let mut transfer_encoding = None;
+    let mut headers = RequestHeaders::default();
     for line in lines {
-        if line.is_empty() {
-            continue;
-        }
-        if line.starts_with([' ', '\t']) {
-            return Err(HttpReadError::BadRequest(
-                "folded HTTP headers are not accepted",
-            ));
-        }
-        let (name, value) = line
-            .split_once(':')
-            .ok_or(HttpReadError::BadRequest("malformed HTTP header"))?;
-        if name.is_empty()
-            || !name
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-        {
-            return Err(HttpReadError::BadRequest("invalid HTTP header name"));
-        }
-        let value = value.trim().to_owned();
-        let slot = match name.to_ascii_lowercase().as_str() {
-            "host" => Some(&mut host),
-            "authorization" => Some(&mut authorization),
-            "origin" => Some(&mut origin),
-            "content-type" => Some(&mut content_type),
-            "x-clat-display-name" => Some(&mut display_name),
-            "x-clat-host-instance" => Some(&mut expected_instance),
-            "transfer-encoding" => Some(&mut transfer_encoding),
-            "content-length" => {
-                if content_length.is_some() {
-                    return Err(HttpReadError::BadRequest(
-                        "duplicate Content-Length is not accepted",
-                    ));
-                }
-                content_length = Some(
-                    value
-                        .parse::<usize>()
-                        .map_err(|_| HttpReadError::BadRequest("invalid Content-Length"))?,
-                );
-                None
-            }
-            _ => None,
-        };
-        if let Some(slot) = slot {
-            if slot.is_some() {
-                return Err(HttpReadError::BadRequest(
-                    "duplicate security-sensitive header is not accepted",
-                ));
-            }
-            *slot = Some(value);
-        }
+        headers.insert(line)?;
     }
+    let RequestHeaders {
+        host,
+        authorization,
+        origin,
+        cookie,
+        fetch_site,
+        content_type,
+        display_name,
+        expected_instance,
+        content_length,
+        transfer_encoding,
+    } = headers;
     if transfer_encoding.is_some() {
         return Err(HttpReadError::BadRequest(
             "Transfer-Encoding is not supported",
@@ -269,11 +246,85 @@ fn parse_head(head: &str) -> Result<ParsedHead, HttpReadError> {
         host,
         authorization,
         origin,
+        cookie,
+        fetch_site,
         content_type,
         display_name,
         expected_instance,
         content_length,
     })
+}
+
+#[derive(Default)]
+struct RequestHeaders {
+    host: Option<String>,
+    authorization: Option<String>,
+    origin: Option<String>,
+    cookie: Option<String>,
+    fetch_site: Option<String>,
+    content_type: Option<String>,
+    display_name: Option<String>,
+    expected_instance: Option<String>,
+    content_length: Option<usize>,
+    transfer_encoding: Option<String>,
+}
+
+impl RequestHeaders {
+    fn insert(&mut self, line: &str) -> Result<(), HttpReadError> {
+        if line.is_empty() {
+            return Ok(());
+        }
+        if line.starts_with([' ', '\t']) {
+            return Err(HttpReadError::BadRequest(
+                "folded HTTP headers are not accepted",
+            ));
+        }
+        let (name, value) = line
+            .split_once(':')
+            .ok_or(HttpReadError::BadRequest("malformed HTTP header"))?;
+        if name.is_empty()
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        {
+            return Err(HttpReadError::BadRequest("invalid HTTP header name"));
+        }
+        let value = value.trim().to_owned();
+        let slot = match name.to_ascii_lowercase().as_str() {
+            "host" => Some(&mut self.host),
+            "authorization" => Some(&mut self.authorization),
+            "origin" => Some(&mut self.origin),
+            "cookie" => Some(&mut self.cookie),
+            "sec-fetch-site" => Some(&mut self.fetch_site),
+            "content-type" => Some(&mut self.content_type),
+            "x-clat-display-name" => Some(&mut self.display_name),
+            "x-clat-host-instance" => Some(&mut self.expected_instance),
+            "transfer-encoding" => Some(&mut self.transfer_encoding),
+            "content-length" => {
+                if self.content_length.is_some() {
+                    return Err(HttpReadError::BadRequest(
+                        "duplicate Content-Length is not accepted",
+                    ));
+                }
+                self.content_length = Some(
+                    value
+                        .parse::<usize>()
+                        .map_err(|_| HttpReadError::BadRequest("invalid Content-Length"))?,
+                );
+                None
+            }
+            _ => None,
+        };
+        if let Some(slot) = slot {
+            if slot.is_some() {
+                return Err(HttpReadError::BadRequest(
+                    "duplicate security-sensitive header is not accepted",
+                ));
+            }
+            *slot = Some(value);
+        }
+        Ok(())
+    }
 }
 
 /// URL 只接受 ASCII 可打印且无 `%` 编码残留（§8.1——不解码）。
@@ -422,6 +473,7 @@ pub(crate) fn write_sse_head(stream: &mut TcpStream) -> std::io::Result<()> {
 fn reason_phrase(status: u16) -> &'static str {
     match status {
         200 => "OK",
+        307 => "Temporary Redirect",
         400 => "Bad Request",
         401 => "Unauthorized",
         403 => "Forbidden",
@@ -511,6 +563,13 @@ mod tests {
                 "duplicate security-sensitive header is not accepted"
             ))
         ));
+        for name in ["Cookie", "Sec-Fetch-Site"] {
+            let head = format!("GET / HTTP/1.1\r\nHost: x\r\n{name}: a\r\n{name}: b\r\n\r\n");
+            assert!(matches!(
+                parse_head(&head),
+                Err(HttpReadError::BadRequest(_))
+            ));
+        }
         let lengths =
             "POST /api/x HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nContent-Length: 0\r\n\r\n";
         assert!(matches!(

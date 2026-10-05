@@ -3,6 +3,7 @@
 //! Every mutation is sent once. A transport failure is an uncertain outcome,
 //! not permission to retry or to open another local writer.
 mod attachments;
+pub(crate) mod browser;
 pub(crate) mod build_identity;
 mod commands;
 mod context;

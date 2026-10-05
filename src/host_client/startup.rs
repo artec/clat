@@ -8,18 +8,33 @@ use std::time::{Duration, Instant};
 impl HostClient {
     pub fn start_command(args: impl Iterator<Item = String>) -> Result<String, String> {
         let args: Vec<_> = args.collect();
-        let trust = match args.as_slice() {
-            [] => false,
-            [arg] if arg == "--trust" => true,
-            _ => return Err("use clat host start [--trust]".into()),
-        };
+        let mut trust = false;
+        let mut no_open = false;
+        for arg in &args {
+            match arg.as_str() {
+                "--trust" if !trust => trust = true,
+                "--no-open" if !no_open => no_open = true,
+                _ => return Err("use clat host start [--trust] [--no-open]".into()),
+            }
+        }
         let project = Project::current().map_err(|error| error.to_string())?;
-        let client = Self::spawn_or_attach(&project, trust)?;
+        let client = Self::start_or_attach(&project, trust, !no_open)?;
         Ok(format!(
-            "Host {} online at 127.0.0.1:{}",
-            client.instance, client.port
+            "Host {} online at {}",
+            client.instance,
+            client.browser_url()
         ))
     }
+
+    fn browser_url(&self) -> String {
+        let workspace = self
+            .prefix
+            .strip_prefix("/workspace/")
+            .map(|id| format!("?workspace={id}"))
+            .unwrap_or_default();
+        format!("http://127.0.0.1:{}/{workspace}", self.port)
+    }
+
     pub fn project_needs_trust(project: &Project) -> Result<bool, String> {
         BootstrapApplication::open_default(project.clone())
             .and_then(|boot| boot.is_trusted())
@@ -28,6 +43,10 @@ impl HostClient {
     }
 
     pub fn spawn_or_attach(project: &Project, trust: bool) -> Result<Self, String> {
+        Self::start_or_attach(project, trust, false)
+    }
+
+    fn start_or_attach(project: &Project, trust: bool, open: bool) -> Result<Self, String> {
         if Self::project_needs_trust(project)? && !trust {
             return Err("project is not trusted; explicit consent is required".into());
         }
@@ -42,7 +61,11 @@ impl HostClient {
             let host_missing = match Self::discover_for_startup(&root) {
                 Ok(super::discovery::StartupDiscovery::Compatible(client)) => {
                     reap_host_child(child.take());
-                    return client.open_project(project.root(), trust);
+                    let client = client.open_project(project.root(), trust)?;
+                    if attempted && open {
+                        super::browser::open(&client.browser_url(), false);
+                    }
+                    return Ok(client);
                 }
                 Ok(super::discovery::StartupDiscovery::Upgradeable { host_version }) => {
                     if takeover_from.is_none() {
@@ -162,6 +185,7 @@ fn spawn_host(
     let mut command = Command::new(executable);
     command
         .arg("serve")
+        .arg("--no-open")
         .arg("--port")
         .arg(super::DEFAULT_HOST_PORT.to_string())
         .current_dir(project)

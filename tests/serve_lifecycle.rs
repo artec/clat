@@ -21,6 +21,10 @@ use bounded_process::BoundedProcess;
 #[path = "support/incompatible_host.rs"]
 mod incompatible_host;
 
+#[cfg(target_os = "macos")]
+#[path = "support/browser_launch.rs"]
+mod browser_launch;
+
 struct HostCleanup<'a> {
     root: &'a Path,
     home: &'a Path,
@@ -34,6 +38,7 @@ fn host_command(home: &Path, project: &Path) -> Command {
         .current_dir(project)
         .env("HOME", home)
         .env("USERPROFILE", home)
+        .env("CI", "1")
         .stdin(Stdio::null());
     command
 }
@@ -173,19 +178,7 @@ fn host_spawn_or_attach_requires_trust_and_converges_two_launchers() {
     );
     assert!(status.status.success(), "launcher exit must not close host");
     assert!(stop.status.success());
-    let deadline = Instant::now() + WAIT;
-    loop {
-        let boot = BootstrapApplication::open(Project::new(&project), home.join(".clat")).unwrap();
-        if let Ok(app) = boot.into_trusted() {
-            app.close().unwrap();
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "host stop must release the lease"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    wait_for_host_stop(&home, &project);
     cleanup.armed = false;
     remove_tree(&root);
 }
@@ -269,24 +262,7 @@ fn background_host_restart_reuses_the_stable_pwa_port() {
         "{}",
         String::from_utf8_lossy(&stop.stderr)
     );
-    let deadline = Instant::now() + WAIT;
-    loop {
-        match BootstrapApplication::open(Project::new(&project), home.join(".clat"))
-            .and_then(|boot| boot.into_trusted())
-        {
-            Ok(app) => {
-                app.close().unwrap();
-                break;
-            }
-            Err(_) => {
-                assert!(
-                    Instant::now() < deadline,
-                    "stopped host must release the root lease before restart"
-                );
-                std::thread::sleep(Duration::from_millis(20));
-            }
-        }
-    }
+    wait_for_host_stop(&home, &project);
 
     let second = command_output(
         command().args(["host", "start"]),
@@ -313,24 +289,7 @@ fn background_host_restart_reuses_the_stable_pwa_port() {
         "fixed-port-second-stop",
     );
     assert!(stop.status.success());
-    let deadline = Instant::now() + WAIT;
-    loop {
-        match BootstrapApplication::open(Project::new(&project), home.join(".clat"))
-            .and_then(|boot| boot.into_trusted())
-        {
-            Ok(app) => {
-                app.close().unwrap();
-                break;
-            }
-            Err(_) => {
-                assert!(
-                    Instant::now() < deadline,
-                    "restarted host must release the root lease before test cleanup"
-                );
-                std::thread::sleep(Duration::from_millis(20));
-            }
-        }
-    }
+    wait_for_host_stop(&home, &project);
     cleanup.armed = false;
     remove_tree(&root);
 }
@@ -519,6 +478,7 @@ fn sigterm_uses_the_graceful_serve_shutdown_path() {
         .current_dir(&project_root)
         .env("HOME", &home)
         .env("USERPROFILE", &home)
+        .env("CI", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -584,6 +544,7 @@ fn a_second_serve_process_fails_even_on_a_different_port() {
             .current_dir(&project_root)
             .env("HOME", &home)
             .env("USERPROFILE", &home)
+            .env("CI", "1")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
@@ -616,4 +577,21 @@ fn a_second_serve_process_fails_even_on_a_different_port() {
     first.kill().expect("stop first serve");
     wait_until_exit(&mut first);
     remove_tree(&root);
+}
+
+fn wait_for_host_stop(home: &Path, project: &Path) {
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let released = BootstrapApplication::open(Project::new(project), home.join(".clat"))
+            .and_then(|boot| boot.into_trusted())
+            .is_ok_and(|app| app.close().is_ok());
+        if released && TcpListener::bind(("127.0.0.1", clat::serve::DEFAULT_SERVE_PORT)).is_ok() {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "stopped host must release both listener and root lease"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }

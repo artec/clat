@@ -26,6 +26,9 @@ const WAIT: Duration = Duration::from_secs(30);
 #[path = "workspace_tests.rs"]
 mod workspace_tests;
 
+#[path = "local_auth_tests.rs"]
+mod local_auth_tests;
+
 #[path = "suggestion_tests.rs"]
 mod suggestion_tests;
 
@@ -68,6 +71,7 @@ fn spawn_serve_with_queue(
             port: 0,
             token: Some(TEST_TOKEN.into()),
             rotate_token: false,
+            no_open: true,
             im: None,
         },
         |bootstrap| {
@@ -94,6 +98,7 @@ fn spawn_serve_with_start_receive_failure(name: &str) -> (ServeHandle, PathBuf, 
             port: 0,
             token: Some(TEST_TOKEN.into()),
             rotate_token: false,
+            no_open: true,
             im: None,
         },
         |bootstrap| {
@@ -180,8 +185,8 @@ fn validate_pairing(addr: SocketAddr, token: &str) -> u16 {
     if status == 200 {
         assert!(!raw.contains(token), "pairing response must not echo token");
         assert!(
-            !raw.to_ascii_lowercase().contains("set-cookie:"),
-            "Bearer must not be copied into a host-wide Cookie"
+            raw.contains("HttpOnly") && raw.contains("SameSite=Strict"),
+            "browser sessions must be private and same-site"
         );
     }
     status
@@ -494,6 +499,12 @@ fn settled_outcome_type(settled: &ParsedSseFrame) -> String {
 fn parse_serve_args_defaults_to_2691_and_accepts_explicit_controls() {
     let defaults = super::parse_serve_args([]).unwrap();
     assert_eq!(defaults.port, 2691);
+    assert!(!defaults.no_open);
+    assert!(
+        super::parse_serve_args(["--no-open".into()])
+            .unwrap()
+            .no_open
+    );
     assert_eq!(defaults.token, None);
     assert!(!defaults.rotate_token);
     assert_eq!(defaults.im, None);
@@ -568,6 +579,7 @@ fn wechat_switch_is_default_off_and_fails_closed_before_binding_exists() {
             port: 0,
             token: None,
             rotate_token: true,
+            no_open: true,
             im: Some(super::ImBackend::Wechat),
         },
         |bootstrap| {
@@ -1325,15 +1337,23 @@ fn realtime_frames_are_byte_identical_to_envelope_line() {
 fn security_gates_fail_closed() {
     let (handle, storage_root, project_root) = spawn_serve("serve-gates", TestBehavior::Success);
 
-    // 静态 shell 公开且不含凭据；特权面无 token → 401。
+    // 本地可信 shell 不含凭据；跨站特权请求没有本地信任 → 403。
     let (status, body) = get(handle.addr, "/", &[]);
     assert_eq!(status, 200);
     assert!(!body.contains(TEST_TOKEN));
-    let (status, _) = get(handle.addr, "/api/events", &[]);
-    assert_eq!(status, 401);
+    let (status, _) = get(
+        handle.addr,
+        "/api/events",
+        &[("Sec-Fetch-Site", "cross-site")],
+    );
+    assert_eq!(status, 403);
     // 历史 query token 不再具有鉴权语义。
-    let (status, _) = get(handle.addr, &format!("/api/events?t={TEST_TOKEN}"), &[]);
-    assert_eq!(status, 401);
+    let (status, _) = get(
+        handle.addr,
+        &format!("/api/events?t={TEST_TOKEN}"),
+        &[("Sec-Fetch-Site", "cross-site")],
+    );
+    assert_eq!(status, 403);
     // 恶意 Origin 即使请求公开 shell 也先被拒绝。
     let (status, _) = get(handle.addr, "/", &[("Origin", "http://evil.example")]);
     assert_eq!(status, 403);
@@ -1347,16 +1367,16 @@ fn security_gates_fail_closed() {
         TEST_TOKEN,
         "session.list",
         "{}",
-        &[("Origin", &allowed)],
+        &[("Origin", &allowed), ("Sec-Fetch-Site", "same-origin")],
     );
     assert_eq!(status, 200);
     assert!(result.is_ok());
-    // POST 无 token → 401。
+    // 显式错误 Bearer → 401，不能由本地信任掩盖。
     let (status, _) = post(handle.addr, "wrong-token", "session.list", "{}");
     assert_eq!(status, 401);
     // query token 形态拒绝。
     let (status, _) = post_query_token(handle.addr);
-    assert_eq!(status, 401);
+    assert_eq!(status, 403);
     // 配对端点验证 Bearer 但不回显 token；错 token 仍 fail-closed。
     assert_eq!(validate_pairing(handle.addr, TEST_TOKEN), 200);
     assert_eq!(validate_pairing(handle.addr, "wrong-token"), 401);
@@ -1399,7 +1419,7 @@ fn post_with_headers(
 fn post_query_token(addr: SocketAddr) -> (u16, Result<serde_json::Value, ErrorCode>) {
     let mut stream = connect(addr);
     let request = format!(
-        "POST /api/session.list?t={TEST_TOKEN} HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
+        "POST /api/session.list?t={TEST_TOKEN} HTTP/1.1\r\nHost: remote.example\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
     );
     stream.write_all(request.as_bytes()).unwrap();
     let (status, body) = read_response(&mut stream);
@@ -1438,10 +1458,10 @@ fn security_gates_reject_before_reading_a_declared_large_body() {
     stream.write_all(request.as_bytes()).unwrap();
     assert_eq!(read_response(&mut stream).0, 401);
 
-    // Host is checked even before Bearer and likewise does not consume body.
+    // An uncredentialed remote Host is rejected before consuming its body.
     let mut stream = connect(handle.addr);
     let request = format!(
-        "POST /api/session.list HTTP/1.1\r\nHost: attacker.example\r\nAuthorization: Bearer {TEST_TOKEN}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "POST /api/session.list HTTP/1.1\r\nHost: attacker.example\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         super::http::MAX_BODY_BYTES
     );
     stream.write_all(request.as_bytes()).unwrap();
@@ -2099,6 +2119,7 @@ fn persistent_token_survives_restart_and_rotation_revokes_the_old_bearer() {
                 port,
                 token: None,
                 rotate_token,
+                no_open: true,
                 im: None,
             },
             |bootstrap| {
@@ -2919,7 +2940,15 @@ fn web_assets_are_public_but_contain_no_credentials() {
         assert_eq!(get(handle.addr, icon, &[]).0, 200, "{icon}");
         assert!(get_response_content_type(handle.addr, icon).contains("image/png"));
     }
-    assert_eq!(get(handle.addr, "/api/events", &[]).0, 401);
+    assert_eq!(
+        get(
+            handle.addr,
+            "/api/events",
+            &[("Sec-Fetch-Site", "cross-site")]
+        )
+        .0,
+        403
+    );
 
     cleanup(handle, &storage_root, &project_root);
 }
@@ -3193,6 +3222,7 @@ fn host_serve_for_playwright(key: &str, behavior: TestBehavior, seed_turns: usiz
             port: 0,
             token: Some(token.clone()),
             rotate_token: false,
+            no_open: true,
             im: None,
         },
         |bootstrap| mount_playwright_application(bootstrap, key, behavior),
@@ -3275,6 +3305,7 @@ fn host_live_glm_for_playwright() {
             port: 0,
             token: Some(token.clone()),
             rotate_token: false,
+            no_open: true,
             im: None,
         },
         |bootstrap| {
