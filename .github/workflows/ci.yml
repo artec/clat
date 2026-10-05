@@ -100,6 +100,15 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2.9.2
+      # I4（2026-10-05，登记簿在案）：rust-toolchain.toml 钉版后，
+      # cargo 经 rustup 代理用钉版工具链；dtolnay 的 targets 装进
+      # stable 而非钉版 channel，交叉目标须显式补装（release.yml
+      # 同款先例）。缺此步时 aarch64-pc-windows-msvc 报 E0463。
+      - name: Add the pinned toolchain cross target
+        shell: bash
+        run: |
+          channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
+          rustup target add --toolchain "$channel" "${{ matrix.target }}"
       - name: Compile the complete target surface
         run: cargo check --locked --all-targets --all-features --target ${{ matrix.target }}
       - name: Test authenticated compiler cache

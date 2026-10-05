@@ -71,6 +71,8 @@ fn cache_hit_poison_and_foreign_content_have_safe_terminal_states() {
         read(&engine, &dir, &different_key, &name).is_none(),
         "foreign host code must be rejected"
     );
+    // Windows directory capabilities intentionally deny deletion while live.
+    drop(dir);
     fs::remove_dir_all(root.parent().unwrap()).unwrap();
 }
 #[test]
@@ -103,6 +105,7 @@ fn truncated_cache_is_recompiled_and_an_invalid_key_is_never_replaced() {
         fs::read(cache_path(&root).unwrap().join("host-key")).unwrap(),
         vec![1; 4]
     );
+    drop(dir);
     fs::remove_dir_all(root.parent().unwrap()).unwrap();
 }
 
@@ -272,4 +275,31 @@ fn a_cache_acl_open_to_everyone_is_never_used_for_native_code() {
         "public ACL must force safe recompilation"
     );
     fs::remove_dir_all(root.parent().unwrap()).unwrap();
+}
+
+#[test]
+fn live_compiled_components_do_not_lock_cache_publication_or_cleanup() {
+    let root = fixture();
+    let engine = Engine::default();
+    let source = source();
+    let compiled = component(&engine, &source, &root).unwrap();
+    let loaded = component(&engine, &source, &root).unwrap();
+    let name = address(&engine, &source);
+    {
+        let dir = files::open(&root).unwrap();
+        let original = files::read(&dir, &name, MAX_CACHE_BYTES).unwrap();
+        files::publish(&dir, &name, &original, false)
+            .expect("live components must not lock atomic replacement");
+    }
+    fs::remove_dir_all(root.parent().unwrap())
+        .expect("production cache handles must close before the component returns");
+    // Both compilation and deserialization own their code independently of
+    // the cache files, so deleting the directory must not invalidate them.
+    for component in [&compiled, &loaded] {
+        let mut store = wasmtime::Store::new(&engine, ());
+        let linker = wasmtime::component::Linker::new(&engine);
+        linker
+            .instantiate(&mut store, component)
+            .expect("cached code must remain usable after deleting its backing cache");
+    }
 }

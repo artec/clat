@@ -320,3 +320,9 @@ Three samples use fresh engines and the production network engine settings.
 The miss includes compilation, serialization and atomic cache publication; the
 hit includes content hashing, authentication and loading. This is not complete
 host startup. The reviewer independently repeats final acceptance.
+
+On Windows, capability directory handles deny delete sharing to protect path
+lookups. Cache tests must release directory capabilities before removing their
+fixture trees. The cache ownership regression keeps both compiled and loaded
+components alive while replacing and deleting cache artifacts, then instantiates
+both components to verify that production code owns no cache file handles.
