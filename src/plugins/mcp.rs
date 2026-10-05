@@ -200,9 +200,7 @@ fn load_installed_mcp_config(
         excluded_ids,
     )?;
     for package in installed.packages {
-        let entry = package
-            .manifest
-            .verify_entry_digest(&package.manifest_path)?;
+        let entry = package.verified_entry.activation_path()?;
         let mut env = BTreeMap::from([
             ("CLAT_PLUGIN_ID".into(), package.id.clone()),
             (
@@ -672,7 +670,18 @@ mod tests {
                 )
                 .expect("install");
         }
+        crate::plugin::store_hash_probe::clear_hashes();
         let effective = load_effective_mcp_config(&storage, &[]).expect("effective");
+        let entry_name = if cfg!(windows) {
+            "fixture.exe"
+        } else {
+            "fixture"
+        };
+        assert_eq!(
+            crate::plugin::store_hash_probe::hash_count(entry_name),
+            if cfg!(windows) { 2 } else { 1 },
+            "MCP consumes tree evidence; Windows retains its final digest gate"
+        );
         let installed = effective
             .servers
             .get("dev.clat.mcp-fixture")

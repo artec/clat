@@ -3,7 +3,7 @@
   "market": {
     "name": "CLAT Plugin Index",
     "homepage": "https://pi.at.cn",
-    "updated": "2026-10-04",
+    "updated": "2026-10-05",
     "notice": "首批包正在完成发布者复核。预览条目展示真实的 CLAT 示例或兼容方向，不代表已经可从远程安装。"
   },
   "packages": [
@@ -107,10 +107,14 @@
       "name": "DSH official web search · WASM",
       "manifestVersion": 2,
       "runtime": "wasm-component",
-      "status": "preview",
-      "summary": "受限 WASM 搜索风味：仅允许向 api.deepseek.com:443 发起 POST。已通过本地签名安装、真实搜索与卸载测试，等待独立审计和正式发布。任意网址抓取请使用 MCP 风味。",
+      "status": "available",
+      "summary": "受限 WASM 搜索风味：仅允许向 api.deepseek.com:443 发起 POST，已通过独立审计与本地签名安装、真实搜索、卸载全链测试。任意网址抓取请使用 MCP 风味。",
       "publisher": "artec",
-      "tags": ["WASM", "Search", "Sandbox"],
+      "tags": [
+        "WASM",
+        "Search",
+        "Sandbox"
+      ],
       "sourceUrl": "https://github.com/artec/clat/tree/main/sdk/dsh-wasm-flavor",
       "docsUrl": "https://github.com/artec/clat/blob/main/docs/wasm.md"
     },
@@ -119,7 +123,7 @@
       "name": "DSH official web search and fetch",
       "runtime": "mcp-stdio",
       "status": "available",
-      "summary": "Official DSH web search and HTTP fetch in one executable; no Node or Bun needed after installation.",
+      "summary": "DSH 官方网页搜索与 HTTP 抓取的完整风味：单文件可执行，安装后无需 Node 或 Bun。",
       "publisher": "artec",
       "tags": [
         "MCP"

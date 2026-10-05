@@ -4,13 +4,13 @@
 //! makes them active. Both WASM and MCP runtimes consume the same registry;
 //! legacy user config remains an override at the adapter layer.
 
+use super::hashing::Sha256;
 use super::{PluginCapabilities, PluginPackageManifest, PluginRuntimeKind};
 use crate::control_storage::json_file;
 use crate::private_fs;
 use crate::session::root_lease::{StorageRootLease, try_acquire};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sha2::{Digest as _, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io::{Read, Write};
@@ -55,6 +55,7 @@ pub(crate) struct PackageInstallRequest {
 
 #[derive(Clone, Debug)]
 pub(crate) struct PackageInspection {
+    pub(super) verified_entry: super::verified_entry::VerifiedEntry,
     pub(crate) manifest: PluginPackageManifest,
     pub(crate) manifest_path: PathBuf,
     pub(crate) package_root: PathBuf,
@@ -102,6 +103,7 @@ pub(crate) struct PackageListEntry {
 
 #[derive(Clone, Debug)]
 pub(crate) struct ActivePackage {
+    pub(crate) verified_entry: super::verified_entry::VerifiedEntry,
     pub(crate) id: String,
     pub(crate) manifest: PluginPackageManifest,
     pub(crate) manifest_path: PathBuf,
@@ -506,10 +508,10 @@ impl PackageStore {
     }
 
     pub(crate) fn revision(&self) -> String {
-        format!(
-            "{:x}",
-            Sha256::digest(serde_json::to_vec(&self.registry).expect("registry JSON"))
-        )
+        Sha256::digest(serde_json::to_vec(&self.registry).expect("registry JSON"))
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
     }
 
     pub(crate) fn review_manifest(
@@ -714,12 +716,13 @@ pub(crate) fn active_packages_for_runtime_excluding(
             continue;
         }
         let loaded = (|| -> Result<ActivePackage, String> {
-            verify_artifact_record(&store_root, &id, artifact)?;
+            let inspected = verify_artifact_record(&store_root, &id, artifact)?;
             let manifest_path = artifact_manifest_path(&store_root, &id, &artifact.tree_sha256);
             artifact
                 .manifest
                 .validate_config(plugin.active.config.as_ref())?;
             Ok(ActivePackage {
+                verified_entry: inspected.verified_entry,
                 id: id.clone(),
                 manifest: artifact.manifest.clone(),
                 manifest_path,
@@ -838,7 +841,8 @@ fn inspect_source(path: &Path) -> Result<PackageInspection, String> {
     }
     reject_final_symlink(&manifest_path, "package manifest")?;
     let manifest = PluginPackageManifest::load(&manifest_path)?;
-    let entry = manifest.verify_entry_digest(&manifest_path)?;
+    let verified_entry = super::verified_entry::VerifiedEntry::capture(&manifest, &manifest_path)?;
+    let entry = verified_entry.checked_path()?;
     #[cfg(not(unix))]
     let _ = &entry;
     #[cfg(unix)]
@@ -862,8 +866,11 @@ fn inspect_source(path: &Path) -> Result<PackageInspection, String> {
         .map_err(|error| format!("canonicalize package root: {error}"))?;
     let manifest_path = package_root.join(MANIFEST_FILE);
     let tree = scan_tree(&package_root)?;
+    verify_scanned_entry(&manifest, &tree)?;
+    verified_entry.checked_path()?;
     let (trust, publisher) = inspect_trust(&package_root, &manifest, &tree)?;
     Ok(PackageInspection {
+        verified_entry,
         capabilities: capability_labels(&manifest.capabilities),
         manifest,
         manifest_path,
@@ -874,6 +881,44 @@ fn inspect_source(path: &Path) -> Result<PackageInspection, String> {
         trust,
         publisher,
     })
+}
+
+fn verify_scanned_entry(manifest: &PluginPackageManifest, tree: &TreePlan) -> Result<(), String> {
+    #[cfg(windows)]
+    let target = manifest.entry_path(&tree.source_root.join(MANIFEST_FILE))?;
+    let entry = tree
+        .files
+        .iter()
+        .find(|file| {
+            if entry_matches(&file.relative, &manifest.runtime.entry) {
+                return true;
+            }
+            #[cfg(windows)]
+            if !manifest.runtime.entry.is_ascii() && !file.relative.is_ascii() {
+                return file.source.canonicalize().ok().as_ref() == Some(&target);
+            }
+            false
+        })
+        .ok_or("runtime.entry is absent from the complete package tree")?;
+    let expected = manifest.runtime.sha256.trim().trim_start_matches("sha256:");
+    if !entry.sha256.eq_ignore_ascii_case(expected) {
+        return Err(format!(
+            "package entry sha256 mismatch: manifest {expected}, actual {}",
+            entry.sha256
+        ));
+    }
+    Ok(())
+}
+
+fn entry_matches(relative: &str, entry: &str) -> bool {
+    let entry: PathBuf = Path::new(entry)
+        .components()
+        .filter(|part| !matches!(part, std::path::Component::CurDir))
+        .collect();
+    #[cfg(windows)]
+    return relative.eq_ignore_ascii_case(&entry.to_string_lossy());
+    #[cfg(not(windows))]
+    (Path::new(relative) == entry)
 }
 
 fn capability_labels(capabilities: &PluginCapabilities) -> Vec<String> {
@@ -1325,7 +1370,7 @@ fn hash_file_bounded(path: &Path, expected: u64) -> Result<String, String> {
         .collect())
 }
 
-fn open_package_file(root: &Path, relative: &Path) -> Result<cap_std::fs::File, String> {
+pub(super) fn open_package_file(root: &Path, relative: &Path) -> Result<cap_std::fs::File, String> {
     let dir = cap_std::fs::Dir::open_ambient_dir(root, cap_std::ambient_authority())
         .map_err(|error| format!("open package root {}: {error}", root.display()))?;
     let mut options = cap_std::fs::OpenOptions::new();
@@ -1349,11 +1394,13 @@ fn open_package_file(root: &Path, relative: &Path) -> Result<cap_std::fs::File, 
 }
 
 fn hash_package_file(root: &Path, relative: &Path, expected: u64) -> Result<String, String> {
+    #[cfg(test)]
+    tests::record_hash(&root.join(relative));
     let mut file = open_package_file(root, relative)?;
     hash_reader_bounded(&mut file, relative, expected)
 }
 
-fn hash_reader_bounded(
+pub(super) fn hash_reader_bounded(
     file: &mut impl Read,
     label: &Path,
     expected: u64,
@@ -1637,7 +1684,50 @@ fn reject_final_symlink(path: &Path, subject: &str) -> Result<(), String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
+    thread_local! {
+        static HASHED: std::cell::RefCell<Vec<PathBuf>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+    pub(crate) fn clear_hashes() {
+        HASHED.with(|paths| paths.borrow_mut().clear());
+    }
+    pub(crate) fn hash_count(name: &str) -> usize {
+        HASHED.with(|paths| {
+            paths
+                .borrow()
+                .iter()
+                .filter(|path| path.file_name().is_some_and(|file| file == name))
+                .count()
+        })
+    }
+    pub(crate) fn record_hash(path: &Path) {
+        HASHED.with(|paths| paths.borrow_mut().push(path.to_owned()));
+    }
+    #[test]
+    fn inspection_hashes_executable_once_and_still_rejects_tampering() {
+        let fixture = root("single-pass");
+        let source = package(&fixture, "test.single-pass", "1", json!({}));
+        HASHED.with(|paths| paths.borrow_mut().clear());
+        inspect_source(&source).unwrap();
+        let count = HASHED.with(|paths| {
+            paths
+                .borrow()
+                .iter()
+                .filter(|path| path.file_name().is_some_and(|name| name == "plugin.wasm"))
+                .count()
+        });
+        assert_eq!(
+            count, 1,
+            "the executable must be read in the complete tree pass only"
+        );
+        fs::write(source.join("plugin.wasm"), b"tampered!").unwrap();
+        assert!(
+            inspect_source(&source).is_err(),
+            "every independent inspection must verify all bytes"
+        );
+        fs::remove_dir_all(fixture).unwrap();
+    }
+
     use super::*;
     use serde_json::json;
 
@@ -1668,6 +1758,45 @@ mod tests {
         drop(PackageStore::open(&storage).unwrap());
         assert!(marker.exists());
         assert_eq!(fs::read_dir(&staging).unwrap().count(), 0);
+        fs::remove_dir_all(fixture).unwrap();
+    }
+
+    #[test]
+    fn activation_evidence_rejects_same_size_tampering_with_restored_mtime() {
+        let fixture = root("receipt-tampering");
+        let source = package(&fixture, "test.receipt", "1", json!({}));
+        let inspected = inspect_source(&source).unwrap();
+        let entry = source.join("plugin.wasm");
+        let before = fs::metadata(&entry).unwrap().modified().unwrap();
+        fs::write(&entry, b"tampered!").unwrap();
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&entry)
+            .unwrap()
+            .set_modified(before)
+            .unwrap();
+        assert!(
+            inspected.verified_entry.checked_path().is_err(),
+            "activation must reject mutation even when size and mtime are unchanged"
+        );
+        fs::remove_dir_all(fixture).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn tree_entry_validation_preserves_windows_unicode_case_resolution() {
+        let fixture = root("unicode-entry");
+        let source = package(&fixture, "test.unicode-entry", "1", json!({}));
+        fs::rename(source.join("plugin.wasm"), source.join("δπ.WASM")).unwrap();
+        let manifest_path = source.join(MANIFEST_FILE);
+        let mut manifest: Value =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        manifest["runtime"]["entry"] = json!("ΔΠ.wasm");
+        fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        assert!(
+            inspect_source(&source).is_ok(),
+            "Windows path resolution must remain compatible with Unicode case folding"
+        );
         fs::remove_dir_all(fixture).unwrap();
     }
 

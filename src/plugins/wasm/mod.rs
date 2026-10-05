@@ -642,6 +642,76 @@ struct WasmInstance {
 }
 
 impl WasmInstance {
+    fn checked_grants(
+        &self,
+        mode: Option<crate::permission::PermissionMode>,
+        write_allowed: bool,
+    ) -> Result<Vec<Grant>, ToolError> {
+        let storage = self
+            .grants_path
+            .parent()
+            .ok_or_else(|| ToolError::new("missing host storage"))?;
+        let grants = self.grants.grants(mode, write_allowed);
+        check_cache_grants(storage, grants.iter().map(|grant| grant.host.as_path()))?;
+        Ok(grants)
+    }
+
+    fn safe_mode(&self) -> Result<Option<crate::permission::PermissionMode>, ToolError> {
+        let mode = self.grants.current_mode();
+        self.checked_grants(mode, true)?;
+        Ok(mode)
+    }
+
+    fn decide_write_grant(
+        &self,
+        mut asked: Vec<PathBuf>,
+        approver: &dyn crate::permission::PermissionApprover,
+        cancel: &CancelToken,
+    ) -> (crate::permission::PermissionDecision, Vec<PathBuf>) {
+        let digest_head = &self.digest[..self.digest.len().min(8)];
+        let decision = loop {
+            let request = crate::permission::PermissionRequest {
+                tool: format!("wasm:{}", self.name),
+                effect: crate::tool::ToolEffect::Write,
+                reason: format!(
+                    "wasm plugin `{}` requests filesystem WRITE access to {} \
+                     directories (component sha256 {digest_head}…); approving \
+                     persists a grant bound to this component and these directories",
+                    self.name,
+                    asked.len(),
+                ),
+                arguments: serde_json::json!({
+                    "plugin": self.name,
+                    "component_sha256": self.digest,
+                    "write_dirs": asked
+                        .iter()
+                        .map(|dir| dir.display().to_string())
+                        .collect::<Vec<String>>(),
+                }),
+                call_id: String::new(),
+            };
+            match approver.decide(request, cancel) {
+                crate::permission::PermissionDecision::Allow => {
+                    let mode = match self.safe_mode() {
+                        Ok(mode) => mode,
+                        Err(error) => {
+                            break crate::permission::PermissionDecision::Deny {
+                                reason: error.to_string(),
+                            };
+                        }
+                    };
+                    let now = self.grants.write_dirs(mode);
+                    if now == asked || now.is_empty() {
+                        break crate::permission::PermissionDecision::Allow;
+                    }
+                    asked = now;
+                }
+                other => break other,
+            }
+        };
+        (decision, asked)
+    }
+
     /// B5（INV-W2/W3/W5/W6）：解析本插件在快照档位下能否获得写授予。
     /// 可能阻塞等人审批（持 slot 锁串行化同插件调用，无并发重问）；
     /// 返回 false 时本 slot 一律物理只读。
@@ -675,40 +745,8 @@ impl WasmInstance {
         // 将获 RW 的目录与组件摘要。弹窗中途升档（w/f）会改变目录集，
         // Allow 后复算——一致才落记录，变了以新集合重问（记录绑定实际
         // 授予面）。
-        let mut asked = requested;
-        let digest_head = &self.digest[..self.digest.len().min(8)];
-        let decision = loop {
-            let request = crate::permission::PermissionRequest {
-                tool: format!("wasm:{}", self.name),
-                effect: crate::tool::ToolEffect::Write,
-                reason: format!(
-                    "wasm plugin `{}` requests filesystem WRITE access to {} \
-                     directories (component sha256 {digest_head}…); approving \
-                     persists a grant bound to this component and these directories",
-                    self.name,
-                    asked.len(),
-                ),
-                arguments: serde_json::json!({
-                    "plugin": self.name,
-                    "component_sha256": self.digest,
-                    "write_dirs": asked
-                        .iter()
-                        .map(|dir| dir.display().to_string())
-                        .collect::<Vec<String>>(),
-                }),
-                call_id: String::new(),
-            };
-            match context.approver.decide(request, &context.cancel) {
-                crate::permission::PermissionDecision::Allow => {
-                    let now = self.grants.write_dirs(self.grants.current_mode());
-                    if now == asked || now.is_empty() {
-                        break crate::permission::PermissionDecision::Allow;
-                    }
-                    asked = now;
-                }
-                other => break other,
-            }
-        };
+        let (decision, asked) =
+            self.decide_write_grant(requested, context.approver.as_ref(), &context.cancel);
         let allowed = matches!(decision, crate::permission::PermissionDecision::Allow);
         if let Ok(mut state) = self.write_state.lock() {
             *state = Some((epoch, !allowed));
@@ -751,7 +789,7 @@ impl WasmInstance {
         cancel: &CancelToken,
         call: impl FnOnce(&mut InstanceSlot) -> R,
     ) -> Result<R, ToolError> {
-        let mode_now = self.grants.current_mode();
+        let mode_now = self.safe_mode()?;
         // B5：写授予门在 slot 锁内解析（同插件并发调用自然串行）。
         let mut guard = self
             .slot
@@ -782,6 +820,25 @@ impl WasmInstance {
     }
 }
 
+fn check_cache_grants<'a>(
+    storage: &std::path::Path,
+    roots: impl Iterator<Item = &'a std::path::Path>,
+) -> Result<(), ToolError> {
+    let private = clat_wasm_net::compiled_cache::cache_path(storage)
+        .map_err(|error| ToolError::new(format!("resolve private compiler cache: {error}")))?;
+    for root in roots {
+        let root = root
+            .canonicalize()
+            .map_err(|error| ToolError::new(format!("resolve guest filesystem grant: {error}")))?;
+        if private.starts_with(&root) || root.starts_with(&private) {
+            return Err(ToolError::new(
+                "guest filesystem grants must not expose the host private compiler cache",
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// 按当前授予集构建实例（preopen → store → instantiate）。B5 起 RW
 /// 授予以写授予门裁决为准（INV-W2：无记录/被拒 = 物理只读 preopen）。
 fn build_slot(
@@ -790,7 +847,7 @@ fn build_slot(
     write_allowed: bool,
 ) -> Result<InstanceSlot, ToolError> {
     let mut builder = WasiCtxBuilder::new();
-    for grant in instance.grants.grants(mode_key, write_allowed) {
+    for grant in instance.checked_grants(mode_key, write_allowed)? {
         builder
             .preopened_dir(
                 &grant.host,
@@ -1237,6 +1294,52 @@ impl WitToolDef for exports::clat::plugin::tools::Definition {
     }
 }
 
+fn verified_component_bytes(
+    path: &std::path::Path,
+    sha256: Option<&str>,
+) -> Result<(Vec<u8>, String), String> {
+    // A4-3：大小闸先于读取/编译——启动同步路径不被大文件拖住。
+    let size = std::fs::metadata(path)
+        .map_err(|error| format!("stat {}: {error}", path.display()))?
+        .len();
+    if size > MAX_COMPONENT_BYTES {
+        return Err(format!(
+            "component {} is {} bytes; the cap is {MAX_COMPONENT_BYTES} (32 MiB)",
+            path.display(),
+            size
+        ));
+    }
+    use std::io::Read as _;
+    let file =
+        std::fs::File::open(path).map_err(|error| format!("read {}: {error}", path.display()))?;
+    let mut bytes = Vec::new();
+    file.take(MAX_COMPONENT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("read {}: {error}", path.display()))?;
+    if bytes.len() as u64 > MAX_COMPONENT_BYTES {
+        return Err(format!(
+            "component {} exceeded its size cap while reading",
+            path.display()
+        ));
+    }
+    // B5：无条件计算组件 digest（写授予记录绑定它）；A4-3 钉扎比对
+    // 同一摘要（配了 pin 才校验，语义不变）。
+    let digest = crate::plugin::hashing::Sha256::digest(&bytes);
+    let digest_hex = digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    if let Some(expected) = sha256
+        && !digest_hex.eq_ignore_ascii_case(expected.trim().trim_start_matches("sha256:"))
+    {
+        return Err(format!(
+            "component {} sha256 mismatch: pinned {expected}, actual {digest_hex}",
+            path.display()
+        ));
+    }
+    Ok((bytes, digest_hex))
+}
+
 /// 编译组件并用零授权临时实例列出其工具（列工具不需要 fs；正式实例
 /// 首次调用时按当前档位惰性建立——授予面永远等于调用时档位）。
 fn compile_plugin(
@@ -1260,36 +1363,8 @@ fn compile_plugin(
             path.display(),
         ));
     }
-    // A4-3：大小闸先于读取/编译——启动同步路径不被大文件拖住。
-    let size = std::fs::metadata(&path)
-        .map_err(|error| format!("stat {}: {error}", path.display()))?
-        .len();
-    if size > MAX_COMPONENT_BYTES {
-        return Err(format!(
-            "component {} is {} bytes; the cap is {MAX_COMPONENT_BYTES} (32 MiB)",
-            path.display(),
-            size
-        ));
-    }
-    let bytes =
-        std::fs::read(&path).map_err(|error| format!("read {}: {error}", path.display()))?;
-    // B5：无条件计算组件 digest（写授予记录绑定它）；A4-3 钉扎比对
-    // 同一摘要（配了 pin 才校验，语义不变）。
-    use sha2::Digest as _;
-    let digest = sha2::Sha256::digest(&bytes);
-    let digest_hex = digest
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    if let Some(expected) = &sha256
-        && !digest_hex.eq_ignore_ascii_case(expected.trim().trim_start_matches("sha256:"))
-    {
-        return Err(format!(
-            "component {} sha256 mismatch: pinned {expected}, actual {digest_hex}",
-            path.display()
-        ));
-    }
-    let component = wasmtime::component::Component::from_binary(engine, &bytes)
+    let (bytes, digest_hex) = verified_component_bytes(&path, sha256.as_deref())?;
+    let component = clat_wasm_net::compiled_cache::component(engine, &bytes, storage_root)
         .map_err(|error| format!("compile {}: {error}", path.display()))?;
     // 额外授予目录（Phase 2b）：展开 + 前置校验（缺失/非目录即拒）。
     let mut extra_dirs = Vec::new();

@@ -15,11 +15,20 @@ pub(crate) struct Lane {
 }
 impl Lane {
     pub(crate) fn new(bytes: impl AsRef<[u8]>) -> wasmtime::Result<Self> {
+        Self::new_cached(bytes, None)
+    }
+    pub(crate) fn new_cached(
+        bytes: impl AsRef<[u8]>,
+        storage: Option<&std::path::Path>,
+    ) -> wasmtime::Result<Self> {
         let mut config = Config::new();
         config.consume_fuel(true).epoch_interruption(true);
         config.cranelift_opt_level(wasmtime::OptLevel::None);
         let engine = Engine::new(&config)?;
-        let component = Component::new(&engine, bytes)?;
+        let component = match storage {
+            Some(root) => crate::compiled_cache::component(&engine, bytes.as_ref(), root)?,
+            None => Component::new(&engine, bytes)?,
+        };
         let mut linker = Linker::new(&engine);
         HostState::link_scheduler(&mut linker)?;
         let ticker = Ticker::start(&engine)?;

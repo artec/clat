@@ -640,6 +640,19 @@ fn mount_read_plugin(
         root,
         &[("read", fixture("read.wasm").display().to_string())],
     );
+    mount_read_configuration(root, mcp_root, project, mode, bridge)
+}
+
+fn mount_read_configuration(
+    root: &std::path::Path,
+    mcp_root: &std::path::Path,
+    project: &std::path::Path,
+    mode: crate::permission::PermissionMode,
+    bridge: std::sync::Arc<crate::plugin_host::PluginHostBridge>,
+) -> (
+    PluginManager,
+    std::sync::Arc<std::sync::RwLock<crate::permission::PermissionMode>>,
+) {
     let cell = std::sync::Arc::new(std::sync::RwLock::new(mode));
     let catalog: Vec<std::sync::Arc<dyn PluginTrait>> = vec![
         std::sync::Arc::new(ToolRegistryPlugin),
@@ -1247,6 +1260,16 @@ fn write_config_json(root: &std::path::Path, entries: &[(String, serde_json::Val
     .expect("write config");
 }
 
+struct PrivateCacheCleanup(Vec<PathBuf>);
+impl Drop for PrivateCacheCleanup {
+    fn drop(&mut self) {
+        for path in &self.0 {
+            let _ = std::fs::remove_dir_all(path);
+        }
+    }
+}
+thread_local! { static PRIVATE_CACHES: std::cell::RefCell<PrivateCacheCleanup> = const { std::cell::RefCell::new(PrivateCacheCleanup(Vec::new())) }; }
+
 fn unique_root(tag: &str) -> PathBuf {
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1254,6 +1277,9 @@ fn unique_root(tag: &str) -> PathBuf {
         .as_nanos();
     let root = std::env::temp_dir().join(format!("clat-wasm-{tag}-{unique}"));
     std::fs::create_dir_all(&root).expect("root");
+    if let Ok(cache) = clat_wasm_net::compiled_cache::cache_path(&root) {
+        PRIVATE_CACHES.with(|paths| paths.borrow_mut().0.push(cache));
+    }
     root
 }
 
@@ -2059,4 +2085,129 @@ fn plg4_legacy_linker_does_not_register_network_candidate() {
         format!("{error:#}").contains("function implementation is missing"),
         "legacy must not have the candidate namespace: {error:#}"
     );
+}
+
+#[test]
+#[ignore = "loads the wasm fixture; run explicitly with --ignored"]
+fn legacy_mount_reuses_authenticated_code_and_rejects_changed_source() {
+    let root = unique_root("compiled-cache-mount");
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("digest.wasm");
+    std::fs::copy(fixture("digest.wasm"), &path).unwrap();
+    let config: WasmPluginConfig = serde_json::from_value(serde_json::json!({
+        "path": path.to_string_lossy(), "sha256": fixture_sha256("digest.wasm")
+    }))
+    .unwrap();
+    let (engine, linker) = legacy_runtime().unwrap();
+    drop(compile_plugin(&engine, &linker, &root, "digest", &config).unwrap());
+    let code = std::fs::read_dir(clat_wasm_net::compiled_cache::cache_path(&root).unwrap())
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.extension().is_some_and(|ext| ext == "cwasm"))
+        .unwrap();
+    let stamp = std::fs::metadata(&code).unwrap().modified().unwrap();
+    let (engine, linker) = legacy_runtime().unwrap();
+    drop(compile_plugin(&engine, &linker, &root, "digest", &config).unwrap());
+    assert_eq!(
+        std::fs::metadata(&code).unwrap().modified().unwrap(),
+        stamp,
+        "production legacy mounting must use the existing compiled artifact"
+    );
+    std::fs::write(&path, b"tampered WASM").unwrap();
+    assert!(
+        compile_plugin(&engine, &linker, &root, "digest", &config).is_err(),
+        "cached compiled code must never bypass the current source pin"
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn guest_filesystem_grants_cannot_expose_cache_key_or_native_code() {
+    let root = unique_root("private-cache-grants");
+    let storage = root.join("storage");
+    let project = root.join("project");
+    std::fs::create_dir_all(&storage).unwrap();
+    std::fs::create_dir_all(&project).unwrap();
+    let cache = clat_wasm_net::compiled_cache::cache_path(&storage).unwrap();
+    std::fs::create_dir(&cache).unwrap();
+    assert!(check_cache_grants(&storage, std::iter::once(project.as_path())).is_ok());
+    assert!(check_cache_grants(&storage, std::iter::once(storage.as_path())).is_ok());
+    assert!(check_cache_grants(&storage, std::iter::once(cache.as_path())).is_err());
+    assert!(
+        check_cache_grants(&storage, std::iter::once(root.as_path())).is_err(),
+        "an ancestor preopen would leak the signing key too"
+    );
+    #[cfg(unix)]
+    {
+        let alias = root.join("alias");
+        std::os::unix::fs::symlink(&cache, &alias).unwrap();
+        assert!(check_cache_grants(&storage, std::iter::once(alias.as_path())).is_err());
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+#[ignore = "loads the wasm fixture; run explicitly with --ignored"]
+fn approval_mode_change_cannot_persist_a_private_cache_grant() {
+    use crate::permission::PermissionMode;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let root = unique_root("cache-approval");
+    let project = unique_root("cache-approval-project");
+    let mcp = unique_root("cache-approval-mcp");
+    let private = clat_wasm_net::compiled_cache::cache_path(&root).unwrap();
+    std::fs::create_dir_all(&private).unwrap();
+    write_config_json(
+        &root,
+        &[(
+            "read".into(),
+            serde_json::json!({
+                "path": fixture("read.wasm"), "dirs": [private],
+            }),
+        )],
+    );
+    let bridge = crate::plugin_host::PluginHostBridge::shared();
+    let (manager, mode) = mount_read_configuration(
+        &root,
+        &mcp,
+        &project,
+        PermissionMode::ProjectWrite,
+        bridge.clone(),
+    );
+    let seen = Arc::new(AtomicUsize::new(0));
+    let calls = seen.clone();
+    install_grant_context(
+        &bridge,
+        Arc::new(
+            move |_: crate::permission::PermissionRequest, _: &CancelToken| {
+                calls.fetch_add(1, Ordering::Relaxed);
+                *mode.write().unwrap() = PermissionMode::FullAccess;
+                PermissionDecision::Allow
+            },
+        ),
+    );
+    let registry = manager.require(TOOL_SERVICE).unwrap();
+    registry
+        .get("wasm_read_write_file")
+        .unwrap()
+        .invoke(
+            &serde_json::json!({"path": "out.txt", "content": "forbidden"}),
+            &crate::project::Project::new(&project),
+            &CancelToken::new(),
+        )
+        .expect_err("changed unsafe mode must fail closed");
+    assert_eq!(
+        seen.load(Ordering::Relaxed),
+        1,
+        "never ask to approve the private cache"
+    );
+    assert!(
+        wasm_grants::load_grants(&wasm_grants::grants_path(&root)).is_empty(),
+        "unsafe mode must not persist a grant"
+    );
+    assert!(!project.join("out.txt").exists());
+    drop(registry);
+    drop(manager);
+    for path in [root, project, mcp] {
+        let _ = std::fs::remove_dir_all(path);
+    }
 }

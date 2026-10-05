@@ -68,3 +68,46 @@ jobs:
         run: |
           cargo test --all-targets --all-features
           cargo test -p clat-wasm-net --lib
+
+  plugin-performance:
+    name: Plugin performance (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            measure: true
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            measure: false
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            measure: true
+          - os: windows-latest
+            target: aarch64-pc-windows-msvc
+            measure: false
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            measure: true
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            measure: true
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2.9.2
+      - name: Compile the complete target surface
+        run: cargo check --locked --all-targets --all-features --target ${{ matrix.target }}
+      - name: Test authenticated compiler cache
+        if: matrix.measure
+        run: cargo test --locked -p clat-wasm-net --lib compiled_cache
+      - name: Repeated SHA comparison (debug)
+        if: matrix.measure
+        run: cargo test --locked -p clat-wasm-net --lib perf_sha_samples -- --ignored --nocapture
+      - name: Repeated SHA comparison (release)
+        if: matrix.measure
+        run: cargo test --locked --release -p clat-wasm-net --lib perf_sha_samples -- --ignored --nocapture

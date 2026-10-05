@@ -260,6 +260,8 @@ permissions and native-process risk, enter any configuration, and select
 Enable, Update, Roll back and Uninstall controls. Changes become available in
 all mounted projects without restarting CLAT; finish active runs or compaction
 before preparing or committing changes, and wait for plugin startup to settle.
+The dialog scrolls when its installed packages, review form or public catalog
+exceed the available screen height, including on mobile screens.
 
 The public catalog is a display surface. Its cross-origin request uses no
 credentials or local Bearer token. Download, signature verification, publisher
@@ -335,3 +337,32 @@ clat plugin market install io.artec.dsh-official-web-wasm --market https://pi.at
 The PWA consent card displays the verified network origins and methods. Its
 catalog's `manifestVersion: 2` selects that fixed index; catalog data cannot
 supply arbitrary download or trust URLs. The ordinary v1 index remains separate.
+
+
+### Startup verification and compiled-code cache
+
+Every installed package is fully verified against its manifest, directory tree,
+registry and publisher signature before activation. The tree scan also validates
+the executable digest; MCP mounting consumes that activation-local evidence and
+rechecks file identity and change timestamps. Windows additionally retains a final full digest check because its timestamps
+can be explicitly rewritten. Verification is never postponed
+until after executable code has started. ARM hosts detect SHA-256 instructions at
+runtime and retain a software fallback; x86 keeps its existing SHA/AVX2 path.
+
+Both WASM interfaces reuse compiled code in a private
+`.clat-wasm-cache-<storage-id>` directory beside the storage root. Entries bind
+the complete component bytes and Wasmtime engine compatibility. A private local
+host key authenticates the complete compiled artifact before deserialization;
+modified, truncated, foreign or incompatible entries are cache misses and are
+recompiled. Publication is atomic. Cache failures, including a read-only storage
+root, fall back to compilation. Network invocations get fresh instances; legacy
+plugins retain their existing permission-bound instance lifecycle. Configuration,
+resource limits and permission checks remain per runtime use; the cache stores
+no credentials, grants or guest state. The cache assumes the same protected local
+user storage boundary as CLAT's credentials; code running with the host user's
+full filesystem privileges is outside that boundary. WASM filesystem preopens
+may not expose this directory or an ancestor; such grants fail before execution
+or write-grant persistence. Ordinary project and storage-root grants remain
+available. The cache can be deleted
+while CLAT is stopped; the next activation rebuilds it. First compilation remains
+slower than subsequent activations.

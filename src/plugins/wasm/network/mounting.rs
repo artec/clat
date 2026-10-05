@@ -32,7 +32,7 @@ fn mount(
     }
     // Resolve identity, configuration and conflicting pins through the ordinary path.
     resolve_package(&adapter.storage_root, name, config)?;
-    let path = manifest.verify_entry_digest(manifest_path)?;
+    let path = manifest.entry_path(manifest_path)?;
     if std::fs::metadata(&path)
         .map_err(|_| "component unavailable")?
         .len()
@@ -41,7 +41,7 @@ fn mount(
         return Err("network component exceeds size limit".into());
     }
     let bytes = verified_bytes(&path, &manifest.runtime.sha256)?;
-    let mut runtime = Runtime::new(&bytes)?;
+    let mut runtime = Runtime::new_cached(&bytes, &adapter.storage_root)?;
     let declaration = serde_json::to_vec(&manifest.capabilities.network_descriptor())
         .map_err(|_| "invalid declaration")?;
     let narrowing = manifest
@@ -137,7 +137,6 @@ impl Drop for Registration {
 }
 
 fn verified_bytes(path: &std::path::Path, expected: &str) -> Result<Vec<u8>, String> {
-    use sha2::Digest;
     use std::io::Read;
     let file = std::fs::File::open(path).map_err(|_| "component unavailable")?;
     let mut bytes = Vec::new();
@@ -147,7 +146,10 @@ fn verified_bytes(path: &std::path::Path, expected: &str) -> Result<Vec<u8>, Str
     if bytes.len() as u64 > MAX_COMPONENT_BYTES {
         return Err("network component exceeds size limit".into());
     }
-    let digest = format!("{:x}", sha2::Sha256::digest(&bytes));
+    let digest = crate::plugin::hashing::Sha256::digest(&bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
     if !digest.eq_ignore_ascii_case(expected.trim().trim_start_matches("sha256:")) {
         return Err("network component changed before compilation".into());
     }

@@ -16,4 +16,6 @@ pub use clat_core::CancelToken;
 mod cancellation;
 #[cfg(not(test))]
 pub use cancellation::CancelToken;
+pub mod compiled_cache;
+pub mod hashing;
 pub mod runtime;

@@ -292,3 +292,31 @@ the unchanged original provider under Node. Backend ordinary tests cover
 encoded/decoded ceilings, allocation pressure, empty-member cancellation and
 physical socket closure. Node encoding success does not certify a particular
 Bun runtime's undici implementation.
+
+
+### Plugin startup performance
+
+PERF-1 has a six-target compile matrix in CI and repeated SHA comparisons on
+native macOS, Windows and Linux runners. Run the same CPU comparison locally
+with `cargo test -p clat-wasm-net --lib perf_sha_samples -- --ignored --nocapture`
+(and again with `--release`). It compares five 61 MiB inputs with identical
+SHA-256 results. x86 deliberately retains the existing backend. Compilation
+checks and CPU comparisons do not establish host startup or device acceptance.
+
+For an idle local host, with explicit permission to disconnect its frontends,
+`scripts/measure-plugin-startup.py --allow-stop-host --binary before=/absolute/old/clat
+--binary after=/absolute/new/clat --output output/perf1/startup.json` measures five
+actual `host start --trust` process restarts per binary against the existing
+local plugin configuration. Stop competing builds and tests first. This leaves
+the host stopped; restart it with the chosen binary after measurement. OS disk
+caches are retained, so the report is process startup rather than cold disk I/O.
+The command never changes the plugin configuration.
+
+To compare a compiler-cache miss and authenticated cache loading for an actual
+component, set `CLAT_PERF_COMPONENT` to its local path and run
+`cargo test -p clat-wasm-net --lib perf_component_samples -- --ignored --nocapture`
+(and again with `--release`). The fixture must be trusted and supplied explicitly.
+Three samples use fresh engines and the production network engine settings.
+The miss includes compilation, serialization and atomic cache publication; the
+hit includes content hashing, authentication and loading. This is not complete
+host startup. The reviewer independently repeats final acceptance.

@@ -5,11 +5,15 @@
 mod bundle;
 mod context;
 mod effect;
+pub(crate) mod hashing;
 mod id;
 mod manager;
 mod market;
 mod package;
 mod store;
+mod verified_entry;
+#[cfg(test)]
+pub(crate) use store::tests as store_hash_probe;
 
 /// panic 载荷的统一文案化（mount/run worker/dispatch 三处隔离共用）。
 pub(crate) use manager::panic_message;

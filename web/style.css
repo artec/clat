@@ -468,7 +468,7 @@ button:disabled { cursor: default; opacity: .45; }
 
 /* Read-only public market projection. The browser never sends its local token
    to pi.at.cn and cannot mutate the local package store. */
-.market-dialog { width: min(880px, calc(100% - 32px)); max-height: min(820px, calc(100% - 32px)); padding: 0; overflow: hidden; color: var(--text); background: var(--surface); border: 1px solid var(--line-strong); border-radius: var(--radius-lg); box-shadow: var(--shadow); }
+.market-dialog { width: min(880px, calc(100% - 32px)); max-height: min(820px, calc(100% - 32px)); padding: 0; overflow: auto; overscroll-behavior: contain; color: var(--text); background: var(--surface); border: 1px solid var(--line-strong); border-radius: var(--radius-lg); box-shadow: var(--shadow); }
 .market-dialog::backdrop { background: rgb(4 7 8 / 76%); backdrop-filter: blur(6px); }
 .market-panel { min-height: min(690px, calc(100vh - 32px)); display: grid; grid-template-rows: auto auto auto minmax(0, 1fr) auto; }
 .market-panel > header { display: flex; align-items: start; justify-content: space-between; padding: 24px 26px 20px; border-bottom: 1px solid var(--line); background: radial-gradient(circle at 76% 0, color-mix(in srgb, var(--signal) 12%, transparent), transparent 38%); }

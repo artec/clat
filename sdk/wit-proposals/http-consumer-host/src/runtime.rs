@@ -63,6 +63,15 @@ impl Runtime {
             .map(Self)
             .map_err(|_| "invalid network component".into())
     }
+    /// Reuse authenticated code while keeping each invocation's Store fresh.
+    pub fn new_cached(bytes: &[u8], storage: &std::path::Path) -> Result<Self, String> {
+        if !bytes.starts_with(b"\0asm") {
+            return Err("expected a binary WASM component".into());
+        }
+        Lane::new_cached(bytes, Some(storage))
+            .map(Self)
+            .map_err(|_| "invalid network component".into())
+    }
     pub fn list(&mut self, invocation: Invocation) -> Result<Vec<Definition>, String> {
         self.0
             .invoke(invocation.0, |store, component, linker| {
