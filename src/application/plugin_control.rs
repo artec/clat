@@ -19,7 +19,7 @@ pub(super) struct PluginReview {
 }
 
 impl HostApplication {
-    fn plugin_market(&self) -> Result<std::sync::Arc<Market>, ApplicationError> {
+    fn plugin_market(&self, generation: u32) -> Result<std::sync::Arc<Market>, ApplicationError> {
         #[cfg(test)]
         if let Some(source) = self
             .storage
@@ -30,7 +30,16 @@ impl HostApplication {
         {
             return Ok(source.clone());
         }
-        Market::load(self.storage.root(), DEFAULT_MARKET_URL)
+        let url = match generation {
+            1 => DEFAULT_MARKET_URL,
+            2 => "https://pi.at.cn/v2/",
+            _ => {
+                return Err(ApplicationError::new(
+                    "unsupported plugin market generation",
+                ));
+            }
+        };
+        Market::load(self.storage.root(), url)
             .map(std::sync::Arc::new)
             .map_err(ApplicationError::new)
     }
@@ -46,13 +55,22 @@ impl HostApplication {
             .map_err(ApplicationError::new)?;
         Ok(
             json!({"installed": packages.into_iter().map(|p| json!({"id": p.id, "name": p.name,
-            "version": p.version, "runtime": p.runtime, "enabled": p.enabled,
+            "version": p.version, "manifest_version": p.manifest_version, "runtime": p.runtime, "enabled": p.enabled,
             "rollback_version": p.rollback_version, "trust": p.trust, "publisher": p.publisher,
             "health": p.health})).collect::<Vec<_>>()}),
         )
     }
 
     pub fn plugin_prepare(&mut self, id: &str, action: &str) -> Result<Value, ApplicationError> {
+        self.plugin_prepare_generation(id, action, 1)
+    }
+
+    pub fn plugin_prepare_generation(
+        &mut self,
+        id: &str,
+        action: &str,
+        generation: u32,
+    ) -> Result<Value, ApplicationError> {
         self.reject_busy_plugin_projects()?;
         self.prune_plugin_reviews();
         if self.plugin_reviews.len() >= 8 {
@@ -64,7 +82,7 @@ impl HostApplication {
         let mut market = None;
         let view = match action {
             "install" | "update" => {
-                let source = self.plugin_market()?;
+                let source = self.plugin_market(generation)?;
                 let prepared = source
                     .prepare(
                         self.storage.root(),

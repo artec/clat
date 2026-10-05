@@ -15,7 +15,7 @@ export function validateIndexGeneration(index, expected = 1) {
         assert(version.manifestVersion === undefined || version.manifestVersion === 1, 'v2 manifest cannot enter v1')
         assert(version.runtime === 'wasm-component' || version.runtime === 'mcp-stdio', 'unknown v1 runtime')
       } else {
-        assert(Object.keys(caps).every(key => ['network','clock','sampling','hostTools','preopens'].includes(key)), 'unknown v2 capability')
+        assert(Object.keys(caps).every(key => [...legacyCapabilities,'network','clock'].includes(key)), 'unknown v2 capability')
         assert(Object.keys(caps.network ?? {}).every(key => ['protocol','origins'].includes(key)), 'unknown network capability')
         assert(version.manifestVersion === 2, 'v2 catalog requires v2 manifest')
         assert(version.runtime === 'wasm-component', 'v2 network flavor requires wasm-component')

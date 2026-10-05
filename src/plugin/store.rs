@@ -86,6 +86,7 @@ pub(crate) struct PackageMutation {
 
 #[derive(Clone, Debug)]
 pub(crate) struct PackageListEntry {
+    pub(crate) manifest_version: u32,
     pub(crate) id: String,
     pub(crate) name: String,
     pub(crate) version: String,
@@ -780,6 +781,7 @@ fn registry_list(registry: &PackageRegistry) -> Vec<PackageListEntry> {
                     .map(|artifact| artifact.manifest.version.clone())
             });
             Some(PackageListEntry {
+                manifest_version: active.manifest.manifest_version,
                 id: id.clone(),
                 name: active.manifest.name.clone(),
                 version: active.manifest.version.clone(),
@@ -893,6 +895,7 @@ fn capability_labels(capabilities: &PluginCapabilities) -> Vec<String> {
             .iter()
             .map(|name| format!("hostTools.{name}")),
     );
+    labels.extend(capabilities.network_labels());
     labels
 }
 

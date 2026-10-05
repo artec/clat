@@ -3,6 +3,7 @@
 import { createHash } from 'node:crypto'
 import { mkdir, readFile, writeFile, stat } from 'node:fs/promises'
 import { spawnSync } from 'node:child_process'
+import {validateIndexGeneration} from './index-generation.mjs'
 import path from 'node:path'
 
 const args = process.argv.slice(2)
@@ -37,6 +38,7 @@ clat('pack', directory, '--output', bundle)
 const bytes = await readFile(bundle)
 const now = Math.floor(Date.now() / 1000)
 const version = {
+  ...(manifest.manifestVersion === 2 ? {manifestVersion:2} : {}),
   version: manifest.version, runtime: manifest.runtime.kind, publisher: publisher.publisher,
   publisherKey: keyId, publishedAtUnix: now, capabilities: manifest.capabilities,
   dependencies: {}, compatibility: manifest.compatibility?.kind?.startsWith('dsh-')
@@ -44,18 +46,20 @@ const version = {
   artifacts: [{ target, url: `packages/${name}`, sha256: createHash('sha256').update(bytes).digest('hex'), bytes: (await stat(bundle)).size }],
 }
 const proposal = {
-  schemaVersion: 1, market: { id: 'cn.at.pi', name: 'CLAT Plugin Index', homepage: 'https://pi.at.cn' },
+  schemaVersion: manifest.manifestVersion, market: { id: 'cn.at.pi', name: 'CLAT Plugin Index', homepage: 'https://pi.at.cn' },
   publishers: [{ id: publisher.publisher, name: publisher.publisher, status: 'trusted', reviewUrl,
     keys: [{ id: keyId, publicKey: publisher.publicKey, status: 'active', notBeforeUnix: now - 60, notAfterUnix: now + 365 * 86400 }] }],
   packages: [{ id: manifest.id, name: manifest.name, summary: manifest.description || manifest.name,
     homepage: sourceUrl, tags: [manifest.runtime.kind === 'mcp-stdio' ? 'MCP' : 'WASM'], versions: [version] }], revocations: [], vulnerabilities: [],
 }
+validateIndexGeneration(proposal, manifest.manifestVersion)
 await writeFile(path.join(destination, 'index.source.proposed.json'), JSON.stringify(proposal, null, 2) + '\n', { flag: 'wx' })
 await writeFile(path.join(destination, 'catalog.proposed.json'), JSON.stringify({ schemaVersion: 1,
   market: { name: 'CLAT Plugin Index', homepage: 'https://pi.at.cn' }, packages: [{
     id: manifest.id, name: manifest.name, runtime: manifest.runtime.kind, status: 'available',
+    ...(manifest.manifestVersion === 2 ? {manifestVersion:2} : {}),
     summary: manifest.description || manifest.name, publisher: publisher.publisher,
     tags: [manifest.runtime.kind === 'mcp-stdio' ? 'MCP' : 'WASM'], sourceUrl, docsUrl: sourceUrl,
-    installCommand: `clat plugin market install ${manifest.id} --accept-capabilities`,
+    installCommand: `clat plugin market install ${manifest.id}${manifest.manifestVersion === 2 ? " --market https://pi.at.cn/v2/" : ""} --accept-capabilities`,
   }] }, null, 2) + '\n', { flag: 'wx' })
 console.log(`Publication proposal: ${destination}. Review publisher identity before owner-signing an index.`)

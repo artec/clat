@@ -1,6 +1,6 @@
 # WASM 网络宿主协议提案（PLG-4 D1）
 
-状态：**D1 审计及异步复审已通过；D2 第二风味已完成实现与本地判别，待独立审计。**
+状态：**D1、D2 已通过独立审计；D3 开发交付完成：生产搜索包、签名 staging 全卷、原 HTTP 组件编码卷与真实服务测量通过；待独立复核和负责人发布。**
 
 官方四件套 0.2.0-rc.2 的源码保持原样。第二风味以显式 context scope 替代
 ALS，闭集 DNS/HTTP 适配消费宿主私有、单次使用的 resolution；网络、审批、
@@ -19,12 +19,12 @@ JS/发布隔离 23 项及原 Bun 配方 9 项通过；完整仓库门禁通过�
 D1 的 24 行攻击有逐行删除红点与对应作者绿卷，供独立审计复核；
 该账本不宣称穷尽全部攻击或取得生产验收。
 
-**D3 尚未实施成品接线与发布**：生产仍使用现有 Bun/MCP；原正式 WIT、
-v1 linker 的注册集合、已发布工件与市场索引字节不变。新网络库是独立作者宿主，
-尚未进入正式安装/运行路径。签名包安装、v2 catalog 成品、PLG-2 staging/PWA、
-全配方/编码兼容卷、公网服务 fuel/墙钟/体积重复测量属于 D3。
-精确 origin 限制依旧生效，任意 URL 抓取不能宣称无差异兼容。
-其他响应编码目前明确拒绝 unsupported，不能把它计为与 Bun 的解码等价。
+**D3 当前交付范围是搜索限定成品**：网络库已共用于生产 loader 与作者宿主，
+签名安装、v2 目录、PWA 同意与卸载、真实 DeepSeek 五次及 Bun 五次测量已通过。
+原正式 WIT、v1 linker 注册集合、已发布 MCP 工件与 v1 签名索引字节不变。
+identity、gzip（含多成员）、zlib/raw deflate、Brotli 已由共享原 HTTP provider 向量和实际正式组件核验。
+精确 origin 限制依旧生效；首发搜索限定，任意 URL 抓取继续用原 MCP 入口。
+独立审计、正式签名与 FTP 上线由负责人执行，不混入开发完成结论。
 
 真实 DNS 按负责人决定免测；原 HTTP 成功卷以测试专属的固定数字回环路由运行，
 宿主向原包投影固定公网测试地址，cfg(test) 外不存在该路由。它证明消费者与
@@ -409,3 +409,53 @@ compatibility gaps in the pinned engine. The original search provider also sends
 test response in the actual component. HTTP-provider pin and cancellation
 equivalence remain under verification; componentization therefore does
 not establish quartet compatibility or D2 completion. Production installation and the v2 catalog remain unimplemented.
+
+
+## D3 production integration and search-only candidate (2026-10-05)
+
+The construction notes above preserve historical status. Manifest v2, the
+production loader, signed package storage and https://pi.at.cn/v2/ are now
+connected. The v1 linker, original tools/config WIT, released MCP packages and
+signed v1 index remain unchanged. The private clat-wasm-net library shares its
+source with the audited author backend; core injects the actual permission lease.
+Every tool gets a fresh Store and independent deadline, retaining cumulative
+active-run attempt budgets, cancellation, deadlines
+and active resource closure. No filesystem, preopens or host-tool execution
+interface is linked into this network flavor.
+
+The first candidate exports only web_search, with signed POST authority for
+https://api.deepseek.com:443 and an independently declared clock. The original
+four upstream dependencies remain unchanged. web_fetch is unavailable in both
+discovery and invocation; the existing MCP edition retains full search/fetch.
+Configuration can only narrow signed network policy. Invalid generations,
+protocols, null declarations and conflicting capabilities fail closed. Install,
+expansion, rollback and restart use the same validation. Guest errors and traps
+are sanitized at the production boundary.
+
+The real component passed ephemeral publisher/index signatures, production
+installation, generated-v2-catalog routing, PWA consent, tool/DNS/HTTP approvals,
+original search requests/results and uninstall. Numeric loopback routing exists
+only in explicitly armed test hosts; ordinary product builds cannot enable it
+through environment, guest config or manifests. System DNS is waived on the
+owner's TUN machine; production still denies 198.18.* addresses.
+
+Five original-component searches and five Bun searches also passed against real
+DeepSeek. The WASM test injects externally obtained A/AAAA answers while retaining
+full public-address validation, numeric dialing, TLS and the network authority
+chain; it does not claim system DNS acceptance. No relay or fixture reply was used.
+
+The shared HTTP entity layer supports identity, gzip (including concatenated
+members), zlib/raw deflate and strict Brotli. Encoded and decoded entities each
+have an 8 MiB ceiling, decoded chunks are at most 64 KiB, and entity/decoder
+reservations share a 128 MiB process budget. Compressed entities are completely
+validated before any decoded bytes are delivered. Authority, cancellation and
+deadline checks occur on output chunks and every 4 KiB of compressed input;
+unknown or stacked encodings, truncation and bombs fail closed. The six shared
+wire vectors pass through the unchanged original provider under Node and the
+actual formal WASM tools component. The signed PWA search staging also consumes
+a gzip reply. Bun 1.3.14 direct HTTP testing exposes an existing undici Agent
+close-method failure; the original fallback is unchanged and this is recorded
+separately, not counted as a green Bun encoding comparison. Local acceptance
+does not establish independent audit or production publication. Commands
+are in [the flavor README](../sdk/dsh-wasm-flavor/README.md); owner signing and
+upload are in [publishing](../market/PUBLISHING.md).

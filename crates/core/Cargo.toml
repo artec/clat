@@ -10,9 +10,11 @@ description = "CLAT terminal-independent runtime and application ports"
 path = "../../src/core.rs"
 
 [features]
-test-support = []
+test-support = ["clat-wasm-net/test-support"]
 
 [dependencies]
+# Semantic network WASM backend; no core/frontend dependency in the backend.
+clat-wasm-net = { path = "../../sdk/wit-proposals/net-runtime" }
 # Official iLink media is AES-128-ECB encrypted. Decryption stays inside the
 # protocol adapter; decrypted bytes immediately enter the existing attachment
 # admission path and are never exposed as a host path.

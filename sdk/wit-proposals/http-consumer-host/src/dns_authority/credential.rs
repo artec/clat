@@ -15,7 +15,7 @@ pub struct Resolution {
     addresses: Vec<IpAddr>,
     discovery: Vec<IpAddr>,
     consumed: AtomicBool,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     loopback_fixture: bool,
 }
 impl Resolution {
@@ -35,7 +35,7 @@ impl Resolution {
             addresses,
             discovery,
             consumed: AtomicBool::new(false),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             loopback_fixture: false,
         }
     }
@@ -83,7 +83,7 @@ impl Resolution {
             deadline: self.deadline,
             addresses: self.addresses.clone(),
             _slot: self.slot.clone(),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             loopback_fixture: self.loopback_fixture,
         })
     }
@@ -96,7 +96,7 @@ pub struct ConnectionPins {
     deadline: Instant,
     addresses: Vec<IpAddr>,
     _slot: Arc<Slot>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     loopback_fixture: bool,
 }
 impl ConnectionPins {
@@ -155,14 +155,14 @@ pub(crate) fn test_resolution(
     )
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl Resolution {
     pub(crate) fn with_loopback_fixture(mut self) -> Self {
         self.loopback_fixture = true;
         self
     }
 }
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl ConnectionPins {
     pub(crate) fn fixture_addresses(&self, addresses: Vec<IpAddr>) -> Vec<IpAddr> {
         if self.loopback_fixture {

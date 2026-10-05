@@ -11,6 +11,7 @@ struct Body {
     driver: Option<Driver>,
     pending: Bytes,
     received: usize,
+    encoding: encoding::Encoding,
 }
 pub struct StreamResponse {
     status: u16,
@@ -24,7 +25,7 @@ pub struct StreamResponse {
     max: usize,
     terminal: Option<Failure>,
     eof: bool,
-    process: Option<OwnedSemaphorePermit>,
+    process: Option<Reservation>,
     resource: Option<HttpPermit>,
 }
 pub(crate) async fn open(
@@ -101,6 +102,7 @@ async fn head<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     };
     let (parts, incoming) = response.into_parts();
     validate_head(&parts, max)?;
+    let encoding = encoding::Encoding::parse(&parts.headers)?;
     Ok((
         parts,
         Body {
@@ -108,6 +110,7 @@ async fn head<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
             driver,
             pending: Bytes::new(),
             received: 0,
+            encoding,
         },
     ))
 }
@@ -125,11 +128,7 @@ fn validate_head(parts: &http::response::Parts, max: usize) -> Result<(), Failur
     {
         return Err(Failure::Limit);
     }
-    for value in parts.headers.get_all("content-encoding") {
-        if value.as_bytes() != b"identity" {
-            return Err(Failure::Encoding);
-        }
-    }
+    encoding::Encoding::parse(&parts.headers)?;
     if let Some(length) = parts.headers.get("content-length") {
         let length = length
             .to_str()
@@ -225,6 +224,13 @@ impl StreamResponse {
         if self.eof {
             return Ok(vec![]);
         }
+        if self
+            .body
+            .as_ref()
+            .is_some_and(|body| body.encoding.compressed())
+        {
+            self.decode_entity().await?;
+        }
         let body = self.body.as_mut().ok_or(Failure::Transport)?;
         while body.pending.is_empty() {
             let frame = tokio::select! {
@@ -251,6 +257,46 @@ impl StreamResponse {
             .to_vec();
         self.check()?;
         Ok(bytes)
+    }
+    async fn decode_entity(&mut self) -> Result<(), Failure> {
+        let mut encoded = Vec::new();
+        encoded
+            .try_reserve_exact(self.max)
+            .map_err(|_| Failure::Limit)?;
+        loop {
+            self.check()?;
+            let body = self.body.as_mut().ok_or(Failure::Transport)?;
+            let data = tokio::select! {
+                biased;
+                _ = cancelled(&self.gate,&self.cancel,self.deadline) => return Err(Failure::Permission(self.gate.check(&self.cancel,self.deadline).unwrap_err())),
+                error = self.pins.closed() => return Err(error.into()),
+                result = body.next() => result?,
+            };
+            let Some(data) = data else {
+                break;
+            };
+            if data.len() > self.max - encoded.len() {
+                return Err(Failure::Limit);
+            }
+            encoded.extend_from_slice(&data);
+        }
+        let body = self.body.as_ref().ok_or(Failure::Transport)?;
+        let gate = self.gate.clone();
+        let cancel = self.cancel.clone();
+        let scope = self.scope.borrow_handle();
+        let deadline = self.deadline;
+        let decoded = encoding::decode(&body.encoding, &encoded, self.max, move || {
+            gate.check(&cancel, deadline).map_err(Failure::Permission)?;
+            scope.check_active(deadline)?;
+            Ok(())
+        })
+        .await?;
+        self.check()?;
+        let body = self.body.as_mut().ok_or(Failure::Transport)?;
+        body.encoding = encoding::Encoding::Identity;
+        body.received = decoded.len();
+        body.pending = Bytes::from(decoded);
+        Ok(())
     }
 }
 

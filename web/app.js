@@ -2224,6 +2224,7 @@ function normalizeMarketCatalog(catalog) {
       name: plugin.name,
       summary: plugin.summary,
       runtime: plugin.runtime,
+      manifestVersion: plugin.manifestVersion === 2 ? 2 : 1,
       status: plugin.status,
       tags: Array.isArray(plugin.tags)
         ? plugin.tags.slice(0, 12).filter((tag) => typeof tag === 'string').map((tag) => tag.slice(0, 48))

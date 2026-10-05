@@ -103,6 +103,18 @@
       "docsUrl": "https://github.com/artec/clat/blob/main/docs/permissions.md"
     },
     {
+      "id": "io.artec.dsh-official-web-wasm",
+      "name": "DSH official web search · WASM",
+      "manifestVersion": 2,
+      "runtime": "wasm-component",
+      "status": "preview",
+      "summary": "受限 WASM 搜索风味：仅允许向 api.deepseek.com:443 发起 POST。已通过本地签名安装、真实搜索与卸载测试，等待独立审计和正式发布。任意网址抓取请使用 MCP 风味。",
+      "publisher": "artec",
+      "tags": ["WASM", "Search", "Sandbox"],
+      "sourceUrl": "https://github.com/artec/clat/tree/main/sdk/dsh-wasm-flavor",
+      "docsUrl": "https://github.com/artec/clat/blob/main/docs/wasm.md"
+    },
+    {
       "id": "io.artec.dsh-official-web",
       "name": "DSH official web search and fetch",
       "runtime": "mcp-stdio",

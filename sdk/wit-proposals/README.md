@@ -597,3 +597,18 @@ JS 与发布隔离 23 tests，Bun recipe+compiled 9 tests。第二风味构建�
 引擎与 tools/config WIT 漂移。复现命令见 `../dsh-wasm-flavor/README.md`。
 生产 backend/包安装/v2 catalog 与 staging/performance 是 D3 成品工作，
 这里依旧不注册生产网络接口。旧施工段落是历史证据，当前状态见 docs/wasm-net.md。
+
+
+## D3 shared production backend
+
+The net-runtime workspace crate now compiles this same source as the private
+clat-wasm-net library. Core injects its production permission authority. Ordinary
+host invariants run in delivery gates. Historical author-only statements above
+describe earlier stages. The v1 linker remains unchanged. Current v2 loading
+and market isolation are documented in docs/wasm-net.md.
+
+D3 production run/tool integration now keeps a host-owned active-run attempt
+budget and advances its admission window only under the current core lease.
+Every tool retains its own bounded deadline; advancing the shared window does
+not renew an older tool or refund DNS/HTTP attempts. The historical bounded
+author `Run::new` remains absolute and cannot be renewed.

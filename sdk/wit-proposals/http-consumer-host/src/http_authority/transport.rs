@@ -1,12 +1,12 @@
-//! Private bounded HTTP/1 candidate; no production linker entry.
+//! Bounded semantic HTTP/1 transport shared by production and author hosts.
 use super::{
     PreparedRequest,
     connector::{Connection, ConnectionRequest},
     permission::{self, Gate},
 };
+use crate::CancelToken;
 use crate::dns_authority::{Failure as AuthorityFailure, Resolution, Scope};
 use bytes::Bytes;
-use clat_core::CancelToken;
 use http_body_util::Full;
 
 use std::sync::Arc;
@@ -36,6 +36,8 @@ impl From<AuthorityFailure> for Failure {
         Self::Authority(e)
     }
 }
+mod encoding;
+mod memory;
 mod stream;
 pub use stream::StreamResponse;
 pub(crate) use stream::open;
@@ -74,13 +76,21 @@ pub(super) async fn execute(
         _stream: stream,
     })
 }
-fn reserve() -> Result<OwnedSemaphorePermit, Failure> {
+struct Reservation {
+    _slot: OwnedSemaphorePermit,
+    _memory: memory::Permit,
+}
+fn reserve() -> Result<Reservation, Failure> {
     static BUDGET: OnceLock<Arc<Semaphore>> = OnceLock::new();
-    BUDGET
+    let slot = BUDGET
         .get_or_init(|| Arc::new(Semaphore::new(8)))
         .clone()
         .try_acquire_owned()
-        .map_err(|_| Failure::Limit)
+        .map_err(|_| Failure::Limit)?;
+    Ok(Reservation {
+        _slot: slot,
+        _memory: memory::Permit::acquire(2 * LIMIT)?,
+    })
 }
 async fn cancelled(gate: &Gate, cancel: &CancelToken, deadline: Instant) {
     while gate.check(cancel, deadline).is_ok() {

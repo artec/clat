@@ -117,6 +117,8 @@ pub(crate) struct MarketPackage {
 pub(crate) struct MarketVersion {
     pub(crate) version: String,
     pub(crate) runtime: PluginRuntimeKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) manifest_version: Option<u32>,
     pub(crate) publisher: String,
     pub(crate) publisher_key: String,
     pub(crate) published_at_unix: u64,
@@ -224,6 +226,7 @@ impl Market {
         let (index_bytes, signature_bytes) = match fetched {
             Ok(pair) => {
                 let index = verify_signed_index(&pair.0, &pair.1, now_unix()?)?;
+                validate_endpoint_generation(&base, &index)?;
                 write_cache(storage_root, &base, &pair.0, &pair.1)?;
                 return Ok(Self { base, index });
             }
@@ -232,6 +235,7 @@ impl Market {
             })?,
         };
         let index = verify_signed_index(&index_bytes, &signature_bytes, now_unix()?)?;
+        validate_endpoint_generation(&base, &index)?;
         Ok(Self { base, index })
     }
 
@@ -663,7 +667,7 @@ fn verify_signed_index_with_key(
 }
 
 fn validate_index(index: &MarketIndex, now: u64) -> Result<(), String> {
-    if index.schema_version != 1 {
+    if !matches!(index.schema_version, 1 | 2) {
         return Err(format!(
             "unsupported market schema {}",
             index.schema_version
@@ -743,16 +747,7 @@ fn validate_index(index: &MarketIndex, now: u64) -> Result<(), String> {
         }
         let mut versions = BTreeSet::new();
         for version in &package.versions {
-            SemVersion::parse(&version.version)?;
-            validate_identifier(&version.publisher, "version publisher")?;
-            validate_identifier(&version.publisher_key, "version publisher key")?;
-            if version.published_at_unix > index.market.generated_at_unix {
-                return Err(format!(
-                    "package `{}` version `{}` has a future publication timestamp",
-                    package.id, version.version
-                ));
-            }
-            validate_compatibility(&version.compatibility)?;
+            validate_generation_version(index, version)?;
             if !versions.insert(&version.version) {
                 return Err(format!(
                     "package `{}` has duplicate version `{}`",
@@ -819,6 +814,41 @@ fn validate_index(index: &MarketIndex, now: u64) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_endpoint_generation(base: &Url, index: &MarketIndex) -> Result<(), String> {
+    if base.host_str() == Some("pi.at.cn") {
+        let expected = if base.path() == "/v2/" { 2 } else { 1 };
+        if index.schema_version != expected {
+            return Err("market endpoint and index generations do not match".into());
+        }
+    }
+    Ok(())
+}
+
+fn validate_generation_version(index: &MarketIndex, version: &MarketVersion) -> Result<(), String> {
+    SemVersion::parse(&version.version)?;
+    validate_identifier(&version.publisher, "version publisher")?;
+    validate_identifier(&version.publisher_key, "version publisher key")?;
+    if version.published_at_unix > index.market.generated_at_unix {
+        return Err("market version has a future publication timestamp".into());
+    }
+    validate_compatibility(&version.compatibility)?;
+    match index.schema_version {
+        1 if version.manifest_version.unwrap_or(1) == 1
+            && version.capabilities.network.is_none()
+            && version.capabilities.clock.is_none() =>
+        {
+            Ok(())
+        }
+        2 if version.manifest_version == Some(2)
+            && version.runtime == PluginRuntimeKind::WasmComponent
+            && version.capabilities.network.is_some() =>
+        {
+            version.capabilities.validate_network(None)
+        }
+        _ => Err("catalog and manifest capability generations do not match".into()),
+    }
+}
+
 fn validate_downloaded_package(
     index: &MarketIndex,
     selection: &MarketSelection,
@@ -828,6 +858,7 @@ fn validate_downloaded_package(
     if inspection.manifest.id != selection.package.id
         || inspection.manifest.version != selection.version.version
         || inspection.manifest.runtime.kind != selection.version.runtime
+        || inspection.manifest.manifest_version != selection.version.manifest_version.unwrap_or(1)
         || inspection.manifest.capabilities != selection.version.capabilities
     {
         return Err(format!(
@@ -1674,6 +1705,7 @@ mod tests {
         MarketVersion {
             version: number.into(),
             runtime: PluginRuntimeKind::WasmComponent,
+            manifest_version: None,
             publisher: "artec".into(),
             publisher_key: "release-1".into(),
             published_at_unix: 2,
@@ -1842,3 +1874,39 @@ mod tests {
         assert!(market.solve("dev.root", "*").is_err());
     }
 }
+
+#[cfg(test)]
+mod generation_tests {
+    use super::*;
+    #[test]
+    fn plg4_market_generations_and_signed_endpoint_cannot_mix() {
+        let source = include_str!("../../market/index.source.json");
+        let mut value: serde_json::Value = serde_json::from_str(source).unwrap();
+        let published = value["packages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|p| p["versions"].as_array().unwrap())
+            .map(|v| v["publishedAtUnix"].as_u64().unwrap())
+            .max()
+            .unwrap();
+        value["market"]["generatedAtUnix"] = serde_json::json!(published);
+        value["market"]["expiresAtUnix"] = serde_json::json!(published + 3600);
+        let mut index: MarketIndex = serde_json::from_value(value).unwrap();
+        // The source index may deliberately have a stale publication time.
+        let now = index.market.generated_at_unix;
+        validate_index(&index, now).unwrap();
+        let legacy = Url::parse("https://pi.at.cn/").unwrap();
+        let network = Url::parse("https://pi.at.cn/v2/").unwrap();
+        assert!(validate_endpoint_generation(&legacy, &index).is_ok());
+        assert!(validate_endpoint_generation(&network, &index).is_err());
+        index.schema_version = 2;
+        assert!(validate_endpoint_generation(&legacy, &index).is_err());
+        assert!(validate_endpoint_generation(&network, &index).is_ok());
+        assert!(validate_index(&index, now).is_err());
+    }
+}
+
+#[cfg(test)]
+#[path = "market/staging_tests.rs"]
+mod staging_tests;

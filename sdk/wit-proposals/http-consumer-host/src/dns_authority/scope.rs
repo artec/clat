@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 use tokio::sync::Notify;
 
-// Author-owned lifetimes only. The production permission bridge is not wired.
+// Host-owned run budgets; production authority supplies the active run lifetime.
 pub struct Run {
     pub(super) inner: Arc<Mutex<RunState>>,
     owner: bool,
@@ -15,6 +15,7 @@ pub(super) struct RunState {
     pub generation: u64,
     pub dns_used: u32,
     pub http_used: u32,
+    tool_windows: bool,
     pub jobs: Vec<Weak<Slot>>,
 }
 impl Run {
@@ -31,9 +32,33 @@ impl Run {
                 generation: 0,
                 dns_used: 0,
                 http_used: 0,
+                tool_windows: false,
                 jobs: Vec::new(),
             })),
         })
+    }
+    /// Trusted host run budget: every tool still has an independent bounded deadline.
+    pub fn for_active_run(deadline: Instant) -> Result<Self, Failure> {
+        let run = Self::new(deadline.saturating_duration_since(Instant::now()))?;
+        run.inner.lock().unwrap().tool_windows = true;
+        Ok(run)
+    }
+    /// Advance only the aggregate budget window, never a previous tool or attempt count.
+    /// The caller must hold a current production authority lease.
+    pub fn admit_tool_window(&self, deadline: Instant) -> Result<(), Failure> {
+        let now = Instant::now();
+        if deadline <= now || deadline.duration_since(now) > Duration::from_secs(120) {
+            return Err(Failure::DeadlineExceeded);
+        }
+        let mut state = self.inner.lock().unwrap();
+        if !state.active {
+            return Err(Failure::Cancelled);
+        }
+        if !state.tool_windows {
+            return Err(Failure::DeadlineExceeded);
+        }
+        state.deadline = state.deadline.max(deadline);
+        Ok(())
     }
     pub fn invalidate(&self) {
         let mut state = self.inner.lock().unwrap();

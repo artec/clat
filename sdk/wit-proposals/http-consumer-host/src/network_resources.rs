@@ -4,7 +4,7 @@ use std::{any::TypeId, collections::BTreeMap, marker::PhantomData, time::Instant
 use wasmtime::component::{Resource, ResourceTable};
 use wasmtime_wasi::p2::{DynPollable, subscribe};
 mod clocks;
-mod component;
+pub(crate) mod component;
 mod diagnostics;
 mod poll;
 pub(crate) mod task;

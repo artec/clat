@@ -40,7 +40,7 @@ impl ConnectionRequest {
     }
     async fn connect_with(&self, tls: TlsConnector) -> Result<Connection, ConnectFailure> {
         let (origin, addresses, _) = self.pins.snapshot()?;
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         let addresses = self.pins.fixture_addresses(addresses);
         let operation = async {
             let stream = dial(

@@ -269,3 +269,26 @@ membership digests detect drift; runtime version metadata alone is insufficient.
 The guest executes representative original-pattern compositions, and a separate
 unlowered build must fail at initialization. This syntax acceptance does not
 certify HTTP/DNS or async-context compatibility.
+
+The shared `clat-wasm-net` library runs its ordinary backend invariants in
+Linux/local delivery gates and Windows CI. Generated-component probes require
+explicit local artifacts and are run separately; ignored or unarmed probes are
+not component acceptance. `PLG4_TOOLS_COMPONENT` must be an absolute path for
+`plg4_original_component_installs_mounts_rejects_undeclared_and_uninstalls`.
+
+The network search staging runner is web/e2e/plugin-network-staging.mjs. It
+checks generated-v2-catalog routing, signed install consent, private config,
+three actual approvals, original search results and uninstall. The numeric
+route is limited to the test host, not product network permission. Explicit
+live and fixture sampling commands are in the
+[second-flavor README](../sdk/dsh-wasm-flavor/README.md).
+
+Local/Linux full gates also run the flavor and v2 release JavaScript contracts
+(`node --test market/scripts/*.test.mjs sdk/dsh-wasm-flavor/*.test.mjs`). Network
+staging runs the signed installation/update/rollback/restart/uninstall matrix
+before its browser test; a compressed original search response is included.
+The explicitly armed formal HTTP component shares the six wire encodings with
+the unchanged original provider under Node. Backend ordinary tests cover
+encoded/decoded ceilings, allocation pressure, empty-member cancellation and
+physical socket closure. Node encoding success does not certify a particular
+Bun runtime's undici implementation.

@@ -137,6 +137,47 @@ mod tests {
             .unwrap();
     }
     #[test]
+    fn active_run_fresh_tool_window_preserves_attempts_and_old_tool_expiry() {
+        let first_deadline = Instant::now() + Duration::from_millis(5);
+        let run = Run::for_active_run(first_deadline).unwrap();
+        let old_tool = Tool::new(first_deadline).unwrap();
+        let old_scope = scope(&run, &old_tool);
+        old_scope
+            .admit_http(Instant::now(), Duration::from_secs(1))
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(10));
+        let next_deadline = Instant::now() + Duration::from_secs(1);
+        run.admit_tool_window(next_deadline).unwrap();
+        assert!(matches!(
+            old_scope.admit_http(Instant::now(), Duration::from_secs(1)),
+            Err(Failure::DeadlineExceeded)
+        ));
+        for _ in 1..64 {
+            let next_tool = Tool::new(next_deadline).unwrap();
+            scope(&run, &next_tool)
+                .admit_http(Instant::now(), Duration::from_secs(1))
+                .unwrap();
+        }
+        run.admit_tool_window(Instant::now() + Duration::from_secs(2))
+            .unwrap();
+        let next_tool = Tool::new(Instant::now() + Duration::from_secs(1)).unwrap();
+        assert!(matches!(
+            scope(&run, &next_tool).admit_http(Instant::now(), Duration::from_secs(1)),
+            Err(Failure::LimitExceeded)
+        ));
+        run.invalidate();
+        assert!(matches!(
+            run.admit_tool_window(Instant::now() + Duration::from_secs(1)),
+            Err(Failure::Cancelled)
+        ));
+        let bounded = Run::new(Duration::from_secs(1)).unwrap();
+        assert!(
+            bounded
+                .admit_tool_window(Instant::now() + Duration::from_secs(2))
+                .is_err()
+        );
+    }
+    #[test]
     fn run_http_budget_cannot_reset_by_new_tool() {
         let run = Run::new(Duration::from_secs(2)).unwrap();
         for _ in 0..64 {

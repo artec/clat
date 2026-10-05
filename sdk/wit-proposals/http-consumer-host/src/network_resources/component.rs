@@ -24,13 +24,15 @@ use clat::net_task::egress::*;
 #[cfg(test)]
 type CloseProbe = Box<dyn FnOnce(&HostState) + Send>;
 // Constructed only by trusted host, per tool. No ambient WASI or guest fences.
-pub(super) struct HostState {
+pub(crate) struct HostState {
     owner: Owner,
     limits: wasmtime::StoreLimits,
     network: Arc<NetworkScope>,
-    dns: Arc<SystemDns>,
+    pub(crate) dns: Arc<SystemDns>,
     fence: HttpFence,
-    config: Option<String>,
+    pub(crate) config: Option<String>,
+    #[cfg(feature = "test-support")]
+    pub(crate) numeric_fixture: bool,
     #[cfg(test)]
     dns_submitted: u32,
     #[cfg(test)]
@@ -43,10 +45,10 @@ pub(super) struct HostState {
     close_probe: Option<CloseProbe>,
 }
 impl HostState {
-    pub(super) fn from_policy(
+    pub(crate) fn from_policy(
         run: &crate::dns_authority::Run,
         gate: Arc<crate::http_authority::permission::Gate>,
-        cancel: clat_core::CancelToken,
+        cancel: crate::CancelToken,
         deadline: Instant,
         dns: Arc<SystemDns>,
         policy: crate::capabilities::Policy,
@@ -62,6 +64,8 @@ impl HostState {
             dns,
             fence: http,
             config: None,
+            #[cfg(feature = "test-support")]
+            numeric_fixture: false,
             #[cfg(test)]
             dns_submitted: 0,
             #[cfg(test)]
@@ -182,6 +186,12 @@ impl Host for HostState {
         Ok((|| {
             // Owned input is released even if validation/admission fails.
             let resolution = self.take(target)?;
+            #[cfg(feature = "test-support")]
+            let resolution = if self.numeric_fixture {
+                resolution.with_loopback_fixture()
+            } else {
+                resolution
+            };
             let headers: Vec<_> = request
                 .headers
                 .iter()
@@ -377,6 +387,15 @@ mod native_tests;
 #[cfg(test)]
 mod native_transport_tests;
 
-mod invocation;
+pub(crate) mod invocation;
 
-mod plugin_interface;
+pub(crate) mod plugin_interface;
+
+#[cfg(test)]
+mod search_samples;
+
+#[cfg(test)]
+mod live_search;
+
+#[cfg(test)]
+mod encoding_consumer;

@@ -301,3 +301,37 @@ reconciled with `plugin.list`, never an optimistic browser installation cache.
 
 See [WASM authoring](wasm.md), [DSH porting](dsh-plugins.md),
 [MCP integration](mcp.md), and [architecture](architecture.md).
+
+## Network WASM components (manifest v2)
+
+Manifest v2 selects a separate semantic HTTP/DNS runtime. Each invocation gets
+fresh guest state, no filesystem preopens, environment, sockets or host tools.
+The signed `capabilities.network` declares exact scheme/hostname/port and HTTP
+methods using `clat:net-task@0.1.0`; `capabilities.clock` can explicitly declare
+`wasi:clocks@0.2.10`. Every outbound operation also uses the current run's Network
+permission policy. Cancellation, policy changes and unloading revoke authority.
+This first runtime exports tools/config only; sampling, elicitation, prompts and
+host context are rejected at installation rather than silently granted.
+
+Optional configuration `networkPolicy` narrows these declarations; it cannot
+expand them. New origins or methods in an update require capability consent.
+Reopening, configuring and rolling back retain the signed capability ceiling.
+V1 components continue to use the original runtime and linker.
+
+The first official DSH WASM release is a search-only variant with independent id
+`io.artec.dsh-official-web-wasm`. Its network ceiling is DeepSeek's declared API
+origin. Arbitrary URL fetching remains available through
+`io.artec.dsh-official-web`, the existing Bun/MCP package. Original upstream
+packages are consumed unchanged by both flavors. The WASM release has passed local
+installation and runtime acceptance; independent review and production publication
+remain pending.
+
+Network packages use a separate signed v2 index at `https://pi.at.cn/v2/`:
+
+```sh
+clat plugin market install io.artec.dsh-official-web-wasm --market https://pi.at.cn/v2/ --accept-capabilities
+```
+
+The PWA consent card displays the verified network origins and methods. Its
+catalog's `manifestVersion: 2` selects that fixed index; catalog data cannot
+supply arbitrary download or trust URLs. The ordinary v1 index remains separate.

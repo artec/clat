@@ -1,7 +1,7 @@
 //! Private DNS entry: same core authority before submission and for credentials.
 use super::permission::{Failure as PermissionFailure, Gate};
+use crate::CancelToken;
 use crate::dns_authority::{DnsJob, Failure, Fence, Guard, Origin, Run, Scope, SystemDns};
-use clat_core::CancelToken;
 use std::{
     sync::Arc,
     time::{Duration, Instant},

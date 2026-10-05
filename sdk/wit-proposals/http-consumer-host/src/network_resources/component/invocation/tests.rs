@@ -382,6 +382,44 @@ fn invocation_second_memory_cannot_multiply_guest_memory_budget() {
 }
 
 #[test]
+fn invocation_fuel_bounds_cpu_even_without_network_imports() {
+    let mut lane = Lane::new(component("(loop $spin br $spin) unreachable")).unwrap();
+    let (_run, host, calls) = host(ORIGIN);
+    let error = lane
+        .invoke(host, |store, component, linker| {
+            assert_eq!(store.get_fuel()?, 100_000_000_000);
+            // Exercise exhaustion quickly, without spending the production ceiling.
+            store.set_fuel(1000)?;
+            probe(store, component, linker)
+        })
+        .unwrap_err();
+    assert_eq!(
+        error.downcast_ref::<wasmtime::Trap>(),
+        Some(&wasmtime::Trap::OutOfFuel)
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn invocation_cannot_import_ambient_filesystem_for_writes() {
+    let mut lane = Lane::new(
+        r#"(component
+          (type $write (func (param "bytes" (list u8)) (result u64)))
+          (import "wasi:filesystem/types@0.2.10"
+            (instance (export "write" (func (type $write))))))"#,
+    )
+    .unwrap();
+    let (_run, host, calls) = host(ORIGIN);
+    let error = lane
+        .invoke(host, |store, component, linker| {
+            linker.instantiate(store, component).map(|_| ())
+        })
+        .unwrap_err();
+    assert!(format!("{error:#}").contains("wasi:filesystem/types@0.2.10"));
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
 #[ignore = "requires freshly generated second-flavor scope component; no DNS"]
 fn invocation_explicit_scope_component_preserves_original_lifecycle() {
     use crate::network_resources::component::TypedClient;

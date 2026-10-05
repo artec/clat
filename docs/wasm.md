@@ -323,7 +323,7 @@ existing Bun/MCP recipe intact and tests the original DSH web quartet against
 this WIT contract. Its engine probe is a real JavaScript WASM component; it is
 not an installable WASM edition of the quartet.
 
-The direct conversion currently fails: the official providers need HTTP/DNS
+The original PLG-3 direct-conversion experiment failed: the providers need HTTP/DNS
 and Node's Undici transport, while this WIT contract has no HTTP/DNS interface.
 The adapter also requires async-context ownership. A sandbox edition needs an
 explicitly reviewed egress contract and equivalent runtime semantics before
@@ -336,6 +336,12 @@ compilation. Native Bun character membership and guest composition probes pass;
 this removes a syntax blocker while retaining the original files. It does not
 provide the missing HTTP/DNS or Node async-context services.
 
-The [proposed network contract](wasm-net.md) specifies an additive, bounded
-`clat:net@0.1.0` capability. It is a design-review draft; the production linker
-does not implement it and installed components cannot use it yet.
+The [network contract](wasm-net.md) records the additive, bounded protocol
+design and its accepted typed `clat:net-task@0.1.0` implementation. The original
+synchronous `clat:net@0.1.0` proposal remains historical evidence.
+
+Network components use manifest v2 and a separate semantic-network linker. See
+[network components](plugins.md#network-wasm-components-manifest-v2) for the
+capability declaration and installation model. The original v1 world is
+unchanged. Production network host code and the isolated author harness share
+the `clat-wasm-net` library implementation; the host needs no external JS runtime.

@@ -27,6 +27,7 @@ use super::services::{
 };
 mod clock;
 mod grants;
+mod network;
 use crate::mcp::client::qualify_prefixed_tool_name;
 use crate::model::CancelToken;
 use crate::plugin::{
@@ -991,6 +992,15 @@ fn legacy_linker(engine: &Engine) -> Result<Linker<PluginState>, PluginError> {
     Ok(linker)
 }
 
+fn legacy_runtime() -> Result<(Engine, Arc<Linker<PluginState>>), PluginError> {
+    let mut config = wasmtime::Config::new();
+    config.consume_fuel(true).epoch_interruption(true);
+    let engine = Engine::new(&config)
+        .map_err(|error| PluginError::new(format!("wasmtime engine: {error}")))?;
+    let linker = Arc::new(legacy_linker(&engine)?);
+    Ok((engine, linker))
+}
+
 impl PluginTrait for WasmAdapterPlugin {
     fn descriptor(&self) -> &'static PluginDescriptor {
         &DESCRIPTOR
@@ -1021,16 +1031,7 @@ impl PluginTrait for WasmAdapterPlugin {
             return Ok(());
         }
 
-        // 引擎（INV-W3：fuel 计量——无 ticker 线程，host 等待不烧预算；
-        // W1-01：epoch 中断——取消观察者推进刻度，执行期 trap）。
-        let mut engine_config = wasmtime::Config::new();
-        engine_config.consume_fuel(true);
-        engine_config.epoch_interruption(true);
-        let engine = Engine::new(&engine_config)
-            .map_err(|error| PluginError::new(format!("wasmtime engine: {error}")))?;
-
-        let linker = legacy_linker(&engine)?;
-        let linker = Arc::new(linker);
+        let (engine, linker) = legacy_runtime()?;
 
         // 逐插件加载（INV-W5：失败隔离——坏插件记入状态，其余照常）。
         let owner = context.owner();
@@ -1046,6 +1047,23 @@ impl PluginTrait for WasmAdapterPlugin {
             }
         };
         for (name, plugin_config) in &config {
+            if let Some(result) = network::try_mount(self, context, name, plugin_config) {
+                if let Some(status) = &status {
+                    match result {
+                        Ok(tools) => status.record_connected(McpServerStatus {
+                            name: name.clone(),
+                            server_version: WASMTIME_VERSION.into(),
+                            protocol_version: "clat-plugin-manifest/2".into(),
+                            tools,
+                            transport: "wasm".into(),
+                        }),
+                        Err(error) => {
+                            status.record_failed_server(format!("wasm `{name}`: {error}"))
+                        }
+                    }
+                }
+                continue;
+            }
             match compile_plugin(&engine, &linker, &self.storage_root, name, plugin_config) {
                 Ok(compiled) => {
                     // A4-2：元数据消毒诊断上状态面板（不拖垮整个插件）。

@@ -9,6 +9,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::{Component, Path, PathBuf};
 
+mod network;
+use network::{ClockCapability, NetworkCapability};
+
 pub(crate) const MANIFEST_VERSION: u32 = 1;
 pub(crate) const MAX_MANIFEST_BYTES: u64 = 256 * 1024;
 pub(crate) const MAX_MANIFEST_PROMPTS: usize = 32;
@@ -67,6 +70,18 @@ pub(crate) struct PluginCapabilities {
     pub host_context: bool,
     #[serde(default)]
     pub host_tools: Vec<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "network::present"
+    )]
+    pub network: Option<NetworkCapability>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "network::present"
+    )]
+    pub clock: Option<ClockCapability>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -106,12 +121,7 @@ impl PluginPackageManifest {
     }
 
     pub(crate) fn validate(&self) -> Result<(), String> {
-        if self.manifest_version != MANIFEST_VERSION {
-            return Err(format!(
-                "unsupported manifestVersion {}; expected {MANIFEST_VERSION}",
-                self.manifest_version
-            ));
-        }
+        network::validate_generation(self)?;
         validate_identifier(&self.id, "plugin id", 128)?;
         if self.name.trim().is_empty()
             || self.name.chars().count() > 128
@@ -291,6 +301,7 @@ impl PluginPackageManifest {
     /// dangerous mismatch (an object schema receiving a scalar) and missing
     /// required keys before executing third-party code.
     pub(crate) fn validate_config(&self, config: Option<&Value>) -> Result<(), String> {
+        self.capabilities.validate_network(config)?;
         let Some(schema) = self.config_schema.as_ref() else {
             return Ok(());
         };
@@ -443,3 +454,11 @@ mod tests {
         std::fs::remove_dir_all(root).expect("cleanup");
     }
 }
+
+#[cfg(test)]
+#[path = "package/network_tests.rs"]
+mod network_tests;
+
+#[cfg(test)]
+#[path = "package/lifecycle_tests.rs"]
+mod lifecycle_tests;

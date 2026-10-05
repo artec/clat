@@ -1,12 +1,12 @@
 //! Injected authority: no local mode policy or second approval pool.
 use super::PreparedRequest;
+use crate::CancelToken;
 use crate::dns_authority::Origin;
-use clat_core::CancelToken;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum Failure {
+pub enum Failure {
     Denied,
     Cancelled,
     Deadline,
@@ -14,10 +14,10 @@ pub(crate) enum Failure {
     Unavailable,
     InvalidRequest,
 }
-pub(crate) trait Pending: Send + Sync {
+pub trait Pending: Send + Sync {
     fn get(&self) -> Option<Result<(), Failure>>;
 }
-pub(crate) trait Authority: Send + Sync {
+pub trait Authority: Send + Sync {
     fn check(&self) -> Result<(), Failure>;
     fn start(
         &self,

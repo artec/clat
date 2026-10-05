@@ -8,8 +8,13 @@ default-run = "clat-plg4-http-consumer-host"
 
 [workspace]
 
+[features]
+test-support = []
+
 [dependencies]
 bytes = "1"
+flate2 = "=1.1.10"
+brotli-decompressor = "=5.0.0"
 http = "1"
 http-body = "1"
 http-body-util = "0.1"

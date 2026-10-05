@@ -887,13 +887,17 @@ comparable — kept improving after it: 139 / 19.67% on 2026-09-11 →
   `src/model/`, `src/plugins/conversation/`), never into one growing
   file. The `src/` root accepts no new production files — a new domain
   opens a directory; root files are entry shims only.
-- **Two-crate workspace, one binary.** `clat-core` (terminal-independent
+- **Core and frontends, one binary.** `clat-core` (terminal-independent
   runtime, `src/core.rs` entry) and the root `clat` package (facade,
   TUI/DSH frontends, the binary) share the source tree; the core
   exposes frontend consumption only through `src/client_ports.rs`.
   The core→frontend dependency edge does not exist in the cargo graph,
   and a workspace metadata test pins both the dependency direction and
   the single-binary deliverable.
+  The private clat-wasm-net library owns the network engine and authority
+  fences. It depends on neither core nor frontends in production; core
+  injects its permission lease. Author probes and production compile one
+  implementation. This adds no executable or external runtime requirement.
 
 ## Adding a core capability
 

@@ -1,4 +1,4 @@
-//! Fresh guest lifetime for the author network lane; compiled code alone is cached.
+//! Fresh guest lifetime for network tools; only compiled code is cached.
 use super::HostState;
 use std::sync::{
     Arc,
@@ -7,14 +7,14 @@ use std::sync::{
 use wasmtime::component::{Component, Linker};
 use wasmtime::{Config, Engine, Store, StoreLimitsBuilder, UpdateDeadline};
 
-pub(super) struct Lane {
+pub(crate) struct Lane {
     engine: Engine,
     linker: Linker<HostState>,
     component: Component,
     _ticker: Ticker,
 }
 impl Lane {
-    pub(super) fn new(bytes: impl AsRef<[u8]>) -> wasmtime::Result<Self> {
+    pub(crate) fn new(bytes: impl AsRef<[u8]>) -> wasmtime::Result<Self> {
         let mut config = Config::new();
         config.consume_fuel(true).epoch_interruption(true);
         config.cranelift_opt_level(wasmtime::OptLevel::None);
@@ -30,7 +30,7 @@ impl Lane {
             _ticker: ticker,
         })
     }
-    pub(super) fn invoke<R>(
+    pub(crate) fn invoke<R>(
         &mut self,
         host: HostState,
         call: impl FnOnce(&mut Store<HostState>, &Component, &Linker<HostState>) -> wasmtime::Result<R>,
@@ -83,7 +83,7 @@ impl Ticker {
         let stop = stopped.clone();
         let engine = engine.clone();
         let thread = std::thread::Builder::new()
-            .name("plg4-author-epoch".into())
+            .name("clat-wasm-net-epoch".into())
             .spawn(move || {
                 while !stop.load(Ordering::Acquire) {
                     std::thread::park_timeout(std::time::Duration::from_millis(5));

@@ -65,4 +65,6 @@ jobs:
       - name: Test
         timeout-minutes: 15
         # Same product workspace members as Linux; never narrow this to -p clat.
-        run: cargo test --all-targets --all-features
+        run: |
+          cargo test --all-targets --all-features
+          cargo test -p clat-wasm-net --lib

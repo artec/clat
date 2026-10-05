@@ -68,6 +68,65 @@ loopback only under `cfg(test)`. It preserves origin/port/authority and checks
 actual requests and connection EOF. It is not public DNS or dial acceptance.
 The shared `pin-cases.json` is consumed by both the unchanged original provider
 and the Rust host; disabling complete-set validation makes its host test fail.
-D2 is ready for independent audit. D3 still owns production loading, signed
-market packages, staging, encoding compatibility and repeated public-provider
-measurements. The existing Bun/MCP fallback remains in use.
+D2 has passed independent audit. The D3 production integration and local
+acceptance below are complete; independent review and owner publication remain
+separate. The existing Bun/MCP fallback remains in use.
+
+
+## D3 search-only release candidate
+
+The production loader accepts the formal tools/config world and signed manifest
+v2 through clat-wasm-net. The first candidate exports only web_search, with POST
+restricted to https://api.deepseek.com:443 and a separate clock capability. The
+four upstream dependencies remain unchanged. The original MCP edition remains
+the full search/fetch option. The shared HTTP host supports identity, gzip
+(including multiple members), zlib/raw deflate and strict Brotli. Both encoded
+and decoded entities are bounded to 8 MiB, with a 128 MiB shared reservation
+budget and cancellation/deadline checks during decoding. Unsupported or stacked
+codings and malformed or oversized compressed entities fail closed.
+
+```sh
+node sdk/dsh-wasm-flavor/build-official-component.mjs /absolute/pinned-native-engine.wasm /absolute/new-search-build search
+node sdk/dsh-wasm-flavor/package-release.mjs /absolute/new-search-build/official.wasm /absolute/new-package
+node web/e2e/plugin-network-staging.mjs --package /absolute/new-package --clat /absolute/clat
+PLG4_SEARCH_COMPONENT=/absolute/new-search-build/official.wasm PLG4_SEARCH_SAMPLES_OUT=/absolute/new-fixture-report.json cargo test -p clat-wasm-net original_search_only_formal_contract_repeated_samples -- --ignored --nocapture
+```
+
+Staging creates and deletes private ephemeral signing keys. Its numeric route
+is limited to the test host, preserving actual core DNS/HTTP approvals and
+public-IP validation. Ordinary product builds have no environment-driven
+fixture route. The generated display proposal selects the signed v2 endpoint;
+the signed legacy index is not rewritten.
+
+Live measurements require a private owner-provided JSON config containing
+apiKey. Never put key contents in commands or environment variables. External
+A and AAAA JSON answer sets replace system DNS only in the explicitly armed
+test; full public-IP validation, production numeric connector and TLS remain
+active. This is real provider evidence, not system DNS acceptance.
+
+```sh
+PLG4_LIVE_CONFIG=/absolute/private-config.json PLG4_LIVE_A=/absolute/public-a.json PLG4_LIVE_AAAA=/absolute/public-aaaa.json PLG4_SEARCH_COMPONENT=/absolute/official.wasm PLG4_SEARCH_SAMPLES_OUT=/absolute/new-live-report.json cargo test -p clat-wasm-net original_search_only_live_provider_repeated_samples -- --ignored --nocapture
+bun sdk/dsh-wasm-flavor/measure-bun-search.mjs /absolute/private-config.json /absolute/new-bun-report.json /absolute/original-compiled-executable
+```
+
+Both probes run five real queries. Reports contain fuel, time, size and result
+byte counts, with no keys or result contents. Cold component compile time is
+separate from tool wall time. Service/network variation precludes a performance
+guarantee. Formal signing, production upload and independent owner acceptance
+remain separate from local staging.
+
+The same six encoding vectors are consumed by the unchanged original HTTP
+provider under Node and by the actual formal WASM tools component:
+
+```sh
+node --test sdk/dsh-wasm-flavor/encoding.test.mjs
+PLG4_TOOLS_COMPONENT=/absolute/full-tools/official.wasm cargo test -p clat-wasm-net original_formal_http_component_decodes_shared_wire_vectors -- --ignored --nocapture
+```
+
+Direct `bun test` with Bun 1.3.14 currently fails in the original provider's
+undici Agent disposal (`dispatcher.close` is unavailable). This baseline
+failure is preserved in the delivery record; the original Bun/MCP flavor has
+not been patched, and Node results are not labeled Bun HTTP acceptance.
+The staging command above additionally runs the complete signed market matrix:
+consent, disabled state, rejected signatures/expiry/digests, configuration,
+concurrent writer, capability expansion, update, rollback, reopen and uninstall.

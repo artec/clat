@@ -1,4 +1,5 @@
 use super::*;
+mod encoding;
 use crate::{
     dns_authority::{Fence, Origin, Run, test_resolution},
     http_authority::{Declaration, HttpFence},
@@ -226,7 +227,12 @@ async fn read_request(stream: &mut tokio::net::TcpStream) -> String {
     }
     String::from_utf8(data).unwrap()
 }
-fn response_case(raw: Vec<u8>) -> Result<Response, Failure> {
+struct CapturedResponse {
+    status: u16,
+    headers: http::HeaderMap,
+    body: Vec<u8>,
+}
+fn response_case(raw: Vec<u8>) -> Result<CapturedResponse, Failure> {
     let _lock = LOCK.lock().unwrap();
     runtime().block_on(async {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -260,7 +266,21 @@ fn response_case(raw: Vec<u8>) -> Result<Response, Failure> {
         assert_eq!(seen[0].arguments["method"], "GET");
         let shown = serde_json::to_string(&seen[0].arguments).unwrap();
         assert!(!shown.contains("secret"));
-        result
+        result.map(|response| {
+            let Response {
+                status,
+                headers,
+                body,
+                _stream,
+            } = response;
+            // Release the process reservation before unlocking the shared test fixture.
+            drop(_stream);
+            CapturedResponse {
+                status,
+                headers,
+                body,
+            }
+        })
     })
 }
 #[test]
@@ -276,7 +296,7 @@ fn redirect_is_returned_without_following_or_cookie_jar() {
     assert_eq!(r.headers["location"], "http://evil.invalid/");
 }
 #[test]
-fn encoded_body_is_explicitly_rejected() {
+fn empty_truncated_gzip_entity_is_explicitly_rejected() {
     assert!(matches!(
         response_case(
             b"HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: 0\r\n\r\n".to_vec()

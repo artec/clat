@@ -86,6 +86,8 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
 
 step "Test (cargo test --all-targets --all-features)"
 cargo test --all-targets --all-features
+step "Shared WASM network backend invariants"
+cargo test -p clat-wasm-net --lib
 
 if [ "$rust_only" -eq 0 ]; then
     command -v npm >/dev/null || {
@@ -96,6 +98,8 @@ if [ "$rust_only" -eq 0 ]; then
     (cd sdk/dsh-adapter && npm ci && npm test)
     step "Pinned official DSH web quartet (no public network fixtures)"
     (cd sdk/dsh-adapter/examples/official-web && npm ci --ignore-scripts && npm test)
+    step "WASM flavor and v2 market release contracts"
+    node --test market/scripts/*.test.mjs sdk/dsh-wasm-flavor/*.test.mjs
     step "PLG-3 isolated JS component experiment (originals unchanged)"
     (cd sdk/dsh-wasm-spike && npm ci --ignore-scripts && npm test)
 else

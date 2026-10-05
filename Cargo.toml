@@ -16,6 +16,7 @@ version = "1.6.1"
 default-members = [".", "crates/core"]
 members = [
     "crates/core",
+    "sdk/wit-proposals/net-runtime",
     "plugins/digest",
     "plugins/greeter",
     "plugins/probe",

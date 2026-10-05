@@ -82,7 +82,6 @@ pub(crate) struct NetworkLease {
     source: String,
 }
 mod approval;
-#[cfg(any(test, feature = "test-support"))]
 pub(crate) use approval::NetworkApproval;
 impl PluginHostBridge {
     #[cfg(test)]
@@ -133,6 +132,9 @@ impl PluginHostBridge {
     }
 }
 impl NetworkLease {
+    pub(crate) fn run_identity(&self) -> u64 {
+        self.epoch
+    }
     pub(crate) fn restrict_deadline(&self, deadline: Instant) -> Result<Self, NetworkError> {
         self.check()?;
         let deadline = deadline.min(self.deadline);
@@ -190,4 +192,4 @@ impl NetworkLease {
     }
 }
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

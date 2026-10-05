@@ -52,3 +52,7 @@ sdk/wit-proposals/http-consumer-host/test-data/tls/*.der -text
 sdk/dsh-wasm-flavor/**/*.wit text eol=lf
 sdk/dsh-wasm-flavor/*.mjs text eol=lf
 sdk/dsh-wasm-flavor/pin-cases.json text eol=lf
+sdk/dsh-wasm-flavor/encoding-cases.json text eol=lf
+
+# PLG-4 generation test reads the actual publisher source as a text fixture.
+market/index.source.json text eol=lf

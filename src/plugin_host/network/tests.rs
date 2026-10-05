@@ -37,7 +37,7 @@ fn core_network_service_refresh_during_snapshot_cannot_relabel_old_factory() {
     ));
     lease(&bridge).check().unwrap();
 }
-pub(super) fn fixture(
+pub(crate) fn fixture(
     mode: PermissionMode,
     plan: bool,
     approver: Arc<dyn PermissionApprover>,

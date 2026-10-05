@@ -48,7 +48,7 @@ function installPluginMarket() {
     const captured = ++generation; await cancelReview(); setPending(true);
     message(action === 'install' || action === 'update' ? 'Downloading and verifying the signed package…' : 'Reading installed package…');
     try {
-      const result = await rpc('plugin.prepare', { id: plugin.id, action });
+      const result = await rpc('plugin.prepare', { id: plugin.id, action, market_generation: plugin.manifestVersion || plugin.manifest_version || 1 });
       if (captured !== generation || !dom['market-dialog'].open) {
         await rpc('plugin.cancel', { ticket: result.ticket }); return;
       }
@@ -109,6 +109,8 @@ function installPluginMarket() {
       for (const [key, label] of Object.entries({ tools: 'Provide tools', prompts: 'Provide system instructions', sampling: 'Request model calls', elicitation: 'Ask for information', hostContext: 'Read host context' })) {
         if (caps[key]) permissions.push(label);
       }
+      if (caps.network) permissions.push('Network restricted to: ' + caps.network.origins.map(origin => `${origin.scheme}://${origin.host}:${origin.port} (${origin.methods.join(', ')})`).join('; '));
+      if (caps.clock) permissions.push('Clock access');
       if (caps.hostTools?.length) permissions.push('Call host tools: ' + caps.hostTools.join(', '));
       review.append(el('p', 'plugin-permissions', permissions.join(' · ') || 'No declared host capabilities'));
       if (plugin.runtime === 'mcp-stdio') review.append(el('p', 'plugin-native-risk', 'Native executable: runs with your user account’s file, network and process access. Install only from a publisher you trust.'));
@@ -147,7 +149,7 @@ function installPluginMarket() {
   async function remove(plugin, action) {
     if (pending) return; const captured = ++generation; await cancelReview(); setPending(true);
     try {
-      const result = await rpc('plugin.remove', { id: plugin.id, action });
+      const result = await rpc('plugin.remove', { id: plugin.id, action, market_generation: plugin.manifestVersion || plugin.manifest_version || 1 });
       if (captured === generation) message(result.note); await refreshWorkbench();
     } catch (error) { if (captured === generation) message(error.message); }
     finally { if (captured === generation) { setPending(false); await refresh(); } }

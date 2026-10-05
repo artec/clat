@@ -290,7 +290,7 @@ impl wasmtime_wasi::p2::Pollable for DnsJob {
 #[path = "resolver_tests.rs"]
 mod tests;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl SystemDns {
     pub(crate) fn fake(
         lookup: impl Fn(&str) -> Result<Vec<IpAddr>, Failure> + Send + Sync + 'static,

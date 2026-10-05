@@ -7,7 +7,7 @@ import {build} from '../dsh-wasm-spike/node_modules/esbuild/lib/main.js'
 import {componentize} from '../dsh-wasm-spike/node_modules/@bytecodealliance/componentize-js/src/componentize.js'
 import {lowerUnicodeProperties} from '../dsh-wasm-spike/regex-lowering.mjs'
 import {explicitScope} from './explicit-scope.mjs'
-const root=path.resolve(import.meta.dirname,'../..'),engine=path.resolve(process.argv[2]),out=process.argv[3],formal=process.argv[4]==='tools'
+const root=path.resolve(import.meta.dirname,'../..'),engine=path.resolve(process.argv[2]),out=process.argv[3],formal=['tools','search'].includes(process.argv[4]),searchOnly=process.argv[4]==='search'
 assert(out&&path.isAbsolute(out));
 const engineSha=createHash('sha256').update(await readFile(engine)).digest('hex');
 assert.equal(engineSha,'004c15137499ee782819af991a2403ada7ebedad6b7126dfd85babe5b611f29f','unapproved native engine');
@@ -50,18 +50,19 @@ export async function run(scenario) {
 if(formal) {
  entry+=`
 import {get as pluginConfig} from 'clat:plugin/config@0.1.0';
+import {releaseDefinitions,requireReleaseTool} from ${JSON.stringify(path.join(import.meta.dirname,'release-tools.mjs'))};
  async function withPlugin(use) {
-  const config=JSON.parse(pluginConfig());configureOrigins(config.origins??[]);
+  const config=JSON.parse(pluginConfig());configureOrigins(config.origins??${searchOnly ? JSON.stringify(['https://api.deepseek.com']) : '[]'});
   const unavailable=async()=>{throw new Error('capability-denied')};
   const controller=new AbortController();
   const shim=new Shim({sampling:unavailable,elicitation:unavailable,capabilities:{sampling:false,elicitation:false,hostServices:false},beginCall:()=>controller.signal,log(){}},'official-wasm');
-  try {officialWeb.apply(shim.buildContext(),config.options??{});return await use(shim)}
+  try {officialWeb.apply(shim.buildContext(),{...config.options,...(config.apiKey===undefined?{}:{apiKey:config.apiKey})});return await use(shim)}
   finally {controller.abort();await shim.disposeAll()}
  }
  export const tools={
-  async listTools(){return withPlugin(shim=>shim.listTools().map(tool=>({name:tool.name,description:tool.description??'',inputSchema:JSON.stringify(tool.parameters),effect:'network'})))},
+  async listTools(){return withPlugin(shim=>releaseDefinitions(shim.listTools(),${searchOnly}).map(tool=>({name:tool.name,description:tool.description??'',inputSchema:JSON.stringify(tool.parameters),effect:'network'})))},
   async call(name,args){return withPlugin(async shim=>{
-   try {const result=await shim.callTool(name,JSON.parse(args),'wit-call');if(result.isError)throw result.content.map(item=>item.text??'').join('\\n');return JSON.stringify(result.structuredContent)}
+   try {requireReleaseTool(name,${searchOnly});const result=await shim.callTool(name,JSON.parse(args),'wit-call');if(result.isError)throw result.content.map(item=>item.text??'').join('\\n');return JSON.stringify(result.structuredContent)}
    catch(error){throw typeof error==='string'?error:error.message}
   })}
  };
@@ -92,5 +93,5 @@ const {component}=await componentize({engine,sourcePath,witPath:path.join(root,f
 await writeFile(path.join(out,'official.wasm'),component)
 assert.equal(await readFile(shim,'utf8'),original)
 for(const input of inputs)assert.equal(createHash('sha256').update(await readFile(path.resolve(root,input.file))).digest('hex'),input.sha256,'original package changed during build')
-await writeFile(path.join(out,'build-report.json'),JSON.stringify({inputs,componentSha256:createHash('sha256').update(component).digest('hex'),engineSha256:engineSha,world:formal?'plugin-client':'typed-client',originalBunUnchanged:true,originalPackagesUnmodified:true,scope:'four original packages componentized; runtime acceptance requires real author invocation tests'},null,2)+'\n')
+await writeFile(path.join(out,'build-report.json'),JSON.stringify({inputs,componentSha256:createHash('sha256').update(component).digest('hex'),engineSha256:engineSha,searchOnly,world:formal?'plugin-client':'typed-client',originalBunUnchanged:true,originalPackagesUnmodified:true,scope:'four original packages componentized; runtime acceptance requires real author invocation tests'},null,2)+'\n')
 console.log(JSON.stringify({bytes:component.length}))

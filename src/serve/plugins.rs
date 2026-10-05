@@ -14,7 +14,11 @@ pub(crate) fn dispatch(
     match method {
         "plugin.list" => app.plugin_list().map_err(Into::into),
         "plugin.prepare" => app
-            .plugin_prepare(string(params, "id")?, string(params, "action")?)
+            .plugin_prepare_generation(
+                string(params, "id")?,
+                string(params, "action")?,
+                generation(params)?,
+            )
             .map_err(Into::into),
         "plugin.cancel" => {
             app.plugin_cancel(string(params, "ticket")?);
@@ -48,4 +52,15 @@ fn string<'a>(params: &'a Map<String, Value>, name: &str) -> Result<&'a str, Rpc
         .and_then(Value::as_str)
         .filter(|s| s.len() <= 128)
         .ok_or_else(|| RpcError::bad_request(format!("{name} must be a bounded string")))
+}
+
+fn generation(params: &Map<String, Value>) -> Result<u32, RpcError> {
+    match params.get("market_generation") {
+        None => Ok(1),
+        Some(value) => match value.as_u64() {
+            Some(1) => Ok(1),
+            Some(2) => Ok(2),
+            _ => Err(RpcError::bad_request("unsupported market generation")),
+        },
+    }
 }

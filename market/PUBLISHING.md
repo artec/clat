@@ -74,3 +74,33 @@ Compromise:
 Removing old bytes is not revocation: clients act on the signed record, and
 immutable evidence remains useful. The production secret key for the market
 index and all publisher secret keys are never committed to this repository.
+
+## Isolated network index
+
+The network WASM flavor uses manifest/schema v2 and is uploaded under `v2/`.
+Keep the existing root index and Bun/MCP artifacts unchanged. Stage a signed
+package with `scripts/stage-package.mjs`; it derives the manifest generation
+from the inspected package. Review the generated index proposal, then prepare a
+new output directory whose final name is `v2`:
+
+```sh
+node market/scripts/release-network-index.mjs --source /absolute/staging/index.source.proposed.json --artifacts /absolute/staging --out /absolute/new-release/v2
+```
+
+Only the owner adds `--minisign-key /secure/path/index.key` to sign production
+bytes. Without that option the output is explicitly unsigned. Upload the whole
+`v2` directory via FTP after signature verification. Add the reviewed WASM card
+(with `manifestVersion: 2`) to the public display catalog only after staging
+acceptance; do not merge it into the v1 signed index. The first WASM card must
+say search-only and list its exact network origin. The original MCP card keeps
+full search/fetch behavior.
+
+For the first network release, run `scripts/sign-package.mjs` on a new copy of
+the unsigned WASM package before staging. The owner-provided public key is
+`release/minisign.pub`; keep secret keys outside the repository. Use target
+`any` for this architecture-independent component. Revalidate the generated
+publisher key window and review/source URLs, verify the final index with
+Minisign, and upload immutable artifacts before replacing the signed v2 index
+pair. Switch the display card from `preview` to `available` only after those
+bytes are deployed. This flow must not regenerate or replace the signed v1
+index or the original MCP artifacts.
