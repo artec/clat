@@ -397,13 +397,14 @@ fn provider_cancelled_round_disarms_without_starting_another_round() {
     let session_id = application.current_session_id().unwrap();
     application.close().unwrap();
 
-    let reopened = BootstrapApplication::open(project, storage_root.clone())
-        .unwrap()
-        .with_permission_modes()
-        .authorize_and_mount_with_provider(Arc::new(TestProviderPlugin {
-            behavior: TestBehavior::Success,
-        }))
-        .unwrap();
+    let reopened = crate::test_support::reopen_after_close(|| {
+        BootstrapApplication::open(project.clone(), storage_root.clone())
+            .unwrap()
+            .with_permission_modes()
+            .authorize_and_mount_with_provider(Arc::new(TestProviderPlugin {
+                behavior: TestBehavior::Success,
+            }))
+    });
     assert_eq!(reopened.current_session_id(), Some(session_id));
     let restored = reopened.goal().unwrap().unwrap();
     assert_eq!(restored.state.rounds_started, 1);

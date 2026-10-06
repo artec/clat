@@ -105,7 +105,9 @@ fn legacy_session_update_is_contextual_and_survives_reopen() {
     ));
     run(&mut application, "continue after upgrade").unwrap();
     application.close().unwrap();
-    let mut reopened = mount(&project, &storage_root, TestBehavior::Success);
+    let mut reopened = crate::test_support::reopen_after_close(|| {
+        mount_result(&project, &storage_root, TestBehavior::Success)
+    });
     let snapshot = reopened.switch_session(key.id).unwrap();
     assert!(snapshot.replay.len() >= 2);
     assert!(!reopened.session_is_read_only());
@@ -201,11 +203,16 @@ fn mount(
     storage_root: &std::path::Path,
     behavior: TestBehavior,
 ) -> TrustedProjectApplication {
-    let bootstrap =
-        BootstrapApplication::open(project.clone(), storage_root.to_path_buf()).unwrap();
-    bootstrap
+    mount_result(project, storage_root, behavior).unwrap()
+}
+
+fn mount_result(
+    project: &Project,
+    storage_root: &std::path::Path,
+    behavior: TestBehavior,
+) -> Result<TrustedProjectApplication, ApplicationError> {
+    BootstrapApplication::open(project.clone(), storage_root.to_path_buf())?
         .authorize_and_mount_with_provider(Arc::new(TestProviderPlugin { behavior }))
-        .unwrap()
 }
 
 fn run(
@@ -665,7 +672,9 @@ fn legacy_single_slot_custom_state_migrates_to_first_profile() {
 
     // 幂等：再次重挂载不重复建档。
     application.close().unwrap();
-    let application = mount(&project, &storage_root, TestBehavior::Success);
+    let application = crate::test_support::reopen_after_close(|| {
+        mount_result(&project, &storage_root, TestBehavior::Success)
+    });
     let profiles = application.list_model_profiles().unwrap();
     assert_eq!(profiles.len(), 1, "migration is idempotent: {profiles:?}");
     application.close().unwrap();

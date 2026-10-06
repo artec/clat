@@ -14,11 +14,17 @@ fn mount(
     storage_root: &std::path::Path,
     behavior: TestBehavior,
 ) -> TrustedProjectApplication {
-    BootstrapApplication::open(project.clone(), storage_root.to_path_buf())
-        .unwrap()
+    mount_result(project, storage_root, behavior).unwrap()
+}
+
+fn mount_result(
+    project: &Project,
+    storage_root: &std::path::Path,
+    behavior: TestBehavior,
+) -> Result<TrustedProjectApplication, ApplicationError> {
+    BootstrapApplication::open(project.clone(), storage_root.to_path_buf())?
         .with_permission_modes()
         .authorize_and_mount_with_provider(Arc::new(TestProviderPlugin { behavior }))
-        .unwrap()
 }
 
 fn run_request(application: &mut TrustedProjectApplication, prompt: &str) -> ApplicationRunResult {
@@ -79,7 +85,9 @@ fn context_reports_normalized_image_count_bytes_tokens_and_survives_cold_replay(
     );
 
     application.close().unwrap();
-    let application = mount(&project, &storage_root, TestBehavior::Panic);
+    let application = crate::test_support::reopen_after_close(|| {
+        mount_result(&project, &storage_root, TestBehavior::Panic)
+    });
     let cold = application.context_snapshot().unwrap();
     assert_estimate_identity(&cold);
     assert_eq!(
@@ -171,7 +179,9 @@ fn context_uses_the_exact_oldest_first_image_projection_across_cold_replay() {
     );
 
     application.close().unwrap();
-    let application = mount(&project, &storage_root, TestBehavior::Panic);
+    let application = crate::test_support::reopen_after_close(|| {
+        mount_result(&project, &storage_root, TestBehavior::Panic)
+    });
     let cold = application.context_snapshot().unwrap();
     assert_eq!(
         (

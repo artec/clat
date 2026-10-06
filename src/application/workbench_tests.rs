@@ -187,7 +187,9 @@ fn failed_and_cancelled_runs_keep_actual_native_capture_readable_after_restart()
             "captured"
         );
         app.close().unwrap();
-        let mut reopened = mount(&project, &storage, TestBehavior::Success);
+        let mut reopened = crate::test_support::reopen_after_close(|| {
+            mount_result(&project, &storage, TestBehavior::Success)
+        });
         reopened.switch_session(id).unwrap();
         assert_eq!(
             reopened.turn_changes(None, None).unwrap()["files"][0]["captured_after_hash"],
@@ -219,7 +221,9 @@ fn organization_is_project_owned_durable_and_never_deletes_or_deselects_chat() {
         .unwrap();
     assert_eq!(app.current_session_id(), Some(id.clone()));
     app.close().unwrap();
-    let mut reopened = mount(&project, &storage, TestBehavior::Success);
+    let mut reopened = crate::test_support::reopen_after_close(|| {
+        mount_result(&project, &storage, TestBehavior::Success)
+    });
     let rows = reopened.list_sessions().unwrap();
     let row = rows.iter().find(|row| row.id == id).unwrap();
     assert!(row.pinned && row.archived && row.message_count >= 2);
