@@ -4,12 +4,15 @@ use crate::host::PluginReviewTicket;
 use serde_json::Value;
 mod input;
 mod render;
+#[cfg(all(test, feature = "runtime-tests"))]
+mod style_tests;
 #[cfg(test)]
 mod tests;
 mod transport;
 
 #[derive(Default)]
 pub(super) struct PluginUi {
+    pub(super) review_terminal_area: Option<Rect>,
     pub(super) dialog: Option<PluginDialog>,
     pub(super) request_serial: u64,
     pub(super) jobs: Vec<std::thread::JoinHandle<()>>,

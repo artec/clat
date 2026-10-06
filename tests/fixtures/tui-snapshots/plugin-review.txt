@@ -1,0 +1,27 @@
+size 80x24
+cursor 0,0
+scroll 0
+000| ┌──────────────────────────────────────────────────────────────────────────────┐  ⟦0..79 DIM⟧
+001| │ CLAT ● host v<VERSION>  ready  ·  not configured — /model                        │  ⟦0..1 DIM · 2..5 BOLD+DIM · 6..12 fg=Green+DIM · 13..31 DIM · 32..54 fg=Cyan+DIM · 55..79 DIM⟧
+002| └──── ┌ /plugin · permissions ───────────────────────────────────────────┐ ────┘  ⟦0..4 DIM · 6..6 fg=Yellow · 7..29 fg=Yellow+BOLD · 30..73 fg=Yellow · 75..79 DIM⟧
+003| ┌ Con │ Verified packages · install · permissions and config schemas     │ ────┐  ⟦0..4 DIM · 6..6 fg=Yellow · 8..67 BOLD · 73..73 fg=Yellow · 75..79 DIM⟧
+004| │     │ Config JSON: {"plugin.id":{...}}; blank keeps update config.     │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 8..67 DIM · 73..73 fg=Yellow · 75..79 DIM⟧
+005| │     │ Configure requires an explicit plugin.id object; {} clears its f │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 8..71 DIM · 73..73 fg=Yellow · 75..79 DIM⟧
+006| │     │ ields.                                                           │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 8..13 DIM · 73..73 fg=Yellow · 75..79 DIM⟧
+007| │     │ [                                                                │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 8..8 DIM · 73..73 fg=Yellow · 75..79 DIM⟧
+008| │     │   {                                                              │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 8..10 DIM · 73..73 fg=Yellow · 75..79 DIM⟧
+009| │     │     "id": "dev.example.greeter",                                 │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 8..39 DIM · 73..73 fg=Yellow · 75..79 DIM⟧
+010| │     │     "runtime": "wasm-component",                                 │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 8..39 DIM · 73..73 fg=Yellow · 75..79 DIM⟧
+011| │     │     "capabilities": {                                            │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 8..28 DIM · 73..73 fg=Yellow · 75..79 DIM⟧
+012| │     │       "tools": true                                              │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 8..26 DIM · 73..73 fg=Yellow · 75..79 DIM⟧
+013| │     │     },                                                           │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 8..13 DIM · 73..73 fg=Yellow · 75..79 DIM⟧
+014| │     │     "config_schema": {                                           │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 8..29 DIM · 73..73 fg=Yellow · 75..79 DIM⟧
+015| │     │       "type": "object"                                           │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 8..29 DIM · 73..73 fg=Yellow · 75..79 DIM⟧
+016| │     │ Host ready                                                       │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 8..71 DIM · 73..73 fg=Yellow · 75..79 DIM⟧
+017| │     │ [ ] I approve all verified permissions · read 13/16 lines        │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 8..71 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+018| │     │                                                                  │     │  ⟦0..4 DIM · 6..6 fg=Yellow · 73..73 fg=Yellow · 75..79 DIM⟧
+019| └──── │ ↑↓/PgDn read · Space approve · C configs · Enter activate · Esc  │ ────┘  ⟦0..4 DIM · 6..6 fg=Yellow · 8..71 fg=DarkGray · 73..73 fg=Yellow · 75..79 DIM⟧
+020| ┌ Mes │ cancel                                                           │ ────┐  ⟦0..4 DIM · 6..6 fg=Yellow · 8..13 fg=DarkGray · 73..73 fg=Yellow · 75..79 DIM⟧
+021| │❯    └──────────────────────────────────────────────────────────────────┘     │  ⟦0..4 DIM · 6..73 fg=Yellow · 75..79 DIM⟧
+022| └──────────────────────────────────────────────────────────────────────────────┘  ⟦0..79 DIM⟧
+023|  <HOST-ROOT>  ⟦0..11 DIM · 12..79 PAD:68 DIM⟧

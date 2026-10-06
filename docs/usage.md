@@ -297,7 +297,8 @@ report a usage error in headless mode instead of inventing a selection.
 
 ### Manage plugins inside the TUI
 
-Run `/plugin` in the default host-attached TUI. The window uses the same host
+Run `/plugin` in the default host-attached TUI. The five views use the shared
+yellow dialog border, muted navigation hints and content-driven height. The window uses the same host
 control plane as the PWA and shows installed versions, enabled state, runtime,
 publisher and package health. Tab switches between installed packages and the
 signed market; arrows select, `/` edits the search filter, Enter finishes search,

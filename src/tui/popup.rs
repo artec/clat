@@ -395,6 +395,36 @@ pub(super) fn permission_argument_width(area: Rect) -> usize {
         .saturating_sub(4) as usize // 参数缩进/留白
 }
 
+/// Shared content-driven popup with a multi-row bottom bar. `footer_lines`
+/// excludes the single separator blank; callers style their status/decision/
+/// navigation lines. Pagination must use `body.height`, never a second budget.
+pub(crate) struct ContentDialogLayout {
+    pub(crate) outer: Rect,
+    pub(crate) body: Rect,
+    pub(crate) footer: Rect,
+}
+
+pub(crate) fn content_dialog_layout(
+    percent_x: u16,
+    content_lines: usize,
+    footer_lines: usize,
+    area: Rect,
+) -> ContentDialogLayout {
+    let height = content_dialog_height(
+        content_lines.saturating_add(footer_lines.saturating_sub(1)),
+        area,
+    );
+    let outer = centered_rect(percent_x, height, area);
+    let inner = popup_block("").inner(outer);
+    let footer_height = footer_lines.saturating_add(1).min(inner.height as usize) as u16;
+    let visible = inner.height.saturating_sub(footer_height);
+    ContentDialogLayout {
+        outer,
+        body: Rect::new(inner.x, inner.y, inner.width, visible),
+        footer: Rect::new(inner.x, inner.y + visible, inner.width, footer_height),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -503,5 +533,29 @@ mod tests {
             assert_eq!(symbol(15, y), " ", "right guard column must be cleared");
             assert_eq!(symbol(16, y), "X");
         }
+    }
+
+    #[test]
+    fn popup_multirow_layout_keeps_content_footer_and_width_in_one_budget() {
+        for area in [
+            Rect::new(0, 0, 80, 24),
+            Rect::new(0, 0, 40, 18),
+            Rect::new(0, 0, 16, 6),
+        ] {
+            let layout = content_dialog_layout(84, 200, 3, area);
+            let inner = popup_block("").inner(layout.outer);
+            assert_eq!(layout.body.width as usize, popup_inner_width(84, area));
+            assert_eq!(layout.body.height + layout.footer.height, inner.height);
+            assert_eq!(layout.body.bottom(), layout.footer.y);
+            assert_eq!(layout.footer.bottom(), inner.bottom());
+            assert!(layout.outer.height <= popup_height_cap(area));
+        }
+        let area = Rect::new(0, 0, 80, 24);
+        let short = content_dialog_layout(84, 4, 3, area);
+        assert_eq!(
+            short.body.height, 4,
+            "short content is not padded to full height"
+        );
+        assert!(short.outer.height < popup_height_cap(area));
     }
 }

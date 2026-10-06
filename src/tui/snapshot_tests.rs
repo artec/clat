@@ -115,6 +115,11 @@ use unicode_width::UnicodeWidthStr;
 /// 重钉——DeepSeek 一级行 "3 models" → "2 models"（V4.0 Flash 与
 /// Vision Exp 官方下架，目录剩 V4.1 Flash + Pro 两模型）。
 const SCENARIOS: &[&str] = &[
+    "plugin-installed-short",
+    "plugin-market-short",
+    "plugin-review",
+    "plugin-config",
+    "plugin-remove",
     // 2026-09-05 PU-2/3: core-driven Plan/Goal title markers and scrollable
     // read-only command dialogs; existing idle/permission styling is unchanged.
     "plan-marker",
@@ -828,7 +833,7 @@ fn native_host_offline_snapshot() {
 ///
 /// 最后叠加裸纳秒数字串归一——路径在窄对话框里换行时会把纳秒串从
 /// 中间拆开（位数恒定 → 换行位置恒定，但裸数字串本身必须归一）。
-fn normalize_paths(projection: &str, project_root: &Path) -> String {
+pub(in crate::tui) fn normalize_paths(projection: &str, project_root: &Path) -> String {
     let normalized = projection.replace(project_root.to_string_lossy().as_ref(), "<ROOT>");
     let tmp = std::env::temp_dir();
     let normalized = normalized.replace(tmp.to_string_lossy().trim_end_matches('/'), "<TMP>");
@@ -863,7 +868,7 @@ fn mask_long_digit_runs(text: &str) -> String {
 /// 区间。行尾默认样式的空白裁剪；**带样式的行尾空白**（用户块的满宽
 /// 背景填充——2026-08-19 恢复的设计内视觉）以显式 `PAD:n` 段保留，
 /// 使横贯效果在快照中可见可审。
-fn render_projection(
+pub(in crate::tui) fn render_projection(
     buffer: &ratatui::buffer::Buffer,
     cursor: (u16, u16),
     scroll_from_bottom: usize,
@@ -963,7 +968,7 @@ fn style_desc(cell: &ratatui::buffer::Cell) -> String {
     parts.join("+")
 }
 
-fn check_or_refresh(name: &str, projection: &str) {
+pub(in crate::tui) fn check_or_refresh(name: &str, projection: &str) {
     let path = snapshot_dir().join(format!("{name}.txt"));
     if std::env::var("CLAT_REFRESH_SNAPSHOTS").as_deref() == Ok("1") {
         std::fs::create_dir_all(snapshot_dir()).expect("snapshot dir");
