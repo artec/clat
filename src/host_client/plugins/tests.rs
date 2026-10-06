@@ -41,8 +41,11 @@ fn plg6_port_rejects_missing_consent_and_never_echoes_configuration_errors() {
 
 fn request(stream: std::net::TcpStream) -> (BufReader<std::net::TcpStream>, String, Value) {
     stream.set_nonblocking(false).unwrap();
+    // The harness window must dominate the chain under test: two client
+    // connects alone budget 3 s each (I5 — a saturated CI runner, not the
+    // development machine, is the reference clock).
     stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
+        .set_read_timeout(Some(Duration::from_secs(30)))
         .unwrap();
     let mut reader = BufReader::new(stream);
     let mut first = String::new();
@@ -81,7 +84,10 @@ fn plg6_lost_prepare_ack_is_cancelled_by_preallocated_identity() {
     let done = Arc::new(AtomicBool::new(false));
     let finished = done.clone();
     std::thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        // Hang guard only, never a correctness bound: must exceed the
+        // client's two 3 s connect budgets plus saturated-runner scheduling
+        // (I5).
+        let deadline = Instant::now() + Duration::from_secs(30);
         let mut ticket = String::new();
         let mut requests = 0;
         while requests < 2 && Instant::now() < deadline {
@@ -124,7 +130,8 @@ fn plg6_lost_commit_ack_consumes_ticket_and_never_retries_or_cancels() {
     let port = listener.local_addr().unwrap().port();
     listener.set_nonblocking(true).unwrap();
     let job = std::thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        // Same I5 window discipline: hang guard, not a correctness bound.
+        let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             match listener.accept() {
                 Ok((stream, _)) => {
