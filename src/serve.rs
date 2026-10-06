@@ -32,6 +32,8 @@ mod startup;
 mod state;
 use startup::serve_wechat_credentials;
 #[cfg(test)]
+mod plg6_fixture;
+#[cfg(test)]
 mod tests;
 mod token;
 mod web_assets;
@@ -475,6 +477,12 @@ where
     // Snapshot before publishing or accepting: cargo may replace the executable
     // while this long-lived process is still serving an older build.
     let build_fingerprint = crate::host_client::build_identity::current()?.to_owned();
+    #[cfg(test)]
+    let build_fingerprint = if let Some(path) = std::env::var_os("CLAT_PLG6_TUI_BINARY") {
+        plg6_fixture::frontend_identity(&PathBuf::from(path))
+    } else {
+        build_fingerprint
+    };
     let host = workspaces::WorkspaceHost::new(
         trusted,
         token.clone(),

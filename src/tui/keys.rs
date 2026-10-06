@@ -181,7 +181,9 @@ impl App {
             Event::Paste(text) => self.handle_paste(&text),
             // 帮助弹窗模态期间吞掉鼠标：后面无可选内容，避免选区高亮
             // 盖住对话框边框（同确权门的做法）。
-            Event::Mouse(mouse) if self.info_dialog.is_none() => self.handle_mouse(mouse),
+            Event::Mouse(mouse) if self.info_dialog.is_none() && self.plugins.dialog.is_none() => {
+                self.handle_mouse(mouse)
+            }
             _ => {}
         }
     }
@@ -191,6 +193,9 @@ impl App {
     pub(super) fn next_repaint_deadline(&self) -> Option<Instant> {
         let now = Instant::now();
         let mut deadline = self.status_until.filter(|until| *until > now);
+        if let Some(at) = self.plugin_repaint_deadline() {
+            deadline = Some(deadline.map_or(at, |current| current.min(at)));
+        }
         if self.phases.phase.is_some() {
             let frame = now + SPINNER_FRAME;
             deadline = Some(deadline.map_or(frame, |current| current.min(frame)));
@@ -532,6 +537,9 @@ impl App {
     }
 
     fn handle_paste(&mut self, text: &str) {
+        if self.plugin_paste(text) {
+            return;
+        }
         self.discovery.picker = None;
         if let Some(picker) = self.session_picker.as_mut() {
             picker.paste_filter(text);

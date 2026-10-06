@@ -692,6 +692,38 @@ impl App {
     /// 命令 outcome 的终端呈现：各 `Start*` 开对应弹窗（数据来自
     /// outcome，不再自查门面）、`SessionReset` 清视图状态、错误已在上
     /// 游 flash。纯渲染，无命令语义。
+    fn reset_command_view(&mut self) {
+        // /new 成功后的前端视图清空：用量指标归属会话（TUI-L04），
+        // 新会话从零累计；路由桶同清（INV-C1 随会话归属）。
+        self.session_id = None;
+        self.session_title = None;
+        self.conversation = self.discovery.reset_conversation(&[]);
+        self.conversation_scroll_from_bottom = 0;
+        self.conversation_has_more = false;
+        self.conversation_history_loading = false;
+        self.conversation_history_windowed = false;
+        self.input = InputBuffer::new(Vec::new());
+        self.session_usage = Usage::default();
+        self.usage_routes.clear();
+        self.last_turn_usage = None;
+        self.run_usage_base = None;
+        self.run_routes_base = None;
+        self.run_route = None;
+        self.run_usage_acc = Usage::default();
+        self.clear_attachment_draft();
+        let pending_paths = self
+            .pending_native_steering
+            .iter()
+            .chain(self.recovered_native_steering.iter())
+            .flat_map(|draft| draft.attachments.iter().cloned())
+            .collect::<Vec<_>>();
+        self.release_core_staged_attachment_paths(pending_paths);
+        self.pending_native_steering.clear();
+        self.native_steering_claim_credits.clear();
+        self.recovered_native_steering.clear();
+        self.flash_status("new conversation");
+    }
+
     fn render_command_outcome(&mut self, outcome: CommandOutcome) {
         match outcome {
             CommandOutcome::Status(message) => self.flash_status(message),
@@ -723,6 +755,7 @@ impl App {
                 self.content_view = Some(ContentView::SubagentStatus(view));
                 self.info_dialog = Some(InfoDialog::new(InfoDialogKind::SubagentStatus));
             }
+            CommandOutcome::StartPluginManagement => self.open_plugin_dialog(),
             CommandOutcome::StartModelSelection => {
                 // Claude Code 风格：先选厂商（一级），再选该厂商的模型
                 //（二级）；Custom 入口经档案三态（B9：零档案直进新建
@@ -760,37 +793,7 @@ impl App {
                     self.flash_status(message);
                 }
             }
-            CommandOutcome::SessionReset => {
-                // /new 成功后的前端视图清空：用量指标归属会话（TUI-L04），
-                // 新会话从零累计；路由桶同清（INV-C1 随会话归属）。
-                self.session_id = None;
-                self.session_title = None;
-                self.conversation = self.discovery.reset_conversation(&[]);
-                self.conversation_scroll_from_bottom = 0;
-                self.conversation_has_more = false;
-                self.conversation_history_loading = false;
-                self.conversation_history_windowed = false;
-                self.input = InputBuffer::new(Vec::new());
-                self.session_usage = Usage::default();
-                self.usage_routes.clear();
-                self.last_turn_usage = None;
-                self.run_usage_base = None;
-                self.run_routes_base = None;
-                self.run_route = None;
-                self.run_usage_acc = Usage::default();
-                self.clear_attachment_draft();
-                let pending_paths = self
-                    .pending_native_steering
-                    .iter()
-                    .chain(self.recovered_native_steering.iter())
-                    .flat_map(|draft| draft.attachments.iter().cloned())
-                    .collect::<Vec<_>>();
-                self.release_core_staged_attachment_paths(pending_paths);
-                self.pending_native_steering.clear();
-                self.native_steering_claim_credits.clear();
-                self.recovered_native_steering.clear();
-                self.flash_status("new conversation");
-            }
+            CommandOutcome::SessionReset => self.reset_command_view(),
             CommandOutcome::QuitRequested => self.should_quit = true,
         }
     }

@@ -583,3 +583,64 @@ fn terminal_frontend_does_not_own_slash_command_dispatch() {
         "architecture guard discovered no frontend sources"
     );
 }
+
+#[test]
+fn plg6_plugin_manager_uses_only_host_ports_and_catalog_vocabulary() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let ui = fs::read_to_string(root.join("src/tui/plugins/mod.rs"))
+        .unwrap_or_default()
+        .replace("\r\n", "\n");
+    assert!(
+        ui.contains("PluginReviewTicket"),
+        "plugin UI must use the core-owned review port"
+    );
+    for needle in [
+        "PackageStore",
+        "Market::load",
+        "accept_capabilities: true",
+        "Command::new",
+        "dispatch_command(\"/plugin",
+    ] {
+        assert!(!ui.contains(needle), "UI boundary violation: {needle}");
+    }
+    for path in rust_sources(&root)
+        .into_iter()
+        .filter(|path| is_clat_tui_frontend(path))
+    {
+        let source = fs::read_to_string(&path).unwrap().replace("\r\n", "\n");
+        let source = without_line_comments(source.split("#[cfg(test)]").next().unwrap_or_default());
+        if path
+            .parent()
+            .is_some_and(|dir| dir.ends_with("tui/plugins"))
+        {
+            for forbidden in [
+                "PackageStore",
+                "Market::load",
+                "accept_capabilities: true",
+                "Command::new",
+            ] {
+                assert!(
+                    !source.contains(forbidden),
+                    "plugin UI boundary violation in {}: {forbidden}",
+                    path.display()
+                );
+            }
+        }
+        assert!(
+            !source.contains("\"/plugin\""),
+            "plugin command dispatched outside catalog: {}",
+            path.display()
+        );
+    }
+    let declarations = rust_sources(&root)
+        .into_iter()
+        .filter(|path| {
+            let source = fs::read_to_string(path).unwrap().replace("\r\n", "\n");
+            source.contains("&[\"plugin\"]") && is_under_src_dir(path, "plugins")
+        })
+        .count();
+    assert_eq!(
+        declarations, 1,
+        "plugin vocabulary must have one registry home"
+    );
+}

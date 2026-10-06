@@ -717,36 +717,7 @@ fn run_headless_command(
                     usage: Usage::default(),
                 }
             }
-            Ok(CommandOutcome::ShowMcpStatus(status)) => {
-                let connecting = if status.connecting > 0 {
-                    format!(" · {} connecting", status.connecting)
-                } else {
-                    String::new()
-                };
-                let mut text = format!(
-                    "mcp: {}/{} connected{connecting}\n",
-                    status.connected, status.configured
-                );
-                for server in &status.servers {
-                    text.push_str(&format!(
-                        "● {}  {} · {} · {} tools\n",
-                        server.name, server.transport, server.protocol_version, server.tools
-                    ));
-                }
-                for failure in &status.failures {
-                    text.push_str(&format!("! {failure}\n"));
-                }
-                let write = stream_write(&io.output, format_args!("{text}"))
-                    .and_then(|()| stream_flush(&io.output));
-                if let Err(error) = write {
-                    io_state.note("stdout", error);
-                }
-                ExecOutcome::Success {
-                    output: text,
-                    turns: 0,
-                    usage: Usage::default(),
-                }
-            }
+            Ok(CommandOutcome::ShowMcpStatus(status)) => write_mcp_view(status, io, io_state),
             Ok(CommandOutcome::ShowMemory(view)) => {
                 write_content_view(view.to_text(), io, io_state)
             }
@@ -854,7 +825,8 @@ fn run_headless_command(
                 usage: Usage::default(),
             },
             Ok(
-                CommandOutcome::StartModelSelection
+                CommandOutcome::StartPluginManagement
+                | CommandOutcome::StartModelSelection
                 | CommandOutcome::StartSessionSelection { .. }
                 | CommandOutcome::StartPermissionModeSelection { .. }
                 | CommandOutcome::StartTitleEdit { .. }
@@ -881,6 +853,41 @@ fn run_headless_command(
         forwarder.join();
     }
     closed
+}
+
+fn write_mcp_view(
+    status: crate::McpStatusDto,
+    io: &ExecIo,
+    io_state: &SharedIoState,
+) -> ExecOutcome {
+    let connecting = if status.connecting > 0 {
+        format!(" · {} connecting", status.connecting)
+    } else {
+        String::new()
+    };
+    let mut text = format!(
+        "mcp: {}/{} connected{connecting}\n",
+        status.connected, status.configured
+    );
+    for server in &status.servers {
+        text.push_str(&format!(
+            "● {}  {} · {} · {} tools\n",
+            server.name, server.transport, server.protocol_version, server.tools
+        ));
+    }
+    for failure in &status.failures {
+        text.push_str(&format!("! {failure}\n"));
+    }
+    let write =
+        stream_write(&io.output, format_args!("{text}")).and_then(|()| stream_flush(&io.output));
+    if let Err(error) = write {
+        io_state.note("stdout", error);
+    }
+    ExecOutcome::Success {
+        output: text,
+        turns: 0,
+        usage: Usage::default(),
+    }
 }
 
 fn write_content_view(text: String, io: &ExecIo, io_state: &SharedIoState) -> ExecOutcome {

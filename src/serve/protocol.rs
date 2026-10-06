@@ -21,6 +21,7 @@ use std::sync::mpsc;
 /// 时必须同时进本表；测试钉住全集，避免 PWA 显示不存在的控制面。
 pub(crate) const RPC_METHODS: &[&str] = &[
     "plugin.list",
+    "plugin.market",
     "plugin.prepare",
     "plugin.commit",
     "plugin.cancel",
@@ -1007,7 +1008,16 @@ fn command_run(params: &Map<String, Value>, shared: &Arc<ServeShared>) -> Result
     {
         shared.release_run_claim();
     }
+    command_reply(outcome, claimed_goal_run, shared)
+}
+
+fn command_reply(
+    outcome: crate::CommandOutcome,
+    claimed_goal_run: Option<String>,
+    shared: &Arc<ServeShared>,
+) -> Result<Value, RpcError> {
     match outcome {
+        crate::CommandOutcome::StartPluginManagement => Ok(json!({"kind":"plugin_manager"})),
         crate::CommandOutcome::Status(message) => {
             Ok(json!({ "kind": "status", "message": message }))
         }
@@ -1020,114 +1030,12 @@ fn command_run(params: &Map<String, Value>, shared: &Arc<ServeShared>) -> Result
         crate::CommandOutcome::ShowSubagentStatus(view) => Ok(json!({
             "kind": "subagent_status", "subagent_status": view, "message": view.to_text(),
         })),
-        crate::CommandOutcome::ShowHelp { commands } => {
-            let message = commands
-                .iter()
-                .map(|info| {
-                    let aliases = info
-                        .aliases
-                        .iter()
-                        .map(|alias| format!("/{alias}"))
-                        .collect::<Vec<_>>();
-                    let names = if aliases.is_empty() {
-                        format!("/{}", info.name)
-                    } else {
-                        format!("/{} ({})", info.name, aliases.join(", "))
-                    };
-                    format!("{names} — {}", info.description)
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            let commands = commands
-                .iter()
-                .map(|info| {
-                    json!({
-                        "name": info.name,
-                        "aliases": info.aliases,
-                        "description": info.description,
-                        "group": info.group.as_str(),
-                    })
-                })
-                .collect::<Vec<_>>();
-            Ok(json!({ "kind": "help", "commands": commands, "message": message }))
-        }
-        crate::CommandOutcome::ShowMcpStatus(status) => {
-            let mut lines = vec![format!(
-                "mcp: {}/{} connected · {} connecting",
-                status.connected, status.configured, status.connecting
-            )];
-            lines.extend(status.servers.iter().map(|server| {
-                format!(
-                    "{} · {} · {} · {} tools",
-                    server.name, server.transport, server.protocol_version, server.tools
-                )
-            }));
-            lines.extend(
-                status
-                    .failures
-                    .iter()
-                    .map(|failure| format!("failure: {failure}")),
-            );
-            Ok(json!({ "kind": "status", "message": lines.join("\n") }))
-        }
-        crate::CommandOutcome::ShowContext(snapshot) => Ok(json!({
-            "kind": "context",
-            "context": {
-                "estimator": snapshot.estimator,
-                "unit": snapshot.unit,
-                "base_prompt": snapshot.base_prompt_estimate,
-                "project_instructions": snapshot.project_instructions_estimate,
-                "plan_policy": snapshot.plan_policy_estimate,
-                "skill_catalog": snapshot.skill_catalog_estimate,
-                "invoked_skill": snapshot.invoked_skill_estimate,
-                "goal_policy": snapshot.goal_policy_estimate,
-                "memory": snapshot.memory_estimate,
-                "memory_budget_bytes": snapshot.memory_budget_bytes,
-                "tool_schemas": snapshot.tool_schemas_estimate,
-                "history": snapshot.history_estimate,
-                "image_count": snapshot.image_count,
-                "image_original_count": snapshot.image_original_count,
-                "image_offloaded_count": snapshot.image_offloaded_count,
-                "image_bytes": snapshot.image_bytes,
-                "image_tokens": snapshot.image_token_estimate,
-                "image_safety_factor": snapshot.image_token_safety_factor,
-                "output_reserve": snapshot.output_reserve_estimate,
-                "input": snapshot.input_estimate,
-                "total": snapshot.total_estimate,
-                "tools": snapshot.tool_names,
-                "skills": snapshot.skill_names,
-                "skill_diagnostics": snapshot.skill_diagnostics.iter().map(|item| json!({
-                    "source": item.source,
-                    "name": item.name,
-                    "kind": item.kind,
-                    "message": item.message,
-                })).collect::<Vec<_>>(),
-            }
-        })),
+        crate::CommandOutcome::ShowHelp { commands } => help_reply(commands),
+        crate::CommandOutcome::ShowMcpStatus(status) => mcp_reply(status),
+        crate::CommandOutcome::ShowContext(snapshot) => context_reply(snapshot),
         // SC-2：与 ShowHelp 同姿势——结构化 DTO 渲染为文本、以 status
         // kind 回给 PWA（workbench 的 /help 即此形态，零前端改动）。
-        crate::CommandOutcome::ShowSkills(overview) => {
-            let mut lines = vec![format!("skills: {}", overview.entries.len())];
-            for entry in &overview.entries {
-                let execution = if entry.requires_execution {
-                    " · requires-execution"
-                } else {
-                    ""
-                };
-                lines.push(format!(
-                    "● {}  {} layer{} — {}",
-                    entry.name, entry.source, execution, entry.description
-                ));
-            }
-            for diagnostic in &overview.diagnostics {
-                let name = diagnostic.name.as_deref().unwrap_or("-");
-                lines.push(format!(
-                    "! {}/{}/{}: {}",
-                    diagnostic.source, name, diagnostic.kind, diagnostic.message
-                ));
-            }
-            Ok(json!({ "kind": "status", "message": lines.join("\n") }))
-        }
+        crate::CommandOutcome::ShowSkills(overview) => skills_reply(overview),
         crate::CommandOutcome::StartGoalRun { .. } => {
             let rpc_id = claimed_goal_run.ok_or_else(|| {
                 RpcError::internal("goal run command reached execution without a run claim")
@@ -1762,6 +1670,118 @@ impl EventSink for FanoutSink {
     fn emit(&mut self, event: RunEvent) {
         self.shared.fanout_run_event(&event);
     }
+}
+
+fn help_reply(commands: Vec<crate::CommandInfo>) -> Result<Value, RpcError> {
+    let message = commands
+        .iter()
+        .map(|info| {
+            let aliases = info
+                .aliases
+                .iter()
+                .map(|alias| format!("/{alias}"))
+                .collect::<Vec<_>>();
+            let names = if aliases.is_empty() {
+                format!("/{}", info.name)
+            } else {
+                format!("/{} ({})", info.name, aliases.join(", "))
+            };
+            format!("{names} — {}", info.description)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let commands = commands
+        .iter()
+        .map(|info| {
+            json!({
+                "name": info.name,
+                "aliases": info.aliases,
+                "description": info.description,
+                "group": info.group.as_str(),
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(json!({ "kind": "help", "commands": commands, "message": message }))
+}
+
+fn mcp_reply(status: crate::McpStatusDto) -> Result<Value, RpcError> {
+    let mut lines = vec![format!(
+        "mcp: {}/{} connected · {} connecting",
+        status.connected, status.configured, status.connecting
+    )];
+    lines.extend(status.servers.iter().map(|server| {
+        format!(
+            "{} · {} · {} · {} tools",
+            server.name, server.transport, server.protocol_version, server.tools
+        )
+    }));
+    lines.extend(
+        status
+            .failures
+            .iter()
+            .map(|failure| format!("failure: {failure}")),
+    );
+    Ok(json!({ "kind": "status", "message": lines.join("\n") }))
+}
+
+fn skills_reply(overview: crate::SkillsOverviewDto) -> Result<Value, RpcError> {
+    let mut lines = vec![format!("skills: {}", overview.entries.len())];
+    for entry in &overview.entries {
+        let execution = if entry.requires_execution {
+            " · requires-execution"
+        } else {
+            ""
+        };
+        lines.push(format!(
+            "● {}  {} layer{} — {}",
+            entry.name, entry.source, execution, entry.description
+        ));
+    }
+    for diagnostic in &overview.diagnostics {
+        let name = diagnostic.name.as_deref().unwrap_or("-");
+        lines.push(format!(
+            "! {}/{}/{}: {}",
+            diagnostic.source, name, diagnostic.kind, diagnostic.message
+        ));
+    }
+    Ok(json!({ "kind": "status", "message": lines.join("\n") }))
+}
+
+fn context_reply(snapshot: crate::ContextEstimateSnapshot) -> Result<Value, RpcError> {
+    Ok(json!({
+        "kind": "context",
+        "context": {
+            "estimator": snapshot.estimator,
+            "unit": snapshot.unit,
+            "base_prompt": snapshot.base_prompt_estimate,
+            "project_instructions": snapshot.project_instructions_estimate,
+            "plan_policy": snapshot.plan_policy_estimate,
+            "skill_catalog": snapshot.skill_catalog_estimate,
+            "invoked_skill": snapshot.invoked_skill_estimate,
+            "goal_policy": snapshot.goal_policy_estimate,
+            "memory": snapshot.memory_estimate,
+            "memory_budget_bytes": snapshot.memory_budget_bytes,
+            "tool_schemas": snapshot.tool_schemas_estimate,
+            "history": snapshot.history_estimate,
+            "image_count": snapshot.image_count,
+            "image_original_count": snapshot.image_original_count,
+            "image_offloaded_count": snapshot.image_offloaded_count,
+            "image_bytes": snapshot.image_bytes,
+            "image_tokens": snapshot.image_token_estimate,
+            "image_safety_factor": snapshot.image_token_safety_factor,
+            "output_reserve": snapshot.output_reserve_estimate,
+            "input": snapshot.input_estimate,
+            "total": snapshot.total_estimate,
+            "tools": snapshot.tool_names,
+            "skills": snapshot.skill_names,
+            "skill_diagnostics": snapshot.skill_diagnostics.iter().map(|item| json!({
+                "source": item.source,
+                "name": item.name,
+                "kind": item.kind,
+                "message": item.message,
+            })).collect::<Vec<_>>(),
+        }
+    }))
 }
 
 #[cfg(test)]

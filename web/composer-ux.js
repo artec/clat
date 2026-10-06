@@ -86,6 +86,10 @@ async function submitComposerCommand({ text, owner }) {
   }
   const value = await rpc('command.run', { command: text });
   if (!composerOwns(owner)) return true;
+  if (value?.kind === 'plugin_manager') {
+    dom['market-open'].click();
+    return true;
+  }
   if (value && ['status', 'help', 'memory', 'goal', 'subagent_status', 'goal_run'].includes(value.kind)) {
     const notice = addNoticeLine(value.message || 'command completed');
     if (['memory', 'goal', 'subagent_status'].includes(value.kind)) {

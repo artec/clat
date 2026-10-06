@@ -102,6 +102,8 @@ pub enum CommandOutcome {
     ShowContext(ContextEstimateSnapshot),
     /// `/model`：延续是模型选择交互（前端开各自的选择器）。
     StartModelSelection,
+    /// Open the host plugin management continuation; no activation authority.
+    StartPluginManagement,
     /// `/resume`：延续是会话选择交互，携带候选列表。
     StartSessionSelection {
         sessions: Vec<SessionSummary>,
@@ -143,6 +145,7 @@ impl fmt::Debug for CommandOutcome {
             Self::ShowGoal(_) => "ShowGoal(..)",
             Self::ShowSubagentStatus(_) => "ShowSubagentStatus(..)",
             Self::ShowContext(_) => "ShowContext(..)",
+            Self::StartPluginManagement => "StartPluginManagement",
             Self::StartModelSelection => "StartModelSelection",
             Self::StartSessionSelection { .. } => "StartSessionSelection { .. }",
             Self::StartPermissionModeSelection { .. } => "StartPermissionModeSelection { .. }",

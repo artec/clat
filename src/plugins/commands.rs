@@ -108,8 +108,8 @@ fn spec(
 /// 出厂命令的（组, 表内序）按权威顺序表落位
 /// （docs/todo/skills-and-command-order.md，SC 组 A1 裁定 2026-09-02）。
 /// 展示序由 `catalog()` 折叠，与这里的声明序无关；描述串沿用原文。
-fn builtin_specs() -> Vec<CommandSpec> {
-    use crate::command::CommandGroup::{Context, Conversation, Extensions, Meta, Model, Safety};
+fn conversation_specs() -> Vec<CommandSpec> {
+    use crate::command::CommandGroup::{Context, Conversation};
     vec![
         spec(
             Conversation,
@@ -146,6 +146,13 @@ fn builtin_specs() -> Vec<CommandSpec> {
             "summarize earlier turns into a compact context",
             run_compact,
         ),
+    ]
+}
+
+fn builtin_specs() -> Vec<CommandSpec> {
+    use crate::command::CommandGroup::{Extensions, Meta, Model, Safety};
+    let mut entries = conversation_specs();
+    entries.extend(vec![
         spec(
             Model,
             6,
@@ -167,6 +174,13 @@ fn builtin_specs() -> Vec<CommandSpec> {
             "inspect MCP servers, tools, and failures",
             run_mcp,
         ),
+        spec(
+            Extensions,
+            10,
+            &["plugin"],
+            "manage installed plugins and the signed market",
+            run_plugin,
+        ),
         spec(Meta, 14, &["help"], "this help", run_help),
         spec(Meta, 15, &["quit", "exit"], "exit", run_quit),
         // VP-1（2026-09-03）：custom 一次性视觉探针——Experiments 组、
@@ -187,7 +201,8 @@ fn builtin_specs() -> Vec<CommandSpec> {
                 run: run_vision_probe,
             }),
         },
-    ]
+    ]);
+    entries
 }
 
 fn run_vision_probe(
@@ -292,6 +307,10 @@ fn run_quit(_application: &mut TrustedProjectApplication) -> Result<CommandOutco
     Ok(CommandOutcome::QuitRequested)
 }
 
+fn run_plugin(_app: &mut TrustedProjectApplication) -> Result<CommandOutcome, CommandError> {
+    Ok(CommandOutcome::StartPluginManagement)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -361,6 +380,8 @@ mod tests {
 
         // INV-C4：/help 载荷与 command_catalog() 一致。
         let catalog = application.command_catalog();
+        assert!(catalog.iter().any(|entry| entry.name == "plugin"));
+        assert!(application.dispatch_command("/plugin").is_ok());
         match application.dispatch_command("/help") {
             Ok(CommandOutcome::ShowHelp { commands }) => assert_eq!(commands, catalog),
             other => panic!("expected ShowHelp, got {other:?}"),
@@ -465,13 +486,14 @@ mod tests {
                 "/plan",
                 "/mcp",
                 "/skill, /skills",
+                "/plugin",
                 "/mem, /memory",
                 "/goal",
                 "/sub, /subagents",
                 "/help",
                 "/quit, /exit",
             ],
-            "the catalog must fold to the authoritative fifteen-row table"
+            "the catalog must fold to the authoritative sixteen-row table"
         );
         // 附加工单（2026-09-03 负责人令）：`/vision-probe` 不进帮助目录
         //（listed = false），但仍可派发——隐藏 ≠ 下线。判定只区分

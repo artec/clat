@@ -290,3 +290,29 @@ fn host_reopen_cleans_interrupted_downloads_without_deleting_installed_state() {
     drop(reopened);
     crate::test_support::cleanup_tree(&root);
 }
+
+#[test]
+fn plg6_caller_ticket_is_unique_and_legacy_prepare_still_works() {
+    let (root, mut host, _, _) = fixture("plg6-ticket");
+    let id = install_fixture(&root, &host);
+    let chosen = uuid::Uuid::new_v4().to_string();
+    let review = host
+        .plugin_prepare_ticket(&id, "enable", 1, Some(&chosen))
+        .unwrap();
+    assert_eq!(review["ticket"], chosen);
+    assert!(
+        host.plugin_prepare_ticket(&id, "enable", 1, Some(&chosen))
+            .is_err()
+    );
+    assert!(
+        host.plugin_prepare_ticket(&id, "enable", 1, Some("invalid"))
+            .is_err()
+    );
+    assert!(host.plugin_reviews.contains_key(&chosen));
+    host.plugin_cancel(&chosen);
+    assert!(!host.plugin_reviews.contains_key(&chosen));
+    let legacy = ticket(&mut host, &id, "enable");
+    host.plugin_cancel(&legacy);
+    host.close().unwrap();
+    crate::test_support::cleanup_tree(&root);
+}

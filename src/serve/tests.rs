@@ -42,7 +42,7 @@ fn setup(name: &str) -> (PathBuf, PathBuf, Project) {
     (storage_root, project_root, project)
 }
 
-fn prepare_storage(project: &Project, storage_root: &Path, behavior: TestBehavior) {
+pub(super) fn prepare_storage(project: &Project, storage_root: &Path, behavior: TestBehavior) {
     let bootstrap =
         BootstrapApplication::open(project.clone(), storage_root.to_path_buf()).unwrap();
     let application = bootstrap

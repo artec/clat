@@ -252,9 +252,9 @@ honestly labelled preview catalog entries. A preview does not become remotely
 installable until a reviewed publisher, signed index record and immutable
 artifact are deployed together.
 
-## Install and manage from the PWA
+## Install and manage from the PWA or TUI
 
-Open **Plugin Index** in the local PWA, choose an available package, review its
+Run `/plugin` in the host-attached TUI, or open **Plugin Index** in the local PWA, choose an available package, review its
 permissions and native-process risk, enter any configuration, and select
 **Install**. The same panel lists installed packages with Configure, Disable,
 Enable, Update, Roll back and Uninstall controls. Changes become available in
@@ -292,7 +292,7 @@ Disable, rollback and Uninstall use local state only. Runtime startup failures
 are reported separately from a committed installation; inspect MCP status and
 configuration if a package starts unsuccessfully.
 
-The additive local RPC amendment adds `plugin.list`, `plugin.prepare`,
+The additive local RPC amendment adds `plugin.list`, `plugin.market`, `plugin.prepare`,
 `plugin.commit`, `plugin.cancel` and `plugin.remove`. These are host-scoped
 methods, independent of session selection, journal events and `RunEvent`.
 `plugin.prepare` takes an id and action (`install`, `update`, `enable`,
@@ -303,6 +303,15 @@ reconciled with `plugin.list`, never an optimistic browser installation cache.
 
 See [WASM authoring](wasm.md), [DSH porting](dsh-plugins.md),
 [MCP integration](mcp.md), and [architecture](architecture.md).
+
+`plugin.market` returns a read-only verified package projection for the requested
+`market_generation` (1 or 2). `command.run` returns `kind: "plugin_manager"` for
+`/plugin`; each frontend opens its own management view. A caller may optionally
+provide a UUID `ticket` to `plugin.prepare`, allowing cancellation even if its
+prepare acknowledgement is lost. Omission preserves the previous behavior.
+TUI review ownership is cancelled on close, expiry, stale responses and graceful
+exit; abrupt process termination still relies on the host's review expiry.
+
 
 ## Network WASM components (manifest v2)
 

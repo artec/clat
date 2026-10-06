@@ -14,32 +14,11 @@ impl App {
             return true;
         }
 
-        // 信息弹窗（/help、/mcp）独占按键：Esc/Enter 关闭，↑/↓ 逐行、
-        // PgUp/PgDn 翻页（步长＝绘制期记录的可视行数；钳制在最大滚
-        // 动位）；/mcp 额外接受 `r` 重取状态。
-        if self.info_dialog.is_some() {
-            let max = self.info_scroll_max;
-            let page = self.info_page.max(1);
-            let is_mcp = self.info_dialog_refreshable();
-            let mut close = false;
-            let mut refresh = false;
-            if let Some(dialog) = self.info_dialog.as_mut() {
-                match key.code {
-                    KeyCode::Esc | KeyCode::Enter => close = true,
-                    KeyCode::Char('r') | KeyCode::Char('R') if is_mcp => refresh = true,
-                    KeyCode::Up => dialog.offset = dialog.offset.saturating_sub(1),
-                    KeyCode::Down => dialog.offset = (dialog.offset + 1).min(max),
-                    KeyCode::PageUp => dialog.offset = dialog.offset.saturating_sub(page),
-                    KeyCode::PageDown => dialog.offset = (dialog.offset + page).min(max),
-                    _ => {}
-                }
-            }
-            if close {
-                self.info_dialog = None;
-            }
-            if refresh {
-                self.refresh_mcp_view();
-            }
+        if self.plugin_key(key) {
+            return true;
+        }
+
+        if self.handle_info_dialog_key(key) {
             return true;
         }
 
@@ -91,6 +70,39 @@ impl App {
 
         false
     }
+    fn handle_info_dialog_key(&mut self, key: KeyEvent) -> bool {
+        // 信息弹窗（/help、/mcp）独占按键：Esc/Enter 关闭，↑/↓ 逐行、
+        // PgUp/PgDn 翻页（步长＝绘制期记录的可视行数；钳制在最大滚
+        // 动位）；/mcp 额外接受 `r` 重取状态。
+        if self.info_dialog.is_some() {
+            let max = self.info_scroll_max;
+            let page = self.info_page.max(1);
+            let is_mcp = self.info_dialog_refreshable();
+            let mut close = false;
+            let mut refresh = false;
+            if let Some(dialog) = self.info_dialog.as_mut() {
+                match key.code {
+                    KeyCode::Esc | KeyCode::Enter => close = true,
+                    KeyCode::Char('r') | KeyCode::Char('R') if is_mcp => refresh = true,
+                    KeyCode::Up => dialog.offset = dialog.offset.saturating_sub(1),
+                    KeyCode::Down => dialog.offset = (dialog.offset + 1).min(max),
+                    KeyCode::PageUp => dialog.offset = dialog.offset.saturating_sub(page),
+                    KeyCode::PageDown => dialog.offset = (dialog.offset + page).min(max),
+                    _ => {}
+                }
+            }
+            if close {
+                self.info_dialog = None;
+            }
+            if refresh {
+                self.refresh_mcp_view();
+            }
+            return true;
+        }
+
+        false
+    }
+
     fn handle_permission_dialog_key(&mut self, key: KeyEvent) -> bool {
         // A permission decision is pending: every key belongs to the dialog
         // until the user allows or denies it.

@@ -7,6 +7,7 @@ use crate::plugin::{
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
+mod market_view;
 #[cfg(test)]
 mod tests;
 
@@ -71,6 +72,24 @@ impl HostApplication {
         action: &str,
         generation: u32,
     ) -> Result<Value, ApplicationError> {
+        self.plugin_prepare_ticket(id, action, generation, None)
+    }
+
+    pub fn plugin_prepare_ticket(
+        &mut self,
+        id: &str,
+        action: &str,
+        generation: u32,
+        requested: Option<&str>,
+    ) -> Result<Value, ApplicationError> {
+        let ticket = requested
+            .map(str::to_owned)
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        if uuid::Uuid::parse_str(&ticket).is_err() || self.plugin_reviews.contains_key(&ticket) {
+            return Err(ApplicationError::new(
+                "invalid or duplicate plugin review request",
+            ));
+        }
         self.reject_busy_plugin_projects()?;
         self.prune_plugin_reviews();
         if self.plugin_reviews.len() >= 8 {
@@ -79,6 +98,27 @@ impl HostApplication {
             ));
         }
         let store = self.plugin_store()?;
+        let (view, market) = self.plugin_review_view(&store, id, action, generation)?;
+        self.plugin_reviews.insert(
+            ticket.clone(),
+            PluginReview {
+                action: action.into(),
+                id: id.into(),
+                revision: store.revision(),
+                started: Instant::now(),
+                market,
+            },
+        );
+        Ok(json!({"ticket": ticket, "action": action, "review": view, "expires_in_seconds": 900}))
+    }
+
+    fn plugin_review_view(
+        &self,
+        store: &PackageStore,
+        id: &str,
+        action: &str,
+        generation: u32,
+    ) -> Result<(Value, Option<PreparedMarketInstall>), ApplicationError> {
         let mut market = None;
         let view = match action {
             "install" | "update" => {
@@ -86,7 +126,7 @@ impl HostApplication {
                 let prepared = source
                     .prepare(
                         self.storage.root(),
-                        &store,
+                        store,
                         &MarketInstallOptions {
                             root_id: id.to_owned(),
                             version: "*".into(),
@@ -116,18 +156,7 @@ impl HostApplication {
             }
             _ => return Err(ApplicationError::new("unknown plugin review action")),
         };
-        let ticket = uuid::Uuid::new_v4().to_string();
-        self.plugin_reviews.insert(
-            ticket.clone(),
-            PluginReview {
-                action: action.into(),
-                id: id.into(),
-                revision: store.revision(),
-                started: Instant::now(),
-                market,
-            },
-        );
-        Ok(json!({"ticket": ticket, "action": action, "review": view, "expires_in_seconds": 900}))
+        Ok((view, market))
     }
 
     pub fn plugin_cancel(&mut self, ticket: &str) {

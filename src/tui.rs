@@ -24,6 +24,7 @@ mod markdown;
 mod model_editor;
 mod native;
 mod permission_picker;
+mod plugins;
 mod session_picker;
 mod theme;
 mod worker;
@@ -245,6 +246,8 @@ fn run_frontend(mut app: App) -> io::Result<()> {
 
     let (result, close_error) = {
         let run_result = app.run(&mut terminal);
+        app.finish_plugin_jobs();
+        app.close_application();
         (run_result, app.take_close_error())
     };
 
@@ -392,6 +395,7 @@ struct App {
     /// 信息弹窗（/help、/mcp）：`Some` = 打开。两类弹窗共用一套滚动/
     /// 翻页/绘制骨架（内容驱动高度，2026-08-19 第三轮反馈：旧 /help
     /// 恒取满额高度，内容再少也是整屏框、上下边距形同虚设）。
+    plugins: plugins::PluginUi,
     info_dialog: Option<InfoDialog>,
     /// 绘制期计算的最大滚动位（info 弹窗每帧刷新，按键翻页用它钳制）。
     /// 首帧绘制先于任何按键，键处理器读到的总是有效值。
@@ -533,7 +537,7 @@ impl App {
 
         // 状态栏初始显示当前打开的项目目录（home 缩写为 ~）。
         let status = abbreviate_home(project.root());
-        let app = Self {
+        Ok(Self {
             native: None,
             project,
             bootstrap: Some(bootstrap),
@@ -587,6 +591,7 @@ impl App {
             conversation_rows: 0,
             selection: None,
             should_quit: false,
+            plugins: plugins::PluginUi::default(),
             info_dialog: None,
             info_scroll_max: 0,
             info_page: 1,
@@ -622,8 +627,7 @@ impl App {
             clipboard_writer: write_osc52_to_stdout,
             clipboard_paste_reader: attachments::system_clipboard_paste_reader(),
             clipboard_image_pending: false,
-        };
-        Ok(app)
+        })
     }
 
     /// dsh 态构造器（D-2 §1.0 字段初值表）：**不走本地信任门**——本地
@@ -633,14 +637,13 @@ impl App {
     /// 占位 + status "connecting to dsh…"（快照 dsh-connecting 断言此态）。
     fn open_dsh(preferred_port: u16) -> Result<Self, String> {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        let project = Project::new(&cwd);
         let (dsh_tx, dsh_rx) = crate::dsh::backend::event_channel();
         let status = "connecting to dsh…".to_owned();
         let config = ModelConfig::default();
         let credentials = ProviderCredentials::for_protocol(config.protocol);
         Ok(Self {
             native: None,
-            project,
+            project: Project::new(&cwd),
             bootstrap: None,
             application: None,
             session_id: None,
@@ -692,6 +695,7 @@ impl App {
             conversation_rows: 0,
             selection: None,
             should_quit: false,
+            plugins: plugins::PluginUi::default(),
             info_dialog: None,
             info_scroll_max: 0,
             info_page: 1,
@@ -927,7 +931,9 @@ impl App {
         while !self.should_quit {
             let deadline = self.next_repaint_deadline();
             let received = match deadline {
-                Some(deadline) => events.recv_timeout(deadline - Instant::now()),
+                Some(deadline) => {
+                    events.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                }
                 // 没有任何未来重绘需求：无限挂起直到下一条消息。
                 None => events
                     .recv()
@@ -944,12 +950,14 @@ impl App {
                     if self.pending_permission.is_none()
                         && self.pending_ask_user.is_none()
                         && self.info_dialog.is_none()
+                        && self.plugins.dialog.is_none()
                     {
                         while let Ok(event) = events.try_recv() {
                             self.handle_ui_event(event);
                             if self.pending_permission.is_some()
                                 || self.pending_ask_user.is_some()
                                 || self.info_dialog.is_some()
+                                || self.plugins.dialog.is_some()
                             {
                                 break;
                             }
@@ -967,14 +975,16 @@ impl App {
             self.poll_dsh();
             terminal.draw(|frame| self.draw(frame))?;
         }
-        // 显式 shutdown：flush 会话与 checkpoint、join 全部 worker，
-        // 消费 close 错误（Drop 只兜底，不算成功关闭）。
+        drop(events); // Pending plugin replies now drop their RAII tickets.
+        Ok(())
+    }
+
+    fn close_application(&mut self) {
         if let Some(application) = self.application.take()
             && let Err(error) = application.close()
         {
             self.close_error = Some(format!("application close failed: {error}"));
         }
-        Ok(())
     }
 
     fn take_close_error(&mut self) -> Option<String> {

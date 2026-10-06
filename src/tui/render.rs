@@ -184,6 +184,7 @@ impl App {
             || self.info_dialog.is_some()
             || self.permission_picker.is_some()
             || self.rename_dialog.is_some()
+            || self.plugins.dialog.is_some()
         {
             frame.render_widget(
                 Block::default().style(Style::default().add_modifier(Modifier::DIM)),
@@ -252,6 +253,7 @@ impl App {
             self.draw_permission_dialog(frame);
         }
         self.draw_info_dialog(frame);
+        self.draw_plugin_dialog(frame);
         if let Some(picker) = &self.permission_picker {
             let current = self.current_permission_mode();
             picker.draw(frame, area, current);
@@ -273,6 +275,7 @@ impl App {
             || self.info_dialog.is_some()
             || self.permission_picker.is_some()
             || self.rename_dialog.is_some()
+            || self.plugins.dialog.is_some()
     }
 
     /// /mcp 弹窗内 `r` 刷新：从 Application 重取 MCP 状态并复位滚动

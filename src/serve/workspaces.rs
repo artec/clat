@@ -16,6 +16,7 @@ mod lifecycle_tests;
 mod reclaim;
 pub(crate) const HOST_METHODS: &[&str] = &[
     "plugin.list",
+    "plugin.market",
     "plugin.prepare",
     "plugin.commit",
     "plugin.cancel",

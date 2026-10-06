@@ -6,6 +6,8 @@ mod attachments;
 pub(crate) mod browser;
 pub(crate) mod build_identity;
 mod commands;
+mod plugins;
+pub use plugins::PluginReviewTicket;
 mod context;
 mod credentials;
 pub(crate) mod discovery;

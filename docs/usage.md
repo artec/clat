@@ -244,6 +244,7 @@ model → safety → extensions → experiments → meta):
 | `/model` | choose a provider preset or manage named custom profiles |
 | `/perm`, `/permission` | switch Read Only, Project Write, or Full Access |
 | `/plan [on|off]` | toggle durable Plan Mode; explicit on/off is idempotent at an idle boundary |
+| `/plugin` | manage installed plugins and browse the signed market in the host TUI; open Plugin Index in the PWA |
 | `/mcp` | inspect MCP/WASM connection state, tools, and isolated failures |
 | `/skill`, `/skills` | list cataloged skills, or arm one for your next message |
 | `/mem`, `/memory ...` | open a read-only memory dialog; add/edit/delete confirms in the status bar |
@@ -293,6 +294,44 @@ being sent as a message.
 The core command catalog is shared with `clat exec --command`. Commands that
 require an interactive picker, such as `/model`, `/resume`, and `/perm`,
 report a usage error in headless mode instead of inventing a selection.
+
+### Manage plugins inside the TUI
+
+Run `/plugin` in the default host-attached TUI. The window uses the same host
+control plane as the PWA and shows installed versions, enabled state, runtime,
+publisher and package health. Tab switches between installed packages and the
+signed market; arrows select, `/` edits the search filter, Enter finishes search,
+R refreshes, and V switches market manifest generation v1/v2. Browse and search
+use the host's verified index; a usable signed cache remains available offline.
+An unavailable or expired index reports an error while local management remains
+available.
+
+Enter or I installs the selected market package. In the installed list, E enables,
+U updates, C configures, B rolls back, D disables and X uninstalls. Installation,
+update, enable, configure and rollback first open a verified permission review.
+Read all pages with arrows/PgDown, press Space to explicitly approve, then Enter
+to activate. Resizing resets review progress and consent. Disable and uninstall
+require Y confirmation. Active runs or compaction can block a change; finish them
+and refresh rather than retrying blindly.
+
+During install, update or configure review, C opens a masked JSON editor. Paste
+an object keyed by package ID, for example `{"dev.example.plugin":{"key":"..."}}`.
+All entered values stay hidden. Enter keeps the draft, Shift+Enter adds a newline
+on supporting terminals, Ctrl+U clears it, and Esc discards it. A blank update
+retains existing configuration; Configure requires the package's complete object
+(use `{"dev.example.plugin":{}}` to clear its fields). Existing values are never
+read back. Drafts do not enter conversation input history and are cleared on
+submission, cancellation, expiry, disconnection or closing the window.
+
+Esc cancels review or confirmation and returns to the installed list; Esc in a
+list closes the window. Reviews expire after 15 minutes. Late responses are
+cancelled rather than attached to a reopened window. A lost activation reply is
+not retried automatically: refresh the authoritative installed list and prepare
+again if needed. Changes apply to all projects mounted in the host without a
+restart. Runtime warnings direct you to `/mcp` for connection diagnostics.
+Standalone shows a notice to use default `clat` or `clat attach` for shared
+plugin management. DSH-attached terminals retain the DSH host command surface;
+use the default CLAT host TUI to manage CLAT packages.
 
 ### Plan Mode, skills, LSP, and context inspection
 

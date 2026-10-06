@@ -32,6 +32,7 @@ fn image_message_label(text: &str, blocks: &[crate::message::ContentBlock]) -> S
 }
 
 pub(super) enum NativeEvent {
+    Plugin(u64, u64, u64, super::plugins::PluginReply),
     History(u64, u64, Result<Value, String>),
     Discovery(u64, u64, u64, Result<Value, String>),
     Info(u64, u64, u64, Result<Value, HostCallError>),
@@ -85,6 +86,13 @@ pub(super) struct NativeState {
 }
 
 impl App {
+    pub(super) fn native_plugin_context(&self) -> Option<(HostClient, u64, u64)> {
+        self.native
+            .as_ref()
+            .filter(|native| native.online)
+            .map(|native| (native.client.clone(), native.epoch, native.selection))
+    }
+
     pub(super) fn native_online(&self) -> Option<bool> {
         self.native.as_ref().map(|native| native.online)
     }
@@ -138,6 +146,7 @@ impl App {
     }
 
     pub(super) fn start_native(&mut self) {
+        self.close_plugin_dialog();
         self.close_native_info();
         self.permission_picker = None;
         if let Some(native) = &mut self.native {
@@ -201,7 +210,7 @@ impl App {
         self.refresh_native();
     }
 
-    fn refresh_native(&mut self) {
+    pub(super) fn refresh_native(&mut self) {
         let (Some(native), Some(ui)) = (&mut self.native, self.event_sender.clone()) else {
             return;
         };
@@ -351,6 +360,9 @@ impl App {
 
     fn native_dialog_event(&mut self, event: NativeEvent) -> Option<NativeEvent> {
         match event {
+            NativeEvent::Plugin(epoch, selection, request, reply) => {
+                self.plugin_loaded(epoch, selection, request, reply);
+            }
             NativeEvent::History(epoch, selection, result) => {
                 self.native_history_loaded(epoch, selection, result)
             }
@@ -441,6 +453,7 @@ impl App {
     }
 
     fn native_offline(&mut self, error: String) {
+        self.close_plugin_dialog();
         self.native.as_mut().unwrap().online = false;
         self.native.as_mut().unwrap().approval_id = None;
         self.pending_permission = None;
@@ -485,6 +498,9 @@ impl App {
     }
 
     fn native_submitted(&mut self, result: Result<Value, HostCallError>) {
+        let plugins = result
+            .as_ref()
+            .is_ok_and(|value| value["kind"] == "plugin_manager");
         let draft = self.native.as_mut().and_then(|n| n.pending.take());
         let images = self
             .native
@@ -499,6 +515,10 @@ impl App {
         }
         match result {
             Ok(value) => {
+                if plugins {
+                    self.open_plugin_dialog();
+                    return;
+                }
                 if let Some(text) = value.get("message").and_then(Value::as_str) {
                     self.conversation.push_turn_end(text.into());
                 } else if value.get("sessions").is_some() {

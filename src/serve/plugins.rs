@@ -13,11 +13,18 @@ pub(crate) fn dispatch(
 ) -> Result<Value, RpcError> {
     match method {
         "plugin.list" => app.plugin_list().map_err(Into::into),
+        "plugin.market" => app
+            .plugin_market_listing(generation(params)?)
+            .map_err(Into::into),
         "plugin.prepare" => app
-            .plugin_prepare_generation(
+            .plugin_prepare_ticket(
                 string(params, "id")?,
                 string(params, "action")?,
                 generation(params)?,
+                params
+                    .get("ticket")
+                    .map(|_| string(params, "ticket"))
+                    .transpose()?,
             )
             .map_err(Into::into),
         "plugin.cancel" => {
