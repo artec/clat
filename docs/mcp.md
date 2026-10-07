@@ -13,6 +13,8 @@ language runtime. For portable in-process local tools, compare
 For a distributable local package, use `clat plugin install <package-dir>` with
 an `mcp-stdio` manifest; see [CLAT plugins](plugins.md). The package entry must
 be an executable and is launched with its immutable artifact directory as cwd.
+Installed packages also support enable, disable, rollback and uninstall; see
+[package lifecycle](plugins.md) for the complete management flow.
 
 `~/.clat/mcp.json` remains the optional user-managed escape hatch:
 
@@ -73,7 +75,8 @@ that the same server registered successfully.
 ### Stderr diagnostics
 
 Subprocess stderr never writes directly into the TUI or protocol stream. CLAT
-keeps a bounded tail of the last 20 lines and attaches it to startup failures.
+keeps a bounded tail of the last 20 lines, truncates each line to 512 bytes,
+and attaches it to startup failures.
 Key-shaped values such as Bearer tokens and common API-key forms are redacted
 before a diagnostic reaches `/mcp` or status surfaces. Redaction limits
 secondary leakage; it does not prevent the subprocess from seeing inherited
@@ -286,7 +289,8 @@ scoped credentials.
 | one stdio frame | 4 MiB |
 | legacy handshake | 10 s |
 | modern discovery probe | 3 s, then fresh legacy fallback |
-| one `tools/list` page | 30 s |
+| complete `tools/list` pagination | 30 s total |
+| complete `prompts/list` pagination | 30 s total |
 | `tools/list` pages | 32 |
 | tools per server | 512 |
 | marked DSH prompts per server | 128 |

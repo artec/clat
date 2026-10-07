@@ -51,8 +51,8 @@ PWA in your default browser. Local access is automatic behind Host/Origin/Fetch
 Metadata checks; remote authorities require credentials. Browser sessions are
 private HttpOnly cookies, and credentials never enter URLs. Use `--no-open`
 to suppress the browser handoff.
-An optional official-iLink WeChat frontend can be bound and paired explicitly;
-it remains off unless serve is started with `--im wechat`.
+The optional official-iLink WeChat frontend supports explicit binding and pairing;
+it remains off unless `serve` is started with `--im wechat`.
 
 ## What is included
 
@@ -138,7 +138,7 @@ Start with the document that matches your task:
 | Use official DSH web search and fetch | [Web tools](docs/web.md) |
 | Install and manage plugins from the PWA or CLI | [CLAT plugins](docs/plugins.md) |
 | Install or author a WASM component | [WASM plugins](docs/wasm.md) |
-| Review the proposed WASM network contract | [Network protocol draft](docs/wasm-net.md) |
+| Understand the WASM network contract and delivery | [Network protocol and delivery](docs/wasm-net.md) |
 | Port a DSH/Cordis plugin | [DSH plugin compatibility guide](docs/dsh-plugins.md) |
 | Audit evidence-backed DSH compatibility claims | [DSH compatibility matrix](docs/dsh-compat.md) |
 | Understand core boundaries and lifecycle | [Architecture](docs/architecture.md) |

@@ -215,6 +215,13 @@ clat plugin market install <id> --version '^1.2.0' --accept-capabilities
 clat plugin market update <id> --accept-capabilities
 ```
 
+Both commands accept `--config-json <json>` or `--config-file <path>` for
+package-private configuration. Prefer a private file for credentials so values
+do not enter shell history. See the configuration rules above.
+
+`market info` displays the market summary but omits v2 network/clock
+capabilities; `clat plugin inspect <package-dir>` displays them from the manifest.
+
 Supported dependency constraints are `*`, an exact three-component SemVer,
 `^`, `~`, and space/comma-separated `>`, `>=`, `<`, `<=` comparisons. The
 solver deterministically chooses the highest compatible non-yanked version for
@@ -247,10 +254,11 @@ and digest mismatch are rejected. The market index binds the entire container
 length and SHA-256; the package signature binds its identity and inner content.
 
 The independently deployable site and signed-index release tooling live in
-`market/`; its deployment runbook is `market/README.md`. The repository ships
-honestly labelled preview catalog entries. A preview does not become remotely
-installable until a reviewed publisher, signed index record and immutable
-artifact are deployed together.
+`market/`; its deployment runbook is `market/README.md`. As verified on
+2026-10-06, `io.artec.dsh-official-web` and `io.artec.dsh-official-web-wasm`
+are `available` on pi.at.cn; the other catalog entries remain `preview`.
+A preview does not become remotely installable until a reviewed publisher,
+signed index record and immutable artifact are deployed together.
 
 ## Install and manage from the PWA or TUI
 
@@ -271,7 +279,9 @@ platforms, revoked publishers, expired indexes and known vulnerabilities fail
 closed; vulnerability overrides remain an explicit CLI operation.
 
 Preparing an install downloads and verifies the complete dependency solution
-without running it. A single-use, 15-minute review ticket binds the package
+without running it. The host allows at most eight pending `plugin.prepare`
+reviews. At that limit, cancel an unused review before preparing another. A single-use,
+15-minute review ticket binds the package
 trees and installed-registry revision. Commit rechecks the index lifetime and
 publisher identities; changed state requires a new review. Cancelled or expired
 reviews never activate a package. Enable, rollback and configuration changes
@@ -315,6 +325,10 @@ exit; abrupt process termination still relies on the host's review expiry.
 
 ## Network WASM components (manifest v2)
 
+Machine-readable schemas for manifest v2 and the v2 market index are not yet
+available. The two files under `schemas/` describe v1 only and reject v2; do
+not use them to validate v2 packages or indexes.
+
 Manifest v2 selects a separate semantic HTTP/DNS runtime. Each invocation gets
 fresh guest state, no filesystem preopens, environment, sockets or host tools.
 The signed `capabilities.network` declares exact scheme/hostname/port and HTTP
@@ -327,15 +341,17 @@ host context are rejected at installation rather than silently granted.
 Optional configuration `networkPolicy` narrows these declarations; it cannot
 expand them. New origins or methods in an update require capability consent.
 Reopening, configuring and rolling back retain the signed capability ceiling.
-V1 components continue to use the original runtime and linker.
+V1 components continue to use the original runtime and linker. During v2
+mounting, tool discovery runs in a separate, network-free Discovery scope with
+a 30-second total budget; discovery does not grant invocation network authority.
 
 The first official DSH WASM release is a search-only variant with independent id
 `io.artec.dsh-official-web-wasm`. Its network ceiling is DeepSeek's declared API
 origin. Arbitrary URL fetching remains available through
 `io.artec.dsh-official-web`, the existing Bun/MCP package. Original upstream
-packages are consumed unchanged by both flavors. The WASM release has passed local
-installation and runtime acceptance; independent review and production publication
-remain pending.
+packages are consumed unchanged by both flavors. The WASM release passed
+independent final review on 2026-10-05 and was published on pi.at.cn; its catalog
+status was verified as `available` on 2026-10-06.
 
 Network packages use a separate signed v2 index at `https://pi.at.cn/v2/`:
 
@@ -363,7 +379,8 @@ Both WASM interfaces reuse compiled code in a private
 the complete component bytes and Wasmtime engine compatibility. A private local
 host key authenticates the complete compiled artifact before deserialization;
 modified, truncated, foreign or incompatible entries are cache misses and are
-recompiled. Publication is atomic. Cache failures, including a read-only storage
+recompiled. Publication is atomic. Each authenticated compiled-cache entry is
+capped at 256 MiB. Cache failures, including a read-only storage
 root, fall back to compilation. Network invocations get fresh instances; legacy
 plugins retain their existing permission-bound instance lifecycle. Configuration,
 resource limits and permission checks remain per runtime use; the cache stores

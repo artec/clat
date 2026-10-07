@@ -15,10 +15,14 @@ Files appear lazily, so a fresh installation may contain only a subset.
 ├── settings.json                # active model state and named profiles
 ├── credentials.json             # remembered per-vendor API keys (0600)
 ├── memory.json                  # explicit user/project knowledge (0600)
+├── im.json                      # atomic WeChat binding, authorization and pairing authority (0600)
 ├── trust.json                   # canonical project path -> trusted timestamp
 ├── web-token                    # clat serve Bearer credential (0600)
 ├── host-endpoint.json            # private host discovery hint, not proof of liveness
 ├── dsh-last-session             # last session id opened by clat dsh
+├── drafts/<process-random>/web/  # private raw drafts; 128 MiB aggregate bound / 1 h TTL
+├── file-review/                 # native file-change and recovery evidence
+├── vision-probe-log.jsonl       # vision-probe diagnostics
 ├── mcp.json                     # optional, user-managed MCP servers
 ├── lsp.json                     # optional, user-managed read-only LSP servers
 ├── skills/<name>/SKILL.md       # optional user-layer instruction bundles
@@ -44,6 +48,8 @@ Files appear lazily, so a fresh installation may contain only a subset.
                 ├── .orphan-sweep-cursor-v1 # private bounded-GC progress
                 ├── blobs/<sha256>   # immutable normalized PNG/JPEG bytes
                 └── staging/         # unpublished admission transactions
+
+~/.clat-wasm-cache-<storage-id>/     # outside ~/.clat; rebuildable compiled WASM cache
 ```
 
 `mcp.json` and `plugins.json` are legacy declarative inputs written by the
@@ -76,7 +82,9 @@ installation and never participates in runtime discovery.
 Back up `~/.clat` as a unit when conversation history and configuration both
 matter. Copying only `storages/workspace.json` does not copy conversations;
 copying only `sessions/` preserves conversation facts but not provider keys,
-trust, or current selections.
+trust, or current selections. The compiled WASM cache
+`~/.clat-wasm-cache-<storage-id>` is outside this backup unit; it is rebuildable
+and can be deleted while CLAT is stopped. See [compiled-code cache](plugins.md#startup-verification-and-compiled-code-cache).
 
 ## Session journals
 

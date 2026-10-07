@@ -2,7 +2,9 @@
 
 This document is for the repository owner publishing CLAT releases. It defines
 the artifact trust chain, offline signing procedure, rollback behavior, key
-rotation, and platform baseline.
+rotation, and platform baseline. Plugin-market releases use the separate
+[market publishing/signing runbook](../market/PUBLISHING.md) and
+[FTP deployment runbook](../market/FTP-DEPLOY.md).
 
 ## Trust model
 

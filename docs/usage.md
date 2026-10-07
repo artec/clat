@@ -114,8 +114,9 @@ multi-hunk update atomically; creation remains `write_file` and v1 does not
 delete or rename files.
 
 For non-interactive setup, `clat exec --trust "..."` accepts trust for the
-current project. `clat serve` never grants trust by itself; open `clat` once or
-run `clat exec --trust` before starting the server.
+current project. `clat serve --trust` explicitly authorizes its current project
+after storage preflight. Without `--trust`, serve requires existing trust;
+open `clat` once or run `clat exec --trust` first.
 
 ## Upgrade
 
@@ -142,6 +143,7 @@ conversation or project:
 clat plugin install ./plugin --config-file ./plugin-config.json \
   --accept-capabilities
 clat plugin list
+clat plugin pack ./plugin --output ./plugin.clatpkg
 clat plugin update ./plugin-v2
 clat plugin rollback dev.example.plugin
 clat plugin disable dev.example.plugin
@@ -152,7 +154,9 @@ Package mutation fails with a busy diagnostic while another CLAT process owns
 the storage root. Restart CLAT after a successful activation change; mounted
 project scopes intentionally keep their frozen tool/prompt surface until
 restart. See [CLAT plugins](plugins.md) for transactions, signatures and trust
-labels.
+labels. The signed market command family is `clat plugin market` with
+`list`, `search`, `info`, `audit`, `install` and `update`; see
+[signed remote market](plugins.md#signed-remote-market) for examples and options.
 
 ## Terminal UI
 
@@ -187,7 +191,8 @@ The main screen has three surfaces:
 | `PageUp` / `PageDown` | scroll the conversation |
 | `Shift+Tab` | cycle the active vendor's reasoning level |
 | `Ctrl+R` | expand or collapse Think details in the conversation |
-| `Ctrl+F` | find original user/agent body text in the loaded conversation window |
+| `Ctrl+O` | cycle tool cards through collapsed, expanded and hidden states |
+| `Ctrl+F` | find original user/agent body text in the loaded conversation window; query limit 256 characters |
 | `Ctrl+G` (also `Alt+S`) | request one manual prompt suggestion when the utility policy allows it |
 | mouse wheel | scroll the conversation |
 | mouse drag | select text and copy it with OSC 52 on release |
@@ -471,7 +476,8 @@ Each session may have one current goal:
 /goal run | pause | resume | complete [summary] | cancel
 ```
 
-`--run` and `/goal run` are the only operations that arm continuation. Restart,
+`/goal clear` is an alias of `/goal cancel`: both clear and disarm the current
+goal. `--run` and `/goal run` are the only operations that arm continuation. Restart,
 session switch, an ordinary user prompt, cancellation, or a terminal goal state
 removes that process-local authority. Goal state itself is durable and uses
 revision/CAS transitions. V1 is capped at 8 rounds, 1,000,000 input+output
@@ -706,9 +712,9 @@ project's newest session; `--session <id>` selects a specific journal. The two
 options are mutually exclusive.
 
 An untrusted project fails closed unless `--trust` is present. With terminal
-stdin, a side-effecting tool displays its full arguments and waits for `y` +
-Enter; `Esc` or any other answer denies it. Input typed before the prompt is
-discarded. With piped stdin there is nobody to ask, so side effects are denied
+stdin, a side-effecting tool displays its full arguments and waits for `y` or
+`yes` (case-insensitive) + Enter; `Esc` or any other answer denies it. Input
+typed before the prompt is discarded. With piped stdin there is nobody to ask, so side effects are denied
 and returned to the model as tool errors. `--yes` approves every side effect,
 including command execution. On macOS the native command tools still default
 to workspace-write Seatbelt confinement; on Linux/Windows there is currently
@@ -1229,13 +1235,16 @@ rename or mutate the underlying `RunEvent` protocol. The workbench uses one
 consistent inline SVG icon language for actions, tools, traces and panel
 navigation, including keyboard and reduced-motion accessibility.
 
-The sidebar's Plugin Index opens a searchable, display-only projection of the
-public [pi.at.cn](https://pi.at.cn) catalog. That cross-origin GET explicitly
-omits credentials, cookies, referrer and the local Bearer token. When the
-catalog is unavailable, the PWA shows a clearly labelled built-in preview and
-retains the external link. It cannot install or update packages; use the
-signed local `clat plugin market` workflow documented in
-[CLAT plugins](plugins.md#signed-remote-market).
+The sidebar's Plugin Index shows a searchable projection of the public
+[pi.at.cn](https://pi.at.cn) catalog. The public catalog is a display surface;
+its cross-origin GET explicitly omits credentials, cookies, referrer and the
+local Bearer token. When the catalog is unavailable, the PWA shows a clearly
+labelled built-in preview and retains the external link. The panel installs,
+updates and manages packages through the authenticated local host, which owns
+signature verification and permission review. The public website cannot install
+or remove packages. See [PWA and TUI plugin control](plugins.md#install-and-manage-from-the-pwa-or-tui)
+for panel controls and [the signed market workflow](plugins.md#signed-remote-market)
+for CLI operations.
 
 The manifest and all asset URLs are credential-free. With the default stable
 port and persistent token, an installed PWA survives normal server restarts.
@@ -1372,7 +1381,8 @@ DSH session id in `~/.clat/dsh-last-session`; missing or invalid memory falls
 back to the newest host session.
 
 The shared commands are `/new`, `/resume`, `/model`, `/perm`, `/rename`,
-`/clear`, `/help`, and `/quit`. `/compact` and `/mcp` are unavailable because
+`/clear`, `/help`, and `/quit` (alias `/exit`); `/perm` also accepts
+`/permission`. `/compact` and `/mcp` are unavailable because
 those concerns belong to the host. The DSH client reconnects after transport
 loss or a temporary host-service failure, but stops retrying on a protocol or
 request error and shows the host error code. It forwards

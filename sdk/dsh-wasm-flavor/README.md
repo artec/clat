@@ -1,8 +1,11 @@
-# DSH WASM second flavor (D2 author lane)
+# DSH WASM second flavor (D1–D3 delivered)
 
 This directory derives an explicit-scope flavor from the original adapter Shim,
 without editing the Bun source or the official package sources. It is an author
-lane, not an installed production plugin or a released market package.
+lane that now also produces the independently reviewed search-only market
+package `io.artec.dsh-official-web-wasm`. Its pi.at.cn catalog status was verified
+as `available` on 2026-10-06; production installation uses the signed v2 index.
+See [network WASM packages](../../docs/plugins.md#network-wasm-components-manifest-v2).
 
 The closed adapters provide semantic DNS/HTTP only. `lookup` requires a hostname
 that identifies one configured exact origin; ambiguous origins fail. The host
@@ -38,7 +41,7 @@ component tests are armed explicitly; ordinary Cargo tests leave them ignored.
 Componentization or discovery alone is insufficient. D2 consumer acceptance now
 also includes real original search/HTTP invocation, physical cancellation, shared
 pin vectors and the existing CLAT tools contract. Production installation and
-release remain D3 work.
+release were completed in D3; the checks above retain their D2 acceptance scope.
 
 The author `run` wrapper reports caught original-tool failures as a `failure`
 packet so runtime diagnostics remain observable with ambient stderr disabled.
@@ -69,14 +72,15 @@ actual requests and connection EOF. It is not public DNS or dial acceptance.
 The shared `pin-cases.json` is consumed by both the unchanged original provider
 and the Rust host; disabling complete-set validation makes its host test fail.
 D2 has passed independent audit. The D3 production integration and local
-acceptance below are complete; independent review and owner publication remain
-separate. The existing Bun/MCP fallback remains in use.
+acceptance below are complete, independent final review passed on 2026-10-05,
+and the search-only package is published on pi.at.cn. The existing Bun/MCP
+fallback remains in use.
 
 
-## D3 search-only release candidate
+## D3 search-only release
 
 The production loader accepts the formal tools/config world and signed manifest
-v2 through clat-wasm-net. The first candidate exports only web_search, with POST
+v2 through clat-wasm-net. The published search-only package exports web_search, with POST
 restricted to https://api.deepseek.com:443 and a separate clock capability. The
 four upstream dependencies remain unchanged. The original MCP edition remains
 the full search/fetch option. The shared HTTP host supports identity, gzip
@@ -112,8 +116,9 @@ bun sdk/dsh-wasm-flavor/measure-bun-search.mjs /absolute/private-config.json /ab
 Both probes run five real queries. Reports contain fuel, time, size and result
 byte counts, with no keys or result contents. Cold component compile time is
 separate from tool wall time. Service/network variation precludes a performance
-guarantee. Formal signing, production upload and independent owner acceptance
-remain separate from local staging.
+guarantee. The published package completed formal signing, production upload
+and independent review; those release steps are distinct from the local staging
+checks documented here.
 
 The same six encoding vectors are consumed by the unchanged original HTTP
 provider under Node and by the actual formal WASM tools component:

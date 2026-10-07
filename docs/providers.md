@@ -54,7 +54,10 @@ six image-input routes are `deepseek-flash`, `qwen3.8-max`,
 `qwen3.8-flash`, `kimi-k3`, and `kimi-for-coding`, plus `glm-5.3-flash`
 (also verified for image tool results) — the first five declared by
 official vendor documentation, the GLM
-route proven by CLAT's own live probe. All other presets are text-only.
+route proven by CLAT's own live probe. The five vendor-declared visual presets
+use a conservative per-request policy of eight images, at most 4 MiB per image;
+custom profiles default to the same limits once image input has been enabled
+by a successful `/vision-probe`. All other presets are text-only.
 
 DeepSeek note (2026-09-10): the official V4.1 Flash release replaced the
 retired `deepseek-v4-flash` and experimental `deepseek-v4-flash-vision-exp`
@@ -252,13 +255,19 @@ exhausting memory:
 
 | Surface | Limit |
 |---|---:|
+| serialized request body | 32 MiB |
+| baseline connection setup timeout | 30 s |
+| baseline response-header timeout | 60 s |
+| stream idle timeout | 300 s |
 | one SSE line | 1 MiB |
 | provider error body | 64 KiB |
 | aggregated response | output tokens × 64 bytes, clamped to 1–64 MiB |
 
 The response ceiling scales with the configured output limit so legitimate
 large outputs are not subject to an unrelated flat cap. Crossing any limit
-returns a typed provider error.
+returns a typed provider error. The connection/header values are transport
+baselines; consumer deadlines can narrow them. The idle timeout bounds silent
+stream waits, not the total duration of an interactive turn.
 
 Journal zstd frames have their own 64 MiB decoded budget; see
 [Persistent state](storage.md#session-journals).
@@ -267,6 +276,8 @@ Journal zstd frames have their own 64 MiB decoded budget; see
 
 Every model call is built through a `ModelFactory` and wrapped by `RetryModel`.
 Each attempt creates a fresh adapter instance, so connection state is not reused.
+The default policy allows four total attempts (the initial call and up to three
+retries), with 1 s, 2 s and 4 s backoff delays.
 
 Typed errors control retry:
 
@@ -280,7 +291,9 @@ Typed errors control retry:
 | invalid request | no |
 | other | no |
 
-`Retry-After` on 429/503 is honored up to 30 seconds. Once any stream event has
+For any non-success HTTP response carrying `Retry-After`, the advertised delay
+is capped at 30 seconds. Retry eligibility still follows the typed error
+classification above. Once any stream event has
 been emitted to the caller, the attempt is no longer retryable; resending would
 duplicate output or tool calls the user already observed.
 

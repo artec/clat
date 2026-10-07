@@ -119,7 +119,7 @@ fn print_help() {
     println!();
     println!("Commands:");
     println!("  standalone       Run the traditional TUI without a background host");
-    println!("  host start      Start or attach to the background host [--trust] [--no-open]");
+    println!("  host start       Start or attach to the background host [--trust] [--no-open]");
     println!("  host status|stop Inspect or explicitly stop the host (--port <n>)");
     println!("  exec [PROMPT]    Run one agent turn headlessly and print the reply on stdout");
     println!("  dsh              Open the TUI as a client of a local DSH web host");

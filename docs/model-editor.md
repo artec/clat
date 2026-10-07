@@ -214,7 +214,8 @@ that finishes after model settings changed cannot replace the newer settings.
 
 The additive host methods are `model.settings.get`, `model.profile.get`,
 `model.profile.save`, `model.profile.activate`, `model.profile.delete`, and
-`model.preset.select`, plus `model.thinking.cycle`; the secret-free notification is `models`.
+`model.preset.select`, plus `model.thinking.cycle` and `model.utility.get` /
+`model.utility.set`; the secret-free notification is `models`.
 ## Attached terminal support
 
 `clat attach` supports the existing `/model` picker for preset selection,

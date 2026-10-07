@@ -140,7 +140,7 @@ stdout 是协议专线。诊断请使用 `ctx.logger` 或 `console.error`。
 | `ctx.systemPrompt` | section/context/order/complete/variable/tools/change/assemble waterfall |
 | `ctx.clat` | 有界的当前 run 上下文与过权限门的原生宿主工具调用 |
 | `ctx.fs` | 通过 CLAT read/list/write/edit 工具投影的 DSH FileSystem |
-| `ctx.shell` | 通过 `run_command` 提供前台 `resolve` / `run` |
+| `ctx.shell` | 通过 `run_command` 提供前台 `resolve` / `run`；DSH 0.2.0 的 `execute(spec)` 未桥接，调用 `ctx.shell.execute()` 报运行时 `TypeError` |
 | `ctx.sessions`、`ctx.agents` | 当前 run 的分离、只读镜像 |
 | `ctx.get/set/provide`、`ctx.reflect.provide` | 进程内 service 注册、查询与撤销 |
 | `ctx.on/once`、`emit/parallel/serial/bail/waterfall` | 进程内 Cordis 调度语义 |

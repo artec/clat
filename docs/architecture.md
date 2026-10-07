@@ -70,8 +70,10 @@ domain contracts.
 The product itself ships two compilation units: `clat` (public facade,
 CLI and TUI/DSH terminal client) depends on `clat-core` (runtime,
 Application and terminal-independent headless/HTTP surfaces); the repo
-workspace additionally contains non-default dev-only members (example
-plugins and the plugin SDK). The core
+workspace additionally contains non-default members: development/example
+plugins and the plugin SDK, plus `sdk/wit-proposals/net-runtime`
+(`clat-wasm-net`), which is a **production dependency of clat-core**, not a
+development-only component. The core
 manifest has no dependency on `clat`, ratatui, crossterm or arboard;
 the dependency direction is enforced by Cargo, not only source inspection.
 Both packages are default workspace members, so ordinary delivery commands
@@ -782,11 +784,14 @@ History metadata travels through replay/SSE; image bytes are loaded later from
 an authenticated active-session reachability endpoint into revocable browser
 blob URLs. Thus neither a host path nor a bearer token becomes image authority.
 
-The read-only Plugin Index panel is a special public-data projection: it fetches
-`https://pi.at.cn/catalog.json` with credentials omitted and never sends the
-local token cross-origin. It has no install RPC. Model trace protocol ids are
-mapped to human-readable presentation labels while the original `RunEvent`
-vocabulary remains unchanged and available as diagnostic metadata.
+The Plugin Index panel combines a public catalog projection with authenticated
+local plugin control. The projection fetches `https://pi.at.cn/catalog.json`
+with credentials omitted and never sends the local token cross-origin; the
+public catalog has no install RPC. Installation and package management use the
+authenticated local host RPC, which owns signature verification and permission
+review. Model trace protocol ids are mapped to human-readable presentation
+labels while the original `RunEvent` vocabulary remains unchanged and available
+as diagnostic metadata.
 
 ### DSH client
 

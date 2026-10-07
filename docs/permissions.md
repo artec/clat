@@ -129,8 +129,9 @@ fail-closed instead of deadlocking shutdown.
 ### Headless approval
 
 With terminal stdin, `clat exec` displays the request only while it is pending.
-Input typed before the request is discarded. `y` + Enter allows; `Esc` or any
-other answer denies. Ctrl-C resolves the wait and cancels the run.
+Input typed before the request is discarded. `y` or `yes` + Enter allows,
+case-insensitively (for example `Y`, `YES` or `Yes`); `Esc` or any other answer
+denies. Ctrl-C resolves the wait and cancels the run.
 
 With piped stdin, no person can answer. Every `Ask` becomes unavailable/denied
 and the model receives the tool error. `--yes` installs an allow-all approver;
@@ -410,7 +411,7 @@ verifies a package proposal, then requires explicit approval of the reviewed
 capabilities and native executable access before activation. Consent to install
 does not approve later Network/Write/Execute tool calls: they continue through
 the ordinary per-run permission policy. Management credentials never go to the
-public market. See [PWA plugin control](plugins.md#install-and-manage-from-the-pwa).
+public market. See [PWA plugin control](plugins.md#install-and-manage-from-the-pwa-or-tui).
 
 ## Core design
 

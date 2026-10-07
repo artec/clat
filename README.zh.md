@@ -51,7 +51,7 @@ clat upgrade --check
 authority 必须持有效凭据。浏览器只保存私有 HttpOnly 会话，凭据不进入
 URL。使用 `--no-open` 可关闭自动打开浏览器。
 可选的微信前端只走官方 iLink；必须显式扫码绑定、配对用户，并以
-`clat serve --im wechat` 启动，否则保持关闭。
+带 `--im wechat` 的 `serve` 启动，否则保持关闭。
 
 ## 已包含的能力
 
@@ -59,7 +59,7 @@ URL。使用 `--no-open` 可关闭自动打开浏览器。
   插话、向用户提问、每会话 todo、自动标题，以及保留原始日志的上下文压缩。
 - **工作流智能**——持久化 Plan Mode 与结构化工具过滤，bundled/user/project
   三层 Markdown skills 的惰性有界加载，可选的用户级只读 LSP 导航
-  （definition/references/implementation/hover，经 CLAT 管理的沙箱 stdio），
+  （`definition`、`references`、`implementation`、`hover`，经 CLAT 管理的沙箱 stdio），
   以及 `/context` 一次性解释模型实际可见上下文的估算分项。
 - **有界 Agent 智能**——不允许模型写入的显式 project/user 本地记忆；
   每会话一个带 CAS 的持久 goal 及仅由用户显式开启的有界续跑；默认关闭、
@@ -125,7 +125,7 @@ irm https://raw.githubusercontent.com/artec/clat/main/install.ps1 | iex
 | 使用 DSH 官方 web 搜索与抓取 | [Web 工具](docs/web.md) |
 | 在 PWA 或 CLI 安装和管理插件 | [CLAT 插件](docs/plugins.md) |
 | 安装或编写 WASM 组件 | [WASM 插件](docs/wasm.md) |
-| 评审 WASM 网络能力提案 | [网络协议草案](docs/wasm-net.md) |
+| 了解 WASM 网络协议与交付 | [网络协议与交付](docs/wasm-net.md) |
 | 移植 DSH/Cordis 插件 | [DSH 插件兼容指南](docs/dsh-plugins.md) |
 | 审核有运行时证据的 DSH 兼容声明 | [DSH 兼容证据矩阵](docs/dsh-compat.md) |
 | 理解核心边界与生命周期 | [架构](docs/architecture.md) |
@@ -139,7 +139,7 @@ DSH 适配器包另有独立的[英文](sdk/dsh-adapter/README.md)和
 
 ## 开发
 
-日常编辑用 `scripts/gates.sh [测试过滤词 ...]` 获取定向反馈；交付前
+日常编辑用 `scripts/gates.sh [test-filter ...]` 获取定向反馈；交付前
 运行一次 `scripts/gates.sh --full`。见[测试分级](docs/testing.md)。
 
 前置条件只有 Git 与当前稳定版 Rust 工具链：

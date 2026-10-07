@@ -4,8 +4,8 @@ CLAT can use the unchanged official DSH web quartet through the MCP adapter:
 `@deepseek-ai/dsh-web`, `dsh-web-search-deepseek`, `dsh-web-fetch-http`, and
 `dsh-tool-web`, all pinned to **0.2.0-rc.2**. The recipe is under
 `sdk/dsh-adapter/examples/official-web`; it requires the static web-service and prompt-query support. The
-adapter `0.1.0-rc.3` includes these additions. Use that version or later
-when distributing the recipe after the owner publishes it.
+adapter `0.1.0-rc.3`, published on 2026-10-03, includes these additions. Use
+that version or later when distributing the recipe.
 
 The two tools appear as `mcp_<server>_web_search` and
 `mcp_<server>_web_fetch`. Both have **Network** effect and use ordinary CLAT
@@ -25,6 +25,22 @@ index and an artifact for the current platform; preview entries are not
 installable. Keys stay in the local private registry. If using a host-side
 `DEEPSEEK_API_KEY` instead, leave the key field blank. Configuration changes
 and installation refresh the external runtime after active work finishes.
+
+### WASM search-only edition
+
+A search-only WASM edition is also available as
+`io.artec.dsh-official-web-wasm` (catalog verified 2026-10-06). Its manifest v2
+uses the separate signed index at `https://pi.at.cn/v2/`:
+
+```sh
+clat plugin market install io.artec.dsh-official-web-wasm --market https://pi.at.cn/v2/ --accept-capabilities
+```
+
+The PWA selects that v2 index from the WASM catalog card. It does not provide
+arbitrary URL fetch; retain the MCP edition for search and fetch. See
+[network WASM packages](plugins.md#network-wasm-components-manifest-v2) for
+permissions, configuration and installation details. WASM receives package-private
+configuration from the host; its guest has no ambient environment variables.
 
 ## Build once, install without a language runtime
 

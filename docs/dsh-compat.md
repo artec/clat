@@ -59,7 +59,7 @@ are useful diagnostics, but they are not compatibility evidence.
 | Elicitation degradation | DSH user-questions service | adapter + MCP elicitation bridge | — | **intentional-difference** | Multi-select degrades to text; `ask({agent})` is unsupported. |
 | Host service negotiation | DSH plugin injection surfaces | adapter `host-services.ts`, Rust PluginHostBridge | — | **partial** | fs/shell/session/agent mirrors are individually bounded and permission-gated, not the DSH host spine. |
 | `ctx.fs` host mirror | DSH filesystem service | adapter host services + native CLAT tools | — | **intentional-difference** | Project-root only, 64 KiB complete reads, no atomic `expected` version guard. |
-| `ctx.shell` host mirror | DSH shell service | adapter host services + ProcessService | — | **intentional-difference** | Foreground only; fixed cwd; no arbitrary env/stdin/background start. |
+| `ctx.shell` host mirror | DSH shell service | adapter host services + ProcessService | — | **intentional-difference** | Foreground `resolve`/`run` only; fixed cwd; no arbitrary env/stdin/background start. DSH 0.2.0 `execute(spec)` is not bridged; `ctx.shell.execute()` fails at runtime with `TypeError`. |
 | `ctx.sessions` / `ctx.agents` | DSH session/agent services | bounded read-only run mirror | — | **intentional-difference** | No creation, mutation, resume, live stream, or child orchestration through the adapter. |
 | Market package/signature contract | DSH plugin packages and CLAT market format | `src/plugin/market.rs`, schemas, release tooling | — | **unresearched** | CLAT owns a different signed package contract; package quantity is not evidence. |
 

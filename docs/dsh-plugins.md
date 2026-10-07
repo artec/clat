@@ -69,7 +69,7 @@ CLAT 的对位路径是 WASM 宿主（fuel/epoch 沙盒、哈希绑定写授予�
 | `ctx.web` search/fetch provider | `web_search` / `web_fetch` 内置工具，保留 provider 选择错误 | 支持 |
 | `ctx.clat` | 读取当前 run 的有界上下文；调用宿主 allowlist 工具 | 支持（CLAT 扩展） |
 | `ctx.fs` | 经 `read_file` / `list_files` / `write_file` / `edit_file` 投影 DSH FileSystem | 支持，有明确收窄 |
-| `ctx.shell` | 经 `run_command` 前台执行 | 支持前台 `resolve` / `run` |
+| `ctx.shell` | 经 `run_command` 前台执行 | 支持前台 `resolve` / `run`；DSH 0.2.0 的 `execute(spec)` 未桥接，调用 `ctx.shell.execute()` 报运行时 `TypeError` |
 | `ctx.sessions` | 当前 CLAT session 的只读、run 级镜像 | 支持只读镜像 |
 | `ctx.agents` | 当前 root agent 的只读镜像 | 支持只读镜像 |
 | callable `ctx.logger(name)` | 所有级别写 stderr，stdout 只走协议 | 支持 |
@@ -177,7 +177,9 @@ stderr 通道。包级 API 和双语示例见
   明确报 `FS_GUARD_UNSUPPORTED`；无 guard 的写入仍过 CLAT 权限与路径围栏。
 - `ctx.shell` 固定在项目根运行，不接受 `env`、`dshEnv`、`stdin` 或任意
   workdir；`start()` 明确不可用。前台 `resolve/run` 复用宿主 `run_command`
-  的 Execute 审批、TTL、受管进程组清理和平台 sandbox facts。
+  的 Execute 审批、TTL、受管进程组清理和平台 sandbox facts。DSH 0.2.0
+  将 shell 面合并为 `execute(spec)`，该方法按既有裁定不移植；适配器
+  没有 `ctx.shell.execute`，调用会报运行时 `TypeError`，不是权限拒绝。
 - `ctx.sessions` / `ctx.agents` 仅镜像当前活动 run，最多携带最近 64 个、
   合计 256 KiB 的模型项；所有 mutation API 报 `READ_ONLY_HOST_SERVICE`。
 
@@ -303,9 +305,13 @@ Promise/async-generator engine probes are distinct from full adapter/provider
 compatibility. The current direct conversion does not produce a usable package:
 provider HTTP/DNS, Undici and async-context dependencies lack an equivalent
 transport in `clat:plugin@0.1.0`. The existing Bun/MCP recipe remains the supported
-quartet route. A future sandbox variant requires reviewed host egress and full
-provider/lifecycle plus signed staging acceptance; it will use an independent
-package id so both editions can coexist.
+quartet route for search and fetch. A separate search-only sandbox variant,
+`io.artec.dsh-official-web-wasm`, has since passed independent review and been
+published on pi.at.cn (catalog verified 2026-10-06). It uses reviewed host
+egress and an independent package id so both editions can coexist; see
+[network WASM packages](plugins.md#network-wasm-components-manifest-v2).
+This delivered explicit-scope flavor does not make the older direct-conversion
+experiment an installable quartet.
 
 The experiment's author compiler now lowers the original XID property literals
 without editing upstream inputs. Exhaustive native Bun membership comparisons

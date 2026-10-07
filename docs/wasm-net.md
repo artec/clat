@@ -1,6 +1,6 @@
-# WASM 网络宿主协议提案（PLG-4 D1）
+# WASM 网络宿主协议与交付（PLG-4 D1–D3）
 
-状态：**D1、D2 已通过独立审计；D3 开发交付完成：生产搜索包、签名 staging 全卷、原 HTTP 组件编码卷与真实服务测量通过；待独立复核和负责人发布。**
+状态：**D1–D3 已交付并通过独立审计，D3 独立终审于 2026-10-05 通过；生产搜索包 `io.artec.dsh-official-web-wasm` 已上线 pi.at.cn，2026-10-06 实测目录状态为 available。**
 
 官方四件套 0.2.0-rc.2 的源码保持原样。第二风味以显式 context scope 替代
 ALS，闭集 DNS/HTTP 适配消费宿主私有、单次使用的 resolution；网络、审批、
@@ -35,7 +35,8 @@ identity、gzip（含多成员）、zlib/raw deflate、Brotli 已由共享原 HT
 
 ## 决策与适用范围
 
-选择独立 `clat:net/egress@0.1.0`，保留 `clat:plugin@0.1.0`。
+历史设计选择独立 `clat:net/egress@0.1.0`，保留 `clat:plugin@0.1.0`；
+`clat:net/egress` 是当时的候选名，生产接口已定名为 `clat:net-task@0.1.0`。
 相比直接开放 wasi:http，此接口不接受 guest 的 socket、connector、代理或 IP
 选择器，解析凭证与连接可以绑定到同一宿主资源。HTTP 请求体/响应体仍是 HTTP
 实体数据，不是 TCP/UDP 或 Node stream 管道。实现只进入 Rust core，前端负责显示审批。
@@ -400,6 +401,11 @@ D1 24 项总卷、shim v2 与官方原包组件化继续按后续门禁推进。
 原DNS13/HTTP26次；共45次通过。完整项目门禁通过，不替代 Windows 真正 CI 或
 生产/官方包验收。
 
+### 历史施工记录：D2 作者通道（下述未完成状态仅指当时）
+
+D2、D3 后续已交付过审，生产搜索包与 v2 索引已上线；以下英文段落保留
+阶段性验证范围，不表示当前生产安装或 v2 目录仍未实现。
+
 The D2 author lane now derives an explicit-scope flavor without editing the Bun
 Shim or official package sources (`sdk/dsh-wasm-flavor`). Its real component
 lifecycle oracle passes overlapping injections, asynchronous generator cleanup,
@@ -411,7 +417,7 @@ equivalence remain under verification; componentization therefore does
 not establish quartet compatibility or D2 completion. Production installation and the v2 catalog remain unimplemented.
 
 
-## D3 production integration and search-only candidate (2026-10-05)
+## D3 production integration and search-only release (2026-10-05)
 
 The construction notes above preserve historical status. Manifest v2, the
 production loader, signed package storage and https://pi.at.cn/v2/ are now
@@ -423,7 +429,7 @@ active-run attempt budgets, cancellation, deadlines
 and active resource closure. No filesystem, preopens or host-tool execution
 interface is linked into this network flavor.
 
-The first candidate exports only web_search, with signed POST authority for
+The published search-only package exports web_search, with signed POST authority for
 https://api.deepseek.com:443 and an independently declared clock. The original
 four upstream dependencies remain unchanged. web_fetch is unavailable in both
 discovery and invocation; the existing MCP edition retains full search/fetch.

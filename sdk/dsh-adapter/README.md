@@ -148,7 +148,7 @@ rejecting startup.
 | `ctx.systemPrompt` | sections, contexts, ordering, complete sections, variables, tool providers, change events, and assembly waterfall |
 | `ctx.clat` | bounded current-run context and permission-gated native host-tool calls |
 | `ctx.fs` | DSH-shaped filesystem over CLAT read/list/write/edit tools |
-| `ctx.shell` | foreground `resolve` / `run` over CLAT `run_command` |
+| `ctx.shell` | foreground `resolve` / `run` over CLAT `run_command`; DSH 0.2.0 `execute(spec)` is not bridged, so `ctx.shell.execute()` fails at runtime with `TypeError` |
 | `ctx.sessions`, `ctx.agents` | detached, read-only current-run mirrors |
 | `ctx.get/set/provide`, `ctx.reflect.provide` | process-local service registration and disposal |
 | `ctx.on/once`, `emit/parallel/serial/bail/waterfall` | process-local Cordis dispatch semantics |

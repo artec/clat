@@ -13,8 +13,10 @@ npm run build
 ```
 
 Deploy the resulting `market/dist/` directory to `pi.at.cn`. The catalog is
-usable without a machine index; every current record is deliberately marked
-`preview`, so the site never presents an unpublished package as installable.
+usable without a machine index. As verified on 2026-10-06,
+`io.artec.dsh-official-web` and `io.artec.dsh-official-web-wasm` are `available`
+on pi.at.cn; the other records remain `preview`. The site never presents an
+unpublished preview package as installable.
 
 The included `_headers` file is understood by Cloudflare Pages and similar
 hosts. On another host, reproduce its CSP, CORS and cache rules. In particular,
