@@ -390,7 +390,7 @@
     <header class="hero">
       <img class="big" src="logo.png" alt="CLAT logo">
       <h1>CLAT</h1>
-      <div><a class="release-pill" href="https://github.com/artec/clat/releases/latest" data-release>v1.6.0 — Latest release</a></div>
+      <div><a class="release-pill" href="https://github.com/artec/clat/releases/latest" data-release>v1.7.2 — Latest release</a></div>
       <p class="tagline">A rock-solid agent foundation · The TUI client for DSH · A single Rust file</p>
       <div class="term">
         <div class="row"><span class="p">❯</span><span>clat</span></div>
@@ -406,11 +406,11 @@
         <a class="btn" href="#install">Install</a>
         <a class="btn" href="https://github.com/artec/clat">View on GitHub</a>
       </div>
-      <!-- 数据带：数字须真实。下载体积 = macOS tar.gz 压缩包大小（v1.6.0 实测 9.9 MiB），
+      <!-- 数据带：数字须真实。下载体积 = macOS tar.gz 压缩包大小（v1.7.2 实测 11.0 MiB），
            发布时复核压缩包即可。 -->
       <div class="stats">
         <div class="stat">
-          <div class="stat-number">9.9 MB</div>
+          <div class="stat-number">11.0 MB</div>
           <div class="stat-label">Download size: one binary, no Node / Python required</div>
         </div>
         <div class="stat">
@@ -439,7 +439,7 @@
         </div>
         <div class="card">
           <h3>Safe by default</h3>
-          <p>Entering a new directory passes a trust gate first. Permissions switch between read-only, project-write, and full-access; at the default level every file write and command asks first, and paths stay inside the project root — every file operation is tracked for review and recovery.</p>
+          <p>Entering a new directory passes a trust gate first. Permissions switch between read-only, project-write, and full-access; at the default level every file write and command asks first, and paths stay inside the project root. Commands can run sandboxed — approved automatically inside the sandbox — and every file operation is tracked for review and recovery.</p>
         </div>
       </div>
     </section>
@@ -482,7 +482,7 @@
         <div class="feature-cell">
           <p class="feature-label">03 — Interaction</p>
           <h3>Questions, steering &amp; thinking</h3>
-          <p>The model stops to ask when a decision is yours to make; while a run is active you can send steering messages that change its direction. Reasoning renders inline as a collapsible Think row (Ctrl+R expands), and <code>/suggest</code> previews a next-message hint on demand — sent only when you adopt it.</p>
+          <p>The model stops to ask when a decision is yours to make; steer an active run any time, or press Ctrl+Q to queue a message for the next turn — dispatched automatically when this one ends. Reasoning renders inline as a collapsible Think row (Ctrl+R expands), and <code>/suggest</code> previews a next-message hint on demand — sent only when you adopt it.</p>
         </div>
         <div class="feature-cell">
           <p class="feature-label">04 — Runtime</p>
@@ -517,7 +517,7 @@
         <div class="feature-cell">
           <p class="feature-label">10 — Plugins</p>
           <h3>Plugins &amp; marketplace</h3>
-          <p>The signed plugin marketplace <a href="https://pi.at.cn">pi.at.cn</a> is live: <code>clat plugin</code> browses, installs, updates, and rolls back in one command, with dependency solving, publisher and revocation checks, and capability review built in. WASM components and MCP servers share one manager, interoperable with the DSH ecosystem.</p>
+          <p>The signed plugin marketplace pi.at.cn is live: both the <code>clat plugin</code> CLI and the <code>/plugin</code> management UI (identical in TUI and workbench) browse, install, configure, and roll back, with signature checks and capability review built in. WASM and MCP packages share one manager; manifest v2 lets WASM plugins declare network access, and the DSH ecosystem interoperates.</p>
         </div>
         <div class="feature-cell">
           <p class="feature-label">11 — Ecosystem</p>
@@ -527,7 +527,7 @@
         <div class="feature-cell">
           <p class="feature-label">12 — Frontends</p>
           <h3>Background host &amp; multi-frontend</h3>
-          <p><code>clat</code> now starts a background host: the TUI, web workbench, and WeChat remote all attach to the same sessions as clients — close the TUI and the host keeps running, and a newer CLAT smoothly replaces an idle old host. The workbench ships workspace review (git status &amp; diff), a file browser, task logs, conversation search, and a command palette.</p>
+          <p><code>clat</code> now starts a background host: the TUI, web workbench, and WeChat remote all attach to the same sessions as clients — close the TUI and the host keeps running, and a newer CLAT smoothly replaces an idle old host. First run opens your system browser automatically, with cookie auth — no token pasting. The workbench ships workspace review (git status &amp; diff), a file browser, task logs, conversation search, and a command palette.</p>
         </div>
       </div>
     </section>

@@ -382,7 +382,7 @@
     <header class="hero">
       <img class="big" src="../logo.png" alt="CLAT logo">
       <h1>CLAT</h1>
-      <div><a class="release-pill" href="https://github.com/artec/clat/releases/latest" data-release>v1.6.0 — 最新版本</a></div>
+      <div><a class="release-pill" href="https://github.com/artec/clat/releases/latest" data-release>v1.7.2 — 最新版本</a></div>
       <p class="tagline">稳如磐石的 Agent 底座 · DSH 的 TUI 客户端 · Rust 单文件</p>
       <div class="term">
         <div class="row"><span class="p">❯</span><span>clat</span></div>
@@ -398,11 +398,11 @@
         <a class="btn" href="#install">安装</a>
         <a class="btn" href="https://github.com/artec/clat">View on GitHub</a>
       </div>
-      <!-- 数据带：数字须真实。下载体积 = macOS tar.gz 压缩包大小（v1.6.0 实测 9.9 MiB），
+      <!-- 数据带：数字须真实。下载体积 = macOS tar.gz 压缩包大小（v1.7.2 实测 11.0 MiB），
            发布时复核压缩包即可。 -->
       <div class="stats">
         <div class="stat">
-          <div class="stat-number">9.9 MB</div>
+          <div class="stat-number">11.0 MB</div>
           <div class="stat-label">下载体积：单二进制，无需 Node / Python</div>
         </div>
         <div class="stat">
@@ -431,7 +431,7 @@
         </div>
         <div class="card">
           <h3>安全默认</h3>
-          <p>进入新目录先过信任门；权限分只读、项目写入、完全访问三档可切换，默认档位下写文件、执行命令逐次询问，路径不出项目根；文件操作全程留痕，可审查、可恢复。</p>
+          <p>进入新目录先过信任门；权限分只读、项目写入、完全访问三档可切换，默认档位下写文件、执行命令逐次询问，路径不出项目根；命令可入沙箱执行、沙箱内自动放行，文件操作全程留痕，可审查、可恢复。</p>
         </div>
       </div>
     </section>
@@ -474,7 +474,7 @@
         <div class="feature-cell">
           <p class="feature-label">03 — 交互</p>
           <h3>问答、转向与思考流</h3>
-          <p>模型遇到该由你拍板的事会停下来提问；运行中也能随时插入转向消息，改变当前任务的方向。思考过程内联为可折叠的 Think 行（Ctrl+R 展开），<code>/suggest</code> 按需生成下一条消息的提示预览，采纳后才会发送。</p>
+          <p>模型遇到该由你拍板的事会停下来提问；运行中可插入转向消息改变方向，Ctrl+Q 把消息排进下一轮队列、本轮结束自动发送。思考过程内联为可折叠的 Think 行（Ctrl+R 展开），<code>/suggest</code> 按需生成下一条消息的提示预览，采纳后才会发送。</p>
         </div>
         <div class="feature-cell">
           <p class="feature-label">04 — 运行</p>
@@ -509,7 +509,7 @@
         <div class="feature-cell">
           <p class="feature-label">10 — 插件</p>
           <h3>插件与市场</h3>
-          <p>签名插件市场 <a href="https://pi.at.cn">pi.at.cn</a> 已上线：<code>clat plugin</code> 一条命令浏览、安装、更新与回滚，依赖解析、发布者核验、能力审查全部内置；WASM 组件与 MCP 服务共用一套管理器，并与 DSH 插件生态互通。</p>
+          <p>签名插件市场 pi.at.cn 已上线：<code>clat plugin</code> 命令行与 <code>/plugin</code> 图形界面（TUI 与工作台同款）都能浏览、安装、配置、回滚，签名核验与能力审查内置；WASM 与 MCP 包共用一套管理器，v2 清单起 WASM 插件可声明联网能力，并与 DSH 插件生态互通。</p>
         </div>
         <div class="feature-cell">
           <p class="feature-label">11 — 生态</p>
@@ -519,7 +519,7 @@
         <div class="feature-cell">
           <p class="feature-label">12 — 前端</p>
           <h3>后台宿主与多端挂接</h3>
-          <p><code>clat</code> 启动的是后台宿主：TUI、Web 工作台、微信遥控都作为客户端挂接同一批会话，关掉 TUI 宿主照常运行，新版 CLAT 自动平滑替换旧宿主。工作台内置工作区审查（Git 状态与 diff）、文件浏览、任务日志、会话搜索与命令面板。</p>
+          <p><code>clat</code> 启动的是后台宿主：TUI、Web 工作台、微信遥控都作为客户端挂接同一批会话，关掉 TUI 宿主照常运行，新版 CLAT 自动平滑替换旧宿主；首次运行自动拉起系统浏览器，Cookie 授权免贴令牌。工作台内置工作区审查（Git 状态与 diff）、文件浏览、任务日志、会话搜索与命令面板。</p>
         </div>
       </div>
     </section>
