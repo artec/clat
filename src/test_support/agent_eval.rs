@@ -5,6 +5,14 @@
 //! session journal as the product. The only fake is the model provider: it
 //! supplies a declared sequence of responses and rejects request drift.
 
+#[cfg(all(test, unix))]
+#[path = "agent_eval/residual.rs"]
+mod residual;
+
+#[cfg(test)]
+#[path = "agent_eval/campaign.rs"]
+mod campaign;
+
 use crate::model::{FinishReason, ModelEvent, ModelRequest, ModelResponse, Usage};
 use crate::test_support::{
     SharedEvents, TestBehavior, TestModelScript, TestProviderPlugin, cleanup_tree,

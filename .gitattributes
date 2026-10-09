@@ -61,3 +61,8 @@ market/index.source.json text eol=lf
 
 # QUE-1 embedded queue client is byte-exact across checkouts.
 web/next-turn.js text eol=lf
+
+# AG-EVAL-1 preregistration inputs/oracles are hashed verbatim.
+tests/agent-campaigns/*.py text eol=lf
+tests/agent-campaigns/*.json text eol=lf
+tests/agent-campaigns/evidence/**/*.json text eol=lf

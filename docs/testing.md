@@ -352,3 +352,19 @@ The macOS lifecycle probe records the system opener instead of opening windows;
 ordinary lifecycle children suppress browser handoff. Manual GUI validation
 checks the real default browser separately. A stop response precedes complete
 teardown, so fixed-port tests wait for both listener and storage lease release.
+
+## Agent effectiveness evidence
+
+The scripted Agent Scenario Harness exercises the real Application, permissions,
+tools and journal. `scripts/gates.sh agent_eval` includes its control export and,
+on Unix, independent ordinary-process-group/scratch teardown witnesses. These
+prove the tested mechanism; they do not establish real model effectiveness or
+containment of an adversarial candidate.
+
+The developer-only [Agent campaigns](../tests/agent-campaigns/README.md) directory
+provides preregistered historical-function microtasks, external behavioral oracles
+and raw-record recomputation. Run its Python contracts explicitly with
+`python3 -m unittest discover -s tests/agent-campaigns -p test_eval.py`. Paid runs
+require separate owner authorization and verified candidate isolation. A scripted
+control or historical reference-fix result must not be reported as a model
+success rate or capability improvement.

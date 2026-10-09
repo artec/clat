@@ -1,0 +1,141 @@
+[
+  {
+    "id": "AGEVAL-01",
+    "kind": "ledger",
+    "family": "budget-ledger",
+    "target": "src/model.rs",
+    "sources": [
+      "src/model.rs"
+    ],
+    "base_revision": "ecc218162a43e5c4aa5953c69b9ea7930c451ee8",
+    "reference_fix_revision": "8a8a741c3d5d915c4c0f99866ed345b1f74b45e9",
+    "prompt": "上游返回极端 token 数后，运行账本可能变小并继续放行请求。修复账本，使已消耗值不会回退，同时保留正常预留与实报对账语义。\n仅修改给定源码。不得联网、部署、读取项目外状态或修改评测材料；完成后说明修改和验证。"
+  },
+  {
+    "id": "AGEVAL-02",
+    "kind": "usage",
+    "family": "usage-aggregation",
+    "target": "src/model.rs",
+    "sources": [
+      "src/model.rs"
+    ],
+    "base_revision": "ecc218162a43e5c4aa5953c69b9ea7930c451ee8",
+    "reference_fix_revision": "8a8a741c3d5d915c4c0f99866ed345b1f74b45e9",
+    "prompt": "多次请求累计 usage 时，极端计数可能崩溃或回绕。修复累计统计，保留缺失可选字段和有效零值的区别。\n仅修改给定源码。不得联网、部署、读取项目外状态或修改评测材料；完成后说明修改和验证。"
+  },
+  {
+    "id": "AGEVAL-03",
+    "kind": "responses-invalid",
+    "family": "responses-admission",
+    "target": "src/providers/openai.rs",
+    "sources": [
+      "src/providers/openai.rs",
+      "src/model.rs",
+      "src/providers/mod.rs"
+    ],
+    "base_revision": "ecc218162a43e5c4aa5953c69b9ea7930c451ee8",
+    "reference_fix_revision": "8a8a741c3d5d915c4c0f99866ed345b1f74b45e9",
+    "prompt": "Responses usage 对象存在但主计费字段缺失或非法时，被当成可信零消耗，导致运行预算被清空。修复 admission；合法零值仍应被接受。\n仅修改给定源码。不得联网、部署、读取项目外状态或修改评测材料；完成后说明修改和验证。"
+  },
+  {
+    "id": "AGEVAL-04",
+    "kind": "responses-clamp",
+    "family": "responses-admission",
+    "target": "src/providers/openai.rs",
+    "sources": [
+      "src/providers/openai.rs",
+      "src/model.rs",
+      "src/providers/mod.rs"
+    ],
+    "base_revision": "ecc218162a43e5c4aa5953c69b9ea7930c451ee8",
+    "reference_fix_revision": "8a8a741c3d5d915c4c0f99866ed345b1f74b45e9",
+    "prompt": "Responses 上游可能返回超出合理范围的主计费与明细字段，污染统计与预算。修复所有 usage 字段的输入边界，不能删除统计或把正常值清零。 项目合同：每字段上限为 1<<40；阈下原值保持不变。\n仅修改给定源码。不得联网、部署、读取项目外状态或修改评测材料；完成后说明修改和验证。"
+  },
+  {
+    "id": "AGEVAL-05",
+    "kind": "compatible",
+    "family": "compatible-admission",
+    "target": "src/providers/openai_compatible.rs",
+    "sources": [
+      "src/providers/openai_compatible.rs",
+      "src/model.rs",
+      "src/providers/mod.rs"
+    ],
+    "base_revision": "ecc218162a43e5c4aa5953c69b9ea7930c451ee8",
+    "reference_fix_revision": "8a8a741c3d5d915c4c0f99866ed345b1f74b45e9",
+    "prompt": "兼容协议上游的极端 token 与缓存计数未受合理输入边界约束。修复计数 admission，并保留已支持的各供应商缓存字段回退。 项目合同：每字段上限为 1<<40；阈下原值保持不变。\n仅修改给定源码。不得联网、部署、读取项目外状态或修改评测材料；完成后说明修改和验证。"
+  },
+  {
+    "id": "AGEVAL-06",
+    "kind": "cancel-ancestor",
+    "family": "cancellation",
+    "target": "src/model.rs",
+    "sources": [
+      "src/model.rs"
+    ],
+    "base_revision": "6c0e7c8cf360232f7d078b752468f4a2ee7a2433",
+    "reference_fix_revision": "b14bb8277b32a4f957d15a256f1e0ea2ea396fbe",
+    "prompt": "父运行显式取消后，孙级任务仍能继续执行。修复多层取消传播；独立活跃任务不能被误取消。\n仅修改给定源码。不得联网、部署、读取项目外状态或修改评测材料；完成后说明修改和验证。"
+  },
+  {
+    "id": "AGEVAL-07",
+    "kind": "cancel-deadline",
+    "family": "cancellation",
+    "target": "src/model.rs",
+    "sources": [
+      "src/model.rs"
+    ],
+    "base_revision": "6c0e7c8cf360232f7d078b752468f4a2ee7a2433",
+    "reference_fix_revision": "b14bb8277b32a4f957d15a256f1e0ea2ea396fbe",
+    "prompt": "子任务设定较晚截止时间时，祖先更早的 deadline 被遗失，provider 请求仍使用过长 timeout。修复取消状态与剩余时间的继承。\n仅修改给定源码。不得联网、部署、读取项目外状态或修改评测材料；完成后说明修改和验证。"
+  },
+  {
+    "id": "AGEVAL-08",
+    "kind": "memo-bounded",
+    "family": "state-reference",
+    "target": "src/control_storage/dsh_last_session.rs",
+    "sources": [
+      "src/control_storage/dsh_last_session.rs"
+    ],
+    "base_revision": "ecc218162a43e5c4aa5953c69b9ea7930c451ee8",
+    "reference_fix_revision": "8a8a741c3d5d915c4c0f99866ed345b1f74b45e9",
+    "prompt": "DSH 客户端读取异常巨大的最后会话偏好文件。让损坏或超限状态 fail-soft，正常会话引用仍能恢复；项目合同为最多 4096 字节（含边界）。\n仅修改给定源码。不得联网、部署、读取项目外状态或修改评测材料；完成后说明修改和验证。"
+  },
+  {
+    "id": "AGEVAL-09",
+    "kind": "memo-symlink-read",
+    "family": "state-reference",
+    "target": "src/control_storage/dsh_last_session.rs",
+    "sources": [
+      "src/control_storage/dsh_last_session.rs"
+    ],
+    "base_revision": "ecc218162a43e5c4aa5953c69b9ea7930c451ee8",
+    "reference_fix_revision": "8a8a741c3d5d915c4c0f99866ed345b1f74b45e9",
+    "prompt": "最后会话偏好被替换为符号链接后，客户端读取了外部目标。阻止该读取，并保留正常文件恢复语义。\n仅修改给定源码。不得联网、部署、读取项目外状态或修改评测材料；完成后说明修改和验证。"
+  },
+  {
+    "id": "AGEVAL-10",
+    "kind": "memo-symlink-write",
+    "family": "state-reference",
+    "target": "src/control_storage/dsh_last_session.rs",
+    "sources": [
+      "src/control_storage/dsh_last_session.rs",
+      "src/control_storage/json_file.rs"
+    ],
+    "base_revision": "ecc218162a43e5c4aa5953c69b9ea7930c451ee8",
+    "reference_fix_revision": "8a8a741c3d5d915c4c0f99866ed345b1f74b45e9",
+    "prompt": "最后会话偏好被替换为符号链接后，记忆更新覆盖了链接目标。阻止越界修改，正常偏好写入仍应有效。\n仅修改给定源码。不得联网、部署、读取项目外状态或修改评测材料；完成后说明修改和验证。"
+  },
+  {
+    "id": "AGEVAL-11",
+    "kind": "memo-absolute-read",
+    "family": "state-reference",
+    "target": "src/control_storage/dsh_last_session.rs",
+    "sources": [
+      "src/control_storage/dsh_last_session.rs"
+    ],
+    "base_revision": "ecc218162a43e5c4aa5953c69b9ea7930c451ee8",
+    "reference_fix_revision": "8a8a741c3d5d915c4c0f99866ed345b1f74b45e9",
+    "prompt": "最后会话偏好被替换为指向绝对路径的符号链接时，客户端读取了目标会话引用。拒绝该链接输入，保留普通文件读取。\n仅修改给定源码。不得联网、部署、读取项目外状态或修改评测材料。"
+  }
+]

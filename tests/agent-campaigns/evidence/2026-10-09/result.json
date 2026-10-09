@@ -1,0 +1,425 @@
+{
+  "schema": 1,
+  "campaign": "AG-EVAL-1-first-offline-version",
+  "date": "2026-10-09",
+  "head": "57cd9a5a5873bee0a005c111c77552711113ca0a",
+  "scope": "trusted-offline-historical-production-function-microtasks",
+  "qualified": 10,
+  "candidates": 11,
+  "compiled_arms": 33,
+  "paid_calls": 0,
+  "capability_improvement": "unverified",
+  "model_tokens": null,
+  "billable_cost": null,
+  "families": [
+    "budget-ledger",
+    "cancellation",
+    "compatible-admission",
+    "responses-admission",
+    "state-reference",
+    "usage-aggregation"
+  ],
+  "rows": [
+    {
+      "task_id": "AGEVAL-01",
+      "family": "budget-ledger",
+      "qualified": true,
+      "admission": "scored_pool",
+      "arms": {
+        "base": {
+          "compile_exit": 0,
+          "oracle_exit": 101,
+          "oracle_pass": false,
+          "behavior_assertion_failed": true,
+          "probe_sha256": "61fb64967d2f224b3965b74a483278bad012c7f0c8bdcd2982f65a3250b72403"
+        },
+        "reference": {
+          "compile_exit": 0,
+          "oracle_exit": 0,
+          "oracle_pass": true,
+          "behavior_assertion_failed": false,
+          "probe_sha256": "2c4364dc3f85e030381094eebb42e4ef94765752c0bcc3aae82e9d2ca382afb7"
+        },
+        "decoy": {
+          "compile_exit": 0,
+          "oracle_exit": 101,
+          "oracle_pass": false,
+          "behavior_assertion_failed": true,
+          "probe_sha256": "d74910fd5b07fe7363a657a360a099bd7120e55bb69c9652776f76baa09cad5b"
+        }
+      }
+    },
+    {
+      "task_id": "AGEVAL-02",
+      "family": "usage-aggregation",
+      "qualified": true,
+      "admission": "scored_pool",
+      "arms": {
+        "base": {
+          "compile_exit": 0,
+          "oracle_exit": 101,
+          "oracle_pass": false,
+          "behavior_assertion_failed": true,
+          "probe_sha256": "9d9225998e91e83f2317f742a38138080fa04c2ebe6977387b41a7ba11ff9e5e"
+        },
+        "reference": {
+          "compile_exit": 0,
+          "oracle_exit": 0,
+          "oracle_pass": true,
+          "behavior_assertion_failed": false,
+          "probe_sha256": "27cb637bf7e781c5c3408842e4b7d2add45e3088932d34cc571e65c5f9dc89ab"
+        },
+        "decoy": {
+          "compile_exit": 0,
+          "oracle_exit": 101,
+          "oracle_pass": false,
+          "behavior_assertion_failed": true,
+          "probe_sha256": "84ce9be0c5e98adcbed3ad172875279bea3de9c7f4af89776960d24733ec258f"
+        }
+      }
+    },
+    {
+      "task_id": "AGEVAL-03",
+      "family": "responses-admission",
+      "qualified": true,
+      "admission": "scored_pool",
+      "arms": {
+        "base": {
+          "compile_exit": 0,
+          "oracle_exit": 101,
+          "oracle_pass": false,
+          "behavior_assertion_failed": true,
+          "probe_sha256": "e6c51906335a846e441323ec0d3e3eb66823a41fefe7e4175d1c63cba9a4026e"
+        },
+        "reference": {
+          "compile_exit": 0,
+          "oracle_exit": 0,
+          "oracle_pass": true,
+          "behavior_assertion_failed": false,
+          "probe_sha256": "d82c7bc056027c8c8bd9e0fea76c3640ea0bb489ae88ae9f175804caf71b6276"
+        },
+        "decoy": {
+          "compile_exit": 0,
+          "oracle_exit": 101,
+          "oracle_pass": false,
+          "behavior_assertion_failed": true,
+          "probe_sha256": "ddd2b83e726ac8897846b249b7abd808900ba1056be79f347bc1add0e8a0716b"
+        }
+      }
+    },
+    {
+      "task_id": "AGEVAL-04",
+      "family": "responses-admission",
+      "qualified": true,
+      "admission": "scored_pool",
+      "arms": {
+        "base": {
+          "compile_exit": 0,
+          "oracle_exit": 101,
+          "oracle_pass": false,
+          "behavior_assertion_failed": true,
+          "probe_sha256": "a15826d479751fa76d71d154c68ee18d5baddb1e19fdecc59560e34661c08733"
+        },
+        "reference": {
+          "compile_exit": 0,
+          "oracle_exit": 0,
+          "oracle_pass": true,
+          "behavior_assertion_failed": false,
+          "probe_sha256": "f2172c2ac9da0b4aea6be09588d086e8825ee5c0ed3207e9b25a44e8caba0ef6"
+        },
+        "decoy": {
+          "compile_exit": 0,
+          "oracle_exit": 101,
+          "oracle_pass": false,
+          "behavior_assertion_failed": true,
+          "probe_sha256": "992a217f70b0ef57c249b397e72e7485a6e50ef47cd8389ebcbca1f0f5653355"
+        }
+      }
+    },
+    {
+      "task_id": "AGEVAL-05",
+      "family": "compatible-admission",
+      "qualified": true,
+      "admission": "scored_pool",
+      "arms": {
+        "base": {
+          "compile_exit": 0,
+          "oracle_exit": 101,
+          "oracle_pass": false,
+          "behavior_assertion_failed": true,
+          "probe_sha256": "984f3541577bb0c8c54601e80aa7a8b201614d43f95156f8c7f22f586211abf3"
+        },
+        "reference": {
+          "compile_exit": 0,
+          "oracle_exit": 0,
+          "oracle_pass": true,
+          "behavior_assertion_failed": false,
+          "probe_sha256": "83e1962645ef9a38c5c679eb0d0b53abf05590744f6c0554c00e9e1fcdd2a9c0"
+        },
+        "decoy": {
+          "compile_exit": 0,
+          "oracle_exit": 101,
+          "oracle_pass": false,
+          "behavior_assertion_failed": true,
+          "probe_sha256": "bf91da0576bd648e47ba349a2a2b043e2e3fd07b54773bd26f68e01638cb89ef"
+        }
+      }
+    },
+    {
+      "task_id": "AGEVAL-06",
+      "family": "cancellation",
+      "qualified": true,
+      "admission": "scored_pool",
+      "arms": {
+        "base": {
+          "compile_exit": 0,
+          "oracle_exit": 101,
+          "oracle_pass": false,
+          "behavior_assertion_failed": true,
+          "probe_sha256": "ea1b6e81fa7e11e9f4711080344da2360f811dc2f7b36e1e19ce540e3b4de4cc"
+        },
+        "reference": {
+          "compile_exit": 0,
+          "oracle_exit": 0,
+          "oracle_pass": true,
+          "behavior_assertion_failed": false,
+          "probe_sha256": "c3fd88d01b968c8dfcb9f08d1f067d1afd04d0c20f585efed31b22ea15aeaff8"
+        },
+        "decoy": {
+          "compile_exit": 0,
+          "oracle_exit": 101,
+          "oracle_pass": false,
+          "behavior_assertion_failed": true,
+          "probe_sha256": "586edee1c9c3e8abbb5dc544eb547f6eda75931ea710171720fd28c6f9e78167"
+        }
+      }
+    },
+    {
+      "task_id": "AGEVAL-07",
+      "family": "cancellation",
+      "qualified": true,
+      "admission": "scored_pool",
+      "arms": {
+        "base": {
+          "compile_exit": 0,
+          "oracle_exit": 101,
+          "oracle_pass": false,
+          "behavior_assertion_failed": true,
+          "probe_sha256": "f4d89fe4edcfa0bf7acb33cdc0d0b78fd6b3d79bcef23461326b28756376c886"
+        },
+        "reference": {
+          "compile_exit": 0,
+          "oracle_exit": 0,
+          "oracle_pass": true,
+          "behavior_assertion_failed": false,
+          "probe_sha256": "2417985b9874eb37784f8fb04168e00915ed76dde0cec2c0b984ef649133270d"
+        },
+        "decoy": {
+          "compile_exit": 0,
+          "oracle_exit": 101,
+          "oracle_pass": false,
+          "behavior_assertion_failed": true,
+          "probe_sha256": "906a22b9e37387722e781e705e6d50513f7056f205acfaecdc65b9b81669ceef"
+        }
+      }
+    },
+    {
+      "task_id": "AGEVAL-08",
+      "family": "state-reference",
+      "qualified": true,
+      "admission": "scored_pool",
+      "arms": {
+        "base": {
+          "compile_exit": 0,
+          "oracle_exit": 101,
+          "oracle_pass": false,
+          "behavior_assertion_failed": true,
+          "probe_sha256": "3e170da30d4eb7bb7ab04a3a4d64625d1e6bc804b39dae6da6335876856ede54"
+        },
+        "reference": {
+          "compile_exit": 0,
+          "oracle_exit": 0,
+          "oracle_pass": true,
+          "behavior_assertion_failed": false,
+          "probe_sha256": "71e4c5c351ce4abefc9c593be48d2f8664c0135f675d15756edf086cf22561c1"
+        },
+        "decoy": {
+          "compile_exit": 0,
+          "oracle_exit": 101,
+          "oracle_pass": false,
+          "behavior_assertion_failed": true,
+          "probe_sha256": "5231718b5a75bfafa95c02ac12529b1337824a4b27970582948570c1c3a736cb"
+        }
+      }
+    },
+    {
+      "task_id": "AGEVAL-09",
+      "family": "state-reference",
+      "qualified": false,
+      "admission": "investigation_pool",
+      "arms": {
+        "base": {
+          "compile_exit": 0,
+          "oracle_exit": 101,
+          "oracle_pass": false,
+          "behavior_assertion_failed": true,
+          "probe_sha256": "e65595ee7e7cf55544f7fc12b1267df492a22fd462e25aab457e7ec680889d89"
+        },
+        "reference": {
+          "compile_exit": 0,
+          "oracle_exit": 101,
+          "oracle_pass": false,
+          "behavior_assertion_failed": true,
+          "probe_sha256": "84c85fe4976b5b3c269b9d0afc28db10e691c2cfcc0b437ec2c0617b50b29a75"
+        },
+        "decoy": {
+          "compile_exit": 0,
+          "oracle_exit": 101,
+          "oracle_pass": false,
+          "behavior_assertion_failed": true,
+          "probe_sha256": "49b9cb9ec94af16e82de18f63452896fd17927592221526befb14db4264e93ef"
+        }
+      }
+    },
+    {
+      "task_id": "AGEVAL-10",
+      "family": "state-reference",
+      "qualified": true,
+      "admission": "scored_pool",
+      "arms": {
+        "base": {
+          "compile_exit": 0,
+          "oracle_exit": 101,
+          "oracle_pass": false,
+          "behavior_assertion_failed": true,
+          "probe_sha256": "dc6c69a2a6f98a41ebc2c07bd734b258abeac4792873833908f5db37186369bc"
+        },
+        "reference": {
+          "compile_exit": 0,
+          "oracle_exit": 0,
+          "oracle_pass": true,
+          "behavior_assertion_failed": false,
+          "probe_sha256": "3dc64153a973ddc3fd51f210bd513b31d80c144ea4de33a0f210c39529f83d7f"
+        },
+        "decoy": {
+          "compile_exit": 0,
+          "oracle_exit": 101,
+          "oracle_pass": false,
+          "behavior_assertion_failed": true,
+          "probe_sha256": "a2ffc0196726ff0b9474e52325633f376c5df3f24b340e2aab3c2fc70949031d"
+        }
+      }
+    },
+    {
+      "task_id": "AGEVAL-11",
+      "family": "state-reference",
+      "qualified": true,
+      "admission": "scored_pool",
+      "arms": {
+        "base": {
+          "compile_exit": 0,
+          "oracle_exit": 101,
+          "oracle_pass": false,
+          "behavior_assertion_failed": true,
+          "probe_sha256": "5c9ef387c933c2d5237c57b36a3e6d1dc6e4a9ece21f0b7d80b0e0f904cc252c"
+        },
+        "reference": {
+          "compile_exit": 0,
+          "oracle_exit": 0,
+          "oracle_pass": true,
+          "behavior_assertion_failed": false,
+          "probe_sha256": "193bd0229ed5f8a6bb07519f36b7da8493de1e5e2f840a478a9235beb85ce6cf"
+        },
+        "decoy": {
+          "compile_exit": 0,
+          "oracle_exit": 101,
+          "oracle_pass": false,
+          "behavior_assertion_failed": true,
+          "probe_sha256": "77723c6ec5b296d95d33f2e813ef0631b692b70a45a87aad1c9773f13391508e"
+        }
+      }
+    }
+  ],
+  "preregistration_sha256": "a9f3814d01d6ab4dd3b65aef59ec2ff3826fa162f2b7a0ae0ec621a8c5981bd7",
+  "qualification_sha256": "749ba11c1b083d2775a2fcd44ecb7d2f48634d3d6b9dc48ca278d314c88bf0be",
+  "control": {
+    "evidence": "offline-mechanism-only",
+    "started": 1,
+    "successes": 1,
+    "failures": 0,
+    "rate": 1.0,
+    "capability_improvement": "unverified",
+    "billable_cost": null,
+    "preregistration_sha256": "19f0913aaaee6202502dea041dd54cab36205d3eccaf03b77ec4019d76012b6a"
+  },
+  "iterations": [
+    {
+      "id": "v1",
+      "qualified": 8,
+      "candidates": 10,
+      "status": "superseded",
+      "reason": "usage panic lacked explicit oracle label; bounded-read control used invalid relative parent"
+    },
+    {
+      "id": "v2",
+      "qualified": 9,
+      "candidates": 10,
+      "status": "superseded",
+      "reason": "relative symlink reference still red; retain in investigation pool"
+    },
+    {
+      "id": "v3",
+      "qualified": 10,
+      "candidates": 11,
+      "status": "superseded",
+      "reason": "new absolute-symlink task; missing normal provider controls"
+    },
+    {
+      "id": "v4",
+      "qualified": 10,
+      "candidates": 11,
+      "status": "superseded",
+      "reason": "independent review found Usage MAX and future-deadline omissions"
+    },
+    {
+      "id": "v5",
+      "qualified": 10,
+      "candidates": 11,
+      "status": "superseded",
+      "reason": "independent review found valid usage zeroing could pass"
+    },
+    {
+      "id": "v6",
+      "qualified": 10,
+      "candidates": 11,
+      "status": "superseded",
+      "reason": "independent review found constant one-second remaining could pass"
+    },
+    {
+      "id": "v7",
+      "qualified": 10,
+      "candidates": 11,
+      "status": "final_bounded_pass",
+      "reason": "four misleading implementations and five integrity tamper controls rejected"
+    }
+  ],
+  "raw_evidence": "output/ageval1-2026-10-09 (local, gitignored; sources and raw logs retained, executables omitted)",
+  "recompute_commands": [
+    "python3 tests/agent-campaigns/eval.py recompute --campaign output/ageval1-2026-10-09/clat-ageval1-qualification-v7",
+    "python3 tests/agent-campaigns/eval.py recompute --campaign output/ageval1-2026-10-09/clat-ageval1-dry-run-v2"
+  ],
+  "limits": [
+    "No real model execution or improvement claim",
+    "No full historical crate acceptance",
+    "Related tasks from six families, not independent problems",
+    "No adversarial candidate OS read/network fence; P2 blocked",
+    "Unix residual probe covers ordinary same-group PIDs and captured scratch only",
+    "Windows native acceptance after owner commit remains required"
+  ],
+  "investigation": {
+    "task_id": "AGEVAL-09",
+    "current_file": "src/dsh/last_session.rs",
+    "finding": "Same-directory relative symlink read violates documented symlink rejection; historical reference and current function remain red",
+    "production_fix": "not applied (P4 not started)"
+  }
+}
