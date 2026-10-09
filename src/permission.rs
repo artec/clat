@@ -88,6 +88,16 @@ where
 }
 
 pub trait PermissionPolicy: Send + Sync {
+    fn check_prepared(
+        &self,
+        project: &Project,
+        tool: &ToolDefinition,
+        call: &ToolCall,
+        _prepared: Option<&crate::tool::PreparedTool>,
+    ) -> PermissionDecision {
+        self.check(project, tool, call)
+    }
+
     fn check(
         &self,
         project: &Project,
@@ -152,7 +162,32 @@ impl PermissionPolicy for InteractivePermissionPolicy {
         tool: &ToolDefinition,
         call: &ToolCall,
     ) -> PermissionDecision {
-        match self.delegate.check(project, tool, call) {
+        self.resolve(self.delegate.check(project, tool, call), tool, call)
+    }
+
+    fn check_prepared(
+        &self,
+        project: &Project,
+        tool: &ToolDefinition,
+        call: &ToolCall,
+        prepared: Option<&crate::tool::PreparedTool>,
+    ) -> PermissionDecision {
+        self.resolve(
+            self.delegate.check_prepared(project, tool, call, prepared),
+            tool,
+            call,
+        )
+    }
+}
+
+impl InteractivePermissionPolicy {
+    fn resolve(
+        &self,
+        decision: PermissionDecision,
+        tool: &ToolDefinition,
+        call: &ToolCall,
+    ) -> PermissionDecision {
+        match decision {
             PermissionDecision::Ask { reason } => {
                 let request = PermissionRequest {
                     tool: tool.name.clone(),
@@ -218,7 +253,8 @@ pub enum PermissionMode {
     ReadOnly,
     /// 项目内文件写、任意路径读与网络/外部读工具自动放行（写工具本就
     /// 受 cap-std 项目根约束，读与网络对齐 DSH 的「不门控」面）；
-    /// 命令执行与破坏性操作仍逐次审批。默认档。
+    /// 原生命令绑定真实 OS enforcement 后免审；显式网络请求、
+    /// 无 enforcement 的执行和破坏性操作仍逐次审批。默认档。
     #[default]
     ProjectWrite,
     /// 全放行（DSH approval=never 对应物）；不再弹任何权限框。
@@ -275,7 +311,7 @@ pub fn mode_decision(mode: PermissionMode, tool: &ToolDefinition) -> PermissionD
             tool.name, tool.effect
         ),
         PermissionMode::ProjectWrite => format!(
-            "tool `{}` ({}) is gated under Project Write mode — commands and destructive tools still need approval",
+            "tool `{}` ({}) is gated under Project Write mode — unprepared commands and destructive tools still need approval",
             tool.name, tool.effect
         ),
         PermissionMode::FullAccess => {
@@ -290,10 +326,9 @@ pub fn mode_decision(mode: PermissionMode, tool: &ToolDefinition) -> PermissionD
 pub fn mode_allows(mode: PermissionMode, effect: ToolEffect) -> bool {
     match mode {
         PermissionMode::FullAccess => true,
-        // PW = 「文件与读自由；命令与破坏性操作逐次审」：Network /
-        // ExternalRead（DSH 词汇表外/其 MCP 完全不设防）随读面一起
-        // 放行；Execute / Destructive 是 CLAT 无内核沙箱时仅剩的两类
-        // 无法 containment 的操作，保留逐次审（对齐 DSH 的承重偏差）。
+        // 不带 prepared authority 的保守 effect 表：Network / ExternalRead
+        // 随读面放行，Execute / Destructive 仍逐次审。ModePolicy 的
+        // check_prepared 仅为绑定真实 OS enforcement 的 PW 原生命令解封。
         PermissionMode::ProjectWrite => matches!(
             effect,
             ToolEffect::Pure
@@ -334,7 +369,7 @@ pub fn mode_guidance(mode: PermissionMode) -> &'static str {
             "every side-effecting tool call (file writes, commands, network) requires user approval before it runs"
         }
         PermissionMode::ProjectWrite => {
-            "file edits, file reads (anywhere on disk), and network/search tools run without approval; commands and destructive tools require user approval"
+            "file edits, file reads (anywhere on disk), and network/search tools run without approval; native commands with a prepared OS sandbox run without approval; explicit command network requests, unconfined commands, and destructive tools require user approval"
         }
         PermissionMode::FullAccess => "all tools run without approval prompts",
     }
@@ -344,29 +379,32 @@ pub fn mode_guidance(mode: PermissionMode) -> &'static str {
 /// 时刻快照——权限检查 Allow 不等于路径围栏开放。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WriteScope {
-    /// 仅项目根相对路径（RO/PW 的围栏；exec 恒为此档）。
+    /// 仅项目根相对路径（Read Only；单次批准不增加额外根）。
     ProjectRoot,
+    /// Shared workspace/temp/scratch roots (workspace-write only).
+    WorkspaceRoots,
     /// 任意绝对路径（Full Access 的围栏开放，DSH danger-full-access
     /// 的「不设防」对应物；原子写纪律不随围栏放开）。
     Unrestricted,
 }
 
-/// 档位 → 写入围栏（SR2）：FA 开放绝对写；RO/PW 保持项目根。RO 下
-/// 人工放行的单次写仍限项目根——对齐 DSH read-only 的升级阶梯
-/// （只升到 workspace-write，不因一次审批放开全盘）。
+/// 档位 → 写入围栏（SR2）：FA 开放绝对写；PW 共享 writable roots。RO 下
+/// 人工放行的单次写仍限项目根，不因一次审批增加 scratch/temp 根。
 pub fn mode_write_scope(mode: PermissionMode) -> WriteScope {
     match mode {
         PermissionMode::FullAccess => WriteScope::Unrestricted,
-        PermissionMode::ReadOnly | PermissionMode::ProjectWrite => WriteScope::ProjectRoot,
+        PermissionMode::ReadOnly => WriteScope::ProjectRoot,
+        PermissionMode::ProjectWrite => WriteScope::WorkspaceRoots,
     }
 }
 
 /// 写工具的围栏来源（与 [`ModeSource`] 对称）：TUI 传共享 cell（与
-/// 权限检查读同一时刻的档位）；exec 传固定 [`WriteScope::ProjectRoot`]。
+/// 权限检查读同一时刻的档位）；exec 使用 workspace-write 共享根。
 #[derive(Clone, Default)]
 pub(crate) enum WriteScopeSource {
     #[default]
     ProjectRoot,
+    WorkspaceRoots,
     Shared(Arc<std::sync::RwLock<PermissionMode>>),
 }
 
@@ -374,6 +412,7 @@ impl WriteScopeSource {
     pub(crate) fn resolve(&self) -> WriteScope {
         match self {
             WriteScopeSource::ProjectRoot => WriteScope::ProjectRoot,
+            WriteScopeSource::WorkspaceRoots => WriteScope::WorkspaceRoots,
             WriteScopeSource::Shared(cell) => {
                 mode_write_scope(*cell.read().expect("permission mode lock"))
             }
@@ -417,6 +456,28 @@ impl ModePolicy {
 }
 
 impl PermissionPolicy for ModePolicy {
+    fn check_prepared(
+        &self,
+        project: &Project,
+        tool: &ToolDefinition,
+        call: &ToolCall,
+        prepared: Option<&crate::tool::PreparedTool>,
+    ) -> PermissionDecision {
+        let mode = self.mode();
+        if mode == PermissionMode::ProjectWrite
+            && tool.effect == ToolEffect::Execute
+            && let Some(prepared) = prepared
+        {
+            if prepared.workspace_enforced {
+                return PermissionDecision::Allow;
+            }
+            return PermissionDecision::Ask {
+                reason: format!("Execute needs approval: {}", prepared.status),
+            };
+        }
+        self.check(project, tool, call)
+    }
+
     fn check(
         &self,
         _project: &Project,

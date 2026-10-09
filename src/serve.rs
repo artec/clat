@@ -23,6 +23,7 @@ pub(crate) mod approver;
 mod auth;
 mod http;
 mod models;
+mod next_turn;
 mod plugins;
 pub(crate) mod protocol;
 mod questions;

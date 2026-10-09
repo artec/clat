@@ -141,6 +141,17 @@ PR/main push. Superseded CI runs for the same ref are cancelled. CI has no
 path-based omissions; it remains the safety net for quick-selection misses.
 Both the Linux gate step and the Windows Test step have a 15-minute CI timeout.
 
+Windows native tests include `tests/windows_sandbox.rs`: the same binary's
+restricted-token runner must allow workspace writes and reject outside writes,
+deletes, Read Only overwrites and sibling scratch writes. These acceptance
+cases cannot self-skip when the provider is unavailable. The suite also checks
+private TMP/TEMP, Job cleanup and the explicitly open network boundary.
+Use `scripts/windows-vm.sh sandbox` for a separate local Parallels checkout or
+`scripts/windows-vm.sh full` for native clippy and tests. The script uses the
+logged-in guest user; a SYSTEM/service token without a logon SID fails closed.
+It does not modify guest security settings. Local VM results do not replace
+the native windows-latest CI result after the owner's commit and push.
+
 `scripts/ci-box.sh` runs the full Linux gate on a two-CPU container when
 platform semantics need verification (its only flag is `--cpus N`).
 `scripts/gates.sh --stress N` remains available for a

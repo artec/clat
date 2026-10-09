@@ -200,7 +200,7 @@ fn native_image_submission_uses_uploads_and_keeps_admission_receipt() {
 
 #[test]
 fn reconnect_represents_each_admitted_input_once() {
-    let (handle, storage, project) = spawn_serve("reconnect-input-once", TestBehavior::RunCommand);
+    let (handle, storage, project) = spawn_approval_serve("reconnect-input-once");
     let mut first = SseClient::connect(handle.addr);
     prompt_send(handle.addr, "run echo");
     first.wait_for("approval.requested", WAIT);
@@ -229,7 +229,7 @@ fn reconnect_represents_each_admitted_input_once() {
 
 #[test]
 fn reconnect_keeps_identical_prior_input_and_settled_history() {
-    let (handle, storage, project) = spawn_serve("reconnect-identical", TestBehavior::RunCommand);
+    let (handle, storage, project) = spawn_approval_serve("reconnect-identical");
     let mut first = SseClient::connect(handle.addr);
     prompt_send(handle.addr, "run echo");
     let approval = first.wait_for("approval.requested", WAIT);
@@ -292,7 +292,7 @@ fn reconnect_keeps_identical_prior_input_and_settled_history() {
 
 #[test]
 fn reconnect_goal_admission_has_one_representation() {
-    let (handle, storage, project) = spawn_serve("reconnect-goal", TestBehavior::RunCommand);
+    let (handle, storage, project) = spawn_approval_serve("reconnect-goal");
     let mut first = SseClient::connect(handle.addr);
     let (_, result) = post(
         handle.addr,
@@ -385,7 +385,7 @@ fn subscription_prefix_survives_run_replacement_without_taking_the_next_run() {
 
 #[test]
 fn late_client_receives_pending_approval_and_both_clients_observe_resolution() {
-    let (handle, storage, project) = spawn_serve("late-approval", TestBehavior::RunCommand);
+    let (handle, storage, project) = spawn_approval_serve("late-approval");
     let mut first = SseClient::connect(handle.addr);
     prompt_send(handle.addr, "run echo");
     let requested = first.wait_for("approval.requested", WAIT);

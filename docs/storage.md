@@ -560,3 +560,20 @@ shutdown performs explicit closure and reports errors.
 control plane. `BootstrapApplication` exposes preflight/trust transition;
 `TrustedProjectApplication` exposes session/model/run use cases. TUI, exec, and
 serve clients never open these paths or infer state from file contents.
+
+## Disposable run scratch
+
+Each active core run owns a freshly created `clat-run-<random>` directory beneath
+the operating-system temporary directory, outside the workspace. Unix creates
+it with mode 0700. The same root authority feeds native write/edit/patch fences
+and command sandbox providers. Windows adds no shared system-temp write grant.
+Run teardown reaps child processes before revoking and deleting scratch;
+creation or explicit cleanup failure is reported instead of silently falling
+back. An abrupt host kill may leave a private temporary directory for manual
+cleanup.
+
+Scratch holds disposable model scripts and files only. Journals, checkpoints,
+attachments, recovery ledgers, and other durable session state keep their
+normal storage paths. Scratch writes do not enter FileReview and do not appear
+in `workspace.changes` because they are outside the repository. Scratch paths
+are injected at execution time and are never relied on to resume a session.

@@ -20,6 +20,15 @@ mod host_cli;
 use host_cli::run_host_command;
 
 fn main() -> ExitCode {
+    #[cfg(windows)]
+    if env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--internal-windows-sandbox"))
+    {
+        // Preserve the complete Windows child exit code instead of truncating
+        // through ExitCode's byte constructor. Dispatch before any host setup.
+        std::process::exit(
+            clat::run_windows_sandbox_internal(env::args_os().skip(2).collect()) as i32,
+        );
+    }
     run(env::args().skip(1))
 }
 

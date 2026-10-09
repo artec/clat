@@ -692,7 +692,7 @@ button:disabled { cursor: default; opacity: .45; }
 .review-header input { min-width: 160px; min-height: 40px; padding: 8px; flex: 1; }
 .workbench-tools { position: absolute; z-index: 24; top: 54px; right: 12px; display: grid; min-width: 220px; padding: 8px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); box-shadow: 0 12px 32px rgb(0 0 0 / 28%); }
 .workbench-tools button { min-height: 42px; text-align: left; padding: 8px 12px; }
-.back-to-latest { position: absolute; z-index: 12; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--surface); border: 1px solid var(--line); border-radius: 999px; padding: 8px 16px; }
+.back-to-latest { position: absolute; z-index: 12; bottom: calc(var(--composer-height) + 18px); left: 50%; transform: translateX(-50%); background: var(--surface); border: 1px solid var(--line); border-radius: 999px; padding: 8px 16px; }
 @media (max-width: 760px) {
   .workflow-details, .workspace-review { padding: 12px; }
   .review-body { grid-template-columns: minmax(0, 1fr); }
@@ -715,3 +715,6 @@ button:disabled { cursor: default; opacity: .45; }
 .plugin-consent { display: flex; align-items: flex-start; gap: 10px; padding: 12px 0; }
 .plugin-consent input { width: auto; }
 @media (max-width: 540px) { .plugin-installed, .plugin-review { margin-inline: 16px; } }
+
+.queue-preview { padding: 8px 16px; max-height: 120px; overflow: auto; font-size: 12px; }
+.queue-item { white-space: pre-wrap; overflow-wrap: anywhere; margin: 4px 0; }

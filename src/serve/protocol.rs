@@ -74,6 +74,9 @@ pub(crate) const RPC_METHODS: &[&str] = &[
     "command.run",
     "prompt.send",
     "steer.send",
+    "queue.list",
+    "queue.enqueue",
+    "queue.recall",
     "run.cancel",
     "approval.respond",
     "question.respond",
@@ -353,6 +356,8 @@ fn dispatch_guarded_project(
             | "command.run"
             | "prompt.send"
             | "steer.send"
+            | "queue.enqueue"
+            | "queue.recall"
             | "run.cancel"
             | "model.overrides.set"
             | "turn.restore"
@@ -367,9 +372,30 @@ fn dispatch_guarded_project(
         && let Some(expected) = params.get("expected_selection_generation")
         && expected.as_u64() != Some(shared.selection_generation())
     {
+        // Only replay an already-produced receipt across a selection change.
+        // This cannot pop input from the newly selected session.
+        if method == "queue.recall"
+            && let Some(id) = params.get("clientMessageId").and_then(Value::as_str)
+            && let Some(item) = shared
+                .app
+                .lock()
+                .expect("application lock")
+                .recalled_next_turn_receipt(id)
+        {
+            return Ok(json!({"item": item}));
+        }
         return Err(RpcError::busy(
             "session selection changed; refresh before submitting",
         ));
+    }
+    if matches!(method, "queue.list" | "queue.enqueue" | "queue.recall") {
+        return super::next_turn::dispatch(
+            method,
+            params
+                .as_object()
+                .ok_or_else(|| RpcError::bad_request("params must be an object"))?,
+            shared,
+        );
     }
     dispatch_project(method, params, shared)
 }
@@ -1454,12 +1480,14 @@ fn dispatch_tasks(
 
 fn workbench_info(shared: &Arc<ServeShared>) -> Result<Value, RpcError> {
     let snapshot = with_app(shared, |app| app.workbench_snapshot()).map_err(app_error)?;
-    Ok(super::shapes::workbench_snapshot_json(
+    let mut value = super::shapes::workbench_snapshot_json(
         &snapshot,
         shared.active_run_info(),
         shared.active_compaction_info(),
         RPC_METHODS,
-    ))
+    );
+    value["next_turn_queue"] = super::next_turn::value(shared)["items"].clone();
+    Ok(value)
 }
 
 fn dispatch_checked_command(
@@ -1662,8 +1690,8 @@ fn optional_str(params: &Map<String, Value>, field: &str) -> Result<Option<Strin
 
 /// 实时族 sink（§5.2）：emit → 零转译过线。挂在 run worker 上，
 /// `try_send` 非阻塞（INV-S7）。
-struct FanoutSink {
-    shared: Arc<ServeShared>,
+pub(super) struct FanoutSink {
+    pub(super) shared: Arc<ServeShared>,
 }
 
 impl EventSink for FanoutSink {

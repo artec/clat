@@ -142,7 +142,7 @@ fn stream_metadata_and_read_reject_revocation_and_original_expiry() {
             let (run, scope, request, res) = setup(
                 &origin,
                 if trigger == 2 {
-                    Duration::from_millis(80)
+                    Duration::from_secs(1)
                 } else {
                     Duration::from_secs(2)
                 },
@@ -156,11 +156,12 @@ fn stream_metadata_and_read_reject_revocation_and_original_expiry() {
                     .await
                     .unwrap();
                 let mut rest = vec![];
-                tokio::time::timeout(Duration::from_millis(250), socket.read_to_end(&mut rest))
+                tokio::time::timeout(Duration::from_secs(3), socket.read_to_end(&mut rest))
                     .await
                     .unwrap()
                     .unwrap();
             };
+            // Reserve handshake time before testing the unchanged original expiry.
             let client = async {
                 let mut response = open(
                     request,
@@ -168,7 +169,7 @@ fn stream_metadata_and_read_reject_revocation_and_original_expiry() {
                     &scope,
                     &gate,
                     &CancelToken::new(),
-                    Duration::from_secs(1),
+                    Duration::from_secs(3),
                     2,
                 )
                 .await
@@ -176,14 +177,14 @@ fn stream_metadata_and_read_reject_revocation_and_original_expiry() {
                 match trigger {
                     0 => gate.fixture.as_ref().unwrap().set_plan(true),
                     1 => run.invalidate(),
-                    _ => tokio::time::sleep(Duration::from_millis(100)).await,
+                    _ => tokio::time::sleep(Duration::from_millis(1100)).await,
                 }
                 assert!(response.status().is_err());
                 assert!(response.headers().is_err());
                 assert!(response.read(1).await.is_err());
                 assert!(response.read(1).await.is_err());
             };
-            tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::time::timeout(Duration::from_secs(5), async {
                 tokio::join!(client, server);
             })
             .await
@@ -256,11 +257,12 @@ fn stream_request_ceiling_and_pending_read_cancel_close_socket() {
                     cancel.cancel();
                 }
                 let mut rest = vec![];
-                tokio::time::timeout(Duration::from_millis(250), socket.read_to_end(&mut rest))
+                tokio::time::timeout(Duration::from_secs(3), socket.read_to_end(&mut rest))
                     .await
                     .expect("request expiry or read cancellation must close socket")
                     .unwrap();
             };
+            // Reserve handshake time before testing the unchanged original expiry.
             let client = async {
                 let mut response = open(
                     request,
@@ -268,11 +270,7 @@ fn stream_request_ceiling_and_pending_read_cancel_close_socket() {
                     &scope,
                     &gate,
                     &cancel,
-                    if cancel_now {
-                        Duration::from_secs(1)
-                    } else {
-                        Duration::from_millis(80)
-                    },
+                    Duration::from_secs(1),
                     2,
                 )
                 .await
@@ -286,7 +284,7 @@ fn stream_request_ceiling_and_pending_read_cancel_close_socket() {
                     ) | Failure::Authority(AuthorityFailure::DeadlineExceeded)
                 ));
             };
-            tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::time::timeout(Duration::from_secs(5), async {
                 tokio::join!(client, server);
             })
             .await

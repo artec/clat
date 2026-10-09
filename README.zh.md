@@ -72,10 +72,11 @@ URL。使用 `--no-open` 可关闭自动打开浏览器。
   读取、按模型能力门控的视觉检查、原子写入、精确编辑、单文件多 hunk
   补丁，以及支持增量输出、stdin、
   PTY 和受管进程组清理的 run 级命令会话。macOS 在 Full Access 之外使用功能
-  探测过的 Seatbelt 写入/网络强制隔离，其他平台如实报告受监督 fallback；
+  探测过的 Seatbelt 写入/网络强制隔离；Windows 使用 restricted-token
+  ACL 沙盒，如实报告部分写隔离、读取与网络开放；Linux 报告受监督 fallback；
   成功文件工具触及嵌套路径后，会刷新对应作用域的项目指令。
-- **权限**——Read Only、Project Write、Full Access 三档，完整参数审查，
-  项目信任、路径围栏，以及无头场景的失败关闭。
+- **权限**——Read Only、Project Write、Full Access 三档，审批时完整参数审查；
+  macOS/Windows 的 Project Write 原生命令绑定实际沙盒后免审；项目信任、路径围栏，以及无头场景的失败关闭。
 - **会话**——`~/.clat` 下可从崩溃恢复的追加式 DSH 兼容日志、本地 replay
   与按项目恢复当前会话。
 - **扩展**——stdio / Streamable HTTP MCP、沙箱化 WebAssembly 组件，

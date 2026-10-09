@@ -57,10 +57,51 @@ function composerSubmissionParams(text, images) {
   };
 }
 
+const pendingTextSteering = new Map();
+
+function restoreTextSteering(id, entry) {
+  pendingTextSteering.delete(id);
+  const canonical = composerOwnerAliases.get(entry.owner) || entry.owner;
+  const current = composerOwns(entry.owner) ? dom.prompt.value : (composerDrafts.get(canonical)?.text || '');
+  const text = entry.text + (current ? '\n' + current : '');
+  if (composerOwns(entry.owner)) {
+    dom.prompt.value = text;
+    state.composerGeneration += 1;
+    resizePrompt();
+    saveComposerText();
+  } else {
+    composerDrafts.set(canonical, { text, generation: (composerDrafts.get(canonical)?.generation || 0) + 1 });
+  }
+}
+
+function finishTextSteering() {
+  let restored = false;
+  for (const [id, entry] of pendingTextSteering) {
+    entry.ended = true;
+    if (entry.accepted) { restoreTextSteering(id, entry); restored = true; }
+  }
+  return restored;
+}
+
 async function submitComposerSteering({ text, images, owner, draftEpoch, composerGeneration }) {
-  const clientMessageId = state.draft.clientMessageId;
-  const value = await rpc('steer.send', composerSubmissionParams(text, images));
+  const clientMessageId = images.length ? state.draft.clientMessageId : newOpaqueClientId('steering');
+  const entry = { text, owner, accepted: false, ended: false };
+  if (!images.length) pendingTextSteering.set(clientMessageId, entry);
+  let value;
+  try {
+    value = await rpc('steer.send', { ...composerSubmissionParams(text, images), clientMessageId });
+  } catch (error) {
+    pendingTextSteering.delete(clientMessageId);
+    throw error;
+  }
   if (value && value.outcome === 'queued') clearOwnedSubmittedText(owner, composerGeneration);
+  if (!images.length) {
+    if (!value || value.outcome !== 'queued') pendingTextSteering.delete(clientMessageId);
+    else if (pendingTextSteering.has(clientMessageId)) {
+      entry.accepted = true;
+      if (entry.ended) restoreTextSteering(clientMessageId, entry);
+    }
+  }
   if (!composerOwns(owner) || draftEpoch !== state.draft.epoch) return;
   if (!value || value.outcome !== 'queued') {
     updateRunState('run ended before steering was accepted; draft retained');
@@ -114,10 +155,7 @@ async function recoverComposerSubmission(error, { owner, text, images, composerG
   }
   updateRunState('run active · sending as steering');
   try {
-    const value = await rpc('steer.send', { text });
-    if (value && value.outcome === 'queued') clearOwnedSubmittedText(owner, composerGeneration);
-    if (!composerOwns(owner)) return;
-    addNoticeLine('steering ' + (value && value.outcome === 'queued' ? 'queued' : 'not running'));
+    await submitComposerSteering({ owner, text, images, composerGeneration, draftEpoch: state.draft.epoch });
   } catch (steerError) {
     if (composerOwns(owner)) updateRunState('steering failed: ' + steerError.message);
   }

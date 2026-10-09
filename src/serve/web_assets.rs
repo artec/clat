@@ -11,6 +11,7 @@ use std::borrow::Cow;
 const INDEX: &[u8] = include_bytes!("../../web/index.html");
 const PLUGIN_MARKET: &[u8] = include_bytes!("../../web/plugin-market.js");
 const APP_JS: &[u8] = include_bytes!("../../web/app.js");
+const NEXT_TURN: &[u8] = include_bytes!("../../web/next-turn.js");
 const COMPOSER_UX: &[u8] = include_bytes!("../../web/composer-ux.js");
 const COMMAND_PICKER: &[u8] = include_bytes!("../../web/command-picker.js");
 const CONVERSATION_FIND: &[u8] = include_bytes!("../../web/conversation-find.js");
@@ -32,6 +33,7 @@ pub(crate) fn asset(path: &str) -> Option<(Cow<'static, [u8]>, &'static str)> {
         "/" => Some((Cow::Borrowed(INDEX), "text/html; charset=utf-8")),
         "/plugin-market.js" => Some((Cow::Borrowed(PLUGIN_MARKET), "application/javascript")),
         "/app.js" => Some((Cow::Borrowed(APP_JS), "application/javascript")),
+        "/next-turn.js" => Some((Cow::Borrowed(NEXT_TURN), "application/javascript")),
         "/composer-ux.js" => Some((Cow::Borrowed(COMPOSER_UX), "application/javascript")),
         "/command-picker.js" => Some((Cow::Borrowed(COMMAND_PICKER), "application/javascript")),
         "/conversation-find.js" => {

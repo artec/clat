@@ -197,7 +197,7 @@ fn project_catalog(input: &mut CompositionInput) -> Vec<Arc<dyn Plugin>> {
         if input.permission_modes {
             crate::permission::WriteScopeSource::Shared(Arc::clone(&input.permission_mode))
         } else {
-            crate::permission::WriteScopeSource::ProjectRoot
+            crate::permission::WriteScopeSource::WorkspaceRoots
         }
     };
     let mut catalog: Vec<Arc<dyn Plugin>> = vec![
@@ -213,7 +213,7 @@ fn project_catalog(input: &mut CompositionInput) -> Vec<Arc<dyn Plugin>> {
             scope: write_scope(),
         }),
         Arc::new(crate::plugins::SandboxPlugin {
-            project_root: input.project.root().to_path_buf(),
+            project: input.project.clone(),
             permission_mode: input
                 .permission_modes
                 .then(|| Arc::clone(&input.permission_mode)),

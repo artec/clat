@@ -15,6 +15,10 @@ use crate::{CancelToken, Project, Tool, ToolDefinition, ToolEffect, ToolError};
 use serde_json::{Value, json};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
+mod prepared;
+#[cfg(test)]
+mod sbx4_tests;
+use prepared::{NativeProcessTool, prepare_native};
 
 const SANDBOX_ID: PluginId = PluginId::new("builtin.sandbox.policy");
 const PROCESS_ID: PluginId = PluginId::new("builtin.process");
@@ -47,7 +51,7 @@ const TOOLS_DESCRIPTOR: PluginDescriptor = PluginDescriptor {
 };
 
 pub(crate) struct SandboxPlugin {
-    pub(crate) project_root: std::path::PathBuf,
+    pub(crate) project: Project,
     pub(crate) permission_mode: Option<Arc<RwLock<PermissionMode>>>,
 }
 
@@ -64,7 +68,7 @@ impl Plugin for SandboxPlugin {
                 SandboxModeSource::Shared(Arc::clone(mode))
             });
         let service = Arc::new(
-            SandboxService::new(self.project_root.clone(), mode).map_err(PluginError::new)?,
+            SandboxService::for_project(self.project.clone(), mode).map_err(PluginError::new)?,
         );
         context
             .provide(SANDBOX_SERVICE, service)
@@ -134,6 +138,7 @@ fn process_tools(service: Arc<ProcessService>) -> Vec<Arc<dyn Tool>> {
     ]
 }
 
+#[derive(Clone)]
 struct ExecCommandTool {
     service: Arc<ProcessService>,
 }
@@ -142,12 +147,12 @@ impl Tool for ExecCommandTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "exec_command".into(),
-            description: "Start a run-owned command session in the project. Returns immediately when it finishes within yield_time, otherwise returns a session_id for write_stdin polling/input/termination. tty=true creates a real PTY where supported. Every call requires Execute approval.".into(),
+            description: "Start a run-owned command session in the project. Returns immediately when it finishes within yield_time, otherwise returns a session_id for write_stdin polling/input/termination. tty=true creates a real PTY where supported. Project Write calls with a prepared OS sandbox run without approval; network=true still requires approval.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "cmd": {"type": "string", "maxLength": MAX_COMMAND_BYTES},
-                    "workdir": {"type": "string", "description": "Project-relative directory"},
+                    "workdir": {"type": "string", "description": "Project-relative directory or absolute directory inside the active scratch root"},
                     "tty": {"type": "boolean", "default": false},
                     "yield_time_ms": {"type": "integer", "minimum": 250, "maximum": 30000, "default": 10000},
                     "max_output_tokens": {"type": "integer", "minimum": 256, "maximum": 16000, "default": 10000},
@@ -162,59 +167,23 @@ impl Tool for ExecCommandTool {
         }
     }
 
+    fn prepare_execution(&self, arguments: &Value) -> Option<crate::tool::PreparedTool> {
+        Some(prepare_native(
+            NativeProcessTool::ExecCommand(self.clone()),
+            arguments,
+        ))
+    }
+
     fn invoke(
         &self,
         arguments: &Value,
-        _project: &Project,
-        _cancel: &CancelToken,
+        project: &Project,
+        cancel: &CancelToken,
     ) -> Result<Value, ToolError> {
-        ensure_object_keys(
-            arguments,
-            &[
-                "cmd",
-                "workdir",
-                "tty",
-                "yield_time_ms",
-                "max_output_tokens",
-                "network",
-                "sandbox",
-            ],
-            "exec_command",
-        )?;
-        let command = required_string(arguments, "cmd", "exec_command")?;
-        if command.trim().is_empty() {
-            return Err(ToolError::new("exec_command: `cmd` must not be empty"));
-        }
-        ensure_command_bound(command, "exec_command")?;
-        let workdir = optional_string(arguments, "workdir", "exec_command")?.map(str::to_owned);
-        let tty = optional_bool(arguments, "tty", "exec_command")?.unwrap_or(false);
-        let network = optional_bool(arguments, "network", "exec_command")?.unwrap_or(false);
-        let sandbox = SandboxRequest::parse(optional_string(arguments, "sandbox", "exec_command")?)
-            .map_err(ToolError::new)?;
-        let yield_ms = bounded_u64(
-            arguments,
-            "yield_time_ms",
-            10_000,
-            250,
-            30_000,
-            "exec_command",
-        )?;
-        let output_bytes = output_bytes(arguments, "exec_command")?;
-        let id = self
-            .service
-            .start(ProcessStart {
-                command: command.to_owned(),
-                workdir,
-                tty,
-                network,
-                sandbox,
-            })
-            .map_err(ToolError::new)?;
-        let output = self
-            .service
-            .wait_and_consume(id, Duration::from_millis(yield_ms), output_bytes)
-            .map_err(ToolError::new)?;
-        Ok(process_output_json(output))
+        let prepared = self
+            .prepare_execution(arguments)
+            .expect("native preparation");
+        prepared.tool.invoke(arguments, project, cancel)
     }
 
     fn journal_arguments(&self, arguments: &Value) -> Value {
@@ -226,6 +195,7 @@ impl Tool for ExecCommandTool {
     }
 }
 
+#[derive(Clone)]
 struct WriteStdinTool {
     service: Arc<ProcessService>,
 }
@@ -274,47 +244,27 @@ impl Tool for WriteStdinTool {
         process_journal_output(output)
     }
 
+    fn prepare_execution(&self, arguments: &Value) -> Option<crate::tool::PreparedTool> {
+        Some(prepare_native(
+            NativeProcessTool::WriteStdin(self.clone()),
+            arguments,
+        ))
+    }
+
     fn invoke(
         &self,
         arguments: &Value,
-        _project: &Project,
-        _cancel: &CancelToken,
+        project: &Project,
+        cancel: &CancelToken,
     ) -> Result<Value, ToolError> {
-        ensure_object_keys(
-            arguments,
-            &[
-                "session_id",
-                "chars",
-                "close_stdin",
-                "terminate",
-                "sensitive",
-                "yield_time_ms",
-                "max_output_tokens",
-            ],
-            "write_stdin",
-        )?;
-        if optional_bool(arguments, "sensitive", "write_stdin")?.unwrap_or(false) {
-            return Err(ToolError::new(
-                "write_stdin: sensitive input is unavailable through the model tool",
-            ));
-        }
-        let session_id = required_u64(arguments, "session_id", "write_stdin")?;
-        let chars = optional_string(arguments, "chars", "write_stdin")?.unwrap_or("");
-        let close_stdin = optional_bool(arguments, "close_stdin", "write_stdin")?.unwrap_or(false);
-        let terminate = optional_bool(arguments, "terminate", "write_stdin")?.unwrap_or(false);
-        let yield_ms = bounded_u64(arguments, "yield_time_ms", 250, 250, 30_000, "write_stdin")?;
-        let output_bytes = output_bytes(arguments, "write_stdin")?;
-        self.service
-            .write_stdin(session_id, chars.as_bytes(), close_stdin, terminate)
-            .map_err(ToolError::new)?;
-        let output = self
-            .service
-            .wait_and_consume(session_id, Duration::from_millis(yield_ms), output_bytes)
-            .map_err(ToolError::new)?;
-        Ok(process_output_json(output))
+        let prepared = self
+            .prepare_execution(arguments)
+            .expect("native preparation");
+        prepared.tool.invoke(arguments, project, cancel)
     }
 }
 
+#[derive(Clone)]
 struct RunCommandTool {
     service: Arc<ProcessService>,
 }
@@ -340,51 +290,23 @@ impl Tool for RunCommandTool {
         }
     }
 
+    fn prepare_execution(&self, arguments: &Value) -> Option<crate::tool::PreparedTool> {
+        Some(prepare_native(
+            NativeProcessTool::RunCommand(self.clone()),
+            arguments,
+        ))
+    }
+
     fn invoke(
         &self,
         arguments: &Value,
         project: &Project,
-        _cancel: &CancelToken,
+        cancel: &CancelToken,
     ) -> Result<Value, ToolError> {
-        ensure_object_keys(
-            arguments,
-            &["command", "timeout_seconds", "network", "sandbox"],
-            "run_command",
-        )?;
-        let command = required_string(arguments, "command", "run_command")?;
-        ensure_command_bound(command, "run_command")?;
-        let timeout = bounded_u64(arguments, "timeout_seconds", 120, 1, 600, "run_command")?;
-        let network = optional_bool(arguments, "network", "run_command")?.unwrap_or(false);
-        let sandbox = SandboxRequest::parse(optional_string(arguments, "sandbox", "run_command")?)
-            .map_err(ToolError::new)?;
-        let output = self
-            .service
-            .run_compat(command, Duration::from_secs(timeout), network, sandbox)
-            .map_err(ToolError::new)?;
-        let cwd = project
-            .resolve_existing(".")
-            .map_err(|error| ToolError::new(format!("run_command: project root: {error}")))?;
-        let signal = output
-            .signal
-            .as_deref()
-            .and_then(|signal| signal.parse::<i64>().ok());
-        let sandbox = output
-            .sandbox
-            .json(output.sandbox_denied, output.sandbox_unavailable);
-        Ok(json!({
-            "command": output.command,
-            "cwd": cwd.to_string_lossy(),
-            "exit_code": output.exit_code,
-            "signal": signal,
-            "timed_out": output.timed_out,
-            "stdout": output.stdout,
-            "stderr": output.stderr,
-            "stdout_bytes": output.stdout_bytes,
-            "stderr_bytes": output.stderr_bytes,
-            "stdout_truncated": output.stdout_truncated,
-            "stderr_truncated": output.stderr_truncated,
-            "sandbox": sandbox
-        }))
+        let prepared = self
+            .prepare_execution(arguments)
+            .expect("native preparation");
+        prepared.tool.invoke(arguments, project, cancel)
     }
 
     fn journal_arguments(&self, arguments: &Value) -> Value {
@@ -490,7 +412,7 @@ fn output_bytes(arguments: &Value, tool: &str) -> Result<usize, ToolError> {
 fn ensure_command_bound(command: &str, tool: &str) -> Result<(), ToolError> {
     if command.len() > MAX_COMMAND_BYTES {
         return Err(ToolError::new(format!(
-            "{tool}: command exceeds {MAX_COMMAND_BYTES} UTF-8 bytes; write a project script instead"
+            "{tool}: command exceeds {MAX_COMMAND_BYTES} UTF-8 bytes; write a temporary script in the supplied scratch directory instead"
         )));
     }
     Ok(())
@@ -566,6 +488,180 @@ fn bounded_u64(
     Ok(value)
 }
 
+impl ExecCommandTool {
+    fn invoke_planned(
+        &self,
+        arguments: &Value,
+        _project: &Project,
+        _cancel: &CancelToken,
+        prepared: Option<crate::process::PreparedProcess>,
+    ) -> Result<Value, ToolError> {
+        ensure_object_keys(
+            arguments,
+            &[
+                "cmd",
+                "workdir",
+                "tty",
+                "yield_time_ms",
+                "max_output_tokens",
+                "network",
+                "sandbox",
+            ],
+            "exec_command",
+        )?;
+        let command = required_string(arguments, "cmd", "exec_command")?;
+        if command.trim().is_empty() {
+            return Err(ToolError::new("exec_command: `cmd` must not be empty"));
+        }
+        ensure_command_bound(command, "exec_command")?;
+        let workdir = optional_string(arguments, "workdir", "exec_command")?.map(str::to_owned);
+        let tty = optional_bool(arguments, "tty", "exec_command")?.unwrap_or(false);
+        let network = optional_bool(arguments, "network", "exec_command")?.unwrap_or(false);
+        let sandbox = SandboxRequest::parse(optional_string(arguments, "sandbox", "exec_command")?)
+            .map_err(ToolError::new)?;
+        let yield_ms = bounded_u64(
+            arguments,
+            "yield_time_ms",
+            10_000,
+            250,
+            30_000,
+            "exec_command",
+        )?;
+        let output_bytes = output_bytes(arguments, "exec_command")?;
+        let id = self
+            .service
+            .start_prepared(
+                ProcessStart {
+                    command: command.to_owned(),
+                    workdir,
+                    tty,
+                    network,
+                    sandbox,
+                },
+                prepared.ok_or_else(|| ToolError::new("missing prepared command"))?,
+            )
+            .map_err(ToolError::new)?;
+        let output = self
+            .service
+            .wait_and_consume(id, Duration::from_millis(yield_ms), output_bytes)
+            .map_err(ToolError::new)?;
+        Ok(process_output_json(output))
+    }
+}
+
+impl RunCommandTool {
+    fn invoke_planned(
+        &self,
+        arguments: &Value,
+        project: &Project,
+        _cancel: &CancelToken,
+        prepared: Option<crate::process::PreparedProcess>,
+    ) -> Result<Value, ToolError> {
+        ensure_object_keys(
+            arguments,
+            &["command", "timeout_seconds", "network", "sandbox"],
+            "run_command",
+        )?;
+        let command = required_string(arguments, "command", "run_command")?;
+        ensure_command_bound(command, "run_command")?;
+        let timeout = bounded_u64(arguments, "timeout_seconds", 120, 1, 600, "run_command")?;
+        let network = optional_bool(arguments, "network", "run_command")?.unwrap_or(false);
+        let sandbox = SandboxRequest::parse(optional_string(arguments, "sandbox", "run_command")?)
+            .map_err(ToolError::new)?;
+        let output = self
+            .service
+            .run_compat_prepared(
+                ProcessStart {
+                    command: command.to_owned(),
+                    workdir: None,
+                    tty: false,
+                    network,
+                    sandbox,
+                },
+                Duration::from_secs(timeout),
+                prepared.ok_or_else(|| ToolError::new("missing prepared command"))?,
+            )
+            .map_err(ToolError::new)?;
+        let cwd = project
+            .resolve_existing(".")
+            .map_err(|error| ToolError::new(format!("run_command: project root: {error}")))?;
+        let signal = output
+            .signal
+            .as_deref()
+            .and_then(|signal| signal.parse::<i64>().ok());
+        let sandbox = output
+            .sandbox
+            .json(output.sandbox_denied, output.sandbox_unavailable);
+        Ok(json!({
+            "command": output.command,
+            "cwd": cwd.to_string_lossy(),
+            "exit_code": output.exit_code,
+            "signal": signal,
+            "timed_out": output.timed_out,
+            "stdout": output.stdout,
+            "stderr": output.stderr,
+            "stdout_bytes": output.stdout_bytes,
+            "stderr_bytes": output.stderr_bytes,
+            "stdout_truncated": output.stdout_truncated,
+            "stderr_truncated": output.stderr_truncated,
+            "sandbox": sandbox
+        }))
+    }
+}
+
+impl WriteStdinTool {
+    fn invoke_planned(
+        &self,
+        arguments: &Value,
+        _project: &Project,
+        _cancel: &CancelToken,
+        prepared: Option<&crate::process::PreparedStdin>,
+    ) -> Result<Value, ToolError> {
+        ensure_object_keys(
+            arguments,
+            &[
+                "session_id",
+                "chars",
+                "close_stdin",
+                "terminate",
+                "sensitive",
+                "yield_time_ms",
+                "max_output_tokens",
+            ],
+            "write_stdin",
+        )?;
+        if optional_bool(arguments, "sensitive", "write_stdin")?.unwrap_or(false) {
+            return Err(ToolError::new(
+                "write_stdin: sensitive input is unavailable through the model tool",
+            ));
+        }
+        let session_id = required_u64(arguments, "session_id", "write_stdin")?;
+        let chars = optional_string(arguments, "chars", "write_stdin")?.unwrap_or("");
+        let close_stdin = optional_bool(arguments, "close_stdin", "write_stdin")?.unwrap_or(false);
+        let terminate = optional_bool(arguments, "terminate", "write_stdin")?.unwrap_or(false);
+        let yield_ms = bounded_u64(arguments, "yield_time_ms", 250, 250, 30_000, "write_stdin")?;
+        let output_bytes = output_bytes(arguments, "write_stdin")?;
+        match prepared {
+            Some(prepared) => self.service.write_prepared_stdin(
+                prepared,
+                session_id,
+                chars.as_bytes(),
+                close_stdin,
+                terminate,
+            ),
+            None => self
+                .service
+                .write_stdin(session_id, chars.as_bytes(), close_stdin, terminate),
+        }
+        .map_err(ToolError::new)?;
+        let output = self
+            .service
+            .wait_and_consume(session_id, Duration::from_millis(yield_ms), output_bytes)
+            .map_err(ToolError::new)?;
+        Ok(process_output_json(output))
+    }
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
@@ -573,18 +669,7 @@ mod tests {
     use crate::plugins::ToolRegistryPlugin;
     use crate::plugins::services::{PROCESS_SERVICE, TOOL_SERVICE};
 
-    fn root() -> std::path::PathBuf {
-        let root = std::env::temp_dir().join(format!(
-            "clat-process-plugin-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
-        root
-    }
+    use super::sbx4_tests::root;
 
     #[test]
     #[cfg(unix)]
@@ -595,7 +680,7 @@ mod tests {
             .mount_all(vec![
                 Arc::new(ToolRegistryPlugin),
                 Arc::new(SandboxPlugin {
-                    project_root: root.clone(),
+                    project: Project::new(root.clone()),
                     permission_mode: None,
                 }),
                 Arc::new(ProcessServicePlugin {

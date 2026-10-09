@@ -1,5 +1,8 @@
 //! Platform sandbox policy planning for ProcessService.
 
+pub(crate) mod roots;
+#[cfg(windows)]
+pub(crate) mod windows;
 use crate::permission::PermissionMode;
 use serde_json::{Value, json};
 #[cfg(target_os = "macos")]
@@ -76,14 +79,24 @@ impl SandboxFacts {
     }
 
     pub(crate) fn denied(&self, stderr: &str) -> bool {
-        self.provider == "seatbelt"
-            && stderr
-                .to_ascii_lowercase()
-                .contains("operation not permitted")
+        let lower = stderr.to_ascii_lowercase();
+        match self.provider.as_str() {
+            "seatbelt" => lower.contains("operation not permitted"),
+            "windows-acl" => {
+                lower.contains("access is denied")
+                    || lower.contains("permissiondenied")
+                    || stderr.contains("拒绝访问")
+            }
+            _ => false,
+        }
     }
 
-    pub(crate) fn unavailable(&self, output: &str) -> bool {
-        self.provider == "seatbelt" && output.to_ascii_lowercase().contains("sandbox-exec:")
+    pub(crate) fn unavailable(&self, output: &str, exit_code: Option<i32>) -> bool {
+        match self.provider.as_str() {
+            "seatbelt" => output.to_ascii_lowercase().contains("sandbox-exec:"),
+            "windows-acl" => exit_code == Some(127) && output.contains("windows-acl-run:"),
+            _ => false,
+        }
     }
 }
 
@@ -119,6 +132,7 @@ pub(crate) struct SandboxService {
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     project_root: PathBuf,
     mode: SandboxModeSource,
+    roots: roots::RootsSource,
 }
 
 impl SandboxService {
@@ -126,7 +140,42 @@ impl SandboxService {
         let project_root = project_root
             .canonicalize()
             .map_err(|error| format!("sandbox: cannot resolve project root: {error}"))?;
-        Ok(Self { project_root, mode })
+        Ok(Self {
+            project_root,
+            mode,
+            roots: Default::default(),
+        })
+    }
+
+    pub(crate) fn with_level<R>(
+        &self,
+        expected: SandboxLevel,
+        action: impl FnOnce() -> Result<R, String>,
+    ) -> Result<R, String> {
+        match &self.mode {
+            SandboxModeSource::Classic => {
+                if expected != SandboxLevel::WorkspaceWrite {
+                    return Err("permission mode changed after preparation".into());
+                }
+                action()
+            }
+            SandboxModeSource::Shared(cell) => {
+                let mode = cell.read().expect("permission mode lock");
+                let level = match *mode {
+                    PermissionMode::ReadOnly => SandboxLevel::ReadOnly,
+                    PermissionMode::ProjectWrite => SandboxLevel::WorkspaceWrite,
+                    PermissionMode::FullAccess => SandboxLevel::FullAccess,
+                };
+                if level != expected {
+                    return Err("permission mode changed after preparation".into());
+                }
+                action()
+            }
+        }
+    }
+
+    pub(crate) fn current_level(&self) -> SandboxLevel {
+        self.mode.level()
     }
 
     pub(crate) fn plan(
@@ -162,11 +211,25 @@ impl SandboxService {
             ));
         }
 
+        self.platform_plan(program, args, level, request, network)
+    }
+
+    fn platform_plan(
+        &self,
+        program: OsString,
+        args: Vec<OsString>,
+        level: SandboxLevel,
+        request: SandboxRequest,
+        network: bool,
+    ) -> Result<PlannedCommand, String> {
+        #[cfg(any(target_os = "macos", windows))]
+        let _ = request;
+
         #[cfg(target_os = "macos")]
         {
             let executable = Path::new("/usr/bin/sandbox-exec");
             probe_seatbelt(executable)?;
-            let profile = seatbelt_profile(level, &self.project_root, network)?;
+            let profile = seatbelt_profile(level, &self.profile_roots()?, network)?;
             let digest = format!("{:x}", Sha256::digest(profile.as_bytes()));
             let mut wrapped = vec![
                 OsString::from("-p"),
@@ -188,7 +251,18 @@ impl SandboxService {
             })
         }
 
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(windows)]
+        {
+            let _ = network; // Phase one deliberately reports open network.
+            let roots = self.writable_roots()?;
+            let workspace = roots
+                .paths()
+                .first()
+                .ok_or("sandbox: writable roots missing workspace")?;
+            windows::plan(program, args, level, workspace, roots.scratch())
+        }
+
+        #[cfg(not(any(target_os = "macos", windows)))]
         {
             let _ = network;
             if request == SandboxRequest::Required {
@@ -298,22 +372,19 @@ fn raw_plan(
 
 #[cfg(target_os = "macos")]
 fn project_read_temp_write_profile(project_root: &Path) -> Result<String, String> {
-    let mut roots = vec![PathBuf::from("/tmp"), std::env::temp_dir()];
-    let mut canonical = Vec::new();
-    for root in roots.drain(..) {
-        let root = root.canonicalize().unwrap_or(root);
-        if !canonical.contains(&root) {
-            canonical.push(root);
-        }
-    }
+    let project_root = project_root
+        .canonicalize()
+        .map_err(|e| format!("sandbox roots: {e}"))?;
+    let canonical = roots::WritableRoots::base_paths(&project_root)
+        .map_err(|e| format!("sandbox roots: {e}"))?
+        .into_iter()
+        .filter(|root| root != &project_root)
+        .collect::<Vec<_>>();
     let clauses = canonical
         .iter()
         .map(|root| format!("(subpath {})", sbpl_string(root)))
         .collect::<Vec<_>>()
         .join(" ");
-    let project_root = project_root
-        .canonicalize()
-        .unwrap_or_else(|_| project_root.to_path_buf());
     Ok([
         "(version 1)".to_owned(),
         "(allow default)".to_owned(),
@@ -332,7 +403,7 @@ fn project_read_temp_write_profile(project_root: &Path) -> Result<String, String
 #[cfg(target_os = "macos")]
 fn seatbelt_profile(
     level: SandboxLevel,
-    project_root: &Path,
+    writable_roots: &[PathBuf],
     network: bool,
 ) -> Result<String, String> {
     let mut forms = vec![
@@ -345,16 +416,7 @@ fn seatbelt_profile(
         forms.push("(deny network*)".into());
     }
     if level == SandboxLevel::WorkspaceWrite {
-        let mut roots = vec![project_root.to_path_buf(), PathBuf::from("/tmp")];
-        roots.push(std::env::temp_dir());
-        let mut canonical = Vec::new();
-        for root in roots {
-            let root = root.canonicalize().unwrap_or(root);
-            if !canonical.contains(&root) {
-                canonical.push(root);
-            }
-        }
-        let clauses = canonical
+        let clauses = writable_roots
             .iter()
             .map(|root| format!("(subpath {})", sbpl_string(root)))
             .collect::<Vec<_>>()
@@ -389,7 +451,7 @@ mod tests {
                 .unwrap_err()
                 .contains("Full Access")
         );
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", windows)))]
         {
             let auto = service
                 .plan("sh".into(), vec![], SandboxRequest::Auto, false)
@@ -405,10 +467,30 @@ mod tests {
     }
 
     #[test]
+    fn windows_failure_signature_requires_runner_exit_and_preserves_partial_facts() {
+        let facts = SandboxFacts {
+            provider: "windows-acl".into(),
+            mode: SandboxLevel::WorkspaceWrite,
+            enforcement: "partial".into(),
+            policy_digest: None,
+            fallback_reason: Some("network open".into()),
+        };
+        assert!(!facts.unavailable("windows-acl-run: ordinary command output", Some(0)));
+        assert!(!facts.unavailable("ordinary exit 127", Some(127)));
+        assert!(facts.unavailable("windows-acl-run: CreateRestrictedToken Win32 5", Some(127)));
+        assert_eq!(facts.json(false, false)["enforcement"], "partial");
+        assert_eq!(facts.json(false, true)["enforcement"], "unusable");
+    }
+
+    #[test]
     #[cfg(target_os = "macos")]
     fn seatbelt_profile_is_path_escaped_and_network_explicit() {
-        let profile =
-            seatbelt_profile(SandboxLevel::WorkspaceWrite, Path::new("/tmp/a\"b"), false).unwrap();
+        let profile = seatbelt_profile(
+            SandboxLevel::WorkspaceWrite,
+            &[PathBuf::from("/tmp/a\"b")],
+            false,
+        )
+        .unwrap();
         assert!(profile.contains("(deny network*)"));
         assert!(profile.contains("a\\\"b"));
         assert!(profile.contains("(deny file-write*)"));

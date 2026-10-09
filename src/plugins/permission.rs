@@ -99,6 +99,22 @@ struct ToolAccessGuardPolicy {
 }
 
 impl PermissionPolicy for ToolAccessGuardPolicy {
+    fn check_prepared(
+        &self,
+        project: &crate::Project,
+        tool: &crate::ToolDefinition,
+        call: &crate::ToolCall,
+        prepared: Option<&crate::tool::PreparedTool>,
+    ) -> crate::PermissionDecision {
+        let policy = self.access.snapshot();
+        if !policy.allows(tool) {
+            return crate::PermissionDecision::Deny {
+                reason: policy.denial_reason(tool).into(),
+            };
+        }
+        self.inner.check_prepared(project, tool, call, prepared)
+    }
+
     fn check(
         &self,
         project: &crate::Project,

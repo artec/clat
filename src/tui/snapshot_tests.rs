@@ -4256,3 +4256,144 @@ fn dsh_steer_badge_snapshot() {
     harness.settle_dsh_status();
     harness.snapshot("dsh-steer-badge");
 }
+
+#[test]
+fn next_turn_tui_keys_render_recall_and_automatic_dispatch() {
+    let (storage_root, project_root) = roots("next-turn-tui");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let mut app =
+        App::open_minimal(Project::new(&project_root), Some(storage_root.clone())).unwrap();
+    let gate = Arc::new(crate::test_support::SteerGate::default());
+    let application = app
+        .bootstrap
+        .take()
+        .unwrap()
+        .authorize_and_mount_with_provider(Arc::new(TestProviderPlugin {
+            behavior: TestBehavior::Steer(Arc::clone(&gate)),
+        }))
+        .unwrap();
+    crate::test_support::configure_test_model(&application);
+    let (config, credentials) = application.model_state().unwrap();
+    app.config = config;
+    app.credentials = credentials;
+    app.application = Some(application);
+    app.trust_prompt = false;
+    let (sender, events) = super::ui_event_channel();
+    app.event_sender = Some(sender);
+    let mut harness = Harness {
+        app,
+        terminal: Terminal::new(TestBackend::new(120, 30)).unwrap(),
+        project_root,
+        storage_root,
+    };
+    assert!(harness.app.start_run("first task".into(), Vec::new()));
+    gate.wait_entered();
+    harness.app.input.insert_str("second task");
+    harness.key_with_modifiers(KeyCode::Char('q'), KeyModifiers::CONTROL);
+    assert_eq!(harness.app.input.text(), "");
+    assert_eq!(
+        harness.app.application.as_ref().unwrap().next_turn_queue()[0].text,
+        "second task"
+    );
+    assert!(harness.draw_projection().contains("Next 1: second task"));
+    harness.app.input.insert_str("still editing");
+    harness.key_with_modifiers(KeyCode::Char('q'), KeyModifiers::ALT);
+    assert_eq!(harness.app.input.text(), "second task\nstill editing");
+    harness.app.input.take();
+    harness.app.input.insert_str("second task");
+    harness.key_with_modifiers(KeyCode::Char('q'), KeyModifiers::CONTROL);
+    gate.release();
+    let deadline = std::time::Instant::now() + ADMISSION_WAIT;
+    let mut outcomes = Vec::new();
+    while harness.app.running {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "next-turn sequence did not settle"
+        );
+        let event = events.recv_timeout(ADMISSION_WAIT).unwrap();
+        if let UiEvent::Worker(WorkerMessage::Done { epoch, result }) = &event {
+            outcomes.push(format!("epoch {epoch}: {result:?}"));
+        }
+        harness.event(event);
+    }
+    assert!(
+        harness
+            .app
+            .application
+            .as_ref()
+            .unwrap()
+            .next_turn_queue()
+            .is_empty(),
+        "queue failed to dispatch; results={outcomes:?}; projection={}",
+        harness.draw_projection()
+    );
+    let projection = harness.draw_projection();
+    assert!(projection.contains("first task"));
+    assert!(projection.contains("second task"));
+    assert_eq!(
+        harness.app.run_epoch, 2,
+        "automatic queued admission is a separate ordinary run"
+    );
+    assert!(
+        !gate.saw_steering.load(std::sync::atomic::Ordering::Acquire),
+        "next-turn text never becomes current-run steering"
+    );
+}
+
+#[test]
+#[ignore = "QUE-1 physical PTY sequence; arm CLAT_QUE1_PTY=1"]
+fn physical_next_turn_tui_sequence() {
+    if std::env::var_os("CLAT_QUE1_PTY").is_none() {
+        return;
+    }
+    use std::io::IsTerminal;
+    assert!(std::io::stdin().is_terminal() && std::io::stdout().is_terminal());
+    let (storage_root, project_root) = roots("next-turn-physical-pty");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let mut app =
+        App::open_minimal(Project::new(&project_root), Some(storage_root.clone())).unwrap();
+    let gate = Arc::new(crate::test_support::SteerGate::default());
+    let application = app
+        .bootstrap
+        .take()
+        .unwrap()
+        .authorize_and_mount_with_provider(Arc::new(TestProviderPlugin {
+            behavior: TestBehavior::Steer(Arc::clone(&gate)),
+        }))
+        .unwrap();
+    crate::test_support::configure_test_model(&application);
+    let (config, credentials) = application.model_state().unwrap();
+    app.config = config;
+    app.credentials = credentials;
+    app.application = Some(application);
+    app.trust_prompt = false;
+    let release = std::thread::spawn(move || {
+        gate.wait_entered();
+        std::thread::sleep(Duration::from_secs(10));
+        gate.release();
+    });
+    eprintln!(
+        "QUE1_PTY: type first task + Enter; then second task + Ctrl+Q; wait for two answers; Ctrl+C exits"
+    );
+    super::run_frontend(app).unwrap();
+    release.join().unwrap();
+    let replay = crate::test_support::load_replay(&storage_root);
+    let users: Vec<_> = replay
+        .iter()
+        .filter_map(|event| {
+            if let crate::client_ports::session::replay::ReplayEvent::UserMessage { text, .. } =
+                event
+            {
+                Some(text.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(
+        users,
+        ["first task", "second task"],
+        "PTY dispatch produces two ordinary durable user turns"
+    );
+    crate::test_support::cleanup_tree(storage_root.parent().unwrap());
+}

@@ -33,7 +33,7 @@ const JOIN_GRACE: Duration = Duration::from_secs(5);
 /// providers never grow a second ad-hoc spawn implementation. This is not a
 /// model job and carries no project authority.
 // 唯一消费者是 macOS 的 seatbelt 探测；其他平台的 provider 落地后再放宽。
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 pub(crate) fn probe_command(
     program: &Path,
     args: &[&str],
@@ -252,6 +252,19 @@ struct ServiceState {
     closed: bool,
 }
 
+pub(crate) struct PreparedStdin {
+    generation: u64,
+    level: crate::sandbox::SandboxLevel,
+    pub(crate) facts: SandboxFacts,
+    pub(crate) eligible: bool,
+}
+
+pub(crate) struct PreparedProcess {
+    owner: RunOwner,
+    workdir: PathBuf,
+    pub(crate) planned: crate::sandbox::PlannedCommand,
+}
+
 pub(crate) struct ProcessService {
     project: Project,
     sandbox: Arc<SandboxService>,
@@ -265,7 +278,12 @@ impl ProcessService {
         Self::with_limits(project, sandbox, ProcessLimits::default())
     }
 
-    fn with_limits(project: Project, sandbox: Arc<SandboxService>, limits: ProcessLimits) -> Self {
+    fn with_limits(
+        mut project: Project,
+        sandbox: Arc<SandboxService>,
+        limits: ProcessLimits,
+    ) -> Self {
+        project.roots = sandbox.roots_source();
         Self {
             project,
             sandbox,
@@ -282,6 +300,21 @@ impl ProcessService {
         }
     }
 
+    pub(crate) fn scratch_guidance(&self) -> Option<String> {
+        let roots = self.sandbox.writable_roots().ok()?;
+        Some(format!(
+            "Temporary scripts and disposable files: use the private scratch directory {}. It is removed when this run ends; never store durable session facts here. In workspace-write, write_file/edit_file/apply_patch may use its absolute paths. exec_command may use it as workdir. Read Only still requires approval and adds no write roots.",
+            roots.scratch().display()
+        ))
+    }
+
+    pub(crate) fn workflow(&self, workflow: Option<String>) -> Option<String> {
+        Some(crate::plan_mode::compose_workflow_instructions(
+            workflow.unwrap_or_default(),
+            self.scratch_guidance().as_deref(),
+        ))
+    }
+
     pub(crate) fn set_notice_sink(&self, sink: NoticeSink) {
         *self.notice_sink.lock().expect("process notice sink") = Some(sink);
     }
@@ -294,6 +327,7 @@ impl ProcessService {
         if state.owner.is_some() {
             return Err("process service already has a bound run".into());
         }
+        self.sandbox.bind_scratch()?;
         state.generation = state.generation.wrapping_add(1).max(1);
         let generation = state.generation;
         state.owner = Some(RunOwner {
@@ -323,7 +357,8 @@ impl ProcessService {
                 .filter_map(|id| state.entries.remove(&id))
                 .collect::<Vec<_>>()
         };
-        close_entries(entries)
+        close_entries(entries)?;
+        self.sandbox.clear_scratch()
     }
 
     pub(crate) fn acquire_managed_stdio(
@@ -415,17 +450,49 @@ impl ProcessService {
         }
     }
 
-    pub(crate) fn start(&self, request: ProcessStart) -> Result<u64, String> {
+    pub(crate) fn prepare_start(&self, request: &ProcessStart) -> Result<PreparedProcess, String> {
         let owner = self.current_owner()?;
+        let workdir = self.resolve_workdir(request.workdir.as_deref())?;
+        let (shell, args) = shell_command(&request.command);
+        let planned = self
+            .sandbox
+            .plan(shell, args, request.sandbox, request.network)?;
+        Ok(PreparedProcess {
+            owner,
+            workdir,
+            planned,
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn start(&self, request: ProcessStart) -> Result<u64, String> {
+        let prepared = self.prepare_start(&request)?;
+        self.start_prepared(request, prepared)
+    }
+
+    pub(crate) fn start_prepared(
+        &self,
+        request: ProcessStart,
+        prepared: PreparedProcess,
+    ) -> Result<u64, String> {
+        self.sandbox.with_level(prepared.planned.facts.mode, || {
+            self.spawn_prepared(request, prepared)
+        })
+    }
+
+    fn spawn_prepared(
+        &self,
+        request: ProcessStart,
+        prepared: PreparedProcess,
+    ) -> Result<u64, String> {
+        let PreparedProcess {
+            owner,
+            workdir,
+            planned,
+        } = prepared;
         if owner.cancel.is_cancelled() {
             return Err("process run is already cancelled".into());
         }
-        let workdir = self.resolve_workdir(request.workdir.as_deref())?;
-        let (shell, shell_args) = shell_command(&request.command);
-        let planned = self
-            .sandbox
-            .plan(shell, shell_args, request.sandbox, request.network)?;
-
         let notice_sink = self
             .notice_sink
             .lock()
@@ -442,6 +509,41 @@ impl ProcessService {
         if state.closed || !current || owner.cancel.is_cancelled() {
             return Err("process run ended before spawn".into());
         }
+        Self::admit_process(&mut state)?;
+        let id = state.next_process_id;
+        state.next_process_id = state.next_process_id.wrapping_add(1).max(1);
+        let entry = if request.tty {
+            spawn_pty(
+                id,
+                &owner,
+                request.command,
+                workdir,
+                planned,
+                self.limits,
+                notice_sink,
+            )?
+        } else {
+            spawn_piped(
+                id,
+                &owner,
+                request.command,
+                workdir,
+                planned,
+                notice_sink,
+                PipedSpawnOptions {
+                    limits: self.limits,
+                    ..PipedSpawnOptions::default()
+                },
+            )?
+        };
+        entry
+            .stdin_auto_approve
+            .store(!request.network, Ordering::Release);
+        state.entries.insert(id, entry);
+        Ok(id)
+    }
+
+    fn admit_process(state: &mut ServiceState) -> Result<(), String> {
         let drained_ids = state
             .entries
             .iter()
@@ -475,34 +577,49 @@ impl ProcessService {
                 "process completed-session limit reached ({MAX_COMPLETED_PROCESSES}); consume existing output"
             ));
         }
-        let id = state.next_process_id;
-        state.next_process_id = state.next_process_id.wrapping_add(1).max(1);
-        let entry = if request.tty {
-            spawn_pty(
-                id,
-                &owner,
-                request.command,
-                workdir,
-                planned,
-                self.limits,
-                notice_sink,
-            )?
-        } else {
-            spawn_piped(
-                id,
-                &owner,
-                request.command,
-                workdir,
-                planned,
-                notice_sink,
-                PipedSpawnOptions {
-                    limits: self.limits,
-                    ..PipedSpawnOptions::default()
-                },
-            )?
-        };
-        state.entries.insert(id, entry);
-        Ok(id)
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn sandbox_for_test_mode_guard(
+        &self,
+        mode: &std::sync::RwLock<crate::PermissionMode>,
+    ) {
+        self.sandbox
+            .with_level(crate::sandbox::SandboxLevel::WorkspaceWrite, || {
+                assert!(
+                    mode.try_write().is_err(),
+                    "mode write cannot overtake admitted operation"
+                );
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    pub(crate) fn prepare_stdin(&self, id: u64) -> Result<PreparedStdin, String> {
+        let entry = self.entry_for_current_owner(id)?;
+        Ok(PreparedStdin {
+            generation: entry.owner_generation,
+            level: self.sandbox.current_level(),
+            facts: entry.sandbox.clone(),
+            eligible: entry.stdin_auto_approve.load(Ordering::Acquire),
+        })
+    }
+
+    pub(crate) fn write_prepared_stdin(
+        &self,
+        prepared: &PreparedStdin,
+        id: u64,
+        bytes: &[u8],
+        close_stdin: bool,
+        terminate: bool,
+    ) -> Result<(), String> {
+        self.sandbox.with_level(prepared.level, || {
+            if self.current_owner()?.generation != prepared.generation {
+                return Err("stdin owner or permission mode changed after preparation".into());
+            }
+            self.write_stdin(id, bytes, close_stdin, terminate)
+        })
     }
 
     pub(crate) fn write_stdin(
@@ -537,6 +654,7 @@ impl ProcessService {
         Ok(entry.consume(max_output_bytes))
     }
 
+    #[cfg(test)]
     pub(crate) fn run_compat(
         &self,
         command: &str,
@@ -544,14 +662,25 @@ impl ProcessService {
         network: bool,
         sandbox: SandboxRequest,
     ) -> Result<ProcessOutput, String> {
-        let owner = self.current_owner()?;
-        let id = self.start(ProcessStart {
+        let request = ProcessStart {
             command: command.to_owned(),
             workdir: None,
             tty: false,
             network,
             sandbox,
-        })?;
+        };
+        let prepared = self.prepare_start(&request)?;
+        self.run_compat_prepared(request, timeout, prepared)
+    }
+
+    pub(crate) fn run_compat_prepared(
+        &self,
+        request: ProcessStart,
+        timeout: Duration,
+        prepared: PreparedProcess,
+    ) -> Result<ProcessOutput, String> {
+        let owner = prepared.owner.clone();
+        let id = self.start_prepared(request, prepared)?;
         let entry = self.entry_for_owner(id, &owner)?;
         // Historical run_command had stdin=null. Keep the one-shot wrapper
         // non-interactive; exec_command is the explicit stdin session API.
@@ -597,7 +726,8 @@ impl ProcessService {
             );
             entries
         };
-        close_entries(entries)
+        close_entries(entries)?;
+        self.sandbox.clear_scratch()
     }
 
     fn current_owner(&self) -> Result<RunOwner, String> {
@@ -633,7 +763,16 @@ impl ProcessService {
     fn resolve_workdir(&self, requested: Option<&str>) -> Result<PathBuf, String> {
         let requested = requested.unwrap_or(".");
         if Path::new(requested).is_absolute() {
-            return Err("process workdir must be project-relative".into());
+            let roots = self.sandbox.writable_roots()?;
+            let resolved = Path::new(requested)
+                .canonicalize()
+                .map_err(|e| format!("process workdir `{requested}`: {e}"))?;
+            if !resolved.starts_with(roots.scratch()) || !resolved.is_dir() {
+                return Err(
+                    "process absolute workdir must be inside the active scratch directory".into(),
+                );
+            }
+            return Ok(resolved);
         }
         let resolved = self
             .project
@@ -670,6 +809,7 @@ fn close_entries(entries: Vec<Arc<ProcessEntry>>) -> Result<(), String> {
 }
 
 struct ProcessEntry {
+    stdin_auto_approve: AtomicBool,
     id: u64,
     owner_generation: u64,
     owner_session_id: String,
@@ -730,6 +870,7 @@ struct TerminalStatus {
 impl ProcessEntry {
     fn new(owner: &RunOwner, init: ProcessEntryInit) -> Arc<Self> {
         Arc::new(Self {
+            stdin_auto_approve: AtomicBool::new(false),
             id: init.id,
             owner_generation: owner.generation,
             owner_session_id: owner.session_id.clone(),
@@ -917,6 +1058,15 @@ impl ProcessEntry {
         }
     }
 
+    fn sandbox_diagnostics(&self, state: &EntryState) -> Option<String> {
+        matches!(self.sandbox.provider.as_str(), "seatbelt" | "windows-acl").then(|| {
+            let mut bytes = state.stderr.snapshot();
+            bytes.push(b'\n');
+            bytes.extend(state.pty.snapshot());
+            String::from_utf8_lossy(&bytes).into_owned()
+        })
+    }
+
     fn consume_limits(
         &self,
         stdout_budget: usize,
@@ -927,12 +1077,7 @@ impl ProcessEntry {
         // Sandbox classification must not depend on the model-facing output
         // budget. A full stdout budget can leave stderr unread in this call,
         // while the bounded transient ring still contains the OS denial.
-        let sandbox_diagnostics = (self.sandbox.provider == "seatbelt").then(|| {
-            let mut bytes = state.stderr.snapshot();
-            bytes.push(b'\n');
-            bytes.extend(state.pty.snapshot());
-            String::from_utf8_lossy(&bytes).into_owned()
-        });
+        let sandbox_diagnostics = self.sandbox_diagnostics(&state);
         let (stdout, stdout_cursor, stdout_ring_lossy, stdout_more) =
             state.stdout.read_from(state.cursors.stdout, stdout_budget);
         state.cursors.stdout = stdout_cursor;
@@ -957,7 +1102,10 @@ impl ProcessEntry {
         let pty_lossy = pty_ring_lossy || pty_utf8_lossy;
         let sandbox_output = sandbox_diagnostics.as_deref().unwrap_or("");
         let denied = self.sandbox.denied(sandbox_output);
-        let sandbox_unavailable = self.sandbox.unavailable(sandbox_output);
+        let sandbox_unavailable = self.sandbox.unavailable(
+            sandbox_output,
+            terminal.as_ref().and_then(|status| status.exit_code),
+        );
         ProcessOutput {
             session_id: self.id,
             command: self.command.clone(),

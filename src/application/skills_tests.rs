@@ -450,8 +450,8 @@ fn executable_skill_runs_only_through_ordinary_required_sandbox_exec() {
     assert_eq!(script.step.load(Ordering::SeqCst), 3);
     assert_eq!(
         approvals.load(Ordering::SeqCst),
-        1,
-        "only Execute asks approval"
+        0,
+        "PW Execute bound to required Seatbelt does not ask"
     );
     assert_eq!(
         std::fs::read_to_string(project_root.join("skill-output.txt")).unwrap(),
@@ -471,7 +471,7 @@ fn executable_skill_runs_only_through_ordinary_required_sandbox_exec() {
             .iter()
             .filter(|event| event.event_type == "approval/asked")
             .count(),
-        1
+        0
     );
     crate::test_support::cleanup_tree(storage_root.parent().unwrap());
 }

@@ -175,6 +175,19 @@ impl<'a> Run<'a> {
         self.drive(items, message, client_message_id, events)
     }
 
+    fn prepare_checked_tool(
+        &self,
+        tool: std::sync::Arc<dyn crate::Tool>,
+        definition: &crate::ToolDefinition,
+        call: &crate::ToolCall,
+    ) -> (std::sync::Arc<dyn crate::Tool>, PermissionDecision) {
+        let (tool, prepared) = crate::tool::prepare_tool(tool, &call.arguments);
+        let decision =
+            self.permissions
+                .check_prepared(self.project, definition, call, prepared.as_ref());
+        (tool, decision)
+    }
+
     fn drive(
         &mut self,
         mut items: Vec<ModelItem>,
@@ -561,7 +574,7 @@ impl<'a> Run<'a> {
                     });
                     continue;
                 }
-                let decision = self.permissions.check(self.project, &definition, &call);
+                let (tool, decision) = self.prepare_checked_tool(tool, &definition, &call);
 
                 events.emit(RunEvent::PermissionChecked {
                     tool: definition.name.clone(),

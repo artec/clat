@@ -14,12 +14,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 mod browser;
 pub(crate) mod review;
+mod roots;
 mod write;
 
 #[derive(Clone, Debug)]
 pub struct Project {
     root: PathBuf,
     review: Option<std::sync::Arc<review::FileReview>>,
+    pub(crate) roots: crate::sandbox::roots::RootsSource,
 }
 
 impl PartialEq for Project {
@@ -34,6 +36,7 @@ impl Project {
         Self {
             root: root.into(),
             review: None,
+            roots: Default::default(),
         }
     }
 
@@ -81,7 +84,7 @@ impl Project {
 
     /// 打开一个受写入围栏约束的写入目标。
     ///
-    /// `scope == ProjectRoot`（一切档位的默认；exec 恒为）：目标必须是
+    /// `scope == ProjectRoot`（Read Only）：目标必须是
     /// 项目根相对路径，`cap_std::fs::Dir` 在 Unix 使用 *at/目录句柄语义，
     /// 在 Windows 使用等价的 capability 路径解析。父目录创建、读取、
     /// 临时文件和最终 rename 都相对同一个已打开句柄：仓库中的符号链接
@@ -90,8 +93,8 @@ impl Project {
     /// `scope == Unrestricted`（Full Access，SR2）：接受任意绝对路径。
     /// W-INV1 原子纪律泛化——canonicalize 目标父目录后打开 ambient 句
     /// 柄，temp+rename 仍绑定到该父目录的同一句柄；相对路径语义不变
-    /// （仍按项目根解析）。RO/PW 下的绝对路径在这里被拒——错误明确
-    /// 指向 "only writable under Full Access mode"。
+    /// （仍按项目根解析）。WorkspaceRoots 接受共享根内的绝对目标，
+    /// 并使用该根持有的 capability；Read Only 仍拒绝绝对目标。
     pub(crate) fn writable_target(
         &self,
         relative: impl AsRef<Path>,
@@ -100,11 +103,17 @@ impl Project {
     ) -> io::Result<WritableTarget> {
         let requested = relative.as_ref();
         if requested.is_absolute() {
-            if !matches!(scope, crate::permission::WriteScope::Unrestricted) {
-                return Err(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    "absolute paths are only writable under Full Access mode",
-                ));
+            match scope {
+                crate::permission::WriteScope::WorkspaceRoots => {
+                    return self.rooted_absolute_target(requested, create_parents);
+                }
+                crate::permission::WriteScope::ProjectRoot => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "absolute paths are only writable under Full Access mode or an active workspace-write root",
+                    ));
+                }
+                crate::permission::WriteScope::Unrestricted => {}
             }
             let file_name = requested.file_name().ok_or_else(|| {
                 io::Error::new(io::ErrorKind::PermissionDenied, "path has no file name")

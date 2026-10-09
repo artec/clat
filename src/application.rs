@@ -49,6 +49,8 @@ mod language_intelligence_tests;
 #[cfg(test)]
 mod memory_tests;
 mod model_settings;
+mod next_turn;
+pub use next_turn::NextTurnItem;
 mod plugin_control;
 pub use model_settings::{
     ModelProfileEdit, ModelRouteView, ModelSettingsView, UtilitySettingsEdit, UtilitySettingsView,
@@ -321,6 +323,8 @@ pub struct TrustedProjectApplication {
     /// Mount-time diagnostic (e.g. an unresolvable workspace pointer);
     /// surfaced by the frontend after it subscribes.
     startup_diagnostic: Option<String>,
+    next_turn: std::collections::VecDeque<NextTurnItem>,
+    recalled_next_turn: std::collections::VecDeque<(String, Option<NextTurnItem>)>,
     active_run: Option<RunHandle>,
     active_compaction: Option<CompactHandle>,
     /// VP-1：进行中的视觉探针句柄（同一时刻至多一个；重启/新会话不

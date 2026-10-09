@@ -283,6 +283,23 @@ struct HostProjectServices {
     permissions: Arc<dyn PermissionPolicyFactory>,
 }
 
+impl HostProjectServices {
+    fn prepare_checked_tool(
+        &self,
+        tool: Arc<dyn crate::Tool>,
+        definition: &ToolDefinition,
+        call: &ToolCall,
+        context: &RunHostContext,
+    ) -> (Arc<dyn crate::Tool>, PermissionDecision) {
+        let policy = self
+            .permissions
+            .create(Arc::clone(&context.approver), &context.cancel);
+        let (tool, prepared) = crate::tool::prepare_tool(tool, &call.arguments);
+        let decision = policy.check_prepared(&self.project, definition, call, prepared.as_ref());
+        (tool, decision)
+    }
+}
+
 #[derive(Clone)]
 struct HostRunMetadata {
     session_id: Option<String>,
@@ -753,10 +770,10 @@ impl PluginHostBridge {
         };
         let mut permission_definition = tool.definition();
         permission_definition.name = format!("{}:host:{name}", source.label());
-        let policy = services
-            .permissions
-            .create(Arc::clone(&context.approver), &context.cancel);
-        match policy.check(&services.project, &permission_definition, &call) {
+        call.arguments = fence_host_tool_arguments(&services.project, name, call.arguments)?;
+        let (tool, decision) =
+            services.prepare_checked_tool(tool, &permission_definition, &call, &context);
+        match decision {
             PermissionDecision::Allow => {}
             PermissionDecision::Ask { reason }
             | PermissionDecision::Deny { reason }
@@ -764,7 +781,6 @@ impl PluginHostBridge {
                 return Err(PluginHostError::HostToolDenied(reason));
             }
         }
-        call.arguments = fence_host_tool_arguments(&services.project, name, call.arguments)?;
         if !self.context_is_current(epoch, &context.cancel) {
             return Err(PluginHostError::Cancelled);
         }

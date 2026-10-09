@@ -170,7 +170,7 @@ mod tests {
             .mount_all(vec![
                 Arc::new(ToolRegistryPlugin),
                 Arc::new(SandboxPlugin {
-                    project_root: project_root.clone(),
+                    project: Project::new(project_root.clone()),
                     permission_mode: None,
                 }),
                 Arc::new(ProcessServicePlugin {
@@ -203,7 +203,7 @@ mod tests {
             .mount_all(vec![
                 Arc::new(ToolRegistryPlugin),
                 Arc::new(SandboxPlugin {
-                    project_root: project_root.clone(),
+                    project: Project::new(project_root.clone()),
                     permission_mode: None,
                 }),
                 Arc::new(ProcessServicePlugin {

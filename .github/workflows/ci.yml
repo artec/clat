@@ -65,9 +65,12 @@ jobs:
       - name: Test
         timeout-minutes: 15
         # Same product workspace members as Linux; never narrow this to -p clat.
+        # windows_sandbox is included: its native ACL/token/Job acceptance has
+        # no self-skip path; provider unavailable is a failed test.
         run: |
           cargo test --all-targets --all-features
           cargo test -p clat-wasm-net --lib
+
 
   plugin-performance:
     name: Plugin performance (${{ matrix.target }})

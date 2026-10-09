@@ -641,3 +641,43 @@ fn malformed_workdir_and_unbound_calls_fail_closed() {
     service.close().unwrap();
     crate::test_support::cleanup_tree(&root);
 }
+
+#[test]
+fn scratch_lifecycle_workdir_and_native_fence_share_one_authority() {
+    let (root, service) = fixture("scratch-lifecycle", ProcessLimits::default());
+    let generation = bind(&service);
+    let roots = service.sandbox.writable_roots().unwrap();
+    let scratch = roots.scratch().to_owned();
+    assert_eq!(service.resolve_workdir(scratch.to_str()).unwrap(), scratch);
+    assert!(
+        service
+            .resolve_workdir(std::env::temp_dir().to_str())
+            .is_err()
+    );
+    let path = scratch.join("one-off.py");
+    service
+        .project
+        .writable_target(&path, true, crate::permission::WriteScope::WorkspaceRoots)
+        .unwrap()
+        .atomic_write("print(1)", None)
+        .unwrap();
+    assert!(
+        service
+            .scratch_guidance()
+            .unwrap()
+            .contains(scratch.to_str().unwrap())
+    );
+    assert!(roots.paths().iter().any(|p| p == &scratch));
+    service.unbind_run(generation).unwrap();
+    assert!(!scratch.exists());
+    assert!(
+        service
+            .project
+            .writable_target(&path, true, crate::permission::WriteScope::WorkspaceRoots)
+            .is_err()
+    );
+    let second = bind(&service);
+    assert_ne!(service.sandbox.writable_roots().unwrap().scratch(), scratch);
+    service.unbind_run(second).unwrap();
+    crate::test_support::cleanup_tree(&root);
+}

@@ -319,6 +319,15 @@ impl App {
     }
 
     fn finish_run(&mut self, epoch: u64, result: crate::ApplicationRunResult) {
+        let dispatch_next =
+            epoch == self.run_epoch && result.as_ref().is_ok_and(|done| !done.cancelled);
+        self.settle_finished_run(epoch, result);
+        if dispatch_next {
+            self.dispatch_next_turn();
+        }
+    }
+
+    fn settle_finished_run(&mut self, epoch: u64, result: crate::ApplicationRunResult) {
         // W1-13：纪元失配 = 上一 run 的陈旧完成（新 run 已启动）。此时
         // 一切 `self` 上的收尾动作（take/join 新 run 的句柄、running 置
         // 假、用量基线对账、阶段收尾）都属于**新** run——一律不做。上一

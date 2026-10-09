@@ -307,6 +307,20 @@ Steering is accepted at model-request boundaries. The queue is sealed
 atomically before a terminal event becomes visible, so a late message either
 joins the active run or becomes a new submission; it is never stranded.
 
+Next-turn followups are a separate Application-owned, process-local FIFO of
+bounded text items. `queue.list`, `queue.enqueue` and idempotent `queue.recall`
+expose it through the RPC method catalog; `workbench.info` includes
+`next_turn_queue`. It is neither steering nor a durable inbox: enqueue writes
+no journal event, and dispatch calls ordinary `start_run`, preserving human
+prompt/goal-disarm semantics and the existing `turn/start` + `user/message`
+admission contract. A successful terminal boundary dispatches one item; success
+continues draining, while cancellation/failure retains the remainder. Items
+leave the queue only after successful admission or an authoritative committed
+receipt. Session switches refuse a non-empty queue, and host takeover/reclaim
+considers it busy. Standalone TUI and serve dispatch through the same core API;
+attached TUI and PWA only own rendering, key/button actions and draft recovery.
+No durable event or `RunEvent` vocabulary is added.
+
 Cancellation is cooperative but propagated across the full call path: model
 SSE reads, native tools, command process trees, MCP waits, WASM execution, and
 plugin-host model/question waits observe the shared token. Components that may
@@ -469,10 +483,12 @@ Project Write and classic headless execution use a functionally probed
 Seatbelt profile with a policy digest; its file-write and network rules are
 enforced by the OS. Account-readable files, inherited environment variables
 and the writable `/tmp`/process-temporary roots remain available; this is not
-a container boundary. Full Access is deliberately unconfined. Linux and
-Windows currently report an explicit supervised/no-enforcement fallback for
-`auto`, and reject `required`; they are not described as sandboxed. Execute
-approval remains in front of this OS boundary on every platform.
+a container boundary. Full Access is deliberately unconfined. Windows uses
+the same binary's internal restricted-token runner, workspace/scratch capability
+ACLs, Low integrity and a kill-on-close Job. It reports partial write confinement
+with unrestricted reads/network and a hard-link alias limitation. Linux reports
+an explicit no-enforcement fallback for `auto` and rejects `required`.
+Permission classification remains in core before middleware and invocation.
 
 `ProjectInstructionsPlugin` supplies cached scope-aware instructions rather
 than a one-time root prompt. It starts at the project root, observes only
@@ -537,9 +553,15 @@ or worker threads. TUI and local web only supply their normal event/approval
 ports; headless control commands cannot silently invent an interactive goal
 continuation.
 
-Writes are project-relative in Read Only, Project Write, and headless runs;
-Full Access can unlock absolute writes. Command execution remains rooted in the
-project. Every call flows through:
+Read Only native writes remain project-relative after approval. Project Write
+and headless runs share `WritableRoots` with the OS sandbox provider: workspace
++ run scratch on Windows; Unix additionally retains `/tmp` and process temp.
+`Project` and `SandboxService` share the same run-bound roots source, populated
+by ProcessService at bind and cleared after process teardown. Each root has an
+opened directory capability for native writes. Full Access can unlock arbitrary
+absolute writes. `exec_command` also accepts the active scratch as workdir.
+Scratch guidance is added to the execution context after binding, without
+creating a persistent session fact. Every call flows through:
 
 ```text
 final tool arguments

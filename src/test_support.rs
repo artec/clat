@@ -181,10 +181,13 @@ pub enum TestBehavior {
     /// 先立即输出 delta，再稍等后请求 write_file：用于锁定 stdout 在
     /// handle 发布前失败时，取消必须先于后续副作用生效。
     DeltaThenWrite,
-    /// 第一轮调用 run_command（Execute 效果——ProjectWrite 下仍必过
-    /// 审批门），拿到工具结果后第二轮完成：serve 审批穿网测试的
-    /// 确定性闸（approval.requested 到达即 run 稳定停在半途）。
+    /// 第一轮调用 run_command，拿到工具结果后第二轮完成。
+    /// 审批测试必须显式使用 ReadOnly，不能依赖 PW 执行逐次审。
     RunCommand,
+    /// 显式请求命令网络，用于 Fresh IM 会话的升级审批边界。
+    RunCommandNetwork,
+    /// Gate every human turn independently for queue lifecycle verification.
+    RunCommandPerTurn,
     /// 发出 `count` 个 128KiB 的 TextDelta 再完成：单请求制造 MB 级
     /// 事件流，确定性打满任何「内核缓冲 + SSE 队列」（INV-S7 慢消费
     /// 腿——轮数堆量会先撞 B1 花费护栏的每请求预留）。
@@ -621,8 +624,20 @@ impl Model for TestModel {
                 result.reasoning = Some("first thought\nlatest thought".into());
                 Ok(result)
             }
-            TestBehavior::RunCommand => {
-                let has_command_result = request.items.iter().any(|item| {
+            TestBehavior::RunCommand
+            | TestBehavior::RunCommandNetwork
+            | TestBehavior::RunCommandPerTurn => {
+                let current_items = if matches!(self.behavior, TestBehavior::RunCommandPerTurn) {
+                    let start = request
+                        .items
+                        .iter()
+                        .rposition(|item| matches!(item, crate::model::ModelItem::User { .. }))
+                        .unwrap_or(0);
+                    &request.items[start..]
+                } else {
+                    request.items
+                };
+                let has_command_result = current_items.iter().any(|item| {
                     matches!(item, crate::model::ModelItem::ToolResult(result) if result.tool_name == "run_command")
                 });
                 if has_command_result {
@@ -636,9 +651,11 @@ impl Model for TestModel {
                         tool_calls: vec![ToolCall {
                             id: "call-run".into(),
                             name: "run_command".into(),
-                            arguments: json!({
-                                "command": "echo from-serve-test",
-                            }),
+                            arguments: if matches!(self.behavior, TestBehavior::RunCommandNetwork) {
+                                json!({"command": "echo from-serve-test", "network": true})
+                            } else {
+                                json!({"command": "echo from-serve-test"})
+                            },
                         }],
                         finish_reason: FinishReason::ToolCalls,
                         usage: None,

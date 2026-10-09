@@ -304,3 +304,26 @@ fn racing_new_occupant_is_not_clobbered_and_detached_material_survives_restart()
     );
     crate::test_support::cleanup_tree(&root);
 }
+
+#[test]
+fn scratch_writes_do_not_enter_file_review_and_read_only_stays_fenced() {
+    let (root, project, review) = fixture();
+    let roots = crate::sandbox::roots::WritableRoots::create(project.root()).unwrap();
+    let path = roots.scratch().join("one-off.py");
+    *project.roots.write().unwrap() = Some(roots.clone());
+    let ro = crate::permission::mode_write_scope(crate::permission::PermissionMode::ReadOnly);
+    assert!(project.writable_target(&path, true, ro).is_err());
+    let pw = crate::permission::mode_write_scope(crate::permission::PermissionMode::ProjectWrite);
+    project
+        .writable_target(&path, true, pw)
+        .unwrap()
+        .atomic_write("print(1)", None)
+        .unwrap();
+    write(&project, "actual-edit", "tracked");
+    review.end();
+    let ledger = review.load("session", 1).unwrap().unwrap();
+    assert_eq!(ledger.files.len(), 1);
+    assert_eq!(ledger.files[0].path, "actual-edit");
+    roots.close().unwrap();
+    crate::test_support::cleanup_tree(&root);
+}

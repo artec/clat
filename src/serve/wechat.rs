@@ -2013,7 +2013,7 @@ mod tests {
         let application = bootstrap
             .with_permission_modes()
             .authorize_and_mount_with_provider(Arc::new(TestProviderPlugin {
-                behavior: TestBehavior::RunCommand,
+                behavior: TestBehavior::RunCommandNetwork,
             }))
             .unwrap();
         crate::test_support::configure_test_model(&application);
@@ -2047,6 +2047,8 @@ mod tests {
         bridge
             .handle_authorized(&message_with_id("/new", "command-new"))
             .unwrap();
+        // Fresh IM mapping selects a new session at admission; explicit
+        // network:true preserves the approval boundary across that reset.
         bridge
             .handle_authorized(&message_with_id("run it", "prompt-approval"))
             .unwrap();
@@ -2136,7 +2138,7 @@ mod tests {
         let application = bootstrap
             .with_permission_modes()
             .authorize_and_mount_with_provider(Arc::new(TestProviderPlugin {
-                behavior: TestBehavior::RunCommand,
+                behavior: TestBehavior::RunCommandNetwork,
             }))
             .unwrap();
         crate::test_support::configure_test_model(&application);
@@ -2170,6 +2172,8 @@ mod tests {
         bridge
             .handle_authorized(&message_with_id("/new", "failure-new"))
             .unwrap();
+        // Fresh IM mapping selects a new session at admission; explicit
+        // network:true preserves the approval boundary across that reset.
         bridge
             .handle_authorized(&message_with_id("run it", "failure-prompt"))
             .unwrap();

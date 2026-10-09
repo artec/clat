@@ -184,6 +184,8 @@ The main screen has three surfaces:
 | Key | Action |
 |---|---|
 | `Enter` | submit; during a run, queue steering for the next model boundary |
+| `Ctrl+Q` | explicitly queue text for the next ordinary turn while a CLAT run is active |
+| `Alt+Q` | recall the newest next-turn item into the composer, preserving existing text |
 | `Shift+Enter`, `Alt+Enter`, `Ctrl+J` | insert a line break |
 | `←` / `→`, `Home`, `End` | move the input cursor |
 | `Backspace` / `Delete` | edit input |
@@ -717,8 +719,9 @@ stdin, a side-effecting tool displays its full arguments and waits for `y` or
 typed before the prompt is discarded. With piped stdin there is nobody to ask, so side effects are denied
 and returned to the model as tool errors. `--yes` approves every side effect,
 including command execution. On macOS the native command tools still default
-to workspace-write Seatbelt confinement; on Linux/Windows there is currently
-no graduated provider, so unattended `--yes` should run only inside an
+to workspace-write Seatbelt confinement; Windows reports partial ACL write
+confinement with unrestricted network and reads. Linux has no graduated
+provider, so unattended `--yes` should run only inside an
 external container, sandbox or disposable environment.
 
 ### Machine-readable events
@@ -763,8 +766,16 @@ through `command.run`; it never sends them to the model as ordinary prompts.
 The model-facing command surface has two session tools plus a compatibility
 wrapper:
 
-- `exec_command` starts a command in the project or a project-relative
-  workdir. It waits up to `yield_time_ms`; a still-running command returns a
+For disposable scripts, use the private scratch directory supplied in the model
+context. In Project Write (and classic headless execution), native write/edit/
+patch tools accept absolute paths inside it. The directory is outside the
+workspace, so these files do not appear in workspace changes or FileReview.
+Scratch is removed at run completion after child processes are reaped; do not
+put results you need to retain there. Read Only approval does not open scratch
+writes, and Full Access retains its existing unrestricted write behavior.
+
+- `exec_command` starts a command in the project, a project-relative
+  workdir, or an absolute directory inside the active run scratch root. It waits up to `yield_time_ms`; a still-running command returns a
   numeric `session_id`. Command text is capped at 64 KiB.
 - `write_stdin` writes characters, closes stdin, polls for output, or
   terminates that same-run id. An empty `chars` value is a poll. Raw characters
@@ -792,12 +803,23 @@ container boundary; macOS cannot promise parent-death cleanup for those cases.
 
 Native command calls accept `sandbox: auto|required|off` and `network`:
 
+In Project Write, native commands bound to macOS Seatbelt or the Windows ACL
+runner run without a prompt. Explicit `network: true`, Linux fallback and
+third-party Execute tools still ask. `write_stdin` uses the same-run command's
+actual sandbox facts. Missing enforcement never grants automatic approval;
+provider launch failures fail closed. Read Only and classic `clat exec` approval
+behavior are unchanged.
+
 - macOS `auto`/`required` uses a functionally probed Seatbelt profile outside
   Full Access. Network is denied unless explicitly requested. `off` requires
   Full Access. Account-readable files and inherited environment variables stay
   visible; Workspace Write also permits `/tmp` and the process temporary
   directory.
-- Linux/Windows `auto` reports `provider=none, enforcement=none`;
+- Windows `auto`/`required` uses the built-in ACL restricted-token runner with
+  `provider=windows-acl, enforcement=partial`. Reads and network are unrestricted;
+  NTFS hard-link aliases remain a limitation. TMP/TEMP point at private run
+  scratch. Workspace ACL grants persist after shutdown; see [Permissions](permissions.md).
+- Linux `auto` reports `provider=none, enforcement=none`;
   `required` fails closed. This is lifecycle supervision, not OS confinement.
 
 Process completion also appears as an Application notice in TUI/PWA. It
@@ -1418,7 +1440,8 @@ rules, and the legacy SQLite cutover.
   the repository and requested operations justify removing all prompts.
 - In CI, prefer fail-closed defaults. On macOS the default Seatbelt profile is
   an additional boundary, but exported environment secrets remain visible.
-  On Linux/Windows use `--yes` only inside a container, sandbox, disposable
+  Windows ACL confines writes partially; it does not filter reads, network or
+  inherited secrets. On Linux use `--yes` only inside a container, sandbox, disposable
   checkout, or similarly explicit containment boundary.
 - Inspect the returned `sandbox.provider`, `enforcement`, `policy_digest`,
   fallback and denial facts. Process-tree cleanup proves lifecycle ownership;
@@ -1550,3 +1573,29 @@ Full terminal dialog/command parity is still pending;
 this is not yet a replacement for the traditional TUI. Plain `clat` opens this
 attached mode by default — it discovers or starts the background host before
 showing the TUI — while `clat standalone` keeps the traditional in-process TUI.
+
+### Next-turn queue
+
+On CLAT standalone and attached terminals, `Ctrl+Q` queues the composer text;
+`Alt+Q` recalls the newest queued item. The status bar shows the count and first
+item. In the PWA, use **Queue next turn** and **Recall last**; the queue above the
+composer shows each pending message. Enter during a run still sends steering to
+the next model-request boundary. The next-turn queue accepts text only.
+
+Each successful run dispatches one FIFO item as an ordinary new run; successive
+successful runs continue draining. Cancellation or failure pauses the queue and
+retains every undispatched item. Recall items to edit them, or submit a normal
+human prompt: its successful completion resumes draining. Admission failure
+before durable commit retains the item; a message already committed is never
+resent. Recall prepends text instead of overwriting an existing draft. The PWA
+also restores unclaimed plain-text steering when its run ends. A lost recall
+response can be retried with the same request id; after a session switch, its
+text returns to the original session draft. Recall receipts are bounded and
+process-local.
+
+Queues belong to a mounted project and its current session, exist only in the
+host process, and disappear on process exit/restart. Session new/switch refuses
+while items remain; recall them first. Opening another workspace keeps the old
+project's queue in that mounted project; it is never transferred to the new
+workspace. Non-empty queues prevent automatic host takeover and idle project
+reclamation. DSH terminals and the WeChat channel have no new queue entry point.

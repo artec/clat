@@ -584,7 +584,7 @@ fn run_worker(
                 events: recorder_sink,
                 tool_access: context.tool_access.clone(),
                 tool_definitions: Arc::clone(&context.tool_definitions),
-                workflow_instructions: round_workflow_instructions,
+                workflow_instructions: process_service.workflow(round_workflow_instructions),
                 permission_mode: permission_mode_snapshot,
             })
         }));

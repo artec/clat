@@ -763,6 +763,7 @@ test('reconnect during approval shows each identical admission once', async ({ p
   for (let round = 1; round <= 2; round++) {
     await expect(page.locator('#detail-run')).toHaveText('Idle', LIVE);
     await page.fill('#prompt', 'same admitted input');
+    await page.evaluate(() => rpc('permission.set', { mode: 'read-only' }));
     await page.click('#send');
     await expect(page.locator('.approval-card').last()).toBeVisible(LIVE);
     const other = await context.newPage();
@@ -1204,6 +1205,7 @@ test.describe('acceptance ① approval + run lifecycle', () => {
     await openWorkbench(page, entry);
 
     await page.fill('#prompt', 'run echo please');
+    await page.evaluate(() => rpc('permission.set', { mode: 'read-only' }));
     await page.click('#send');
     await expect(page.locator('.msg.user .body')).toHaveText('run echo please', LIVE);
 
@@ -1233,6 +1235,7 @@ test.describe('acceptance ① approval + run lifecycle', () => {
     await expect(page.locator('.msg.user')).toHaveCount(0, LIVE);
     await expect(page.locator('#send')).toBeEnabled(LIVE);
     await page.fill('#prompt', 'try a command');
+    await page.evaluate(() => rpc('permission.set', { mode: 'read-only' }));
     await page.click('#send');
 
     const card = page.locator('.approval-card').first();
@@ -1588,6 +1591,7 @@ test('dual tabs observe the same run; first answer wins', async ({ browser }) =>
   await expect(tabA.locator('.msg.user')).toHaveCount(0, LIVE);
   await expect(tabA.locator('#send')).toBeEnabled(LIVE);
   await tabA.fill('#prompt', 'dual tab run');
+  await tabA.evaluate(() => rpc('permission.set', { mode: 'read-only' }));
   await tabA.click('#send');
 
   const cardA = tabA.locator('.approval-card').first();
@@ -1674,6 +1678,7 @@ test('model trace renders human-readable event names instead of raw protocol ids
   await page.click('#new-session');
   await expect(page.locator('#send')).toBeEnabled(LIVE);
   await page.fill('#prompt', 'trace labels');
+  await page.evaluate(() => rpc('permission.set', { mode: 'read-only' }));
   await page.click('#send');
   const trace = page.locator('.trace-event', { hasText: 'Model request started' }).first();
   await revealWorkRecord(trace);
@@ -1724,6 +1729,7 @@ test('context is readable and the plan-mode marker appears and clears', async ({
   await expect(page.locator('.msg.user')).toHaveCount(0, LIVE);
   await expect(page.locator('#send')).toBeEnabled(LIVE);
   await page.fill('#prompt', 'materialize a session for plan mode');
+  await page.evaluate(() => rpc('permission.set', { mode: 'read-only' }));
   await page.click('#send');
   const approval = page.locator('.approval-card').first();
   await expect(approval).toBeVisible(LIVE);
@@ -1792,6 +1798,7 @@ test('stale command completion preserves and submits newer composer input', asyn
   await page.click('#new-session');
   await expect(page.locator('#send')).toBeEnabled(LIVE);
   await page.fill('#prompt', 'materialize the FL-F1 regression session');
+  await page.evaluate(() => rpc('permission.set', { mode: 'read-only' }));
   await page.click('#send');
   const approval = page.locator('.approval-card').first();
   await expect(approval).toBeVisible(LIVE);
@@ -1862,6 +1869,7 @@ test('PU content notices and armed Goal badge follow core workflow state', async
   await expect(page.locator('.msg.user')).toHaveCount(0, LIVE);
   await expect(page.locator('#plan-mode-badge')).toBeHidden();
   await expect(page.locator('#goal-badge')).toBeHidden();
+  await page.evaluate(() => rpc('permission.set', { mode: 'read-only' }));
   const command = async (text) => {
     await expect(page.locator('#send')).toBeEnabled(LIVE);
     await page.fill('#prompt', text);
@@ -2254,6 +2262,8 @@ test('image draft stages, sends image-only, and rebuilds a protected history pre
   await page.setViewportSize({ width: 390, height: 844 });
   await page.screenshot({ path: testInfo.outputPath('mobile-image-draft.png'), animations: 'disabled' });
 
+  await page.evaluate(() => rpc('permission.set', { mode: 'read-only' }));
+
   await page.click('#send');
   const preview = page.locator('.msg.user .message-attachment-preview').last();
   await expect(preview).toBeVisible(LIVE);
@@ -2288,6 +2298,7 @@ test('active run accepts an image steering draft without exposing a host path', 
   await page.click('#new-session');
   await expect(page.locator('#send')).toBeEnabled(LIVE);
   await page.fill('#prompt', 'hold at an approval boundary');
+  await page.evaluate(() => rpc('permission.set', { mode: 'read-only' }));
   await page.click('#send');
   const approval = page.locator('.approval-card').first();
   await expect(approval).toBeVisible(LIVE);
@@ -2309,6 +2320,7 @@ test('durable image steering claim can beat its RPC acknowledgement without rest
   await page.click('#new-session');
   await expect(page.locator('#send')).toBeEnabled(LIVE);
   await page.fill('#prompt', 'hold at an approval boundary for an early claim');
+  await page.evaluate(() => rpc('permission.set', { mode: 'read-only' }));
   await page.click('#send');
   const approval = page.locator('.approval-card').first();
   await expect(approval).toBeVisible(LIVE);
@@ -2350,6 +2362,7 @@ test('cancelled unclaimed image steering restores the draft for a normal retry',
   await openWorkbench(page, entry);
   await page.click('#new-session');
   await page.fill('#prompt', 'hold at an approval boundary');
+  await page.evaluate(() => rpc('permission.set', { mode: 'read-only' }));
   await page.click('#send');
   await expect(page.locator('.approval-card').first()).toBeVisible(LIVE);
 
@@ -2388,6 +2401,8 @@ test('multiple image draft preserves ordering through image-only admission', asy
   await page.locator('.attachment-chip').nth(1).locator('button[title="Move image earlier"]').click();
   await expect(page.locator('.attachment-index')).toHaveText(['01', '02'], LIVE);
 
+  await page.evaluate(() => rpc('permission.set', { mode: 'read-only' }));
+
   await page.click('#send');
   await expect(page.locator('.attachment-chip')).toHaveCount(0, LIVE);
   const user = page.locator('.msg.user').last();
@@ -2414,6 +2429,7 @@ test('drop and clipboard image paste enter the same staged draft pipeline', asyn
   await dispatchImageFileGesture(page, '#prompt', 'paste', image);
   await expect(page.locator('.attachment-chip')).toHaveCount(1, LIVE);
   await expect(page.locator('.attachment-chip .attachment-state')).toHaveText('staged locally', LIVE);
+  await page.evaluate(() => rpc('permission.set', { mode: 'read-only' }));
   await page.click('#send');
   await expect(page.locator('.msg.user').last().locator('.message-attachment-preview')).toHaveCount(1, LIVE);
   const approval = page.locator('.approval-card').last();
@@ -2446,6 +2462,7 @@ test('failed image staging keeps the draft and retry reuses the original file', 
 
   await page.locator('button.attachment-retry').click();
   await expect(page.locator('.attachment-chip .attachment-state')).toHaveText('staged locally', LIVE);
+  await page.evaluate(() => rpc('permission.set', { mode: 'read-only' }));
   await page.click('#send');
   await expect(page.locator('.attachment-chip')).toHaveCount(0, LIVE);
   const approval = page.locator('.approval-card').last();
@@ -2535,6 +2552,8 @@ test('MM-5 PWA near-limit upload and reconnect RSS profile', async ({ page }) =>
         { timeout: 120_000 },
       );
     });
+
+    await page.evaluate(() => rpc('permission.set', { mode: 'read-only' }));
 
     await page.click('#send');
     await expect(page.locator('.attachment-chip')).toHaveCount(0, { timeout: 120_000 });

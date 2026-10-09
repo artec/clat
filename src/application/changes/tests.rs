@@ -309,3 +309,27 @@ fn deleted_and_renamed_files_and_byte_caps_remain_explicit() {
     );
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn scratch_scripts_do_not_pollute_workspace_changes() {
+    let (root, reader) = fixture("scratch-workspace-changes");
+    git(&root, &["init", "-q"]);
+    let roots = crate::sandbox::roots::WritableRoots::create(reader.project.root()).unwrap();
+    *reader.project.roots.write().unwrap() = Some(roots.clone());
+    let path = roots.scratch().join("one-off.py");
+    reader
+        .project
+        .writable_target(&path, true, crate::permission::WriteScope::WorkspaceRoots)
+        .unwrap()
+        .atomic_write("print(1)", None)
+        .unwrap();
+    // Inspect the Git result itself: a concurrent UI query can return busy
+    // with an empty file list, which would falsely satisfy this invariant.
+    assert!(git::status(&reader.project).unwrap().is_empty());
+    std::fs::write(root.join("actual-edit"), "visible").unwrap();
+    let files = git::status(&reader.project).unwrap();
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].path, "actual-edit");
+    roots.close().unwrap();
+    crate::test_support::cleanup_tree(&root);
+}

@@ -221,6 +221,12 @@ impl ServeShared {
             && self.active_uploads.load(Ordering::Acquire) == 0
             && self.active_attachment_downloads.load(Ordering::Acquire) == 0
             && !self.drafts.has_live_drafts()
+            && self
+                .app
+                .lock()
+                .expect("application lock")
+                .next_turn_queue()
+                .is_empty()
     }
 
     pub(crate) fn is_idle_for_takeover(&self) -> bool {
@@ -239,6 +245,12 @@ impl ServeShared {
             && self.active_uploads.load(Ordering::Acquire) == 0
             && self.active_attachment_downloads.load(Ordering::Acquire) == 0
             && !self.drafts.has_live_drafts()
+            && self
+                .app
+                .lock()
+                .expect("application lock")
+                .next_turn_queue()
+                .is_empty()
     }
 
     pub(crate) fn selection_generation(&self) -> u64 {
@@ -406,6 +418,13 @@ impl ServeShared {
 
     /// 控制帧广播（approval.requested / prompt.settled / notice / …）：
     /// 不进 run 缓冲——控制面是活流，不落 durable（§6.1）。
+    pub(crate) fn notify_queue_changed(&self) {
+        self.broadcast(SseFrame {
+            event: "notice",
+            data: super::shapes::ctl_data(&json!({"kind":"next_turn_queue","payload":{}})),
+        });
+    }
+
     pub(crate) fn broadcast(&self, frame: SseFrame) {
         let mut inner = self.inner.lock().expect("serve inner lock");
         Self::deliver(&mut inner, frame);
@@ -800,8 +819,12 @@ impl ServeShared {
                     Ok(outline) => super::shapes::with_message_outline(settled, &outline),
                     Err(_) => settled,
                 };
+                let completed = settled["outcome"]["type"] == "completed";
                 shared.finish_run(super::shapes::ctl_data(&settled));
                 let _ = handle.join();
+                if completed && !shared.is_shutting_down() {
+                    super::next_turn::dispatch_next(&shared);
+                }
             })
             .expect("spawn settler");
         self.register_worker(worker);

@@ -113,11 +113,13 @@ fn compressed_read_cancel_and_expiry_close_actual_socket_without_partial_entity(
                 read_request(&mut socket).await;
                 socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: 100\r\n\r\nx").await.unwrap();
                 let mut rest = Vec::new();
-                tokio::time::timeout(Duration::from_millis(500), socket.read_to_end(&mut rest)).await
+                tokio::time::timeout(Duration::from_secs(3), socket.read_to_end(&mut rest)).await
                     .expect("compressed read must physically close on cancel or expiry").unwrap();
             };
+            // The deadline includes connection setup; the invariant is body expiry,
+            // not completing the Windows loopback handshake within 100ms.
             let client = async {
-                let mut response = open(request, &resolution, &scope, &gate, &cancel, Duration::from_millis(100), 100).await.unwrap();
+                let mut response = open(request, &resolution, &scope, &gate, &cancel, Duration::from_secs(1), 100).await.unwrap();
                 let abort = async {
                     tokio::time::sleep(Duration::from_millis(20)).await;
                     if cancel_first { trigger.cancel(); }
@@ -128,7 +130,7 @@ fn compressed_read_cancel_and_expiry_close_actual_socket_without_partial_entity(
                 assert!(response.status().is_err());
                 let _held: Vec<_> = (0..8).map(|_| reserve().unwrap()).collect();
             };
-            tokio::time::timeout(Duration::from_secs(2), async { tokio::join!(client, server); }).await.unwrap();
+            tokio::time::timeout(Duration::from_secs(5), async { tokio::join!(client, server); }).await.unwrap();
         }
     });
 }

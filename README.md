@@ -79,11 +79,13 @@ it remains off unless `serve` is started with `--im wechat`.
   single-file multi-hunk patches, and
   run-owned command sessions with incremental output, stdin, PTY and owned
   process-group cleanup. macOS commands use functionally probed Seatbelt write/network
-  confinement outside Full Access; other platforms report supervised fallback
-  honestly. Scoped project instructions refresh as successful file tools reach
+  confinement outside Full Access. Windows uses a restricted-token ACL sandbox
+  and reports partial write enforcement with unrestricted reads and network;
+  Linux reports supervised fallback. Scoped project instructions refresh as successful file tools reach
   nested paths.
-- **Permissions** — Read Only, Project Write, and Full Access modes; complete
-  argument review; project trust; path fences; fail-closed headless behavior.
+- **Permissions** — Read Only, Project Write, and Full Access modes; full argument review for
+  prompted calls, sandbox-bound native Execute without prompts in Project Write
+  on macOS/Windows; project trust; path fences; fail-closed headless behavior.
 - **Sessions** — crash-resilient, append-only, DSH-compatible journals under
   `~/.clat`, with local replay and per-project resume state.
 - **Extensions** — MCP over stdio or Streamable HTTP, sandboxed WebAssembly

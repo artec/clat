@@ -236,7 +236,7 @@ pub(crate) fn native_write_tools(
 const MAX_WRITE_BYTES: usize = 1024 * 1024;
 
 /// 写工具携带写入围栏来源（SR2）：每次 invoke 解析当前档位——FA 开放
-/// 绝对路径，RO/PW（与 exec）保持项目根相对路径。
+/// 绝对路径，PW（与 exec）使用共享 roots；RO 保持项目根相对路径。
 #[derive(Clone, Default)]
 pub struct WriteFileTool {
     scope: crate::permission::WriteScopeSource,
@@ -246,13 +246,13 @@ impl Tool for WriteFileTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "write_file".into(),
-            description: "Create or overwrite a file with UTF-8 text. Paths are project-relative (parent directories are created as needed); absolute paths outside the project are only writable under Full Access mode. Prefer edit_file for small changes to existing files.".into(),
+            description: "Create or overwrite a file with UTF-8 text. Paths are project-relative (parent directories are created as needed); absolute paths in the active scratch directory are writable in Project Write; other outside paths require Full Access. Prefer edit_file for small changes to existing files.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Project-relative file path (absolute only under Full Access mode)"
+                        "description": "Project-relative path, or absolute scratch path in Project Write (arbitrary absolute paths require Full Access)"
                     },
                     "content": {
                         "type": "string",
@@ -310,13 +310,13 @@ impl Tool for EditFileTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "edit_file".into(),
-            description: "Replace an exact, unique text snippet in a file. old_str must match the file byte-for-byte and appear exactly once; include surrounding lines to disambiguate. Paths are project-relative; absolute paths outside the project are only editable under Full Access mode.".into(),
+            description: "Replace an exact, unique text snippet in a file. old_str must match the file byte-for-byte and appear exactly once; include surrounding lines to disambiguate. Paths are project-relative; absolute scratch paths are editable in Project Write; other outside paths require Full Access.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Project-relative file path (must exist; absolute only under Full Access mode)"
+                        "description": "Existing project-relative path or absolute scratch path in Project Write; arbitrary absolute paths require Full Access"
                     },
                     "old_str": {
                         "type": "string",
@@ -966,6 +966,31 @@ mod tests {
     /// 路径且错误点名档位；FA（共享 cell）开放绝对写并保持原子纪律
     ///（无临时残留）；同一 cell 热降档后下一次写重新被围。pre-fix 上
     /// 绝对路径一律被拒（无 FA 分支），FA 断言必红。
+    #[test]
+    #[cfg(unix)]
+    fn workspace_write_has_a_project_external_script_target() {
+        let (root, project) = fixture();
+        let roots = crate::sandbox::roots::WritableRoots::create(project.root()).unwrap();
+        *project.roots.write().unwrap() = Some(roots);
+        let outside =
+            std::env::temp_dir().join(format!("clat-sbx1-red-{}.py", uuid::Uuid::new_v4()));
+        let writer = WriteFileTool {
+            scope: crate::permission::WriteScopeSource::Shared(std::sync::Arc::new(
+                std::sync::RwLock::new(crate::permission::PermissionMode::ProjectWrite),
+            )),
+        };
+        writer
+            .invoke(
+                &json!({"path": outside, "content": "print(1)"}),
+                &project,
+                &CancelToken::new(),
+            )
+            .expect("workspace-write supports temporary scripts outside the project");
+        assert_eq!(fs::read_to_string(&outside).unwrap(), "print(1)");
+        fs::remove_file(outside).unwrap();
+        crate::test_support::cleanup_tree(&root);
+    }
+
     #[test]
     fn write_scope_gates_absolute_paths_by_mode() {
         use crate::permission::PermissionMode;

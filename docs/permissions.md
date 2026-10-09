@@ -20,10 +20,14 @@ Interactive local clients use three session-scoped modes:
 | `Pure`, `Read`, `SessionWrite` | allow | allow | allow |
 | `Write` | ask | allow | allow |
 | `Network`, `ExternalRead` | ask | allow | allow |
-| `Execute`, `Destructive` | ask | ask | allow |
+| `Execute` | ask | allow only with a prepared native sandbox invocation; otherwise ask | allow |
+| `Destructive` | ask | ask | allow |
 
 Project Write is the daily-driver mode: file edits and network/search tools run
-without interruption; commands and destructive operations still ask. Full
+without interruption. Native commands run without prompting when that invocation
+is bound to macOS Seatbelt or the Windows ACL runner. Linux commands, third-party
+Execute tools, explicit `network: true` requests and destructive operations still
+ask. Full
 Access removes all tool prompts and unlocks absolute-path writes, so cold
 switches require a separate warning confirmation.
 
@@ -33,9 +37,20 @@ approver or from an unavailable approver, not from a table-level mode rule.
 
 CLAT deliberately has no "read-only shell command" approval allowlist. An
 apparently harmless command can contain a write, network call, or destructive
-suffix, and Linux/Windows do not yet have a graduated sandbox provider.
-`run_command`, `exec_command`, and `write_stdin` therefore remain `Execute` and
-ask in Project Write even where macOS Seatbelt adds a second OS boundary.
+suffix. Native `run_command` and `exec_command` instead prepare and freeze the
+actual sandbox plan before permission review. Project Write bypasses Ask only
+for Seatbelt `full` or Windows ACL `partial` workspace-write enforcement, with
+no explicit network request. The Windows read/network/hard-link limitations
+below remain part of this boundary. `write_stdin` qualifies only through the
+actual facts of a command session owned by the same run.
+
+Unavailable enforcement returns to Ask; an approved call still fails closed
+if its required provider cannot start. Mode/run changes invalidate a prepared
+invocation rather than rebuilding it with wider authority. `sandbox: off`
+requires Full Access. Third-party Execute tools cannot mint the native proof.
+Read Only, Full Access, Destructive and the classic headless approval policy
+retain their existing decisions. Approval reasons for prepared native commands
+include enforcement status.
 
 ### Session persistence
 
@@ -136,9 +151,9 @@ denies. Ctrl-C resolves the wait and cancels the run.
 With piped stdin, no person can answer. Every `Ask` becomes unavailable/denied
 and the model receives the tool error. `--yes` installs an allow-all approver;
 it does not replace sandbox policy. On macOS classic headless commands still
-use the workspace-write Seatbelt profile by default. On Linux/Windows `auto`
-is an explicitly reported no-enforcement fallback, so external containment is
-still required for unattended `--yes` execution.
+use the workspace-write Seatbelt profile by default. Windows uses partial ACL
+write confinement; Linux `auto` is an explicitly reported no-enforcement
+fallback requiring external containment for unattended `--yes` execution.
 
 ### Server approval
 
@@ -298,15 +313,25 @@ the native `write_file`, `edit_file`, and `apply_patch` tools:
 | Client/mode | Writable paths |
 |---|---|
 | TUI/PWA Read Only | project-relative only, after approval |
-| TUI/PWA Project Write | project-relative only |
+| TUI/PWA Project Write | project-relative plus absolute writable roots (workspace and active scratch; Unix also `/tmp` and process temp) |
 | TUI/PWA Full Access | project-relative and absolute |
-| `clat exec` | project-relative only, even with `--yes` |
+| `clat exec` | same workspace-write roots; `--yes` changes approval only |
+
+The writable-root set has one core-owned definition consumed by native path
+fences and OS providers. Windows grants only workspace + private run scratch;
+Unix retains `/tmp` and process temp for existing command compatibility. A
+scratch directory is minted outside the project for each run (Unix mode 0700),
+its path is supplied to the model for disposable scripts, and it is removed
+after run processes are reaped. Read Only gains no extra native write roots;
+Full Access remains unrestricted. Creation errors abort the run rather than
+falling back to writing temporary scripts in the project. Cleanup errors are
+reported as run failures; abrupt process termination may leave temporary files.
 
 This table governs CLAT's native write/edit/patch path resolver; command
 confinement is a separate boundary. On macOS, classic headless, Read Only and
 Project Write commands default to a functionally probed Seatbelt profile.
 Classic/Project Write can write only the canonical project, `/tmp`, and the
-process temporary directory; Read Only cannot write the project. Network is
+process temporary directory and the active private scratch directory; Read Only cannot write the project. Network is
 denied unless the tool call explicitly sets `network: true`. Full Access is
 deliberately unconfined.
 The current profile intentionally permits account-readable filesystem reads,
@@ -314,11 +339,25 @@ inherits CLAT's environment, and permits Workspace Write commands to use those
 temporary roots. It is graduated write/network confinement, not a
 container or a secret filter.
 
-Linux and Windows currently have no graduated command sandbox provider:
-`sandbox: "auto"` reports `provider=none, enforcement=none`, while
-`sandbox: "required"` fails closed. Therefore `clat exec --yes` on those
-platforms still gives approved commands the operating-system account's normal
-filesystem, environment and network authority.
+Windows `auto` and `required` use the built-in `windows-acl` runner. A restricted
+token, capability SIDs and Low integrity constrain filesystem writes; a
+kill-on-close Job contains ordinary descendants. The runner is the same CLAT
+binary, and token, ACL, runner or Job failures refuse execution. Facts report
+`enforcement=partial`: reads and network remain unrestricted, and NTFS hard-link
+aliases can bypass path confinement. `network: false` does not block Windows
+network traffic. Private run scratch replaces TMP/TEMP; shared system temp is
+not a write grant. LSP and execution-required skills remain unavailable on
+Windows because their stronger required boundary has not graduated.
+
+Workspace grants leave persistent capability ACEs, an ambient delete-child
+deny and Low integrity labels on the workspace tree. These changes are
+invisible to ordinary file listings and are intentionally retained across
+runs. Initial ACL propagation can take tens of seconds on large trees;
+protected ACLs or unsupported filesystems fail closed rather than widening
+authority. Private scratch grants are revoked during run cleanup.
+
+Linux `auto` reports `provider=none, enforcement=none`; `required` fails closed.
+On Linux, `clat exec --yes` therefore retains the account's ordinary authority.
 
 Project-relative writes bind all parent creation, inspection, temporary-file
 creation, and rename operations to opened directory capabilities. Final
@@ -326,7 +365,7 @@ symlinks are rejected. Under Full Access, CLAT canonicalizes and opens the
 absolute target parent before applying the same atomic discipline.
 
 `run_command` always runs in the canonical project root. `exec_command` accepts
-only a project-relative existing directory. Both use the same ProcessService
+a project-relative existing directory or an absolute existing directory inside the active scratch root. Both use the same ProcessService
 and sandbox plan. `sandbox: "off"` is accepted only under interactive Full
 Access; `required` refuses when the current platform/policy cannot provide the
 claimed confinement.

@@ -1239,7 +1239,7 @@ impl App {
         };
         let budget = bar.width.saturating_sub(MIN_STATUS_LEFT + 2) as usize;
         let suffix = fit_status_suffix(&segments, budget);
-        let status_line = if let Some(phase) = self.phases.phase {
+        let mut status_line = if let Some(phase) = self.phases.phase {
             phase_line(
                 tick,
                 phase,
@@ -1250,6 +1250,9 @@ impl App {
         } else {
             Line::from(self.status.as_str())
         };
+        if let Some(summary) = self.next_turn_summary() {
+            status_line.spans.push(Span::raw(format!(" · {summary}")));
+        }
         if suffix.is_empty() {
             frame.render_widget(Paragraph::new(status_line), bar);
         } else {

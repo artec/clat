@@ -1086,6 +1086,10 @@ impl App {
     /// the established synchronous handoff. This keeps the application
     /// continuously available for the overwhelmingly common fast path.
     fn start_text_run(&mut self, prompt: String) -> bool {
+        self.start_text_run_kind(prompt, false)
+    }
+
+    pub(super) fn start_text_run_kind(&mut self, prompt: String, queued: bool) -> bool {
         let sender = self
             .event_sender
             .clone()
@@ -1103,9 +1107,12 @@ impl App {
             .as_mut()
             .ok_or_else(|| "project application is unavailable".to_owned())
             .and_then(|application| {
-                application
-                    .start_run(request)
-                    .map_err(|error| error.to_string())
+                let result = if queued {
+                    application.start_next_turn(request)
+                } else {
+                    application.start_run(request)
+                };
+                result.map_err(|error| error.to_string())
             }) {
             Ok(handle) => handle,
             Err(error) => {

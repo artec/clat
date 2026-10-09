@@ -166,6 +166,7 @@
 
     <section class="composer" aria-label="Message composer">
       <div id="composer-shell" class="composer-shell">
+        <div id="next-turn-queue" class="queue-preview" aria-live="polite" hidden></div>
         <input id="attachment-input" class="visually-hidden" type="file" multiple
                accept="image/png,image/jpeg" aria-label="Choose PNG or JPEG images">
         <div id="drop-overlay" class="drop-overlay hidden" aria-hidden="true">
@@ -228,6 +229,8 @@
                 <button id="model-picker-manage" class="model-picker-manage" type="button">Manage model profiles…</button>
               </section>
             </div>
+            <button id="queue-enqueue" type="button" title="Queue text for the next turn (Ctrl+Q)" aria-label="Queue next turn">Queue</button>
+            <button id="queue-recall" type="button" title="Recall latest queued text (Alt+Q)" hidden aria-label="Recall latest next-turn item">Recall</button>
             <button id="send" class="send-button" type="button" aria-label="Send message">Send <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5m-5 5 5-5 5 5"/></svg></button>
           </div>
         </div>
@@ -479,6 +482,7 @@
 </dialog>
 
 <script src="/composer-ux.js"></script>
+<script src="/next-turn.js"></script>
 <script src="/command-picker.js"></script>
 <script src="/conversation-find.js"></script>
 <script src="/workspace-review.js"></script>

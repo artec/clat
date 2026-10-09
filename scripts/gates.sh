@@ -100,6 +100,8 @@ if [ "$rust_only" -eq 0 ]; then
     (cd sdk/dsh-adapter/examples/official-web && npm ci --ignore-scripts && npm test)
     step "WASM flavor and v2 market release contracts"
     node --test market/scripts/*.test.mjs sdk/dsh-wasm-flavor/*.test.mjs
+    step "PWA next-turn and steering recovery contracts"
+    node --test web/tests/*.test.cjs
     step "PLG-3 isolated JS component experiment (originals unchanged)"
     (cd sdk/dsh-wasm-spike && npm ci --ignore-scripts && npm test)
 else

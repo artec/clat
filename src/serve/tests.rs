@@ -56,6 +56,20 @@ fn spawn_serve(name: &str, behavior: TestBehavior) -> (ServeHandle, PathBuf, Pat
     spawn_serve_with_queue(name, behavior, super::state::SUBSCRIBER_QUEUE_FRAMES)
 }
 
+// Approval/reconnect tests use an explicit gate, independent of PW containment.
+fn spawn_approval_serve(name: &str) -> (ServeHandle, PathBuf, PathBuf) {
+    let fixture = spawn_serve(name, TestBehavior::RunCommand);
+    let (status, result) = post(
+        fixture.0.addr,
+        TEST_TOKEN,
+        "permission.set",
+        r#"{"mode":"read-only"}"#,
+    );
+    assert_eq!(status, 200);
+    result.expect("set explicit approval gate");
+    fixture
+}
+
 fn spawn_serve_with_queue(
     name: &str,
     behavior: TestBehavior,
@@ -1663,8 +1677,7 @@ fn attachment_bytes_are_readable_only_by_opaque_reachable_id_in_active_session()
 
 #[test]
 fn opaque_image_draft_can_be_queued_as_active_run_steering() {
-    let (handle, storage_root, project_root) =
-        spawn_serve("serve-image-steering", TestBehavior::RunCommand);
+    let (handle, storage_root, project_root) = spawn_approval_serve("serve-image-steering");
     let mut client = SseClient::connect(handle.addr);
     prompt_send(handle.addr, "hold at an approval boundary");
     client.wait_for("approval.requested", WAIT);
@@ -2188,8 +2201,7 @@ fn scan_for(root: &Path, needle: &[u8], found: &mut Vec<PathBuf>) {
 
 #[test]
 fn mid_run_subscription_gets_full_replay_and_complete_run_buffer() {
-    let (handle, storage_root, project_root) =
-        spawn_serve("serve-mid-run-subscribe", TestBehavior::RunCommand);
+    let (handle, storage_root, project_root) = spawn_approval_serve("serve-mid-run-subscribe");
 
     // 首连接：订阅 → 发起 run → 等审批请求（确定性半途闸：run 稳定
     // 停在 approval.requested）。
@@ -2619,8 +2631,7 @@ fn mm2_w7_post_commit_start_failure_projects_receipt_and_retry_is_idempotent() {
 #[test]
 fn approval_callback_fail_closed_first_answer_wins_and_late_allow_is_not_pending() {
     // 腿 a：deny → 结构化拒绝、工具不执行、run 完成。
-    let (handle, storage_root, project_root) =
-        spawn_serve("serve-approval-deny", TestBehavior::RunCommand);
+    let (handle, storage_root, project_root) = spawn_approval_serve("serve-approval-deny");
     let mut client = SseClient::connect(handle.addr);
     prompt_send(handle.addr, "run echo");
     let approval = client.wait_for("approval.requested", WAIT);
@@ -2667,8 +2678,7 @@ fn approval_callback_fail_closed_first_answer_wins_and_late_allow_is_not_pending
     cleanup(handle, &storage_root, &project_root);
 
     // 腿 b：run 取消解锁审批（fail-closed 之一）。
-    let (handle, storage_root, project_root) =
-        spawn_serve("serve-approval-cancel", TestBehavior::RunCommand);
+    let (handle, storage_root, project_root) = spawn_approval_serve("serve-approval-cancel");
     let mut client = SseClient::connect(handle.addr);
     prompt_send(handle.addr, "run echo");
     client.wait_for("approval.requested", WAIT);
@@ -2693,8 +2703,7 @@ fn approval_callback_fail_closed_first_answer_wins_and_late_allow_is_not_pending
     cleanup(handle, &storage_root, &project_root);
 
     // 腿 c：订阅全断 → Deny（fail-closed 之二）。
-    let (handle, storage_root, project_root) =
-        spawn_serve("serve-approval-disconnect", TestBehavior::RunCommand);
+    let (handle, storage_root, project_root) = spawn_approval_serve("serve-approval-disconnect");
     let mut client = SseClient::connect(handle.addr);
     prompt_send(handle.addr, "run echo");
     client.wait_for("approval.requested", WAIT);
@@ -3352,6 +3361,12 @@ fn serve_e2e_host_run_command() {
 }
 
 #[test]
+#[ignore = "Playwright queue e2e host; needs CLAT_E2E_HOST=1"]
+fn serve_e2e_host_queue_command() {
+    host_serve_for_playwright("queue-command", TestBehavior::RunCommandPerTurn, 0);
+}
+
+#[test]
 #[ignore = "Playwright e2e host (needs CLAT_E2E_HOST=1, set by web/e2e/global-setup.js)"]
 fn serve_e2e_host_long_stream() {
     host_serve_for_playwright(
@@ -3613,4 +3628,87 @@ fn production_serve_entry_uses_the_checked_join_exit_seam() {
         !body.contains("handle.join();"),
         "production entry must not discard the join outcome"
     );
+}
+
+#[test]
+fn next_turn_queue_is_separate_dispatches_after_success_and_survives_cancel() {
+    let (handle, storage_root, project_root) =
+        spawn_serve("serve-next-turn", TestBehavior::RunCommandPerTurn);
+    post_rpc_json(
+        handle.addr,
+        TEST_TOKEN,
+        "permission.set",
+        r#"{"mode":"read-only"}"#,
+    );
+    let mut client = SseClient::connect(handle.addr);
+    prompt_send(handle.addr, "first task");
+    let approval = client.wait_for("approval.requested", WAIT);
+    let body =
+        serde_json::json!({"text":"second task", "clientMessageId":"queue-serve-1"}).to_string();
+    let (_, queued) = post_rpc_json(handle.addr, TEST_TOKEN, "queue.enqueue", &body);
+    assert_eq!(queued["ok"], true, "{queued}");
+    let (_, list) = post_rpc_json(handle.addr, TEST_TOKEN, "queue.list", "{}");
+    assert_eq!(list["value"]["items"][0]["text"], "second task");
+    let (_, history) = post_rpc_json(handle.addr, TEST_TOKEN, "session.history", "{}");
+    assert!(
+        !history.to_string().contains("second task"),
+        "enqueue is not durable"
+    );
+    let id = ctl_of(&approval)["rpc_id"].as_str().unwrap().to_owned();
+    let (_, allowed) = post_rpc_json(
+        handle.addr,
+        TEST_TOKEN,
+        "approval.respond",
+        &serde_json::json!({"rpcId":id,"decision":"allow"}).to_string(),
+    );
+    assert_eq!(allowed["ok"], true);
+    assert_eq!(settled_outcome_type(&client.wait_settled()), "completed");
+    client.wait_for("approval.requested", WAIT);
+    let (_, history) = post_rpc_json(handle.addr, TEST_TOKEN, "session.history", "{}");
+    assert!(
+        history.to_string().contains("second task"),
+        "next task is now ordinary durable user input"
+    );
+    let (_, queued) = post_rpc_json(
+        handle.addr,
+        TEST_TOKEN,
+        "queue.enqueue",
+        &serde_json::json!({"text":"retained after cancel", "clientMessageId":"queue-serve-2"})
+            .to_string(),
+    );
+    assert_eq!(queued["ok"], true, "{queued}");
+    post_rpc_json(handle.addr, TEST_TOKEN, "run.cancel", "{}");
+    assert_eq!(settled_outcome_type(&client.wait_settled()), "cancelled");
+    let (_, list) = post_rpc_json(handle.addr, TEST_TOKEN, "queue.list", "{}");
+    assert_eq!(list["value"]["items"][0]["text"], "retained after cancel");
+    let (_, recalled) = post_rpc_json(
+        handle.addr,
+        TEST_TOKEN,
+        "queue.recall",
+        r#"{"clientMessageId":"recall-serve-1"}"#,
+    );
+    assert_eq!(recalled["value"]["item"]["text"], "retained after cancel");
+    let (_, switched) = post_rpc_json(handle.addr, TEST_TOKEN, "session.new", "{}");
+    assert_eq!(switched["ok"], true, "{switched}");
+    let (_, replayed) = post_rpc_json(
+        handle.addr,
+        TEST_TOKEN,
+        "queue.recall",
+        r#"{"clientMessageId":"recall-serve-1","expected_selection_generation":0}"#,
+    );
+    assert_eq!(
+        replayed["value"]["item"]["text"], "retained after cancel",
+        "lost reply must replay across selection without recalling the new session"
+    );
+    let (_, refused) = post_rpc_json(
+        handle.addr,
+        TEST_TOKEN,
+        "queue.recall",
+        r#"{"clientMessageId":"unknown-recall","expected_selection_generation":0}"#,
+    );
+    assert_eq!(
+        refused["ok"], false,
+        "stale requests may only replay existing receipts"
+    );
+    cleanup(handle, &storage_root, &project_root);
 }

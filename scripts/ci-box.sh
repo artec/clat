@@ -44,8 +44,10 @@ docker run --rm --cpus "$cpus" \
     "$image" \
     bash -c '
         set -euo pipefail
-        # 源码拷进可写层：剔除宿主 target/.git/node_modules（大且平台不符）
-        tar -C /src --exclude=./target --exclude=./.git --exclude=node_modules -cf - . | tar -xf -
+        # 源码拷进可写层：剔除平台产物、正在写入的验证日志和本机秘密。
+        (cd /src && tar --exclude=target --exclude=.git --exclude=node_modules \
+            --exclude=output --exclude=.codegraph --exclude=.release-secrets \
+            -cf - -- * .??*) | tar -xf -
         export CARGO_TARGET_DIR=/target
         scripts/gates.sh --ci
     '

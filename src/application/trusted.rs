@@ -185,6 +185,8 @@ impl TrustedProjectApplication {
             fresh_session_open: true,
             emitted_request_header: None,
             startup_diagnostic: None,
+            next_turn: Default::default(),
+            recalled_next_turn: Default::default(),
             active_run: None,
             active_compaction: None,
             active_vision_probe: None,
@@ -939,7 +941,7 @@ impl TrustedProjectApplication {
     /// 指针写失败时旧会话原样保留；指针写成功后旧会话的清理失败也不
     /// 会让指针与内存分叉（Fresh + 无活动会话是自洽状态）。
     pub fn new_session(&mut self) -> Result<(), ApplicationError> {
-        self.reject_session_switch_while_busy()?;
+        self.reject_next_turn_session_switch()?;
         self.persist_selection(None)?;
         self.selection = None;
         let quiesce = self.sessions.quiesce_active().map_err(session_error);
@@ -950,7 +952,7 @@ impl TrustedProjectApplication {
         self.goal.reset_for_new();
         self.subagents.session_boundary();
         // SC-2：武装的显式技能调用不跨会话（与附件草稿同纪律）。
-        self.invoked_skill = None;
+        self.clear_session_transient_inputs();
         // 新会话从默认档起步：上一个会话的档位绝不跨 /new 携带（PS1
         // 的进程内变体）；物化前 /perm 的选择仍是出生档（PS7）。
         if self.permission_modes_enabled {
@@ -1042,7 +1044,7 @@ impl TrustedProjectApplication {
         id: SessionId,
         max_messages: Option<usize>,
     ) -> Result<crate::application::HistoryWindow<SessionSnapshot>, ApplicationError> {
-        self.reject_session_switch_while_busy()?;
+        self.reject_next_turn_session_switch()?;
         if !self.sessions.has_log(&self.session_key(&id)) {
             return Err(ApplicationError::new(format!(
                 "session {id} does not exist in this project"
@@ -1134,7 +1136,7 @@ impl TrustedProjectApplication {
         self.goal.session_boundary();
         self.subagents.session_boundary();
         // SC-2：武装的显式技能调用不跨会话（与附件草稿同纪律）。
-        self.invoked_skill = None;
+        self.clear_session_transient_inputs();
         self.restore_todo_from(&view);
         let input_history = self
             .sessions

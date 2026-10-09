@@ -42,6 +42,14 @@ pub(super) enum NativeEvent {
     Offline(u64, String),
     Snapshot(u64, u64, Result<Value, String>),
     Submitted(Result<Value, HostCallError>),
+    NextTurn(
+        u64,
+        u64,
+        Option<String>,
+        String,
+        bool,
+        Result<Value, String>,
+    ),
     ApprovalReply(Result<Value, String>),
     Sessions(u64, u64, Result<Vec<crate::SessionSummary>, String>),
     Renamed(u64, u64, Result<Value, String>),
@@ -62,13 +70,19 @@ pub(super) enum NativeEvent {
 pub(super) struct NativeState {
     vendor: crate::ModelVendor,
     context_window: Option<u64>,
-    client: HostClient,
-    epoch: u64,
+    pub(super) client: HostClient,
+    pub(super) epoch: u64,
     interrupt: Option<HostEventsInterrupt>,
-    online: bool,
-    selection: u64,
+    pub(super) online: bool,
+    pub(super) selection: u64,
     snapshot_request: u64,
     pending: Option<String>,
+    pub(super) next_turn: Vec<String>,
+    pub(super) queue_pending: bool,
+    pub(super) queue_retry: Option<(String, String)>,
+    pub(super) recall_retry: Option<(String, u64, Option<String>)>,
+    pub(super) recalled_queue_items: std::collections::VecDeque<String>,
+    pub(super) queue_recovered: Vec<(Option<String>, String)>,
     pending_images: crate::tui::attachments::AttachmentComposer,
     approval_id: Option<String>,
     replay: Vec<crate::session::replay::ReplayEvent>,
@@ -123,6 +137,12 @@ impl App {
             selection: 0,
             snapshot_request: 0,
             pending: None,
+            next_turn: Vec::new(),
+            queue_pending: false,
+            queue_retry: None,
+            recall_retry: None,
+            recalled_queue_items: Default::default(),
+            queue_recovered: Vec::new(),
             pending_images: Default::default(),
             approval_id: None,
             replay: Vec::new(),
@@ -156,6 +176,8 @@ impl App {
             return;
         };
         native.epoch += 1;
+        native.queue_pending = false;
+        native.queue_retry = None;
         native.questions = questions::NativeQuestions::default();
         self.pending_ask_user = None;
         native.models_pending = false;
@@ -447,6 +469,9 @@ impl App {
                 }
             }
             NativeEvent::Submitted(result) => self.native_submitted(result),
+            NativeEvent::NextTurn(epoch, selection, session, text, recall, result) => {
+                self.native_next_turn_reply((epoch, selection, session), text, recall, result);
+            }
             NativeEvent::ApprovalReply(Err(error)) => self.flash_status(error),
             _ => {}
         }
@@ -550,6 +575,15 @@ impl App {
 
     fn native_snapshot(&mut self, value: Value) {
         if let Some(native) = &mut self.native {
+            native.next_turn = value["next_turn_queue"]
+                .as_array()
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item["text"].as_str().map(str::to_owned))
+                        .collect()
+                })
+                .unwrap_or_default();
             native.permissions.mode = value["permission"]["mode"]
                 .as_str()
                 .and_then(PermissionMode::from_journal_value);
@@ -559,6 +593,7 @@ impl App {
         self.session_id = value["session"]["id"]
             .as_str()
             .map(|id| SessionId::new(id.to_owned()));
+        self.restore_native_queue_drafts();
         self.session_title = value["session"]["title"].as_str().map(str::to_owned);
         self.config.model = value["model"]["model"].as_str().unwrap_or_default().into();
         // preset 也随快照回填：标题按 preset 查显示名（缺了就退回
@@ -652,6 +687,15 @@ impl App {
                 ) =>
             {
                 self.native_question_notice(&payload)
+            }
+            "notice" if payload["kind"] == "next_turn_error" => {
+                self.flash_status(format!(
+                    "next turn paused: {}",
+                    payload["payload"]["message"]
+                        .as_str()
+                        .unwrap_or("startup failed")
+                ));
+                self.refresh_native();
             }
             "notice" => self.refresh_native(),
             "approval.requested" => self.native_approval(payload),

@@ -1,3 +1,6 @@
+#[path = "next_turn_tests.rs"]
+mod next_turn_tests;
+
 use super::trusted::glm_mcp_pack_from_control;
 use super::*;
 

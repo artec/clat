@@ -251,6 +251,11 @@ impl std::error::Error for ToolError {}
 pub(crate) const MAX_TOOL_DESCRIPTION_CHARS: usize = 4096;
 
 pub trait Tool: Send + Sync {
+    /// Freeze native execution authority before permission review.
+    fn prepare_execution(&self, _arguments: &Value) -> Option<PreparedTool> {
+        None
+    }
+
     fn definition(&self) -> ToolDefinition;
 
     /// Durable tool/call arguments. The default is lossless; tools carrying
@@ -282,6 +287,10 @@ pub trait Tool: Send + Sync {
         cancel: &CancelToken,
     ) -> Result<Value, ToolError>;
 }
+
+mod prepared;
+pub use prepared::PreparedTool;
+pub(crate) use prepared::prepare_tool;
 
 /// Immutable, already-authorized tool invocation passed to core middleware.
 /// Middleware cannot replace the tool or mutate arguments after permission

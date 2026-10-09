@@ -210,7 +210,7 @@ mod tests {
             vec![
                 Arc::new(ToolRegistryPlugin) as Arc<dyn Plugin>,
                 Arc::new(SandboxPlugin {
-                    project_root: project_root.clone(),
+                    project: Project::new(project_root.clone()),
                     permission_mode: None,
                 }),
                 // SC-2：SkillsPlugin 现在贡献 `/skill` 命令，依赖命令注册表。

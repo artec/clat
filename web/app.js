@@ -404,6 +404,7 @@ for (const id of [
   'header-model', 'header-permission', 'new-session', 'sessions-open', 'session-search', 'session-count',
   'session-list', 'session-empty', 'transcript-scroll', 'empty-state', 'transcript',
   'history-status', 'message-map', 'message-map-track', 'message-map-preview',
+  'queue-enqueue', 'queue-recall', 'next-turn-queue',
   'prompt', 'send', 'suggest', 'cancel', 'run-state', 'composer-permission', 'composer-shell',
   'model-picker-trigger', 'model-picker-label', 'model-picker', 'model-picker-close',
   'model-picker-current', 'model-picker-list', 'model-picker-key', 'model-picker-error',
@@ -637,6 +638,7 @@ function handleReplay(event) {
   let node = null;
   switch (event.type) {
     case 'user_message':
+      pendingTextSteering.delete(event.client_message_id);
       settleQueuedDraft(event.client_message_id);
       node = addUserMessage(event.text, event.content_blocks);
       break;
@@ -731,6 +733,7 @@ function handleLive(event) {
       break;
     }
     case 'steering_applied':
+      pendingTextSteering.delete(event.client_message_id);
       settleQueuedDraft(event.client_message_id);
       addUserMessage(event.text || '', event.content_blocks);
       addNoticeLine('', event.type);
@@ -754,7 +757,8 @@ function finishRun(event) {
   }
   state.runActive = false;
   state.run = null;
-  const restoredDraft = restoreQueuedDraft();
+  const restoredText = finishTextSteering();
+  const restoredDraft = restoreQueuedDraft() || restoredText;
   updateRunState(restoredDraft ? 'run ended before steering was applied; draft restored' : '');
   updateRunDetail();
   hide(dom.cancel);
@@ -866,6 +870,13 @@ function onNotice(ctl) {
   }
   const payload = ctl && ctl.payload;
   switch (ctl && ctl.kind) {
+    case 'next_turn_queue':
+      refreshWorkbench();
+      break;
+    case 'next_turn_error':
+      updateRunState('next turn paused: ' + (payload?.message || 'startup failed'));
+      refreshWorkbench();
+      break;
     case 'selection':
       invalidateSuggestion();
       if (state.stream) state.stream.abort();
@@ -1709,6 +1720,7 @@ async function refreshWorkbench() {
     const info = await rpc('workbench.info', {});
     if (request !== state.workbenchRequest || state.switching || selection !== state.selectionGeneration) return;
     state.workbench = info;
+    renderNextTurnQueue(info.next_turn_queue || []);
     const project = info.project || {};
     const session = info.session || {};
     const model = info.model || {};
@@ -3315,6 +3327,7 @@ dom.prompt.addEventListener('keydown', (event) => {
     submitPrompt();
   }
 });
+installNextTurn();
 installSelectionQuote();
 installCommandPicker();
 installConversationFind();

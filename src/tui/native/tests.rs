@@ -1350,3 +1350,50 @@ fn native_resolved_approval_dismisses_only_the_matching_dialog() {
     drop(app);
     crate::test_support::cleanup_tree(&storage);
 }
+
+#[test]
+fn next_turn_native_replies_preserve_session_draft_authority_and_render_host_queue() {
+    let (mut app, storage) = shell();
+    app.session_id = Some(SessionId::new("new-session"));
+    app.native.as_mut().unwrap().epoch = 2;
+    app.native.as_mut().unwrap().selection = 3;
+    app.input.insert_str("new draft");
+    app.handle_native_event(NativeEvent::NextTurn(
+        1,
+        2,
+        Some("old-session".into()),
+        String::new(),
+        true,
+        Ok(json!({"item":{"id":"old-item","text":"old recovered words"}})),
+    ));
+    assert_eq!(app.input.text(), "new draft");
+    assert_eq!(app.native.as_ref().unwrap().queue_recovered.len(), 1);
+    app.native_snapshot(json!({"session":{"id":"old-session"},"next_turn_queue":[{"id":"q","text":"host next task"}]}));
+    assert_eq!(app.input.text(), "old recovered words\nnew draft");
+    assert!(app.next_turn_summary().unwrap().contains("host next task"));
+    app.handle_native_event(NativeEvent::NextTurn(
+        2,
+        3,
+        Some("old-session".into()),
+        String::new(),
+        true,
+        Ok(json!({"item":{"id":"old-item","text":"old recovered words"}})),
+    ));
+    assert_eq!(
+        app.input.text(),
+        "old recovered words\nnew draft",
+        "lost-reply replay after reconnect must not restore the same item twice"
+    );
+    app.input.clear();
+    app.handle_native_event(NativeEvent::NextTurn(
+        2,
+        3,
+        Some("old-session".into()),
+        "failed words".into(),
+        false,
+        Err("transport failed".into()),
+    ));
+    assert_eq!(app.input.text(), "failed words");
+    drop(app);
+    crate::test_support::cleanup_tree(&storage);
+}

@@ -23,6 +23,7 @@ mod logo;
 mod markdown;
 mod model_editor;
 mod native;
+mod next_turn;
 mod permission_picker;
 mod plugins;
 mod session_picker;
