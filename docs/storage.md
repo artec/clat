@@ -483,7 +483,9 @@ binds successfully. Creation and `--rotate-token` use atomic replacement and
 modifies it. The token does not enter manifests, URLs, logs, or session events.
 
 `dsh-last-session` contains one opaque session id, capped at 4 KiB. Reads reject
-symlinks, non-files, invalid UTF-8, and oversized content. Writes are atomic
+final-component symlinks, including relative links to files in the same directory,
+through the capability resolver's no-follow option. Non-files, invalid UTF-8,
+and oversized content are also ignored. Writes are atomic
 and fail-soft. This file is a presentation preference only; deleting it does
 not affect the DSH host or any session.
 

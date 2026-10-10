@@ -105,3 +105,36 @@ The first-version result and retained iteration ledger are in
 [evidence/2026-10-09/result.json](evidence/2026-10-09/result.json).
 The complete local raw run directory is recorded there. Recreate evidence with
 the commands above; the compact committed summary alone is not a raw campaign.
+
+## Paired follow-up analysis
+
+`paired.py` registers repeated A/B samples in seeded, interleaved task blocks.
+The input-pair check permits one registered prompt suffix and rejects changes
+to source, model, tools, permissions or budgets. It performs no model calls or
+candidate execution; those still require a separately admitted fenced runner.
+
+Every started failure remains in the denominator. Partial campaigns report the
+unstarted roster and cannot produce a paired improvement estimate. Complete
+campaigns report per-task outcomes and a paired task-cluster bootstrap interval;
+repetitions are not independent tasks. This descriptive interval for a small,
+fixed task set does not establish population-level improvement or authorize
+promotion. Missing provider usage and unobserved cost remain `null`.
+
+```sh
+python3 -m unittest discover -s tests/agent-campaigns -p 'test_*.py'
+python3 tests/agent-campaigns/paired.py /absolute/registration.json /absolute/records.json
+```
+
+The [2026-10-10 follow-up result](evidence/2026-10-10/result.json) records a
+rejected prompt intervention: registered success was 20/20 versus 18/20 on
+the original task set, and 7/8 versus 6/8 on four held-out functions. The
+held-out negative delta is driven by an exact internal cache-generation
+criterion; user-visible harm from that difference is unproven. Frozen scores
+are retained separately from the post-hoc diagnostic. Missing usage keeps
+total tokens unknown, and no prompt was promoted.
+
+Secondary independent-agent process reviews are exploratory. Allocation labels were
+withheld, but instruction-readback redaction leaked an arm signature;
+condition blinding is not guaranteed. The original packets and judgments
+remain retained, and this defect does not change the registered external
+oracle scores or the decision to reject promotion.

@@ -41,6 +41,7 @@ runtime-tests = []
 clat-core = { path = "crates/core" }
 arboard = { version = "=3.6.1", features = ["wayland-data-control"] }
 base64 = "0.22.1"
+cap-fs-ext = "4.0.2"
 cap-std = "4.0.2"
 command-group = "5.0.1"
 crossterm = "0.29"

@@ -365,6 +365,7 @@ version = "1.7.2"
 dependencies = [
  "arboard",
  "base64 0.22.1",
+ "cap-fs-ext",
  "cap-std",
  "clat-core",
  "command-group",

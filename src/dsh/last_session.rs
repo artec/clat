@@ -6,6 +6,7 @@
 //! 日志）。装饰性记忆：读写皆 fail-soft——缺席/损坏回落 None，调用
 //! 方回落宿主列表头（最近被提问/创建的会话）。
 
+use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt as _};
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
@@ -30,18 +31,9 @@ pub(crate) fn read_last_session_at(path: &Path) -> Option<String> {
     let parent = path.parent()?;
     let dir = cap_std::fs::Dir::open_ambient_dir(parent, cap_std::ambient_authority()).ok()?;
     let mut options = cap_std::fs::OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use cap_std::fs::OpenOptionsExt as _;
-        options.custom_flags(libc::O_NOFOLLOW);
-    }
-    #[cfg(windows)]
-    {
-        use cap_std::fs::OpenOptionsExt as _;
-        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
-        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
-    }
+    // Platform custom flags do not control cap-std's own path resolver.
+    // Refuse the final link during resolution, without a separate lstat race.
+    options.read(true).follow(FollowSymlinks::No);
     let file = dir.open_with(name, &options).ok()?;
     let metadata = file.metadata().ok()?;
     if metadata.file_type().is_symlink() || !metadata.is_file() {
@@ -149,6 +141,27 @@ mod tests {
             "the read must reject the symlink too"
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A relative target remains inside the capability directory, so rejecting
+    /// an absolute target alone does not prove that the final link is refused.
+    #[cfg(unix)]
+    #[test]
+    fn relative_memory_links_are_rejected_without_touching_the_target() {
+        let root = temp_path("relative-link");
+        std::fs::create_dir_all(root.join("nested")).unwrap();
+        std::fs::write(root.join("victim"), "private-session").unwrap();
+        for target in ["victim", "./victim", "nested/../victim"] {
+            let memory = root.join("dsh-last-session");
+            std::os::unix::fs::symlink(target, &memory).unwrap();
+            let observed = read_last_session_at(&memory);
+            remember_last_session_at(&memory, "replacement");
+            let victim = std::fs::read_to_string(root.join("victim")).unwrap();
+            std::fs::remove_file(&memory).unwrap();
+            assert_eq!(observed, None, "relative target {target} must be refused");
+            assert_eq!(victim, "private-session", "writing must preserve {target}");
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     /// FIX-4/CA-07（pre-fix 红）：读取有界（4 KiB）——超帽记忆文件
