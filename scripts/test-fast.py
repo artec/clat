@@ -7,6 +7,8 @@ import subprocess
 import sys
 import time
 
+from rust_test_ports import prepare
+
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 # Shared contracts affect essentially every consumer: fall back to all Rust tests.
 SHARED = {"lib", "model", "event", "tool", "permission", "message", "project",
@@ -119,7 +121,7 @@ def main():
     for package in owners:
         command += ["-p", package]
     command += ["--"] + (chosen or [])
-    output = run(command + ["--quiet"], True)
+    output = run(prepare(command + ["--quiet"]), True)
     print(output, end="")
     if not any(int(value) for value in re.findall(r"(\d+) passed;", output)):
         raise SystemExit("没有实际通过的测试（零匹配或只匹配 ignored）；本次验证失败。")

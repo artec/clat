@@ -48,18 +48,27 @@ done
 python3 scripts/check-test-waits.py
 
 if [ "$mode" = fast ]; then
-    exec python3 scripts/test-fast.py "${filters[@]}"
+    exec python3 scripts/test-fast.py ${filters[@]+"${filters[@]}"}
 fi
 if [ "${#filters[@]}" -ne 0 ]; then
     echo "test filters/--plan require --fast" >&2; exit 2
 fi
 [[ "$stress" =~ ^[0-9]+$ ]] || { echo "--stress must be a non-negative integer" >&2; exit 2; }
 
+rust_tests() {
+    if [ "$mode" = ci ]; then
+        python3 scripts/rust_test_ports.py --ci cargo test "$@" --
+    else
+        python3 scripts/rust_test_ports.py cargo test "$@" --
+    fi
+}
+
 step() { printf '\n\033[1m== %s\033[0m\n' "$1"; }
 
 step "Test selection contract"
 python3 -m unittest discover -s scripts -p test_test_fast.py -q
 python3 -m unittest discover -s scripts -p test_check_test_waits.py -q
+python3 -m unittest discover -s scripts -p test_rust_test_ports.py -q
 
 step "Format (cargo fmt --all -- --check)"
 cargo fmt --all -- --check
@@ -85,7 +94,7 @@ step "Rustdoc (RUSTDOCFLAGS=-D warnings cargo doc --no-deps --all-features)"
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
 
 step "Test (cargo test --all-targets --all-features)"
-cargo test --all-targets --all-features
+rust_tests --all-targets --all-features
 step "Shared WASM network backend invariants"
 cargo test -p clat-wasm-net --lib
 
@@ -114,14 +123,14 @@ cargo test --lib -- --ignored
 i=1
 while [ "$i" -le "$stress" ]; do
     step "Stress $i/$stress — Test (时序敏感复跑)"
-    cargo test --all-targets --all-features
+    rust_tests --all-targets --all-features
     step "Stress $i/$stress — Gated"
     cargo test --lib -- --ignored
     i=$((i + 1))
 done
 
 if [ "$rust_only" -eq 0 ]; then
-    printf '\n\033[1m门禁全绿（CI Linux job 镜像）\033[0m\n'
+    printf '\n\033[1m门禁通过（固定口覆盖及跳过计数见 Test 步骤；有跳过须补验）\033[0m\n'
 else
     printf '\n\033[1mRust 门禁全绿（未验证 adapter，不是完整交付）\033[0m\n'
 fi

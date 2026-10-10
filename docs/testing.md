@@ -206,6 +206,25 @@ instead of a tax. Each rule was paid for by a real incident.
   2691, but an in-process test mutex cannot serialize them. Run these faces
   sequentially; otherwise an address-in-use panic can also poison the
   remaining lifecycle tests in that process.
+  Local `scripts/gates.sh --full` and all-target fast feedback probe the
+  stable port before their Rust test face. If it is occupied, they enumerate
+  the selected tests and print `LOCAL COVERAGE GAP`, the reason, exact count,
+  and each skipped fixed-port test. These are filtered out, never counted as
+  passed; the other lifecycle tests still run. `--ci` (or a set `CI` variable)
+  refuses to skip and fails on an occupied port. A free port runs the original
+  selection with zero skips. The probe does not stop or authenticate to the
+  developer's host; a subsequent competing bind remains a real test failure.
+  To supplement Linux fixed-port coverage, run `scripts/ci-box.sh` in its
+  isolated network. The macOS-only browser handoff test still needs a free
+  macOS port; have the host owner run `clat host stop` before repeating
+  `--full` to close all native coverage gaps.
+  Direct `cargo test` retains its port requirements and does not self-skip.
+- **Scan visible test sources, not evidence archives.** The wait guard uses
+  Git's tracked and nonignored untracked Rust paths, including new test files;
+  tracked paths remain covered even if an ignore rule matches them. Exported
+  source copies without Git metadata use the directory walk with `output/`
+  and build/dependency directories excluded. The 96-site registration rule
+  still rejects new waits and stale entries; historical evidence is preserved.
 - **Do not accumulate duplicated scaffolding.** When two test suites
   share setup/assert sequences (the providers adapters' test sections
   carried 97 duplicated normalized blocks while the production code

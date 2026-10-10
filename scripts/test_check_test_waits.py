@@ -40,6 +40,56 @@ class WaitGuardTests(unittest.TestCase):
             (root / "tests/new.rs").write_text("fn helper() { cmd.output(); }")
             self.assertEqual(len(waits.inventory(root)), 1)
 
+    def test_ignored_archive_does_not_hide_new_source_waits(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            subprocess.run(["git", "init", "-q", str(root)], check=True, timeout=10)
+            (root / ".gitignore").write_text("output/\narchive/\n")
+            for name in ("output/tests/old.rs", "archive/tests/old.rs", "tests/new.rs"):
+                file = root / name
+                file.parent.mkdir(parents=True, exist_ok=True)
+                file.write_text("fn helper() { child.wait(); }")
+            calls = waits.inventory(root)
+            self.assertEqual([key[0] for key, _ in calls], ["tests/new.rs"])
+            self.assertIn("unregistered", waits.violations(calls, {})[0])
+
+    def test_tracked_ignored_source_remains_covered_and_deleted_paths_are_absent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            subprocess.run(["git", "init", "-q", str(root)], check=True, timeout=10)
+            (root / "tests").mkdir()
+            file = root / "tests/tracked.rs"
+            file.write_text("fn helper() { child.wait(); }")
+            subprocess.run(["git", "add", "tests/tracked.rs"], cwd=root,
+                           check=True, timeout=10)
+            (root / ".gitignore").write_text("tests/\n")
+            self.assertEqual(len(waits.inventory(root)), 1)
+            file.unlink()
+            self.assertEqual(waits.inventory(root), [])
+
+    def test_no_git_archive_copy_still_excludes_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            (root / "output/tests").mkdir(parents=True)
+            (root / "output/tests/old.rs").write_text("fn helper() { child.wait(); }")
+            self.assertEqual(waits.inventory(root), [])
+
+    def test_bash32_no_filters_and_literal_filters_reach_fast_runner(self):
+        scripts = pathlib.Path(__file__).parent
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            (root / "scripts").mkdir()
+            for name in ("gates.sh", "check-test-waits.py"):
+                shutil.copyfile(scripts / name, root / "scripts" / name)
+            (root / "scripts/test-waits.allowlist.tsv").write_text("# empty\n")
+            (root / "scripts/test-fast.py").write_text(
+                'import sys; print(repr(sys.argv[1:]))\n')
+            for filters in ([], ["first::", "filter with spaces", "--plan"]):
+                result = subprocess.run(["/bin/bash", "scripts/gates.sh", *filters],
+                                        cwd=root, capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(repr(filters), result.stdout)
+
     def test_comments_strings_raw_strings_chars_and_lifetimes(self):
         source = r'''
         // #[cfg(test)] mod ghost { cmd.output(); }

@@ -6,6 +6,7 @@ import os
 import pathlib
 import re
 import sys
+import subprocess
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 ALLOWLIST = ROOT / "scripts/test-waits.allowlist.tsv"
@@ -143,16 +144,27 @@ def scan_source(path, source, inherited=False, external=None):
     return calls
 
 
-def inventory(root):
-    sources = {}
-    # Walk new directories too, without depending on git's tracked-file index.
+def source_files(root):
+    """Tracked and new visible sources; exported CI copies retain archive fences."""
+    if (root / ".git").exists():
+        result = subprocess.run(
+            ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z",
+             "--", "*.rs"], cwd=root, capture_output=True, text=True,
+            check=True, timeout=30)
+        return sorted(path for path in set(filter(None, result.stdout.split("\0")))
+                      if (root / path).is_file())
+    paths = []
     for directory, children, files in os.walk(root):
-        children[:] = sorted(set(children) - {"target", "node_modules", ".git", ".codegraph"})
-        for name in sorted(files):
-            if name.endswith(".rs"):
-                file = pathlib.Path(directory) / name
-                path = file.relative_to(root).as_posix()
-                sources[path] = file.read_text(encoding="utf-8")
+        children[:] = sorted(set(children) - {
+            "target", "node_modules", ".git", ".codegraph", "output"})
+        paths.extend((pathlib.Path(directory) / name).relative_to(root).as_posix()
+                     for name in sorted(files) if name.endswith(".rs"))
+    return paths
+
+
+def inventory(root):
+    sources = {path: (root / path).read_text(encoding="utf-8")
+               for path in source_files(root)}
     calls, inherited = {}, set()
     pending = list(sorted(sources))
     while pending:
