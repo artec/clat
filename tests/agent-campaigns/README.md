@@ -138,3 +138,56 @@ withheld, but instruction-readback redaction leaked an arm signature;
 condition blinding is not guaranteed. The original packets and judgments
 remain retained, and this defect does not change the registered external
 oracle scores or the decision to reject promotion.
+
+
+## BANK-2 versioned bank
+
+The [BANK-2 compact roster](evidence/bank2-2026-10-10/result.json) registers
+30 qualified tasks: ten previously exposed discovery tasks and twenty
+independently designed held-out tasks. Earlier registrations,
+raw failures, investigation tasks and the four previously paid follow-up tasks
+retain their original identities and scores. Previously exposed follow-up
+functions are excluded from the fresh held-out roster.
+
+Question sources and `TASK.md` stay in each private `exam/`; references,
+mutants and judge materials stay in separate directories. Public compact cards
+contain qualification metadata and artifact digests, without answer source or
+hidden case values. A future candidate receives only its exam directory and
+the public build interface, through a separately admitted fenced runner.
+The bank checker itself does not execute candidates or call a model.
+
+`bank.py` validates the public digest of the private frozen manifest, the
+complete roster, artifact hashes and compiled behavioral observations. It
+rederives admission from base red, reference green, wrong-fix red and an
+additional gaming attack red. For external-case receipts it compares typed
+observed values against the retained oracle values, disregarding a recorded
+`qualified` or `passed` flag. Old trusted Rust-test receipts keep their original
+assertion format. This is accidental-drift detection for trusted offline
+qualification, not protection against an adversary rewriting every artifact.
+
+```sh
+python3 -m unittest discover -s tests/agent-campaigns -p 'test_*.py'
+python3 tests/agent-campaigns/bank.py \
+  --bank output/bank2-2026-10-10/bank-v1 \
+  --compact tests/agent-campaigns/evidence/bank2-2026-10-10/result.json
+```
+
+All raw source snapshots, extraction rules, unsuccessful preparations,
+preregistrations and compiler/oracle logs remain local. The compact manifest
+alone cannot recreate missing raw artifacts. These are historical Rust item
+microtasks with declared glue, rather than acceptance of whole historical
+crates or a complete repository benchmark. The test-strengthening item is
+scored by running submitted regression tests against bug, reference and mutant
+implementations; the cross-module item exercises the declared extracted
+production paths together.
+
+Toolchain or dependency changes create a fresh qualification version. Copy
+the retained inputs to a new work directory before rerunning qualification;
+do not run a retained generator against the immutable bank. Pin the compiler,
+Rust dependency bytes and platform-library identities, rerun every
+base/reference/mutant/attack, and retain the previous version. The SQLite
+fixtures record the system library version/source identity, SDK stub and OS
+build; the shared-cache library bytes are not separately exported. A release re-examination is optional and
+requires its own owner-approved model budget, frozen version/model settings,
+and all-started-run denominator. Do not silently spend tokens as part of a
+build or release, or compare unlike bank versions as an ability trend.

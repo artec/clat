@@ -1,0 +1,315 @@
+{
+  "schema": 1,
+  "version": "bank2-v1",
+  "date": "2026-10-10",
+  "qualified": 30,
+  "discovery": 10,
+  "holdout": 20,
+  "investigation_retained": [
+    "AGEVAL-09"
+  ],
+  "paid_calls": 0,
+  "capability_improvement": "unverified",
+  "manifest_sha256": "953fa81e514166726bb29b71dac75298dc5cc0f887e344610cdd391e3b629114",
+  "tasks": [
+    {
+      "id": "AGEVAL-01",
+      "split": "discovery",
+      "domain": "budget-ledger",
+      "category": "historical-local-repair",
+      "scope": "historical Rust item microtask",
+      "question_sha256": "51e089138838faba3eca9c290da4a9fc28d43f7a51457bfa160ab9b679bd77a7",
+      "qualification": "compiled red/green/red + constant/no-op rejected"
+    },
+    {
+      "id": "AGEVAL-02",
+      "split": "discovery",
+      "domain": "usage-aggregation",
+      "category": "historical-local-repair",
+      "scope": "historical Rust item microtask",
+      "question_sha256": "cd941b270e9a2eb4cc7e35fd79113b5b15ba4d129f380011583977f86aa447d2",
+      "qualification": "compiled red/green/red + constant/no-op rejected"
+    },
+    {
+      "id": "AGEVAL-03",
+      "split": "discovery",
+      "domain": "responses-admission",
+      "category": "historical-local-repair",
+      "scope": "historical Rust item microtask",
+      "question_sha256": "24e1b80976739b7f93172730a540539a83f17212d70bfbc1f2c2461547e58cc4",
+      "qualification": "compiled red/green/red + constant/no-op rejected"
+    },
+    {
+      "id": "AGEVAL-04",
+      "split": "discovery",
+      "domain": "responses-admission",
+      "category": "historical-local-repair",
+      "scope": "historical Rust item microtask",
+      "question_sha256": "3e478f049bbe62c093658b92027e9961a352c8cb9158f6862869310cc0580a57",
+      "qualification": "compiled red/green/red + constant/no-op rejected"
+    },
+    {
+      "id": "AGEVAL-05",
+      "split": "discovery",
+      "domain": "compatible-admission",
+      "category": "historical-local-repair",
+      "scope": "historical Rust item microtask",
+      "question_sha256": "9fbee06c533e073e7c988ae47da660981217ff48ae6b30959309899e49156167",
+      "qualification": "compiled red/green/red + constant/no-op rejected"
+    },
+    {
+      "id": "AGEVAL-06",
+      "split": "discovery",
+      "domain": "cancellation",
+      "category": "historical-local-repair",
+      "scope": "historical Rust item microtask",
+      "question_sha256": "77fd159f8ee0aded3aba5d7efad9c7ebd5fb5b8e4801f68e13637a29a9687b98",
+      "qualification": "compiled red/green/red + constant/no-op rejected"
+    },
+    {
+      "id": "AGEVAL-07",
+      "split": "discovery",
+      "domain": "cancellation",
+      "category": "historical-local-repair",
+      "scope": "historical Rust item microtask",
+      "question_sha256": "4ee0ccff3957a18e937287cafb11d12c89e83b79ebb7048cb64225dcf6890370",
+      "qualification": "compiled red/green/red + constant/no-op rejected"
+    },
+    {
+      "id": "AGEVAL-08",
+      "split": "discovery",
+      "domain": "state-reference",
+      "category": "historical-local-repair",
+      "scope": "historical Rust item microtask",
+      "question_sha256": "698c7ee178035d72be30ececd8da9afb33b068a3741a2787b883298cb37a1187",
+      "qualification": "compiled red/green/red + constant/no-op rejected"
+    },
+    {
+      "id": "AGEVAL-10",
+      "split": "discovery",
+      "domain": "state-reference",
+      "category": "historical-local-repair",
+      "scope": "historical Rust item microtask",
+      "question_sha256": "e329448bb7f96d96b0390c16707a6cada49c1dec1ff6db68a5f5c742430271bf",
+      "qualification": "compiled red/green/red + constant/no-op rejected"
+    },
+    {
+      "id": "AGEVAL-11",
+      "split": "discovery",
+      "domain": "state-reference",
+      "category": "historical-local-repair",
+      "scope": "historical Rust item microtask",
+      "question_sha256": "bfa7f5eed1d048c187f9e8a1d5f2c823f540896c01337ef00ad0ab8e97b31507",
+      "qualification": "compiled red/green/red + constant/no-op rejected"
+    },
+    {
+      "id": "BANK2-H01",
+      "split": "holdout",
+      "domain": "tui",
+      "category": "定位诊断",
+      "difficulty": "medium",
+      "scope": "提取run_frontend里的格式化表达式与修复后的完整user_facing_error_line。I/O适配仅把返回字符串写为hex；不验证真实终端恢复。",
+      "question_sha256": "bceb0ba38d71f3387ec4311be05b9bade1b8b0da4891279eac4582421e4673dd",
+      "qualification": "compiled red/green/red + three gaming attacks rejected"
+    },
+    {
+      "id": "BANK2-H02",
+      "split": "holdout",
+      "domain": "dsh",
+      "category": "兼容性",
+      "difficulty": "medium",
+      "scope": "完整提取parse_header；WS_MESSAGE_CAP按历史常量提供。输出的是取帧门槛，不验证完整mux或整个历史crate。",
+      "question_sha256": "d4b9c91ec293c4106c765bdfd3579c0f362dda2fc00b2efd22b0c3ff8ffd8c1a",
+      "qualification": "compiled red/green/red + three gaming attacks rejected"
+    },
+    {
+      "id": "BANK2-H03",
+      "split": "holdout",
+      "domain": "tui",
+      "category": "局部修复",
+      "difficulty": "hard",
+      "scope": "完整提取steer_input。Application::steer/start_run为确定性失败注入缝，非历史实现；只验证TUI输入所有权，不验证core并发时序。base适配只把原本unit型start_run调用的bool返回值丢弃。",
+      "question_sha256": "16c1ac6d64c286cf64b553f7d7055799e83d44f9b52bba4bf6563f7a48cfd968",
+      "qualification": "compiled red/green/red + three gaming attacks rejected"
+    },
+    {
+      "id": "BANK2-H04",
+      "split": "holdout",
+      "domain": "serve",
+      "category": "定位诊断",
+      "difficulty": "hard",
+      "scope": "base提取生产入口最后handle.join();0两句；ref完整提取serve_join_exit和serve_exit_code。句柄适配只注入join结果，不启动真实HTTP服务。",
+      "question_sha256": "a9c28ef381da7dc35257b872cbfa211ef8b219786b27f841ecf836da119808f0",
+      "qualification": "compiled red/green/red + three gaming attacks rejected"
+    },
+    {
+      "id": "BANK2-H05",
+      "split": "holdout",
+      "domain": "serve",
+      "category": "跨模块",
+      "difficulty": "hard",
+      "scope": "实际提取两个模块的production：accept_loop关停后缀与state::drain_workers完整方法。适配提供真实Arc/Mutex/JoinHandle；join_with_grace在微任务中直接join短命线程。其它清理方法为无状态缝；不验证HTTP连接超时。",
+      "question_sha256": "202ee3195051e9f2c71318f3b70fc57495072323b337587167483d0870fe3877",
+      "qualification": "compiled red/green/red + three gaming attacks rejected"
+    },
+    {
+      "id": "BANK2-H06",
+      "split": "holdout",
+      "domain": "session",
+      "category": "局部修复",
+      "difficulty": "hard",
+      "scope": "完整提取session_is_empty、archive_session与离开清理方法；函数名统一leave_session。SQL通过真实系统SQLite执行，最小schema限于四张表；不验证历史完整迁移或完整crate。",
+      "question_sha256": "0f44cf198914e19d6b8b2bc32752b8d64565fad85ea654c0eadd0c3b9be6595b",
+      "qualification": "compiled red/green/red + three gaming attacks rejected"
+    },
+    {
+      "id": "BANK2-H07",
+      "split": "holdout",
+      "domain": "session",
+      "category": "测试补强",
+      "difficulty": "medium",
+      "scope": "完整提取current_session；真实SQLite adapter/schema保持不变。提交regression.rs中的Rust #[test]，外部judge把同一组测试分别接到三个冻结实现；不接受仅让全部实现失败/通过的测试。",
+      "question_sha256": "623a0d42f827b9cdf25e46893e6d980f8e3b4eb105d6994664cef57113540d38",
+      "qualification": "compiled red/green/red + three gaming attacks rejected"
+    },
+    {
+      "id": "BANK2-H08",
+      "split": "holdout",
+      "domain": "model",
+      "category": "兼容性",
+      "difficulty": "medium",
+      "scope": "只提取ModelPreset::apply的种值识别闭包及随后的match生产块，其他配置字段不在题目范围。参数previous_preset_window由适配直接注入；不验证整个配置迁移。",
+      "question_sha256": "3a9b122fd0c0c8e8a4e448c710e88a790c257583ea6177ac16da52d50d06b299",
+      "qualification": "compiled red/green/red + three gaming attacks rejected"
+    },
+    {
+      "id": "BANK2-H09",
+      "split": "holdout",
+      "domain": "serve",
+      "category": "定位诊断",
+      "difficulty": "hard",
+      "scope": "完整提取parse_head及其header_value依赖；ref完整提取ParsedHead结构和parse_head。适配归一到相同可观察结果；不验证路由权限或真实网络。",
+      "question_sha256": "8b812383c18473d390104c4418e6073e657dccdcaf5135921fee1cc35ed6a609",
+      "qualification": "compiled red/green/red + three gaming attacks rejected"
+    },
+    {
+      "id": "BANK2-H10",
+      "split": "holdout",
+      "domain": "serve",
+      "category": "局部修复",
+      "difficulty": "hard",
+      "scope": "完整提取历史读取链与解析依赖；TcpStream由确定性Read分段适配替换（超时安装为空操作），没有改读取逻辑。只验证分段字节保留，不宣称验证TCP/超时、安全路由或整个历史crate。",
+      "question_sha256": "07fec6211534ea3520cd775d0702b6da34bbf2911e499dba9f59a2e0addf2a32",
+      "qualification": "compiled red/green/red + three gaming attacks rejected"
+    },
+    {
+      "id": "BANK2-H11",
+      "split": "holdout",
+      "domain": "插件/权限",
+      "category": "局部修复",
+      "difficulty": "medium",
+      "scope": "函数原文保留；其类型依赖改为同字段最小支架。仅输出生产PermissionRequest.arguments。",
+      "question_sha256": "a36e7e5a500439d3ab3591987403df3c46c335e99d7acec3d3d44a31b6370588",
+      "qualification": "compiled red/green/red + constant and first-case snapshot rejected"
+    },
+    {
+      "id": "BANK2-H12",
+      "split": "holdout",
+      "domain": "插件/MCP",
+      "category": "诊断",
+      "difficulty": "medium",
+      "scope": "保留历史trait pending_requests方法原文。最小Bridge/Handler支架注入共享总计与各连接局部计数，隔离生产read路径，不模拟完整MCP调度。",
+      "question_sha256": "7b48f07eb5ba7a78401f7403a70068301eb8363a751b5e7bcc99836ce4aa6f3e",
+      "qualification": "compiled red/green/red + constant and first-case snapshot rejected"
+    },
+    {
+      "id": "BANK2-H13",
+      "split": "holdout",
+      "domain": "插件/WASM/权限",
+      "category": "安全修复",
+      "difficulty": "medium",
+      "scope": "grants与guest_path_for原文抽取；历史base无consent参数，适配器接收但不传该输入。ref直接使用真实write_allowed参数。",
+      "question_sha256": "ce3b691c9ae4140d4f65547af3071ec4b592a727e36742581a5bbd2b1d064f9f",
+      "qualification": "compiled red/green/red + constant and first-case snapshot rejected"
+    },
+    {
+      "id": "BANK2-H14",
+      "split": "holdout",
+      "domain": "插件/WASM",
+      "category": "诊断",
+      "difficulty": "medium",
+      "scope": "base为compile_plugin的definitions映射原文，移至与ref同签名函数；WIT bindgen投影为同字段Def，effect固定Read（不参与判卷）。ref sanitize_definitions原文。",
+      "question_sha256": "31e32b4cf2da781f1cde5bd5f6fbdc6902b3ef3409207427165fa6f9045ea2f5",
+      "qualification": "compiled red/green/red + constant and first-case snapshot rejected"
+    },
+    {
+      "id": "BANK2-H15",
+      "split": "holdout",
+      "domain": "MCP/工具",
+      "category": "安全修复",
+      "difficulty": "medium",
+      "scope": "base组合历史HttpSession::request先read_to_string后MAX_FRAME_BYTES检查为独立函数；ref read_body_capped原文。cap参数化用于边界，支架仅记录实际Read字节。",
+      "question_sha256": "c542b4f673caf4ee759809035a7bb46d747947b6713f0d44c5a83ba68b2905fa",
+      "qualification": "compiled red/green/red + constant and first-case snapshot rejected"
+    },
+    {
+      "id": "BANK2-H16",
+      "split": "holdout",
+      "domain": "模型适配",
+      "category": "兼容性",
+      "difficulty": "medium",
+      "scope": "merge_extra_body函数base/ref原文；ModelError仅类型支架。外部case锁定无多个key错误导致半提交的输入，未声称整体原子性。",
+      "question_sha256": "7f279571cb41f50c7bad39b730e3db572ce52dd96f155a3586eb9a5e60cab5ee",
+      "qualification": "compiled red/green/red + constant and first-case snapshot rejected"
+    },
+    {
+      "id": "BANK2-H17",
+      "split": "holdout",
+      "domain": "本地工具",
+      "category": "局部修复",
+      "difficulty": "medium",
+      "scope": "sorted_entries函数原文；base为统一接口仅把Vec返回改成(Vec,false)，不改变收集行为；ToolError为最小错误支架。外部判程序创建真实目录。",
+      "question_sha256": "31b3272e7a2873367cf83d3a648e548cefd0cfc205e32a07f0834617c3516385",
+      "qualification": "compiled red/green/red + constant and first-case snapshot rejected"
+    },
+    {
+      "id": "BANK2-H18",
+      "split": "holdout",
+      "domain": "工具/终端",
+      "category": "安全修复",
+      "difficulty": "medium",
+      "scope": "base来自ExecEventSink::emit原样delta显示分支，以identity helper表达；ref sanitize_tty_text原文，driver保持生产TTY/pipe分支。",
+      "question_sha256": "42e4fd344f5187b659a8732ffc7f41f17999514b79007ecedbe469a98ea2c3ca",
+      "qualification": "compiled red/green/red + constant and first-case snapshot rejected"
+    },
+    {
+      "id": "BANK2-H19",
+      "split": "holdout",
+      "domain": "工具/升级",
+      "category": "安全修复",
+      "difficulty": "medium",
+      "scope": "历史download_asset返回待安装文件处无任何magic gate，base helper是该缺失preflight的identity表达；ref两个验证函数原文。真实文件由外部oracle创建。",
+      "question_sha256": "ad4c8b114424d4ad3d5ae7fa329b15d0830c726139575ed39fa8d0b9849da72c",
+      "qualification": "compiled red/green/red + constant and first-case snapshot rejected"
+    },
+    {
+      "id": "BANK2-H20",
+      "split": "holdout",
+      "domain": "运行时/工具",
+      "category": "局部修复",
+      "difficulty": "hard",
+      "scope": "完整历史队列methods原文；base统一新接口的try_push转调旧push、finish转调旧is_empty、旧生命周期无封口表达为no-op seal。ref真实state与methods原文。无线程scheduler改写。",
+      "question_sha256": "d4f38bbad727d3256131f010b9857aa743a3260f0ab4ddb5c8115c8a2e60f2a6",
+      "qualification": "compiled red/green/red + constant and first-case snapshot rejected"
+    }
+  ],
+  "private_raw": "output/bank2-2026-10-10/bank-v1",
+  "historical_policy": "Old registrations/results unchanged; exposed P6 tasks are not fresh holdout",
+  "limits": [
+    "Trusted offline Rust item qualification; not whole historical crate acceptance",
+    "Separate fenced runner and owner budget required before paid examination",
+    "Local raw artifacts required; compact cards alone are not a reproducible campaign",
+    "Heldout isolation is fresh-context/access-log evidence, not an OS read fence",
+    "Native Windows CI remains owner post-commit acceptance"
+  ]
+}
