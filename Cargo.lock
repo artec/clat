@@ -361,7 +361,7 @@ dependencies = [
 
 [[package]]
 name = "clat"
-version = "1.7.2"
+version = "1.7.3"
 dependencies = [
  "arboard",
  "base64 0.22.1",
@@ -388,7 +388,7 @@ dependencies = [
 
 [[package]]
 name = "clat-core"
-version = "1.7.2"
+version = "1.7.3"
 dependencies = [
  "aes",
  "async-trait",
@@ -473,7 +473,7 @@ dependencies = [
 
 [[package]]
 name = "clat-wasm-net"
-version = "1.7.2"
+version = "1.7.3"
 dependencies = [
  "brotli-decompressor",
  "bytes",
