@@ -15,6 +15,8 @@ use crate::{CancelToken, Project, Tool, ToolDefinition, ToolEffect, ToolError};
 use serde_json::{Value, json};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
+#[cfg(test)]
+mod outcome_tests;
 mod prepared;
 #[cfg(test)]
 mod sbx4_tests;
@@ -193,6 +195,10 @@ impl Tool for ExecCommandTool {
     fn journal_output(&self, output: &Value) -> Value {
         process_journal_output(output)
     }
+
+    fn error_output(&self, error: &ToolError) -> Value {
+        process_error_output(error)
+    }
 }
 
 #[derive(Clone)]
@@ -242,6 +248,10 @@ impl Tool for WriteStdinTool {
 
     fn journal_output(&self, output: &Value) -> Value {
         process_journal_output(output)
+    }
+
+    fn error_output(&self, error: &ToolError) -> Value {
+        process_error_output(error)
     }
 
     fn prepare_execution(&self, arguments: &Value) -> Option<crate::tool::PreparedTool> {
@@ -316,6 +326,18 @@ impl Tool for RunCommandTool {
     fn journal_output(&self, output: &Value) -> Value {
         process_journal_output(output)
     }
+
+    fn error_output(&self, error: &ToolError) -> Value {
+        process_error_output(error)
+    }
+}
+
+fn process_error_output(error: &ToolError) -> Value {
+    let message = error.to_string();
+    json!({
+        "command_outcome": crate::process::classify_tool_error(&message).json(),
+        "error": message,
+    })
 }
 
 fn process_journal_output(output: &Value) -> Value {
@@ -344,7 +366,7 @@ fn process_journal_output(output: &Value) -> Value {
                 .iter()
                 .any(|field| output.get(field).and_then(Value::as_bool).unwrap_or(false))
         });
-    json!({
+    let mut journal = json!({
         "session_id": output.get("session_id").cloned().unwrap_or(Value::Null),
         "running": output.get("running").cloned().unwrap_or(json!(false)),
         "exit_code": output.get("exit_code").cloned().unwrap_or(Value::Null),
@@ -358,7 +380,11 @@ fn process_journal_output(output: &Value) -> Value {
         "output_truncated": output_truncated,
         "sandbox": output.get("sandbox").cloned().unwrap_or(Value::Null),
         "output_omitted_from_journal": true
-    })
+    });
+    if let Some(outcome) = output.get("command_outcome") {
+        journal["command_outcome"] = outcome.clone();
+    }
+    journal
 }
 
 fn bounded_command_journal(arguments: &Value, field: &str) -> Value {
@@ -379,6 +405,7 @@ fn bounded_command_journal(arguments: &Value, field: &str) -> Value {
 
 fn process_output_json(output: ProcessOutput) -> Value {
     json!({
+        "command_outcome": output.command_outcome.json(),
         "session_id": output.session_id,
         "tty": output.tty,
         "running": output.running,
@@ -593,6 +620,7 @@ impl RunCommandTool {
             .sandbox
             .json(output.sandbox_denied, output.sandbox_unavailable);
         Ok(json!({
+            "command_outcome": output.command_outcome.json(),
             "command": output.command,
             "cwd": cwd.to_string_lossy(),
             "exit_code": output.exit_code,

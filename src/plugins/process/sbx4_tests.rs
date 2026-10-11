@@ -2,14 +2,7 @@ use super::prepared::enforced_workspace;
 use super::*;
 
 pub(super) fn root() -> std::path::PathBuf {
-    let root = std::env::temp_dir().join(format!(
-        "clat-process-plugin-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let (_, root) = crate::test_support::roots("process-plugin");
     std::fs::create_dir_all(&root).unwrap();
     root
 }

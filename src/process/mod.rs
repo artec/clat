@@ -14,6 +14,8 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 mod capture;
+mod outcome;
+pub(crate) use outcome::{CommandOutcome, classify_tool_error};
 pub(crate) mod review;
 pub(crate) use capture::capture_command;
 
@@ -197,6 +199,7 @@ impl ManagedStdioLease {
 
 #[derive(Clone, Debug)]
 pub(crate) struct ProcessOutput {
+    pub command_outcome: CommandOutcome,
     pub session_id: u64,
     pub command: String,
     pub tty: bool,
@@ -1058,13 +1061,11 @@ impl ProcessEntry {
         }
     }
 
-    fn sandbox_diagnostics(&self, state: &EntryState) -> Option<String> {
-        matches!(self.sandbox.provider.as_str(), "seatbelt" | "windows-acl").then(|| {
-            let mut bytes = state.stderr.snapshot();
-            bytes.push(b'\n');
-            bytes.extend(state.pty.snapshot());
-            String::from_utf8_lossy(&bytes).into_owned()
-        })
+    fn command_diagnostics(&self, state: &EntryState) -> String {
+        let mut bytes = state.stderr.snapshot();
+        bytes.push(b'\n');
+        bytes.extend(state.pty.snapshot());
+        String::from_utf8_lossy(&bytes).into_owned()
     }
 
     fn consume_limits(
@@ -1077,7 +1078,7 @@ impl ProcessEntry {
         // Sandbox classification must not depend on the model-facing output
         // budget. A full stdout budget can leave stderr unread in this call,
         // while the bounded transient ring still contains the OS denial.
-        let sandbox_diagnostics = self.sandbox_diagnostics(&state);
+        let diagnostics = self.command_diagnostics(&state);
         let (stdout, stdout_cursor, stdout_ring_lossy, stdout_more) =
             state.stdout.read_from(state.cursors.stdout, stdout_budget);
         state.cursors.stdout = stdout_cursor;
@@ -1100,38 +1101,64 @@ impl ProcessEntry {
         let stdout_lossy = stdout_ring_lossy || stdout_utf8_lossy;
         let stderr_lossy = stderr_ring_lossy || stderr_utf8_lossy;
         let pty_lossy = pty_ring_lossy || pty_utf8_lossy;
-        let sandbox_output = sandbox_diagnostics.as_deref().unwrap_or("");
+        self.build_output(
+            &diagnostics,
+            terminal,
+            stdout_text,
+            stderr_text,
+            pty_text,
+            [stdout_bytes, stderr_bytes, pty_bytes],
+            [stdout_lossy, stderr_lossy, pty_lossy],
+            [
+                stdout_more || stdout_lossy || stdout_decode_truncated,
+                stderr_more || stderr_lossy || stderr_decode_truncated,
+                pty_more || pty_lossy || pty_decode_truncated,
+            ],
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build_output(
+        &self,
+        diagnostics: &str,
+        terminal: Option<TerminalStatus>,
+        stdout: String,
+        stderr: String,
+        pty: String,
+        bytes: [usize; 3],
+        lossy: [bool; 3],
+        truncated: [bool; 3],
+    ) -> ProcessOutput {
+        let sandbox_output = if matches!(self.sandbox.provider.as_str(), "seatbelt" | "windows-acl")
+        {
+            diagnostics
+        } else {
+            ""
+        };
         let denied = self.sandbox.denied(sandbox_output);
         let sandbox_unavailable = self.sandbox.unavailable(
             sandbox_output,
             terminal.as_ref().and_then(|status| status.exit_code),
         );
-        ProcessOutput {
+        let mut output = ProcessOutput {
+            command_outcome: classify_tool_error("pending result"),
             session_id: self.id,
             command: self.command.clone(),
             tty: self.tty,
             running: terminal.is_none(),
-            stdout: stdout_text,
-            stderr: stderr_text,
-            pty: pty_text,
-            stdout_bytes,
-            stderr_bytes,
-            pty_bytes,
-            stdout_lossy,
-            stderr_lossy,
-            pty_lossy,
-            stdout_truncated: stdout_more || stdout_lossy || stdout_decode_truncated,
-            stderr_truncated: stderr_more || stderr_lossy || stderr_decode_truncated,
-            pty_truncated: pty_more || pty_lossy || pty_decode_truncated,
-            output_truncated: stdout_lossy
-                || stderr_lossy
-                || pty_lossy
-                || stdout_decode_truncated
-                || stderr_decode_truncated
-                || pty_decode_truncated
-                || stdout_more
-                || stderr_more
-                || pty_more,
+            stdout,
+            stderr,
+            pty,
+            stdout_bytes: bytes[0],
+            stderr_bytes: bytes[1],
+            pty_bytes: bytes[2],
+            stdout_lossy: lossy[0],
+            stderr_lossy: lossy[1],
+            pty_lossy: lossy[2],
+            stdout_truncated: truncated[0],
+            stderr_truncated: truncated[1],
+            pty_truncated: truncated[2],
+            output_truncated: truncated.into_iter().any(|value| value),
             exit_code: terminal.as_ref().and_then(|status| status.exit_code),
             signal: terminal.as_ref().and_then(|status| status.signal.clone()),
             timed_out: terminal.as_ref().is_some_and(|status| status.timed_out),
@@ -1140,7 +1167,9 @@ impl ProcessEntry {
             sandbox: self.sandbox.clone(),
             sandbox_denied: denied,
             sandbox_unavailable,
-        }
+        };
+        output.command_outcome = outcome::classify(&output, diagnostics);
+        output
     }
 
     fn is_terminal(&self) -> bool {
@@ -1720,5 +1749,7 @@ fn terminate_group(child: &mut command_group::GroupChild) -> TerminalStatus {
     })
 }
 
+#[cfg(test)]
+mod outcome_tests;
 #[cfg(test)]
 mod tests;

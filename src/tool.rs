@@ -272,6 +272,12 @@ pub trait Tool: Send + Sync {
         output.clone()
     }
 
+    /// Model-facing diagnostics for invocation errors. The caller still sets
+    /// `is_error`; implementations must retain the original error message.
+    fn error_output(&self, error: &ToolError) -> Value {
+        serde_json::json!({"error": error.to_string()})
+    }
+
     /// Optional typed result blocks. The default keeps existing text/JSON
     /// tools byte-for-byte unchanged; visual tools return descriptors here
     /// while session-owned result transformers attach transient provider

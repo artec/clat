@@ -131,6 +131,9 @@ impl Tool for FrozenProcessTool {
     fn journal_output(&self, a: &Value) -> Value {
         self.source.tool().journal_output(a)
     }
+    fn error_output(&self, error: &ToolError) -> Value {
+        self.source.tool().error_output(error)
+    }
     fn invoke(&self, a: &Value, p: &Project, c: &CancelToken) -> Result<Value, ToolError> {
         if a != &self.arguments {
             return Err(ToolError::new("prepared arguments changed"));

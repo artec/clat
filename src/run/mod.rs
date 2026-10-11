@@ -654,12 +654,7 @@ impl<'a> Run<'a> {
                 }
                 let (output, is_error) = match invocation {
                     Ok(output) => (output, false),
-                    Err(error) => (
-                        serde_json::json!({
-                            "error": error.to_string(),
-                        }),
-                        true,
-                    ),
+                    Err(error) => (tool.error_output(&error), true),
                 };
                 let approved_plan_exit = call.name == "exit_plan_mode"
                     && !is_error

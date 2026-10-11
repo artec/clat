@@ -786,6 +786,44 @@ writes, and Full Access retains its existing unrestricted write behavior.
 - `run_command` remains the one-shot project-root API and uses the same core
   ProcessService and command-text cap.
 
+All three tools add a structured `command_outcome` to command results and
+native invocation errors. It contains `kind`, `reason`, and `evidence`:
+
+| `kind` | Meaning |
+| --- | --- |
+| `running` | The command has not reached a terminal status. |
+| `success` | The outer shell exited zero (`shell_exit_zero`). |
+| `program_failure` | An ordinary nonzero exit (`nonzero_exit`), including compiler or assertion failures. |
+| `environment_failure` | A supervised timeout, sandbox diagnostic, launch/session limit error, or recognized execution/loading/resource diagnostic. |
+| `interrupted` | CLAT observed cancellation or explicit termination. |
+| `unknown_failure` | An unexplained signal, ambiguous 126/127 exit, or an unclassified tool error. |
+
+For example, exit 126 with a permission-denied diagnostic yields
+`{"kind":"environment_failure","reason":"execution_denied","evidence":"output_signature"}`;
+a compiler's exit 101 yields
+`{"kind":"program_failure","reason":"nonzero_exit","evidence":"exit_status"}`.
+The original exit code, signal, stderr, timeout fields, and error message remain
+unchanged. Nonzero command exits keep their existing tool-result semantics;
+invocation errors still have `is_error=true`. The labels never change approvals,
+sandbox enforcement, retries, or process lifecycle.
+
+`evidence=lifecycle` describes CLAT-observed supervision;
+`exit_status` describes the reported outer process status.
+`sandbox_diagnostic`, `output_signature`, and `operation_context` are diagnostic
+classifications, not proof of an OS cause. Output signatures use the existing
+bounded stderr/PTY rings, independently of the current output budget and
+consumption cursor; old diagnostics can disappear if the ring overflows.
+Bare `SIGKILL` is not labeled OOM, and ambiguous 126/127 exits remain unknown.
+Missing executable/format, permission-denied, memory/allocation, disk-space,
+and descriptor-limit messages are hints; an application can print those words.
+`success` does not prove every command in a shell sequence or pipeline succeeded:
+`false; echo ok` still reports the outer shell's zero exit. Check the actual test
+output and match count before claiming verification.
+
+The durable tool-result journal retains `command_outcome` while omitting raw
+process streams. Older journal results without this field remain readable;
+replay preserves recorded labels rather than recomputing them from missing output.
+
 `tty: true` requests a real PTY on macOS/Linux; Windows rejects PTY sessions
 until its process-tree isolation graduates. At most eight sessions may run in
 one run. Every id belongs to exactly that run/session; cancellation, run end,
