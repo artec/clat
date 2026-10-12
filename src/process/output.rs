@@ -51,6 +51,24 @@ impl ByteRing {
         usize::try_from(self.end.saturating_sub(effective)).unwrap_or(usize::MAX)
     }
 
+    /// A retained preceding newline proves a line boundary; lost bytes cannot.
+    pub(super) fn starts_line_at(&self, cursor: u64) -> bool {
+        if cursor == 0 && self.start == 0 {
+            return true;
+        }
+        let effective = cursor.max(self.start).min(self.end);
+        let Some(index) = effective
+            .checked_sub(self.start)
+            .and_then(|offset| offset.checked_sub(1))
+        else {
+            return false;
+        };
+        usize::try_from(index)
+            .ok()
+            .and_then(|index| self.bytes.get(index))
+            == Some(&b'\n')
+    }
+
     pub(super) fn snapshot(&self) -> Vec<u8> {
         self.bytes.iter().copied().collect()
     }

@@ -20,6 +20,8 @@ mod outcome_tests;
 mod prepared;
 #[cfg(test)]
 mod sbx4_tests;
+#[cfg(test)]
+mod witness_tests;
 use prepared::{NativeProcessTool, prepare_native};
 
 const SANDBOX_ID: PluginId = PluginId::new("builtin.sandbox.policy");
@@ -336,6 +338,7 @@ fn process_error_output(error: &ToolError) -> Value {
     let message = error.to_string();
     json!({
         "command_outcome": crate::process::classify_tool_error(&message).json(),
+        "verification_witness": crate::process::verification::unknown(),
         "error": message,
     })
 }
@@ -384,6 +387,9 @@ fn process_journal_output(output: &Value) -> Value {
     if let Some(outcome) = output.get("command_outcome") {
         journal["command_outcome"] = outcome.clone();
     }
+    if let Some(witness) = output.get("verification_witness") {
+        journal["verification_witness"] = witness.clone();
+    }
     journal
 }
 
@@ -405,6 +411,7 @@ fn bounded_command_journal(arguments: &Value, field: &str) -> Value {
 
 fn process_output_json(output: ProcessOutput) -> Value {
     json!({
+        "verification_witness": output.verification_witness,
         "command_outcome": output.command_outcome.json(),
         "session_id": output.session_id,
         "tty": output.tty,
@@ -620,6 +627,7 @@ impl RunCommandTool {
             .sandbox
             .json(output.sandbox_denied, output.sandbox_unavailable);
         Ok(json!({
+            "verification_witness": output.verification_witness,
             "command_outcome": output.command_outcome.json(),
             "command": output.command,
             "cwd": cwd.to_string_lossy(),

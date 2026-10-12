@@ -820,7 +820,30 @@ and descriptor-limit messages are hints; an application can print those words.
 `false; echo ok` still reports the outer shell's zero exit. Check the actual test
 output and match count before claiming verification.
 
-The durable tool-result journal retains `command_outcome` while omitting raw
+Command results also carry `verification_witness`. It reports bounded,
+unauthenticated observations from the **currently consumed bounded output bytes**,
+before JSON-string escaping can truncate their display, separately
+from the outer process status. Complete Rust test summaries include `passed`,
+`failed`, `ignored`, `filtered_out`, and `matched` (passed + failed); zero matches
+are explicit. Cargo compile-failure messages have an unknown match count. Other
+formats, incomplete lines and empty polls cannot prove a verification ran.
+Every observation carries a stream and format; the envelope states
+`evidence=output_signature`, `scope=consumed_output_bytes`, `authenticated=false`, and
+`target_exit_code=null`. Programs can print these signatures themselves.
+
+Up to eight observations are retained, including earlier failures before later
+successes. Their ordering is per stream, not a merged stdout/stderr timeline.
+`observations_truncated` reports an observation cap; `output_incomplete` reports
+truncated/lossy bytes, a missing line prefix, or a fragment without its terminating
+newline. A retained preceding newline proves the start of a polled line; a lost
+prefix cannot. Polling does not replay
+previously consumed summaries. The witness does not certify source identity,
+assertion coverage or unseen pipeline stages; `status=unknown` remains unknown.
+Invocation errors have an empty witness. This metadata never changes permissions
+or command execution.
+
+The durable tool-result journal retains `command_outcome` and the bounded witness
+counts and fixed labels while omitting raw
 process streams. Older journal results without this field remain readable;
 replay preserves recorded labels rather than recomputing them from missing output.
 

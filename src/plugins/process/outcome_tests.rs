@@ -1,7 +1,7 @@
 use super::*;
 
 #[cfg(unix)]
-struct Fixture {
+pub(super) struct Fixture {
     root: std::path::PathBuf,
     service: Arc<ProcessService>,
     generation: u64,
@@ -9,7 +9,7 @@ struct Fixture {
 
 #[cfg(unix)]
 impl Fixture {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let root = super::sbx4_tests::root();
         let sandbox = Arc::new(
             SandboxService::new(
@@ -27,7 +27,7 @@ impl Fixture {
         }
     }
 
-    fn exec(&self, cmd: &str) -> Value {
+    pub(super) fn exec(&self, cmd: &str) -> Value {
         ExecCommandTool {
             service: Arc::clone(&self.service),
         }
@@ -39,12 +39,24 @@ impl Fixture {
         .unwrap()
     }
 
-    fn poll(&self, id: &Value, chars: &str) -> Value {
+    pub(super) fn poll(&self, id: &Value, chars: &str) -> Value {
         WriteStdinTool {
             service: Arc::clone(&self.service),
         }
         .invoke(
             &json!({"session_id":id,"chars":chars,"yield_time_ms":1000}),
+            &Project::new(&self.root),
+            &CancelToken::new(),
+        )
+        .unwrap()
+    }
+
+    pub(super) fn compat(&self, command: &str) -> Value {
+        RunCommandTool {
+            service: Arc::clone(&self.service),
+        }
+        .invoke(
+            &json!({"command":command}),
             &Project::new(&self.root),
             &CancelToken::new(),
         )
@@ -191,6 +203,7 @@ impl crate::Model for ErrorProbe {
                     .contains("not available in this run")
             );
             assert_eq!(result.output["command_outcome"]["kind"], "unknown_failure");
+            assert_eq!(result.output["verification_witness"]["status"], "unknown");
             response.text = "observed structured error".into();
         } else {
             response.finish_reason = crate::FinishReason::ToolCalls;
@@ -275,6 +288,15 @@ fn command_outcome_catalog_checkpoint_and_replay_preserve_recorded_labels() {
             true,
         ),
         (json!({"exit_code":1,"stderr":"legacy output"}), false),
+        (
+            json!({"exit_code":0,"stdout":"transient diagnostic", "verification_witness":{
+                "scope":"consumed_output_bytes","evidence":"output_signature","authenticated":false,
+                "target_exit_code":null,"status":"observed","output_incomplete":false,
+                "observations_truncated":false,"observations":[{"format":"rust_test_summary", "stream":"stdout",
+                "status":"zero_matches","matched":0,"passed":0,"failed":0,"ignored":0,"filtered_out":2}]
+            }}),
+            false,
+        ),
     ];
     for (live, is_error) in samples {
         let durable = process_journal_output(&live);
@@ -298,6 +320,21 @@ fn command_outcome_catalog_checkpoint_and_replay_preserve_recorded_labels() {
             crate::session::catalog::ReplayKind::ToolResult
         ));
         seat.validate(&event, 4).unwrap();
+        let mut replay = crate::session::replay::ReplayAdapter::new();
+        let mut replay_events = Vec::new();
+        replay.push(&event, &mut replay_events);
+        let [
+            crate::session::replay::ReplayEvent::ToolFinished {
+                output,
+                is_error: replay_error,
+                ..
+            },
+        ] = replay_events.as_slice()
+        else {
+            panic!("tool/result must actually replay")
+        };
+        assert_eq!(output, &durable);
+        assert_eq!(*replay_error, is_error);
         let mut original = ProjectionRegistry::clat();
         original.fold_one(&event).unwrap();
         let checkpoint = original.checkpoint(
@@ -317,6 +354,7 @@ fn command_outcome_catalog_checkpoint_and_replay_preserve_recorded_labels() {
         };
         let json: Value = serde_json::from_str(result.output.as_str().unwrap()).unwrap();
         assert_eq!(json["command_outcome"], live["command_outcome"]);
+        assert_eq!(json["verification_witness"], live["verification_witness"]);
         assert_eq!(result.is_error, is_error);
         assert!(!json.to_string().contains("transient diagnostic"));
         assert!(!json.to_string().contains("legacy output"));

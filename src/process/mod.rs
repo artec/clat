@@ -15,6 +15,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 mod capture;
 mod outcome;
+pub(crate) mod verification;
 pub(crate) use outcome::{CommandOutcome, classify_tool_error};
 pub(crate) mod review;
 pub(crate) use capture::capture_command;
@@ -199,6 +200,7 @@ impl ManagedStdioLease {
 
 #[derive(Clone, Debug)]
 pub(crate) struct ProcessOutput {
+    pub verification_witness: serde_json::Value,
     pub command_outcome: CommandOutcome,
     pub session_id: u64,
     pub command: String,
@@ -1079,6 +1081,11 @@ impl ProcessEntry {
         // budget. A full stdout budget can leave stderr unread in this call,
         // while the bounded transient ring still contains the OS denial.
         let diagnostics = self.command_diagnostics(&state);
+        let starts_line = [
+            state.stdout.starts_line_at(state.cursors.stdout),
+            state.stderr.starts_line_at(state.cursors.stderr),
+            state.pty.starts_line_at(state.cursors.pty),
+        ];
         let (stdout, stdout_cursor, stdout_ring_lossy, stdout_more) =
             state.stdout.read_from(state.cursors.stdout, stdout_budget);
         state.cursors.stdout = stdout_cursor;
@@ -1101,7 +1108,7 @@ impl ProcessEntry {
         let stdout_lossy = stdout_ring_lossy || stdout_utf8_lossy;
         let stderr_lossy = stderr_ring_lossy || stderr_utf8_lossy;
         let pty_lossy = pty_ring_lossy || pty_utf8_lossy;
-        self.build_output(
+        let mut output = self.build_output(
             &diagnostics,
             terminal,
             stdout_text,
@@ -1114,7 +1121,21 @@ impl ProcessEntry {
                 stderr_more || stderr_lossy || stderr_decode_truncated,
                 pty_more || pty_lossy || pty_decode_truncated,
             ],
-        )
+        );
+        output.verification_witness = verification::consumed(
+            &[
+                ("stdout", &stdout, starts_line[0]),
+                ("stderr", &stderr, starts_line[1]),
+                ("pty", &pty, starts_line[2]),
+            ],
+            stdout_more
+                || stderr_more
+                || pty_more
+                || stdout_ring_lossy
+                || stderr_ring_lossy
+                || pty_ring_lossy,
+        );
+        output
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1141,6 +1162,7 @@ impl ProcessEntry {
             terminal.as_ref().and_then(|status| status.exit_code),
         );
         let mut output = ProcessOutput {
+            verification_witness: verification::unknown(),
             command_outcome: classify_tool_error("pending result"),
             session_id: self.id,
             command: self.command.clone(),
