@@ -289,11 +289,37 @@ test('WEB-3 work summaries never contain answers interactive cards errors or ret
     onQuestionNotice({ kind: 'question_requested', payload: {
       rpc_id: 'web3-question', question: { question: '继续吗？', options: [], allow_custom: true },
     } });
+    // The live tool_finished shape (result.is_error) is a separate code path
+    // from replay (event.is_error); drive both so F1 routing holds on each.
+    handleLive({ type: 'tool_finished', result: { tool_name: 'bash', output: 'live broken', is_error: true } });
   });
   await expect(page.locator('.work-summary')).toHaveCount(1);
   await expect(page.locator('.work-summary .tool-card')).toHaveCount(2);
   await expect(page.locator('.work-summary .msg, .work-summary .approval-card, .work-summary .question-card')).toHaveCount(0);
-  await expect(page.locator('.tool-card.is-error')).toBeVisible();
+  await expect(page.locator('.transcript > .tool-card.is-error')).toHaveCount(2);
+  // F1: each failed card keeps its own event position and stays individually
+  // visible. Replay seq=8 must sit between its retry notice and its turn-end
+  // error notice; the live card must land after all earlier transcript
+  // content — prepending either card is a regression, not a style choice.
+  const failedCard = page.locator('.transcript > .tool-card.is-error[data-seq="8"]');
+  await expect(failedCard).toHaveCount(1);
+  await expect(failedCard).toBeVisible();
+  await expect(failedCard.locator('.tool-state')).toHaveText('Failed');
+  expect(await page.evaluate(() => {
+    const after = (earlier, later) => Boolean(earlier && later
+      && (earlier.compareDocumentPosition(later) & Node.DOCUMENT_POSITION_FOLLOWING));
+    const transcript = dom.transcript;
+    const replayCard = transcript.querySelector('.tool-card.is-error[data-seq="8"]');
+    const turnEndError = [...transcript.querySelectorAll('.trace-event')]
+      .find((node) => node.textContent.includes('failed on replay'));
+    const liveCard = transcript.querySelector('.tool-card.is-error:not([data-seq])');
+    return {
+      replayAfterRetry: after(transcript.querySelector('.trace-event[data-seq="7"]'), replayCard),
+      replayBeforeOwnTurnEnd: after(replayCard, turnEndError),
+      liveAfterEarlierContent: after(transcript.querySelector('.question-card'), liveCard),
+    };
+  })).toEqual({ replayAfterRetry: true, replayBeforeOwnTurnEnd: true, liveAfterEarlierContent: true });
+  await expect(page.locator('.work-summary .tool-card.is-error')).toHaveCount(0);
   await expect(page.locator('.trace-event', { hasText: 'Retry' })).toBeVisible();
   await expect(page.locator('.trace-event', { hasText: 'bash' })).toBeVisible();
   await expect(page.locator('.trace-event', { hasText: 'failed on replay' })).toBeVisible();
@@ -303,6 +329,12 @@ test('WEB-3 work summaries never contain answers interactive cards errors or ret
   await expect(page.locator('.approval-card')).toBeVisible();
   await expect(page.locator('.question-card')).toBeVisible();
   await expect(page.locator('.transcript > .msg[data-seq="5"]')).toBeVisible();
+  // Live path routes the failed card identically: transcript child outside
+  // summaries, Failed label preserved.
+  const liveFailed = page.locator('.transcript > .tool-card.is-error', { hasText: 'live broken' });
+  await expect(liveFailed).toHaveCount(1);
+  await expect(liveFailed).toBeVisible();
+  await expect(liveFailed.locator('.tool-state')).toHaveText('Failed');
 });
 
 test('WEB-3 same-content visual matrix keeps wide content and composer inside the viewport', async ({ page }, testInfo) => {
