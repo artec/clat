@@ -15,6 +15,7 @@ use crate::{CancelToken, Project, Tool, ToolDefinition, ToolEffect, ToolError};
 use serde_json::{Value, json};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
+mod discrimination;
 #[cfg(test)]
 mod outcome_tests;
 mod prepared;
@@ -138,7 +139,10 @@ fn process_tools(service: Arc<ProcessService>) -> Vec<Arc<dyn Tool>> {
         Arc::new(ExecCommandTool {
             service: Arc::clone(&service),
         }),
-        Arc::new(WriteStdinTool { service }),
+        Arc::new(WriteStdinTool {
+            service: Arc::clone(&service),
+        }),
+        Arc::new(discrimination::TestDiscriminationTool { service }),
     ]
 }
 
@@ -732,7 +736,12 @@ mod tests {
                 .into_iter()
                 .map(|tool| tool.name)
                 .collect::<Vec<_>>(),
-            ["run_command", "exec_command", "write_stdin"]
+            [
+                "run_command",
+                "exec_command",
+                "write_stdin",
+                "test_discrimination"
+            ]
         );
         assert!(
             tools

@@ -4661,6 +4661,7 @@ fn failed_run_spawn_does_not_mark_the_request_header_emitted() {
             "run_command",
             "exec_command",
             "write_stdin",
+            "test_discrimination",
             "ask_user",
             "exit_plan_mode",
             "skill",

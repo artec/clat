@@ -270,6 +270,12 @@ pub(crate) struct PreparedProcess {
     pub(crate) planned: crate::sandbox::PlannedCommand,
 }
 
+impl PreparedProcess {
+    pub(crate) fn working_directory(&self) -> &Path {
+        &self.workdir
+    }
+}
+
 pub(crate) struct ProcessService {
     project: Project,
     sandbox: Arc<SandboxService>,
@@ -303,6 +309,10 @@ impl ProcessService {
             }),
             notice_sink: Mutex::new(None),
         }
+    }
+
+    pub(crate) fn project_root(&self) -> &Path {
+        self.project.root()
     }
 
     pub(crate) fn scratch_guidance(&self) -> Option<String> {

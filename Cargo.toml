@@ -10,7 +10,7 @@ license-file = "LICENSE"
 # 构建 clat 本体不需要）。根包隐式属于本 workspace。
 # 版本唯一权威：升版本只改这里一处（两包经 version.workspace 继承）。
 [workspace.package]
-version = "1.7.4"
+version = "1.7.5"
 
 [workspace]
 default-members = [".", "crates/core"]
@@ -35,10 +35,10 @@ path = "src/main.rs"
 # Ordinary cargo test and every delivery gate retain the integration face.
 # Narrow pure-UI edit loops explicitly disable this harness-only feature.
 default = ["runtime-tests"]
-runtime-tests = []
+runtime-tests = ["clat-core/runtime-tests"]
 
 [dependencies]
-clat-core = { path = "crates/core" }
+clat-core = { path = "crates/core", default-features = false }
 arboard = { version = "=3.6.1", features = ["wayland-data-control"] }
 base64 = "0.22.1"
 cap-fs-ext = "4.0.2"

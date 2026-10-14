@@ -796,6 +796,34 @@ writes, and Full Access retains its existing unrestricted write behavior.
 - `run_command` remains the one-shot project-root API and uses the same core
   ProcessService and command-text cap.
 
+`test_discrimination` is a separate, opt-in Rust unit-test experiment. Prepare
+two disposable, disjoint copies under the project or the active scratch root:
+`candidate_dir` contains the intended production behavior and
+`counterexample_dir` contains a deliberate production defect. Supply `package`,
+the full exact `test_filter`, and relative `test_files` / `production_files`.
+Listed test files and Cargo.toml/Cargo.lock must be identical; at least one listed
+production file must differ. Copies must have a lockfile and locally cached
+dependencies. The live project root cannot be an experiment arm.
+
+The tool runs the same offline, locked `cargo test --lib` command in both copies,
+using fresh separate target directories and the normal Execute permission /
+sandbox. Cargo build scripts and tests execute code. `sandbox` defaults to
+`required` (`auto` is available; `off` and network access are unavailable).
+The per-arm `timeout_seconds` defaults to 120 and is capped at 300. A failed or
+empty candidate run stops before the control is started. No source mutation,
+automatic retries, or additional model requests are performed by the tool.
+
+Results distinguish `not_discriminating` (both green),
+`discriminates_declared_defect` (candidate green / comparable test failure),
+and `inconclusive` (including build failure, zero matches, timeout or incomplete
+output). Both-green evidence should lead to inspecting the test's real
+production call path and strengthening its assertions before claiming it
+protects the fix. Input hashes bind only the declared files, not every possible
+dependency. Test counts are output signatures, not authenticated coverage;
+callers must review the failure reason, completeness of the declared inputs,
+and whether the defect models the intended contract. Raw experiment stdout /
+stderr is transient and omitted from the durable journal.
+
 All three tools add a structured `command_outcome` to command results and
 native invocation errors. It contains `kind`, `reason`, and `evidence`:
 

@@ -11,6 +11,8 @@ path = "../../src/core.rs"
 
 [features]
 test-support = ["clat-wasm-net/test-support"]
+default = ["runtime-tests"]
+runtime-tests = []
 
 [dependencies]
 # Semantic network WASM backend; no core/frontend dependency in the backend.
