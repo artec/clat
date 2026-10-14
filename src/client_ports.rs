@@ -6,6 +6,9 @@ pub mod host {
     pub fn journal_format_version() -> u32 {
         crate::session::compat::SESSION_FORMAT_VERSION
     }
+    pub fn wire_version() -> u64 {
+        crate::wire::WIRE_VERSION
+    }
     pub use crate::host_client::{
         HOST_PROTOCOL_VERSION, HostCallError, HostClient, HostEvent, HostEvents,
         HostEventsInterrupt, HostModelChoices, decode_host_approval, decode_host_event,

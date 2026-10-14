@@ -1246,6 +1246,7 @@ impl App {
                 self.phase_elapsed(),
                 self.run_elapsed(),
                 self.conversation.pending_steering_count(),
+                self.cancel_requested,
             )
         } else {
             Line::from(self.status.as_str())

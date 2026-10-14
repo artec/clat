@@ -114,6 +114,7 @@ impl App {
                 // 或累加到上一 run 的用量基线。
                 self.run_epoch += 1;
                 let epoch = self.run_epoch;
+                self.cancel_requested = false;
                 self.conversation.push_user(prompt);
                 self.conversation_scroll_from_bottom = 0;
                 self.run_handle = Some(started.handle);
@@ -214,6 +215,23 @@ impl App {
         // 转录装配的唯一 live 入口（G8）：状态行闪烁等呈现逻辑之外，
         // 事件先喂会话模型。
         self.conversation.apply_run_event(&event);
+        // CF1（返工 2026-10-13）：取消请求标志的生命周期绑定真实 run
+        // 事件。attached 模式没有本地 Done/settle 路径——终态与下一
+        // 轮启动都由事件流驱动，复位必须发生在同样的流上，否则第一
+        // 轮的 Cancelling… 会污染第二轮的 phase 行。
+        match event {
+            RunEvent::RunStarted { .. }
+            | RunEvent::RunCancelled { .. }
+            | RunEvent::RunCompleted { .. }
+            | RunEvent::RunFailed { .. } => {
+                self.cancel_requested = false;
+                // CF7：新 run/终态同样解除取消在途门。
+                if let Some(native) = self.native.as_mut() {
+                    native.cancel_inflight = None;
+                }
+            }
+            _ => {}
+        }
         // 派生阶段（G6）：新模型步重开 Waiting；步内按事件推进、只进
         // 不退；未知事件落 `_ => {}` 保持现状、永不 panic。
         match &event {
@@ -338,6 +356,9 @@ impl App {
             return;
         }
         self.running = false;
+        // CANCEL-1（C1）：run 终态后取消请求标志必须复位——否则下一
+        // 个 run 的 phase 行会在第一帧错误地显示 Cancelling…。
+        self.cancel_requested = false;
         if let Some(handle) = self.run_handle.take() {
             let _ = handle.join();
         }

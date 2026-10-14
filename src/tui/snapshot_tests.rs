@@ -8,6 +8,7 @@
 //! `CLAT_REFRESH_SNAPSHOTS=1 cargo test`，每次刷新必须逐一说明原因。
 
 use super::App;
+use super::status::Phase;
 
 /// FL 族病历（2026-09-08，--test-threads 96 放大复现）：后台准入/回执
 /// 的进度等待用 2s 硬期限，CPU 饥饿下墙钟到点即假红。进度等待（事件
@@ -817,6 +818,604 @@ fn ux_find_keys_and_paste_preserve_composer_and_navigate_loaded_message_data() {
 #[test]
 fn native_host_online_snapshot() {
     harness_native("snap-native-host-online", true).snapshot("native-host-online");
+}
+
+/// CF7（复审 r3 2026-10-14）判别面 C1：attached 取消请求幂等。真实
+/// HostClient（握手 + Bearer + POST /api/run.cancel）打到本地计数
+/// fixture 宿主；宿主将取消响应延迟 250ms，隔离"取消尚未结算"窗
+/// 口。运行中连按两次 ESC（真实键盘事件入口）必须只发出**一次**
+/// run.cancel（pre-fix：每个 ESC 独立 spawn RPC → 2 次 → 红）。单次
+/// ESC 阳性对照排除计数器自翻倍。
+#[test]
+fn repeated_esc_while_cancel_inflight_issues_one_cancel_request() {
+    let (fixture, root, project_root) = CountingHostFixture::spawn_cancel_mode(false);
+    let client =
+        crate::host::HostClient::connect(fixture.port, "cf7token".into(), &root).expect("connect");
+    let mut harness = Harness {
+        app: App::open_native(crate::Project::new(&project_root), client).expect("native shell"),
+        terminal: Terminal::new(TestBackend::new(80, 24)).expect("test terminal"),
+        project_root: project_root.clone(),
+        storage_root: root.clone(),
+    };
+    harness.app.set_native_online_for_snapshot(true);
+    harness.app.running = true;
+    // CF7：cancel_native 的 RPC 回执经 event_sender 送回——主循环未运
+    // 行的测试壳必须安装真实通道并手动泵回执（ui_event_channel 与
+    // run() 同源；CancelReply 在此解除在途门）。
+    let (cf7_sender, cf7_events) = super::ui_event_channel();
+    harness.app.event_sender = Some(cf7_sender);
+    let pump = |app: &mut super::App| {
+        while let Ok(event) = cf7_events.recv_timeout(std::time::Duration::from_millis(50)) {
+            app.handle_ui_event(event);
+        }
+    };
+    harness.key(KeyCode::Esc);
+    // 在途窗口内（fixture 延迟 250ms）立即连按——两次按键间隔远小于
+    // 结算时间，与真实"双击 ESC"同一形态。
+    harness.key(KeyCode::Esc);
+    std::thread::sleep(std::time::Duration::from_millis(700));
+    pump(&mut harness.app);
+    assert_eq!(
+        fixture.cancel_requests(),
+        1usize,
+        "a double ESC while the first cancel is unsettled must not issue a second run.cancel; seen: {:?}",
+        fixture.seen.lock().unwrap()
+    );
+}
+
+/// CF7-B（r4 2026-10-14）判别面 C1：成功回执不是 Run 终态。宿主
+/// run.cancel 立即返回 `{}` 不等终态——RPC 成功回执被处理后（真实
+/// HTTP 往返 + UI 通道泵），run 仍在运行（无终态事件）期间再次 ESC
+/// 必须仍幂等（pre-fix：回执清掉在途门 → 第二请求 → 红）。
+#[test]
+fn success_reply_before_terminal_does_not_reissue_cancel() {
+    let (fixture, root, project_root) = CountingHostFixture::spawn_cancel_mode(false);
+    let client =
+        crate::host::HostClient::connect(fixture.port, "cf7token".into(), &root).expect("connect");
+    let mut harness = Harness {
+        app: App::open_native(crate::Project::new(&project_root), client).expect("native shell"),
+        terminal: Terminal::new(TestBackend::new(80, 24)).expect("test terminal"),
+        project_root: project_root.clone(),
+        storage_root: root.clone(),
+    };
+    harness.app.set_native_online_for_snapshot(true);
+    harness.app.running = true;
+    let (cf7_sender, cf7_events) = super::ui_event_channel();
+    harness.app.event_sender = Some(cf7_sender);
+    let pump = |app: &mut super::App| {
+        while let Ok(event) = cf7_events.recv_timeout(std::time::Duration::from_millis(50)) {
+            app.handle_ui_event(event);
+        }
+    };
+    harness.key(KeyCode::Esc);
+    // 成功回执真实回流并经 UI 通道处理；不发任何终态事件。
+    std::thread::sleep(std::time::Duration::from_millis(700));
+    pump(&mut harness.app);
+    assert!(
+        harness.app.running,
+        "no terminal event: the run is still live"
+    );
+    harness.key(KeyCode::Esc);
+    std::thread::sleep(std::time::Duration::from_millis(700));
+    pump(&mut harness.app);
+    assert_eq!(
+        fixture.cancel_requests(),
+        1usize,
+        "an accepted cancel RPC is not the terminal state; ESC before the real terminal must stay idempotent; seen: {:?}",
+        fixture.seen.lock().unwrap()
+    );
+}
+
+/// CF8（r4 2026-10-14）判别面 C4/S6：旧轮回执不得解除新 Run 的在途
+/// 去重。真实序列：轮1 取消（请求1 在途）→ 真实终态/第二轮 RunStarted
+/// → 轮2 ESC（请求2 在途）→ **迟到的轮1 回执**被 UI 处理 → 轮2 再
+/// ESC。两轮各 1 次、总 2（pre-fix：旧回执无条件清门 → 第 3 个请求
+/// → 红）。全程真实帧入口与真实 HTTP 回执，不手改被测状态。
+#[test]
+fn stale_reply_cannot_unlock_new_run_pending_cancel() {
+    use crate::Usage;
+    use crate::event::RunEvent;
+    use crate::host::HostEvent;
+    use crate::message::MessageContent;
+    use crate::tui::native::NativeEvent;
+    use crate::tui::worker::UiEvent;
+
+    let (fixture, root, project_root) = CountingHostFixture::spawn_cancel_mode(false);
+    let client =
+        crate::host::HostClient::connect(fixture.port, "cf7token".into(), &root).expect("connect");
+    let mut harness = Harness {
+        app: App::open_native(crate::Project::new(&project_root), client).expect("native shell"),
+        terminal: Terminal::new(TestBackend::new(80, 24)).expect("test terminal"),
+        project_root: project_root.clone(),
+        storage_root: root.clone(),
+    };
+    harness.app.set_native_online_for_snapshot(true);
+    harness.app.running = true;
+    let (cf7_sender, cf7_events) = super::ui_event_channel();
+    harness.app.event_sender = Some(cf7_sender);
+    let epoch = harness.app.native.as_ref().expect("native state").epoch;
+    let pump = |app: &mut super::App| {
+        while let Ok(event) = cf7_events.recv_timeout(std::time::Duration::from_millis(50)) {
+            app.handle_ui_event(event);
+        }
+    };
+    let frame = |app: &mut super::App, event: RunEvent| {
+        app.handle_ui_event(UiEvent::Native(NativeEvent::Frame(
+            epoch,
+            HostEvent::Run(event),
+        )));
+    };
+
+    // 轮 1：RunStarted → ESC（请求 1 在途，宿主 250ms 延迟）。
+    frame(
+        &mut harness.app,
+        RunEvent::RunStarted {
+            project: project_root.clone(),
+            message: MessageContent::text("round one"),
+            client_message_id: None,
+        },
+    );
+    harness.key(KeyCode::Esc);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while fixture.cancel_requests() < 1 && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert_eq!(fixture.cancel_requests(), 1usize, "round 1 request issued");
+    // 回执尚未泵入 UI（保留为"迟到回执"）。
+
+    // 真实终态 + 第二轮启动（终态清轮 1 在途；run 序号推进）。
+    frame(
+        &mut harness.app,
+        RunEvent::RunCompleted {
+            output: "done".into(),
+            turns: 1,
+            usage: Usage::default(),
+        },
+    );
+    harness
+        .app
+        .handle_ui_event(UiEvent::Native(NativeEvent::Frame(
+            epoch,
+            HostEvent::Control {
+                kind: "prompt.settled".into(),
+                payload: serde_json::json!({}),
+            },
+        )));
+    frame(
+        &mut harness.app,
+        RunEvent::RunStarted {
+            project: project_root.clone(),
+            message: MessageContent::text("round two"),
+            client_message_id: None,
+        },
+    );
+    // 轮 2：ESC（请求 2 在途）。
+    harness.key(KeyCode::Esc);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while fixture.cancel_requests() < 2 && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert_eq!(fixture.cancel_requests(), 2usize, "round 2 request issued");
+
+    // 现在泵入迟到的轮 1 回执（真实 HTTP 应答），随后轮 2 再 ESC。
+    pump(&mut harness.app);
+    harness.key(KeyCode::Esc);
+    std::thread::sleep(std::time::Duration::from_millis(700));
+    pump(&mut harness.app);
+    assert_eq!(
+        fixture.cancel_requests(),
+        2usize,
+        "a stale round-1 reply must not unlock round 2's in-flight cancel gate; seen: {:?}",
+        fixture.seen.lock().unwrap()
+    );
+}
+
+/// CF7 阳性对照：单次 ESC 恰好一次请求（排除 fixture 计数自翻倍）。
+#[test]
+fn single_esc_issues_exactly_one_cancel_request() {
+    let (fixture, root, project_root) = CountingHostFixture::spawn_cancel_mode(false);
+    let client =
+        crate::host::HostClient::connect(fixture.port, "cf7token".into(), &root).expect("connect");
+    let mut harness = Harness {
+        app: App::open_native(crate::Project::new(&project_root), client).expect("native shell"),
+        terminal: Terminal::new(TestBackend::new(80, 24)).expect("test terminal"),
+        project_root: project_root.clone(),
+        storage_root: root.clone(),
+    };
+    harness.app.set_native_online_for_snapshot(true);
+    harness.app.running = true;
+    // CF7：cancel_native 的 RPC 回执经 event_sender 送回——主循环未运
+    // 行的测试壳必须安装真实通道并手动泵回执（ui_event_channel 与
+    // run() 同源；CancelReply 在此解除在途门）。
+    let (cf7_sender, cf7_events) = super::ui_event_channel();
+    harness.app.event_sender = Some(cf7_sender);
+    let pump = |app: &mut super::App| {
+        while let Ok(event) = cf7_events.recv_timeout(std::time::Duration::from_millis(50)) {
+            app.handle_ui_event(event);
+        }
+    };
+    harness.key(KeyCode::Esc);
+    std::thread::sleep(std::time::Duration::from_millis(700));
+    pump(&mut harness.app);
+    assert_eq!(
+        fixture.cancel_requests(),
+        1usize,
+        "single ESC = one request"
+    );
+}
+
+/// CF7 补充：宿主拒绝（HTTP 500）后，回执到达即解除在途去重——下一
+/// 次 ESC 是可解释的人工重试，而非被幂等门挡死。
+#[test]
+fn failed_cancel_reply_allows_an_explained_retry() {
+    let (fixture, root, project_root) = CountingHostFixture::spawn_cancel_mode(true);
+    let client =
+        crate::host::HostClient::connect(fixture.port, "cf7token".into(), &root).expect("connect");
+    let mut harness = Harness {
+        app: App::open_native(crate::Project::new(&project_root), client).expect("native shell"),
+        terminal: Terminal::new(TestBackend::new(80, 24)).expect("test terminal"),
+        project_root: project_root.clone(),
+        storage_root: root.clone(),
+    };
+    harness.app.set_native_online_for_snapshot(true);
+    harness.app.running = true;
+    // CF7：cancel_native 的 RPC 回执经 event_sender 送回——主循环未运
+    // 行的测试壳必须安装真实通道并手动泵回执（ui_event_channel 与
+    // run() 同源；CancelReply 在此解除在途门）。
+    let (cf7_sender, cf7_events) = super::ui_event_channel();
+    harness.app.event_sender = Some(cf7_sender);
+    let pump = |app: &mut super::App| {
+        while let Ok(event) = cf7_events.recv_timeout(std::time::Duration::from_millis(50)) {
+            app.handle_ui_event(event);
+        }
+    };
+    harness.key(KeyCode::Esc);
+    // 在途窗口内的双击仍只算一次。
+    harness.key(KeyCode::Esc);
+    std::thread::sleep(std::time::Duration::from_millis(700));
+    pump(&mut harness.app);
+    assert_eq!(fixture.cancel_requests(), 1usize);
+    // 500 回执已回流（失败提示可见），人工重试应被允许。
+    assert!(
+        harness.app.status.contains("host refused")
+            || harness.app.status.contains("offline")
+            || harness.app.status.contains("failed")
+            || harness.app.status.contains("cancelling"),
+        "the failure must surface an explainable status: {}",
+        harness.app.status
+    );
+    harness.key(KeyCode::Esc);
+    std::thread::sleep(std::time::Duration::from_millis(700));
+    pump(&mut harness.app);
+    assert_eq!(
+        fixture.cancel_requests(),
+        2usize,
+        "after a failed reply, a deliberate ESC retries once"
+    );
+}
+
+/// CF7 计数 fixture 宿主：真实握手（host.describe 校验协议/根身份），
+/// run.cancel 计数并延迟 250ms 后应答（`refuse` 为 true 时回 HTTP 500，
+/// 隔离"取消失败/未结算"路径）。仅绑定 127.0.0.1 临时端口。
+struct CountingHostFixture {
+    port: u16,
+    cancels: std::sync::Arc<std::sync::Mutex<usize>>,
+    seen: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl CountingHostFixture {
+    fn spawn_cancel_mode(refuse: bool) -> (Self, std::path::PathBuf, std::path::PathBuf) {
+        use std::io::{Read as _, Write};
+        use std::net::TcpListener;
+        let seen_lines: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let base = std::env::temp_dir().join(format!(
+            "clat-cf7-fixture-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let root = base.join("home");
+        let project_root = base.join("proj");
+        std::fs::create_dir_all(&root).expect("fixture root");
+        std::fs::create_dir_all(&project_root).expect("fixture project");
+        let root = root.canonicalize().expect("canonical root");
+        let listener = TcpListener::bind("127.0.0.1:0").expect("fixture bind");
+        let port = listener.local_addr().unwrap().port();
+        let cancels = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let fixture = Self {
+            port,
+            cancels: std::sync::Arc::clone(&cancels),
+            seen: std::sync::Arc::clone(&seen_lines),
+            stop: std::sync::Arc::clone(&stop),
+        };
+        let description_root = root.to_string_lossy().into_owned();
+        let server_stop = std::sync::Arc::clone(&stop);
+        let server_cancels = std::sync::Arc::clone(&cancels);
+        let server_seen = std::sync::Arc::clone(&seen_lines);
+        let _ = &server_seen;
+        std::thread::Builder::new()
+            .name("clat-cf7-fixture".into())
+            .spawn(move || {
+                for stream in listener.incoming() {
+                    let Ok(mut stream) = stream else { break };
+                    if server_stop.load(std::sync::atomic::Ordering::Relaxed) {
+                        break;
+                    }
+                    stream
+                        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                        .ok();
+                    let mut head = Vec::new();
+                    let mut byte = [0u8; 1];
+                    // 请求头 + Content-Length 正文（逐字节读，量小）
+                    while !head.ends_with(b"\r\n\r\n") && head.len() < 64 * 1024 {
+                        match stream.read(&mut byte) {
+                            Ok(0) | Err(_) => break,
+                            Ok(_) => head.push(byte[0]),
+                        }
+                    }
+                    let head_text = String::from_utf8_lossy(&head).into_owned();
+                    let content_length: usize = head_text
+                        .lines()
+                        .find_map(|line| {
+                            let value = line.strip_prefix("Content-Length:")?;
+                            value.trim().parse().ok()
+                        })
+                        .unwrap_or(0);
+                    let mut body = vec![0u8; content_length];
+                    if content_length > 0 {
+                        let _ = stream.read_exact(&mut body);
+                    }
+                    let request_line = head_text.lines().next().unwrap_or_default().to_owned();
+                    seen_lines.lock().unwrap().push(request_line.clone());
+                    let reply = if request_line.contains("/api/host.describe") {
+                        let value = serde_json::json!({
+                            "instance_id": uuid::Uuid::new_v4().to_string(),
+                            "storage_root": description_root,
+                            "protocol_version": crate::host::HOST_PROTOCOL_VERSION,
+                            "wire_version": crate::client_ports::host::wire_version(),
+                            "journal_version": crate::client_ports::host::journal_format_version(),
+                        });
+                        (
+                            "HTTP/1.1 200 OK",
+                            serde_json::json!({"ok": true, "value": value}).to_string(),
+                        )
+                    } else if request_line.contains("/api/run.cancel") {
+                        *server_cancels.lock().unwrap() += 1;
+                        // 在途窗口：延迟 250ms 再应答（复审复现参数）。
+                        std::thread::sleep(std::time::Duration::from_millis(250));
+                        if refuse {
+                            ("HTTP/1.1 500", String::from("boom"))
+                        } else {
+                            (
+                                "HTTP/1.1 200 OK",
+                                serde_json::json!({"ok": true, "value": {}}).to_string(),
+                            )
+                        }
+                    } else {
+                        (
+                            "HTTP/1.1 200 OK",
+                            serde_json::json!({"ok": false, "error": {"message": "unexpected"}})
+                                .to_string(),
+                        )
+                    };
+                    let response = format!(
+                        "{}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        reply.0,
+                        reply.1.len(),
+                        reply.1
+                    );
+                    let _ = stream.write_all(response.as_bytes());
+                }
+            })
+            .expect("fixture thread");
+        (fixture, root, project_root)
+    }
+
+    fn cancel_requests(&self) -> usize {
+        *self.cancels.lock().unwrap()
+    }
+}
+
+impl Drop for CountingHostFixture {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        // 唤醒 accept 循环（连接自身）。
+        let _ = std::net::TcpStream::connect(("127.0.0.1", self.port));
+    }
+}
+
+/// CANCEL-1（AG-DOGFOOD-2）判别面 C1：attached TUI 在 run 进行中按一
+/// 次 ESC，UI 必须立即出现可辨识的"取消中"反馈，而不是等 host 的
+/// run.cancel 往返与事件回流后才第一次响应。pre-fix：ESC 只异步发
+/// `run.cancel` RPC，状态栏维持默认路径 → 红。运行期 phase 行优先于
+/// flash 渲染（draw_status_bar），所以判别面必须是**投影出的画面**
+/// 含 Cancelling…——仅断言 `self.status` 会在 run 未结束的整个窗口
+/// 里给出"假绿"（CANCEL-1 实测教训）。附带钉住幂等（连按 ESC 不启
+/// 动新 run、不崩溃）与终态复位。
+#[test]
+fn attached_esc_shows_immediate_cancel_feedback() {
+    let mut harness = harness_native("snap-attached-esc-cancel", true);
+    harness.app.running = true;
+    harness.app.phases.phase = Some(Phase::Responding);
+    harness.key(KeyCode::Esc);
+    assert!(
+        harness.app.status.contains("cancelling"),
+        "ESC while running must flash an immediate cancelling hint, got: {}",
+        harness.app.status
+    );
+    // 判别面：运行中（phase 活跃）画面必须已显示 Cancelling…。
+    let projection = harness.draw_projection();
+    assert!(
+        projection.contains("Cancelling"),
+        "the live phase line must acknowledge the cancel request: {projection}"
+    );
+    // 幂等：连按 ESC 仍是取消反馈，不触发新 run 或崩溃。
+    harness.key(KeyCode::Esc);
+    assert!(
+        harness.draw_projection().contains("Cancelling"),
+        "repeated ESC keeps the cancel acknowledgment"
+    );
+    assert!(
+        harness.app.running,
+        "ESC never fabricates run state changes"
+    );
+    assert!(
+        harness.app.run_handle.is_none(),
+        "attached mode must not fabricate a local run handle"
+    );
+}
+
+/// CF1（返工单 2026-10-13）：attached 真实生命周期里取消标志必须由事
+/// 件复位。判别面全程走真实路径——SSE 帧（`NativeEvent::Frame`，与
+/// 在线泵线程同一入口）驱动 RunStarted/流事件/终态/prompt.settled，
+/// 用户按键驱动 ESC——**不手动改写被测标志**。pre-fix：第一轮取消后
+/// `cancel_requested` 无人复位（attached 无本地 Done/settle 路径），
+/// 第二轮运行一打开 phase 行就是 Cancelling…（乙方
+/// attached-next-run-probe 复现）→ 红。
+#[test]
+fn attached_cancel_state_resets_across_real_run_lifecycle_events() {
+    use crate::ModelEvent;
+    use crate::Usage;
+    use crate::event::RunEvent;
+    use crate::host::HostEvent;
+    use crate::message::MessageContent;
+    use crate::tui::native::NativeEvent;
+    use crate::tui::worker::UiEvent;
+
+    let mut harness = harness_native("snap-attached-cancel-lifecycle", true);
+    let epoch = harness.app.native.as_ref().expect("native state").epoch;
+    let frame = |app: &mut super::App, event: RunEvent| {
+        app.handle_ui_event(UiEvent::Native(NativeEvent::Frame(
+            epoch,
+            HostEvent::Run(event),
+        )));
+    };
+    let started = |round: &str| RunEvent::RunStarted {
+        project: std::path::PathBuf::from("/tmp/probe"),
+        message: MessageContent::text(round),
+        client_message_id: None,
+    };
+    let streaming = || {
+        (
+            RunEvent::ModelRequested {
+                turn: 1,
+                provider: "probe".into(),
+                model: "probe-model".into(),
+            },
+            RunEvent::ModelStream {
+                turn: 1,
+                event: ModelEvent::TextDelta {
+                    delta: "tok ".into(),
+                },
+            },
+        )
+    };
+
+    // 第一轮：真实 RunStarted → 模型步 → 流式文本。
+    frame(&mut harness.app, started("first round"));
+    assert!(harness.app.running, "RunStarted drives running=true");
+    let (requested, delta) = streaming();
+    frame(&mut harness.app, requested);
+    frame(&mut harness.app, delta);
+    assert!(
+        !harness.draw_projection().contains("Cancelling"),
+        "a fresh run must not show a cancel label"
+    );
+
+    // 用户按 ESC：立即反馈（C1）。
+    harness.key(KeyCode::Esc);
+    assert!(
+        harness.draw_projection().contains("Cancelling"),
+        "ESC during the first run shows the cancel acknowledgment"
+    );
+
+    // 真实终态：RunCancelled 事件 + prompt.settled 控制（宿主侧结算）。
+    frame(
+        &mut harness.app,
+        RunEvent::RunCancelled {
+            turns: 1,
+            usage: Usage::default(),
+        },
+    );
+    harness
+        .app
+        .handle_ui_event(UiEvent::Native(NativeEvent::Frame(
+            epoch,
+            HostEvent::Control {
+                kind: "prompt.settled".into(),
+                payload: serde_json::json!({}),
+            },
+        )));
+    assert!(!harness.app.running, "prompt.settled ends the run");
+
+    // 第二轮：再次以真实事件启动并流式输出。
+    frame(&mut harness.app, started("second round"));
+    let (requested, delta) = streaming();
+    frame(&mut harness.app, requested);
+    frame(&mut harness.app, delta);
+    assert!(harness.app.running, "the second run must be running again");
+    // CF1 判别面：下一轮不得继承上一轮的取消请求。
+    let projection = harness.draw_projection();
+    assert!(
+        !projection.contains("Cancelling"),
+        "the second run must show its real phase, not a stale cancel request: {projection}"
+    );
+
+    // 标志仍可用：第二轮再 ESC 再次得到反馈（复位没有把功能焊死）。
+    harness.key(KeyCode::Esc);
+    assert!(
+        harness.draw_projection().contains("Cancelling"),
+        "ESC still works on the second run after a reset"
+    );
+
+    // ── 臂B：事件流单独复位（无 prompt.settled——终态仅由 run 事件
+    // 表达的路径，例如 settled 帧丢失/乱序时的纵深）──────────────
+    frame(
+        &mut harness.app,
+        RunEvent::RunCancelled {
+            turns: 2,
+            usage: Usage::default(),
+        },
+    );
+    frame(&mut harness.app, started("third round"));
+    let (requested, delta) = streaming();
+    frame(&mut harness.app, requested);
+    frame(&mut harness.app, delta);
+    let projection = harness.draw_projection();
+    assert!(
+        !projection.contains("Cancelling"),
+        "run events alone must clear the stale cancel request (no settled frame): {projection}"
+    );
+
+    // ── 臂C：会话装载/切换（replay.end）复位 ─────────────────────
+    harness.key(KeyCode::Esc);
+    assert!(
+        harness.draw_projection().contains("Cancelling"),
+        "arm C precondition: cancel acknowledged before switching sessions"
+    );
+    harness
+        .app
+        .handle_ui_event(UiEvent::Native(NativeEvent::Frame(
+            epoch,
+            HostEvent::Control {
+                kind: "replay.end".into(),
+                payload: serde_json::json!({"has_more": false}),
+            },
+        )));
+    assert!(!harness.app.running, "replay.end leaves the idle state");
+    frame(&mut harness.app, started("fourth round"));
+    let (requested, delta) = streaming();
+    frame(&mut harness.app, requested);
+    frame(&mut harness.app, delta);
+    let projection = harness.draw_projection();
+    assert!(
+        !projection.contains("Cancelling"),
+        "a session switch must not carry the old cancel request: {projection}"
+    );
 }
 
 #[test]

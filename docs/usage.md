@@ -518,6 +518,16 @@ queued message appears immediately in the conversation. `Esc` recalls the
 newest queued message into the input. When no steering is queued, `Esc`
 cancels the run and keeps already streamed output.
 
+Cancellation is acknowledged immediately and actively propagated. The status
+line switches to `Cancelling…` on the keypress in both the standalone and
+attached TUI, without waiting for the host round-trip, and the provider
+layer races the cancel token against the blocking connect and
+response-header wait — cancelling during a slow first byte stops the run
+instead of waiting for the endpoint to respond (bounded by the request
+timeouts). Child processes of a cancelled run are terminated with the
+process group. A request whose cancel was already set is never sent, and a
+cancelled run schedules no further model or tool steps.
+
 The agent loop has no fixed turn count. A run ends when the model completes or
 refuses, the user cancels, a failure occurs, or the configured token spend
 budget is exhausted. The default spend budget is 10 million input+output

@@ -70,6 +70,9 @@ pub(crate) fn clamp_usage_field(tokens: Option<u64>) -> Option<u64> {
 }
 
 /// FP-02：错误响应体的有界读取——读满 cap 即止并标注截断。
+/// CF2 后生产路径全部走 [`read_error_body_capped_cancellable`]；此函
+/// 数仅存续于测试构建，钉住有界读取的基线语义（cap 截断标注）。
+#[cfg(test)]
 pub(crate) fn read_error_body_capped(body: impl Read, cap: usize) -> String {
     let mut bytes = Vec::new();
     let _ = body.take(cap as u64).read_to_end(&mut bytes);
@@ -77,6 +80,60 @@ pub(crate) fn read_error_body_capped(body: impl Read, cap: usize) -> String {
         format!("{}…[truncated]", String::from_utf8_lossy(&bytes))
     } else {
         String::from_utf8_lossy(&bytes).into_owned()
+    }
+}
+
+/// CF2（返工单 2026-10-13）：错误正文的取消感知读取。保留
+/// [`read_error_body_capped`] 的字节帽、截断标注与"读取失败保留已读
+/// 前缀"语义（CF5/CF6，复审 2026-10-14：分段读入约束在剩余额度内，
+/// 错误臂不清空已读诊断）；取消获胜时以
+/// [`CancellingBodyRead::Cancelled`] 通知调用方短路——不吞错误、不
+/// 假造诊断、不把取消伪装成 429 上抛。滴漏正文的读取因此最多再等
+/// 一个 body 轮询窗（250ms）即被取消截断。
+pub(super) enum CancellingBodyRead {
+    Body(String),
+    Cancelled,
+}
+
+pub(super) fn read_error_body_capped_cancellable<R: Read>(
+    body: R,
+    cancel: &CancelToken,
+    cap: usize,
+) -> CancellingBodyRead {
+    let mut reader = CancelAwareReader::new(body, cancel);
+    let mut bytes = Vec::new();
+    let mut scratch = [0u8; 8192];
+    loop {
+        if cancel.is_cancelled() {
+            return CancellingBodyRead::Cancelled;
+        }
+        match reader.read(&mut scratch) {
+            Ok(0) => {
+                if cancel.is_cancelled() {
+                    return CancellingBodyRead::Cancelled;
+                }
+                return CancellingBodyRead::Body(String::from_utf8_lossy(&bytes).into_owned());
+            }
+            Ok(byte_count) => {
+                // CF5：读入量先约束在剩余额度内——先追加后检查会让
+                // 一个分段越过帽界（66560 > 65536 实测）。
+                let remaining = cap.saturating_sub(bytes.len());
+                let take = byte_count.min(remaining);
+                bytes.extend_from_slice(&scratch[..take]);
+                if bytes.len() >= cap {
+                    return CancellingBodyRead::Body(format!(
+                        "{}…[truncated]",
+                        String::from_utf8_lossy(&bytes)
+                    ));
+                }
+            }
+            Err(error) if is_stream_poll_timeout(&error) => continue,
+            Err(_) => {
+                // CF6：对齐旧 read_error_body_capped 语义——read_to_end
+                // 忽略错误但保留已读字节；这里同样返回已读前缀。
+                return CancellingBodyRead::Body(String::from_utf8_lossy(&bytes).into_owned());
+            }
+        }
     }
 }
 
@@ -889,6 +946,56 @@ fn cancelled_response() -> ModelResponse {
         provider_response_id: None,
         provider_state: Vec::new(),
         reasoning: None,
+    }
+}
+
+/// CANCEL-1（AG-DOGFOOD-2）：手动取消令牌没有可预置的请求级超时
+/// （deadline 令牌经 `remaining()` 配 timeout_global，见各 send()），
+/// 因此 connect / 响应头等待阶段完全观察不到取消——思考型端点按住
+/// 响应头时按 Esc，run 要等端点写头或 60s 超时才停（2026-10-13 实测
+/// 5.0s+，docs/todo/ag-dogfood2-cancel1-party-ab-2026-10-13.md C2/S3）。
+/// 这里把阻塞 send 挪到一次性辅助线程，调用方以 STREAM_BODY_POLL_TIMEOUT
+/// 为节拍竞速取消：任一先到。
+///
+/// 辅助线程在取消获胜时不 join：它在 ureq 的 connect(30s)/响应头(60s)
+/// 超时或端点响应后丢弃 Response（关闭套接字）自行退出——有界、发送
+/// 后无共享可变状态；run 已终态，不得为它等待。已发出请求的服务端成
+/// 本不可撤回（C3 best-effort 边界）。
+pub(super) enum CancelRaceOutcome<T> {
+    Completed(T),
+    Cancelled,
+    /// 辅助线程未交付值就退出（未预期——闭包不 panic 是构造前提）。
+    /// 不冒称用户取消，由调用方按 Transport 错误上抛。
+    HelperLost,
+}
+
+pub(super) fn race_send_with_cancel<F, T>(send: F, cancel: &CancelToken) -> CancelRaceOutcome<T>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    if cancel.is_cancelled() {
+        return CancelRaceOutcome::Cancelled;
+    }
+    let (delivered, inbox) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("clat-provider-send".into())
+        .spawn(move || {
+            let _ = delivered.send(send());
+        })
+        .expect("provider send helper thread");
+    loop {
+        match inbox.recv_timeout(STREAM_BODY_POLL_TIMEOUT) {
+            Ok(value) => return CancelRaceOutcome::Completed(value),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if cancel.is_cancelled() {
+                    return CancelRaceOutcome::Cancelled;
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                return CancelRaceOutcome::HelperLost;
+            }
+        }
     }
 }
 
@@ -1819,5 +1926,606 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(30));
         }
+    }
+
+    // ─── CANCEL-1（AG-DOGFOOD-2）：取消传播进 provider 的阻塞阶段 ──────
+
+    use crate::model::{Model, ModelEvent, ModelEventSink, ModelRequest};
+    use std::net::TcpStream;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::mpsc;
+
+    /// 受控慢端点：读完请求头后按住响应头 `header_delay`（模拟思考型
+    /// 端点首字节前挂起），随后以 `chunk_gap` 为间隔持续写 SSE 行，直
+    /// 到写失败（对端关闭）或测试置位 `stop`。时间线标签：
+    /// `request`（请求头读毕）/`headers`（响应头写出）/`close`（对端
+    /// 拆链被观察到）。
+    struct SlowEndpoint {
+        port: u16,
+        timeline: Arc<Mutex<Vec<(&'static str, Instant)>>>,
+        stop: Arc<AtomicBool>,
+    }
+
+    impl SlowEndpoint {
+        fn spawn(header_delay: Duration, chunk_gap: Duration, chunks: Vec<String>) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind cancel test endpoint");
+            let port = listener.local_addr().expect("endpoint address").port();
+            let timeline = Arc::new(Mutex::new(Vec::new()));
+            let stop = Arc::new(AtomicBool::new(false));
+            let server_timeline = Arc::clone(&timeline);
+            let server_stop = Arc::clone(&stop);
+            std::thread::Builder::new()
+                .name("clat-cancel-endpoint".into())
+                .spawn(move || {
+                    let Ok((mut stream, _)) = listener.accept() else {
+                        return;
+                    };
+                    if !read_request_head(&mut stream) {
+                        return;
+                    }
+                    server_timeline
+                        .lock()
+                        .unwrap()
+                        .push(("request", Instant::now()));
+                    std::thread::sleep(header_delay);
+                    let head = concat!(
+                        "HTTP/1.1 200 OK\r\n",
+                        "Content-Type: text/event-stream\r\n",
+                        "Cache-Control: no-cache\r\n\r\n"
+                    );
+                    if stream.write_all(head.as_bytes()).is_err() {
+                        server_timeline
+                            .lock()
+                            .unwrap()
+                            .push(("close", Instant::now()));
+                        return;
+                    }
+                    server_timeline
+                        .lock()
+                        .unwrap()
+                        .push(("headers", Instant::now()));
+                    let mut index = 0usize;
+                    while !server_stop.load(Ordering::Relaxed) {
+                        let line = chunks
+                            .get(index % chunks.len().max(1))
+                            .cloned()
+                            .unwrap_or_default();
+                        if stream
+                            .write_all(line.as_bytes())
+                            .and_then(|_| stream.flush())
+                            .is_err()
+                        {
+                            server_timeline
+                                .lock()
+                                .unwrap()
+                                .push(("close", Instant::now()));
+                            return;
+                        }
+                        index += 1;
+                        std::thread::sleep(chunk_gap);
+                    }
+                })
+                .expect("spawn cancel test endpoint");
+            Self {
+                port,
+                timeline,
+                stop,
+            }
+        }
+
+        /// CF2（返工单 2026-10-13）：429 + 声明 80 字节 JSON 正文，每
+        /// `chunk_gap` 滴漏 1 字节——错误正文读取期间的取消必须及时终
+        /// 止，不能等正文读完（pre-fix 约 80×gap）。
+        fn spawn_slow_error(chunk_gap: Duration) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind cancel test endpoint");
+            let port = listener.local_addr().expect("endpoint address").port();
+            let timeline = Arc::new(Mutex::new(Vec::new()));
+            let stop = Arc::new(AtomicBool::new(false));
+            let server_timeline = Arc::clone(&timeline);
+            let server_stop = Arc::clone(&stop);
+            std::thread::Builder::new()
+                .name("clat-cancel-endpoint".into())
+                .spawn(move || {
+                    let Ok((mut stream, _)) = listener.accept() else {
+                        return;
+                    };
+                    if !read_request_head(&mut stream) {
+                        return;
+                    }
+                    server_timeline
+                        .lock()
+                        .unwrap()
+                        .push(("request", Instant::now()));
+                    let head = concat!(
+                        "HTTP/1.1 429 Too Many Requests\r\n",
+                        "Content-Type: application/json\r\n",
+                        "Content-Length: 80\r\n\r\n"
+                    );
+                    if stream.write_all(head.as_bytes()).is_err() {
+                        server_timeline
+                            .lock()
+                            .unwrap()
+                            .push(("close", Instant::now()));
+                        return;
+                    }
+                    server_timeline
+                        .lock()
+                        .unwrap()
+                        .push(("headers", Instant::now()));
+                    let body = b"{\"error\":{\"message\":\"slow drip body for cancel tests\"}}";
+                    let mut index = 0usize;
+                    while !server_stop.load(Ordering::Relaxed) && index < body.len() {
+                        if stream
+                            .write_all(&body[index..index + 1])
+                            .and_then(|_| stream.flush())
+                            .is_err()
+                        {
+                            server_timeline
+                                .lock()
+                                .unwrap()
+                                .push(("close", Instant::now()));
+                            return;
+                        }
+                        index += 1;
+                        std::thread::sleep(chunk_gap);
+                    }
+                    // 滴漏完毕后按住连接（取消观察窗内不主动结束）。
+                    while !server_stop.load(Ordering::Relaxed) {
+                        std::thread::sleep(chunk_gap);
+                    }
+                })
+                .expect("spawn cancel test endpoint");
+            Self {
+                port,
+                timeline,
+                stop,
+            }
+        }
+
+        /// 有界轮询共享时间线（无未注册的无限阻塞等待）。
+        fn wait_for(&self, label: &'static str) -> Option<Instant> {
+            for _ in 0..300 {
+                let found = self
+                    .timeline
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .find(|(entry, _)| *entry == label)
+                    .map(|(_, moment)| *moment);
+                if found.is_some() {
+                    return found;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            None
+        }
+
+        fn saw(&self, label: &'static str) -> Option<Instant> {
+            self.timeline
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|(entry, _)| *entry == label)
+                .map(|(_, moment)| *moment)
+        }
+    }
+
+    fn read_request_head(stream: &mut TcpStream) -> bool {
+        let mut seen = Vec::new();
+        let mut byte = [0u8; 1];
+        while !seen.ends_with(b"\r\n\r\n") {
+            match stream.read(&mut byte) {
+                Ok(0) | Err(_) => return false,
+                Ok(_) => seen.push(byte[0]),
+            }
+            if seen.len() > 64 * 1024 {
+                return false;
+            }
+        }
+        true
+    }
+
+    struct NoopSink;
+    impl ModelEventSink for NoopSink {
+        fn emit(&mut self, _event: ModelEvent) {}
+    }
+
+    fn compatible_model(port: u16) -> OpenAiCompatibleModel {
+        let config = crate::ModelConfig {
+            protocol: ModelProtocol::OpenAiCompatible,
+            model: "cancel-test-model".into(),
+            endpoint: format!("http://127.0.0.1:{port}"),
+            request_path: "/chat/completions".into(),
+            ..crate::ModelConfig::default()
+        };
+        OpenAiCompatibleModel::from_runtime_fields(vec!["test-key".into()], &config)
+            .expect("compatible test model")
+    }
+
+    fn compatible_delta(text: &str) -> String {
+        format!(
+            "data: {{\"id\":\"c\",\"object\":\"chat.completion.chunk\",\"choices\":[{{\
+             \"index\":0,\"delta\":{{\"content\":\"{text}\"}},\"finish_reason\":null}}]}}\n\n"
+        )
+    }
+
+    /// CANCEL-1 判别面（S3）：端点按住响应头期间取消，provider 的
+    /// `stream` 必须在短、有界的时间内以 `FinishReason::Cancelled` 返
+    /// 回，而不是等端点自己写出响应头（pre-fix：send 阻塞在响应头等
+    /// 待，取消不被观察，5s 后才返回 → 红）。
+    #[test]
+    fn cancel_propagates_into_provider_header_wait() {
+        let endpoint = SlowEndpoint::spawn(
+            Duration::from_secs(5),
+            Duration::from_millis(50),
+            vec![compatible_delta("x")],
+        );
+        let token = CancelToken::new();
+        let driver_token = token.clone();
+        let port = endpoint.port;
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut model = compatible_model(port);
+            let items = vec![ModelItem::user_text("hello")];
+            let options = ModelOptions::default();
+            let request = ModelRequest {
+                instructions: None,
+                items: &items,
+                tools: &[],
+                options: &options,
+                cancel: &driver_token,
+            };
+            let mut sink = NoopSink;
+            let _ = tx.send(model.stream(request, &mut sink));
+        });
+        assert!(
+            endpoint.wait_for("request").is_some(),
+            "endpoint must observe the request before cancel"
+        );
+        token.cancel();
+        let cancelled_at = Instant::now();
+        let result = rx
+            .recv_timeout(Duration::from_secs(20))
+            .expect("stream thread returns");
+        let after_cancel = cancelled_at.elapsed();
+        let response = result.expect("cancelled header wait is a Cancelled response");
+        assert_eq!(response.finish_reason, FinishReason::Cancelled);
+        assert!(
+            after_cancel < Duration::from_millis(1500),
+            "cancel must interrupt the header wait promptly: {after_cancel:?}"
+        );
+        endpoint.stop.store(true, Ordering::Relaxed);
+    }
+
+    /// CANCEL-1 判别面（S3，OpenAI Responses 协议同型）：同一阻塞窗口
+    /// 的取消传播。
+    #[test]
+    fn cancel_propagates_into_openai_responses_header_wait() {
+        let endpoint = SlowEndpoint::spawn(
+            Duration::from_secs(5),
+            Duration::from_millis(50),
+            vec![String::from(
+                "data: {\"type\":\"response.output_text.delta\",\"delta\":\"x\"}\n\n",
+            )],
+        );
+        let token = CancelToken::new();
+        let driver_token = token.clone();
+        let port = endpoint.port;
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut model = OpenAiModel::new("test-key", "cancel-test-model")
+                .expect("openai test model")
+                .with_base_url(format!("http://127.0.0.1:{port}"));
+            let items = vec![ModelItem::user_text("hello")];
+            let options = ModelOptions::default();
+            let request = ModelRequest {
+                instructions: None,
+                items: &items,
+                tools: &[],
+                options: &options,
+                cancel: &driver_token,
+            };
+            let mut sink = NoopSink;
+            let _ = tx.send(model.stream(request, &mut sink));
+        });
+        assert!(
+            endpoint.wait_for("request").is_some(),
+            "endpoint must observe the request before cancel"
+        );
+        token.cancel();
+        let cancelled_at = Instant::now();
+        let result = rx
+            .recv_timeout(Duration::from_secs(20))
+            .expect("stream thread returns");
+        let after_cancel = cancelled_at.elapsed();
+        let response = result.expect("cancelled header wait is a Cancelled response");
+        assert_eq!(response.finish_reason, FinishReason::Cancelled);
+        assert!(
+            after_cancel < Duration::from_millis(1500),
+            "cancel must interrupt the header wait promptly: {after_cancel:?}"
+        );
+        endpoint.stop.store(true, Ordering::Relaxed);
+    }
+
+    /// CANCEL-1 判别面（C3）：已取消的 run 不得再发出新的模型请求。
+    /// pre-fix：先取消后 stream 仍会先 POST（send 不预检取消）→ 红。
+    #[test]
+    fn pre_cancelled_provider_request_never_reaches_the_endpoint() {
+        let endpoint = SlowEndpoint::spawn(
+            Duration::ZERO,
+            Duration::from_millis(50),
+            vec![compatible_delta("x")],
+        );
+        let token = CancelToken::new();
+        token.cancel();
+        let mut model = compatible_model(endpoint.port);
+        let items = vec![ModelItem::user_text("hello")];
+        let options = ModelOptions::default();
+        let request = ModelRequest {
+            instructions: None,
+            items: &items,
+            tools: &[],
+            options: &options,
+            cancel: &token,
+        };
+        let mut sink = NoopSink;
+        let started = Instant::now();
+        let result = model.stream(request, &mut sink);
+        let elapsed = started.elapsed();
+        let response = result.expect("pre-cancelled stream is a Cancelled response");
+        assert_eq!(response.finish_reason, FinishReason::Cancelled);
+        assert!(
+            elapsed < Duration::from_millis(500),
+            "pre-cancelled request must fail fast: {elapsed:?}"
+        );
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(
+            endpoint.saw("request").is_none(),
+            "a cancelled run must not schedule a new model request"
+        );
+        endpoint.stop.store(true, Ordering::Relaxed);
+    }
+
+    /// CANCEL-1 回归腿（S1）：持续输出中的取消已有界（250ms body 轮询
+    /// 可见取消）；此测试钉住该行为，并要求拆链传播回端点（对端观察
+    /// 到 close），证明不是"等流自然结束"。
+    #[test]
+    fn cancel_during_active_stream_is_prompt_and_teardown_reaches_endpoint() {
+        let endpoint = SlowEndpoint::spawn(
+            Duration::from_millis(100),
+            Duration::from_millis(50),
+            vec![compatible_delta("x")],
+        );
+        let token = CancelToken::new();
+        let driver_token = token.clone();
+        let port = endpoint.port;
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut model = compatible_model(port);
+            let items = vec![ModelItem::user_text("hello")];
+            let options = ModelOptions::default();
+            let request = ModelRequest {
+                instructions: None,
+                items: &items,
+                tools: &[],
+                options: &options,
+                cancel: &driver_token,
+            };
+            let mut sink = NoopSink;
+            let _ = tx.send(model.stream(request, &mut sink));
+        });
+        assert!(
+            endpoint.wait_for("headers").is_some(),
+            "stream must be active before cancel"
+        );
+        std::thread::sleep(Duration::from_millis(250));
+        token.cancel();
+        let cancelled_at = Instant::now();
+        let result = rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("stream thread returns");
+        let after_cancel = cancelled_at.elapsed();
+        let response = result.expect("cancelled stream is a Cancelled response");
+        assert_eq!(response.finish_reason, FinishReason::Cancelled);
+        assert!(
+            after_cancel < Duration::from_millis(1500),
+            "active-stream cancel must stay prompt: {after_cancel:?}"
+        );
+        let closed_at = endpoint
+            .wait_for("close")
+            .expect("endpoint observes teardown");
+        assert!(
+            closed_at.duration_since(cancelled_at) < Duration::from_secs(2),
+            "socket teardown must reach the endpoint after cancel"
+        );
+        endpoint.stop.store(true, Ordering::Relaxed);
+    }
+
+    /// CF5（复审 2026-10-14）判别面：分段读取下的硬字节帽。Reader 以
+    /// 1024 字节分段持续供数（复现参数：帽 65536）——pre-fix 先整段追
+    /// 加再检查 cap，保留正文可超帽一个分段（乙方实测 66560 > 65536）
+    /// → 红。保护必须落在**生产读取路径**（本函数），不再以 cfg(test)
+    /// 旧函数的字节帽测试代替。
+    #[test]
+    fn cancellable_error_body_respects_the_hard_cap_across_partial_reads() {
+        struct ChunkyBody {
+            total: usize,
+            delivered: usize,
+        }
+        impl Read for ChunkyBody {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                if self.delivered >= self.total {
+                    return Ok(0);
+                }
+                // 乙方复现向量：首段 1024 字节，其后按调用方缓冲大小
+                // （8192）返回——非对齐分段跨过帽界，pre-fix 保留正文
+                // 66560 > 65536。
+                let base = if self.delivered == 0 { 1024 } else { buf.len() };
+                let want = base.min(self.total - self.delivered);
+                for slot in buf[..want].iter_mut() {
+                    *slot = b'x';
+                }
+                self.delivered += want;
+                Ok(want)
+            }
+        }
+        let cancel = CancelToken::new();
+        let body = ChunkyBody {
+            total: 200_000,
+            delivered: 0,
+        };
+        let result = read_error_body_capped_cancellable(body, &cancel, 65_536);
+        let CancellingBodyRead::Body(text) = result else {
+            panic!("an uncancelled read is a Body")
+        };
+        let marker = "…[truncated]";
+        assert!(
+            text.ends_with(marker),
+            "truncation marker present: {text:?}"
+        );
+        let retained = &text[..text.len() - marker.len()];
+        assert!(
+            retained.len() <= 65_536,
+            "hard body cap violated: {} > 65536",
+            retained.len()
+        );
+        assert_eq!(
+            retained.len(),
+            65_536,
+            "the cap is fully used, not under-read"
+        );
+    }
+
+    /// CF6（复审 2026-10-14）判别面：未取消时读取失败的已读前缀保
+    /// 留。旧 [`read_error_body_capped`] 经 `read_to_end` 忽略错误但保
+    /// 留已读字节；pre-fix 新函数错误臂返回空串，丢失 "bad request"
+    /// 前缀 → 红。
+    #[test]
+    fn cancellable_error_body_keeps_partial_diagnostics_on_read_failure() {
+        struct FailingAfterPrefix {
+            delivered: bool,
+        }
+        impl Read for FailingAfterPrefix {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                if self.delivered {
+                    return Err(io::Error::new(io::ErrorKind::ConnectionReset, "reset"));
+                }
+                self.delivered = true;
+                buf[..11].copy_from_slice(b"bad request");
+                Ok(11)
+            }
+        }
+        let cancel = CancelToken::new();
+        let result = read_error_body_capped_cancellable(
+            FailingAfterPrefix { delivered: false },
+            &cancel,
+            1024,
+        );
+        let CancellingBodyRead::Body(text) = result else {
+            panic!("an uncancelled read is a Body")
+        };
+        assert_eq!(
+            text, "bad request",
+            "the already-read prefix must survive a read failure"
+        );
+    }
+
+    /// CF2（返工单 2026-10-13）判别面（C2，compatible 适配器）：429 错
+    /// 误正文以 100ms/字节滴漏（声明 80 字节）期间取消，`stream` 必须
+    /// 短、有界地以 Cancelled 终止，而不是等正文读完（pre-fix：读取
+    /// 无取消感知，~8s 后才返回且形状是 429 错误 → 红）。终态必须是
+    /// 取消，不是吞错误或假造。
+    #[test]
+    fn cancel_interrupts_slow_error_body_read_compatible() {
+        let endpoint = SlowEndpoint::spawn_slow_error(Duration::from_millis(100));
+        let token = CancelToken::new();
+        let driver_token = token.clone();
+        let port = endpoint.port;
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut model = compatible_model(port);
+            let items = vec![ModelItem::user_text("hello")];
+            let options = ModelOptions::default();
+            let request = ModelRequest {
+                instructions: None,
+                items: &items,
+                tools: &[],
+                options: &options,
+                cancel: &driver_token,
+            };
+            let mut sink = NoopSink;
+            let _ = tx.send(model.stream(request, &mut sink));
+        });
+        assert!(
+            endpoint.wait_for("headers").is_some(),
+            "the drip must be underway before cancel"
+        );
+        std::thread::sleep(Duration::from_millis(300));
+        token.cancel();
+        let cancelled_at = Instant::now();
+        let result = rx
+            .recv_timeout(Duration::from_secs(20))
+            .expect("stream thread returns");
+        let after_cancel = cancelled_at.elapsed();
+        let response = result.expect("cancelled error-body read is a Cancelled response");
+        assert_eq!(
+            response.finish_reason,
+            FinishReason::Cancelled,
+            "cancel during a slow error body must end cancelled, not as a surfaced 429"
+        );
+        assert!(
+            after_cancel < Duration::from_millis(1500),
+            "cancel must interrupt the slow error body read promptly: {after_cancel:?}"
+        );
+        endpoint.stop.store(true, Ordering::Relaxed);
+    }
+
+    /// CF2 判别面（C2，OpenAI Responses 适配器同型路径，独立实测——
+    /// 返工单要求不把源码核对写成实测）。
+    #[test]
+    fn cancel_interrupts_slow_error_body_read_openai_responses() {
+        let endpoint = SlowEndpoint::spawn_slow_error(Duration::from_millis(100));
+        let token = CancelToken::new();
+        let driver_token = token.clone();
+        let port = endpoint.port;
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut model = OpenAiModel::new("test-key", "cancel-test-model")
+                .expect("openai test model")
+                .with_base_url(format!("http://127.0.0.1:{port}"));
+            let items = vec![ModelItem::user_text("hello")];
+            let options = ModelOptions::default();
+            let request = ModelRequest {
+                instructions: None,
+                items: &items,
+                tools: &[],
+                options: &options,
+                cancel: &driver_token,
+            };
+            let mut sink = NoopSink;
+            let _ = tx.send(model.stream(request, &mut sink));
+        });
+        assert!(
+            endpoint.wait_for("headers").is_some(),
+            "the drip must be underway before cancel"
+        );
+        std::thread::sleep(Duration::from_millis(300));
+        token.cancel();
+        let cancelled_at = Instant::now();
+        let result = rx
+            .recv_timeout(Duration::from_secs(20))
+            .expect("stream thread returns");
+        let after_cancel = cancelled_at.elapsed();
+        let response = result.expect("cancelled error-body read is a Cancelled response");
+        assert_eq!(
+            response.finish_reason,
+            FinishReason::Cancelled,
+            "cancel during a slow error body must end cancelled, not as a surfaced 429"
+        );
+        assert!(
+            after_cancel < Duration::from_millis(1500),
+            "cancel must interrupt the slow error body read promptly: {after_cancel:?}"
+        );
+        endpoint.stop.store(true, Ordering::Relaxed);
     }
 }

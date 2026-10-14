@@ -123,6 +123,7 @@ pub(super) fn phase_line(
     phase_elapsed: Option<Duration>,
     run_elapsed: Option<Duration>,
     steering_queued: usize,
+    cancelling: bool,
 ) -> Line<'static> {
     let frame = spinner_frame(tick);
     let base = theme::style(theme::Role::ThinkingGlyph);
@@ -136,7 +137,13 @@ pub(super) fn phase_line(
     // 范围 [-margin, len+margin)。先照亮的字符在灯光走过后回基色；
     // 高斯尾给出柔和的边缘。转圈独立节律（每 2 字符一帧，见常量注
     // 释）。
-    let label = phase.label();
+    // CANCEL-1（C1）：取消请求一旦发出，标签即切换为 Cancelling…，
+    // 保留 spinner 与 run 总时钟——反馈即刻可见，不等待 run 真正停止。
+    let label = if cancelling {
+        "Cancelling…"
+    } else {
+        phase.label()
+    };
     let len = label.chars().count() as u64;
     let cycle = len + 2 * SWEEP_MARGIN_CHARS;
     let center = ((tick / SWEEP_STEP_TICKS) % cycle) as f64 - SWEEP_MARGIN_CHARS as f64;
@@ -159,14 +166,20 @@ pub(super) fn phase_line(
     }
 
     if let Some(run_elapsed) = run_elapsed {
-        let clocks = match (phase, phase_elapsed) {
-            (Phase::WaitingFirstToken, _) => format!(" {}", format_clock(run_elapsed)),
-            (_, Some(phase_elapsed)) => format!(
-                " {} · total {}",
-                format_clock(phase_elapsed),
-                format_clock(run_elapsed)
-            ),
-            (_, None) => format!(" · total {}", format_clock(run_elapsed)),
+        // Cancelling… 只保留 run 总时钟：当前 phase 的分项时钟在取消
+        // 语境下没有意义（CANCEL-1/C1）。
+        let clocks = if cancelling {
+            format!(" {}", format_clock(run_elapsed))
+        } else {
+            match (phase, phase_elapsed) {
+                (Phase::WaitingFirstToken, _) => format!(" {}", format_clock(run_elapsed)),
+                (_, Some(phase_elapsed)) => format!(
+                    " {} · total {}",
+                    format_clock(phase_elapsed),
+                    format_clock(run_elapsed)
+                ),
+                (_, None) => format!(" · total {}", format_clock(run_elapsed)),
+            }
         };
         spans.push(Span::styled(clocks, theme::style(theme::Role::Faint)));
     }

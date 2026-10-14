@@ -514,6 +514,7 @@ impl App {
                         None => {
                             if let Some(handle) = &self.run_handle {
                                 handle.cancel();
+                                self.cancel_requested = true;
                                 self.flash_status("cancelling…");
                             }
                         }

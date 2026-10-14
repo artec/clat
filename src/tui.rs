@@ -314,6 +314,10 @@ struct App {
     /// /resume 会话选择器；打开期间独占按键与鼠标。
     session_picker: Option<SessionPicker>,
     running: bool,
+    /// CANCEL-1（C1）：运行中已发出取消请求（Esc / /cancel）。phase 行
+    /// 优先于 flash 渲染，取消确认必须出现在 phase 行上，否则用户在
+    /// run 真正停止前看不到任何反馈。终态/新 run 复位。
+    cancel_requested: bool,
     /// A local run's pre-commit attachment admission is executing off the
     /// terminal thread. During this short handoff `application` is owned by
     /// the worker and terminal input is gated; the structured draft remains
@@ -556,6 +560,7 @@ impl App {
             default_status: status.clone(),
             status,
             status_until: None,
+            cancel_requested: false,
             editor: None,
             picker: None,
             picker_return: None,
@@ -660,6 +665,7 @@ impl App {
             default_status: status.clone(),
             status,
             status_until: None,
+            cancel_requested: false,
             editor: None,
             picker: None,
             picker_return: None,
@@ -1683,7 +1689,7 @@ mod tests {
 
     #[test]
     fn phase_line_searchlight_sweeps_at_a_constant_per_character_dwell() {
-        let at_start = phase_line(0, Phase::WaitingFirstToken, None, None, 0);
+        let at_start = phase_line(0, Phase::WaitingFirstToken, None, None, 0, false);
         // The spinner frame itself rotates and keeps the brand blue.
         assert_eq!(at_start.spans[0].content, SPINNER_FRAMES[0]);
         assert_eq!(at_start.spans[0].style.fg, Some(theme::BRAND_SHIMMER_LOW));
@@ -1700,7 +1706,7 @@ mod tests {
         // pre-fix 两版各自必红：整圈周期恒定版（v0.6.1）每字速度随字数
         // 变；整词呼吸版没有任何字符差异。
         let styles = |tick: u64, phase: Phase| -> Vec<Option<Color>> {
-            phase_line(tick, phase, None, None, 0)
+            phase_line(tick, phase, None, None, 0, false)
                 .spans
                 .into_iter()
                 .skip(2)
@@ -1747,6 +1753,7 @@ mod tests {
             Some(Duration::from_secs(42)),
             Some(Duration::from_secs(61)),
             0,
+            false,
         );
         let last = with_clock.spans.last().expect("clock span");
         assert!(last.content.contains("42s"));
@@ -1758,6 +1765,7 @@ mod tests {
             Some(Duration::from_secs(4)),
             Some(Duration::from_secs(8)),
             2,
+            false,
         );
         let last = with_steering.spans.last().expect("badge span");
         assert_eq!(last.content, " · steering·2");
@@ -1770,7 +1778,7 @@ mod tests {
     fn phase_line_searchlight_char_lights_then_returns_to_base() {
         let base = Some(theme::BRAND_SHIMMER_LOW);
         let char_fg = |tick: u64, index: usize| {
-            phase_line(tick, Phase::Thinking, None, None, 0).spans[2 + index]
+            phase_line(tick, Phase::Thinking, None, None, 0, false).spans[2 + index]
                 .style
                 .fg
         };

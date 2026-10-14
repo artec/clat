@@ -110,7 +110,13 @@ impl OpenAiCompatibleModel {
         Ok(Value::Object(body))
     }
 
-    fn send(&self, body: &Value, cancel: &CancelToken) -> Result<Response<Body>, ModelError> {
+    /// `Ok(None)`：取消在连接/响应头等待阶段获胜（CANCEL-1）——
+    /// 调用方以 Cancelled 响应短路，不进入流读取。
+    fn send(
+        &self,
+        body: &Value,
+        cancel: &CancelToken,
+    ) -> Result<Option<Response<Body>>, ModelError> {
         let url = join_endpoint(&self.config.endpoint, &self.config.request_path);
         let encoded = super::serialize_request_body(body, "OpenAI-compatible")?;
         let mut request = self
@@ -147,21 +153,44 @@ impl OpenAiCompatibleModel {
                 .build();
         }
 
-        let mut response = request.send(encoded).map_err(|error| {
-            ModelError::transport(format!("compatible API request failed: {error}"))
-        })?;
+        let response = match super::race_send_with_cancel(move || request.send(encoded), cancel) {
+            super::CancelRaceOutcome::Completed(result) => result.map_err(|error| {
+                ModelError::transport(format!("compatible API request failed: {error}"))
+            })?,
+            super::CancelRaceOutcome::Cancelled => return Ok(None),
+            super::CancelRaceOutcome::HelperLost => {
+                return Err(ModelError::transport(
+                    "compatible API send helper terminated without a response",
+                ));
+            }
+        };
+        Self::finish_send(response, cancel)
+    }
+
+    /// 状态分类 + 错误正文处理（CANCEL-1 拆分：send 保持在 80 行形状
+    /// 预算内）。`Ok(None)`：取消在错误正文读取中获胜（CF2）。
+    fn finish_send(
+        mut response: Response<Body>,
+        cancel: &CancelToken,
+    ) -> Result<Option<Response<Body>>, ModelError> {
         if response.status().is_success() {
-            return Ok(response);
+            return Ok(Some(response));
         }
         let status = response.status();
         let kind = super::error_kind_from_status(status.as_u16());
         let hint = super::retry_hint_from_headers(response.headers());
         // FP-02：错误体有界读取（截断保留 + 尾标）——异常端点的巨型
         // 错误体不能在诊断消息成形前灌满内存。
-        let text = super::read_error_body_capped(
+        let text = match super::read_error_body_capped_cancellable(
             response.body_mut().as_reader(),
+            cancel,
             super::MAX_ERROR_BODY_BYTES,
-        );
+        ) {
+            super::CancellingBodyRead::Body(text) => text,
+            // CF2：取消在错误正文读取中获胜——与头部等待取消同型，
+            // 短路为 Cancelled 响应，不把半截诊断当 429 上抛。
+            super::CancellingBodyRead::Cancelled => return Ok(None),
+        };
         let mut error = ModelError::with_kind(
             kind,
             format!(
@@ -192,7 +221,9 @@ impl Model for OpenAiCompatibleModel {
     ) -> Result<ModelResponse, ModelError> {
         let cancel = request.cancel;
         let body = self.request_body(request)?;
-        let response = self.send(&body, cancel)?;
+        let Some(response) = self.send(&body, cancel)? else {
+            return Ok(super::cancelled_response());
+        };
         let (_, body) = response.into_parts();
         consume_sse(
             BufReader::new(CancelAwareReader::new(body.into_reader(), cancel)),

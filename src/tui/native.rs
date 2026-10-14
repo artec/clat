@@ -65,6 +65,11 @@ pub(super) enum NativeEvent {
         crate::interaction::AskAnswer,
         Result<Value, String>,
     ),
+    /// CF7（r3 2026-10-14）：run.cancel 的回执——与审批回执分离。
+    /// `issued_for` = 发起时所在 run 的本地序号（CF8/r4：旧轮回执不得
+    /// 解除新 Run 的在途门）；失败回执按归属解除并提示，成功回执不清
+    /// 门（CF7-B/r4：RPC 成功不是 Run 终态，门保持到真实终态事件）。
+    CancelReply(u64, Result<Value, String>),
 }
 
 pub(super) struct NativeState {
@@ -97,6 +102,13 @@ pub(super) struct NativeState {
     questions: questions::NativeQuestions,
     info_request: u64,
     permissions: permissions::NativePermissions,
+    /// CF7：run.cancel 在途标志（所在 run 的本地序号）——同一 run 取
+    /// 消未结算期间重复 ESC 幂等跳过（C1）；真实终态/新 run 解除。
+    /// CF8（r4）：回执按序号归属，旧轮回执不解除新轮。
+    pub(super) cancel_inflight: Option<u64>,
+    /// CF8（r4）：本连接内 RunStarted 帧递增的本地 run 序号，标识取
+    /// 消请求的归属。
+    pub(super) run_seq: u64,
 }
 
 impl App {
@@ -157,6 +169,8 @@ impl App {
             questions: questions::NativeQuestions::default(),
             info_request: 0,
             permissions: Default::default(),
+            cancel_inflight: None,
+            run_seq: 0,
         });
         // The title already carries the host connection marker. Keep the
         // resident status as the project directory and use this only as a
@@ -366,9 +380,23 @@ impl App {
     }
 
     fn cancel_native(&mut self) {
-        let (Some(native), Some(ui)) = (&self.native, self.event_sender.clone()) else {
+        // CANCEL-1（C1）：取消请求是异步 RPC，事件回流要等宿主真正停
+        // 止；UI 反馈不得绑定在往返完成上——按键即刻亮"取消中"（flash
+        // + phase 行），宿主终态事件到达后由 finish 侧提示覆盖。
+        self.cancel_requested = true;
+        self.flash_status("cancelling…");
+        let (Some(native), Some(ui)) = (&mut self.native, self.event_sender.clone()) else {
             return;
         };
+        // CF7（r3，C1）：同一 run 的取消请求尚未结算时，重复 ESC 不
+        // 得发出第二个 run.cancel——幂等跳过。Cancelling… 反馈已在屏
+        // 上；门保持到**真实终态事件**（CF7-B/r4：成功 RPC 不是终态）；
+        // 失败回执按归属解除，失败后的下一次 ESC 是可解释的人工重试。
+        let run_seq = native.run_seq;
+        if native.cancel_inflight == Some(run_seq) {
+            return;
+        }
+        native.cancel_inflight = Some(run_seq);
         let client = native.client.clone();
         let selection = native.selection;
         thread::spawn(move || {
@@ -376,7 +404,7 @@ impl App {
                 "run.cancel",
                 &json!({"expected_selection_generation": selection}),
             );
-            let _ = ui.send(UiEvent::Native(NativeEvent::ApprovalReply(result)));
+            let _ = ui.send(UiEvent::Native(NativeEvent::CancelReply(run_seq, result)));
         });
     }
 
@@ -473,6 +501,24 @@ impl App {
                 self.native_next_turn_reply((epoch, selection, session), text, recall, result);
             }
             NativeEvent::ApprovalReply(Err(error)) => self.flash_status(error),
+            NativeEvent::CancelReply(issued_for, result) => {
+                // CF7-B/r4：成功回执**不解除**在途门——宿主 run.cancel
+                // 立即返回，不是 Run 终态；门保持到真实终态事件。
+                // CF8/r4：失败回执只在归属匹配时解除（旧轮回执不改当
+                // 前取消状态）并给出可解释提示，下一次 ESC 即人工重试。
+                let belongs = self
+                    .native
+                    .as_ref()
+                    .is_some_and(|native| native.cancel_inflight == Some(issued_for));
+                if belongs && result.is_err() {
+                    if let Some(native) = self.native.as_mut() {
+                        native.cancel_inflight = None;
+                    }
+                    if let Err(error) = result {
+                        self.flash_status(format!("cancel request failed: {error}"));
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -622,6 +668,11 @@ impl App {
             HostEvent::Run(event) => {
                 if let RunEvent::RunStarted { message, .. } = &event {
                     self.running = true;
+                    // CF8（r4）：本地 run 序号推进——此后发起的取消请
+                    // 求归属于新 run，旧轮回执不再匹配。
+                    if let Some(native) = self.native.as_mut() {
+                        native.run_seq += 1;
+                    }
                     self.run_usage_acc = Usage::default();
                     self.run_routes_base = Some(self.usage_routes.clone());
                     self.run_route = None;
@@ -648,6 +699,12 @@ impl App {
                     &self.native.as_ref().unwrap().replay,
                 );
                 self.running = false;
+                // CF1：会话装载/切换完成 = 旧 run 的取消请求不再属于
+                // 当前上下文（跨会话/断线重连防线）。
+                self.cancel_requested = false;
+                if let Some(native) = self.native.as_mut() {
+                    native.cancel_inflight = None;
+                }
             }
             "subscribed" => {
                 self.native.as_mut().unwrap().online = true;
@@ -657,6 +714,12 @@ impl App {
             }
             "prompt.settled" => {
                 self.running = false;
+                // CF1：宿主侧 prompt 结算（拒绝/失败路径可能没有对应的
+                // RunCancelled 事件到达）同样是 run 终态。
+                self.cancel_requested = false;
+                if let Some(native) = self.native.as_mut() {
+                    native.cancel_inflight = None;
+                }
                 self.phases.finish();
                 self.conversation.push_turn_end(
                     payload["outcome"]["type"]

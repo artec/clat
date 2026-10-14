@@ -128,7 +128,13 @@ impl OpenAiModel {
         Ok(Value::Object(body))
     }
 
-    fn send(&self, body: &Value, cancel: &CancelToken) -> Result<Response<Body>, ModelError> {
+    /// `Ok(None)`：取消在连接/响应头等待阶段获胜（CANCEL-1）——
+    /// 调用方以 Cancelled 响应短路，不进入流读取。
+    fn send(
+        &self,
+        body: &Value,
+        cancel: &CancelToken,
+    ) -> Result<Option<Response<Body>>, ModelError> {
         let url = format!("{}/responses", self.base_url);
         let body = super::serialize_request_body(body, "OpenAI")?;
         let mut request = self
@@ -148,22 +154,36 @@ impl OpenAiModel {
                 .timeout_recv_response(Some(remaining.min(RECV_RESPONSE_TIMEOUT)))
                 .build();
         }
-        let mut response = request
-            .send(body)
-            .map_err(|error| ModelError::transport(format!("OpenAI request failed: {error}")))?;
+        let mut response = match super::race_send_with_cancel(move || request.send(body), cancel) {
+            super::CancelRaceOutcome::Completed(result) => result.map_err(|error| {
+                ModelError::transport(format!("OpenAI request failed: {error}"))
+            })?,
+            super::CancelRaceOutcome::Cancelled => return Ok(None),
+            super::CancelRaceOutcome::HelperLost => {
+                return Err(ModelError::transport(
+                    "OpenAI send helper terminated without a response",
+                ));
+            }
+        };
 
         if response.status().is_success() {
-            return Ok(response);
+            return Ok(Some(response));
         }
 
         let status = response.status();
         let kind = super::error_kind_from_status(status.as_u16());
         let hint = super::retry_hint_from_headers(response.headers());
         // FP-02：错误体有界读取（截断保留 + 尾标）。
-        let body = super::read_error_body_capped(
+        let body = match super::read_error_body_capped_cancellable(
             response.body_mut().as_reader(),
+            cancel,
             super::MAX_ERROR_BODY_BYTES,
-        );
+        ) {
+            super::CancellingBodyRead::Body(text) => text,
+            // CF2：取消在错误正文读取中获胜——与头部等待取消同型，
+            // 短路为 Cancelled 响应，不把半截诊断当 429 上抛。
+            super::CancellingBodyRead::Cancelled => return Ok(None),
+        };
         let mut error = ModelError::with_kind(
             kind,
             format!(
@@ -194,7 +214,9 @@ impl Model for OpenAiModel {
     ) -> Result<ModelResponse, ModelError> {
         let cancel = request.cancel;
         let body = self.request_body(request)?;
-        let response = self.send(&body, cancel)?;
+        let Some(response) = self.send(&body, cancel)? else {
+            return Ok(super::cancelled_response());
+        };
         let (_, body) = response.into_parts();
         consume_sse(
             BufReader::new(CancelAwareReader::new(body.into_reader(), cancel)),
