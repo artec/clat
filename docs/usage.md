@@ -915,7 +915,9 @@ result, so inspect the receipt even when `is_error` is false.
 
 The scanner joins partial lines before parsing, retains at most 64 summary rows
 as aggregate counts, and buffers at most 4096 bytes per pending stdout/stderr
-line. Long or invalid lines, counter overflow, missing EOF and excess summaries
+line. ANSI SGR color/style sequences are ignored when recognizing signatures;
+raw output is unchanged and other terminal controls are not interpreted.
+Long or invalid lines, counter overflow, missing EOF and excess summaries
 make the scan incomplete. Summary counts remain unauthenticated output
 signatures: a program can print them. `exit_scope=direct_child` does not recover
 hidden exits inside an explicitly launched wrapper or shell, certify a test

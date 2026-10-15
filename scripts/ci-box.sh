@@ -39,6 +39,7 @@ docker run --rm --cpus "$cpus" \
     -v clat-ci-box-npm:/npm-cache \
     -v clat-ci-box-target:/target \
     -e CARGO_HOME=/cargo-cache \
+    -e CARGO_TERM_COLOR=always \
     -e npm_config_cache=/npm-cache \
     -w /work \
     "$image" \

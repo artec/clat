@@ -253,7 +253,7 @@ fn verification_real_cargo_build_failure_cannot_reuse_a_previous_green() {
     std::fs::write(f.root.join("Cargo.toml"), "[package]\nname='receipt_fixture'\nversion='0.1.0'\nedition='2021'\n[workspace]\n[lib]\npath='lib.rs'\n").unwrap();
     let source = f.root.join("lib.rs");
     std::fs::write(&source, "#[test] fn contract() { assert_eq!(2 + 2, 4); }\n").unwrap();
-    let args = json!({"argv":["cargo","test","--offline","--lib","contract","--","--exact"],
+    let args = json!({"argv":["cargo","test","--color","always","--offline","--lib","contract","--","--exact"],
         "yield_time_ms":1000,"verification":{"format":"rust-test-summary","minimum_executed":1}});
     let good = f.finish(f.exec(&args).unwrap());
     assert_eq!(good["verification_receipt"]["status"], "passed", "{good}");

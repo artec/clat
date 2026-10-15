@@ -135,7 +135,8 @@ impl Receipt {
             self.incomplete = true;
             return;
         };
-        let Some(row) = super::verification::observe(text.trim_end_matches('\r')) else {
+        let text = super::verification::plain_signature(text.trim_end_matches('\r'));
+        let Some(row) = super::verification::observe(&text) else {
             if text.starts_with("test result: ") {
                 self.incomplete = true;
             }

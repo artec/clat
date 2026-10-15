@@ -55,6 +55,7 @@ fn summarize(streams: &[(&str, &str, bool)], mut incomplete: bool) -> Value {
 }
 
 pub(super) fn observe(line: &str) -> Option<Value> {
+    let line = plain_signature(line);
     if line.starts_with("error: could not compile `") && line.contains(" due to ") {
         return Some(
             json!({"format":"cargo_compile_diagnostic", "status":"compile_failed", "matched":null}),
@@ -89,6 +90,36 @@ pub(super) fn observe(line: &str) -> Option<Value> {
     }))
 }
 
+/// Ignore presentation-only SGR; never execute or erase other terminal controls.
+pub(super) fn plain_signature(line: &str) -> std::borrow::Cow<'_, str> {
+    if !line.contains('\x1b') {
+        return line.into();
+    }
+    let bytes = line.as_bytes();
+    let mut plain = String::with_capacity(line.len());
+    let (mut index, mut start) = (0, 0);
+    while index + 1 < bytes.len() {
+        if bytes[index] == b'\x1b' && bytes[index + 1] == b'[' {
+            let mut end = index + 2;
+            while bytes
+                .get(end)
+                .is_some_and(|b| b.is_ascii_digit() || matches!(b, b';' | b':'))
+            {
+                end += 1;
+            }
+            if bytes.get(end) == Some(&b'm') {
+                plain.push_str(&line[start..index]);
+                index = end + 1;
+                start = index;
+                continue;
+            }
+        }
+        index += 1;
+    }
+    plain.push_str(&line[start..]);
+    plain.into()
+}
+
 fn count(field: &str, suffix: &str) -> Option<u64> {
     let number = field.strip_suffix(suffix)?;
     if number.is_empty() || !number.bytes().all(|byte| byte.is_ascii_digit()) {
@@ -101,6 +132,28 @@ fn count(field: &str, suffix: &str) -> Option<u64> {
 mod tests {
     use super::*;
     const SUMMARY: &str = "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.01s";
+
+    #[test]
+    fn verification_signatures_ignore_sgr_without_interpreting_terminal_commands() {
+        let diagnostic = "error: could not compile `fixture` (lib test) due to 1 previous error";
+        for plain in [SUMMARY, diagnostic] {
+            let colored = format!(
+                "\x1b[1m\x1b[31m{}\x1b[0m",
+                plain.replace(' ', "\x1b[0m \x1b[38;2;255;0;0m")
+            );
+            assert_eq!(observe(&colored), observe(plain), "{colored:?}");
+            let stream = format!("{colored}\r\n");
+            let observed = consumed(&[("stderr", stream.as_bytes(), true)], false);
+            assert_eq!(
+                observed["observations"][0]["status"],
+                observe(plain).unwrap()["status"]
+            );
+            assert_eq!(observed["authenticated"], false);
+        }
+        for control in ["\x1b[2K", "\x1b]8;;https://example.invalid\x07", "\x1b[31"] {
+            assert!(observe(&format!("{control}{SUMMARY}")).is_none());
+        }
+    }
 
     #[test]
     fn verification_witness_does_not_promote_partial_or_malformed_signatures() {
