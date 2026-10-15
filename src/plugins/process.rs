@@ -21,6 +21,9 @@ mod outcome_tests;
 mod prepared;
 #[cfg(test)]
 mod sbx4_tests;
+mod verification;
+#[cfg(all(test, feature = "runtime-tests"))]
+mod verification_tests;
 #[cfg(test)]
 mod witness_tests;
 use prepared::{NativeProcessTool, prepare_native};
@@ -155,11 +158,16 @@ impl Tool for ExecCommandTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "exec_command".into(),
-            description: "Start a run-owned command session in the project. Returns immediately when it finishes within yield_time, otherwise returns a session_id for write_stdin polling/input/termination. tty=true creates a real PTY where supported. Project Write calls with a prepared OS sandbox run without approval; network=true still requires approval.".into(),
+            description: "Start a run-owned command session in the project. Specify exactly one of cmd (shell) or argv (direct executable and literal arguments). For test verification prefer argv with verification; its cumulative receipt survives polling and diagnostic clipping. Receipt test counts are unauthenticated output observations, not coverage. Returns immediately when it finishes within yield_time, otherwise returns a session_id for write_stdin polling/input/termination. tty=true creates a real PTY where supported. Project Write calls with a prepared OS sandbox run without approval; network=true still requires approval.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "cmd": {"type": "string", "maxLength": MAX_COMMAND_BYTES},
+                    "argv": {"type":"array","minItems":1,"maxItems":128,"items":{"type":"string"},"description":"Direct executable and literal arguments; at most 65536 UTF-8 bytes total, no NUL. Mutually exclusive with cmd."},
+                    "verification": {"type":"object","properties":{
+                        "format":{"type":"string","enum":["rust-test-summary"]},
+                        "minimum_executed":{"type":"integer","minimum":1,"maximum":1000000}
+                    },"required":["format","minimum_executed"],"additionalProperties":false,"description":"Optional bounded cumulative receipt; requires argv and tty=false. Only the directly launched process exit is known."},
                     "workdir": {"type": "string", "description": "Project-relative directory or absolute directory inside the active scratch root"},
                     "tty": {"type": "boolean", "default": false},
                     "yield_time_ms": {"type": "integer", "minimum": 250, "maximum": 30000, "default": 10000},
@@ -167,7 +175,7 @@ impl Tool for ExecCommandTool {
                     "network": {"type": "boolean", "default": false},
                     "sandbox": {"type": "string", "enum": ["auto", "required", "off"], "default": "auto"}
                 },
-                "required": ["cmd"],
+                "required": [],
                 "additionalProperties": false
             }),
             effect: ToolEffect::Execute,
@@ -195,7 +203,7 @@ impl Tool for ExecCommandTool {
     }
 
     fn journal_arguments(&self, arguments: &Value) -> Value {
-        bounded_command_journal(arguments, "cmd")
+        verification::journal_arguments(arguments)
     }
 
     fn journal_output(&self, output: &Value) -> Value {
@@ -394,6 +402,9 @@ fn process_journal_output(output: &Value) -> Value {
     if let Some(witness) = output.get("verification_witness") {
         journal["verification_witness"] = witness.clone();
     }
+    if let Some(receipt) = output.get("verification_receipt") {
+        journal["verification_receipt"] = receipt.clone();
+    }
     journal
 }
 
@@ -414,7 +425,8 @@ fn bounded_command_journal(arguments: &Value, field: &str) -> Value {
 }
 
 fn process_output_json(output: ProcessOutput) -> Value {
-    json!({
+    let receipt = output.verification_receipt.clone();
+    let mut value = json!({
         "verification_witness": output.verification_witness,
         "command_outcome": output.command_outcome.json(),
         "session_id": output.session_id,
@@ -439,7 +451,14 @@ fn process_output_json(output: ProcessOutput) -> Value {
         "cancelled": output.cancelled,
         "terminated": output.terminated,
         "sandbox": output.sandbox.json(output.sandbox_denied, output.sandbox_unavailable)
-    })
+    });
+    if output.direct {
+        value["execution"] = json!("argv");
+    }
+    match receipt {
+        Some(receipt) => verification::bounded_view(value, receipt),
+        None => value,
+    }
 }
 
 fn output_bytes(arguments: &Value, tool: &str) -> Result<usize, ToolError> {
@@ -538,6 +557,8 @@ impl ExecCommandTool {
             arguments,
             &[
                 "cmd",
+                "argv",
+                "verification",
                 "workdir",
                 "tty",
                 "yield_time_ms",
@@ -547,11 +568,7 @@ impl ExecCommandTool {
             ],
             "exec_command",
         )?;
-        let command = required_string(arguments, "cmd", "exec_command")?;
-        if command.trim().is_empty() {
-            return Err(ToolError::new("exec_command: `cmd` must not be empty"));
-        }
-        ensure_command_bound(command, "exec_command")?;
+        let invocation = verification::Invocation::parse(arguments)?;
         let workdir = optional_string(arguments, "workdir", "exec_command")?.map(str::to_owned);
         let tty = optional_bool(arguments, "tty", "exec_command")?.unwrap_or(false);
         let network = optional_bool(arguments, "network", "exec_command")?.unwrap_or(false);
@@ -570,7 +587,7 @@ impl ExecCommandTool {
             .service
             .start_prepared(
                 ProcessStart {
-                    command: command.to_owned(),
+                    command: invocation.command,
                     workdir,
                     tty,
                     network,

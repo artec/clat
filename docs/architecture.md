@@ -489,6 +489,23 @@ separately bounded. Raw streams and stdin have no persistence path. `write_stdin
 redacts its characters from the durable `tool/call` while permission review
 and invocation still see the complete arguments.
 
+`exec_command` may prepare a direct `argv` invocation using the same sandbox
+planner and frozen Execute authority as shell commands. Optional verification
+mode attaches a run-owned bounded accumulator before output-ring eviction and
+model display clipping. Complete Rust output signatures are folded across
+reader chunks; stream EOF, overflow and supervision facts constrain the final
+receipt. Counts are observations, never authenticated coverage. The OS status
+belongs only to the directly launched child. No new frontend lifecycle or
+durable-event vocabulary is introduced.
+
+Verification-mode formatting reserves a bounded receipt envelope under the
+shared serialized-result threshold before adding diagnostic excerpts. The
+production pruner remains enabled for every tool; it does not replace these
+already-bounded results. The existing tool/result journal projection keeps
+receipt metadata without stdout/stderr, and checkpoint/replay preserves that
+recorded value. Raw output retention, verification relevance and actual Agent
+adoption remain separate concerns.
+
 The lifecycle claim is limited to code paths where CLAT can execute teardown
 and to descendants that remain in the owned group. A daemon that deliberately
 creates a new session/process group can escape this local boundary. Fatal

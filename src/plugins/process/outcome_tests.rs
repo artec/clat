@@ -294,7 +294,8 @@ fn command_outcome_catalog_checkpoint_and_replay_preserve_recorded_labels() {
                 "target_exit_code":null,"status":"observed","output_incomplete":false,
                 "observations_truncated":false,"observations":[{"format":"rust_test_summary", "stream":"stdout",
                 "status":"zero_matches","matched":0,"passed":0,"failed":0,"ignored":0,"filtered_out":2}]
-            }}),
+            },"verification_receipt":{"version":1,"status":"inconclusive","exit_scope":"direct_child",
+                "authenticated":false,"executed":0,"owner_generation":1,"invocation_sha256":"fixture"}}),
             false,
         ),
     ];
@@ -355,6 +356,7 @@ fn command_outcome_catalog_checkpoint_and_replay_preserve_recorded_labels() {
         let json: Value = serde_json::from_str(result.output.as_str().unwrap()).unwrap();
         assert_eq!(json["command_outcome"], live["command_outcome"]);
         assert_eq!(json["verification_witness"], live["verification_witness"]);
+        assert_eq!(json["verification_receipt"], live["verification_receipt"]);
         assert_eq!(result.is_error, is_error);
         assert!(!json.to_string().contains("transient diagnostic"));
         assert!(!json.to_string().contains("legacy output"));

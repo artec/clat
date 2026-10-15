@@ -54,7 +54,7 @@ fn summarize(streams: &[(&str, &str, bool)], mut incomplete: bool) -> Value {
     })
 }
 
-fn observe(line: &str) -> Option<Value> {
+pub(super) fn observe(line: &str) -> Option<Value> {
     if line.starts_with("error: could not compile `") && line.contains(" due to ") {
         return Some(
             json!({"format":"cargo_compile_diagnostic", "status":"compile_failed", "matched":null}),

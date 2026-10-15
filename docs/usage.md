@@ -791,6 +791,11 @@ writes, and Full Access retains its existing unrestricted write behavior.
 - `exec_command` starts a command in the project, a project-relative
   workdir, or an absolute directory inside the active run scratch root. It waits up to `yield_time_ms`; a still-running command returns a
   numeric `session_id`. Command text is capped at 64 KiB.
+  Specify exactly one of `cmd` (shell text) or `argv` (an executable followed
+  by literal arguments). `argv` accepts 1–128 strings, at most 64 KiB of UTF-8
+  bytes in total, with no NUL; empty arguments after the program are preserved.
+  Shell operators in an argument are literal text. Windows batch files require
+  explicit shell execution through `cmd`.
 - `write_stdin` writes characters, closes stdin, polls for output, or
   terminates that same-run id. An empty `chars` value is a poll. Raw characters
   are redacted from the durable tool-call journal; the model tool rejects
@@ -834,7 +839,7 @@ native invocation errors. It contains `kind`, `reason`, and `evidence`:
 | `kind` | Meaning |
 | --- | --- |
 | `running` | The command has not reached a terminal status. |
-| `success` | The outer shell exited zero (`shell_exit_zero`). |
+| `success` | The outer shell exited zero (`shell_exit_zero`), or an argv process exited zero (`process_exit_zero`). |
 | `program_failure` | An ordinary nonzero exit (`nonzero_exit`), including compiler or assertion failures. |
 | `environment_failure` | A supervised timeout, sandbox diagnostic, launch/session limit error, or recognized execution/loading/resource diagnostic. |
 | `interrupted` | CLAT observed cancellation or explicit termination. |
@@ -888,6 +893,43 @@ The durable tool-result journal retains `command_outcome` and the bounded witnes
 counts and fixed labels while omitting raw
 process streams. Older journal results without this field remain readable;
 replay preserves recorded labels rather than recomputing them from missing output.
+
+For verification, `exec_command` accepts an optional non-PTY `argv` mode:
+
+```json
+{
+  "argv": ["cargo", "test", "--offline", "--lib", "contract", "--", "--exact"],
+  "verification": {"format": "rust-test-summary", "minimum_executed": 1},
+  "yield_time_ms": 1000
+}
+```
+
+The returned `verification_receipt` is cumulative for that run-owned process,
+including subsequent `write_stdin` polls. It reports `running`, `failed`,
+`inconclusive`, or `passed`, the direct child's exit/lifecycle facts, an argv/cwd
+fingerprint and bounded Rust-summary counts. Poll while running. Nonzero exits,
+observed failures and compilation failures cannot pass; interruption, missing
+evidence, zero/ignored-only matches or fewer than `minimum_executed` tests remain
+inconclusive. The minimum must be 1–1,000,000. A failed test is a normal process
+result, so inspect the receipt even when `is_error` is false.
+
+The scanner joins partial lines before parsing, retains at most 64 summary rows
+as aggregate counts, and buffers at most 4096 bytes per pending stdout/stderr
+line. Long or invalid lines, counter overflow, missing EOF and excess summaries
+make the scan incomplete. Summary counts remain unauthenticated output
+signatures: a program can print them. `exit_scope=direct_child` does not recover
+hidden exits inside an explicitly launched wrapper or shell, certify a test
+binary/source version, or prove that the assertions cover the intended behavior.
+
+Verification results reserve room for the receipt and shorten diagnostics based
+on the actual serialized JSON size, before the shared result pruner runs. The
+receipt therefore survives long or escape-heavy output. Display truncation and
+scanner completeness are separate facts; a bounded excerpt is not the full log.
+Empty polls keep cumulative evidence without rerunning the process. The durable
+journal retains receipt metadata while omitting raw streams. There are no
+automatic retries, source edits or extra model calls, and the normal Execute,
+sandbox, network, cancellation and run-ownership policies still apply. Legacy
+`cmd` results keep their existing fragment-scoped witness behavior.
 
 `tty: true` requests a real PTY on macOS/Linux; Windows rejects PTY sessions
 until its process-tree isolation graduates. At most eight sessions may run in

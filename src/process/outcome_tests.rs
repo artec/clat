@@ -9,6 +9,7 @@ fn entry(provider: &str, code: Option<i32>, signal: Option<&str>) -> Arc<Process
     let entry = ProcessEntry::new(
         &owner,
         ProcessEntryInit {
+            verification: None,
             id: 1,
             command: "unit".into(),
             tty: false,

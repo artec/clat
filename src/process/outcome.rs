@@ -51,7 +51,15 @@ pub(super) fn classify(output: &ProcessOutput, diagnostics: &str) -> CommandOutc
         );
     }
     if output.exit_code == Some(0) {
-        return outcome("success", "shell_exit_zero", "exit_status");
+        return outcome(
+            "success",
+            if output.direct {
+                "process_exit_zero"
+            } else {
+                "shell_exit_zero"
+            },
+            "exit_status",
+        );
     }
     if let Some(reason) = diagnostic_reason(output.exit_code, diagnostics) {
         return outcome("environment_failure", reason, "output_signature");

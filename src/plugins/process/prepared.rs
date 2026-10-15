@@ -99,12 +99,21 @@ fn prepare_native_plan(
     } else {
         "cmd"
     };
-    let command = arguments
-        .get(key)
-        .and_then(Value::as_str)
-        .ok_or("missing command")?;
+    let invocation = if matches!(source, NativeProcessTool::ExecCommand(_)) {
+        verification::Invocation::parse(arguments).map_err(|e| e.to_string())?
+    } else {
+        verification::Invocation {
+            command: arguments
+                .get(key)
+                .and_then(Value::as_str)
+                .ok_or("missing command")?
+                .into(),
+            argv: None,
+            verification: None,
+        }
+    };
     let request = ProcessStart {
-        command: command.into(),
+        command: invocation.command,
         workdir: arguments
             .get("workdir")
             .and_then(Value::as_str)
@@ -119,7 +128,13 @@ fn prepare_native_plan(
             .unwrap_or(false),
         sandbox: SandboxRequest::parse(arguments.get("sandbox").and_then(Value::as_str))?,
     };
-    source.service().prepare_start(&request).map(Some)
+    match invocation.argv {
+        Some(argv) => source
+            .service()
+            .prepare_direct(&request, argv, invocation.verification),
+        None => source.service().prepare_start(&request),
+    }
+    .map(Some)
 }
 impl Tool for FrozenProcessTool {
     fn definition(&self) -> ToolDefinition {

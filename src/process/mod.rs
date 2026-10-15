@@ -14,9 +14,13 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 mod capture;
+mod direct;
+mod launch;
 mod outcome;
+mod receipt;
 pub(crate) mod verification;
 pub(crate) use outcome::{CommandOutcome, classify_tool_error};
+pub(crate) use receipt::VerificationSpec;
 pub(crate) mod review;
 pub(crate) use capture::capture_command;
 
@@ -118,8 +122,9 @@ impl Default for ProcessLimits {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct PipedSpawnOptions {
+    verification: Option<receipt::Context>,
     limits: ProcessLimits,
     stdout_capacity: usize,
     stderr_capacity: usize,
@@ -129,6 +134,7 @@ struct PipedSpawnOptions {
 impl Default for PipedSpawnOptions {
     fn default() -> Self {
         Self {
+            verification: None,
             limits: ProcessLimits::default(),
             stdout_capacity: STREAM_RING_BYTES,
             stderr_capacity: STREAM_RING_BYTES,
@@ -200,6 +206,8 @@ impl ManagedStdioLease {
 
 #[derive(Clone, Debug)]
 pub(crate) struct ProcessOutput {
+    pub verification_receipt: Option<serde_json::Value>,
+    pub direct: bool,
     pub verification_witness: serde_json::Value,
     pub command_outcome: CommandOutcome,
     pub session_id: u64,
@@ -265,6 +273,7 @@ pub(crate) struct PreparedStdin {
 }
 
 pub(crate) struct PreparedProcess {
+    verification: Option<receipt::Context>,
     owner: RunOwner,
     workdir: PathBuf,
     pub(crate) planned: crate::sandbox::PlannedCommand,
@@ -429,6 +438,7 @@ impl ProcessService {
             planned,
             None,
             PipedSpawnOptions {
+                verification: None,
                 limits: self.limits,
                 stdout_capacity: MANAGED_STDOUT_RING_BYTES,
                 stderr_capacity: MANAGED_STDERR_RING_BYTES,
@@ -473,6 +483,7 @@ impl ProcessService {
             .sandbox
             .plan(shell, args, request.sandbox, request.network)?;
         Ok(PreparedProcess {
+            verification: None,
             owner,
             workdir,
             planned,
@@ -501,6 +512,7 @@ impl ProcessService {
         prepared: PreparedProcess,
     ) -> Result<u64, String> {
         let PreparedProcess {
+            verification,
             owner,
             workdir,
             planned,
@@ -534,7 +546,11 @@ impl ProcessService {
                 request.command,
                 workdir,
                 planned,
-                self.limits,
+                PipedSpawnOptions {
+                    verification,
+                    limits: self.limits,
+                    ..PipedSpawnOptions::default()
+                },
                 notice_sink,
             )?
         } else {
@@ -546,6 +562,7 @@ impl ProcessService {
                 planned,
                 notice_sink,
                 PipedSpawnOptions {
+                    verification,
                     limits: self.limits,
                     ..PipedSpawnOptions::default()
                 },
@@ -824,6 +841,7 @@ fn close_entries(entries: Vec<Arc<ProcessEntry>>) -> Result<(), String> {
 }
 
 struct ProcessEntry {
+    direct: bool,
     stdin_auto_approve: AtomicBool,
     id: u64,
     owner_generation: u64,
@@ -843,6 +861,7 @@ struct ProcessEntry {
 }
 
 struct ProcessEntryInit {
+    verification: Option<receipt::Context>,
     id: u64,
     command: String,
     tty: bool,
@@ -856,6 +875,7 @@ struct ProcessEntryInit {
 }
 
 struct EntryState {
+    verification: Option<receipt::Receipt>,
     stdout: ByteRing,
     stderr: ByteRing,
     pty: ByteRing,
@@ -885,6 +905,7 @@ struct TerminalStatus {
 impl ProcessEntry {
     fn new(owner: &RunOwner, init: ProcessEntryInit) -> Arc<Self> {
         Arc::new(Self {
+            direct: init.verification.is_some(),
             stdin_auto_approve: AtomicBool::new(false),
             id: init.id,
             owner_generation: owner.generation,
@@ -897,6 +918,7 @@ impl ProcessEntry {
             owner_cancel: owner.cancel.clone(),
             stdin: Mutex::new(Some(init.stdin)),
             state: Mutex::new(EntryState {
+                verification: init.verification.and_then(receipt::Receipt::new),
                 stdout: ByteRing::new(init.stdout_capacity),
                 stderr: ByteRing::new(init.stderr_capacity),
                 pty: ByteRing::new(init.pty_capacity),
@@ -919,6 +941,9 @@ impl ProcessEntry {
 
     fn append(&self, stream: StreamKind, bytes: &[u8]) {
         let mut state = self.state.lock().expect("process entry lock");
+        if let Some(receipt) = &mut state.verification {
+            receipt.append(stream, bytes);
+        }
         match stream {
             StreamKind::Stdout => state.stdout.append(bytes),
             StreamKind::Stderr => state.stderr.append(bytes),
@@ -927,6 +952,13 @@ impl ProcessEntry {
         }
         state.last_activity = Instant::now();
         self.changed.notify_all();
+    }
+
+    fn finish_output(&self, stream: StreamKind, eof: bool) {
+        let mut state = self.state.lock().expect("process entry lock");
+        if let Some(receipt) = &mut state.verification {
+            receipt.finish(stream, eof);
+        }
     }
 
     fn read_stdout_raw(
@@ -1145,6 +1177,10 @@ impl ProcessEntry {
                 || stderr_ring_lossy
                 || pty_ring_lossy,
         );
+        output.verification_receipt = state
+            .verification
+            .as_ref()
+            .map(|r| r.json(&output, self.owner_generation));
         output
     }
 
@@ -1172,6 +1208,8 @@ impl ProcessEntry {
             terminal.as_ref().and_then(|status| status.exit_code),
         );
         let mut output = ProcessOutput {
+            verification_receipt: None,
+            direct: self.direct,
             verification_witness: verification::unknown(),
             command_outcome: classify_tool_error("pending result"),
             session_id: self.id,
@@ -1343,6 +1381,24 @@ fn credential_shaped_env_key(key: &std::ffi::OsStr) -> bool {
         .any(|needle| upper.contains(needle))
 }
 
+fn piped_command(
+    planned: &crate::sandbox::PlannedCommand,
+    workdir: PathBuf,
+    strip: bool,
+) -> std::process::Command {
+    let mut process = std::process::Command::new(&planned.program);
+    process
+        .args(&planned.args)
+        .current_dir(workdir)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    if strip {
+        strip_credential_shaped_env(&mut process);
+    }
+    process
+}
+
 fn spawn_piped(
     id: u64,
     owner: &RunOwner,
@@ -1352,16 +1408,7 @@ fn spawn_piped(
     notice_sink: Option<NoticeSink>,
     options: PipedSpawnOptions,
 ) -> Result<Arc<ProcessEntry>, String> {
-    let mut process = std::process::Command::new(&planned.program);
-    process
-        .args(&planned.args)
-        .current_dir(workdir)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
-    if options.strip_credential_env {
-        strip_credential_shaped_env(&mut process);
-    }
+    let mut process = piped_command(&planned, workdir, options.strip_credential_env);
     let mut child = process
         .group_spawn()
         .map_err(|error| format!("process spawn failed: {error}"))?;
@@ -1377,6 +1424,7 @@ fn spawn_piped(
     let entry = ProcessEntry::new(
         owner,
         ProcessEntryInit {
+            verification: options.verification,
             id,
             command,
             tty: false,
@@ -1416,41 +1464,12 @@ fn spawn_piped(
             return Err(error);
         }
     };
-    let monitor_entry = Arc::clone(&entry);
-    let child_slot = Arc::new(Mutex::new(Some(ChildHandle::Group(child))));
-    let monitor_child = Arc::clone(&child_slot);
-    let reader_slot = Arc::new(Mutex::new(Some((
+    launch::monitor(
+        &entry,
+        ChildHandle::Group(child),
         vec![stdout_reader, stderr_reader],
         vec![stdout_done, stderr_done],
-    ))));
-    let monitor_readers = Arc::clone(&reader_slot);
-    let monitor = std::thread::Builder::new()
-        .name(format!("clat-process-{id}"))
-        .spawn(move || {
-            let child = monitor_child
-                .lock()
-                .expect("process child slot")
-                .take()
-                .expect("process child present");
-            let (readers, reader_done) = monitor_readers
-                .lock()
-                .expect("process reader slot")
-                .take()
-                .expect("process readers present");
-            monitor_process(monitor_entry, child, readers, reader_done);
-        })
-        .map_err(|error| {
-            if let Some(mut child) = child_slot.lock().expect("process child slot").take() {
-                let _ = child.terminate_tree();
-            }
-            if let Some((readers, _)) = reader_slot.lock().expect("process reader slot").take() {
-                for reader in readers {
-                    join_reader_after_terminate(reader);
-                }
-            }
-            format!("process monitor spawn failed: {error}")
-        })?;
-    entry.set_monitor(monitor);
+    )?;
     Ok(entry)
 }
 
@@ -1460,12 +1479,12 @@ fn spawn_pty(
     command: String,
     workdir: PathBuf,
     planned: crate::sandbox::PlannedCommand,
-    limits: ProcessLimits,
+    options: PipedSpawnOptions,
     notice_sink: Option<NoticeSink>,
 ) -> Result<Arc<ProcessEntry>, String> {
     #[cfg(windows)]
     {
-        let _ = (id, owner, command, workdir, planned, limits, notice_sink);
+        let _ = (id, owner, command, workdir, planned, options, notice_sink);
         Err("PTY sessions are unavailable on Windows until process-tree isolation graduates".into())
     }
     #[cfg(not(windows))]
@@ -1519,11 +1538,12 @@ fn spawn_pty(
         let entry = ProcessEntry::new(
             owner,
             ProcessEntryInit {
+                verification: options.verification,
                 id,
                 command,
                 tty: true,
                 sandbox: planned.facts,
-                limits,
+                limits: options.limits,
                 stdin: writer,
                 stdout_capacity: 0,
                 stderr_capacity: 0,
@@ -1548,41 +1568,15 @@ fn spawn_pty(
                 return Err(error);
             }
         };
-        let monitor_entry = Arc::clone(&entry);
-        let child_slot = Arc::new(Mutex::new(Some(ChildHandle::Pty {
-            child,
-            process_group,
-        })));
-        let monitor_child = Arc::clone(&child_slot);
-        let reader_slot = Arc::new(Mutex::new(Some((vec![reader_thread], vec![reader_done]))));
-        let monitor_readers = Arc::clone(&reader_slot);
-        let monitor = std::thread::Builder::new()
-            .name(format!("clat-pty-{id}"))
-            .spawn(move || {
-                let child = monitor_child
-                    .lock()
-                    .expect("PTY child slot")
-                    .take()
-                    .expect("PTY child present");
-                let (readers, reader_done) = monitor_readers
-                    .lock()
-                    .expect("PTY reader slot")
-                    .take()
-                    .expect("PTY readers present");
-                monitor_process(monitor_entry, child, readers, reader_done);
-            })
-            .map_err(|error| {
-                if let Some(mut child) = child_slot.lock().expect("PTY child slot").take() {
-                    let _ = child.terminate_tree();
-                }
-                if let Some((readers, _)) = reader_slot.lock().expect("PTY reader slot").take() {
-                    for reader in readers {
-                        join_reader_after_terminate(reader);
-                    }
-                }
-                format!("PTY monitor spawn failed: {error}")
-            })?;
-        entry.set_monitor(monitor);
+        launch::monitor(
+            &entry,
+            ChildHandle::Pty {
+                child,
+                process_group,
+            },
+            vec![reader_thread],
+            vec![reader_done],
+        )?;
         Ok(entry)
     }
 }
@@ -1597,14 +1591,15 @@ fn spawn_reader(
         .name("clat-process-output".into())
         .spawn(move || {
             let mut buffer = [0u8; 8192];
-            loop {
+            let eof = loop {
                 match reader.read(&mut buffer) {
-                    Ok(0) => break,
+                    Ok(0) => break true,
                     Ok(read) => entry.append(stream, &buffer[..read]),
                     Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-                    Err(_) => break,
+                    Err(_) => break false,
                 }
-            }
+            };
+            entry.finish_output(stream, eof);
             done.store(true, Ordering::Release);
             entry.changed.notify_all();
         })
@@ -1783,5 +1778,7 @@ fn terminate_group(child: &mut command_group::GroupChild) -> TerminalStatus {
 
 #[cfg(test)]
 mod outcome_tests;
+#[cfg(test)]
+mod receipt_tests;
 #[cfg(test)]
 mod tests;

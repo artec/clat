@@ -1,5 +1,15 @@
 # Development verification
 
+Agent-driven Rust verification may use `exec_command` with literal `argv` and
+`verification: {"format":"rust-test-summary","minimum_executed":1}`. Follow the
+returned run-owned receipt through polls until terminal; zero matches,
+ignored-only runs and incomplete scans are inconclusive. The direct process
+exit and cumulative output signatures survive bounded diagnostic display.
+They do not certify assertion relevance or source/test-binary identity. Keep
+pre-fix and deliberate-defect checks independent, and retain the actual build
+and executable identity when reporting discrimination. See [usage](usage.md)
+for the execution and receipt limits.
+
 The edit loop and the delivery gate have different jobs. After a local edit:
 
 ```bash
