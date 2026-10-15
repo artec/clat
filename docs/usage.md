@@ -833,6 +833,18 @@ callers must review the failure reason, completeness of the declared inputs,
 and whether the defect models the intended contract. Raw experiment stdout /
 stderr is transient and omitted from the durable journal.
 
+Supply optional `expected_failure` with a literal assertion marker derived from
+the intended invariant (nonblank, at most 512 UTF-8 bytes). A comparable red
+control qualifies only when its retained Rust panic diagnostic contains that
+marker. Printing it elsewhere in test stdout is insufficient. A different or
+unavailable panic reason yields `inconclusive` and directs the agent to inspect
+the actual failure before claiming discrimination. The check runs before the
+transient diagnostic excerpt is shortened; only `matched`, `mismatched`, or
+`unavailable` is added to the control observation and journal. It performs no
+extra executions or model requests. Omission preserves the count-based result
+and explicitly leaves the failure reason unverified. A marker match is an
+output observation, not proof of source coverage or semantic relevance.
+
 All three tools add a structured `command_outcome` to command results and
 native invocation errors. It contains `kind`, `reason`, and `evidence`:
 

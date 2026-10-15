@@ -6,6 +6,9 @@ use crate::plugins::ToolRegistryPlugin;
 use crate::plugins::services::TOOL_SERVICE;
 use crate::tool::ToolCall;
 
+#[path = "expectation_tests.rs"]
+mod expectations;
+
 struct Fixture {
     root: std::path::PathBuf,
     manager: PluginManager,

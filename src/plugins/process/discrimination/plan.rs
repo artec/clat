@@ -13,6 +13,8 @@ struct Request {
     test_filter: String,
     test_files: Vec<String>,
     production_files: Vec<String>,
+    #[serde(default)]
+    expected_failure: Option<String>,
     #[serde(default = "timeout")]
     timeout_seconds: u64,
     #[serde(default)]
@@ -31,6 +33,7 @@ pub(super) struct Pair {
     candidate: Arm,
     counterexample: Arm,
     timeout: Duration,
+    expected_failure: Option<String>,
 }
 impl Pair {
     pub(super) fn prepare(service: &ProcessService, value: &Value) -> Result<Self, String> {
@@ -60,6 +63,7 @@ impl Pair {
             candidate,
             counterexample,
             timeout: Duration::from_secs(req.timeout_seconds),
+            expected_failure: req.expected_failure,
         })
     }
     pub(super) fn workspace_enforced(&self) -> bool {
@@ -86,11 +90,17 @@ impl Pair {
         let inputs = json!({"candidate_sha256":fingerprint(&self.candidate.hashes),
             "counterexample_sha256":fingerprint(&self.counterexample.hashes),
             "declared_files":self.candidate.hashes.len()});
-        let candidate = run_arm(self.candidate, service, cancel, self.timeout)?;
+        let candidate = run_arm(self.candidate, service, cancel, self.timeout, None)?;
         if !result::candidate_passed(&candidate) {
             return Ok(result::finish(candidate, None, inputs));
         }
-        let counterexample = run_arm(self.counterexample, service, cancel, self.timeout)?;
+        let counterexample = run_arm(
+            self.counterexample,
+            service,
+            cancel,
+            self.timeout,
+            self.expected_failure.as_deref(),
+        )?;
         Ok(result::finish(candidate, Some(counterexample), inputs))
     }
 }
@@ -111,6 +121,13 @@ impl Request {
         }
         if !(1..=300).contains(&self.timeout_seconds) {
             return Err("timeout_seconds outside 1..=300".into());
+        }
+        if self
+            .expected_failure
+            .as_ref()
+            .is_some_and(|text| text.trim().is_empty() || text.len() > 512)
+        {
+            return Err("expected_failure must be nonblank and at most 512 UTF-8 bytes".into());
         }
         for list in [&self.test_files, &self.production_files] {
             if list.is_empty() || list.len() > 32 {
@@ -211,6 +228,7 @@ fn run_arm(
     service: &ProcessService,
     cancel: &CancelToken,
     timeout: Duration,
+    expected_failure: Option<&str>,
 ) -> Result<Value, String> {
     if cancel.is_cancelled() {
         return Err("experiment cancelled before execution".into());
@@ -220,7 +238,7 @@ fn run_arm(
     if hash_files(&arm.root, arm.hashes.keys().map(String::as_str))? != arm.hashes {
         return Err("experiment changed declared source/test inputs".into());
     }
-    Ok(result::observation(output))
+    Ok(result::observation(output, expected_failure))
 }
 
 impl Arm {

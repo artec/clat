@@ -1,5 +1,5 @@
 use super::*;
-pub(super) fn observation(output: ProcessOutput) -> Value {
+pub(super) fn observation(output: ProcessOutput, expected_failure: Option<&str>) -> Value {
     let summary = regex::Regex::new(
         r"(?m)^test result: (?:ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored;",
     )
@@ -13,11 +13,31 @@ pub(super) fn observation(output: ProcessOutput) -> Value {
         "failed":r[2].parse::<u64>().unwrap_or(0),"ignored":r[3].parse::<u64>().unwrap_or(0)})
         })
         .collect();
-    json!({"exit_code":output.exit_code,"timed_out":output.timed_out,
+    let mut value = json!({"exit_code":output.exit_code,"timed_out":output.timed_out,
         "output_incomplete":output.stdout_truncated || output.stderr_truncated,
         "test_summaries":counts,"stdout":excerpt(&output.stdout),"stderr":excerpt(&output.stderr),
         "diagnostic_excerpt_truncated":output.stdout.chars().count()>200 || output.stderr.chars().count()>200,
-        "sandbox":output.sandbox.json(output.sandbox_denied,output.sandbox_unavailable)})
+        "sandbox":output.sandbox.json(output.sandbox_denied,output.sandbox_unavailable)});
+    if let Some(expected) = expected_failure {
+        value["failure_expectation"] = json!(failure_expectation(&output.stdout, expected));
+    }
+    value
+}
+
+/// Inspect the retained diagnostic before its transient excerpt is shortened.
+/// Arbitrary stdout before a panic must not satisfy the assertion marker.
+fn failure_expectation(stdout: &str, expected: &str) -> &'static str {
+    let stdout = stdout.replace("\r\n", "\n");
+    let panic_header = regex::Regex::new(r"(?m)^thread [^\n]*panicked at [^\n]*:\n").unwrap();
+    let mut found = false;
+    for header in panic_header.find_iter(&stdout) {
+        found = true;
+        let message = stdout[header.end()..].split("\n\n").next().unwrap_or("");
+        if message.contains(expected) {
+            return "matched";
+        }
+    }
+    if found { "mismatched" } else { "unavailable" }
 }
 fn counts(value: &Value) -> Option<(u64, u64)> {
     if value["timed_out"] != false || value["output_incomplete"] != false {
@@ -49,10 +69,7 @@ pub(super) fn finish(candidate: Value, counterexample: Option<Value>, inputs: Va
                     && control["exit_code"] == 101
                     && counts(&candidate).is_some_and(|(n, _)| n == p + f) =>
             {
-                (
-                    "discriminates_declared_defect",
-                    "The same test failed with the declared defect and passed with candidate. Review failure reason and defect relevance; this does not prove coverage or general Agent capability.",
-                )
+                classify_failure(control)
             }
             _ => (
                 "inconclusive",
@@ -64,6 +81,23 @@ pub(super) fn finish(candidate: Value, counterexample: Option<Value>, inputs: Va
     };
     json!({"status":status,"next_action":action,"scope":"declared_files_and_output_signatures",
         "authenticated_coverage":false,"inputs":inputs,"candidate":candidate,"counterexample":counterexample})
+}
+
+fn classify_failure(control: &Value) -> (&'static str, &'static str) {
+    match control.get("failure_expectation").and_then(Value::as_str) {
+        Some("mismatched" | "unavailable") => (
+            "inconclusive",
+            "The control's failure reason did not establish the expected assertion marker. Inspect the real failure reason and production call path before claiming discrimination; do not weaken the expectation just to get a passing verdict.",
+        ),
+        Some("matched") => (
+            "discriminates_declared_defect",
+            "The same test failed with the expected assertion marker and passed with candidate. Review the marker's relevance to the intended invariant; output matching does not prove coverage or general Agent capability.",
+        ),
+        _ => (
+            "discriminates_declared_defect",
+            "The same test failed with the declared defect and passed with candidate. No expected_failure was supplied: failure reason remains unverified. Review failure reason and defect relevance; this does not prove coverage or general Agent capability.",
+        ),
+    }
 }
 pub(super) fn journal(value: &Value) -> Value {
     let mut copy = value.clone();
