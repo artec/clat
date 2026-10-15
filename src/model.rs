@@ -110,12 +110,17 @@ pub fn aggregate_response_budget(output_limit: Option<u32>) -> usize {
 }
 
 impl ModelConfig {
-    /// 生效的 per-run 花费护栏：`Some(0)` 显式关闭 → None。
+    /// 生效的 per-run 花费护栏（BUDGET-1，2026-10-15 产品裁定）：
+    /// `None`（未设置/缺字段/新建 profile/preset 切换）= **无 CLAT
+    /// 本地累计硬顶**——用户从未授权过本地私自决定的 10M 默认值，
+    /// 不允许任何替代阈值；`Some(0)` 显式关闭 → None；`Some(n>0)`
+    /// 用户明确 cap 照常执行（预留→对账→失败尝试归并与请求前检查）。
+    /// 无累计硬顶不等于无限上下文/无限真实额度：单请求护栏
+    /// （`aggregate_response_budget`）、上下文窗口与 provider 限额独立生效。
     pub fn effective_run_token_budget(&self) -> Option<u64> {
         match self.run_token_budget {
-            Some(0) => None,
+            Some(0) | None => None,
             Some(cap) => Some(cap),
-            None => Some(RUN_TOKEN_BUDGET_DEFAULT),
         }
     }
 

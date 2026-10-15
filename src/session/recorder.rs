@@ -1948,9 +1948,7 @@ mod tests {
     #[test]
     fn hostile_usage_keeps_the_hard_stop_armed() {
         let (mut recorder, journal, _seen) = recorder();
-        let ledger = std::sync::Arc::new(crate::model::RunSpendLedger::new(Some(
-            crate::model::RUN_TOKEN_BUDGET_DEFAULT,
-        )));
+        let ledger = std::sync::Arc::new(crate::model::RunSpendLedger::new(Some(10_000_000)));
         recorder.set_run_ledger(std::sync::Arc::clone(&ledger));
         recorder.emit(RunEvent::ModelRequested {
             turn: 1,

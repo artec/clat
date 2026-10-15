@@ -1911,16 +1911,18 @@ fn run_token_budget_stops_the_loop_with_a_teaching_error() {
     );
 }
 
-/// B1：`Some(0)` = 显式关闭（effective 层），None = 缺省 10M。
-///（FP-12 改名：原 `…_default_off_and_explicit` 名实不符——缺省
-/// 是开启 10M，显式 0 才是关闭。）
+/// BUDGET-1（2026-10-15 产品裁定，pre-fix 红）：`None` = **无 CLAT 本地
+/// 累计硬顶**（不得以 10M/50M/任何阈值替代）；`Some(0)` = 显式关闭；
+/// `Some(n>0)` = 用户明确 cap。pre-fix：`None` 被替换成
+/// `Some(RUN_TOKEN_BUDGET_DEFAULT)`（10M）→ 首个断言红。
 #[test]
-fn budget_config_semantics_default_on_and_explicit_off() {
-    use crate::model::{ModelConfig, RUN_TOKEN_BUDGET_DEFAULT};
+fn budget_config_semantics_none_means_no_local_cap() {
+    use crate::model::ModelConfig;
     let config = ModelConfig::default();
     assert_eq!(
         config.effective_run_token_budget(),
-        Some(RUN_TOKEN_BUDGET_DEFAULT)
+        None,
+        "unset budget must not become a local default cap"
     );
     let off = ModelConfig {
         run_token_budget: Some(0),
@@ -1932,6 +1934,12 @@ fn budget_config_semantics_default_on_and_explicit_off() {
         ..ModelConfig::default()
     };
     assert_eq!(tight.effective_run_token_budget(), Some(1234));
+    // 旧正数配置（含 10M）按用户明确 cap 保留生效，B2。
+    let legacy = ModelConfig {
+        run_token_budget: Some(10_000_000),
+        ..ModelConfig::default()
+    };
+    assert_eq!(legacy.effective_run_token_budget(), Some(10_000_000));
 }
 
 /// B1：预算关闭（None）时同剧本不设限跑完。
@@ -2052,9 +2060,7 @@ fn hostile_usage_cannot_unspend_the_ledger_or_bypass_the_cap() {
     register_test_tool(&tools, EchoTool);
     let mut model = ScriptedModel { calls: 0 };
     let mut events = Vec::new();
-    let ledger = std::sync::Arc::new(crate::model::RunSpendLedger::new(Some(
-        crate::model::RUN_TOKEN_BUDGET_DEFAULT,
-    )));
+    let ledger = std::sync::Arc::new(crate::model::RunSpendLedger::new(Some(10_000_000)));
     // 模拟 recorder 落账对端回的 u64::MAX input usage。
     ledger.reconcile(u64::MAX);
     let error = Run::new(&mut model, &tools, &AllowAll, &project)
@@ -2074,7 +2080,7 @@ fn hostile_usage_cannot_unspend_the_ledger_or_bypass_the_cap() {
         "the model request must be rejected before the provider call"
     );
     assert!(
-        ledger.used() >= crate::model::RUN_TOKEN_BUDGET_DEFAULT,
+        ledger.used() >= 10_000_000,
         "the ledger must stay monotonic, used: {}",
         ledger.used()
     );

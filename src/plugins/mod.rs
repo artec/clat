@@ -48,7 +48,7 @@ pub(crate) use prompt::{DefaultPromptPlugin, PromptRegistryPlugin};
 pub(crate) use providers::{OpenAiCompatiblePlugin, OpenAiResponsesPlugin, ProviderRegistryPlugin};
 #[cfg(test)]
 pub(crate) use pruner::ResultPruner;
-pub(crate) use pruner::ToolResultPrunerPlugin;
+pub(crate) use pruner::{THRESHOLD_CHARS, ToolResultPrunerPlugin};
 pub(crate) use run_scope::RunScopePlugin;
 pub(crate) use search::SearchPlugin;
 #[cfg(test)]

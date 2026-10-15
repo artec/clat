@@ -7,15 +7,16 @@ use crate::project::Project;
 use crate::tool::{Tool, ToolDefinition, ToolEffect, ToolError};
 use serde_json::{Value, json};
 use std::fs;
-use std::io::BufReader;
 use std::path::Path;
 
 const DEFAULT_LIST_DEPTH: usize = 2;
 const DEFAULT_LIST_ENTRIES: usize = 200;
 const MAX_LIST_DEPTH: usize = 8;
 const MAX_LIST_ENTRIES: usize = 2_000;
-const DEFAULT_READ_BYTES: usize = 64 * 1024;
-const MAX_READ_BYTES: usize = 1024 * 1024;
+mod read;
+
+pub use read::ReadFileTool;
+
 pub(crate) fn native_read_tools() -> Vec<std::sync::Arc<dyn Tool>> {
     vec![
         std::sync::Arc::new(ListFilesTool),
@@ -99,124 +100,6 @@ impl Tool for ListFilesTool {
         Ok(json!({
             "path": requested,
             "entries": entries,
-            "truncated": truncated
-        }))
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-pub struct ReadFileTool;
-
-impl Tool for ReadFileTool {
-    fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "read_file".into(),
-            description: "Read UTF-8 text from a file with line numbers. Paths are project-relative; absolute paths (anywhere on disk) are also accepted — reads are never confined to the project root.".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Project-relative or absolute file path"
-                    },
-                    "start_line": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "description": "First line to return. Defaults to 1"
-                    },
-                    "end_line": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "description": "Last line to return, inclusive"
-                    },
-                    "max_bytes": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "maximum": MAX_READ_BYTES,
-                        "description": "Maximum UTF-8 bytes returned. Defaults to 65536"
-                    }
-                },
-                "required": ["path"],
-                "additionalProperties": false
-            }),
-            effect: ToolEffect::Read,
-            strict: false,
-        }
-    }
-
-    fn invoke(
-        &self,
-        arguments: &Value,
-        project: &Project,
-        cancel: &CancelToken,
-    ) -> Result<Value, ToolError> {
-        let requested = required_string_arg(arguments, "path", "read_file")?;
-        let start_line = usize_arg(arguments, "start_line").unwrap_or(1).max(1);
-        let end_line = usize_arg(arguments, "end_line");
-        if end_line.is_some_and(|end| end < start_line) {
-            return Err(ToolError::new(
-                "read_file: `end_line` must be greater than or equal to `start_line`",
-            ));
-        }
-        let max_bytes = usize_arg(arguments, "max_bytes")
-            .unwrap_or(DEFAULT_READ_BYTES)
-            .clamp(1, MAX_READ_BYTES);
-        let path = project
-            .resolve_existing(requested)
-            .map_err(|error| tool_io_error("read_file", requested, error))?;
-
-        if !path.is_file() {
-            return Err(ToolError::new(format!(
-                "read_file: `{requested}` is not a file"
-            )));
-        }
-
-        let file =
-            fs::File::open(&path).map_err(|error| tool_io_error("read_file", requested, error))?;
-        let mut content = String::new();
-        let mut last_line = start_line.saturating_sub(1);
-        let mut truncated = false;
-
-        // FP-06（2026-08-22 审计）：有界行读取——超长单行不再先整行
-        // 物化（1GiB 无换行文件在 max_bytes=1KiB 时旧实现会先分配
-        // 1GiB）。单行超过 max_bytes 即触发截断（该行本身就不可能被
-        // 保留）；输出格式与 BufReader::lines 版逐字节一致。
-        let mut reader = BufReader::new(file);
-        let mut index = 0usize;
-        loop {
-            check_cancelled(cancel)?;
-            let line = match crate::mcp::transport::read_capped_line(&mut reader, max_bytes) {
-                Ok(Some(line)) => line,
-                Ok(None) => break,
-                Err(_) => {
-                    truncated = true;
-                    break;
-                }
-            };
-            let line_number = index + 1;
-            index += 1;
-            if line_number < start_line {
-                continue;
-            }
-            if end_line.is_some_and(|end| line_number > end) {
-                break;
-            }
-
-            let line = line.trim_end_matches(['\r', '\n']);
-            let formatted = format!("{line_number} | {line}\n");
-            if content.len() + formatted.len() > max_bytes {
-                truncated = true;
-                break;
-            }
-            content.push_str(&formatted);
-            last_line = line_number;
-        }
-
-        Ok(json!({
-            "path": requested,
-            "start_line": start_line,
-            "end_line": last_line,
-            "content": content,
             "truncated": truncated
         }))
     }
@@ -737,6 +620,7 @@ impl Tool for AskUserTool {
 mod tests {
     use super::*;
     use crate::plugins::SearchTool;
+    use crate::tool::ToolResultTransformer;
     use std::env;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -865,6 +749,681 @@ mod tests {
             "content stays within the budget: {}",
             content.len()
         );
+        crate::test_support::cleanup_tree(&root);
+    }
+
+    // ===== READ-1（2026-10-15）判别测试族：有界、可续、完整、可判别 =====
+
+    /// 游标续读驱动器：循环调用 read_file 并回传 next_cursor 与
+    /// expected_file_version，直到 has_more=false。返回模型视角的
+    /// 全部段（400 段上限防死循环——续读语义要求必然终止）。
+    fn read_until_eof(project: &Project, path: &str, extra_args: Value) -> Vec<Value> {
+        let mut segments = Vec::new();
+        let mut call = serde_json::Map::new();
+        call.insert("path".into(), json!(path));
+        if let Value::Object(args) = extra_args {
+            for (key, value) in args {
+                call.insert(key, value);
+            }
+        }
+        loop {
+            let output = ReadFileTool
+                .invoke(&Value::Object(call.clone()), project, &CancelToken::new())
+                .expect("segmented read");
+            let has_more = output["has_more"].as_bool().expect("has_more");
+            segments.push(output);
+            assert!(
+                segments.len() <= 400,
+                "segmented read must terminate (got {} segments)",
+                segments.len()
+            );
+            if !has_more {
+                return segments;
+            }
+            let last = segments.last().expect("just pushed");
+            call.insert(
+                "cursor".into(),
+                json!(last["next_cursor"].as_str().expect("next_cursor")),
+            );
+            call.insert(
+                "expected_file_version".into(),
+                json!(last["file_version"].as_str().expect("file_version")),
+            );
+        }
+    }
+
+    /// 从段显示重建文本：`N | ` 前缀只在行首片出现，行内续片原样；
+    /// 每个以 `\n` 结尾的片补一个 `\n`（源 `\r\n` 被规范化）。
+    fn reconstruct_text(segments: &[Value]) -> String {
+        let mut text = String::new();
+        for segment in segments {
+            let content = segment["content"].as_str().unwrap_or("");
+            let mut rest = content;
+            while !rest.is_empty() {
+                match rest.split_once('\n') {
+                    Some((part, tail)) => {
+                        text.push_str(strip_line_prefix(part));
+                        text.push('\n');
+                        rest = tail;
+                    }
+                    None => {
+                        // 段尾行内截断片：无 `\n`，由下一段续拼。
+                        text.push_str(strip_line_prefix(rest));
+                        rest = "";
+                    }
+                }
+            }
+        }
+        text
+    }
+
+    fn strip_line_prefix(part: &str) -> &str {
+        let digits_end = part.find(" | ").unwrap_or(0);
+        if digits_end > 0 && part[..digits_end].chars().all(|ch| ch.is_ascii_digit()) {
+            &part[digits_end + 3..]
+        } else {
+            part
+        }
+    }
+
+    /// R2 主证据：长文件（CRLF、中文、无尾换行、恰好超限的多行混合）
+    /// 按游标续读——不重叠、不遗漏、不循环，最终 has_more=false，重建
+    /// 文本与源（规范化后）一致。pre-fix 红：旧实现无游标，模型只能
+    /// 重复同一截断窗口或被 pruner 吃掉中段。
+    #[test]
+    fn read_file_segments_cover_a_long_file_without_gaps_or_overlap() {
+        let (root, project) = fixture();
+        let path = root.join("long-doc.md");
+        let mut source = String::new();
+        for index in 0..900 {
+            source.push_str(&format!("line-{index:04} 中文内容 emoji 🚀\r\n"));
+        }
+        // 恰好制造无尾换行的末行 + 超长行（超过单段预算）。
+        source.push_str("final line without trailing newline");
+        let giant = "g".repeat(20_000);
+        source.push_str(&format!("\n{giant}"));
+        fs::write(&path, source.as_bytes()).expect("write long doc");
+
+        let segments = read_until_eof(&project, "long-doc.md", json!({}));
+        assert!(
+            segments.len() >= 3,
+            "a long file must arrive as multiple bounded segments"
+        );
+        // 每段（除末段）都声明 has_more + 游标；末段终止。
+        for segment in &segments[..segments.len() - 1] {
+            assert_eq!(segment["has_more"], true);
+            assert!(segment["next_cursor"].as_str().is_some());
+        }
+        assert_eq!(segments.last().expect("segments")["has_more"], false);
+
+        // 游标严格单调前进（不重叠、不循环）。
+        let mut offsets: Vec<u64> = Vec::new();
+        for segment in &segments[..segments.len() - 1] {
+            let cursor = segment["next_cursor"].as_str().expect("cursor");
+            let byte = cursor
+                .strip_prefix("b=")
+                .and_then(|rest| rest.split(';').next())
+                .and_then(|value| value.parse::<u64>().ok())
+                .expect("cursor byte offset");
+            offsets.push(byte);
+        }
+        assert!(
+            offsets.windows(2).all(|pair| pair[0] < pair[1]),
+            "cursor offsets must strictly increase: {offsets:?}"
+        );
+
+        // 重建文本 == 源文本（\r\n 规范化为 \n；无尾换行的末行被显示
+        // 规范补 \n；超长单行是最后一行，行内截断片按原样拼回）。
+        let normalized = source.replace("\r\n", "\n");
+        let normalized = if normalized.ends_with('\n') {
+            normalized
+        } else {
+            format!("{normalized}\n")
+        };
+        let reconstructed = reconstruct_text(&segments);
+        if reconstructed != normalized {
+            let mismatch = reconstructed
+                .chars()
+                .zip(normalized.chars())
+                .position(|(left, right)| left != right)
+                .unwrap_or_else(|| {
+                    reconstructed
+                        .chars()
+                        .count()
+                        .min(normalized.chars().count())
+                });
+            panic!(
+                "segments must reconstruct the file: mismatch at char {mismatch} \
+                 (reconstructed {} chars, normalized {} chars, {} segments)",
+                reconstructed.chars().count(),
+                normalized.chars().count(),
+                segments.len()
+            );
+        }
+        crate::test_support::cleanup_tree(&root);
+    }
+
+    /// R2 超长单行：pre-fix 红的核心场景——旧实现对超过 max_bytes 的
+    /// 单行只返回空 content + truncated，重试同一 start_line 永不前进。
+    /// 新语义：首个 start_line 读取就返回行首前缀 + partial_line +
+    /// next_cursor；按游标续读覆盖整行（多字节字符不被截断在字节中间，
+    /// 无 U+FFFD、无重叠）。
+    #[test]
+    fn read_file_giant_single_line_progresses_by_byte_cursor() {
+        let (root, project) = fixture();
+        let path = root.join("giant-utf8-line.txt");
+        // ASCII 前缀 + 多字节主体：字符边界切割的判别压力。
+        let mut source = String::from("prefix ");
+        for index in 0..6_000 {
+            source.push_str(&format!("段{index:05}🚀"));
+        }
+        source.push('\n');
+        source.push_str("tail\n");
+        fs::write(&path, source.as_bytes()).expect("write giant line");
+
+        let first = ReadFileTool
+            .invoke(
+                &json!({"path": "giant-utf8-line.txt", "max_bytes": 1024}),
+                &project,
+                &CancelToken::new(),
+            )
+            .expect("first segment");
+        assert!(
+            !first["content"].as_str().unwrap().is_empty(),
+            "pre-fix: a giant line returned empty content and never progressed"
+        );
+        assert_eq!(first["truncated"], true);
+        assert_eq!(first["partial_line"], true, "must mark the partial line");
+        assert!(first["next_cursor"].as_str().is_some());
+        // partial 段不得提供 next_start_line（跳行号会漏行内剩余）。
+        assert!(first.get("next_start_line").is_none());
+
+        let segments = read_until_eof(&project, "giant-utf8-line.txt", json!({"max_bytes": 1024}));
+        assert!(segments.len() >= 5, "the giant line needs several chunks");
+        // 中间段：行内续片无 `N | ` 前缀、标记 partial_line。
+        for segment in &segments[..segments.len() - 1] {
+            assert!(segment["partial_line"] == true || segment["has_more"] == true);
+        }
+        // 无 lossy 替换（字符边界完整）。
+        for segment in &segments {
+            assert!(
+                segment.get("invalid_utf8").is_none(),
+                "char-boundary chunks must not corrupt multibyte content"
+            );
+        }
+        // 重建：首片带 `1 | ` 前缀，其余行内片原样；拼接 == 源行。
+        let mut chunks = String::new();
+        for (index, segment) in segments.iter().enumerate() {
+            let content = segment["content"].as_str().unwrap();
+            if index == 0 {
+                chunks.push_str(content.strip_prefix("1 | ").unwrap_or(content));
+            } else {
+                chunks.push_str(content);
+            }
+        }
+        // 尾部两行（tail\n + 末空行）也在最后一段内；只验证到源第一行
+        // 的重建：chunks 以源第一行开头。
+        let first_source_line = "prefix 段00000🚀";
+        assert!(
+            chunks.starts_with(first_source_line),
+            "first chunk text must match the source line start"
+        );
+        // 覆盖证明：所有段的字符总量（去前缀）== 源文件字符数
+        //（源两行 + 换行；显示补 \n 与源 \n 对齐）。
+        let total: usize = segments
+            .iter()
+            .map(|segment| segment["content"].as_str().unwrap().chars().count())
+            .sum::<usize>()
+            - "1 | ".chars().count()
+            - "2 | ".chars().count();
+        let expected = source.chars().count();
+        assert_eq!(
+            total, expected,
+            "chunks must cover every source char exactly once"
+        );
+        crate::test_support::cleanup_tree(&root);
+    }
+
+    /// R1 主证据：真实 ResultPruner（生产二级裁剪）对每个 read_file 段
+    /// 必须是 no-op——结果构造上就低于阈值。对抗输入：引号/反斜杠/
+    /// 制表符密集、超长路径、恰好边界尺寸。
+    #[test]
+    fn read_file_results_survive_the_production_result_pruner() {
+        let (root, project) = fixture();
+        let dir = root.join("a-very-long-directory-name-for-envelope-pressure");
+        fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join("escape-heavy-with-quotes-and-tabs-and-backslashes.md");
+        let mut source = String::new();
+        for index in 0..2_000 {
+            source.push_str(&format!("line {index}: \"quoted \\ tab\tend\r\n"));
+        }
+        fs::write(&path, source.as_bytes()).expect("write escape-heavy doc");
+
+        let segments = read_until_eof(&project, path.to_str().unwrap(), json!({}));
+        assert!(segments.len() >= 3);
+        let pruner = crate::plugins::ResultPruner;
+        for segment in &segments {
+            let serialized = serde_json::to_string(segment).expect("serialize");
+            assert!(
+                serialized.chars().count() <= crate::plugins::THRESHOLD_CHARS,
+                "every segment must be constructed under the pruner threshold"
+            );
+            let mut result = crate::tool::ToolResult {
+                call_id: "call-1".into(),
+                tool_name: "read_file".into(),
+                output: segment.clone(),
+                is_error: false,
+                blocks: Vec::new(),
+                image_parts: Vec::new(),
+            };
+            pruner.transform_result(&mut result);
+            assert_eq!(
+                result.output, *segment,
+                "the production pruner must never rewrite a read_file segment"
+            );
+        }
+        crate::test_support::cleanup_tree(&root);
+    }
+
+    // ===== 审计返工判别（乙方反例 CF1–CF3，2026-10-15 r2）=====
+
+    /// CF1（乙方公开输入）：转义密集超长单行（`"` `\` `\t` ×8000 +
+    /// `\n`，24001 字节），默认参数。修复前：首片按裸字符数取片、
+    /// 序列化后超帽、最终收缩整片弹出 → **成功返回零进度空段**
+    /// （content=""、has_more=true、cursor 不动）。修复后：取片转义
+    /// 感知，每个成功且非 EOF 的段有真实内容与前进游标。
+    #[test]
+    fn read_file_escape_heavy_giant_line_progresses_and_covers() {
+        let (root, project) = fixture();
+        let path = root.join("escape-heavy.txt");
+        let mut source = String::new();
+        for _ in 0..8_000 {
+            source.push_str("\"\\\t");
+        }
+        source.push('\n');
+        fs::write(&path, source.as_bytes()).expect("write");
+
+        let segments = read_until_eof(&project, "escape-heavy.txt", json!({}));
+        assert!(
+            segments.len() >= 3,
+            "escape-dense giant line must arrive as multiple segments"
+        );
+        for (index, segment) in segments.iter().enumerate() {
+            let has_more = segment["has_more"].as_bool().expect("has_more");
+            let content = segment["content"].as_str().expect("content");
+            assert!(
+                !has_more || !content.is_empty(),
+                "CF1: segment {index} returned empty content with has_more=true"
+            );
+            assert!(
+                segment.get("clat_truncated").is_none(),
+                "the production pruner must never rewrite segments"
+            );
+            assert!(
+                segment.get("invalid_utf8").is_none(),
+                "escape-dense ASCII must not corrupt"
+            );
+        }
+        let reconstructed = reconstruct_text(&segments);
+        if reconstructed != source {
+            panic!(
+                "escape-heavy segments must reconstruct the source: reconstructed \
+                 {} chars, expected {} chars, {} segments",
+                reconstructed.chars().count(),
+                source.chars().count(),
+                segments.len()
+            );
+        }
+        crate::test_support::cleanup_tree(&root);
+    }
+
+    /// CF2（乙方公开输入）：`abcdef\n` + `max_bytes=7`（schema 最小值
+    /// 1 的合法值）。修复前：`budget < 8` 在任何读取前 break → 成功
+    /// 空 content + 同游标空转。修复后：任何接受的预算要么取得可解释
+    /// 进度（≥1 可见字符），要么显式报出预算不足。
+    #[test]
+    fn read_file_schema_small_budget_makes_progress_or_fails_explicitly() {
+        let (root, project) = fixture();
+        fs::write(root.join("small.txt"), b"abcdef\n").expect("write");
+
+        let segments = read_until_eof(&project, "small.txt", json!({"max_bytes": 7}));
+        assert!(
+            segments.len() >= 2,
+            "a 7-byte budget must still split the file"
+        );
+        for (index, segment) in segments.iter().enumerate() {
+            let has_more = segment["has_more"].as_bool().expect("has_more");
+            let content = segment["content"].as_str().expect("content");
+            assert!(
+                !has_more || !content.is_empty(),
+                "CF2: segment {index} returned empty content with has_more=true"
+            );
+        }
+        assert_eq!(reconstruct_text(&segments), "abcdef\n");
+
+        // 不可行预算（连一个带行号前缀的字符都放不下）：显式教学错误。
+        let error = ReadFileTool
+            .invoke(
+                &json!({"path": "small.txt", "max_bytes": 1}),
+                &project,
+                &CancelToken::new(),
+            )
+            .expect_err("max_bytes=1 cannot fit a numbered prefix");
+        assert!(
+            error.to_string().contains("too small"),
+            "teaching error: {error}"
+        );
+        crate::test_support::cleanup_tree(&root);
+    }
+
+    /// CF3（乙方公开输入）：`"中" × 100 + "\n"`、`max_bytes=32`。修复
+    /// 前：预算按字符消费，首段 content 达 85 UTF-8 字节，超出调用者
+    /// 显式字节上限。修复后：`max_bytes` 恢复 content 的 UTF-8 字节帽
+    /// （含行号前缀），与序列化帽同时生效。
+    #[test]
+    fn read_file_max_bytes_bounds_content_utf8_bytes() {
+        let (root, project) = fixture();
+        let path = root.join("cjk.txt");
+        let source = format!("{}\n", "中".repeat(100));
+        fs::write(&path, source.as_bytes()).expect("write");
+
+        let segments = read_until_eof(&project, "cjk.txt", json!({"max_bytes": 32}));
+        assert!(
+            segments.len() >= 3,
+            "a 32-byte budget must split the CJK line"
+        );
+        for segment in &segments {
+            let content = segment["content"].as_str().expect("content");
+            assert!(
+                content.len() <= 32,
+                "CF3: content is {} UTF-8 bytes, exceeding max_bytes=32",
+                content.len()
+            );
+        }
+        assert_eq!(reconstruct_text(&segments), source);
+        crate::test_support::cleanup_tree(&root);
+    }
+
+    /// CF5（r2 审计公开输入）：四级目录、每级 160 个双引号 + `f.txt`
+    /// （请求路径 649 字节、序列化 1291 字符），正文 `"x"×16000 + \n`，
+    /// 默认参数。r2 缺陷：信封预留按裸字符计路径、构造预算虚高、首片
+    /// 被收缩弹空后空信封低于阈值，循环以**成功零进度段**退出。
+    #[test]
+    fn read_file_escaped_path_cannot_erase_the_first_piece() {
+        let (root, project) = fixture();
+        let mut dir = root.clone();
+        for _ in 0..4 {
+            dir = dir.join("\"".repeat(160));
+        }
+        fs::create_dir_all(&dir).expect("dirs");
+        let path = dir.join("f.txt");
+        fs::write(&path, format!("{}\n", "x".repeat(16_000))).expect("write");
+        let requested = path.to_str().expect("utf8 path");
+
+        let segments = read_until_eof(&project, requested, json!({}));
+        assert!(
+            segments.len() >= 3,
+            "the escaped-path file must still arrive as multiple segments"
+        );
+        for (index, segment) in segments.iter().enumerate() {
+            let has_more = segment["has_more"].as_bool().expect("has_more");
+            let content = segment["content"].as_str().expect("content");
+            assert!(
+                !has_more || !content.is_empty(),
+                "CF5: segment {index} returned empty content with has_more=true"
+            );
+        }
+        let reconstructed = reconstruct_text(&segments);
+        if reconstructed != format!("{}\n", "x".repeat(16_000)) {
+            panic!(
+                "escaped-path segments must reconstruct the source: {} chars, {} segments",
+                reconstructed.chars().count(),
+                segments.len()
+            );
+        }
+        crate::test_support::cleanup_tree(&root);
+    }
+
+    /// CF6（r2 审计公开输入）：`[0xff; 100] + [0x0a]`、`max_bytes=32`。
+    /// r2 缺陷：lossy 替换的 U+FFFD 输出为 3 字节而预算按输入 1 字节
+    /// 计，各段 content 输出 33–34 字节超过显式上限。修复后输出字节帽
+    /// 与源字节游标解耦，替换文本同样守法。
+    #[test]
+    fn read_file_lossy_utf8_still_obeys_the_output_byte_cap() {
+        let (root, project) = fixture();
+        let path = root.join("lossy.bin");
+        let mut bytes = vec![0xff; 100];
+        bytes.push(0x0a);
+        fs::write(&path, &bytes).expect("write");
+
+        let segments = read_until_eof(&project, "lossy.bin", json!({"max_bytes": 32}));
+        assert!(
+            segments.len() >= 3,
+            "a 32-byte cap must split the replacements"
+        );
+        for (index, segment) in segments.iter().enumerate() {
+            let content = segment["content"].as_str().expect("content");
+            assert!(
+                content.len() <= 32,
+                "CF6: segment {index} content is {} output bytes, exceeding max_bytes=32",
+                content.len()
+            );
+            assert_eq!(
+                segment["invalid_utf8"], true,
+                "lossy decoding must be marked"
+            );
+        }
+        // 重建：100 个替换字符 + 行终止。
+        let reconstructed = reconstruct_text(&segments);
+        assert_eq!(
+            reconstructed.chars().count(),
+            101,
+            "100 replacement chars plus the newline"
+        );
+        assert!(reconstructed.starts_with('\u{FFFD}'));
+        assert!(reconstructed.ends_with('\n'));
+        crate::test_support::cleanup_tree(&root);
+    }
+
+    /// CF7（r2 审计公开输入）：`a\r\nb\r\n`、`max_bytes=9`。r2 缺陷：
+    /// partial 片发出 `\r`、下一段只看到 `\n`，重建为 `a\r\nb\n`——
+    /// CR 归一化依赖分段位置。修复后 CRLF 是单一行终止（跨段边界同样
+    /// 归一化），重建恒为完整行归一化结果 `a\nb\n`。
+    #[test]
+    fn read_file_crlf_normalization_does_not_depend_on_segment_boundary() {
+        let (root, project) = fixture();
+        fs::write(root.join("crlf.txt"), b"a\r\nb\r\n").expect("write");
+
+        let segments = read_until_eof(&project, "crlf.txt", json!({"max_bytes": 9}));
+        assert!(
+            segments.len() >= 2,
+            "a 9-byte budget must split the two CRLF lines"
+        );
+        assert_eq!(
+            reconstruct_text(&segments),
+            "a\nb\n",
+            "CRLF normalization must not depend on where segments split"
+        );
+        // 对照：同文件一次性读完（大预算）也得到相同归一化结果。
+        let whole = ReadFileTool
+            .invoke(&json!({"path": "crlf.txt"}), &project, &CancelToken::new())
+            .expect("whole read");
+        assert_eq!(
+            whole["content"].as_str().expect("content"),
+            "1 | a\n2 | b\n"
+        );
+        crate::test_support::cleanup_tree(&root);
+    }
+
+    /// CF8（r3 审计公开输入）：源字节 `a\r\r\nb\r`——第一个 `\r` 是
+    /// 正文，`\r\n` 是行终止，末尾 `\r` 是 EOF 正文。r3 缺陷：扫描层
+    /// 已把 CRLF 归一化，`complete_line_piece` 却仍 pop 尾部 CR，正文
+    /// CR 随分段预算丢失（默认/32 → `a\nb\n`；9 → `a\r\nb\n`）。修复
+    /// 后归一化只作用于真正的 CRLF，任意预算下重建恒为 `a\r\nb\r\n`。
+    #[test]
+    fn read_file_standalone_cr_is_preserved_independently_of_segmentation() {
+        let (root, project) = fixture();
+        fs::write(root.join("standalone-cr.txt"), b"a\r\r\nb\r").expect("write");
+        let expected = "a\r\nb\r\n";
+
+        for budget in [None, Some(9), Some(32), Some(64), Some(4096)] {
+            let args = match budget {
+                Some(bytes) => json!({"max_bytes": bytes}),
+                None => json!({}),
+            };
+            let segments = read_until_eof(&project, "standalone-cr.txt", args);
+            let label = format!("max_bytes={:?}", budget);
+            let reconstructed = reconstruct_text(&segments);
+            if reconstructed != expected {
+                panic!(
+                    "CF8 ({label}): reconstructed {:?} != expected {:?} ({} segments)",
+                    reconstructed,
+                    expected,
+                    segments.len()
+                );
+            }
+        }
+
+        // 对照：一次性整读的正文视图与分段重建一致（同一归一化）。
+        let whole = ReadFileTool
+            .invoke(
+                &json!({"path": "standalone-cr.txt"}),
+                &project,
+                &CancelToken::new(),
+            )
+            .expect("whole read");
+        assert_eq!(
+            whole["content"].as_str().expect("content"),
+            "1 | a\r\n2 | b\r\n",
+            "whole-read view must keep standalone CRs too"
+        );
+        crate::test_support::cleanup_tree(&root);
+    }
+
+    /// R3：续读之间文件被修改——expected_file_version 必须显式失败并
+    /// 指导重启；越界游标同样显式失败。
+    #[test]
+    fn read_file_version_mismatch_and_stale_cursors_fail_explicitly() {
+        let (root, project) = fixture();
+        let path = root.join("changing.txt");
+        let mut source = String::new();
+        for index in 0..300 {
+            source.push_str(&format!("original line {index:03}\r\n"));
+        }
+        fs::write(&path, source.as_bytes()).expect("write");
+
+        let first = ReadFileTool
+            .invoke(
+                &json!({"path": "changing.txt", "max_bytes": 1024}),
+                &project,
+                &CancelToken::new(),
+            )
+            .expect("first read");
+        assert_eq!(first["has_more"], true, "the fixture must span segments");
+        let version = first["file_version"].as_str().expect("version").to_owned();
+        let cursor = first["next_cursor"].as_str().expect("cursor").to_owned();
+
+        // 文件被替换（长度与 mtime 都变）。
+        let mut replacement = String::new();
+        for index in 0..120 {
+            replacement.push_str(&format!("replaced line {index:03} with different width\n"));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        fs::write(&path, replacement.as_bytes()).expect("rewrite");
+
+        let error = ReadFileTool
+            .invoke(
+                &json!({
+                    "path": "changing.txt",
+                    "cursor": cursor,
+                    "expected_file_version": version,
+                }),
+                &project,
+                &CancelToken::new(),
+            )
+            .expect_err("a changed file must fail the version check");
+        assert!(
+            error.to_string().contains("changed since the last read"),
+            "teaching error: {error}"
+        );
+
+        // 不带版本参数的越界游标：显式失败而非空转。
+        let error = ReadFileTool
+            .invoke(
+                &json!({"path": "changing.txt", "cursor": "b=9999;l=9"}),
+                &project,
+                &CancelToken::new(),
+            )
+            .expect_err("a stale cursor must fail explicitly");
+        assert!(
+            error.to_string().contains("past the end of the file"),
+            "teaching error: {error}"
+        );
+        crate::test_support::cleanup_tree(&root);
+    }
+
+    /// R4：显式超大 max_bytes 被分段帽压回（content_budget_chars 回报
+    /// 实际生效值），续读仍完整覆盖；小 max_bytes 原样尊重。
+    #[test]
+    fn read_file_large_max_bytes_is_capped_but_still_resumable() {
+        let (root, project) = fixture();
+        let path = root.join("cap-me.md");
+        let mut source = String::new();
+        for index in 0..400 {
+            source.push_str(&format!("cap line {index:03} with some padding text\r\n"));
+        }
+        fs::write(&path, source.as_bytes()).expect("write");
+
+        let segments = read_until_eof(&project, "cap-me.md", json!({"max_bytes": 65536}));
+        assert!(segments.len() >= 2, "the segment cap must split the file");
+        for segment in &segments {
+            let budget = segment["content_budget_chars"].as_u64().expect("budget");
+            assert!(
+                budget <= crate::plugins::THRESHOLD_CHARS as u64,
+                "the applied budget must stay under the pruner threshold"
+            );
+            let content = segment["content"].as_str().expect("content");
+            assert!(content.chars().count() <= budget as usize);
+        }
+        let reconstructed = reconstruct_text(&segments);
+        if reconstructed != source.replace("\r\n", "\n") {
+            panic!(
+                "capped segments must cover the whole file: reconstructed {} chars, \
+                 expected {} chars, {} segments",
+                reconstructed.chars().count(),
+                source.chars().count(),
+                segments.len()
+            );
+        }
+        crate::test_support::cleanup_tree(&root);
+    }
+
+    /// R2 边界语义：空文件与越过 EOF 的 start_line 都是显式、可判别
+    /// 的结果（不返回同一截断片段，不无限空转）。
+    #[test]
+    fn read_file_empty_and_beyond_eof_have_explicit_semantics() {
+        let (root, project) = fixture();
+        fs::write(root.join("empty.txt"), b"").expect("empty");
+
+        let output = ReadFileTool
+            .invoke(&json!({"path": "empty.txt"}), &project, &CancelToken::new())
+            .expect("empty read");
+        assert_eq!(output["content"], "");
+        assert_eq!(output["has_more"], false);
+        assert_eq!(output["truncated"], false);
+        assert!(output.get("next_cursor").is_none());
+
+        let output = ReadFileTool
+            .invoke(
+                &json!({"path": "empty.txt", "start_line": 42}),
+                &project,
+                &CancelToken::new(),
+            )
+            .expect("beyond eof read");
+        assert_eq!(output["content"], "");
+        assert_eq!(output["beyond_eof"], true);
+        assert_eq!(output["has_more"], false);
+        assert!(output.get("next_cursor").is_none());
         crate::test_support::cleanup_tree(&root);
     }
 

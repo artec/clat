@@ -731,7 +731,7 @@ fn profile_editor_has_no_preset_row() {
 }
 
 /// 验收②（INV-M4）：只填四个必填文本即可保存——持久化值为保守
-/// 缺省集（context 128K / output 32K / budget 系统缺省 10M /
+/// 缺省集（context 128K / output 32K / budget 无累计硬顶（None）/
 /// request_path 与 auth 默认 / parallel on / protocol compatible）。
 #[test]
 fn profile_template_saves_with_only_required_fields_filled() {
@@ -760,7 +760,7 @@ fn profile_template_saves_with_only_required_fields_filled() {
     assert_eq!(config.request_path, "/chat/completions");
     assert_eq!(config.output_limit, Some(32 * 1024));
     assert_eq!(config.max_context_tokens, Some(128 * 1024));
-    assert_eq!(config.run_token_budget, None, "default 10M = None");
+    assert_eq!(config.run_token_budget, None, "no-cap default = None");
     assert!(config.parallel_tool_calls);
     assert_eq!(credentials.value(0), Some("sk-work"));
 }

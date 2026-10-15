@@ -3556,6 +3556,368 @@ fn long_tool_loops_run_uninterrupted_without_a_turn_budget() {
     std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
 }
 
+// ===== AG-DOGFOOD-3 / BUDGET-1 + READ-1（2026-10-15）联合回归 =====
+
+/// J1 脚本模型：在**真实** Agent Loop（TestProviderPlugin → Run →
+/// read_file → ToolResultPruner → 模型下一轮请求）中驱动 read_file
+/// 游标续读直到 EOF。记录模型在下一轮请求里实际看到的每个工具结果
+/// （post-pruner 视图）；每轮回报超大 usage（跨旧 10M 缺省硬顶——
+/// pre-fix 在此 RunFailed）。
+struct ReadToEofScript {
+    path: String,
+    /// 模型视角的段输出（经生产 pruner 之后的最终视图）。
+    segments: Mutex<Vec<serde_json::Value>>,
+    calls: std::sync::atomic::AtomicUsize,
+    usage_input: u64,
+}
+
+impl ReadToEofScript {
+    fn read_call(&self, arguments: serde_json::Value) -> crate::ModelResponse {
+        crate::ModelResponse {
+            text: String::new(),
+            tool_calls: vec![crate::ToolCall {
+                id: format!("read-{}", self.calls.load(Ordering::SeqCst)),
+                name: "read_file".into(),
+                arguments,
+            }],
+            finish_reason: crate::FinishReason::ToolCalls,
+            usage: Some(crate::model::Usage {
+                input_tokens: self.usage_input,
+                output_tokens: 7,
+                ..crate::model::Usage::default()
+            }),
+            provider_response_id: None,
+            provider_state: Vec::new(),
+            reasoning: None,
+        }
+    }
+
+    fn done(&self) -> crate::ModelResponse {
+        let segments = self.segments.lock().expect("segments").len();
+        crate::ModelResponse {
+            text: format!("READ_EOF segments={segments}"),
+            tool_calls: Vec::new(),
+            finish_reason: crate::FinishReason::Completed,
+            usage: Some(crate::model::Usage {
+                input_tokens: self.usage_input,
+                output_tokens: 7,
+                ..crate::model::Usage::default()
+            }),
+            provider_response_id: None,
+            provider_state: Vec::new(),
+            reasoning: None,
+        }
+    }
+}
+
+impl TestModelScript for ReadToEofScript {
+    fn stream(
+        &self,
+        request: crate::ModelRequest<'_>,
+        _events: &mut dyn crate::ModelEventSink,
+    ) -> Result<crate::ModelResponse, crate::ModelError> {
+        let calls = self.calls.fetch_add(1, Ordering::SeqCst);
+        if calls > 300 {
+            return Err(crate::ModelError::request(
+                "script loop guard: the read never reached EOF",
+            ));
+        }
+        let last_output = request.items.iter().rev().find_map(|item| match item {
+            crate::ModelItem::ToolResult(result) if result.tool_name == "read_file" => {
+                Some(result.output.clone())
+            }
+            _ => None,
+        });
+        let Some(output) = last_output else {
+            return Ok(self.read_call(serde_json::json!({"path": self.path})));
+        };
+        self.segments.lock().expect("segments").push(output.clone());
+        if output["has_more"].as_bool().unwrap_or(false) {
+            let arguments = serde_json::json!({
+                "path": self.path,
+                "cursor": output["next_cursor"],
+                "expected_file_version": output["file_version"],
+            });
+            Ok(self.read_call(arguments))
+        } else {
+            Ok(self.done())
+        }
+    }
+}
+
+/// J1（B1+R5 联合）：无预算模型在跨旧 10M 阈值的长 run 中把长文件
+/// 分段读完——没有本地缺省累计硬停，模型实际收到的段未被 pruner 改
+/// 写、游标链单调、末段终止。pre-fix 双红：缺省 10M 硬顶使 run 失败；
+/// 旧 read_file 无游标且结果被 pruner 吃掉中段。
+#[test]
+fn long_run_without_a_default_budget_reads_a_long_file_to_eof() {
+    let (storage_root, project_root) = roots("dogfood3-budget-read-j1");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let project = Project::new(&project_root);
+    let target = project_root.join("long-target.md");
+    let mut source = String::new();
+    for index in 0..1500 {
+        source.push_str(&format!("doc line {index:04} with 中文 and emoji 🚀\r\n"));
+    }
+    source.push_str(&format!("giant {}", "g".repeat(24_000)));
+    // r2（审计返工 CF1）：转义密集超长单行直接进入联合 e2e——乙方
+    // 公开反例输入，修复前该输入在真实链路零进度停滞。
+    source.push('\n');
+    for _ in 0..8_000 {
+        source.push_str("\"\\\t");
+    }
+    source.push_str("\nshort tail\n");
+    // r4（审计返工 CF8）：孤立 CR + CRLF 混合——正文 CR 不得随分段
+    // 预算丢失，与整读归一化一致。
+    source.push_str("edge\rcr\r\r\nfin\r");
+    std::fs::write(&target, source.as_bytes()).unwrap();
+    let file_bytes = std::fs::metadata(&target).unwrap().len();
+
+    let script = Arc::new(ReadToEofScript {
+        path: "long-target.md".into(),
+        segments: Mutex::new(Vec::new()),
+        calls: std::sync::atomic::AtomicUsize::new(0),
+        usage_input: 10_500_000,
+    });
+    let mut application = mount(
+        &project,
+        &storage_root,
+        TestBehavior::Scripted(script.clone()),
+    );
+    configure_test_model(&application);
+
+    let done = run(&mut application, "read long-target.md to the end")
+        .expect("no default cap: the long run must complete");
+    assert!(
+        done.output.starts_with("READ_EOF segments="),
+        "script summary: {}",
+        done.output
+    );
+
+    let segments = script.segments.lock().unwrap().clone();
+    application.close().unwrap();
+    assert!(
+        segments.len() >= 3,
+        "the long file must arrive as multiple bounded segments"
+    );
+    // B1 证据：usage 跨过旧 10M 硬顶而 run 完成。
+    assert!(
+        done.usage.input_tokens >= 10_500_000 * segments.len() as u64,
+        "the run really accumulated past the old 10M default cap"
+    );
+    // R5 证据：模型下一轮请求看到的每个段——未被生产 pruner 改写、
+    // 无中段丢失标志、游标链单调、末段 has_more=false。
+    let mut previous_offset = 0u64;
+    for (index, segment) in segments.iter().enumerate() {
+        assert!(
+            segment.get("clat_truncated").is_none(),
+            "the production pruner must never rewrite a read segment: {segment}"
+        );
+        if index < segments.len() - 1 {
+            assert_eq!(segment["has_more"], true);
+            let cursor = segment["next_cursor"].as_str().expect("next_cursor");
+            let offset = cursor
+                .strip_prefix("b=")
+                .and_then(|rest| rest.split(';').next())
+                .and_then(|value| value.parse::<u64>().ok())
+                .expect("cursor offset");
+            assert!(
+                offset > previous_offset,
+                "cursor chain must be strictly monotonic at {index}: {offset} vs {previous_offset}"
+            );
+            previous_offset = offset;
+        }
+    }
+    assert_eq!(segments.last().unwrap()["has_more"], false);
+    assert_eq!(
+        segments.last().unwrap()["file_bytes"],
+        file_bytes,
+        "identity travels with every segment"
+    );
+    // CF4.4（审计返工）：正文级重建——模型视角 content 剥离行号前缀
+    // 后与源文件（规范化 \r\n、末行补 \n）逐字一致；不能只断言
+    // metadata/游标单调。partial 行内片原样拼接。
+    let mut reconstructed = String::new();
+    for segment in &segments {
+        let content = segment["content"].as_str().unwrap_or("");
+        let mut rest = content;
+        while !rest.is_empty() {
+            match rest.split_once('\n') {
+                Some((part, tail)) => {
+                    reconstructed.push_str(strip_model_view_prefix(part));
+                    reconstructed.push('\n');
+                    rest = tail;
+                }
+                None => {
+                    reconstructed.push_str(strip_model_view_prefix(rest));
+                    rest = "";
+                }
+            }
+        }
+    }
+    let mut normalized = source.replace("\r\n", "\n");
+    if !normalized.ends_with('\n') {
+        normalized.push('\n');
+    }
+    if reconstructed != normalized {
+        panic!(
+            "model-view segments must reconstruct the source verbatim: \
+             reconstructed {} chars, normalized {} chars, {} segments",
+            reconstructed.chars().count(),
+            normalized.chars().count(),
+            segments.len()
+        );
+    }
+    std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
+}
+
+/// 剥离模型视角行显示的 `N | ` 前缀（仅行首片携带）。
+fn strip_model_view_prefix(part: &str) -> &str {
+    let digits_end = part.find(" | ").unwrap_or(0);
+    if digits_end > 0 && part[..digits_end].chars().all(|ch| ch.is_ascii_digit()) {
+        &part[digits_end + 3..]
+    } else {
+        part
+    }
+}
+
+/// J1（B2 腿）：同一工作流在用户显式小 cap 下必须按预算停止，并给出
+/// 真实 used/cap 文案——显式预算语义不因缺省改动而削弱。
+#[test]
+fn explicit_small_budget_stops_the_same_read_workflow() {
+    let (storage_root, project_root) = roots("dogfood3-budget-read-j1-cap");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let project = Project::new(&project_root);
+    let target = project_root.join("long-target.md");
+    let mut source = String::new();
+    for index in 0..300 {
+        source.push_str(&format!("doc line {index:04} with padding\r\n"));
+    }
+    std::fs::write(&target, source.as_bytes()).unwrap();
+
+    let script = Arc::new(ReadToEofScript {
+        path: "long-target.md".into(),
+        segments: Mutex::new(Vec::new()),
+        calls: std::sync::atomic::AtomicUsize::new(0),
+        usage_input: 10_500_000,
+    });
+    let mut application = mount(
+        &project,
+        &storage_root,
+        TestBehavior::Scripted(script.clone()),
+    );
+    let mut config = crate::ModelConfig {
+        model: "deterministic".into(),
+        endpoint: "https://application-test.invalid".into(),
+        ..crate::ModelConfig::default()
+    };
+    config.run_token_budget = Some(25_000);
+    let credentials = crate::ProviderCredentials::for_protocol(config.protocol);
+    application
+        .save_model_state(&config, &credentials)
+        .expect("save capped test model");
+
+    let failure = run(&mut application, "read long-target.md to the end")
+        .expect_err("the explicit cap must stop the run");
+    assert!(
+        failure.error.contains("run token budget exceeded"),
+        "teaching error: {}",
+        failure.error
+    );
+    assert!(
+        failure.error.contains("cap 25000"),
+        "the real used/cap must be reported: {}",
+        failure.error
+    );
+    application.close().unwrap();
+    // 已收到的段（若有）同样未被 pruner 改写。
+    for segment in script.segments.lock().unwrap().iter() {
+        assert!(segment.get("clat_truncated").is_none());
+    }
+    std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
+}
+
+/// CF5 e2e（r2 审计返工）：转义密集长路径 + 长正文在**真实生产链路**
+/// （mount → Run → read_file → 生产 pruner → 下一轮 ModelRequest.items）
+/// 按序读完并逐字重建——r2 缺陷下该输入以成功零进度段停滞。
+#[test]
+fn escaped_path_file_reads_to_eof_in_the_real_agent_loop() {
+    let (storage_root, project_root) = roots("dogfood3-budget-read-cf5");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let project = Project::new(&project_root);
+    let mut dir = project_root.clone();
+    for _ in 0..4 {
+        dir = dir.join("\"".repeat(160));
+    }
+    std::fs::create_dir_all(&dir).unwrap();
+    let target = dir.join("f.txt");
+    let source = format!("{}\n", "x".repeat(16_000));
+    std::fs::write(&target, source.as_bytes()).unwrap();
+    let requested = target.to_str().unwrap().to_owned();
+
+    let script = Arc::new(ReadToEofScript {
+        path: requested.clone(),
+        segments: Mutex::new(Vec::new()),
+        calls: std::sync::atomic::AtomicUsize::new(0),
+        usage_input: 10_500_000,
+    });
+    let mut application = mount(
+        &project,
+        &storage_root,
+        TestBehavior::Scripted(script.clone()),
+    );
+    configure_test_model(&application);
+    let done = run(&mut application, "read the escaped-path file to the end")
+        .expect("no default cap and a fit segment: the read must complete");
+    assert!(
+        done.output.starts_with("READ_EOF segments="),
+        "{}",
+        done.output
+    );
+
+    let segments = script.segments.lock().unwrap().clone();
+    application.close().unwrap();
+    assert!(segments.len() >= 3);
+    for (index, segment) in segments.iter().enumerate() {
+        assert!(
+            segment.get("clat_truncated").is_none(),
+            "pruner must never rewrite segments: {segment}"
+        );
+        assert!(
+            !segment["has_more"].as_bool().unwrap_or(false)
+                || !segment["content"].as_str().unwrap_or("").is_empty(),
+            "CF5: segment {index} made no progress with has_more=true"
+        );
+    }
+    let mut reconstructed = String::new();
+    for segment in &segments {
+        let content = segment["content"].as_str().unwrap_or("");
+        let mut rest = content;
+        while !rest.is_empty() {
+            match rest.split_once('\n') {
+                Some((part, tail)) => {
+                    reconstructed.push_str(strip_model_view_prefix(part));
+                    reconstructed.push('\n');
+                    rest = tail;
+                }
+                None => {
+                    reconstructed.push_str(strip_model_view_prefix(rest));
+                    rest = "";
+                }
+            }
+        }
+    }
+    if reconstructed != source {
+        panic!(
+            "escaped-path model view must reconstruct the source: {} vs {} chars, {} segments",
+            reconstructed.chars().count(),
+            source.chars().count(),
+            segments.len()
+        );
+    }
+    std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
+}
+
 /// 自动压缩的 Application 级回归：历史跨过模型窗口的 80% 水位后，
 /// worker 必须经真实 compactor/provider 接缝生成摘要，把四事件族原子
 /// 落盘，并让 replace surface 在冷重启后继续可用。纯 `choose_cut`

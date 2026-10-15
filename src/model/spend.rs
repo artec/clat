@@ -1,8 +1,12 @@
 //! spend implementation behind the stable model contract.
 
-/// 花费护栏缺省硬顶（定案：10M——误报在 ~p99.9 之外，漏报封顶贵模型
-/// 几十美元量级；dogfood 校准见 docs/todo/open-worklist.md B1）。
-pub const RUN_TOKEN_BUDGET_DEFAULT: u64 = 10_000_000;
+// BUDGET-1（2026-10-15 产品裁定）：不存在本地缺省累计硬顶。旧版曾把
+// 未设置的 `run_token_budget: None` 私自解析为 10M 并硬停长任务
+// （`run token budget exceeded: used 10003415 / cap 10000000`）——用户
+// 从未授权。`None` 现在恒等于「无 CLAT 本地累计上限」；唯一生效的
+// cap 是用户显式设置的正数（`Some(n>0)`；`Some(0)` 为显式关闭）。
+// 该常量已删除以防任何代码路径复活缺省硬顶；显式 cap 的语义见
+// `ModelConfig::effective_run_token_budget`。
 
 /// B1 花费护栏的共享账本：**唯一仪表**。recorder 在 assistant/message
 /// 落账点按 INV-S6 口径（主循环 usage + 插件采样归并）记账；run.rs

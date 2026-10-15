@@ -818,9 +818,7 @@ impl TrustedProjectApplication {
                 thinking_level: crate::effective_thinking_level(&config),
                 max_context_tokens: config.max_context_tokens,
                 overrides: config.overrides,
-                run_token_budget: config
-                    .run_token_budget
-                    .unwrap_or(crate::model::RUN_TOKEN_BUDGET_DEFAULT),
+                run_token_budget: config.run_token_budget.unwrap_or(0),
                 image_input: config.capabilities.accepts_image_input(),
             },
             permission_mode: self.permission_mode(),

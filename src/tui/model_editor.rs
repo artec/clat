@@ -122,8 +122,8 @@ fn override_or_clear<T>(
 /// 首位；Off/Custom… 等特殊位殿后。
 const CONTEXT_CHOICES: [u32; 3] = [128 * 1024, 256 * 1024, 1024 * 1024];
 const OUTPUT_CHOICES: [u32; 3] = [8 * 1024, 32 * 1024, 128 * 1024];
-/// None = 系统缺省（B1 的 10M）；Some 值即 run_token_budget；
-/// Some(0) = off。
+/// None = 无累计硬顶（BUDGET-1 缺省，2026-10-15 裁定）；Some 值即
+/// run_token_budget；Some(0) = 显式 off（与缺省等效，但保留用户意图）。
 const BUDGET_CHOICES: [Option<u64>; 4] = [Some(1_000_000), None, Some(50_000_000), Some(0)];
 /// 各枚举的缺省位（模板缺省，见 new_profile_template）。
 const OUTPUT_DEFAULT: usize = 1;
@@ -255,7 +255,7 @@ impl ModelEditor {
             original_name: None,
             name: String::new(),
         });
-        // 保守缺省：context 128K / output 32K / budget 系统缺省(10M)。
+        // 保守缺省：context 128K / output 32K / budget 无累计硬顶。
         editor.context_choice = 0;
         editor.output_choice = OUTPUT_DEFAULT;
         editor.budget_choice = BUDGET_DEFAULT;
@@ -650,7 +650,7 @@ impl ModelEditor {
         match self.budget_choice {
             CHOICE_CUSTOM => format!("custom: {}  ←/→", custom_or(&self.spend_budget)),
             index => match BUDGET_CHOICES[index] {
-                None => "default 10M  ←/→".into(),
+                None => "no cap (default)  ←/→".into(),
                 Some(0) => "off  ←/→".into(),
                 Some(budget) => format!("{}  ←/→", human_tokens(budget)),
             },

@@ -148,12 +148,14 @@ pub struct ModelConfig {
     /// 回填后存活。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking_level: Option<ThinkingLevel>,
-    /// per-run token 花费护栏（B1，2026-08-22 定案）：口径
-    /// `input_tokens + output_tokens`（缓存命中计入 input、不重复计）。
-    /// `None` = 缺省 [`RUN_TOKEN_BUDGET_DEFAULT`]；`Some(0)` = 显式关闭
-    /// （文档标注不建议）；`Some(n)` = 上限 n。独立一等字段（同
+    /// per-run token 花费护栏（B1，2026-08-22 定案；BUDGET-1 2026-10-15
+    /// 修订缺省语义）：口径 `input_tokens + output_tokens`（缓存命中
+    /// 计入 input、不重复计）。`None` = **无本地累计硬顶**（缺省；不再
+    /// 解析为任何 CLAT 私设的默认 cap）；`Some(0)` = 显式关闭（文档
+    /// 标注不建议）；`Some(n>0)` = 用户明确上限 n。独立一等字段（同
     /// `thinking_level` 的存活理由）；过顶 → run 以三要素错误终止，
-    /// 50%/90% 各一次持久化预警（`clat/budget`，ignorable 事件）。
+    /// 50%/90% 各一次持久化预警（`clat/budget`，ignorable 事件）——
+    /// 预警与硬停都只在显式 cap 存在时发生。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_token_budget: Option<u64>,
     /// INV-MM2-1：模型输入能力快照。内置预设 `apply` 时 stamp；旧

@@ -289,7 +289,11 @@ user prompt
 ```
 
 The loop has no turn-count limit. It stops on model completion/refusal,
-cancellation, failure, or the per-run token spend guard. Tool failures and
+cancellation, failure, or the per-run token spend guard — which is armed only
+by an explicit positive `run_token_budget` set by the user; an unset budget
+means no CLAT-local cumulative cap (BUDGET-1 ruling, 2026-10-15: the former
+silent 10M default is removed; `Some(0)` is an explicit off). Accounting still
+runs without a cap. Tool failures and
 permission denials become structured `ToolResult` errors so the model can
 adapt without aborting the whole run.
 
@@ -379,6 +383,19 @@ summary marker and shadows older surface ranges without deleting original
 events. Preset context windows seed automatic compaction; manual configuration
 remains authoritative.
 
+`read_file` results are constructed to stay under the shared pruner threshold,
+so the generic head/tail replacement never fires on them: every segment keeps
+its cursor and status fields intact in the model's view (READ-1, 2026-10-15).
+Long files arrive as ordered bounded segments with `has_more`, an opaque
+`next_cursor` (absolute byte offset + line number + in-line flag), and a
+`file_version` identity (`size` + `mtime`); passing `expected_file_version`
+back fails explicitly when the file changed between segments instead of
+silently stitching two versions. Lines longer than the segment budget are
+split at character boundaries and marked `partial_line` — byte-cursor
+continuation always progresses, so no input loops forever on the same
+truncated piece. `max_bytes` stays an upper bound; the applied context-safe
+budget is reported as `content_budget_chars`.
+
 Immediately before each agent request, core derives a detached image projection
 from that surface. It counts user, assistant, and typed tool-result images in
 provider order, enforces the independent 12-block/20,000,000-byte request
@@ -436,8 +453,9 @@ Built-in read tools are `list_files`, `read_file`, and `search`. Search is an
 independent internal plugin: literal remains the default, while regex,
 include/exclude globs, extensions, gitignore/hidden policy, stable ordering and
 snapshot-bound pagination remain bounded inside the Rust binary. Read tools
-enforce byte, depth, entry, match and result limits. Project-relative paths
-reject traversal and use symlink-aware capability discipline. Explicit
+enforce byte, depth, entry, match and result limits; `read_file` returns
+resumable bounded segments (see the pruning contract above). Project-relative
+paths reject traversal and use symlink-aware capability discipline. Explicit
 absolute reads remain allowed by CLAT's current permission contract.
 
 Trusted projects also receive:

@@ -106,7 +106,7 @@ Numeric settings use bounded choice rows before a custom input:
 |---|---|
 | Context Window | 128K (default template), 256K, 1M, Custom… |
 | Max Output | 8K, 32K (default template), 128K, Custom… |
-| Spend Budget | 1M, 10M (default), 50M, off, Custom… |
+| Spend Budget | 1M, no cap (default), 50M, off, Custom… |
 
 `Enter` or `←`/`→` cycles a choice. Selecting Custom opens a numeric input.
 
@@ -165,13 +165,17 @@ catalog value; a user-entered value wins. CLAT estimates context before the
 next run, triggers around 80% of the window, and compacts toward the same ratio
 while preserving the original journal.
 
-**Spend Budget** limits total input+output tokens for one run. The default is
-10M and `0` disables it. Despite the label, its unit is tokens, not money.
-Every model or extension-sampling request reserves a
+**Spend Budget** optionally limits total input+output tokens for one run.
+The default is **no cap**: CLAT no longer applies a silent local default
+(the former 10M fallback was removed on 2026-10-15), so long tasks are not
+stopped by a limit you never chose. `0` explicitly disables an existing
+guardrail and behaves the same as no cap. Despite the label, its unit is
+tokens, not money. Every model or extension-sampling request reserves a
 conservative amount before it starts; provider usage reconciles the reservation
 when available. Malformed or absurd usage cannot wrap or silently reset the
-ledger. Crossing the cap stops the run with used/cap values and a pointer back
-to `/model`.
+ledger. Crossing a cap you set stops the run with used/cap values and a
+pointer back to `/model`; without a cap, accounting still runs and real
+provider quota and context compaction still apply.
 
 The spend value belongs to the model configuration, so different profiles can
 carry different risk/cost limits.

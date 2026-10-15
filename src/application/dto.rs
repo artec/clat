@@ -126,7 +126,9 @@ pub struct WorkbenchModelSnapshot {
     /// W2b frontend-neutral tri-state source. Credentials and unrestricted
     /// provider JSON remain excluded from this lightweight snapshot.
     pub overrides: crate::model::ModelOverrides,
-    /// 已解析缺省值后的单次 run token 花费护栏；0 表示关闭。
+    /// 已解析缺省值后的单次 run token 花费护栏；0 表示关闭/无累计上限
+    /// （BUDGET-1：未设置与显式 off 同样解析为 0——`None` 不再被替换
+    /// 成任何本地默认硬顶，与 `effective_run_token_budget` 同源）。
     pub run_token_budget: u64,
     /// 当前冻结配置是否接受图片输入。唯一事实源是
     /// `ModelCapabilities::accepts_image_input()`；前端不得重判。

@@ -529,10 +529,14 @@ process group. A request whose cancel was already set is never sent, and a
 cancelled run schedules no further model or tool steps.
 
 The agent loop has no fixed turn count. A run ends when the model completes or
-refuses, the user cancels, a failure occurs, or the configured token spend
-budget is exhausted. The default spend budget is 10 million input+output
-tokens per run. Change it in `/model`; `0` disables the guardrail. Warnings are
-journaled at 50% and 90%.
+refuses, the user cancels, a failure occurs, or the token spend budget **you
+set** is exhausted. There is no default cumulative budget: if you never set
+one, CLAT never stops a long run on a local token cap (the former silent
+10M default was removed on 2026-10-15). Set one in `/model` if you want a
+hard stop; `0` disables an existing guardrail. Warnings are journaled at 50%
+and 90% — and only for budgets you set. A run without a local cap is still
+bounded by context compaction, per-request response limits, and your real
+provider quota.
 
 Context pressure is handled separately. Presets seed a context window, and
 automatic compaction triggers near 80% of it. `/compact` forces the same

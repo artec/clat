@@ -24,7 +24,12 @@ const DESCRIPTOR: PluginDescriptor = PluginDescriptor {
     optional: &[],
 };
 
-const THRESHOLD_CHARS: usize = 8192;
+/// 通用工具结果的上下文预算：序列化后超过该字符数的输出会被替换为
+/// head/tail 截断视图（参数取 DSH tool-result-pruner 调优值）。
+/// `pub(crate)`（READ-1，2026-10-15）：read_file 等有界分段工具用同一
+/// 常量构造「结果必然 ≤ 阈值」的分段，使通用 head/tail 二次裁剪对其
+/// 永不触发——分段游标与状态字段不会在模型视图中丢失。
+pub(crate) const THRESHOLD_CHARS: usize = 8192;
 const HEAD_CHARS: usize = 4096;
 const TAIL_CHARS: usize = 1024;
 const ERROR_SUMMARY_CHARS: usize = 2048;
