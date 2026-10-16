@@ -1088,6 +1088,18 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    fn ag4_batch_explicit_stdin_fixture_retains_its_real_application_outcome() {
+        let fixture = fixture("exec-session-stdin");
+        let report = run_fixture(&fixture).unwrap();
+        assert_eq!(report.gate, GateStatus::Matched, "{report:#?}");
+        assert_eq!(
+            report_json(&report).unwrap(),
+            std::fs::read_to_string(fixture.join("expected-report.json")).unwrap()
+        );
+    }
+
+    #[test]
     fn every_registered_scenario_matches_its_golden_report() {
         let root = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
             .join("tests/fixtures/agent-scenarios");

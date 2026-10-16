@@ -21,6 +21,7 @@ mod outcome_tests;
 mod prepared;
 #[cfg(test)]
 mod sbx4_tests;
+mod stdin;
 mod verification;
 #[cfg(all(test, feature = "runtime-tests"))]
 mod verification_tests;
@@ -158,7 +159,7 @@ impl Tool for ExecCommandTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "exec_command".into(),
-            description: "Start a run-owned command session in the project. Specify exactly one of cmd (shell) or argv (direct executable and literal arguments). For test verification prefer argv with verification; its cumulative receipt survives polling and diagnostic clipping. Receipt test counts are unauthenticated output observations, not coverage. Returns immediately when it finishes within yield_time, otherwise returns a session_id for write_stdin polling/input/termination. tty=true creates a real PTY where supported. Project Write calls with a prepared OS sandbox run without approval; network=true still requires approval.".into(),
+            description: "Start a run-owned command session in the project. Specify exactly one of cmd (shell) or argv (direct executable and literal arguments). For test verification prefer argv with verification; its cumulative receipt survives polling and diagnostic clipping. Receipt test counts are unauthenticated output observations, not coverage. Returns immediately when it finishes within yield_time, otherwise returns a session_id for write_stdin polling/input/termination. Non-PTY stdin defaults to closed (EOF); set stdin=pipe explicitly for interactive input. tty=true keeps terminal input and creates a real PTY where supported. Project Write calls with a prepared OS sandbox run without approval; network=true still requires approval.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -170,6 +171,7 @@ impl Tool for ExecCommandTool {
                     },"required":["format","minimum_executed"],"additionalProperties":false,"description":"Optional bounded cumulative receipt; requires argv and tty=false. Only the directly launched process exit is known."},
                     "workdir": {"type": "string", "description": "Project-relative directory or absolute directory inside the active scratch root"},
                     "tty": {"type": "boolean", "default": false},
+                    "stdin": {"type":"string","enum":["closed","pipe"],"description":"Non-PTY commands default to closed stdin (EOF). Use pipe explicitly for write_stdin input. PTYs keep terminal input and cannot use closed."},
                     "yield_time_ms": {"type": "integer", "minimum": 250, "maximum": 30000, "default": 10000},
                     "max_output_tokens": {"type": "integer", "minimum": 256, "maximum": 16000, "default": 10000},
                     "network": {"type": "boolean", "default": false},
@@ -559,6 +561,7 @@ impl ExecCommandTool {
                 "cmd",
                 "argv",
                 "verification",
+                "stdin",
                 "workdir",
                 "tty",
                 "yield_time_ms",

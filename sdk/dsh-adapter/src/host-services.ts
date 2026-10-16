@@ -242,7 +242,7 @@ export class HostServicesSeam {
             'CLAT host tools cannot provide DSH atomic version guards; omit expected or port the plugin to a native CLAT capability',
           )
         }
-        await seam.callTool('write_file', { path: this.processPath(target), content })
+        await seam.callTool('write_file', { path: this.processPath(target), content, overwrite: true })
         aborted(signal)
         return { operation: before === null ? 'create' : 'update', version: versionOf(content), before, after: content }
       },

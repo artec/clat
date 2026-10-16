@@ -10,7 +10,10 @@ pre-fix and deliberate-defect checks independent, and retain the actual build
 and executable identity when reporting discrimination. See [usage](usage.md)
 for the execution and receipt limits.
 
-The edit loop and the delivery gate have different jobs. After a local edit:
+The edit loop and the remote release gate have different jobs.
+Development, review and ordinary handoff use the smallest relevant checks.
+Do not run a full gate merely because a candidate is ready for review.
+After a local edit:
 
 ```bash
 scripts/gates.sh session::admission::   # one Rust area
@@ -66,7 +69,9 @@ It never signs artifacts, changes security settings or removes metadata.
 
 Automatic selection includes staged, unstaged and untracked files. Known
 domains include their principal consumers; shared contracts, fixtures, build
-inputs and unknown domains fall back to all Rust targets. Documentation-only
+inputs and unknown domains can broaden selection to all Rust targets. Inspect
+`--plan` and supply explicit relevant filters during development rather than
+running that broad fallback as routine feedback. Documentation-only
 changes skip Rust builds after static checks. This is a feedback heuristic, not a proof
 of the complete dependency graph. CodeGraph `affected` is useful when choosing
 an explicit filter, but missing graph edges must not waive delivery checks.
@@ -126,7 +131,8 @@ was adopted. Reusing a resident statically linked test process would test
 old code after an edit; a watcher alone cannot remove that constraint.
 This investigation is closed with the latency target explicitly unmet.
 
-Before handing off a completed batch, run once:
+Only when the owner starts remote release preparation, or explicitly
+requests full verification, run once:
 
 ```bash
 scripts/gates.sh --full
@@ -162,8 +168,10 @@ logged-in guest user; a SYSTEM/service token without a logon SID fails closed.
 It does not modify guest security settings. Local VM results do not replace
 the native windows-latest CI result after the owner's commit and push.
 
-`scripts/ci-box.sh` runs the full Linux gate on a two-CPU container when
-platform semantics need verification (its only flag is `--cpus N`).
+`scripts/ci-box.sh` runs the full Linux gate on a two-CPU container during
+remote release verification (its only flag is `--cpus N`). During
+development, select only the affected platform tests; do not launch the full
+container gate for every platform-related edit.
 `scripts/gates.sh --stress N` remains available for a
 specific diagnosed timing concern, rather than routine repeated full runs.
 DSH checkout oracles remain opt-in with `DSH_CHECKOUT`; real-model/device

@@ -8,6 +8,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createInterface } from 'node:readline'
 import { PassThrough } from 'node:stream'
+import path from 'node:path'
 import { serveClat } from '../src/index.js'
 import { demoPlugin } from '../src/demo.js'
 import type { DshContext, DshPluginLike, RunningAdapter } from '../src/index.js'
@@ -728,4 +729,36 @@ test('a cancel arriving before registration is reconciled when the call starts',
   } finally {
     await adapter.dispose()
   }
+})
+
+test('DSH writeText retains explicit whole-file replacement through the host permission seam', async () => {
+  const client = new Client()
+  let ctx: DshContext | undefined
+  const adapter = await start(client, { name: 'write-contract', apply(value) { ctx = value } })
+  try {
+    await client.initialize({ experimental: { 'io.artec.clat/hostServices': { version: '0.1.0' } } })
+    client.send({ jsonrpc: '2.0', method: 'io.artec.clat/context/changed', params: {
+      context: { protocolVersion: '0.1.0', project: { root: '/workspace' },
+        run: { sessionId: 's1', provider: 'fixture', model: 'm', messages: [] },
+        hostTools: ['read_file', 'write_file'] },
+    } })
+    await client.call('ping')
+    assert.ok(ctx)
+    const target = await ctx.fs.resolve('existing.txt')
+    const expectedPath = path.resolve('/workspace', 'existing.txt')
+    const pending = ctx.fs.writeText(target, 'complete replacement\n')
+    const read = await client.serverRequest()
+    assert.deepEqual(read.params, { name: 'read_file', arguments: { path: expectedPath, max_bytes: 65536 } })
+    client.reply(read.id, { output: { content: '1 | original\n', truncated: false } })
+    const write = await client.serverRequest()
+    assert.equal(write.method, 'io.artec.clat/tools/call')
+    assert.deepEqual(write.params, { name: 'write_file', arguments: {
+      path: expectedPath, content: 'complete replacement\n', overwrite: true,
+    } })
+    client.reply(write.id, { output: { created: false, bytes: 21 } })
+    const result = await pending
+    assert.equal(result.operation, 'update')
+    assert.equal(result.before, 'original\n')
+    assert.equal(result.after, 'complete replacement\n')
+  } finally { await adapter.dispose() }
 })

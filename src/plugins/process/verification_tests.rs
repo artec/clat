@@ -2,7 +2,7 @@ use super::*;
 mod agent_loop_tests;
 
 const PROBE: &str = r#"
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 fn main() {
     let args: Vec<_> = std::env::args().skip(1).collect();
     writeln!(std::fs::OpenOptions::new().create(true).append(true).open("invocations").unwrap(), "{}", args[0]).unwrap();
@@ -10,6 +10,7 @@ fn main() {
         "literal" => { std::fs::write("received-args", format!("{:?}", &args[1..])).unwrap(); println!("{}", args[1..].join("\n")); std::process::exit(7); }
         "wait" => std::thread::sleep(std::time::Duration::from_secs(2)),
         "inspect" => println!("{}", std::fs::read_to_string(&args[1]).unwrap()),
+        "eof" => { let mut s=String::new(); io::stdin().read_to_string(&mut s).unwrap(); println!("eof:{}",s.len()); }
         "poll" => {
             print!("test res"); io::stdout().flush().unwrap();
             let mut s = String::new(); io::stdin().read_line(&mut s).unwrap();
@@ -60,8 +61,12 @@ impl Fixture {
         }
     }
     fn args(&self, mode: &str) -> Value {
-        json!({"argv":[self.program,mode],"yield_time_ms":250,
-            "verification":{"format":"rust-test-summary","minimum_executed":1}})
+        let mut args = json!({"argv":[self.program,mode],"yield_time_ms":250,
+            "verification":{"format":"rust-test-summary","minimum_executed":1}});
+        if mode == "poll" {
+            args["stdin"] = json!("pipe");
+        }
+        args
     }
     fn exec(&self, args: &Value) -> Result<Value, ToolError> {
         ExecCommandTool {
@@ -385,4 +390,46 @@ fn verification_timeout_is_inconclusive_and_legacy_shell_stays_distinct() {
         assert_eq!(shell["command_outcome"]["reason"], "shell_exit_zero");
         assert!(shell.get("verification_receipt").is_none());
     }
+}
+
+#[test]
+fn ag4_batch_default_stdin_gives_batch_process_eof() {
+    let f = Fixture::new();
+    let output = f.finish(
+        f.exec(&json!({"argv":[f.program,"eof"],"yield_time_ms":1000}))
+            .unwrap(),
+    );
+    assert_eq!(
+        output["running"], false,
+        "a batch command must not wait forever for a pipe the caller never requested"
+    );
+    assert_eq!(output["exit_code"], 0);
+    assert!(output["stdout"].as_str().unwrap().contains("eof:0"));
+    let error = WriteStdinTool {
+        service: f.service.clone(),
+    }
+    .invoke(
+        &json!({"session_id":output["session_id"],"chars":"late input"}),
+        &Project::new(&f.root),
+        &CancelToken::new(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("stdin") && error.contains("pipe"), "{error}");
+}
+
+#[test]
+fn ag4_batch_stdin_invalid_intent_is_rejected_before_spawn() {
+    let f = Fixture::new();
+    for flag in [json!("unknown"), json!(true), json!(null)] {
+        assert!(
+            f.exec(&json!({"argv":[f.program,"green"],"stdin":flag}))
+                .is_err()
+        );
+    }
+    assert!(
+        f.exec(&json!({"argv":[f.program,"green"],"tty":true,"stdin":"closed"}))
+            .is_err()
+    );
+    assert!(!f.root.join("invocations").exists());
 }

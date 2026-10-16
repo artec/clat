@@ -127,7 +127,7 @@ def main():
         raise SystemExit("没有实际通过的测试（零匹配或只匹配 ignored）；本次验证失败。")
     # Architecture/integration targets belong to the full gate. Building one
     # here also builds the CLI binary, doubling the library-only edit cycle.
-    print(f"快速反馈完成：{time.monotonic() - started:.1f}s；交付运行 scripts/gates.sh --full")
+    print(f"快速反馈完成：{time.monotonic() - started:.1f}s；全量门禁留待负责人准备远程发布版本时运行")
 
 
 if __name__ == "__main__":

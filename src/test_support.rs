@@ -576,6 +576,9 @@ impl Model for TestModel {
                             arguments: json!({
                                 "path": "generated.txt",
                                 "content": "from headless test",
+                                // This shared fixture intentionally replaces whole files;
+                                // implicit-create/refusal controls use independent scripts.
+                                "overwrite": true,
                             }),
                         }],
                         finish_reason: FinishReason::ToolCalls,

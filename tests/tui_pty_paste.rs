@@ -67,7 +67,7 @@ fn spawn_clat_on_pty(home: &std::path::Path, project: &std::path::Path) -> PtySe
             &mut slave,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
-            &mut window_size,
+            &raw mut window_size,
         )
     };
     assert_eq!(result, 0, "openpty must allocate a real terminal");

@@ -273,6 +273,7 @@ pub(crate) struct PreparedStdin {
 }
 
 pub(crate) struct PreparedProcess {
+    stdin_pipe: bool,
     verification: Option<receipt::Context>,
     owner: RunOwner,
     workdir: PathBuf,
@@ -280,6 +281,11 @@ pub(crate) struct PreparedProcess {
 }
 
 impl PreparedProcess {
+    pub(crate) fn with_stdin_pipe(mut self, open: bool) -> Self {
+        self.stdin_pipe = open;
+        self
+    }
+
     pub(crate) fn working_directory(&self) -> &Path {
         &self.workdir
     }
@@ -483,6 +489,7 @@ impl ProcessService {
             .sandbox
             .plan(shell, args, request.sandbox, request.network)?;
         Ok(PreparedProcess {
+            stdin_pipe: true,
             verification: None,
             owner,
             workdir,
@@ -512,6 +519,7 @@ impl ProcessService {
         prepared: PreparedProcess,
     ) -> Result<u64, String> {
         let PreparedProcess {
+            stdin_pipe,
             verification,
             owner,
             workdir,
@@ -568,6 +576,9 @@ impl ProcessService {
                 },
             )?
         };
+        if !stdin_pipe && !request.tty {
+            entry.close_stdin();
+        }
         entry
             .stdin_auto_approve
             .store(!request.network, Ordering::Release);
@@ -715,7 +726,7 @@ impl ProcessService {
         let id = self.start_prepared(request, prepared)?;
         let entry = self.entry_for_owner(id, &owner)?;
         // Historical run_command had stdin=null. Keep the one-shot wrapper
-        // non-interactive; exec_command is the explicit stdin session API.
+        // non-interactive; exec_command has explicit opt-in stdin pipe sessions.
         entry.close_stdin();
         entry.set_call_deadline(timeout);
         entry.wait_until(timeout + JOIN_GRACE);
@@ -1024,7 +1035,10 @@ impl ProcessEntry {
             Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
         };
         if slot.is_none() {
-            return Err(format!("process session {} stdin is closed", self.id));
+            return Err(format!(
+                "process session {} stdin is closed; start a fresh exec_command with stdin=pipe to send input",
+                self.id
+            ));
         }
         {
             let mut state = self.state.lock().expect("process entry lock");

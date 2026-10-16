@@ -1,3 +1,6 @@
+#[path = "write_guard_tests.rs"]
+mod write_guard;
+
 #[path = "next_turn_tests.rs"]
 mod next_turn_tests;
 
@@ -5019,6 +5022,7 @@ fn failed_run_spawn_does_not_mark_the_request_header_emitted() {
             "search",
             "write_file",
             "edit_file",
+            "export_patch",
             "apply_patch",
             "run_command",
             "exec_command",
@@ -6241,3 +6245,6 @@ fn core_network_application_publication_tracks_aba_session_and_failed_commit() {
     application.close().unwrap();
     std::fs::remove_dir_all(storage_root.parent().unwrap()).unwrap();
 }
+
+#[path = "export_tests.rs"]
+mod export;

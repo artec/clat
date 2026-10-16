@@ -128,13 +128,18 @@ fn prepare_native_plan(
             .unwrap_or(false),
         sandbox: SandboxRequest::parse(arguments.get("sandbox").and_then(Value::as_str))?,
     };
+    let stdin_pipe = if matches!(source, NativeProcessTool::ExecCommand(_)) {
+        super::stdin::pipe(arguments).map_err(|e| e.to_string())?
+    } else {
+        false
+    };
     match invocation.argv {
         Some(argv) => source
             .service()
             .prepare_direct(&request, argv, invocation.verification),
         None => source.service().prepare_start(&request),
     }
-    .map(Some)
+    .map(|plan| Some(plan.with_stdin_pipe(stdin_pipe)))
 }
 impl Tool for FrozenProcessTool {
     fn definition(&self) -> ToolDefinition {

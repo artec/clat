@@ -28,14 +28,16 @@ impl Fixture {
     }
 
     pub(super) fn exec(&self, cmd: &str) -> Value {
+        self.exec_args(json!({"cmd":cmd,"yield_time_ms":1000}))
+    }
+    pub(super) fn exec_pipe(&self, cmd: &str) -> Value {
+        self.exec_args(json!({"cmd":cmd,"yield_time_ms":1000,"stdin":"pipe"}))
+    }
+    fn exec_args(&self, args: Value) -> Value {
         ExecCommandTool {
             service: Arc::clone(&self.service),
         }
-        .invoke(
-            &json!({"cmd":cmd,"yield_time_ms":1000}),
-            &Project::new(&self.root),
-            &CancelToken::new(),
-        )
+        .invoke(&args, &Project::new(&self.root), &CancelToken::new())
         .unwrap()
     }
 
@@ -100,7 +102,8 @@ fn command_outcome_distinguishes_execution_refusal_from_program_failure() {
 #[cfg(unix)]
 fn command_outcome_polling_and_compat_use_the_same_classification() {
     let f = Fixture::new();
-    let start = f.exec("read answer; printf 'sh: ./blocked: Permission denied\n' >&2; exit 126");
+    let start =
+        f.exec_pipe("read answer; printf 'sh: ./blocked: Permission denied\n' >&2; exit 126");
     assert_eq!(start["running"], true);
     assert_eq!(start["command_outcome"]["kind"], "running");
     let done = f.poll(&start["session_id"], "go\n");

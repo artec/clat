@@ -327,3 +327,72 @@ fn scratch_writes_do_not_enter_file_review_and_read_only_stays_fenced() {
     roots.close().unwrap();
     crate::test_support::cleanup_tree(&root);
 }
+
+#[test]
+fn write_guard_refusal_has_no_recovery_record_and_successes_remain_reversible() {
+    let (root, project, review) = fixture();
+    std::fs::write(project.root().join("existing"), "user baseline").unwrap();
+    let writer = crate::native_tools::WriteFileTool::default();
+    use crate::tool::Tool;
+    assert!(
+        writer
+            .invoke(
+                &serde_json::json!({"path":"existing","content":"tail"}),
+                &project,
+                &crate::CancelToken::new()
+            )
+            .is_err()
+    );
+    assert!(
+        review.load("session", 1).unwrap().unwrap().files.is_empty(),
+        "refusal cannot capture the original file into a recovery artifact"
+    );
+    for (path, overwrite) in [("new", false), ("existing", true)] {
+        writer
+            .invoke(
+                &serde_json::json!({"path":path,"content":"agent content","overwrite":overwrite}),
+                &project,
+                &crate::CancelToken::new(),
+            )
+            .unwrap();
+    }
+    review.end();
+    let reopened = FileReview::open(&root.join("storage"), project.root()).unwrap();
+    let ledger = reopened.load("session", 1).unwrap().unwrap();
+    assert_eq!(ledger.files.len(), 2);
+    let done = reopened.apply(&project, ledger).unwrap();
+    assert!(done.files.iter().all(|file| file.status == "restored"));
+    assert!(!project.root().join("new").exists());
+    assert_eq!(
+        std::fs::read_to_string(project.root().join("existing")).unwrap(),
+        "user baseline"
+    );
+    crate::test_support::cleanup_tree(&root);
+}
+
+#[test]
+fn write_guard_create_capture_never_reads_a_late_external_file() {
+    let (root, project, review) = fixture();
+    let target = project
+        .writable_target("late", true, crate::permission::WriteScope::ProjectRoot)
+        .unwrap();
+    std::fs::write(project.root().join("late"), "private external bytes").unwrap();
+    target.prepare_create_capture("intended only").unwrap();
+    assert_eq!(
+        target.publish_create("intended only").unwrap_err().kind(),
+        std::io::ErrorKind::AlreadyExists
+    );
+    review.end();
+    let ledger = review.load("session", 1).unwrap().unwrap();
+    assert_eq!(
+        ledger.files[0].before, None,
+        "create-only capture cannot read a late external owner's data"
+    );
+    assert_eq!(ledger.files[0].status, "prepared");
+    assert!(review.preview(&project, &ledger)[0].1.contains("prepared"));
+    assert_eq!(
+        std::fs::read_to_string(project.root().join("late")).unwrap(),
+        "private external bytes"
+    );
+    crate::test_support::cleanup_tree(&root);
+}

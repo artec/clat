@@ -28,6 +28,7 @@ impl ProcessService {
             self.sandbox
                 .plan(program, argv.collect(), request.sandbox, request.network)?;
         Ok(PreparedProcess {
+            stdin_pipe: true,
             owner,
             workdir,
             planned,

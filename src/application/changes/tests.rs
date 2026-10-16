@@ -12,7 +12,7 @@ fn fixture(name: &str) -> (std::path::PathBuf, WorkspaceReview) {
     (root, reader)
 }
 
-fn git(root: &Path, args: &[&str]) {
+pub(in crate::application) fn git(root: &Path, args: &[&str]) {
     let mut command = Command::new("git");
     command
         .current_dir(root)

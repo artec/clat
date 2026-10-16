@@ -113,6 +113,27 @@ snapshot-bound cursors. `apply_patch` performs one existing file's exact
 multi-hunk update atomically; creation remains `write_file` and v1 does not
 delete or rename files.
 
+`write_file` creates new files by default. If the path already exists, it
+returns an error and preserves its contents. Use `edit_file` to append or
+change a section; intentional whole-file replacement requires
+`overwrite: true` together with the complete replacement content. Creation
+uses atomic no-replace publication; filesystems without hard-link support
+return an error rather than replacing an existing path.
+
+The native `export_patch` tool freezes all current workspace changes against
+Git HEAD, including non-ignored untracked files, into a standard binary-safe
+Git patch and an adjacent `.manifest.json` containing source and patch SHA256
+hashes. For example, `{"path":".tmp/delivery.patch"}` requires both output
+paths to be new and Git ignored. It runs at the repository root, does not stage
+or commit, and includes pre-existing edits rather than attributing them to the
+Agent. The patch limit is 1 MiB, with at most 128 changed files, 1 MiB per source
+and 8 MiB aggregate sources. Symlinks, submodules, unresolved merges, byte-changing
+Git encoding/EOL conversions, limits and observed source drift are refused.
+The manifest is written last: errors or cancellation can leave an incomplete
+patch without a completion manifest; choose fresh names for a retry. Export
+artifacts are separate from the code-edit FileReview ledger. Hashes let a
+reviewer check reconstruction; before/after checks do not lock the repository.
+
 For non-interactive setup, `clat exec --trust "..."` accepts trust for the
 current project. `clat serve --trust` explicitly authorizes its current project
 after storage preflight. Without `--trust`, serve requires existing trust;
@@ -814,6 +835,10 @@ writes, and Full Access retains its existing unrestricted write behavior.
   bytes in total, with no NUL; empty arguments after the program are preserved.
   Shell operators in an argument are literal text. Windows batch files require
   explicit shell execution through `cmd`.
+  Non-PTY commands default to closed stdin (immediate EOF), so batch tests
+  cannot wait on an unused input pipe. Set `"stdin":"pipe"` when input will
+  later be sent through `write_stdin`. PTYs retain terminal input by default;
+  `stdin: "closed"` requires `tty: false`.
 - `write_stdin` writes characters, closes stdin, polls for output, or
   terminates that same-run id. An empty `chars` value is a poll. Raw characters
   are redacted from the durable tool-call journal; the model tool rejects

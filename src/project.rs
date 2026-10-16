@@ -13,6 +13,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 mod browser;
+mod export;
+pub(crate) mod git;
 pub(crate) mod review;
 mod roots;
 mod write;
@@ -300,6 +302,26 @@ impl WritableTarget {
         let stamp = self.publish(content, metadata)?;
         self.finish_capture(capture, stamp)?;
         Ok(existed)
+    }
+
+    /// Create without replacing any directory entry, including one published
+    /// by a non-cooperating writer after the locked existence check.
+    pub(crate) fn atomic_create(&self, content: &str) -> io::Result<()> {
+        let _guard = WriteGuard::acquire(&self.parent)?;
+        self.reject_final_symlink()?;
+        match self.parent.symlink_metadata(&self.file_name) {
+            Ok(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "target exists",
+                ));
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        let capture = self.prepare_create_capture(content)?;
+        let stamp = self.publish_create(content)?;
+        self.finish_capture(capture, stamp)
     }
 
     fn reject_final_symlink(&self) -> io::Result<()> {

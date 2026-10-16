@@ -96,6 +96,9 @@ prompt 不会未经用户选择自动进入系统指令。
 ProcessService：macOS 使用当前 Seatbelt 策略，其他平台如实报告无强制隔离的
 fallback；这不等于 adapter 子进程本身被沙箱化。其中 fs 投影的读写路径都被收紧到当前项目根；
 不继承 CLAT agent 原生读工具“显式绝对路径可读”的宽松能力。
+`ctx.fs.writeText` 表达的是完整文件写入，adapter 显式传递
+`overwrite: true`，保持其创建或全量替换语义；模型直接调用原生
+`write_file` 时，省略该字段只允许新建。两者仍经过相同的宿主权限检查。
 
 以下能力仍不能由 MCP 子进程安全地伪造：
 

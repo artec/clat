@@ -18,6 +18,7 @@
             "name": "exec_command",
             "arguments": {
               "cmd": "read line; printf 'got:%s' \"$line\"",
+              "stdin": "pipe",
               "yield_time_ms": 250,
               "sandbox": "auto"
             }

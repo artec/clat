@@ -16,7 +16,8 @@
             "name": "write_file",
             "arguments": {
               "path": "demo.txt",
-              "content": "after\n"
+              "content": "after\n",
+              "overwrite": true
             }
           }
         ],

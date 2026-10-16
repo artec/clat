@@ -8,7 +8,7 @@ use std::sync::{Mutex, MutexGuard};
 mod git;
 mod parse;
 #[cfg(test)]
-mod tests;
+pub(in crate::application) mod tests;
 mod turn;
 
 const FILE_CAP: usize = 500;

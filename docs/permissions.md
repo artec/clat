@@ -127,6 +127,8 @@ The TUI renders dangerous native calls as readable previews:
 - `apply_patch` shows the complete patch JSON, including its single target and
   every hunk; v1 rejects add/delete/rename and multi-file forms;
 - `write_file` shows the target and full content;
+- `export_patch` shows the artifact target and exports current workspace edits
+  into fresh Git-ignored local artifacts; it does not stage, commit or publish;
 - `run_command` shows the command, working directory, timeout, sandbox request,
   and whether network is requested;
 - other tools show formatted JSON plus all top-level field names.
@@ -374,9 +376,10 @@ claimed confinement.
 
 | Tool | Effect | Core guarantees |
 |---|---|---|
-| `write_file` | `Write` | content ≤1 MiB; atomic temp+rename; existing mode bits preserved; failed writes leave no partial target; capability-relative path operations |
+| `write_file` | `Write` | content ≤1 MiB; default atomic create-only publication; explicit overwrite:true permits whole-file replacement preserving mode bits; capability-relative path operations |
 | `edit_file` | `Write` | target/result ≤1 MiB; exactly one text match; cooperating writers serialized; source snapshot revalidated before atomic replace |
 | `apply_patch` | `Write` | patch/target/result ≤1 MiB; one existing UTF-8 target; all exact hunks prevalidated; one snapshot-checked atomic commit; no add/delete/rename/multi-file v1 |
+| `export_patch` | `Write` | repository root; fresh Git-ignored project-relative artifacts; standard binary-safe patch plus SHA manifest written last; 128 files, 1 MiB patch/per-file, 8 MiB total source; code-edit recovery ledger excludes artifacts |
 | `exec_command` | `Execute` | run-owned session; project-relative cwd; incremental stdout/stderr or real PTY; 256 KiB transient rings; sandbox facts; max 8 active jobs |
 | `write_stdin` | `Execute` | poll/input/close/terminate one same-run session; ≤256 KiB per write with a 5 s backpressure deadline; characters redacted from durable `tool/call`; sensitive model input rejected |
 | `run_command` | `Execute` | one-shot ProcessService wrapper; canonical project cwd; ≤600 s call timeout; owned process-group termination; 32 KiB stdout/stderr compatibility result |

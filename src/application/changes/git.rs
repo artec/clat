@@ -1,39 +1,9 @@
 use super::*;
 use crate::process::capture_command;
-use std::process::Command;
 use std::time::Duration;
 
-fn command(project: &Project) -> Command {
-    let mut command = Command::new("git");
-    command
-        .current_dir(project.root())
-        .args(["--no-optional-locks", "--literal-pathspecs"]);
-    for setting in [
-        "core.fsmonitor=false",
-        "core.untrackedCache=false",
-        "core.pager=",
-        "color.ui=false",
-        "status.relativePaths=true",
-        "diff.external=",
-        "core.attributesFile=",
-    ] {
-        command.args(["-c", setting]);
-    }
-    // Inherited Git variables can redirect the query to another repository or inject config.
-    for (name, _) in std::env::vars_os() {
-        if name.to_string_lossy().starts_with("GIT_") {
-            command.env_remove(name);
-        }
-    }
-    command.env("GIT_TERMINAL_PROMPT", "0");
-    command.env("GIT_NO_LAZY_FETCH", "1");
-    command.env("LC_ALL", "C");
-    command
-}
-
 fn run(project: &Project, args: &[&str], cap: usize) -> Result<Vec<u8>, String> {
-    let mut process = command(project);
-    disable_filters(project, &mut process)?;
+    let mut process = crate::project::git::command(project)?;
     process.args(args);
     let result = capture_command(process, cap, Duration::from_secs(3))?;
     if !result.status.success() {
@@ -45,42 +15,11 @@ fn run(project: &Project, args: &[&str], cap: usize) -> Result<Vec<u8>, String> 
     Ok(result.stdout)
 }
 
-// Even --no-textconv still permits clean/process filters. Discover configured
-// names without reading worktree bytes, then override every executable driver.
-fn disable_filters(project: &Project, process: &mut Command) -> Result<(), String> {
-    let mut config = command(project);
-    config.args([
-        "config",
-        "--null",
-        "--name-only",
-        "--get-regexp",
-        r"^filter\..*\.(clean|smudge|process|required)$",
-    ]);
-    let result = capture_command(config, 16 * 1024, Duration::from_secs(3))?;
-    if !result.status.success() && result.status.code() != Some(1) {
-        return Err("Cannot inspect Git filter configuration safely".into());
-    }
-    let names =
-        std::str::from_utf8(&result.stdout).map_err(|_| "Non-UTF-8 Git filter configuration")?;
-    for name in names.split('\0').filter(|name| !name.is_empty()) {
-        if name.contains(['\n', '\r', '=']) || !name.starts_with("filter.") {
-            return Err("Unsupported Git filter configuration key".into());
-        }
-        let value = if name.ends_with(".required") {
-            "false"
-        } else {
-            ""
-        };
-        process.args(["-c", &format!("{name}={value}")]);
-    }
-    Ok(())
-}
-
 pub(super) fn status(project: &Project) -> Result<Vec<ChangedFile>, String> {
     if !project.root().is_dir() {
         return Err("Project directory is unavailable".into());
     }
-    let mut probe = command(project);
+    let mut probe = crate::project::git::command(project)?;
     probe.args(["rev-parse", "--is-inside-work-tree", "--show-prefix"]);
     let output = capture_command(probe, 4096, Duration::from_secs(3))?;
     if !output.status.success() {

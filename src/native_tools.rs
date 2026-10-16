@@ -13,9 +13,12 @@ const DEFAULT_LIST_DEPTH: usize = 2;
 const DEFAULT_LIST_ENTRIES: usize = 200;
 const MAX_LIST_DEPTH: usize = 8;
 const MAX_LIST_ENTRIES: usize = 2_000;
+mod export;
 mod read;
+mod write;
 
 pub use read::ReadFileTool;
+pub use write::WriteFileTool;
 
 pub(crate) fn native_read_tools() -> Vec<std::sync::Arc<dyn Tool>> {
     vec![
@@ -113,75 +116,11 @@ pub(crate) fn native_write_tools(
             scope: scope.clone(),
         }),
         std::sync::Arc::new(EditFileTool { scope }),
+        std::sync::Arc::new(export::ExportPatchTool),
     ]
 }
 
 const MAX_WRITE_BYTES: usize = 1024 * 1024;
-
-/// 写工具携带写入围栏来源（SR2）：每次 invoke 解析当前档位——FA 开放
-/// 绝对路径，PW（与 exec）使用共享 roots；RO 保持项目根相对路径。
-#[derive(Clone, Default)]
-pub struct WriteFileTool {
-    scope: crate::permission::WriteScopeSource,
-}
-
-impl Tool for WriteFileTool {
-    fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "write_file".into(),
-            description: "Create or overwrite a file with UTF-8 text. Paths are project-relative (parent directories are created as needed); absolute paths in the active scratch directory are writable in Project Write; other outside paths require Full Access. Prefer edit_file for small changes to existing files.".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Project-relative path, or absolute scratch path in Project Write (arbitrary absolute paths require Full Access)"
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "Full file content to write (max 1 MiB)"
-                    }
-                },
-                "required": ["path", "content"],
-                "additionalProperties": false
-            }),
-            effect: ToolEffect::Write,
-            strict: false,
-        }
-    }
-
-    fn invoke(
-        &self,
-        arguments: &Value,
-        project: &Project,
-        cancel: &CancelToken,
-    ) -> Result<Value, ToolError> {
-        check_cancelled(cancel)?;
-        let requested = required_string_arg(arguments, "path", "write_file")?;
-        let content = required_string_arg(arguments, "content", "write_file")?;
-        if content.len() > MAX_WRITE_BYTES {
-            // FIX-5/CA-06：不再指向 edit_file——它的结果与目标同受
-            // MAX_WRITE_BYTES 约束，指路只会把模型引向另一条失败路径。
-            return Err(ToolError::new(format!(
-                "write_file: content exceeds {MAX_WRITE_BYTES} bytes — split the write into smaller pieces"
-            )));
-        }
-        // W-INV1：父目录创建、临时文件与 rename 全部绑定到同一个
-        // 目标根 capability（项目根，或 FA 绝对路径的目标父目录），
-        // 路径竞态不能把后续 I/O 引到目标根之外。
-        let target = project
-            .writable_target(requested, true, self.scope.resolve())
-            .map_err(|error| tool_io_error("write_file", requested, error))?;
-        let existed = target
-            .atomic_write(content, None)
-            .map_err(|error| tool_io_error("write_file", requested, error))?;
-        Ok(json!({
-            "path": requested,
-            "bytes": content.len(),
-            "created": !existed
-        }))
-    }
-}
 
 /// 写工具携带写入围栏来源（SR2），同 [`WriteFileTool::default()`]。
 #[derive(Clone, Default)]
@@ -631,7 +570,7 @@ mod tests {
     /// 删掉另一方的根目录。
     static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-    fn fixture() -> (PathBuf, Project) {
+    pub(super) fn fixture() -> (PathBuf, Project) {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("time")
@@ -1652,7 +1591,7 @@ mod tests {
         // 覆盖。
         let output = WriteFileTool::default()
             .invoke(
-                &json!({"path": "docs/new/note.md", "content": "second\n"}),
+                &json!({"path": "docs/new/note.md", "content": "second\n", "overwrite": true}),
                 &project,
                 &CancelToken::new(),
             )
@@ -2098,7 +2037,7 @@ mod tests {
 
         WriteFileTool::default()
             .invoke(
-                &json!({"path": "script.sh", "content": "#!/bin/sh\nnew\n"}),
+                &json!({"path": "script.sh", "content": "#!/bin/sh\nnew\n", "overwrite": true}),
                 &project,
                 &CancelToken::new(),
             )
@@ -2316,6 +2255,7 @@ mod tests {
                 "search",
                 "write_file",
                 "edit_file",
+                "export_patch",
                 "apply_patch",
                 "run_command",
                 "ask_user"
@@ -2323,3 +2263,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod write_guard_tests;

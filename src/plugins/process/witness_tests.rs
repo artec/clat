@@ -64,7 +64,7 @@ fn verification_witness_unknown_and_compile_failure_never_claim_tests_ran() {
 #[cfg(unix)]
 fn verification_witness_polling_is_incremental_not_replayed_as_new_execution() {
     let f = super::outcome_tests::Fixture::new();
-    let start = f.exec("read answer; printf 'test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s\\n'");
+    let start = f.exec_pipe("read answer; printf 'test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s\\n'");
     assert_eq!(start["running"], true);
     assert_eq!(start["verification_witness"]["status"], "unknown");
     let done = f.poll(&start["session_id"], "go\n");
@@ -120,7 +120,7 @@ fn verification_witness_compat_and_execution_refusal_keep_distinct_scopes() {
 #[cfg(unix)]
 fn verification_witness_poll_boundary_cannot_turn_a_line_suffix_into_a_summary() {
     let f = super::outcome_tests::Fixture::new();
-    let start = f.exec(&format!(
+    let start = f.exec_pipe(&format!(
         "printf 'non-summary prefix '; read answer; printf '%s\\n' '{GREEN}'"
     ));
     assert_eq!(start["running"], true);

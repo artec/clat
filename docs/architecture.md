@@ -468,12 +468,18 @@ Trusted projects also receive:
   surfaces carry descriptor-only content blocks. Its invoke-to-result
   authority cache is bounded to one model step and consumes an entry for each
   transformed result, so a long tool loop cannot retain historic references;
-- `write_file` — bounded atomic replacement with permission preservation;
+- `write_file` — bounded atomic creation by default, refusing existing paths even
+  at publication; explicit `overwrite: true` opts into whole-file atomic
+  replacement with permission preservation;
 - `edit_file` — one exact unique replacement plus conflict revalidation;
 - `apply_patch` — one existing UTF-8 file, multiple exact hunks, complete
   in-memory validation followed by one snapshot-checked atomic commit;
+- `export_patch` — bounded workspace-to-HEAD Git patch plus source SHA manifest,
+  including non-ignored new files, fresh ignored artifact paths and completion
+  manifest published last; uses the same isolated Git query policy as review;
 - `exec_command` + `write_stdin` — run-owned command sessions with incremental
   stdout/stderr or PTY output, stdin/poll/terminate, bounded cursors and TTL;
+  non-PTY stdin defaults to EOF, explicit `stdin: "pipe"` retains interaction;
 - `run_command` — a one-shot compatibility wrapper over the same
   `ProcessService`, fixed to the project root.
 
