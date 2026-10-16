@@ -208,6 +208,24 @@ model is thinking, the collapsed `Think` row follows its latest non-empty line;
 after settlement it keeps the first line as the summary. Press `Ctrl+R` to
 expand or collapse the complete reasoning text.
 
+Pasting multi-paragraph text into the Message composer preserves the paragraph
+structure. Terminal bracketed paste and the explicit `Ctrl+V` text path both
+normalize line breaks the terminal delivers as `CR` or `CRLF` (plus Unicode
+line/paragraph separators) to ordinary line breaks, so pasted paragraphs and
+blank lines stay separate rows in the draft and in the submitted message. A
+paste never submits: embedded newlines edit the draft only — press `Enter`
+yourself to send.
+
+When a run ends, the transcript explains the stop in place: `completed`,
+`cancelled`, or — for a failed run — `error: <reason>` with the host's real
+failure detail (bounded to one line; when an older host sends no reason, an
+explicit no-reason marker is shown instead). The same text survives session
+switches, reconnection, and journal replay on every client, so a failure can
+still be diagnosed after the transient status line expires. Credential-shaped
+values inside failure text (`Bearer …` tokens, `sk-…` keys, `api_key=…`
+assignments) are masked as `[REDACTED]` on every surface before display —
+status codes, URLs, and messages stay diagnosable.
+
 While a permission dialog is open, `Esc` denies that tool call instead of
 cancelling the run. Hold `Shift` while dragging if you want the terminal's own
 selection behavior instead of CLAT's mouse handling.

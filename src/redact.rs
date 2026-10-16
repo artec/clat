@@ -98,7 +98,11 @@ fn keyish_name_before(output: &str) -> bool {
 /// INV-K1 的单点脱敏：`Bearer <token>` 的 token、`sk-` 前缀长 token、
 /// `…api_key=<value>` 类赋值的值——各自替换为 `[REDACTED]`（标记与
 /// 尾随句点保留）。无密文本零变化。
-pub(crate) fn redact_secrets(text: &str) -> String {
+///
+/// 可见性（AG-DOGFOOD-4 返工 F1）：`pub` 仅为经 `client_ports`
+/// re-export 给前端展示面共享（同词表、单一归属）；`mod redact` 本身
+/// 仍是 core 私有模块，此函数没有其它公共路径。
+pub fn redact_secrets(text: &str) -> String {
     let mut output = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(offset) = rest.find(|c: char| c.is_ascii_alphabetic() || c == '=') {

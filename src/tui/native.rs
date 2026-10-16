@@ -713,6 +713,19 @@ impl App {
                 self.flash_status("attached to CLAT host");
             }
             "prompt.settled" => {
+                // F3（返工 r2/r3/r4）：去重记忆 = 转录中以该 id 为主键的
+                // 终态卡——不可遗忘且天然有界（转录无删除路径，与会话同
+                // 生命周期），不受固定窗口淘汰（CF-R3-2：任意历史距离的
+                // 迟到重放都拦）。不同 id 逐一处理；Null/缺失 id（旧宿主
+                // 语义）不做归属去重。
+                let rpc_id = payload["prompt_rpc_id"].as_str().map(str::to_owned);
+                let duplicate = rpc_id
+                    .as_deref()
+                    .is_some_and(|id| self.conversation.has_settled_card(id));
+                if duplicate {
+                    self.refresh_native();
+                    return;
+                }
                 self.running = false;
                 // CF1：宿主侧 prompt 结算（拒绝/失败路径可能没有对应的
                 // RunCancelled 事件到达）同样是 run 终态。
@@ -721,12 +734,14 @@ impl App {
                     native.cancel_inflight = None;
                 }
                 self.phases.finish();
-                self.conversation.push_turn_end(
-                    payload["outcome"]["type"]
-                        .as_str()
-                        .unwrap_or("settled")
-                        .into(),
-                );
+                // RUNERR-1：settled 帧的完整 outcome（含 failed 的真实原因）
+                // 进转录，与 standalone/回放同词汇——不再只剩 `failed`。
+                // 终态卡携带 prompt_rpc_id 主键（F3/CF-R3-2 的去重记忆）。
+                let notice = crate::tui::conversation::settled_outcome_notice(&payload);
+                match rpc_id {
+                    Some(id) => self.conversation.push_settled_turn_end(notice, id),
+                    None => self.conversation.push_turn_end(notice),
+                }
                 self.refresh_native();
             }
             "notice" if payload["kind"] == "selection" => self.start_native(),

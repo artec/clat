@@ -196,12 +196,11 @@ fn snapshot_dir() -> PathBuf {
 
 /// 真实 App + TestBackend 的驱动装置。生产事件循环之外逐条注入
 /// UiEvent、以 TestBackend 绘制、投影为可 review 文本。
-struct Harness {
-    app: App,
-    terminal: Terminal<TestBackend>,
-    project_root: PathBuf,
-    #[allow(dead_code)]
-    storage_root: PathBuf,
+pub(crate) struct Harness {
+    pub(crate) app: App,
+    pub(crate) terminal: Terminal<TestBackend>,
+    pub(crate) project_root: PathBuf,
+    pub(crate) storage_root: PathBuf,
 }
 
 impl Drop for Harness {
@@ -544,7 +543,7 @@ fn trusted_harness_never_closes_an_authorizer_and_reacquires_its_lease() {
     // setup must never release one writer just to construct a second writer.
     let source = include_str!("snapshot_tests.rs").replace("\r\n", "\n");
     let setup = source
-        .split_once("\nfn harness(tag:")
+        .split_once("\npub(crate) fn harness(tag:")
         .expect("harness setup")
         .1
         .split_once("\nimpl Harness {")
@@ -571,7 +570,7 @@ fn trusted_harness_never_closes_an_authorizer_and_reacquires_its_lease() {
     assert!(error.contains("another CLAT process holds this storage root"));
 }
 
-fn harness(tag: &str, width: u16, height: u16, trusted: bool) -> Harness {
+pub(crate) fn harness(tag: &str, width: u16, height: u16, trusted: bool) -> Harness {
     let (storage_root, project_root) = roots(tag);
     std::fs::create_dir_all(&project_root).expect("project dir");
     // 确权对话框逐行换行显示 project root：临时前缀长度随平台不同
@@ -617,7 +616,7 @@ fn harness(tag: &str, width: u16, height: u16, trusted: bool) -> Harness {
 }
 
 impl Harness {
-    fn trusted(tag: &str, width: u16, height: u16) -> Self {
+    pub(crate) fn trusted(tag: &str, width: u16, height: u16) -> Self {
         harness(tag, width, height, true)
     }
 
@@ -625,15 +624,15 @@ impl Harness {
         harness(tag, 80, 24, false)
     }
 
-    fn event(&mut self, event: UiEvent) {
+    pub(crate) fn event(&mut self, event: UiEvent) {
         self.app.handle_ui_event(event);
     }
 
-    fn key(&mut self, code: KeyCode) {
+    pub(crate) fn key(&mut self, code: KeyCode) {
         self.key_with_modifiers(code, KeyModifiers::NONE);
     }
 
-    fn key_with_modifiers(&mut self, code: KeyCode, modifiers: KeyModifiers) {
+    pub(crate) fn key_with_modifiers(&mut self, code: KeyCode, modifiers: KeyModifiers) {
         self.event(UiEvent::Terminal(Event::Key(KeyEvent::new(
             code, modifiers,
         ))));
@@ -664,7 +663,7 @@ impl Harness {
     }
 
     /// 绘制并投影。连绘两次并断言一致（G1），返回投影文本。
-    fn draw_projection(&mut self) -> String {
+    pub(crate) fn draw_projection(&mut self) -> String {
         let first = self.project();
         let second = self.project();
         assert_eq!(first, second, "G1: 同一输入序列必须产生同一投影");
@@ -696,7 +695,7 @@ impl Harness {
     }
 }
 
-fn harness_native(tag: &str, online: bool) -> Harness {
+pub(crate) fn harness_native(tag: &str, online: bool) -> Harness {
     let (storage_root, project_root) = roots(tag);
     std::fs::create_dir_all(&storage_root).expect("storage dir");
     std::fs::create_dir_all(&project_root).expect("project dir");
@@ -713,6 +712,15 @@ fn harness_native(tag: &str, online: bool) -> Harness {
         project_root,
         storage_root,
     }
+}
+
+/// 宽度可调的 native harness（CF-R3-1 类反例：长前缀把凭据推到 80 列
+/// 渲染区之外，需宽投影才能观察真实泄露面）。
+#[cfg(all(test, feature = "runtime-tests"))]
+pub(crate) fn harness_native_wide(tag: &str, online: bool, width: u16) -> Harness {
+    let mut harness = harness_native(tag, online);
+    harness.terminal = Terminal::new(TestBackend::new(width, 24)).expect("test terminal");
+    harness
 }
 
 #[test]

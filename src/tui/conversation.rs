@@ -63,6 +63,9 @@ pub(crate) enum ConversationItem {
     #[allow(dead_code)]
     TurnEnd {
         text: String,
+        /// F3/CF-R3-2：settled 来源的 `prompt_rpc_id` 主键（standalone/
+        /// replay/命令回执为 None）。转录本身即不可遗忘的有界去重记忆。
+        settled_id: Option<String>,
     },
 }
 
@@ -168,7 +171,35 @@ impl ConversationModel {
     }
 
     pub(crate) fn push_turn_end(&mut self, text: String) {
-        self.push_item(ConversationItem::TurnEnd { text });
+        self.push_item(ConversationItem::TurnEnd {
+            text,
+            settled_id: None,
+        });
+    }
+
+    /// settled 帧专属：终态卡携带 `prompt_rpc_id` 主键（F3/CF-R3-2）。
+    /// 转录本身就是**不可遗忘的有界记忆**——以此 id 为主键的卡一旦
+    /// 存在，该 prompt 的任何重发（相邻重复或任意历史距离的迟到重放，
+    /// 不受固定去重窗淘汰）都是重复结算，由 `has_settled_card` 拦截。
+    pub(crate) fn push_settled_turn_end(&mut self, text: String, settled_id: String) {
+        self.push_item(ConversationItem::TurnEnd {
+            text,
+            settled_id: Some(settled_id),
+        });
+    }
+
+    /// 该 prompt 的终态卡是否已在转录中（任意历史距离，O(轮数)，
+    /// 每轮结算至多查一次；转录无删除路径，记忆与会话同生命周期）。
+    pub(crate) fn has_settled_card(&self, settled_id: &str) -> bool {
+        self.items.iter().any(|(item, _)| {
+            matches!(
+                item,
+                ConversationItem::TurnEnd {
+                    settled_id: Some(id),
+                    ..
+                } if id == settled_id
+            )
+        })
     }
 
     // ---- steering 回显尾部区（docs/todo/steering-visibility-recall.md）----
@@ -834,7 +865,7 @@ fn render_item(
             ..
         } => render_tool_card(tool, arguments, state, width),
         // run 终态通知（G7）：dim 单行，每个停止都解释自己。
-        ConversationItem::TurnEnd { text } => vec![Line::from(Span::styled(
+        ConversationItem::TurnEnd { text, .. } => vec![Line::from(Span::styled(
             format!("· {text}"),
             theme::style(theme::Role::Dim),
         ))],
@@ -852,8 +883,86 @@ pub(crate) fn turn_end_notice_text(reason: &ReplayTurnEnd) -> String {
         ReplayTurnEnd::Blocked => "blocked".into(),
         ReplayTurnEnd::MaxTokens => "max tokens".into(),
         ReplayTurnEnd::Interrupted => "interrupted".into(),
-        ReplayTurnEnd::Error { message } => format!("error: {message}"),
+        ReplayTurnEnd::Error { message } => format!("error: {}", diagnostic_notice_text(message)),
     }
+}
+
+/// `prompt.settled` 控制帧 outcome → 转录通知文本（RUNERR-1，attached
+/// 实时路径）。standalone（`settle_finished_run`）与 journal 回放
+/// （`turn_end_notice_text`）已显示 `error: …`，本函数让第三条腿同源：
+///
+/// - `failed` 带原因 → `error: {原因}`，与另两条面完全同词汇；
+/// - `failed` 缺原因字段（旧版/异常宿主）→ 明确的 no-reason 标注，
+///   不伪装成有原因也不静默（E1/E3）；
+/// - `completed`/`cancelled` 原样，取消绝不误标失败（E3）；
+/// - 缺失/未知 type 沿用既有的 `settled` 兜底文案。
+///
+/// 原因文本经 `diagnostic_notice_text`（E4：凭据遮蔽 + 单行折叠 +
+/// 有界截断）。
+pub(crate) fn settled_outcome_notice(payload: &serde_json::Value) -> String {
+    let outcome = &payload["outcome"];
+    match outcome["type"].as_str() {
+        Some("failed") => match outcome["error"].as_str() {
+            Some(error) if !error.is_empty() => {
+                format!("error: {}", diagnostic_notice_text(error))
+            }
+            _ => "failed — no reason provided".into(),
+        },
+        Some("completed") => "completed".into(),
+        Some("cancelled") => "cancelled".into(),
+        _ => "settled".into(),
+    }
+}
+
+/// 诊断文本进转录前的统一管线（E4，返工 F1/r3/r4）：
+/// **折叠 → 遮蔽 → 截断**。两个边界反例钉住这个顺序：
+/// - CF-R2-1：凭据扫描只认空白分隔，`Bearer\n<值>` 若在折叠前扫描，
+///   LF 阻断识别、折叠又把 LF 变空格——凭据可见。折叠必须在遮蔽前。
+/// - CF-R3-1：截断若在遮蔽前，会把本来可识别的完整 token（如 232
+///   字符前缀后的 `sk-…29 字符`）切成低于识别阈值的 8 字符片段泄露。
+///   遮蔽必须看到完整文本；截断只处理已遮蔽文本，不产生半截凭据。
+///
+/// live 与 replay 共用同一归属，保证跨端一致。
+pub(crate) fn diagnostic_notice_text(raw: &str) -> String {
+    truncate_notice(
+        &redact_for_notice(&fold_notice_whitespace(raw)),
+        NOTICE_LIMIT,
+    )
+}
+
+/// 折叠行内不可见字符：控制字符与 Unicode 行/段分隔符（U+2028/U+2029
+/// 是 Zl/Zp 类，**不是** `char::is_control` 的 Cc 类，返工 F1 反例）→ 空格。
+fn fold_notice_whitespace(text: &str) -> String {
+    text.chars()
+        .map(|ch| {
+            if ch.is_control() || matches!(ch, '\u{2028}' | '\u{2029}') {
+                ' '
+            } else {
+                ch
+            }
+        })
+        .collect()
+}
+
+/// 超过 `limit` 个字符时截断并加省略号。
+fn truncate_notice(text: &str, limit: usize) -> String {
+    if text.chars().count() <= limit {
+        return text.trim_end().to_owned();
+    }
+    let mut truncated: String = text.chars().take(limit).collect();
+    truncated.push('…');
+    truncated
+}
+
+const NOTICE_LIMIT: usize = 240;
+
+/// 遮蔽入口（E4/返工 F1）：复用 core 的单一脱敏原语 `redact_secrets`
+///（INV-K1：Bearer 标记值、`sk-` 前缀长 token、keyish 赋值值三族），
+/// 经 client_ports 出口供前端共享——不另立第二套凭据词表。provider/
+/// journal 出口已按不变量脱敏；这里是前端转录入口对绕过那些出口的
+/// 错误来源（异常宿主帧、宿主 worker 崩溃文案等）的同一道闸。
+fn redact_for_notice(text: &str) -> String {
+    crate::redact_secrets(text)
 }
 
 /// 工具卡 = 单行状态头 + dim 正文（参数 + 结果）。缓存持有**展开全文**，

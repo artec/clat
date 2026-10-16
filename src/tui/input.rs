@@ -75,6 +75,17 @@ impl InputBuffer {
         self.cursor += value.len();
     }
 
+    /// 粘贴入口（bracketed paste 与 Ctrl+V 系统剪贴板共用）：把终端送来的
+    /// 行分隔归一为 `\n` 再入草稿。终端在 bracketed paste 中把粘贴换行发为
+    /// `\r`（xterm/Terminal.app 键盘等价行为）或 `\r\n`，而本缓冲的行模型、
+    /// 渲染与提交都以 `\n` 为准——未归一化时多段文本会视觉塌成一行，提交
+    /// 内容也携带原始 CR（PASTE-1）。Unicode 行/段分隔符一并归一，输入法
+    /// 富文本源粘贴不再依赖终端是否转换。
+    pub fn insert_paste(&mut self, value: &str) {
+        let normalized = normalize_pasted_newlines(value);
+        self.insert_str(&normalized);
+    }
+
     /// 召回的插话回填（ESC 栈式召回多次使用）：先发的想法靠前——
     /// 新召回的整行插到现有内容**之前**、换行分隔。召回顺序是 LIFO
     ///（steer3 先回），prepend 语义使多次召回后按发送顺序排列
@@ -306,6 +317,30 @@ fn next_boundary(text: &str, cursor: usize) -> usize {
         .nth(1)
         .map(|(index, _)| cursor + index)
         .unwrap_or(text.len())
+}
+
+/// 把粘贴文本的行分隔归一为 `\n`：`\r\n` → 一个 `\n`；孤立 `\r`、
+/// Unicode 行分隔符（U+2028）与段分隔符（U+2029）→ 一个 `\n`；其余
+/// 字节原样保留。纯 `\n` 文本原样返回（无克隆路径不引入额外分配）。
+pub(crate) fn normalize_pasted_newlines(text: &str) -> String {
+    if !text.contains(['\r', '\u{2028}', '\u{2029}']) {
+        return text.to_owned();
+    }
+    let mut normalized = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\r' => {
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+                normalized.push('\n');
+            }
+            '\u{2028}' | '\u{2029}' => normalized.push('\n'),
+            other => normalized.push(other),
+        }
+    }
+    normalized
 }
 
 #[cfg(test)]

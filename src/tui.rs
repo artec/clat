@@ -1055,6 +1055,9 @@ impl App {
 mod snapshot_tests;
 
 #[cfg(all(test, feature = "runtime-tests"))]
+mod paste_settled_tests;
+
+#[cfg(all(test, feature = "runtime-tests"))]
 mod tests {
     use super::*;
     use ratatui::Terminal;

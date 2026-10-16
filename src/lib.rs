@@ -1,5 +1,6 @@
 //! CLAT public facade and terminal client. Runtime ownership lives in clat-core.
 pub(crate) use clat_core::client_ports::host;
+pub(crate) use clat_core::client_ports::redact_secrets;
 pub(crate) use clat_core::client_ports::{SessionId, SessionSummary, permission};
 pub(crate) use clat_core::client_ports::{command, draft, interaction, private_fs, session};
 pub use clat_core::*;

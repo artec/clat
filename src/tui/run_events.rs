@@ -86,7 +86,9 @@ impl App {
                 }
             }
             Ok(crate::tui::attachments::PreparedClipboardPaste::Text(text)) => {
-                self.input.insert_str(&text);
+                // Ctrl+V 系统剪贴板文本与 bracketed paste 同一保真契约
+                //（PASTE-1）：段落换行归一为 `\n` 后入草稿。
+                self.input.insert_paste(&text);
                 self.flash_status("clipboard text pasted");
             }
             Ok(crate::tui::attachments::PreparedClipboardPaste::Empty) => {

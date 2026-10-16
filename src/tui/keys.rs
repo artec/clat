@@ -578,7 +578,9 @@ impl App {
                     Err(error) => self.flash_status(format!("attach failed: {error}")),
                 }
             } else {
-                self.input.insert_str(text);
+                // 普通文本粘贴：仅写入草稿。换行在此归一为 `\n`
+                //（PASTE-1，见 `InputBuffer::insert_paste`），不触发发送。
+                self.input.insert_paste(text);
             }
         }
     }

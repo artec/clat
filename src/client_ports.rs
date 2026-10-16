@@ -2,6 +2,11 @@
 //! This surface is not a plugin ABI; internal workspace crates evolve together.
 pub use crate::session::id::SessionId;
 pub use crate::session::use_cases::SessionSummary;
+// AG-DOGFOOD-4 返工 F1（E4）：前端展示面共享 core 的单一脱敏原语
+//（INV-K1 的 redact_secrets）。provider/journal 出口已按不变量脱敏；
+// 前端转录入口对绕过那些出口的错误来源（异常宿主帧、宿主 worker
+// 崩溃文案等）补同一道闸，跨端一致、不另立词表。
+pub use crate::redact::redact_secrets;
 pub mod host {
     pub fn journal_format_version() -> u32 {
         crate::session::compat::SESSION_FORMAT_VERSION
