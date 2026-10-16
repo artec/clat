@@ -69,10 +69,24 @@ impl App {
         self.status_until = Some(Instant::now() + STATUS_TTL);
     }
 
-    /// draw 前调用：瞬时提示到期后回落为常驻状态。
+    /// CONT-1（C1）：记录 run 的真实终态为常驻状态。瞬时提示过期后回落
+    /// 到这里而不是项目目录，直到下一次 run 开工清空——终态不再随 4 秒
+    /// 提示一起消失，也不把任何仍在执行的 run 改称完成/失败。
+    pub(super) fn set_terminal_status(&mut self, message: impl Into<String>) {
+        let text = message.into();
+        self.terminal_status = Some(text.clone());
+        self.status = text;
+        self.status_until = None;
+    }
+
+    /// draw 前调用：瞬时提示到期后回落为常驻状态。回落优先级：run 终态
+    /// （若有）> 默认常驻（当前目录）。
     pub(super) fn expire_status(&mut self) {
         if status_expired(self.status_until, Instant::now()) {
-            self.status = self.default_status.clone();
+            self.status = self
+                .terminal_status
+                .clone()
+                .unwrap_or_else(|| self.default_status.clone());
             self.status_until = None;
         }
     }
@@ -1126,6 +1140,8 @@ impl App {
         self.conversation_scroll_from_bottom = 0;
         self.run_handle = Some(handle);
         self.running = true;
+        // CONT-1（C1）：新 run 开工即清上一 run 的常驻终态。
+        self.terminal_status = None;
         self.run_usage_base = Some(self.session_usage.clone());
         self.run_usage_acc = Usage::default();
         self.run_routes_base = Some(self.usage_routes.clone());
@@ -1178,6 +1194,8 @@ impl App {
         self.conversation_scroll_from_bottom = 0;
         self.run_handle = Some(handle);
         self.running = true;
+        // CONT-1（C1）：新 run 开工即清上一 run 的常驻终态。
+        self.terminal_status = None;
         self.run_usage_base = Some(self.session_usage.clone());
         self.run_usage_acc = Usage::default();
         self.run_routes_base = Some(self.usage_routes.clone());

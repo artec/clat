@@ -305,6 +305,10 @@ struct App {
     status: String,
     /// 瞬时提示的过期时刻；None 表示当前 status 即常驻内容。
     status_until: Option<Instant>,
+    /// CONT-1（C1）：最近一次 run 的真实终态文本。run 结束后常驻状态栏
+    /// （瞬时提示过期后回落到这里而不是项目目录），直到下一次 run 开工
+    /// 才清空——「4 秒提示消失」不再独自把已完成/失败/取消抹回平静目录。
+    terminal_status: Option<String>,
     editor: Option<ModelEditor>,
     /// 二级模型选择器；与 editor 互斥，/model 命令打开。
     picker: Option<ModelPicker>,
@@ -560,6 +564,7 @@ impl App {
             default_status: status.clone(),
             status,
             status_until: None,
+            terminal_status: None,
             cancel_requested: false,
             editor: None,
             picker: None,
@@ -665,6 +670,7 @@ impl App {
             default_status: status.clone(),
             status,
             status_until: None,
+            terminal_status: None,
             cancel_requested: false,
             editor: None,
             picker: None,
@@ -1056,6 +1062,9 @@ mod snapshot_tests;
 
 #[cfg(all(test, feature = "runtime-tests"))]
 mod paste_settled_tests;
+
+#[cfg(all(test, feature = "runtime-tests"))]
+mod ag5_cont_tests;
 
 #[cfg(all(test, feature = "runtime-tests"))]
 mod tests {

@@ -1247,10 +1247,12 @@ test.describe('acceptance ① approval + run lifecycle', () => {
     await card.locator('button.primary').click(); // Allow
 
     await expect(page.locator('.verdict.completed')).toBeVisible(LIVE);
+    // ORDER-1（AG-DOGFOOD-5）：同一 call_id 恰一张卡——请求与结果合并在
+    // 同一张 run_command 卡上（旧断言的 2 张 = 三卡缺陷的计数）。
     const results = page.locator('.tool-card', { hasText: 'run_command' });
-    await expect(results).toHaveCount(2, LIVE);
-    await revealWorkRecord(results.last());
-    await expect(results.last()).toBeVisible(LIVE);
+    await expect(results).toHaveCount(1, LIVE);
+    await revealWorkRecord(results.first());
+    await expect(results.first()).toBeVisible(LIVE);
   });
 
   // —— 验收①的 Deny 腿 + 验收②：会话管理（新会话 → 拒绝 → 侧栏/重命名）

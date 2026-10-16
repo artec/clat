@@ -121,6 +121,9 @@ impl App {
                 self.conversation_scroll_from_bottom = 0;
                 self.run_handle = Some(started.handle);
                 self.running = true;
+                // CONT-1（C1）：新 run 开工即清上一 run 的常驻终态——旧
+                // 终态不得把新 run 的执行期误标成已完成/已失败。
+                self.terminal_status = None;
                 if exit_after_start && let Some(handle) = &self.run_handle {
                     handle.cancel();
                 }
@@ -347,6 +350,39 @@ impl App {
         }
     }
 
+    /// CONT-1（C1/C2）：以真实终态设置常驻状态栏；存在可观察的未完成
+    /// 待办时追加转录交代行（未完成数 + 未核验声明 + 续办提示），读不
+    /// 到工作事实或全部完成时不编造。
+    fn settle_run_terminal_status(&mut self, done: &crate::ApplicationRunDone) {
+        let todos = self.application.as_ref().and_then(open_todo_summary);
+        match (&todos, done.cancelled) {
+            (Some((open, total, sample)), false) => {
+                self.conversation.push_turn_end(format!(
+                    "run completed — {open} of {total} todos unfinished (task completion not verified): {sample}"
+                ));
+                self.set_terminal_status(format!(
+                    "completed · {} model turns · {open} todos unfinished — send a message to continue",
+                    done.turns
+                ));
+            }
+            (Some((open, _, _)), true) => {
+                self.set_terminal_status(format!(
+                    "cancelled · {} model turns · {open} todos unfinished",
+                    done.turns
+                ));
+            }
+            (None, false) => {
+                self.set_terminal_status(format!(
+                    "completed · {} model turns — send a message to continue",
+                    done.turns
+                ));
+            }
+            (None, true) => {
+                self.set_terminal_status(format!("cancelled · {} model turns", done.turns));
+            }
+        }
+    }
+
     fn settle_finished_run(&mut self, epoch: u64, result: crate::ApplicationRunResult) {
         // W1-13：纪元失配 = 上一 run 的陈旧完成（新 run 已启动）。此时
         // 一切 `self` 上的收尾动作（take/join 新 run 的句柄、running 置
@@ -414,14 +450,15 @@ impl App {
                 // 终态通知进转录（G7）：与回放 TurnEnded 同源文本。
                 if done.cancelled {
                     self.conversation.push_turn_end("cancelled".into());
-                    self.flash_status(format!("cancelled · {} model turns", done.turns));
                 } else {
                     self.conversation.push_turn_end("completed".into());
-                    self.flash_status(format!("completed · {} model turns", done.turns));
                     // AFK 提醒：对话结束响铃。用户主动取消不响——人就在
                     // 键盘前（Esc 是他按的）。
                     self.notify();
                 }
+                // CONT-1（C1/C2）：run 真实终态常驻状态栏 + 未完工作诚实
+                // 交代（RunCompleted ≠ 业务目标已核验完成）。
+                self.settle_run_terminal_status(&done);
             }
             Err(failure) => {
                 match self.run_usage_base.take() {
@@ -455,7 +492,9 @@ impl App {
                 }
                 self.conversation
                     .push_turn_end(format!("error: {}", failure.error));
-                self.flash_status(format!(
+                // CONT-1（C1）：失败原因常驻状态栏（同文本），不随 4 秒
+                // 提示消失；转录终态行与 RUNERR-1 词汇同源。
+                self.set_terminal_status(format!(
                     "run failed after {} model turns: {}",
                     failure.turns, failure.error
                 ));
@@ -477,4 +516,41 @@ impl App {
         }
         self.conversation_scroll_from_bottom = 0;
     }
+}
+
+/// CONT-1（C2）：从 `workflow.details` 投影 JSON 读未完成待办，返回
+/// `(未完成数, 总数, 有界样本)`。只报告可观察事实，不推断业务完成度；
+/// 形状不符/读不到返回 `None`（无证据不宣称、不编造交代）。
+/// standalone 与 attached 腿共用（attached 经 HostClient 取同一投影）。
+pub(super) fn summarize_open_todos(details: &serde_json::Value) -> Option<(usize, usize, String)> {
+    let todos = details.get("todos")?.as_array()?;
+    let total = todos.len();
+    let mut open = Vec::new();
+    for todo in todos {
+        if todo.get("status").and_then(serde_json::Value::as_str) == Some("completed") {
+            continue;
+        }
+        open.push(
+            todo.get("content")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("untitled")
+                .to_owned(),
+        );
+    }
+    if open.is_empty() {
+        return None;
+    }
+    let count = open.len();
+    let mut sample = open.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
+    if count > 3 {
+        sample.push_str(&format!(" (+{} more)", count - 3));
+    }
+    Some((count, total, sample))
+}
+
+/// standalone 腿：直接读本地 Application 的 `workflow_details` 投影。
+pub(super) fn open_todo_summary(
+    application: &crate::TrustedProjectApplication,
+) -> Option<(usize, usize, String)> {
+    summarize_open_todos(&application.workflow_details().ok()?)
 }

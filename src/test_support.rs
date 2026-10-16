@@ -864,3 +864,212 @@ pub fn load_replay(storage_root: &std::path::Path) -> Vec<crate::session::replay
         .expect("visit");
     crate::session::replay::ReplayAdapter::fold(&events)
 }
+
+// ---------------------------------------------------------------------------
+// AG-DOGFOOD-5 / J1：ORDER-1 + CONT-1 联合脚本（同一 Session 多步任务 +
+// 用户明确续办）。供 serve Playwright 宿主与 TUI App 级测试共用。
+//
+// Run 1（用户要求两个具体产物 a.md / b.md）：
+//   请求1 → todo_write 登记 4 项（write a、write b、verify、report） +
+//           write_file(a.md)；
+//   请求2（见 a.md 结果，延迟 250ms 的延迟结果腿）→ write_file(b.md) +
+//           edit_file(b.md, 不存在 old_str)（可控制失败，is_error=true
+//           但主 Run 继续）；
+//   请求3（见失败结果）→ 正常 Completed，verify/report 两项保持 open——
+//           「Run 完成 ≠ 任务已核验完成」的可观察未尽工作。
+// Run 2（用户明确说 continue）：
+//   请求4 → todo_write 把 4 项全部置 completed（仅剩余动作）；
+//   请求5 → Completed "all artifacts verified and reported"。
+// ---------------------------------------------------------------------------
+
+pub struct Ag5JointScript;
+
+impl Default for Ag5JointScript {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Ag5JointScript {
+    pub fn new() -> Self {
+        Self
+    }
+
+    /// `todo_write` 的完整参数形状：`{"todos": [...]}`（裸数组会被工具
+    /// 校验拒绝——"requires a `todos` array"）。
+    fn todo_args(args: &[(&str, &str)]) -> serde_json::Value {
+        serde_json::json!({"todos": args
+            .iter()
+            .map(|(content, status)| {
+                serde_json::json!({"content": content, "status": status})
+            })
+            .collect::<Vec<_>>()})
+    }
+
+    fn tool_call(id: &str, name: &str, arguments: serde_json::Value) -> ToolCall {
+        ToolCall {
+            id: id.to_owned(),
+            name: name.to_owned(),
+            arguments,
+        }
+    }
+
+    fn tool_response(calls: Vec<ToolCall>) -> Result<ModelResponse, ModelError> {
+        Ok(ModelResponse {
+            text: String::new(),
+            tool_calls: calls,
+            finish_reason: FinishReason::ToolCalls,
+            usage: Some(Usage {
+                input_tokens: 1,
+                output_tokens: 1,
+                ..Usage::default()
+            }),
+            provider_response_id: None,
+            provider_state: Vec::new(),
+            reasoning: None,
+        })
+    }
+}
+
+impl TestModelScript for Ag5JointScript {
+    fn stream(
+        &self,
+        request: ModelRequest<'_>,
+        events: &mut dyn crate::model::ModelEventSink,
+    ) -> Result<ModelResponse, ModelError> {
+        // 标题旁路：不消耗脚本步。
+        if request.tools.is_empty()
+            && request
+                .instructions
+                .is_some_and(|text| text.starts_with("Generate a concise title"))
+        {
+            return Ok(response("ag5 joint title", FinishReason::Completed));
+        }
+        let has_result = |name: &str| {
+            request.items.iter().any(|item| {
+                matches!(item, crate::model::ModelItem::ToolResult(result) if result.tool_name == name)
+            })
+        };
+        let latest_user = request
+            .items
+            .iter()
+            .rev()
+            .find_map(|item| match item {
+                crate::model::ModelItem::User { content } => content.iter().find_map(|part| {
+                    matches!(part, crate::model::ContentPart::Text(text) if !text.is_empty())
+                        .then(|| part)
+                        .and_then(|_| match part {
+                            crate::model::ContentPart::Text(text) => Some(text.clone()),
+                            _ => None,
+                        })
+                }),
+                _ => None,
+            })
+            .unwrap_or_default();
+
+        let todo_results = request
+            .items
+            .iter()
+            .filter(|item| {
+                matches!(item, crate::model::ModelItem::ToolResult(result) if result.tool_name == "todo_write")
+            })
+            .count();
+
+        // —— Run 2：用户明确续办，仅执行剩余动作（todo 收口）——
+        // 注意：跨 run 的工具结果会从模型表面修剪（transient context），
+        // 续办首请求看到的 todo_results 从 0 重新计数；因此按当前计数
+        // 生成唯一 call id（真实模型每次发射唯一 id），直到累计第 3 次
+        // todo_write 结果到达才完成。
+        if latest_user.contains("continue") {
+            if todo_results >= 3 {
+                let text = "all artifacts verified and reported";
+                events.emit(ModelEvent::TextDelta {
+                    delta: text.to_owned(),
+                });
+                return Ok(response(text, FinishReason::Completed));
+            }
+            return Self::tool_response(vec![Self::tool_call(
+                &format!("call-ag5-cont-todos-{todo_results}"),
+                "todo_write",
+                Self::todo_args(&[
+                    ("write a.md", "completed"),
+                    ("write b.md", "completed"),
+                    ("verify outputs", "completed"),
+                    ("report results", "completed"),
+                ]),
+            )]);
+        }
+
+        // —— Run 1 ——
+        if has_result("edit_file") {
+            // 第二批已执行（含可控制失败）：先收口已完成项（第 2 次
+            // todo_write），再正常完成——verify/report 保持 open，J1 的
+            // 「Run 完成但仍有可观察未尽工作」。
+            if todo_results >= 2 {
+                let text = "phase one done — a.md and b.md exist; the b.md edit attempt failed";
+                events.emit(ModelEvent::TextDelta {
+                    delta: text.to_owned(),
+                });
+                return Ok(response(text, FinishReason::Completed));
+            }
+            return Self::tool_response(vec![Self::tool_call(
+                "call-ag5-close-todos",
+                "todo_write",
+                Self::todo_args(&[
+                    ("write a.md", "completed"),
+                    ("write b.md", "completed"),
+                    ("verify outputs", "in_progress"),
+                    ("report results", "pending"),
+                ]),
+            )]);
+        }
+        if has_result("write_file") {
+            // 延迟结果腿：第二批响应前先等 250ms。
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            return Self::tool_response(vec![
+                Self::tool_call(
+                    "call-ag5-write-b",
+                    "write_file",
+                    serde_json::json!({
+                        "path": "b.md",
+                        "content": "# B\n\nsecond artifact\n",
+                        // 共享宿主的多次 E2E 里 b.md 可能已存在：显式
+                        // 覆盖写保持幂等（fresh project 目录行为不变）。
+                        "overwrite": true,
+                    }),
+                ),
+                Self::tool_call(
+                    "call-ag5-edit-fail",
+                    "edit_file",
+                    serde_json::json!({
+                        "path": "b.md",
+                        "old_str": "THIS-MARKER-DOES-NOT-EXIST",
+                        "new_str": "edited",
+                    }),
+                ),
+            ]);
+        }
+        // 首请求：登记待办 + 产物一。
+        Self::tool_response(vec![
+            Self::tool_call(
+                "call-ag5-todos",
+                "todo_write",
+                Self::todo_args(&[
+                    ("write a.md", "completed"),
+                    ("write b.md", "in_progress"),
+                    ("verify outputs", "pending"),
+                    ("report results", "pending"),
+                ]),
+            ),
+            Self::tool_call(
+                "call-ag5-write-a",
+                "write_file",
+                serde_json::json!({
+                    "path": "a.md",
+                    "content": "# A\n\nfirst artifact\n",
+                    "overwrite": true,
+                }),
+            ),
+        ])
+    }
+}

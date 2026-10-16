@@ -668,6 +668,8 @@ impl App {
             HostEvent::Run(event) => {
                 if let RunEvent::RunStarted { message, .. } = &event {
                     self.running = true;
+                    // CONT-1（C1）：新 run 开工即清上一 run 的常驻终态。
+                    self.terminal_status = None;
                     // CF8（r4）：本地 run 序号推进——此后发起的取消请
                     // 求归属于新 run，旧轮回执不再匹配。
                     if let Some(native) = self.native.as_mut() {
@@ -742,6 +744,11 @@ impl App {
                     Some(id) => self.conversation.push_settled_turn_end(notice, id),
                     None => self.conversation.push_turn_end(notice),
                 }
+                // CONT-1（C1/C2）：attached 腿与 standalone 同款——run 真实
+                // 终态常驻状态栏；存在可观察未完成待办时给出诚实交代。
+                // todo 事实经既有 workflow.details RPC（不加新 wire 面）。
+                let outcome_type = payload["outcome"]["type"].as_str().unwrap_or("").to_owned();
+                self.apply_settled_accounting(outcome_type);
                 self.refresh_native();
             }
             "notice" if payload["kind"] == "selection" => self.start_native(),
@@ -865,6 +872,47 @@ impl App {
             );
             let _ = ui.send(UiEvent::Native(NativeEvent::ApprovalReply(result)));
         });
+    }
+
+    /// CONT-1（C1/C2）：attached 腿的 settled 交代。completed/cancelled 时
+    /// 经既有 `workflow.details` RPC 读 todo 投影：存在未完成项 → 转录
+    /// 诚实交代行（RunCompleted ≠ 业务目标已核验）+ 常驻终态带未完成数；
+    /// 读不到投影或无未完成项 → 常驻终态不带待办注记，不编造。failed 的
+    /// 原因已由 settled_outcome_notice 进转录，这里只设常驻终态。
+    fn apply_settled_accounting(&mut self, outcome_type: String) {
+        let todos = match outcome_type.as_str() {
+            "completed" | "cancelled" => self.native.as_ref().and_then(|native| {
+                native
+                    .client
+                    .call("workflow.details", &json!({}))
+                    .ok()
+                    .and_then(|details| crate::tui::run_events::summarize_open_todos(&details))
+            }),
+            _ => None,
+        };
+        match (outcome_type.as_str(), todos) {
+            ("completed", Some((open, total, sample))) => {
+                self.conversation.push_turn_end(format!(
+                    "run completed — {open} of {total} todos unfinished (task completion not verified): {sample}"
+                ));
+                self.set_terminal_status(format!(
+                    "completed · {open} todos unfinished — send a message to continue"
+                ));
+            }
+            ("completed", None) => {
+                self.set_terminal_status("completed — send a message to continue");
+            }
+            ("cancelled", Some((open, _, _))) => {
+                self.set_terminal_status(format!("cancelled · {open} todos unfinished"));
+            }
+            ("cancelled", None) => {
+                self.set_terminal_status("cancelled");
+            }
+            ("failed", _) => {
+                self.set_terminal_status("run failed — see the failure notice above");
+            }
+            _ => {}
+        }
     }
 }
 

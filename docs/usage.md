@@ -734,6 +734,27 @@ attaching to existing history; it does not run a second quota monitor.
 fields (`monitor`, current-route `route_usage`, and `last_request_usage`).
 These contain display data only, never endpoint credentials.
 
+### Run terminal states and unfinished work
+
+A run's real outcome stays on the status bar after the run ends — `completed ·
+N model turns`, `cancelled · …`, or `run failed after …: reason` — instead of
+silently reverting to the project directory when a transient hint expires.
+The next run clears it when it starts, so an active run is never mislabeled as
+finished or failed by a leftover status. The transcript keeps the same
+outcome line (`completed`, `cancelled`, or `error: …`), and a tool failure
+(`✗ Tool / …`) remains a distinct card: a failed tool call does not fail the
+run, and the model may continue after it.
+
+`RunCompleted` means the run terminated, not that your task was verified
+complete. When the session has observable unfinished work — todos that are
+still `pending` or `in_progress` — the transcript adds an honest accounting
+line (`run completed — 2 of 4 todos unfinished · task completion not
+verified: …`) and the persistent status names the unfinished count. With no
+observable unfinished items CLAT does not invent a completion score;
+continuation is always your decision: send the next message to continue in
+the same session, and the next run sees the same journal context without
+re-running completed work.
+
 ## Headless runner (`clat exec`)
 
 `clat exec` performs one agent run and exits:
@@ -1414,6 +1435,28 @@ composer and session mutations are locked, and the button becomes a cancellation
 control. Completion is journal-backed and therefore visible again after reload.
 Full Access requires both a UI warning acknowledgement and the protocol
 confirmation described in [Permissions](permissions.md).
+
+Tool cards pair by call id exactly like the TUI: one card per tool call,
+opened at the request position and settled in place when the result arrives
+(arguments and output on the same card; `Failed`/`Denied` states and the
+permission notice stay visible). Duplicate or late request frames reuse the
+same card instead of opening a second one, and a result that arrives without
+a usable call id (or before its request was replayed) still shows a fallback
+result card at the finish position — results are never silently dropped.
+Successful cards group into the collapsible work summary, while a failed call
+moves its card out of the summary so errors are never hidden; a tool failure
+never ends the run by itself. Reloads and reconnects rebuild the same
+one-card-per-call view from the journal, including during an active run.
+
+When a run settles with observable unfinished todos, the transcript shows the
+same honest accounting line as the TUI (`… todos unfinished · task completion
+not verified · send a message to continue`); it reappears after a reload, and
+the run state under the composer keeps the real terminal state instead of
+going quiet. Duplicate terminal notices are deduplicated, and a settled frame
+only owns the terminal when no new run has started — a late completion notice
+after you already sent the next message never overwrites the active run, and
+accounting replies that come back after you switched sessions are dropped
+rather than leaking into the new session's transcript.
 
 Conversation history opens on the newest message. The server sends a
 message-aligned tail window (50 messages by default), and the workbench loads

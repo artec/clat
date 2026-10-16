@@ -3167,7 +3167,15 @@ fn mount_playwright_application(
     bootstrap: BootstrapApplication,
     key: &str,
     behavior: TestBehavior,
+    permission_modes: bool,
 ) -> Result<crate::TrustedProjectApplication, crate::ApplicationError> {
+    // permission_modes：接线会话权限档（新会话默认 Project Write）；
+    // 不接线保持 classic 逐次 Ask 面（既有审批类 spec 依赖）。
+    let bootstrap = if permission_modes {
+        bootstrap.with_permission_modes()
+    } else {
+        bootstrap
+    };
     let app =
         bootstrap.authorize_and_mount_with_provider(Arc::new(TestProviderPlugin { behavior }))?;
     if key == "plugin-market" {
@@ -3179,6 +3187,18 @@ fn mount_playwright_application(
 }
 
 fn host_serve_for_playwright(key: &str, behavior: TestBehavior, seed_turns: usize) {
+    host_serve_modes_for_playwright(key, behavior, seed_turns, false)
+}
+
+/// AG-DOGFOOD-5：带会话权限档的宿主装配（ag5-joint 用 Project Write 默认，
+/// 与生产 TUI/serve 日常档一致；写效果免逐次审批，permission_checked
+/// 通知仍可见）。
+fn host_serve_modes_for_playwright(
+    key: &str,
+    behavior: TestBehavior,
+    seed_turns: usize,
+    permission_modes: bool,
+) {
     // 武装开关：仅当 Playwright（web/e2e/global-setup.js）以
     // CLAT_E2E_HOST=1 拉起时才起服驻留——CI 的 `-- --ignored` 门控面
     // 不带此变量，本测试瞬过不驻留（否则 CI 会在此挂 10 分钟）。
@@ -3234,7 +3254,7 @@ fn host_serve_for_playwright(key: &str, behavior: TestBehavior, seed_turns: usiz
             no_open: true,
             im: None,
         },
-        |bootstrap| mount_playwright_application(bootstrap, key, behavior),
+        |bootstrap| mount_playwright_application(bootstrap, key, behavior, permission_modes),
         Arc::new(AtomicBool::new(false)),
         super::state::SUBSCRIBER_QUEUE_FRAMES,
     )
@@ -3364,6 +3384,22 @@ fn serve_e2e_host_run_command() {
 #[ignore = "Playwright queue e2e host; needs CLAT_E2E_HOST=1"]
 fn serve_e2e_host_queue_command() {
     host_serve_for_playwright("queue-command", TestBehavior::RunCommandPerTurn, 0);
+}
+
+/// AG-DOGFOOD-5 / J1：ORDER-1 + CONT-1 浏览器联合宿主。同一 Session 的
+/// 多步任务（todo 登记、两个产物、延迟结果、可控制失败、带未尽工作的
+/// Completed）与用户明确续办（仅剩余动作）。见
+/// web/e2e/tests/ag5-order-cont.spec.js 与 src/test_support.rs 的
+/// Ag5JointScript。
+#[test]
+#[ignore = "Playwright e2e host (needs CLAT_E2E_HOST=1, set by web/e2e/global-setup.js)"]
+fn serve_e2e_host_ag5_joint() {
+    host_serve_modes_for_playwright(
+        "ag5-joint",
+        TestBehavior::Scripted(Arc::new(crate::test_support::Ag5JointScript::new())),
+        0,
+        true,
+    );
 }
 
 #[test]

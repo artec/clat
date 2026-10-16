@@ -688,6 +688,12 @@ view models, and channel multiplexing. They do not create providers, tools,
 storage, MCP processes, or run workers. An approver adapter and user-question
 adapter translate core requests into dialog state.
 
+A run's real terminal state persists on the status bar after the run ends
+(cleared when the next run starts), and a completed run with observable
+unfinished todos adds an honest transcript accounting line derived from the
+existing `workflow.details` projection — `RunCompleted` is never presented as
+verified business-goal completion, and no automatic completion score exists.
+
 ### Headless runner
 
 `exec/` maps stdout/stderr/stdin to the same Application ports. It injects a
@@ -835,8 +841,28 @@ boundary.
 The embedded `web/` workbench is a projection client. Static assets and pairing
 shell contain no credential. Authenticated API calls carry the persistent
 `~/.clat/web-token` as Bearer; no URL or Cookie token path exists. Browser
-storage contains only UI preferences and the origin-scoped paired token, never
+storage contains only UI preferences and the origin-scoped paired token, neverer
 conversation facts.
+
+Workbench tool cards pair by call id with the same semantics as the TUI
+conversation model: one card per call, opened at `tool_requested` and settled
+in place by `tool_finished`/`permission_denied`; replay keys add the journal
+turn so identical ids in different runs never merge, duplicate or late
+`tool_requested` frames reuse the existing card instead of opening a second
+one, and a live finish settles the card a replay prefix opened (unique
+suffix-key fallback). Results without a usable call id still render a
+fallback card at the finish position — success cards enter the process
+summary and error cards stay outside it. Terminal notices are deduplicated
+per run and per `prompt_rpc_id`, a settled frame owns the terminal only when
+no run is active (a late settled after a new `run_started` changes nothing),
+and asynchronous unfinished-work accounting is fenced by an anchored owner
+snapshot (session id, selection generation, stream object): identities not
+yet materialized anchor at the first observed concrete value inside the same
+subscription handshake, and any later concrete change drops the reply
+without consuming its dedup slot. After a reload or reconnect the last
+durable turn outcome restores the persistent run-state text and re-derives
+the accounting from the existing `workflow.details` projection; no new wire
+method, durable event, or `RunEvent` variant was added for any of it.
 
 Image drafts remain frontend presentation state until the server admits them:
 the workbench sends one bounded PNG/JPEG stream into a server-minted, selection-

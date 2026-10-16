@@ -367,6 +367,24 @@ const state = {
   utilitySettings: null,
   modelSelectionPending: false,
   transcriptAttachmentUrls: new Set(),
+  // ORDER-1（O1/O3）：call-id → 工具卡配对注册表。live 键 = call_id（run
+  // 开工即清场，run 内配对）；replay 键 = `${turn}::${call_id}`（journal
+  // 侧 turn 一定可得，页界不切 turn，跨 turn/run 同名 id 不误合并）。
+  toolCards: new Map(),
+  lastCallId: null,
+  // CONT-1（C4）：本 run 范围已渲染的终态通知类别与 settled rpc 去重，
+  // 迟到/重复完成帧不重复立卡。
+  runOutcomeNoted: null,
+  settledRpcIds: new Set(),
+  // CONT-1（O3）：未尽项交代去重键（settled:<rpc> / live:<outcome> /
+  // turn:<seq>）；live 终态、settled 帧与重载回放三条入口同一交代只出一次。
+  accountedKeys: new Set(),
+  // R2-F4/R3-F1：挂起中的交代键→发起时的 owner 快照（同键排他；旧
+  // 请求的清理只作用于仍映射到自己的占位）。
+  accountingInFlightOwners: new Map(),
+  // O3：回放流中最新的 turn_ended 原因（replay.end 时用于复现未尽项交代）。
+  lastTurnEndReason: null,
+  lastTurnEndSeq: null,
   history: {
     hasMore: false,
     loading: false,
@@ -608,6 +626,15 @@ function handleFrame(frame) {
       state.run = null;
       state.runActive = false;
       state.lastUsage = null;
+      // ORDER-1/CONT-1：转录重建即清配对注册表与终态去重记忆，随后
+      // replay/live 重建等价逻辑序（O3）。
+      clearToolCardScope();
+      state.runOutcomeNoted = null;
+      state.settledRpcIds.clear();
+      state.accountedKeys.clear();
+      state.accountingInFlightOwners.clear();
+      state.lastTurnEndReason = null;
+      state.lastTurnEndSeq = null;
       state.history.hasMore = Boolean(payload.has_more);
       state.history.firstSeq = null;
       state.history.loading = false;
@@ -623,6 +650,20 @@ function handleFrame(frame) {
       requestAnimationFrame(() => { dom['transcript-scroll'].style.scrollBehavior = ''; });
       state.history.replaying = false;
       syncActiveMapItem();
+      // O3/C1（J1 冷恢复/重连，AG5-R1 F5）：回放重建后，最后一个 turn
+      // 的真实终态同样要可再现——run 状态栏恢复与 live 相同词汇的常驻
+      // 终态文案（活跃 Run 到来时 run_started 会重置为 running）；
+      // 已完成 turn 的未尽项交代以 turn seq 去重再现。
+      if (!state.runActive) {
+        // R2-F1：刚完成的回放重建就是当前转录的权威状态——常驻文案随
+        // 重建内容覆盖（前一会话/前一运行的文案不得阻挡恢复）。活跃
+        // Run 到来时 run_started 会重置为 running。
+        const idle = replayedIdleText(state.lastTurnEndReason);
+        if (idle) updateRunState(idle);
+        if (state.lastTurnEndReason === 'completed') {
+          accountUnfinishedWork('completed', 'turn:' + state.lastTurnEndSeq);
+        }
+      }
       break;
     default:
       console.warn('[clat] unknown frame type:', frame.event);
@@ -648,24 +689,43 @@ function handleReplay(event) {
       if (event.reasoning) bubble.setReasoning(event.reasoning);
       bubble.appendBody(event.text || '');
       bubble.finishBody();
-      for (const call of event.tool_calls || []) {
-        addToolCard(call.name, jsonText(call.arguments), null, false);
-      }
+      // ORDER-1：assistant 的 tool_calls 声明不单独开卡——TUI 将其作为
+      // assistant 项数据不渲染；卡由 tool_requested 在请求位点唯一创建。
       break;
     }
     case 'permission_checked':
       node = addPermissionNotice(event);
       break;
     case 'tool_requested':
-      node = addToolCard(event.call && event.call.name, jsonText(event.call && event.call.arguments), null, false);
+      // 请求位点唯一开卡；缺失 call.id 的旧协议事件不注册（结果卡自建）。
+      node = openToolCard(
+        event.call && event.call.name,
+        jsonText(event.call && event.call.arguments),
+        (event.call && event.call.id) || null,
+        toolCardKey(event.call && event.call.id, event.turn),
+      );
       break;
-    case 'tool_finished':
-      node = addToolCard(event.tool, '← ' + jsonText(event.output), null, event.is_error);
+    case 'tool_finished': {
+      const key = toolCardKey(event.call_id, event.turn);
+      const settled = settleToolCard(
+        event.call_id || null,
+        key,
+        '← ' + jsonText(event.output),
+        Boolean(event.is_error),
+        event.tool,
+      );
+      node = settled;
+      if (node && Number.isSafeInteger(event.seq)) node.dataset.resultSeq = String(event.seq);
       break;
+    }
     case 'retry_scheduled':
       node = addNoticeLine('#' + event.retry + ' in ' + event.delay_ms + 'ms', event.type);
       break;
     case 'turn_ended':
+      // R2-F1：保持生产的 reason 原形状（字符串或 {error}/{aborted} 对象
+      // ——serve shapes.rs 两种都发），终态恢复层负责解释；入口不再丢弃。
+      state.lastTurnEndReason = event.reason === undefined ? null : event.reason;
+      state.lastTurnEndSeq = Number.isSafeInteger(event.seq) ? event.seq : state.lastTurnEndSeq;
       node = addTurnEndNotice(event);
       break;
     case 'compaction': node = addNoticeLine('', event.type); break;
@@ -684,6 +744,11 @@ function handleLive(event) {
     case 'run_started':
       invalidateSuggestion();
       state.runActive = true;
+      // ORDER-1/CONT-1：新 run 开工即清配对与终态去重记忆——不同 run 的
+      // 同名 call_id 不误合并，旧 run 的重复完成帧不再立第二张终态卡。
+      clearToolCardScope();
+      state.runOutcomeNoted = null;
+      for (const key of state.accountedKeys) if (key.startsWith('live:')) state.accountedKeys.delete(key);
       updateRunState('running');
       updateRunDetail();
       syncInteractionControls();
@@ -713,20 +778,32 @@ function handleLive(event) {
       }
       addTraceEvent(event.type, turnEndText(event.finish_reason));
       break;
-    case 'tool_requested':
+    case 'tool_requested': {
       state.run = state.run || {};
-      addToolCard(event.call && event.call.name, jsonText(event.call && event.call.arguments), null, false);
+      const callId = event.call && event.call.id;
+      state.lastCallId = callId || state.lastCallId;
+      // live 帧 run 内配对：键 = call_id（run_started 已清场）。
+      openToolCard(event.call && event.call.name, jsonText(event.call && event.call.arguments), callId || null, callId || null);
       break;
+    }
     case 'permission_checked':
       addPermissionNotice(event);
       break;
     case 'permission_denied':
       addNoticeLine(event.tool + ' — ' + (event.reason || ''), event.type);
+      // 与 TUI 同语义：live 拒绝不带 call id，落定最近一次请求的卡。
+      denyToolCard(state.lastCallId, event.reason);
       break;
     case 'tool_started': break;
     case 'tool_finished': {
       const result = event.result || {};
-      addToolCard(result.tool_name, '← ' + jsonText(result.output), null, result.is_error);
+      settleToolCard(
+        result.call_id || null,
+        result.call_id || null,
+        '← ' + jsonText(result.output),
+        Boolean(result.is_error),
+        result.tool_name,
+      );
       if (result.tool_name === 'exit_plan_mode' && !result.is_error) {
         refreshWorkbench();
       }
@@ -764,8 +841,21 @@ function finishRun(event) {
   hide(dom.cancel);
   syncInteractionControls();
   if (event.type === 'run_failed') {
-    addVerdict('failed', 'run failed — ' + (event.message || 'unknown error'));
+    // CONT-1（C4）：live 终态与 prompt.settled 是同一终点的两条腿，任一
+    // 先到即立唯一终态卡（noteRunOutcome 去重），另一条不再重复。
+    if (noteRunOutcome('failed')) {
+      addVerdict('failed', 'run failed — ' + (event.message || 'unknown error'));
+    }
+    updateRunState('run failed — ' + (event.message || 'unknown error'));
   }
+}
+
+/// CONT-1（C4）：本 run 范围内每个终态类别只立一次卡；run_started 与
+/// replay.begin 清场。返回 false 表示该类别已呈现，调用方跳过。
+function noteRunOutcome(kind) {
+  if (state.runOutcomeNoted === kind) return false;
+  state.runOutcomeNoted = kind;
+  return true;
 }
 
 function onSubscribed(ctl) {
@@ -774,6 +864,7 @@ function onSubscribed(ctl) {
   closeCommandPanel();
   refreshCommandCatalog();
   state.selectionGeneration = ctl.selection_generation;
+  anchorAccountingOwner();
   state.connected = true;
   state.reconnectDelayMs = 1000;
   setConnStatus('live', 'live');
@@ -849,17 +940,177 @@ function onSettled(ctl) {
     renderMessageMap();
   }
   state.lastUsage = outcome.usage || null;
-  switch (outcome.type) {
-    case 'completed':
-      addVerdict('completed', 'completed · ' + (outcome.turns || 0) + ' turns · ' + usageText(outcome.usage));
-      break;
-    case 'cancelled': addVerdict('cancelled', 'cancelled after ' + (outcome.turns || 0) + ' turns'); break;
-    case 'failed': addVerdict('failed', 'failed — ' + (outcome.error || 'unknown error')); break;
-    default: console.warn('[clat] unknown settled outcome:', outcome.type);
+  // CONT-1（C4）/AG5-R1 F4：settled 帧双门——
+  // ① prompt_rpc_id 去重（重连/迟到重复不重复立卡）；
+  // ② 归属检查：只有当前没有活跃 Run 且不在回放重建窗口时，该 settled
+  //   才属于"当前终端窗口"。新 run_started 之后到达的旧 settled（未见
+  //   过的 rpc id）不立 verdict、不改 run 状态、不做交代——runActive
+  //   是活跃 Run 的事实来源，终态文案不得与它矛盾。
+  const rpcId = typeof (ctl && ctl.prompt_rpc_id) === 'string' ? ctl.prompt_rpc_id : null;
+  const ownsTerminal = !state.runActive;
+  const fresh = !rpcId || !state.settledRpcIds.has(rpcId);
+  if (fresh && ownsTerminal) {
+    if (rpcId) state.settledRpcIds.add(rpcId);
+    switch (outcome.type) {
+      case 'completed':
+        if (noteRunOutcome('completed')) {
+          addVerdict('completed', 'completed · ' + (outcome.turns || 0) + ' turns · ' + usageText(outcome.usage));
+        }
+        break;
+      case 'cancelled':
+        if (noteRunOutcome('cancelled')) {
+          addVerdict('cancelled', 'cancelled after ' + (outcome.turns || 0) + ' turns');
+        }
+        break;
+      case 'failed':
+        if (noteRunOutcome('failed')) {
+          addVerdict('failed', 'failed — ' + (outcome.error || 'unknown error'));
+        }
+        break;
+      default: console.warn('[clat] unknown settled outcome:', outcome.type);
+    }
+    accountUnfinishedWork(outcome.type, rpcId ? `settled:${rpcId}` : `live:${outcome.type}`);
+    const idleText = settledIdleText(outcome.type);
+    if (idleText && (dom['run-state'].textContent === '' || dom['run-state'].textContent === 'running')) {
+      updateRunState(idleText);
+    }
   }
   refreshSessions();
   refreshWorkbench();
   scrollIfNearEnd();
+}
+
+
+
+/// AG5-R1 F5：journal turn_ended reason → 常驻终态文案（与 settled
+/// 路径同词汇）。用户中止（aborted: user）与 interrupted 视为取消；
+/// error/其它异常终态如实标注失败可见；未知形状退守中性文案，不虚构。
+function replayedIdleText(reason) {
+  if (reason === 'completed') return 'run completed — send a message to continue';
+  if (reason === 'interrupted') return 'run cancelled — send a message to continue';
+  if (reason && typeof reason === 'object') {
+    if (reason.aborted === 'user') return 'run cancelled — send a message to continue';
+    if (typeof reason.error === 'string') return 'run failed — see the failure notice above';
+    return 'run ended — see the transcript above';
+  }
+  if (typeof reason === 'string' && reason) return 'run ended (' + reason + ') — see the transcript above';
+  return '';
+}
+
+/// CONT-1（C1）：settled 后的常驻 run 状态文本——run 真实终态持续可见，
+/// 不随瞬时提示一起消失；新 run 的 run_started 会重置为 running。
+function settledIdleText(type) {
+  switch (type) {
+    case 'completed': return 'run completed — send a message to continue';
+    case 'cancelled': return 'run cancelled — send a message to continue';
+    case 'failed': return 'run failed — see the failure notice above';
+    default: return '';
+  }
+}
+
+/// CONT-1（C2/C3）：RunCompleted 只说明本次 Run 终止，不等于用户业务
+/// 目标已核验完成。从既有 workflow.details 投影读取 todos（不加新协议面），
+/// 存在未完成项时在转录给出诚实交代：可观察的未完成项 + 未核验声明 +
+/// 下一步由用户决定（发消息继续）；读不到工作事实就不编造交代，也不做
+/// 自动任务完成评分。默认绝不自动开启新 run。
+function accountUnfinishedWork(outcomeType, key) {
+  if (outcomeType !== 'completed' && outcomeType !== 'cancelled') return;
+  if (!key) {
+    void renderUnfinishedWorkAccounting(outcomeType, key, null);
+    return;
+  }
+  // R2-F4：同键 in-flight 排他——挂起期间重复的 replay.end/settled 不
+  // 发起第二份；归属丢弃时归还（不占名额，保 F1 串会话性质）。
+  // R3-F1：占位记录发起时的 owner 快照（key→owner 映射）——同名键在
+  // 切换后属于后来者，旧请求的清理只作用于仍映射到自己的占位。
+  if (state.accountedKeys.has(key) || state.accountingInFlightOwners.has(key)) return;
+  const gateOwner = accountingOwner();
+  state.accountingInFlightOwners.set(key, gateOwner);
+  void renderUnfinishedWorkAccounting(outcomeType, key, gateOwner);
+}
+
+
+/// AG5-R1 F1：挂起中的异步交代在订阅身份物化的当下锚定（同一订阅握手
+/// 的 null→具体填充）；此后（含比较时）任何具体身份变化都是真切换。
+function anchorAccountingOwner() {
+  // R3-F1：并发挂起可能不止一个——对每个挂起 owner 应用同一物化锚定
+  // 规则（未物化身份在订阅握手落地时锁定；锚定后的变化都是真切换）。
+  const owners = [
+    ...(state.accountingInFlight ? [state.accountingInFlight] : []),
+    ...state.accountingInFlightOwners.values(),
+  ];
+  for (const owner of owners) {
+    if (owner.session == null && state.sessionId != null) owner.session = state.sessionId;
+    if (owner.selection == null && state.selectionGeneration != null) {
+      owner.selection = state.selectionGeneration;
+    }
+  }
+}
+
+/// AG5-R1 F1：异步交代的归属快照——RPC 期间会话/选择代/流任一变化
+/// （切会话、重连、重放重建），旧回复一律丢弃且不占用去重名额。
+function accountingOwner() {
+  return {
+    session: state.sessionId,
+    selection: state.selectionGeneration,
+    stream: state.stream,
+  };
+}
+
+function sameAccountingOwner(owner) {
+  const current = accountingOwner();
+  // 锚定语义（AG5-R1 F1）：reload/attach 时 replay.end 先于 subscribed，
+  // 发起快照的身份可能尚未物化——首次观察到具体值即锚定为该身份
+  // （同一订阅握手的填充）；锚定之后任何具体值的变化都是真切换，
+  // 一律丢弃。流对象全程严格同一。
+  if (owner.session == null && current.session != null) owner.session = current.session;
+  if (owner.selection == null && current.selection != null) {
+    owner.selection = current.selection;
+  }
+  // 见 anchorAccountingOwner：物化锚定发生在订阅身份更新的当下，而不是
+  // 比较时——挂起期间后续的身份替换（真切换）不会被误锚。
+  return owner.session === current.session
+    && owner.selection === current.selection
+    && current.stream === owner.stream;
+}
+
+async function renderUnfinishedWorkAccounting(outcomeType, key, gateOwner) {
+  const owner = gateOwner || accountingOwner();
+  if (gateOwner) state.accountingInFlight = gateOwner;
+  // R3-F1：清理只作用于本请求自己的资源——占位仍映射到自己的 owner
+  // 快照才删除；跨会话/跨连接后同值键的占位属于后来者。in-flight 锚
+  // 定槽同样只有仍是自己时才清空。
+  const settleKeys = () => {
+    if (key && state.accountingInFlightOwners.get(key) === owner) {
+      state.accountingInFlightOwners.delete(key);
+    }
+    if (state.accountingInFlight === owner) state.accountingInFlight = null;
+  };
+  let todos = null;
+  try {
+    const details = await rpc('workflow.details', {});
+    todos = Array.isArray(details && details.todos) ? details.todos : [];
+  } catch (_) {
+    settleKeys();
+    return;
+  }
+  const owned = sameAccountingOwner(owner);
+  settleKeys();
+  if (!owned) return;
+  // 归属有效才占用去重名额（丢弃路径不记键，切换回来仍可重新交代）。
+  if (key) state.accountedKeys.add(key);
+  const open = todos.filter((todo) => todo && todo.status !== 'completed');
+  if (open.length === 0) return;
+  const total = todos.length;
+  const sample = open.slice(0, 5).map((todo) => '"' + (todo.content || 'untitled') + '"').join(', ');
+  const more = open.length > 5 ? ` (+${open.length - 5} more)` : '';
+  const line = addNoticeLine(
+    outcomeType + ' run ended — ' + open.length + ' of ' + total
+    + ' todos unfinished · task completion not verified: ' + sample + more
+    + ' · send a message to continue',
+  );
+  line.classList.add('is-warning');
+  line.setAttribute('aria-label', 'Unfinished work accounting')
 }
 
 function onNotice(ctl) {
@@ -1280,19 +1531,160 @@ function ensureAssistant() {
   return state.run.assistant;
 }
 
-function addToolCard(name, argsText, outputText, isError) {
-  const card = el('details', 'tool-card' + (isError ? ' is-error' : ''));
+// —— 工具卡配对（ORDER-1 O1：同一 call 一张卡，与 TUI ConversationModel
+// 的 open_tool_card/settle_tool_card 语义镜像）——
+//
+// 请求位点开卡（Pending），tool_finished/permission_denied 按 call-id 原
+// 地落定；缺失 call-id、迟到或重复事件有明确降级：无 id 的结果卡在完成
+// 位点自建（结果不许丢），重复落定幂等（输出行替换，不叠加第二张）。
+// 错误落定时卡移出 work-summary（WEB-3 不变量：错误卡在摘要外）。
+
+function toolCardKey(callId, turn) {
+  if (!callId) return null;
+  return Number.isSafeInteger(turn) ? `${turn}::${callId}` : String(callId);
+}
+
+/// 键解析：显式键优先；live 帧（无 turn，裸键）落在 replay 前缀开的卡
+/// （turn 键）时按唯一后缀匹配回退——活跃 run 重连的混合作用域下，
+/// 完成事件仍落定同一张卡，而不是丢失配对（O3，AG5-R1 F3b）。
+function resolveToolCardKey(rawId, explicitKey) {
+  if (explicitKey && state.toolCards.has(explicitKey)) return explicitKey;
+  // R2-F2：后缀回退只用于无 turn 的裸 id（live 帧落 replay 前缀开的
+  // 卡）；键已带明确 turn 时不做跨 turn 猜测——缺请求记录的结果走
+  // fallback 新卡并注册到自己的作用域，不同 turn 的同名 id 各自可辨。
+  if (!rawId) return null;
+  if (explicitKey && explicitKey.includes('::')) return null;
+  const suffix = '::' + rawId;
+  const matches = [...state.toolCards.keys()].filter((key) => key.endsWith(suffix));
+  return matches.length === 1 ? matches[0] : null;
+}
+
+function openToolCard(name, argsText, rawId, key) {
+  // AG5-R1 F2：同作用域重复/迟到的 tool_requested 复用同一张卡——
+  // 不新增第二张卡、不把已落定状态重置回 Pending。R3-F2：结果先到、
+  // 请求迟到时补齐缺失的请求参数（请求/过程/结果均可辨）；已渲染的
+  // 请求信息不被重复请求覆盖。
+  if (key) {
+    const existing = state.toolCards.get(key);
+    if (existing) {
+      const body = existing.querySelector('.tool-body');
+      if (body && argsText && !existing.querySelector('.tool-args')) {
+        const args = el('div', 'tool-args', argsText);
+        body.insertBefore(args, body.querySelector('.tool-output') || body.firstChild);
+      }
+      return existing;
+    }
+  }
+  const card = el('details', 'tool-card');
+  card.dataset.state = 'pending';
+  // data-call-id 是裸 call id（live 与 replay 一致，供检索/测试断言）；
+  // 配对键（replay 带 turn 前缀）只进注册表。
+  if (rawId) card.dataset.callId = rawId;
   const summary = el('summary');
   summary.append(
     svgIcon('tool'),
     el('span', null, name || 'Unknown tool'),
-    el('span', 'tool-state', isError ? 'Failed' : 'Tool trace'),
+    el('span', 'tool-state', 'Running'),
   );
   const body = el('div', 'tool-body');
-  if (argsText) body.appendChild(el('div', null, argsText));
-  if (outputText) body.appendChild(el('div', null, outputText));
+  if (argsText) body.appendChild(el('div', 'tool-args', argsText));
   card.append(summary, body);
-  return isError ? appendTranscript(card) : appendWorkRecord(card, name);
+  if (key) state.toolCards.set(key, card);
+  return appendWorkRecord(card, name);
+}
+
+function settleToolCard(rawId, explicitKey, outputText, isError, toolName, stateText) {
+  const key = resolveToolCardKey(rawId, explicitKey);
+  let card = key ? state.toolCards.get(key) : null;
+  if (!card) {
+    // AG5-R1 F3：无注册卡（旧协议缺 id / 无请求记录的迟到结果）时，
+    // 成功结果同样必须进入转录——fallback 卡在完成位点自建，带可辨
+    // 工具名；结果不许凭空消失。
+    card = el('details', 'tool-card');
+    card.dataset.state = 'pending';
+    const summary = el('summary');
+    summary.append(svgIcon('tool'), el('span', null, toolName || 'Tool'), el('span', 'tool-state'));
+    card.append(summary, el('div', 'tool-body'));
+    const nameSpan = card.querySelector('.tool-state');
+    if (!isError) appendWorkRecord(card, toolName || null);
+    card.dataset.state = isError ? 'error' : 'done';
+    card.classList.toggle('is-error', Boolean(isError));
+    if (nameSpan) nameSpan.textContent = isError ? 'Failed' : 'Done';
+    if (rawId) card.dataset.callId = rawId;
+  }
+  card.dataset.state = isError ? 'error' : 'done';
+  card.classList.toggle('is-error', Boolean(isError));
+  const stateSpan = card.querySelector('.tool-state');
+  if (stateSpan) stateSpan.textContent = stateText || (isError ? 'Failed' : 'Done');
+  const body = card.querySelector('.tool-body');
+  if (body) {
+    let output = body.querySelector('.tool-output');
+    if (!output) {
+      output = el('div', 'tool-output');
+      body.appendChild(output);
+    }
+    // 幂等：重复/迟到落定替换同一输出行，不追加第二份结果。
+    output.replaceChildren(document.createTextNode(outputText || ''));
+  }
+  if (isError) {
+    // 错误卡必须位于过程摘要之外（WEB-3 不变量），移出并回落计数。
+    const group = card.closest('.work-summary');
+    if (group) detachWorkRecord(card, group);
+    appendTranscript(card);
+  }
+  // R2-F3：fallback 卡也注册其稳定身份（显式键优先）——重复结果/
+  // 迟到请求命中注册保持同一张卡；无 id 的兼容输入不伪造全局身份。
+  const registerKey = explicitKey || key;
+  if (registerKey) state.toolCards.set(registerKey, card);
+  return card;
+}
+
+function denyToolCard(rawId, reason) {
+  if (!rawId) return;
+  const key = resolveToolCardKey(rawId, rawId);
+  const card = key ? state.toolCards.get(key) : null;
+  if (!card) return;
+  card.dataset.state = 'denied';
+  const stateSpan = card.querySelector('.tool-state');
+  if (stateSpan) stateSpan.textContent = 'Denied';
+  const body = card.querySelector('.tool-body');
+  if (body && reason) {
+    let output = body.querySelector('.tool-output');
+    if (!output) {
+      output = el('div', 'tool-output');
+      body.appendChild(output);
+    }
+    output.replaceChildren(document.createTextNode('denied — ' + reason));
+  }
+}
+
+function detachWorkRecord(card, group) {
+  const records = group.querySelector('.work-records');
+  if (records && card.parentElement === records) records.removeChild(card);
+  const rest = records ? records.childElementCount : 0;
+  group.dataset.records = String(rest);
+  const label = group.querySelector('.work-summary-label');
+  if (label) {
+    label.textContent = 'Work · ' + rest + (rest === 1 ? ' record' : ' records')
+      + (group.dataset.tool ? ' · ' + group.dataset.tool : '');
+  }
+  if (rest === 0) group.remove();
+}
+
+/// 兼容入口：既有 WEB-3 e2e 布局测试直接在页面里调用旧签名填充 DOM
+/// （生产代码不经过这里；语义 = 无配对的自建结果卡）。
+function addToolCard(name, argsText, outputText, isError) {
+  const card = settleToolCard(null, null, outputText, Boolean(isError), name);
+  const body = card.querySelector('.tool-body');
+  if (body && argsText && !card.querySelector('.tool-args')) {
+    body.insertBefore(el('div', 'tool-args', argsText), body.firstChild);
+  }
+  return card;
+}
+
+function clearToolCardScope() {
+  state.toolCards.clear();
+  state.lastCallId = null;
 }
 
 function addVerdict(kind, text) {
