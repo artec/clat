@@ -20,6 +20,13 @@ use std::fmt;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, mpsc};
 
+/// AG-DOGFOOD-6 R1-F1：utility 证据/展示文本的防御性截断。仅用于 CLAT
+/// 自有的 SessionError/IO 文本（磁盘与路径信息）；provider 错误正文一概
+/// 不进此路径——它们在 utility 层就被收敛为 `UtilityFailure` 类别码。
+pub(crate) fn bounded_reason(reason: &str) -> String {
+    reason.chars().take(160).collect()
+}
+
 mod bootstrap;
 mod changes;
 mod compaction;
@@ -71,6 +78,8 @@ mod tests;
 mod threads;
 mod title;
 mod trusted;
+#[cfg(test)]
+mod utility_tests;
 mod vision_probe;
 
 pub use bootstrap::{BootstrapApplication, ProjectAuthorization};

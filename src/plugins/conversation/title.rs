@@ -10,7 +10,7 @@ use crate::model::{CancelToken, ModelConfig, ProviderCredentials};
 use crate::plugin::{Plugin, PluginContext, PluginDescriptor, PluginError, PluginId, ScopeKind};
 use crate::plugins::services::{
     GeneratedTitle, SESSION_TITLE_SERVICE, SESSION_TITLE_SERVICE_ID, SessionTitler,
-    UTILITY_MODEL_SERVICE, UTILITY_MODEL_SERVICE_ID, UtilityModel, UtilityTask,
+    UTILITY_MODEL_SERVICE, UTILITY_MODEL_SERVICE_ID, UtilityFailure, UtilityModel, UtilityTask,
 };
 use std::sync::Arc;
 
@@ -61,7 +61,7 @@ impl SessionTitler for DefaultSessionTitler {
         credentials: &ProviderCredentials,
         conversation: &str,
         cancel: &CancelToken,
-    ) -> Option<GeneratedTitle> {
+    ) -> Result<GeneratedTitle, UtilityFailure> {
         let output = self.utility.generate(
             UtilityTask::SessionTitle,
             config,
@@ -69,7 +69,7 @@ impl SessionTitler for DefaultSessionTitler {
             conversation,
             cancel,
         )?;
-        Some(GeneratedTitle {
+        Ok(GeneratedTitle {
             title: sanitize_title(&output.text),
             provider: output.provider,
             model: output.model,
@@ -291,6 +291,7 @@ mod tests {
         let titler = titler_with_factory(DeadlineProbingFactory(Arc::clone(&seen)));
         let config = ModelConfig::default();
         let credentials = ProviderCredentials::for_protocol(config.protocol);
+        // 空正文清洗为空标题：Err（"empty response"）——失败可诊断而非静默。
         let _ = titler.generate_title(&config, &credentials, "hello", &CancelToken::new());
         let remaining = *seen.lock().expect("seen");
         assert!(
@@ -325,7 +326,7 @@ mod tests {
     }
 
     #[test]
-    fn generation_failure_is_silent_none() {
+    fn generation_failure_returns_the_structured_category() {
         let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let mut manager = PluginManager::root(ScopeKind::TrustedProject);
         manager
@@ -346,11 +347,20 @@ mod tests {
         let titler = manager.require(SESSION_TITLE_SERVICE).expect("titler");
         let config = ModelConfig::default();
         let credentials = ProviderCredentials::for_protocol(config.protocol);
-        assert!(
-            titler
-                .generate_title(&config, &credentials, "anything", &CancelToken::new())
-                .is_none()
+        let failure =
+            match titler.generate_title(&config, &credentials, "anything", &CancelToken::new()) {
+                Ok(_) => panic!("a provider failure must surface a category"),
+                Err(failure) => failure,
+            };
+        // R1-F1：错误只保留自有类别码；工厂消息 "title provider down"
+        // 属于不可信正文形状，绝不出现在安全文本里。
+        assert_eq!(
+            failure,
+            UtilityFailure::RequestFailed(crate::model::ModelErrorKind::Transport)
         );
+        let safe = failure.safe_text();
+        assert_eq!(safe, "request failed (transport)");
+        assert!(!safe.contains("title provider down"));
         assert_eq!(
             attempts.load(std::sync::atomic::Ordering::SeqCst),
             1,

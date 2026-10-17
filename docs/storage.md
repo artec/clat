@@ -23,6 +23,7 @@ Files appear lazily, so a fresh installation may contain only a subset.
 ├── drafts/<process-random>/web/  # private raw drafts; 128 MiB aggregate bound / 1 h TTL
 ├── file-review/                 # native file-change and recovery evidence
 ├── vision-probe-log.jsonl       # vision-probe diagnostics
+├── utility-log.jsonl            # bounded naming/suggestion failure evidence (256 KiB rotate to .1)
 ├── mcp.json                     # optional, user-managed MCP servers
 ├── lsp.json                     # optional, user-managed read-only LSP servers
 ├── skills/<name>/SKILL.md       # optional user-layer instruction bundles
@@ -78,6 +79,7 @@ installation and never participates in runtime discovery.
 | plugin artifacts/staging | immutable code / uncommitted transaction bytes | verify complete tree before activation; stale staging is never executable |
 | market cache/staging | public signed metadata / uncommitted downloaded code | signature+expiry checks on every read; only a committed package registry can activate code |
 | `dsh-last-session` | decorative client preference | missing/corrupt/oversized/symlink → ignore |
+| `utility-log.jsonl` | bounded utility failure evidence | one JSON line per failed naming/suggestion attempt carrying CLAT-owned category codes (never provider error bodies); append is serialized across writers; rotate to `.1` past 256 KiB, dropping the line if rotation fails; write failures only drop the evidence line |
 
 Back up `~/.clat` as a unit when conversation history and configuration both
 matter. Copying only `storages/workspace.json` does not copy conversations;

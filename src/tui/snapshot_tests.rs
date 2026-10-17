@@ -188,6 +188,12 @@ const SCENARIOS: &[&str] = &[
     "dsh-disconnected",
     "dsh-unknown-events",
     "dsh-steer-badge",
+    // 2026-10-17 新增（AG-DOGFOOD-6 / CMDPOP-1）：`/` 命令补全浮层的
+    // 排版回归锁——正文逻辑行折行（含 CJK 与内部 \n）、正文/footer 分隔
+    // 空行、footer Dim 弱化、紧贴输入框等宽几何。窄屏 48×16 覆盖 footer
+    // 自身折行与安全退化。
+    "command-picker",
+    "command-picker-narrow",
 ];
 
 fn snapshot_dir() -> PathBuf {
@@ -799,6 +805,416 @@ fn tui2_dsh_has_no_command_picker_before_or_after_help() {
     assert!(harness.app.discovery.picker.is_none());
     harness.key(KeyCode::Enter);
     assert!(harness.app.should_quit);
+}
+
+/// 行级读取辅助：指定行 [x0, x1) 列区间的文本（去行尾空白）。
+fn picker_row_text(buffer: &ratatui::buffer::Buffer, y: u16, x0: u16, x1: u16) -> String {
+    let mut text = String::new();
+    for x in x0..x1 {
+        text.push_str(buffer[(x, y)].symbol());
+    }
+    text.trim_end().to_owned()
+}
+
+/// 行级样式辅助：指定行 [x0, x1) 列区间是否有非空白格带 DIM 修饰。
+fn picker_row_has_dim(buffer: &ratatui::buffer::Buffer, y: u16, x0: u16, x1: u16) -> bool {
+    (x0..x1).any(|x| {
+        let cell = &buffer[(x, y)];
+        cell.modifier.contains(ratatui::style::Modifier::DIM) && cell.symbol() != " "
+    })
+}
+
+/// 宽字符在 TestBackend 中占两格（第二格是 continuation 空格）——
+/// 文本断言统一去空白，避免把投影空格当成内容。
+fn squeezed(text: &str) -> String {
+    text.split_whitespace().collect()
+}
+
+/// 定位命令补全浮层：以输入框为锚——底边必须是紧贴输入框上沿的一行
+///（几何契约），顶边为同一左右边框列上最近的 ┌。
+fn picker_frame_rows(
+    buffer: &ratatui::buffer::Buffer,
+    input: ratatui::layout::Rect,
+) -> Option<(u16, u16)> {
+    let bottom = input.y.checked_sub(1)?;
+    if buffer[(input.x, bottom)].symbol() != "└" {
+        return None;
+    }
+    for y in (0..bottom).rev() {
+        if buffer[(input.x, y)].symbol() == "┌" {
+            return Some((y, bottom));
+        }
+    }
+    None
+}
+
+/// CMDPOP-1（AG-DOGFOOD-6，前置红）：`/` 命令补全浮层的**内部排版**对齐
+/// 现有弹窗规范——
+/// - 正文（命令名/说明/hint）按逻辑行安全折行：内部 `\n` 是逻辑行边界、
+///   超宽折到续行、CJK 按显示宽度计，绝不把 `\n` 当零宽拼在一行、也不
+///   靠水平截断藏 hint；
+/// - 正文与底部键位提示之间至少一个分隔空行；
+/// - footer `↑↓ browse · … · Esc close` 用现有 `theme::Role::Dim` 弱化；
+/// - 几何契约不回归：紧贴输入框正上方、与输入框等宽、不越界不压输入框。
+#[test]
+fn command_picker_wraps_body_separates_and_dims_footer() {
+    let mut harness = Harness::trusted("cmdpop-wrap", 80, 24);
+    let mut picker = super::command_picker::CommandPicker::new(1);
+    picker.load(&json!({
+        "commands": [
+            {"name": "longcmd",
+             "description": "This description is deliberately long enough to overflow the popup body width and must wrap onto a continuation line instead of truncating the hint away",
+             "usage": "/longcmd <a-very-long-argument-name>"},
+            {"name": "中文命令",
+             "description": "说明第一行\n第二行说明",
+             "usage": "/中文命令 参数"}
+        ],
+        "skills": {"entries": []}
+    }));
+    harness.app.discovery.picker = Some(picker);
+    harness.project();
+    let input = harness.app.input_area;
+    let projection = harness.draw_projection();
+    let buffer = harness.terminal.backend().buffer();
+    let (top, bottom) = picker_frame_rows(buffer, input)
+        .unwrap_or_else(|| panic!("picker frame not found:\n{projection}"));
+    assert!(
+        picker_row_text(buffer, top, input.x, input.x + input.width).contains("Commands / Skills"),
+        "picker title row:\n{projection}"
+    );
+
+    // 几何契约：底边紧贴输入框上沿；左右边框列与输入框对齐等宽。
+    assert_eq!(
+        bottom,
+        input.y - 1,
+        "popup bottom must hug the input top edge"
+    );
+    assert_eq!(
+        buffer[(input.x, bottom)].symbol(),
+        "└",
+        "left border must align with the input box"
+    );
+    assert_eq!(
+        buffer[(input.x + input.width - 1, bottom)].symbol(),
+        "┘",
+        "popup must share the input box width"
+    );
+
+    // footer：Dim 弱化 + 与正文之间至少一个分隔空行。
+    let mut footer_row = None;
+    for y in top..=bottom {
+        if picker_row_text(buffer, y, input.x, input.x + input.width).contains("Esc close") {
+            footer_row = Some(y);
+            break;
+        }
+    }
+    let footer_row = footer_row.unwrap_or_else(|| panic!("footer row missing:\n{projection}"));
+    assert!(
+        picker_row_has_dim(buffer, footer_row, input.x + 1, input.x + input.width - 1),
+        "the footer hint must use the existing Dim role, projection:\n{projection}"
+    );
+    let separator = picker_row_text(
+        buffer,
+        footer_row - 1,
+        input.x + 1,
+        input.x + input.width - 1,
+    );
+    assert!(
+        separator.is_empty(),
+        "a clear blank line must separate body from footer, got {separator:?}"
+    );
+
+    // 折行：长说明的尾部必须出现在 /longcmd 行**下方**的续行里，且不出
+    // 边框（不得水平截断藏内容）。
+    let rows: Vec<(u16, String)> = (top..=bottom)
+        .map(|y| {
+            (
+                y,
+                picker_row_text(buffer, y, input.x + 1, input.x + input.width - 1),
+            )
+        })
+        .collect();
+    let entry_row = rows
+        .iter()
+        .find(|(_, text)| text.contains("/longcmd"))
+        .unwrap_or_else(|| panic!("longcmd entry missing:\n{projection}"));
+    let continuation = rows
+        .iter()
+        .find(|(y, text)| *y > entry_row.0 && text.contains("continuation line"))
+        .unwrap_or_else(|| {
+            panic!("long description must wrap onto a continuation row:\n{projection}")
+        });
+    let hint_row = rows
+        .iter()
+        .find(|(y, text)| *y >= entry_row.0 && text.contains("a-very-long-argument-name"))
+        .unwrap_or_else(|| panic!("the usage hint must stay visible:\n{projection}"));
+
+    // 逻辑行：内部 \n 必须分行呈现，第二行说明独立成行（宽字符断言去
+    // continuation 空格）。
+    let second_logical = rows
+        .iter()
+        .find(|(_, text)| squeezed(text).contains("第二行说明"))
+        .unwrap_or_else(|| panic!("second logical line missing:\n{projection}"));
+    assert!(
+        !squeezed(&second_logical.1).contains("说明第一行"),
+        "internal \\n must break logical lines, not glue them zero-width:\n{projection}"
+    );
+    assert!(hint_row.0 <= footer_row);
+    assert!(continuation.0 < footer_row);
+
+    // 边框完整：正文行不占用边框列（边框列只允许框线字符）。
+    for y in top..=bottom {
+        for x in [input.x, input.x + input.width - 1] {
+            let symbol = buffer[(x, y)].symbol();
+            assert!(
+                symbol == "│"
+                    || symbol == "┌"
+                    || symbol == "┐"
+                    || symbol == "└"
+                    || symbol == "┘"
+                    || symbol == "─"
+                    || symbol == " ",
+                "border column must stay intact at ({x},{y}), got {symbol:?}"
+            );
+        }
+    }
+}
+
+/// CMDPOP-1 窄屏负控（48×16）：浮层仍紧贴输入框、与输入框等宽；正文折
+/// 行不越界；空间不足时安全退化但 footer 的 Dim 与键位语义仍在。
+#[test]
+fn command_picker_narrow_stays_glued_wraps_and_keeps_dim_footer() {
+    let mut harness = Harness::trusted("cmdpop-narrow", 48, 16);
+    let mut picker = super::command_picker::CommandPicker::new(1);
+    picker.load(&json!({
+        "commands": [
+            {"name": "longcmd",
+             "description": "一段特别长的中文说明文字用于验证窄屏下的按显示宽度折行行为必须继续工作而不越过右边框",
+             "usage": "/longcmd 参数"},
+            {"name": "quit", "description": "退出当前会话", "usage": "/quit"}
+        ],
+        "skills": {"entries": []}
+    }));
+    harness.app.discovery.picker = Some(picker);
+    harness.project();
+    let input = harness.app.input_area;
+    let projection = harness.draw_projection();
+    let buffer = harness.terminal.backend().buffer();
+    let (top, bottom) = picker_frame_rows(buffer, input)
+        .unwrap_or_else(|| panic!("picker frame not found:\n{projection}"));
+    assert!(
+        picker_row_text(buffer, top, input.x, input.x + input.width).contains("Commands / Skills"),
+        "narrow picker title row:\n{projection}"
+    );
+
+    assert_eq!(bottom, input.y - 1, "narrow popup still hugs the input box");
+    assert_eq!(buffer[(input.x, bottom)].symbol(), "└");
+    assert_eq!(buffer[(input.x + input.width - 1, bottom)].symbol(), "┘");
+
+    // CJK 宽字符折行：每个正文行都在边框内（列 x 与 x+width-1 之间）。
+    for y in top..=bottom {
+        for x in [input.x, input.x + input.width - 1] {
+            let symbol = buffer[(x, y)].symbol();
+            assert!(
+                symbol == "│"
+                    || symbol == "┌"
+                    || symbol == "┐"
+                    || symbol == "└"
+                    || symbol == "┘"
+                    || symbol == "─"
+                    || symbol == " ",
+                "narrow border intact at ({x},{y}), got {symbol:?}"
+            );
+        }
+    }
+    // footer 仍 Dim、仍在浮层内。
+    let footer_row = (top..=bottom)
+        .find(|y| picker_row_text(buffer, *y, input.x, input.x + input.width).contains("Esc close"))
+        .unwrap_or_else(|| panic!("footer missing in narrow popup:\n{projection}"));
+    assert!(
+        picker_row_has_dim(buffer, footer_row, input.x + 1, input.x + input.width - 1),
+        "narrow footer keeps the Dim role:\n{projection}"
+    );
+}
+
+/// CMDPOP-1 快照锁（真实 `/` 路径 + 真实 core 命令目录）：80×24 常规
+/// 宽度下正文折行、分隔空行与 Dim footer 的完整排版。
+#[test]
+fn command_picker_snapshot() {
+    let mut harness = Harness::trusted("snap-command-picker", 80, 24);
+    harness.type_text("/");
+    assert!(harness.app.discovery.picker.is_some());
+    harness.snapshot("command-picker");
+    // 键位语义不随排版改变：Esc 关闭、输入完好（J 链的 TUI 腿）。
+    harness.key(KeyCode::Esc);
+    assert!(harness.app.discovery.picker.is_none());
+    assert_eq!(harness.app.input.text(), "/");
+}
+
+/// CMDPOP-1 窄屏快照锁（48×16）：footer 自身折行 + 安全退化。
+#[test]
+fn command_picker_narrow_snapshot() {
+    let mut harness = Harness::trusted("snap-command-picker-narrow", 48, 16);
+    harness.type_text("/");
+    assert!(harness.app.discovery.picker.is_some());
+    harness.snapshot("command-picker-narrow");
+    // 导航后关闭，输入不被损坏。
+    harness.key(KeyCode::Down);
+    harness.key(KeyCode::Esc);
+    assert_eq!(harness.app.input.text(), "/");
+}
+
+/// CMDPOP-1 宽度矩阵补全（合同 120×30 与“更窄/更矮”）：120 列宽屏与
+/// 40×10 极矮屏下几何契约与安全退化不变（矮屏保 footer，正文截尾）。
+#[test]
+fn command_picker_geometry_holds_wide_and_very_short() {
+    for (width, height) in [(120u16, 30u16), (40, 10)] {
+        let mut harness = Harness::trusted("cmdpop-matrix", width, height);
+        let mut picker = super::command_picker::CommandPicker::new(1);
+        picker.load(&json!({
+            "commands": [
+                {"name": "quit", "description": "Exit the session", "usage": "/quit"}
+            ],
+            "skills": {"entries": []}
+        }));
+        harness.app.discovery.picker = Some(picker);
+        harness.project();
+        let input = harness.app.input_area;
+        let projection = harness.draw_projection();
+        let buffer = harness.terminal.backend().buffer();
+        let (top, bottom) = picker_frame_rows(buffer, input)
+            .unwrap_or_else(|| panic!("{width}x{height}: picker frame not found:\n{projection}"));
+        assert_eq!(
+            bottom,
+            input.y - 1,
+            "{width}x{height}: popup bottom hugs the input top edge"
+        );
+        assert_eq!(
+            buffer[(input.x + input.width - 1, bottom)].symbol(),
+            "┘",
+            "{width}x{height}: popup shares the input width"
+        );
+        // footer（或退化后的 footer 尾行）保持 Dim 且在浮层内。
+        let footer_row = (top..=bottom)
+            .filter(|y| picker_row_has_dim(buffer, *y, input.x + 1, input.x + input.width - 1))
+            .max()
+            .unwrap_or_else(|| panic!("{width}x{height}: no Dim footer row:\n{projection}"));
+        assert!(footer_row < bottom);
+        for y in top..=bottom {
+            for x in [input.x, input.x + input.width - 1] {
+                let symbol = buffer[(x, y)].symbol();
+                assert!(
+                    symbol == "│"
+                        || symbol == "┌"
+                        || symbol == "┐"
+                        || symbol == "└"
+                        || symbol == "┘"
+                        || symbol == "─"
+                        || symbol == " ",
+                    "{width}x{height}: border intact at ({x},{y}), got {symbol:?}"
+                );
+            }
+        }
+    }
+}
+
+/// R1-F2（乙方反例复刻）：5 条命令各有 ~4 行说明，真实 Down 键导航 4
+/// 次选中最后一条——选中项与其高亮必须仍在浮层内（视口围绕选中条目，
+/// 而不是按条目数取前 N 条）。
+#[test]
+fn command_picker_keeps_selection_visible_after_wrapped_navigation() {
+    let mut harness = Harness::trusted("cmdpop-r1f2", 80, 24);
+    let mut picker = super::command_picker::CommandPicker::new(1);
+    let commands: Vec<serde_json::Value> = (0..5)
+        .map(|index| {
+            json!({
+                "name": format!("cmd{index}"),
+                "description": format!(
+                    "command {index} has a deliberately long description that \
+                     wraps across roughly five physical rows in the eighty \
+                     column popup so the wrapped viewport has to follow the \
+                     selection instead of clipping the tail entries away and \
+                     hiding the highlighted row from the person navigating \
+                     with the down arrow key through all five commands here {index}"
+                ),
+                "usage": format!("/cmd{index} arg{index}")
+            })
+        })
+        .collect();
+    picker.load(&json!({"commands": commands, "skills": {"entries": []}}));
+    harness.app.discovery.picker = Some(picker);
+    harness.project();
+    for _ in 0..4 {
+        harness.key(KeyCode::Down);
+    }
+    let input = harness.app.input_area;
+    let projection = harness.draw_projection();
+    let buffer = harness.terminal.backend().buffer();
+    let (top, bottom) = picker_frame_rows(buffer, input)
+        .unwrap_or_else(|| panic!("picker frame not found:\n{projection}"));
+    // cmd4 的正文行与选中高亮（REVERSED）都必须可见。
+    let mut saw_cmd4 = false;
+    let mut saw_highlight = false;
+    for y in top..=bottom {
+        let text = picker_row_text(buffer, y, input.x + 1, input.x + input.width - 1);
+        if squeezed(&text).contains("cmd4") {
+            saw_cmd4 = true;
+        }
+        if squeezed(&text).contains("cmd4")
+            && (0..input.width).any(|x| {
+                buffer[(x, y)]
+                    .modifier
+                    .contains(ratatui::style::Modifier::REVERSED)
+            })
+        {
+            saw_highlight = true;
+        }
+    }
+    assert!(
+        saw_cmd4,
+        "the selected entry must stay visible:\n{projection}"
+    );
+    assert!(
+        saw_highlight,
+        "the selection highlight must stay visible:\n{projection}"
+    );
+    // 高亮行的填充目标仍是 cmd4（导航与可见内容一致）。
+    assert!(harness.app.discovery.picker.is_some());
+    harness.key(KeyCode::Tab);
+    assert!(harness.app.input.text().starts_with("/cmd4"));
+}
+
+/// R1-F3（乙方反例复刻）：80×30（inner=76）下一条 76 个 Z 的 ASCII 逻辑
+/// 行——渲染出的 Z 总数必须等于 76（缩进计入宽度后不再有静默的水平
+/// 截断；跨行分布允许）。
+#[test]
+fn command_picker_wraps_full_width_text_without_losing_characters() {
+    let mut harness = Harness::trusted("cmdpop-r1f3", 80, 30);
+    let mut picker = super::command_picker::CommandPicker::new(1);
+    picker.load(&json!({
+        "commands": [
+            {"name": "zline", "description": "Z".repeat(76), "usage": "/zline"}
+        ],
+        "skills": {"entries": []}
+    }));
+    harness.app.discovery.picker = Some(picker);
+    harness.project();
+    let input = harness.app.input_area;
+    let projection = harness.draw_projection();
+    let buffer = harness.terminal.backend().buffer();
+    let (top, bottom) = picker_frame_rows(buffer, input)
+        .unwrap_or_else(|| panic!("picker frame not found:\n{projection}"));
+    let rendered_z = (top..=bottom)
+        .map(|y| {
+            (input.x + 1..input.x + input.width - 1)
+                .filter(|x| buffer[(*x, y)].symbol() == "Z")
+                .count()
+        })
+        .sum::<usize>();
+    assert_eq!(
+        rendered_z, 76,
+        "all 76 columns of Z must render (wrapped across rows), got {rendered_z}:\n{projection}"
+    );
 }
 
 #[test]

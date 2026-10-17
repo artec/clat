@@ -1,0 +1,27 @@
+size 80x24
+cursor 4,21
+scroll 0
+000| ┌──────────────────────────────────────────────────────────────────────────────┐
+001| │ CLAT v<VERSION>  ready  ·  not configured — /model                               │  ⟦2..5 BOLD · 25..47 fg=Cyan⟧
+002| └──────────────────────────────────────────────────────────────────────────────┘
+003| ┌ Conversation ────────────────────────────────────────────────────────────────┐
+004| │                                                                              │
+005| │                                                                              │
+006| │                                                                              │
+007| │                        ██████╗██╗      █████╗ ███████╗                       │  ⟦24..55 fg=Rgb(65, 118, 230)⟧
+008| │                       ██╔════╝██║     ██╔══██╗╚══██══╝                       │  ⟦24..55 fg=Rgb(65, 118, 230)⟧
+009| ┌ Commands / Skills ───────────────────────────────────────────────────────────┐  ⟦0..0 fg=Yellow · 1..19 fg=Yellow+BOLD · 20..79 fg=Yellow⟧
+010| │ Commands                                                                     │  ⟦0..0 fg=Yellow · 2..9 fg=DarkGray · 79..79 fg=Yellow⟧
+011| │ /new · start a new conversation · /new                                       │  ⟦0..0 fg=Yellow · 2..39 REVERSED · 79..79 fg=Yellow⟧
+012| │ /resume · pick a previous conversation to continue · /resume                 │  ⟦0..0 fg=Yellow · 79..79 fg=Yellow⟧
+013| │ /rename · rename the current conversation                                    │  ⟦0..0 fg=Yellow · 79..79 fg=Yellow⟧
+014| │   No active conversation to rename                                           │  ⟦0..0 fg=Yellow · 79..79 fg=Yellow⟧
+015| │ /compact · summarize earlier turns into a compact context · /compact         │  ⟦0..0 fg=Yellow · 79..79 fg=Yellow⟧
+016| │ /context · inspect an estimated model-context breakdown · /context           │  ⟦0..0 fg=Yellow · 79..79 fg=Yellow⟧
+017| │                                                                              │  ⟦0..0 fg=Yellow · 79..79 fg=Yellow⟧
+018| │ ↑↓ browse · Tab fill · Enter fill/submit exact command · Esc close           │  ⟦0..0 fg=Yellow · 2..67 DIM · 79..79 fg=Yellow⟧
+019| └──────────────────────────────────────────────────────────────────────────────┘  ⟦0..79 fg=Yellow⟧
+020| ┌ Message ────────────────────────────────────────────────────── Project Write ┐  ⟦64..78 fg=DarkGray⟧
+021| │❯ /                                                                           │
+022| └──────────────────────────────────────────────────────────────────────────────┘
+023|  <STORAGE-ROOT>

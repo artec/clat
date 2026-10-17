@@ -45,7 +45,7 @@ pub(super) struct CommandPicker {
 }
 
 impl CommandPicker {
-    fn new(request: u64) -> Self {
+    pub(super) fn new(request: u64) -> Self {
         Self {
             choices: Vec::new(),
             query: String::new(),
@@ -55,7 +55,7 @@ impl CommandPicker {
         }
     }
 
-    fn load(&mut self, catalog: &Value) {
+    pub(super) fn load(&mut self, catalog: &Value) {
         self.choices.clear();
         for entry in catalog["commands"]
             .as_array()
@@ -279,38 +279,64 @@ impl App {
         };
         let filtered = picker.filtered();
         let first = picker.selected.saturating_sub(3);
-        let mut lines = Vec::new();
+        // 内容区宽度：弹框与输入框等宽（几何契约），扣除边框与左右内边距。
+        let inner = self
+            .input_area
+            .width
+            .saturating_sub(2 + 2 * POPUP_TEXT_PADDING) as usize;
+        // 渲染候选（≤5 条）为物理行，并记录选中条目与其分组头的行号——
+        // R1-F2：折行后视口必须围绕选中条目，而不是按条目数取前 N 条。
+        let mut body: Vec<Line<'static>> = Vec::new();
         let mut section = None;
+        let mut anchor = 0usize;
+        let mut anchor_section_head = 0usize;
         for (index, choice) in filtered.iter().skip(first).take(5).enumerate() {
+            let is_selected = first + index == picker.selected;
             if section != Some(choice.skill) {
                 section = Some(choice.skill);
-                lines.push(Line::from(Span::styled(
+                if is_selected {
+                    anchor_section_head = body.len();
+                }
+                body.push(Line::from(Span::styled(
                     if choice.skill { "Skills" } else { "Commands" },
                     theme::style(theme::Role::Faint),
                 )));
             }
-            lines.push(Line::from(Span::styled(
-                format!(
-                    "{} · {} · {}",
-                    choice.label, choice.description, choice.hint
-                ),
-                if first + index == picker.selected {
-                    theme::style(theme::Role::Selected)
-                } else {
-                    Style::default()
-                },
-            )));
+            if is_selected {
+                anchor = body.len();
+            }
+            body.extend(entry_lines(choice, is_selected, inner));
         }
-        if lines.is_empty() {
-            lines.push(Line::from(picker.status.clone()));
+        if body.is_empty() {
+            body.push(Line::from(picker.status.clone()));
         }
-        lines.push(Line::from(
-            "↑↓ browse · Tab fill · Enter fill/submit exact command · Esc close",
-        ));
-        let height = (lines.len() as u16 + 2).min(self.input_area.y);
+        // 底部键位提示：正文与 footer 之间至少一个分隔空行（空间足够时），
+        // footer 用现有对话框 footer 的 Dim 弱化（CMDPOP-1）。footer 自身
+        // 超宽时按同一宽度折行（窄屏不截断键位语义）。
+        let footer = "↑↓ browse · Tab fill · Enter fill/submit exact command · Esc close";
+        let footer_rows: Vec<String> = wrap_text(footer, inner.max(1));
+        let wanted = (body.len() + 2 + footer_rows.len() + 1) as u16; // 边框+正文+空行+footer
+        let height = wanted.min(self.input_area.y);
         if height < 3 {
             return;
         }
+        let avail = height as usize - 2; // 边框内行数
+        // 空间不足时保 footer（可操作键位语义）优先于正文尾部。
+        let with_separator = avail > footer_rows.len();
+        let body_rows =
+            avail.saturating_sub(footer_rows.len() + if with_separator { 1 } else { 0 });
+        // R1-F2：放不下全部行时，视口围绕选中条目（含其分组头）；选中
+        // 行与其高亮必须可见，否则导航与可见内容脱节。
+        let visible_body = viewport_rows(body, body_rows, anchor.min(anchor_section_head), anchor);
+        let mut lines: Vec<Line<'static>> = visible_body.into_iter().collect();
+        if with_separator {
+            lines.push(Line::from(""));
+        }
+        lines.extend(
+            footer_rows
+                .into_iter()
+                .map(|row| Line::from(Span::styled(row, theme::style(theme::Role::Dim)))),
+        );
         let area = Rect::new(
             self.input_area.x,
             self.input_area.y - height,
@@ -323,6 +349,87 @@ impl App {
             area,
         );
     }
+}
+
+/// 行级视口：全部放得下时全显；否则从“锚定区”开始（选中条目与分组头
+/// 尽量一起可见），并钳制保证 `anchor` 行落在窗口内（R1-F2）。
+fn viewport_rows(
+    body: Vec<Line<'static>>,
+    budget: usize,
+    desired_start: usize,
+    anchor: usize,
+) -> Vec<Line<'static>> {
+    if budget == 0 {
+        return Vec::new();
+    }
+    if body.len() <= budget {
+        return body;
+    }
+    let max_start = body.len() - budget;
+    let mut start = desired_start.saturating_sub(2).min(max_start);
+    if anchor >= start + budget {
+        start = (anchor + 1).saturating_sub(budget).min(max_start);
+    }
+    body.into_iter().skip(start).take(budget).collect()
+}
+
+/// 一条命令/技能的展示行：`label · description · hint` 在放得下时保持
+/// 原单行形态；放不下或含内部换行时按逻辑行拆分并按显示宽度折行——
+/// `\n` 永远是逻辑行边界（不是零宽拼接，且同字段的两个逻辑行不得用
+/// `·` 拼回一行），续行缩进两格，超宽用 unicode 宽度折行而不是水平
+/// 截断（CMDPOP-1）。字段**之间**（label/description/hint）才允许用
+/// `·` 合并到同一行。R1-F3：缩进与连接符计入宽度——所有行按
+/// `inner - INDENT` 折行，首行不加前缀、续行加 INDENT 前缀后仍 ≤ inner，
+/// 任何行都不再因隐藏前缀被 Paragraph 截断。
+fn entry_lines(choice: &Choice, selected: bool, inner: usize) -> Vec<Line<'static>> {
+    const INDENT: usize = 2;
+    let style = if selected {
+        theme::style(theme::Role::Selected)
+    } else {
+        Style::default()
+    };
+    let wrap_width = inner.saturating_sub(INDENT).max(1);
+    let indent = " ".repeat(INDENT);
+    let mut rows: Vec<String> = Vec::new();
+    let mut current: Option<String> = None;
+    for (segment_index, segment) in [&choice.label, &choice.description, &choice.hint]
+        .into_iter()
+        .enumerate()
+    {
+        for (line_index, logical) in segment.split('\n').enumerate() {
+            for wrapped in wrap_text(logical, wrap_width) {
+                let joins_field = line_index == 0;
+                match (joins_field, current.take()) {
+                    (true, Some(prev)) => {
+                        let joined = format!("{prev} · {wrapped}");
+                        if joined.width() <= wrap_width {
+                            current = Some(joined);
+                        } else {
+                            rows.push(prev);
+                            current = Some(format!("{indent}{wrapped}"));
+                        }
+                    }
+                    (_, previous) => {
+                        // 字段内部的 \n 是硬换行：任何已有行先落盘。
+                        if let Some(previous) = previous {
+                            rows.push(previous);
+                        }
+                        current = Some(if segment_index == 0 && line_index == 0 {
+                            wrapped
+                        } else {
+                            format!("{indent}{wrapped}")
+                        });
+                    }
+                }
+            }
+        }
+    }
+    if let Some(final_row) = current.take() {
+        rows.push(final_row);
+    }
+    rows.into_iter()
+        .map(|row| Line::from(Span::styled(row, style)))
+        .collect()
 }
 
 #[cfg(test)]

@@ -1,0 +1,19 @@
+size 48x16
+cursor 4,13
+scroll 0
+000| ┌ Commands / Skills ───────────────────────────┐  ⟦0..0 fg=Yellow · 1..19 fg=Yellow+BOLD · 20..47 fg=Yellow⟧
+001| │ Commands                                     │  ⟦0..0 fg=Yellow · 2..9 fg=DarkGray · 47..47 fg=Yellow⟧
+002| │ /new · start a new conversation · /new       │  ⟦0..0 fg=Yellow · 2..39 REVERSED · 47..47 fg=Yellow⟧
+003| │ /resume                                      │  ⟦0..0 fg=Yellow · 47..47 fg=Yellow⟧
+004| │   pick a previous conversation to continue   │  ⟦0..0 fg=Yellow · 47..47 fg=Yellow⟧
+005| │   /resume                                    │  ⟦0..0 fg=Yellow · 47..47 fg=Yellow⟧
+006| │ /rename · rename the current conversation    │  ⟦0..0 fg=Yellow · 47..47 fg=Yellow⟧
+007| │   No active conversation to rename           │  ⟦0..0 fg=Yellow · 47..47 fg=Yellow⟧
+008| │                                              │  ⟦0..0 fg=Yellow · 47..47 fg=Yellow⟧
+009| │ ↑↓ browse · Tab fill · Enter fill/submit exa │  ⟦0..0 fg=Yellow · 2..45 DIM · 47..47 fg=Yellow⟧
+010| │ ct command · Esc close                       │  ⟦0..0 fg=Yellow · 2..23 DIM · 47..47 fg=Yellow⟧
+011| └──────────────────────────────────────────────┘  ⟦0..47 fg=Yellow⟧
+012| ┌ Message ────────────────────── Project Write ┐  ⟦32..46 fg=DarkGray⟧
+013| │❯ /                                           │
+014| └──────────────────────────────────────────────┘
+015|  <STORAGE-ROOT>

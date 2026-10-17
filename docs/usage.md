@@ -1123,6 +1123,27 @@ do not read or write the old attempt-budget file. Requests use short excerpts
 of recent messages, so a long assistant reply cannot crowd out the user's
 recent intent. Cancellation, request deadlines, and output-size bounds remain.
 
+Naming and suggestion requests are one-shot utility requests with their own
+shape, independent of the main agent loop's thinking settings: they never
+send a `thinking` object, they lower an existing `reasoning_effort` to `low`,
+and they carry an output budget sized for brief thinking plus one line of
+text. Built-in presets run as reasoning models per their official parameters,
+so these bounds keep the answer from being crowded out under the controlled
+reproduction; the exact vendor-side accounting of reasoning tokens against
+`max_tokens` is not claimed for every provider.
+
+When a naming or suggestion request fails, one bounded evidence line is
+appended to `~/.clat/utility-log.jsonl` and the frontends show the same
+failure text. That text is a CLAT-owned category code — for example
+`request failed (server)`, `request failed (transport)`,
+`empty response (finish max-tokens)`, or `cancelled` — never the provider's
+error body: response bodies from the network are untrusted input, so they are
+classified by CLAT's own stable error taxonomy instead of being copied,
+truncated, or echoed. The log records no credentials and no conversation
+text, is serialized across writers, and rotates to `.1` once it exceeds
+256 KiB; if rotation itself fails the line is dropped so the log stays
+bounded. Naming never blocks the run and never retries in the background.
+
 ### WeChat remote control
 
 The optional WeChat frontend uses the official iLink bot API from the same
@@ -1789,7 +1810,9 @@ companion for naming (for example, `kimi-k3` uses `kimi-for-coding` and
 `hy4-preview` uses `hy3`); other models and customized routes use the primary
 model. Companion requests
 keep the same endpoint and credentials, use the companion's model settings,
-and record the actual model in the title's source.
+and record the actual model in the title's source. Like suggestions, they
+are shaped as one-shot low-effort requests without a `thinking` object
+(see *Companion utility and manual suggestions*).
 If an error carries a committed admission receipt, the submitted text is not
 restored as a new draft; any newer input is preserved. Without a valid receipt,
 the text is kept with a warning to check host history before sending it again.

@@ -799,7 +799,7 @@ fn prompt_suggest(
     };
     let suggestion = prepared
         .generate(&crate::CancelToken::new())
-        .ok_or_else(|| RpcError::internal("prompt suggestion unavailable"))?;
+        .map_err(RpcError::internal)?;
     Ok(json!({
         "session_id": suggestion.session_id.as_str(),
         "selection_generation": selection,

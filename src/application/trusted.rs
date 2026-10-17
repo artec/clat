@@ -220,6 +220,7 @@ impl TrustedProjectApplication {
                 Arc::clone(titler),
                 Arc::clone(&self.sessions),
                 Arc::clone(&self.subscribers),
+                self.host_storage.root().to_path_buf(),
             )?);
         }
         // B9 迁移腿（INV-M3 升级腿）：旧世界的唯一自定义持久化形态是

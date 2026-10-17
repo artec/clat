@@ -604,9 +604,7 @@ impl App {
         let spawn = thread::Builder::new()
             .name("clat-prompt-suggestion".into())
             .spawn(move || {
-                let outcome = prepared
-                    .generate(&cancel)
-                    .ok_or_else(|| "prompt suggestion unavailable".to_owned());
+                let outcome = prepared.generate(&cancel);
                 let message =
                     UiEvent::Worker(WorkerMessage::PromptSuggestionFinished { request, outcome });
                 let _ = sender.send(message);

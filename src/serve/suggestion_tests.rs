@@ -1,5 +1,5 @@
 use super::*;
-use crate::plugins::services::{UtilityModel, UtilityOutput, UtilityTask};
+use crate::plugins::services::{UtilityFailure, UtilityModel, UtilityOutput, UtilityTask};
 use serde_json::json;
 use std::sync::{Condvar, mpsc};
 
@@ -20,7 +20,7 @@ impl UtilityModel for BlockedUtility {
         _: &crate::ProviderCredentials,
         _: &str,
         _: &crate::CancelToken,
-    ) -> Option<UtilityOutput> {
+    ) -> Result<UtilityOutput, UtilityFailure> {
         self.reached.send(()).unwrap();
         let (lock, wake) = &*self.release;
         let (released, _) = wake
@@ -28,11 +28,15 @@ impl UtilityModel for BlockedUtility {
                 !*released
             })
             .unwrap();
-        (*released).then(|| UtilityOutput {
-            text: "next question".into(),
-            provider: "fixture".into(),
-            model: "fixture".into(),
-        })
+        if *released {
+            Ok(UtilityOutput {
+                text: "next question".into(),
+                provider: "fixture".into(),
+                model: "fixture".into(),
+            })
+        } else {
+            Err(UtilityFailure::Cancelled)
+        }
     }
 }
 

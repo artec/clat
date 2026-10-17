@@ -5,8 +5,8 @@ use crate::model::{
 use crate::plugin::{Plugin, PluginContext, PluginDescriptor, PluginError, PluginId, ScopeKind};
 use crate::plugins::services::{
     CONFIG_SERVICE, CONFIG_SERVICE_ID, ConfigStore, PROVIDER_SERVICE, PROVIDER_SERVICE_ID,
-    ProviderRegistry, UTILITY_MODEL_SERVICE, UTILITY_MODEL_SERVICE_ID, UtilityModel, UtilityOutput,
-    UtilityTask,
+    ProviderRegistry, UTILITY_MODEL_SERVICE, UTILITY_MODEL_SERVICE_ID, UtilityFailure,
+    UtilityFinish, UtilityModel, UtilityOutput, UtilityTask,
 };
 use crate::presets::preset_by_id;
 use crate::providers::{ModelBuildFn, RetryPolicy, retry_model_with};
@@ -74,11 +74,22 @@ impl UtilityModel for DefaultUtilityModel {
         primary_credentials: &ProviderCredentials,
         conversation: &str,
         cancel: &CancelToken,
-    ) -> Option<UtilityOutput> {
+    ) -> Result<UtilityOutput, UtilityFailure> {
         if !self.enabled(task) {
-            return None;
+            return Err(UtilityFailure::Disabled);
         }
-        let (config, credentials) = self.route(primary, primary_credentials)?;
+        let (config, credentials) = self
+            .route(primary, primary_credentials)
+            .ok_or(UtilityFailure::RouteUnavailable)?;
+        // AG-DOGFOOD-6（TITLE-1/SUG-1 根因）：utility 请求是一次性小请求，
+        // 不复用主 agent 循环的思考档位——内置预设全部是思考不可关闭的
+        // 推理模型（DeepSeek/GLM 官方 "Disabling reasoning is no longer
+        // supported"），带着 `thinking: enabled` + `effort: high` 和
+        // 32/96 的 max_tokens 去请求，思考 token 先耗尽预算，流以
+        // length 终止且无正文，标题/建议静默为空。整形为任务级形态：
+        // 不发 thinking 对象（交由服务端默认）、effort 收敛到 low、预算
+        // 放宽到思考后仍有正文余量。
+        let config = shape_utility_request(&config);
         let response = request(
             &self.providers,
             task,
@@ -87,12 +98,27 @@ impl UtilityModel for DefaultUtilityModel {
             conversation,
             cancel,
         )?;
-        Some(UtilityOutput {
+        Ok(UtilityOutput {
             text: response,
             provider: config.protocol.to_string(),
             model: config.model,
         })
     }
+}
+
+/// 任务级请求整形：适用于任何路由来源（预设 companion 或自定义端点），
+/// 规则与厂商无关——不发 `thinking` 对象（GLM 官方拒绝 `disabled`，
+/// 服务端默认本就开启）；`reasoning_effort` 已存在时收敛为 low；其余
+/// extra_body 字段（stream_options 等）原样保留。
+pub(crate) fn shape_utility_request(config: &ModelConfig) -> ModelConfig {
+    let mut shaped = config.clone();
+    if let Some(body) = shaped.extra_body.as_object_mut() {
+        body.remove("thinking");
+        if body.contains_key("reasoning_effort") {
+            body.insert("reasoning_effort".into(), serde_json::json!("low"));
+        }
+    }
+    shaped
 }
 
 impl DefaultUtilityModel {
@@ -119,7 +145,7 @@ fn request(
     credentials: &ProviderCredentials,
     conversation: &str,
     cancel: &CancelToken,
-) -> Option<String> {
+) -> Result<String, UtilityFailure> {
     let build: ModelBuildFn = {
         let providers = Arc::clone(providers);
         let config = config.clone();
@@ -145,6 +171,7 @@ fn request(
         ..ModelOptions::default()
     };
     let request_cancel = cancel.child_with_deadline(std::time::Instant::now() + DEADLINE);
+    // R1-F1：错误正文（不可信）不离开本层——只保留自有 kind 类别码。
     let response = model
         .stream(
             ModelRequest {
@@ -156,8 +183,32 @@ fn request(
             },
             &mut Vec::new(),
         )
-        .ok()?;
-    (response.finish_reason != FinishReason::Cancelled).then_some(response.text)
+        .map_err(|error| UtilityFailure::RequestFailed(error.kind()))?;
+    if response.finish_reason == FinishReason::Cancelled {
+        return Err(UtilityFailure::Cancelled);
+    }
+    if response.text.trim().is_empty() {
+        return Err(UtilityFailure::EmptyResponse {
+            finish: UtilityFinish::from(response.finish_reason),
+        });
+    }
+    Ok(response.text)
+}
+
+/// 自有 finish 词表：未知 provider 值归一为 `Unknown`，不携带原串。
+impl From<FinishReason> for UtilityFinish {
+    fn from(reason: FinishReason) -> Self {
+        match reason {
+            FinishReason::Completed => Self::Completed,
+            FinishReason::ToolCalls => Self::ToolCalls,
+            FinishReason::MaxTokens => Self::MaxTokens,
+            FinishReason::Refusal => Self::Refusal,
+            FinishReason::Cancelled => Self::Cancelled,
+            FinishReason::Incomplete => Self::Incomplete,
+            FinishReason::Error => Self::Error,
+            FinishReason::Unknown(_) => Self::Unknown,
+        }
+    }
 }
 
 fn instructions(task: UtilityTask) -> &'static str {
@@ -178,8 +229,10 @@ fn instructions(task: UtilityTask) -> &'static str {
 
 fn output_limit(task: UtilityTask) -> u32 {
     match task {
-        UtilityTask::SessionTitle => 32,
-        UtilityTask::PromptSuggestion => 96,
+        // 预算必须覆盖"低档思考 + 一行正文"：思考不可关闭的模型上，
+        // 32/96 会被思考 token 耗尽（TITLE-1/SUG-1 根因）。
+        UtilityTask::SessionTitle => 512,
+        UtilityTask::PromptSuggestion => 768,
     }
 }
 

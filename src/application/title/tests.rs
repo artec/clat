@@ -1,4 +1,5 @@
 use super::*;
+use crate::plugins::services::UtilityFailure;
 use crate::session::event::payloads;
 use crate::session::key::ProjectKey;
 use crate::session::persistence::JsonlCompression;
@@ -14,10 +15,10 @@ impl SessionTitler for RecordingTitler {
         _: &ProviderCredentials,
         conversation: &str,
         _: &CancelToken,
-    ) -> Option<crate::plugins::services::GeneratedTitle> {
+    ) -> Result<crate::plugins::services::GeneratedTitle, UtilityFailure> {
         let mut calls = self.0.lock().unwrap();
         calls.push(conversation.into());
-        Some(crate::plugins::services::GeneratedTitle {
+        Ok(crate::plugins::services::GeneratedTitle {
             title: format!("topic {}", calls.len()),
             provider: "test".into(),
             model: "small".into(),
@@ -56,10 +57,12 @@ fn utility_worker_updates_provider_titles_but_manual_rename_ends_model_calls() {
     let (tx, rx) = mpsc::channel();
     let subscribers = Arc::new(Mutex::new(vec![tx]));
     let cancel = CancelToken::new();
+    let evidence =
+        std::env::temp_dir().join(format!("clat-title-evidence-{}", uuid::Uuid::new_v4()));
     completed_turn(&sessions, 1, "original topic");
-    maybe_autotitle(&titler, &sessions, &job, &cancel, &subscribers);
+    maybe_autotitle(&titler, &sessions, &job, &cancel, &subscribers, &evidence);
     assert_eq!(sessions.title_state().0.as_deref(), Some("topic 1"));
-    maybe_autotitle(&titler, &sessions, &job, &cancel, &subscribers);
+    maybe_autotitle(&titler, &sessions, &job, &cancel, &subscribers, &evidence);
     assert_eq!(
         titler.0.lock().unwrap().len(),
         1,
@@ -68,7 +71,7 @@ fn utility_worker_updates_provider_titles_but_manual_rename_ends_model_calls() {
     for turn in 2..=6 {
         completed_turn(&sessions, turn, "changed topic");
     }
-    maybe_autotitle(&titler, &sessions, &job, &cancel, &subscribers);
+    maybe_autotitle(&titler, &sessions, &job, &cancel, &subscribers, &evidence);
     assert_eq!(
         sessions.title_state().0.as_deref(),
         Some("topic 2"),
@@ -91,13 +94,16 @@ fn utility_worker_updates_provider_titles_but_manual_rename_ends_model_calls() {
     for turn in 7..=11 {
         completed_turn(&sessions, turn, "another topic");
     }
-    maybe_autotitle(&titler, &sessions, &job, &cancel, &subscribers);
+    maybe_autotitle(&titler, &sessions, &job, &cancel, &subscribers, &evidence);
     assert_eq!(
         titler.0.lock().unwrap().len(),
         2,
         "manual title stops model calls, not only writes"
     );
     sessions.quiesce_active().unwrap();
+    // 成功路径（含 CAS 正常拒绝）不写失败证据。
+    assert!(!evidence.join("utility-log.jsonl").exists());
+    drop(evidence);
     crate::test_support::cleanup_tree(&root);
 }
 
@@ -115,7 +121,7 @@ fn disabled_naming_never_reserves_budget_or_calls_the_provider() {
             _: &ProviderCredentials,
             _: &str,
             _: &CancelToken,
-        ) -> Option<crate::plugins::services::GeneratedTitle> {
+        ) -> Result<crate::plugins::services::GeneratedTitle, UtilityFailure> {
             panic!("disabled naming must stop before provider I/O")
         }
     }
@@ -137,6 +143,7 @@ fn disabled_naming_never_reserves_budget_or_calls_the_provider() {
         &job,
         &CancelToken::new(),
         &Arc::new(Mutex::new(Vec::new())),
+        &std::env::temp_dir(),
     );
     let budget = root
         .join(project.bucket)
