@@ -13,6 +13,8 @@ const DEFAULT_LIST_DEPTH: usize = 2;
 const DEFAULT_LIST_ENTRIES: usize = 200;
 const MAX_LIST_DEPTH: usize = 8;
 const MAX_LIST_ENTRIES: usize = 2_000;
+mod edit;
+mod edit_recovery;
 mod export;
 mod read;
 mod write;
@@ -126,104 +128,6 @@ const MAX_WRITE_BYTES: usize = 1024 * 1024;
 #[derive(Clone, Default)]
 pub struct EditFileTool {
     scope: crate::permission::WriteScopeSource,
-}
-
-impl Tool for EditFileTool {
-    fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "edit_file".into(),
-            description: "Replace an exact, unique text snippet in a file. old_str must match the file byte-for-byte and appear exactly once; include surrounding lines to disambiguate. Paths are project-relative; absolute scratch paths are editable in Project Write; other outside paths require Full Access.".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Existing project-relative path or absolute scratch path in Project Write; arbitrary absolute paths require Full Access"
-                    },
-                    "old_str": {
-                        "type": "string",
-                        "description": "Exact text to replace; must be unique in the file"
-                    },
-                    "new_str": {
-                        "type": "string",
-                        "description": "Replacement text"
-                    }
-                },
-                "required": ["path", "old_str", "new_str"],
-                "additionalProperties": false
-            }),
-            effect: ToolEffect::Write,
-            strict: false,
-        }
-    }
-
-    fn invoke(
-        &self,
-        arguments: &Value,
-        project: &Project,
-        cancel: &CancelToken,
-    ) -> Result<Value, ToolError> {
-        check_cancelled(cancel)?;
-        let requested = required_string_arg(arguments, "path", "edit_file")?;
-        let old_str = required_string_arg(arguments, "old_str", "edit_file")?;
-        let new_str = required_string_arg(arguments, "new_str", "edit_file")?;
-        if old_str.is_empty() {
-            return Err(ToolError::new("edit_file: `old_str` must not be empty"));
-        }
-        if old_str == new_str {
-            return Err(ToolError::new(
-                "edit_file: `old_str` and `new_str` are identical",
-            ));
-        }
-        // W-INV3：先验证后行动——文件读取与匹配检查全部通过之前，
-        // 不触碰目标文件。
-        let target = project
-            .writable_target(requested, false, self.scope.resolve())
-            .map_err(|error| tool_io_error("edit_file", requested, error))?;
-        if !target
-            .is_file()
-            .map_err(|error| tool_io_error("edit_file", requested, error))?
-        {
-            return Err(ToolError::new(format!(
-                "edit_file: `{requested}` is not a file"
-            )));
-        }
-        // RA-04：边界必须落在实际 read 上。stat 只能快拒，不能防住
-        // stat 后文件增长；生产读取最多取 MAX_WRITE_BYTES+1，超帽即停。
-        let content = target
-            .read_to_string_limited(MAX_WRITE_BYTES)
-            .map_err(|error| tool_io_error("edit_file", requested, error))?;
-        let occurrences = content.match_indices(old_str).count();
-        match occurrences {
-            0 => {
-                return Err(ToolError::new(format!(
-                    "edit_file: `old_str` not found in `{requested}` — read the file and copy the exact text"
-                )));
-            }
-            1 => {}
-            count => {
-                return Err(ToolError::new(format!(
-                    "edit_file: `old_str` matches {count} times in `{requested}` — include surrounding lines to make it unique"
-                )));
-            }
-        }
-        let updated = content.replacen(old_str, new_str, 1);
-        if updated.len() > MAX_WRITE_BYTES {
-            return Err(ToolError::new(format!(
-                "edit_file: result would exceed {MAX_WRITE_BYTES} bytes"
-            )));
-        }
-        // NWE-06：父目录锁覆盖“快照复查→rename”整个提交区间；
-        // 另一个 CLAT 写入者必须串行并基于新快照重试。
-        target
-            .atomic_write(&updated, Some(&content))
-            .map_err(|error| tool_io_error("edit_file", requested, error))?;
-        Ok(json!({
-            "path": requested,
-            "replacements": 1,
-            "bytes": updated.len()
-        }))
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -554,6 +458,9 @@ impl Tool for AskUserTool {
         }
     }
 }
+
+#[cfg(test)]
+mod edit_tests;
 
 #[cfg(test)]
 mod tests {

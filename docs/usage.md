@@ -120,6 +120,30 @@ change a section; intentional whole-file replacement requires
 uses atomic no-replace publication; filesystems without hard-link support
 return an error rather than replacing an existing path.
 
+`edit_file` accepts either `old_str` / `new_str` or an `edits` array of
+1–64 such pairs for one file. Every pair matches the **original snapshot**
+exactly once (including overlapping occurrences); replacement ranges may not
+overlap. All pairs are validated before a single snapshot-checked atomic
+write. A missing/ambiguous pair, overlap, cancellation or size error preserves
+the file. Empty/no-op pairs, mixed forms and unknown keys are rejected;
+combined old/new text is limited to 2 MiB and the resulting file to 1 MiB.
+For example:
+
+```json
+{"path":"src/config.rs","edits":[{"old_str":"first = 1","new_str":"first = 2"},{"old_str":"second = 3","new_str":"second = 4"}]}
+```
+
+A match failure may include `edit_recovery`: `applied: false`, a zero-based
+`edit_index`, a stable `not_found` / `ambiguous` code, and up to three candidate
+`read_file` windows (`start_line` / `end_line`). Not-found hints use a short
+prefix and may be irrelevant or empty; they never authorize fuzzy replacement.
+The locator examines at most 32 occurrences and reports omitted candidates.
+Hints contain no file snippets, make no extra reads, and are only produced
+after an authorized read. Re-read the same file, include unique context and
+preserve exact bytes, including CRLF; the hints do not normalize line endings.
+Other errors retain their ordinary diagnostics. Permissions and path fences
+apply to single and batch edits alike.
+
 The native `export_patch` tool freezes all current workspace changes against
 Git HEAD, including non-ignored untracked files, into a standard binary-safe
 Git patch and an adjacent `.manifest.json` containing source and patch SHA256
@@ -980,6 +1004,18 @@ previously consumed summaries. The witness does not certify source identity,
 assertion coverage or unseen pipeline stages; `status=unknown` remains unknown.
 Invocation errors have an empty witness. This metadata never changes permissions
 or command execution.
+
+Without a cumulative receipt, a completed zero-exit command whose currently
+consumed output contains a failed/compile-failed or zero-match signature also
+returns `verification_guidance`. It reports `failure_observed` or `inconclusive`
+and recommends inspecting output and, when needed, verifying the actual test
+executable with literal `argv` and a receipt. It preserves the real outer exit
+and `command_outcome`; `target_exit_code` stays null and `authenticated` false.
+It never executes a retry or changes permissions. Normal successful output,
+nonzero/interrupted/running results and existing receipts do not receive this
+extra guidance. Missing, truncated or previously consumed signatures may be
+unavailable; this is not cumulative verification. The bounded guidance survives
+model-result pruning and journal/replay while raw streams remain transient.
 
 The durable tool-result journal retains `command_outcome` and the bounded witness
 counts and fixed labels while omitting raw

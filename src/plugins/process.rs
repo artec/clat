@@ -415,7 +415,7 @@ fn process_journal_output(output: &Value) -> Value {
     if let Some(witness) = output.get("verification_witness") {
         journal["verification_witness"] = witness.clone();
     }
-    for key in ["execution", "exit_scope"] {
+    for key in ["execution", "exit_scope", "verification_guidance"] {
         if let Some(v) = output.get(key) {
             journal[key] = v.clone();
         }
@@ -478,7 +478,7 @@ fn process_output_json(output: ProcessOutput) -> Value {
     });
     match receipt {
         Some(receipt) => verification::bounded_view(value, receipt),
-        None => value,
+        None => verification::with_guidance(value),
     }
 }
 

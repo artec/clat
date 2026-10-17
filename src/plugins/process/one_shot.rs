@@ -46,7 +46,7 @@ impl RunCommandTool {
         if let Some(receipt) = value.get("verification_receipt").cloned() {
             value = verification::bounded_view(value, receipt);
         }
-        Ok(value)
+        Ok(verification::with_guidance(value))
     }
 }
 

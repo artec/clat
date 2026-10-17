@@ -471,7 +471,10 @@ Trusted projects also receive:
 - `write_file` — bounded atomic creation by default, refusing existing paths even
   at publication; explicit `overwrite: true` opts into whole-file atomic
   replacement with permission preservation;
-- `edit_file` — one exact unique replacement plus conflict revalidation;
+- `edit_file` — exact unique single/batch replacements planned against one
+  original snapshot, rejecting overlapping ranges before one conflict-revalidated
+  atomic commit; bounded match-failure line hints reach the next model request
+  without extra reads or fuzzy mutation;
 - `apply_patch` — one existing UTF-8 file, multiple exact hunks, complete
   in-memory validation followed by one snapshot-checked atomic commit;
 - `export_patch` — bounded workspace-to-HEAD Git patch plus source SHA manifest,

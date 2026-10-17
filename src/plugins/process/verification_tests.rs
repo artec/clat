@@ -1,5 +1,6 @@
 use super::*;
 mod ag5_tests;
+mod ag6_tests;
 mod agent_loop_tests;
 
 const PROBE: &str = r#"
@@ -8,6 +9,8 @@ fn main() {
     let args: Vec<_> = std::env::args().skip(1).collect();
     writeln!(std::fs::OpenOptions::new().create(true).append(true).open("invocations").unwrap(), "{}", args[0]).unwrap();
     match args[0].as_str() {
+        "masked-poll" => { let mut s=String::new(); io::stdin().read_line(&mut s).unwrap(); assert_eq!(s,"go\n"); println!("test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s"); }
+        "masked" => { println!("test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s"); println!("{}", "diagnostic ".repeat(1500)); }
         "recover" => { let mut s=String::new(); io::stdin().read_line(&mut s).unwrap(); assert_eq!(s,"go\n"); println!("  1 passed (0.1s)"); }
         "pw-green" => { println!("test result: ok. 999 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s\n\x1b[32m  13 passed (1.2s)\x1b[0m\n  2 skipped"); }
         "pw-failed" => { println!("  1 failed\n  12 passed (2.0s)"); std::process::exit(1); }

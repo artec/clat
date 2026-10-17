@@ -228,13 +228,24 @@ pub struct ToolResult {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ToolError {
     message: String,
+    recovery: Option<Value>,
 }
 
 impl ToolError {
     pub fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
+            recovery: None,
         }
+    }
+
+    pub(crate) fn with_recovery(mut self, recovery: Value) -> Self {
+        self.recovery = Some(recovery);
+        self
+    }
+
+    pub(crate) fn recovery(&self) -> Option<&Value> {
+        self.recovery.as_ref()
     }
 }
 

@@ -102,6 +102,10 @@ impl Invocation {
 
 pub(super) fn bounded_view(mut value: Value, receipt: Value) -> Value {
     value["verification_receipt"] = receipt;
+    bounded_evidence(value)
+}
+
+fn bounded_evidence(mut value: Value) -> Value {
     for field in ["stdout", "stderr", "pty"] {
         if fits(&value) {
             return value;
@@ -130,9 +134,14 @@ pub(super) fn bounded_view(mut value: Value, receipt: Value) -> Value {
     }
     // Only bounded OS/receipt facts remain if a legacy diagnostic envelope grew.
     if !fits(&value) {
-        let mut small =
-            json!({"verification_receipt":value["verification_receipt"],"output_truncated":true});
+        let mut small = json!({"output_truncated":true});
         for field in [
+            "verification_receipt",
+            "verification_guidance",
+            "verification_witness",
+            "command_outcome",
+            "execution",
+            "exit_scope",
             "session_id",
             "running",
             "exit_code",
@@ -141,7 +150,9 @@ pub(super) fn bounded_view(mut value: Value, receipt: Value) -> Value {
             "terminated",
             "signal",
         ] {
-            small[field] = value[field].clone();
+            if let Some(fact) = value.get(field) {
+                small[field] = fact.clone();
+            }
         }
         return small;
     }
@@ -155,3 +166,40 @@ fn fits(value: &Value) -> bool {
         .count()
         <= crate::plugins::THRESHOLD_CHARS
 }
+
+/// Passive signatures can contradict a wrapper's success. Keep that distinction
+/// visible before generic pruning; never synthesize an exit or execute a retry.
+pub(super) fn with_guidance(mut value: Value) -> Value {
+    if value.get("verification_receipt").is_some() {
+        return bounded_evidence(value);
+    }
+    if value["exit_code"] != 0
+        || ["running", "timed_out", "cancelled", "terminated"]
+            .iter()
+            .any(|key| value[*key] == true)
+        || !value["signal"].is_null()
+    {
+        return value;
+    }
+    let Some(rows) = value["verification_witness"]["observations"].as_array() else {
+        return value;
+    };
+    let failed = rows
+        .iter()
+        .any(|row| matches!(row["status"].as_str(), Some("failed" | "compile_failed")));
+    let zero = rows.iter().any(|row| row["status"] == "zero_matches");
+    if !failed && !zero {
+        return value;
+    }
+    value["verification_guidance"] = json!({
+        "status":if failed {"failure_observed"} else {"inconclusive"},
+        "evidence":"output_signature","scope":"consumed_output_bytes",
+        "authenticated":false,"target_exit_code":null,
+        "next_action":"Inspect the observed failure or zero-match summary. Outer exit 0 does not prove verification passed or reveal a hidden child exit. If verification is needed, invoke the actual test executable with literal argv and verification (minimum_executed >= 1); inspect its receipt. Do not infer an exit code from printed output."
+    });
+    bounded_evidence(value)
+}
+
+#[cfg(test)]
+#[path = "verification_guidance_tests.rs"]
+mod guidance_tests;
