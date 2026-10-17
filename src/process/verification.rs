@@ -55,6 +55,10 @@ fn summarize(streams: &[(&str, &str, bool)], mut incomplete: bool) -> Value {
 }
 
 pub(super) fn observe(line: &str) -> Option<Value> {
+    observe_rust(line).or_else(|| super::playwright::observe(line))
+}
+
+pub(super) fn observe_rust(line: &str) -> Option<Value> {
     let line = plain_signature(line);
     if line.starts_with("error: could not compile `") && line.contains(" due to ") {
         return Some(

@@ -19,12 +19,30 @@ pub(crate) struct VerificationSpec {
 pub(crate) enum Format {
     #[serde(rename = "rust-test-summary")]
     RustTestSummary,
+    #[serde(rename = "playwright-summary")]
+    PlaywrightSummary,
+}
+
+impl Format {
+    fn name(self) -> &'static str {
+        match self {
+            Self::RustTestSummary => "rust-test-summary",
+            Self::PlaywrightSummary => "playwright-summary",
+        }
+    }
+    fn observe(self, line: &str) -> Option<Value> {
+        match self {
+            Self::RustTestSummary => super::verification::observe_rust(line),
+            Self::PlaywrightSummary => super::playwright::observe(line),
+        }
+    }
 }
 
 #[derive(Clone)]
 pub(super) struct Context {
     fingerprint: String,
     minimum: Option<u64>,
+    format: Option<Format>,
 }
 impl Context {
     pub(super) fn new(
@@ -43,6 +61,7 @@ impl Context {
         Self {
             fingerprint: format!("{:x}", hash.finalize()),
             minimum: spec.map(|s| s.minimum_executed),
+            format: spec.map(|s| s.format),
         }
     }
 }
@@ -60,6 +79,7 @@ pub(super) struct Receipt {
     passed: u64,
     failed: u64,
     ignored: u64,
+    flaky: u64,
     compile_failed: bool,
     incomplete: bool,
     eof: [bool; 2],
@@ -84,6 +104,7 @@ impl Receipt {
             passed: 0,
             failed: 0,
             ignored: 0,
+            flaky: 0,
             compile_failed: false,
             incomplete: false,
             eof: [false; 2],
@@ -136,8 +157,17 @@ impl Receipt {
             return;
         };
         let text = super::verification::plain_signature(text.trim_end_matches('\r'));
-        let Some(row) = super::verification::observe(&text) else {
-            if text.starts_with("test result: ") {
+        let Some(row) = self
+            .context
+            .format
+            .expect("verification format")
+            .observe(&text)
+        else {
+            if matches!(self.context.format, Some(Format::RustTestSummary))
+                && text.starts_with("test result: ")
+                || matches!(self.context.format, Some(Format::PlaywrightSummary))
+                    && super::playwright::is_summary_candidate(&text)
+            {
                 self.incomplete = true;
             }
             return;
@@ -155,6 +185,7 @@ impl Receipt {
             (&mut self.passed, "passed"),
             (&mut self.failed, "failed"),
             (&mut self.ignored, "ignored"),
+            (&mut self.flaky, "flaky"),
         ] {
             if let Some(sum) = count.checked_add(row[key].as_u64().unwrap_or(0)) {
                 *count = sum;
@@ -162,7 +193,12 @@ impl Receipt {
                 self.incomplete = true;
             }
         }
-        if self.passed.checked_add(self.failed).is_none() {
+        if self
+            .passed
+            .checked_add(self.failed)
+            .and_then(|v| v.checked_add(self.flaky))
+            .is_none()
+        {
             self.incomplete = true;
         }
     }
@@ -171,15 +207,18 @@ impl Receipt {
         let complete = self.eof.iter().all(|eof| *eof)
             && !self.incomplete
             && self.lines.iter().all(|l| l.bytes.is_empty() && !l.dropping);
-        let executed = self.passed.saturating_add(self.failed);
+        let executed = self
+            .passed
+            .saturating_add(self.failed)
+            .saturating_add(self.flaky);
         let (status, action) = self.verdict(output, complete, executed);
-        json!({"version":1,"format":"rust-test-summary","session_id":output.session_id,"owner_generation":generation,
+        json!({"version":1,"format":self.context.format.expect("verification format").name(),"session_id":output.session_id,"owner_generation":generation,
             "invocation_sha256":self.context.fingerprint,"execution":"argv","exit_scope":"direct_child",
             "status":status,"next_action":action,"exit_code":output.exit_code,"signal":output.signal,
             "timed_out":output.timed_out,"cancelled":output.cancelled,"terminated":output.terminated,
             "evidence":"output_signature","authenticated":false,"scan_complete":complete,
             "summaries":self.summaries,"passed":self.passed,"failed":self.failed,"ignored":self.ignored,
-            "executed":executed,"minimum_executed":self.context.minimum,"compile_failed":self.compile_failed})
+            "flaky":self.flaky,"executed":executed,"minimum_executed":self.context.minimum,"compile_failed":self.compile_failed})
     }
 
     fn verdict(
@@ -209,6 +248,12 @@ impl Receipt {
             return (
                 "failed",
                 "Inspect the failure before claiming verification passed; no automatic retry was performed.",
+            );
+        }
+        if self.flaky > 0 {
+            return (
+                "inconclusive",
+                "Flaky results observed; inspect retries before claiming stable verification. No automatic rerun was performed.",
             );
         }
         if !complete || executed < self.context.minimum.expect("verification enabled") {

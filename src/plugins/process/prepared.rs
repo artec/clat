@@ -94,24 +94,12 @@ fn prepare_native_plan(
     if matches!(source, NativeProcessTool::WriteStdin(_)) {
         return Ok(None);
     }
-    let key = if matches!(source, NativeProcessTool::RunCommand(_)) {
-        "command"
-    } else {
-        "cmd"
-    };
     let invocation = if matches!(source, NativeProcessTool::ExecCommand(_)) {
-        verification::Invocation::parse(arguments).map_err(|e| e.to_string())?
+        verification::Invocation::parse(arguments)
     } else {
-        verification::Invocation {
-            command: arguments
-                .get(key)
-                .and_then(Value::as_str)
-                .ok_or("missing command")?
-                .into(),
-            argv: None,
-            verification: None,
-        }
-    };
+        verification::Invocation::compat(arguments)
+    }
+    .map_err(|e| e.to_string())?;
     let request = ProcessStart {
         command: invocation.command,
         workdir: arguments

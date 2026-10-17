@@ -481,7 +481,14 @@ Trusted projects also receive:
   stdout/stderr or PTY output, stdin/poll/terminate, bounded cursors and TTL;
   non-PTY stdin defaults to EOF, explicit `stdin: "pipe"` retains interaction;
 - `run_command` — a one-shot compatibility wrapper over the same
-  `ProcessService`, fixed to the project root.
+  `ProcessService`, with shell `command` or literal `argv`, optional bounded
+  verification and fenced workdir (project root by default). Both command
+  entrypoints share the frozen preparation/permission and receipt pipelines.
+  Cumulative verification selects Rust or Playwright summary parsing; format
+  counts never mix supporting-host output into the selected test suite.
+  Unknown stdin ids may return bounded current-owner session metadata, never
+  command/output/environment or another run's authority; recovery is advisory
+  and does not execute, redirect input or consume output.
 
 `ProcessService` is the only agent-command spawn seam. One Trusted Project
 owns the service; each active Run binds a fresh generation and session id.

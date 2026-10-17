@@ -60,3 +60,29 @@ fn receipt_bounds_lines_summaries_and_count_overflow_without_losing_later_failur
         "executed count overflow must be incomplete"
     );
 }
+
+#[test]
+fn ag5_playwright_summary_is_chunk_safe_format_specific_and_fail_closed() {
+    let text = b"\x1b[32m  13 passed (2.5s)\x1b[0m\r\n  2 skipped\n";
+    for split in 0..=text.len() {
+        let mut r = Receipt::new(Context::new(
+            &["fixture".into()],
+            std::path::Path::new("."),
+            Some(VerificationSpec {
+                format: Format::PlaywrightSummary,
+                minimum_executed: 1,
+            }),
+        ))
+        .unwrap();
+        r.append(StreamKind::Stdout, &text[..split]);
+        r.append(StreamKind::Stdout, &text[split..]);
+        assert_eq!(r.test_counts(), (2, 13, 0, 2, false), "split={split}");
+        r.append(StreamKind::Stdout,b"test result: ok. 999 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s\n");
+        assert_eq!(r.test_counts(), (2, 13, 0, 2, false));
+        r.append(StreamKind::Stdout, b"  18446744073709551616 failed\n");
+        assert!(
+            r.test_counts().4,
+            "malformed browser count must make receipt incomplete"
+        );
+    }
+}

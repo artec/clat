@@ -1,3 +1,5 @@
+#[path = "agent_evidence_tests.rs"]
+mod agent_evidence;
 #[path = "write_guard_tests.rs"]
 mod write_guard;
 

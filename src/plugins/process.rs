@@ -16,6 +16,7 @@ use serde_json::{Value, json};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 mod discrimination;
+mod one_shot;
 #[cfg(test)]
 mod outcome_tests;
 mod prepared;
@@ -166,7 +167,7 @@ impl Tool for ExecCommandTool {
                     "cmd": {"type": "string", "maxLength": MAX_COMMAND_BYTES},
                     "argv": {"type":"array","minItems":1,"maxItems":128,"items":{"type":"string"},"description":"Direct executable and literal arguments; at most 65536 UTF-8 bytes total, no NUL. Mutually exclusive with cmd."},
                     "verification": {"type":"object","properties":{
-                        "format":{"type":"string","enum":["rust-test-summary"]},
+                        "format":{"type":"string","enum":["rust-test-summary","playwright-summary"]},
                         "minimum_executed":{"type":"integer","minimum":1,"maximum":1000000}
                     },"required":["format","minimum_executed"],"additionalProperties":false,"description":"Optional bounded cumulative receipt; requires argv and tty=false. Only the directly launched process exit is known."},
                     "workdir": {"type": "string", "description": "Project-relative directory or absolute directory inside the active scratch root"},
@@ -226,7 +227,7 @@ impl Tool for WriteStdinTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "write_stdin".into(),
-            description: "Write up to 256 KiB of characters to, poll, close stdin for, or terminate a run-owned exec_command session. Empty chars polls. Raw chars are redacted from the durable tool/call journal; sensitive user secrets still must not be routed through a model tool.".into(),
+            description: "Write up to 256 KiB of characters to, poll, close stdin for, or terminate a run-owned exec_command session. Empty chars polls. Unknown IDs return bounded current-run session metadata for recovery; no input is redirected or job restarted. Raw chars are redacted from the durable tool/call journal; sensitive user secrets still must not be routed through a model tool.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -267,7 +268,11 @@ impl Tool for WriteStdinTool {
     }
 
     fn error_output(&self, error: &ToolError) -> Value {
-        process_error_output(error)
+        let mut output = process_error_output(error);
+        if let Some(recovery) = self.service.recovery_for_error(&error.to_string()) {
+            output["process_recovery"] = recovery;
+        }
+        output
     }
 
     fn prepare_execution(&self, arguments: &Value) -> Option<crate::tool::PreparedTool> {
@@ -299,16 +304,22 @@ impl Tool for RunCommandTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "run_command".into(),
-            description: "Compatibility one-shot command wrapper over ProcessService. Runs in the project root, waits for completion/timeout, and returns bounded stdout/stderr plus sandbox facts. Prefer exec_command for interactive or long-running work.".into(),
+            description: "One-shot command: specify command (shell) OR argv (literal executable/arguments). Prefer argv with verification for tests: child exit and cumulative receipt survive output clipping and journaling; shell pipelines only report the shell exit. workdir is project-relative or active scratch. Waits to completion/timeout with stdin EOF. Use exec_command for interactive or long-running jobs.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "command": {"type": "string", "maxLength": MAX_COMMAND_BYTES},
+                    "argv": {"type":"array","minItems":1,"maxItems":128,"items":{"type":"string"}},
+                    "verification": {"type":"object","properties":{
+                        "format":{"type":"string","enum":["rust-test-summary","playwright-summary"]},
+                        "minimum_executed":{"type":"integer","minimum":1,"maximum":1000000}
+                    },"required":["format","minimum_executed"],"additionalProperties":false},
+                    "workdir": {"type":"string"},
                     "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 600, "default": 120},
                     "network": {"type": "boolean", "default": false},
                     "sandbox": {"type": "string", "enum": ["auto", "required", "off"], "default": "auto"}
                 },
-                "required": ["command"],
+                "required": [],
                 "additionalProperties": false
             }),
             effect: ToolEffect::Execute,
@@ -336,7 +347,7 @@ impl Tool for RunCommandTool {
     }
 
     fn journal_arguments(&self, arguments: &Value) -> Value {
-        bounded_command_journal(arguments, "command")
+        bounded_command_journal(&verification::journal_arguments(arguments), "command")
     }
 
     fn journal_output(&self, output: &Value) -> Value {
@@ -404,6 +415,11 @@ fn process_journal_output(output: &Value) -> Value {
     if let Some(witness) = output.get("verification_witness") {
         journal["verification_witness"] = witness.clone();
     }
+    for key in ["execution", "exit_scope"] {
+        if let Some(v) = output.get(key) {
+            journal[key] = v.clone();
+        }
+    }
     if let Some(receipt) = output.get("verification_receipt") {
         journal["verification_receipt"] = receipt.clone();
     }
@@ -454,9 +470,12 @@ fn process_output_json(output: ProcessOutput) -> Value {
         "terminated": output.terminated,
         "sandbox": output.sandbox.json(output.sandbox_denied, output.sandbox_unavailable)
     });
-    if output.direct {
-        value["execution"] = json!("argv");
-    }
+    value["execution"] = json!(if output.direct { "argv" } else { "shell" });
+    value["exit_scope"] = json!(if output.direct {
+        "direct_child"
+    } else {
+        "shell"
+    });
     match receipt {
         Some(receipt) => verification::bounded_view(value, receipt),
         None => value,
@@ -485,13 +504,6 @@ fn ensure_object_keys(arguments: &Value, allowed: &[&str], tool: &str) -> Result
         return Err(ToolError::new(format!("{tool}: unknown argument `{key}`")));
     }
     Ok(())
-}
-
-fn required_string<'a>(arguments: &'a Value, name: &str, tool: &str) -> Result<&'a str, ToolError> {
-    arguments
-        .get(name)
-        .and_then(Value::as_str)
-        .ok_or_else(|| ToolError::new(format!("{tool}: `{name}` must be a string")))
 }
 
 fn optional_string<'a>(
@@ -604,68 +616,6 @@ impl ExecCommandTool {
             .wait_and_consume(id, Duration::from_millis(yield_ms), output_bytes)
             .map_err(ToolError::new)?;
         Ok(process_output_json(output))
-    }
-}
-
-impl RunCommandTool {
-    fn invoke_planned(
-        &self,
-        arguments: &Value,
-        project: &Project,
-        _cancel: &CancelToken,
-        prepared: Option<crate::process::PreparedProcess>,
-    ) -> Result<Value, ToolError> {
-        ensure_object_keys(
-            arguments,
-            &["command", "timeout_seconds", "network", "sandbox"],
-            "run_command",
-        )?;
-        let command = required_string(arguments, "command", "run_command")?;
-        ensure_command_bound(command, "run_command")?;
-        let timeout = bounded_u64(arguments, "timeout_seconds", 120, 1, 600, "run_command")?;
-        let network = optional_bool(arguments, "network", "run_command")?.unwrap_or(false);
-        let sandbox = SandboxRequest::parse(optional_string(arguments, "sandbox", "run_command")?)
-            .map_err(ToolError::new)?;
-        let output = self
-            .service
-            .run_compat_prepared(
-                ProcessStart {
-                    command: command.to_owned(),
-                    workdir: None,
-                    tty: false,
-                    network,
-                    sandbox,
-                },
-                Duration::from_secs(timeout),
-                prepared.ok_or_else(|| ToolError::new("missing prepared command"))?,
-            )
-            .map_err(ToolError::new)?;
-        let cwd = project
-            .resolve_existing(".")
-            .map_err(|error| ToolError::new(format!("run_command: project root: {error}")))?;
-        let signal = output
-            .signal
-            .as_deref()
-            .and_then(|signal| signal.parse::<i64>().ok());
-        let sandbox = output
-            .sandbox
-            .json(output.sandbox_denied, output.sandbox_unavailable);
-        Ok(json!({
-            "verification_witness": output.verification_witness,
-            "command_outcome": output.command_outcome.json(),
-            "command": output.command,
-            "cwd": cwd.to_string_lossy(),
-            "exit_code": output.exit_code,
-            "signal": signal,
-            "timed_out": output.timed_out,
-            "stdout": output.stdout,
-            "stderr": output.stderr,
-            "stdout_bytes": output.stdout_bytes,
-            "stderr_bytes": output.stderr_bytes,
-            "stdout_truncated": output.stdout_truncated,
-            "stderr_truncated": output.stderr_truncated,
-            "sandbox": sandbox
-        }))
     }
 }
 

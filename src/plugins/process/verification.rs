@@ -26,6 +26,17 @@ pub(super) fn journal_arguments(args: &Value) -> Value {
 }
 
 impl Invocation {
+    pub fn compat(args: &Value) -> Result<Self, ToolError> {
+        let mut translated = args.clone();
+        let object = translated
+            .as_object_mut()
+            .ok_or_else(|| ToolError::new("run_command: expected object"))?;
+        if let Some(command) = object.remove("command") {
+            object.insert("cmd".into(), command);
+        }
+        Self::parse(&translated)
+    }
+
     pub fn parse(args: &Value) -> Result<Self, ToolError> {
         let cmd = optional_string(args, "cmd", "exec_command")?;
         let argv = args.get("argv");

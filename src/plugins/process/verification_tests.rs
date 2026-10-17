@@ -1,4 +1,5 @@
 use super::*;
+mod ag5_tests;
 mod agent_loop_tests;
 
 const PROBE: &str = r#"
@@ -7,6 +8,11 @@ fn main() {
     let args: Vec<_> = std::env::args().skip(1).collect();
     writeln!(std::fs::OpenOptions::new().create(true).append(true).open("invocations").unwrap(), "{}", args[0]).unwrap();
     match args[0].as_str() {
+        "recover" => { let mut s=String::new(); io::stdin().read_line(&mut s).unwrap(); assert_eq!(s,"go\n"); println!("  1 passed (0.1s)"); }
+        "pw-green" => { println!("test result: ok. 999 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s\n\x1b[32m  13 passed (1.2s)\x1b[0m\n  2 skipped"); }
+        "pw-failed" => { println!("  1 failed\n  12 passed (2.0s)"); std::process::exit(1); }
+        "pw-zero" => println!("  3 skipped"),
+        "pw-flaky" => println!("  1 flaky\n  2 passed (1.0s)"),
         "literal" => { std::fs::write("received-args", format!("{:?}", &args[1..])).unwrap(); println!("{}", args[1..].join("\n")); std::process::exit(7); }
         "wait" => std::thread::sleep(std::time::Duration::from_secs(2)),
         "inspect" => println!("{}", std::fs::read_to_string(&args[1]).unwrap()),
@@ -63,7 +69,7 @@ impl Fixture {
     fn args(&self, mode: &str) -> Value {
         let mut args = json!({"argv":[self.program,mode],"yield_time_ms":250,
             "verification":{"format":"rust-test-summary","minimum_executed":1}});
-        if mode == "poll" {
+        if matches!(mode, "poll" | "recover") {
             args["stdin"] = json!("pipe");
         }
         args

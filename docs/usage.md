@@ -866,8 +866,23 @@ writes, and Full Access retains its existing unrestricted write behavior.
   `sensitive: true` rather than pretending to protect a secret already sent to
   the model. One write is capped at 256 KiB; five seconds of write backpressure
   terminates the session instead of starving cancellation/TTL teardown.
-- `run_command` remains the one-shot project-root API and uses the same core
-  ProcessService and command-text cap.
+- `run_command` is the one-shot API over the same ProcessService. Supply
+  exactly one of `command` (legacy shell text) or `argv` (literal executable and
+  arguments). `workdir` defaults to the project root and accepts project-relative
+  directories or the active scratch directory. Direct `argv` also accepts the
+  same `verification` specification as `exec_command`; it waits until completion
+  or timeout with stdin closed, without requiring a polling session. The result
+  reports the resolved `cwd`, and `execution` / `exit_scope` distinguish a shell
+  exit from a direct child's exit. No shell pipeline is rewritten automatically.
+
+An unavailable `write_stdin` id still fails. Its error may include
+`process_recovery` with at most eight current-run session ids, `running` and
+`tty` flags, plus an omitted count. Running ids come first. This read-only
+snapshot contains no command text, arguments, output or environment, excludes
+managed MCP processes and other runs, and does not consume output. Use the
+matching id to poll with empty chars; a snapshot can become stale, so the usual
+owner/permission/cancellation checks still apply. No input is redirected and no
+job is automatically restarted or terminated.
 
 `test_discrimination` is a separate, opt-in Rust unit-test experiment. Prepare
 two disposable, disjoint copies under the project or the active scratch root:
@@ -946,7 +961,8 @@ output and match count before claiming verification.
 Command results also carry `verification_witness`. It reports bounded,
 unauthenticated observations from the **currently consumed bounded output bytes**,
 before JSON-string escaping can truncate their display, separately
-from the outer process status. Complete Rust test summaries include `passed`,
+from the outer process status. Rust and Playwright list/line summary formats
+are recognized separately. Complete Rust test summaries include `passed`,
 `failed`, `ignored`, `filtered_out`, and `matched` (passed + failed); zero matches
 are explicit. Cargo compile-failure messages have an unknown match count. Other
 formats, incomplete lines and empty polls cannot prove a verification ran.
@@ -983,11 +999,24 @@ For verification, `exec_command` accepts an optional non-PTY `argv` mode:
 The returned `verification_receipt` is cumulative for that run-owned process,
 including subsequent `write_stdin` polls. It reports `running`, `failed`,
 `inconclusive`, or `passed`, the direct child's exit/lifecycle facts, an argv/cwd
-fingerprint and bounded Rust-summary counts. Poll while running. Nonzero exits,
+fingerprint and bounded format-specific summary counts. Poll while running. Nonzero exits,
 observed failures and compilation failures cannot pass; interruption, missing
 evidence, zero/ignored-only matches or fewer than `minimum_executed` tests remain
 inconclusive. The minimum must be 1–1,000,000. A failed test is a normal process
 result, so inspect the receipt even when `is_error` is false.
+
+For Playwright list/line reporters, select `"format":"playwright-summary"`.
+For example, a one-shot invocation can use `argv: ["node",
+"node_modules/@playwright/test/cli.js", "test", "contract"]` with
+`workdir: "web/e2e"` and `verification.minimum_executed: 1`. On Windows use the
+actual executable/Node entrypoint rather than a `.cmd` wrapper. The receipt
+counts passed, failed, skipped/did-not-run (`ignored`) and flaky totals. Rust
+summaries printed by a supporting host are not added to browser totals.
+Skipped-only output cannot pass; any flaky total remains inconclusive and
+requires inspection. These are unauthenticated reporter totals, not a proof of
+coverage or that a retry was legitimate. HTML/JSON/dot/custom reporter output is
+not inferred as list/line totals. Neither a wrapper's zero exit nor a printed
+summary authenticates a hidden child exit.
 
 The scanner joins partial lines before parsing, retains at most 64 summary rows
 as aggregate counts, and buffers at most 4096 bytes per pending stdout/stderr
