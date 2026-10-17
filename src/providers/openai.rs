@@ -23,6 +23,10 @@ pub const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 
 pub struct OpenAiModel {
     agent: Agent,
+    /// NETISO-1（R1-F1）：该 agent 是否已按武装态加固（重定向/代理）。
+    /// 构造时抽样 + send 时点复核：武装晚于构造的实例在下一次 send
+    /// 真正出站前重建为受约束 agent。
+    transport_constrained: bool,
     api_key: Option<String>,
     base_url: String,
     model: String,
@@ -30,17 +34,12 @@ pub struct OpenAiModel {
 
 impl OpenAiModel {
     pub fn new(api_key: impl Into<String>, model: impl Into<String>) -> Result<Self, ModelError> {
-        let agent = Agent::config_builder()
-            .http_status_as_error(false)
-            .timeout_connect(Some(CONNECT_TIMEOUT))
-            .timeout_recv_response(Some(RECV_RESPONSE_TIMEOUT))
-            .timeout_recv_body(Some(STREAM_BODY_POLL_TIMEOUT))
-            .build()
-            .new_agent();
+        let agent = Self::build_agent();
         let api_key = api_key.into();
 
         Ok(Self {
             agent,
+            transport_constrained: super::outbound_guard::active(),
             api_key: (!api_key.trim().is_empty()).then_some(api_key),
             base_url: DEFAULT_BASE_URL.into(),
             model: model.into(),
@@ -130,12 +129,42 @@ impl OpenAiModel {
 
     /// `Ok(None)`：取消在连接/响应头等待阶段获胜（CANCEL-1）——
     /// 调用方以 Cancelled 响应短路，不进入流读取。
+    /// 武装态下构造受约束 agent；未武装为普通生产 agent。
+    fn build_agent() -> Agent {
+        // NETISO-1：武装时加固 agent（生产未武装零变化）——见 outbound_guard。
+        let mut config = Agent::config_builder()
+            .http_status_as_error(false)
+            .timeout_connect(Some(CONNECT_TIMEOUT))
+            .timeout_recv_response(Some(RECV_RESPONSE_TIMEOUT))
+            .timeout_recv_body(Some(STREAM_BODY_POLL_TIMEOUT));
+        if super::outbound_guard::redirects_capped() {
+            config = config.max_redirects(0);
+        }
+        if super::outbound_guard::proxy_cleared() {
+            config = config.proxy(None);
+        }
+        config.build().new_agent()
+    }
+
+    /// R1-F1 + R2-F2：send 时点对称同步（进入与退出隔离都重建匹配的
+    /// agent；见 openai_compatible 同名方法注释）。
+    fn ensure_transport_constrained(&mut self) {
+        let constrained = super::outbound_guard::active();
+        if constrained != self.transport_constrained {
+            self.agent = Self::build_agent();
+            self.transport_constrained = constrained;
+        }
+    }
+
     fn send(
-        &self,
+        &mut self,
         body: &Value,
         cancel: &CancelToken,
     ) -> Result<Option<Response<Body>>, ModelError> {
+        self.ensure_transport_constrained();
         let url = format!("{}/responses", self.base_url);
+        // NETISO-1：出站前路由准入（未武装直通）。
+        super::outbound_guard::authorize(&url).map_err(ModelError::request)?;
         let body = super::serialize_request_body(body, "OpenAI")?;
         let mut request = self
             .agent

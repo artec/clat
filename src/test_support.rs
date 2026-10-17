@@ -22,6 +22,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub mod netiso;
 pub mod network;
 
 /// Small fully decodable PNG for provider/session tests. Image projection now

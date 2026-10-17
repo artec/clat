@@ -236,7 +236,7 @@ fn output_limit(task: UtilityTask) -> u32 {
     }
 }
 
-fn resolve_default(primary: &ModelConfig) -> ModelConfig {
+pub(crate) fn resolve_default(primary: &ModelConfig) -> ModelConfig {
     let Some(preset) = primary.preset.as_deref().and_then(preset_by_id) else {
         return primary.clone();
     };

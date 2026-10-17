@@ -307,6 +307,10 @@ where
 
 /// 生产入口（main.rs 挂 `Some("serve")`）。阻塞直到关停旗置位。
 pub fn run_serve_with_shutdown(args: ServeArgs, shutdown: Arc<AtomicBool>) -> i32 {
+    // NETISO-1（R1-F2）：严格测试专用环境武装入口——`CLAT_NETISO_ALLOWLIST`
+    // 未设置时零效果，普通用户契约不变；设置时本 serve 进程的所有
+    // provider HTTP 出站被限制在授权字面环回监听器内（含重定向/代理）。
+    crate::providers::outbound_guard::arm_from_environment();
     let no_open = args.no_open;
     let project = match Project::current() {
         Ok(project) => project,

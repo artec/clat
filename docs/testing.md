@@ -237,6 +237,35 @@ instead of a tax. Each rule was paid for by a real incident.
   macOS port; have the host owner run `clat host stop` before repeating
   `--full` to close all native coverage gaps.
   Direct `cargo test` retains its port requirements and does not self-skip.
+  Port-independent equivalents (`EQUIVALENT_TESTS` in the same script) cover
+  trust refusal, occupied-port fail-not-hop, auth boundaries, a synthetic
+  model roundtrip through a real `clat serve --port 0` child, cold restart
+  with journal replay and dead-route survival on random loopback ports; they
+  run even while 2691 is occupied and are never skipped — the script refuses
+  a skip filter that would substring-drop them (`tests/host_random_port_lifecycle.rs`).
+  The default-background-host-stays-2691 and two-launcher attach convergence
+  semantics remain fixed-port-only (`NOT_RUN` locally while the host is up).
+- **Isolated model tests arm the outbound guard.** Tests that claim a local
+  synthetic HTTP provider should arm `clat_core::test_support::netiso::
+  arm_outbound_guard` with the exact listener sockets: armed, the production
+  HTTP adapters refuse any effective route that is not a literal loopback IP
+  (IPv4 or IPv6) in the authorized set, ignore `ALL_PROXY`/`HTTPS_PROXY`/
+  `HTTP_PROXY`, and do not follow redirects — enforced at `send()` time so
+  adapters created before arming are constrained too. Arming is process-wide
+  with scoped RAII tokens (releasing one token never disables a still-live
+  scope), so those tests live in their own test binary
+  (`tests/netiso_outbound_guard.rs`), never in the shared lib test process.
+  All guard rejections are desensitized: scheme/host/port only, never
+  path/query/credentials, and unparseable URLs report only their byte length.
+  The guard is inert in production and unarmed builds; offline scripted models
+  never pass through it. Real `clat serve` child processes arm the same guard
+  through the strictly test-only `CLAT_NETISO_ALLOWLIST` environment entrance
+  (`literal-loopback ip:port` entries). The entrance is fail-closed: unset
+  keeps ordinary production behavior, while a set-but-unusable value (empty,
+  malformed, or non-loopback entries only) arms a deny-all scope that refuses
+  every provider HTTP request instead of silently continuing unprotected. It
+  constrains route/redirect/proxy outbound across cold restarts — see
+  `tests/host_random_port_lifecycle.rs`.
 - **Scan visible test sources, not evidence archives.** The wait guard uses
   Git's tracked and nonignored untracked Rust paths, including new test files;
   tracked paths remain covered even if an ignore rule matches them. Exported

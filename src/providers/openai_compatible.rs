@@ -23,6 +23,8 @@ const RECV_RESPONSE_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub struct OpenAiCompatibleModel {
     agent: Agent,
+    /// NETISO-1（R1-F1）：agent 是否已按武装态加固；send 时点复核。
+    transport_constrained: bool,
     runtime_value: Option<String>,
     config: ModelConfig,
 }
@@ -32,13 +34,7 @@ impl OpenAiCompatibleModel {
         mut fields: Vec<String>,
         config: &ModelConfig,
     ) -> Result<Self, ModelError> {
-        let agent = Agent::config_builder()
-            .http_status_as_error(false)
-            .timeout_connect(Some(CONNECT_TIMEOUT))
-            .timeout_recv_response(Some(RECV_RESPONSE_TIMEOUT))
-            .timeout_recv_body(Some(STREAM_BODY_POLL_TIMEOUT))
-            .build()
-            .new_agent();
+        let agent = Self::build_agent();
         let value = if fields.is_empty() {
             String::new()
         } else {
@@ -46,9 +42,38 @@ impl OpenAiCompatibleModel {
         };
         Ok(Self {
             agent,
+            transport_constrained: super::outbound_guard::active(),
             runtime_value: (!value.trim().is_empty()).then_some(value),
             config: config.clone(),
         })
+    }
+
+    /// 武装态下构造受约束 agent；未武装为普通生产 agent。
+    fn build_agent() -> Agent {
+        // NETISO-1：武装时加固 agent（生产未武装零变化）——见 outbound_guard。
+        let mut builder = Agent::config_builder()
+            .http_status_as_error(false)
+            .timeout_connect(Some(CONNECT_TIMEOUT))
+            .timeout_recv_response(Some(RECV_RESPONSE_TIMEOUT))
+            .timeout_recv_body(Some(STREAM_BODY_POLL_TIMEOUT));
+        if super::outbound_guard::redirects_capped() {
+            builder = builder.max_redirects(0);
+        }
+        if super::outbound_guard::proxy_cleared() {
+            builder = builder.proxy(None);
+        }
+        builder.build().new_agent()
+    }
+
+    /// R1-F1 + R2-F2：send 时点对称同步——武装晚于构造时重建受限
+    /// agent；**最后一个隔离作用域解除后**同一实例重建普通生产 agent
+    /// （未武装语义完整恢复，不永久残留 max_redirects(0)/proxy(None)）。
+    fn ensure_transport_constrained(&mut self) {
+        let constrained = super::outbound_guard::active();
+        if constrained != self.transport_constrained {
+            self.agent = Self::build_agent();
+            self.transport_constrained = constrained;
+        }
     }
 
     fn request_body(&self, request: ModelRequest<'_>) -> Result<Value, ModelError> {
@@ -113,11 +138,14 @@ impl OpenAiCompatibleModel {
     /// `Ok(None)`：取消在连接/响应头等待阶段获胜（CANCEL-1）——
     /// 调用方以 Cancelled 响应短路，不进入流读取。
     fn send(
-        &self,
+        &mut self,
         body: &Value,
         cancel: &CancelToken,
     ) -> Result<Option<Response<Body>>, ModelError> {
+        self.ensure_transport_constrained();
         let url = join_endpoint(&self.config.endpoint, &self.config.request_path);
+        // NETISO-1：出站前路由准入（未武装直通）。
+        super::outbound_guard::authorize(&url).map_err(ModelError::request)?;
         let encoded = super::serialize_request_body(body, "OpenAI-compatible")?;
         let mut request = self
             .agent
@@ -581,7 +609,7 @@ fn tool_output_text(result: &ToolResult) -> String {
     }
 }
 
-fn join_endpoint(endpoint: &str, request_path: &str) -> String {
+pub(crate) fn join_endpoint(endpoint: &str, request_path: &str) -> String {
     let endpoint = endpoint.trim_end_matches('/');
     let path = request_path.trim();
     if path.is_empty() {

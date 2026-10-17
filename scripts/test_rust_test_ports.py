@@ -69,6 +69,51 @@ class FixedPortTests(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, "Ambiguous"):
                 ports.prepare(self.command)
 
+    def test_equivalents_are_reported_and_never_skipped(self):
+        self.listing.stdout += "\n" + "\n".join(
+            name + ": test" for name in ports.EQUIVALENT_TESTS)
+        with patch.dict(os.environ, {}, clear=True), \
+                patch.object(ports, "occupied", return_value=True), \
+                patch.object(ports.subprocess, "run", return_value=self.listing):
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                command = ports.prepare(self.command)
+        skipped_args = command[len(self.command):]
+        for name in ports.EQUIVALENT_TESTS:
+            self.assertNotIn(name, skipped_args,
+                             "equivalent tests must never enter the skip list")
+        text = output.getvalue()
+        self.assertIn(
+            f"Port-independent equivalents still executed: "
+            f"{len(ports.EQUIVALENT_TESTS)}/{len(ports.EQUIVALENT_TESTS)}", text)
+        self.assertIn(f"EQUIV {ports.EQUIVALENT_TESTS[-1]}", text)
+
+    def test_fixed_skip_substring_hitting_an_equivalent_fails_closed(self):
+        # 若有人把固定口用例名改成某个等效用例的前缀，--skip 会连带丢弃
+        # 等效用例——必须拒绝执行而不是静默降覆盖。
+        equivalent = ports.EQUIVALENT_TESTS[-1]
+        prefix = equivalent[:len("random_port_serve")]
+        self.assertIn(prefix, equivalent, "fixture requires a real prefix relation")
+        listing = subprocess.CompletedProcess(
+            [], 0, stdout=f"{prefix}: test\n{equivalent}: test\n")
+        with patch.object(ports, "FIXED_TESTS", (prefix,)), \
+                patch.dict(os.environ, {}, clear=True), \
+                patch.object(ports, "occupied", return_value=True), \
+                patch.object(ports.subprocess, "run", return_value=listing):
+            with self.assertRaisesRegex(SystemExit, "substring of"):
+                ports.prepare(self.command)
+
+    def test_equivalent_inventory_matches_the_random_port_test_file(self):
+        root = pathlib.Path(__file__).resolve().parents[1]
+        import re
+        source = (root / "tests/host_random_port_lifecycle.rs").read_text()
+        source = source.replace("\r\n", "\n")
+        found = re.findall(r"#\[test\]\s*\nfn (\w+)\(", source)
+        listed = {name for name in ports.EQUIVALENT_TESTS
+                  if name.startswith("random_port_")}
+        self.assertEqual(set(found), listed,
+                         "EQUIVALENT_TESTS must track every random-port test")
+
     def test_inventory_matches_all_mutex_users(self):
         root = pathlib.Path(__file__).resolve().parents[1]
         import re

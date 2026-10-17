@@ -4,6 +4,7 @@
 
 pub mod openai;
 pub mod openai_compatible;
+pub(crate) mod outbound_guard;
 
 use crate::CancelToken;
 use crate::model::{

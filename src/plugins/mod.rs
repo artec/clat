@@ -4,7 +4,7 @@
 
 mod context;
 use context::{context_inspector, goal, instructions, memory, plan_mode, prompt, skills};
-mod conversation;
+pub(crate) mod conversation;
 use conversation::{compaction, pruner, title, todo, utility};
 
 mod agent;
