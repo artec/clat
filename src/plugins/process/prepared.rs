@@ -94,6 +94,9 @@ fn prepare_native_plan(
     if matches!(source, NativeProcessTool::WriteStdin(_)) {
         return Ok(None);
     }
+    if matches!(source, NativeProcessTool::RunCommand(_)) {
+        evidence::request(arguments).map_err(|e| e.to_string())?;
+    }
     let invocation = if matches!(source, NativeProcessTool::ExecCommand(_)) {
         verification::Invocation::parse(arguments)
     } else {
@@ -127,7 +130,14 @@ fn prepare_native_plan(
             .prepare_direct(&request, argv, invocation.verification),
         None => source.service().prepare_start(&request),
     }
-    .map(|plan| Some(plan.with_stdin_pipe(stdin_pipe)))
+    .and_then(|plan| {
+        if arguments.get("evidence").is_some()
+            && plan.planned.facts.mode == crate::sandbox::SandboxLevel::ReadOnly
+        {
+            return Err("evidence recording requires a writable project mode".into());
+        }
+        Ok(Some(plan.with_stdin_pipe(stdin_pipe)))
+    })
 }
 impl Tool for FrozenProcessTool {
     fn definition(&self) -> ToolDefinition {

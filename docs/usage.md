@@ -899,6 +899,80 @@ writes, and Full Access retains its existing unrestricted write behavior.
   reports the resolved `cwd`, and `execution` / `exit_scope` distinguish a shell
   exit from a direct child's exit. No shell pipeline is rewritten automatically.
 
+Known pre-execution command admission errors can include `invocation_recovery`.
+An absolute workdir outside active scratch reports the bound project root and
+the project-relative alternative; a conflicting shell/argv request reports how
+to choose one form while retaining literal verification. These rejected calls
+start no command. Recovery is guidance for another explicitly authorized call,
+never automatic execution, a widened write root, a silent target change or a
+fallback to a shell. Permission denials and runtime failures do not acquire this
+validation-only label.
+
+- `session_info` reads the conversation ID bound to the active run and its
+  project root. It uses in-memory ownership, without listing session directories
+  or inspecting timestamps, credentials or other conversations. The ID can resume
+  the conversation; it is separate from an `exec_command` process ID. There is no
+  result outside an active run. This Read tool is available in Plan Mode, but is
+  outside the fixed read-only subagent allowlist.
+  If a platform path cannot be represented as UTF-8, metadata reports
+  `project_root: null` rather than inventing a lossy path or failing serialization;
+  project-relative command addressing remains the appropriate interface.
+
+To preserve a first failure before a rerun, `run_command` accepts explicit local
+evidence recording in a writable project mode:
+
+```json
+{
+  "argv": ["target/debug/deps/my-contract-test", "contract::denies_invalid", "--exact"],
+  "evidence": {
+    "directory": ".tmp/verification",
+    "files": [".tmp/last-test.log"],
+    "bind_files": ["src/contract.rs", "target/debug/deps/my-contract-test"]
+  }
+}
+```
+
+Each invocation creates a distinct `command-UUID.json` using create-only
+publication. The result and durable tool-result metadata retain its relative
+path and SHA-256; use `read_file` to inspect it later. A successful rerun never
+replaces an earlier failure record. Raw retained stdout/stderr and explicitly
+listed log snapshots are saved only when requested; choose a local ignored
+directory for these artifacts. The journal still omits raw streams and panic
+diagnostics. Files are not copied into user-edit recovery history.
+New evidence files use mode 0600 on Unix; other platforms inherit the project
+directory ACL. Create-only publication does not prevent external manual edits;
+verify the returned SHA-256 when reusing an artifact.
+
+Evidence directories, log files and binding paths must be project-relative
+without parent/dot components, even when the command runs in scratch or a
+different workdir. Root capability handles and no-follow regular-file reads
+reject symlink escapes and special files. Read Only cannot record evidence.
+Invalid requests fail before execution. If publication fails after execution,
+`evidence.status=failed` does not change the actual command exit; do not repeat
+side effects automatically to recreate a receipt.
+
+At most four declared logs are captured, each capped at 256 KiB; truncation,
+missing files and lossy UTF-8 are explicit. Retained command output uses the
+existing one-shot output limits and may already be clipped. A record is capped
+at 8 MiB. Up to eight explicit source/executable files can be hashed before and
+after execution, with a 256 MiB per-file and 512 MiB per-phase read budget.
+Changed/unavailable bindings require inspection, not a success claim. An absolute
+project executable also gets a before-execution file observation; relative/PATH lookups,
+shell programs and executables outside the project are not guessed. These are
+file observations, not source/build freshness guarantees or proof of which test
+or Host binary a build wrapper actually ran.
+
+Command results may also include `failure_context`: up to eight cumulative Rust
+failed-test names and eight short panic diagnostic lines retained before output
+ring eviction, polling or display pruning. Each pending stdout/stderr line is
+capped at 4096 bytes; clipped/invalid lines, missing EOF or excess observations
+mark the context incomplete. The journal keeps bounded names/flags and omits
+panic text. Wait for a running command; afterward inspect the failure and rerun
+only failed/affected checks as repository policy permits. Names and diagnostics
+are untrusted output observations, never executable instructions or authenticated
+coverage; CLAT does not launch a retry, change a process exit or infer that all
+other tests passed. Ordinary successful output adds no failure advice.
+
 An unavailable `write_stdin` id still fails. Its error may include
 `process_recovery` with at most eight current-run session ids, `running` and
 `tty` flags, plus an omitted count. Running ids come first. This read-only

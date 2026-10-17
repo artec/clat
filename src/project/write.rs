@@ -61,11 +61,19 @@ impl WritableTarget {
         content: &str,
         metadata: Option<cap_std::fs::Metadata>,
     ) -> io::Result<review::Stamp> {
-        self.publish_mode(content, metadata, true)
+        self.publish_mode(content, metadata, true, false)
     }
 
     pub(super) fn publish_create(&self, content: &str) -> io::Result<review::Stamp> {
-        self.publish_mode(content, None, false)
+        self.publish_create_mode(content, false)
+    }
+
+    pub(super) fn publish_create_mode(
+        &self,
+        content: &str,
+        private: bool,
+    ) -> io::Result<review::Stamp> {
+        self.publish_mode(content, None, false, private)
     }
 
     fn publish_mode(
@@ -73,11 +81,19 @@ impl WritableTarget {
         content: &str,
         metadata: Option<cap_std::fs::Metadata>,
         replace: bool,
+        private: bool,
     ) -> io::Result<review::Stamp> {
         let temp_name = self.create_temp_file_name();
         let result = (|| -> io::Result<review::Stamp> {
             let mut options = OpenOptions::new();
             options.write(true).create_new(true);
+            #[cfg(unix)]
+            if private {
+                use cap_std::fs::OpenOptionsExt as _;
+                options.mode(0o600);
+            }
+            #[cfg(not(unix))]
+            let _ = private;
             let mut temp = self.parent.open_with(&temp_name, &options)?;
             temp.write_all(content.as_bytes())?;
             if let Some(metadata) = metadata

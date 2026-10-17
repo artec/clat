@@ -15,6 +15,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 mod capture;
 mod direct;
+mod failures;
 mod launch;
 mod outcome;
 mod playwright;
@@ -208,6 +209,7 @@ impl ManagedStdioLease {
 
 #[derive(Clone, Debug)]
 pub(crate) struct ProcessOutput {
+    pub failure_context: Option<serde_json::Value>,
     pub verification_receipt: Option<serde_json::Value>,
     pub direct: bool,
     pub verification_witness: serde_json::Value,
@@ -888,6 +890,7 @@ struct ProcessEntryInit {
 }
 
 struct EntryState {
+    failures: failures::Failures,
     verification: Option<receipt::Receipt>,
     stdout: ByteRing,
     stderr: ByteRing,
@@ -931,6 +934,7 @@ impl ProcessEntry {
             owner_cancel: owner.cancel.clone(),
             stdin: Mutex::new(Some(init.stdin)),
             state: Mutex::new(EntryState {
+                failures: failures::Failures::default(),
                 verification: init.verification.and_then(receipt::Receipt::new),
                 stdout: ByteRing::new(init.stdout_capacity),
                 stderr: ByteRing::new(init.stderr_capacity),
@@ -954,6 +958,7 @@ impl ProcessEntry {
 
     fn append(&self, stream: StreamKind, bytes: &[u8]) {
         let mut state = self.state.lock().expect("process entry lock");
+        state.failures.append(stream, bytes);
         if let Some(receipt) = &mut state.verification {
             receipt.append(stream, bytes);
         }
@@ -969,6 +974,7 @@ impl ProcessEntry {
 
     fn finish_output(&self, stream: StreamKind, eof: bool) {
         let mut state = self.state.lock().expect("process entry lock");
+        state.failures.finish(stream, eof);
         if let Some(receipt) = &mut state.verification {
             receipt.finish(stream, eof);
         }
@@ -1197,6 +1203,7 @@ impl ProcessEntry {
             .verification
             .as_ref()
             .map(|r| r.json(&output, self.owner_generation));
+        output.failure_context = state.failures.json(output.running);
         output
     }
 
@@ -1224,6 +1231,7 @@ impl ProcessEntry {
             terminal.as_ref().and_then(|status| status.exit_code),
         );
         let mut output = ProcessOutput {
+            failure_context: None,
             verification_receipt: None,
             direct: self.direct,
             verification_witness: verification::unknown(),

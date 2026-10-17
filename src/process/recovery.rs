@@ -3,6 +3,25 @@ use super::*;
 use serde_json::{Value, json};
 
 impl ProcessService {
+    pub(crate) fn project_root_value(&self) -> Value {
+        self.project
+            .root()
+            .to_str()
+            .map_or(Value::Null, |root| json!(root))
+    }
+
+    pub(crate) fn active_session_info(&self) -> Result<Value, String> {
+        let state = self.state.lock().expect("process service lock");
+        let owner = state.owner.as_ref().ok_or("no active run binding")?;
+        if state.closed || owner.cancel.is_cancelled() || owner.session_id.len() > 256 {
+            return Err("no active run binding".into());
+        }
+        Ok(
+            json!({"session_id":owner.session_id,"source":"active_run_binding",
+            "project_root":self.project_root_value(),"kind":"conversation"}),
+        )
+    }
+
     pub(crate) fn recovery_for_error(&self, error: &str) -> Option<Value> {
         error
             .strip_prefix("process session ")?

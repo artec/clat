@@ -14,6 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 mod browser;
 mod export;
+mod fingerprint;
 pub(crate) mod git;
 pub(crate) mod review;
 mod roots;
@@ -181,7 +182,8 @@ impl Project {
         #[cfg(unix)]
         {
             use cap_std::fs::OpenOptionsExt as _;
-            options.custom_flags(libc::O_NOFOLLOW);
+            // Regular-file readers must not block if a FIFO replaces the target.
+            options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
         }
         #[cfg(windows)]
         {
@@ -307,6 +309,14 @@ impl WritableTarget {
     /// Create without replacing any directory entry, including one published
     /// by a non-cooperating writer after the locked existence check.
     pub(crate) fn atomic_create(&self, content: &str) -> io::Result<()> {
+        self.atomic_create_mode(content, false)
+    }
+
+    pub(crate) fn atomic_create_private(&self, content: &str) -> io::Result<()> {
+        self.atomic_create_mode(content, true)
+    }
+
+    fn atomic_create_mode(&self, content: &str, private: bool) -> io::Result<()> {
         let _guard = WriteGuard::acquire(&self.parent)?;
         self.reject_final_symlink()?;
         match self.parent.symlink_metadata(&self.file_name) {
@@ -320,7 +330,11 @@ impl WritableTarget {
             Err(error) => return Err(error),
         }
         let capture = self.prepare_create_capture(content)?;
-        let stamp = self.publish_create(content)?;
+        let stamp = if private {
+            self.publish_create_mode(content, true)?
+        } else {
+            self.publish_create(content)?
+        };
         self.finish_capture(capture, stamp)
     }
 
@@ -344,7 +358,8 @@ impl WritableTarget {
         #[cfg(unix)]
         {
             use cap_std::fs::OpenOptionsExt as _;
-            options.custom_flags(libc::O_NOFOLLOW);
+            // Regular-file readers must not block if a FIFO replaces the target.
+            options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
         }
         #[cfg(windows)]
         {

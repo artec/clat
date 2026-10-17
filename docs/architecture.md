@@ -487,11 +487,19 @@ Trusted projects also receive:
   `ProcessService`, with shell `command` or literal `argv`, optional bounded
   verification and fenced workdir (project root by default). Both command
   entrypoints share the frozen preparation/permission and receipt pipelines.
+  Explicit evidence recording creates unique project-fenced artifacts containing
+  retained output, declared log snapshots and bounded before/after file digests;
+  the model and journal retain the path/digest, without adding raw streams to
+  the journal or user-edit recovery history. Failed publication cannot change
+  the command exit or cause an automatic retry; Read Only cannot record.
   Cumulative verification selects Rust or Playwright summary parsing; format
   counts never mix supporting-host output into the selected test suite.
   Unknown stdin ids may return bounded current-owner session metadata, never
   command/output/environment or another run's authority; recovery is advisory
   and does not execute, redirect input or consume output.
+- `session_info` — a Read tool over the current ProcessService run binding,
+  exposing only conversation identity and project root, without storage scans
+  or another run's metadata; cancellation/unbind invalidates the result source.
 
 `ProcessService` is the only agent-command spawn seam. One Trusted Project
 owns the service; each active Run binds a fresh generation and session id.
@@ -501,7 +509,9 @@ close all terminate the owned process group and ordinary descendants. Each
 stdout, stderr and PTY stream has a 256 KiB transient ring; the LSP
 managed-stdio channel uses separate dedicated buffers from the same service
 (its stdout ring and stdin-write cap are larger); tool results are
-separately bounded. Raw streams and stdin have no persistence path. `write_stdin`
+separately bounded. Raw streams stay out of the journal; optional one-shot
+evidence artifacts retain only bounded output and explicitly declared files.
+Stdin has no persistence path. `write_stdin`
 redacts its characters from the durable `tool/call` while permission review
 and invocation still see the complete arguments.
 
@@ -513,6 +523,13 @@ reader chunks; stream EOF, overflow and supervision facts constrain the final
 receipt. Counts are observations, never authenticated coverage. The OS status
 belongs only to the directly launched child. No new frontend lifecycle or
 durable-event vocabulary is introduced.
+
+A second bounded accumulator retains Rust failure identities and short panic
+lines before output-ring eviction. Its context survives polling and result
+pruning, with unavailable/incomplete evidence disclosed; the journal drops
+diagnostic text and preserves only bounded observations. It offers failed/affected
+check guidance without executing a retry. Evidence file digests are explicit
+observations, not dependency analysis, executable attestation or build freshness.
 
 Verification-mode formatting reserves a bounded receipt envelope under the
 shared serialized-result threshold before adding diagnostic excerpts. The

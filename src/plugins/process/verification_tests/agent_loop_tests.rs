@@ -1,6 +1,5 @@
 use super::*;
 use crate::model::{FinishReason, Model, ModelError, ModelItem, ModelRequest, ModelResponse};
-use crate::plugin::{PluginManager, ScopeKind};
 use crate::plugins::services::{TOOL_PIPELINE_SERVICE, TOOL_SERVICE};
 
 #[test]
@@ -11,22 +10,7 @@ fn verification_model_sees_failure_after_pruning_and_actually_inspects_the_contr
         "contract: preserve every source byte",
     )
     .unwrap();
-    let mut manager = PluginManager::root(ScopeKind::TrustedProject);
-    manager
-        .mount_all(vec![
-            Arc::new(crate::plugins::ToolRegistryPlugin),
-            Arc::new(crate::plugins::ToolPipelinePlugin),
-            Arc::new(crate::plugins::ToolResultPrunerPlugin),
-            Arc::new(SandboxPlugin {
-                project: Project::new(&f.root),
-                permission_mode: Some(Arc::new(RwLock::new(PermissionMode::FullAccess))),
-            }),
-            Arc::new(ProcessServicePlugin {
-                project: Project::new(&f.root),
-            }),
-            Arc::new(ExecToolsPlugin),
-        ])
-        .unwrap();
+    let mut manager = f.manager();
     let service = manager.require(PROCESS_SERVICE).unwrap();
     let generation = service
         .bind_run("verification-loop", CancelToken::new())

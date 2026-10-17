@@ -149,6 +149,8 @@ fn bounded_evidence(mut value: Value) -> Value {
             "cancelled",
             "terminated",
             "signal",
+            "evidence",
+            "failure_context",
         ] {
             if let Some(fact) = value.get(field) {
                 small[field] = fact.clone();
@@ -170,6 +172,16 @@ fn fits(value: &Value) -> bool {
 /// Passive signatures can contradict a wrapper's success. Keep that distinction
 /// visible before generic pruning; never synthesize an exit or execute a retry.
 pub(super) fn with_guidance(mut value: Value) -> Value {
+    let preserve = value.get("failure_context").is_some() || value.get("evidence").is_some();
+    value = passive_guidance(value);
+    if preserve {
+        bounded_evidence(value)
+    } else {
+        value
+    }
+}
+
+fn passive_guidance(mut value: Value) -> Value {
     if value.get("verification_receipt").is_some() {
         return bounded_evidence(value);
     }

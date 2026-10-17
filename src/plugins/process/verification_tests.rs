@@ -1,6 +1,9 @@
 use super::*;
 mod ag5_tests;
 mod ag6_tests;
+mod ag7_loop_tests;
+mod ag7_recovery_tests;
+mod ag7_tests;
 mod agent_loop_tests;
 
 const PROBE: &str = r#"
@@ -9,6 +12,38 @@ fn main() {
     let args: Vec<_> = std::env::args().skip(1).collect();
     writeln!(std::fs::OpenOptions::new().create(true).append(true).open("invocations").unwrap(), "{}", args[0]).unwrap();
     match args[0].as_str() {
+        "ag7-red" => {
+            let diagnostic = "thread 'case::denies_invalid' panicked at synthetic.rs:1:1:\nSYNTHETIC_INVARIANT: invalid input must fail closed\n";
+            std::fs::write("stage.log", diagnostic).unwrap();
+            println!("test case::denies_invalid ... FAILED\n\n{diagnostic}\n");
+            println!("{}", "noise ".repeat(60000));
+            println!("test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s");
+            std::process::exit(101);
+        }
+        "ag7-green" => {
+            std::fs::write("stage.log", "second run green").unwrap();
+            println!("test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s");
+        }
+        "ag7-change" => {
+            std::fs::write("input.rs", "changed during execution").unwrap();
+            println!("done");
+        }
+        "ag7-inspect" => {
+            assert!(std::fs::read_to_string(&args[1]).unwrap().contains("SYNTHETIC_INVARIANT"));
+            println!("preserved-first-failure");
+        }
+        "ag7-targeted" => {
+            assert_eq!(args[1], "case::denies_invalid");
+            std::fs::write("targeted-filter", &args[1]).unwrap();
+            println!("test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s");
+        }
+        "ag7-poll" => {
+            print!("test case::polled ... FAI"); io::stdout().flush().unwrap();
+            let mut s=String::new(); io::stdin().read_line(&mut s).unwrap();
+            println!("LED\nthread 'case::polled' panicked at synthetic.rs:1:1:\nSYNTHETIC_POLL_FAILURE\n");
+            io::stdout().flush().unwrap();s.clear();io::stdin().read_line(&mut s).unwrap();
+            std::process::exit(101);
+        }
         "masked-poll" => { let mut s=String::new(); io::stdin().read_line(&mut s).unwrap(); assert_eq!(s,"go\n"); println!("test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s"); }
         "masked" => { println!("test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s"); println!("{}", "diagnostic ".repeat(1500)); }
         "recover" => { let mut s=String::new(); io::stdin().read_line(&mut s).unwrap(); assert_eq!(s,"go\n"); println!("  1 passed (0.1s)"); }
@@ -47,6 +82,27 @@ struct Fixture {
     mode: Arc<RwLock<PermissionMode>>,
 }
 impl Fixture {
+    fn manager(&self) -> crate::plugin::PluginManager {
+        let mut manager =
+            crate::plugin::PluginManager::root(crate::plugin::ScopeKind::TrustedProject);
+        manager
+            .mount_all(vec![
+                Arc::new(crate::plugins::ToolRegistryPlugin),
+                Arc::new(crate::plugins::ToolPipelinePlugin),
+                Arc::new(crate::plugins::ToolResultPrunerPlugin),
+                Arc::new(SandboxPlugin {
+                    project: Project::new(&self.root),
+                    permission_mode: Some(Arc::new(RwLock::new(PermissionMode::FullAccess))),
+                }),
+                Arc::new(ProcessServicePlugin {
+                    project: Project::new(&self.root),
+                }),
+                Arc::new(ExecToolsPlugin),
+            ])
+            .unwrap();
+        manager
+    }
+
     fn new() -> Self {
         let root = super::sbx4_tests::root();
         let source = root.join("probe.rs");

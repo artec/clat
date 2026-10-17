@@ -16,12 +16,15 @@ use serde_json::{Value, json};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 mod discrimination;
+mod evidence;
+mod invocation_recovery;
 mod one_shot;
 #[cfg(test)]
 mod outcome_tests;
 mod prepared;
 #[cfg(test)]
 mod sbx4_tests;
+mod session_info;
 mod stdin;
 mod verification;
 #[cfg(all(test, feature = "runtime-tests"))]
@@ -147,7 +150,10 @@ fn process_tools(service: Arc<ProcessService>) -> Vec<Arc<dyn Tool>> {
         Arc::new(WriteStdinTool {
             service: Arc::clone(&service),
         }),
-        Arc::new(discrimination::TestDiscriminationTool { service }),
+        Arc::new(discrimination::TestDiscriminationTool {
+            service: Arc::clone(&service),
+        }),
+        Arc::new(session_info::SessionInfoTool { service }),
     ]
 }
 
@@ -214,7 +220,7 @@ impl Tool for ExecCommandTool {
     }
 
     fn error_output(&self, error: &ToolError) -> Value {
-        process_error_output(error)
+        invocation_recovery::annotate(&self.service, error)
     }
 }
 
@@ -304,7 +310,7 @@ impl Tool for RunCommandTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "run_command".into(),
-            description: "One-shot command: specify command (shell) OR argv (literal executable/arguments). Prefer argv with verification for tests: child exit and cumulative receipt survive output clipping and journaling; shell pipelines only report the shell exit. workdir is project-relative or active scratch. Waits to completion/timeout with stdin EOF. Use exec_command for interactive or long-running jobs.".into(),
+            description: "One-shot command: specify command (shell) OR argv (literal executable/arguments). Prefer argv with verification for tests: child exit and cumulative receipt survive clipping; shell pipelines only report the shell exit. Optional evidence saves a unique create-only local record of retained output, declared log snapshots and before/after file digests; use it to preserve the first failure before rerunning. Files and evidence directories are project-relative. Raw output is saved only when requested, never in the journal. workdir is project-relative or active scratch. Waits to completion/timeout with stdin EOF; use exec_command for interactive jobs.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -316,6 +322,11 @@ impl Tool for RunCommandTool {
                     },"required":["format","minimum_executed"],"additionalProperties":false},
                     "workdir": {"type":"string"},
                     "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 600, "default": 120},
+                    "evidence": {"type":"object","properties":{
+                        "directory":{"type":"string","maxLength":200,"description":"Project-relative output directory. Every invocation publishes a distinct command-UUID.json without replacing any previous record."},
+                        "files":{"type":"array","maxItems":4,"items":{"type":"string","maxLength":200},"description":"Optional project-relative log files to snapshot after execution, at most 256 KiB each. Missing, lossy and clipped data are disclosed."},
+                        "bind_files":{"type":"array","maxItems":8,"items":{"type":"string","maxLength":200},"description":"Explicit project-relative source or executable files to hash before/after execution; max 256 MiB per file and 512 MiB per phase. Observations do not prove build freshness or identify Cargo child binaries."}
+                    },"required":["directory"],"additionalProperties":false},
                     "network": {"type": "boolean", "default": false},
                     "sandbox": {"type": "string", "enum": ["auto", "required", "off"], "default": "auto"}
                 },
@@ -355,7 +366,7 @@ impl Tool for RunCommandTool {
     }
 
     fn error_output(&self, error: &ToolError) -> Value {
-        process_error_output(error)
+        invocation_recovery::annotate(&self.service, error)
     }
 }
 
@@ -415,13 +426,25 @@ fn process_journal_output(output: &Value) -> Value {
     if let Some(witness) = output.get("verification_witness") {
         journal["verification_witness"] = witness.clone();
     }
-    for key in ["execution", "exit_scope", "verification_guidance"] {
+    for key in [
+        "execution",
+        "exit_scope",
+        "verification_guidance",
+        "evidence",
+    ] {
         if let Some(v) = output.get(key) {
             journal[key] = v.clone();
         }
     }
     if let Some(receipt) = output.get("verification_receipt") {
         journal["verification_receipt"] = receipt.clone();
+    }
+    if let Some(context) = output.get("failure_context") {
+        let mut context = context.clone();
+        if let Some(object) = context.as_object_mut() {
+            object.remove("diagnostics");
+        }
+        journal["failure_context"] = context;
     }
     journal
 }
@@ -444,6 +467,7 @@ fn bounded_command_journal(arguments: &Value, field: &str) -> Value {
 
 fn process_output_json(output: ProcessOutput) -> Value {
     let receipt = output.verification_receipt.clone();
+    let failure_context = output.failure_context.clone();
     let mut value = json!({
         "verification_witness": output.verification_witness,
         "command_outcome": output.command_outcome.json(),
@@ -471,6 +495,9 @@ fn process_output_json(output: ProcessOutput) -> Value {
         "sandbox": output.sandbox.json(output.sandbox_denied, output.sandbox_unavailable)
     });
     value["execution"] = json!(if output.direct { "argv" } else { "shell" });
+    if let Some(context) = failure_context {
+        value["failure_context"] = context;
+    }
     value["exit_scope"] = json!(if output.direct {
         "direct_child"
     } else {
@@ -683,7 +710,7 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    fn catalog_registers_three_tools_and_redacts_stdin_journal_arguments() {
+    fn catalog_registers_process_tools_and_current_session_reader() {
         let root = root();
         let mut manager = PluginManager::root(ScopeKind::TrustedProject);
         manager
@@ -710,14 +737,20 @@ mod tests {
                 "run_command",
                 "exec_command",
                 "write_stdin",
-                "test_discrimination"
+                "test_discrimination",
+                "session_info"
             ]
         );
         assert!(
             tools
                 .definitions()
                 .iter()
-                .all(|definition| definition.effect == ToolEffect::Execute)
+                .all(|definition| definition.effect
+                    == if definition.name == "session_info" {
+                        ToolEffect::Read
+                    } else {
+                        ToolEffect::Execute
+                    })
         );
         let write = tools.get("write_stdin").unwrap();
         let journal = write.journal_arguments(&json!({
