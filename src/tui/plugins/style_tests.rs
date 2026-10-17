@@ -47,6 +47,7 @@ impl Fixture {
         }
     }
     fn draw(&mut self) {
+        self.app.test_render_version = Some(crate::tui::snapshot_tests::SNAPSHOT_VERSION);
         self.terminal.draw(|frame| self.app.draw(frame)).unwrap();
     }
     fn snapshot(&mut self, name: &str) {

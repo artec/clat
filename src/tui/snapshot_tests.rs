@@ -677,6 +677,7 @@ impl Harness {
     }
 
     fn project(&mut self) -> String {
+        self.app.test_render_version = Some(SNAPSHOT_VERSION);
         self.app.expire_status();
         self.terminal
             .draw(|frame| self.app.draw(frame))
@@ -1847,12 +1848,14 @@ fn native_host_offline_snapshot() {
     harness_native("snap-native-host-offline", false).snapshot("native-host-offline");
 }
 
+pub(in crate::tui) const SNAPSHOT_VERSION: &str = "0.0.0";
+
 /// 三道环境归一化，保证 fixture 与开发机/CI、crate 版本解耦：
 /// 1. project root 整段替换；
 /// 2. 临时目录前缀替换（macOS `$TMPDIR` vs Linux `/tmp`）——必须在
 ///    project root 之后做（project root 是临时目录的子串）；
-/// 3. 版本号打码——发布提交 bump `CARGO_PKG_VERSION` 时，头部的
-///    `CLAT v0.6.x` 不应令全部 fixture 集体失效；
+/// 3. 绘制前注入固定版本，再将固定版本打码。仅在投影后替换真实版本
+///    无法消除版本长度导致的居中、换行和样式区间偏移。
 ///
 /// 最后叠加裸纳秒数字串归一——路径在窄对话框里换行时会把纳秒串从
 /// 中间拆开（位数恒定 → 换行位置恒定，但裸数字串本身必须归一）。
@@ -1860,8 +1863,21 @@ pub(in crate::tui) fn normalize_paths(projection: &str, project_root: &Path) -> 
     let normalized = projection.replace(project_root.to_string_lossy().as_ref(), "<ROOT>");
     let tmp = std::env::temp_dir();
     let normalized = normalized.replace(tmp.to_string_lossy().trim_end_matches('/'), "<TMP>");
-    let version = concat!("v", env!("CARGO_PKG_VERSION"));
-    mask_long_digit_runs(&normalized.replace(version, "v<VERSION>"))
+    let version = format!("v{SNAPSHOT_VERSION}");
+    mask_long_digit_runs(&normalized.replace(&version, "v<VERSION>"))
+}
+
+#[test]
+fn snapshot_version_is_fixed_before_layout() {
+    let mut harness = harness_native("snapshot-version-layout", false);
+    assert_eq!(harness.app.render_version(), env!("CARGO_PKG_VERSION"));
+    let expected = harness.draw_projection();
+    for version in ["1.7.9", "1.7.10", "100.200.300-preview.123"] {
+        harness.app.test_render_version = Some(version);
+        assert_eq!(harness.app.render_version(), version);
+        assert_eq!(harness.draw_projection(), expected, "version {version}");
+    }
+    assert!(expected.contains("v<VERSION>"));
 }
 
 /// 投影中任何 ≥12 位的连续数字串（临时目录纳秒后缀）归一为固定占位

@@ -112,18 +112,15 @@ impl RenameDialog {
 
 /// 空会话欢迎页：LOGO + 版本行 + 起步提示，双向居中于会话区内框。
 /// 窄到放不下 LOGO 的终端退化为单行提示（ASCII 字形无法有意义地缩放）。
-pub(super) fn draw_welcome(frame: &mut Frame, inner: Rect) {
+pub(super) fn draw_welcome(frame: &mut Frame, inner: Rect, version: &str) {
     if inner.width == 0 || inner.height == 0 {
         return;
     }
-    let welcome = crate::tui::logo::welcome_lines();
+    let welcome = crate::tui::logo::welcome_lines(version);
     let content_width = welcome.iter().map(Line::width).max().unwrap_or(0) as u16;
     if inner.width < content_width {
         let hint = Line::from(Span::styled(
-            format!(
-                "clat v{} · type a message to begin",
-                env!("CARGO_PKG_VERSION")
-            ),
+            format!("clat v{version} · type a message to begin"),
             theme::style(theme::Role::Dim),
         ));
         let x = inner.x + inner.width.saturating_sub(hint.width() as u16) / 2;

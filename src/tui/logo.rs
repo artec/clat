@@ -22,14 +22,14 @@ const LOGO_LINES: [&str; 6] = [
 
 /// 空会话欢迎页（启动 / `/new` / `/clear` 后的会话区）：LOGO +
 /// 版本行 + 起步提示。横向居中由调用方按最宽行处理。
-pub(crate) fn welcome_lines() -> Vec<Line<'static>> {
+pub(crate) fn welcome_lines(version: &str) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = LOGO_LINES
         .iter()
         .map(|text| Line::from(Span::styled((*text).to_owned(), theme::style(Role::Logo))))
         .collect();
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        format!("v{} · cmd-line agent runtime", env!("CARGO_PKG_VERSION")),
+        format!("v{version} · cmd-line agent runtime"),
         theme::style(Role::Dim),
     )));
     lines.push(Line::from(Span::styled(
@@ -114,7 +114,7 @@ mod tests {
 
     #[test]
     fn welcome_pairs_logo_with_startup_hints() {
-        let lines = welcome_lines();
+        let lines = welcome_lines(env!("CARGO_PKG_VERSION"));
         assert_eq!(lines.len(), LOGO_LINES.len() + 3);
         let logo: Vec<String> = lines
             .iter()

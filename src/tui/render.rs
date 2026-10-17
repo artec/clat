@@ -1,6 +1,15 @@
 use super::*;
 
 impl App {
+    /// Resolve presentation inputs before measuring or wrapping text.
+    pub(super) fn render_version(&self) -> &'static str {
+        #[cfg(test)]
+        if let Some(version) = self.test_render_version {
+            return version;
+        }
+        env!("CARGO_PKG_VERSION")
+    }
+
     pub(super) fn scroll_up(&mut self, amount: usize) {
         self.conversation_scroll_from_bottom =
             self.conversation_scroll_from_bottom.saturating_add(amount);
@@ -876,7 +885,7 @@ impl App {
             .sum::<usize>();
         let rest_budget = area.width.saturating_sub(2 + 2 + prefix_width as u16) as usize;
         let header = HeaderModel {
-            version: env!("CARGO_PKG_VERSION"),
+            version: self.render_version(),
             state,
             model: model.as_str(),
             level: level.as_deref(),
@@ -964,7 +973,7 @@ impl App {
             self.conversation_rows = 0;
             frame.render_widget(&block, area);
             self.draw_history_indicator(frame, inner);
-            draw_welcome(frame, content_area);
+            draw_welcome(frame, content_area, self.render_version());
             self.draw_dsh_banner(frame, area);
             return;
         }

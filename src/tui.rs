@@ -452,6 +452,9 @@ struct App {
     /// 快照测试确定性钩子：冻结动画帧号，同一输入序列永远同一画面。
     #[cfg(test)]
     test_freeze_tick: bool,
+    /// Snapshot-only version injection, applied before layout.
+    #[cfg(test)]
+    test_render_version: Option<&'static str>,
     /// 快照测试确定性钩子：阶段/run 计时固定值（Instant 不可移植构造）。
     #[cfg(test)]
     test_phase_elapsed: Option<Duration>,
@@ -623,6 +626,8 @@ impl App {
             #[cfg(test)]
             test_freeze_tick: false,
             #[cfg(test)]
+            test_render_version: None,
+            #[cfg(test)]
             test_phase_elapsed: None,
             #[cfg(test)]
             test_run_elapsed: None,
@@ -728,6 +733,8 @@ impl App {
             loading: None,
             #[cfg(test)]
             test_freeze_tick: false,
+            #[cfg(test)]
+            test_render_version: None,
             #[cfg(test)]
             test_phase_elapsed: None,
             #[cfg(test)]

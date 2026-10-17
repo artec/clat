@@ -53,6 +53,13 @@ remain in the default `runtime-tests` feature. An explicit persistence-test
 filter selects the full harness. Ordinary Cargo tests, mixed filters and
 delivery/CI gates retain these tests; the quick tier does not delete coverage.
 
+Snapshot harnesses inject a fixed version before layout, shared by the header
+and welcome view (including the narrow fallback), then mask that version in
+the textual projection. Replacing the release version only after rendering
+leaves length-dependent alignment and style ranges behind; version bumps
+must not require refreshing otherwise unchanged snapshots. Normal rendering
+continues to use the build version.
+
 Runtime-backed snapshot fixtures authorize through the real TUI confirmation
 gate and retain that single mounted application. Do not pre-authorize by
 mounting, closing and immediately reopening the same storage root: that
