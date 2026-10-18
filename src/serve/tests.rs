@@ -3454,7 +3454,7 @@ fn ag8_wait_idle(handle: &ServeHandle) {
         }
         consecutive_failures = 0;
         let info = &raw["value"];
-        if info.get("active_run").map_or(true, |run| run.is_null()) {
+        if info.get("active_run").is_none_or(|run| run.is_null()) {
             return;
         }
         assert!(Instant::now() < deadline, "host run never settled");

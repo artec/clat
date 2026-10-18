@@ -1,5 +1,7 @@
 #[path = "agent_evidence_tests.rs"]
 mod agent_evidence;
+#[path = "argument_recovery_tests.rs"]
+mod argument_recovery;
 #[path = "edit_recovery_tests.rs"]
 mod edit_recovery;
 #[path = "verification_conflict_tests.rs"]

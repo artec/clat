@@ -319,8 +319,9 @@ fn parse_read_request(arguments: &Value, requested: &str) -> Result<ReadRequest,
     let end_line =
         usize_arg(arguments, "end_line").map(|end| u64::try_from(end).unwrap_or(u64::MAX));
     if end_line.is_some_and(|end| end < start_line) {
-        return Err(ToolError::new(
-            "read_file: `end_line` must be greater than or equal to `start_line`",
+        return Err(super::argument_recovery::invalid_range(
+            start_line,
+            end_line.unwrap(),
         ));
     }
     let start_byte =
@@ -793,6 +794,10 @@ fn exceeds_pruner_threshold(output: &Value) -> bool {
 }
 
 impl Tool for ReadFileTool {
+    fn error_output(&self, error: &ToolError) -> Value {
+        super::argument_recovery::output(error)
+    }
+
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "read_file".into(),

@@ -8,6 +8,7 @@ struct RecoveryModel {
     tool: &'static str,
     reason: &'static str,
     root: String,
+    program: String,
 }
 
 impl Model for RecoveryModel {
@@ -38,6 +39,13 @@ impl Model for RecoveryModel {
             if self.reason == "workdir_out_of_scope" {
                 assert_eq!(hint["project_root"], self.root);
                 self.args["workdir"] = json!(".");
+            } else if self.reason == "verification_requires_argv" {
+                assert_eq!(hint["required"], json!({"command_form":"argv","tty":false}));
+                self.args.as_object_mut().unwrap().remove("command");
+                self.args["argv"] = json!([self.program, "green"]);
+                if self.tool == "exec_command" {
+                    self.args["tty"] = json!(false);
+                }
             } else {
                 self.args.as_object_mut().unwrap().remove("command");
             }
@@ -52,7 +60,7 @@ impl Model for RecoveryModel {
             let Some(ModelItem::ToolResult(result)) = request.items.last() else {
                 panic!("corrected result")
             };
-            assert!(!result.is_error);
+            assert!(!result.is_error, "{}", result.output);
             assert_eq!(result.output["verification_receipt"]["status"], "passed");
             vec![]
         };
@@ -76,7 +84,8 @@ impl Model for RecoveryModel {
     }
 }
 
-fn recovery_journey(workdir: bool) {
+fn recovery_journey(mode: u8) {
+    let workdir = mode == 0;
     let f = Fixture::new();
     let mut manager = f.manager();
     let service = manager.require(PROCESS_SERVICE).unwrap();
@@ -86,26 +95,35 @@ fn recovery_journey(workdir: bool) {
     let tools = manager.require(TOOL_SERVICE).unwrap();
     let pipeline = manager.require(TOOL_PIPELINE_SERVICE).unwrap();
     let mut args = json!({"argv":[f.program,"green"],"verification":{"format":"rust-test-summary","minimum_executed":1}});
-    if workdir {
+    if mode == 3 {
+        args["tty"] = json!(true);
+        args["yield_time_ms"] = json!(30000);
+    } else if workdir {
         args["workdir"] = json!(f.root.to_string_lossy());
         args["yield_time_ms"] = json!(30000);
     } else {
         args["command"] = json!("exit 99");
+        if mode == 2 {
+            args.as_object_mut().unwrap().remove("argv");
+        }
     }
     let mut model = RecoveryModel {
         calls: 0,
         args,
-        tool: if workdir {
+        tool: if workdir || mode == 3 {
             "exec_command"
         } else {
             "run_command"
         },
         reason: if workdir {
             "workdir_out_of_scope"
+        } else if mode >= 2 {
+            "verification_requires_argv"
         } else {
             "ambiguous_command_input"
         },
         root: f.root.to_string_lossy().into_owned(),
+        program: f.program.clone(),
     };
     let result = crate::run::Run::new(
         &mut model,
@@ -133,10 +151,34 @@ fn recovery_journey(workdir: bool) {
 
 #[test]
 fn ag7_recovery_keeps_literal_verification_after_workdir_rejection() {
-    recovery_journey(true);
+    recovery_journey(0);
 }
 
 #[test]
 fn ag7_recovery_resolves_argument_conflict_without_running_the_rejected_command() {
-    recovery_journey(false);
+    recovery_journey(1);
+}
+
+#[test]
+fn ag8_recovery_keeps_verification_after_shell_form_rejection() {
+    recovery_journey(2);
+}
+
+#[test]
+fn ag8_recovery_never_relabels_permission_or_runtime_errors_as_not_started() {
+    let f = Fixture::new();
+    for message in [
+        "permission denied",
+        "cancelled",
+        "process spawn failed",
+        "unknown verification format",
+    ] {
+        let out = super::super::invocation_recovery::annotate(&f.service, &ToolError::new(message));
+        assert!(out.get("invocation_recovery").is_none());
+    }
+}
+
+#[test]
+fn ag8_recovery_keeps_verification_after_pty_form_rejection() {
+    recovery_journey(3);
 }

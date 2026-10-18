@@ -798,6 +798,7 @@ fn late_settlement_beyond_any_window_cannot_override_active_run() {
 ///   与 serve/shapes.rs `settled_failed` 同形状）；
 /// - 重连时第二条 SSE 流重放 journal 事实（user_message + turn_ended
 ///   error）再 `subscribed`，与真实宿主重连语义一致。
+///
 /// fixture 行为开关（AG-DOGFOOD-8）：`snapshot_recent_inputs=false` 模拟
 /// 不携带 session.recent_inputs 的旧宿主快照，用于单独判别“回执入史”
 ///（remember）与“快照重建”（replace_history）两条腿。
@@ -1254,9 +1255,8 @@ fn joint_paste_submit_failure_reason_and_replay() {
 fn drain_for(app: &mut super::App, events: &mpsc::Receiver<super::UiEvent>, millis: u64) {
     let deadline = Instant::now() + Duration::from_millis(millis);
     while Instant::now() < deadline {
-        match events.recv_timeout(Duration::from_millis(20)) {
-            Ok(event) => app.handle_ui_event(event),
-            Err(_) => {}
+        if let Ok(event) = events.recv_timeout(Duration::from_millis(20)) {
+            app.handle_ui_event(event);
         }
     }
 }

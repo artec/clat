@@ -12,6 +12,10 @@ pub(super) fn annotate(service: &ProcessService, error: &ToolError) -> Value {
         "exec_command: specify exactly one of cmd or argv" => json!({
             "reason":"ambiguous_command_input","command_started":false,
             "next_action":"Choose exactly one input form. For literal test execution keep argv and verification, remove command/cmd. A shell input needs no argv and cannot have verification. This rejected call executed nothing; submit corrected arguments only if still authorized."}),
+        "verification requires argv and tty=false" => json!({
+            "reason":"verification_requires_argv","command_started":false,
+            "required":{"command_form":"argv","tty":false},
+            "next_action":"Keep the intended target and verification specification. Resubmit literal argv only if still authorized. run_command is already non-PTY: do not add a tty argument there. For exec_command set tty=false. Do not drop verification or switch to a shell to make a failing check appear successful. If shell expansion is essential, explain that this verification form cannot attest it; no command was started and no retry was scheduled."}),
         _ => return value,
     };
     value["invocation_recovery"] = hint;

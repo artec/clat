@@ -33,11 +33,7 @@ impl Tool for EditFileTool {
     }
 
     fn error_output(&self, error: &ToolError) -> Value {
-        let mut output = json!({"error":error.to_string()});
-        if let Some(recovery) = error.recovery() {
-            output["edit_recovery"] = recovery.clone();
-        }
-        output
+        super::argument_recovery::output(error)
     }
 
     fn invoke(
@@ -83,6 +79,7 @@ fn check_keys(value: &Value, allowed: &[&str]) -> Result<(), ToolError> {
 }
 
 fn parse_edits(args: &Value) -> Result<Vec<Edit<'_>>, ToolError> {
+    super::argument_recovery::validate_edit(args)?;
     check_keys(args, &["path", "old_str", "new_str", "edits"])?;
     let values = if let Some(batch) = args.get("edits") {
         if args.get("old_str").is_some() || args.get("new_str").is_some() {

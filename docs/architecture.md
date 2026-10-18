@@ -449,6 +449,16 @@ that header identity becomes the required cache key prefix.
 
 ## Native tools and permission pipeline
 
+Native read/edit argument failures retain their original error plus bounded,
+value-free `argument_recovery` diagnostics. Read-range validation happens
+before file I/O; edit structural validation collects at most eight issues
+before the authorized snapshot read. The existing registry permission gate,
+ToolResultPruner, next model request and generic tool-result journal carry the
+same metadata; there is no retry scheduler, alternate write path, new durable
+event type, or interpretation of supplied text as recovery instructions.
+Existing `edit_recovery` remains the separate post-read exact-match locator.
+
+
 Built-in read tools are `list_files`, `read_file`, and `search`. Search is an
 independent internal plugin: literal remains the default, while regex,
 include/exclude globs, extensions, gitignore/hidden policy, stable ordering and

@@ -141,8 +141,16 @@ The locator examines at most 32 occurrences and reports omitted candidates.
 Hints contain no file snippets, make no extra reads, and are only produced
 after an authorized read. Re-read the same file, include unique context and
 preserve exact bytes, including CRLF; the hints do not normalize line endings.
-Other errors retain their ordinary diagnostics. Permissions and path fences
-apply to single and batch edits alike.
+Argument rejection can include `argument_recovery`. Invalid read ranges report
+`operation_started: false` and the supplied numeric bounds, so the agent can
+check the intended range without automatically swapping bounds or widening a
+read. Invalid edit forms report `applied: false`, up to eight structural issues
+with zero-based `edit_index` (null for the request), and `issues_omitted`.
+Allowed field names are supplied; unexpected keys, old/new text and file
+contents are not echoed. Correct the whole rejected batch before resubmitting:
+no entry was applied, ignored, or automatically retried. Permission denials,
+I/O failures and cancellation do not acquire these argument-validation hints.
+Permissions and path fences apply to single and batch edits alike.
 
 The native `export_patch` tool freezes all current workspace changes against
 Git HEAD, including non-ignored untracked files, into a standard binary-safe
@@ -916,8 +924,9 @@ writes, and Full Access retains its existing unrestricted write behavior.
 Known pre-execution command admission errors can include `invocation_recovery`.
 An absolute workdir outside active scratch reports the bound project root and
 the project-relative alternative; a conflicting shell/argv request reports how
-to choose one form while retaining literal verification. These rejected calls
-start no command. Recovery is guidance for another explicitly authorized call,
+to choose one form while retaining literal verification. A verification request in shell or PTY form also reports the required literal
+`argv` / `tty=false` form, retaining the verification requirement instead of
+silently dropping it. These rejected calls start no command. Recovery is guidance for another explicitly authorized call,
 never automatic execution, a widened write root, a silent target change or a
 fallback to a shell. Permission denials and runtime failures do not acquire this
 validation-only label.

@@ -13,6 +13,7 @@ const DEFAULT_LIST_DEPTH: usize = 2;
 const DEFAULT_LIST_ENTRIES: usize = 200;
 const MAX_LIST_DEPTH: usize = 8;
 const MAX_LIST_ENTRIES: usize = 2_000;
+mod argument_recovery;
 mod edit;
 mod edit_recovery;
 mod export;
@@ -459,6 +460,8 @@ impl Tool for AskUserTool {
     }
 }
 
+#[cfg(test)]
+mod argument_recovery_tests;
 #[cfg(test)]
 mod edit_tests;
 
