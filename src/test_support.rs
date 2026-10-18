@@ -358,11 +358,11 @@ impl Model for TestModel {
                 }
             }
             TestBehavior::SlowTitle => {
-                // 标题请求（由 instructions 识别）慢 3s；普通对话快返回。
+                // 按标题任务前缀识别，不绑定词数/CJK 限长措辞；普通对话快返回。
                 let is_title = request.tools.is_empty()
-                    && request.instructions.is_some_and(|text| {
-                        text.starts_with("Generate a concise title (at most 8 words)")
-                    });
+                    && request
+                        .instructions
+                        .is_some_and(|text| text.starts_with("Generate a concise title"));
                 if is_title {
                     std::thread::sleep(std::time::Duration::from_secs(3));
                     Ok(response("slow title", FinishReason::Completed))
@@ -540,10 +540,11 @@ impl Model for TestModel {
                 // Scenario 声明的 agent step。与 ToolLoop 同纪律：不
                 // 消耗脚本 cursor，否则首轮成功后的异步标题会让稳定
                 // scenario 偶发多一步。
+                // 只识别任务前缀，不绑定可能随标题策略变化的长度提示。
                 let is_title = request.tools.is_empty()
-                    && request.instructions.is_some_and(|text| {
-                        text.starts_with("Generate a concise title (at most 8 words)")
-                    });
+                    && request
+                        .instructions
+                        .is_some_and(|text| text.starts_with("Generate a concise title"));
                 if is_title {
                     // Report 不能被标题 worker 的调度时机污染：close
                     // 可能在它开始前取消，也可能让它先提交标题。固定

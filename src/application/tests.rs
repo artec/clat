@@ -2184,7 +2184,7 @@ impl TestModelScript for RejectVisualPayloadScript {
     ) -> Result<crate::ModelResponse, crate::ModelError> {
         if request
             .instructions
-            .is_some_and(|text| text.starts_with("Generate a concise title (at most 8 words)"))
+            .is_some_and(|text| text.starts_with("Generate a concise title"))
         {
             events.emit(crate::ModelEvent::TextDelta {
                 delta: "visual test".into(),
@@ -5749,7 +5749,7 @@ impl TestModelScript for ViewImageLoopScript {
         if request.tools.is_empty()
             && request
                 .instructions
-                .is_some_and(|text| text.starts_with("Generate a concise title (at most 8 words)"))
+                .is_some_and(|text| text.starts_with("Generate a concise title"))
         {
             return Ok(Self::completed("visual test", events));
         }
