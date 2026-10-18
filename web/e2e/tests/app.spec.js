@@ -523,7 +523,37 @@ test('model picker hit area follows its label while long labels stay bounded bes
       expect(picker.x).toBeGreaterThanOrEqual(0);
       expect(picker.x + picker.width).toBeCloseTo(seat.x + seat.width, 0);
       expect(send.x - picker.x - picker.width).toBeGreaterThanOrEqual(5);
-      expect(send.x - picker.x - picker.width).toBeLessThanOrEqual(7);
+      // PICKER-HIT-1 勘误（R1 返工，2026-10-18）：本用例（110a818，10-03）
+      // 原断言 picker 与 Send 间距 ≤7px；57cd9a5（10-09）在两者之间加入
+      // Queue 按钮，实测间距恒为 68.09px = Queue 56.09px + 2×6px flex gap
+      // （10 视口×运行组合），中点 elementFromPoint 命中 queue-enqueue。
+      // 旧前提被产品 DOM 合法取代。B 审 R1 指出"只查中点"存在两侧空白
+      // 盲点——修订为**相邻控件边界**契约：可见序列 picker → Queue →
+      // Send，每对相邻边缘距离不得超过正常 flex gap（6px + 子像素容差
+      // = 8px，阈值来源 .composer-actions gap:6px），且控件内部采样点
+      // 命中该特定控件（不得命中任意 button）。JS 显隐 Cancel 属几何
+      // 模拟面，非真实运行态交互（如实声明）。
+      const queue = await page.locator('#queue-enqueue').boundingBox();
+      expect(queue.width, 'Queue stays a visible control between picker and Send').toBeGreaterThan(0);
+      const gapPickerQueue = queue.x - (picker.x + picker.width);
+      const gapQueueSend = send.x - (queue.x + queue.width);
+      expect(gapPickerQueue, 'picker→Queue edge gap must stay a normal flex gap (≤8px), no dead zones').toBeGreaterThanOrEqual(0);
+      expect(gapPickerQueue).toBeLessThanOrEqual(8);
+      expect(gapQueueSend, 'Queue→Send edge gap must stay a normal flex gap (≤8px), no dead zones').toBeGreaterThanOrEqual(0);
+      expect(gapQueueSend).toBeLessThanOrEqual(8);
+      // 控件身份命中：Queue 内三点必须命中 #queue-enqueue 本体。
+      const hitAt = (x, y) => page.evaluate(
+        ([px, py]) => {
+          const el = document.elementFromPoint(px, py);
+          const button = el && el.closest('button');
+          return button ? button.id || button.textContent.trim() : null;
+        },
+        [x, y],
+      );
+      const midY = send.y + send.height / 2;
+      for (const frac of [0.25, 0.5, 0.75]) {
+        expect(await hitAt(queue.x + queue.width * frac, midY), 'samples inside Queue must hit #queue-enqueue itself').toBe('queue-enqueue');
+      }
       expect(send.x + send.width).toBeLessThanOrEqual(width);
       expect(await page.locator('#model-picker-label').evaluate((node) => node.scrollWidth > node.clientWidth)).toBe(true);
       if (running) {
@@ -1294,6 +1324,99 @@ test.describe('acceptance ① approval + run lifecycle', () => {
     await page.click('#session-title');
     await expect(page.locator('#session-title')).toHaveText('renamed by e2e', LIVE);
   });
+});
+
+// TITLE-CUT-1（AG-DOGFOOD-9）· R1-F4 返工（2026-10-18）：窄视口下会话
+// 标题只做**视觉省略**——可视与存储分别独立断言：
+//   可视：360px 视口下文档无横向溢出、标题按钮右缘不越视口、CSS 省略号
+//         裁剪生效（39 汉字与自动上限内 24 汉字两档——R1 实测旧值
+//         603px/393px 均 >360，属标题验收缺口，不得推给未派工项）；
+//   存储：textContent 恒为全值（未被显示层改写），刷新后 journal 重建
+//         仍是全值；默认视口侧栏行（固定宽约束）CSS 省略同样成立。
+test('TITLE-CUT-1 narrow viewport keeps the stored title whole and ellipsizes visually', async ({ page }) => {
+  await openWorkbench(page, hostInfo('success'));
+  // rename 需要活跃会话：新会话 + 一轮 TestProvider 完成（窄视口下侧栏是
+  // 抽屉、#new-session 在视口外，故材料化在默认视口完成）。
+  await page.click('#new-session');
+  await expect(page.locator('#send')).toBeEnabled(LIVE);
+  await page.fill('#prompt', 'narrow viewport title');
+  await page.click('#send');
+  await expect(page.locator('.msg.assistant').last()).toBeVisible(LIVE);
+  await page.evaluate(() => refreshWorkbench());
+  await expect.poll(() => page.evaluate(() => state.sessionId), LIVE).not.toBeNull();
+  const sessionId = await page.evaluate(() => state.sessionId);
+
+  // 39 个汉字 ≈ 546px，远超 360px 视口的标题可用宽；39 < 60 字符的用户
+  // 标题清洗上限，存储值必须完整。
+  const longTitle = '这条标题用来验证窄视口下会话标题只做视觉省略而完整保存不会把残缺词句写回存储层';
+  page.once('dialog', (dialog) => dialog.accept(longTitle));
+  await page.click('#session-title');
+  await expect(page.locator('#session-title')).toHaveText(longTitle, LIVE);
+
+  // 默认视口侧栏行（固定宽度 + min-width:0）：文本节点仍是全值，CSS 裁剪
+  // 且带省略号。
+  const rowTitle = page.locator(`[data-session-id="${sessionId}"] .session-copy strong`);
+  await expect(rowTitle).toHaveText(longTitle, LIVE);
+  const rowMetrics = await rowTitle.evaluate((el) => ({
+    scrollWidth: el.scrollWidth,
+    clientWidth: el.clientWidth,
+    textOverflow: getComputedStyle(el).textOverflow,
+    overflow: getComputedStyle(el).overflow,
+    whiteSpace: getComputedStyle(el).whiteSpace,
+  }));
+  expect(rowMetrics.scrollWidth).toBeGreaterThan(rowMetrics.clientWidth);
+  expect(rowMetrics.textOverflow).toBe('ellipsis');
+  expect(rowMetrics.overflow).toBe('hidden');
+  expect(rowMetrics.whiteSpace).toBe('nowrap');
+
+  // —— 窄视口（360px）头部可视断言（R1-F4 核心）——
+  await page.setViewportSize({ width: 360, height: 640 });
+  await expect(page.locator('#session-title')).toHaveText(longTitle, LIVE);
+  const narrow = await page.evaluate(() => {
+    const title = document.querySelector('#session-title');
+    const rect = title.getBoundingClientRect();
+    const cs = getComputedStyle(title);
+    return {
+      viewport: window.innerWidth,
+      docScrollWidth: document.documentElement.scrollWidth,
+      titleRight: Math.round(rect.right),
+      titleScroll: title.scrollWidth,
+      titleClient: title.clientWidth,
+      textOverflow: cs.textOverflow,
+      overflow: cs.overflow,
+      whiteSpace: cs.whiteSpace,
+    };
+  });
+  // 复审证据：宽度链实际值随用例日志留存。
+  console.log('TITLE-CUT-1 narrow header metrics:', JSON.stringify(narrow));
+  expect(narrow.docScrollWidth).toBeLessThanOrEqual(360);
+  expect(narrow.titleRight).toBeLessThanOrEqual(360);
+  expect(narrow.titleScroll).toBeGreaterThan(narrow.titleClient);
+  expect(narrow.textOverflow).toBe('ellipsis');
+  expect(narrow.overflow).toBe('hidden');
+  expect(narrow.whiteSpace).toBe('nowrap');
+
+  // 自动标题硬上限内的 24 汉字（48 列）同样不得越出视口（R1 补充观察档）。
+  const cappedTitle = '修复生产环境中用户登录失败以及无法访问的问题场景';
+  page.once('dialog', (dialog) => dialog.accept(cappedTitle));
+  await page.click('#session-title');
+  await expect(page.locator('#session-title')).toHaveText(cappedTitle, LIVE);
+  const cappedRight = await page.evaluate(() =>
+    Math.round(document.querySelector('#session-title').getBoundingClientRect().right),
+  );
+  expect(cappedRight).toBeLessThanOrEqual(360);
+
+  // —— 存储独立断言：持久层未被视觉层改写 ——
+  await page.reload();
+  await expect(page.locator('#conn-status')).toHaveText('live', LIVE);
+  await expect(page.locator('#session-title')).toHaveText(cappedTitle, LIVE);
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.evaluate(() => refreshWorkbench());
+  const stored = await page.evaluate((id) => {
+    const row = document.querySelector(`[data-session-id="${id}"] .session-copy strong`);
+    return row ? row.textContent : null;
+  }, sessionId);
+  expect(stored).toBe(cappedTitle);
 });
 
 test('settings expose the default-deny WeChat binding surface', async ({ page }) => {

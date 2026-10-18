@@ -214,10 +214,14 @@ impl From<FinishReason> for UtilityFinish {
 fn instructions(task: UtilityTask) -> &'static str {
     match task {
         UtilityTask::SessionTitle => {
-            "Generate a concise title (at most 8 words) for the coding assistant conversation \
-             below, focusing on its recent topic. Use the same language as the conversation. \
-             Output only the title text: no quotes, no trailing punctuation beyond what is \
-             natural, no explanation."
+            // TITLE-CUT-1（2026-10-18）：生成目标按文字系统区分（6 词 /
+            // 12 汉字 ≈ ≤36 列），远小于落库层 48 列硬上限——目标塑形、
+            // 上限兑底，与 DSH（5 词/10 汉字 vs 80 字节）同纪律。
+            "Generate a concise title for the coding assistant conversation \
+             below, focusing on its recent topic. Use the same language as the \
+             conversation. Keep it within 6 words for non-CJK languages, or \
+             within 12 CJK characters. Output only the title text: no quotes, \
+             no trailing punctuation beyond what is natural, no explanation."
         }
         UtilityTask::PromptSuggestion => {
             "Predict one useful next user message for the coding assistant conversation below. \

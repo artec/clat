@@ -55,6 +55,9 @@ serde_yaml_ng = "0.10"
 semver.workspace = true
 sha2 = "0.10"
 unicode-width = "0.2"
+# R1-F3（2026-10-18 返工）：显示层截断按 grapheme cluster 迭代，不劈开
+# emoji ZWJ 序列/组合附标；与 clat-core 同版，Cargo.lock 既有 1.13.3。
+unicode-segmentation = "1.13"
 ureq = { version = "3.3", default-features = false, features = ["rustls"] }
 url = "2"
 uuid = { version = "1", features = ["v4"] }

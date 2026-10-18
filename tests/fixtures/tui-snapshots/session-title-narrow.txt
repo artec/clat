@@ -1,0 +1,27 @@
+size 56x24
+cursor 3,21
+scroll 0
+000| ┌──────────────────────────────────────────────────────┐
+001| │ CLAT v<VERSION>  ready  ·  not configured — /model       │  ⟦2..5 BOLD · 25..47 fg=Cyan⟧
+002| └──────────────────────────────────────────────────────┘
+003| ┌ Conversation 中 中 中 中 中 中 中 中 中 中 中 中 中 中 中 中 中 中 中 … ┐  ⟦14..15 fg=DarkGray · 17..17 fg=DarkGray · 19..19 fg=DarkGray · 21..21 fg=DarkGray · 23..23 fg=DarkGray · 25..25 fg=DarkGray · 27..27 fg=DarkGray · 29..29 fg=DarkGray · 31..31 fg=DarkGray · 33..33 fg=DarkGray · 35..35 fg=DarkGray · 37..37 fg=DarkGray · 39..39 fg=DarkGray · 41..41 fg=DarkGray · 43..43 fg=DarkGray · 45..45 fg=DarkGray · 47..47 fg=DarkGray · 49..49 fg=DarkGray · 51..51 fg=DarkGray · 53..54 fg=DarkGray⟧
+004| │                                                      │
+005| │                                                      │
+006| │                                                      │
+007| │            ██████╗██╗      █████╗ ███████╗           │  ⟦12..43 fg=Rgb(65, 118, 230)⟧
+008| │           ██╔════╝██║     ██╔══██╗╚══██══╝           │  ⟦12..43 fg=Rgb(65, 118, 230)⟧
+009| │           ██║     ██║     ███████║   ██║             │  ⟦12..43 fg=Rgb(65, 118, 230)⟧
+010| │           ██║     ██║     ██╔══██║   ██║             │  ⟦12..43 fg=Rgb(65, 118, 230)⟧
+011| │           ╚██████╗███████╗██║  ██║   ██║             │  ⟦12..43 fg=Rgb(65, 118, 230)⟧
+012| │            ╚═════╝╚══════╝╚═╝  ╚═╝   ╚═╝             │  ⟦12..43 fg=Rgb(65, 118, 230)⟧
+013| │                                                      │
+014| │            v<VERSION> · cmd-line agent runtime           │  ⟦13..43 DIM⟧
+015| │       type a message to begin · /help for keys       │  ⟦8..47 fg=DarkGray⟧
+016| │                                                      │
+017| │                                                      │
+018| │                                                      │
+019| └──────────────────────────────────────────────────────┘
+020| ┌ Message ────────────────────────────── Project Write ┐  ⟦40..54 fg=DarkGray⟧
+021| │❯                                                     │
+022| └──────────────────────────────────────────────────────┘
+023|  <STORAGE-ROOT>

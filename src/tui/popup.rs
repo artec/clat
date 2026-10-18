@@ -45,7 +45,14 @@ pub(crate) fn fit_display_width(text: &str, width: usize) -> String {
     format!("{truncated}{padding}")
 }
 
-fn truncate_display_width(text: &str, max: usize) -> String {
+/// 超宽省略号截断到 ≤ `max` 显示宽。TITLE-CUT-1：会话右标题等纯视觉
+/// 省略统一走此宽度感知入口（不按 chars 计数——CJK 标题会溢出预算列）。
+/// R1-F3（2026-10-18 返工）：按 grapheme cluster 迭代并以整簇计量宽度
+/// ——旧实现先按整串 `UnicodeWidthStr` 判宽、截取却逐 char 累加
+/// `UnicodeWidthChar`，会把 ZWJ emoji 簇拆成 `a👩‍…`。截断后剥尾部
+/// 零宽/空白簇再补省略号，避免 `…` 前悬挂空格。
+pub(crate) fn truncate_display_width(text: &str, max: usize) -> String {
+    use unicode_segmentation::UnicodeSegmentation;
     if max == 0 {
         return String::new();
     }
@@ -54,16 +61,19 @@ fn truncate_display_width(text: &str, max: usize) -> String {
     }
     let mut out = String::new();
     let mut used = 0usize;
-    for character in text.chars() {
-        let width = UnicodeWidthChar::width(character).unwrap_or(0);
+    for cluster in text.graphemes(true) {
+        let width = UnicodeWidthStr::width(cluster);
         if used + width > max.saturating_sub(1) {
             break;
         }
-        out.push(character);
+        out.push_str(cluster);
         used += width;
     }
-    out.push('…');
-    out
+    let trimmed = out.trim_end();
+    let mut result = String::with_capacity(trimmed.len() + 3);
+    result.push_str(trimmed);
+    result.push('…');
+    result
 }
 
 /// 权限对话框的参数字段摘要：对象时列出全部顶层键（截断到 10 个
@@ -428,6 +438,28 @@ pub(crate) fn content_dialog_layout(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// R1-F3（2026-10-18 返工）：显示层截断不得把 ZWJ emoji 组合字形劈开，
+    /// 且截点宽度按整簇计量。乙方 R1 原反例：4 列预算足以容纳
+    /// `a👩‍👩‍👧‍👦…`（1+2+1），旧实现逐 char 累加把簇拆成 `a👩‍…`。
+    #[test]
+    fn truncate_display_width_never_splits_grapheme_clusters() {
+        let family = "a\u{1f469}\u{200d}\u{1f469}\u{200d}\u{1f467}\u{200d}\u{1f466}";
+        assert_eq!(
+            truncate_display_width(&format!("{family} tail"), 4),
+            format!("{family}…")
+        );
+        // 组合附标（NFD é）是一个簇，不得在 e 与附标之间截断。
+        assert_eq!(
+            truncate_display_width("cafe\u{0301}inder", 5),
+            "cafe\u{0301}…"
+        );
+        // 边界宽度：恰好 4 列的内容原样返回（无省略号）。
+        assert_eq!(truncate_display_width("中中", 4), "中中");
+        // 5 列预算保留两个整簇（4 列）+ 省略号；4 列预算保留一个整簇。
+        assert_eq!(truncate_display_width("中中中中", 5), "中中…");
+        assert_eq!(truncate_display_width("中中中中", 4), "中…");
+    }
 
     #[test]
     fn picker_row_fills_width_and_leads_with_the_current_marker() {

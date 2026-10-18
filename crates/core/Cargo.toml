@@ -65,6 +65,10 @@ serde_yaml_ng = "0.10"
 semver.workspace = true
 sha2 = "0.10"
 unicode-width = "0.2"
+# TITLE-CUT-1（2026-10-18）：标题按 grapheme cluster 计量显示宽度，截断
+# 不得劈开 emoji ZWJ 序列/组合附标。与 unicode-width 同族、无传递依赖，
+# 且 1.13.3 已在 Cargo.lock（零新增 crate）。
+unicode-segmentation = "1.13"
 ureq = { version = "3.3", default-features = false, features = ["rustls"] }
 url = "2"
 # DSH-compatible session logs: every durable append batch is one independent

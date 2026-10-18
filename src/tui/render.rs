@@ -939,13 +939,12 @@ impl App {
             .as_deref()
             .filter(|title| !title.is_empty())
         {
-            let budget = (area.width as usize).saturating_sub(left_title.chars().count() + 2);
-            let shown = if title.chars().count() > budget {
-                let kept: String = title.chars().take(budget.saturating_sub(1)).collect();
-                format!("{kept}…")
-            } else {
-                title.to_owned()
-            };
+            // TITLE-CUT-1（2026-10-18）：纯视觉省略必须按显示宽度（列）计
+            // ——汉字占 2 列/字，旧码按 chars 计数会放行超宽标题、覆盖左侧
+            // "Conversation" 标签。视觉省略不回写 Session/journal。
+            let budget = (area.width as usize)
+                .saturating_sub(unicode_width::UnicodeWidthStr::width(left_title) + 2);
+            let shown = truncate_display_width(title, budget);
             block = block.title(
                 Line::from(Span::styled(
                     format!(" {shown} "),

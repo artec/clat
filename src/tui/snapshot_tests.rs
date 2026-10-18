@@ -165,6 +165,10 @@ const SCENARIOS: &[&str] = &[
     "permission-confirm-full",
     "permission-dialog-escalate",
     "session-title",
+    // 2026-10-18 新增（AG-DOGFOOD-9 / TITLE-CUT-1）：56 列窄终端下 CJK
+    // 会话右标题按显示宽度省略（19 汉字+…）且不覆盖左侧 Conversation
+    // 标签的排版锁；旧码 chars 计数会放行 48 列宽标题。
+    "session-title-narrow",
     "rename-dialog",
     "rename-not-named",
     "attachment-chip",
@@ -3734,6 +3738,50 @@ fn session_title_snapshot() {
         Some("Fix the Safari login crash"),
         "the title event updates the display state without a snapshot pull"
     );
+}
+
+/// TITLE-CUT-1（2026-10-18）：窄终端（56 列）下会话右标题按**显示宽度**
+/// 省略——24 个汉字（48 列）超出 41 列标题预算时截断加省略号。旧码按
+/// chars 计数（24 ≤ 41）不截断，48 列宽标题直接溢出右边框；本断言在旧码
+/// 上红。纯视觉省略，标题存储值不回写。
+#[test]
+fn session_title_narrow_cjk_snapshot() {
+    let mut harness = Harness::trusted("snap-session-title-narrow", 56, 24);
+    let title = "中".repeat(24);
+    harness.event(UiEvent::Application(
+        crate::ApplicationEvent::TitleUpdated { title },
+    ));
+    harness.snapshot("session-title-narrow");
+    // 判别断言（TITLE-CUT-1）：标题预算 56−14−2=40 列 → 保留 19 个汉字
+    // （38 列）+ 省略号；左上角 "Conversation" 标签必须完好。旧码按 chars
+    // 计数（24 ≤ 40）不截断，48 列宽标题直接把左标签整个覆盖（投影中找
+    // 不到该行）；省略号也从不出现。投影文本对宽字形带标记空格，不做等
+    // 宽断言。
+    let projection = harness.draw_projection();
+    let border = projection
+        .lines()
+        .find(|line| line.contains("Conversation"))
+        .unwrap_or_else(|| {
+            panic!(
+                "the CJK title overflowed and overwrote the Conversation label; \
+             the header truncation must be display-width aware"
+            )
+        });
+    assert!(
+        border.contains('…'),
+        "a 48-column CJK title in a 56-column terminal must be visually ellipsized"
+    );
+    assert_eq!(
+        border.matches('中').count(),
+        19,
+        "40-column budget keeps exactly 19 CJK chars plus the ellipsis"
+    );
+    assert_eq!(
+        harness.app.session_title.as_deref(),
+        Some("中".repeat(24).as_str()),
+        "visual ellipsis must not rewrite the stored title"
+    );
+    harness.snapshot("session-title-narrow");
 }
 
 /// /rename 弹框（渲染快照）：预填当前标题 + 真实光标 + 页脚键位。

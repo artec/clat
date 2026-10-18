@@ -1232,7 +1232,21 @@ process-only override; it neither reads nor changes the persistent token.
 
 The Workbench settings panel exposes a host-wide companion utility policy.
 Continuous session naming is on by default; it coalesces duplicate notifications
-for the same ended turn and never changes a user-owned title. Manual prompt suggestions
+for the same ended turn and never changes a user-owned title. Generated titles
+follow a bounded contract: the model is asked for a short script-aware title
+(about 6 words in non-CJK languages, 12 CJK characters), and whatever it
+returns is accepted only within a hard cap of **48 display columns** (24 CJK
+characters / 48 Latin letters). Compliant titles are stored whole — never cut.
+An over-long title is kept only when a provably safe cut exists: a whole-word
+or grapheme boundary (emoji ZWJ sequences are never split, and unspaced CJK
+runs count as one unbreakable word). Terminal control and bidirectional
+spoofing characters are stripped, and when no safe prefix exists — a single
+64-character token, or a 25-character unspaced CJK phrase — the previous title
+is kept instead of saving a mid-word fragment. The TUI conversation header and
+the PWA header/sidebar ellipsize long titles visually within the available
+width; what is stored stays whole and manual renames (bounded separately at
+60 characters) always take precedence.
+Manual prompt suggestions
 are off by default. In the PWA, the sparkle button at the upper-right of the
 composer is muted and disabled until the policy, session, and idle state allow
 a request; when enabled, press it to request one next-message hint. In the TUI,

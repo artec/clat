@@ -199,12 +199,16 @@ button:disabled { cursor: default; opacity: .45; }
 }
 
 /* Conversation */
-.conversation { --composer-height: 154px; position: relative; display: grid; grid-template-rows: 70px minmax(0, 1fr); min-width: 0; background: var(--surface); }
-.conversation-header { position: relative; display: flex; align-items: center; gap: 12px; padding: 0 20px; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--surface) 92%, transparent); }
+/* R1-F4（2026-10-18 返工）：标题/元数据在窄视口必须被约束在此列内做纯视
+   觉省略——隐式 auto 网格列会取 nowrap 内容的 min-content 把整页撑出横向
+   滚动（实测 360px 视口下 39 汉字标题按钮右缘 603px、24 汉字 393px）。
+   四层收缩许可：显式 minmax(0,1fr) 列 + header/meta/title 的 min-width:0。 */
+.conversation { --composer-height: 154px; position: relative; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: 70px minmax(0, 1fr); min-width: 0; background: var(--surface); }
+.conversation-header { position: relative; display: flex; align-items: center; gap: 12px; padding: 0 20px; min-width: 0; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--surface) 92%, transparent); }
 .conversation-identity { min-width: 0; flex: 1; }
-.session-title { display: block; max-width: 100%; padding: 0; overflow: hidden; color: var(--text); font-size: 14px; font-weight: 650; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+.session-title { display: block; min-width: 0; max-width: 100%; padding: 0; overflow: hidden; color: var(--text); font-size: 14px; font-weight: 650; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
 .session-title:hover { color: var(--accent); }
-.conversation-meta { display: flex; align-items: center; gap: 7px; margin-top: 2px; color: var(--text-muted); font: 12px/1.3 var(--font-ui); white-space: nowrap; }
+.conversation-meta { display: flex; align-items: center; gap: 7px; margin-top: 2px; min-width: 0; color: var(--text-muted); font: 12px/1.3 var(--font-ui); white-space: nowrap; }
 .model-identity { display: inline-flex; min-width: 0; align-items: center; gap: 5px; }
 .model-identity .model-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .vision-capability { display: inline-grid; flex: 0 0 auto; place-items: center; width: 18px; height: 18px; border: 1px solid color-mix(in srgb, var(--signal) 42%, var(--line)); border-radius: 5px; color: var(--signal); background: color-mix(in srgb, var(--signal) 8%, transparent); }
