@@ -3956,9 +3956,15 @@ fn automatic_compaction_is_durable_and_survives_cold_reopen() {
     std::fs::create_dir_all(&project_root).unwrap();
     let project = Project::new(&project_root);
     let mut application = mount(&project, &storage_root, TestBehavior::Success);
-    // 12k window leaves enough room for the fixed summary reserves while a
-    // handful of deliberately long turns deterministically cross 80%.
-    configure_test_model_with_budget(&application, 12_000);
+    // Size the fixture from the actual empty catalog, not a fixed window that
+    // silently becomes too small when native tools are added. The 8k history
+    // allowance fits a summary plus retained turns, but still forces pressure
+    // within the bounded long-turn sequence below.
+    configure_test_model_with_budget(&application, u32::MAX);
+    let fixed = application.context_snapshot().unwrap().total_estimate;
+    let window = u32::try_from((fixed + 8_000) * 5 / 4).unwrap();
+    configure_test_model_with_budget(&application, window);
+    eprintln!("COMPACTION_FIXTURE fixed={fixed} window={window}");
 
     let mut submitted = 0usize;
     for turn in 0..12 {
@@ -3977,10 +3983,12 @@ fn automatic_compaction_is_durable_and_survives_cold_reopen() {
             break;
         }
     }
+    assert!(submitted > 1, "the fixture must accumulate real history");
     assert!(
         submitted < 12,
         "the configured context pressure must trigger automatic compaction"
     );
+    eprintln!("COMPACTION_FIXTURE compacted_after={submitted}");
     application.close().unwrap();
 
     let events = load_events(&storage_root);
