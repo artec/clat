@@ -142,6 +142,9 @@ fn workbench_base_json(
                         .committed_seq
                         .map_or(Value::Null, |seq| json!(seq)),
                 ),
+                // AG-DOGFOOD-8：当前会话有界已提交输入（旧→新），供前端
+                // ↑/↓ 召回；与本地 TUI 的 input_history 同一 journal 权威。
+                ("recent_inputs", json!(snapshot.session.recent_inputs)),
             ]),
         ),
         (
@@ -817,6 +820,7 @@ mod tests {
                 id: Some(crate::SessionId::new("session-1")),
                 title: Some("active work".into()),
                 committed_seq: Some(42),
+                recent_inputs: vec!["first prompt".into(), "second prompt".into()],
             },
             model: crate::WorkbenchModelSnapshot {
                 vendor: crate::ModelVendor::DeepSeek,
@@ -869,7 +873,7 @@ mod tests {
                 &["workbench.info", "permission.set"],
             )
             .to_string(),
-            r#"{"plan_mode_active":true,"goal_armed":false,"project":{"root":"/work/repo","name":"repo","workspace_id":"workspace-1"},"session":{"id":"session-1","title":"active work","committed_seq":42},"model":{"protocol":"open_ai_responses","model":"deepseek-v3","preset":"deepseek","active_profile":"daily","thinking_level":"high","max_context_tokens":128000,"overrides":{"output_limit":{"state":"clear"},"temperature":{"state":"set","value":0.2},"parallel_tool_calls":{"state":"inherit"},"thinking_level":{"state":"set","value":"high"},"max_context_tokens":{"state":"inherit"}},"run_token_budget":10000000,"image_input":true},"permission":{"mode":"read-only","label":"Read Only"},"mcp":{"configured":1,"connected":1,"connecting":0,"failures":["stale server warning"],"servers":[{"name":"repo-tools","server_version":"1.2.3","protocol_version":"2025-06-18","tools":4,"transport":"stdio"}]},"active_run":{"prompt_rpc_id":"prompt-1","started":99},"active_compaction":{"started":98},"methods":["workbench.info","permission.set"],"capabilities":["session-history","in-run-steering","permission-modes","approval-bridge","session-compaction","model-summary","mcp-status"]}"#
+            r#"{"plan_mode_active":true,"goal_armed":false,"project":{"root":"/work/repo","name":"repo","workspace_id":"workspace-1"},"session":{"id":"session-1","title":"active work","committed_seq":42,"recent_inputs":["first prompt","second prompt"]},"model":{"protocol":"open_ai_responses","model":"deepseek-v3","preset":"deepseek","active_profile":"daily","thinking_level":"high","max_context_tokens":128000,"overrides":{"output_limit":{"state":"clear"},"temperature":{"state":"set","value":0.2},"parallel_tool_calls":{"state":"inherit"},"thinking_level":{"state":"set","value":"high"},"max_context_tokens":{"state":"inherit"}},"run_token_budget":10000000,"image_input":true},"permission":{"mode":"read-only","label":"Read Only"},"mcp":{"configured":1,"connected":1,"connecting":0,"failures":["stale server warning"],"servers":[{"name":"repo-tools","server_version":"1.2.3","protocol_version":"2025-06-18","tools":4,"transport":"stdio"}]},"active_run":{"prompt_rpc_id":"prompt-1","started":99},"active_compaction":{"started":98},"methods":["workbench.info","permission.set"],"capabilities":["session-history","in-run-steering","permission-modes","approval-bridge","session-compaction","model-summary","mcp-status"]}"#
         );
 
         let replay: Vec<(&str, &str)> = vec![

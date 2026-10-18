@@ -1397,3 +1397,48 @@ fn next_turn_native_replies_preserve_session_draft_authority_and_render_host_que
     drop(app);
     crate::test_support::cleanup_tree(&storage);
 }
+
+/// AG-DOGFOOD-8 / B8-R1 同类（TUI 腿）：迟到接纳回执只有在其提交时的选择
+/// 世代仍等于当前世代（会话未被切换）时才入史——旧会话的提示词不得写进
+/// 新会话的输入历史（J2 跨会话负控）。
+#[test]
+fn ag8_native_late_receipt_selection_fence() {
+    let (mut app, storage) = shell();
+    app.native.as_mut().unwrap().online = true;
+    app.native_control("subscribed", json!({"selection_generation": 4}));
+    let accepted = json!({"kind": "prompt", "receipt": {"state": "committed"}});
+
+    // 正控：世代未变 → 接纳回执入史，↑ 可召回。
+    {
+        let native = app.native.as_mut().unwrap();
+        native.pending = Some("fenced probe".into());
+        native.pending_history = Some((native.selection, "fenced probe".into()));
+    }
+    app.handle_native_event(NativeEvent::Submitted(Ok(accepted.clone())));
+    assert!(
+        !app.input.history_is_empty(),
+        "same-session receipt joins history"
+    );
+    app.input.clear();
+    app.input.history_previous();
+    assert_eq!(app.input.text(), "fenced probe");
+    app.input.clear();
+
+    // 反例：提交后宿主切了会话（subscribed 推新一代）→ 迟到接纳回执不入史。
+    {
+        let native = app.native.as_mut().unwrap();
+        native.pending = Some("stale session probe".into());
+        native.pending_history = Some((native.selection, "stale session probe".into()));
+    }
+    app.native_control("subscribed", json!({"selection_generation": 5}));
+    app.handle_native_event(NativeEvent::Submitted(Ok(accepted)));
+    app.input.clear();
+    app.input.history_previous();
+    assert_eq!(
+        app.input.text(),
+        "fenced probe",
+        "a late accepted receipt must not cross the session fence"
+    );
+    drop(app);
+    crate::test_support::cleanup_tree(&storage);
+}

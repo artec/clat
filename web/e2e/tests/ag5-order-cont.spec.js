@@ -76,6 +76,17 @@ test('ORDER-1/CONT-1 J1: one card per call, honest terminals, explicit continuat
   expect(userIndex).toBeGreaterThanOrEqual(0);
   expect(assistantIndex).toBeGreaterThan(userIndex);
 
+  // AG-DOGFOOD-8 / ORDER-LIVE-1 永久断言（J4）：最终回复必须在每张工具卡
+  // 之后——live DOM 不得把 final 文本回填到工具前的旧回复项。
+  const timeline = await page.evaluate(() => [...document.querySelectorAll('.msg.user, .msg.assistant, .tool-card')]
+    .map((node) => ({
+      kind: node.classList.contains('msg') ? (node.classList.contains('user') ? 'user' : 'assistant') : 'tool',
+      text: (node.textContent || '').trim(),
+    })));
+  const lastTool = timeline.map((entry) => entry.kind === 'tool').lastIndexOf(true);
+  const finalAssistant = timeline.findIndex((entry) => entry.kind === 'assistant' && entry.text.includes(RUN1_ASSISTANT));
+  expect(finalAssistant, 'live final answer must come after every tool card').toBeGreaterThan(lastTool);
+
   // C2：RunCompleted ≠ 任务已核验完成——未尽项交代可见且只出现一次。
   const accounting = page.locator('.notice-line[aria-label="Unfinished work accounting"]');
   try {
@@ -116,6 +127,16 @@ test('ORDER-1/CONT-1 J1: one card per call, honest terminals, explicit continuat
   });
   expect(reloadedOrder.findIndex((node) => node.text.includes('two artifacts')))
     .toBeLessThan(reloadedOrder.findIndex((node) => node.text.includes(RUN1_ASSISTANT)));
+  // AG-DOGFOOD-8 / ORDER-LIVE-1 永久断言（J4）：冷刷新 replay 后同样必须
+  // 工具在前、最终回复在后（live/replay 等价的另一半）。
+  const reloadedTimeline = await page.evaluate(() => [...document.querySelectorAll('.msg.user, .msg.assistant, .tool-card')]
+    .map((node) => ({
+      kind: node.classList.contains('msg') ? (node.classList.contains('user') ? 'user' : 'assistant') : 'tool',
+      text: (node.textContent || '').trim(),
+    })));
+  const reloadedLastTool = reloadedTimeline.map((entry) => entry.kind === 'tool').lastIndexOf(true);
+  const reloadedFinal = reloadedTimeline.findIndex((entry) => entry.kind === 'assistant' && entry.text.includes(RUN1_ASSISTANT));
+  expect(reloadedFinal, 'replayed final answer must come after every tool card').toBeGreaterThan(reloadedLastTool);
   // 重载后未尽项交代可再现（turn seq 去重，恰一条）。
   {
     const dump = await page.evaluate(() => [...document.querySelectorAll('.notice-line[aria-label]')]

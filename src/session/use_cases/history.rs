@@ -206,7 +206,8 @@ impl SessionService {
     }
 
     /// Input recall from the transcript projection (compaction-safe,
-    /// plan §13.5).
+    /// plan §13.5). Whitespace-only user rows (无正文占位) carry no recallable
+    /// text and are skipped for every consumer (AG-DOGFOOD-8).
     pub(crate) fn recent_inputs(&self, limit: usize) -> Result<Vec<String>, SessionError> {
         let guard = self.active.lock().expect("active");
         let Some(active) = guard.as_ref() else {
@@ -224,6 +225,7 @@ impl SessionService {
                     .filter_map(|entry| {
                         entry.get("text").and_then(Value::as_str).map(str::to_owned)
                     })
+                    .filter(|text| !text.trim().is_empty())
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();

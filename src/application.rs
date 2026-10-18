@@ -88,8 +88,8 @@ pub use content_views::{GoalViewDto, MemoryEntryDto, MemoryOverviewDto, Subagent
 pub use dto::{
     ContextEstimateSnapshot, ContextSkillDiagnostic, McpServerInfoDto, McpStatusDto,
     MessageOutlineDto, ProjectSnapshot, SessionSnapshot, SkillEntryDto, SkillsOverviewDto,
-    WorkbenchModelSnapshot, WorkbenchProjectSnapshot, WorkbenchSessionSnapshot, WorkbenchSnapshot,
-    WorkspaceInfo,
+    WORKBENCH_RECENT_INPUTS_LIMIT, WorkbenchModelSnapshot, WorkbenchProjectSnapshot,
+    WorkbenchSessionSnapshot, WorkbenchSnapshot, WorkspaceInfo,
 };
 pub use host::HostApplication;
 pub(crate) use remote_control::{

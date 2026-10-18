@@ -6,7 +6,10 @@ pub(crate) struct InputBuffer {
     cursor: usize,
     history: Vec<String>,
     history_index: Option<usize>,
-    draft: String,
+    /// 浏览前的原草稿暂存（B8-R2）：`Some` = 有一份未发送草稿正等待还原。
+    /// 同值快照替换不清空；列表真变化且游标锚点失效时也保留——`↓` 仍可
+    /// 精确取回；用户编辑（leave_history）即接管所有权并丢弃。
+    draft: Option<String>,
     generation: u64,
 }
 
@@ -23,7 +26,7 @@ impl InputBuffer {
         self.text.clear();
         self.cursor = 0;
         self.history_index = None;
-        self.draft.clear();
+        self.draft = None;
     }
 
     pub fn take(&mut self) -> String {
@@ -31,7 +34,7 @@ impl InputBuffer {
         let value = std::mem::take(&mut self.text);
         self.cursor = 0;
         self.history_index = None;
-        self.draft.clear();
+        self.draft = None;
         value
     }
 
@@ -52,7 +55,39 @@ impl InputBuffer {
             self.history.push(value);
         }
         self.history_index = None;
-        self.draft.clear();
+        self.draft = None;
+    }
+
+    /// Host 快照的权威历史整表替换（AG-DOGFOOD-8 / HIST-TUI-1 T3 +
+    /// B8-R2）：
+    /// - **列表未变**（同 Session 重复快照）：完全不动——浏览游标与原草
+    ///   稿暂存均保持有效；
+    /// - **列表真变化**（其它客户端新提交/重连/切会话）：正在浏览时按
+    ///   “当前召回值”锚点迁移游标（窗口滑动/压缩使锚点消失时复位为
+    ///   None），**原草稿暂存保留**，`↓` 仍可精确还原；
+    /// - 当前未发送正文永不被动。
+    pub fn replace_history(&mut self, history: Vec<String>) {
+        if self.history == history {
+            return;
+        }
+        if let Some(index) = self.history_index
+            && let Some(anchor) = self.history.get(index).cloned()
+        {
+            self.history_index = history.iter().position(|entry| *entry == anchor);
+        } else {
+            self.history_index = None;
+        }
+        self.history = history;
+    }
+
+    /// 会话/selection 变化时的整体退役（AG-DOGFOOD-8 / B8-R2-1 同类）：
+    /// 旧会话的浏览游标与待还原暂存一并作废，不得经新会话的 ↑↓ 复原；
+    /// 新列表只能是新会话自己的权威投影。与同会话 `replace_history` 的
+    /// “保留暂存 + 值锚迁移”是两条不同规则。
+    pub fn retire_history(&mut self, history: Vec<String>) {
+        self.history = history;
+        self.history_index = None;
+        self.draft = None;
     }
 
     pub fn insert_char(&mut self, ch: char) {
@@ -140,13 +175,23 @@ impl InputBuffer {
         self.history.is_empty()
     }
 
+    /// 是否还有一份被浏览打断但待恢复的草稿（B8-R2-3：真实 ↓ 路由需要
+    /// 它判断“空历史但可还原”，不能只看条目数）。
+    pub fn has_pending_history_draft(&self) -> bool {
+        self.draft.is_some()
+    }
+
     pub fn history_previous(&mut self) {
         if self.history.is_empty() {
             return;
         }
         let next = match self.history_index {
             None => {
-                self.draft = self.text.clone();
+                // 首次 ↑ 暂存原草稿；被快照打断后重新进入浏览时不覆盖
+                // 仍待还原的原草稿（B8-R2）。
+                if self.draft.is_none() {
+                    self.draft = Some(self.text.clone());
+                }
                 self.history.len() - 1
             }
             Some(0) => 0,
@@ -159,16 +204,24 @@ impl InputBuffer {
     }
 
     pub fn history_next(&mut self) {
-        let Some(index) = self.history_index else {
+        if self.history_index.is_none() {
+            // B8-R2：游标已被列表替换打断时，暂存的原草稿仍可经 ↓ 取回
+            // （仅一次；正常浏览流程在此状态下没有暂存）。
+            if let Some(draft) = self.draft.take() {
+                self.generation = self.generation.wrapping_add(1);
+                self.text = draft;
+                self.cursor = self.text.len();
+            }
             return;
-        };
+        }
+        let index = self.history_index.expect("checked above");
         if index + 1 < self.history.len() {
             let next = index + 1;
             self.history_index = Some(next);
             self.text = self.history[next].clone();
         } else {
             self.history_index = None;
-            self.text = std::mem::take(&mut self.draft);
+            self.text = self.draft.take().unwrap_or_default();
         }
         self.generation = self.generation.wrapping_add(1);
         self.cursor = self.text.len();
@@ -290,10 +343,10 @@ impl InputBuffer {
     }
 
     fn leave_history(&mut self) {
-        if self.history_index.is_some() {
-            self.history_index = None;
-            self.draft.clear();
-        }
+        // 编辑即接管草稿所有权：浏览游标与待还原暂存一并作废（含被快照
+        // 打断后的编辑，B8-R2）。
+        self.history_index = None;
+        self.draft = None;
     }
 }
 

@@ -82,6 +82,11 @@ pub(super) struct NativeState {
     pub(super) selection: u64,
     snapshot_request: u64,
     pending: Option<String>,
+    /// HIST-TUI-1/T2 + B8-R1 同类：本次在途提交的入史资格（提交时的选择
+    /// 世代，空闲态非 slash 消息）。接纳回执（Ok 或 committed 错误）只有
+    /// 在宿主选择世代未变（会话未被切换）时才入史——迟到回执不得把旧会
+    /// 话提示词写进新会话历史；steering 只能经 durable claim 后由快照补录。
+    pending_history: Option<(u64, String)>,
     pub(super) next_turn: Vec<String>,
     pub(super) queue_pending: bool,
     pub(super) queue_retry: Option<(String, String)>,
@@ -149,6 +154,7 @@ impl App {
             selection: 0,
             snapshot_request: 0,
             pending: None,
+            pending_history: None,
             next_turn: Vec::new(),
             queue_pending: false,
             queue_retry: None,
@@ -333,6 +339,7 @@ impl App {
             self.cancel_native();
             return;
         }
+        let running = self.running;
         let Some(native) = &mut self.native else {
             return;
         };
@@ -352,13 +359,21 @@ impl App {
             return;
         };
         native.pending = Some(text.clone());
+        let selection = native.selection;
+        // HIST-TUI-1：入史资格在提交时定格（空闲态 + 非 slash 消息，并
+        // 记住提交时的选择世代）——running 态提交走 steer.send，接纳 ≠
+        // user journal 事件，不入史，只等 durable claim 后由快照
+        // recent_inputs 补录。
+        native.pending_history = if running || text.starts_with('/') {
+            None
+        } else {
+            Some((selection, text.clone()))
+        };
         if !text.starts_with('/') {
             native.pending_images = std::mem::take(&mut self.attachments);
         }
         let images = native.pending_images.paths();
         let client = native.client.clone();
-        let running = self.running;
-        let selection = native.selection;
         thread::spawn(move || {
             let result = client.submit_message(&text, &images, running, selection);
             let _ = ui.send(UiEvent::Native(NativeEvent::Submitted(result)));
@@ -573,6 +588,19 @@ impl App {
             .as_ref()
             .is_ok_and(|value| value["kind"] == "plugin_manager");
         let draft = self.native.as_mut().and_then(|n| n.pending.take());
+        // HIST-TUI-1/T2 + B8-R1 同类：接纳事实以回执为准（Ok 或 committed
+        // 错误均为“已持久入账”），且宿主选择世代未变（提交属于当前会话）
+        // 才具备资格入史；未入账失败不污染（草稿走还原路径）。
+        let history_entry = self
+            .native
+            .as_mut()
+            .and_then(|n| n.pending_history.take())
+            .filter(|_| result.is_ok() || result.as_ref().is_err_and(|error| error.committed()))
+            .filter(|(selection_at_submit, _)| {
+                self.native
+                    .as_ref()
+                    .is_some_and(|native| native.selection == *selection_at_submit)
+            });
         let images = self
             .native
             .as_mut()
@@ -590,6 +618,9 @@ impl App {
                     self.open_plugin_dialog();
                     return;
                 }
+                if let Some((_, text)) = history_entry {
+                    self.input.remember(text);
+                }
                 if let Some(text) = value.get("message").and_then(Value::as_str) {
                     self.conversation.push_turn_end(text.into());
                 } else if value.get("sessions").is_some() {
@@ -601,6 +632,9 @@ impl App {
             }
             Err(error) => {
                 if error.committed() {
+                    if let Some((_, text)) = history_entry {
+                        self.input.remember(text);
+                    }
                     self.flash_status(format!(
                         "{} · message committed; not restored or resent",
                         error
@@ -636,9 +670,29 @@ impl App {
         }
         self.config.thinking_level =
             serde_json::from_value(value["model"]["thinking_level"].clone()).ok();
+        let previous_session_id = self.session_id.clone();
         self.session_id = value["session"]["id"]
             .as_str()
             .map(|id| SessionId::new(id.to_owned()));
+        // HIST-TUI-1/T3 + B8-R2-1 同类：快照携带的 session.recent_inputs 是
+        // 当前会话的权威已提交输入。**会话未变**时走 replace_history（游标
+        // 值锚迁移、待还原暂存保留）；**会话变了**（其它客户端切换/重连到
+        // 另一会话）时整体 retire——旧会话的浏览暂存不得进入新会话；旧宿
+        // 主无此字段时保持现状。
+        if let Some(inputs) = value["session"]["recent_inputs"].as_array() {
+            let history = inputs
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|text| !text.trim().is_empty())
+                .map(str::to_owned)
+                .collect();
+            let session_changed = previous_session_id.as_ref() != self.session_id.as_ref();
+            if session_changed {
+                self.input.retire_history(history);
+            } else {
+                self.input.replace_history(history);
+            }
+        }
         self.restore_native_queue_drafts();
         self.session_title = value["session"]["title"].as_str().map(str::to_owned);
         self.config.model = value["model"]["model"].as_str().unwrap_or_default().into();

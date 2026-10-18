@@ -3402,6 +3402,249 @@ fn serve_e2e_host_ag5_joint() {
     );
 }
 
+/// AG-DOGFOOD-8 / ORDER-LIVE-1 宿主：正文→工具→无正文中间步→工具→终文
+/// 案的因果链（Ag8OrderLiveScript），供 web/e2e/tests/ag8-orderlive.spec.js
+/// 在真实 Run/工具/持久化路径上钉 live DOM 顺序与冷刷新回放等价。
+#[test]
+#[ignore = "Playwright e2e host (needs CLAT_E2E_HOST=1, set by web/e2e/global-setup.js)"]
+fn serve_e2e_host_ag8_orderlive() {
+    host_serve_modes_for_playwright(
+        "ag8-orderlive",
+        TestBehavior::Scripted(Arc::new(crate::test_support::Ag8OrderLiveScript::new())),
+        0,
+        true,
+    );
+}
+
+/// AG-DOGFOOD-8 / HIST-PWA-1 宿主：普通快回对话，供
+/// web/e2e/tests/ag8-hist-pwa.spec.js 验证 composer ↑/↓ 从同一 Session
+/// transcript 提交历史召回（与 TUI recent_inputs 同源）。
+#[test]
+#[ignore = "Playwright e2e host (needs CLAT_E2E_HOST=1, set by web/e2e/global-setup.js)"]
+fn serve_e2e_host_ag8_hist() {
+    host_serve_for_playwright("ag8-hist", TestBehavior::Success, 0);
+}
+
+// ---- AG-DOGFOOD-8 / J1+J2：双端共用的提交历史线契约 --------------------
+//
+// 已提交输入的唯一权威是 journal（transcript 投影）。TUI 与 PWA 的提交都
+// 终结于同一 prompt.send/command.run 面，召回都从 workbench.info 的
+// session.recent_inputs 读取——本组在真实 serve 宿主上钉住这条共享契约：
+// 顺序（旧→新）、有界、slash 命令缺席、会话隔离。
+
+fn ag8_wait_idle(handle: &ServeHandle) {
+    let deadline = Instant::now() + WAIT;
+    // 既有独立隐患（不在本轮三项范围内）：活跃 Run 追加 journal 的窗口内，
+    // workbench.info 的 usage 追平（catch_up_replay）可能瞬时报
+    // “session log changed while streaming”，下一次刷新即成功。此处容忍
+    // 瞬时错误（与 PWA 的 console.warn 容忍一致），连续失败才罢休。
+    let mut consecutive_failures = 0;
+    loop {
+        let (status, raw) = post_rpc_json(handle.addr, TEST_TOKEN, "workbench.info", "{}");
+        assert_eq!(status, 200, "workbench.info status: {raw}");
+        if !raw["ok"].as_bool().unwrap_or(false) {
+            consecutive_failures += 1;
+            assert!(
+                consecutive_failures < 40,
+                "workbench.info keeps failing: {raw}"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+            assert!(Instant::now() < deadline, "host run never settled");
+            continue;
+        }
+        consecutive_failures = 0;
+        let info = &raw["value"];
+        if info.get("active_run").map_or(true, |run| run.is_null()) {
+            return;
+        }
+        assert!(Instant::now() < deadline, "host run never settled");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn ag8_recent_inputs_wire_reflects_journal_and_is_session_scoped() {
+    let (handle, storage_root, project_root) =
+        spawn_serve("ag8-recent-inputs", TestBehavior::Success);
+
+    // 双端提交（TUI/PWA 同一 RPC 面）依次入账，顺序旧→新。
+    for turn in ["alpha from tui", "beta from pwa"] {
+        let (status, result) = post(
+            handle.addr,
+            TEST_TOKEN,
+            "prompt.send",
+            &serde_json::json!({ "text": turn }).to_string(),
+        );
+        assert_eq!(status, 200);
+        result.expect("prompt.send admitted");
+        ag8_wait_idle(&handle);
+    }
+    let (status, result) = post(handle.addr, TEST_TOKEN, "workbench.info", "{}");
+    assert_eq!(status, 200);
+    let info = result.expect("workbench.info");
+    assert_eq!(
+        info["session"]["recent_inputs"],
+        serde_json::json!(["alpha from tui", "beta from pwa"]),
+        "recent_inputs must mirror the journal transcript order (oldest -> newest)"
+    );
+
+    // J2 会话隔离：新会话的快照不得携带前任会话文本。
+    let (status, result) = post(handle.addr, TEST_TOKEN, "session.new", "{}");
+    assert_eq!(status, 200);
+    result.expect("session.new");
+    let (status, result) = post(handle.addr, TEST_TOKEN, "workbench.info", "{}");
+    assert_eq!(status, 200);
+    let fresh = result.expect("workbench.info");
+    assert_eq!(
+        fresh["session"]["recent_inputs"],
+        serde_json::json!([]),
+        "a fresh session must not expose another session's inputs"
+    );
+
+    cleanup(handle, &storage_root, &project_root);
+}
+
+/// AG-DOGFOOD-8 / J1（B 审返工）：同一真实 serve 宿主、同一 Session 的双
+/// 客户端联合。客户端 T（TUI 的 wire 面：/api/events SSE 订阅 +
+/// prompt.send + workbench.info）与客户端 P（PWA 的 wire 面：prompt.send +
+/// workbench.info）在同一活跃会话上交替提交，双向都经 journal 权威
+///（session.recent_inputs + SSE user 帧）可见，且会话隔离对两端同时成立。
+/// TUI App 结构与真 serve 同进程受 crate 物理边界限制（client_ports 是唯一
+/// 面），该层由 src/tui/paste_settled_tests.rs 的协议 fixture 覆盖。
+#[test]
+fn ag8_joint_two_clients_one_host_one_session() {
+    let (handle, storage_root, project_root) =
+        spawn_serve("ag8-joint-two-clients", TestBehavior::Success);
+
+    // 客户端 T 附着（TUI 的第一步：SSE 订阅到 subscribed）。
+    let mut client_t = SseClient::connect(handle.addr);
+
+    // T 提交 alpha（TUI wire 面）；T 自己的 run 在其事件流上可见。
+    let (status, result) = post(
+        handle.addr,
+        TEST_TOKEN,
+        "prompt.send",
+        &serde_json::json!({ "text": "joint alpha from tui" }).to_string(),
+    );
+    assert_eq!(status, 200);
+    result.expect("client T prompt.send admitted");
+    client_t.wait_for_run_event("run_started", WAIT);
+    client_t.wait_settled();
+    ag8_wait_idle(&handle);
+
+    // 客户端 P（PWA wire 面）同一会话提交 beta。
+    let (status, result) = post(
+        handle.addr,
+        TEST_TOKEN,
+        "prompt.send",
+        &serde_json::json!({ "text": "joint beta from pwa" }).to_string(),
+    );
+    assert_eq!(status, 200);
+    result.expect("client P prompt.send admitted");
+    ag8_wait_idle(&handle);
+
+    // 跨客户端转录可见性：T 的事件流必须看到 P 的 beta 用户消息
+    //（TUI 转录/how the other end's commit becomes visible）。
+    let deadline = Instant::now() + WAIT;
+    loop {
+        client_t.consume_available();
+        let seen = client_t.frames.iter().any(|frame| {
+            frame.event.as_deref() == Some("event") && frame.data.contains("joint beta from pwa")
+        });
+        if seen {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "client T never saw client P's committed message"
+        );
+        if !client_t.pump_once() {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    // 双向召回权威：两端的读面（同一 RPC）都是 [alpha, beta]（旧→新）。
+    for reader in ["client T", "client P"] {
+        let (status, result) = post(handle.addr, TEST_TOKEN, "workbench.info", "{}");
+        assert_eq!(status, 200, "{reader} workbench.info");
+        let info = result.expect("workbench.info");
+        assert_eq!(
+            info["session"]["recent_inputs"],
+            serde_json::json!(["joint alpha from tui", "joint beta from pwa"]),
+            "{reader} must see the same journal order"
+        );
+    }
+
+    // J2 隔离（双端同源）：P 切新会话后，两端读面立即不再暴露旧会话文本。
+    let (status, result) = post(handle.addr, TEST_TOKEN, "session.new", "{}");
+    assert_eq!(status, 200);
+    result.expect("session.new");
+    let (status, result) = post(handle.addr, TEST_TOKEN, "workbench.info", "{}");
+    assert_eq!(status, 200);
+    let fresh = result.expect("workbench.info");
+    assert_eq!(
+        fresh["session"]["recent_inputs"],
+        serde_json::json!([]),
+        "both clients' recall authority must reset with the session"
+    );
+
+    cleanup(handle, &storage_root, &project_root);
+}
+
+#[test]
+fn ag8_recent_inputs_wire_excludes_commands_and_is_bounded() {
+    let (handle, storage_root, project_root) =
+        spawn_serve("ag8-recent-inputs-bounded", TestBehavior::Success);
+
+    // slash 命令（command.run）不是 user journal 事件，不入 recent_inputs。
+    let (status, result) = post(
+        handle.addr,
+        TEST_TOKEN,
+        "command.run",
+        &serde_json::json!({ "command": "/help" }).to_string(),
+    );
+    assert_eq!(status, 200);
+    result.expect("command.run");
+    let (status, result) = post(handle.addr, TEST_TOKEN, "workbench.info", "{}");
+    assert_eq!(status, 200);
+    let info = result.expect("workbench.info");
+    assert_eq!(
+        info["session"]["recent_inputs"],
+        serde_json::json!([]),
+        "slash commands must never join committed input history"
+    );
+
+    // 有界：超过 WORKBENCH_RECENT_INPUTS_LIMIT 的长会话只暴露最近 N 条
+    //（旧→新保留尾部）。TestBehavior::Success 每 run ~100ms，53 轮可控。
+    let limit = crate::application::WORKBENCH_RECENT_INPUTS_LIMIT;
+    for turn in 0..(limit + 3) {
+        let text = format!("bound probe {turn:03}");
+        let (status, result) = post(
+            handle.addr,
+            TEST_TOKEN,
+            "prompt.send",
+            &serde_json::json!({ "text": text }).to_string(),
+        );
+        assert_eq!(status, 200);
+        result.expect("prompt.send admitted");
+        ag8_wait_idle(&handle);
+    }
+    let (status, result) = post(handle.addr, TEST_TOKEN, "workbench.info", "{}");
+    assert_eq!(status, 200);
+    let info = result.expect("workbench.info");
+    let inputs = info["session"]["recent_inputs"]
+        .as_array()
+        .expect("recent_inputs array");
+    assert_eq!(inputs.len(), limit, "the wire list must be bounded");
+    assert_eq!(
+        inputs.last(),
+        Some(&serde_json::json!(format!("bound probe {:03}", limit + 2))),
+        "the newest committed input must be the last entry"
+    );
+
+    cleanup(handle, &storage_root, &project_root);
+}
+
 #[test]
 #[ignore = "Playwright e2e host (needs CLAT_E2E_HOST=1, set by web/e2e/global-setup.js)"]
 fn serve_e2e_host_long_stream() {

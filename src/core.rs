@@ -60,9 +60,9 @@ pub use application::{
     InteractionCatalog, InteractionCommand, McpServerInfoDto, McpStatusDto, MessageOutlineDto,
     ProjectAuthorization, ProjectSnapshot, RecalledSteering, RenameOutcome, RunHandle,
     SessionSnapshot, SkillEntryDto, SkillsOverviewDto, SteerOutcome, TrustedProjectApplication,
-    VisionProbeHandle, VisionProbeOutcome, VisionProbeReport, WorkbenchModelSnapshot,
-    WorkbenchProjectSnapshot, WorkbenchSessionSnapshot, WorkbenchSnapshot, WorkspaceChanges,
-    WorkspaceDiff, WorkspaceReview,
+    VisionProbeHandle, VisionProbeOutcome, VisionProbeReport, WORKBENCH_RECENT_INPUTS_LIMIT,
+    WorkbenchModelSnapshot, WorkbenchProjectSnapshot, WorkbenchSessionSnapshot, WorkbenchSnapshot,
+    WorkspaceChanges, WorkspaceDiff, WorkspaceReview,
 };
 pub use command::{CommandError, CommandGroup, CommandInfo, CommandOutcome};
 pub use control_storage::ModelProfileSummary;

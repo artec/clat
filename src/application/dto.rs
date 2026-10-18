@@ -98,11 +98,19 @@ pub struct WorkbenchProjectSnapshot {
     pub workspace_id: Option<String>,
 }
 
+/// 工作台轻快照里的当前会话有界已提交输入（AG-DOGFOOD-8 / HIST-TUI-1 +
+/// HIST-PWA-1）：与本地 TUI `ProjectSnapshot::input_history` 同源（journal
+/// transcript 投影），仅供前端 ↑/↓ 召回浏览，不是第二份会话事实。
+pub const WORKBENCH_RECENT_INPUTS_LIMIT: usize = 50;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorkbenchSessionSnapshot {
     pub id: Option<SessionId>,
     pub title: Option<String>,
     pub committed_seq: Option<u64>,
+    /// 当前会话最近已提交 user 文本（旧→新，含其它客户端的提交；
+    /// slash 命令与未入账 steering 不在 journal user 事件里，天然缺席）。
+    pub recent_inputs: Vec<String>,
 }
 
 /// Bounded, frontend-neutral navigation row for one durable chat message.

@@ -36,6 +36,12 @@ function observeComposerSession(id, selection) {
   composerScope = scope;
   composerSession = next;
   composerSelection = selection;
+  // HIST-PWA-1/W1 + B8-R2-1：会话/selection 变化是**作废**不是迁移——
+  // 旧会话的浏览游标与待还原暂存一并退役，不得经新会话的 ↑↓ 复原；
+  // 新会话列表只能由匹配它的 workbench 快照重新提供。与同会话刷新的
+  // “保留暂存 + 值锚迁移”（observeInputHistory）是两条不同规则。页面内
+  // 各会话自己的文本草稿（composerDrafts）不受影响。
+  retireInputHistory();
   resizePrompt();
 }
 
@@ -159,6 +165,121 @@ async function recoverComposerSubmission(error, { owner, text, images, composerG
   } catch (steerError) {
     if (composerOwns(owner)) updateRunState('steering failed: ' + steerError.message);
   }
+}
+
+// —— 已提交输入历史（HIST-PWA-1）————————————————————————————
+//
+// 列表只来自 Host 的 session.recent_inputs（与 TUI recent_inputs 同一
+// journal transcript 权威，含其它客户端的提交）；浏览态是页面本地的，
+// 永不写入 localStorage/sessionStorage/IndexedDB。语义与 TUI
+// InputBuffer 的 ↑↓ 召回对齐：首次 ↑ 暂存草稿，越过最新项 ↓ 原样还原。
+
+const inputHistory = { list: [], index: null, draft: null };
+
+function resetInputHistoryBrowse() {
+  inputHistory.index = null;
+  inputHistory.draft = null;
+}
+
+/// 会话/selection 变化：历史浏览整体退役（列表、游标、待还原暂存），
+/// 旧会话的任何浏览状态都不得进入新会话（B8-R2-1）。
+function retireInputHistory() {
+  inputHistory.list = [];
+  resetInputHistoryBrowse();
+}
+
+/// 编辑即退出浏览态（与 TUI leave_history 同语义：待还原暂存一并丢弃，
+/// 被编辑的召回项成为新草稿——含被列表变化打断后的编辑，B8-R3）。
+function exitInputHistoryBrowse() {
+  if (inputHistory.index === null && inputHistory.draft === null) return;
+  resetInputHistoryBrowse();
+}
+
+/// Host 快照落地（当前 Session 匹配时由调用方保证）。
+/// - 列表未变（同 Session 重复快照）：完全不动——浏览游标与待还原草稿
+///   均保持有效（B8-R3）。
+/// - 列表真变化（其它客户端新提交/重连/切会话）：正在浏览时按“当前
+///   召回值”锚点迁移游标（锚点滑出有界窗口时复位为 null），**待还原
+///   草稿保留**，↓ 仍可精确取回；正文不动。
+function observeInputHistory(recentInputs) {
+  const list = Array.isArray(recentInputs)
+    ? recentInputs.filter((text) => typeof text === 'string' && text.trim() !== '')
+    : [];
+  const unchanged = list.length === inputHistory.list.length
+    && list.every((text, index) => text === inputHistory.list[index]);
+  if (unchanged) return;
+  if (inputHistory.index !== null) {
+    const anchor = inputHistory.list[inputHistory.index];
+    // B8-R2-2：锚点滑出有界窗口时归一到无游标态（lastIndexOf 找不到返回
+    // -1，不得当作有效游标保存——否则 ↑ 无法重新进入历史）。
+    if (anchor !== undefined) {
+      const found = list.lastIndexOf(anchor);
+      inputHistory.index = found >= 0 ? found : null;
+    } else {
+      inputHistory.index = null;
+    }
+  }
+  inputHistory.list = list;
+}
+
+/// 自身成功提交后的即时入史（最终权威以随后的快照为准）；slash 命令与
+/// steering 提交不在此列（后者等 durable claim 后由快照补录）。调用方
+/// 必须已用提交时的 owner 归属校验过滤迟到回执（B8-R1）。
+function rememberSubmittedInput(text) {
+  const value = String(text || '').trim();
+  if (!value || value.startsWith('/')) return;
+  inputHistory.index = null;
+  inputHistory.draft = null;
+  if (inputHistory.list[inputHistory.list.length - 1] !== value) inputHistory.list.push(value);
+}
+
+function applyInputHistoryText(text) {
+  dom.prompt.value = text;
+  state.composerGeneration += 1;
+  if (state.suggestionPending || state.suggestion) invalidateSuggestion();
+  resizePrompt();
+  dom.prompt.setSelectionRange(text.length, text.length);
+}
+
+/// ↑/↓ 召回（W2 边界由调用方判定）。返回 true 表示已消费该键。
+/// B8-R2-3 + B8-R3-1：游标被列表变化打断时，待还原草稿仍可经 ↓ 取回
+///（仅一次）——即使权威窗口已**空**（同会话滑空/压缩）也不例外；空历史
+/// 且无暂存时不拦截方向键（返回 false，原生行为）。
+function navigateInputHistory(direction) {
+  if (direction < 0) {
+    if (!inputHistory.list.length) return false;
+    if (!inputHistory.list.length) return false;
+    if (inputHistory.index === null) {
+      // 首次 ↑ 暂存原草稿；被打断后重新进入浏览时不覆盖仍待还原的原
+      // 草稿（当前正文是召回项，不是用户的原草稿）。
+      if (inputHistory.draft === null) inputHistory.draft = dom.prompt.value;
+      inputHistory.index = inputHistory.list.length - 1;
+    } else if (inputHistory.index > 0) {
+      inputHistory.index -= 1;
+    } else {
+      return false;
+    }
+  } else {
+    if (inputHistory.index === null || !inputHistory.list.length) {
+      // 游标无效（含空窗口）：有暂存则取回一次，否则不拦截。
+      if (inputHistory.draft === null) return false;
+      const draft = inputHistory.draft;
+      inputHistory.draft = null;
+      applyInputHistoryText(draft);
+      return true;
+    }
+    if (inputHistory.index + 1 < inputHistory.list.length) {
+      inputHistory.index += 1;
+    } else {
+      inputHistory.index = null;
+      const draft = inputHistory.draft === null ? '' : inputHistory.draft;
+      inputHistory.draft = null;
+      applyInputHistoryText(draft);
+      return true;
+    }
+  }
+  applyInputHistoryText(inputHistory.list[inputHistory.index]);
+  return true;
 }
 
 function confirmAttachmentSelection() {

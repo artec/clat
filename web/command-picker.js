@@ -15,6 +15,12 @@ function closeCommandPanel() {
   dom.prompt.setAttribute('aria-expanded', 'false');
 }
 
+/// HIST-PWA-1/W3：命令/skills picker 打开时由 picker 独占方向键——composer
+/// 的历史召回必须显式让位，不依赖监听注册顺序。
+function commandPanelOpen() {
+  return Boolean(commandPanel) && !commandPanel.classList.contains('hidden');
+}
+
 function catalogCandidates(catalog, query) {
   const matches = (values) => values.some((text) => String(text || '').toLocaleLowerCase().includes(query));
   const commands = (catalog.commands || []).filter((entry) => matches(

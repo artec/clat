@@ -248,6 +248,20 @@ The main screen has three surfaces:
 | `Esc` | recall the newest queued steering; otherwise cancel the active run; when idle, clear input |
 | `Ctrl+C` | copy an active selection; otherwise quit |
 
+Input history is the **current session's committed prompts** in both standalone
+and attached (default host) mode. In host mode an accepted `prompt.send`
+submission joins history at its admission receipt, and every
+`workbench.info` snapshot replaces the list with the session's journal-derived
+`recent_inputs` (bounded to the most recent 50, oldest first, including prompts
+committed from other clients such as the web workbench). Queued steering joins
+only after the host's durable claim; slash commands, UI drafts, and rejected
+submissions never enter history. Browsing preserves the untouched draft:
+the first `↑` stashes it and the `↓` past the newest entry restores it exactly,
+including CJK and line breaks. Session switching or `/resume` reloads the list
+from the newly selected session only. While browsing, duplicate snapshots keep
+the cursor in place; genuinely newer commits migrate the cursor by its recalled
+value, and the stashed draft remains recoverable past the newest entry.
+
 Reasoning is shown inline in both local and `clat dsh` conversations. While a
 model is thinking, the collapsed `Think` row follows its latest non-empty line;
 after settlement it keeps the first line as the summary. Press `Ctrl+R` to
@@ -1441,6 +1455,23 @@ The details sidebar offers refresh, context inspection, and model-profile
 management. Context inspection adds a read-only breakdown to the conversation
 without sending the composer draft or making a model request.
 
+The composer recalls the **current session's committed prompts** with the arrow
+keys. `↑` steps from newest to older, `↓` steps back, and the `↓` past the
+newest entry restores the untouched draft exactly (including CJK and line
+breaks). The list comes from the same journal-derived
+`workbench.info → session.recent_inputs` authority as the terminal (bounded to
+the most recent 50, oldest first), so prompts committed from the TUI are
+recallable here and vice versa after the next snapshot. Boundaries follow the
+caret's **visual line** — soft-wrapped rows count: arrows move within the body
+first, and history triggers only when the caret sits on the first visual line
+(`↑`) or the last visual line (`↓`) with no active selection; IME composition
+and the open command/skills picker always keep the keys. While browsing, a
+duplicate snapshot never disturbs the cursor, and genuinely newer commits
+arrive by value-anchoring the cursor so the pre-browse draft stays recoverable
+past the newest entry. Queued steering joins the list only after the host's
+durable claim, slash commands and failed submissions never do, and nothing is
+written to browser storage.
+
 The conversation is the default reading space: details start closed in a new
 browser, while an existing desktop open/closed preference is respected. Phone
 drawers start closed. Neutral controls and a restrained warm-gray light / dark
@@ -1717,7 +1748,11 @@ below.
 `workbench.info` is lightweight: it returns project, active-session, model
 (including all five typed override states), permission, MCP, capability,
 active-run, and active-compaction summaries without loading a transcript or
-returning credentials. `session.compact` accepts `{"action":"start"}` (the
+returning credentials. `session.recent_inputs` inside it is the active
+session's bounded (50, oldest first) committed user prompts — the shared
+input-recall authority for the TUI and PWA composers; it never includes slash
+commands, unadmitted drafts, or another session's text.
+`session.compact` accepts `{"action":"start"}` (the
 default) or `{"action":"cancel"}`. It is mutually exclusive with a run and a
 second compaction, and reports progress through `notice` frames rather than
 holding the RPC request open.

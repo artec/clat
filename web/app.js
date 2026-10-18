@@ -684,6 +684,9 @@ function handleReplay(event) {
       node = addUserMessage(event.text, event.content_blocks);
       break;
     case 'assistant_message': {
+      // ORDER-LIVE-1/O1：无正文且无 reasoning 的中间模型步（纯 tool_calls
+      // 声明）不渲染空回复气泡——与 live 的懒开气泡同形，live/回放等价。
+      if (!(event.text || '').trim() && !event.reasoning) break;
       const bubble = addAssistantMessage();
       node = bubble.node;
       if (event.reasoning) bubble.setReasoning(event.reasoning);
@@ -757,15 +760,21 @@ function handleLive(event) {
       addUserMessage(event.prompt, event.content_blocks);
       break;
     case 'model_requested':
+      // ORDER-LIVE-1/O1：不急开回复气泡——气泡由首个正文/reasoning 增量懒
+      // 开（无正文的纯工具步不产生空气泡）；气泡位置因此落在它之前的
+      // 工具卡之后，保持因果顺序。重试（无 model_responded 分隔）继续追
+      // 加到同一气泡。
       addTraceEvent(event.type, [event.provider, event.model].filter(Boolean).join(' · '));
-      ensureAssistant();
+      state.run = state.run || {};
       break;
     case 'model_stream': {
-      const bubble = ensureAssistant();
+      // ORDER-LIVE-1/O1：气泡懒开仅由带内容的增量触发——tool_call_completed
+      // 等非正文帧不得开空气泡（无正文的纯工具步不渲染回复项）。
       const inner = event.event || {};
       if (inner.type === 'text_delta' || inner.type === 'refusal_delta') {
-        bubble.appendBody(inner.delta || '');
+        ensureAssistant().appendBody(inner.delta || '');
       } else if (inner.type === 'reasoning_delta' || inner.type === 'reasoning_summary_delta') {
+        const bubble = ensureAssistant();
         bubble.setTraceKind(inner.type);
         bubble.appendReasoning(inner.delta || '');
       }
@@ -775,6 +784,9 @@ function handleLive(event) {
       if (state.run && state.run.assistant) {
         state.run.assistant.finishReasoning();
         state.run.assistant.finishBody();
+        // ORDER-LIVE-1/O1：解除复用资格——下一个模型步的增量必须懒开新气
+        // 泡（落在已完成的工具卡之后），不得回填到工具前的旧回复项。
+        state.run.assistant = null;
       }
       addTraceEvent(event.type, turnEndText(event.finish_reason));
       break;
@@ -2119,6 +2131,10 @@ async function refreshWorkbench() {
     const permission = info.permission || {};
     observeComposerSession(session.id || null, state.selectionGeneration);
     state.sessionId = session.id || null;
+    // HIST-PWA-1/W1：当前 Session 的已提交输入（journal transcript 权威，
+    // 含其它客户端提交）——过期响应已在上方 request/switching/selection
+    // 三重门拦截，此处落地即为当前会话列表。
+    observeInputHistory(session.recent_inputs);
     state.runActive = Boolean(info.active_run);
     state.compactionActive = Boolean(info.active_compaction);
     syncPlanModeBadge();
@@ -3663,6 +3679,11 @@ async function submitPrompt() {
       if (!await submitComposerCommand(submission)) return;
     } else {
       await rpc('prompt.send', composerSubmissionParams(text, images));
+      // HIST-PWA-1/T2 + B8-R1：接纳即入史（回执在 journal 入账后），但仅当
+      // 提交仍归属当前会话（owner 未变）——迟到的成功回执不得把旧会话
+      // 提示词写进新会话历史。失败路径不入史；steering 走
+      // submitComposerSteering，由 durable claim 后的快照补录。
+      if (composerOwns(owner)) rememberSubmittedInput(text);
       clearOwnedSubmittedText(owner, composerGeneration);
       if (images.length > 0 && draftEpoch === state.draft.epoch) clearDraft();
       return;
@@ -3708,12 +3729,63 @@ function restoreQueuedDraft() {
 
 dom.send.addEventListener('click', submitPrompt);
 dom.prompt.addEventListener('input', () => {
+  exitInputHistoryBrowse();
   state.composerGeneration += 1;
   saveComposerText();
   if (state.suggestionPending || state.suggestion) invalidateSuggestion();
   resizePrompt();
 });
+/// HIST-PWA-1/W2 + B8-R4：方向键触发历史的边界判定。textarea 的**软折
+/// 行**意味着“没有换行符”≠“只有一个视觉行”——用镜像测量 caret 与首/末
+/// 字符所在视觉行的行顶，相等才视为边界；正文内部保持原生上下移动。
+const CARET_MIRROR_STYLE_PROPS = [
+  'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'letterSpacing', 'lineHeight',
+  'textTransform', 'wordSpacing', 'paddingTop', 'paddingRight', 'paddingBottom',
+  'paddingLeft', 'borderTopWidth', 'borderBottomWidth', 'boxSizing', 'tabSize',
+];
+let caretLineMirror = null;
+
+function caretVisualLineTop(index) {
+  if (!caretLineMirror) {
+    caretLineMirror = document.createElement('div');
+    caretLineMirror.setAttribute('aria-hidden', 'true');
+    caretLineMirror.style.position = 'absolute';
+    caretLineMirror.style.visibility = 'hidden';
+    caretLineMirror.style.top = '0';
+    caretLineMirror.style.left = '-99999px';
+    document.body.appendChild(caretLineMirror);
+  }
+  const style = window.getComputedStyle(dom.prompt);
+  for (const prop of CARET_MIRROR_STYLE_PROPS) caretLineMirror.style[prop] = style[prop];
+  caretLineMirror.style.width = dom.prompt.clientWidth + 'px';
+  caretLineMirror.style.whiteSpace = 'pre-wrap';
+  caretLineMirror.style.overflowWrap = 'break-word';
+  caretLineMirror.style.height = 'auto';
+  caretLineMirror.textContent = dom.prompt.value.slice(0, index);
+  const marker = document.createElement('span');
+  marker.textContent = '\u200b';
+  caretLineMirror.appendChild(marker);
+  return marker.offsetTop;
+}
+
+function inputHistoryBoundaryKey(key) {
+  const caret = dom.prompt.selectionStart;
+  if (key === 'ArrowUp') {
+    return caretVisualLineTop(caret) === caretVisualLineTop(0);
+  }
+  return caretVisualLineTop(caret) === caretVisualLineTop(dom.prompt.value.length);
+}
+
 dom.prompt.addEventListener('keydown', (event) => {
+  if ((event.key === 'ArrowUp' || event.key === 'ArrowDown')
+    && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey
+    && !event.isComposing && event.keyCode !== 229
+    && !commandPanelOpen()
+    && dom.prompt.selectionStart === dom.prompt.selectionEnd
+    && inputHistoryBoundaryKey(event.key)) {
+    if (navigateInputHistory(event.key === 'ArrowUp' ? -1 : 1)) event.preventDefault();
+    return;
+  }
   if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
     event.preventDefault();
     submitPrompt();

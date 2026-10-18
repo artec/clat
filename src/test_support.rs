@@ -1074,3 +1074,184 @@ impl TestModelScript for Ag5JointScript {
         ])
     }
 }
+
+// ---------------------------------------------------------------------------
+// AG-DOGFOOD-8 / ORDER-LIVE-1：PWA live 模型步/工具因果顺序脚本。
+//
+// 单个 Run（用户提示词含 "orderlive"；含 "again" 的第二跑换终文案）：
+//   请求1 → 文本 delta（"opening two work files"）+ write_file(ag8-x.md) +
+//           write_file(ag8-y.md)（两张卡）；
+//   请求2（见 2 个结果）→ **无正文**，仅 read_file(ag8-x.md)（第三张卡；
+//           锁定“无正文的中间模型步不得渲染空回复气泡”）；
+//   请求3（见全部 3 个结果）→ 文本 delta（"final answer after tools"/
+//           "final answer after rerun"）+ Completed。
+// 期望 live/replay DOM：user → assistant(opening…) → 3 张工具卡 →
+// assistant(final)。把 final 回填进工具前旧回复气泡的实现在此形状下暴露
+// （AG-DOGFOOD-7 隔离 Chromium 红的复现形状）。
+// ---------------------------------------------------------------------------
+
+pub struct Ag8OrderLiveScript;
+
+impl Default for Ag8OrderLiveScript {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Ag8OrderLiveScript {
+    pub fn new() -> Self {
+        Self
+    }
+
+    fn tool_call(id: &str, name: &str, arguments: serde_json::Value) -> ToolCall {
+        ToolCall {
+            id: id.to_owned(),
+            name: name.to_owned(),
+            arguments,
+        }
+    }
+
+    fn tool_response(calls: Vec<ToolCall>) -> Result<ModelResponse, ModelError> {
+        Ok(ModelResponse {
+            text: String::new(),
+            tool_calls: calls,
+            finish_reason: FinishReason::ToolCalls,
+            usage: Some(Usage {
+                input_tokens: 1,
+                output_tokens: 1,
+                ..Usage::default()
+            }),
+            provider_response_id: None,
+            provider_state: Vec::new(),
+            reasoning: None,
+        })
+    }
+
+    fn latest_user_text(request: &ModelRequest<'_>) -> String {
+        request
+            .items
+            .iter()
+            .rev()
+            .find_map(|item| match item {
+                crate::model::ModelItem::User { content } => content.iter().find_map(|part| {
+                    matches!(part, crate::model::ContentPart::Text(text) if !text.is_empty())
+                        .then(|| part)
+                        .and_then(|_| match part {
+                            crate::model::ContentPart::Text(text) => Some(text.clone()),
+                            _ => None,
+                        })
+                }),
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+
+    /// 本轮（最后一个 user 消息之后）的工具结果数：同 Session 第二跑不把
+    /// 上一跑的旧结果计入（脚本状态跨请求无状态，只能从模型表面推导）。
+    fn turn_tool_results(request: &ModelRequest<'_>) -> usize {
+        let mut count = 0usize;
+        for item in request.items.iter().rev() {
+            match item {
+                crate::model::ModelItem::ToolResult(_) => count += 1,
+                crate::model::ModelItem::User { .. } => break,
+                _ => {}
+            }
+        }
+        count
+    }
+}
+
+impl TestModelScript for Ag8OrderLiveScript {
+    fn stream(
+        &self,
+        request: ModelRequest<'_>,
+        events: &mut dyn crate::model::ModelEventSink,
+    ) -> Result<ModelResponse, ModelError> {
+        // 标题旁路：不消耗脚本步。
+        if request.tools.is_empty()
+            && request
+                .instructions
+                .is_some_and(|text| text.starts_with("Generate a concise title"))
+        {
+            return Ok(response("ag8 orderlive title", FinishReason::Completed));
+        }
+        let latest_user = Self::latest_user_text(&request);
+        if !latest_user.contains("orderlive") {
+            return Ok(response("acknowledged", FinishReason::Completed));
+        }
+        // AG-DOGFOOD-8 / HIST-PWA-1 T2 慢驻留腿：首请求先流正文再驻留 3s，
+        // 给浏览器侧在真实活跃 Run 内 queue steering 并在下一步边界被 claim
+        // 的确定性窗口；见 ag8-hist-pwa.spec.js 的 steering 测试。
+        if latest_user.contains("slowsteer") {
+            let has_slow_result = request.items.iter().any(|item| {
+                matches!(item, crate::model::ModelItem::ToolResult(result)
+                    if result.tool_name == "write_file")
+            });
+            if has_slow_result {
+                let text = "slow steer run finished";
+                events.emit(ModelEvent::TextDelta {
+                    delta: text.to_owned(),
+                });
+                return Ok(response(text, FinishReason::Completed));
+            }
+            let text = "holding the run open";
+            events.emit(ModelEvent::TextDelta {
+                delta: text.to_owned(),
+            });
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            return Self::tool_response(vec![Self::tool_call(
+                "call-ag8-slow-write",
+                "write_file",
+                serde_json::json!({
+                    "path": "ag8-slow.md",
+                    "content": "# S\n\nslow steer artifact\n",
+                    "overwrite": true,
+                }),
+            )]);
+        }
+        let tool_results = Self::turn_tool_results(&request);
+        if tool_results == 0 {
+            let text = "opening two work files";
+            events.emit(ModelEvent::TextDelta {
+                delta: text.to_owned(),
+            });
+            return Self::tool_response(vec![
+                Self::tool_call(
+                    "call-ag8-write-x",
+                    "write_file",
+                    serde_json::json!({
+                        "path": "ag8-x.md",
+                        "content": "# X\n\norderlive artifact one\n",
+                        "overwrite": true,
+                    }),
+                ),
+                Self::tool_call(
+                    "call-ag8-write-y",
+                    "write_file",
+                    serde_json::json!({
+                        "path": "ag8-y.md",
+                        "content": "# Y\n\norderlive artifact two\n",
+                        "overwrite": true,
+                    }),
+                ),
+            ]);
+        }
+        if tool_results <= 2 {
+            // 无正文中间步：只有第三张卡，不产生回复气泡。
+            return Self::tool_response(vec![Self::tool_call(
+                "call-ag8-read-x",
+                "read_file",
+                serde_json::json!({"path": "ag8-x.md"}),
+            )]);
+        }
+        let text = if latest_user.contains("again") {
+            "final answer after rerun"
+        } else {
+            "final answer after tools"
+        };
+        events.emit(ModelEvent::TextDelta {
+            delta: text.to_owned(),
+        });
+        Ok(response(text, FinishReason::Completed))
+    }
+}

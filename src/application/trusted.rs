@@ -809,6 +809,10 @@ impl TrustedProjectApplication {
                 id: self.current_session_id(),
                 title: self.effective_session_title(),
                 committed_seq: self.committed_seq(),
+                recent_inputs: self
+                    .sessions
+                    .recent_inputs(crate::WORKBENCH_RECENT_INPUTS_LIMIT)
+                    .map_err(session_error)?,
             },
             model: crate::WorkbenchModelSnapshot {
                 vendor: config.vendor(),

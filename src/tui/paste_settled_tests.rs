@@ -798,17 +798,36 @@ fn late_settlement_beyond_any_window_cannot_override_active_run() {
 ///   与 serve/shapes.rs `settled_failed` 同形状）；
 /// - 重连时第二条 SSE 流重放 journal 事实（user_message + turn_ended
 ///   error）再 `subscribed`，与真实宿主重连语义一致。
+/// fixture 行为开关（AG-DOGFOOD-8）：`snapshot_recent_inputs=false` 模拟
+/// 不携带 session.recent_inputs 的旧宿主快照，用于单独判别“回执入史”
+///（remember）与“快照重建”（replace_history）两条腿。
+#[derive(Clone)]
+struct FixtureOptions {
+    snapshot_recent_inputs: bool,
+}
+
 struct JointHostFixture {
     port: u16,
     root: std::path::PathBuf,
     submitted: Arc<Mutex<Vec<String>>>,
+    /// 当前会话 id（B8-R2-1 同类判别：测试可切到 B 会话，生产中由其它客
+    // 户端切换会话后随快照到达）。
+    session: Arc<Mutex<String>>,
     connections: Arc<AtomicU64>,
     stop: Arc<AtomicBool>,
+    options: Arc<FixtureOptions>,
     slot: SseSlot,
 }
 
 impl JointHostFixture {
     fn spawn() -> Self {
+        Self::spawn_with(true, Vec::new())
+    }
+
+    /// `snapshot_recent_inputs=false`：workbench.info 不携带
+    /// session.recent_inputs（旧宿主形状）；`seed`：预置“其它客户端”
+    /// 已提交输入（仅快照可达，不经本 TUI 提交路径）。
+    fn spawn_with(snapshot_recent_inputs: bool, seed: Vec<String>) -> Self {
         let base = std::env::temp_dir().join(format!(
             "clat-ag4-joint-{}",
             std::time::SystemTime::now()
@@ -824,16 +843,22 @@ impl JointHostFixture {
         let fixture = Self {
             port,
             root: root.clone(),
-            submitted: Arc::new(Mutex::new(Vec::new())),
+            submitted: Arc::new(Mutex::new(seed)),
+            session: Arc::new(Mutex::new("ag8-hist-session".to_owned())),
             connections: Arc::new(AtomicU64::new(0)),
             stop: Arc::new(AtomicBool::new(false)),
+            options: Arc::new(FixtureOptions {
+                snapshot_recent_inputs,
+            }),
             slot: SseSlot::default(),
         };
 
         let submitted = Arc::clone(&fixture.submitted);
+        let session = Arc::clone(&fixture.session);
         let connections = Arc::clone(&fixture.connections);
         let stop = Arc::clone(&fixture.stop);
         let slot = fixture.slot.clone();
+        let options = Arc::clone(&fixture.options);
         std::thread::Builder::new()
             .name("clat-ag4-joint-accept".into())
             .spawn(move || {
@@ -844,10 +869,12 @@ impl JointHostFixture {
                     }
                     let state = (
                         Arc::clone(&submitted),
+                        Arc::clone(&session),
                         Arc::clone(&connections),
                         Arc::clone(&stop),
                         slot.clone(),
                         root.clone(),
+                        options.clone(),
                     );
                     std::thread::Builder::new()
                         .name("clat-ag4-joint-conn".into())
@@ -873,14 +900,16 @@ impl Drop for JointHostFixture {
 
 type ConnState = (
     Arc<Mutex<Vec<String>>>,
+    Arc<Mutex<String>>,
     Arc<AtomicU64>,
     Arc<AtomicBool>,
     SseSlot,
     std::path::PathBuf,
+    Arc<FixtureOptions>,
 );
 
 fn handle_connection(mut stream: std::net::TcpStream, state: ConnState) {
-    let (submitted, connections, stop, slot, root) = state;
+    let (submitted, session, connections, stop, slot, root, options) = state;
     stream.set_read_timeout(Some(Duration::from_secs(30))).ok();
     let mut head = Vec::new();
     let mut byte = [0u8; 1];
@@ -979,30 +1008,59 @@ fn handle_connection(mut stream: std::net::TcpStream, state: ConnState) {
         let value: serde_json::Value =
             serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null);
         let text = value["text"].as_str().unwrap_or_default().to_owned();
-        submitted.lock().expect("submitted").push(text.clone());
-        // 与生产同序：先入队 run 事件 + 终态结算帧，再回 RPC。
-        slot.publish(run_event_frame(serde_json::json!({
-            "type": "run_started",
-            "project": "/tmp/ag4-joint-proj",
-            "prompt": text,
-        })));
-        slot.publish(control_frame(
-            "prompt.settled",
-            serde_json::json!({
-                "prompt_rpc_id": "ag4-rpc-1",
-                "outcome": {"type": "failed", "error": JOINT_FAILURE},
-            }),
-        ));
+        if text.starts_with("AG8-FORCE-FAIL") {
+            // AG-DOGFOOD-8 / T2：未入账的失败提交（宿主拒绝，无 committed
+            // 回执）——不入 submitted（近似 journal），供历史不污染负控。
+            (
+                "HTTP/1.1 200 OK",
+                serde_json::json!({
+                    "ok": false,
+                    "error": {"code": "internal", "message": "forced failure"}
+                })
+                .to_string(),
+            )
+        } else {
+            submitted.lock().expect("submitted").push(text.clone());
+            // 与生产同序：先入队 run 事件 + 终态结算帧，再回 RPC。
+            slot.publish(run_event_frame(serde_json::json!({
+                "type": "run_started",
+                "project": "/tmp/ag4-joint-proj",
+                "prompt": text,
+            })));
+            slot.publish(control_frame(
+                "prompt.settled",
+                serde_json::json!({
+                    "prompt_rpc_id": "ag4-rpc-1",
+                    "outcome": {"type": "failed", "error": JOINT_FAILURE},
+                }),
+            ));
+            (
+                "HTTP/1.1 200 OK",
+                serde_json::json!({
+                    "ok": true,
+                    "value": {"kind": "prompt", "receipt": {"state": "committed"}},
+                })
+                .to_string(),
+            )
+        }
+    } else if request_line.contains("/api/workbench.info") {
+        // AG-DOGFOOD-8 / HIST-TUI-1：镜像真实 serve 契约——session.recent_inputs
+        // 是当前 Session 已入账 user 文本（fixture 以捕获的 prompt.send 提交
+        // + 预置种子近似 journal 投影；slash 命令与 steering 不进此列表）。
+        // `snapshot_recent_inputs=false` 模拟旧宿主（无此字段）。
+        let recent = submitted.lock().expect("submitted").clone();
+        let session_id = session.lock().expect("session").clone();
+        let session = if options.snapshot_recent_inputs {
+            serde_json::json!({"id": session_id, "recent_inputs": recent})
+        } else {
+            serde_json::json!({"id": session_id})
+        };
         (
             "HTTP/1.1 200 OK",
-            serde_json::json!({
-                "ok": true,
-                "value": {"kind": "prompt", "receipt": {"state": "committed"}},
-            })
-            .to_string(),
+            serde_json::json!({"ok": true, "value": {"session": session}}).to_string(),
         )
     } else {
-        // workbench.info / 其它 RPC：最小合法快照。
+        // 其它 RPC：最小合法快照。
         (
             "HTTP/1.1 200 OK",
             serde_json::json!({"ok": true, "value": {}}).to_string(),
@@ -1180,4 +1238,462 @@ fn joint_paste_submit_failure_reason_and_replay() {
         }),
         "replay must keep the failure reason: {replay_projection}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// AG-DOGFOOD-8 / HIST-TUI-1：默认 Host 模式输入历史召回（T1/T2/T3）。
+//
+// 权威边界：会话 journal（fixture 以捕获的 prompt.send 提交近似）是已提交
+// 用户输入的唯一事实源；成功接纳的非 slash 消息进入历史，失败/未入账提交
+// 与 steering 不污染；快照 session.recent_inputs 重建浏览列表；↑↓ 有序浏
+// 览且越过最新项准确还原未发送草稿（UTF-8/CJK/换行）。
+// ---------------------------------------------------------------------------
+
+/// 提交回执（HTTP reply）在 fixture 里晚于 SSE 帧——泵到 run 落定后再固定
+/// 吸收一段时间，确保 Submitted 回执与随后的 workbench.info 快照都被处理。
+fn drain_for(app: &mut super::App, events: &mpsc::Receiver<super::UiEvent>, millis: u64) {
+    let deadline = Instant::now() + Duration::from_millis(millis);
+    while Instant::now() < deadline {
+        match events.recv_timeout(Duration::from_millis(20)) {
+            Ok(event) => app.handle_ui_event(event),
+            Err(_) => {}
+        }
+    }
+}
+
+fn ag8_attached_harness(tag: &str) -> (Harness, JointHostFixture, mpsc::Receiver<super::UiEvent>) {
+    ag8_attach_fixture(tag, JointHostFixture::spawn())
+}
+
+fn ag8_attach_fixture(
+    tag: &str,
+    fixture: JointHostFixture,
+) -> (Harness, JointHostFixture, mpsc::Receiver<super::UiEvent>) {
+    let client = HostClient::connect(fixture.port, "ag8-hist-token".into(), &fixture.root)
+        .expect("real host handshake");
+    let mut harness = Harness {
+        app: super::App::open_native(
+            crate::Project::new(std::path::PathBuf::from(format!("/tmp/{tag}-proj"))),
+            client,
+        )
+        .expect("attached TUI shell"),
+        terminal: ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24))
+            .expect("test terminal"),
+        project_root: std::path::PathBuf::from(format!("/tmp/{tag}-proj")),
+        storage_root: fixture.root.clone(),
+    };
+    let (sender, events) = super::ui_event_channel();
+    harness.app.event_sender = Some(sender);
+    harness.app.start_native();
+    pump_until(
+        &mut harness.app,
+        &events,
+        |app| app.native.as_ref().is_some_and(|native| native.online),
+        "ag8 subscribe online",
+    );
+    // 首个快照（含/不含 recent_inputs）落地后再交给测试体。
+    drain_for(&mut harness.app, &events, 200);
+    (harness, fixture, events)
+}
+
+/// T1：真实提交路径（Enter → prompt.send → 回执）后，↑/↓ 有序召回，越过
+/// 最新项 ↓ 精确还原未发送草稿（含 CJK 与换行）。
+#[test]
+fn ag8_native_submit_history_recall_roundtrip() {
+    let (mut harness, fixture, events) = ag8_attached_harness("ag8-hist-recall");
+
+    harness.app.input.insert_str("alpha committed line");
+    harness.key(KeyCode::Enter);
+    pump_until(
+        &mut harness.app,
+        &events,
+        |app| !app.running && !app.conversation.is_empty(),
+        "ag8 first run settles",
+    );
+    drain_for(&mut harness.app, &events, 400);
+    assert_eq!(
+        fixture.submitted_texts(),
+        vec!["alpha committed line".to_owned()]
+    );
+    assert!(
+        !harness.app.input.history_is_empty(),
+        "an accepted host submission must become recallable input history"
+    );
+
+    harness.app.input.insert_str("beta second line");
+    harness.key(KeyCode::Enter);
+    pump_until(
+        &mut harness.app,
+        &events,
+        |app| !app.running && fixture.submitted_texts().len() == 2,
+        "ag8 second run settles",
+    );
+    drain_for(&mut harness.app, &events, 400);
+
+    // ↑→最新、再↑→更旧、↓→回新、越过最新↓→原草稿（此处为空）。
+    harness.key(KeyCode::Up);
+    assert_eq!(harness.app.input.text(), "beta second line");
+    harness.key(KeyCode::Up);
+    assert_eq!(harness.app.input.text(), "alpha committed line");
+    harness.key(KeyCode::Down);
+    assert_eq!(harness.app.input.text(), "beta second line");
+    harness.key(KeyCode::Down);
+    assert_eq!(
+        harness.app.input.text(),
+        "",
+        "past-newest Down restores the empty draft"
+    );
+
+    // 有内容的未发送草稿（CJK + 换行）在浏览后必须逐字还原。
+    let draft = "未发送草稿\n第二行：浏览后必须还原";
+    harness.app.input.insert_str(draft);
+    harness.key(KeyCode::Up);
+    assert_eq!(harness.app.input.text(), "beta second line");
+    harness.key(KeyCode::Down);
+    assert_eq!(
+        harness.app.input.text(),
+        draft,
+        "the untouched draft must survive browsing"
+    );
+    drop(harness);
+}
+
+/// T3：快照（session.recent_inputs）从权威投影重建输入历史——含其它客户
+/// 端的提交（种子），重连后与本地提交按序召回。
+#[test]
+fn ag8_native_snapshot_restores_input_history_after_reconnect() {
+    // 种子 = “其它客户端”已提交输入：只能经快照进入本 TUI（判别快照腿）。
+    let (mut harness, _fixture, events) = ag8_attach_fixture(
+        "ag8-hist-restore",
+        JointHostFixture::spawn_with(true, vec!["seeded by another client".into()]),
+    );
+    assert!(
+        !harness.app.input.history_is_empty(),
+        "the attach snapshot must restore another client's committed inputs"
+    );
+    harness.key(KeyCode::Up);
+    assert_eq!(harness.app.input.text(), "seeded by another client");
+    harness.app.input.clear();
+
+    harness.app.input.insert_str("restored by snapshot");
+    harness.key(KeyCode::Enter);
+    pump_until(
+        &mut harness.app,
+        &events,
+        |app| !app.running && !app.conversation.is_empty(),
+        "ag8 restore run settles",
+    );
+    drain_for(&mut harness.app, &events, 400);
+
+    // 重连（生产 /reconnect 路径）：replay + workbench.info 重建转录与历史。
+    harness.app.start_native();
+    pump_until(
+        &mut harness.app,
+        &events,
+        |app| app.native.as_ref().is_some_and(|native| native.online),
+        "ag8 reconnect online",
+    );
+    drain_for(&mut harness.app, &events, 300);
+    harness.app.input.clear();
+    harness.key(KeyCode::Up);
+    assert_eq!(harness.app.input.text(), "restored by snapshot");
+    harness.key(KeyCode::Up);
+    assert_eq!(harness.app.input.text(), "seeded by another client");
+    drop(harness);
+}
+
+/// T2/A1 判别腿：旧宿主快照（无 recent_inputs 字段）下，回执入史是唯一
+/// 来源——接纳后 ↑ 必须立即可用，不等第二次快照。
+#[test]
+fn ag8_native_remember_covers_legacy_snapshot_gap() {
+    let (mut harness, fixture, events) = ag8_attach_fixture(
+        "ag8-hist-legacy",
+        JointHostFixture::spawn_with(false, Vec::new()),
+    );
+    assert!(harness.app.input.history_is_empty());
+
+    harness.app.input.insert_str("legacy gap probe");
+    harness.key(KeyCode::Enter);
+    pump_until(
+        &mut harness.app,
+        &events,
+        |app| !app.running && !app.conversation.is_empty(),
+        "ag8 legacy run settles",
+    );
+    drain_for(&mut harness.app, &events, 400);
+    assert_eq!(
+        fixture.submitted_texts(),
+        vec!["legacy gap probe".to_owned()]
+    );
+    assert!(
+        !harness.app.input.history_is_empty(),
+        "the admission receipt alone must make the input recallable"
+    );
+    harness.key(KeyCode::Up);
+    assert_eq!(harness.app.input.text(), "legacy gap probe");
+    drop(harness);
+}
+
+/// T2：失败提交（未入账）不入历史、草稿保留；slash 命令与 running 态
+/// steering 不进入已提交提示词历史。
+#[test]
+fn ag8_native_submission_history_guards() {
+    let (mut harness, fixture, events) = ag8_attached_harness("ag8-hist-guards");
+
+    // 未入账的失败提交：草稿保留，历史不污染。
+    harness.app.input.insert_str("AG8-FORCE-FAIL rejected text");
+    harness.key(KeyCode::Enter);
+    pump_until(
+        &mut harness.app,
+        &events,
+        |app| !app.input.text().is_empty(),
+        "ag8 failed receipt restores the draft",
+    );
+    drain_for(&mut harness.app, &events, 300);
+    assert!(
+        harness
+            .app
+            .input
+            .text()
+            .contains("AG8-FORCE-FAIL rejected text"),
+        "the failed submission draft must be retained: {:?}",
+        harness.app.input.text()
+    );
+    assert!(
+        harness.app.input.history_is_empty(),
+        "a rejected submission must never enter input history"
+    );
+    assert!(fixture.submitted_texts().is_empty());
+    harness.app.input.clear();
+
+    // slash 命令（command.run）不属于已提交提示词历史。
+    harness.app.input.insert_str("/help");
+    harness.key(KeyCode::Enter);
+    drain_for(&mut harness.app, &events, 400);
+    assert!(
+        harness.app.input.history_is_empty(),
+        "slash commands must not become prompt history"
+    );
+
+    // running 态提交走 steer.send：接纳 ≠ user journal 事件，不入历史。
+    harness.app.running = true;
+    harness.app.input.insert_str("queued steering probe");
+    harness.key(KeyCode::Enter);
+    drain_for(&mut harness.app, &events, 400);
+    assert!(
+        harness.app.input.history_is_empty(),
+        "steering must join history only via the durable claim, not the queue receipt"
+    );
+    drop(harness);
+}
+
+/// B8-R2（重复快照）：同 Session 的**完全相同**快照不得打断浏览——游标
+/// 与原未发送草稿（CJK/换行）保持可用，生产入口 refresh_native → HTTP
+/// fixture → Snapshot → native_snapshot 全程真实。浏览到更旧项后再接收
+/// 相同快照，↓ 必须仍按序走回更新项（判别值锚迁移，而非游标复位）。
+#[test]
+fn ag8_native_duplicate_snapshot_preserves_browsing_draft() {
+    let (mut harness, _fixture, events) = ag8_attach_fixture(
+        "ag8-hist-dup-snapshot",
+        JointHostFixture::spawn_with(
+            true,
+            vec!["committed alpha".into(), "committed beta".into()],
+        ),
+    );
+    let draft = "未发送草稿\n第二行：重复快照后必须还原";
+    harness.app.input.insert_str(draft);
+    harness.key(KeyCode::Up);
+    assert_eq!(harness.app.input.text(), "committed beta");
+    harness.key(KeyCode::Up);
+    assert_eq!(harness.app.input.text(), "committed alpha");
+
+    // 生产快照路径回流（fixture 返回完全相同的列表）。
+    harness.app.refresh_native();
+    drain_for(&mut harness.app, &events, 300);
+
+    // 游标未失效：仍显示同一召回项，↓ 按序回到更新项而非直归草稿。
+    assert_eq!(harness.app.input.text(), "committed alpha");
+    harness.key(KeyCode::Down);
+    assert_eq!(
+        harness.app.input.text(),
+        "committed beta",
+        "an identical snapshot must keep the browsing cursor in place"
+    );
+    // 越过最新项 ↓ 仍精确还原原草稿。
+    harness.key(KeyCode::Down);
+    assert_eq!(
+        harness.app.input.text(),
+        draft,
+        "an identical snapshot must not void the browsing draft"
+    );
+    // 浏览继续可用：↑ 回到最新项。
+    harness.key(KeyCode::Up);
+    assert_eq!(harness.app.input.text(), "committed beta");
+    drop(harness);
+}
+
+/// B8-R2（真变化迁移）：浏览中列表追加（其它客户端提交）时，游标按当前
+/// 召回值锚点迁移，新条目可经 ↓ 到达，越过最新项仍还原原草稿。
+#[test]
+fn ag8_native_history_growth_migrates_browse_and_keeps_draft() {
+    let (mut harness, fixture, events) = ag8_attach_fixture(
+        "ag8-hist-growth",
+        JointHostFixture::spawn_with(true, vec!["committed alpha".into()]),
+    );
+    let draft = "原草稿：追加后仍可还原";
+    harness.app.input.insert_str(draft);
+    harness.key(KeyCode::Up);
+    assert_eq!(harness.app.input.text(), "committed alpha");
+
+    // 其它客户端追加一条已提交输入（fixture 的 journal 近似），随后生产
+    // 快照路径回流新列表。
+    fixture
+        .submitted
+        .lock()
+        .expect("submitted")
+        .push("committed by another client".into());
+    harness.app.refresh_native();
+    drain_for(&mut harness.app, &events, 300);
+
+    // 锚点迁移：仍显示同一召回项，不跳跃、不重复。
+    assert_eq!(
+        harness.app.input.text(),
+        "committed alpha",
+        "the browsing cursor must migrate by value anchor"
+    );
+    harness.key(KeyCode::Down);
+    assert_eq!(harness.app.input.text(), "committed by another client");
+    harness.key(KeyCode::Down);
+    assert_eq!(
+        harness.app.input.text(),
+        draft,
+        "the pre-browse draft must stay recoverable after list growth"
+    );
+    drop(harness);
+}
+
+/// B8-R2（窗口滑动）：浏览中的锚点滑出有界窗口（压缩/滑窗）时游标复
+/// 位，但**待还原原草稿仍可经 ↓ 取回**——不能因列表变化丢失用户未发送
+/// 的输入。
+#[test]
+fn ag8_native_window_slide_keeps_draft_recoverable() {
+    let (mut harness, fixture, events) = ag8_attach_fixture(
+        "ag8-hist-window-slide",
+        JointHostFixture::spawn_with(true, vec!["committed alpha".into()]),
+    );
+    let draft = "原草稿：锚点滑出窗口后仍可还原";
+    harness.app.input.insert_str(draft);
+    harness.key(KeyCode::Up);
+    assert_eq!(harness.app.input.text(), "committed alpha");
+
+    // 权威列表滑窗：锚点条目离开窗口，仅剩新条目。
+    *fixture.submitted.lock().expect("submitted") = vec!["newer window entry".into()];
+    harness.app.refresh_native();
+    drain_for(&mut harness.app, &events, 300);
+
+    // 游标复位后 ↓ 仍能精确取回原草稿（暂存未被丢弃）。
+    harness.key(KeyCode::Down);
+    assert_eq!(
+        harness.app.input.text(),
+        draft,
+        "a slid anchor must not destroy the recoverable draft"
+    );
+    drop(harness);
+}
+
+/// B8-R2-3（消费者级）：浏览中权威窗口变**空**（有界窗口滑空/压缩）时，
+// 真实 ↓ 按键（keys.rs 路由）必须仍能取回待还原草稿——空历史不得把 ↓
+// 改道成会话滚动。
+#[test]
+fn b8_r2_empty_window_restores_pending_draft_via_real_down() {
+    let (mut harness, fixture, events) = ag8_attach_fixture(
+        "ag8-hist-empty-window",
+        JointHostFixture::spawn_with(true, vec!["committed anchor".into()]),
+    );
+    let draft = "原草稿：空窗口仍应可还原";
+    harness.app.input.insert_str(draft);
+    harness.key(KeyCode::Up);
+    assert_eq!(harness.app.input.text(), "committed anchor");
+
+    // 权威窗口变空（合法空窗口，非伪造宿主状态），经生产快照入口回流。
+    fixture.submitted.lock().expect("submitted").clear();
+    harness.app.refresh_native();
+    drain_for(&mut harness.app, &events, 300);
+    assert!(
+        harness.app.input.history_is_empty(),
+        "the consumer must have received the empty window"
+    );
+
+    // 真实 ↓ 路由：取回草稿而非滚动。
+    harness.key(KeyCode::Down);
+    assert_eq!(
+        harness.app.input.text(),
+        draft,
+        "a real Down key must restore the pending draft even with an empty window"
+    );
+    drop(harness);
+}
+
+/// B8-R2-3（分支护栏）：无历史且无待恢复暂存时，↓ 保持既有语义（不产生
+/// 幻影还原，输入保持为空）。
+#[test]
+fn ag8_native_down_without_history_or_stash_keeps_scroll_semantics() {
+    let (mut harness, _fixture, events) = ag8_attach_fixture(
+        "ag8-hist-no-stash",
+        JointHostFixture::spawn_with(true, Vec::new()),
+    );
+    drain_for(&mut harness.app, &events, 200);
+    assert!(harness.app.input.history_is_empty());
+    assert!(!harness.app.input.has_pending_history_draft());
+    harness.app.input.insert_str("");
+    harness.key(KeyCode::Down);
+    assert_eq!(
+        harness.app.input.text(),
+        "",
+        "Down with no history and no stash must never materialize a draft"
+    );
+    drop(harness);
+}
+
+/// B8-R2-1 同类（TUI 腿）：其它客户端切到新会话后，旧会话的浏览游标与
+/// 待还原暂存随快照整体退役——新会话 ↓ 不得恢复 A 的未发送草稿，↑ 只
+/// 能召回新会话自己的提交。
+#[test]
+fn ag8_native_session_switch_retires_old_session_browse() {
+    let (mut harness, fixture, events) = ag8_attach_fixture(
+        "ag8-hist-session-retire",
+        JointHostFixture::spawn_with(true, vec!["committed anchor".into()]),
+    );
+    let draft_a = "A 未发送草稿：不得进入 B 会话";
+    harness.app.input.insert_str(draft_a);
+    harness.key(KeyCode::Up);
+    assert_eq!(harness.app.input.text(), "committed anchor");
+
+    // 其它客户端切换会话（新会话已有自己的提交），随后生产快照回流。
+    *fixture.session.lock().expect("session") = "ag8-hist-session-b".to_owned();
+    *fixture.submitted.lock().expect("submitted") = vec!["committed in B".to_owned()];
+    harness.app.refresh_native();
+    drain_for(&mut harness.app, &events, 300);
+
+    // B 会话内：↓ 不得恢复 A 的待还原草稿（暂存已退役，正文保持切换前
+    // 的召回项，而不是变成 A 的草稿）。
+    harness.key(KeyCode::Down);
+    assert_eq!(
+        harness.app.input.text(),
+        "committed anchor",
+        "the old session's pending draft must not be restorable in B"
+    );
+    harness.app.input.clear();
+    // ↑ 只召回 B 的提交，越过最新项还原空。
+    harness.key(KeyCode::Up);
+    assert_eq!(harness.app.input.text(), "committed in B");
+    harness.key(KeyCode::Up);
+    assert_eq!(
+        harness.app.input.text(),
+        "committed in B",
+        "no older cross-session entry may appear"
+    );
+    harness.key(KeyCode::Down);
+    assert_eq!(harness.app.input.text(), "");
+    drop(harness);
 }

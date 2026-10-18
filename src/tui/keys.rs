@@ -450,7 +450,11 @@ impl App {
                 }
             }
             KeyCode::Down => {
-                if self.input.history_is_empty() {
+                // 空历史且**没有待恢复的浏览暂存**时 ↓ 保持会话滚动（既有
+                // 语义）；有待恢复暂存时即使历史已空（如窗口滑空），↓ 仍
+                // 走召回路径取回草稿（B8-R2-3：真实按键入口不得绕过底层
+                // 恢复机制）。
+                if self.input.history_is_empty() && !self.input.has_pending_history_draft() {
                     self.scroll_down(WHEEL_SCROLL_ROWS);
                 } else {
                     self.input.history_next();
