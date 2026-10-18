@@ -1341,12 +1341,29 @@ fn mount_modes_from_storage(
     storage_root: &std::path::Path,
     behavior: TestBehavior,
 ) -> TrustedProjectApplication {
-    let bootstrap =
-        BootstrapApplication::open(project.clone(), storage_root.to_path_buf()).unwrap();
-    bootstrap
+    try_mount_modes_from_storage(project, storage_root, behavior).expect("mount permission modes")
+}
+
+fn try_mount_modes_from_storage(
+    project: &Project,
+    storage_root: &std::path::Path,
+    behavior: TestBehavior,
+) -> Result<TrustedProjectApplication, ApplicationError> {
+    BootstrapApplication::open(project.clone(), storage_root.to_path_buf())?
         .with_permission_modes()
         .authorize_and_mount_with_provider(Arc::new(TestProviderPlugin { behavior }))
-        .unwrap()
+}
+
+// E4: only cold reopens use the bounded lease-visibility helper. Initial
+// mounts still fail immediately; unrelated errors are never retried.
+fn reopen_modes_from_storage(
+    project: &Project,
+    storage_root: &std::path::Path,
+    behavior: TestBehavior,
+) -> TrustedProjectApplication {
+    crate::test_support::reopen_after_close(|| {
+        try_mount_modes_from_storage(project, storage_root, behavior.clone())
+    })
 }
 
 fn run_with_approver(
@@ -1476,7 +1493,7 @@ fn permission_mode_travels_with_the_session_not_the_process() {
     // 会话 A：档位系统挂载，出生 FA（物化前设置）。
     let full_access_id = {
         let mut application =
-            mount_modes_from_storage(&project, &storage_root, TestBehavior::Success);
+            reopen_modes_from_storage(&project, &storage_root, TestBehavior::Success);
         configure_test_model(&application);
         // 当前活跃会话是遗留的 B（workspace 恢复）——先 /new 再设档。
         application.new_session().unwrap();
@@ -1513,7 +1530,7 @@ fn permission_mode_travels_with_the_session_not_the_process() {
     // 持久化诉求）。
     {
         let mut application =
-            mount_modes_from_storage(&project, &storage_root, TestBehavior::Success);
+            reopen_modes_from_storage(&project, &storage_root, TestBehavior::Success);
         assert_eq!(
             application.permission_mode(),
             PermissionMode::FullAccess,
@@ -1682,7 +1699,7 @@ fn denied_permission_mode_batch_never_commits_late() {
     );
     application.close().expect("close");
 
-    let reopened = mount_modes_from_storage(&project, &storage_root, TestBehavior::Success);
+    let reopened = reopen_modes_from_storage(&project, &storage_root, TestBehavior::Success);
     assert_eq!(
         reopened.permission_mode(),
         PermissionMode::ProjectWrite,
@@ -1736,7 +1753,7 @@ fn unknown_permission_mode_outcome_stops_future_writes_until_cold_repair() {
         application.close().is_err(),
         "close reports the poisoned unknown outcome"
     );
-    let reopened = mount_modes_from_storage(&project, &storage_root, TestBehavior::Success);
+    let reopened = reopen_modes_from_storage(&project, &storage_root, TestBehavior::Success);
     assert_eq!(
         reopened.permission_mode(),
         PermissionMode::ProjectWrite,
@@ -1801,7 +1818,7 @@ fn stale_permission_modes_file_is_ignored() {
     )
     .unwrap();
 
-    let application = mount_modes_from_storage(&project, &storage_root, TestBehavior::Success);
+    let application = reopen_modes_from_storage(&project, &storage_root, TestBehavior::Success);
     assert_eq!(
         application.permission_mode(),
         PermissionMode::ProjectWrite,
@@ -5922,7 +5939,7 @@ fn view_image_is_fenced_provider_visible_and_cold_replayable() {
         } if call_id == "view-project" && content_blocks.len() == 1
     )));
 
-    let mut reopened = mount_modes_from_storage(
+    let mut reopened = reopen_modes_from_storage(
         &project,
         &storage_root,
         TestBehavior::Scripted(script.clone()),
