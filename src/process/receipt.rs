@@ -21,6 +21,8 @@ pub(crate) enum Format {
     RustTestSummary,
     #[serde(rename = "playwright-summary")]
     PlaywrightSummary,
+    #[serde(rename = "playwright-json")]
+    PlaywrightJson,
 }
 
 impl Format {
@@ -28,12 +30,14 @@ impl Format {
         match self {
             Self::RustTestSummary => "rust-test-summary",
             Self::PlaywrightSummary => "playwright-summary",
+            Self::PlaywrightJson => "playwright-json",
         }
     }
     fn observe(self, line: &str) -> Option<Value> {
         match self {
             Self::RustTestSummary => super::verification::observe_rust(line),
             Self::PlaywrightSummary => super::playwright::observe(line),
+            Self::PlaywrightJson => None,
         }
     }
 }
@@ -74,6 +78,7 @@ struct Line {
 
 pub(super) struct Receipt {
     context: Context,
+    json_report: Option<super::playwright_json::Capture>,
     lines: [Line; 2],
     summaries: u64,
     passed: u64,
@@ -98,6 +103,8 @@ impl Receipt {
     pub(super) fn new(context: Context) -> Option<Self> {
         context.minimum?;
         Some(Self {
+            json_report: matches!(context.format, Some(Format::PlaywrightJson))
+                .then(super::playwright_json::Capture::default),
             context,
             lines: Default::default(),
             summaries: 0,
@@ -112,6 +119,12 @@ impl Receipt {
     }
 
     pub(super) fn append(&mut self, stream: StreamKind, bytes: &[u8]) {
+        if let Some(report) = &mut self.json_report {
+            if matches!(stream, StreamKind::Stdout) {
+                report.append(bytes);
+            }
+            return;
+        }
         let index = match stream {
             StreamKind::Stdout => 0,
             StreamKind::Stderr => 1,
@@ -204,6 +217,15 @@ impl Receipt {
     }
 
     pub(super) fn json(&self, output: &ProcessOutput, generation: u64) -> Value {
+        if let Some(report) = &self.json_report {
+            let mut value = report.receipt(
+                output,
+                self.context.minimum.expect("verification enabled"),
+                self.eof.iter().all(|e| *e),
+            );
+            self.identity(&mut value, output, generation);
+            return value;
+        }
         let complete = self.eof.iter().all(|eof| *eof)
             && !self.incomplete
             && self.lines.iter().all(|l| l.bytes.is_empty() && !l.dropping);
@@ -217,6 +239,7 @@ impl Receipt {
             "status":status,"next_action":action,"exit_code":output.exit_code,"signal":output.signal,
             "timed_out":output.timed_out,"cancelled":output.cancelled,"terminated":output.terminated,
             "evidence":"output_signature","authenticated":false,"scan_complete":complete,
+            "expected_failure_visibility":"unavailable",
             "summaries":self.summaries,"passed":self.passed,"failed":self.failed,"ignored":self.ignored,
             "flaky":self.flaky,"executed":executed,"minimum_executed":self.context.minimum,"compile_failed":self.compile_failed})
     }
@@ -266,5 +289,18 @@ impl Receipt {
             "passed",
             "Direct process succeeded with the requested output evidence; review test relevance, not just counts. This does not authenticate coverage.",
         )
+    }
+}
+
+impl Receipt {
+    fn identity(&self, value: &mut Value, output: &ProcessOutput, generation: u64) {
+        let fields = json!({"version":1,"format":self.context.format.expect("verification format").name(),
+            "session_id":output.session_id,"owner_generation":generation,"invocation_sha256":self.context.fingerprint,
+            "execution":"argv","exit_scope":"direct_child","exit_code":output.exit_code,"signal":output.signal,
+            "timed_out":output.timed_out,"cancelled":output.cancelled,"terminated":output.terminated});
+        value
+            .as_object_mut()
+            .expect("receipt")
+            .extend(fields.as_object().expect("identity").clone());
     }
 }

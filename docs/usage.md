@@ -931,6 +931,40 @@ never automatic execution, a widened write root, a silent target change or a
 fallback to a shell. Permission denials and runtime failures do not acquire this
 validation-only label.
 
+- `terminal_snapshot` reads current text cells of a current-run PTY created with
+  `exec_command` and `tty: true`. Supply its `session_id`, optional `start_row`
+  (default 0) and `row_count` (default 12, maximum 24); follow `next_row` when
+  `has_more_rows` is true. The VT projection folds cursor, erase and alternate
+  screen updates from capture start, without consuming raw output, writing input
+  or extending process lifetime. Check `projection_complete` and
+  `text_truncated`: capture stops after 4 MiB or an unsupported screen size
+  (maximum 100 rows × 240 columns), and incomplete projections return no text.
+  PTY handle/lifecycle metadata survives shared result pruning even when raw
+  diagnostics require shortening. Each response contains at most 3000 text
+  characters. This is a bounded VT text
+  projection, with no scrollback, font/IME/image emulation or terminal query
+  responses; long combining sequences may be shortened by its cell model.
+  `projection_complete` describes capture/size bounds, not exact emulation.
+  It is not proof of application or persistent state and cannot
+  inspect a nested PTY hidden inside a non-PTY script. Screen text is omitted
+  from the durable journal. Windows PTY execution remains unavailable.
+- `verify_observation` evaluates explicit checks against a project-relative JSON
+  observation file (maximum 256 KiB, regular files only, no symlink traversal).
+  It returns the SHA-256 of the bytes read and per-check `passed`, `failed` or
+  `inconclusive`, without returning the artifact data. Supply 1–16 `checks`, each
+  with a unique ASCII `id`, an `op`, and a JSON `pointer`. `is_true` requires an
+  observed boolean; `equals` compares an explicit `expected` JSON value, useful
+  for a complete sequence of intermediate observations; `all_before` requires
+  every `before` label to precede every `after` label in a string trace, with
+  both groups present. Missing pointers, wrong types and missing order groups
+  remain inconclusive. All checks must pass for overall success. Contracts
+  (including expected literals) are hashed and omitted from the journal.
+  This Read tool does not authenticate observers, freshness, source identity,
+  coverage or the correctness of the declared contract. Use independent truth,
+  normal controls and meaningful counterexamples; matching two wrong results
+  or checking only a final value does not prove the intermediate behavior.
+  Both new Read tools use the shared permission/cancellation path, are available
+  in Plan Mode, and are outside the fixed subagent tool allowlist.
 - `session_info` reads the conversation ID bound to the active run and its
   project root. It uses in-memory ownership, without listing session directories
   or inspecting timestamps, credentials or other conversations. The ID can resume
@@ -1149,7 +1183,21 @@ Skipped-only output cannot pass; any flaky total remains inconclusive and
 requires inspection. These are unauthenticated reporter totals, not a proof of
 coverage or that a retry was legitimate. HTML/JSON/dot/custom reporter output is
 not inferred as list/line totals. Neither a wrapper's zero exit nor a printed
-summary authenticates a hidden child exit.
+summary authenticates a hidden child exit. Summary receipts explicitly report
+`expected_failure_visibility: "unavailable"`; list/line totals cannot distinguish
+Playwright `test.fail` from ordinary successful assertions.
+
+For per-test expectation accounting, use `"format":"playwright-json"` with
+Playwright's `--reporter=json` and `tty: false`. The entire stdout must be one
+JSON report, with `suites` and `errors`; do not mix a list reporter or arbitrary
+stdout into it. The cumulative capture is capped at 512 KiB, 4096 tests and
+32 nested suite levels. Malformed, partial or oversized reports cannot pass.
+The receipt separates ordinary `passed` tests from `expected_failures`,
+`unexpected_passes`, `ignored` and `flaky`/retried tests. An expected failure
+with a zero process exit remains **inconclusive**, not a business pass;
+unexpected passes and report errors fail. Real process exit, cancellation and
+timeout facts still take precedence. These are unauthenticated report contents,
+not independent proof of the observer or tested source.
 
 The scanner joins partial lines before parsing, retains at most 64 summary rows
 as aggregate counts, and buffers at most 4096 bytes per pending stdout/stderr

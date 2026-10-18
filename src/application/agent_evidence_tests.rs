@@ -1,5 +1,7 @@
 //! Native production catalog -> permission -> processes -> pruner -> next request -> journal.
 use super::*;
+#[path = "agent_evidence_tests/ag9_tests.rs"]
+mod ag9_tests;
 use crate::model::{ModelError, ModelEventSink, ModelItem, ModelRequest, ModelResponse};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -8,6 +10,13 @@ use std::io::{self,Write};
 fn main(){
  let mode=std::env::args().nth(1).unwrap();
  writeln!(std::fs::OpenOptions::new().create(true).append(true).open("starts").unwrap(),"{mode}").unwrap();
+ if mode=="screen" {
+  print!("\x1b[2J\x1b[Hprivate-draft\x1b[2;1Hold");
+  for _ in 0..5000 {print!("\x1b[2;1Hupdated\x1b[K");}
+  print!("\x1b[3;1HAG9_SCREEN_READY");
+  io::stdout().flush().unwrap();let mut s=String::new();io::stdin().read_line(&mut s).unwrap();return;
+ }
+ if mode=="json" {print!("{}",std::fs::read_to_string("report.json").unwrap());return;}
  if mode=="job" {let mut s=String::new();io::stdin().read_line(&mut s).unwrap();assert_eq!(s,"go\n");println!("  1 failed\n  2 passed (0.1s)");std::process::exit(1);}
  for _ in 0..200 {println!("{}","bounded diagnostic ".repeat(5));}
  println!("  1 passed (0.1s)");
@@ -23,6 +32,9 @@ impl TestModelScript for RecoveryScript {
         request: ModelRequest<'_>,
         _: &mut dyn ModelEventSink,
     ) -> Result<ModelResponse, ModelError> {
+        if request.tools.is_empty() {
+            return Ok(super::write_guard::response(None, "Evidence review"));
+        }
         let n = self.step.fetch_add(1, Ordering::SeqCst);
         let out = request.items.iter().rev().find_map(|i| match i {
             ModelItem::ToolResult(r) => Some(r),
@@ -81,10 +93,7 @@ impl TestModelScript for RecoveryScript {
 fn ag5_evidence_application_recovers_correct_process_and_consumes_bounded_receipts() {
     let (storage, root) = roots("ag5-evidence-loop");
     std::fs::create_dir_all(&root).unwrap();
-    let source = root.join("probe.rs");
-    std::fs::write(&source, PROGRAM).unwrap();
-    let program = root.join(format!("probe{}", std::env::consts::EXE_SUFFIX));
-    crate::process::compile_rust_test_helper(&source, &program).unwrap();
+    let program = compile_probe(&root);
     let script = Arc::new(RecoveryScript {
         program: program.to_string_lossy().into_owned(),
         step: AtomicUsize::new(0),
@@ -130,6 +139,7 @@ fn ag5_evidence_application_recovers_correct_process_and_consumes_bounded_receip
 
 struct DeniedScript {
     program: String,
+    format: &'static str,
 }
 impl TestModelScript for DeniedScript {
     fn stream(
@@ -139,13 +149,19 @@ impl TestModelScript for DeniedScript {
     ) -> Result<ModelResponse, ModelError> {
         if let Some(ModelItem::ToolResult(r)) = request.items.last() {
             assert!(r.is_error);
+            assert!(
+                r.output["error"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("permission denied")
+            );
             return Ok(super::write_guard::response(None, "permission refused"));
         }
         Ok(super::write_guard::response(
             Some((
                 "run_command",
                 json!({"argv":[self.program,"inspect"],
-            "verification":{"format":"playwright-summary","minimum_executed":1}}),
+            "verification":{"format":self.format,"minimum_executed":1}}),
             )),
             "",
         ))
@@ -153,16 +169,17 @@ impl TestModelScript for DeniedScript {
 }
 #[test]
 fn ag5_evidence_one_shot_permission_denial_precedes_invocation() {
-    let (storage, root) = roots("ag5-evidence-deny");
+    denial("playwright-summary", "ag5-evidence-deny");
+}
+fn denial(format: &'static str, name: &str) {
+    let (storage, root) = roots(name);
     std::fs::create_dir_all(&root).unwrap();
-    let source = root.join("probe.rs");
-    std::fs::write(&source, PROGRAM).unwrap();
-    let program = root.join(format!("probe{}", std::env::consts::EXE_SUFFIX));
-    crate::process::compile_rust_test_helper(&source, &program).unwrap();
+    let program = compile_probe(&root);
     let mut app = mount(
         &Project::new(&root),
         &storage,
         TestBehavior::Scripted(Arc::new(DeniedScript {
+            format,
             program: program.to_string_lossy().into_owned(),
         })),
     );
@@ -189,4 +206,12 @@ fn ag5_evidence_one_shot_permission_denial_precedes_invocation() {
     );
     crate::test_support::cleanup_tree(&storage);
     crate::test_support::cleanup_tree(&root);
+}
+
+fn compile_probe(root: &std::path::Path) -> std::path::PathBuf {
+    let source = root.join("probe.rs");
+    std::fs::write(&source, PROGRAM).unwrap();
+    let program = root.join(format!("probe{}", std::env::consts::EXE_SUFFIX));
+    crate::process::compile_rust_test_helper(&source, &program).unwrap();
+    program
 }

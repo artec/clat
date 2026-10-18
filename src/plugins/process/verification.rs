@@ -143,6 +143,7 @@ fn bounded_evidence(mut value: Value) -> Value {
             "execution",
             "exit_scope",
             "session_id",
+            "tty",
             "running",
             "exit_code",
             "timed_out",
@@ -172,7 +173,11 @@ fn fits(value: &Value) -> bool {
 /// Passive signatures can contradict a wrapper's success. Keep that distinction
 /// visible before generic pruning; never synthesize an exit or execute a retry.
 pub(super) fn with_guidance(mut value: Value) -> Value {
-    let preserve = value.get("failure_context").is_some() || value.get("evidence").is_some();
+    // PTY handles must survive noisy incremental output so a subsequent
+    // terminal_snapshot can read current cells through the same ownership path.
+    let preserve = value.get("failure_context").is_some()
+        || value.get("evidence").is_some()
+        || value["tty"] == true;
     value = passive_guidance(value);
     if preserve {
         bounded_evidence(value)

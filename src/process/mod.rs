@@ -19,8 +19,10 @@ mod failures;
 mod launch;
 mod outcome;
 mod playwright;
+mod playwright_json;
 mod receipt;
 mod recovery;
+mod terminal;
 pub(crate) mod verification;
 pub(crate) use outcome::{CommandOutcome, classify_tool_error};
 pub(crate) use receipt::VerificationSpec;
@@ -868,6 +870,8 @@ struct ProcessEntry {
     limits: ProcessLimits,
     owner_cancel: CancelToken,
     stdin: Mutex<Option<Box<dyn Write + Send>>>,
+    #[cfg(not(windows))]
+    terminal_master: Mutex<Option<Box<dyn portable_pty::MasterPty + Send>>>,
     state: Mutex<EntryState>,
     changed: Condvar,
     terminate_requested: AtomicBool,
@@ -890,6 +894,7 @@ struct ProcessEntryInit {
 }
 
 struct EntryState {
+    screen: Option<terminal::TerminalScreen>,
     failures: failures::Failures,
     verification: Option<receipt::Receipt>,
     stdout: ByteRing,
@@ -933,7 +938,10 @@ impl ProcessEntry {
             limits: init.limits,
             owner_cancel: owner.cancel.clone(),
             stdin: Mutex::new(Some(init.stdin)),
+            #[cfg(not(windows))]
+            terminal_master: Mutex::new(None),
             state: Mutex::new(EntryState {
+                screen: init.tty.then(terminal::TerminalScreen::new),
                 failures: failures::Failures::default(),
                 verification: init.verification.and_then(receipt::Receipt::new),
                 stdout: ByteRing::new(init.stdout_capacity),
@@ -957,6 +965,8 @@ impl ProcessEntry {
     }
 
     fn append(&self, stream: StreamKind, bytes: &[u8]) {
+        #[cfg(not(windows))]
+        let size = if self.tty { self.terminal_size() } else { None };
         let mut state = self.state.lock().expect("process entry lock");
         state.failures.append(stream, bytes);
         if let Some(receipt) = &mut state.verification {
@@ -966,7 +976,12 @@ impl ProcessEntry {
             StreamKind::Stdout => state.stdout.append(bytes),
             StreamKind::Stderr => state.stderr.append(bytes),
             #[cfg(not(windows))]
-            StreamKind::Pty => state.pty.append(bytes),
+            StreamKind::Pty => {
+                if let Some(screen) = &mut state.screen {
+                    screen.append(bytes, size);
+                }
+                state.pty.append(bytes);
+            }
         }
         state.last_activity = Instant::now();
         self.changed.notify_all();
@@ -1513,52 +1528,8 @@ fn spawn_pty(
     }
     #[cfg(not(windows))]
     {
-        let system = native_pty_system();
-        let pair = system
-            .openpty(PtySize::default())
-            .map_err(|error| format!("PTY open failed: {error}"))?;
-        let mut builder = CommandBuilder::new(&planned.program);
-        builder.args(&planned.args);
-        builder.cwd(workdir);
-        let child = pair
-            .slave
-            .spawn_command(builder)
-            .map_err(|error| format!("PTY spawn failed: {error}"))?;
-        let process_group = pair.master.process_group_leader();
-        drop(pair.slave);
-        #[cfg(unix)]
-        if process_group.is_none() {
-            let mut child = ChildHandle::Pty {
-                child,
-                process_group,
-            };
-            let _ = child.terminate_tree();
-            return Err(
-                "PTY process group is unavailable; refusing an unsupervised session".into(),
-            );
-        }
-        let reader = match pair.master.try_clone_reader() {
-            Ok(reader) => reader,
-            Err(error) => {
-                let mut child = ChildHandle::Pty {
-                    child,
-                    process_group,
-                };
-                let _ = child.terminate_tree();
-                return Err(format!("PTY reader failed: {error}"));
-            }
-        };
-        let writer = match pair.master.take_writer() {
-            Ok(writer) => writer,
-            Err(error) => {
-                let mut child = ChildHandle::Pty {
-                    child,
-                    process_group,
-                };
-                let _ = child.terminate_tree();
-                return Err(format!("PTY writer failed: {error}"));
-            }
-        };
+        let (master, mut child) = terminal::open_pty(&planned, &workdir)?;
+        let (reader, writer) = terminal::pty_handles(&*master, &mut child)?;
         let entry = ProcessEntry::new(
             owner,
             ProcessEntryInit {
@@ -1575,6 +1546,7 @@ fn spawn_pty(
                 notice_sink,
             },
         );
+        *entry.terminal_master.lock().expect("PTY master lock") = Some(master);
         let reader_done = Arc::new(AtomicBool::new(false));
         let reader_thread = match spawn_reader(
             Arc::clone(&entry),
@@ -1584,23 +1556,11 @@ fn spawn_pty(
         ) {
             Ok(reader) => reader,
             Err(error) => {
-                let mut child = ChildHandle::Pty {
-                    child,
-                    process_group,
-                };
                 let _ = child.terminate_tree();
                 return Err(error);
             }
         };
-        launch::monitor(
-            &entry,
-            ChildHandle::Pty {
-                child,
-                process_group,
-            },
-            vec![reader_thread],
-            vec![reader_done],
-        )?;
+        launch::monitor(&entry, child, vec![reader_thread], vec![reader_done])?;
         Ok(entry)
     }
 }

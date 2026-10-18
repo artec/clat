@@ -4,6 +4,7 @@ mod ag6_tests;
 mod ag7_loop_tests;
 mod ag7_recovery_tests;
 mod ag7_tests;
+mod ag9_tests;
 mod agent_loop_tests;
 
 const PROBE: &str = r#"
@@ -12,6 +13,11 @@ fn main() {
     let args: Vec<_> = std::env::args().skip(1).collect();
     writeln!(std::fs::OpenOptions::new().create(true).append(true).open("invocations").unwrap(), "{}", args[0]).unwrap();
     match args[0].as_str() {
+        "ag9-json" | "ag9-json-wait" => {
+            print!("{}", std::fs::read_to_string(&args[1]).unwrap());io::stdout().flush().unwrap();
+            if args[0]=="ag9-json-wait" {let mut s=String::new();io::stdin().read_line(&mut s).unwrap();}
+            if args.len()>2 {std::process::exit(args[2].parse().unwrap());}
+        }
         "ag7-red" => {
             let diagnostic = "thread 'case::denies_invalid' panicked at synthetic.rs:1:1:\nSYNTHETIC_INVARIANT: invalid input must fail closed\n";
             std::fs::write("stage.log", diagnostic).unwrap();

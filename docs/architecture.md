@@ -502,11 +502,24 @@ Trusted projects also receive:
   the model and journal retain the path/digest, without adding raw streams to
   the journal or user-edit recovery history. Failed publication cannot change
   the command exit or cause an automatic retry; Read Only cannot record.
-  Cumulative verification selects Rust or Playwright summary parsing; format
-  counts never mix supporting-host output into the selected test suite.
+  Cumulative verification selects Rust/Playwright summary parsing or bounded
+  per-test Playwright JSON accounting; expected failures remain separate from
+  ordinary passes. Format counts never mix supporting-host output into the
+  selected test suite.
   Unknown stdin ids may return bounded current-owner session metadata, never
   command/output/environment or another run's authority; recovery is advisory
   and does not execute, redirect input or consume output.
+- `terminal_snapshot` — a Read tool over a current-run PTY's bounded VT text
+  projection, folded before raw output eviction/consumption. It sends no input
+  or terminal query responses and extends no lifetime. A native `vt100` parser
+  stays inside the binary. Unsupported dimensions/input overflow invalidate
+  the projection; screen text is transient and omitted from the journal.
+- `verify_observation` — a Read tool using the shared capability-relative,
+  bounded ordinary-file reader. Explicit independent truth, exact expected
+  JSON/sequences and nonempty quantified ordering checks return per-claim
+  verdicts bound to artifact bytes by SHA-256. Contract literals are omitted
+  from durable arguments; no raw observations enter results. It authenticates
+  neither the observer nor the completeness/correctness of the chosen contract.
 - `session_info` — a Read tool over the current ProcessService run binding,
   exposing only conversation identity and project root, without storage scans
   or another run's metadata; cancellation/unbind invalidates the result source.

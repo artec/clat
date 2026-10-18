@@ -496,6 +496,8 @@ fn agent_command_spawning_is_owned_only_by_process_service() {
     for name in [
         "src/native_tools.rs",
         "src/plugins/process.rs",
+        "src/plugins/process/terminal.rs",
+        "src/plugins/process/observation/mod.rs",
         "src/plugins/language_intelligence.rs",
         "src/language_intelligence.rs",
         "src/application/run_lifecycle.rs",
@@ -520,7 +522,12 @@ fn agent_command_spawning_is_owned_only_by_process_service() {
         .map(|s| s.replace("\r\n", "\n"))
         .expect("process service");
     assert!(owner.contains(".group_spawn()"));
-    assert!(owner.contains("native_pty_system()"));
+    let pty_owner = fs::read_to_string(root.join("src/process/terminal.rs"))
+        .map(|s| s.replace("\r\n", "\n"))
+        .expect("process-owned PTY implementation");
+    assert!(owner.contains("mod terminal;"));
+    assert!(owner.contains("terminal::open_pty("));
+    assert!(pty_owner.contains("native_pty_system()"));
 }
 
 /// Slash command semantics live in the `core.commands` registry
