@@ -1082,6 +1082,56 @@ extra executions or model requests. Omission preserves the count-based result
 and explicitly leaves the failure reason unverified. A marker match is an
 output observation, not proof of source coverage or semantic relevance.
 
+For Playwright experiments, supply `playwright` instead of `package` and
+`test_filter`. This extends the same tool and permission path; the default Cargo
+experiment is unchanged. Both disposable roots run the same literal `argv`
+with stdin closed. Configure Playwright's JSON reporter and zero retries;
+include every relevant test/helper in `test_files`, package manifests,
+lockfiles and configuration in `build_files`, and production differences in
+`production_files`. `build_files` must include a `package.json` (nested paths
+are allowed). For example, the additional runner object can be:
+
+```json
+{
+  "argv": ["node", "node_modules/@playwright/test/cli.js", "test", "contract.spec.js", "--reporter=json", "--retries=0"],
+  "build_files": ["package.json", "package-lock.json", "playwright.config.js"],
+  "artifact_files": ["bin/product"]
+}
+```
+
+`expected_failure` is required here. A qualifying control must exit 1, have the
+same nonempty test set as the successful candidate, and report ordinary failed
+assertions containing this marker in each failed test's JSON error messages.
+A marker printed in stdout, setup errors, expected failures, skips, retries,
+timeouts, different tests or incomplete reports yield `inconclusive`. Two
+ordinary passing reports yield `not_discriminating`. No report can authenticate
+that its producer used the intended binary or that a chosen defect is relevant.
+
+Up to four optional `artifact_files` bind explicit source-built executables or
+other runtime inputs by SHA-256 before and after each execution. Each artifact
+is limited to 256 MiB; ordinary declared files to 1 MiB; each arm's hashing phase
+to 512 MiB. Declared inputs must be regular, non-symlink files inside their copy root and
+cannot change after
+preparation or while either arm runs. Both copies are rechecked after each arm,
+including when the candidate fails and the control is skipped. These checks
+compare boundary snapshots; they cannot detect a file changed and restored
+between checks. These digests are observations, not proof
+of build freshness or an inventory of every dependency. The JSON report and
+stderr must each fit the one-shot process capture (32 KiB); clipped/lossy data
+is inconclusive. Install project dependencies yourself; the tool adds no Node
+runtime or dependency installer to CLAT. There is no network opt-in or sandbox-off option. Effective restrictions still
+follow the selected permission mode and sandbox facts (Full Access is unconfined). Execute approval still applies to the
+supplied program and any code it launches.
+
+The Playwright tool/call journal stores argument hashes/counts instead of raw
+argv or assertion markers. Results retain only bounded counts, identities,
+artifact digests, lifecycle facts and classification. Up to two transient assertion messages (240 characters each)
+help inspect an unrelated failure; these messages are omitted from tool/result
+journals. Provider streaming and
+other existing session records retain their own policies: never put credentials
+in model tool arguments. The tool does not mutate source, rebuild artifacts,
+retry tests, or add model requests.
+
 All three tools add a structured `command_outcome` to command results and
 native invocation errors. It contains `kind`, `reason`, and `evidence`:
 

@@ -105,6 +105,7 @@ pub(super) fn journal(value: &Value) -> Value {
         if let Some(arm) = copy.get_mut(key).and_then(Value::as_object_mut) {
             arm.remove("stdout");
             arm.remove("stderr");
+            arm.remove("failure_diagnostics");
         }
     }
     copy

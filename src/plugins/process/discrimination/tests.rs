@@ -385,3 +385,6 @@ fn discrimination_long_diagnostics_keep_model_evidence_below_pruner_threshold() 
     assert_eq!(out["counterexample"]["diagnostic_excerpt_truncated"], true);
     assert!(serde_json::to_string(&out).unwrap().chars().count() < 8192);
 }
+
+#[path = "playwright_tests.rs"]
+mod playwright_tests;
