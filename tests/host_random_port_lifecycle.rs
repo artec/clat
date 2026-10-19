@@ -27,6 +27,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 mod bounded_process;
 use bounded_process::BoundedProcess;
 
+#[path = "support/reopen_after_close.rs"]
+mod cold_reopen;
+use cold_reopen::reopen_after_close;
+
 const WAIT: Duration = Duration::from_secs(30);
 const ANSWER_MARK: &str = "J1-SYNTHETIC-ANSWER-7f3d";
 const FAKE_KEY: &str = "j1-synthetic-key-0002";
@@ -109,10 +113,10 @@ fn configure_synthetic_route(
     provider: SocketAddr,
 ) -> clat_core::TrustedProjectApplication {
     let project = root.join("project");
-    let app = BootstrapApplication::open(Project::new(&project), root.join("home/.clat"))
-        .expect("open bootstrap")
-        .authorize_and_mount(ProjectAuthorization::grant())
-        .expect("mount app");
+    let app = reopen_after_close(|| {
+        BootstrapApplication::open(Project::new(&project), root.join("home/.clat"))?
+            .authorize_and_mount(ProjectAuthorization::grant())
+    });
     let mut config = ModelConfig {
         preset: None,
         protocol: ModelProtocol::OpenAiCompatible,
