@@ -30,7 +30,7 @@ pub(super) struct RunContextSnapshot {
     pub(super) tool_definitions: Arc<[crate::tool::ToolDefinition]>,
     subagents_enabled: bool,
     pub(super) instructions: InstructionLayers,
-    pub(super) workflow_base: String,
+    workflow_base: String,
     pub(super) workflow_instructions: Option<String>,
     plan_header: Option<Value>,
     memory_header: Value,
@@ -84,56 +84,18 @@ impl TrustedProjectApplication {
             self.permission_modes_enabled
                 .then(|| self.permission_mode()),
         );
-        let with_plan = crate::plan_mode::compose_workflow_instructions(
-            base.clone(),
-            plan_instructions.as_deref(),
-        );
-        let with_skills = crate::plan_mode::compose_workflow_instructions(
-            with_plan.clone(),
-            skills.instructions(),
-        );
         let invoked_instructions = invoked_skill
             .as_ref()
             .map(crate::skills::InvokedSkill::instructions);
-        let with_invoked = crate::plan_mode::compose_workflow_instructions(
-            with_skills.clone(),
-            invoked_instructions.as_deref(),
-        );
-        let with_memory = crate::plan_mode::compose_workflow_instructions(
-            with_invoked.clone(),
-            (!memory.instructions.is_empty()).then_some(memory.instructions.as_str()),
-        );
-        let with_goal = crate::plan_mode::compose_workflow_instructions(
-            with_memory.clone(),
-            (!goal.instructions.is_empty()).then_some(goal.instructions.as_str()),
-        );
-
-        // The worker needs the workflow-only form so goal continuation can
-        // replace just the goal layer without reassembling plan/skills/invoked
-        // /memory.
-        let plan_and_skills = crate::plan_mode::compose_workflow_instructions(
-            plan_instructions.unwrap_or_default(),
-            skills.instructions(),
-        );
-        let plan_skills_invoked = crate::plan_mode::compose_workflow_instructions(
-            plan_and_skills,
-            invoked_instructions.as_deref(),
-        );
-        let workflow_base = crate::plan_mode::compose_workflow_instructions(
-            plan_skills_invoked,
-            (!memory.instructions.is_empty()).then_some(memory.instructions.as_str()),
-        );
-        let workflow = crate::plan_mode::compose_workflow_instructions(
-            workflow_base.clone(),
-            (!goal.instructions.is_empty()).then_some(goal.instructions.as_str()),
-        );
-        debug_assert_eq!(
-            with_goal,
-            crate::plan_mode::compose_workflow_instructions(
-                base.clone(),
-                (!workflow.is_empty()).then_some(workflow.as_str()),
-            ),
-            "system layers and workflow-only layers must compose identically"
+        let (instructions, workflow_base, workflow_instructions) = InstructionLayers::assemble(
+            base,
+            [
+                plan_instructions.as_deref(),
+                skills.instructions(),
+                invoked_instructions.as_deref(),
+                Some(&memory.instructions),
+                Some(&goal.instructions),
+            ],
         );
         let visual_tool_enabled = config.capabilities.accepts_image_input()
             && config.capabilities.accepts_image_tool_results();
@@ -147,15 +109,9 @@ impl TrustedProjectApplication {
             tool_access,
             tool_definitions,
             subagents_enabled,
-            instructions: InstructionLayers {
-                base,
-                with_plan,
-                with_skills,
-                with_invoked,
-                with_goal,
-            },
+            instructions,
             workflow_base,
-            workflow_instructions: (!workflow.is_empty()).then_some(workflow),
+            workflow_instructions,
             plan_header,
             memory_header: memory.header,
             memory_bytes: memory.bytes,
@@ -175,37 +131,7 @@ impl TrustedProjectApplication {
         context: &RunContextSnapshot,
         instruction_snapshot: Option<&crate::plugins::services::InstructionSnapshot>,
     ) -> crate::session::recorder::RequestHeaderData {
-        let mut header = serde_json::Map::new();
-        let mut config_json = serde_json::Map::new();
-        config_json.insert("provider".into(), json!(config.protocol.to_string()));
-        config_json.insert("model".into(), json!(config.model));
-        if let Some(temperature) = config.temperature {
-            config_json.insert("temperature".into(), json!(temperature));
-        }
-        if let Some(output_limit) = config.output_limit {
-            config_json.insert("maxTokens".into(), json!(output_limit));
-        }
-        if let Some(level) = config.thinking_level {
-            config_json.insert("thinking".into(), json!(level.label().to_lowercase()));
-        }
-        header.insert("config".into(), Value::Object(config_json));
-        header.insert(
-            "imageProjection".into(),
-            json!({
-                "route": crate::model::model_route_key(
-                    &config.protocol.to_string(),
-                    &config.model,
-                ),
-                "policy": {
-                    "mediaTypes": config.image_policy.media_types,
-                    "maxImages": config.image_policy.max_images,
-                    "maxBytes": config.image_policy.max_bytes,
-                },
-                "estimatorVersion": crate::media::IMAGE_TOKEN_ESTIMATOR_VERSION,
-                "calibrationVersion": crate::media::IMAGE_TOKEN_CALIBRATION_VERSION,
-                "encoderVersion": crate::session::attachments::ATTACHMENT_ENCODER_VERSION,
-            }),
-        );
+        let mut header = route_header(config);
         if let Some(plan) = &context.plan_header {
             header.insert("plan".into(), plan.clone());
         }
@@ -265,5 +191,163 @@ impl TrustedProjectApplication {
             // 必须替换既有头，绝不追加第二个头。
             system_head: self.sessions.last_system_head(),
         }
+    }
+}
+
+fn route_header(config: &ModelConfig) -> serde_json::Map<String, Value> {
+    let mut header = serde_json::Map::new();
+    let mut config_json = serde_json::Map::new();
+    config_json.insert("provider".into(), json!(config.protocol.to_string()));
+    config_json.insert("model".into(), json!(config.model));
+    if let Some(temperature) = config.temperature {
+        config_json.insert("temperature".into(), json!(temperature));
+    }
+    if let Some(output_limit) = config.output_limit {
+        config_json.insert("maxTokens".into(), json!(output_limit));
+    }
+    if let Some(level) = config.thinking_level {
+        config_json.insert("thinking".into(), json!(level.label().to_lowercase()));
+    }
+    header.insert("config".into(), Value::Object(config_json));
+    header.insert(
+        "imageProjection".into(),
+        json!({
+            "route": crate::model::model_route_key(
+                &config.protocol.to_string(),
+                &config.model,
+            ),
+            "policy": {
+                "mediaTypes": config.image_policy.media_types,
+                "maxImages": config.image_policy.max_images,
+                "maxBytes": config.image_policy.max_bytes,
+            },
+            "estimatorVersion": crate::media::IMAGE_TOKEN_ESTIMATOR_VERSION,
+            "calibrationVersion": crate::media::IMAGE_TOKEN_CALIBRATION_VERSION,
+            "encoderVersion": crate::session::attachments::ATTACHMENT_ENCODER_VERSION,
+        }),
+    );
+    header
+}
+
+/// The two instruction views advance together through the same ordered layers.
+struct LayerAssembly {
+    system: String,
+    workflow: String,
+}
+impl LayerAssembly {
+    fn append(&mut self, layer: Option<&str>) -> String {
+        self.system = crate::plan_mode::compose_workflow_instructions(
+            std::mem::take(&mut self.system),
+            layer,
+        );
+        self.workflow = crate::plan_mode::compose_workflow_instructions(
+            std::mem::take(&mut self.workflow),
+            layer,
+        );
+        self.system.clone()
+    }
+}
+impl InstructionLayers {
+    fn assemble(
+        base: String,
+        [plan, skills, invoked, memory, goal]: [Option<&str>; 5],
+    ) -> (Self, String, Option<String>) {
+        let with_plan = crate::plan_mode::compose_workflow_instructions(base.clone(), plan);
+        let mut layers = LayerAssembly {
+            system: with_plan.clone(),
+            workflow: plan.unwrap_or_default().to_owned(),
+        };
+        let with_skills = layers.append(skills);
+        let with_invoked = layers.append(invoked);
+        layers.append(memory.filter(|s| !s.is_empty()));
+        let workflow_base = layers.workflow.clone();
+        let with_goal = layers.append(goal.filter(|s| !s.is_empty()));
+        let workflow = (!layers.workflow.is_empty()).then_some(layers.workflow);
+        (
+            Self {
+                base,
+                with_plan,
+                with_skills,
+                with_invoked,
+                with_goal,
+            },
+            workflow_base,
+            workflow,
+        )
+    }
+}
+
+pub(super) struct RoundContext {
+    pub(super) header: crate::session::recorder::RequestHeaderData,
+    pub(super) workflow: Option<String>,
+    pub(super) reason: Option<&'static str>,
+    pub(super) error: Option<String>,
+}
+impl RunContextSnapshot {
+    pub(super) fn round_context(
+        &self,
+        durable: &crate::session::recorder::RequestHeaderData,
+        reason: Option<&'static str>,
+        first: bool,
+        goal: Option<Result<crate::goal::GoalInjection, String>>,
+    ) -> RoundContext {
+        let mut round = RoundContext {
+            header: durable.clone(),
+            workflow: self.workflow_instructions.clone(),
+            reason: first.then_some(reason).flatten(),
+            error: None,
+        };
+        if let Some(goal) = goal {
+            round.error = match goal {
+                Ok(goal) => self.refresh_goal(&mut round, goal, first, durable).err(),
+                Err(error) => Some(format!(
+                    "goal round could not refresh durable goal context: {error}"
+                )),
+            };
+        }
+        round
+    }
+
+    fn refresh_goal(
+        &self,
+        round: &mut RoundContext,
+        goal: crate::goal::GoalInjection,
+        first: bool,
+        durable: &crate::session::recorder::RequestHeaderData,
+    ) -> Result<(), String> {
+        let workflow = crate::plan_mode::compose_workflow_instructions(
+            self.workflow_base.clone(),
+            (!goal.instructions.is_empty()).then_some(goal.instructions.as_str()),
+        );
+        round.workflow = (!workflow.is_empty()).then_some(workflow);
+        if let Some(header) = round.header.header.as_object_mut() {
+            if goal.header.is_null() {
+                header.remove("goal");
+            } else {
+                header.insert("goal".into(), goal.header);
+            }
+        }
+        round.header.base_system = crate::plan_mode::compose_workflow_instructions(
+            self.instructions.base.clone(),
+            round.workflow.as_deref(),
+        );
+        let snapshot = round
+            .header
+            .dynamic_instructions
+            .as_ref()
+            .map(|source| source.snapshot())
+            .transpose()
+            .map_err(|error| {
+                format!("goal round could not refresh project instructions: {error}")
+            })?;
+        crate::plugins::services::apply_instructions_to_header(
+            &mut round.header.header,
+            &round.header.base_system,
+            snapshot.flatten().as_ref(),
+        );
+        if !first && round.header.header != durable.header {
+            round.reason = Some("change");
+        }
+        Ok(())
     }
 }

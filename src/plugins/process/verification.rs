@@ -41,9 +41,10 @@ impl Invocation {
         let cmd = optional_string(args, "cmd", "exec_command")?;
         let argv = args.get("argv");
         if cmd.is_some() == argv.is_some() {
-            return Err(ToolError::new(
-                "exec_command: specify exactly one of cmd or argv",
-            ));
+            return Err(
+                ToolError::new("exec_command: specify exactly one of cmd or argv")
+                    .with_recovery(json!({"code":"ambiguous_command_input"})),
+            );
         }
         let verification = args
             .get("verification")
@@ -54,7 +55,8 @@ impl Invocation {
             .transpose()?;
         if let Some(spec) = verification {
             if argv.is_none() || optional_bool(args, "tty", "exec_command")?.unwrap_or(false) {
-                return Err(ToolError::new("verification requires argv and tty=false"));
+                return Err(ToolError::new("verification requires argv and tty=false")
+                    .with_recovery(json!({"code":"verification_requires_argv"})));
             }
             if !(1..=1_000_000).contains(&spec.minimum_executed) {
                 return Err(ToolError::new("minimum_executed must be in 1..=1000000"));
@@ -99,124 +101,3 @@ impl Invocation {
         })
     }
 }
-
-pub(super) fn bounded_view(mut value: Value, receipt: Value) -> Value {
-    value["verification_receipt"] = receipt;
-    bounded_evidence(value)
-}
-
-fn bounded_evidence(mut value: Value) -> Value {
-    for field in ["stdout", "stderr", "pty"] {
-        if fits(&value) {
-            return value;
-        }
-        let text = value[field].as_str().unwrap_or("");
-        if text.chars().count() > 256 {
-            let head: String = text.chars().take(128).collect();
-            let tail: String = text
-                .chars()
-                .rev()
-                .take(128)
-                .collect::<String>()
-                .chars()
-                .rev()
-                .collect();
-            value[field] = json!(format!("{head}\n[verification diagnostic excerpt]\n{tail}"));
-            value[format!("{field}_truncated")] = json!(true);
-            value["output_truncated"] = json!(true);
-        }
-    }
-    if !fits(&value) {
-        for field in ["stdout", "stderr", "pty"] {
-            value[field] = json!("");
-        }
-        value["output_truncated"] = json!(true);
-    }
-    // Only bounded OS/receipt facts remain if a legacy diagnostic envelope grew.
-    if !fits(&value) {
-        let mut small = json!({"output_truncated":true});
-        for field in [
-            "verification_receipt",
-            "verification_guidance",
-            "verification_witness",
-            "command_outcome",
-            "execution",
-            "exit_scope",
-            "session_id",
-            "tty",
-            "running",
-            "exit_code",
-            "timed_out",
-            "cancelled",
-            "terminated",
-            "signal",
-            "evidence",
-            "failure_context",
-        ] {
-            if let Some(fact) = value.get(field) {
-                small[field] = fact.clone();
-            }
-        }
-        return small;
-    }
-    value
-}
-
-fn fits(value: &Value) -> bool {
-    serde_json::to_string(value)
-        .expect("JSON output")
-        .chars()
-        .count()
-        <= crate::plugins::THRESHOLD_CHARS
-}
-
-/// Passive signatures can contradict a wrapper's success. Keep that distinction
-/// visible before generic pruning; never synthesize an exit or execute a retry.
-pub(super) fn with_guidance(mut value: Value) -> Value {
-    // PTY handles must survive noisy incremental output so a subsequent
-    // terminal_snapshot can read current cells through the same ownership path.
-    let preserve = value.get("failure_context").is_some()
-        || value.get("evidence").is_some()
-        || value["tty"] == true;
-    value = passive_guidance(value);
-    if preserve {
-        bounded_evidence(value)
-    } else {
-        value
-    }
-}
-
-fn passive_guidance(mut value: Value) -> Value {
-    if value.get("verification_receipt").is_some() {
-        return bounded_evidence(value);
-    }
-    if value["exit_code"] != 0
-        || ["running", "timed_out", "cancelled", "terminated"]
-            .iter()
-            .any(|key| value[*key] == true)
-        || !value["signal"].is_null()
-    {
-        return value;
-    }
-    let Some(rows) = value["verification_witness"]["observations"].as_array() else {
-        return value;
-    };
-    let failed = rows
-        .iter()
-        .any(|row| matches!(row["status"].as_str(), Some("failed" | "compile_failed")));
-    let zero = rows.iter().any(|row| row["status"] == "zero_matches");
-    if !failed && !zero {
-        return value;
-    }
-    value["verification_guidance"] = json!({
-        "status":if failed {"failure_observed"} else {"inconclusive"},
-        "evidence":"output_signature","scope":"consumed_output_bytes",
-        "authenticated":false,"target_exit_code":null,
-        "next_action":"Inspect the observed failure or zero-match summary. Outer exit 0 does not prove verification passed or reveal a hidden child exit. If verification is needed, invoke the actual test executable with literal argv and verification (minimum_executed >= 1); inspect its receipt. Do not infer an exit code from printed output."
-    });
-    bounded_evidence(value)
-}
-
-#[cfg(test)]
-#[path = "verification_guidance_tests.rs"]
-mod guidance_tests;

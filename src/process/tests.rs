@@ -505,6 +505,7 @@ fn blocked_stdin_write_cannot_starve_timeout_or_teardown() {
         service
             .write_stdin(id, &vec![b'x'; MAX_STDIN_WRITE_BYTES + 1], false, false)
             .unwrap_err()
+            .to_string()
             .contains("exceeds")
     );
     let writer_service = Arc::clone(&service);

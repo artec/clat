@@ -68,6 +68,16 @@ Production lease acquisition remains one-shot and fail-closed; fixture fixes
 must not add sleeps or silently retry a busy root. The fixture structure and
 retained cross-thread exclusion have a regression guard.
 
+Process-recovery fixtures must finish children without consuming the output
+whose retention they assert. The AG5 recovery test holds a child on stdin,
+releases it explicitly, then waits with a zero-byte read budget; repeated
+recovery listings must leave every child's output readable. Do not use a
+draining poll helper to establish an unread completed-session fixture.
+MCP cancellation fixtures wait for the marker's complete `cancelled` content,
+not merely its existence: opening a file for writing makes an empty file
+visible before the write completes. A controlled empty-then-complete reader
+guards that distinction without changing the notification or latency assertions.
+
 The measurement command reports build time, startup plus tests, artifact
 size, cache freshness and total time. Run it immediately after an actual
 edit. `--rebuild src/tui/model_editor.rs` explicitly requests a synthetic
@@ -425,6 +435,33 @@ The macOS lifecycle probe records the system opener instead of opening windows;
 ordinary lifecycle children suppress browser handoff. Manual GUI validation
 checks the real default browser separately. A stop response precedes complete
 teardown, so fixed-port tests wait for both listener and storage lease release.
+
+## Runtime refactor regression checks
+
+Behavior-preserving runtime changes reuse the existing Application and Agent-loop
+contracts. During editing, select the affected filters explicitly:
+
+```bash
+scripts/gates.sh plugins::process process::
+scripts/gates.sh context_tests goal_tests plan_mode_tests skills_tests memory_tests
+scripts/gates.sh run:: application:: goal:: subagent:: session::recorder
+scripts/gates.sh plugins::conversation plugins::services utility_tests todo_
+cargo test -p clat --test architecture_boundaries
+```
+
+Test-support conditional-compilation changes also need a normal production check
+(`cargo check -p clat`). All-features checks compile the test-only consumers and
+can therefore hide unused imports or fields in the ordinary build.
+
+These are per-batch choices, not a requirement to repeat every command after each
+edit. Confirm that the relevant core tests actually execute; a frontend target
+with zero matching tests contributes no behavioral evidence. Reconcile test
+identities/counts across module moves instead of weakening assertions or
+refreshing golden files for an internal-only change. Recovery checks distinguish
+classified errors from lookalike text, and lifecycle checks exercise permission
+denial, cancellation, panic, durable failure, cross-run process fencing and cold
+reopen. Targeted mechanism-removal controls must fail for their intended
+behavior; they do not constitute model-effectiveness evidence.
 
 ## Agent effectiveness evidence
 

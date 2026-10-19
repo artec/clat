@@ -323,8 +323,8 @@ fn ag7_session_metadata_does_not_panic_or_invent_a_non_utf8_project_path() {
     let error = ExecCommandTool {
         service: service.clone(),
     }
-    .error_output(&ToolError::new(
-        "process absolute workdir must be inside the active scratch directory",
+    .error_output(&prepared::process_error(
+        crate::process::ProcessError::WorkdirOutOfScope,
     ));
     assert!(error["invocation_recovery"]["project_root"].is_null());
     assert_eq!(error["invocation_recovery"]["command_started"], false);

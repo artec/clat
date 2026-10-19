@@ -9,7 +9,7 @@ struct FrozenProcessTool {
     source: NativeProcessTool,
     arguments: Value,
     stdin: Option<crate::process::PreparedStdin>,
-    plan: std::sync::Mutex<Option<Result<Option<crate::process::PreparedProcess>, String>>>,
+    plan: std::sync::Mutex<Option<Result<Option<crate::process::PreparedProcess>, ToolError>>>,
 }
 impl NativeProcessTool {
     fn tool(&self) -> &dyn Tool {
@@ -90,19 +90,18 @@ pub(super) fn prepare_native(
 fn prepare_native_plan(
     source: &NativeProcessTool,
     arguments: &Value,
-) -> Result<Option<crate::process::PreparedProcess>, String> {
+) -> Result<Option<crate::process::PreparedProcess>, ToolError> {
     if matches!(source, NativeProcessTool::WriteStdin(_)) {
         return Ok(None);
     }
     if matches!(source, NativeProcessTool::RunCommand(_)) {
-        evidence::request(arguments).map_err(|e| e.to_string())?;
+        evidence::request(arguments)?;
     }
     let invocation = if matches!(source, NativeProcessTool::ExecCommand(_)) {
         verification::Invocation::parse(arguments)
     } else {
         verification::Invocation::compat(arguments)
-    }
-    .map_err(|e| e.to_string())?;
+    }?;
     let request = ProcessStart {
         command: invocation.command,
         workdir: arguments
@@ -117,10 +116,11 @@ fn prepare_native_plan(
             .get("network")
             .and_then(Value::as_bool)
             .unwrap_or(false),
-        sandbox: SandboxRequest::parse(arguments.get("sandbox").and_then(Value::as_str))?,
+        sandbox: SandboxRequest::parse(arguments.get("sandbox").and_then(Value::as_str))
+            .map_err(ToolError::new)?,
     };
     let stdin_pipe = if matches!(source, NativeProcessTool::ExecCommand(_)) {
-        super::stdin::pipe(arguments).map_err(|e| e.to_string())?
+        super::stdin::pipe(arguments)?
     } else {
         false
     };
@@ -130,11 +130,14 @@ fn prepare_native_plan(
             .prepare_direct(&request, argv, invocation.verification),
         None => source.service().prepare_start(&request),
     }
+    .map_err(process_error)
     .and_then(|plan| {
         if arguments.get("evidence").is_some()
             && plan.planned.facts.mode == crate::sandbox::SandboxLevel::ReadOnly
         {
-            return Err("evidence recording requires a writable project mode".into());
+            return Err(ToolError::new(
+                "evidence recording requires a writable project mode",
+            ));
         }
         Ok(Some(plan.with_stdin_pipe(stdin_pipe)))
     })
@@ -161,8 +164,7 @@ impl Tool for FrozenProcessTool {
             .lock()
             .expect("prepared plan")
             .take()
-            .ok_or_else(|| ToolError::new("prepared invocation already consumed"))?
-            .map_err(ToolError::new)?;
+            .ok_or_else(|| ToolError::new("prepared invocation already consumed"))??;
         match &self.source {
             NativeProcessTool::ExecCommand(t) => t.invoke_planned(a, p, c, plan),
             NativeProcessTool::RunCommand(t) => t.invoke_planned(a, p, c, plan),
@@ -175,4 +177,19 @@ pub(super) fn enforced_workspace(f: &crate::sandbox::SandboxFacts) -> bool {
     f.mode == crate::sandbox::SandboxLevel::WorkspaceWrite
         && ((f.provider == "seatbelt" && f.enforcement == "full")
             || (f.provider == "windows-acl" && f.enforcement == "partial"))
+}
+
+// Only adapters translate domain identity into tool diagnostics.
+pub(super) fn process_error(error: crate::process::ProcessError) -> ToolError {
+    use crate::process::ProcessError;
+    let recovery = match &error {
+        ProcessError::WorkdirOutOfScope => Some(json!({"code":"workdir_out_of_scope"})),
+        ProcessError::SessionUnavailable(_) => Some(json!({"code":"session_unavailable"})),
+        ProcessError::Other(_) => None,
+    };
+    let result = ToolError::new(error.to_string());
+    match recovery {
+        Some(recovery) => result.with_recovery(recovery),
+        None => result,
+    }
 }

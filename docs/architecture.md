@@ -307,6 +307,19 @@ signal, and join handle, so callers do not reproduce cleanup order.
 admission commit point; execution never decides whether a user fact may be
 made durable.
 
+Internally, `run_execution/worker.rs` owns mutable worker progress and Goal
+continuation; `run_execution/round.rs` owns a round's bindings, shared spend
+ledger, invocation, process cleanup and durable settlement. Cleanup is explicit:
+its errors participate in the existing terminal precedence before completion is
+reported. The activation boundary remains in `run_execution.rs` and admission
+remains in Application.
+
+The agent loop delegates request preparation, model response handling and one
+serial tool call to `run/request.rs`, `run/response.rs` and `run/tools.rs`.
+`run/state.rs` keeps history, turn count and usage together when constructing a
+terminal result. These are internal boundaries: tool order, steering seals,
+permission checks, result transforms and event publication retain their order.
+
 Steering is accepted at model-request boundaries. The queue is sealed
 atomically before a terminal event becomes visible, so a late message either
 joins the active run or becomes a new submission; it is never stranded.
@@ -411,6 +424,12 @@ Provider-specific replay stays opaque to `Run`. For example, OpenAI Responses
 reasoning items travel through `provider_state`, while DeepSeek-compatible
 `reasoning_content` is attached only to assistant messages that made tool calls.
 
+Run context assembly advances full-system and workflow-only views through one
+ordered sequence. The context owner also refreshes Goal instructions and their
+request header together at each continuation boundary; the worker supplies the
+new Goal observation without editing prompt layers or header fields itself.
+Plan, skills, memory and tool visibility retain their existing freeze rules.
+
 ## Providers
 
 `Model` exposes one streaming, provider-neutral protocol:
@@ -448,6 +467,14 @@ duplicate identical bytes. If route-specific encoding is introduced later,
 that header identity becomes the required cache key prefix.
 
 ## Native tools and permission pipeline
+
+Command preparation and current-run lookup preserve internal error identity
+through frozen execution. Recovery adapters use that identity, never parse a
+human-readable error message; an unrelated error with the same text does not
+acquire recovery authority. Command model views, bounded diagnostic retention,
+passive verification guidance and journal projections share one policy owner in
+`plugins/process/output.rs`. The existing generic result transformer remains the
+only downstream pruning pipeline.
 
 Native read/edit argument failures retain their original error plus bounded,
 value-free `argument_recovery` diagnostics. Read-range validation happens
@@ -666,6 +693,11 @@ Middleware never sees an unapproved side effect. The frontend-supplied
 `PermissionApprover` only presents and returns a decision. Effect
 classification, escalation options, write scope, and fail-closed behavior stay
 in core. See [Permissions](permissions.md).
+
+Todo state, validation and append/flush/publication ordering live with the Todo
+conversation service. Utility and title contracts live with their conversation
+producers. `plugins/services.rs` keeps service keys and compatibility re-exports;
+consumers do not acquire a new persistence owner or alternate service registry.
 
 ## Extension bridge
 
@@ -958,9 +990,9 @@ preserves global, trust, selection, modal and composer priority explicitly.
 | `src/application.rs`, `src/application/` | client-neutral use-case facade, DTOs, run/session lifecycle |
 | `src/application/composition.rs` | Trusted Project catalog, typed port resolution, freeze/wiring, Run children, and teardown |
 | `src/application/run_context.rs` | request-bound workflow composition, tool view, and durable request-header assembly |
-| `src/application/run_execution.rs` | two-phase run worker activation, round execution, terminal merge, and run-resource cleanup |
+| `src/application/run_execution.rs`, `src/application/run_execution/` | two-phase activation, worker progress, round settlement, and explicit run-resource cleanup |
 | `src/application/remote_control.rs` | remote binding/pairing/delivery use cases and durable chat-to-session recovery orchestration |
-| `src/run/` | agent loop and privately owned, atomically sealed steering queue |
+| `src/run/` | agent-step orchestration, request preparation, response settlement, serial tool calls, and atomically sealed steering |
 | `src/model.rs`, `src/providers/` | provider-neutral model contract and adapters |
 | `src/tool.rs`, `src/native_tools.rs`, `src/apply_patch.rs`, `src/search.rs` | tool contract and native coding tools |
 | `src/process/`, `src/plugins/process.rs`, `src/sandbox.rs` | run-owned process sessions, bounded output cursors, exec tools and platform sandbox policy |

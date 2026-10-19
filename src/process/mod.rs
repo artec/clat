@@ -15,6 +15,8 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 mod capture;
 mod direct;
+mod error;
+pub(crate) use error::ProcessError;
 mod failures;
 mod launch;
 mod outcome;
@@ -487,7 +489,10 @@ impl ProcessService {
         }
     }
 
-    pub(crate) fn prepare_start(&self, request: &ProcessStart) -> Result<PreparedProcess, String> {
+    pub(crate) fn prepare_start(
+        &self,
+        request: &ProcessStart,
+    ) -> Result<PreparedProcess, ProcessError> {
         let owner = self.current_owner()?;
         let workdir = self.resolve_workdir(request.workdir.as_deref())?;
         let (shell, args) = shell_command(&request.command);
@@ -662,13 +667,15 @@ impl ProcessService {
         bytes: &[u8],
         close_stdin: bool,
         terminate: bool,
-    ) -> Result<(), String> {
-        self.sandbox.with_level(prepared.level, || {
-            if self.current_owner()?.generation != prepared.generation {
-                return Err("stdin owner or permission mode changed after preparation".into());
-            }
-            self.write_stdin(id, bytes, close_stdin, terminate)
-        })
+    ) -> Result<(), ProcessError> {
+        self.sandbox
+            .with_level(prepared.level, || {
+                if self.current_owner()?.generation != prepared.generation {
+                    return Err("stdin owner or permission mode changed after preparation".into());
+                }
+                Ok(self.write_stdin(id, bytes, close_stdin, terminate))
+            })
+            .map_err(ProcessError::from)?
     }
 
     pub(crate) fn write_stdin(
@@ -677,7 +684,7 @@ impl ProcessService {
         bytes: &[u8],
         close_stdin: bool,
         terminate: bool,
-    ) -> Result<(), String> {
+    ) -> Result<(), ProcessError> {
         let entry = self.entry_for_current_owner(session_id)?;
         if terminate {
             entry.request_terminate();
@@ -697,7 +704,7 @@ impl ProcessService {
         session_id: u64,
         wait: Duration,
         max_output_bytes: usize,
-    ) -> Result<ProcessOutput, String> {
+    ) -> Result<ProcessOutput, ProcessError> {
         let entry = self.entry_for_current_owner(session_id)?;
         entry.wait_until(wait);
         Ok(entry.consume(max_output_bytes))
@@ -790,12 +797,16 @@ impl ProcessService {
             .ok_or_else(|| "process tools require an active run".into())
     }
 
-    fn entry_for_current_owner(&self, id: u64) -> Result<Arc<ProcessEntry>, String> {
+    fn entry_for_current_owner(&self, id: u64) -> Result<Arc<ProcessEntry>, ProcessError> {
         let owner = self.current_owner()?;
         self.entry_for_owner(id, &owner)
     }
 
-    fn entry_for_owner(&self, id: u64, owner: &RunOwner) -> Result<Arc<ProcessEntry>, String> {
+    fn entry_for_owner(
+        &self,
+        id: u64,
+        owner: &RunOwner,
+    ) -> Result<Arc<ProcessEntry>, ProcessError> {
         let state = self.state.lock().expect("process service lock");
         let entry = state
             .entries
@@ -805,11 +816,11 @@ impl ProcessService {
                     && entry.owner_session_id == owner.session_id
             })
             .cloned()
-            .ok_or_else(|| format!("process session {id} is not available in this run"))?;
+            .ok_or(ProcessError::SessionUnavailable(id))?;
         Ok(entry)
     }
 
-    fn resolve_workdir(&self, requested: Option<&str>) -> Result<PathBuf, String> {
+    fn resolve_workdir(&self, requested: Option<&str>) -> Result<PathBuf, ProcessError> {
         let requested = requested.unwrap_or(".");
         if Path::new(requested).is_absolute() {
             let roots = self.sandbox.writable_roots()?;
@@ -817,9 +828,7 @@ impl ProcessService {
                 .canonicalize()
                 .map_err(|e| format!("process workdir `{requested}`: {e}"))?;
             if !resolved.starts_with(roots.scratch()) || !resolved.is_dir() {
-                return Err(
-                    "process absolute workdir must be inside the active scratch directory".into(),
-                );
+                return Err(ProcessError::WorkdirOutOfScope);
             }
             return Ok(resolved);
         }
@@ -828,7 +837,7 @@ impl ProcessService {
             .resolve_existing(requested)
             .map_err(|error| format!("process workdir `{requested}`: {error}"))?;
         if !resolved.is_dir() {
-            return Err(format!("process workdir `{requested}` is not a directory"));
+            return Err(format!("process workdir `{requested}` is not a directory").into());
         }
         Ok(resolved)
     }

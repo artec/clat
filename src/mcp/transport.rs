@@ -1479,6 +1479,28 @@ for line in sys.stdin:
         assert!(error.to_string().contains("timed out"), "{error}");
     }
 
+    fn wait_for_cancel_marker(
+        mut read: impl FnMut() -> std::io::Result<String>,
+    ) -> std::io::Result<String> {
+        let mut contents = read();
+        for _ in 0..20 {
+            // open(w) publishes the empty file before the writer closes it.
+            if matches!(contents.as_deref(), Ok("cancelled")) {
+                return contents;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+            contents = read();
+        }
+        contents
+    }
+
+    #[test]
+    fn cancel_marker_waits_for_complete_contents_after_file_creation() {
+        let mut contents = ["", "cancelled"].into_iter();
+        let observed = wait_for_cancel_marker(|| Ok(contents.next().unwrap().to_owned())).unwrap();
+        assert_eq!(observed, "cancelled");
+    }
+
     /// 取消令牌必须打断正在等待的 MCP 调用，并尽力把标准 cancellation
     /// notification 发给仍在处理请求的服务端。
     #[test]
@@ -1534,14 +1556,9 @@ for line in sys.stdin:
         assert!(error.to_string().contains("cancel"), "{error}");
         assert!(started.elapsed() < Duration::from_secs(1));
 
-        for _ in 0..20 {
-            if marker.exists() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(25));
-        }
         assert_eq!(
-            std::fs::read_to_string(&marker).expect("server observed cancellation"),
+            wait_for_cancel_marker(|| std::fs::read_to_string(&marker))
+                .expect("server observed cancellation"),
             "cancelled"
         );
         let _ = std::fs::remove_file(marker);

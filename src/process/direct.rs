@@ -19,7 +19,7 @@ impl ProcessService {
         request: &ProcessStart,
         argv: Vec<OsString>,
         verification: Option<receipt::VerificationSpec>,
-    ) -> Result<PreparedProcess, String> {
+    ) -> Result<PreparedProcess, ProcessError> {
         let owner = self.current_owner()?;
         let workdir = self.resolve_workdir(request.workdir.as_deref())?;
         let verification = Some(receipt::Context::new(&argv, &workdir, verification));

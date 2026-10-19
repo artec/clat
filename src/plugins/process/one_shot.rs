@@ -46,44 +46,6 @@ impl RunCommandTool {
             .run_compat_prepared(request, Duration::from_secs(timeout), prepared)
             .map_err(ToolError::new)?;
         let evidence = capture.map(|c| c.finish(project, &output, cancel));
-        let mut value = if output.direct {
-            process_output_json(output)
-        } else {
-            legacy_json(output)
-        };
-        value["cwd"] = json!(cwd);
-        if let Some(evidence) = evidence {
-            value["evidence"] = evidence;
-        }
-        if let Some(receipt) = value.get("verification_receipt").cloned() {
-            value = verification::bounded_view(value, receipt);
-        }
-        Ok(verification::with_guidance(value))
+        Ok(output::one_shot(output, cwd, evidence))
     }
-}
-
-fn legacy_json(output: ProcessOutput) -> Value {
-    let failure_context = output.failure_context.clone();
-    let signal = output
-        .signal
-        .as_deref()
-        .and_then(|signal| signal.parse::<i64>().ok());
-    let sandbox = output
-        .sandbox
-        .json(output.sandbox_denied, output.sandbox_unavailable);
-    let mut value = json!({
-        "execution":"shell", "exit_scope":"shell",
-        "verification_witness": output.verification_witness,
-        "command_outcome": output.command_outcome.json(),
-        "command": output.command,
-        "exit_code": output.exit_code, "signal": signal, "timed_out": output.timed_out,
-        "stdout": output.stdout, "stderr": output.stderr,
-        "stdout_bytes": output.stdout_bytes, "stderr_bytes": output.stderr_bytes,
-        "stdout_truncated": output.stdout_truncated, "stderr_truncated": output.stderr_truncated,
-        "sandbox": sandbox
-    });
-    if let Some(context) = failure_context {
-        value["failure_context"] = context;
-    }
-    value
 }

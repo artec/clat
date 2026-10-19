@@ -121,11 +121,23 @@ fn ag5_one_shot_rejects_ambiguous_inputs_and_cancel_before_spawning() {
 #[test]
 fn ag5_process_recovery_is_bounded_does_not_consume_and_forgets_old_run() {
     let mut f = Fixture::new();
+    let mut ids = Vec::new();
     for _ in 0..9 {
-        let mut args = f.args("noisy");
-        args["max_output_tokens"] = json!(256);
-        args["yield_time_ms"] = json!(1000);
-        f.finish(f.exec(&args).unwrap());
+        let mut args = f.args("recover");
+        args["yield_time_ms"] = json!(250);
+        let started = f.exec(&args).unwrap();
+        assert_eq!(started["running"], true);
+        let id = started["session_id"].as_u64().unwrap();
+        f.service.write_stdin(id, b"go\n", false, false).unwrap();
+        // Polling with Fixture::finish can drain output before the child exits,
+        // making the next admission legitimately reclaim this session.
+        let completed = f
+            .service
+            .wait_and_consume(id, Duration::from_secs(20), 0)
+            .unwrap();
+        assert!(!completed.running);
+        assert_eq!(completed.exit_code, Some(0));
+        ids.push(id);
     }
     let tool = WriteStdinTool {
         service: f.service.clone(),
@@ -142,6 +154,20 @@ fn ag5_process_recovery_is_bounded_does_not_consume_and_forgets_old_run() {
     assert_eq!(rows.len(), 8);
     assert_eq!(out["process_recovery"]["omitted"], 1);
     assert!(rows.iter().all(|r| r["running"] == false));
+    assert_eq!(
+        tool.error_output(&err)["process_recovery"],
+        out["process_recovery"]
+    );
+    for id in ids {
+        let output = f
+            .service
+            .wait_and_consume(id, Duration::ZERO, 1024)
+            .unwrap();
+        assert!(
+            output.stdout.contains("1 passed"),
+            "recovery must not consume output"
+        );
+    }
     f.service.unbind_run(f.generation).unwrap();
     assert!(tool.error_output(&err).get("process_recovery").is_none());
     f.generation = f.service.bind_run("new-run", CancelToken::new()).unwrap();

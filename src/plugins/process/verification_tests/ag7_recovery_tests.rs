@@ -182,3 +182,43 @@ fn ag8_recovery_never_relabels_permission_or_runtime_errors_as_not_started() {
 fn ag8_recovery_keeps_verification_after_pty_form_rejection() {
     recovery_journey(3);
 }
+
+#[test]
+fn recovery_identity_survives_changed_diagnostic_text_without_trusting_lookalikes() {
+    let f = Fixture::new();
+    let classified = verification::Invocation::parse(&json!({"cmd":"x","argv":["x"]}))
+        .err()
+        .expect("ambiguous invocation");
+    let renamed = ToolError::new("a different diagnostic")
+        .with_recovery(classified.recovery().unwrap().clone());
+    let out = invocation_recovery::annotate(&f.service, &renamed);
+    assert_eq!(out["error"], "a different diagnostic");
+    assert_eq!(
+        out["invocation_recovery"]["reason"],
+        "ambiguous_command_input"
+    );
+    let lookalike = ToolError::new(classified.to_string());
+    assert!(
+        invocation_recovery::annotate(&f.service, &lookalike)
+            .get("invocation_recovery")
+            .is_none()
+    );
+    let stdin = WriteStdinTool {
+        service: Arc::clone(&f.service),
+    };
+    assert!(
+        stdin
+            .error_output(&ToolError::new(
+                "process session 999 is not available in this run"
+            ))
+            .get("process_recovery")
+            .is_none()
+    );
+    let actual = f.service.write_stdin(999, b"", false, false).unwrap_err();
+    assert!(
+        stdin
+            .error_output(&prepared::process_error(actual))
+            .get("process_recovery")
+            .is_some()
+    );
+}

@@ -20,6 +20,8 @@ mod evidence;
 mod invocation_recovery;
 mod observation;
 mod one_shot;
+mod output;
+use output::{process_error_output, process_journal_output, process_output_json};
 #[cfg(test)]
 mod outcome_tests;
 mod prepared;
@@ -281,7 +283,11 @@ impl Tool for WriteStdinTool {
 
     fn error_output(&self, error: &ToolError) -> Value {
         let mut output = process_error_output(error);
-        if let Some(recovery) = self.service.recovery_for_error(&error.to_string()) {
+        if error
+            .recovery()
+            .is_some_and(|r| r["code"] == "session_unavailable")
+            && let Some(recovery) = self.service.recovery_sessions()
+        {
             output["process_recovery"] = recovery;
         }
         output
@@ -376,85 +382,6 @@ impl Tool for RunCommandTool {
     }
 }
 
-fn process_error_output(error: &ToolError) -> Value {
-    let message = error.to_string();
-    json!({
-        "command_outcome": crate::process::classify_tool_error(&message).json(),
-        "verification_witness": crate::process::verification::unknown(),
-        "error": message,
-    })
-}
-
-fn process_journal_output(output: &Value) -> Value {
-    // Tool errors are scalar strings produced by Run, not raw process output.
-    // Preserve them so durable replay can explain the same failure the model
-    // saw; only successful object results carry transient streams to omit.
-    if !output.is_object() || output.get("error").is_some() {
-        return output.clone();
-    }
-    let bytes = |field: &str, count_field: &str| {
-        output
-            .get(count_field)
-            .and_then(Value::as_u64)
-            .unwrap_or_else(|| {
-                output
-                    .get(field)
-                    .and_then(Value::as_str)
-                    .map_or(0, |text| text.len() as u64)
-            })
-    };
-    let output_truncated = output
-        .get("output_truncated")
-        .and_then(Value::as_bool)
-        .unwrap_or_else(|| {
-            ["stdout_truncated", "stderr_truncated", "pty_truncated"]
-                .iter()
-                .any(|field| output.get(field).and_then(Value::as_bool).unwrap_or(false))
-        });
-    let mut journal = json!({
-        "session_id": output.get("session_id").cloned().unwrap_or(Value::Null),
-        "running": output.get("running").cloned().unwrap_or(json!(false)),
-        "exit_code": output.get("exit_code").cloned().unwrap_or(Value::Null),
-        "signal": output.get("signal").cloned().unwrap_or(Value::Null),
-        "timed_out": output.get("timed_out").cloned().unwrap_or(json!(false)),
-        "cancelled": output.get("cancelled").cloned().unwrap_or(json!(false)),
-        "terminated": output.get("terminated").cloned().unwrap_or(json!(false)),
-        "stdout_bytes": bytes("stdout", "stdout_bytes"),
-        "stderr_bytes": bytes("stderr", "stderr_bytes"),
-        "pty_bytes": bytes("pty", "pty_bytes"),
-        "output_truncated": output_truncated,
-        "sandbox": output.get("sandbox").cloned().unwrap_or(Value::Null),
-        "output_omitted_from_journal": true
-    });
-    if let Some(outcome) = output.get("command_outcome") {
-        journal["command_outcome"] = outcome.clone();
-    }
-    if let Some(witness) = output.get("verification_witness") {
-        journal["verification_witness"] = witness.clone();
-    }
-    for key in [
-        "execution",
-        "exit_scope",
-        "verification_guidance",
-        "evidence",
-    ] {
-        if let Some(v) = output.get(key) {
-            journal[key] = v.clone();
-        }
-    }
-    if let Some(receipt) = output.get("verification_receipt") {
-        journal["verification_receipt"] = receipt.clone();
-    }
-    if let Some(context) = output.get("failure_context") {
-        let mut context = context.clone();
-        if let Some(object) = context.as_object_mut() {
-            object.remove("diagnostics");
-        }
-        journal["failure_context"] = context;
-    }
-    journal
-}
-
 fn bounded_command_journal(arguments: &Value, field: &str) -> Value {
     let Some(command) = arguments.get(field).and_then(Value::as_str) else {
         return arguments.clone();
@@ -469,50 +396,6 @@ fn bounded_command_journal(arguments: &Value, field: &str) -> Value {
         object.insert("command_omitted_from_journal".into(), json!(true));
     }
     bounded
-}
-
-fn process_output_json(output: ProcessOutput) -> Value {
-    let receipt = output.verification_receipt.clone();
-    let failure_context = output.failure_context.clone();
-    let mut value = json!({
-        "verification_witness": output.verification_witness,
-        "command_outcome": output.command_outcome.json(),
-        "session_id": output.session_id,
-        "tty": output.tty,
-        "running": output.running,
-        "stdout": output.stdout,
-        "stderr": output.stderr,
-        "pty": output.pty,
-        "stdout_bytes": output.stdout_bytes,
-        "stderr_bytes": output.stderr_bytes,
-        "pty_bytes": output.pty_bytes,
-        "stdout_lossy": output.stdout_lossy,
-        "stderr_lossy": output.stderr_lossy,
-        "pty_lossy": output.pty_lossy,
-        "stdout_truncated": output.stdout_truncated,
-        "stderr_truncated": output.stderr_truncated,
-        "pty_truncated": output.pty_truncated,
-        "output_truncated": output.output_truncated,
-        "exit_code": output.exit_code,
-        "signal": output.signal,
-        "timed_out": output.timed_out,
-        "cancelled": output.cancelled,
-        "terminated": output.terminated,
-        "sandbox": output.sandbox.json(output.sandbox_denied, output.sandbox_unavailable)
-    });
-    value["execution"] = json!(if output.direct { "argv" } else { "shell" });
-    if let Some(context) = failure_context {
-        value["failure_context"] = context;
-    }
-    value["exit_scope"] = json!(if output.direct {
-        "direct_child"
-    } else {
-        "shell"
-    });
-    match receipt {
-        Some(receipt) => verification::bounded_view(value, receipt),
-        None => verification::with_guidance(value),
-    }
 }
 
 fn output_bytes(arguments: &Value, tool: &str) -> Result<usize, ToolError> {
@@ -647,7 +530,7 @@ impl ExecCommandTool {
         let output = self
             .service
             .wait_and_consume(id, Duration::from_millis(yield_ms), output_bytes)
-            .map_err(ToolError::new)?;
+            .map_err(prepared::process_error)?;
         Ok(process_output_json(output))
     }
 }
@@ -696,11 +579,11 @@ impl WriteStdinTool {
                 .service
                 .write_stdin(session_id, chars.as_bytes(), close_stdin, terminate),
         }
-        .map_err(ToolError::new)?;
+        .map_err(prepared::process_error)?;
         let output = self
             .service
             .wait_and_consume(session_id, Duration::from_millis(yield_ms), output_bytes)
-            .map_err(ToolError::new)?;
+            .map_err(prepared::process_error)?;
         Ok(process_output_json(output))
     }
 }

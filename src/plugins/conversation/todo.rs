@@ -10,12 +10,14 @@ use crate::plugin::{
     ServiceId,
 };
 use crate::plugins::services::{
-    SESSION_SERVICE_ID, TODO_SERVICE, TODO_SERVICE_ID, TOOL_SERVICE, TOOL_SERVICE_ID, TodoEntry,
-    TodoService, TodoStatus,
+    SESSION_SERVICE_ID, TODO_SERVICE, TODO_SERVICE_ID, TOOL_SERVICE, TOOL_SERVICE_ID,
 };
 use crate::{CancelToken, Project, Tool, ToolDefinition, ToolEffect, ToolError};
 use serde_json::{Value, json};
 use std::sync::Arc;
+
+mod service;
+pub(crate) use service::{TodoEntry, TodoService, TodoStatus};
 
 const ID: PluginId = PluginId::new("builtin.todo");
 const REQUIRES: &[ServiceId] = &[SESSION_SERVICE_ID, TOOL_SERVICE_ID];

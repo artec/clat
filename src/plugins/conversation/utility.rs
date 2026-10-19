@@ -5,13 +5,17 @@ use crate::model::{
 use crate::plugin::{Plugin, PluginContext, PluginDescriptor, PluginError, PluginId, ScopeKind};
 use crate::plugins::services::{
     CONFIG_SERVICE, CONFIG_SERVICE_ID, ConfigStore, PROVIDER_SERVICE, PROVIDER_SERVICE_ID,
-    ProviderRegistry, UTILITY_MODEL_SERVICE, UTILITY_MODEL_SERVICE_ID, UtilityFailure,
-    UtilityFinish, UtilityModel, UtilityOutput, UtilityTask,
+    ProviderRegistry, UTILITY_MODEL_SERVICE, UTILITY_MODEL_SERVICE_ID,
 };
 use crate::presets::preset_by_id;
 use crate::providers::{ModelBuildFn, RetryPolicy, retry_model_with};
 use std::sync::Arc;
 use std::time::Duration;
+
+mod contracts;
+pub(crate) use contracts::{
+    UtilityFailure, UtilityFinish, UtilityModel, UtilityOutput, UtilitySettings, UtilityTask,
+};
 
 const ID: PluginId = PluginId::new("builtin.utility_model");
 const REQUIRES: &[crate::plugin::ServiceId] = &[PROVIDER_SERVICE_ID];

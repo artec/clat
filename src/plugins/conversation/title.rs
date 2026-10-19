@@ -11,12 +11,15 @@
 use crate::model::{CancelToken, ModelConfig, ProviderCredentials};
 use crate::plugin::{Plugin, PluginContext, PluginDescriptor, PluginError, PluginId, ScopeKind};
 use crate::plugins::services::{
-    GeneratedTitle, SESSION_TITLE_SERVICE, SESSION_TITLE_SERVICE_ID, SessionTitler,
-    UTILITY_MODEL_SERVICE, UTILITY_MODEL_SERVICE_ID, UtilityFailure, UtilityModel, UtilityTask,
+    SESSION_TITLE_SERVICE, SESSION_TITLE_SERVICE_ID, UTILITY_MODEL_SERVICE,
+    UTILITY_MODEL_SERVICE_ID, UtilityFailure, UtilityModel, UtilityTask,
 };
 use std::sync::Arc;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
+
+mod contracts;
+pub(crate) use contracts::{GeneratedTitle, SessionTitler};
 
 const ID: PluginId = PluginId::new("builtin.session_title");
 const REQUIRES: &[crate::plugin::ServiceId] = &[UTILITY_MODEL_SERVICE_ID];

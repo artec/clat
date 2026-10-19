@@ -31,6 +31,7 @@
 
 use std::collections::BTreeSet;
 use std::net::{IpAddr, SocketAddr};
+#[cfg(any(test, feature = "test-support"))]
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{RwLock, RwLockReadGuard};
 use url::{Host, Url};
@@ -40,6 +41,7 @@ pub(crate) const ENV_ALLOWLIST: &str = "CLAT_NETISO_ALLOWLIST";
 
 /// 一个有效隔离作用域：授权监听器集合。栈顶即当前生效集合。
 struct Scope {
+    #[cfg(any(test, feature = "test-support"))]
     id: u64,
     allowed: BTreeSet<SocketAddr>,
 }
@@ -47,6 +49,7 @@ struct Scope {
 /// 全进程唯一武装状态：空栈 = 未武装（生产常态）。
 static ARMED: RwLock<Vec<Scope>> = RwLock::new(Vec::new());
 /// 令牌 id 发号器（0 保留给环境武装的进程生命周期作用域）。
+#[cfg(any(test, feature = "test-support"))]
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 fn read_scopes() -> Option<RwLockReadGuard<'static, Vec<Scope>>> {
@@ -84,9 +87,13 @@ pub(crate) fn proxy_cleared() -> bool {
     active()
 }
 
-fn push_scope(id: u64, allowed: BTreeSet<SocketAddr>) {
+fn push_scope(_id: u64, allowed: BTreeSet<SocketAddr>) {
     if let Ok(mut scopes) = ARMED.write() {
-        scopes.push(Scope { id, allowed });
+        scopes.push(Scope {
+            #[cfg(any(test, feature = "test-support"))]
+            id: _id,
+            allowed,
+        });
     }
 }
 

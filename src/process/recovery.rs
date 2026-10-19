@@ -22,12 +22,7 @@ impl ProcessService {
         )
     }
 
-    pub(crate) fn recovery_for_error(&self, error: &str) -> Option<Value> {
-        error
-            .strip_prefix("process session ")?
-            .strip_suffix(" is not available in this run")?
-            .parse::<u64>()
-            .ok()?;
+    pub(crate) fn recovery_sessions(&self) -> Option<Value> {
         let entries = {
             let state = self.state.lock().expect("process service lock");
             let owner = state.owner.as_ref()?;
