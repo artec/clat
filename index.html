@@ -390,7 +390,7 @@
     <header class="hero">
       <img class="big" src="logo.png" alt="CLAT logo">
       <h1>CLAT</h1>
-      <div><a class="release-pill" href="https://github.com/artec/clat/releases/latest" data-release>v1.7.2 — Latest release</a></div>
+      <div><a class="release-pill" href="https://github.com/artec/clat/releases/latest" data-release>v2.0.0 — Latest release</a></div>
       <p class="tagline">A rock-solid agent foundation · The TUI client for DSH · A single Rust file</p>
       <div class="term">
         <div class="row"><span class="p">❯</span><span>clat</span></div>
@@ -406,11 +406,11 @@
         <a class="btn" href="#install">Install</a>
         <a class="btn" href="https://github.com/artec/clat">View on GitHub</a>
       </div>
-      <!-- 数据带：数字须真实。下载体积 = macOS tar.gz 压缩包大小（v1.7.2 实测 11.0 MiB），
+      <!-- 数据带：数字须真实。下载体积 = macOS tar.gz 压缩包大小（v2.0.0 实测 11.3 MiB），
            发布时复核压缩包即可。 -->
       <div class="stats">
         <div class="stat">
-          <div class="stat-number">11.0 MB</div>
+          <div class="stat-number">11.3 MB</div>
           <div class="stat-label">Download size: one binary, no Node / Python required</div>
         </div>
         <div class="stat">
@@ -427,7 +427,7 @@
     <section id="why">
       <p class="kicker">Why CLAT</p>
       <h2>Command line + tools + models</h2>
-      <p class="lede">CLAT brings the model into your terminal: reading code, editing files, and running commands all happen locally — every step visible, controllable, and auditable.</p>
+      <p class="lede">CLAT brings the model into your terminal: reading code, editing files, and running commands all happen locally — edits land atomically (batch changes to one file validate and commit in a single snapshot, all-or-nothing), workspace changes export as a hash-manifested Git delivery patch, and every step stays visible, controllable, and auditable.</p>
       <div class="grid3">
         <div class="card">
           <h3>Local first</h3>
@@ -435,11 +435,11 @@
         </div>
         <div class="card">
           <h3>One binary</h3>
-          <p>A single Rust executable with no runtime and nothing to install. Runs out of the box on six platforms across macOS, Linux, and Windows.</p>
+          <p>A single Rust executable with no runtime and nothing to install — it runs out of the box on six platforms across macOS, Linux, and Windows, no Node or Python required.</p>
         </div>
         <div class="card">
           <h3>Safe by default</h3>
-          <p>Entering a new directory passes a trust gate first. Permissions switch between read-only, project-write, and full-access; at the default level every file write and command asks first, and paths stay inside the project root. Commands can run sandboxed — approved automatically inside the sandbox — and every file operation is tracked for review and recovery.</p>
+          <p>A trust gate guards every new directory; permissions switch between read-only, project-write, and full-access — every write and command asks first, and file changes stay traceable and recoverable.</p>
         </div>
       </div>
     </section>
@@ -472,62 +472,62 @@
         <div class="feature-cell">
           <p class="feature-label">01 — Models</p>
           <h3>Vendors out of the box</h3>
-          <p>DeepSeek, GLM, Qwen, Kimi, and Tencent Hy presets are built in, and any OpenAI-compatible endpoint works too. <code>/model</code> opens a two-level picker — vendor first, then model — with keys stored in per-vendor slots.</p>
+          <p>DeepSeek, GLM, Qwen, Kimi, and Tencent Hy presets are built in, and any OpenAI-compatible endpoint works too. <code>/model</code> opens a two-level picker — vendor first, then model — with keys in per-vendor slots, thinking levels, and live quota telemetry.</p>
         </div>
         <div class="feature-cell">
           <p class="feature-label">02 — Multimodal</p>
           <h3>Multimodal image interaction</h3>
-          <p>Press Ctrl+V to paste a screenshot, drag an image path in, or use <code>/paste-image</code> from the clipboard — images enter the message as structured attachments, shown in both the TUI and the web workbench. The built-in <code>view_image</code> tool lets the model itself inspect images in your project. GLM 5.3 Flash and the DeepSeek Vision preset see natively; when a model can't, CLAT fails loudly instead of silently degrading.</p>
+          <p>Press Ctrl+V to paste a screenshot, drag a path in, or <code>/paste-image</code> from the clipboard — images ride along as structured attachments in both the TUI and the workbench. <code>view_image</code> lets the model inspect project images itself; a model that can't see fails loudly, never silently.</p>
         </div>
         <div class="feature-cell">
           <p class="feature-label">03 — Interaction</p>
           <h3>Questions, steering &amp; thinking</h3>
-          <p>The model stops to ask when a decision is yours to make; steer an active run any time, or press Ctrl+Q to queue a message for the next turn — dispatched automatically when this one ends. Reasoning renders inline as a collapsible Think row (Ctrl+R expands), and <code>/suggest</code> previews a next-message hint on demand — sent only when you adopt it.</p>
+          <p>The model stops to ask when a decision is yours; steer an active run any time, or press Ctrl+Q to queue a message for the next turn — dispatched automatically. Reasoning renders inline as a collapsible Think row (Ctrl+R), and <code>/suggest</code> previews a next-message hint on demand.</p>
         </div>
         <div class="feature-cell">
           <p class="feature-label">04 — Runtime</p>
           <h3>Unlimited turns &amp; auto-compaction</h3>
-          <p>No turn limit — a run continues until the task is done. At 80% of the context window the conversation compacts automatically, with the original history fully preserved.</p>
+          <p>No turn limit — a run continues until the task is done; at 80% of the context window the conversation compacts automatically with the original history preserved. Every ending is explained in place — completed, cancelled, or the exact failure reason — and Esc cancels any time.</p>
         </div>
         <div class="feature-cell">
           <p class="feature-label">05 — Permissions</p>
           <h3>Three permission modes</h3>
-          <p>Read-only, project-write (default), and full-access, switchable any time via <code>/perm</code> or right from a permission prompt, remembered per project. In the lower two modes, file writes and commands still ask every time.</p>
+          <p>Read-only, project-write (default), and full-access, switchable any time via <code>/perm</code> or right from a permission prompt, remembered per project. In the lower two modes file writes and commands still ask every time; commands running sandboxed are approved automatically.</p>
         </div>
         <div class="feature-cell">
           <p class="feature-label">06 — Integration</p>
           <h3>MCP native</h3>
-          <p>MCP servers over stdio or Streamable HTTP; GLM Coding Plan mounts the four official GLM MCP servers automatically, and <code>/mcp</code> shows every connection and registered tool.</p>
+          <p>MCP servers over stdio or Streamable HTTP; GLM Coding Plan mounts the four official GLM servers automatically, and <code>/mcp</code> shows every connection, registered tool, and isolated failure. The official DSH web-search quartet installs from the plugin market in one step.</p>
         </div>
         <div class="feature-cell">
           <p class="feature-label">07 — Agent</p>
           <h3>Memory, goals &amp; subagents</h3>
-          <p>Memory is yours to write explicitly: <code>/memory</code> stores project or global knowledge, the model only reads it and never auto-saves conversations. <code>/goal</code> arms one bounded goal per session — hard caps on rounds, tokens, and time, with acceptance criteria verified automatically. <code>/subagents on</code> launches read-only subagents to explore the codebase in parallel, all usage charged to the parent run.</p>
+          <p>Memory is explicit and yours: <code>/memory</code> stores project or global knowledge, the model only reads it — conversations never become memory on their own. <code>/goal</code> arms one bounded goal per session with verified acceptance; <code>/subagents on</code> explores in parallel, read-only.</p>
         </div>
         <div class="feature-cell">
           <p class="feature-label">08 — Persistence</p>
           <h3>Crash-safe sessions</h3>
-          <p>Every conversation is written to an append-only log, flushed before the model is called; after a crash it recovers to the last complete batch. Logs use the DSH-compatible format, readable by other compatible tools, and legacy sessions upgrade in one step with <code>/update</code>. The model titles each session — <code>/rename</code> to edit.</p>
+          <p>Every conversation is written to an append-only log, flushed before the model is called; after a crash it recovers to the last complete batch. Logs use the DSH-compatible format readable by other tools, legacy sessions upgrade via <code>/update</code>, and input history is shared across clients.</p>
         </div>
         <div class="feature-cell">
           <p class="feature-label">09 — Skills</p>
           <h3>Layered skills &amp; LSP navigation</h3>
-          <p>Skills layer across the project's <code>.clat/skills/</code>, the user directory, and built-ins; the model loads instructions by name (<code>/skill</code> invokes directly) — loading is read-only and never executes code. Configure <code>~/.clat/lsp.json</code> for read-only language intelligence: precise definition, references, implementation, and hover navigation.</p>
+          <p>Skills layer across the project's <code>.clat/skills/</code>, the user directory, and built-ins; the model loads instructions by name (<code>/skill</code> invokes directly) — read-only, never executing code. Configure <code>~/.clat/lsp.json</code> for read-only LSP: definition, references, implementation, hover.</p>
         </div>
         <div class="feature-cell">
           <p class="feature-label">10 — Plugins</p>
           <h3>Plugins &amp; marketplace</h3>
-          <p>The signed plugin marketplace pi.at.cn is live: both the <code>clat plugin</code> CLI and the <code>/plugin</code> management UI (identical in TUI and workbench) browse, install, configure, and roll back, with signature checks and capability review built in. WASM and MCP packages share one manager; manifest v2 lets WASM plugins declare network access, and the DSH ecosystem interoperates.</p>
+          <p>The signed plugin marketplace pi.at.cn is live: <code>clat plugin</code> and the <code>/plugin</code> UI (identical in TUI and workbench) browse, install, configure, and roll back, with signature checks built in. Manifest v2 lets WASM plugins go online; the DSH ecosystem interoperates.</p>
         </div>
         <div class="feature-cell">
           <p class="feature-label">11 — Ecosystem</p>
           <h3>DSH host client</h3>
-          <p>One <code>clat dsh</code> connects to a local DSH host and the CLAT interface becomes its terminal: DSH sessions, questions, and approvals all happen in the same TUI, with automatic reconnection. It never writes to <code>~/.dsh</code> — everything goes through the official API.</p>
+          <p>One <code>clat dsh</code> connects to a local DSH host and the CLAT interface becomes its terminal: DSH sessions, questions, and approvals all happen in the same TUI with automatic reconnection. It never writes to <code>~/.dsh</code> — everything goes through the official API, and host feedback renders natively.</p>
         </div>
         <div class="feature-cell">
           <p class="feature-label">12 — Frontends</p>
           <h3>Background host &amp; multi-frontend</h3>
-          <p><code>clat</code> now starts a background host: the TUI, web workbench, and WeChat remote all attach to the same sessions as clients — close the TUI and the host keeps running, and a newer CLAT smoothly replaces an idle old host. First run opens your system browser automatically, with cookie auth — no token pasting. The workbench ships workspace review (git status &amp; diff), a file browser, task logs, conversation search, and a command palette.</p>
+          <p><code>clat</code> starts a background host: the TUI, web workbench, and WeChat remote attach to the same sessions; close the TUI and the host keeps running, a newer CLAT replaces an idle one, and first run opens your browser. The workbench ships workspace review, a file browser, conversation search, and a command palette.</p>
         </div>
       </div>
     </section>
