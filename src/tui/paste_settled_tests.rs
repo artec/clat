@@ -1697,3 +1697,285 @@ fn ag8_native_session_switch_retires_old_session_browse() {
     assert_eq!(harness.app.input.text(), "");
     drop(harness);
 }
+
+// ---------------------------------------------------------------------------
+// BELL-HOST-1（AG-DOGFOOD-10，2026-10-19）：attached 腿 run 终态提醒铃。
+//
+// 缺陷（用户实战 + 静态核准）：standalone（run_events.rs `finish_run`）
+// 与 dsh（dsh_events.rs `turn/end`）的 run 结束都会响铃，attached 腿的
+// 宿主结算 `prompt.settled` 分支不调 `notify`——后台 Host 上 Run 结束
+// 后，失焦终端的用户永远等不到提醒（本地与 DSH 均有通知，唯独缺这腿）。
+//
+// 判别面约定（与 CF1 返工同款）：全程真实事件驱动（在线泵同一入口
+// `NativeEvent::Frame`，含 RunStarted），不手写被测标志；铃声出口用
+// 受控无声 sink——`BellMode::Command` 写 marker 文件，与生产
+// Sound/Command 完全同一 `ring_bell` 调用链，测试不实际发声、不依赖
+// 系统音量。
+// ---------------------------------------------------------------------------
+
+use crate::event::RunEvent;
+use crate::host::HostEvent;
+use crate::message::MessageContent;
+use crate::tui::native::NativeEvent;
+use crate::tui::worker::UiEvent;
+
+/// 受控无声铃探针：命令只向 marker 文件追加一次 `bell` 标记。
+struct BellProbe {
+    marker: std::path::PathBuf,
+}
+
+impl BellProbe {
+    fn new(tag: &str) -> Self {
+        let marker = std::env::temp_dir().join(format!(
+            "clat-bellhost1-{tag}-{}-{}.marker",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_file(&marker);
+        Self { marker }
+    }
+
+    /// 挂到被测 App：与生产 `CLAT_BELL_COMMAND` 完全同一条
+    /// `notify → should_ring → ring_bell` 链，只是命令换成写 marker。
+    fn arm(&self, harness: &mut Harness) {
+        harness.app.bell =
+            super::BellMode::Command(format!("printf bell >> {}", self.marker.display()));
+    }
+
+    fn rings(&self) -> usize {
+        std::fs::read_to_string(&self.marker)
+            .map(|text| text.matches("bell").count())
+            .unwrap_or(0)
+    }
+
+    /// 响铃是 detached spawn：有界等待 marker 达到期望次数。
+    fn wait_for_rings(&self, expected: usize) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let rings = self.rings();
+            assert!(
+                rings <= expected,
+                "the bell rang {rings} times, at most {expected} allowed"
+            );
+            if rings == expected {
+                return;
+            }
+            if std::time::Instant::now() > deadline {
+                panic!(
+                    "expected {expected} bell ring(s), saw {rings} within 5s (marker: {})",
+                    self.marker.display()
+                );
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+    }
+
+    /// 负向：有界静默窗口后仍无 marker（detached spawn 已有足够时隙）。
+    fn assert_silent(&self) {
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        assert_eq!(
+            self.rings(),
+            0,
+            "the bell must stay silent (marker: {})",
+            self.marker.display()
+        );
+    }
+}
+
+/// 真实 SSE 事件帧（与在线泵线程同一入口）驱动 run 事件。
+fn bell_run_frame(harness: &mut Harness, event: RunEvent) {
+    let epoch = harness.app.native.as_ref().expect("native state").epoch;
+    harness
+        .app
+        .handle_ui_event(UiEvent::Native(NativeEvent::Frame(
+            epoch,
+            HostEvent::Run(event),
+        )));
+}
+
+fn bell_run_started(round: &str) -> RunEvent {
+    RunEvent::RunStarted {
+        project: std::path::PathBuf::from("/tmp/probe"),
+        message: MessageContent::text(round),
+        client_message_id: None,
+    }
+}
+
+/// 主链：attached run completed 结算必须响一声（pre-fix 红：该分支
+/// 无 notify，AFK 用户等不到）。RunStarted 先于 settled 到达，
+/// running 归属成立。
+#[test]
+fn bell_host1_attached_run_completed_rings_once() {
+    let mut harness = harness_native("bellhost1-completed", true);
+    let probe = BellProbe::new("completed");
+    probe.arm(&mut harness);
+    bell_run_frame(&mut harness, bell_run_started("bell round one"));
+    assert!(harness.app.running, "RunStarted drives running=true");
+    settled(
+        &mut harness,
+        json!({"prompt_rpc_id": "rpc-bell-1", "outcome": {"type": "completed", "turns": 1}}),
+    );
+    probe.wait_for_rings(1);
+    assert!(!harness.app.running, "prompt.settled ends the run");
+}
+
+/// 失败同样要响（AFK 下更需要知道），且与 standalone 失败语义同源。
+#[test]
+fn bell_host1_attached_run_failed_rings() {
+    let mut harness = harness_native("bellhost1-failed", true);
+    let probe = BellProbe::new("failed");
+    probe.arm(&mut harness);
+    bell_run_frame(&mut harness, bell_run_started("bell round fail"));
+    settled(
+        &mut harness,
+        json!({"prompt_rpc_id": "rpc-bell-2", "outcome": {"type": "failed", "error": "model 500"}}),
+    );
+    probe.wait_for_rings(1);
+}
+
+/// 主动取消不响：与 standalone（cancelled 不 notify）同语义。
+#[test]
+fn bell_host1_attached_run_cancelled_stays_silent() {
+    let mut harness = harness_native("bellhost1-cancelled", true);
+    let probe = BellProbe::new("cancelled");
+    probe.arm(&mut harness);
+    bell_run_frame(&mut harness, bell_run_started("bell round cancel"));
+    settled(
+        &mut harness,
+        json!({"prompt_rpc_id": "rpc-bell-3", "outcome": {"type": "cancelled", "turns": 1}}),
+    );
+    probe.assert_silent();
+}
+
+/// 同 RPC 二次 settled（迟到重放/重复帧）只响一次：F3 去重门在铃之前。
+#[test]
+fn bell_host1_duplicate_settled_frame_does_not_ring_twice() {
+    let mut harness = harness_native("bellhost1-duplicate", true);
+    let probe = BellProbe::new("duplicate");
+    probe.arm(&mut harness);
+    bell_run_frame(&mut harness, bell_run_started("bell round dup"));
+    let payload = json!({"prompt_rpc_id": "rpc-bell-4", "outcome": {"type": "completed"}});
+    settled(&mut harness, payload.clone());
+    probe.wait_for_rings(1);
+    settled(&mut harness, payload);
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    assert_eq!(
+        probe.rings(),
+        1,
+        "a duplicate settled frame must not ring again"
+    );
+}
+
+/// 焦点三态（B-1）在本腿同判：FocusGained（屏前看得见）静音；
+/// FocusLost 后恢复响。判别：删掉 focused 记录或 should_ring 门即红。
+#[test]
+fn bell_host1_focus_tri_state_gates_the_settled_ring() {
+    let mut harness = harness_native("bellhost1-focus", true);
+    let probe = BellProbe::new("focus");
+    probe.arm(&mut harness);
+    harness.event(super::UiEvent::Terminal(Event::FocusGained));
+    assert_eq!(harness.app.focused, Some(true));
+    bell_run_frame(&mut harness, bell_run_started("focused round"));
+    settled(
+        &mut harness,
+        json!({"prompt_rpc_id": "rpc-bell-5", "outcome": {"type": "completed"}}),
+    );
+    probe.assert_silent();
+
+    harness.event(super::UiEvent::Terminal(Event::FocusLost));
+    assert_eq!(harness.app.focused, Some(false));
+    bell_run_frame(&mut harness, bell_run_started("unfocused round"));
+    settled(
+        &mut harness,
+        json!({"prompt_rpc_id": "rpc-bell-6", "outcome": {"type": "completed"}}),
+    );
+    probe.wait_for_rings(1);
+}
+
+/// CLAT_NO_BELL 语义不退化：Off 模式下结算静音。B-R1 F1（返工）：负控
+/// 必须观察**被禁止的出口**——同一 marker 命令作为 CLAT_BELL_COMMAND
+/// 同时在场，经与真实环境同一条 `bell_mode_from_env` 裁决链断言
+/// NO_BELL 优先级把它压成 Off 且 marker 不响。单点退化（优先级翻转
+/// 让 Command 赢）本测试立刻红：mode 断言与 marker 双保险。
+#[test]
+fn bell_host1_no_bell_mode_suppresses_the_armed_command_outlet() {
+    let mut harness = harness_native("bellhost1-nobell", true);
+    let probe = BellProbe::new("nobell-armed");
+    let mode = super::bell_mode_from_env(
+        Some("1".to_owned()),
+        Some(format!("printf bell >> {}", probe.marker.display())),
+    );
+    assert_eq!(
+        mode,
+        super::BellMode::Off,
+        "CLAT_NO_BELL must win over a configured CLAT_BELL_COMMAND"
+    );
+    harness.app.bell = mode;
+    bell_run_frame(&mut harness, bell_run_started("silent round"));
+    settled(
+        &mut harness,
+        json!({"prompt_rpc_id": "rpc-bell-7", "outcome": {"type": "completed"}}),
+    );
+    probe.assert_silent();
+}
+
+/// 归属边界：本 TUI 未观察到 running 的结算（切会话 replay.end 后的
+/// 旧会话迟到结算 / 未跟跑的孤立 settled 帧）不得乱响。
+#[test]
+fn bell_host1_settlement_without_an_observed_run_stays_silent() {
+    let mut harness = harness_native("bellhost1-unattributed", true);
+    let probe = BellProbe::new("unattributed");
+    probe.arm(&mut harness);
+    assert!(!harness.app.running, "no run was observed by this client");
+    settled(
+        &mut harness,
+        json!({"prompt_rpc_id": "rpc-bell-8", "outcome": {"type": "completed"}}),
+    );
+    probe.assert_silent();
+}
+
+/// Host 审批提醒（既有路径）独立正常发出且不被本修复抑制：
+/// approval.requested 一声，随后同一 run 窗口 completed 结算再一声，
+/// 总共恰两声——不多不少。
+#[test]
+fn bell_host1_approval_ring_survives_and_settled_adds_exactly_one_more() {
+    let mut harness = harness_native("bellhost1-approval", true);
+    let probe = BellProbe::new("approval");
+    probe.arm(&mut harness);
+    // native_approval 的后台应答线程需要真实事件回线（与 CF7 同款注入）。
+    let (sender, _events) = super::ui_event_channel();
+    harness.app.event_sender = Some(sender);
+    let epoch = harness.app.native.as_ref().expect("native state").epoch;
+    harness
+        .app
+        .handle_ui_event(UiEvent::Native(NativeEvent::Frame(
+            epoch,
+            HostEvent::Control {
+                kind: "approval.requested".into(),
+                payload: json!({
+                    "rpc_id": "appr-bell-1",
+                    "request": {
+                        "tool": "write_file",
+                        "reason": "bell probe",
+                        "call_id": "call-bell-1",
+                        "effect": "write",
+                        "arguments": {}
+                    }
+                }),
+            },
+        )));
+    probe.wait_for_rings(1);
+    // 真实 run 随后完成：settled 只再补一声（不重复审批铃、不吞结算铃）。
+    bell_run_frame(&mut harness, bell_run_started("after approval"));
+    settled(
+        &mut harness,
+        json!({"prompt_rpc_id": "rpc-bell-9", "outcome": {"type": "completed"}}),
+    );
+    probe.wait_for_rings(2);
+    // 关闭权限框（拒绝），让后台应答线程收尾。
+    harness.key(KeyCode::Esc);
+    drop(harness);
+}

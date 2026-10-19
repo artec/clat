@@ -752,10 +752,13 @@ Tool cards stay visually secondary: their status heading and successful output
 text are dim, only the successful checkmark is green, and failures remain red.
 
 CLAT plays a focus-aware notification when an unattended run finishes or a
-permission/question dialog needs attention. Set `CLAT_NO_BELL=1` to disable
-it, or `CLAT_BELL_COMMAND` to a detached shell command that should provide the
-sound. When native system audio is unavailable, CLAT falls back to the
-terminal bell.
+permission/question dialog needs attention. This covers standalone, DSH, and
+host-attached sessions alike: a run settling on the background host — even one
+driven from another client such as the web workbench — rings once in an
+unfocused terminal, while runs you cancel yourself stay silent. Set
+`CLAT_NO_BELL=1` to disable it, or `CLAT_BELL_COMMAND` to a detached shell
+command that should provide the sound. When native system audio is unavailable,
+CLAT falls back to the terminal bell.
 
 ### Model and usage status
 

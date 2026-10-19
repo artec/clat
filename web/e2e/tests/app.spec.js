@@ -1355,15 +1355,29 @@ test('TITLE-CUT-1 narrow viewport keeps the stored title whole and ellipsizes vi
 
   // 默认视口侧栏行（固定宽度 + min-width:0）：文本节点仍是全值，CSS 裁剪
   // 且带省略号。
+  // TITLE-OBS-1（第九轮，2026-10-19 定案）：旧写法 locator.evaluate 在
+  // rename 后的 refreshSessions 重渲染窗口内会量到已被 replaceChildren
+  // 脱挂的旧行（scrollWidth==clientWidth==0，间歇红；现场证据：量到 0/0
+  // 的同刻新节点 507/155 健康，且测量前 32ms 内 renderSessions 重渲染 3
+  // 次）——观测者竞态，非产品布局缺陷。改为浏览器内实时查询 + 有界
+  // poll：只修观测载体，业务断言一字不减，不加任何 sleep 刷绿。
   const rowTitle = page.locator(`[data-session-id="${sessionId}"] .session-copy strong`);
   await expect(rowTitle).toHaveText(longTitle, LIVE);
-  const rowMetrics = await rowTitle.evaluate((el) => ({
-    scrollWidth: el.scrollWidth,
-    clientWidth: el.clientWidth,
-    textOverflow: getComputedStyle(el).textOverflow,
-    overflow: getComputedStyle(el).overflow,
-    whiteSpace: getComputedStyle(el).whiteSpace,
-  }));
+  await expect.poll(() => page.evaluate((sid) => {
+    const strong = document.querySelector(`[data-session-id="${sid}"] .session-copy strong`);
+    return strong && strong.isConnected ? strong.scrollWidth : 0;
+  }, sessionId), LIVE).toBeGreaterThan(0);
+  const rowMetrics = await page.evaluate((sid) => {
+    const strong = document.querySelector(`[data-session-id="${sid}"] .session-copy strong`);
+    const cs = getComputedStyle(strong);
+    return {
+      scrollWidth: strong.scrollWidth,
+      clientWidth: strong.clientWidth,
+      textOverflow: cs.textOverflow,
+      overflow: cs.overflow,
+      whiteSpace: cs.whiteSpace,
+    };
+  }, sessionId);
   expect(rowMetrics.scrollWidth).toBeGreaterThan(rowMetrics.clientWidth);
   expect(rowMetrics.textOverflow).toBe('ellipsis');
   expect(rowMetrics.overflow).toBe('hidden');

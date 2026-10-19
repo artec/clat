@@ -631,7 +631,7 @@ impl App {
             test_phase_elapsed: None,
             #[cfg(test)]
             test_run_elapsed: None,
-            bell: bell_mode_from_env(
+            bell: bell::bell_for_app_build(
                 env::var("CLAT_NO_BELL").ok(),
                 env::var("CLAT_BELL_COMMAND").ok(),
             ),
@@ -739,7 +739,7 @@ impl App {
             test_phase_elapsed: None,
             #[cfg(test)]
             test_run_elapsed: None,
-            bell: bell_mode_from_env(
+            bell: bell::bell_for_app_build(
                 env::var("CLAT_NO_BELL").ok(),
                 env::var("CLAT_BELL_COMMAND").ok(),
             ),

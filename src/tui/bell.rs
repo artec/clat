@@ -37,6 +37,19 @@ pub(super) fn bell_mode_from_env(no_bell: Option<String>, command: Option<String
     }
 }
 
+/// App 构造入口的铃模式：生产 = 纯环境语义（见 [`bell_mode_from_env`]）。
+/// 测试构建在**两个铃环境变量都缺席**时默认 `Off`——BELL-HOST-1 之后
+/// attached `prompt.settled` 结算也会响铃，快照/单元测试驱动真实事件
+/// 序列时不得在开发机上真实放音（afplay/paplay）或向 stdout 写 BEL；
+/// 需要断言响铃的测试显式注入 `BellMode::Command`（受控无声 marker）。
+pub(super) fn bell_for_app_build(no_bell: Option<String>, command: Option<String>) -> BellMode {
+    #[cfg(test)]
+    if no_bell.is_none() && command.is_none() {
+        return BellMode::Off;
+    }
+    bell_mode_from_env(no_bell, command)
+}
+
 /// 平台默认提示音（路线 A：系统播放器 + 系统自带声音，零新依赖）。
 /// 返回 `(程序, 参数)`；播放器对应的声音文件不存在（或平台未适配）
 /// 时返回 `None`——调用方回落 BEL。提示是尽力而为。
