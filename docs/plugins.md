@@ -30,11 +30,11 @@ lifecycle as other built-ins. They are independently removable catalog entries,
 not UI special cases. The current workflow/intelligence set is
 `builtin.plan_mode`, `builtin.skills`, `builtin.language_intelligence`,
 `builtin.context_inspector`, `builtin.memory`, `builtin.goal`, and
-`builtin.subagent`. Omitting one removes its commands/tools/service; closing the
+`builtin.subagent`, and `builtin.task`. Omitting one removes its commands/tools/service; closing the
 Trusted Project scope revokes its leases and joins owned workers.
 
 This internal packaging does not make a capability a downloadable marketplace
-package. Memory, goal, and subagent currently depend on CLAT-owned Rust runtime
+package. Memory, goal, subagent, and durable task recovery currently depend on CLAT-owned Rust runtime
 interfaces and durable-event gates; they may become portable only after those
 contracts have an interoperable external ABI.
 

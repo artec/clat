@@ -54,6 +54,7 @@ pub(super) struct ProjectPorts {
     pub(super) skill_catalog: Arc<crate::skills::SkillCatalogSlot>,
     pub(super) memory: Arc<crate::memory::MemoryService>,
     pub(super) goal: Arc<crate::goal::GoalService>,
+    pub(super) task: Arc<crate::task::TaskService>,
     pub(super) subagents: Arc<crate::subagent::SubagentService>,
     pub(super) commands: Arc<crate::command::CommandRegistry>,
     pub(super) agent: Arc<dyn AgentRuntime>,
@@ -234,63 +235,7 @@ fn project_catalog(input: &mut CompositionInput) -> Vec<Arc<dyn Plugin>> {
             Arc::new(crate::plugins::OpenAiCompatiblePlugin) as Arc<dyn Plugin>,
         ]),
     }
-    catalog.extend([
-        Arc::new(crate::plugins::McpAdapterPlugin::with_project_root(
-            input.storage_root.clone(),
-            input.project.root().to_owned(),
-            super::trusted::glm_mcp_pack_from_control(&input.control),
-            Arc::clone(&input.plugin_host),
-        )) as Arc<dyn Plugin>,
-        Arc::new(crate::plugins::WasmAdapterPlugin::new(
-            input.storage_root.clone(),
-            Arc::clone(&input.plugin_host),
-            input.project.root().to_owned(),
-            input
-                .permission_modes
-                .then(|| Arc::clone(&input.permission_mode)),
-        )) as Arc<dyn Plugin>,
-        Arc::new(crate::plugins::PlanModePlugin::new(Arc::clone(
-            &input.asker_slot,
-        ))),
-        Arc::new(crate::plugins::SkillsPlugin::new(
-            input.project.root().to_owned(),
-            input.storage_root.clone(),
-        )),
-        Arc::new(crate::plugins::LanguageIntelligencePlugin::new(
-            input.project.root().to_owned(),
-            input.storage_root.clone(),
-        )),
-        Arc::new(crate::plugins::MemoryPlugin::new(
-            input.storage_root.clone(),
-            input.project.root().to_owned(),
-        )),
-        Arc::new(crate::plugins::DefaultPermissionPlugin::new(
-            permission_source,
-        )),
-        Arc::new(crate::plugins::PromptRegistryPlugin),
-        Arc::new(crate::plugins::DefaultPromptPlugin),
-        Arc::new(crate::plugins::CommandsPlugin),
-        Arc::new(crate::plugins::GoalPlugin::new(
-            input.project.root().to_owned(),
-        )),
-        Arc::new(crate::plugins::SubagentPlugin::new(input.project.clone())),
-        Arc::new(crate::plugins::BuiltinCommandsPlugin),
-        Arc::new(crate::plugins::ContextInspectorPlugin),
-        Arc::new(crate::plugins::ProjectInstructionsPlugin::new(
-            input.project.clone(),
-        )),
-        Arc::new(crate::plugins::ToolPipelinePlugin),
-        Arc::new(crate::plugins::ViewImagePlugin),
-        Arc::new(crate::plugins::ToolResultPrunerPlugin),
-        Arc::new(crate::plugins::CompactionPlugin),
-        Arc::new(crate::plugins::TodoPlugin),
-        Arc::new(crate::plugins::CompanionUtilityPlugin),
-        Arc::new(crate::plugins::SessionTitlePlugin),
-        Arc::new(crate::plugins::DefaultAgentPlugin::new(
-            input.project.clone(),
-        )),
-        Arc::new(crate::plugins::MonitorPlugin),
-    ]);
+    catalog.extend(project_runtime_catalog(input, permission_source));
     catalog
 }
 
@@ -351,6 +296,7 @@ fn resolve_and_freeze(
         skill_catalog,
         memory,
         goal,
+        task: required(manager, crate::task::plugin::TASK_SERVICE)?,
         subagents,
         commands,
         agent: required(manager, AGENT_SERVICE)?,
@@ -401,4 +347,68 @@ fn wire_project_notices(
                 },
             );
         }));
+}
+
+fn project_runtime_catalog(
+    input: &CompositionInput,
+    permission_source: crate::permission::ModeSource,
+) -> Vec<Arc<dyn Plugin>> {
+    vec![
+        Arc::new(crate::plugins::McpAdapterPlugin::with_project_root(
+            input.storage_root.clone(),
+            input.project.root().to_owned(),
+            super::trusted::glm_mcp_pack_from_control(&input.control),
+            Arc::clone(&input.plugin_host),
+        )) as Arc<dyn Plugin>,
+        Arc::new(crate::plugins::WasmAdapterPlugin::new(
+            input.storage_root.clone(),
+            Arc::clone(&input.plugin_host),
+            input.project.root().to_owned(),
+            input
+                .permission_modes
+                .then(|| Arc::clone(&input.permission_mode)),
+        )) as Arc<dyn Plugin>,
+        Arc::new(crate::plugins::PlanModePlugin::new(Arc::clone(
+            &input.asker_slot,
+        ))),
+        Arc::new(crate::plugins::SkillsPlugin::new(
+            input.project.root().to_owned(),
+            input.storage_root.clone(),
+        )),
+        Arc::new(crate::plugins::LanguageIntelligencePlugin::new(
+            input.project.root().to_owned(),
+            input.storage_root.clone(),
+        )),
+        Arc::new(crate::plugins::MemoryPlugin::new(
+            input.storage_root.clone(),
+            input.project.root().to_owned(),
+        )),
+        Arc::new(crate::plugins::DefaultPermissionPlugin::new(
+            permission_source,
+        )),
+        Arc::new(crate::plugins::PromptRegistryPlugin),
+        Arc::new(crate::plugins::DefaultPromptPlugin),
+        Arc::new(crate::plugins::CommandsPlugin),
+        Arc::new(crate::plugins::GoalPlugin::new(
+            input.project.root().to_owned(),
+        )),
+        Arc::new(crate::task::TaskPlugin(input.project.clone())),
+        Arc::new(crate::plugins::SubagentPlugin::new(input.project.clone())),
+        Arc::new(crate::plugins::BuiltinCommandsPlugin),
+        Arc::new(crate::plugins::ContextInspectorPlugin),
+        Arc::new(crate::plugins::ProjectInstructionsPlugin::new(
+            input.project.clone(),
+        )),
+        Arc::new(crate::plugins::ToolPipelinePlugin),
+        Arc::new(crate::plugins::ViewImagePlugin),
+        Arc::new(crate::plugins::ToolResultPrunerPlugin),
+        Arc::new(crate::plugins::CompactionPlugin),
+        Arc::new(crate::plugins::TodoPlugin),
+        Arc::new(crate::plugins::CompanionUtilityPlugin),
+        Arc::new(crate::plugins::SessionTitlePlugin),
+        Arc::new(crate::plugins::DefaultAgentPlugin::new(
+            input.project.clone(),
+        )),
+        Arc::new(crate::plugins::MonitorPlugin),
+    ]
 }

@@ -418,7 +418,19 @@ where
     // `--command`：core.commands 注册表的 headless 形态（与 TUI 同一
     // dispatch 路径，INV-C2）。不跑模型、不读 stdin；命令各自的失败
     // （如未配置模型时的 /compact）由 dispatch 以结构化错误返回。
-    if let Some(command) = args.command.clone() {
+    let task_resume = match prepare_task_command(&mut application, args.command.as_deref()) {
+        Ok(resume) => resume,
+        Err(error) => {
+            return close_and_finalize(
+                application,
+                ExecOutcome::Failure(error),
+                &args,
+                &io,
+                &io_state,
+            );
+        }
+    };
+    if let Some(command) = args.command.clone().filter(|_| task_resume.is_none()) {
         return run_headless_command(application, &command, &args, &io, &io_state);
     }
 
@@ -447,7 +459,10 @@ where
     }
 
     // INV-6：prompt 在信任门/模型检查之后才读 stdin（无效调用不吞输入）。
-    let prompt = match resolve_prompt(&args, &io, MAX_STDIN_BYTES) {
+    let prompt = match task_resume.as_ref().map_or_else(
+        || resolve_prompt(&args, &io, MAX_STDIN_BYTES),
+        |_| Ok(String::new()),
+    ) {
         Ok(prompt) => prompt,
         Err(outcome) => return close_and_finalize(application, outcome, &args, &io, &io_state),
     };
@@ -465,40 +480,15 @@ where
         ));
     }
 
-    let mode = if args.yes {
-        PermissionMode::AllowAll
-    } else if io.interactive_stdin {
-        PermissionMode::Interactive
-    } else {
-        PermissionMode::NonInteractive
-    };
-    let approver: Arc<dyn PermissionApprover> = Arc::new(ExecApprover {
-        mode,
-        input: io.permission_input.clone(),
-        error: Arc::clone(&io.error),
-        io_state: Arc::clone(&io_state),
-        interrupt: cancel.clone(),
-    });
-    let sink = ExecEventSink {
-        output: Arc::clone(&io.output),
-        error: Arc::clone(&io.error),
-        quiet: args.quiet,
-        json: args.json,
-        stdout_is_terminal: io.stdout_is_terminal,
-        io_state: Arc::clone(&io_state),
-        cancel: cancel.clone(),
-    };
-
     let (completion_tx, completion_rx) = mpsc::channel();
-    // MM-1A：typed 初始消息（headless 不接受附件——首期边界，方案
-    // §范围裁定；无客户端幂等键）。
-    let handle = match application.start_run(ApplicationRunRequest {
-        message: crate::message::PendingMessage::text(prompt),
-        asker: None,
-        approver,
-        events: Box::new(sink),
-        completion: completion_tx,
-    }) {
+    let request = exec_request((&args, &io, &io_state, cancel), prompt, completion_tx);
+    let started = match task_resume {
+        Some(resume) => application
+            .start_task_run(resume, request)
+            .map(|(handle, _)| handle),
+        None => application.start_run(request),
+    };
+    let handle = match started {
         Ok(handle) => handle,
         Err(error) => {
             return close_and_finalize(
@@ -697,29 +687,14 @@ fn run_headless_command(
                 }
                 Err(error) => ExecOutcome::Failure(error.to_string()),
             },
-            Ok(CommandOutcome::ShowHelp { commands }) => {
-                let mut text = String::new();
-                for info in &commands {
-                    let mut names = format!("/{}", info.name);
-                    for alias in &info.aliases {
-                        names.push_str(&format!(", /{alias}"));
-                    }
-                    text.push_str(&format!("{names} — {}\n", info.description));
-                }
-                let write = stream_write(&io.output, format_args!("{text}"))
-                    .and_then(|()| stream_flush(&io.output));
-                if let Err(error) = write {
-                    io_state.note("stdout", error);
-                }
-                ExecOutcome::Success {
-                    output: text,
-                    turns: 0,
-                    usage: Usage::default(),
-                }
-            }
+            Ok(CommandOutcome::ShowHelp { commands }) => write_help_view(&commands, io, io_state),
             Ok(CommandOutcome::ShowMcpStatus(status)) => write_mcp_view(status, io, io_state),
             Ok(CommandOutcome::ShowMemory(view)) => {
                 write_content_view(view.to_text(), io, io_state)
+            }
+            Ok(CommandOutcome::ShowTask(text)) => write_content_view(text, io, io_state),
+            Ok(CommandOutcome::StartTaskRun(_)) => {
+                ExecOutcome::Failure("task continuation was not routed to execution".into())
             }
             Ok(CommandOutcome::ShowGoal(view)) => write_content_view(view.to_text(), io, io_state),
             Ok(CommandOutcome::ShowSubagentStatus(view)) => {
@@ -1342,3 +1317,82 @@ impl EventSink for ExecEventSink {
 
 #[cfg(test)]
 mod tests;
+
+fn prepare_task_command(
+    app: &mut TrustedProjectApplication,
+    command: Option<&str>,
+) -> Result<Option<crate::task::TaskResume>, String> {
+    let Some(command) = command else {
+        return Ok(None);
+    };
+    let words: Vec<_> = command.split_whitespace().take(2).collect();
+    if words != ["/task", "continue"] {
+        return Ok(None);
+    }
+    match app.dispatch_command(command).map_err(|e| e.to_string())? {
+        CommandOutcome::StartTaskRun(resume) => Ok(Some(resume)),
+        _ => Err("unexpected task continuation outcome".into()),
+    }
+}
+
+fn write_help_view(
+    commands: &[crate::CommandInfo],
+    io: &ExecIo,
+    state: &SharedIoState,
+) -> ExecOutcome {
+    let mut text = String::new();
+    for info in commands {
+        let mut names = format!("/{}", info.name);
+        for alias in &info.aliases {
+            names.push_str(&format!(", /{alias}"));
+        }
+        text.push_str(&format!("{names} — {}\n", info.description));
+    }
+    if let Err(error) =
+        stream_write(&io.output, format_args!("{text}")).and_then(|()| stream_flush(&io.output))
+    {
+        state.note("stdout", error);
+    }
+    ExecOutcome::Success {
+        output: text,
+        turns: 0,
+        usage: Usage::default(),
+    }
+}
+
+fn exec_request(
+    (args, io, state, cancel): (&ExecArgs, &ExecIo, &SharedIoState, &ExecCancel),
+    prompt: String,
+    completion: mpsc::Sender<
+        Result<crate::application::ApplicationRunDone, crate::application::ApplicationRunFailure>,
+    >,
+) -> ApplicationRunRequest {
+    let mode = if args.yes {
+        PermissionMode::AllowAll
+    } else if io.interactive_stdin {
+        PermissionMode::Interactive
+    } else {
+        PermissionMode::NonInteractive
+    };
+    ApplicationRunRequest {
+        message: crate::message::PendingMessage::text(prompt),
+        asker: None,
+        completion,
+        approver: Arc::new(ExecApprover {
+            mode,
+            input: io.permission_input.clone(),
+            error: Arc::clone(&io.error),
+            io_state: Arc::clone(state),
+            interrupt: cancel.clone(),
+        }),
+        events: Box::new(ExecEventSink {
+            output: Arc::clone(&io.output),
+            error: Arc::clone(&io.error),
+            quiet: args.quiet,
+            json: args.json,
+            stdout_is_terminal: io.stdout_is_terminal,
+            io_state: Arc::clone(state),
+            cancel: cancel.clone(),
+        }),
+    }
+}

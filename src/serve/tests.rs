@@ -3991,3 +3991,64 @@ fn next_turn_queue_is_separate_dispatches_after_success_and_survives_cancel() {
     );
     cleanup(handle, &storage_root, &project_root);
 }
+
+#[test]
+fn ga1_command_run_maps_task_recovery_to_the_existing_run_and_event_paths() {
+    let gate = Arc::new(SteerGate::default());
+    let (handle, storage, root) = spawn_serve("ga1-serve", TestBehavior::Steer(gate.clone()));
+    let mut client = SseClient::connect(handle.addr);
+    let spec = serde_json::json!({"objective":"web task","acceptance":["human review"],"budget":{"max_tokens":1000000,"max_runs":4,"max_seconds":60,"run_tokens":200000,"run_seconds":20}});
+    let (status, result) = post(
+        handle.addr,
+        TEST_TOKEN,
+        "command.run",
+        &serde_json::json!({"command":format!("/task create {spec}")}).to_string(),
+    );
+    assert_eq!(status, 200);
+    assert_eq!(result.unwrap()["kind"], "task");
+    let (_, result) = post(
+        handle.addr,
+        TEST_TOKEN,
+        "command.run",
+        r#"{"command":"/task check"}"#,
+    );
+    let result = result.unwrap();
+    let check: serde_json::Value =
+        serde_json::from_str(result["message"].as_str().unwrap()).unwrap();
+    let command = format!(
+        "/task continue {} {} {}",
+        check["task"]["id"].as_str().unwrap(),
+        check["task"]["revision"],
+        check["digest"].as_str().unwrap()
+    );
+    let (status, result) = post(
+        handle.addr,
+        TEST_TOKEN,
+        "command.run",
+        &serde_json::json!({"command":command.clone()}).to_string(),
+    );
+    assert_eq!(status, 200);
+    assert_eq!(result.unwrap()["kind"], "task_run");
+    gate.wait_entered();
+    let (_, competing) = post(
+        handle.addr,
+        TEST_TOKEN,
+        "command.run",
+        &serde_json::json!({"command":command}).to_string(),
+    );
+    assert!(matches!(competing, Err(ErrorCode::Busy)));
+    gate.release();
+    client.wait_settled();
+    let (status, result) = post(
+        handle.addr,
+        TEST_TOKEN,
+        "command.run",
+        r#"{"command":"/task show"}"#,
+    );
+    assert_eq!(status, 200);
+    let state: serde_json::Value =
+        serde_json::from_str(result.unwrap()["message"].as_str().unwrap()).unwrap();
+    assert_eq!(state["runs"][0]["settled"], true);
+    assert_eq!(state["runs"].as_array().unwrap().len(), 1);
+    cleanup(handle, &storage, &root);
+}

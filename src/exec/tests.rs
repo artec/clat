@@ -1638,3 +1638,51 @@ fn unconfigured_model_fails_with_pointer_to_model_command() {
     fs::remove_dir_all(storage_root).ok();
     fs::remove_dir_all(project_root).ok();
 }
+
+#[test]
+fn ga1_headless_task_create_exit_check_explicit_continue_sequence() {
+    let (storage, root, project) = setup("ga1-headless");
+    prepare_storage(&project, &storage, TestBehavior::Success);
+    let spec = serde_json::json!({"objective":"explicit headless task","acceptance":["human review"],"budget":{"max_tokens":1000000,"max_runs":4,"max_seconds":60,"run_tokens":200000,"run_seconds":20}});
+    let mut options = args(None);
+    options.command = Some(format!("/task create {spec}"));
+    let (io, _) = ExecIo::capture(&[]);
+    assert!(matches!(
+        exec(&project, &storage, TestBehavior::Success, options, io),
+        ExecOutcome::Success { .. }
+    ));
+    let mut options = args(None);
+    options.continue_session = true;
+    options.command = Some("/task check".into());
+    let (io, _) = ExecIo::capture(&[]);
+    let result = exec(&project, &storage, TestBehavior::Success, options, io);
+    let ExecOutcome::Success { output, .. } = result else {
+        panic!("{result:?}")
+    };
+    let check: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert!(check["task"]["runs"].as_array().unwrap().is_empty());
+    let mut options = args(None);
+    options.continue_session = true;
+    options.command = Some(format!(
+        "/task continue {} {} {}",
+        check["task"]["id"].as_str().unwrap(),
+        check["task"]["revision"],
+        check["digest"].as_str().unwrap()
+    ));
+    let (io, _) = ExecIo::capture(&[]);
+    let result = exec(&project, &storage, TestBehavior::Success, options, io);
+    assert!(matches!(result, ExecOutcome::Success { .. }), "{result:?}");
+    let mut options = args(None);
+    options.continue_session = true;
+    options.command = Some("/task show".into());
+    let (io, _) = ExecIo::capture(&[]);
+    let ExecOutcome::Success { output, .. } =
+        exec(&project, &storage, TestBehavior::Success, options, io)
+    else {
+        panic!("show")
+    };
+    let task: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(task["runs"].as_array().unwrap().len(), 1);
+    assert_eq!(task["runs"][0]["settled"], true);
+    crate::test_support::cleanup_tree(root.parent().unwrap());
+}

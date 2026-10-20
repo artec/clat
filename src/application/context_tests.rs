@@ -356,6 +356,7 @@ fn run_header_and_context_inspector_share_authoritative_instruction_layers() {
         None,
         crate::memory::MemoryInjection::default(),
         goal,
+        None,
     );
     application.subagents.set_enabled(None, false).unwrap();
     let mut frozen_probe = context.clone();

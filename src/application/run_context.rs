@@ -50,34 +50,10 @@ impl TrustedProjectApplication {
         invoked_skill: Option<crate::skills::InvokedSkill>,
         memory: crate::memory::MemoryInjection,
         goal: crate::goal::GoalInjection,
+        task: Option<String>,
     ) -> RunContextSnapshot {
-        let state = self.plan_mode.state();
         let subagents_enabled = self.subagents.enabled(self.sessions.active_id().as_ref());
-        let (tool_access, plan_instructions, plan_header) = if state.active {
-            (
-                crate::tool::ToolAccessPolicy::plan_mode(),
-                Some(crate::plan_mode::PLAN_POLICY.to_owned()),
-                Some(json!({ "active": true })),
-            )
-        } else if let Some(approved) = state.approved {
-            (
-                crate::tool::ToolAccessPolicy::all(),
-                Some(crate::plan_mode::approved_plan_instructions(&approved)),
-                Some(json!({
-                    "active": false,
-                    "approved": {
-                        "digest": approved.digest,
-                        "eventSeq": approved.event_seq,
-                    }
-                })),
-            )
-        } else {
-            (
-                crate::tool::ToolAccessPolicy::all().with_subagents(subagents_enabled),
-                None,
-                None,
-            )
-        };
+        let (plan_instructions, plan_header) = self.plan_context();
 
         let base = crate::plugins::services::base_model_instructions(
             &self.prompts,
@@ -94,15 +70,11 @@ impl TrustedProjectApplication {
                 skills.instructions(),
                 invoked_instructions.as_deref(),
                 Some(&memory.instructions),
+                task.as_deref(),
                 Some(&goal.instructions),
             ],
         );
-        let visual_tool_enabled = config.capabilities.accepts_image_input()
-            && config.capabilities.accepts_image_tool_results();
-
-        let tool_access = tool_access
-            .with_subagents(subagents_enabled)
-            .with_view_image(visual_tool_enabled);
+        let tool_access = self.context_tool_access(config, task.is_some());
         let tool_definitions = self.tools.definitions_for(&tool_access).into();
 
         RunContextSnapshot {
@@ -118,6 +90,45 @@ impl TrustedProjectApplication {
             goal_header: goal.header,
             skills,
             invoked_skill,
+        }
+    }
+
+    pub(super) fn context_tool_access(
+        &self,
+        config: &ModelConfig,
+        task: bool,
+    ) -> crate::tool::ToolAccessPolicy {
+        let access = if self.plan_mode_active() {
+            crate::tool::ToolAccessPolicy::plan_mode()
+        } else {
+            crate::tool::ToolAccessPolicy::all()
+        };
+        access
+            .with_subagents(self.subagents.enabled(self.sessions.active_id().as_ref()))
+            .with_view_image(config.capabilities.accepts_image_tool_results())
+            .with_task_progress(task)
+    }
+
+    fn plan_context(&self) -> (Option<String>, Option<Value>) {
+        let state = self.plan_mode.state();
+        if state.active {
+            (
+                Some(crate::plan_mode::PLAN_POLICY.to_owned()),
+                Some(json!({ "active": true })),
+            )
+        } else if let Some(approved) = state.approved {
+            (
+                Some(crate::plan_mode::approved_plan_instructions(&approved)),
+                Some(json!({
+                    "active": false,
+                    "approved": {
+                        "digest": approved.digest,
+                        "eventSeq": approved.event_seq,
+                    }
+                })),
+            )
+        } else {
+            (None, None)
         }
     }
 
@@ -250,7 +261,7 @@ impl LayerAssembly {
 impl InstructionLayers {
     fn assemble(
         base: String,
-        [plan, skills, invoked, memory, goal]: [Option<&str>; 5],
+        [plan, skills, invoked, memory, task, goal]: [Option<&str>; 6],
     ) -> (Self, String, Option<String>) {
         let with_plan = crate::plan_mode::compose_workflow_instructions(base.clone(), plan);
         let mut layers = LayerAssembly {
@@ -260,6 +271,7 @@ impl InstructionLayers {
         let with_skills = layers.append(skills);
         let with_invoked = layers.append(invoked);
         layers.append(memory.filter(|s| !s.is_empty()));
+        layers.append(task);
         let workflow_base = layers.workflow.clone();
         let with_goal = layers.append(goal.filter(|s| !s.is_empty()));
         let workflow = (!layers.workflow.is_empty()).then_some(layers.workflow);

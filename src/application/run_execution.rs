@@ -179,6 +179,7 @@ struct RunWorkerDeps {
     compactor: Option<Arc<dyn crate::plugins::services::HistoryCompactor>>,
     todo_service: Option<Arc<crate::plugins::services::TodoService>>,
     goal_service: Arc<crate::goal::GoalService>,
+    task_service: Arc<crate::task::TaskService>,
     subagent_service: Arc<crate::subagent::SubagentService>,
     titler: Option<Arc<dyn crate::plugins::services::SessionTitler>>,
     title_sender: Option<mpsc::SyncSender<AutotitleJob>>,
@@ -230,6 +231,7 @@ impl RunExecutionEngine {
             compactor: application.compactor.clone(),
             todo_service: application.todo.clone(),
             goal_service: Arc::clone(&application.goal),
+            task_service: Arc::clone(&application.task),
             subagent_service: Arc::clone(&application.subagents),
             titler: application.titler.clone(),
             title_sender: application

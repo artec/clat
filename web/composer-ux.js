@@ -137,9 +137,9 @@ async function submitComposerCommand({ text, owner }) {
     dom['market-open'].click();
     return true;
   }
-  if (value && ['status', 'help', 'memory', 'goal', 'subagent_status', 'goal_run'].includes(value.kind)) {
+  if (value && ['status', 'help', 'memory', 'goal', 'subagent_status', 'goal_run', 'task', 'task_run'].includes(value.kind)) {
     const notice = addNoticeLine(value.message || 'command completed');
-    if (['memory', 'goal', 'subagent_status'].includes(value.kind)) {
+    if (['memory', 'goal', 'subagent_status', 'task'].includes(value.kind)) {
       notice.classList.add('content-notice');
       notice.setAttribute('aria-label', value.kind.replaceAll('_', ' '));
     }

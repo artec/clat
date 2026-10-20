@@ -21,6 +21,7 @@ impl Run<'_> {
         });
         let invocation = match self.tool_pipeline {
             Some(pipeline) => pipeline.execute(&ToolInvocation {
+                call_id: Some(&call.id),
                 tool: tool.as_ref(),
                 arguments: &call.arguments,
                 project: self.project,
@@ -28,6 +29,11 @@ impl Run<'_> {
             }),
             None => tool.invoke(&call.arguments, self.project, &self.cancel),
         };
+        if let Err(error) = &invocation
+            && error.is_fatal()
+        {
+            return Err(state.fail(events, &self.steering, error.to_string()));
+        }
         if self.cancel.is_cancelled() {
             return Ok(Some(state.cancel(events, &self.steering, text.to_owned())));
         }

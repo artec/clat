@@ -736,6 +736,18 @@ impl App {
         self.flash_status("new conversation");
     }
 
+    fn show_task_content(&mut self, text: String) {
+        self.session_id = self
+            .application
+            .as_ref()
+            .and_then(|app| app.current_session_id());
+        self.content_view = Some(ContentView::Remote {
+            title: "/task",
+            text,
+        });
+        self.info_dialog = Some(InfoDialog::new(InfoDialogKind::Remote));
+    }
+
     fn render_command_outcome(&mut self, outcome: CommandOutcome) {
         match outcome {
             CommandOutcome::Status(message) => self.flash_status(message),
@@ -800,8 +812,12 @@ impl App {
                 // TUI 无需持有句柄（fire-and-forget + 状态栏通知）。
                 self.flash_status("vision probe started — the verdict lands here");
             }
+            CommandOutcome::ShowTask(text) => self.show_task_content(text),
+            CommandOutcome::StartTaskRun(task) => {
+                self.start_controlled_run(Some(task));
+            }
             CommandOutcome::StartGoalRun { message } => {
-                if self.start_goal_run() {
+                if self.start_controlled_run(None) {
                     self.flash_status(message);
                 }
             }
@@ -1154,7 +1170,7 @@ impl App {
         true
     }
 
-    fn start_goal_run(&mut self) -> bool {
+    fn start_controlled_run(&mut self, task: Option<crate::task::TaskResume>) -> bool {
         if !self.model_ready() {
             self.flash_status("model is not configured — run /model first");
             return false;
@@ -1176,9 +1192,11 @@ impl App {
             .as_mut()
             .ok_or_else(|| "project application is unavailable".to_owned())
             .and_then(|application| {
-                application
-                    .start_goal_run(request)
-                    .map_err(|error| error.to_string())
+                match task {
+                    Some(task) => application.start_task_run(task, request),
+                    None => application.start_goal_run(request),
+                }
+                .map_err(|error| error.to_string())
             }) {
             Ok(started) => started,
             Err(error) => {
@@ -1198,7 +1216,7 @@ impl App {
         self.run_usage_acc = Usage::default();
         self.run_routes_base = Some(self.usage_routes.clone());
         self.run_route = None;
-        self.flash_status("starting bounded goal…");
+        self.flash_status("starting explicit continuation…");
         thread::spawn(move || {
             if let Ok(result) = completed.recv() {
                 let _ = sender.send(UiEvent::Worker(WorkerMessage::Done { epoch, result }));

@@ -568,3 +568,7 @@ fn require_admission_metadata(data: &serde_json::Value) -> Result<(), String> {
     }
     Ok(())
 }
+
+pub(super) fn task(event: &SessionEvent, _version: u32) -> Result<(), String> {
+    crate::task::decode_change(&event.data).map(|_| ())
+}

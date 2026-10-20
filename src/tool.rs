@@ -56,6 +56,7 @@ pub(crate) struct ToolAccessPolicy {
     subagents_enabled: bool,
     readonly_child: bool,
     view_image_enabled: bool,
+    task_progress_enabled: bool,
 }
 
 impl ToolAccessPolicy {
@@ -65,6 +66,7 @@ impl ToolAccessPolicy {
             subagents_enabled: false,
             readonly_child: false,
             view_image_enabled: false,
+            task_progress_enabled: false,
         }
     }
 
@@ -74,11 +76,17 @@ impl ToolAccessPolicy {
             subagents_enabled: false,
             readonly_child: false,
             view_image_enabled: false,
+            task_progress_enabled: false,
         }
     }
 
     pub(crate) fn with_subagents(mut self, enabled: bool) -> Self {
         self.subagents_enabled = enabled;
+        self
+    }
+
+    pub(crate) fn with_task_progress(mut self, enabled: bool) -> Self {
+        self.task_progress_enabled = enabled;
         self
     }
 
@@ -102,10 +110,16 @@ impl ToolAccessPolicy {
             subagents_enabled: false,
             readonly_child: true,
             view_image_enabled: false,
+            task_progress_enabled: false,
         }
     }
 
     pub(crate) fn allows(&self, definition: &ToolDefinition) -> bool {
+        if matches!(definition.name.as_str(), "read_task" | "update_task")
+            && !self.task_progress_enabled
+        {
+            return false;
+        }
         if definition.name == "view_image" && !self.view_image_enabled {
             return false;
         }
@@ -130,6 +144,10 @@ impl ToolAccessPolicy {
     pub(crate) fn denial_reason(&self, definition: &ToolDefinition) -> &'static str {
         if self.readonly_child {
             "tool unavailable to a read-only subagent"
+        } else if matches!(definition.name.as_str(), "read_task" | "update_task")
+            && !self.task_progress_enabled
+        {
+            "task progress tools require an explicitly continued task Run"
         } else if definition.name == "view_image" && !self.view_image_enabled {
             "view_image is unavailable because the active model has no verified image capability"
         } else {
@@ -229,6 +247,7 @@ pub struct ToolResult {
 pub struct ToolError {
     message: String,
     recovery: Option<Value>,
+    fatal: bool,
 }
 
 impl ToolError {
@@ -236,7 +255,20 @@ impl ToolError {
         Self {
             message: message.into(),
             recovery: None,
+            fatal: false,
         }
+    }
+
+    pub(crate) fn fatal(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            recovery: None,
+            fatal: true,
+        }
+    }
+
+    pub(crate) fn is_fatal(&self) -> bool {
+        self.fatal
     }
 
     pub(crate) fn with_recovery(mut self, recovery: Value) -> Self {
@@ -313,6 +345,7 @@ pub(crate) use prepared::prepare_tool;
 /// Middleware cannot replace the tool or mutate arguments after permission
 /// classification.
 pub(crate) struct ToolInvocation<'a> {
+    pub call_id: Option<&'a str>,
     pub tool: &'a dyn Tool,
     pub arguments: &'a Value,
     pub project: &'a Project,

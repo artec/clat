@@ -2193,3 +2193,135 @@ while items remain; recall them first. Opening another workspace keeps the old
 project's queue in that mounted project; it is never transferred to the new
 workspace. Non-empty queues prevent automatic host takeover and idle project
 reclamation. DSH terminals and the WeChat channel have no new queue entry point.
+
+## Durable task progress and explicit recovery (`/task`)
+
+A task is an explicitly created objective and progress record in the selected
+session. Ordinary conversations remain ordinary conversations. A task is separate
+from Todo, compaction summaries and the optional Goal driver: finish/clear a
+separate Goal and exit Plan Mode before creating or continuing a task. Task
+and unfinished Goal workflows exclude each other in both directions: complete
+or cancel the task before creating, resuming or arming a Goal, even when Goal
+creation requests no immediate execution. Restored conflicting state grants no
+execution authority. Task
+continuation starts **one new Run**, with the current permission policy and
+approver; it never restores an old approval, process, PTY, tool handle or armed
+Goal. Only the user can declare a task complete or cancel it. A model checkpoint
+is a progress claim, not verified completion.
+
+Create a task in the TUI or PWA command composer:
+
+```text
+/task create {"objective":"Read local materials, prepare a table and report","acceptance":["Review the report totals"],"budget":{"max_tokens":1000000,"max_runs":8,"max_seconds":3600,"run_tokens":200000,"run_seconds":600}}
+/task show
+/task check
+```
+
+All five budget fields are explicit positive limits: total tokens, total Runs,
+total active seconds, and tokens/seconds for each continuation. At most 32 Runs
+and 86,400 total seconds are accepted. A configured model run-token cap can
+further reduce a continuation's cap. Normal completion, failure, retry, sampling
+and internal compaction share the existing conservative spend ledger. Pausing
+or reopening never clears consumption. Before a Run starts, its token/time
+slice is reserved durably; settlement replaces it with measured conservative
+usage and monotonic elapsed time. If the process dies or settlement fails, the
+reservation remains charged and is marked unknown consumption. An exhausted
+task does not execute again. Start a new task only as a new explicit decision.
+
+The reservation has its own unique Run ID and no session turn until the normal
+message admission commits. A failure before admission leaves no user message;
+retrying uses a new Run ID and preserves the prior budget record. A crash before
+settlement keeps the reserved slice charged. After admission, the actual session
+turn is bound durably before any model request or task effect.
+
+`/task check` is read-only and does not call a model or execute a saved next step.
+It returns the task identity, revision, current permission mode, remaining budget,
+artifact observations, unresolved operations, known required-tool availability,
+and a `digest` binding those observations. Reopening only makes saved progress
+available; it does not start work. To continue, copy the identity, revision and
+check digest from the report:
+
+```text
+/task continue <task-id> <revision> <check-digest>
+```
+
+Application checks the observations again at start. A changed revision, file
+hash, permission mode, model configuration or job observation requires a new check and explicit
+continuation. Changed, missing, restricted artifacts or unresolved job
+observations also require `--accept-changes` after reviewing the report; this
+acknowledgement does not resolve an uncertain operation or grant tool permission.
+Execution still checks each actual tool invocation under the current policy.
+Required-tool availability uses the same Plan, subagent and verified model
+capability policy as the actual Run; image tools require verified image input
+and image tool-result support. Registered tools are not automatically usable.
+The model receives the saved objective/progress, recovery observations, pending
+questions and confirmed operation references through the normal context owner.
+
+During a task Run, `read_task` exposes the current revision and operation
+references. `update_task` saves a complete bounded semantic checkpoint using
+`task_id`, `expected_revision` and `progress`. Progress supports `summary`,
+`steps`, `questions`, `next`, `required_tools`, `artifacts` and `jobs`; omitted
+fields use empty defaults. Artifact records contain a project-relative `path`,
+`summary`, SHA-256 `digest` and `evidence` operation IDs. Saving checks the actual
+bytes and the evidence's committed identity. Prior artifact/job references are
+retained when omitted; adding a reference does not certify its business content.
+User checkpoints use the same format:
+
+```text
+/task save <task-id> <revision> {"summary":"Table saved; report remains","steps":["Read materials","Prepare table"],"questions":["Confirm totals"],"next":"Write report"}
+/task pause
+/task complete <task-id> <revision>
+/task cancel <task-id> <revision>
+```
+
+In the TUI, use Esc to cancel a running task, then `/task pause` when idle;
+slash commands retain the existing idle-only rule. The Application/PWA pause
+command cancels and joins a live task Run, preserving its last committed semantic
+checkpoint and execution facts. Normal exit does the same through the existing
+run shutdown. It does not promise to recover uncommitted model thoughts.
+
+An execution intent is committed after permission and before invocation. A
+returned result becomes confirmed only after its outcome commits; a confirmed
+error is still an error, with possible side effects. Cancellation before actual
+invocation is recorded as `not_executed`; cancellation during/after invocation,
+or a crash between intent and outcome, remains `unknown`. Result-persistence
+failure stops further task effects, including nested host-tool calls. Recovery
+never replays saved tool arguments. An identical confirmed side-effecting tool
+invocation from an earlier Run is refused; this fingerprint fence cannot prove
+semantic equivalence of different requests or provide external exactly-once.
+Investigate unknown results in the affected system first. Only an explicit user
+decision can resolve one, with a note:
+
+```text
+/task resolve <task-id> <revision> <operation-id> confirmed <what was checked>
+/task resolve <task-id> <revision> <operation-id> not_executed <basis for retry>
+```
+
+Unknown operations block continuation, completion and ordinary prompts in the
+same session. Use a separate session for unrelated work while investigating.
+A resolution is a human
+statement, not automatic verification. Any later execution still passes normal
+approval. Do not classify an operation from the mere presence of `tool/call`,
+the absence of `tool/result`, or an error message.
+
+Task recovery pins the original project-directory identity; moving/replacing
+a root under the same name requires a new explicit task/session rather than
+automatically rebinding old work. Checks read only the recorded project-relative regular files, reject symlink
+components and read at most 8 MiB per file/32 MiB per checkpoint or check.
+`unchanged`, `changed`, `missing` and `restricted` are separate observations;
+an equal hash only describes bytes read during that check. State is bounded to
+128 KiB, 64 artifacts, 32 external-job references and 128 recorded operations.
+Capacity exhaustion refuses further continuation rather than dropping evidence.
+Job references contain provider, scope, stable ID, non-secret result reference
+and last observation. This version supplies an injected read-only query port
+with shared cancellation/deadline, tested with a local fake adapter. No provider
+adapter is bundled; without one, jobs remain `Unavailable` and need review.
+CLAT never restarts an external job or adopts an old local process.
+
+For headless use, create once with `clat exec --command '/task create ...'`, then
+use `--continue --command '/task check'` and
+`--continue --command '/task continue <id> <revision> <digest>'`. `--session`
+can select a specific session instead. Check/show/save do not require a model;
+continuation uses the normal headless event, cancellation and approval paths.
+Non-interactive Ask decisions remain denied unless the user supplies `--yes`.
+TUI and PWA use the same Application/command/event paths.

@@ -1134,3 +1134,57 @@ rejects direct frontend references to storage/session/composition/context/
 execution owners. Behavioral tests must also exercise lifecycle sequences—
 open, run, switch, close, reopen—because static boundaries alone cannot prove
 state correctness.
+
+## Explicit durable tasks
+
+`task/` owns a bounded, session-scoped work objective and semantic checkpoints.
+`TaskService` is its sole semantic writer; `SessionService` validates project,
+session and revision under the active-session lock and commits `clat/task`
+snapshots through the existing durable admission/append path. The catalog owns
+payload validation and replay disposition; `TaskUnit` shares strict transitions
+between online folds and checkpoint/tail restore. Task events are log-only,
+ignorable extensions for older readers, independent of model-context surface
+replacement. Ordinary sessions have a null task projection.
+
+Application owns task creation, user-only resolution/completion, recovery check,
+and explicitly checked continuation. A continuation descriptor binds task ID,
+revision and an observation digest, with no durable activation authority. A
+live binding exists only during the new Run. Goal scheduling remains separate;
+creating/resuming/arming/running a Goal excludes unfinished tasks in both
+directions, including restored conflicting states. Every Run entry shares the
+unknown-operation admission fence; no objective or counter is mirrored
+between them. Todo and summaries cannot certify task progress. The current
+RunContextSnapshot assembles recovery observations and task progress into both
+the actual model workflow and request-header view. Recovery checks and actual
+Runs derive tool access from the same context owner (Plan, subagents, verified
+image input/tool results and explicit task tools). The recovery digest binds the
+current model configuration too. Pre-run automatic compaction
+is skipped for task Runs; request-boundary compaction uses the same spend ledger
+as task settlement, including failed/unknown usage reservations.
+
+The task plugin contributes bounded metadata tools, the `/task` command and
+execution middleware. Normal permission/prepared-tool checks precede middleware;
+it durably records an intent before invoking an external operation and commits
+a result classification afterward. Intent/outcome failures return typed fatal
+tool errors; a failed task fence also blocks nested follow-up effects before the
+outer tool can return. Arguments/results are represented by hashes, not copied
+outputs. Interrupted intents remain unknown, confirmed prior effects are not
+replayed, and only human resolution can authorize reconsideration. Run-level
+process cleanup and ownership remain unchanged.
+
+Each new task Run reserves its bounded token/time slice and Run count under a
+unique UUID before model work. `TaskRun.turn` remains null until the session
+admission batch commits; a separate durable transition binds the actual turn
+before worker activation. Only bound Runs can record operation intents. Failed
+starts and interrupted unbound reservations remain distinct budget records;
+retry never guesses a strictly increasing future turn or fabricates a message.
+Settlement consumes the existing shared ledger and monotonic elapsed
+time before terminal publication; an interrupted/failed settlement keeps the
+reservation. Recovery never resets totals. Task state pins a hashed stable project-directory witness; replacing the
+project root cannot silently rebind old progress, even under the same pathname.
+Artifact checks traverse the held project-root capability
+without following symlink components, read bounded bytes and report
+changed/missing/restricted separately. Injected job queries are read-only,
+cooperatively deadline/cancellation bounded and never return process ownership.
+Frontends only render progress or pass a continuation descriptor through their
+standard channels; they do not own recovery policy or state.

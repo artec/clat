@@ -68,6 +68,10 @@ impl RoundExecution {
         } else {
             configured
         };
+        let budget = match worker.deps.task_service.cap() {
+            Some(cap) => Some(budget.map_or(cap, |b| b.min(cap))),
+            None => budget,
+        };
         let spend_ledger = Arc::new(crate::model::RunSpendLedger::new(budget));
         let subagent_round_error = worker
             .deps
@@ -191,6 +195,17 @@ impl RoundExecution {
         }))
     }
     fn finish(&self, worker: &mut RunWorker, outcome: ExecutionOutcome) -> ApplicationRunResult {
+        let task_error = worker
+            .deps
+            .task_service
+            .settle(self.spend_ledger.used())
+            .err();
+        if let Some(error) = &task_error {
+            self.recorder
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .force_terminal_failure(format!("task progress settlement failed: {error}"));
+        }
         let (finish_error, published) = self
             .recorder
             .lock()
@@ -213,7 +228,7 @@ impl RoundExecution {
         if let Some(header) = worker.deps.sessions.last_request_header() {
             worker.durable_request_header.header = header;
         }
-        outcome.into_result(journal_error)
+        outcome.into_result(journal_error.or(task_error))
     }
 }
 impl ExecutionOutcome {

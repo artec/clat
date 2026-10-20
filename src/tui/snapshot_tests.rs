@@ -5484,3 +5484,66 @@ fn physical_next_turn_tui_sequence() {
     );
     crate::test_support::cleanup_tree(storage_root.parent().unwrap());
 }
+
+#[test]
+fn ga1_tui_task_commands_use_core_and_render_scrollable_progress() {
+    let (storage_root, project_root) = roots("ga1-tui");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let mut app = App::open(Project::new(&project_root), Some(storage_root.clone())).unwrap();
+    let application = app
+        .bootstrap
+        .take()
+        .unwrap()
+        .with_permission_modes()
+        .authorize_and_mount_with_provider(Arc::new(TestProviderPlugin {
+            behavior: TestBehavior::Success,
+        }))
+        .unwrap();
+    crate::test_support::configure_test_model(&application);
+    (app.config, app.credentials) = application.model_state().unwrap();
+    app.application = Some(application);
+    app.trust_prompt = false;
+    let (sender, _events) = super::ui_event_channel();
+    app.event_sender = Some(sender);
+    let mut harness = Harness {
+        app,
+        terminal: Terminal::new(TestBackend::new(100, 30)).unwrap(),
+        project_root,
+        storage_root,
+    };
+    let spec = json!({"objective":"TUI task","acceptance":["human review"],"budget":{"max_tokens":1000000,"max_runs":4,"max_seconds":60,"run_tokens":200000,"run_seconds":20}});
+    harness.type_text(&format!("/task create {spec}"));
+    harness.key(KeyCode::Enter);
+    assert!(harness.app.info_dialog.is_some());
+    assert!(harness.project().contains("TUI task"));
+    harness.key(KeyCode::Esc);
+    harness.type_text("/task check");
+    harness.key(KeyCode::Enter);
+    let Some(super::ContentView::Remote { text, .. }) = &harness.app.content_view else {
+        panic!("task dialog")
+    };
+    let check: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert!(check["task"]["runs"].as_array().unwrap().is_empty());
+    harness.key(KeyCode::Esc);
+    let command = format!(
+        "/task continue {} {} {}",
+        check["task"]["id"].as_str().unwrap(),
+        check["task"]["revision"],
+        check["digest"].as_str().unwrap()
+    );
+    harness.type_text(&command);
+    harness.key(KeyCode::Enter);
+    assert!(harness.app.running, "{}", harness.app.status);
+    harness.key(KeyCode::Esc);
+    harness.app.run_handle.as_ref().unwrap().join().unwrap();
+    let state = harness
+        .app
+        .application
+        .as_ref()
+        .unwrap()
+        .task_state()
+        .unwrap()
+        .unwrap();
+    assert_eq!(state.runs.len(), 1);
+    assert!(state.runs[0].settled);
+}

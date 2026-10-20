@@ -26,6 +26,10 @@ jobs:
           components: clippy, rustfmt
 
       - uses: Swatinem/rust-cache@v2.9.2
+        with:
+          # Do not restore older caches containing target/doc: rust-cache 2.9.2
+          # mistakes rustdoc's source directories named tests for build output.
+          prefix-key: v1-rust-without-doc
 
       - uses: actions/setup-node@v5
         with:
@@ -37,6 +41,14 @@ jobs:
         # install the pinned official web recipe and run the isolated JS component
         # experiment before the ignored MCP tests.
         run: scripts/gates.sh --ci
+
+      # Documentation is checked above, but is not a published CI artifact.
+      # Keep it out of the cache plugin's post-job target traversal, including
+      # when a later gate fails after cargo doc has already succeeded.
+      - name: Exclude generated documentation from Rust cache
+        if: always()
+        shell: bash
+        run: rm -rf -- target/doc
 
   # F-W1（2026-08-22 复核派工）：Windows 测试腿——收口所有
   # `#[cfg(windows)]` 代码与测试的历史性 CI 零覆盖，并完成 FP-05

@@ -36,6 +36,9 @@ mod context;
 mod discovery;
 mod files;
 mod session_organization;
+mod task_recovery;
+#[cfg(test)]
+mod task_recovery_tests;
 mod tasks;
 mod workflow;
 pub use changes::{WorkspaceChanges, WorkspaceDiff, WorkspaceReview};
@@ -277,6 +280,7 @@ pub struct TrustedProjectApplication {
     /// Event-sourced same-session goal state. Only the activation bit is
     /// process-local and is reset on every session boundary.
     goal: Arc<crate::goal::GoalService>,
+    task: Arc<crate::task::TaskService>,
     /// Default-off, process-local gate and bounded run binding for fixed-role
     /// read-only children.
     subagents: Arc<crate::subagent::SubagentService>,

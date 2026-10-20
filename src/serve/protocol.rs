@@ -1012,9 +1012,12 @@ fn command_run(params: &Map<String, Value>, shared: &Arc<ServeShared>) -> Result
         )));
     }
     let words = trimmed.split_whitespace().collect::<Vec<_>>();
-    let wants_goal_run = words.first().copied() == Some("/goal")
-        && (words.get(1).copied() == Some("run")
-            || (words.get(1).copied() == Some("create") && words.contains(&"--run")));
+    let wants_task_run =
+        words.first().copied() == Some("/task") && words.get(1).copied() == Some("continue");
+    let wants_goal_run = wants_task_run
+        || words.first().copied() == Some("/goal")
+            && (words.get(1).copied() == Some("run")
+                || (words.get(1).copied() == Some("create") && words.contains(&"--run")));
     let claimed_goal_run = wants_goal_run.then(|| uuid::Uuid::new_v4().to_string());
     if let Some(rpc_id) = &claimed_goal_run
         && !shared.try_claim_run(rpc_id, super::state::now_ms())
@@ -1030,7 +1033,10 @@ fn command_run(params: &Map<String, Value>, shared: &Arc<ServeShared>) -> Result
             return Err(RpcError::bad_request(error.to_string()));
         }
     };
-    if !matches!(&outcome, crate::CommandOutcome::StartGoalRun { .. }) && claimed_goal_run.is_some()
+    if !matches!(
+        &outcome,
+        crate::CommandOutcome::StartGoalRun { .. } | crate::CommandOutcome::StartTaskRun(_)
+    ) && claimed_goal_run.is_some()
     {
         shared.release_run_claim();
     }
@@ -1050,6 +1056,11 @@ fn command_reply(
         crate::CommandOutcome::ShowMemory(view) => Ok(json!({
             "kind": "memory", "memory": view, "message": view.to_text(),
         })),
+        crate::CommandOutcome::ShowTask(message) => Ok(json!({"kind":"task", "message":message})),
+        crate::CommandOutcome::StartTaskRun(request) => {
+            let id = claimed_goal_run.ok_or_else(|| RpcError::internal("task run lacks claim"))?;
+            start_goal_run(shared, id, Some(request))
+        }
         crate::CommandOutcome::ShowGoal(view) => Ok(json!({
             "kind": "goal", "goal": view, "message": view.to_text(),
         })),
@@ -1066,7 +1077,7 @@ fn command_reply(
             let rpc_id = claimed_goal_run.ok_or_else(|| {
                 RpcError::internal("goal run command reached execution without a run claim")
             })?;
-            start_goal_run(shared, rpc_id)
+            start_goal_run(shared, rpc_id, None)
         }
         crate::CommandOutcome::SessionReset => Ok(json!({ "kind": "session_reset" })),
         crate::CommandOutcome::StartVisionProbe(_) => {
@@ -1089,15 +1100,28 @@ fn command_reply(
     }
 }
 
-fn start_goal_run(shared: &Arc<ServeShared>, rpc_id: String) -> Result<Value, RpcError> {
+fn start_goal_run(
+    shared: &Arc<ServeShared>,
+    rpc_id: String,
+    task: Option<crate::task::TaskResume>,
+) -> Result<Value, RpcError> {
+    let kind = if task.is_some() {
+        "task_run"
+    } else {
+        "goal_run"
+    };
     let (completion_tx, completion_rx) =
         mpsc::channel::<Result<ApplicationRunDone, ApplicationRunFailure>>();
     let started = {
         let mut app = shared.app.lock().expect("application lock");
         // Another client may clear an approved plan between command dispatch
         // and run admission. Describe the state frozen at the actual start.
-        let message = app.goal_run_message();
-        app.start_goal_run(ApplicationRunRequest {
+        let message = if task.is_some() {
+            "Task run started".into()
+        } else {
+            app.goal_run_message()
+        };
+        let request = ApplicationRunRequest {
             message: crate::message::PendingMessage::text(String::new()),
             asker: Some(Arc::new(super::questions::ServeAsker::new(shared))),
             approver: Arc::new(approver::ServeApprover::new(Arc::clone(shared))),
@@ -1105,8 +1129,12 @@ fn start_goal_run(shared: &Arc<ServeShared>, rpc_id: String) -> Result<Value, Rp
                 shared: Arc::clone(shared),
             }),
             completion: completion_tx,
-        })
-        .map(|started| {
+        };
+        let started = match task {
+            Some(task) => app.start_task_run(task, request),
+            None => app.start_goal_run(request),
+        };
+        started.map(|started| {
             shared.publish_run_boundary(&started.0);
             (started, message)
         })
@@ -1114,7 +1142,7 @@ fn start_goal_run(shared: &Arc<ServeShared>, rpc_id: String) -> Result<Value, Rp
     match started {
         Ok(((handle, _), message)) => {
             shared.spawn_settler(rpc_id.clone(), completion_rx, handle);
-            Ok(json!({ "kind": "goal_run", "prompt_rpc_id": rpc_id, "message": message }))
+            Ok(json!({ "kind": kind, "prompt_rpc_id": rpc_id, "message": message }))
         }
         Err(error) => {
             shared.release_run_claim();

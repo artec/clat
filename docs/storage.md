@@ -95,8 +95,9 @@ CLAT's event types, headers, paths, and encoding are compatible with the DSH
 session format.
 
 `/new` may update the workspace's active-session pointer to Fresh, but it does
-not create a session directory or log. The first prompt materializes the new
-session.
+not create a session directory or log. The first prompt or an explicit `/task create` materializes the new
+session. Task creation saves its own durable objective without inventing a user
+chat message.
 
 ### Physical encoding
 
@@ -195,6 +196,7 @@ corrupt or unsupported session fails before the active-session pointer moves.
 The journal folds into independent projections:
 
 - model-context surface;
+- bounded current task progress, operation evidence and budget reservations;
 - human transcript;
 - title;
 - todo state;

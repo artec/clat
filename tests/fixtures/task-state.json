@@ -1,0 +1,30 @@
+{
+  "id": "task-fixture",
+  "project": "/task-fixture",
+  "project_anchor": "0000000000000000000000000000000000000000000000000000000000000000",
+  "session": "test-session",
+  "revision": 1,
+  "objective": "read materials and prepare a report",
+  "acceptance": [
+    "human checks the totals"
+  ],
+  "phase": "paused",
+  "budget": {
+    "max_tokens": 10000,
+    "max_runs": 8,
+    "max_seconds": 60,
+    "run_tokens": 1000,
+    "run_seconds": 10
+  },
+  "progress": {
+    "summary": "",
+    "steps": [],
+    "questions": [],
+    "next": "",
+    "artifacts": [],
+    "jobs": [],
+    "required_tools": []
+  },
+  "runs": [],
+  "operations": []
+}

@@ -100,7 +100,9 @@ impl RunWorker {
     }
     fn prepare_round(&mut self) {
         self.deps.subagent_service.update_turn(self.input.turn);
-        if let Some(compactor) = &self.deps.compactor {
+        if let Some(compactor) = &self.deps.compactor
+            && self.deps.task_service.cap().is_none()
+        {
             let note = run_auto_compaction(
                 compactor.as_ref(),
                 self.deps.sessions.as_ref(),

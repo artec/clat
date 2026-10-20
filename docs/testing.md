@@ -178,7 +178,13 @@ every already-green check without a reason. Test failures are evidence to
 investigate, not permission to retry until green.
 
 Linux CI and the Linux container call `scripts/gates.sh --ci`, the same full
-sequence without xwin. Windows CI still runs native clippy and tests on every
+sequence without xwin. After the Linux CI gates, an always-run step removes
+generated `target/doc` before Rust cache cleanup; rustdoc validation still
+runs in the shared gates. The cache prefix excludes older caches containing
+those docs, which rust-cache 2.9.2 can misidentify as test build directories.
+This cleanup preserves compilation artifacts and does not run locally or in
+the container, where documentation remains available for inspection.
+Windows CI still runs native clippy and tests on every
 PR/main push. Superseded CI runs for the same ref are cancelled. CI has no
 path-based omissions; it remains the safety net for quick-selection misses.
 Both the Linux gate step and the Windows Test step have a 15-minute CI timeout.
@@ -522,3 +528,27 @@ regression requires normal cancellation to settle before projecting an unused,
 still-oversized request, while a maintenance persistence error keeps precedence.
 These contracts establish execution and recovery behavior, not summary quality
 or autonomous task success rates with a real provider.
+
+## Durable task recovery (GA-1)
+
+Use `scripts/gates.sh task:: application::task_recovery_tests::` for task state,
+admission/CAS, full-fold/checkpoint parity, capability-relative artifact checks,
+conservative intent/result crash windows, explicit human resolution and reserved
+budget accounting. The Application scenarios use scripted Providers and temporary
+projects; the report scenario reads materials, produces a CSV, exits/reopens and
+explicitly continues to a report while preserving prior bytes and operation
+counts. Internal compaction must preserve questions, task facts and usage.
+The rework regressions cover Goal create/resume/arm/run exclusion (including
+unarmed creation and cold conflicting state), failed Skill resolution before
+admission, crashes before/after admission but before the task turn binding,
+binding persistence failure, and verified/unverified/text-model tool visibility.
+Model changes must invalidate old recovery checks without executing a request.
+
+Run `scripts/gates.sh exec::tests::ga1 serve::tests::ga1 tui::snapshot_tests::ga1`
+for the actual headless, local-socket command/SSE and terminal-command mappings.
+These are deterministic product-contract checks, not evidence of improved real
+model autonomy or an external job provider's behavior. Job recovery uses an
+injected local fake, with unavailable/disconnected/expired/deadline/cancel cases.
+Fault and deliberate-defect checks must retain the first failing output and
+restore source using reverse patches. A green compile is not runtime evidence.
+Do not run full release gates or touch the live host for this development task.

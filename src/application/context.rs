@@ -61,6 +61,7 @@ impl TrustedProjectApplication {
             invoked_skill,
             crate::memory::MemoryInjection::default(),
             goal,
+            self.task.injection().map_err(ApplicationError::new)?,
         );
         let final_system = crate::plugins::services::compose_instructions(
             &run_context.instructions.with_goal,
@@ -78,13 +79,7 @@ impl TrustedProjectApplication {
         let invoked_total = estimate_instructions(&run_context.instructions.with_invoked);
         let goal_total = estimate_instructions(&run_context.instructions.with_goal);
         let system_total = estimate_instructions(&final_system);
-        let model_options = crate::model::ModelOptions {
-            output_limit: config.output_limit,
-            temperature: config.temperature,
-            parallel_tool_calls: config.request_parallel_tool_calls(),
-            image_projection: Some(crate::model::ImageProjectionBudget::for_config(&config)),
-            ..crate::model::ModelOptions::default()
-        };
+        let model_options = context_model_options(&config);
         let (projected_history, image_projection) = crate::model::project_items_for_image_budget(
             &history,
             (!final_system.is_empty()).then_some(final_system.as_str()),
@@ -143,5 +138,15 @@ impl TrustedProjectApplication {
                 diagnostics
             },
         })
+    }
+}
+
+fn context_model_options(config: &crate::model::ModelConfig) -> crate::model::ModelOptions {
+    crate::model::ModelOptions {
+        output_limit: config.output_limit,
+        temperature: config.temperature,
+        parallel_tool_calls: config.request_parallel_tool_calls(),
+        image_projection: Some(crate::model::ImageProjectionBudget::for_config(config)),
+        ..crate::model::ModelOptions::default()
     }
 }

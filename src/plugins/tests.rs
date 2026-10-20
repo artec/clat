@@ -118,6 +118,7 @@ fn one_catalog_entry_composes_typed_service_tool_and_reversible_middleware() {
     let cancel = CancelToken::new();
     let fallback = ExtensionTool;
     let invocation = ToolInvocation {
+        call_id: None,
         tool: &fallback,
         arguments: &json!({}),
         project: &project,

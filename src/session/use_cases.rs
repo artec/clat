@@ -11,6 +11,7 @@ mod attachments;
 mod folding_journal;
 mod history;
 mod lifecycle;
+mod task;
 mod utility;
 use active::{ActiveSession, checkpoint_active, fold_if_behind};
 use folding_journal::ProjectionFoldJournal;

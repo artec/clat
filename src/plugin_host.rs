@@ -787,6 +787,7 @@ impl PluginHostBridge {
         services
             .pipeline
             .execute(&ToolInvocation {
+                call_id: None,
                 tool: tool.as_ref(),
                 arguments: &call.arguments,
                 project: &services.project,

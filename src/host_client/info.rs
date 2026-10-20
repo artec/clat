@@ -12,6 +12,8 @@ impl HostClient {
             "/skill" | "/skills" => Some("/skill"),
             "/mem" | "/memory" => Some("/mem"),
             "/goal" => Some("/goal"),
+            "/task" | "/task show" => Some("/task"),
+            "/task check" => Some("/task check"),
             "/sub" | "/subagents" => Some("/sub"),
             _ => None,
         }

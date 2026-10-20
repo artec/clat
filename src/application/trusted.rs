@@ -164,6 +164,7 @@ impl TrustedProjectApplication {
             invoked_skill: None,
             memory: ports.memory,
             goal: ports.goal,
+            task: ports.task,
             subagents: ports.subagents,
             commands: ports.commands,
             agent: ports.agent,
@@ -409,6 +410,7 @@ impl TrustedProjectApplication {
         arm: bool,
     ) -> Result<crate::goal::GoalView, ApplicationError> {
         self.reject_session_switch_while_busy()?;
+        self.check_goal_task_exclusion()?;
         if arm {
             self.check_goal_activation()?;
         }
@@ -443,6 +445,7 @@ impl TrustedProjectApplication {
         expected_revision: u64,
     ) -> Result<crate::goal::GoalView, ApplicationError> {
         self.reject_session_switch_while_busy()?;
+        self.check_goal_task_exclusion()?;
         self.goal
             .resume(expected_revision)
             .map_err(ApplicationError::new)
@@ -572,6 +575,7 @@ impl TrustedProjectApplication {
 
     /// Read-only preflight also used by headless before rejecting interactive runs.
     pub fn check_goal_activation(&self) -> Result<(), ApplicationError> {
+        self.check_goal_task_exclusion()?;
         if self.plan_mode_active() {
             return Err(ApplicationError::new(
                 "exit plan mode first (/plan off) before arming the goal",

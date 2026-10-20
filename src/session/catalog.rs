@@ -100,6 +100,7 @@ macro_rules! vocabulary {
 vocabulary! {
     "agent-preset/selected" => (None, false, Skip, false),
     "clat/budget" => (None, false, Skip, false),
+    "clat/task" => (Some(validation::task), false, Skip, false),
     "clat/subagent" => (Some(validation::subagent), false, Skip, false),
     "agent/inbox/spliced" => (None, false, Skip, false),
     "approval/asked" => (Some(validation::approval), false, ApprovalAsked, false),
@@ -197,13 +198,13 @@ mod tests {
         // The upstream set is sorted; every entry is known and the surface
         // subset is exactly the four message types (v3 adds the protected
         // system head).
-        assert_eq!(KNOWN_EVENT_TYPES.len(), 64);
+        assert_eq!(KNOWN_EVENT_TYPES.len(), 65);
         assert_eq!(
             KNOWN_EVENT_TYPES
                 .iter()
                 .collect::<std::collections::BTreeSet<_>>()
                 .len(),
-            64,
+            65,
             "each vocabulary seat must be unique"
         );
         assert!(is_known_type("user/message"));

@@ -39,6 +39,7 @@ mod search;
 pub mod serve;
 mod skills;
 pub mod subagent;
+pub mod task;
 // DSH-compatible session stack (docs/todo/dsh-session-persistence.md):
 // session facts live exclusively in these logs since the stage-5 cutover.
 // Format-documentation items (catalog constants, layout helpers) exceed the

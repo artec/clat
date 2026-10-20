@@ -44,6 +44,7 @@ impl ProjectionRegistry {
                 Box::new(PermissionModeUnit::default()),
                 Box::new(PlanModeUnit::default()),
                 Box::new(GoalUnit::default()),
+                Box::new(crate::task::projection::TaskUnit::default()),
                 Box::new(SubagentUnit::default()),
                 Box::new(ReceiptUnit::default()),
                 Box::new(TodoUnit::default()),

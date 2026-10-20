@@ -84,6 +84,8 @@ pub struct CommandInfo {
 pub enum CommandOutcome {
     /// 纯信息性消息（前端以状态提示呈现）。
     Status(String),
+    ShowTask(String),
+    StartTaskRun(crate::task::TaskResume),
     /// `/help`：携带完整命令目录，帮助表从载荷派生。
     ShowHelp {
         commands: Vec<CommandInfo>,
@@ -138,6 +140,8 @@ impl fmt::Debug for CommandOutcome {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::Status(_) => "Status(..)",
+            Self::ShowTask(_) => "ShowTask(..)",
+            Self::StartTaskRun(_) => "StartTaskRun(..)",
             Self::ShowHelp { .. } => "ShowHelp { .. }",
             Self::ShowMcpStatus(_) => "ShowMcpStatus(..)",
             Self::ShowSkills(_) => "ShowSkills(..)",

@@ -25,7 +25,10 @@ impl TrustedProjectApplication {
         // authority, matching DSH goal-round-driver's competing prompt fence.
         self.goal.disarm();
         let client_message_id = request.message.client_message_id.clone();
-        let cancel = CancelToken::new();
+        let cancel = self
+            .task
+            .deadline()
+            .map_or_else(CancelToken::new, CancelToken::with_deadline);
         let catalog = run_catalog(cancel.clone(), Arc::clone(&request.approver));
         self.start_run_with_catalog(request, catalog, None)
             .map_err(|error| {
@@ -299,6 +302,9 @@ impl TrustedProjectApplication {
         run_plugins: Vec<Arc<dyn Plugin>>,
         goal_round: Option<crate::goal::GoalRound>,
     ) -> Result<RunHandle, ApplicationError> {
+        self.task
+            .ensure_start_allowed()
+            .map_err(ApplicationError::new)?;
         if let Some(previous) = self
             .active_run
             .as_ref()
@@ -358,39 +364,8 @@ impl TrustedProjectApplication {
             .snapshot()
             .map_err(ApplicationError::new)?;
         let skill_snapshot = self.skills.snapshot().map_err(ApplicationError::new)?;
-        // SC-2：消费 `/skill <name>` 武装的一次性显式调用，针对本 run 冻
-        // 结 catalog 解析。解析发生在 admission 之前——过期的武装快速失
-        // 败，不留任何耐久用户事实；武装位无论成败都在此取走（失败后重
-        // 新提交即普通 run，不会反复中毒）。
-        let invoked_skill = match self.invoked_skill.take() {
-            Some(name) => Some(
-                self.skills
-                    .resolve_invoked(&skill_snapshot, &name)
-                    .map_err(|error| {
-                        ApplicationError::new(format!(
-                            "invoked skill `{name}` is unavailable: {error}; \
-                             run /skill to pick another"
-                        ))
-                    })?,
-            ),
-            None => None,
-        };
-        let memory_query = request.message.content.plain_text();
-        // Image-only is a valid multimodal user message. Memory retrieval is
-        // text-indexed, so use a stable semantic sentinel rather than letting
-        // its non-empty query guard reject the entire run before admission.
-        let memory_query = if memory_query.is_empty()
-            && (!request.message.staged_attachments.is_empty()
-                || request.message.content.has_images())
-        {
-            "[image-only user message]"
-        } else {
-            memory_query.as_str()
-        };
-        let memory_injection = self
-            .memory
-            .injection(memory_query)
-            .map_err(ApplicationError::new)?;
+        let invoked_skill = self.take_invoked_skill(&skill_snapshot)?;
+        let memory_injection = self.memory_for_message(&request.message)?;
         let ApplicationRunRequest {
             message: request_message,
             approver,
@@ -435,13 +410,16 @@ impl TrustedProjectApplication {
                 .map(|receipt| Box::new((*receipt).with_failure_phase(phase)));
             error.with_receipt(failed_receipt)
         };
-        let goal_injection = match self.goal.injection().map_err(ApplicationError::new) {
+        let (goal_injection, task_injection) = match self
+            .admitted_workflow_injection(prepared.turn)
+            .map_err(ApplicationError::new)
+        {
             Ok(injection) => injection,
             Err(error) => {
                 waiting_execution.abort().map_err(|join_error| {
                     post_commit_start_error(join_error, "worker-start-cleanup")
                 })?;
-                return Err(post_commit_start_error(error, "goal-injection"));
+                return Err(post_commit_start_error(error, "workflow-injection"));
             }
         };
         let context = self.run_context_snapshot(
@@ -450,6 +428,7 @@ impl TrustedProjectApplication {
             invoked_skill,
             memory_injection,
             goal_injection,
+            task_injection,
         );
         let request_header =
             self.request_header_data(&config, &context, instruction_snapshot.as_ref());
@@ -829,4 +808,49 @@ fn wait_for_sealed_wrapup(previous: &RunHandle) -> bool {
         std::thread::sleep(std::time::Duration::from_millis(2));
     }
     true
+}
+
+impl TrustedProjectApplication {
+    fn memory_for_message(
+        &self,
+        message: &crate::message::PendingMessage,
+    ) -> Result<crate::memory::MemoryInjection, ApplicationError> {
+        let memory_query = message.content.plain_text();
+        // Image-only is a valid multimodal user message. Memory retrieval is
+        // text-indexed, so use a stable semantic sentinel rather than letting
+        // its non-empty query guard reject the entire run before admission.
+        let memory_query = if memory_query.is_empty()
+            && (!message.staged_attachments.is_empty() || message.content.has_images())
+        {
+            "[image-only user message]"
+        } else {
+            memory_query.as_str()
+        };
+        self.memory
+            .injection(memory_query)
+            .map_err(ApplicationError::new)
+    }
+}
+
+impl TrustedProjectApplication {
+    fn take_invoked_skill(
+        &mut self,
+        skill_snapshot: &crate::skills::SkillCatalogSnapshot,
+    ) -> Result<Option<crate::skills::InvokedSkill>, ApplicationError> {
+        // SC-2：消费 `/skill <name>` 武装的一次性显式调用，针对本 run 冻
+        // 结 catalog 解析。解析发生在 admission 之前——过期的武装快速失
+        // 败，不留任何耐久用户事实；武装位无论成败都在此取走（失败后重
+        // 新提交即普通 run，不会反复中毒）。
+        Ok(match self.invoked_skill.take() {
+            Some(name) => Some(self.skills.resolve_invoked(skill_snapshot, &name).map_err(
+                |error| {
+                    ApplicationError::new(format!(
+                        "invoked skill `{name}` is unavailable: {error}; \
+                             run /skill to pick another"
+                    ))
+                },
+            )?),
+            None => None,
+        })
+    }
 }
