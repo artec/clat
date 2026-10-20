@@ -72,6 +72,7 @@ pub fn run_demo(
         .into();
     let output = agent
         .execute(AgentRequest {
+            context_manager: None,
             credentials: ProviderCredentials::for_protocol(config.protocol),
             spend_ledger: None,
             config,

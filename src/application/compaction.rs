@@ -13,6 +13,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
+mod active;
+mod alignment;
+pub(super) use active::ActiveContext;
+
 use super::*;
 
 impl TrustedProjectApplication {
@@ -78,15 +82,14 @@ impl TrustedProjectApplication {
                             item: item.clone(),
                         })
                         .collect();
-                    let outcome = compactor.compact(CompactionRequest {
-                        config: &config,
-                        credentials: &credentials,
-                        nodes: &compaction_nodes,
-                        instructions: String::new(),
-                        tool_definitions: Vec::new(),
-                        force: true,
-                        cancel: cancel.clone(),
-                    });
+                    let outcome = compact_history(
+                        compactor.as_ref(),
+                        &config,
+                        &credentials,
+                        &compaction_nodes,
+                        true,
+                        &cancel,
+                    );
                     let summary = outcome.summary.as_deref().ok_or_else(|| {
                         outcome
                             .degraded
@@ -190,12 +193,13 @@ fn write_compaction_events(
     outcome: &CompactionOutcome,
     config: &ModelConfig,
     turn: u64,
-) -> Result<(), String> {
+) -> Result<u64, String> {
     if shadowed.is_empty() {
         return Err("compaction shadowed an empty range".into());
     }
     let compaction_id = uuid::Uuid::new_v4().to_string();
-    let seqs: Vec<u64> = shadowed.iter().map(|node| node.seq).collect();
+    let mut seqs: Vec<u64> = shadowed.iter().map(|node| node.seq).collect();
+    seqs.dedup();
     let range = (seqs[0], seqs[seqs.len() - 1]);
     let usage = json!({
         "inputTokens": outcome.usage.input_tokens,
@@ -230,8 +234,29 @@ fn write_compaction_events(
         )
         .log_only(),
     ];
-    journal.append_atomic(&family)?;
-    journal.flush()
+    let committed = journal.append_atomic_durable(&family)?;
+    Ok(committed.start + 2)
+}
+
+fn compact_history(
+    compactor: &dyn HistoryCompactor,
+    config: &ModelConfig,
+    credentials: &ProviderCredentials,
+    nodes: &[CompactionNode],
+    force: bool,
+    cancel: &CancelToken,
+) -> CompactionOutcome {
+    compactor.compact(CompactionRequest {
+        config,
+        credentials,
+        nodes,
+        active_checkpoints: None,
+        spend_ledger: None,
+        instructions: String::new(),
+        tool_definitions: Vec::new(),
+        force,
+        cancel: cancel.clone(),
+    })
 }
 
 /// 自动压缩的 worker 侧执行；返回 `(note, succeeded)` 或 None（无事发生）。
@@ -255,15 +280,14 @@ pub(super) fn run_auto_compaction(
             item: item.clone(),
         })
         .collect();
-    let outcome = compactor.compact(CompactionRequest {
+    let outcome = compact_history(
+        compactor,
         config,
         credentials,
-        nodes: &compaction_nodes,
-        instructions: String::new(),
-        tool_definitions: Vec::new(),
-        force: false,
-        cancel: cancel.clone(),
-    });
+        &compaction_nodes,
+        false,
+        cancel,
+    );
     match &outcome.summary {
         Some(summary) => {
             let shadowed = &compaction_nodes[..outcome.shadowed_count.min(compaction_nodes.len())];
@@ -281,7 +305,7 @@ pub(super) fn run_auto_compaction(
                 write_compaction_events(journal, shadowed, summary, &outcome, config, turn);
             let _ = sessions.sync_active();
             match written {
-                Ok(()) => Some((
+                Ok(_) => Some((
                     format!(
                         "compacted history: shadowed {} events",
                         outcome.shadowed_count

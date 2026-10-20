@@ -33,7 +33,10 @@ impl Run<'_> {
         }
         Ok(())
     }
-    pub(super) fn prepare_request(&self, items: &[ModelItem]) -> Result<RequestInputs, String> {
+    pub(super) fn prepare_request(
+        &mut self,
+        state: &mut StepState,
+    ) -> Result<RequestInputs, String> {
         let snapshot = self
             .dynamic_instructions
             .as_ref()
@@ -50,8 +53,27 @@ impl Run<'_> {
             || self.tools.definitions_for(&self.tool_access),
             |defs| defs.to_vec(),
         );
+        if let Some(manager) = &mut self.context_manager {
+            manager.maintain(
+                &mut state.items,
+                &mut state.usage,
+                instructions.as_deref(),
+                &definitions,
+                &self.model_options,
+            )?;
+        }
+        // Maintenance can be cancelled while the old context is still oversized.
+        // The loop settles cancellation before dispatch; do not preflight or reserve
+        // an unused request. Maintenance errors above still retain failure precedence.
+        if self.cancel.is_cancelled() {
+            return Ok(RequestInputs {
+                instructions,
+                definitions,
+                items: Vec::new(),
+            });
+        }
         let (items, _) = crate::model::project_items_for_image_budget(
-            items,
+            &state.items,
             instructions.as_deref(),
             &definitions,
             &self.model_options,

@@ -33,7 +33,7 @@ image=clat-ci-box:${toolchain}
 echo "== Linux CI 盒子：${image}（rust:${toolchain}-bookworm 基座），--cpus=${cpus}"
 docker build -q -f scripts/ci-box/Dockerfile --build-arg CHANNEL="$toolchain" -t "$image" scripts/ci-box >/dev/null
 
-docker run --rm --cpus "$cpus" \
+python3 scripts/ci-box/source-files.py | docker run --rm -i --cpus "$cpus" \
     -v "$PWD":/src:ro \
     -v clat-ci-box-cargo:/cargo-cache \
     -v clat-ci-box-npm:/npm-cache \
@@ -45,10 +45,9 @@ docker run --rm --cpus "$cpus" \
     "$image" \
     bash -c '
         set -euo pipefail
-        # 源码拷进可写层：剔除平台产物、正在写入的验证日志和本机秘密。
-        (cd /src && tar --exclude=target --exclude=.git --exclude=node_modules \
-            --exclude=output --exclude=.codegraph --exclude=.release-secrets \
-            -cf - -- * .??*) | tar -xf -
+        # NUL 文件清单来自宿主 Git：包含当前未忽略的新文件，排除历史
+        # ignored 快照/构建产物；tracked deletion 不复活，名字不按行拆。
+        (cd /src && tar --null --no-recursion -T - -cf -) | tar -xf -
         export CARGO_TARGET_DIR=/target
         scripts/gates.sh --ci
     '

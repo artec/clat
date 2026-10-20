@@ -177,6 +177,7 @@ impl AgentRuntime for DefaultAgentRuntime {
             permissions.as_ref(),
             &self.project,
         )
+        .with_context_manager(request.context_manager)
         .with_model_options(options)
         .with_spend_ledger(request.spend_ledger.clone())
         .with_cancel_token(request.cancel)

@@ -68,6 +68,15 @@ Production lease acquisition remains one-shot and fail-closed; fixture fixes
 must not add sleeps or silently retry a busy root. The fixture structure and
 retained cross-thread exclusion have a regression guard.
 
+Process cleanup fixtures distinguish readiness from cancellation: wait for the
+complete child-ready marker with a bounded deadline and report early child
+exit, then keep the child waiting until owner cleanup. The cleanup assertion
+must run before that child's fallback deadline, and the control arm must never
+start. Capture-limit fixtures first establish executable readiness with a
+bounded ready request, then keep the original byte and timeout budgets for the
+measured calls. Controlled slow-start cases ensure first-launch delays cannot
+masquerade as cancellation or byte-limit failures.
+
 Process-recovery fixtures must finish children without consuming the output
 whose retention they assert. The AG5 recovery test holds a child on stdin,
 releases it explicitly, then waits with a zero-byte read budget; repeated
@@ -189,6 +198,14 @@ the native windows-latest CI result after the owner's commit and push.
 remote release verification (its only flag is `--cpus N`). During
 development, select only the affected platform tests; do not launch the full
 container gate for every platform-related edit.
+The container source export uses Git's tracked files and visible untracked
+files, preserving current modifications and deletions. Ignored historical
+worktree copies and build outputs are excluded before the Git-less container
+runs source scanners; tracked fixtures remain included even if an ignore rule
+matches them. A NUL-delimited manifest preserves unusual filenames and symlinks.
+The exporter requires Git rather than silently falling back to an unfiltered
+workspace copy. `python3 -m unittest discover -s scripts -p test_ci_box_sources.py`
+checks this contract; both full and CI gates run it through their shared script.
 `scripts/gates.sh --stress N` remains available for a
 specific diagnosed timing concern, rather than routine repeated full runs.
 DSH checkout oracles remain opt-in with `DSH_CHECKOUT`; real-model/device
@@ -478,3 +495,30 @@ and raw-record recomputation. Run its Python contracts explicitly with
 require separate owner authorization and verified candidate isolation. A scripted
 control or historical reference-fix result must not be reported as a model
 success rate or capability improvement.
+
+## In-run context maintenance
+
+Run the deterministic context-maintenance contracts with:
+
+```bash
+scripts/gates.sh application::tests::active_compaction plugins::conversation::compaction application::compaction::alignment::tests
+```
+
+The Application cases drive the production provider registry, retry wrapper,
+Agent loop, native file tools, compactor, recorder, durable admission and cold
+session replay. They cover a single user turn with repeated parallel tool
+batches and multiple checkpoints; steering arriving during a summary; no
+summary below pressure; summary refusal, cancellation through the actual run
+handle, shared cumulative budget, and an injected persistence failure.
+Original tool observations stay in the log and untouched live tool results
+remain structured JSON. The fixtures use temporary project/storage roots and
+a scripted provider; they do not call a real model or the resident Host.
+
+The conversation/alignment cases cover complete call/result batches, protected
+users and owned checkpoint identities, duplicate/missing anchors, unchanged
+image/provider-state tails, UTF-8 chunk reconstruction including tail evidence,
+and actual/fallback accounting for repeated summary attempts. A cancellation
+regression requires normal cancellation to settle before projecting an unused,
+still-oversized request, while a maintenance persistence error keeps precedence.
+These contracts establish execution and recovery behavior, not summary quality
+or autonomous task success rates with a real provider.

@@ -12,11 +12,13 @@ use crate::project::Project;
 use crate::tool::{ToolExecutionPipeline, ToolInvocation, ToolRegistry, ToolResult};
 use std::fmt;
 
+mod context;
 mod request;
 mod response;
 mod state;
 mod steering;
 mod tools;
+pub(crate) use context::RequestContextManager;
 use state::StepState;
 use steering::SteeringSealGuard;
 pub(crate) use steering::{PushOutcome, SteeringQueue};
@@ -28,6 +30,7 @@ pub(crate) struct Run<'a> {
     project: &'a Project,
     instructions: Option<String>,
     dynamic_instructions: Option<std::sync::Arc<dyn crate::plugins::services::DynamicInstructions>>,
+    context_manager: Option<Box<dyn RequestContextManager>>,
     model_options: ModelOptions,
     cancel: CancelToken,
     steering: SteeringQueue,
@@ -58,6 +61,7 @@ impl<'a> Run<'a> {
             project,
             instructions: None,
             dynamic_instructions: None,
+            context_manager: None,
             model_options: ModelOptions::default(),
             cancel: CancelToken::new(),
             steering: SteeringQueue::new(),
@@ -79,6 +83,14 @@ impl<'a> Run<'a> {
         source: std::sync::Arc<dyn crate::plugins::services::DynamicInstructions>,
     ) -> Self {
         self.dynamic_instructions = Some(source);
+        self
+    }
+
+    pub(crate) fn with_context_manager(
+        mut self,
+        manager: Option<Box<dyn RequestContextManager>>,
+    ) -> Self {
+        self.context_manager = manager;
         self
     }
 
@@ -216,9 +228,13 @@ impl<'a> Run<'a> {
                 return Ok(state.cancel(events, &self.steering, String::new()));
             }
             self.claim_steering(&mut state, events)?;
-            let request = self
-                .prepare_request(&state.items)
-                .map_err(|error| state.fail(events, &self.steering, error))?;
+            let request = match self.prepare_request(&mut state) {
+                Ok(request) => request,
+                Err(error) => return Err(state.fail(events, &self.steering, error)),
+            };
+            if self.cancel.is_cancelled() {
+                return Ok(state.cancel(events, &self.steering, String::new()));
+            }
             let response = self.model_step(request, &mut state, events)?;
             if let Some(done) = self.finish_response(&response, &mut state, events)? {
                 return Ok(done);

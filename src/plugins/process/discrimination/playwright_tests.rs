@@ -18,7 +18,17 @@ fn fixture(failed: bool) -> (Fixture, Value) {
     std::fs::write(
         &source,
         r#"fn main() {
+        if let Ok(delay) = std::fs::read_to_string("startup-delay-ms") {
+            std::thread::sleep(std::time::Duration::from_millis(delay.parse().unwrap()));
+        }
         std::fs::write("ran", "yes").unwrap();
+        if std::path::Path::new("hold-until-cleanup").exists() {
+            let deadline=std::time::Instant::now()+std::time::Duration::from_secs(60);
+            while std::time::Instant::now()<deadline {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            panic!("owner cleanup did not stop the candidate");
+        }
         if std::path::Path::new("mutate").exists() {std::fs::write("bound.bin","changed while running").unwrap();}
         if let Ok(other) = std::fs::read_to_string("mutate-other") {std::fs::write(std::path::Path::new(&other).join("bound.bin"),"cross-arm drift").unwrap();}
         if std::path::Path::new("wait").exists() {std::thread::sleep(std::time::Duration::from_secs(5));}
@@ -266,8 +276,22 @@ mod loop_tests;
 
 #[test]
 fn ag10_playwright_pair_owner_cleanup_interrupts_candidate_without_starting_control() {
+    owner_cleanup_case(0);
+}
+
+#[test]
+fn ag10_owner_cleanup_waits_for_slow_start_without_confusing_it_with_cancellation() {
+    owner_cleanup_case(4000);
+}
+
+fn owner_cleanup_case(startup_delay_ms: u64) {
     let (mut f, args) = fixture(true);
-    std::fs::write(f.root.join("candidate/wait"), "").unwrap();
+    std::fs::write(f.root.join("candidate/hold-until-cleanup"), "").unwrap();
+    std::fs::write(
+        f.root.join("candidate/startup-delay-ms"),
+        startup_delay_ms.to_string(),
+    )
+    .unwrap();
     let tool = f
         .manager
         .require(TOOL_SERVICE)
@@ -278,22 +302,46 @@ fn ag10_playwright_pair_owner_cleanup_interrupts_candidate_without_starting_cont
     let a = args.clone();
     let project = Project::new(&f.root);
     let job = std::thread::spawn(move || prepared.tool.invoke(&a, &project, &CancelToken::new()));
-    let deadline = std::time::Instant::now() + Duration::from_secs(3);
-    while !f.root.join("candidate/ran").exists() && std::time::Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    assert!(
-        f.root.join("candidate/ran").exists(),
-        "candidate must actually start before cancellation"
-    );
+    let job = await_candidate_ready(&f.root, job);
+    let cancelled_at = std::time::Instant::now();
     f.service.unbind_run(f.generation).unwrap();
     let outcome = job.join().unwrap();
+    assert!(
+        cancelled_at.elapsed() < Duration::from_secs(5),
+        "owner cleanup must interrupt the held candidate, not wait for its 60-second deadline"
+    );
     assert!(outcome.is_err() || outcome.as_ref().unwrap()["status"] == "inconclusive");
     assert!(!f.root.join("counterexample/ran").exists());
     f.generation = f
         .service
         .bind_run("after-cleanup", CancelToken::new())
         .unwrap();
+}
+
+fn await_candidate_ready(
+    root: &std::path::Path,
+    job: std::thread::JoinHandle<Result<Value, ToolError>>,
+) -> std::thread::JoinHandle<Result<Value, ToolError>> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        if matches!(
+            std::fs::read_to_string(root.join("candidate/ran")).as_deref(),
+            Ok("yes")
+        ) {
+            return job;
+        }
+        if job.is_finished() {
+            panic!(
+                "candidate exited before readiness: {:?}",
+                job.join().unwrap()
+            );
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "candidate must actually start before cancellation (readiness deadline exceeded)"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 #[test]

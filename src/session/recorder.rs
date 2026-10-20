@@ -469,6 +469,16 @@ impl SessionRecorder {
         )
     }
 
+    /// A compaction boundary closes a complete step, without ending the user turn.
+    pub(crate) fn prepare_context_boundary(&mut self) -> Result<(), String> {
+        self.close_open_step();
+        for event in self.budget.crossing_events(None, 0) {
+            self.append_quietly(event);
+        }
+        self.flush_quietly();
+        self.journal_error.clone().map_or(Ok(()), Err)
+    }
+
     /// Emit `step/end` for the open step, keeping any partial assistant
     /// message first: a step cut short by a stream failure still keeps the
     /// partial text the UI already showed (the same guarantee `finish`

@@ -143,16 +143,13 @@ fn image_projection_totals(items: &[ModelItem]) -> (u64, u64, u64) {
     (images, bytes, tokens)
 }
 
-fn image_projection_token_limit(
-    budget: &ImageProjectionBudget,
-    output_limit: Option<u32>,
-) -> Option<u64> {
-    let window = u64::from(budget.max_context_tokens?);
-    // Quantize the 80% pressure line so small estimator/config changes do not
-    // churn the provider prefix. Output reserve belongs inside the same line.
-    let pressure = window.saturating_mul(8) / 10;
-    let quantized = pressure / IMAGE_OFFLOAD_QUANTUM_TOKENS * IMAGE_OFFLOAD_QUANTUM_TOKENS;
-    Some(quantized.saturating_sub(u64::from(output_limit.unwrap_or(4096))))
+impl ImageProjectionBudget {
+    /// The common request pressure line, including the output reserve.
+    pub(crate) fn request_token_limit(&self) -> Option<u64> {
+        let window = u64::from(self.max_context_tokens?);
+        let pressure = window.saturating_mul(8) / 10;
+        Some(pressure / IMAGE_OFFLOAD_QUANTUM_TOKENS * IMAGE_OFFLOAD_QUANTUM_TOKENS)
+    }
 }
 
 fn image_projection_is_over_budget(
@@ -166,8 +163,10 @@ fn image_projection_is_over_budget(
     if images > budget.max_request_images as u64 || bytes > budget.max_request_image_bytes {
         return true;
     }
-    image_projection_token_limit(budget, options.output_limit)
-        .is_some_and(|limit| estimate_request_tokens(instructions, items, tools) > limit)
+    budget.request_token_limit().is_some_and(|limit| {
+        let input_limit = limit.saturating_sub(u64::from(options.output_limit.unwrap_or(4096)));
+        estimate_request_tokens(instructions, items, tools) > input_limit
+    })
 }
 
 fn replace_oldest_image(item: &mut ModelItem) -> bool {

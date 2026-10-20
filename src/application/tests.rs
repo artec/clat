@@ -1,3 +1,5 @@
+#[path = "active_compaction_tests.rs"]
+mod active_compaction;
 #[path = "agent_evidence_tests.rs"]
 mod agent_evidence;
 #[path = "argument_recovery_tests.rs"]

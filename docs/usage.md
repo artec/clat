@@ -624,9 +624,37 @@ bounded by context compaction, per-request response limits, and your real
 provider quota.
 
 Context pressure is handled separately. Presets seed a context window, and
-automatic compaction triggers near 80% of it. `/compact` forces the same
-process manually. Compaction changes model context, not the human-readable
-transcript or the authoritative journal.
+automatic compaction checks run both at run/Goal-round startup and before every
+model request inside a long task, near the shared 80% request-pressure line
+(including instructions, visible tools, and output reserve). A single user turn
+can therefore continue through many model/tool exchanges without waiting for a
+new user message to reclaim context. Without a configured or preset context
+window, CLAT does not invent an automatic compaction threshold.
+
+In-run compaction keeps genuine user messages and steering inputs verbatim,
+retains the newest complete tool exchange, and summarizes older complete
+exchanges without splitting a model response's tool-call/result pairs. Earlier
+checkpoints made during that run can be summarized again. Summary input is
+split into bounded, lossless text chunks rather than taking just the first
+2,000 characters of each item. The handoff asks for decisions, observed results,
+evidence references, unresolved issues, and next steps. Summarization remains
+lossy; original observations are available in the journal. Images in summarized
+exchanges are represented by image notices, not re-sent to the summary model.
+
+Internal summary attempts share the run's cancellation signal and cumulative
+token budget, including retries. Missing provider usage is charged using the
+conservative request estimate and output reserve. Each request boundary allows
+at most four shrinking checkpoint passes; each pass retains the existing
+60-second deadline and eight-attempt summary limit. An exchange too large for
+that bounded summary work is left intact. If no safe reduction fits the frozen
+request budget, CLAT stops before the next provider request with an explanation.
+A summary failure leaves context intact; a persistence failure stops execution
+without repeating tools already executed.
+
+`/compact` still manually summarizes older user turns while no run is active.
+Compaction appends summary and replacement events after durable admission; it
+keeps the original journal events and human-readable transcript. Untouched live
+tool results and image blocks retain their existing model projection.
 
 ### Attached terminal information dialogs
 

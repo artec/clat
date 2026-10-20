@@ -498,6 +498,7 @@ impl PromptLease {
 }
 
 pub(crate) struct AgentRequest {
+    pub context_manager: Option<Box<dyn crate::run::RequestContextManager>>,
     pub config: ModelConfig,
     /// B1/F-1：花费护栏共享账本（None = 无护栏——demo/测试）。
     pub spend_ledger: Option<Arc<crate::model::RunSpendLedger>>,
@@ -766,6 +767,9 @@ pub(crate) struct CompactionRequest<'a> {
     pub config: &'a ModelConfig,
     pub credentials: &'a ProviderCredentials,
     pub nodes: &'a [CompactionNode],
+    /// Some enables complete-exchange cuts; only these checkpoint users may be replaced.
+    pub active_checkpoints: Option<&'a [u64]>,
+    pub spend_ledger: Option<Arc<crate::model::RunSpendLedger>>,
     pub instructions: String,
     pub tool_definitions: Vec<crate::tool::ToolDefinition>,
     /// `/compact` 手动路径为 true：无视阈值强制压缩。
@@ -775,12 +779,13 @@ pub(crate) struct CompactionRequest<'a> {
 
 /// 压缩结果（事件原生版）：`summary` 为 Some 表示本次产生了新摘要，
 /// Application 须把 compaction 事件族 + replace 载体经 RunJournal 原子
-/// 写入并 flush；`degraded` 为 Some 表示摘要请求失败，已按 INV-C2 降
-/// 级（绝不追加 replace，继续使用最后耐久 surface）。`shadowed_count`
-/// 是被遮蔽节点数（nodes 前缀 [0..shadowed_count)）。
+/// 写入并 flush；`degraded` 为 Some 表示没有可用摘要，不追加 replace。
+/// 运行中的请求仍须通过上下文和花费预算检查。`shadowed_count`
+/// 是从 shadowed_start 开始的被遮蔽节点数。
 #[derive(Debug, Default)]
 pub(crate) struct CompactionOutcome {
     pub summary: Option<String>,
+    pub shadowed_start: usize,
     pub shadowed_count: usize,
     pub shadowed_token_count: u64,
     pub usage: Usage,

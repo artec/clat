@@ -154,6 +154,7 @@ impl RoundExecution {
                 self.file_capture_error.as_ref(),
             )?;
             worker.deps.agent.execute(AgentRequest {
+                context_manager: self.context_manager(worker),
                 config: worker.deps.config.clone(),
                 spend_ledger: Some(Arc::clone(&self.spend_ledger)),
                 credentials: worker.deps.credentials.clone(),
@@ -169,6 +170,24 @@ impl RoundExecution {
                 workflow_instructions: worker.deps.process_service.workflow(workflow),
                 permission_mode: worker.deps.permission_mode_snapshot,
             })
+        }))
+    }
+    fn context_manager(
+        &self,
+        worker: &RunWorker,
+    ) -> Option<Box<dyn crate::run::RequestContextManager>> {
+        Some(Box::new(super::super::compaction::ActiveContext {
+            compactor: worker.deps.compactor.clone()?,
+            sessions: Arc::clone(&worker.deps.sessions),
+            journal: Arc::clone(&worker.input.journal),
+            recorder: Arc::clone(&self.recorder),
+            config: worker.deps.config.clone(),
+            credentials: worker.deps.credentials.clone(),
+            cancel: worker.deps.cancel.clone(),
+            turn: worker.input.turn,
+            subscribers: Arc::clone(&worker.deps.subscribers),
+            ledger: Arc::clone(&self.spend_ledger),
+            checkpoints: Default::default(),
         }))
     }
     fn finish(&self, worker: &mut RunWorker, outcome: ExecutionOutcome) -> ApplicationRunResult {

@@ -336,9 +336,10 @@ impl Model for TestModel {
                 Ok(response("done", FinishReason::Completed))
             }
             TestBehavior::SlowCompaction => {
-                let is_summary = request
-                    .instructions
-                    .is_some_and(|text| text.contains("summarizing a coding-agent conversation"));
+                let is_summary = request.tools.is_empty()
+                    && request
+                        .instructions
+                        .is_some_and(|text| text.contains("context compaction"));
                 if is_summary {
                     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
                     while std::time::Instant::now() < deadline && !request.cancel.is_cancelled() {
@@ -426,9 +427,10 @@ impl Model for TestModel {
                 }
             }
             TestBehavior::CompactionFailure => {
-                let is_summary = request
-                    .instructions
-                    .is_some_and(|text| text.contains("summarizing a coding-agent conversation"));
+                let is_summary = request.tools.is_empty()
+                    && request
+                        .instructions
+                        .is_some_and(|text| text.contains("context compaction"));
                 if is_summary {
                     Err(ModelError::transport("intentional compaction failure"))
                 } else {

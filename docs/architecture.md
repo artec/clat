@@ -319,6 +319,11 @@ serial tool call to `run/request.rs`, `run/response.rs` and `run/tools.rs`.
 `run/state.rs` keeps history, turn count and usage together when constructing a
 terminal result. These are internal boundaries: tool order, steering seals,
 permission checks, result transforms and event publication retain their order.
+`run/context.rs` defines an internal request-boundary maintenance port: the loop
+passes its live items, usage, actual instructions, frozen tool definitions, and
+model options before image projection and spend reservation. The round owner
+injects the Application implementation; the loop does not own session I/O or
+summary models.
 
 Steering is accepted at model-request boundaries. The queue is sealed
 atomically before a terminal event becomes visible, so a late message either
@@ -395,6 +400,36 @@ Tool-result pruning reduces transient model context. Compaction appends a
 summary marker and shadows older surface ranges without deleting original
 events. Preset context windows seed automatic compaction; manual configuration
 remains authoritative.
+
+`application/compaction/active.rs` maintains context inside a single running
+model/tool loop. At pressure it closes and flushes a completed recorder step
+without ending the user turn, reads the committed surface, invokes the shared
+compactor, and admits the existing atomic compaction event family. Only then
+does it replace the corresponding live interval. No recorder/session lock is
+held during model I/O or subscriber callbacks. A failed durable write prevents
+another model request; no completed tool is replayed.
+
+`plugins/conversation/compaction/selection.rs` selects complete exchange spans,
+protecting genuine user nodes and the newest complete exchange. Its bounded
+input allowance leaves room for map/reduce requests under the existing attempt
+cap. `chunks.rs` splits full rendered text at UTF-8 boundaries for in-run
+summaries. `accounting.rs` accounts each actual summary attempt in the shared
+run spend ledger and preserves usage when a later summary/reduction fails.
+Unapplied attempts record usage on an existing log-only compaction end event;
+successful replacements record it once on the summary event. The existing
+Stats/Compaction/Surface folds and checkpoints consume both paths; there is no
+new durable event vocabulary, session generation, or projection version.
+
+`application/compaction/alignment.rs` maps durable spans to the live history
+using call/result identities. Replay groups calls in assistant nodes while the
+serial loop interleaves calls and results; comparison tolerates that ordering
+without treating raw item offsets as durable coordinates. Every user is
+protected except checkpoints created and identified by this manager. Durable
+source seqs are deduplicated because an assistant event projects several model
+items. Unshadowed live JSON, image parts, and provider state are copied intact,
+instead of replacing rich live results with their redacted journal projection.
+The context and image projection share the quantized request pressure line.
+Manual/startup compaction retains the older user-turn selection policy.
 
 `read_file` results are constructed to stay under the shared pruner threshold,
 so the generic head/tail replacement never fires on them: every segment keeps
