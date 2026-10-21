@@ -68,6 +68,24 @@ Production lease acquisition remains one-shot and fail-closed; fixture fixes
 must not add sleeps or silently retry a busy root. The fixture structure and
 retained cross-thread exclusion have a regression guard.
 
+Attached HTTP/SSE fixtures assign a distinct settlement identity to each
+accepted prompt, matching the host contract. The input-history roundtrip checks
+both terminal cards as well as recalled text: reusing one `prompt_rpc_id` can
+otherwise make the second settlement look like a replay and turn event timing
+into an intermittent timeout. Command-description changes must also check the
+command-picker snapshots, since wrapping changes the popup height.
+
+Task acceptance fixtures compile real Rust test harnesses with `-C strip=symbols`.
+The evidence still hashes the executed binary and declared inputs before and after
+execution; stripping irrelevant standard-library symbols keeps tiny fixtures
+within the public 250-ms verification budget on the two-CPU Linux CI box. Do not
+raise that production deadline or accept `inconclusive` as a passing result to
+compensate for fixture size. The checker deadline, mutation and cancellation
+counterexamples remain enabled. The test profile also optimizes the established
+SHA-256 software fallback, keeping debug-only hashing overhead from consuming
+that budget on ARM CI containers. Release settings and checker limits are
+unchanged.
+
 Process cleanup fixtures distinguish readiness from cancellation: wait for the
 complete child-ready marker with a bounded deadline and report early child
 exit, then keep the child waiting until owner cleanup. The cleanup assertion
@@ -609,3 +627,53 @@ grant. Shell aliases/resolved workdirs share the fence. A running exec launch
 and its real stdin poll remain inconclusive, without adopting the poll as a new
 producer. These are local contract regressions; remote/native Windows release
 verification and independent re-review remain separate.
+
+### GA-3 capability discovery contracts
+
+`scripts/gates.sh ga3_` covers registry/legacy compatibility, native and real WASM
+component mapping, exact/Chinese/English matching, explicit I/O/scope differences,
+actual JSON byte bounds and schema chunk reconstruction, frozen visible sets,
+lease/Run/session invalidation, cancellation, concurrency and read-only queries.
+The explicit local MCP fixture is gated:
+`cargo test -p clat-core --lib ga3_mcp_fixture_discovery -- --ignored`.
+It starts a temporary Python fixture during setup, then asserts ten query/detail
+cycles send zero new MCP messages before a separate actual tool call. This is a
+test-only dependency, not a new product runtime requirement.
+
+Application scripts reuse GA-2 acceptance scaffolding for JSON→table/report and
+real Rust harness receipt→acceptance. They inspect actual query ids/schema, run
+normal tools, retain failed/inconclusive gates, deny replay without a grant and
+consume one explicit grant for fresh runtime evidence. Discovery adds no Task
+operation; normal model tokens remain accounted. Headless commands, TUI Enter
+and current PWA `command.run` use the same Application content, with attached
+TUI argument preservation checked separately. Existing GA-1/GA-2 regressions
+remain relevant; a scripted provider is wiring evidence, not a natural model
+selection-quality measurement.
+
+Adversarial checks remove visibility, generation or required missing-condition
+mechanisms and inject an unintended target call/approval bypass in temporary
+projects. Each claimed discriminator must fail at runtime; reverse patches must
+restore the exact pre-mutation bytes. Keep invalid fixture observations separate
+from product defects. Architecture, fmt, diff and code-health close ordinary
+handoff; remote Linux/native Windows, full release gates and independent review
+remain separate owner-controlled acceptance.
+
+GA3-R1/R2 regressions preserve ordinary configuration words and colliding property
+names in a real local MCP registration, compare published model definitions with
+details, and reject a separate tool containing a protected structural value.
+Shared legacy-tool tests cover nested annotations, opaque `const`/`enum` data,
+secret constraints, full chunk reconstruction and both query domains. An
+Application script compares actual ModelRequest schemas with user details and
+checks normal persisted/replayed discovery results for the fixture secret.
+HTTP transport checks exercise the same boundary without network requests.
+Temporary mechanism removals must make annotation, structural-rejection and
+ordinary-configuration regressions fail at runtime, then restore exact bytes.
+
+The explicit local stdio regressions for credential environment echoes run with
+`cargo test -p clat-core --lib ga3_mcp_ -- --ignored`. A shared Python fixture feeds
+both adapter registration and an Application script: root descriptions, actual
+ModelRequest definitions, idle/model schema chunk reconstruction and normal
+persisted/replayed results must exclude the bare configured `API_KEY` value.
+Separate unsafe tools still reject credential-bearing constraints; ordinary
+mode/format words retain their schema semantics, and discovery sends zero MCP
+messages. These are local fixture checks, not external-provider acceptance.

@@ -28,6 +28,7 @@ pub(super) struct InstructionLayers {
 pub(super) struct RunContextSnapshot {
     pub(super) tool_access: crate::tool::ToolAccessPolicy,
     pub(super) tool_definitions: Arc<[crate::tool::ToolDefinition]>,
+    pub(super) capabilities: Arc<crate::tool::capabilities::CapabilityView>,
     subagents_enabled: bool,
     pub(super) instructions: InstructionLayers,
     workflow_base: String,
@@ -75,11 +76,13 @@ impl TrustedProjectApplication {
             ],
         );
         let tool_access = self.context_tool_access(config, task.is_some());
-        let tool_definitions = self.tools.definitions_for(&tool_access).into();
+        let capabilities = self.tools.capability_view(Some(&tool_access));
+        let tool_definitions = capabilities.definitions().into();
 
         RunContextSnapshot {
             tool_access,
             tool_definitions,
+            capabilities,
             subagents_enabled,
             instructions,
             workflow_base,

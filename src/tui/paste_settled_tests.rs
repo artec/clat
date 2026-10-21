@@ -1021,7 +1021,11 @@ fn handle_connection(mut stream: std::net::TcpStream, state: ConnState) {
                 .to_string(),
             )
         } else {
-            submitted.lock().expect("submitted").push(text.clone());
+            let prompt_rpc_id = {
+                let mut submitted = submitted.lock().expect("submitted");
+                submitted.push(text.clone());
+                format!("ag4-rpc-{}", submitted.len())
+            };
             // 与生产同序：先入队 run 事件 + 终态结算帧，再回 RPC。
             slot.publish(run_event_frame(serde_json::json!({
                 "type": "run_started",
@@ -1031,7 +1035,7 @@ fn handle_connection(mut stream: std::net::TcpStream, state: ConnState) {
             slot.publish(control_frame(
                 "prompt.settled",
                 serde_json::json!({
-                    "prompt_rpc_id": "ag4-rpc-1",
+                    "prompt_rpc_id": prompt_rpc_id,
                     "outcome": {"type": "failed", "error": JOINT_FAILURE},
                 }),
             ));
@@ -1329,6 +1333,11 @@ fn ag8_native_submit_history_recall_roundtrip() {
         "ag8 second run settles",
     );
     drain_for(&mut harness.app, &events, 400);
+    assert!(harness.app.conversation.has_settled_card("ag4-rpc-1"));
+    assert!(
+        harness.app.conversation.has_settled_card("ag4-rpc-2"),
+        "distinct accepted prompts must keep distinct settlement identities"
+    );
 
     // ↑→最新、再↑→更旧、↓→回新、越过最新↓→原草稿（此处为空）。
     harness.key(KeyCode::Up);

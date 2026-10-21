@@ -406,3 +406,38 @@ or write-grant persistence. Ordinary project and storage-root grants remain
 available. The cache can be deleted
 while CLAT is stopped; the next activation rebuilds it. First compilation remains
 slower than subsequent activations.
+
+## Capability declarations and discovery
+
+`/capabilities` and model query/detail tools derive their views from actual tool
+registrations. Plugin owner and registration identity come from registry leases;
+source/adapter declarations are supplied at the native/MCP/WASM boundary, never
+guessed from a tool-name prefix. Rust tools may optionally implement
+`Tool::capability_metadata`; existing tools and `ToolDefinition` literals continue
+to work with undeclared input/output/health information. No WIT or external ABI
+change is required. Native text-file tools describe raw text/JSON storage rather
+than inventing parsers or aggregate computation.
+
+MCP and both WASM component paths expose existing definitions and owner/adapter
+identity. Output schema, business labels and login checks that were not declared
+remain unknown. Component instantiation, configuration presence and connection
+startup do not certify safety, availability or output correctness. Discovery
+runs no plugin callbacks, processes or probes. Provider descriptions are untrusted
+data in tool results, never new system instructions. User startup diagnoses are
+typed summaries; credentials, configuration, component paths and raw failures
+are not copied into them. Lifecycle changes invalidate ids/pages; recommendations
+do not install, connect, retry, approve or invoke a replacement.
+
+All tool sources pass a shared public-schema boundary at registration. It cleans
+recognized secrets in schema annotations before model definitions, user/model
+details, pagination and normal tool-result journals consume the same definition.
+Data inside `const`, `enum`, `default`, `examples` and unknown extensions is never
+rewritten as annotation text. Recognized secrets in structural data reject the
+tool with `tool schema cannot be safely published`; no altered parameter contract
+is installed. Producers should remove secrets from their definitions and reload.
+The optional `Tool::public_definition` hook can provide transport-specific
+annotation cleanup and stricter structural checks; its default preserves the old
+`definition` implementation, and the registry always applies shared checks.
+This adds no required Rust method or WIT change. Checks recognize supported token
+spellings and declared credential fields; they cannot identify arbitrary unmarked
+sensitive prose. Traversal is bounded to depth 128 and 65,536 visited nodes.

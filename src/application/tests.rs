@@ -2727,7 +2727,9 @@ fn admitted_images_carry_durable_metadata_and_rebuild_receipts_after_restart() {
 
     application.close().unwrap();
     // 冷重启：同一 storage root 全新进程语义（重挂 + 冷恢复整条日志）。
-    let mut reopened = mount(&project, &storage_root, TestBehavior::Success);
+    let mut reopened = crate::test_support::reopen_after_close(|| {
+        mount_result(&project, &storage_root, TestBehavior::Success)
+    });
     configure_test_model(&reopened);
     let summary = reopened.list_sessions().unwrap();
     let target = summary.first().expect("session survives").id.clone();
@@ -5054,6 +5056,8 @@ fn failed_run_spawn_does_not_mark_the_request_header_emitted() {
     assert_eq!(
         tool_names,
         [
+            "query_capabilities",
+            "describe_capability",
             "list_files",
             "read_file",
             "search",

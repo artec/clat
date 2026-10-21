@@ -172,6 +172,17 @@ struct ExecCommandTool {
 }
 
 impl Tool for ExecCommandTool {
+    fn capability_metadata(&self) -> crate::ToolCapability {
+        let mut metadata = crate::ToolCapability::native(
+            &["command", "test", "receipt", "命令", "测试", "回执"],
+            &["argv", "shell"],
+            &["command-receipt"],
+            "Exact argv preferred; missing binaries/dependencies unobserved. May return running session_id: poll write_stdin until terminal EOF. Receipt is output observation, not acceptance; actual policy and GA-2 gates apply.",
+        );
+        metadata.host_available = false;
+        metadata
+    }
+
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "exec_command".into(),
@@ -239,6 +250,15 @@ struct WriteStdinTool {
 }
 
 impl Tool for WriteStdinTool {
+    fn capability_metadata(&self) -> crate::ToolCapability {
+        crate::ToolCapability::native(
+            &["command", "poll", "receipt", "查询", "回执"],
+            &["session-id"],
+            &["command-receipt"],
+            "Only current Run-owned process sessions. Poll until terminal EOF; cancellation/timeout/nonzero exit do not prove acceptance. No inherited process handles after cold reopen.",
+        )
+    }
+
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "write_stdin".into(),
@@ -320,6 +340,17 @@ struct RunCommandTool {
 }
 
 impl Tool for RunCommandTool {
+    fn capability_metadata(&self) -> crate::ToolCapability {
+        let mut metadata = crate::ToolCapability::native(
+            &["command", "test", "receipt", "命令", "测试", "回执"],
+            &["argv", "shell"],
+            &["command-receipt"],
+            "Exact argv preferred. Binary, dependencies, configuration and login unobserved: user must supply/install them. A receipt is process output observation; actual EOF/exit and GA-2 acceptance still required.",
+        );
+        metadata.host_available = false;
+        metadata
+    }
+
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "run_command".into(),

@@ -201,6 +201,8 @@ impl Default for ToolAccessPolicy {
     }
 }
 
+pub(crate) mod capabilities;
+pub use capabilities::ToolCapability;
 mod access;
 pub(crate) use access::ToolAccessSlot;
 
@@ -296,6 +298,17 @@ pub trait Tool: Send + Sync {
     }
 
     fn definition(&self) -> ToolDefinition;
+
+    /// Registration-time public contract. Only schema annotations may be
+    /// cleaned; unsafe validation data rejects publication, never changes it.
+    fn public_definition(&self) -> Result<ToolDefinition, ToolError> {
+        Ok(self.definition())
+    }
+
+    /// Optional declarations, captured once at registration; never authority.
+    fn capability_metadata(&self) -> ToolCapability {
+        ToolCapability::default()
+    }
 
     /// Native prepared command identity (actual argv/shell and working directory).
     /// Wrapper names, output clipping and polling options do not grant a new effect.
@@ -610,6 +623,7 @@ pub(crate) enum ToolRegistryError {
     },
     Frozen,
     Poisoned,
+    UnsafeSchema,
 }
 
 impl fmt::Display for ToolRegistryError {
@@ -625,6 +639,8 @@ impl fmt::Display for ToolRegistryError {
             ),
             Self::Frozen => formatter.write_str("tool registry is frozen"),
             Self::Poisoned => formatter.write_str("tool registry lock poisoned"),
+            Self::UnsafeSchema => formatter
+                .write_str("tool schema cannot be safely published; registration unavailable"),
         }
     }
 }
@@ -632,6 +648,9 @@ impl fmt::Display for ToolRegistryError {
 impl std::error::Error for ToolRegistryError {}
 
 struct ToolEntry {
+    definition: ToolDefinition,
+    metadata: ToolCapability,
+    registration: String,
     owner: PluginId,
     tool: Arc<dyn Tool>,
 }
@@ -641,11 +660,14 @@ struct ToolRegistryState {
     by_name: HashMap<String, ToolEntry>,
     order: Vec<String>,
     frozen: bool,
+    revision: u64,
 }
 
 #[derive(Clone, Default)]
 pub(crate) struct ToolRegistry {
     inner: Arc<RwLock<ToolRegistryState>>,
+    discovery: Arc<RwLock<Option<Arc<capabilities::CapabilityView>>>>,
+    idle_discovery: Arc<RwLock<capabilities::IdleView>>,
 }
 
 impl ToolRegistry {
@@ -659,7 +681,10 @@ impl ToolRegistry {
         tool: Arc<dyn Tool>,
     ) -> Result<ToolLease, ToolRegistryError> {
         let owner = owner.id();
-        let definition = tool.definition();
+        let definition = capabilities::schema::public_contract(tool.as_ref())
+            .map_err(|_| ToolRegistryError::UnsafeSchema)?;
+        let metadata = tool.capability_metadata().bounded();
+        let registration = uuid::Uuid::new_v4().to_string();
         let mut state = self
             .inner
             .write()
@@ -674,13 +699,22 @@ impl ToolRegistry {
                 attempted_owner: owner,
             });
         }
+        state.revision = state.revision.wrapping_add(1);
         state.order.push(definition.name.clone());
-        state
-            .by_name
-            .insert(definition.name.clone(), ToolEntry { owner, tool });
+        state.by_name.insert(
+            definition.name.clone(),
+            ToolEntry {
+                definition: definition.clone(),
+                metadata,
+                registration: registration.clone(),
+                owner,
+                tool,
+            },
+        );
         Ok(ToolLease {
             registry: Arc::downgrade(&self.inner),
             name: definition.name,
+            registration,
             owner,
             active: true,
         })
@@ -711,7 +745,7 @@ impl ToolRegistry {
             .order
             .iter()
             .filter_map(|name| state.by_name.get(name))
-            .map(|entry| entry.tool.definition())
+            .map(|entry| entry.definition.clone())
             .collect()
     }
 
@@ -744,6 +778,7 @@ impl ToolRegistry {
 pub(crate) struct ToolLease {
     registry: Weak<RwLock<ToolRegistryState>>,
     name: String,
+    registration: String,
     owner: PluginId,
     active: bool,
 }
@@ -762,11 +797,10 @@ impl ToolLease {
             return Ok(());
         };
         let mut state = registry.write().map_err(|_| ToolRegistryError::Poisoned)?;
-        if state
-            .by_name
-            .get(&self.name)
-            .is_some_and(|entry| entry.owner == self.owner)
-        {
+        if state.by_name.get(&self.name).is_some_and(|entry| {
+            entry.owner == self.owner && entry.registration == self.registration
+        }) {
+            state.revision = state.revision.wrapping_add(1);
             state.by_name.remove(&self.name);
             state.order.retain(|name| name != &self.name);
         }

@@ -3,6 +3,8 @@
 //! 远端工具到 [`crate::tool::Tool`] 的适配。挂载侧插件见
 //! `plugins/mcp.rs`。
 
+mod capability;
+mod schema_privacy;
 pub(crate) mod transport;
 
 pub(crate) mod client;

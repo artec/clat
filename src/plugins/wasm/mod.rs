@@ -956,6 +956,10 @@ pub struct WasmTool {
 }
 
 impl Tool for WasmTool {
+    fn capability_metadata(&self) -> crate::ToolCapability {
+        crate::ToolCapability::external("wasm", &self.instance.name, "component-grants")
+    }
+
     fn definition(&self) -> ToolDefinition {
         self.definition.clone()
     }
@@ -1058,6 +1062,38 @@ fn legacy_runtime() -> Result<(Engine, Arc<Linker<PluginState>>), PluginError> {
     Ok((engine, linker))
 }
 
+fn close_tool_contributions(
+    leases: Vec<crate::tool::ToolLease>,
+    prompts: Vec<crate::plugins::services::PromptLease>,
+    instances: Vec<Arc<WasmInstance>>,
+) {
+    for lease in leases {
+        let _ = lease.revoke();
+    }
+    for lease in prompts {
+        let _ = lease.revoke();
+    }
+    for instance in instances {
+        if let Ok(mut slot) = instance.slot.lock() {
+            *slot = None;
+        }
+    }
+}
+
+fn record_configured_sources(
+    status: Option<&crate::plugins::services::McpStatus>,
+    effective: &EffectiveWasmConfig,
+) {
+    // INV-W6：与 MCP 同一状态面板；configured 分母先扩（wasm 同步
+    // 挂载，随后逐插件落定）。
+    if let Some(status) = status {
+        status.extend_configured(effective.entries.len() + effective.failures.len());
+        for failure in &effective.failures {
+            status.record_failed_server(failure.clone());
+        }
+    }
+}
+
 impl PluginTrait for WasmAdapterPlugin {
     fn descriptor(&self) -> &'static PluginDescriptor {
         &DESCRIPTOR
@@ -1075,14 +1111,7 @@ impl PluginTrait for WasmAdapterPlugin {
             .map_err(|error| PluginError::new(error.to_string()))?;
         let effective = load_effective_wasm_config(&self.storage_root)
             .map_err(|error| PluginError::new(error.to_string()))?;
-        // INV-W6：与 MCP 同一状态面板；configured 分母先扩（wasm 同步
-        // 挂载，随后逐插件落定）。
-        if let Some(status) = &status {
-            status.extend_configured(effective.entries.len() + effective.failures.len());
-            for failure in &effective.failures {
-                status.record_failed_server(failure.clone());
-            }
-        }
+        record_configured_sources(status.as_deref(), &effective);
         let config = effective.entries;
         if config.is_empty() {
             return Ok(());
@@ -1114,9 +1143,12 @@ impl PluginTrait for WasmAdapterPlugin {
                             tools,
                             transport: "wasm".into(),
                         }),
-                        Err(error) => {
-                            status.record_failed_server(format!("wasm `{name}`: {error}"))
-                        }
+                        Err(error) => status.record_capability_failed(
+                            "wasm",
+                            name,
+                            "component_unavailable",
+                            format!("wasm `{name}`: {error}"),
+                        ),
                     }
                 }
                 continue;
@@ -1220,7 +1252,12 @@ impl PluginTrait for WasmAdapterPlugin {
                 }
                 Err(error) => {
                     if let Some(status) = &status {
-                        status.record_failed_server(format!("wasm `{name}`: {error}"));
+                        status.record_capability_failed(
+                            "wasm",
+                            name,
+                            "component_unavailable",
+                            format!("wasm `{name}`: {error}"),
+                        );
                     }
                 }
             }
@@ -1229,17 +1266,7 @@ impl PluginTrait for WasmAdapterPlugin {
         // teardown：撤工具 lease → 释放实例/store（fuel 化后无后台
         // 线程需要停机）。
         context.defer(move || {
-            for lease in leases.drain(..) {
-                let _ = lease.revoke();
-            }
-            for lease in prompt_leases.drain(..) {
-                let _ = lease.revoke();
-            }
-            for instance in instances.drain(..) {
-                if let Ok(mut slot) = instance.slot.lock() {
-                    *slot = None;
-                }
-            }
+            close_tool_contributions(leases, prompt_leases, instances);
             Ok(())
         });
         Ok(())

@@ -87,6 +87,12 @@ debug = 0
 [profile.test.package.clat-core]
 debug = 0
 
+# Acceptance tests hash real executables under the public 250-ms check budget.
+# Keep the established SHA software fallback optimized in test builds too;
+# debug hashing cost must not determine whether valid runtime evidence passes.
+[profile.test.package."sha2:0.10.9"]
+opt-level = 3
+
 # Hardware SHA must remain fast in the daily-driver debug binary as well.
 # Only the new ARM hash implementation is optimized; product code stays debug.
 [profile.dev.package."sha2:0.11.0"]

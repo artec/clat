@@ -11,6 +11,7 @@ pub struct NextTurnItem {
 impl TrustedProjectApplication {
     pub(super) fn clear_session_transient_inputs(&mut self) {
         self.invoked_skill = None;
+        self.tools.clear_capabilities();
     }
 
     pub(super) fn reject_next_turn_session_switch(&self) -> Result<(), ApplicationError> {

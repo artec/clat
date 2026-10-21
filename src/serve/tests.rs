@@ -4097,3 +4097,41 @@ fn ga2_pwa_command_mapping_exposes_same_read_only_results_and_core_completion() 
     assert!(done["runs"].as_array().unwrap().is_empty());
     cleanup(handle, &storage, &root);
 }
+
+#[test]
+fn ga3_pwa_current_command_run_mapping_has_same_core_content_and_no_model_invocation() {
+    let (handle, storage, root) = spawn_serve("ga3-serve", TestBehavior::Panic);
+    let command = |text: String| {
+        let (status, result) = post(
+            handle.addr,
+            TEST_TOKEN,
+            "command.run",
+            &serde_json::json!({"command":text}).to_string(),
+        );
+        assert_eq!(status, 200);
+        let result = result.unwrap();
+        assert_eq!(result["kind"], "capabilities");
+        serde_json::from_str::<serde_json::Value>(result["message"].as_str().unwrap()).unwrap()
+    };
+    let page = command(r#"/capabilities {"name":"read_file"}"#.into());
+    assert_eq!(page["domain"], "idle-user");
+    assert_eq!(page["candidates"][0]["owner"], "builtin.native_read");
+    let detail = command(format!(
+        "/capabilities {{\"id\":{}}}",
+        page["candidates"][0]["id"]
+    ));
+    assert_eq!(detail["tool"]["name"], "read_file");
+    assert_eq!(detail["tool"]["checks"]["login"], "unknown");
+    let (status, result) = post(
+        handle.addr,
+        TEST_TOKEN,
+        "command.run",
+        r#"{"command":"/capabilities {\"name\":\"not-installed\"}"}"#,
+    );
+    assert_eq!(status, 200);
+    let result = result.unwrap();
+    let value: serde_json::Value =
+        serde_json::from_str(result["message"].as_str().unwrap()).unwrap();
+    assert_eq!(value["candidates"], serde_json::json!([]));
+    cleanup(handle, &storage, &root);
+}

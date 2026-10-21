@@ -519,6 +519,20 @@ fn process(argv: Value, verification: bool) -> Step {
     }
     Step::Call("run_command", args)
 }
+// Keep real compiled fixtures small enough for the public 250-ms verification
+// budget. Linux's bundled standard-library symbols alone can add several MiB;
+// they are irrelevant to the test invariant but are still hashed as evidence.
+fn rust_test_argv(source: &str, binary: &str) -> Value {
+    json!([
+        "rustc",
+        "--test",
+        source,
+        "-C",
+        "strip=symbols",
+        "-o",
+        binary
+    ])
+}
 fn command_clause(id: &str, argv: Value, format: &str, files: Vec<&str>) -> Clause {
     clause(
         id,
@@ -542,7 +556,7 @@ fn ga2_programming_real_rust_harness_zero_failure_and_pass_bound_to_runtime_inpu
     } else {
         "case-tests"
     };
-    let compile = json!(["rustc", "--test", "case.rs", "-o", binary]);
+    let compile = rust_test_argv("case.rs", binary);
     let invoke = json!([executable]);
     let mut steps = Vec::new();
     for (source, status) in [
@@ -650,7 +664,7 @@ fn ga2_same_command_recovery_replay_stays_blocked_but_explicit_single_use_rechec
         "./recheck-tests"
     };
     let code = r#"#[test] fn invariant(){let n=std::fs::read_to_string("execution-count").ok().and_then(|v|v.parse::<u64>().ok()).unwrap_or(0);std::fs::write("execution-count",(n+1).to_string()).unwrap();assert_eq!(2+3,5);}"#;
-    let compile = json!(["rustc", "--test", "recheck.rs", "-o", binary]);
+    let compile = rust_test_argv("recheck.rs", binary);
     let invoke = json!([executable]);
     let steps = vec![
         write("recheck.rs", code),
@@ -1143,7 +1157,7 @@ fn ga2_rework_command_alias_cannot_bypass_recheck_grant() {
         "ga2-audit-alias",
         vec![
             write("alias.rs", code),
-            process(json!(["rustc", "--test", "alias.rs", "-o", binary]), false),
+            process(rust_test_argv("alias.rs", binary), false),
             process(argv.clone(), true),
             read(),
             Step::Done,
@@ -1330,7 +1344,7 @@ fn ga2_rework_wrappers_bidirectionally_require_one_grant_and_keep_new_runtime_ev
             "ga2-dual-wrapper",
             vec![
                 write("dual.rs", code),
-                process(json!(["rustc", "--test", "dual.rs", "-o", binary]), false),
+                process(rust_test_argv("dual.rs", binary), false),
                 wrapper(argv.clone(), first_exec),
                 read(),
                 Step::Verify("passed"),
@@ -1612,7 +1626,7 @@ fn ga2_rework_running_exec_receipt_and_poll_result_cannot_be_used_as_completed_e
         "ga2-running-exec",
         vec![
             write("slow.rs", code),
-            process(json!(["rustc", "--test", "slow.rs", "-o", binary]), false),
+            process(rust_test_argv("slow.rs", binary), false),
             Step::Call(
                 "exec_command",
                 json!({"argv":argv,"tty":false,"sandbox":"off","yield_time_ms":250,"verification":{"format":"rust-test-summary","minimum_executed":1}}),
@@ -1665,3 +1679,6 @@ fn ga2_rework_running_exec_receipt_and_poll_result_cannot_be_used_as_completed_e
     assert!(s.runs[0].settled && s.runs[0].tokens > 0);
     finish(app, &root);
 }
+
+#[path = "capability_acceptance_tests.rs"]
+mod capability_tests;

@@ -2211,3 +2211,59 @@ fn approval_mode_change_cannot_persist_a_private_cache_grant() {
         let _ = std::fs::remove_dir_all(path);
     }
 }
+
+#[test]
+fn ga3_wasm_real_component_declarations_are_not_readiness_certificates() {
+    let root = unique_root("ga3-component");
+    write_config_json(
+        &root,
+        &[(
+            "digest".into(),
+            serde_json::json!({"path":fixture("digest.wasm").display().to_string()}),
+        )],
+    );
+    let mut manager = PluginManager::root(ScopeKind::TrustedProject);
+    manager
+        .mount_all(vec![
+            Arc::new(ToolRegistryPlugin),
+            Arc::new(WasmAdapterPlugin::new(
+                root.clone(),
+                crate::plugin_host::PluginHostBridge::shared(),
+                root.clone(),
+                None,
+            )),
+        ])
+        .unwrap();
+    let registry = manager.require(TOOL_SERVICE).unwrap();
+    registry.install_capabilities(
+        registry.capability_view(Some(&crate::tool::ToolAccessPolicy::all())),
+    );
+    let cancel = CancelToken::new();
+    let page = registry
+        .query_capabilities(&serde_json::json!({"source":"wasm"}), &cancel)
+        .unwrap();
+    let row = &page["candidates"][0];
+    assert_eq!(row["owner"], "builtin.wasm_adapter");
+    assert_eq!(row["adapter"], "digest");
+    assert_eq!(row["outputs"], serde_json::json!([]));
+    assert!(row["readiness"].as_str().unwrap().contains("unknown"));
+    let detail = registry
+        .query_capabilities(&serde_json::json!({"id":row["id"]}), &cancel)
+        .unwrap();
+    let definition = registry
+        .get(row["name"].as_str().unwrap())
+        .unwrap()
+        .definition();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(detail["schema"]["text"].as_str().unwrap())
+            .unwrap(),
+        definition.input_schema
+    );
+    manager.close().unwrap();
+    assert!(
+        registry
+            .query_capabilities(&serde_json::json!({"id":row["id"]}), &cancel)
+            .is_err()
+    );
+    crate::test_support::cleanup_tree(&root);
+}

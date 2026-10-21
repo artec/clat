@@ -9,14 +9,14 @@ scroll 0
 005| │                                                                              │
 006| │                                                                              │
 007| │                        ██████╗██╗      █████╗ ███████╗                       │  ⟦24..55 fg=Rgb(65, 118, 230)⟧
-008| │                       ██╔════╝██║     ██╔══██╗╚══██══╝                       │  ⟦24..55 fg=Rgb(65, 118, 230)⟧
-009| ┌ Commands / Skills ───────────────────────────────────────────────────────────┐  ⟦0..0 fg=Yellow · 1..19 fg=Yellow+BOLD · 20..79 fg=Yellow⟧
-010| │ Commands                                                                     │  ⟦0..0 fg=Yellow · 2..9 fg=DarkGray · 79..79 fg=Yellow⟧
-011| │ /new · start a new conversation · /new                                       │  ⟦0..0 fg=Yellow · 2..39 REVERSED · 79..79 fg=Yellow⟧
-012| │ /resume · pick a previous conversation to continue · /resume                 │  ⟦0..0 fg=Yellow · 79..79 fg=Yellow⟧
-013| │ /rename · rename the current conversation                                    │  ⟦0..0 fg=Yellow · 79..79 fg=Yellow⟧
-014| │   No active conversation to rename                                           │  ⟦0..0 fg=Yellow · 79..79 fg=Yellow⟧
-015| │ /task · inspect, checkpoint and explicitly resume one durable task · /task   │  ⟦0..0 fg=Yellow · 79..79 fg=Yellow⟧
+008| ┌ Commands / Skills ───────────────────────────────────────────────────────────┐  ⟦0..0 fg=Yellow · 1..19 fg=Yellow+BOLD · 20..79 fg=Yellow⟧
+009| │ Commands                                                                     │  ⟦0..0 fg=Yellow · 2..9 fg=DarkGray · 79..79 fg=Yellow⟧
+010| │ /new · start a new conversation · /new                                       │  ⟦0..0 fg=Yellow · 2..39 REVERSED · 79..79 fg=Yellow⟧
+011| │ /resume · pick a previous conversation to continue · /resume                 │  ⟦0..0 fg=Yellow · 79..79 fg=Yellow⟧
+012| │ /rename · rename the current conversation                                    │  ⟦0..0 fg=Yellow · 79..79 fg=Yellow⟧
+013| │   No active conversation to rename                                           │  ⟦0..0 fg=Yellow · 79..79 fg=Yellow⟧
+014| │ /task · inspect, checkpoint, verify and explicitly resume one durable task   │  ⟦0..0 fg=Yellow · 79..79 fg=Yellow⟧
+015| │   /task                                                                      │  ⟦0..0 fg=Yellow · 79..79 fg=Yellow⟧
 016| │ /compact · summarize earlier turns into a compact context · /compact         │  ⟦0..0 fg=Yellow · 79..79 fg=Yellow⟧
 017| │                                                                              │  ⟦0..0 fg=Yellow · 79..79 fg=Yellow⟧
 018| │ ↑↓ browse · Tab fill · Enter fill/submit exact command · Esc close           │  ⟦0..0 fg=Yellow · 2..67 DIM · 79..79 fg=Yellow⟧

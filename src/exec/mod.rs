@@ -608,14 +608,12 @@ where
 /// headless 没有对应呈现，按用法错误拒绝（脚本可判定）。压缩经
 /// `join_report` 等待结果（压缩 worker 有总 deadline 与尝试上限，join
 /// 有界）。
-fn run_headless_command(
-    mut application: TrustedProjectApplication,
-    command: &str,
+fn headless_command_forwarder(
+    application: &TrustedProjectApplication,
     args: &ExecArgs,
     io: &ExecIo,
     io_state: &SharedIoState,
-) -> ExecOutcome {
-    // 与 run 路径同一可见性通道：CompactionUpdated 的 stderr 通知。
+) -> Option<ApplicationEventForwarder> {
     let mut forwarder = None;
     if !args.quiet {
         let (events_tx, events_rx) = mpsc::channel::<ApplicationEvent>();
@@ -626,6 +624,18 @@ fn run_headless_command(
             Arc::clone(io_state),
         ));
     }
+    forwarder
+}
+
+fn run_headless_command(
+    mut application: TrustedProjectApplication,
+    command: &str,
+    args: &ExecArgs,
+    io: &ExecIo,
+    io_state: &SharedIoState,
+) -> ExecOutcome {
+    // 与 run 路径同一可见性通道：CompactionUpdated 的 stderr 通知。
+    let mut forwarder = headless_command_forwarder(&application, args, io, io_state);
     let goal_words = command.split_whitespace().collect::<Vec<_>>();
     let interactive_goal_run = goal_words.first().copied() == Some("/goal")
         && (goal_words.get(1).copied() == Some("run")
@@ -692,7 +702,9 @@ fn run_headless_command(
             Ok(CommandOutcome::ShowMemory(view)) => {
                 write_content_view(view.to_text(), io, io_state)
             }
-            Ok(CommandOutcome::ShowTask(text)) => write_content_view(text, io, io_state),
+            Ok(CommandOutcome::ShowTask(text) | CommandOutcome::ShowCapabilities(text)) => {
+                write_content_view(text, io, io_state)
+            }
             Ok(CommandOutcome::StartTaskRun(_)) => {
                 ExecOutcome::Failure("task continuation was not routed to execution".into())
             }

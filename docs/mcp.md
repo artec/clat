@@ -322,3 +322,43 @@ flooding server block the agent or shutdown path.
 
 For DSH plugin-specific packaging problems, use the
 [DSH plugin porting guide](dsh-plugins.md).
+
+## Read-only discovery
+
+`/capabilities {"source":"mcp"}` lists registered MCP declarations in idle user
+diagnostics. Filtering by the exact server/adapter name also shows its existing
+startup observation, including connecting, missing configuration or an executable
+reported missing by the original spawn attempt. Queries never spawn a dependency
+probe or send MCP messages. Unregistered sources have no callable tool/schema;
+fix configuration/dependencies/login yourself and explicitly reload through the
+existing plugin controls. At most two source observations are previewed; use an
+exact source filter when `has_more` is true.
+
+Models discover only their frozen Run-visible registrations using
+`query_capabilities` / `describe_capability`. The MCP adapter maps the actual
+qualified name, registry owner and input schema. The current tool contract does
+not declare output schema or business/login metadata, so these remain unknown.
+Annotations/descriptions are provider declarations, not host-certified readiness,
+permission or acceptance. Even a connected stdio server is an **external** data
+boundary; discovery does not assume that the server processes data locally.
+Adapter lifetime loss makes old observation ids/pages stale; an HTTP service's
+health without an existing observation remains unknown. Calls still use the
+original MCP adapter, permission pipeline and cancellation, with no fallback to
+another same-name source. Existing secret/error redaction remains in force.
+
+At registration, MCP annotations (`description`, `title`, `$comment` and
+`markdownDescription`) are cleaned using existing token rules and transport
+configuration/header redaction. Validation data is preserved: ordinary private
+configuration such as `mode=object` or an `Accept` header cannot rewrite schema
+types, property names, `required`, `enum`, `const`, patterns or references.
+Credential-bearing configuration fields/environment variables and authentication
+headers supply protected values for structural checks. A recognized secret in
+validation data rejects that tool's registration with a fixed diagnostic, rather
+than publishing a changed contract. Other safe tools can still register. Existing
+stderr/error redaction continues to cover all known private configuration values.
+
+For stdio, the same known credential environment values used by structural checks
+also clean public tool descriptions and schema annotations, including bare value
+echoes without an `API_KEY=` marker. Public text combines those values with the
+existing private configuration values, longest first; stderr/error text uses the
+same set. Ordinary configuration words stay outside structural secret checks.

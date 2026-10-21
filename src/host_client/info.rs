@@ -15,8 +15,26 @@ impl HostClient {
             "/task" | "/task show" => Some("/task"),
             "/task check" => Some("/task check"),
             "/sub" | "/subagents" => Some("/sub"),
+            _ if command.split_whitespace().next() == Some("/capabilities") => {
+                Some("/capabilities")
+            }
             _ => None,
         }
+    }
+
+    /// Preserve read-only capability filters/detail ids; aliases of other views
+    /// retain their existing canonical no-argument request.
+    pub fn info_dialog_request(command: &str) -> Option<(&'static str, String)> {
+        let title = Self::info_dialog_command(command)?;
+        Some((
+            title,
+            if title == "/capabilities" {
+                command.trim()
+            } else {
+                title
+            }
+            .to_owned(),
+        ))
     }
 
     pub fn info_dialog_refreshable(command: &str) -> bool {
@@ -132,5 +150,27 @@ mod tests {
             "commands": [{"name":"help","aliases":[],"description":"show","group":"alien"}]
         });
         assert!(HostClient::help_commands(&malformed).is_err());
+    }
+}
+
+#[cfg(test)]
+mod capability_tests {
+    use super::*;
+    #[test]
+    fn ga3_attached_info_request_preserves_filters_and_detail_identity() {
+        for command in [
+            "/capabilities",
+            r#"/capabilities {"source":"mcp","output":"table"}"#,
+            r#"/capabilities {"id":"current-id","schema_offset":1024}"#,
+        ] {
+            let (title, request) = HostClient::info_dialog_request(command).unwrap();
+            assert_eq!(title, "/capabilities");
+            assert_eq!(request, command);
+        }
+        assert!(HostClient::info_dialog_request("/capabilities-other").is_none());
+        assert_eq!(
+            HostClient::info_dialog_request("/skills"),
+            Some(("/skill", "/skill".into()))
+        );
     }
 }

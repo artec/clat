@@ -163,6 +163,17 @@ pub fn redact_secrets(text: &str) -> String {
     output
 }
 
+/// Credential-bearing names. Ordinary config words (mode, type, format) are
+/// not credential values merely because a provider keeps config private.
+pub(crate) fn credential_name(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    KEYISH_SUFFIXES.iter().any(|suffix| name.ends_with(suffix))
+        || matches!(
+            name.as_str(),
+            "credentials" | "credential" | "auth" | "authentication" | "authorization" | "cookie"
+        )
+}
+
 /// Exact values from a plugin's private configuration supplement token
 /// heuristics. The values never leave the owning transport.
 pub(crate) fn plugin_config_values(env: &[(String, String)]) -> Vec<String> {

@@ -100,7 +100,7 @@ impl App {
     }
 
     pub(super) fn open_native_info(&mut self, command: &str) -> bool {
-        let Some(title) = HostClient::info_dialog_command(command) else {
+        let Some((title, command)) = HostClient::info_dialog_request(command) else {
             return false;
         };
         let Some(native) = &mut self.native else {
@@ -130,7 +130,7 @@ impl App {
         let (epoch, selection, request) = (native.epoch, native.selection, native.info_request);
         let client = native.client.clone();
         thread::spawn(move || {
-            let result = client.submit_text(title, false, selection);
+            let result = client.submit_text(&command, false, selection);
             let _ = ui.send(UiEvent::Native(NativeEvent::Info(
                 epoch, selection, request, result,
             )));

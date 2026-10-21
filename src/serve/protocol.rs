@@ -1056,6 +1056,9 @@ fn command_reply(
         crate::CommandOutcome::ShowMemory(view) => Ok(json!({
             "kind": "memory", "memory": view, "message": view.to_text(),
         })),
+        crate::CommandOutcome::ShowCapabilities(message) => {
+            Ok(json!({"kind":"capabilities", "message":message}))
+        }
         crate::CommandOutcome::ShowTask(message) => Ok(json!({"kind":"task", "message":message})),
         crate::CommandOutcome::StartTaskRun(request) => {
             let id = claimed_goal_run.ok_or_else(|| RpcError::internal("task run lacks claim"))?;

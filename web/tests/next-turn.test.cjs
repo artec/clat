@@ -70,3 +70,27 @@ test('lost recall reply retries the original session receipt and restores its dr
   assert.equal(ctx.dom.prompt.value, 'new session draft');
   assert.equal(vm.runInContext("composerDrafts.get('session').text", ctx), 'recalled original words');
 });
+
+test('GA-3 capability command renders core content as text and never starts a run', async () => {
+  const ctx = client();
+  const calls = [];
+  const notices = [];
+  ctx.rpc = async (method, params) => {
+    calls.push([method, params]);
+    return { kind: 'capabilities', message: '{"domain":"idle-user","candidates":[]}' };
+  };
+  ctx.addNoticeLine = (text) => {
+    const notice = { text, classList: { add(name) { notice.className = name; } }, setAttribute(name, value) { notice[name] = value; } };
+    notices.push(notice); return notice;
+  };
+  ctx.refreshWorkbench = async () => {};
+  const command = '/capabilities {"name":"read_file"}';
+  ctx.command = command;
+  await vm.runInContext("submitComposerCommand({text:command,owner:'session'})", ctx);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], 'command.run');
+  assert.equal(calls[0][1].command, command);
+  assert.equal(notices[0].className, 'content-notice');
+  assert.equal(notices[0]['aria-label'], 'capabilities');
+  assert.equal(notices[0].text, '{"domain":"idle-user","candidates":[]}');
+});

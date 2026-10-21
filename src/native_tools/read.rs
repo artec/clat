@@ -794,6 +794,15 @@ fn exceeds_pruner_threshold(output: &Value) -> bool {
 }
 
 impl Tool for ReadFileTool {
+    fn capability_metadata(&self) -> crate::ToolCapability {
+        crate::ToolCapability::native(
+            &["read", "file", "text", "json", "读取", "文件"],
+            &["path"],
+            &["utf8-text"],
+            "Reads existing UTF-8 text/JSON bytes, not a JSON parser. Bounded pages; paths may be absolute. File existence/permission checked only at invocation.",
+        )
+    }
+
     fn error_output(&self, error: &ToolError) -> Value {
         super::argument_recovery::output(error)
     }

@@ -5606,3 +5606,31 @@ fn ga2_tui_displays_core_clause_results_and_verified_completion_without_a_model_
         done
     );
 }
+
+#[test]
+fn ga3_tui_real_enter_command_uses_core_content_and_invalidates_draft_session_identity() {
+    let mut harness = task_harness("ga3-tui");
+    harness.type_text(r#"/capabilities {"name":"read_file"}"#);
+    harness.key(KeyCode::Enter);
+    let Some(super::ContentView::Remote { text, .. }) = &harness.app.content_view else {
+        panic!("capability content view");
+    };
+    let p: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(p["domain"], "idle-user");
+    assert_eq!(p["candidates"][0]["source"], "native");
+    assert!(harness.project().contains("/capabilities"));
+    harness.key(KeyCode::Esc);
+    let command = format!("/capabilities {{\"id\":{}}}", p["candidates"][0]["id"]);
+    let d = tui_task_json(&mut harness, &command);
+    assert_eq!(d["tool"]["name"], "read_file");
+    let app = harness.app.application.as_mut().unwrap();
+    assert!(
+        app.current_session_id().is_none(),
+        "pure viewing must not create a session"
+    );
+    app.new_session().unwrap();
+    assert!(
+        app.capability_query(&serde_json::json!({"id":p["candidates"][0]["id"]}))
+            .is_err()
+    );
+}

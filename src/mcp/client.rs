@@ -196,8 +196,9 @@ pub type McpConfig = std::collections::BTreeMap<String, McpServerConfig>;
 /// 一个已握手的服务器会话；stdio 条目持有子进程直到 Drop，HTTP 条目
 /// 只持端点与会话 id。
 pub struct McpServer {
+    capability_lifetime: std::sync::Arc<()>,
     name: String,
-    session: Session,
+    pub(super) session: Session,
     server_version: String,
     /// 握手协商出的协议版本（服务器回显或其支持的最新版）。
     negotiated_version: String,
@@ -224,7 +225,7 @@ enum Transport {
     },
 }
 
-enum Session {
+pub(super) enum Session {
     Stdio(StdioSession),
     Http(super::transport::HttpSession),
 }
@@ -440,6 +441,7 @@ impl McpServer {
         let probe = transport.new_session(cwd)?;
         let mut server = match Self::discover(&probe) {
             Ok((server_version, capabilities)) => Self {
+                capability_lifetime: std::sync::Arc::new(()),
                 name: name.to_owned(),
                 session: probe,
                 server_version,
@@ -469,6 +471,7 @@ impl McpServer {
                     }
                 };
                 Self {
+                    capability_lifetime: std::sync::Arc::new(()),
                     name: name.to_owned(),
                     session,
                     server_version,
@@ -1178,6 +1181,7 @@ pub struct McpTool {
 
 impl McpTool {
     pub fn new(server: &std::sync::Arc<McpServer>, info: McpToolInfo) -> Self {
+        let info = super::capability::public_tool_info(server, info);
         let qualified_name = qualify_tool_name(server.name(), &info.name)
             .unwrap_or_else(|| format!("mcp_unnamed_{}", info.name.len()));
         Self {
@@ -1190,6 +1194,27 @@ impl McpTool {
 }
 
 impl Tool for McpTool {
+    fn public_definition(&self) -> Result<ToolDefinition, ToolError> {
+        let server = self
+            .server
+            .upgrade()
+            .ok_or_else(|| ToolError::new("MCP public schema unavailable"))?;
+        super::capability::public_definition(&server, self.definition())
+    }
+
+    fn capability_metadata(&self) -> crate::ToolCapability {
+        let mut metadata = crate::ToolCapability::external("mcp", &self.server_name, "external");
+        if let Some(server) = self.server.upgrade() {
+            metadata.lifetime = Some(match &server.session {
+                Session::Stdio(session) => session.connection_observer(),
+                Session::Http(_) => std::sync::Arc::downgrade(&server.capability_lifetime),
+            });
+        } else {
+            metadata.lifetime = Some(std::sync::Weak::new());
+        }
+        metadata
+    }
+
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.qualified_name.clone(),

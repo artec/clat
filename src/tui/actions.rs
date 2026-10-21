@@ -736,16 +736,21 @@ impl App {
         self.flash_status("new conversation");
     }
 
-    fn show_task_content(&mut self, text: String) {
+    fn show_command_content(&mut self, title: &'static str, text: String) {
         self.session_id = self
             .application
             .as_ref()
             .and_then(|app| app.current_session_id());
-        self.content_view = Some(ContentView::Remote {
-            title: "/task",
-            text,
-        });
+        self.content_view = Some(ContentView::Remote { title, text });
         self.info_dialog = Some(InfoDialog::new(InfoDialogKind::Remote));
+    }
+
+    fn open_command_model_picker(&mut self) {
+        self.editor = None;
+        self.picker_return = None;
+        let profiles = self.model_profile_summaries();
+        self.picker = Some(ModelPicker::new(&self.config, profiles));
+        self.flash_status("select a model");
     }
 
     fn render_command_outcome(&mut self, outcome: CommandOutcome) {
@@ -784,11 +789,7 @@ impl App {
                 // Claude Code 风格：先选厂商（一级），再选该厂商的模型
                 //（二级）；Custom 入口经档案三态（B9：零档案直进新建
                 // 页、≥1 档案列表 + New…）。
-                self.editor = None;
-                self.picker_return = None;
-                let profiles = self.model_profile_summaries();
-                self.picker = Some(ModelPicker::new(&self.config, profiles));
-                self.flash_status("select a model");
+                self.open_command_model_picker();
             }
             CommandOutcome::StartSessionSelection { sessions } => {
                 let current = self.session_id.clone();
@@ -812,7 +813,10 @@ impl App {
                 // TUI 无需持有句柄（fire-and-forget + 状态栏通知）。
                 self.flash_status("vision probe started — the verdict lands here");
             }
-            CommandOutcome::ShowTask(text) => self.show_task_content(text),
+            CommandOutcome::ShowTask(text) => self.show_command_content("/task", text),
+            CommandOutcome::ShowCapabilities(text) => {
+                self.show_command_content("/capabilities", text)
+            }
             CommandOutcome::StartTaskRun(task) => {
                 self.start_controlled_run(Some(task));
             }

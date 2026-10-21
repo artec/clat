@@ -337,6 +337,77 @@ struct ConnectedContributions {
     prompt_failure: Option<String>,
 }
 
+fn valid_capability_source(
+    status: &McpStatus,
+    name: &str,
+    config: &crate::mcp::client::McpServerConfig,
+) -> bool {
+    let valid = config.is_http() || !config.command.trim().is_empty();
+    status.record_capability_source(
+        "mcp",
+        name,
+        if valid { "connecting" } else { "blocked" },
+        if valid {
+            "startup_pending"
+        } else {
+            "missing_configuration"
+        },
+    );
+    valid
+}
+fn close_cancelled_connection(result: Result<ConnectedContributions, (String, &'static str)>) {
+    if let Ok(connected) = result {
+        let _ = connected.server.shutdown();
+    }
+}
+
+fn register_capability_tools(
+    registry: &ToolRegistry,
+    status: &McpStatus,
+    state: &McpStartupState,
+    owner: crate::plugin::PluginOwner,
+    server: &Arc<McpServer>,
+    infos: Vec<crate::mcp::client::McpToolInfo>,
+) -> usize {
+    let name = server.name();
+    let mut tools = 0usize;
+    for info in infos {
+        let remote_name = info.name.clone();
+        // N-6（审计，W1-19 的 MCP 半边）：description 同 4096 字符闸
+        //（帧帽 4MiB 兜底的是内存，不是模型可见注入面）。
+        let mut info = info;
+        if info.description.chars().count() > crate::tool::MAX_TOOL_DESCRIPTION_CHARS {
+            let kept: String = info
+                .description
+                .chars()
+                .take(crate::tool::MAX_TOOL_DESCRIPTION_CHARS)
+                .collect();
+            status.record_failure(format!(
+                "mcp `{name}` tool `{remote_name}`: description exceeded \
+                     {} chars and was truncated",
+                crate::tool::MAX_TOOL_DESCRIPTION_CHARS
+            ));
+            info.description = format!("{kept}… [truncated by host]");
+        }
+        let tool: Arc<dyn Tool> = Arc::new(McpTool::new(server, info));
+        match registry.register(owner, tool) {
+            Ok(lease) => {
+                // 清理序（每 server）：先贡献 lease、后进程关闭。
+                state.push_cleanup(Box::new(move || {
+                    let _ = lease.revoke();
+                }));
+                tools += 1;
+            }
+            Err(error) => {
+                // server 已连上：连接级失败之外的登记（不参与
+                // connecting 推导）。
+                status.record_failure(format!("mcp `{name}` tool `{remote_name}`: {error}"));
+            }
+        }
+    }
+    tools
+}
+
 fn run_startup(inputs: McpStartupInputs) {
     let McpStartupInputs {
         config,
@@ -353,12 +424,12 @@ fn run_startup(inputs: McpStartupInputs) {
     struct ServerOutcome {
         name: String,
         transport: &'static str,
-        result: Result<ConnectedContributions, String>,
+        result: Result<ConnectedContributions, (String, &'static str)>,
     }
     let (tx, rx) = std::sync::mpsc::channel::<ServerOutcome>();
     let mut pending = 0usize;
     for (name, server_config) in &config {
-        let valid = server_config.is_http() || !server_config.command.trim().is_empty();
+        let valid = valid_capability_source(&status, name, server_config);
         if !valid {
             status.record_failed_server(format!("mcp `{name}`: empty command and no url"));
             continue;
@@ -366,7 +437,12 @@ fn run_startup(inputs: McpStartupInputs) {
         let resolved_server_cwd = match resolve_mcp_cwd(&server_cwd, server_config.cwd.as_deref()) {
             Ok(cwd) => cwd,
             Err(error) => {
-                status.record_failed_server(format!("mcp `{name}`: {error}"));
+                status.record_capability_failed(
+                    "mcp",
+                    name,
+                    "invalid_configuration",
+                    format!("mcp `{name}`: {error}"),
+                );
                 continue;
             }
         };
@@ -433,11 +509,11 @@ fn run_startup(inputs: McpStartupInputs) {
                                         &server.stderr_tail(),
                                     );
                                     let _ = server.shutdown();
-                                    Err(format!("mcp `{name}`: {error}{tail}"))
+                                    Err((format!("mcp `{name}`: {error}{tail}"), error.kind))
                                 }
                             }
                         }
-                        Err(error) => Err(format!("mcp `{name}`: {error}")),
+                        Err(error) => Err((format!("mcp `{name}`: {error}"), error.kind)),
                     };
                 let transport = if server_config.is_http() {
                     "http"
@@ -453,8 +529,12 @@ fn run_startup(inputs: McpStartupInputs) {
             });
         if spawned.is_err() {
             pending -= 1;
-            status
-                .record_failed_server(format!("mcp `{thread_name}`: spawn connect thread failed"));
+            status.record_capability_failed(
+                "mcp",
+                &thread_name,
+                "startup_failed",
+                format!("mcp `{thread_name}`: spawn connect thread failed"),
+            );
         }
     }
     drop(tx);
@@ -471,10 +551,7 @@ fn run_startup(inputs: McpStartupInputs) {
         };
         pending -= 1;
         if state.is_cancelled() {
-            // 已连上但来不及注册的：显式关闭，不依赖 Drop 兜底。
-            if let Ok(connected) = outcome.result {
-                let _ = connected.server.shutdown();
-            }
+            close_cancelled_connection(outcome.result);
             continue;
         }
         let ServerOutcome {
@@ -489,7 +566,8 @@ fn run_startup(inputs: McpStartupInputs) {
             prompt_failure,
         } = match result {
             Ok(connected) => connected,
-            Err(message) => {
+            Err((message, kind)) => {
+                status.record_capability_source("mcp", &name, "blocked", kind);
                 status.record_failed_server(message);
                 continue;
             }
@@ -507,41 +585,7 @@ fn run_startup(inputs: McpStartupInputs) {
             }));
             state.push_cleanup(Box::new(move || lease.revoke()));
         }
-        let mut tools = 0usize;
-        for info in infos {
-            let remote_name = info.name.clone();
-            // N-6（审计，W1-19 的 MCP 半边）：description 同 4096 字符闸
-            //（帧帽 4MiB 兜底的是内存，不是模型可见注入面）。
-            let mut info = info;
-            if info.description.chars().count() > crate::tool::MAX_TOOL_DESCRIPTION_CHARS {
-                let kept: String = info
-                    .description
-                    .chars()
-                    .take(crate::tool::MAX_TOOL_DESCRIPTION_CHARS)
-                    .collect();
-                status.record_failure(format!(
-                    "mcp `{name}` tool `{remote_name}`: description exceeded \
-                     {} chars and was truncated",
-                    crate::tool::MAX_TOOL_DESCRIPTION_CHARS
-                ));
-                info.description = format!("{kept}… [truncated by host]");
-            }
-            let tool: Arc<dyn Tool> = Arc::new(McpTool::new(&server, info));
-            match registry.register(owner, tool) {
-                Ok(lease) => {
-                    // 清理序（每 server）：先贡献 lease、后进程关闭。
-                    state.push_cleanup(Box::new(move || {
-                        let _ = lease.revoke();
-                    }));
-                    tools += 1;
-                }
-                Err(error) => {
-                    // server 已连上：连接级失败之外的登记（不参与
-                    // connecting 推导）。
-                    status.record_failure(format!("mcp `{name}` tool `{remote_name}`: {error}"));
-                }
-            }
-        }
+        let tools = register_capability_tools(&registry, &status, &state, owner, &server, infos);
         let static_prompts = manifest_prompts.remove(&name).unwrap_or_default();
         if let Some(prompt_registry) = &prompt_registry {
             for prompt in &static_prompts {
@@ -1233,3 +1277,6 @@ for line in sys.stdin:
         fs::remove_dir_all(root).expect("remove root");
     }
 }
+
+#[cfg(all(test, feature = "runtime-tests"))]
+mod capability_tests;

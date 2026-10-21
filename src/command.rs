@@ -85,6 +85,8 @@ pub enum CommandOutcome {
     /// 纯信息性消息（前端以状态提示呈现）。
     Status(String),
     ShowTask(String),
+    /// Read-only capability content through the existing content view.
+    ShowCapabilities(String),
     StartTaskRun(crate::task::TaskResume),
     /// `/help`：携带完整命令目录，帮助表从载荷派生。
     ShowHelp {
@@ -141,6 +143,7 @@ impl fmt::Debug for CommandOutcome {
         formatter.write_str(match self {
             Self::Status(_) => "Status(..)",
             Self::ShowTask(_) => "ShowTask(..)",
+            Self::ShowCapabilities(_) => "ShowCapabilities(..)",
             Self::StartTaskRun(_) => "StartTaskRun(..)",
             Self::ShowHelp { .. } => "ShowHelp { .. }",
             Self::ShowMcpStatus(_) => "ShowMcpStatus(..)",

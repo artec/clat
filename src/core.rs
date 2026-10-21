@@ -92,7 +92,9 @@ pub(crate) use run::Run;
 pub use run::{RunError, RunOutput};
 pub(crate) use session::id::SessionId;
 pub(crate) use session::use_cases::SessionSummary;
-pub use tool::{PreparedTool, Tool, ToolCall, ToolDefinition, ToolEffect, ToolError, ToolResult};
+pub use tool::{
+    PreparedTool, Tool, ToolCall, ToolCapability, ToolDefinition, ToolEffect, ToolError, ToolResult,
+};
 pub(crate) use tool::{ToolExecutionPipeline, ToolRegistry};
 
 #[doc(hidden)]

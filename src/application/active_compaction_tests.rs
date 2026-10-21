@@ -163,7 +163,16 @@ fn fixture(
     );
     configure_test_model_with_budget(&app, u32::MAX);
     let fixed = app.context_snapshot().unwrap().total_estimate;
-    configure_test_model_with_budget(&app, u32::try_from((fixed + 9000) * 5 / 4).unwrap());
+    // The failure case must exceed the frozen request limit, not merely the
+    // earlier compaction trigger (which includes an extra safety reserve).
+    // Leave less history room so a failed summary cannot still fit and allow
+    // another main-model step after changes to the fixed tool catalog.
+    let history_room = if matches!(mode, SummaryMode::Failure) {
+        8000
+    } else {
+        9000
+    };
+    configure_test_model_with_budget(&app, u32::try_from((fixed + history_room) * 5 / 4).unwrap());
     let (mut config, credentials) = app.model_state().unwrap();
     config.run_token_budget = budget;
     app.save_model_state(&config, &credentials).unwrap();
@@ -253,6 +262,7 @@ fn active_compaction_summary_failure_preserves_observations_and_accounts_attempt
         "oversized request must not reach provider after failed summary"
     );
     let seen = script.main.load(Ordering::SeqCst);
+    assert_eq!(seen, 2, "failed reduction must stop the next main request");
     assert_eq!(script.summaries.load(Ordering::SeqCst), 1);
     app.close().unwrap();
     let events = load_events(&storage);

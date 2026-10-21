@@ -9,6 +9,15 @@ pub struct WriteFileTool {
 }
 
 impl Tool for WriteFileTool {
+    fn capability_metadata(&self) -> crate::ToolCapability {
+        crate::ToolCapability::native(
+            &["write", "file", "text", "json", "写入", "报表"],
+            &["utf8-text"],
+            &["file"],
+            "Writes supplied text bytes, including JSON or reports; does not compute aggregates or validate formats. Write scope and approval checked at invocation.",
+        )
+    }
+
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "write_file".into(),

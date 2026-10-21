@@ -2475,3 +2475,82 @@ sources yield inconclusive results. History holds at most 8 reports,
 exhaustion rejects a write without discarding history. Checks never follow
 symlinks, read outside the held project capability, install software or use a
 remote validation service.
+
+## Inspect capabilities before choosing a tool
+
+While idle, `/capabilities` lists registered tools. The same command works in
+standalone/attached TUI, headless `clat exec --command`, and the PWA. Optional
+JSON filters use the same core query as the model:
+
+```text
+/capabilities {"text":"测试","output":"command-receipt","scope":"local","limit":1}
+/capabilities {"name":"read_file"}
+/capabilities {"source":"mcp"}
+/capabilities {"id":"<id returned by this snapshot>","schema_offset":0}
+```
+
+Models use `query_capabilities` and `describe_capability`. Their view contains
+only the current Run's actual tool definitions, including Plan, modality, Task
+and subagent fences. Read-only children keep their existing three-tool allowlist.
+User diagnostics use the broader **idle-user** domain and are rejected during an
+active Run. Viewing does not create a conversation, run tools, probe dependencies,
+connect/reconnect services, install software, ask for approval or change a Task.
+Normal model query calls/results still enter the ordinary conversation journal.
+
+`name` is exact; `source` is an exact source kind, adapter or plugin owner.
+`text` matches names, the first 16 KiB of descriptions and explicit labels:
+ASCII case is ignored, whitespace-separated terms are ANDed, and Chinese terms
+are literal substrings. There is no semantic search or automatic translation.
+`input`, `output` and `scope` compare explicit declarations. An undeclared field
+produces a candidate requiring confirmation; a declared mismatch excludes it.
+These candidates carry reasons and missing conditions. They are suggestions,
+with local/external/unknown boundaries preserved, never equivalent replacements,
+execution evidence, authorization or a promise of eventual success. For example,
+`write_file` can save supplied JSON/report text; it does not compute aggregates or
+certify spreadsheet support. An external tool's unknown output is not PDF/XLSX
+support. No confirmed path is a valid result.
+
+Each item separates registration/visibility, handler availability, unknown
+binary/dependency/configuration/login/health checks and invocation-time policy.
+A native handler being available says nothing about a path or command. MCP
+startup/handshake and WASM loading do not prove end-to-end readiness. Idle source
+diagnostics show existing startup observations, including missing executable,
+missing configuration, connecting or failure. They expose no raw startup command,
+secret configuration or underlying error. Fix configuration/dependencies or login
+explicitly, then use the existing plugin management reload; discovery performs
+none of these actions. HTTP disconnects without an existing observation remain
+unknown; this is not a health monitor.
+
+Use `next_cursor` with the **same filters and limit** to continue. A different Run,
+session selection, registry/lease generation or observed source state invalidates
+old pages/ids; requery instead of treating historical text as live authority.
+Actual calls still use normal preparation, approval, cancellation, budgets,
+unknown-operation fences, one-use verification grants and acceptance gates.
+
+Requests are at most 2,048 serialized JSON bytes; text is at most 256 UTF-8 bytes
+and eight terms; filters/ids are at most 128 bytes; cursors at most 256. A page
+contains at most four items (default two, possibly fewer to fit), and each reply
+is at most 4,096 serialized JSON bytes. More than 4,096 registered visible entries
+returns an explicit unsupported-size error. Source diagnostics show at most two
+observations with `has_more`; filter by source/adapter to narrow them. Descriptions
+are bounded previews with completeness flags; optional labels are bounded partial
+declarations. Details return exact model input-schema JSON as text chunks with
+`offset`, `next_offset`, `total_bytes` and `complete`; only an entire first chunk
+can be `complete`. Each chunk is at most 1,024 bytes **after JSON escaping**;
+schemas above 65,536 serialized bytes are explicitly omitted. Never execute using
+a partial schema as though it were complete. Reissue list/detail after compaction
+or cold reopen; no capability database or historical tool handle is restored.
+
+Preview limits count JSON escaping too: name/owner/adapter 128 bytes,
+source/scope 64, description/limitations 256, and each displayed label family
+128 bytes in total. Label lists and limitations are explicitly partial previews;
+use current model schema and producer documentation before a call. An observed
+stdio reader EOF marks that adapter/channel blocked and expires old observation
+ids. No new connectivity check is performed.
+
+Schema annotations have recognized secrets removed before publication and
+pagination. Model definitions and user/model details share that public schema;
+validation constraints are preserved. A tool whose schema contains a recognized
+secret in a property name or other structural data is refused at registration,
+with a fixed diagnostic. Correct the producer definition and explicitly reload;
+discovery cannot supply an altered schema for such a tool.

@@ -131,6 +131,7 @@ pub(super) struct WaitingRunExecution {
 struct RunSlots {
     plugin_host: Arc<crate::plugin_host::PluginHostBridge>,
     tool_access: Arc<crate::tool::ToolAccessSlot>,
+    tools: Arc<crate::tool::ToolRegistry>,
     skill_catalog: Arc<crate::skills::SkillCatalogSlot>,
     view_image: Arc<crate::view_image::ViewImageState>,
     file_review: Option<Arc<crate::project::review::FileReview>>,
@@ -141,6 +142,7 @@ impl RunSlots {
         Self {
             plugin_host: Arc::clone(&app.plugin_host),
             tool_access: Arc::clone(&app.tool_access),
+            tools: Arc::clone(&app.tools),
             skill_catalog: Arc::clone(&app.skill_catalog),
             view_image: Arc::clone(&app.view_image),
             file_review: app.project.file_review(),
@@ -150,6 +152,7 @@ impl RunSlots {
     fn clear(&self) {
         self.plugin_host.clear();
         self.tool_access.clear();
+        self.tools.clear_capabilities();
         self.skill_catalog.clear();
         self.view_image.clear();
         if let Some(review) = &self.file_review {
@@ -294,6 +297,9 @@ impl WaitingRunExecution {
         self.slots
             .skill_catalog
             .install(Arc::clone(&start.context.skills));
+        self.slots
+            .tools
+            .install_capabilities(Arc::clone(&start.context.capabilities));
         self.slots.view_image.begin_run();
         self.slots
             .plugin_host

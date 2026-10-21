@@ -165,6 +165,10 @@ struct NetworkTool {
     instance: Arc<Instance>,
 }
 impl Tool for NetworkTool {
+    fn capability_metadata(&self) -> crate::ToolCapability {
+        crate::ToolCapability::external("wasm", &self.instance.name, "external")
+    }
+
     fn definition(&self) -> ToolDefinition {
         self.definition.clone()
     }

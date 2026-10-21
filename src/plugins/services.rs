@@ -558,6 +558,8 @@ pub(crate) struct McpStatus {
 }
 
 struct McpStatusInner {
+    observation_revision: u64,
+    capability_sources: std::collections::BTreeMap<(String, String), (&'static str, &'static str)>,
     configured: usize,
     connected: usize,
     /// 连接失败的 server 数（connecting 推导用；工具注册失败不算——
@@ -581,9 +583,55 @@ pub(crate) struct McpStatusSnapshot {
 }
 
 impl McpStatus {
+    pub(crate) fn record_capability_failed(
+        &self,
+        source: &str,
+        name: &str,
+        reason: &'static str,
+        message: String,
+    ) {
+        self.record_capability_source(source, name, "blocked", reason);
+        self.record_failed_server(message);
+    }
+    /// Typed, non-secret startup observations. No configuration/error text is copied.
+    pub(crate) fn record_capability_source(
+        &self,
+        source: &str,
+        name: &str,
+        state: &'static str,
+        reason: &'static str,
+    ) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.observation_revision = inner.observation_revision.wrapping_add(1);
+            inner
+                .capability_sources
+                .insert((source.into(), name.into()), (state, reason));
+        }
+    }
+    pub(crate) fn capability_revision(&self) -> u64 {
+        self.inner
+            .lock()
+            .map(|inner| inner.observation_revision)
+            .unwrap_or(u64::MAX)
+    }
+    pub(crate) fn capability_sources(&self, source: &str) -> serde_json::Value {
+        let Ok(inner) = self.inner.lock() else {
+            return serde_json::json!({"state":"unknown"});
+        };
+        let items: Vec<_> = inner
+            .capability_sources
+            .iter()
+            .filter(|((s, n), _)| source.is_empty() || source == s || source == n)
+            .collect();
+        serde_json::json!({"revision":inner.observation_revision,"configured":inner.configured,"connected_at_startup":inner.connected,"connecting":inner.configured.saturating_sub(inner.connected+inner.failed_servers),"diagnostics":inner.failures.len(),"items":items.iter().take(2).map(|((s,n),(state,reason))| serde_json::json!({
+            "source":s,"name":crate::tool::capabilities::bounded_label(n),"state":state,"reason":reason,
+            "end_to_end":"unknown","login":"unknown","next":"user: inspect /mcp, fix dependency/configuration or login; explicitly reload via plugin management"})).collect::<Vec<_>>(),"has_more":items.len()>2})
+    }
     pub(crate) fn new(configured: usize) -> Self {
         Self {
             inner: std::sync::Mutex::new(McpStatusInner {
+                capability_sources: Default::default(),
+                observation_revision: 0,
                 configured,
                 connected: 0,
                 failed_servers: 0,
@@ -632,7 +680,18 @@ impl McpStatus {
     }
 
     pub(crate) fn record_connected(&self, server: McpServerStatus) {
+        self.record_capability_source(
+            if server.transport == "wasm" {
+                "wasm"
+            } else {
+                "mcp"
+            },
+            &server.name,
+            "unknown",
+            "startup_connected_only",
+        );
         if let Ok(mut inner) = self.inner.lock() {
+            inner.observation_revision = inner.observation_revision.wrapping_add(1);
             inner.connected += 1;
             inner.servers.push(server);
         }
@@ -642,6 +701,7 @@ impl McpStatus {
     /// server 级失败（连接/握手/列工具失败）：计入 connecting 推导。
     pub(crate) fn record_failed_server(&self, message: String) {
         if let Ok(mut inner) = self.inner.lock() {
+            inner.observation_revision = inner.observation_revision.wrapping_add(1);
             inner.failed_servers += 1;
             inner.failures.push(message);
         }
@@ -651,6 +711,7 @@ impl McpStatus {
     /// 非 server 级失败（如工具注册失败）：不影响 connecting 推导。
     pub(crate) fn record_failure(&self, message: String) {
         if let Ok(mut inner) = self.inner.lock() {
+            inner.observation_revision = inner.observation_revision.wrapping_add(1);
             inner.failures.push(message);
         }
     }
@@ -671,6 +732,7 @@ impl McpStatus {
             return;
         }
         if let Ok(mut inner) = self.inner.lock() {
+            inner.observation_revision = inner.observation_revision.wrapping_add(1);
             inner.configured += extra;
         }
     }

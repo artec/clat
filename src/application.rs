@@ -28,6 +28,7 @@ pub(crate) fn bounded_reason(reason: &str) -> String {
 }
 
 mod bootstrap;
+mod capabilities;
 mod changes;
 mod compaction;
 mod composition;

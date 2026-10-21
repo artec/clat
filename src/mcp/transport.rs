@@ -49,12 +49,30 @@ const CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(25);
 #[derive(Debug)]
 pub struct McpError {
     message: String,
+    pub(crate) kind: &'static str,
 }
 
 impl McpError {
     pub(crate) fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
+            kind: "connection_failed",
+        }
+    }
+}
+
+impl McpError {
+    fn spawn(command: &str, error: std::io::Error) -> Self {
+        let kind = if error.kind() == std::io::ErrorKind::NotFound {
+            "missing_dependency"
+        } else if error.kind() == std::io::ErrorKind::PermissionDenied {
+            "permission_denied"
+        } else {
+            "startup_failed"
+        };
+        Self {
+            message: format!("spawn MCP server `{command}`: {error}"),
+            kind,
         }
     }
 }
@@ -296,6 +314,7 @@ pub struct StdioSession {
     writer: Option<mpsc::SyncSender<WriterRequest>>,
     writer_handle: Option<JoinHandle<()>>,
     reader_handle: Option<JoinHandle<()>>,
+    reader_lifetime: std::sync::Weak<()>,
     /// stderr 排水线程的 join 句柄（EOF/子进程退出后自然结束）。
     stderr_handle: Option<JoinHandle<()>>,
     /// 每个在途请求的响应回传通道，按 id 注册，由 reader 线程消费。
@@ -307,7 +326,71 @@ pub struct StdioSession {
     /// [`push_diagnostic`]）。
     stderr_tail: Arc<Mutex<VecDeque<String>>>,
     next_id: AtomicU64,
+    // Public text includes both private config and known credential environment values.
     private_config_values: Vec<String>,
+    private_schema_values: Vec<String>,
+}
+
+fn require_pipe<T>(pipe: Option<T>, message: &str) -> Result<T, McpError> {
+    pipe.ok_or_else(|| McpError::new(message))
+}
+
+fn read_frames(
+    stdout: std::process::ChildStdout,
+    reader_pending: Arc<Mutex<PendingMap>>,
+    reader_requests: Arc<Mutex<Option<ServerRequestSink>>>,
+    reader_tail: Arc<Mutex<VecDeque<String>>>,
+    lifetime: Arc<()>,
+) {
+    let _lifetime = lifetime;
+    let mut reader = BufReader::new(stdout);
+    loop {
+        let line = match read_capped_line(&mut reader, MAX_FRAME_BYTES) {
+            Ok(Some(line)) => line,
+            Ok(None) => break,
+            Err(error) => {
+                push_diagnostic(&reader_tail, format!("reader stopping: {error}"));
+                break;
+            }
+        };
+        match parse_incoming(&line) {
+            IncomingFrame::Response { id, outcome } => {
+                let slot = reader_pending
+                    .lock()
+                    .ok()
+                    .and_then(|mut map| map.remove(&id));
+                match slot {
+                    Some(sender) => {
+                        let _ = sender.send(outcome);
+                    }
+                    // 未知 id：超时后被放弃的请求的迟到响应，
+                    // 或服务端违反协议。记录但不中断会话——
+                    // 进诊断缓冲而非 eprintln（TUI 运行期任何
+                    // 终端打印都会毁屏，2026-08-20）。
+                    None => push_diagnostic(
+                        &reader_tail,
+                        format!("response for unknown id {id} dropped"),
+                    ),
+                }
+            }
+            IncomingFrame::ServerRequest { id, method, params } => {
+                let request = ServerRequest { id, method, params };
+                if !try_deliver_server_request(&reader_requests, request) {
+                    push_diagnostic(
+                        &reader_tail,
+                        "server request dropped: no handler installed or queue full",
+                    );
+                }
+            }
+            IncomingFrame::Ignored => {}
+        }
+    }
+    // 流结束：叫醒所有在途调用方，绝不留人挂死。
+    if let Ok(mut map) = reader_pending.lock() {
+        for (_, sender) in map.drain() {
+            let _ = sender.send(Err("MCP server closed the connection".into()));
+        }
+    }
 }
 
 fn spawn_stderr_drain(
@@ -337,6 +420,22 @@ fn spawn_stderr_drain(
 }
 
 impl StdioSession {
+    /// Existing reader ownership is evidence of a channel being open, never of remote health.
+    pub(crate) fn connection_observer(&self) -> std::sync::Weak<()> {
+        self.reader_lifetime.clone()
+    }
+
+    pub(crate) fn private_schema_text(&self, text: &str) -> bool {
+        super::schema_privacy::contains(text, &self.private_schema_values)
+    }
+
+    pub(crate) fn public_metadata(&self, text: &str) -> String {
+        crate::redact::redact_secrets(&crate::redact::redact_known_values(
+            text,
+            &self.private_config_values,
+        ))
+    }
+
     /// 启动子进程并建立 stdio 通道。
     ///
     /// `cwd` 是子进程的固定工作目录（MCP 服务器是全局能力，绝不在
@@ -362,19 +461,10 @@ impl StdioSession {
             .stderr(Stdio::piped());
         let mut child = command_builder
             .spawn()
-            .map_err(|error| McpError::new(format!("spawn MCP server `{command}`: {error}")))?;
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| McpError::new("MCP server stdin unavailable"))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| McpError::new("MCP server stdout unavailable"))?;
-        let stderr = child
-            .stderr
-            .take()
-            .ok_or_else(|| McpError::new("MCP server stderr unavailable"))?;
+            .map_err(|error| McpError::spawn(command, error))?;
+        let stdin = require_pipe(child.stdin.take(), "MCP server stdin unavailable")?;
+        let stdout = require_pipe(child.stdout.take(), "MCP server stdout unavailable")?;
+        let stderr = require_pipe(child.stderr.take(), "MCP server stderr unavailable")?;
 
         let pending: Arc<Mutex<PendingMap>> = Arc::new(Mutex::new(HashMap::new()));
         let reader_pending = Arc::clone(&pending);
@@ -382,70 +472,32 @@ impl StdioSession {
         let reader_requests = Arc::clone(&server_requests);
         let stderr_tail: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
         let reader_tail = Arc::clone(&stderr_tail);
-        let reader_handle = match std::thread::Builder::new().name("mcp-reader".into()).spawn(
-            move || {
-                let mut reader = BufReader::new(stdout);
-                loop {
-                    let line = match read_capped_line(&mut reader, MAX_FRAME_BYTES) {
-                        Ok(Some(line)) => line,
-                        Ok(None) => break,
-                        Err(error) => {
-                            push_diagnostic(&reader_tail, format!("reader stopping: {error}"));
-                            break;
-                        }
-                    };
-                    match parse_incoming(&line) {
-                        IncomingFrame::Response { id, outcome } => {
-                            let slot = reader_pending
-                                .lock()
-                                .ok()
-                                .and_then(|mut map| map.remove(&id));
-                            match slot {
-                                Some(sender) => {
-                                    let _ = sender.send(outcome);
-                                }
-                                // 未知 id：超时后被放弃的请求的迟到响应，
-                                // 或服务端违反协议。记录但不中断会话——
-                                // 进诊断缓冲而非 eprintln（TUI 运行期任何
-                                // 终端打印都会毁屏，2026-08-20）。
-                                None => push_diagnostic(
-                                    &reader_tail,
-                                    format!("response for unknown id {id} dropped"),
-                                ),
-                            }
-                        }
-                        IncomingFrame::ServerRequest { id, method, params } => {
-                            let request = ServerRequest { id, method, params };
-                            if !try_deliver_server_request(&reader_requests, request) {
-                                push_diagnostic(
-                                    &reader_tail,
-                                    "server request dropped: no handler installed or queue full",
-                                );
-                            }
-                        }
-                        IncomingFrame::Ignored => {}
-                    }
+        let reader_guard = Arc::new(());
+        let reader_lifetime = Arc::downgrade(&reader_guard);
+        let reader_handle =
+            match std::thread::Builder::new()
+                .name("mcp-reader".into())
+                .spawn(move || {
+                    read_frames(
+                        stdout,
+                        reader_pending,
+                        reader_requests,
+                        reader_tail,
+                        reader_guard,
+                    );
+                }) {
+                Ok(handle) => handle,
+                Err(error) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(McpError::new(format!("spawn MCP reader thread: {error}")));
                 }
-                // 流结束：叫醒所有在途调用方，绝不留人挂死。
-                if let Ok(mut map) = reader_pending.lock() {
-                    for (_, sender) in map.drain() {
-                        let _ = sender.send(Err("MCP server closed the connection".into()));
-                    }
-                }
-            },
-        ) {
-            Ok(handle) => handle,
-            Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(McpError::new(format!("spawn MCP reader thread: {error}")));
-            }
-        };
+            };
 
         // stderr 排水线程：持续读并截留到尾缓冲。管道不排会被子进程
         // 写满阻塞（cap 沿用帧上限）；EOF/异常时自然结束，shutdown
         // 与 stdout reader 一并 join。
-        let private_config_values = crate::redact::plugin_config_values(env);
+        let private_config_values = super::schema_privacy::public_values(env);
         let stderr_handle = match spawn_stderr_drain(
             stderr,
             Arc::clone(&stderr_tail),
@@ -558,11 +610,13 @@ impl StdioSession {
             writer: Some(writer),
             writer_handle: Some(writer_handle),
             reader_handle: Some(reader_handle),
+            reader_lifetime,
             stderr_handle: Some(stderr_handle),
             pending,
             server_requests,
             stderr_tail,
             private_config_values,
+            private_schema_values: super::schema_privacy::values(env),
             next_id: AtomicU64::new(1),
         })
     }
@@ -904,6 +958,27 @@ pub struct HttpSession {
 }
 
 impl HttpSession {
+    pub(crate) fn private_schema_text(&self, text: &str) -> bool {
+        let values = self
+            .headers
+            .iter()
+            .filter(|(key, _)| super::schema_privacy::private_header(key))
+            .flat_map(|(_, v)| [v.clone(), v.strip_prefix("Bearer ").unwrap_or(v).to_owned()])
+            .filter(|v| !v.is_empty())
+            .collect::<Vec<_>>();
+        super::schema_privacy::contains(text, &values)
+    }
+
+    pub(crate) fn public_metadata(&self, text: &str) -> String {
+        let values = self
+            .headers
+            .iter()
+            .flat_map(|(_, v)| [v.clone(), v.strip_prefix("Bearer ").unwrap_or(v).to_owned()])
+            .filter(|v| !v.is_empty())
+            .collect::<Vec<_>>();
+        crate::redact::redact_secrets(&crate::redact::redact_known_values(text, &values))
+    }
+
     /// 建立会话（无握手 IO：首次请求才触网）。`headers` 是调用方配置
     /// 的静态头（如 `Authorization: Bearer …`），逐请求附带。
     pub fn connect(url: &str, headers: &[(String, String)]) -> Result<Self, McpError> {
@@ -1091,6 +1166,57 @@ pub fn parse_sse_messages(body: &str) -> Vec<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ga3_rework_http_annotations_clean_but_headers_never_rewrite_contracts() {
+        let session = HttpSession::connect(
+            "http://127.0.0.1:1",
+            &[
+                ("Authorization".into(), "Bearer fixturecredential".into()),
+                ("Accept".into(), "object".into()),
+            ],
+        )
+        .unwrap();
+        let original = crate::ToolDefinition {
+            name: "http-tool".into(),
+            description: "test".into(),
+            input_schema: serde_json::json!({"type":"object","properties":{"object":{"type":"string","enum":["object"]}},"description":"fixturecredential"}),
+            effect: crate::ToolEffect::Read,
+            strict: false,
+        };
+        let published = crate::tool::capabilities::schema::definition(
+            original.clone(),
+            &|text| session.public_metadata(text),
+            &|text| session.private_schema_text(text),
+        )
+        .unwrap();
+        assert_eq!(published.input_schema["type"], "object");
+        assert_eq!(
+            published.input_schema["properties"],
+            original.input_schema["properties"]
+        );
+        assert!(
+            !published
+                .input_schema
+                .to_string()
+                .contains("fixturecredential")
+        );
+        let mut unsafe_definition = original;
+        unsafe_definition.input_schema = serde_json::json!({"const":"fixturecredential"});
+        let result = crate::tool::capabilities::schema::definition(
+            unsafe_definition,
+            &|text| session.public_metadata(text),
+            &|text| session.private_schema_text(text),
+        );
+        assert!(result.is_err());
+        assert!(
+            !result
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("fixturecredential")
+        );
+    }
 
     /// W1-11：HTTP 响应体读取必须有界——无限数据源下 `read_body_capped`
     /// 必须终止并报超限（先 `take` 后读）。若有人删掉 `.take()` 回到

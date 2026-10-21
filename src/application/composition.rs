@@ -205,6 +205,7 @@ fn project_catalog(input: &mut CompositionInput) -> Vec<Arc<dyn Plugin>> {
         Arc::new(ProjectControlStoragePlugin::new(Arc::clone(&input.control))),
         Arc::new(SessionPersistencePlugin::new(Arc::clone(&input.sessions))),
         Arc::new(crate::plugins::ToolRegistryPlugin),
+        Arc::new(crate::tool::capabilities::DiscoveryPlugin),
         Arc::new(crate::plugins::NativeReadToolsPlugin),
         Arc::new(crate::plugins::SearchPlugin),
         Arc::new(crate::plugins::NativeWriteToolsPlugin {

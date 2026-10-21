@@ -234,7 +234,8 @@ impl ToolMiddleware for TaskService {
         // Session metadata (including update_task) cannot be mistaken for an external effect.
         let definition = invocation.tool.definition();
         let effect = definition.effect;
-        if matches!(effect, ToolEffect::SessionWrite)
+        if crate::tool::capabilities::is_discovery(&definition.name)
+            || matches!(effect, ToolEffect::SessionWrite)
             || matches!(
                 definition.name.as_str(),
                 "check_task_acceptance" | "read_task"

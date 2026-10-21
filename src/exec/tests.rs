@@ -1741,3 +1741,34 @@ fn ga2_headless_contract_read_verify_save_and_verified_complete_survive_reopen()
     assert_eq!(view["current_applicability"]["applicable"], true);
     crate::test_support::cleanup_tree(root.parent().unwrap());
 }
+
+#[test]
+fn ga3_headless_real_command_lists_and_details_without_model_or_session_content() {
+    let (storage, root, project) = setup("ga3-headless");
+    prepare_storage(&project, &storage, TestBehavior::Success);
+    let mut options = args(None);
+    options.command = Some(r#"/capabilities {"name":"read_file"}"#.into());
+    let (io, _) = ExecIo::capture(&[]);
+    let ExecOutcome::Success { output, turns, .. } =
+        exec(&project, &storage, TestBehavior::Panic, options, io)
+    else {
+        panic!("read-only capability command")
+    };
+    let page: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(turns, 0);
+    assert_eq!(page["domain"], "idle-user");
+    assert_eq!(page["candidates"][0]["name"], "read_file");
+    assert_eq!(page["candidates"][0]["source"], "native");
+    let mut options = args(None);
+    options.command = Some(format!(
+        "/capabilities {{\"id\":{}}}",
+        page["candidates"][0]["id"]
+    ));
+    let (io, _) = ExecIo::capture(&[]);
+    // A new process/mount must reject history's snapshot id, without calling the model.
+    assert!(matches!(
+        exec(&project, &storage, TestBehavior::Panic, options, io),
+        ExecOutcome::Failure(_)
+    ));
+    crate::test_support::cleanup_tree(root.parent().unwrap());
+}

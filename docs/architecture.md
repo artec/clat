@@ -1252,3 +1252,47 @@ machine-check completion retain distinct provenance. External file changes
 later affect current applicability, without rewriting the historical terminal
 fact. This is a local observation/permission contract, not a guarantee that
 user-supplied criteria or declared input scopes are sufficient.
+
+## Derived capability views
+
+`tool::capabilities` owns discovery, matching, output bounds and transient
+pagination. The sole tool directory remains `ToolRegistry`: registration stores
+owner, definition, a random registration identity and optional producer-owned
+`ToolCapability` declarations. Existing `Tool` implementations inherit unknown
+metadata; `ToolDefinition` construction is unchanged. Definitions are captured
+at registration, without calling external tool implementations during queries.
+Native file/process, MCP and WASM implementations supply their own declarations.
+External descriptions remain data, with provider trust and missing claims visible.
+
+`RunContextSnapshot` obtains the capability view and actual model definitions
+from one registry capture. Activation publishes that immutable view; cleanup and
+session selection invalidate it. Model discovery never falls back to idle/global
+tools. User commands go through Application's idle-only diagnostic view and the
+same query engine. Frontends display core content and perform no matching or
+permission decisions. Attached TUI preserves capability JSON arguments when
+forwarding through existing `command.run`.
+
+Registration identity, view identity, registry generation and observed adapter
+lifetime bind detail ids/cursors. Idle views also bind the existing external
+startup observation generation. A query checks generation before/after building
+its reply and checks cancellation; no locks enclose arbitrary provider callbacks.
+Observations have an epoch and time, with explicit scope: an adapter lifetime or
+startup connection is not a health/login test. MCP/WASM status remains owned by
+the existing domain; typed, secret-free projections accompany idle queries.
+
+Discovery produces no durable capability events, database or automatic action.
+Its model tools use ordinary journal/result projection and are excluded from Task
+operation intents. They do not advance progress, settle unknown effects or spend
+verification grants; ordinary model-request accounting still applies. Suggested
+tools are invoked separately through the original lease, preparation, permissions
+and Task/acceptance pipeline. A query result never becomes an execution handle.
+
+Registration also owns public-schema preparation in `tool::capabilities::schema`.
+The optional `Tool::public_definition` adapter hook and mandatory registry pass
+form one publication boundary. Only annotations on recognized schema nodes may
+be cleaned; validation strings/keys and opaque data remain unchanged. Unsafe
+structural disclosure rejects registration before registry mutation. MCP keeps
+credential values in transport state and supplies private predicates to this
+boundary. Model definitions and both discovery domains then share the stored
+public definition; no fragment-level cleanup or extra query-time callback is
+needed. The source tool's original call contract remains available internally.
