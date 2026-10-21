@@ -124,7 +124,12 @@ fn discovered_app(
     label: &str,
     script: Arc<DiscoveryPrelude>,
 ) -> (TrustedProjectApplication, PathBuf, PathBuf) {
-    let (storage, root) = roots(label);
+    discovered_app_at(roots(label), script)
+}
+fn discovered_app_at(
+    (storage, root): (PathBuf, PathBuf),
+    script: Arc<DiscoveryPrelude>,
+) -> (TrustedProjectApplication, PathBuf, PathBuf) {
     std::fs::create_dir_all(&root).unwrap();
     std::fs::create_dir_all(&storage).unwrap();
     std::fs::write(root.join("input.json"), INPUT).unwrap();
@@ -244,16 +249,13 @@ fn ga3_noncoding_discovers_text_json_candidate_then_real_outputs_and_acceptance(
 }
 #[test]
 fn ga3_programming_discovers_receipt_and_runs_real_rust_then_requires_explicit_recheck() {
+    let fixture_paths = roots("ga3-rust-e2e");
     let binary = if cfg!(windows) {
         "ga3-tests.exe"
     } else {
         "ga3-tests"
     };
-    let executable = if cfg!(windows) {
-        "ga3-tests.exe"
-    } else {
-        "./ga3-tests"
-    };
+    let executable = fixture_paths.1.join(binary).to_string_lossy().into_owned();
     let code = r#"#[test] fn invariant(){let n=std::fs::read_to_string("calls").ok().and_then(|v|v.parse::<u64>().ok()).unwrap_or(0);std::fs::write("calls",(n+1).to_string()).unwrap();assert_eq!(2+3,5);}"#;
     let invoke = json!([executable]);
     let script = DiscoveryPrelude::new(
@@ -267,7 +269,7 @@ fn ga3_programming_discovers_receipt_and_runs_real_rust_then_requires_explicit_r
             Step::Done,
         ],
     );
-    let (mut app, root, storage) = discovered_app("ga3-rust-e2e", script.clone());
+    let (mut app, root, storage) = discovered_app_at(fixture_paths, script.clone());
     activate(
         &app,
         AcceptanceContract {

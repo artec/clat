@@ -1000,16 +1000,18 @@ mod tests {
     #[test]
     fn read_file_escaped_path_cannot_erase_the_first_piece() {
         let (root, project) = fixture();
-        let mut dir = root.clone();
-        for _ in 0..4 {
-            dir = dir.join("\"".repeat(160));
-        }
-        fs::create_dir_all(&dir).expect("dirs");
-        let path = dir.join("f.txt");
+        let (path, requested) = crate::test_support::escaped_read_fixture(&root);
         fs::write(&path, format!("{}\n", "x".repeat(16_000))).expect("write");
-        let requested = path.to_str().expect("utf8 path");
+        assert_eq!(
+            project.resolve_existing(&requested).unwrap(),
+            path.canonicalize().unwrap()
+        );
+        assert!(
+            serde_json::to_string(&requested).unwrap().chars().count()
+                >= requested.chars().count() + 640
+        );
 
-        let segments = read_until_eof(&project, requested, json!({}));
+        let segments = read_until_eof(&project, &requested, json!({}));
         assert!(
             segments.len() >= 3,
             "the escaped-path file must still arrive as multiple segments"

@@ -677,3 +677,18 @@ persisted/replayed results must exclude the bare configured `API_KEY` value.
 Separate unsafe tools still reject credential-bearing constraints; ordinary
 mode/format words retain their schema semantics, and discovery sends zero MCP
 messages. These are local fixture checks, not external-provider acceptance.
+
+The GitHub `Complete Linux gates` step reserves 30 minutes for the complete
+sequential `scripts/gates.sh --ci` sequence, including cold compilation and the
+real JS component probe. Individual tool, checker and test deadlines remain
+unchanged. `scripts/test_ci_windows.py` also checks this aggregate budget and
+keeps the Windows Cargo commands in separate failure-preserving steps.
+
+Real compiled task-acceptance fixtures allocate their temporary project before
+building argv, then use that project's absolute executable path in both the
+invocation and acceptance contract. This avoids Windows PATH/parent-directory
+lookup for a just-built child binary. Escaped-path read regressions retain at
+least 640 JSON escape characters on every platform: Unix uses quoted directory
+names, while Windows uses legal repeated path separators. Both still resolve
+the actual file, consume all segments and reconstruct every source byte; they
+are not skipped on Windows.

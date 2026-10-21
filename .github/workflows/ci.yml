@@ -36,7 +36,10 @@ jobs:
           node-version: 22
 
       - name: Complete Linux gates
-        timeout-minutes: 15
+        # This is the whole sequential gate, including cold Rust builds and
+        # the real JS component probe. Run 39561574997 exhausted 15 minutes.
+        # Keep per-test/tool deadlines unchanged; bound the aggregate instead.
+        timeout-minutes: 30
         # Workspace default-members cover both product crates. Shared gates also
         # install the pinned official web recipe and run the isolated JS component
         # experiment before the ignored MCP tests.

@@ -263,7 +263,12 @@ fn fresh(
     label: &str,
     steps: Vec<Step>,
 ) -> (TrustedProjectApplication, Arc<Sequence>, PathBuf, PathBuf) {
-    let (storage, root) = roots(label);
+    fresh_at(roots(label), steps)
+}
+fn fresh_at(
+    (storage, root): (PathBuf, PathBuf),
+    steps: Vec<Step>,
+) -> (TrustedProjectApplication, Arc<Sequence>, PathBuf, PathBuf) {
     std::fs::create_dir_all(&root).unwrap();
     std::fs::write(root.join("input.json"), INPUT).unwrap();
     let script = Arc::new(Sequence {
@@ -543,19 +548,16 @@ fn command_clause(id: &str, argv: Value, format: &str, files: Vec<&str>) -> Clau
 }
 #[test]
 fn ga2_programming_real_rust_harness_zero_failure_and_pass_bound_to_runtime_input_and_completion() {
+    let fixture_paths = roots("ga2-rust-e2e");
     let ignored = "#[test]\n#[ignore]\nfn invariant(){assert_eq!(2+3,5);}\n";
     let failed = "#[test]\nfn invariant(){assert_eq!(2+3,6);}\n";
     let passed = "#[test]\nfn invariant(){assert_eq!(2+3,5);}\n";
-    let executable = if cfg!(windows) {
-        "case-tests.exe"
-    } else {
-        "./case-tests"
-    };
     let binary = if cfg!(windows) {
         "case-tests.exe"
     } else {
         "case-tests"
     };
+    let executable = fixture_paths.1.join(binary).to_string_lossy().into_owned();
     let compile = rust_test_argv("case.rs", binary);
     let invoke = json!([executable]);
     let mut steps = Vec::new();
@@ -574,7 +576,7 @@ fn ga2_programming_real_rust_harness_zero_failure_and_pass_bound_to_runtime_inpu
         ]);
     }
     steps.push(Step::Done);
-    let (mut app, script, root, storage) = fresh("ga2-rust-e2e", steps);
+    let (mut app, script, root, storage) = fresh_at(fixture_paths, steps);
     activate(
         &app,
         AcceptanceContract {
@@ -653,16 +655,13 @@ fn ga2_programming_real_rust_harness_zero_failure_and_pass_bound_to_runtime_inpu
 #[test]
 fn ga2_same_command_recovery_replay_stays_blocked_but_explicit_single_use_recheck_creates_new_evidence()
  {
+    let fixture_paths = roots("ga2-explicit-recheck");
     let binary = if cfg!(windows) {
         "recheck-tests.exe"
     } else {
         "recheck-tests"
     };
-    let executable = if cfg!(windows) {
-        "recheck-tests.exe"
-    } else {
-        "./recheck-tests"
-    };
+    let executable = fixture_paths.1.join(binary).to_string_lossy().into_owned();
     let code = r#"#[test] fn invariant(){let n=std::fs::read_to_string("execution-count").ok().and_then(|v|v.parse::<u64>().ok()).unwrap_or(0);std::fs::write("execution-count",(n+1).to_string()).unwrap();assert_eq!(2+3,5);}"#;
     let compile = rust_test_argv("recheck.rs", binary);
     let invoke = json!([executable]);
@@ -674,7 +673,7 @@ fn ga2_same_command_recovery_replay_stays_blocked_but_explicit_single_use_rechec
         Step::Verify("passed"),
         Step::Done,
     ];
-    let (mut app, _, root, storage) = fresh("ga2-explicit-recheck", steps);
+    let (mut app, _, root, storage) = fresh_at(fixture_paths, steps);
     activate(
         &app,
         AcceptanceContract {
@@ -1141,20 +1140,17 @@ fn ga2_rework_final_gate_failure_emits_failed_terminal() {
 
 #[test]
 fn ga2_rework_command_alias_cannot_bypass_recheck_grant() {
+    let fixture_paths = roots("ga2-audit-alias");
     let binary = if cfg!(windows) {
         "alias-tests.exe"
     } else {
         "alias-tests"
     };
-    let exe = if cfg!(windows) {
-        "alias-tests.exe"
-    } else {
-        "./alias-tests"
-    };
+    let exe = fixture_paths.1.join(binary).to_string_lossy().into_owned();
     let code = r#"#[test] fn invariant(){let n=std::fs::read_to_string("execution-count").ok().and_then(|v|v.parse::<u64>().ok()).unwrap_or(0);std::fs::write("execution-count",(n+1).to_string()).unwrap();}"#;
     let argv = json!([exe]);
-    let (mut app, _, root, storage) = fresh(
-        "ga2-audit-alias",
+    let (mut app, _, root, storage) = fresh_at(
+        fixture_paths,
         vec![
             write("alias.rs", code),
             process(rust_test_argv("alias.rs", binary), false),
@@ -1336,12 +1332,13 @@ fn wrapper(argv: Value, exec: bool) -> Step {
 #[test]
 fn ga2_rework_wrappers_bidirectionally_require_one_grant_and_keep_new_runtime_evidence() {
     for first_exec in [false, true] {
+        let fixture_paths = roots("ga2-dual-wrapper");
         let binary = if cfg!(windows) { "dual.exe" } else { "dual" };
-        let exe = if cfg!(windows) { "dual.exe" } else { "./dual" };
+        let exe = fixture_paths.1.join(binary).to_string_lossy().into_owned();
         let argv = json!([exe]);
         let code = r#"#[test] fn invariant(){let n=std::fs::read_to_string("count").ok().and_then(|s|s.parse::<u32>().ok()).unwrap_or(0);std::fs::write("count",(n+1).to_string()).unwrap();}"#;
-        let (mut app, _, root, storage) = fresh(
-            "ga2-dual-wrapper",
+        let (mut app, _, root, storage) = fresh_at(
+            fixture_paths,
             vec![
                 write("dual.rs", code),
                 process(rust_test_argv("dual.rs", binary), false),
@@ -1618,12 +1615,13 @@ fn ga2_rework_actual_settlement_failure_has_no_success_terminal_and_no_completed
 
 #[test]
 fn ga2_rework_running_exec_receipt_and_poll_result_cannot_be_used_as_completed_evidence() {
+    let fixture_paths = roots("ga2-running-exec");
     let binary = if cfg!(windows) { "slow.exe" } else { "slow" };
-    let exe = if cfg!(windows) { "slow.exe" } else { "./slow" };
+    let exe = fixture_paths.1.join(binary).to_string_lossy().into_owned();
     let argv = json!([exe]);
     let code = r#"#[test] fn invariant(){std::fs::write("started","1").unwrap();std::thread::sleep(std::time::Duration::from_secs(5));}"#;
-    let (mut app, _, root, _) = fresh(
-        "ga2-running-exec",
+    let (mut app, _, root, _) = fresh_at(
+        fixture_paths,
         vec![
             write("slow.rs", code),
             process(rust_test_argv("slow.rs", binary), false),

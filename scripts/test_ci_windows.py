@@ -13,5 +13,15 @@ class WindowsGateTests(unittest.TestCase):
         self.assertNotIn("run: |", windows)
 
 
+class LinuxGateBudgetTests(unittest.TestCase):
+    def test_sequential_linux_gate_has_bounded_cold_build_headroom(self):
+        workflow = (Path(__file__).resolve().parent.parent / ".github/workflows/ci.yml").read_text().replace("\r\n", "\n")
+        step = workflow.split("      - name: Complete Linux gates\n", 1)[1].split("      - name:", 1)[0]
+        minutes = int(re.search(r"timeout-minutes: (\d+)", step).group(1))
+        self.assertGreaterEqual(minutes, 30, "the full cold-build sequence exceeded 15 minutes")
+        self.assertLessEqual(minutes, 45, "the complete gate must remain time bounded")
+        self.assertIn("run: scripts/gates.sh --ci", step)
+
+
 if __name__ == "__main__":
     unittest.main()

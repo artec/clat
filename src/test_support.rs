@@ -709,6 +709,23 @@ pub fn roots(name: &str) -> (PathBuf, PathBuf) {
     (base.join("storage"), base.join("project"))
 }
 
+/// Keep the JSON-escape regression dense on both platforms without creating
+/// Windows-forbidden quote names. Repeated Windows separators are legal; the
+/// project resolver normalizes them while the result retains the raw request.
+pub fn escaped_read_fixture(root: &std::path::Path) -> (PathBuf, String) {
+    if cfg!(windows) {
+        return (root.join("f.txt"), format!(".{}f.txt", "\\".repeat(640)));
+    }
+    let mut dir = root.to_path_buf();
+    for _ in 0..4 {
+        dir = dir.join("\"".repeat(160));
+    }
+    std::fs::create_dir_all(&dir).expect("escaped fixture directories");
+    let target = dir.join("f.txt");
+    let requested = target.to_str().expect("UTF-8 fixture path").to_owned();
+    (target, requested)
+}
+
 // Share the exact bounded cold-reopen policy with out-of-process Host tests.
 #[path = "../tests/support/reopen_after_close.rs"]
 mod cold_reopen;

@@ -3879,15 +3879,17 @@ fn escaped_path_file_reads_to_eof_in_the_real_agent_loop() {
     let (storage_root, project_root) = roots("dogfood3-budget-read-cf5");
     std::fs::create_dir_all(&project_root).unwrap();
     let project = Project::new(&project_root);
-    let mut dir = project_root.clone();
-    for _ in 0..4 {
-        dir = dir.join("\"".repeat(160));
-    }
-    std::fs::create_dir_all(&dir).unwrap();
-    let target = dir.join("f.txt");
+    let (target, requested) = crate::test_support::escaped_read_fixture(&project_root);
     let source = format!("{}\n", "x".repeat(16_000));
     std::fs::write(&target, source.as_bytes()).unwrap();
-    let requested = target.to_str().unwrap().to_owned();
+    assert_eq!(
+        project.resolve_existing(&requested).unwrap(),
+        target.canonicalize().unwrap()
+    );
+    assert!(
+        serde_json::to_string(&requested).unwrap().chars().count()
+            >= requested.chars().count() + 640
+    );
 
     let script = Arc::new(ReadToEofScript {
         path: requested.clone(),
