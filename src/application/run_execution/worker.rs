@@ -8,6 +8,8 @@ pub(super) struct RunWorker {
     header_reason: Option<&'static str>,
     pub(super) durable_request_header: RequestHeaderData,
     first_round: bool,
+    pub(super) task_run: Option<String>,
+    pub(super) task_terminal: Option<Arc<Mutex<SessionRecorder>>>,
     pub(super) goal_mode: bool,
     round_started: std::time::Instant,
     aggregate_usage: Usage,
@@ -55,7 +57,10 @@ impl RunWorker {
         let round_started = input
             .goal_round_started
             .unwrap_or_else(std::time::Instant::now);
+        let task_run = deps.task_service.binding_run();
         Self {
+            task_run,
+            task_terminal: None,
             deps,
             input,
             context,
@@ -301,6 +306,21 @@ impl RunWorker {
                 failure.usage.add_assign(&sampled);
                 failure
             });
+        let result = if let (Some(run), Some(recorder)) =
+            (self.task_run.as_deref(), self.task_terminal.take())
+        {
+            super::terminal::finish(
+                result,
+                &self.deps.task_service,
+                run,
+                self.input.turn,
+                &self.deps.cancel,
+                &recorder,
+                &self.ui_sink,
+            )
+        } else {
+            result
+        };
         if let Ok(done) = &result
             && !done.cancelled
             && self.deps.titler.is_some()

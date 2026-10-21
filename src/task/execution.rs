@@ -134,15 +134,28 @@ impl TaskService {
         let name = invocation.tool.definition().name;
         let arguments_digest =
             digest(&serde_json::to_vec(invocation.arguments).map_err(|e| e.to_string())?);
-        if !matches!(
-            invocation.tool.definition().effect,
-            ToolEffect::Pure | ToolEffect::Read
-        ) && s.operations.iter().any(|o| {
-            o.run != run
-                && o.tool == name
-                && o.arguments_digest == arguments_digest
-                && o.outcome == "confirmed"
-        }) {
+        let execution_identity = invocation.tool.execution_identity();
+        let command_fact = self.command_intent(
+            &s,
+            &name,
+            invocation.arguments,
+            execution_identity.as_deref(),
+        )?;
+        let grant = Self::verification_grant(&s, command_fact.as_ref());
+        if grant.is_none()
+            && !matches!(
+                invocation.tool.definition().effect,
+                ToolEffect::Pure | ToolEffect::Read
+            )
+            && s.operations.iter().any(|o| {
+                o.run != run
+                    && o.outcome == "confirmed"
+                    && ((o.tool == name && o.arguments_digest == arguments_digest)
+                        || execution_identity
+                            .as_ref()
+                            .is_some_and(|id| crate::plugins::prior_command_matches(o, &s, id)))
+            })
+        {
             return Err("a prior task run already confirmed this operation; inspect its result instead of replaying it".into());
         }
         let id = format!("op-{}", uuid::Uuid::new_v4());
@@ -162,7 +175,16 @@ impl TaskService {
                 result_digest: None,
                 result_kind: None,
                 resolution: None,
+                command_fact,
+                execution_identity,
             });
+            if let Some(index) = grant {
+                s.acceptance_state
+                    .as_mut()
+                    .ok_or("verification grant disappeared")?
+                    .grants[index]
+                    .consumed_by = Some(id.clone());
+            }
             Ok(())
         })?;
         Ok(Some(id))
@@ -176,12 +198,21 @@ impl TaskService {
         let _lane = self.lane.lock().map_err(|_| "task write lock poisoned")?;
         let s = self.current()?.ok_or("task disappeared")?;
         self.require_binding(&s.id)?;
+        let mut command_fact = s
+            .operations
+            .iter()
+            .find(|o| o.id == id)
+            .and_then(|o| o.command_fact.clone());
+        if let (Some(fact), Ok(value)) = (&mut command_fact, result) {
+            self.record_command_outcome(fact, &s, value);
+        }
         self.update(&s.id, s.revision, |s| {
             let o = s
                 .operations
                 .iter_mut()
                 .find(|o| o.id == id)
                 .ok_or("task operation missing")?;
+            o.command_fact = command_fact;
             o.outcome = outcome.into();
             o.result_kind = Some(if result.is_ok() { "ok" } else { "error" }.into());
             o.result_digest = Some(digest(&match result {
@@ -201,8 +232,14 @@ impl ToolMiddleware for TaskService {
     ) -> Result<Value, ToolError> {
         self.check_failure()?;
         // Session metadata (including update_task) cannot be mistaken for an external effect.
-        let effect = invocation.tool.definition().effect;
-        if matches!(effect, ToolEffect::SessionWrite) {
+        let definition = invocation.tool.definition();
+        let effect = definition.effect;
+        if matches!(effect, ToolEffect::SessionWrite)
+            || matches!(
+                definition.name.as_str(),
+                "check_task_acceptance" | "read_task"
+            )
+        {
             return next.execute(invocation);
         }
         if invocation.cancel.is_cancelled() {
@@ -254,5 +291,11 @@ impl TaskService {
             return Err(ToolError::fatal(error));
         }
         Ok(())
+    }
+}
+
+impl TaskService {
+    pub(crate) fn binding_run(&self) -> Option<String> {
+        self.live.lock().ok()?.as_ref().map(|l| l.run.clone())
     }
 }

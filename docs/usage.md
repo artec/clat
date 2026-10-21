@@ -2206,8 +2206,9 @@ creation requests no immediate execution. Restored conflicting state grants no
 execution authority. Task
 continuation starts **one new Run**, with the current permission policy and
 approver; it never restores an old approval, process, PTY, tool handle or armed
-Goal. Only the user can declare a task complete or cancel it. A model checkpoint
-is a progress claim, not verified completion.
+Goal. The user can declare completion or explicitly authorize acceptance of a
+model completion candidate under a confirmed contract (see below). Cancellation
+remains a user operation. A model checkpoint is a progress claim.
 
 Create a task in the TUI or PWA command composer:
 
@@ -2325,3 +2326,152 @@ can select a specific session instead. Check/show/save do not require a model;
 continuation uses the normal headless event, cancellation and approval paths.
 Non-interactive Ask decisions remain denied unless the user supplies `--yes`.
 TUI and PWA use the same Application/command/event paths.
+
+
+### Confirmed acceptance and evidence-backed completion
+
+Structured acceptance is optional. Without it, `/task complete <id> <revision>`
+records `human_declaration`, and older text conditions remain human conditions.
+With a contract, that command requires verified completion or an explicit user
+`override` with a note. An override records `human_override`; failed/inconclusive
+reports keep their original results. The model cannot activate contracts, attest
+human conditions, authorize rechecks or call an override.
+
+Activate a contract while idle, using the current task ID/revision from
+`/task show`. The first contract has `version:1`; replacement must advance by
+exactly one, clears current human confirmations/candidates/recheck grants, and
+retains historical reports. Copy each original text condition into a required
+`human` clause named `legacy-1`, `legacy-2`, etc., with version 1, source `human`
+and `parameters:{"text":"<original condition>"}`. These cannot silently become
+machine checks. Example for a task created with an empty text acceptance list:
+
+```text
+/task acceptance <id> <revision> {"version":1,"allow_model_completion":false,"clauses":[{"id":"sections","required":true,"checker":"text","checker_version":1,"source":"project_files","files":["report.md"],"parameters":{"path":"report.md","contains":["Results","Total: 5"]}}]}
+/task verify
+/task verify-save <id> <revision>
+/task verification-status
+/task complete-verified <id> <revision> <saved-report-id>
+```
+
+`verify` only calculates; `verification-status [report-id]` only views the saved
+report and recomputes its current applicability. Neither saves results, invokes
+a model nor starts a command. `verify-save` explicitly persists a new report and
+returns a new revision. Use that revision for the next write. Save and completion
+are separate commits: completion must reference a previously durable report.
+The headless form is `clat exec --continue --command '/task verify'` (or select
+`--session`). TUI and PWA use the same commands and results.
+
+Each clause has a stable `id`, `required`, `checker`, `checker_version`, `source`,
+`files` and `parameters`. There must be at least one required clause. Installed
+version-1 checkers are:
+
+| Checker / source | Parameters and checked meaning |
+| --- | --- |
+| `human` / `human` | User description; `/task attest <id> <revision> <clause-id> <note>` confirms it explicitly. |
+| `text` / `project_files` | `{"path":"report.md","contains":["Results"]}`; bounded UTF-8 text must contain every required literal. |
+| `json` / `project_files` | `{"path":"result.json","checks":[{"op":"equals","id":"count","pointer":"/count","expected":2}]}`; the existing `verify_observation` JSON-pointer assertions (`equals`, `is_true`, `all_before`). |
+| `records` / `project_files` | `{"input":"input.json","table":"table.json","report":"report.md","value_field":"amount","total_label":"Total:"}`; independently computes source row count and exact signed 64-bit sum. |
+| `command` / `command_operation` | `{"argv":["cargo","test","selected_test"],"cwd":".","format":"rust-test-summary","minimum_executed":1}`; runtime-linked, complete command observation with declared input identities. |
+
+For local checkers, `files` must exactly name the parameter paths. `records`
+expects a source JSON array, a table object with `rows` equal to that entire
+array, `row_count` equal to its length, and `total` equal to the independently
+computed sum. Each source record must contain an integer `value_field` within
+i64; fractional values or overflow are inconclusive. The UTF-8 report needs
+exactly one line beginning with `total_label`, whose trimmed whole line equals
+`<label> <computed sum>`. Add separate text/JSON clauses for additional sections
+or fields. This does not infer requirements or certify source completeness.
+
+Command clauses declare a nonempty `files` input scope. Obtain a receipt through
+the normal native **`run_command` or non-PTY `exec_command`** argv invocation, with its existing
+`verification:{"format":"…","minimum_executed":1}` option. Formats are
+`rust-test-summary`, `playwright-summary` and `playwright-json`. The same argv,
+project-relative `workdir` (or `.`), format and minimum must match the contract.
+Pass an explicit operation map when checking/saving:
+
+```text
+/task verify {"tests":"op-<actual-operation-id>"}
+/task verify-save <id> <revision> {"tests":"op-<actual-operation-id>"}
+/task recheck <id> <revision> tests
+```
+
+Use the actual operation ID from `/task show` or `read_task`; no “latest receipt”
+is guessed. Arbitrary JSON is not a command receipt. The gate binds the actual
+process/cwd/argv, Task/contract/operation identity, exit status, cancellation,
+EOF/complete scan, nonzero minimum, and declared file hashes before/after the
+command and at checking time. Running, interrupted, incomplete or zero-test
+observations cannot pass. Failed exit/test observations remain failed;
+flaky/expected-failure or otherwise ambiguous observations remain inconclusive.
+Ignored/skipped and other receipt metadata are retained. A Cargo-shaped stdout
+signature remains an output observation: it cannot authenticate test coverage,
+observer correctness or build freshness. Declare all relevant inputs and review
+the command/conditions yourself. An `exec_command` result is eligible only when that invocation already returned
+terminal, fully scanned output. A running launch remains inconclusive; later
+`write_stdin` polls cannot replace its saved Task command fact or act as a new
+producer. Use an explicitly authorized new invocation to obtain fresh complete
+evidence. PTY adoption is not an acceptance source.
+
+The prior-Run duplicate-effect fence remains active. Native commands record the execution identity from frozen preparation: actual
+argv or shell text and resolved cwd, shared by `run_command` and `exec_command`.
+Changing wrappers, timeout/format/output options, or equivalent workdir spelling
+does not authorize replay. Shell requests share identity across the `command`
+and `cmd` aliases, but shell text is not treated as semantically equivalent to
+an arbitrary argv request or admitted as a receipt-checking rule. Earlier GA-2
+relative-digest facts keep their fence through the matching confirmed contract;
+if that old rule is unavailable, CLAT refuses to infer new execution authority.
+Inspect and explicitly authorize a new declared check or start a new Task. After inspecting the prior effect, `recheck`
+grants one new matching invocation; intent and grant consumption commit together.
+Normal permission approval, unknown-operation fences and budget accounting still
+apply. A failed, still-running or interrupted invocation does not restore a consumed
+grant; polling it grants no new invocation.
+Nothing automatically runs or retries a check.
+
+During an explicitly continued Task Run, the model can use:
+
+- `check_task_acceptance({"evidence":{...},"offset":0})`: read-only recomputation;
+- `verify_task_acceptance({"task_id":"…","expected_revision":N,"evidence":{...}})`:
+  compute and durably save a report;
+- `propose_task_completion({"task_id":"…","expected_revision":N,"report_id":"…"})`:
+  save only a pending candidate referencing a durable passing report.
+
+Those tools are unavailable to ordinary Runs. `update_task` accepts progress
+only. Large model results are bounded summaries (4 KiB); `read_task` accepts
+`section:"operations"|"reports"|"contract"` and `offset` to page identities and
+results. Follow `next_offset`; full confirmed rules remain in Task recovery
+context and user `/task show`. Read-only check results also support clause pages.
+Full durable reports are not replaced by the model summary.
+
+Setting `allow_model_completion:true` is explicit user authorization for the
+core to accept a candidate **after** the Task Run's journal, process cleanup,
+budget settlement and Run-scope disposal succeed. The final gate rereads the
+evidence and refuses stale or unresolved results. Cancellation, panic, cleanup,
+settlement or persistence failure cannot leave a verified success. Reopening or
+an unrelated ordinary Run never executes/promotes a saved candidate. With the
+option disabled, the candidate stays pending for user confirmation. For Task Runs, exactly one final Run terminal agrees with the Application result:
+final gates and required disposal run before it is published. An accepted Task
+completion and the final `turn/end` share an atomic durable batch; a failed final
+commit cannot publish success. Check Task provenance for the declared acceptance
+scope; an ordinary completed Run without an accepted candidate still does not
+claim the Task is complete.
+
+Required failed clauses make the aggregate `failed`; otherwise any required
+inconclusive clause makes it `inconclusive`. Missing/unsupported checkers and
+versions keep their clauses and cannot pass. Human-only completion is labelled
+`human_attested`, mixed human/machine completion `mixed_verified`, and machine
+completion `verified`, with separate user/model authorization provenance. A
+normal budget settlement changes the CAS revision without invalidating unchanged
+evidence. Contract/attestation changes or changed input/output bytes make an old
+report inapplicable. External changes after completion mark current evidence
+stale; they do not rewrite historical results or reopen the completed Task.
+
+Limits: 16 clauses, 8 files and 8 KiB parameters per clause, 32 KiB contract,
+64 distinct files, 8 MiB per file and 32 MiB total reads including the second
+stability read. Contract parameters have depth 32 / 4,096-node limits. JSON
+assertion files are at most 256 KiB; records input/table/report at most
+1 MiB / 2 MiB / 256 KiB, with 10,000 rows. Checks cooperatively observe cancellation
+and a 250 ms deadline. Missing, restricted, changed-during-read or over-limit
+sources yield inconclusive results. History holds at most 8 reports,
+16 attestations and 32 single-use grants, within the overall 128 KiB Task cap;
+exhaustion rejects a write without discarding history. Checks never follow
+symlinks, read outside the held project capability, install software or use a
+remote validation service.

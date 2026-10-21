@@ -36,6 +36,9 @@ mod context;
 mod discovery;
 mod files;
 mod session_organization;
+mod task_acceptance;
+#[cfg(test)]
+mod task_acceptance_tests;
 mod task_recovery;
 #[cfg(test)]
 mod task_recovery_tests;

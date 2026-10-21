@@ -79,9 +79,12 @@ jobs:
         # Same product workspace members as Linux; never narrow this to -p clat.
         # windows_sandbox is included: its native ACL/token/Job acceptance has
         # no self-skip path; provider unavailable is a failed test.
-        run: |
-          cargo test --all-targets --all-features
-          cargo test -p clat-wasm-net --lib
+        # Separate steps preserve each native command's exit status in pwsh.
+        run: cargo test --all-targets --all-features
+
+      - name: Test WASM network backend
+        timeout-minutes: 15
+        run: cargo test -p clat-wasm-net --lib
 
 
   plugin-performance:

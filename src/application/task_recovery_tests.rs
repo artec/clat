@@ -12,7 +12,7 @@ use serde_json::json;
 use std::sync::atomic::{AtomicUsize, Ordering};
 const TABLE: &str = "name,value\nalpha,2\nbeta,3\n";
 const REPORT: &str = "# Report\nTwo records. Total value: 5.\n";
-fn budget() -> TaskBudget {
+pub(super) fn budget() -> TaskBudget {
     TaskBudget {
         max_tokens: 1_000_000,
         max_runs: 8,
@@ -21,7 +21,7 @@ fn budget() -> TaskBudget {
         run_seconds: 30,
     }
 }
-fn mount(
+pub(super) fn mount(
     root: &std::path::Path,
     storage: &std::path::Path,
     behavior: TestBehavior,
@@ -31,7 +31,7 @@ fn mount(
         .authorize_and_mount_with_provider(Arc::new(TestProviderPlugin { behavior }))
         .unwrap()
 }
-fn task_request(app: &TrustedProjectApplication) -> TaskResume {
+pub(super) fn task_request(app: &TrustedProjectApplication) -> TaskResume {
     let c = app.task_check().unwrap();
     TaskResume {
         task_id: c.task.id,
@@ -40,7 +40,7 @@ fn task_request(app: &TrustedProjectApplication) -> TaskResume {
         accept_changes: false,
     }
 }
-fn run(app: &mut TrustedProjectApplication, resume: TaskResume) -> ApplicationRunResult {
+pub(super) fn run(app: &mut TrustedProjectApplication, resume: TaskResume) -> ApplicationRunResult {
     let (completion, rx) = mpsc::channel();
     let (handle, _) = app
         .start_task_run(
@@ -263,9 +263,10 @@ fn ga1_commands_create_save_check_complete_and_no_implicit_ordinary_task() {
     crate::test_support::cleanup_tree(root.parent().unwrap());
 }
 
-struct CompactTask {
-    main: AtomicUsize,
-    summaries: AtomicUsize,
+pub(super) struct CompactTask {
+    pub(super) main: AtomicUsize,
+    pub(super) summaries: AtomicUsize,
+    pub(super) expected_items: std::sync::Mutex<Vec<String>>,
 }
 impl TestModelScript for CompactTask {
     fn stream(
@@ -290,6 +291,12 @@ impl TestModelScript for CompactTask {
                 .unwrap_or_default()
                 .contains("do not assume reviewed")
         );
+        for expected in self.expected_items.lock().unwrap().iter() {
+            assert!(
+                r.instructions.unwrap_or_default().contains(expected),
+                "durable task acceptance omitted after compaction"
+            );
+        }
         let n = self.main.fetch_add(1, Ordering::SeqCst);
         let mut response = crate::test_support::response("done", FinishReason::Completed);
         if n < 6 {
@@ -314,6 +321,7 @@ fn ga1_in_run_compaction_preserves_progress_questions_operations_and_budget() {
     let script = Arc::new(CompactTask {
         main: AtomicUsize::new(0),
         summaries: AtomicUsize::new(0),
+        expected_items: Default::default(),
     });
     let mut app = mount(&root, &storage, TestBehavior::Scripted(script.clone()));
     crate::test_support::configure_test_model_with_budget(&app, u32::MAX);
@@ -490,11 +498,14 @@ fn ga1_ordinary_run_cannot_see_or_forge_task_progress_tools() {
                     FinishReason::Completed,
                 ));
             }
-            assert!(
-                !r.tools
-                    .iter()
-                    .any(|t| matches!(t.name.as_str(), "read_task" | "update_task"))
-            );
+            assert!(!r.tools.iter().any(|t| matches!(
+                t.name.as_str(),
+                "read_task"
+                    | "update_task"
+                    | "check_task_acceptance"
+                    | "verify_task_acceptance"
+                    | "propose_task_completion"
+            )));
             assert!(
                 !r.instructions
                     .unwrap_or_default()

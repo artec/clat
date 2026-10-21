@@ -27,7 +27,7 @@ mod recovery;
 mod terminal;
 pub(crate) mod verification;
 pub(crate) use outcome::{CommandOutcome, classify_tool_error};
-pub(crate) use receipt::{Format, VerificationSpec};
+pub(crate) use receipt::{Format, VerificationSpec, invocation_digest};
 pub(crate) mod review;
 pub(crate) use capture::capture_command;
 

@@ -782,7 +782,9 @@ fn preset_switch_after_profile_activation_clears_the_active_pointer() {
 }
 
 /// Load the durable events of the storage root's only session.
-fn load_events(storage_root: &std::path::Path) -> Vec<crate::session::event::SessionEvent> {
+pub(super) fn load_events(
+    storage_root: &std::path::Path,
+) -> Vec<crate::session::event::SessionEvent> {
     let backend = crate::session::persistence::JsonlBackend::new(
         storage_root.join("sessions"),
         crate::session::persistence::JsonlCompression::Zstd,

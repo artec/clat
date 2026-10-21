@@ -70,6 +70,7 @@ python3 -m unittest discover -s scripts -p test_test_fast.py -q
 python3 -m unittest discover -s scripts -p test_check_test_waits.py -q
 python3 -m unittest discover -s scripts -p test_rust_test_ports.py -q
 python3 -m unittest discover -s scripts -p test_ci_box_sources.py -q
+python3 -m unittest discover -s scripts -p test_ci_windows.py -q
 
 step "Format (cargo fmt --all -- --check)"
 cargo fmt --all -- --check

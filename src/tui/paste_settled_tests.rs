@@ -1741,8 +1741,7 @@ impl BellProbe {
     /// 挂到被测 App：与生产 `CLAT_BELL_COMMAND` 完全同一条
     /// `notify → should_ring → ring_bell` 链，只是命令换成写 marker。
     fn arm(&self, harness: &mut Harness) {
-        harness.app.bell =
-            super::BellMode::Command(format!("printf bell >> {}", self.marker.display()));
+        harness.app.bell = super::BellMode::Command(bell_probe_command(&self.marker));
     }
 
     fn rings(&self) -> usize {
@@ -1978,4 +1977,25 @@ fn bell_host1_approval_ring_survives_and_settled_adds_exactly_one_more() {
     // 关闭权限框（拒绝），让后台应答线程收尾。
     harness.key(KeyCode::Esc);
     drop(harness);
+}
+
+fn bell_probe_command(marker: &std::path::Path) -> String {
+    // Git sh accepts C:/ paths; quoting preserves spaces and shell metacharacters.
+    let path = marker.to_string_lossy();
+    #[cfg(windows)]
+    let path = path.replace('\\', "/");
+    format!("printf bell >> '{}'", path.replace('\'', "'\"'\"'"))
+}
+
+#[test]
+fn bell_host1_probe_preserves_shell_sensitive_marker_path() {
+    let mut probe = BellProbe::new("path-quoting");
+    let directory = probe
+        .marker
+        .with_extension("space ' dollar $ backtick ` directory");
+    std::fs::create_dir_all(&directory).unwrap();
+    probe.marker = directory.join("bell ' $ ` marker");
+    super::bell::ring_bell(&super::BellMode::Command(bell_probe_command(&probe.marker)));
+    probe.wait_for_rings(1);
+    std::fs::remove_dir_all(directory).unwrap();
 }

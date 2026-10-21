@@ -196,7 +196,8 @@ corrupt or unsupported session fails before the active-session pointer moves.
 The journal folds into independent projections:
 
 - model-context surface;
-- bounded current task progress, operation evidence and budget reservations;
+- bounded current task progress, operation evidence, budget reservations and
+  optional versioned acceptance/verification/completion provenance;
 - human transcript;
 - title;
 - todo state;
@@ -583,3 +584,49 @@ attachments, recovery ledgers, and other durable session state keep their
 normal storage paths. Scratch writes do not enter FileReview and do not appear
 in `workspace.changes` because they are outside the repository. Scratch paths
 are injected at execution time and are never relied on to resume a session.
+
+
+## Versioned Task acceptance compatibility
+
+Task acceptance adds optional `acceptance_state` and operation `command_fact`
+and `execution_identity` fields to the existing `clat/task` payload. Missing fields deserialize to `None`
+and are omitted on serialization: GA-1 snapshots/goldens keep their original
+byte shape, and old text acceptance/completed Tasks retain human semantics.
+Contracts carry their own positive version; checker identity includes its
+version. No new journal event type or alternate Task store is introduced.
+Admission and Task projection share snapshot/transition validation, including
+full-fold and checkpoint/tail parity. A Task snapshot remains capped at 128 KiB.
+
+The acceptance object stores the current user contract, current human
+attestations, up to eight immutable reports, one candidate, explicit completion
+provenance and at most 32 one-use recheck grants. Contract replacement requires
+version+1, clears current attestations/candidate/grants, and preserves prior
+reports. The journal retains prior contract/confirmation transitions. Reports
+bind Task/project/session, contract/attestation digests, checker versions,
+observed file SHA-256 and explicit producer operation/result identities. Operation
+command facts retain bounded receipts/lifecycle metadata and before/after input
+digests, not process output. See [usage](usage.md#confirmed-acceptance-and-evidence-backed-completion)
+for rule/resource limits and observation boundaries.
+
+Read-only verification and applicability views do not append Task facts or
+rewrite checkpoint files. Explicit report save is a durable CAS. Completion is
+a later durable CAS referencing an already saved report; a model proposal stores
+only pending state until successful Run disposal/accounting/journal finalization.
+For Task Runs the final Task transition and `turn/end` commit as one atomic
+durable group after final step flush, accounting and actual scope disposal.
+Terminal publication follows that commit, so a late gate failure cannot leave
+an earlier successful live/replay terminal. Native command operation identities
+come from frozen argv/shell and resolved cwd; wrapper aliases and output/polling
+options do not form a new execution identity. Legacy missing fields stay omitted.
+Failures never publish the proposed Task state. A crash can leave a report or
+pending candidate, or a charged unsettled Run reservation; reopening does not
+execute it. Current file changes mark an old report stale without changing its
+historical result or completed Task phase. Metadata revision and content
+freshness are separate identities.
+
+Compatibility is forward reading, not downgrade writing: GA-1 CLAT uses strict
+Task payload decoding and cannot interpret these new fields. Older readers
+without the CLAT extension may ignore the ignorable event, but cannot enforce
+acceptance. Do not resume/write structured Tasks with a pre-acceptance binary or
+strip fields to make them readable. Keep the journal and use a compatible binary;
+no database deletion or migration of original text into machine checks is needed.

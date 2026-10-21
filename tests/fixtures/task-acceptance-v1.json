@@ -1,0 +1,421 @@
+[
+  {
+    "id": "task-fixture",
+    "project": "/task-fixture",
+    "project_anchor": "0000000000000000000000000000000000000000000000000000000000000000",
+    "session": "test-session",
+    "revision": 1,
+    "objective": "read materials and prepare a report",
+    "acceptance": [
+      "human checks the totals"
+    ],
+    "phase": "paused",
+    "budget": {
+      "max_tokens": 10000,
+      "max_runs": 8,
+      "max_seconds": 60,
+      "run_tokens": 1000,
+      "run_seconds": 10
+    },
+    "progress": {
+      "summary": "",
+      "steps": [],
+      "questions": [],
+      "next": "",
+      "artifacts": [],
+      "jobs": [],
+      "required_tools": []
+    },
+    "runs": [],
+    "operations": []
+  },
+  {
+    "id": "task-fixture",
+    "project": "/task-fixture",
+    "project_anchor": "0000000000000000000000000000000000000000000000000000000000000000",
+    "session": "test-session",
+    "revision": 2,
+    "objective": "read materials and prepare a report",
+    "acceptance": [
+      "human checks the totals"
+    ],
+    "phase": "paused",
+    "budget": {
+      "max_tokens": 10000,
+      "max_runs": 8,
+      "max_seconds": 60,
+      "run_tokens": 1000,
+      "run_seconds": 10
+    },
+    "progress": {
+      "summary": "",
+      "steps": [],
+      "questions": [],
+      "next": "",
+      "artifacts": [],
+      "jobs": [],
+      "required_tools": []
+    },
+    "runs": [],
+    "operations": [],
+    "acceptance_state": {
+      "contract": {
+        "version": 1,
+        "allow_model_completion": false,
+        "clauses": [
+          {
+            "id": "legacy-1",
+            "required": true,
+            "checker": "human",
+            "checker_version": 1,
+            "source": "human",
+            "files": [],
+            "parameters": {
+              "text": "human checks the totals"
+            }
+          },
+          {
+            "id": "sections",
+            "required": true,
+            "checker": "text",
+            "checker_version": 1,
+            "source": "project_files",
+            "files": [
+              "report.md"
+            ],
+            "parameters": {
+              "contains": [
+                "Results",
+                "Total: 5"
+              ],
+              "path": "report.md"
+            }
+          }
+        ]
+      },
+      "attestations": [],
+      "reports": [],
+      "candidate": null,
+      "completion": null,
+      "grants": []
+    }
+  },
+  {
+    "id": "task-fixture",
+    "project": "/task-fixture",
+    "project_anchor": "0000000000000000000000000000000000000000000000000000000000000000",
+    "session": "test-session",
+    "revision": 3,
+    "objective": "read materials and prepare a report",
+    "acceptance": [
+      "human checks the totals"
+    ],
+    "phase": "paused",
+    "budget": {
+      "max_tokens": 10000,
+      "max_runs": 8,
+      "max_seconds": 60,
+      "run_tokens": 1000,
+      "run_seconds": 10
+    },
+    "progress": {
+      "summary": "",
+      "steps": [],
+      "questions": [],
+      "next": "",
+      "artifacts": [],
+      "jobs": [],
+      "required_tools": []
+    },
+    "runs": [],
+    "operations": [],
+    "acceptance_state": {
+      "contract": {
+        "version": 1,
+        "allow_model_completion": false,
+        "clauses": [
+          {
+            "id": "legacy-1",
+            "required": true,
+            "checker": "human",
+            "checker_version": 1,
+            "source": "human",
+            "files": [],
+            "parameters": {
+              "text": "human checks the totals"
+            }
+          },
+          {
+            "id": "sections",
+            "required": true,
+            "checker": "text",
+            "checker_version": 1,
+            "source": "project_files",
+            "files": [
+              "report.md"
+            ],
+            "parameters": {
+              "contains": [
+                "Results",
+                "Total: 5"
+              ],
+              "path": "report.md"
+            }
+          }
+        ]
+      },
+      "attestations": [
+        {
+          "clause": "legacy-1",
+          "contract_version": 1,
+          "note": "User reviewed original totals"
+        }
+      ],
+      "reports": [],
+      "candidate": null,
+      "completion": null,
+      "grants": []
+    }
+  },
+  {
+    "id": "task-fixture",
+    "project": "/task-fixture",
+    "project_anchor": "0000000000000000000000000000000000000000000000000000000000000000",
+    "session": "test-session",
+    "revision": 4,
+    "objective": "read materials and prepare a report",
+    "acceptance": [
+      "human checks the totals"
+    ],
+    "phase": "paused",
+    "budget": {
+      "max_tokens": 10000,
+      "max_runs": 8,
+      "max_seconds": 60,
+      "run_tokens": 1000,
+      "run_seconds": 10
+    },
+    "progress": {
+      "summary": "",
+      "steps": [],
+      "questions": [],
+      "next": "",
+      "artifacts": [],
+      "jobs": [],
+      "required_tools": []
+    },
+    "runs": [],
+    "operations": [],
+    "acceptance_state": {
+      "contract": {
+        "version": 1,
+        "allow_model_completion": false,
+        "clauses": [
+          {
+            "id": "legacy-1",
+            "required": true,
+            "checker": "human",
+            "checker_version": 1,
+            "source": "human",
+            "files": [],
+            "parameters": {
+              "text": "human checks the totals"
+            }
+          },
+          {
+            "id": "sections",
+            "required": true,
+            "checker": "text",
+            "checker_version": 1,
+            "source": "project_files",
+            "files": [
+              "report.md"
+            ],
+            "parameters": {
+              "contains": [
+                "Results",
+                "Total: 5"
+              ],
+              "path": "report.md"
+            }
+          }
+        ]
+      },
+      "attestations": [
+        {
+          "clause": "legacy-1",
+          "contract_version": 1,
+          "note": "User reviewed original totals"
+        }
+      ],
+      "reports": [
+        {
+          "id": "check-fixture",
+          "task_id": "task-fixture",
+          "project_anchor": "0000000000000000000000000000000000000000000000000000000000000000",
+          "session": "test-session",
+          "contract_version": 1,
+          "contract_digest": "3f7f0bede63fe0c932145c41f380fa9e9d94316473501423e646e3960b963e8c",
+          "attestation_digest": "528b8dd0a0e14fe8bf93c8f704b73ce6941e1d6d4f0b3780852f77b9698b7917",
+          "status": "passed",
+          "results": [
+            {
+              "clause": "legacy-1",
+              "checker": "human",
+              "checker_version": 1,
+              "status": "passed",
+              "source": "human",
+              "reason": "human attestation; not a machine check",
+              "files": [],
+              "operation": null,
+              "evidence_digest": null
+            },
+            {
+              "clause": "sections",
+              "checker": "text",
+              "checker_version": 1,
+              "status": "passed",
+              "source": "project_files",
+              "reason": "required UTF-8 text present",
+              "files": [
+                {
+                  "path": "report.md",
+                  "sha256": "e614eb5c946a890a41d7dead461faef291b40b5df371e3bd1929553c4faba03c"
+                }
+              ],
+              "operation": null,
+              "evidence_digest": null
+            }
+          ],
+          "limitations": "Declared conditions and observed bytes only; human review is a separate source."
+        }
+      ],
+      "candidate": null,
+      "completion": null,
+      "grants": []
+    }
+  },
+  {
+    "id": "task-fixture",
+    "project": "/task-fixture",
+    "project_anchor": "0000000000000000000000000000000000000000000000000000000000000000",
+    "session": "test-session",
+    "revision": 5,
+    "objective": "read materials and prepare a report",
+    "acceptance": [
+      "human checks the totals"
+    ],
+    "phase": "complete",
+    "budget": {
+      "max_tokens": 10000,
+      "max_runs": 8,
+      "max_seconds": 60,
+      "run_tokens": 1000,
+      "run_seconds": 10
+    },
+    "progress": {
+      "summary": "",
+      "steps": [],
+      "questions": [],
+      "next": "",
+      "artifacts": [],
+      "jobs": [],
+      "required_tools": []
+    },
+    "runs": [],
+    "operations": [],
+    "acceptance_state": {
+      "contract": {
+        "version": 1,
+        "allow_model_completion": false,
+        "clauses": [
+          {
+            "id": "legacy-1",
+            "required": true,
+            "checker": "human",
+            "checker_version": 1,
+            "source": "human",
+            "files": [],
+            "parameters": {
+              "text": "human checks the totals"
+            }
+          },
+          {
+            "id": "sections",
+            "required": true,
+            "checker": "text",
+            "checker_version": 1,
+            "source": "project_files",
+            "files": [
+              "report.md"
+            ],
+            "parameters": {
+              "contains": [
+                "Results",
+                "Total: 5"
+              ],
+              "path": "report.md"
+            }
+          }
+        ]
+      },
+      "attestations": [
+        {
+          "clause": "legacy-1",
+          "contract_version": 1,
+          "note": "User reviewed original totals"
+        }
+      ],
+      "reports": [
+        {
+          "id": "check-fixture",
+          "task_id": "task-fixture",
+          "project_anchor": "0000000000000000000000000000000000000000000000000000000000000000",
+          "session": "test-session",
+          "contract_version": 1,
+          "contract_digest": "3f7f0bede63fe0c932145c41f380fa9e9d94316473501423e646e3960b963e8c",
+          "attestation_digest": "528b8dd0a0e14fe8bf93c8f704b73ce6941e1d6d4f0b3780852f77b9698b7917",
+          "status": "passed",
+          "results": [
+            {
+              "clause": "legacy-1",
+              "checker": "human",
+              "checker_version": 1,
+              "status": "passed",
+              "source": "human",
+              "reason": "human attestation; not a machine check",
+              "files": [],
+              "operation": null,
+              "evidence_digest": null
+            },
+            {
+              "clause": "sections",
+              "checker": "text",
+              "checker_version": 1,
+              "status": "passed",
+              "source": "project_files",
+              "reason": "required UTF-8 text present",
+              "files": [
+                {
+                  "path": "report.md",
+                  "sha256": "e614eb5c946a890a41d7dead461faef291b40b5df371e3bd1929553c4faba03c"
+                }
+              ],
+              "operation": null,
+              "evidence_digest": null
+            }
+          ],
+          "limitations": "Declared conditions and observed bytes only; human review is a separate source."
+        }
+      ],
+      "candidate": null,
+      "completion": {
+        "kind": "mixed_verified",
+        "authority": "explicit_user",
+        "report": "check-fixture",
+        "note": "User accepts declared verified scope"
+      },
+      "grants": []
+    }
+  }
+]

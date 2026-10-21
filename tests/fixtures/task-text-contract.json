@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "allow_model_completion": false,
+  "clauses": [
+    {
+      "id": "sections",
+      "required": true,
+      "checker": "text",
+      "checker_version": 1,
+      "source": "project_files",
+      "files": [
+        "report.md"
+      ],
+      "parameters": {
+        "path": "report.md",
+        "contains": [
+          "Results",
+          "Total: 5"
+        ]
+      }
+    }
+  ]
+}

@@ -2,7 +2,7 @@
 use super::*;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-mod rules;
+pub(super) mod rules;
 #[cfg(test)]
 mod tests;
 const LIMIT: usize = 256 * 1024;
@@ -82,23 +82,5 @@ fn validate(req: &Request) -> Result<(), ToolError> {
             "verify_observation: path/check count exceeds bounds",
         ));
     }
-    let mut ids = std::collections::HashSet::new();
-    for check in &req.checks {
-        let (id, pointer) = check.identity();
-        if id.is_empty()
-            || id.len() > 64
-            || !id
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
-            || !ids.insert(id)
-            || pointer.len() > 1024
-            || (!pointer.is_empty() && !pointer.starts_with('/'))
-        {
-            return Err(ToolError::new(
-                "verify_observation: unique ASCII check ids and bounded JSON pointers required",
-            ));
-        }
-        check.validate()?;
-    }
-    Ok(())
+    rules::validate_checks(&req.checks)
 }

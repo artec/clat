@@ -457,7 +457,7 @@ mod tests {
     }
 
     /// SC-3 判别：真机 catalog 逐行等于权威顺序表（A1 裁定，2026-09-02）
-    /// 的十五行——删 `catalog()` 折叠（或抹掉某条 spec 的分组键落位）即
+    /// 的十七行——删 `catalog()` 折叠（或抹掉某条 spec 的分组键落位）即
     /// 红。挂载序与展示序解耦（INV-SC-1）靠此测试钉住。
     #[test]
     fn command_catalog_matches_the_authoritative_table() {
@@ -479,6 +479,7 @@ mod tests {
                 "/new, /clear",
                 "/resume",
                 "/rename",
+                "/task",
                 "/compact",
                 "/context",
                 "/model",
@@ -493,7 +494,7 @@ mod tests {
                 "/help",
                 "/quit, /exit",
             ],
-            "the catalog must fold to the authoritative sixteen-row table"
+            "the catalog must fold to the authoritative seventeen-row table"
         );
         // 附加工单（2026-09-03 负责人令）：`/vision-probe` 不进帮助目录
         //（listed = false），但仍可派发——隐藏 ≠ 下线。判定只区分

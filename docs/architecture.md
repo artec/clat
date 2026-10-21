@@ -1146,7 +1146,7 @@ between online folds and checkpoint/tail restore. Task events are log-only,
 ignorable extensions for older readers, independent of model-context surface
 replacement. Ordinary sessions have a null task projection.
 
-Application owns task creation, user-only resolution/completion, recovery check,
+Application owns task creation, user-only resolution/contract authority, completion gates, recovery check,
 and explicitly checked continuation. A continuation descriptor binds task ID,
 revision and an observation digest, with no durable activation authority. A
 live binding exists only during the new Run. Goal scheduling remains separate;
@@ -1188,3 +1188,67 @@ changed/missing/restricted separately. Injected job queries are read-only,
 cooperatively deadline/cancellation bounded and never return process ownership.
 Frontends only render progress or pass a continuation descriptor through their
 standard channels; they do not own recovery policy or state.
+
+
+### Task acceptance owner and final commit
+
+Optional `TaskState.acceptance_state` extends the existing Task snapshot and
+`clat/task` catalog seat. TaskService owns user-confirmed versioned contracts,
+human attestations, immutable verification reports, one pending completion
+candidate and single-use recheck grants. Admission allows one transition family
+per CAS; reports cannot be rewritten or created in the completion commit. The
+same validation runs at admission, live projection and checkpoint/tail restore.
+Absent fields retain the GA-1 byte shape; there is no new durable vocabulary,
+second completion projection or frontend-owned verdict.
+
+The Task plugin explicitly installs an internal checker registry. Process-domain
+adapters implement bounded text/JSON/records algorithms and Rust/Playwright
+receipt interpretation. JSON assertions reuse the observation rule owner. The
+Agent loop has no checker-specific branches. New native adapters require a
+unique `(name, version)`, parameter validation, bounded declared-file access,
+three-state results and invariant tests; this is not a dynamic discovery ABI.
+Unavailable versions remain inconclusive. Local checks execute no commands,
+network calls or model requests.
+
+File checks use the held Task root capability and no-follow traversal. One
+snapshot collects declared bytes under a shared read/time budget, computes
+clause results and rereads hashes for stability. Reports bind content/contract/
+attestation identities independently of Task revision. Only metadata writers
+use revision CAS; settling a budget does not stale unchanged content. Explicit
+operation maps bind command results to this Task's committed native argv
+invocation, process identity and unchanged declared inputs. Prepared native
+process tools expose the identity of their frozen argv/shell and resolved cwd;
+Task intents save it independently of wrapper names or output/polling options.
+Both run_command and exec_command therefore share the cross-Run replay fence.
+A terminal non-PTY exec launch can supply a receipt; running launches/polls cannot
+upgrade an earlier incomplete Task fact. Raw stdout is not
+copied into Task facts. Output signatures do not authenticate coverage.
+
+Read-only check/status calls compute views; explicit save calls append a
+report. `read_task` and check tools do not create Task operation facts or advance
+its revision; normal Run tool-call/result recording still applies. Task-owned
+4 KiB model DTOs page operation/report/contract summaries before generic tool
+result pruning. Full rules stay in recovery instructions, full reports stay
+in the Task projection, and user commands expose the same persisted state.
+
+Model completion proposals remain pending throughout a Task Run. Worker startup
+captures its bound Task Run ID. After normal process cleanup, recorder terminal
+commit, Task ledger settlement and actual Run-scope disposal, worker finalization
+rechecks evidence and commits completion only with prior user authorization,
+all required clauses passed and no unknown operations. For Task Runs the recorder flushes the last step while withholding `turn/end`
+and the terminal RunEvent. After actual scope disposal, the Task owner rechecks
+acceptance and commits a changed Task state with `turn/end` in one atomic durable
+batch. The recorder then publishes exactly one terminal agreeing with the final
+Application result. Failed gates, disposal, accounting or final persistence
+produce no earlier success terminal; fallback error close is attempted through
+the same journal. An unknown durability outcome stays fail-closed until recovery.
+Ordinary Runs and intermediate Goal rounds retain their existing lifecycle. An unrelated Run cannot
+promote an older candidate, and cold reopen never schedules it. A failed final
+commit propagates failure rather than publishing a completed Task.
+
+User verified completion uses the same evidence/currentness gate while idle.
+Manual declaration, explicit override, human-only attestation, mixed-source and
+machine-check completion retain distinct provenance. External file changes
+later affect current applicability, without rewriting the historical terminal
+fact. This is a local observation/permission contract, not a guarantee that
+user-supplied criteria or declared input scopes are sufficient.

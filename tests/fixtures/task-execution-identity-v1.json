@@ -1,0 +1,261 @@
+[
+  {
+    "id": "task-fixture",
+    "project": "/task-fixture",
+    "project_anchor": "0000000000000000000000000000000000000000000000000000000000000000",
+    "session": "test-session",
+    "revision": 1,
+    "objective": "read materials and prepare a report",
+    "acceptance": [
+      "human checks the totals"
+    ],
+    "phase": "paused",
+    "budget": {
+      "max_tokens": 10000,
+      "max_runs": 8,
+      "max_seconds": 60,
+      "run_tokens": 1000,
+      "run_seconds": 10
+    },
+    "progress": {
+      "summary": "",
+      "steps": [],
+      "questions": [],
+      "next": "",
+      "artifacts": [],
+      "jobs": [],
+      "required_tools": []
+    },
+    "runs": [],
+    "operations": []
+  },
+  {
+    "id": "task-fixture",
+    "project": "/task-fixture",
+    "project_anchor": "0000000000000000000000000000000000000000000000000000000000000000",
+    "session": "test-session",
+    "revision": 2,
+    "objective": "read materials and prepare a report",
+    "acceptance": [
+      "human checks the totals"
+    ],
+    "phase": "running",
+    "budget": {
+      "max_tokens": 10000,
+      "max_runs": 8,
+      "max_seconds": 60,
+      "run_tokens": 1000,
+      "run_seconds": 10
+    },
+    "progress": {
+      "summary": "",
+      "steps": [],
+      "questions": [],
+      "next": "",
+      "artifacts": [],
+      "jobs": [],
+      "required_tools": []
+    },
+    "runs": [
+      {
+        "id": "run-identity",
+        "turn": null,
+        "tokens": 1000,
+        "elapsed_ms": 10000,
+        "settled": false
+      }
+    ],
+    "operations": []
+  },
+  {
+    "id": "task-fixture",
+    "project": "/task-fixture",
+    "project_anchor": "0000000000000000000000000000000000000000000000000000000000000000",
+    "session": "test-session",
+    "revision": 3,
+    "objective": "read materials and prepare a report",
+    "acceptance": [
+      "human checks the totals"
+    ],
+    "phase": "running",
+    "budget": {
+      "max_tokens": 10000,
+      "max_runs": 8,
+      "max_seconds": 60,
+      "run_tokens": 1000,
+      "run_seconds": 10
+    },
+    "progress": {
+      "summary": "",
+      "steps": [],
+      "questions": [],
+      "next": "",
+      "artifacts": [],
+      "jobs": [],
+      "required_tools": []
+    },
+    "runs": [
+      {
+        "id": "run-identity",
+        "turn": 1,
+        "tokens": 1000,
+        "elapsed_ms": 10000,
+        "settled": false
+      }
+    ],
+    "operations": []
+  },
+  {
+    "id": "task-fixture",
+    "project": "/task-fixture",
+    "project_anchor": "0000000000000000000000000000000000000000000000000000000000000000",
+    "session": "test-session",
+    "revision": 4,
+    "objective": "read materials and prepare a report",
+    "acceptance": [
+      "human checks the totals"
+    ],
+    "phase": "running",
+    "budget": {
+      "max_tokens": 10000,
+      "max_runs": 8,
+      "max_seconds": 60,
+      "run_tokens": 1000,
+      "run_seconds": 10
+    },
+    "progress": {
+      "summary": "",
+      "steps": [],
+      "questions": [],
+      "next": "",
+      "artifacts": [],
+      "jobs": [],
+      "required_tools": []
+    },
+    "runs": [
+      {
+        "id": "run-identity",
+        "turn": 1,
+        "tokens": 1000,
+        "elapsed_ms": 10000,
+        "settled": false
+      }
+    ],
+    "operations": [
+      {
+        "id": "op-identity",
+        "run": "run-identity",
+        "tool": "exec_command",
+        "arguments_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+        "call_id": "call-identity",
+        "outcome": "unknown",
+        "result_digest": null,
+        "result_kind": null,
+        "resolution": null,
+        "execution_identity": "1111111111111111111111111111111111111111111111111111111111111111"
+      }
+    ]
+  },
+  {
+    "id": "task-fixture",
+    "project": "/task-fixture",
+    "project_anchor": "0000000000000000000000000000000000000000000000000000000000000000",
+    "session": "test-session",
+    "revision": 5,
+    "objective": "read materials and prepare a report",
+    "acceptance": [
+      "human checks the totals"
+    ],
+    "phase": "running",
+    "budget": {
+      "max_tokens": 10000,
+      "max_runs": 8,
+      "max_seconds": 60,
+      "run_tokens": 1000,
+      "run_seconds": 10
+    },
+    "progress": {
+      "summary": "",
+      "steps": [],
+      "questions": [],
+      "next": "",
+      "artifacts": [],
+      "jobs": [],
+      "required_tools": []
+    },
+    "runs": [
+      {
+        "id": "run-identity",
+        "turn": 1,
+        "tokens": 1000,
+        "elapsed_ms": 10000,
+        "settled": false
+      }
+    ],
+    "operations": [
+      {
+        "id": "op-identity",
+        "run": "run-identity",
+        "tool": "exec_command",
+        "arguments_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+        "call_id": "call-identity",
+        "outcome": "confirmed",
+        "result_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+        "result_kind": "ok",
+        "resolution": null,
+        "execution_identity": "1111111111111111111111111111111111111111111111111111111111111111"
+      }
+    ]
+  },
+  {
+    "id": "task-fixture",
+    "project": "/task-fixture",
+    "project_anchor": "0000000000000000000000000000000000000000000000000000000000000000",
+    "session": "test-session",
+    "revision": 6,
+    "objective": "read materials and prepare a report",
+    "acceptance": [
+      "human checks the totals"
+    ],
+    "phase": "paused",
+    "budget": {
+      "max_tokens": 10000,
+      "max_runs": 8,
+      "max_seconds": 60,
+      "run_tokens": 1000,
+      "run_seconds": 10
+    },
+    "progress": {
+      "summary": "",
+      "steps": [],
+      "questions": [],
+      "next": "",
+      "artifacts": [],
+      "jobs": [],
+      "required_tools": []
+    },
+    "runs": [
+      {
+        "id": "run-identity",
+        "turn": 1,
+        "tokens": 7,
+        "elapsed_ms": 12,
+        "settled": true
+      }
+    ],
+    "operations": [
+      {
+        "id": "op-identity",
+        "run": "run-identity",
+        "tool": "exec_command",
+        "arguments_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+        "call_id": "call-identity",
+        "outcome": "confirmed",
+        "result_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+        "result_kind": "ok",
+        "resolution": null,
+        "execution_identity": "1111111111111111111111111111111111111111111111111111111111111111"
+      }
+    ]
+  }
+]

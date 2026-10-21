@@ -1686,3 +1686,58 @@ fn ga1_headless_task_create_exit_check_explicit_continue_sequence() {
     assert_eq!(task["runs"][0]["settled"], true);
     crate::test_support::cleanup_tree(root.parent().unwrap());
 }
+
+#[test]
+fn ga2_headless_contract_read_verify_save_and_verified_complete_survive_reopen() {
+    let (storage, root, project) = setup("ga2-headless");
+    prepare_storage(&project, &storage, TestBehavior::Success);
+    fs::write(root.join("report.md"), "Results\nTotal: 5\n").unwrap();
+    let command = |text: String, continuation: bool| {
+        let mut options = args(None);
+        options.continue_session = continuation;
+        options.command = Some(text);
+        let (io, _) = ExecIo::capture(&[]);
+        let result = exec(&project, &storage, TestBehavior::Success, options, io);
+        let ExecOutcome::Success { output, .. } = result else {
+            panic!("{result:?}")
+        };
+        serde_json::from_str::<serde_json::Value>(&output).unwrap()
+    };
+    let s=command(r#"/task create {"objective":"headless verified report","acceptance":[],"budget":{"max_tokens":1000,"max_runs":2,"max_seconds":30,"run_tokens":1000,"run_seconds":10}}"#.into(),false);
+    let contract = include_str!("../../tests/fixtures/task-text-contract.json");
+    let s = command(
+        format!(
+            "/task acceptance {} {} {contract}",
+            s["id"].as_str().unwrap(),
+            s["revision"]
+        ),
+        true,
+    );
+    let r = command("/task verify".into(), true);
+    assert_eq!(r["results"][0]["status"], "passed");
+    let unchanged = command("/task show".into(), true);
+    assert_eq!(unchanged, s);
+    let s = command(
+        format!(
+            "/task verify-save {} {}",
+            s["id"].as_str().unwrap(),
+            s["revision"]
+        ),
+        true,
+    );
+    let r = s["acceptance_state"]["reports"][0]["id"].as_str().unwrap();
+    let done = command(
+        format!(
+            "/task complete-verified {} {} {r}",
+            s["id"].as_str().unwrap(),
+            s["revision"]
+        ),
+        true,
+    );
+    assert_eq!(done["phase"], "complete");
+    assert!(done["runs"].as_array().unwrap().is_empty());
+    let view = command("/task verification-status".into(), true);
+    assert_eq!(view["task"], done);
+    assert_eq!(view["current_applicability"]["applicable"], true);
+    crate::test_support::cleanup_tree(root.parent().unwrap());
+}

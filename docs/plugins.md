@@ -38,6 +38,20 @@ package. Memory, goal, subagent, and durable task recovery currently depend on C
 interfaces and durable-event gates; they may become portable only after those
 contracts have an interoperable external ABI.
 
+`builtin.task` owns acceptance orchestration and explicitly mounts built-in
+process-domain checker adapters (`text`, `json`, `records`, `command`, version 1).
+The internal Rust checker seam consumes bounded declared-file snapshots and
+runtime-linked observations; it cannot execute evidence-producing commands.
+Unknown/unmounted versions remain inconclusive. The command adapter supports native `run_command` and already-terminal non-PTY
+`exec_command` receipts. Native prepared tools expose the actual frozen execution
+identity for a shared replay fence; a running launch, poll or old PTY/process
+cannot be adopted as fresh passing Task evidence.
+`check_task_acceptance` is read-only; `verify_task_acceptance` and
+`propose_task_completion` are SessionWrite metadata tools restricted to explicit
+Task Runs. User contract/attestation/override/recheck authority stays in the
+Application/command layer. These are static service contributions, not a new
+marketplace API; see [usage](usage.md#confirmed-acceptance-and-evidence-backed-completion).
+
 ## One semantic host
 
 MCP server requests and WIT imports terminate in `PluginHostBridge`. Transport

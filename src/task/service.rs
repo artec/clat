@@ -11,6 +11,8 @@ pub(crate) struct TaskService {
     pub(super) live: Mutex<Option<LiveRun>>,
     pub(super) query: Mutex<Option<Arc<dyn JobQuery>>>,
     pub(super) failure: Mutex<Option<String>>,
+    pub(super) checkers:
+        std::collections::BTreeMap<(String, u32), Arc<dyn super::acceptance::AcceptanceChecker>>,
 }
 pub(super) struct LiveRun {
     pub task: String,
@@ -35,6 +37,7 @@ impl TaskService {
             live: Mutex::new(None),
             query: Mutex::new(None),
             failure: Mutex::new(None),
+            checkers: Default::default(),
         })
     }
     pub(crate) fn current(&self) -> Result<Option<TaskState>, String> {
@@ -112,6 +115,7 @@ impl TaskService {
             progress: Progress::default(),
             runs: Vec::new(),
             operations: Vec::new(),
+            acceptance_state: None,
         }
     }
     pub(super) fn update(
@@ -187,6 +191,9 @@ impl TaskService {
         })
     }
     pub(crate) fn finish(&self, id: &str, revision: u64, phase: &str) -> Result<TaskState, String> {
+        if phase == "complete" {
+            return self.finish_human(id, revision, None);
+        }
         let _lane = self.lane.lock().map_err(|_| "task write lock poisoned")?;
         if self
             .live

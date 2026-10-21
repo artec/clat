@@ -12,6 +12,7 @@ use super::run_lifecycle::{
 };
 use super::title::AutotitleJob;
 mod round;
+mod terminal;
 mod worker;
 use super::*;
 use crate::CancelToken;

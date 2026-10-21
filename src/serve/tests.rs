@@ -4052,3 +4052,48 @@ fn ga1_command_run_maps_task_recovery_to_the_existing_run_and_event_paths() {
     assert_eq!(state["runs"].as_array().unwrap().len(), 1);
     cleanup(handle, &storage, &root);
 }
+
+#[test]
+fn ga2_pwa_command_mapping_exposes_same_read_only_results_and_core_completion() {
+    let (handle, storage, root) = spawn_serve("ga2-serve", TestBehavior::Success);
+    std::fs::write(root.join("report.md"), "Results\nTotal: 5\n").unwrap();
+    let command = |text: String| {
+        let (status, result) = post(
+            handle.addr,
+            TEST_TOKEN,
+            "command.run",
+            &serde_json::json!({"command":text}).to_string(),
+        );
+        assert_eq!(status, 200);
+        let result = result.unwrap();
+        assert_eq!(result["kind"], "task");
+        serde_json::from_str::<serde_json::Value>(result["message"].as_str().unwrap()).unwrap()
+    };
+    let s=command(r#"/task create {"objective":"web verified report","acceptance":[],"budget":{"max_tokens":1000,"max_runs":2,"max_seconds":30,"run_tokens":1000,"run_seconds":10}}"#.into());
+    let contract = include_str!("../../tests/fixtures/task-text-contract.json");
+    let s = command(format!(
+        "/task acceptance {} {} {contract}",
+        s["id"].as_str().unwrap(),
+        s["revision"]
+    ));
+    let r = command("/task verify".into());
+    assert_eq!(r["results"][0]["status"], "passed");
+    assert_eq!(command("/task show".into()), s);
+    let s = command(format!(
+        "/task verify-save {} {}",
+        s["id"].as_str().unwrap(),
+        s["revision"]
+    ));
+    let r = s["acceptance_state"]["reports"][0]["id"].as_str().unwrap();
+    let done = command(format!(
+        "/task complete-verified {} {} {r}",
+        s["id"].as_str().unwrap(),
+        s["revision"]
+    ));
+    assert_eq!(done["phase"], "complete");
+    assert_eq!(done["acceptance_state"]["completion"]["kind"], "verified");
+    let view = command("/task verification-status".into());
+    assert_eq!(view["task"], done);
+    assert!(done["runs"].as_array().unwrap().is_empty());
+    cleanup(handle, &storage, &root);
+}

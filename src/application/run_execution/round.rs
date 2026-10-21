@@ -199,12 +199,26 @@ impl RoundExecution {
             .deps
             .task_service
             .settle(self.spend_ledger.used())
-            .err();
+            .err()
+            .map(|e| format!("task progress settlement failed: {e}"));
         if let Some(error) = &task_error {
             self.recorder
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .force_terminal_failure(format!("task progress settlement failed: {error}"));
+                .force_terminal_failure(error.clone());
+        }
+        if worker.task_run.is_some() {
+            let error = self
+                .recorder
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .prepare_terminal(outcome.cancelled);
+            worker.task_terminal = Some(Arc::clone(&self.recorder));
+            return outcome.into_result(
+                error
+                    .map(|e| format!("session journal failed: {e}"))
+                    .or(task_error),
+            );
         }
         let (finish_error, published) = self
             .recorder

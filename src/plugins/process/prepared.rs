@@ -143,6 +143,22 @@ fn prepare_native_plan(
     })
 }
 impl Tool for FrozenProcessTool {
+    fn execution_identity(&self) -> Option<String> {
+        let plan = self.plan.lock().ok()?;
+        let plan = plan.as_ref()?.as_ref().ok()?.as_ref()?;
+        let invocation = if matches!(self.source, NativeProcessTool::ExecCommand(_)) {
+            verification::Invocation::parse(&self.arguments)
+        } else if matches!(self.source, NativeProcessTool::RunCommand(_)) {
+            verification::Invocation::compat(&self.arguments)
+        } else {
+            return None;
+        }
+        .ok()?;
+        Some(verification::execution_identity(
+            &invocation,
+            plan.working_directory(),
+        ))
+    }
     fn definition(&self) -> ToolDefinition {
         self.source.tool().definition()
     }

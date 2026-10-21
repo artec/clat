@@ -23,6 +23,14 @@ impl SessionService {
         previous: Option<&crate::task::TaskState>,
         next: &crate::task::TaskState,
     ) -> Result<(), String> {
+        self.commit_task_batch(previous, next, &[])
+    }
+    pub(crate) fn commit_task_batch(
+        &self,
+        previous: Option<&crate::task::TaskState>,
+        next: &crate::task::TaskState,
+        tail: &[crate::session::run_journal::NewSessionEvent],
+    ) -> Result<(), String> {
         let guard = self.active.lock().map_err(|_| "session lock poisoned")?;
         let active = guard.as_ref().ok_or("task requires an active session")?;
         if active.coordinator.is_read_only() {
@@ -44,16 +52,19 @@ impl SessionService {
         if current.as_ref() != previous {
             return Err("task changed; inspect again".into());
         }
-        let data = serde_json::to_value(next).map_err(|e| e.to_string())?;
-        let mut checked = current;
-        crate::task::fold_change(&mut checked, &data)?;
+        let mut events = Vec::new();
+        if previous != Some(next) {
+            let data = serde_json::to_value(next).map_err(|e| e.to_string())?;
+            let mut checked = current;
+            crate::task::fold_change(&mut checked, &data)?;
+            events.push(
+                crate::session::run_journal::NewSessionEvent::new("clat/task", data).log_only(),
+            );
+        }
+        events.extend_from_slice(tail);
         active
             .shared_journal(&self.backend)
-            .append_atomic_durable(&[crate::session::run_journal::NewSessionEvent::new(
-                "clat/task",
-                data,
-            )
-            .log_only()])?;
+            .append_atomic_durable(&events)?;
         let _ = checkpoint_active(active, &self.checkpoints);
         Ok(())
     }

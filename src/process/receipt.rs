@@ -304,3 +304,10 @@ impl Receipt {
             .extend(fields.as_object().expect("identity").clone());
     }
 }
+
+/// The same native argv/cwd identity used by runtime receipts, for explicit
+/// task contract comparison. This does not authenticate executable contents.
+pub(crate) fn invocation_digest(argv: &[String], cwd: &Path) -> String {
+    let argv: Vec<_> = argv.iter().map(std::ffi::OsString::from).collect();
+    Context::new(&argv, cwd, None).fingerprint
+}

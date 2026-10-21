@@ -443,6 +443,20 @@ impl SessionRecorder {
         if let Some(error) = flush_error {
             self.journal_error.get_or_insert(error.clone());
         }
+        self.publish_terminal()
+    }
+    /// Flush the final step without writing a turn terminal. Task workers still
+    /// have scope disposal and acceptance gates to settle before that terminal.
+    pub(crate) fn prepare_terminal(&mut self, interrupted: bool) -> Option<String> {
+        self.close_open_step_interrupted(interrupted);
+        self.flush_quietly();
+        self.journal_error.clone()
+    }
+    /// The caller already committed turn/end with its Task acceptance CAS.
+    pub(crate) fn terminal_committed(&mut self) -> (Option<String>, Vec<RunEvent>) {
+        self.publish_terminal()
+    }
+    fn publish_terminal(&mut self) -> (Option<String>, Vec<RunEvent>) {
         // A success terminal requires the journal to be healthy for the
         // WHOLE turn, not just the final flush: an append that failed
         // mid-run already made the durable log incomplete, and the

@@ -51,6 +51,10 @@ pub struct Operation {
     pub result_digest: Option<String>,
     pub result_kind: Option<String>,
     pub resolution: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_identity: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command_fact: Option<super::acceptance::CommandFact>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -78,6 +82,8 @@ pub struct TaskState {
     pub progress: Progress,
     pub runs: Vec<TaskRun>,
     pub operations: Vec<Operation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acceptance_state: Option<super::acceptance::AcceptanceState>,
 }
 impl TaskState {
     pub(crate) fn remaining(&self) -> (u64, u32, u64) {
@@ -134,6 +140,7 @@ impl TaskState {
             return Err("task capacity exceeded".into());
         }
         validate_execution(self)?;
+        super::acceptance::validate_snapshot(self)?;
         if serde_json::to_vec(self).map_err(|e| e.to_string())?.len() > 131072 {
             return Err("task snapshot exceeds 128 KiB".into());
         }
@@ -190,12 +197,18 @@ fn validate_execution(s: &TaskState) -> Result<(), String> {
     for o in &s.operations {
         bounded(&o.id, 80)?;
         bounded(&o.tool, 128)?;
+        if let Some(fact) = &o.command_fact {
+            super::acceptance::validate_command(fact)?;
+        }
         if let Some(id) = &o.call_id {
             bounded(id, 1024)?;
         }
         if !s.runs.iter().any(|r| r.id == o.run && r.turn.is_some())
             || !ops.insert(&o.id)
             || !valid_digest(&o.arguments_digest)
+            || o.execution_identity
+                .as_ref()
+                .is_some_and(|d| !valid_digest(d))
             || !matches!(o.outcome.as_str(), "unknown" | "confirmed" | "not_executed")
             || o.result_digest.as_ref().is_some_and(|d| !valid_digest(d))
             || o.result_kind
@@ -261,21 +274,26 @@ pub(crate) fn decode_change(data: &Value) -> Result<TaskState, String> {
 pub(crate) fn fold_change(current: &mut Option<TaskState>, data: &Value) -> Result<(), String> {
     let next = decode_change(data)?;
     match current.as_ref() {
-        None if next.revision == 1 && next.phase == "paused" && next.runs.is_empty() => {}
+        None if valid_birth(&next) => {}
         Some(old)
             if old.id != next.id
                 && old.terminal()
-                && next.revision == 1
+                && valid_birth(&next)
                 && old.project_anchor == next.project_anchor
                 && old.project == next.project
-                && old.session == next.session
-                && next.runs.is_empty()
-                && next.phase == "paused" => {}
+                && old.session == next.session => {}
         Some(old) if old.id == next.id => validate_transition(old, &next)?,
         _ => return Err("invalid task birth or replacement".into()),
     }
     *current = Some(next);
     Ok(())
+}
+fn valid_birth(s: &TaskState) -> bool {
+    s.revision == 1
+        && s.phase == "paused"
+        && s.runs.is_empty()
+        && s.operations.is_empty()
+        && s.acceptance_state.is_none()
 }
 fn validate_transition(old: &TaskState, next: &TaskState) -> Result<(), String> {
     if old.terminal()
@@ -297,6 +315,8 @@ fn validate_transition(old: &TaskState, next: &TaskState) -> Result<(), String> 
             || a.tool != b.tool
             || a.arguments_digest != b.arguments_digest
             || a.call_id != b.call_id
+            || a.execution_identity != b.execution_identity
+            || !super::acceptance::immutable_command(a, b)
             || (a.outcome != "unknown" && a != b)
         {
             return Err("task operation fact changed".into());
@@ -311,6 +331,7 @@ fn validate_transition(old: &TaskState, next: &TaskState) -> Result<(), String> 
             return Err("task run fact changed".into());
         }
     }
+    super::acceptance::validate_change(old, next)?;
     validate_transition_family(old, next)
 }
 

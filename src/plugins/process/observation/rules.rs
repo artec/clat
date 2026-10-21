@@ -1,7 +1,8 @@
 use super::*;
-#[derive(Deserialize)]
+use serde::Serialize;
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
-pub(super) enum Check {
+pub(crate) enum Check {
     IsTrue {
         id: String,
         pointer: String,
@@ -19,14 +20,14 @@ pub(super) enum Check {
     },
 }
 impl Check {
-    pub(super) fn identity(&self) -> (&str, &str) {
+    pub(crate) fn identity(&self) -> (&str, &str) {
         match self {
             Self::IsTrue { id, pointer }
             | Self::Equals { id, pointer, .. }
             | Self::AllBefore { id, pointer, .. } => (id, pointer),
         }
     }
-    pub(super) fn validate(&self) -> Result<(), ToolError> {
+    pub(crate) fn validate(&self) -> Result<(), ToolError> {
         if let Self::AllBefore { before, after, .. } = self
             && (before.is_empty()
                 || after.is_empty()
@@ -40,7 +41,7 @@ impl Check {
         }
         Ok(())
     }
-    pub(super) fn evaluate(&self, source: &Value) -> Value {
+    pub(crate) fn evaluate(&self, source: &Value) -> Value {
         let (id, pointer) = self.identity();
         let Some(actual) = source.pointer(pointer) else {
             return result(id, "inconclusive", "missing_pointer");
@@ -88,4 +89,29 @@ fn ordered(actual: &Value, before: &str, after: &str) -> (&'static str, &'static
         (Some(_), Some(_)) => ("failed", "order_violated"),
         _ => ("inconclusive", "missing_order_group"),
     }
+}
+
+pub(crate) fn validate_checks(checks: &[Check]) -> Result<(), ToolError> {
+    if checks.is_empty() || checks.len() > 16 {
+        return Err(ToolError::new("observation needs 1..16 checks"));
+    }
+    let mut ids = std::collections::HashSet::new();
+    for check in checks {
+        let (id, pointer) = check.identity();
+        if id.is_empty()
+            || id.len() > 64
+            || !id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
+            || !ids.insert(id)
+            || pointer.len() > 1024
+            || (!pointer.is_empty() && !pointer.starts_with('/'))
+        {
+            return Err(ToolError::new(
+                "verify_observation: unique ASCII check ids and bounded JSON pointers required",
+            ));
+        }
+        check.validate()?;
+    }
+    Ok(())
 }

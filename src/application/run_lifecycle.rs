@@ -854,3 +854,126 @@ impl TrustedProjectApplication {
         })
     }
 }
+
+#[cfg(test)]
+mod acceptance_cleanup_tests {
+    use super::*;
+    use crate::plugin::{
+        DisposeError, PluginContext, PluginDescriptor, PluginError, PluginId, ScopeKind,
+    };
+    struct FailingCleanup {
+        sessions: Arc<SessionService>,
+        fail_write: bool,
+    }
+    impl Plugin for FailingCleanup {
+        fn descriptor(&self) -> &'static PluginDescriptor {
+            static D: PluginDescriptor = PluginDescriptor {
+                id: PluginId::new("test.ga2.cleanup"),
+                scope: ScopeKind::Run,
+                provides: &[],
+                requires: &[],
+                optional: &[],
+            };
+            &D
+        }
+        fn mount(&self, context: &mut PluginContext<'_>) -> Result<(), PluginError> {
+            let sessions = self.sessions.clone();
+            let fail_write = self.fail_write;
+            context.defer(move || {
+                if fail_write {
+                    sessions.inject_persistence_faults(crate::session::persistence::FaultHooks {
+                        fail_batch_write: true,
+                        ..Default::default()
+                    });
+                    Ok(())
+                } else {
+                    Err(DisposeError::new("injected run disposer failure"))
+                }
+            });
+            Ok(())
+        }
+    }
+    #[test]
+    fn ga2_actual_run_scope_disposer_failure_blocks_verified_completion() {
+        scope_failure(false);
+    }
+    #[test]
+    fn ga2_rework_final_task_and_terminal_write_failure_never_publishes_success() {
+        scope_failure(true);
+    }
+    fn scope_failure(fail_write: bool) {
+        let (mut app, root) =
+            crate::application::task_acceptance_tests::pending_completion_app("ga2-scope-failure");
+        let check = app.task_check().unwrap();
+        let resume = crate::task::TaskResume {
+            task_id: check.task.id.clone(),
+            revision: check.task.revision,
+            check_digest: check.digest.clone(),
+            accept_changes: false,
+        };
+        app.task.begin(&resume, &check, Some(200000)).unwrap();
+        let approver: Arc<dyn PermissionApprover> = Arc::new(
+            crate::test_support::CountingApprover(Arc::new(std::sync::atomic::AtomicUsize::new(0))),
+        );
+        let mut catalog = run_catalog(CancelToken::new(), approver.clone());
+        catalog.push(Arc::new(FailingCleanup {
+            sessions: app.sessions.clone(),
+            fail_write,
+        }));
+        let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (completion, rx) = mpsc::channel();
+        let handle = app
+            .start_run_with_catalog(
+                ApplicationRunRequest {
+                    message: crate::message::PendingMessage::text("explicit checked task"),
+                    asker: None,
+                    approver,
+                    events: Box::new(crate::test_support::SharedEvents(observed.clone())),
+                    completion,
+                },
+                catalog,
+                None,
+            )
+            .unwrap();
+        let failure = rx
+            .recv_timeout(std::time::Duration::from_secs(20))
+            .unwrap()
+            .unwrap_err();
+        handle.join().unwrap();
+        assert!(failure.error.contains(if fail_write {
+            "task completion gate failed"
+        } else {
+            "run scope cleanup failed"
+        }));
+        app.sessions
+            .inject_persistence_faults(crate::session::persistence::FaultHooks::default());
+        crate::application::task_acceptance_tests::assert_task_terminal_history(
+            &mut app, &observed, "error",
+        );
+        let s = app.task_state().unwrap().unwrap();
+        assert_eq!(s.phase, "paused");
+        let a = s.acceptance_state.unwrap();
+        assert!(a.completion.is_none());
+        assert_eq!(
+            a.candidate.unwrap().state,
+            if fail_write { "pending" } else { "rejected" }
+        );
+        assert!(s.runs[0].settled && s.runs[0].tokens > 0);
+        let saved = app.task_state().unwrap().unwrap();
+        app.close().unwrap();
+        let storage = root.parent().unwrap().join("storage");
+        let mut app = crate::test_support::reopen_after_close(|| {
+            Ok::<_, ApplicationError>(crate::application::task_acceptance_tests::mount_checked(
+                &root,
+                &storage,
+                crate::test_support::TestBehavior::Success,
+            ))
+        });
+        assert_eq!(app.task_state().unwrap().unwrap(), saved);
+        crate::application::task_acceptance_tests::assert_task_terminal_history(
+            &mut app, &observed, "error",
+        );
+        app.close().unwrap();
+        crate::test_support::cleanup_tree(root.parent().unwrap());
+    }
+}

@@ -187,7 +187,10 @@ the container, where documentation remains available for inspection.
 Windows CI still runs native clippy and tests on every
 PR/main push. Superseded CI runs for the same ref are cancelled. CI has no
 path-based omissions; it remains the safety net for quick-selection misses.
-Both the Linux gate step and the Windows Test step have a 15-minute CI timeout.
+The Linux gate step and each Windows test step have a 15-minute CI timeout.
+Windows product and WASM backend tests run in separate steps so a later
+successful native command cannot mask the product suite exit code.
+`scripts/test_ci_windows.py` pins this workflow contract in the shared gates.
 
 Windows native tests include `tests/windows_sandbox.rs`: the same binary's
 restricted-token runner must allow workspace writes and reject outside writes,
@@ -552,3 +555,57 @@ injected local fake, with unavailable/disconnected/expired/deadline/cancel cases
 Fault and deliberate-defect checks must retain the first failing output and
 restore source using reverse patches. A green compile is not runtime evidence.
 Do not run full release gates or touch the live host for this development task.
+
+## Task acceptance and completion gates (GA-2)
+
+Use `scripts/gates.sh task:: application::task_acceptance_tests::
+application::run_lifecycle::acceptance_cleanup_tests:: plugins::process::acceptance::`
+(on one shell line) for contracts, bounded checks, producer identities,
+currentness/CAS, human authority, reports, final disposal and persistence failure.
+The programming sequence compiles/runs a real temporary Rust test harness,
+observes ignored-only/failing/passing receipts and explicitly authorizes a new
+invocation after the cross-Run replay fence. The records sequence independently
+checks JSON source rows, i64 totals and report text, repairs wrong totals, submits
+a model candidate and cold-reopens the completed state. Both use temporary roots
+and scripted Providers; neither calls a real model or validates an external host.
+
+`tests/fixtures/task-acceptance-v1.json` pins admission, full fold, checkpoint/tail
+and completion provenance with LF bytes; the unchanged GA-1 golden remains a
+separate compatibility assertion. Adversarial cases cover combined/forged
+transitions, cross-task producer IDs, stale bytes/contract/revisions, omitted
+clauses, missing/unsupported/invalid/oversized sources, symlinks, cancellation,
+checker panic/deadline and changes during checking. Large Task DTO tests page
+all operation/report identities under the generic pruner's size threshold.
+Internal compaction must preserve confirmed rules and saved report identities
+outside the model's summary, then permit user completion after normal settlement.
+
+Use `scripts/gates.sh ga2_headless ga2_tui ga2_pwa` for real headless command,
+terminal key/scrollable-view and local socket/PWA mapping sequences. Read-only
+checking must leave Task revision and durable bytes unchanged; explicit saves
+advance CAS. Run-candidate cases exercise later file effects, no user opt-in,
+cancellation, panic, actual journal/ledger/disposer failures and an unrelated Run
+that must not revive an older candidate. Fault checks and deliberate-defect
+checks retain original failing output and restore only their own reverse patch.
+These local checks do not replace independent review, remote Linux/native Windows
+CI, real-model dogfood or release acceptance. Ordinary handoff uses these affected
+checks and architecture/shape hygiene; full release gates remain owner-triggered.
+
+
+### GA-2 review regressions
+
+`scripts/gates.sh ga2_rework_ ga2_actual_run_` exercises the review repairs using
+real Application workers and native commands in temporary projects. Final gate,
+Task settlement, scope disposal, journal and final-completion commit failures
+must agree across the completion channel, exactly one live terminal and the
+journal/replay reason. Success persists adjacent Task completion/turn-end facts
+in the same final atomic group, checked again after cold reopen. No success
+terminal is emitted before these gates.
+
+Both native command wrappers are exercised in both directions across cold
+reopen. Replaying argv/cwd without a grant must leave the executable's actual
+counter unchanged; one user grant produces a new operation/receipt under normal
+permissions and spend accounting, and a later Run cannot reuse that consumed
+grant. Shell aliases/resolved workdirs share the fence. A running exec launch
+and its real stdin poll remain inconclusive, without adopting the poll as a new
+producer. These are local contract regressions; remote/native Windows release
+verification and independent re-review remain separate.

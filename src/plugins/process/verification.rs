@@ -101,3 +101,22 @@ impl Invocation {
         })
     }
 }
+
+/// Identity comes from the frozen native parse and resolved cwd, never a tool alias.
+pub(super) fn execution_identity(invocation: &Invocation, cwd: &std::path::Path) -> String {
+    if let Some(argv) = &invocation.argv {
+        let args: Vec<_> = argv
+            .iter()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect();
+        crate::process::invocation_digest(&args, cwd)
+    } else {
+        use sha2::{Digest, Sha256};
+        format!(
+            "{:x}",
+            Sha256::digest(
+                serde_json::to_vec(&("shell", &invocation.command, cwd)).expect("native identity")
+            )
+        )
+    }
+}

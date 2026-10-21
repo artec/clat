@@ -26,24 +26,28 @@ impl Plugin for TaskPlugin {
         &DESCRIPTOR
     }
     fn mount(&self, context: &mut PluginContext<'_>) -> Result<(), PluginError> {
-        let service = Arc::new(
-            TaskService::new(
-                context.require(SESSION_SERVICE).map_err(pe)?,
-                Project::new(self.0.root().canonicalize().map_err(pe)?),
-            )
-            .map_err(pe)?,
-        );
+        let mut service = TaskService::new(
+            context.require(SESSION_SERVICE).map_err(pe)?,
+            Project::new(self.0.root().canonicalize().map_err(pe)?),
+        )
+        .map_err(pe)?;
+        service
+            .install_checkers(crate::plugins::task_checkers())
+            .map_err(pe)?;
+        let service = Arc::new(service);
         let tools = context.require(TOOL_SERVICE).map_err(pe)?;
-        for read in [true, false] {
-            let lease = tools
-                .register(
-                    context.owner(),
-                    Arc::new(ProgressTool {
-                        service: service.clone(),
-                        read,
-                    }),
-                )
-                .map_err(pe)?;
+        let mut task_tools: Vec<Arc<dyn Tool>> = [true, false]
+            .into_iter()
+            .map(|read| {
+                Arc::new(ProgressTool {
+                    service: service.clone(),
+                    read,
+                }) as Arc<dyn Tool>
+            })
+            .collect();
+        task_tools.extend(super::acceptance::interface::tools(service.clone()));
+        for tool in task_tools {
+            let lease = tools.register(context.owner(), tool).map_err(pe)?;
             context.defer(move || lease.revoke().map_err(|e| DisposeError::new(e.to_string())));
         }
         let pipeline = context.require(TOOL_PIPELINE_SERVICE).map_err(pe)?;
@@ -57,8 +61,8 @@ impl Plugin for TaskPlugin {
                 context.owner(),
                 CommandSpec {
                     names: vec!["task".into()],
-                    description: "inspect, checkpoint and explicitly resume one durable task"
-                        .into(),
+                    description:
+                        "inspect, checkpoint, verify and explicitly resume one durable task".into(),
                     takes_args: true,
                     group: crate::command::CommandGroup::Conversation,
                     order: 18,
@@ -74,6 +78,20 @@ impl Plugin for TaskPlugin {
 fn pe(e: impl ToString) -> PluginError {
     PluginError::new(e.to_string())
 }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReadTaskOptions {
+    section: Option<String>,
+    #[serde(default)]
+    offset: usize,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SaveProgress {
+    task_id: String,
+    expected_revision: u64,
+    progress: Progress,
+}
 struct ProgressTool {
     service: Arc<TaskService>,
     read: bool,
@@ -84,8 +102,8 @@ impl Tool for ProgressTool {
             name: if self.read { "read_task" } else { "update_task" }.into(),
             description: if self.read { "Read current durable task revision, operation evidence and budget. Progress claims are not verified completion." }
                 else { "Save a complete task checkpoint using task_id and current expected_revision from read_task. Progress fields: summary, steps, questions, next, artifacts [{path, summary, digest (SHA256), evidence (confirmed operation ids)}], jobs [{provider, scope, id, result_ref, last_observation}], required_tools. No raw outputs or secrets. Cannot create/complete tasks or resolve uncertain operations." }.into(),
-            effect: ToolEffect::SessionWrite, strict: false,
-            input_schema: if self.read { json!({"type":"object","properties":{},"additionalProperties":false}) }
+            effect: if self.read { ToolEffect::Read } else { ToolEffect::SessionWrite }, strict: false,
+            input_schema: if self.read { json!({"type":"object","properties":{"section":{"type":"string","enum":["summary","operations","reports","contract"]},"offset":{"type":"integer","minimum":0,"maximum":128}},"additionalProperties":false}) }
                 else { json!({"type":"object","properties":{"task_id":{"type":"string"},"expected_revision":{"type":"integer"},"progress":{"type":"object"}},"required":["task_id","expected_revision","progress"],"additionalProperties":false}) },
         }
     }
@@ -107,21 +125,35 @@ impl Tool for ProgressTool {
             .require_binding(&s.id)
             .map_err(ToolError::new)?;
         if self.read {
-            return serde_json::to_value(s).map_err(|e| ToolError::new(e.to_string()));
+            if args.to_string().len() > 1024 {
+                return Err(ToolError::new("task read options exceed bound"));
+            }
+            let options: ReadTaskOptions = serde_json::from_value(args.clone())
+                .map_err(|_| ToolError::new("invalid task read options"))?;
+            if options.offset > 128
+                || options.section.as_ref().is_some_and(|s| {
+                    !matches!(
+                        s.as_str(),
+                        "summary" | "operations" | "reports" | "contract"
+                    )
+                })
+            {
+                return Err(ToolError::new("invalid task read page"));
+            }
+            return Ok(TaskService::model_view(&s, args));
         }
-        let id = args["task_id"]
-            .as_str()
-            .ok_or_else(|| ToolError::new("task_id required"))?;
-        let rev = args["expected_revision"]
-            .as_u64()
-            .ok_or_else(|| ToolError::new("expected_revision required"))?;
-        let p: Progress = serde_json::from_value(args["progress"].clone())
-            .map_err(|e| ToolError::new(e.to_string()))?;
+        let SaveProgress {
+            task_id: id,
+            expected_revision: rev,
+            progress: p,
+        } = serde_json::from_value(args.clone()).map_err(|_| {
+            ToolError::new("invalid progress request; acceptance contracts are user-owned")
+        })?;
         let next = self
             .service
-            .save(id, rev, p, true)
+            .save(&id, rev, p, true)
             .map_err(ToolError::new)?;
-        serde_json::to_value(next).map_err(|e| ToolError::new(e.to_string()))
+        Ok(TaskService::model_view(&next, &json!({})))
     }
 }
 #[derive(Deserialize)]
@@ -146,6 +178,9 @@ impl CommandHandler for TaskCommand {
             .split_once(char::is_whitespace)
             .unwrap_or((args.trim(), ""));
         let rest = rest.trim();
+        if let Some(result) = super::acceptance::interface::command(app, verb, rest) {
+            return result;
+        }
         match verb {
             "" | "show" => app
                 .task_state()
@@ -205,7 +240,7 @@ impl CommandHandler for TaskCommand {
             }
             "resolve" => resolve(app, rest),
             _ => Err(failed(
-                "/task show|check|create <JSON>|save <id> <revision> <JSON>|continue <id> <revision> <check_digest> [--accept-changes]|pause|complete <id> <revision>|cancel <id> <revision>|resolve <id> <revision> <operation> confirmed|not_executed <note>",
+                "/task show|check|create <JSON>|save <id> <revision> <JSON>|continue <id> <revision> <check_digest> [--accept-changes]|pause|complete <id> <revision>|cancel <id> <revision>|resolve <id> <revision> <operation> confirmed|not_executed <note>|acceptance <id> <revision> <contract JSON>|attest <id> <revision> <clause> <note>|verify [evidence JSON]|verify-save <id> <revision> [evidence JSON]|verification-status [report]|complete-verified <id> <revision> <report>|override <id> <revision> <note>|recheck <id> <revision> <clause>",
             )),
         }
     }
@@ -223,16 +258,16 @@ fn resolve(
         .map(|s| CommandOutcome::ShowTask(pretty(&s)))
         .map_err(failed)
 }
-fn identity(rest: &str) -> Result<(&str, u64, &str), CommandError> {
+pub(super) fn identity(rest: &str) -> Result<(&str, u64, &str), CommandError> {
     let mut parts = rest.splitn(3, ' ');
     let id = parts.next().unwrap_or("");
     let rev = parts.next().unwrap_or("").parse().map_err(failed)?;
     Ok((id, rev, parts.next().unwrap_or("").trim()))
 }
-fn pretty(s: &impl serde::Serialize) -> String {
+pub(super) fn pretty(s: &impl serde::Serialize) -> String {
     serde_json::to_string_pretty(s).unwrap_or_else(|e| e.to_string())
 }
-fn failed(e: impl ToString) -> CommandError {
+pub(super) fn failed(e: impl ToString) -> CommandError {
     CommandError::Failed {
         message: e.to_string(),
     }

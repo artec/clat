@@ -115,9 +115,7 @@ impl ToolAccessPolicy {
     }
 
     pub(crate) fn allows(&self, definition: &ToolDefinition) -> bool {
-        if matches!(definition.name.as_str(), "read_task" | "update_task")
-            && !self.task_progress_enabled
-        {
+        if is_task_tool(&definition.name) && !self.task_progress_enabled {
             return false;
         }
         if definition.name == "view_image" && !self.view_image_enabled {
@@ -144,9 +142,7 @@ impl ToolAccessPolicy {
     pub(crate) fn denial_reason(&self, definition: &ToolDefinition) -> &'static str {
         if self.readonly_child {
             "tool unavailable to a read-only subagent"
-        } else if matches!(definition.name.as_str(), "read_task" | "update_task")
-            && !self.task_progress_enabled
-        {
+        } else if is_task_tool(&definition.name) && !self.task_progress_enabled {
             "task progress tools require an explicitly continued task Run"
         } else if definition.name == "view_image" && !self.view_image_enabled {
             "view_image is unavailable because the active model has no verified image capability"
@@ -300,6 +296,12 @@ pub trait Tool: Send + Sync {
     }
 
     fn definition(&self) -> ToolDefinition;
+
+    /// Native prepared command identity (actual argv/shell and working directory).
+    /// Wrapper names, output clipping and polling options do not grant a new effect.
+    fn execution_identity(&self) -> Option<String> {
+        None
+    }
 
     /// Durable tool/call arguments. The default is lossless; tools carrying
     /// interactive bytes may replace only the journal copy while permission
@@ -770,6 +772,17 @@ impl ToolLease {
         }
         Ok(())
     }
+}
+
+fn is_task_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "read_task"
+            | "update_task"
+            | "check_task_acceptance"
+            | "verify_task_acceptance"
+            | "propose_task_completion"
+    )
 }
 
 #[cfg(test)]

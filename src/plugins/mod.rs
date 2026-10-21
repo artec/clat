@@ -84,3 +84,7 @@ pub(crate) fn run_catalog(
 pub(crate) use permission::network_test_factory;
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) use permission::network_test_factory_with_access;
+
+pub(crate) use process::acceptance::{
+    command_observation, command_plan, prior_command_matches, task_checkers,
+};

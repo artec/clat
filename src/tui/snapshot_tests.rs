@@ -5485,9 +5485,8 @@ fn physical_next_turn_tui_sequence() {
     crate::test_support::cleanup_tree(storage_root.parent().unwrap());
 }
 
-#[test]
-fn ga1_tui_task_commands_use_core_and_render_scrollable_progress() {
-    let (storage_root, project_root) = roots("ga1-tui");
+fn task_harness(label: &str) -> Harness {
+    let (storage_root, project_root) = roots(label);
     std::fs::create_dir_all(&project_root).unwrap();
     let mut app = App::open(Project::new(&project_root), Some(storage_root.clone())).unwrap();
     let application = app
@@ -5505,12 +5504,17 @@ fn ga1_tui_task_commands_use_core_and_render_scrollable_progress() {
     app.trust_prompt = false;
     let (sender, _events) = super::ui_event_channel();
     app.event_sender = Some(sender);
-    let mut harness = Harness {
+    Harness {
         app,
         terminal: Terminal::new(TestBackend::new(100, 30)).unwrap(),
         project_root,
         storage_root,
-    };
+    }
+}
+
+#[test]
+fn ga1_tui_task_commands_use_core_and_render_scrollable_progress() {
+    let mut harness = task_harness("ga1-tui");
     let spec = json!({"objective":"TUI task","acceptance":["human review"],"budget":{"max_tokens":1000000,"max_runs":4,"max_seconds":60,"run_tokens":200000,"run_seconds":20}});
     harness.type_text(&format!("/task create {spec}"));
     harness.key(KeyCode::Enter);
@@ -5546,4 +5550,59 @@ fn ga1_tui_task_commands_use_core_and_render_scrollable_progress() {
         .unwrap();
     assert_eq!(state.runs.len(), 1);
     assert!(state.runs[0].settled);
+}
+
+fn tui_task_json(h: &mut Harness, command: &str) -> serde_json::Value {
+    h.type_text(command);
+    h.key(KeyCode::Enter);
+    let Some(super::ContentView::Remote { text, .. }) = &h.app.content_view else {
+        panic!("task view: {}", h.app.status)
+    };
+    let value = serde_json::from_str(text).unwrap();
+    h.key(KeyCode::Esc);
+    value
+}
+#[test]
+fn ga2_tui_displays_core_clause_results_and_verified_completion_without_a_model_run() {
+    let mut h = task_harness("ga2-tui");
+    std::fs::write(h.project_root.join("report.md"), "Results\nTotal: 5\n").unwrap();
+    let s = tui_task_json(
+        &mut h,
+        r#"/task create {"objective":"TUI verified report","acceptance":[],"budget":{"max_tokens":1000,"max_runs":2,"max_seconds":30,"run_tokens":1000,"run_seconds":10}}"#,
+    );
+    let contract = include_str!("../../tests/fixtures/task-text-contract.json");
+    let s = tui_task_json(
+        &mut h,
+        &format!(
+            "/task acceptance {} {} {contract}",
+            s["id"].as_str().unwrap(),
+            s["revision"]
+        ),
+    );
+    let r = tui_task_json(&mut h, "/task verify");
+    assert_eq!(r["results"][0]["status"], "passed");
+    assert_eq!(tui_task_json(&mut h, "/task show"), s);
+    let s = tui_task_json(
+        &mut h,
+        &format!(
+            "/task verify-save {} {}",
+            s["id"].as_str().unwrap(),
+            s["revision"]
+        ),
+    );
+    let r = s["acceptance_state"]["reports"][0]["id"].as_str().unwrap();
+    let done = tui_task_json(
+        &mut h,
+        &format!(
+            "/task complete-verified {} {} {r}",
+            s["id"].as_str().unwrap(),
+            s["revision"]
+        ),
+    );
+    assert_eq!(done["acceptance_state"]["completion"]["kind"], "verified");
+    assert!(done["runs"].as_array().unwrap().is_empty());
+    assert_eq!(
+        tui_task_json(&mut h, "/task verification-status")["task"],
+        done
+    );
 }

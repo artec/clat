@@ -915,3 +915,131 @@ fn ga1_rework_unadmitted_reservation_cannot_execute_effects() {
     assert_eq!(effect.count.load(Ordering::SeqCst), 0);
     assert!(f.task.current().unwrap().unwrap().operations.is_empty());
 }
+
+mod acceptance_contract_tests {
+    use super::*;
+    use crate::task::acceptance::{AcceptanceContract, Clause};
+    pub(super) fn contract(version: u64) -> AcceptanceContract {
+        AcceptanceContract {
+            version,
+            allow_model_completion: false,
+            clauses: vec![Clause {
+                id: "legacy-1".into(),
+                required: true,
+                checker: "human".into(),
+                checker_version: 1,
+                source: "human".into(),
+                files: vec![],
+                parameters: json!({"text":"human checks content"}),
+            }],
+        }
+    }
+    #[test]
+    fn ga2_contract_is_user_versioned_and_preserves_legacy_human_conditions() {
+        let f = Fixture::new();
+        let s = f.task.current().unwrap().unwrap();
+        let mut empty = contract(1);
+        empty.clauses.clear();
+        assert!(f.task.set_acceptance(&s.id, s.revision, empty).is_err());
+        let mut lowered = contract(1);
+        lowered.clauses[0].required = false;
+        assert!(f.task.set_acceptance(&s.id, s.revision, lowered).is_err());
+        let mut wrong = contract(1);
+        wrong.clauses[0].checker = "json".into();
+        assert!(f.task.set_acceptance(&s.id, s.revision, wrong).is_err());
+        assert_eq!(f.task.current().unwrap().unwrap(), s);
+        let next = f
+            .task
+            .set_acceptance(&s.id, s.revision, contract(1))
+            .unwrap();
+        assert_eq!(
+            next.acceptance_state
+                .as_ref()
+                .unwrap()
+                .contract
+                .as_ref()
+                .unwrap()
+                .version,
+            1
+        );
+        assert!(
+            f.task
+                .set_acceptance(&s.id, s.revision, contract(2))
+                .is_err()
+        );
+        assert!(
+            f.task
+                .set_acceptance(&s.id, next.revision, contract(1))
+                .is_err()
+        );
+        let a = f
+            .task
+            .attest(
+                &s.id,
+                next.revision,
+                "legacy-1",
+                "User inspected original acceptance",
+            )
+            .unwrap();
+        let next = f
+            .task
+            .set_acceptance(&s.id, a.revision, contract(2))
+            .unwrap();
+        assert!(
+            next.acceptance_state
+                .as_ref()
+                .unwrap()
+                .attestations
+                .is_empty()
+        );
+        assert_eq!(next.acceptance, vec!["human checks content"]);
+    }
+    #[test]
+    fn ga2_legacy_snapshot_stays_byte_compatible_and_contract_write_failure_never_publishes() {
+        let f = Fixture::new();
+        let s = f.task.current().unwrap().unwrap();
+        assert!(s.acceptance_state.is_none());
+        assert!(
+            !serde_json::to_string(&s)
+                .unwrap()
+                .contains("acceptance_state")
+        );
+        f.task.sessions.inject_persistence_faults(FaultHooks {
+            fail_batch_write: true,
+            ..Default::default()
+        });
+        assert!(
+            f.task
+                .set_acceptance(&s.id, s.revision, contract(1))
+                .is_err()
+        );
+        assert_eq!(f.task.current().unwrap().unwrap(), s);
+        f.begin(1000);
+        assert!(
+            f.task
+                .set_acceptance(&s.id, s.revision, contract(1))
+                .is_err()
+        );
+    }
+    #[test]
+    fn ga2_cannot_complete_a_structured_task_by_only_changing_phase() {
+        let f = Fixture::new();
+        let s = f.task.current().unwrap().unwrap();
+        let next = f
+            .task
+            .set_acceptance(&s.id, s.revision, contract(1))
+            .unwrap();
+        assert!(f.task.finish(&s.id, next.revision, "complete").is_err());
+        assert_eq!(f.task.current().unwrap().unwrap(), next);
+        let mut forged = next.clone();
+        forged.revision += 1;
+        forged.phase = "complete".into();
+        assert!(
+            crate::task::fold_change(&mut Some(next), &serde_json::to_value(forged).unwrap())
+                .is_err()
+        );
+    }
+}
+
+#[path = "acceptance/tests.rs"]
+mod acceptance_adversarial_tests;
