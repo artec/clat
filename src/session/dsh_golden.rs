@@ -19,6 +19,10 @@
 //!   zstd golden 再由 CLAT load → admission → projection 常跑消费。
 
 #[cfg(test)]
+#[path = "dsh_golden/rc_021_tests.rs"]
+mod rc_021;
+
+#[cfg(test)]
 mod tests {
     use crate::session::compat::log_file_name;
     use crate::session::event::SessionEvent;
@@ -52,7 +56,7 @@ mod tests {
         mount_fixture_generation(file, id, 0)
     }
 
-    fn mount_fixture_generation(
+    pub(super) fn mount_fixture_generation(
         file: &str,
         id: &str,
         version: u32,
@@ -141,7 +145,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    fn key_for(id: &str) -> SessionKey {
+    pub(super) fn key_for(id: &str) -> SessionKey {
         SessionKey {
             project: ProjectKey::from_cwd(FIXTURE_CWD),
             id: SessionId::new(id),
@@ -150,7 +154,7 @@ mod tests {
 
     /// 布局发现的黄金路径也顺带钉住：list_headers 能看见 DSH 产的
     /// 会话（project_key 推导与 DSH 的 projectKey 同一 cwd 哈希语义）。
-    fn load_golden(backend: &JsonlBackend, id: &str) -> Vec<SessionEvent> {
+    pub(super) fn load_golden(backend: &JsonlBackend, id: &str) -> Vec<SessionEvent> {
         let headers: Vec<SessionHeader> = backend
             .list_headers()
             .expect("list headers")

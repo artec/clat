@@ -2,6 +2,66 @@
 use super::is_surface_type;
 use crate::session::event::SessionEvent;
 
+/// Read-only metadata contracts from DSH 0.2.1-rc.2 (687f282e8625).
+/// Unknown additions are preserved; these seats have no CLAT producer or
+/// cwd/job consumer. Do not turn TypeScript number fields into integer or
+/// monotonic-clock requirements that the upstream contract does not impose.
+pub(super) fn working_directory(event: &SessionEvent, _version: u32) -> Result<(), String> {
+    require_str(&event.data, "cwd")?;
+    Ok(())
+}
+
+pub(super) fn job_registered(event: &SessionEvent, _version: u32) -> Result<(), String> {
+    for field in ["jobId", "owner", "kind", "label"] {
+        require_str(&event.data, field)?;
+    }
+    require_number(&event.data, "startedAt")?;
+    if event.data.get("toolCall").is_some() {
+        require_object(&event.data, "toolCall")?;
+        for field in ["callId", "rootCallId"] {
+            require_str(&event.data["toolCall"], field)?;
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn job_settled(event: &SessionEvent, version: u32) -> Result<(), String> {
+    job_registered(event, version)?;
+    require_number(&event.data, "finishedAt")?;
+    if !matches!(
+        event.data.get("status").and_then(|value| value.as_str()),
+        Some("completed" | "killed" | "failed")
+    ) {
+        return Err("job status must be completed, killed or failed".into());
+    }
+    if !matches!(
+        event.data.get("cause").and_then(|value| value.as_str()),
+        Some("producer" | "kill" | "teardown")
+    ) {
+        return Err("job cause must be producer, kill or teardown".into());
+    }
+    if event
+        .data
+        .get("producerReported")
+        .and_then(|value| value.as_bool())
+        .is_none()
+    {
+        return Err("job producerReported must be a boolean".into());
+    }
+    if event.data.get("detail").is_some() {
+        require_str(&event.data, "detail")?;
+    }
+    Ok(())
+}
+
+fn require_number(data: &serde_json::Value, key: &str) -> Result<(), String> {
+    if data.get(key).is_some_and(serde_json::Value::is_number) {
+        Ok(())
+    } else {
+        Err(format!("`{key}` must be a number"))
+    }
+}
+
 pub(super) fn turn(event: &SessionEvent, _version: u32) -> Result<(), String> {
     require_u64(&event.data, "turn")?;
     Ok(())

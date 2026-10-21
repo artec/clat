@@ -44,8 +44,15 @@ const KNOWN_FROM_V3: [&str; 5] = [
 ];
 
 /// The upstream released-V3 list already includes image/offload and
-/// workspace/changes. Only developer/message is new to the V4 window.
-const KNOWN_FROM_V4: [&str; 1] = ["developer/message"];
+/// workspace/changes. DSH 0.2.1-rc.2 (687f282e8625) additionally writes
+/// required cwd/job records within V4: its current catalog restores with
+/// the HEAD vocabulary although the frozen V4 list did not change.
+const KNOWN_FROM_V4: [&str; 4] = [
+    "developer/message",
+    "job/registered",
+    "job/settled",
+    "working-directory/change",
+];
 
 /// Released types retired by format v3: the predecessor PTC names. In v3
 /// logs a required occurrence refuses (an opaque source extension must not
@@ -124,6 +131,8 @@ vocabulary! {
     "hook/invoked" => (None, false, Skip, false),
     "hook/result" => (None, false, Skip, false),
     "image/offload" => (None, false, Skip, false),
+    "job/registered" => (Some(validation::job_registered), false, Skip, false),
+    "job/settled" => (Some(validation::job_settled), false, Skip, false),
     "llm/retry" => (None, false, Retry, false),
     "llm/retry-started" => (None, false, Skip, false),
     "model/selection" => (None, false, Skip, false),
@@ -162,6 +171,7 @@ vocabulary! {
     "turn/start" => (Some(validation::turn), false, TurnStart, false),
     "user/message" => (Some(validation::user_message), true, UserMessage, false),
     "web/deepseek-search-llm-request" => (None, false, Skip, false),
+    "working-directory/change" => (Some(validation::working_directory), false, Skip, false),
     "workspace/changes" => (None, false, Skip, false),
 }
 
@@ -196,15 +206,15 @@ mod tests {
     #[test]
     fn catalog_covers_the_pinned_vocabulary_and_surface_subset() {
         // The upstream set is sorted; every entry is known and the surface
-        // subset is exactly the four message types (v3 adds the protected
-        // system head).
-        assert_eq!(KNOWN_EVENT_TYPES.len(), 65);
+        // subset is exactly the five released message types, including
+        // the protected system head and V4 developer messages.
+        assert_eq!(KNOWN_EVENT_TYPES.len(), 68);
         assert_eq!(
             KNOWN_EVENT_TYPES
                 .iter()
                 .collect::<std::collections::BTreeSet<_>>()
                 .len(),
-            65,
+            68,
             "each vocabulary seat must be unique"
         );
         assert!(is_known_type("user/message"));

@@ -238,6 +238,17 @@ specific diagnosed timing concern, rather than routine repeated full runs.
 DSH checkout oracles remain opt-in with `DSH_CHECKOUT`; real-model/device
 checks follow [Live validation](live-validation.md).
 
+DSH 0.2.1-rc.2 metadata admission has focused coverage in
+`session::dsh_golden::rc_021::`: native required records, malformed payloads,
+generation windows, opaque plugin extensions, checkpoint cuts, incremental
+replay, and resume/append/close/reopen without rewriting source bytes.
+Run `scripts/gates.sh session::dsh_golden::rc_021::` for this contract. Its new
+goldens regenerate with `tests/fixtures/dsh-session/gen-v4-021-fixtures.mts`
+from the exact DSH revision named in that script; historical generators and
+adapter cohorts retain their own pins. Set `DSH_CHECKOUT` only on the explicit
+`dsh_and_clat_exclude_each_others_session_writer` test when checking a new
+upstream lease implementation, rather than exporting it across other cohorts.
+
 ## Standing test rules (2026-09-11 consolidation)
 
 The workbench tool suite covers native commit capture through real tools,

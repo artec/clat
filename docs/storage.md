@@ -170,6 +170,14 @@ Sessions containing developer messages or a nonempty `agentPreset` open
 read-only: CLAT cannot continue their model/deferred-tool context safely.
 `/update` is only for older generations and is unavailable in those V4 sessions.
 
+DSH 0.2.1-rc.2 adds required `working-directory/change`, `job/registered`, and
+`job/settled` records within V4. CLAT admits their declared payload shapes and
+preserves their bytes during append-only continuation, including an unsettled
+registration. These are non-surface metadata with no CLAT cwd/job projection or
+producer. Continuing uses CLAT's existing project/run directory; it does not
+adopt DSH's recorded effective directory or take over a background job. See the
+revision-specific boundary in the [compatibility matrix](dsh-compat.md).
+
 ### Event admission
 
 Known durable event types are validated before append and again when read.

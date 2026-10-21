@@ -358,6 +358,11 @@ replay skip-list edit. Stateful projections still own fold/checkpoint/restore;
 the recorder's RunEvent-to-journal lifecycle and the v1 wire encoder remain
 separate contracts because these vocabularies are not one-to-one.
 
+The V4 catalog also admits DSH 0.2.1-rc.2 cwd/job records through payload
+validators and `Skip` replay seats. They remain preserved facts without a
+CLAT working-directory or job-registry consumer. Adding these reader seats
+does not add a recorder producer, RunEvent variant, or model-facing message.
+
 One run produces two related streams:
 
 - **`RunEvent`** is the live client protocol. `EventSink` receives run start,

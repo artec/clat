@@ -638,7 +638,7 @@ mod tests {
     /// The catalog constants stay honest against the dispatch above.
     #[test]
     fn known_catalog_is_consistent() {
-        assert_eq!(crate::session::catalog::KNOWN_EVENT_TYPES.len(), 65);
+        assert_eq!(crate::session::catalog::KNOWN_EVENT_TYPES.len(), 68);
     }
 
     /// SV 批次 2 判别腿：native V3 结构性准入（canonical 形状的拒绝面，

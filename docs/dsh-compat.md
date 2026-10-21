@@ -7,7 +7,8 @@ states only what executable evidence proves at pinned DSH revision
 released session format v4). Rows that predate the V3 alignment pin
 (`d347e70390…`, `dsh-v0.1.3-alpha.1`, released v2) say so in their oracle
 column; their fixtures stay valid because V3 changed no released-v2 read
-semantics.
+semantics. Later rows name their own revision explicitly; they do not advance
+the historical oracle or adapter cohort pins above.
 
 The status vocabulary is deliberately strict:
 
@@ -27,6 +28,7 @@ are useful diagnostics, but they are not compatibility evidence.
 
 | Contact point | Pinned upstream source | CLAT implementation | DSH oracle fixture | Status | Known boundary |
 |---|---|---|---|---|---|
+| V4 cwd/job metadata read admission (DSH 0.2.1-rc.2, `687f282e8625c6b8d11ff58211a90524be2e4317`) | `core/session/src/known-event-types.ts`, `session/working-directory/src/index.ts`, `jobs/jobs/src/types.ts` under `packages/` | `src/session/catalog.rs`, `src/session/catalog/validation.rs` | `tests/fixtures/dsh-session/v4-{registered,settled}-0.2.1.jsonl.zstd` | **partial** | Native SessionStore append/current-codec artifacts cover required `working-directory/change`, `job/registered` and `job/settled`, backend load, incremental/checkpoint replay and append-only continuation. CLAT validates their declared payload fields and preserves unknown additions, but does not produce these types or consume cwd/job state: they are non-surface `Skip` seats. Continuation keeps CLAT's existing project/run cwd, not DSH's recorded effective cwd; registered jobs are not resumed, controlled or automatically settled. V4 remains unchanged. |
 | Cordis event dispatch (`on/once/emit/parallel/serial/bail/waterfall`) | `vendor/cordis/src/events.ts` | `sdk/dsh-adapter/src/events.ts` | `tests/fixtures/dsh-oracle/cordis-events.json` | **compatible** | Single adapter scope; no Cordis filter/isolate chain. Disposer return value is not treated as a wire contract. |
 | System-prompt registry ordering, complete sections, variables, contexts, tools, waterfall | `packages/core/system-prompt/src/index.ts` | `sdk/dsh-adapter/src/system-prompt.ts` | `tests/fixtures/dsh-oracle/system-prompt.json` | **compatible** | DSH's built-in `harness:identity` and deployment persona sections are host-owned and are not recreated by the registry seam. Agent-scoped shadowing and `toolOrder` are outside the static adapter. `cwd/provider/model` providers are installed by the Shim's agent-runtime layer, as DSH agent-loop does, rather than baked into the registry. |
 | Released-v2 embedded Assistant streams (`assistant/attempt`, `assistant/message`) | `packages/llm/llm/src/assistant-stream.ts`, `packages/session/session-persistence-jsonl/src/format.ts` | `src/session/assistant_stream.rs`, `src/session/jsonl.rs` | `tests/fixtures/dsh-oracle/session-jsonl.json` | **compatible** | Oracle covers all four compact record variants and exact timed expansion; model-provider semantics are outside the storage seam. |
@@ -112,6 +114,19 @@ The V4 native and migrated goldens regenerate against the V4 pin with:
 cd ../deepseek-harness && \
   ./node_modules/.bin/tsx ../clat/tests/fixtures/dsh-session/gen-v4-fixtures.mts
 ```
+
+The additional V4 cwd/job fixtures use their separate 0.2.1-rc.2 pin
+`687f282e8625c6b8d11ff58211a90524be2e4317`:
+
+```bash
+cd ../deepseek-harness && \
+  node --import=tsx ../clat/tests/fixtures/dsh-session/gen-v4-021-fixtures.mts
+```
+
+This generator checks the exact revision and a clean upstream checkout,
+validates its native records with DSH's current restorer, and prints fixture
+hashes. Two consecutive runs must match; it does not regenerate historical
+session or adapter oracles.
 
 `oracle:regen` checks the pinned source wiring, runs each generator twice,
 requires byte-identical output, and writes generator/checker/fixture SHA-256
