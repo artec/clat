@@ -692,3 +692,13 @@ least 640 JSON escape characters on every platform: Unix uses quoted directory
 names, while Windows uses legal repeated path separators. Both still resolve
 the actual file, consume all segments and reconstruct every source byte; they
 are not skipped on Windows.
+
+Real Host subprocess fixtures in `ag4_joint_real_host` and
+`ag5_joint_real_host` share `tests/support/serve_stdout.rs`. Reporting the
+listening port must leave the reader draining stdout until EOF: the Host still
+prints after its readiness announcement, and closing the pipe can terminate it
+before an SSE client subscribes. Their controlled regression holds back later
+output until readiness is received, then requires that output to be consumed
+through EOF. Child stderr is inherited so a future reset exposes Host panics
+instead of hiding them behind an SSE error. No reconnection retry masks the
+first failed subscription.

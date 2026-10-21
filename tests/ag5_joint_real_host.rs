@@ -25,6 +25,9 @@ use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+#[path = "support/serve_stdout.rs"]
+mod serve_stdout;
+
 const TOKEN: &str = "ag5-real-host-token";
 const WAIT: Duration = Duration::from_secs(60);
 const TASK: &str = "please produce the two artifacts a.md and b.md";
@@ -327,7 +330,7 @@ fn spawn_real_serve(home: &Path, project: &Path) -> (Child, u16) {
         .env("CI", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::inherit())
         .spawn()
         .expect("spawn real clat serve");
     let stdout = child.stdout.take().expect("serve stdout");
@@ -335,25 +338,10 @@ fn spawn_real_serve(home: &Path, project: &Path) -> (Child, u16) {
     std::thread::Builder::new()
         .name("clat-ag5-serve-stdout".into())
         .spawn(move || {
-            let mut line = String::new();
             let mut reader = BufReader::new(stdout);
-            let mut announced = None;
-            loop {
-                line.clear();
-                match reader.read_line(&mut line) {
-                    Ok(0) | Err(_) => break,
-                    Ok(_) => {
-                        if let Some(rest) = line
-                            .trim()
-                            .strip_prefix("clat serve listening on http://127.0.0.1:")
-                        {
-                            announced = rest.trim_end_matches('/').parse::<u16>().ok();
-                            break;
-                        }
-                    }
-                }
+            if let Err(error) = serve_stdout::drain(&mut reader, tx) {
+                eprintln!("serve stdout drain failed: {error}");
             }
-            let _ = tx.send(announced);
         })
         .expect("stdout reader thread");
     let port = rx
