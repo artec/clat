@@ -1273,24 +1273,54 @@ fn catch_up_replay(
     committed: Option<u64>,
     replay: &Mutex<ResumeSink>,
 ) -> Result<(), SessionError> {
+    catch_up_replay_with(committed, replay, |floor, visitor| {
+        backend.visit_from(key, floor, visitor).map(|_| ())
+    })
+}
+
+fn catch_up_replay_with(
+    committed: Option<u64>,
+    replay: &Mutex<ResumeSink>,
+    mut read: impl FnMut(
+        u64,
+        &mut dyn FnMut(&SessionEvent) -> Result<(), String>,
+    ) -> Result<(), SessionError>,
+) -> Result<(), SessionError> {
     let mut replay = replay.lock().expect("replay");
     if !committed.is_some_and(|committed| replay.pushed <= committed) {
         return Ok(());
     }
     let floor = replay.pushed;
-    let ResumeSink {
-        adapter,
-        replay: events,
-        usage,
-        pushed,
-    } = &mut *replay;
-    backend.visit_from(key, floor, &mut |event| {
-        adapter.push(event, events);
-        usage.record(event);
-        *pushed += 1;
-        Ok(())
-    })?;
-    Ok(())
+    let mut last = None;
+    for _ in 0..3 {
+        // A stream may deliver events before its final revision check fails.
+        // Stage only the suffix, retaining prefix pairing state without
+        // cloning the existing transcript. Publish all cache fields together.
+        let mut suffix = ResumeSink {
+            adapter: replay.adapter.clone(),
+            replay: Vec::new(),
+            usage: replay.usage.clone(),
+            pushed: floor,
+        };
+        let result = read(floor, &mut |event| {
+            suffix.adapter.push(event, &mut suffix.replay);
+            suffix.usage.record(event);
+            suffix.pushed += 1;
+            Ok(())
+        });
+        match result {
+            Ok(()) => {
+                replay.adapter = suffix.adapter;
+                replay.replay.extend(suffix.replay);
+                replay.usage = suffix.usage;
+                replay.pushed = suffix.pushed;
+                return Ok(());
+            }
+            Err(SessionError::Io(message)) => last = Some(SessionError::Io(message)),
+            Err(error) => return Err(error),
+        }
+    }
+    Err(last.expect("at least one attempt ran"))
 }
 
 fn paginate_replay(

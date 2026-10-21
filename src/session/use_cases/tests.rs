@@ -2828,3 +2828,131 @@ fn usage_fold_buckets_by_model_route() {
     );
     crate::test_support::cleanup_tree(&root);
 }
+
+// A streamed suffix is provisional until stat→read→stat accepts its revision.
+// Simulate a writer committing after delivery, without timing or platform sleeps.
+fn replay_suffix_fixture() -> (Mutex<ResumeSink>, SessionEvent) {
+    let mut sink = ResumeSink::new();
+    sink.adapter.push(
+        &SessionEvent::new("turn/start", 0, 1, payloads::turn_start(7)),
+        &mut sink.replay,
+    );
+    sink.pushed = 1;
+    let event = SessionEvent::new(
+        "assistant/message",
+        1,
+        2,
+        payloads::assistant_message(
+            7,
+            1,
+            vec![payloads::text_block("once")],
+            "p",
+            "m",
+            Some(&crate::model::Usage {
+                input_tokens: 11,
+                output_tokens: 3,
+                ..Default::default()
+            }),
+        ),
+    )
+    .append(Vec::new());
+    (Mutex::new(sink), event)
+}
+
+fn assert_replay_prefix_turn(state: &ResumeSink) {
+    let mut probe = state.adapter.clone();
+    let mut out = Vec::new();
+    probe.push(
+        &SessionEvent::new("user/message", 3, 4, payloads::user_message("probe")),
+        &mut out,
+    );
+    assert_eq!(
+        out[0].turn(),
+        7,
+        "failed stream cannot publish adapter turn 99"
+    );
+}
+
+#[test]
+fn replay_suffix_retries_revision_drift_without_double_counting() {
+    let (sink, event) = replay_suffix_fixture();
+    let mut attempts = 0;
+    catch_up_replay_with(Some(1), &sink, |floor, visitor| {
+        assert_eq!(floor, 1, "failed streams cannot advance the cached cursor");
+        attempts += 1;
+        visitor(&event).unwrap();
+        if attempts < 3 {
+            visitor(&SessionEvent::new(
+                "turn/start",
+                2,
+                3,
+                payloads::turn_start(99),
+            ))
+            .unwrap();
+            Err(SessionError::Io(
+                "session log changed while streaming".into(),
+            ))
+        } else {
+            Ok(())
+        }
+    })
+    .expect("a stable suffix succeeds within the read budget");
+    assert_eq!(attempts, 3);
+    let state = sink.lock().unwrap();
+    assert_eq!(state.pushed, 2);
+    assert_eq!(state.replay.len(), 1);
+    assert_replay_prefix_turn(&state);
+    assert_eq!(state.usage.session.input_tokens, 11);
+    assert_eq!(state.usage.session.output_tokens, 3);
+    assert_eq!(state.usage.routes.values().next().unwrap().input_tokens, 11);
+    drop(state);
+    catch_up_replay_with(Some(1), &sink, |_, _| panic!("already caught up")).unwrap();
+}
+
+#[test]
+fn replay_suffix_failure_keeps_cache_unchanged_and_retries_are_bounded() {
+    for corrupt in [false, true] {
+        let (sink, event) = replay_suffix_fixture();
+        let mut attempts = 0;
+        let result = catch_up_replay_with(Some(1), &sink, |_, visitor| {
+            attempts += 1;
+            visitor(&event).unwrap();
+            visitor(&SessionEvent::new(
+                "turn/start",
+                2,
+                3,
+                payloads::turn_start(99),
+            ))
+            .unwrap();
+            if corrupt {
+                Err(SessionError::Corruption("invalid event".into()))
+            } else {
+                Err(SessionError::Io(
+                    "session log changed while streaming".into(),
+                ))
+            }
+        });
+        assert!(result.is_err());
+        let state = sink.lock().unwrap();
+        assert_eq!(
+            state.pushed, 1,
+            "a failed suffix must not publish its cursor"
+        );
+        assert!(
+            state.replay.is_empty(),
+            "a failed suffix must not publish its messages"
+        );
+        assert_eq!(state.usage, UsageStats::default());
+        assert_replay_prefix_turn(&state);
+        assert_eq!(attempts, if corrupt { 1 } else { 3 });
+        drop(state);
+        catch_up_replay_with(Some(1), &sink, |floor, visitor| {
+            assert_eq!(floor, 1);
+            visitor(&event).unwrap();
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(sink.lock().unwrap().replay.len(), 1);
+        assert_eq!(sink.lock().unwrap().replay[0].turn(), 7);
+    }
+}

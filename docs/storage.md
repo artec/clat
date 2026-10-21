@@ -247,6 +247,12 @@ projection folding, transcript replay, and usage restoration together. Session
 listing can use checkpoint rows and the bounded first log record instead of
 decoding the conversation body.
 
+Incremental history reads publish their replay cursor, messages, pairing state,
+and usage only after the complete stream passes its revision check. A transient
+I/O conflict gets at most three attempts with provisional suffix state discarded
+between attempts; persistent I/O failures and malformed logs remain visible
+errors. The existing transcript prefix is reused rather than cloned per attempt.
+
 `session_projcache.json` is a higher-level list cache. It is disposable and
 silently rebuilt when stale or torn.
 

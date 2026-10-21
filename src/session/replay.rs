@@ -203,6 +203,7 @@ pub enum ReplayTurnEnd {
 /// Incremental fold state. Feed events in seq order; everything positional
 /// (turn numbers, call-id pairing, approval pairing) is derived here, never
 /// re-read from the log.
+#[derive(Clone)]
 pub struct ReplayAdapter {
     turn: u64,
     calls: HashMap<String, String>,
