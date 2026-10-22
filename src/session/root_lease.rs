@@ -157,10 +157,10 @@ fn try_lock_exclusive(file: &File) -> io::Result<bool> {
 ///
 /// Known window: between one holder creating a deeper prefix and locking
 /// it, a second process computing the deepest existing prefix may lock
-/// that new directory without contention. The no-clobber link publish of
-/// the control plane is the actual atomicity guard there — both racers
-/// cannot both commit, one fails cleanly — so the lease is best-effort
-/// serialization on top, not the correctness boundary.
+/// that new directory without contention. Initializers must therefore call
+/// `cover_initialized_root` before publishing the control-plane sentinel.
+/// Losing the new-directory lease leaves a Fresh directory for its actual
+/// owner to initialize. No-clobber publication remains an additional guard.
 #[cfg(unix)]
 pub(crate) fn acquire(root: &Path) -> io::Result<StorageRootLease> {
     let identity = root_identity(root)?;

@@ -494,6 +494,12 @@ aligned.
 A facade mutex serializes threads. A kernel storage-root lease serializes
 processes.
 
+For a Fresh root, the initializer leases the newly created directory before
+publishing `config.json`, while retaining its ancestor lease. If another
+initializer has acquired the new directory, the loser publishes no control
+facts; the directory's owner can still complete initialization. This avoids
+stranding concurrent CLI/desktop launchers without a ready Host.
+
 ## Web token and DSH preference
 
 `clat serve` creates `~/.clat/web-token` only after the requested loopback port

@@ -1,5 +1,16 @@
 name: Desktop
 on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Native check target (optional Windows test installer)
+        type: choice
+        default: all
+        options: [all, aarch64-apple-darwin, x86_64-apple-darwin, x86_64-pc-windows-msvc, aarch64-pc-windows-msvc]
+      installer:
+        description: Build unsigned Windows test installer (macOS uses bun app:build locally)
+        type: boolean
+        default: false
   push:
     branches: [main]
     paths: ['package.json', 'publish', 'desktop/**', 'src/host_client/**', 'src/serve/**', 'src/serve.rs', 'src/client_ports.rs', 'web/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/desktop.yml']
@@ -7,6 +18,9 @@ on:
     paths: ['package.json', 'publish', 'desktop/**', 'src/host_client/**', 'src/serve/**', 'src/serve.rs', 'src/client_ports.rs', 'web/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/desktop.yml']
 permissions:
   contents: read
+concurrency:
+  group: desktop-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   web-shell:
     runs-on: ubuntu-24.04
@@ -31,7 +45,9 @@ jobs:
           bun-version: 1.3.14
       - run: bun install --cwd desktop --frozen-lockfile --ignore-scripts
       - id: assets
-        run: echo "matrix=$(bun desktop/scripts/release.ts matrix --kind desktop)" >> "$GITHUB_OUTPUT"
+        env:
+          DESKTOP_TARGET: ${{ inputs.target || 'all' }}
+        run: echo "matrix=$(bun desktop/scripts/release.ts matrix --kind desktop --target "$DESKTOP_TARGET")" >> "$GITHUB_OUTPUT"
   native:
     needs: plan
     runs-on: ${{ matrix.os }}
@@ -54,10 +70,22 @@ jobs:
       - uses: Swatinem/rust-cache@v2.9.2
         with:
           key: desktop-${{ matrix.target }}
+          cache-on-failure: true
       - run: bun install --cwd desktop --frozen-lockfile --ignore-scripts
       - run: cargo clippy -p clat-desktop --all-targets --locked -- -D warnings
       - run: cargo test -p clat-desktop --locked
       - run: bun test desktop/scripts --timeout 60000
       - run: bun desktop/node_modules/typescript/bin/tsc --project desktop/tsconfig.json
-      - run: bun desktop/scripts/release.ts build --target ${{ matrix.target }} --release --official
-      - run: bun desktop/scripts/release.ts package --target ${{ matrix.target }} --output dist-desktop
+      # Push/PR feedback retains all four native faces without release builds.
+      # Manual Windows installers are test artifacts, never release inputs.
+      - name: Optional Windows test installer
+        if: github.event_name == 'workflow_dispatch' && inputs.installer && startsWith(matrix.platform, 'windows')
+        run: |
+          bun desktop/scripts/release.ts build --target ${{ matrix.target }} --release --official
+          bun desktop/scripts/release.ts package --target ${{ matrix.target }} --output dist-desktop
+      - uses: actions/upload-artifact@v6
+        if: github.event_name == 'workflow_dispatch' && inputs.installer && startsWith(matrix.platform, 'windows')
+        with:
+          name: test-desktop-${{ matrix.platform }}
+          path: dist-desktop/*
+          if-no-files-found: error

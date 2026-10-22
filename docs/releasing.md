@@ -362,9 +362,10 @@ YAML. Desktop filenames omit full CLI Rust target triples so older CLI selectors
 cannot mistake installers for CLI executables. There is no preview update channel.
 
 The root workspace Cargo.toml remains the only manually maintained version.
-CI marks release builds with CLAT_OFFICIAL_RELEASE=1, stages private backends and
-unsigned desktop bundles, and waits for all CLI/desktop jobs before creating the
-same draft Release. Versioned cache runtimes keep running independently of the
+CI marks release builds with CLAT_OFFICIAL_RELEASE=1, builds six CLI targets and
+two unsigned Windows desktop installers, and waits for those jobs before creating
+the draft Release. The owner's Mac builds both macOS desktop architectures locally
+with the same official build identity. Versioned cache runtimes keep running independently of the
 installation directory. Build tools do not become CLI runtime dependencies.
 
 Before owner-side publication, install desktop build tools with
@@ -389,10 +390,17 @@ The desktop signer passes the password through its child environment rather than
 process arguments. Do not reuse another application's Tauri signing variables or
 the CLI Minisign key.
 
-The owner still runs just `./publish` on macOS after pushing the signed tag and
-waiting for CI. No separate Bun release/upload/publish commands are required.
-It downloads and validates
-the complete draft desktop asset set, then finalizes in this order:
+The owner still runs just `./publish` on macOS after pushing the signed tag;
+there is no need to wait for the complete CI draft first. No separate Bun
+release/upload/publish commands are required.
+Local formal builds require a clean worktree with HEAD equal to the current
+version tag. The script selects the exact tag/commit's Release run and waits only
+for each required macOS CLI artifact, then compiles its desktop App locally while
+other remote platforms continue. The private backend reuses those CLI bytes;
+it is not compiled again locally. Pinned macOS targets are installed as needed.
+Once both local macOS stages and the remote Release finish, the script validates
+the complete draft and downloads the six CLI archives and two Windows installers.
+Signing and finalization follow this order:
 
 1. Sign each nested backend using the local Developer ID Application identity and
    backend-only WASM/JIT entitlements; refresh its post-signing digest manifest.
@@ -414,6 +422,45 @@ performs production signing. Never finalize partially built releases.
 The finalizer preflights tools, the local certificate, notarization configuration
 and the desktop key pair before modifying artifacts. DMGs use a simple
 App/Applications layout produced by hdiutil, without Finder automation.
+
+The unsigned macOS build produces only an App archive, without a throwaway DMG.
+The final DMG is made once, after signing and notarizing the App. Cargo's local
+target directory is retained across releases. Completed unsigned and Apple-signed
+stages are stored under `dist-release/vX.Y.Z/macos/<commit>/<target>/`; each receipt
+binds the source commit, target, stage and exact file hashes. Interrupted
+notarization reuses a completed compilation; interruption after signing reuses the
+signed stage. Changes to cached bytes or source identity reject reuse. A failure
+inside a stage retries that stage; this does not promise resumption within an Apple
+notarization submission. Do not delete local build caches between retries.
+
+Each Windows CLI and desktop installer share one platform job: compile CLI once,
+save a `backend-<target>` artifact immediately, package CLI, and build the desktop
+using that same executable. Desktop does not invoke another `cargo build -p clat`.
+The artifact contains an official-build receipt binding commit, version, target,
+workflow run, size and SHA-256. The producer checks the executable's version;
+consumers check the receipt and PE/Mach-O architecture before staging bytes.
+Artifact downloads may lose executable mode, which staging explicitly restores.
+If the same Release run is retried after desktop failure, its validated saved CLI
+is restored instead of rebuilt. Missing artifacts trigger the normal CLI build;
+invalid artifacts fail closed, without a silent rebuild fallback. Internal
+`backend-*` artifacts are excluded from public Release assets.
+
+The owner command polls for tag dispatch, CLI availability and final completion
+with bounded waits (up to 90 minutes per wait). Remote failures or timeouts leave
+completed local stages intact; retry failed jobs and rerun `./publish`. It does
+not start, cancel or rerun GitHub jobs automatically. A manual Release run must
+select the version tag, rather than a branch. This parallelizes local desktop
+work with remaining remote builds; it does not remove compilation of the GUI or
+promise a particular cold-build duration.
+
+Ordinary Desktop push/PR jobs run clippy and tests on all four native platforms,
+without optimized builds or installer generation. New pushes cancel superseded
+Desktop runs, and Rust caches are saved on failure. For an isolated Windows test
+installer, use the Desktop workflow's manual Run workflow entry, select a target
+and enable `installer`; its artifacts are not formal release inputs. For macOS
+use `bun app:build` locally. Tagged Release builds still require the full formal
+asset inventory before `./publish` makes the draft public. Re-run failed jobs to
+preserve successful platform jobs when retrying the same commit.
 
 Windows initially uses per-user NSIS installers without Authenticode. All desktop
 updates still require signatures. The updater validates a signed, version-fixed

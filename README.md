@@ -55,7 +55,9 @@ to suppress the browser handoff.
 CLAT Desktop installers accompany the CLI archives in desktop-enabled releases.
 For local desktop development, use `bun start`; `bun app:build` creates a native
 test installer. Desktop tooling runs directly on Bun/TypeScript.
-Formal releases retain the signed-tag → CI → `./publish` flow.
+For formal releases, push the signed tag and run `./publish` while CI builds.
+Windows installers reuse their platform's CLI; macOS desktop packages reuse CI
+backends and build/sign locally, preserving completed stages after interruptions.
 The desktop app shares Host data with the CLI/PWA and updates independently;
 it requires no preinstalled CLI, Node.js or Python.
 The optional official-iLink WeChat frontend supports explicit binding and pairing;

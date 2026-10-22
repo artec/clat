@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { cleanEnv, run, type Runner, withTemp, writeJson } from './common';
+import { cleanEnv, digest, run, type Runner, withTemp, writeJson } from './common';
+import type { BackendIdentity } from './backend';
 import { DesktopRelease } from './release';
 import { OwnerRelease, type RemoteRelease } from './owner-release';
 
@@ -31,4 +32,17 @@ export function fixtureIndex(release: DesktopRelease, owner: OwnerRelease, folde
     platforms[record.platform!] = { url: `https://github.com/artec/clat/releases/download/${owner.tag()}/${name}`, signature: readFileSync(join(folder, name + '.sig'), 'utf8').trim() };
   }
   const index = join(folder, 'desktop-latest.json'); writeJson(index, { version: release.version(), platforms }); return index;
+}
+
+export const backendIdentity: BackendIdentity = { commit: 'a'.repeat(40), version: '2.0.0', target: 'aarch64-apple-darwin', runId: '123' };
+export function backendBytes(target: string): Buffer {
+  const value = Buffer.alloc(256);
+  if (target.endsWith('apple-darwin')) { value.writeUInt32LE(0xfeedfacf); value.writeUInt32LE(target.startsWith('aarch64-') ? 0x0100000c : 0x01000007, 4); }
+  else { value.writeUInt16LE(0x5a4d); value.writeUInt32LE(64, 60); value.writeUInt32LE(0x4550, 64); value.writeUInt16LE(target.startsWith('aarch64-') ? 0xaa64 : 0x8664, 68); }
+  return value;
+}
+export function backendArtifact(folder: string, id = backendIdentity): void {
+  mkdirSync(folder, { recursive: true }); const path = join(folder, id.target.includes('windows') ? 'clat.exe' : 'clat');
+  writeFileSync(path, backendBytes(id.target), { mode: 0o644 });
+  writeJson(join(folder, 'receipt.json'), { ...id, official: true, size: 256, sha256: digest(path) });
 }

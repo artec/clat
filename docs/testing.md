@@ -774,6 +774,21 @@ and signing checks require Minisign and report skips explicitly when unavailable
 macOS-only DMG/owner-platform checks and POSIX flock checks are platform-gated.
 The existing unrelated Python Rust-test fixtures remain in their own domains.
 
+Desktop push/PR checks cover all four native platforms without running optimized
+installer builds. `bun app:test` also verifies this workflow boundary, the
+Windows-only formal CI matrix, and local macOS staging contracts: clean/tag-bound
+source, interrupted signing reuse, changed-byte rejection and rejection of source
+changes during a build. Stage tests use disposable files and injected build/sign
+operations; they do not use the owner's Apple credentials or prove native builds,
+notarization or remote timing. Formal macOS packaging runs on the owner's Mac via
+`./publish`; manual Desktop workflow installers are optional Windows test artifacts.
+Backend/release-build tests additionally cover official CLI receipt identity,
+PE/Mach-O architecture, unchanged staging without backend compilation, restored
+executable permissions, reuse while other platforms are running, rejection of
+foreign tag/commit/run or expired artifacts, and bounded failure/timeout handling.
+Remote orchestration tests inject GitHub responses; they do not initiate jobs,
+read credentials or establish actual GitHub artifact timing.
+
 
 ### CLI self-update progress
 
@@ -786,3 +801,15 @@ is pinned `-text` in .gitattributes. No live executable or Host is replaced.
 `cargo test -p clat --bin clat upgrade_cli:: --locked` verifies CLI line rendering
 and terminal outcomes independently of the core observer. Tests do not download a
 real release or establish remote update acceptance.
+
+### Concurrent first Host startup
+
+`scripts/gates.sh control_storage::sentinel:: session::root_lease::` checks
+new-directory ownership before sentinel publication, zero publication on lease
+failure, and a competing initializer's ability to complete. The three
+`fresh_directory_` contracts fail with publication before the ownership check;
+the lease interleaving is deterministic and adds no sleeps. Unix-only cases
+exercise directory `flock`; Windows retains its stable named-mutex identity.
+The `serve_lifecycle` integration target exercises two real launchers and Host
+readiness. Run it in the isolated Linux container when the local fixed Host port
+is occupied; do not stop the owner's Host to obtain a test result.

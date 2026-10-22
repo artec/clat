@@ -7,13 +7,13 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   plan:
     runs-on: ubuntu-24.04
     outputs:
       cli: ${{ steps.assets.outputs.cli }}
-      desktop: ${{ steps.assets.outputs.desktop }}
     steps:
       - uses: actions/checkout@v5
       - uses: oven-sh/setup-bun@v2
@@ -24,7 +24,6 @@ jobs:
         shell: bash
         run: |
           echo "cli=$(bun desktop/scripts/release.ts matrix --kind cli)" >> "$GITHUB_OUTPUT"
-          echo "desktop=$(bun desktop/scripts/release.ts matrix --kind desktop)" >> "$GITHUB_OUTPUT"
 
   build:
     name: ${{ matrix.target }}
@@ -43,13 +42,16 @@ jobs:
       # 会让升级链与宿主接管（MF-1c 按二进制自报版本比较）全部失真。
       # 版本唯一权威在 Cargo.toml [workspace.package]（发布包继承）。
       - name: Refuse tags that do not match the workspace version
-        if: startsWith(github.ref, 'refs/tags/')
         # shell 必须显式 bash：Windows runner 的 run: 默认 pwsh，
         # bash 参数展开与 [ ] 测试语法在 pwsh 下必炸（v1.4.2 两跑
         # Windows 腿红的真因；首诊误记 autocrlf/sed——那只是并存
         # 的潜在问题，shell 错配才是首死因）。
         shell: bash
         run: |
+          if [[ "$GITHUB_REF" != refs/tags/* ]]; then
+            echo "::error::Select the version tag when manually running Release" >&2
+            exit 1
+          fi
           tag="${GITHUB_REF_NAME#v}"
           # 无 $ 行尾锚 + .* 吞尾：autocrlf checkout 可给行尾添 \r。
           version="$(sed -n 's/^version = "\(.*\)".*/\1/p' Cargo.toml | head -n 1)"
@@ -78,9 +80,45 @@ jobs:
       - uses: Swatinem/rust-cache@v2.9.2
         with:
           key: ${{ matrix.target }}
+          cache-on-failure: true
 
+      - uses: oven-sh/setup-bun@v2
+        if: contains(matrix.target, 'windows') || contains(matrix.target, 'apple-darwin')
+        with:
+          bun-version: 1.3.14
+      - name: Install desktop build tools
+        if: contains(matrix.target, 'windows') || contains(matrix.target, 'apple-darwin')
+        run: bun install --cwd desktop --frozen-lockfile --ignore-scripts
+      - name: Find previous backend from this run
+        id: probe
+        if: contains(matrix.target, 'windows') || contains(matrix.target, 'apple-darwin')
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bun desktop/scripts/backend.ts probe --target ${{ matrix.target }}
+      - name: Download previous backend
+        id: reuse
+        if: steps.probe.outputs.found == 'true'
+        uses: actions/download-artifact@v7
+        with:
+          name: backend-${{ matrix.target }}
+          path: dist-backend
+      - name: Verify and restore previous CLI
+        if: steps.reuse.outcome == 'success'
+        run: bun desktop/scripts/backend.ts restore --target ${{ matrix.target }} --output dist-backend
       - name: Build
+        if: steps.reuse.outcome != 'success'
         run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Record reusable backend
+        if: steps.reuse.outcome != 'success' && (contains(matrix.target, 'windows') || contains(matrix.target, 'apple-darwin'))
+        run: bun desktop/scripts/backend.ts record --target ${{ matrix.target }} --output dist-backend
+      - name: Save reusable CLI before desktop compilation
+        if: steps.reuse.outcome != 'success' && (contains(matrix.target, 'windows') || contains(matrix.target, 'apple-darwin'))
+        uses: actions/upload-artifact@v6
+        with:
+          name: backend-${{ matrix.target }}
+          path: dist-backend/*
+          if-no-files-found: error
 
       - name: Package (windows)
         if: contains(matrix.target, 'windows')
@@ -111,50 +149,29 @@ jobs:
       - uses: actions/upload-artifact@v6
         with:
           name: release-${{ matrix.target }}
+          overwrite: true
           path: clat-${{ github.ref_name }}-${{ matrix.target }}.*
           if-no-files-found: error
 
-  desktop:
-    name: Desktop ${{ matrix.platform }}
-    needs: plan
-    runs-on: ${{ matrix.os }}
-    env:
-      CARGO_BUILD_JOBS: 2
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(needs.plan.outputs.desktop) }}
-    steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 22
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.3.14
-      - uses: Swatinem/rust-cache@v2.9.2
-        with:
-          key: desktop-${{ matrix.target }}
-      - name: Install pinned target
-        shell: bash
-        run: |
-          channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
-          rustup target add --toolchain "$channel" "${{ matrix.target }}"
-      - name: Install build tools
-        run: bun install --cwd desktop --frozen-lockfile --ignore-scripts
-      - name: Build unsigned desktop bundle
-        run: bun desktop/scripts/release.ts build --target ${{ matrix.target }} --release --official
-      - name: Collect typed assets
+      - name: Build Windows desktop using this job's CLI
+        if: contains(matrix.target, 'windows')
+        env:
+          CARGO_BUILD_JOBS: 2
+        run: bun desktop/scripts/release.ts build --target ${{ matrix.target }} --release --official --backend dist-backend
+      - name: Collect Windows desktop assets
+        if: contains(matrix.target, 'windows')
         run: bun desktop/scripts/release.ts package --target ${{ matrix.target }} --output dist-desktop
       - uses: actions/upload-artifact@v6
+        if: contains(matrix.target, 'windows')
         with:
-          name: release-desktop-${{ matrix.platform }}
+          name: release-desktop-${{ matrix.target }}
           path: dist-desktop/*
           if-no-files-found: error
+          overwrite: true
 
   stage-draft:
     name: Stage unsigned draft
-    needs: [build, desktop]
+    needs: [build]
     # 钉版（同 ci.yml 与资产矩阵先例）：ubuntu-latest 将于 2026-10-19
     # 迁往 Ubuntu 26；平台变更须显式验证后再切换，不随 label 漂移。
     runs-on: ubuntu-24.04

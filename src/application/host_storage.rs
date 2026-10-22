@@ -34,7 +34,7 @@ impl HostStorage {
                     "another CLAT process holds this storage root; close it first",
                 )
             })?;
-        initialize(root, authorize)?;
+        initialize(root, authorize, &mut lease)?;
         lease
             .cover_initialized_root(root)
             .map_err(|error| ApplicationError::new(error.to_string()))?;
@@ -132,7 +132,11 @@ impl HostStorage {
     }
 }
 
-fn initialize(root: &Path, authorize: bool) -> Result<(), ApplicationError> {
+fn initialize(
+    root: &Path,
+    authorize: bool,
+    lease: &mut StorageRootLease,
+) -> Result<(), ApplicationError> {
     let status = sentinel::classify(root);
     match &status {
         sentinel::ControlPlaneStatus::Fresh if !authorize => {
@@ -151,7 +155,12 @@ fn initialize(root: &Path, authorize: bool) -> Result<(), ApplicationError> {
         .map_err(|error| ApplicationError::new(error.to_string()))?;
     match status {
         sentinel::ControlPlaneStatus::Fresh => {
-            sentinel::initialize(root).map_err(ApplicationError::new)?;
+            sentinel::initialize_guarded(root, |directory| {
+                lease
+                    .cover_initialized_root(directory)
+                    .map_err(|error| error.to_string())
+            })
+            .map_err(ApplicationError::new)?;
         }
         sentinel::ControlPlaneStatus::LegacySQLite
         | sentinel::ControlPlaneStatus::LegacyConfigOnly => {

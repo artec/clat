@@ -231,7 +231,16 @@ pub(crate) fn project_key(root: &Path) -> String {
 
 /// The Fresh commit protocol（MP-1：写且只写 config.json 哨兵——其余
 /// 一切文件惰性诞生，无两写窗口，故无 PendingCommit 状态）。
+#[cfg(test)]
 pub(crate) fn initialize(root: &Path) -> Result<SentinelConfig, String> {
+    initialize_guarded(root, |_| Ok(()))
+}
+
+/// The caller must own the newly created directory before publishing facts.
+pub(crate) fn initialize_guarded(
+    root: &Path,
+    own_directory: impl FnOnce(&Path) -> Result<(), String>,
+) -> Result<SentinelConfig, String> {
     match classify(root) {
         ControlPlaneStatus::Fresh => {}
         ControlPlaneStatus::Unsupported(reason) | ControlPlaneStatus::Inconsistent(reason) => {
@@ -242,6 +251,7 @@ pub(crate) fn initialize(root: &Path) -> Result<SentinelConfig, String> {
         status => return Err(format!("storage is already initialized ({status:?})")),
     }
     create_root_dir(root)?;
+    own_directory(root)?;
     let config = SentinelConfig::new(Uuid::new_v4().to_string());
     publish_config_fresh(root, &config)?;
     Ok(config)
@@ -599,5 +609,97 @@ mod tests {
             ControlPlaneStatus::LegacySQLite
         ));
         std::fs::remove_dir_all(db_root).unwrap();
+    }
+
+    #[test]
+    fn fresh_directory_ownership_failure_publishes_no_sentinel() {
+        let parent = temp_root("directory-gate-failure");
+        let root = parent.join("storage");
+        let error =
+            initialize_guarded(&root, |_| Err("lost new-directory ownership".into())).unwrap_err();
+        assert_eq!(error, "lost new-directory ownership");
+        assert!(
+            !root.join(CONFIG_NAME).exists(),
+            "ownership failure must precede durable publication"
+        );
+        assert!(
+            std::fs::read_dir(&root).unwrap().next().is_none(),
+            "no temporary control facts"
+        );
+        std::fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fresh_directory_race_leaves_one_initializer_able_to_publish() {
+        let parent = temp_root("directory-gate-race");
+        let root = parent.join("storage");
+        let mut first = crate::session::root_lease::try_acquire(&root)
+            .unwrap()
+            .unwrap();
+        let mut winner = None;
+        let error = initialize_guarded(&root, |directory| {
+            // Fix the interleaving: the second process acquires the new directory
+            // while the first initializer still holds its existing ancestor.
+            winner =
+                crate::session::root_lease::try_acquire(directory).map_err(|e| e.to_string())?;
+            assert!(winner.is_some());
+            first
+                .cover_initialized_root(directory)
+                .map_err(|e| e.to_string())
+        })
+        .unwrap_err();
+        assert!(error.contains("another CLAT process acquired"));
+        assert!(
+            !root.join(CONFIG_NAME).exists(),
+            "the losing initializer cannot strand a published sentinel"
+        );
+        drop(first);
+        let mut winner = winner.unwrap();
+        initialize_guarded(&root, |directory| {
+            winner
+                .cover_initialized_root(directory)
+                .map_err(|e| e.to_string())
+        })
+        .unwrap();
+        assert!(classify(&root).is_ready());
+        assert!(
+            crate::session::root_lease::try_acquire(&root)
+                .unwrap()
+                .is_none()
+        );
+        drop(winner);
+        std::fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fresh_directory_is_leased_before_publication_and_until_owner_closes() {
+        let parent = temp_root("directory-gate-success");
+        let root = parent.join("storage");
+        let mut owner = crate::session::root_lease::try_acquire(&root)
+            .unwrap()
+            .unwrap();
+        initialize_guarded(&root, |directory| {
+            assert!(directory.is_dir());
+            assert!(!directory.join(CONFIG_NAME).exists());
+            owner
+                .cover_initialized_root(directory)
+                .map_err(|e| e.to_string())
+        })
+        .unwrap();
+        assert!(classify(&root).is_ready());
+        assert!(
+            crate::session::root_lease::try_acquire(&root)
+                .unwrap()
+                .is_none()
+        );
+        drop(owner);
+        assert!(
+            crate::session::root_lease::try_acquire(&root)
+                .unwrap()
+                .is_some()
+        );
+        std::fs::remove_dir_all(parent).unwrap();
     }
 }

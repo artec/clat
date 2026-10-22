@@ -27,13 +27,32 @@ does not run production signing, notarization, upload or publication. Developmen
 mode uses embedded pages rather than widening native bridge origins for a dev
 server. Its strict development-backend identity checks remain in force.
 
-The owner release flow is still **push the reviewed signed tag → wait for CI →
-`./publish`**. CI builds six CLI targets and four desktop targets natively. The
-single owner command collects them, signs/notarizes locally, verifies all assets,
+The owner release flow is **push the reviewed signed tag → `./publish`**. CI
+builds six CLI targets; each Windows desktop reuses the CLI from its platform job.
+The owner command consumes each macOS CLI artifact as it becomes available and
+builds its desktop App locally while other remote targets continue. It then
+collects the complete CI draft, signs/notarizes locally, verifies all assets,
 uploads to the draft, then publishes. Desktop key password input is hidden and
 automatic; CLI Minisign unlocks once. If upload fails, rerun `./publish`: verified
 local signed files under `dist-release/<tag>/prepared/` are reused. Do not run the
 owner command as a development smoke test.
+
+Formal local builds require a clean worktree at the version tag. Completed
+unsigned and Apple-signed macOS stages are cached by commit and target under
+`dist-release/<tag>/macos/`, with hashes checked before reuse. Signing failures
+retain completed compilation; upload failures retain completed signing. An
+unsigned macOS build does not create a disposable DMG; only the final signed App
+is packaged into the release DMG.
+
+Reusable backend artifacts are bound to the tag's source commit, version, target
+and Release run, with executable architecture and digest checks. Failed Windows
+desktop jobs can reuse their already-uploaded CLI on retry. Internal backend
+artifacts are not public release assets. `./publish` waits for the complete remote
+Release before upload/publication; failures preserve completed local stages.
+
+Ordinary push/PR Desktop jobs run native clippy/tests without release installers.
+The manual Desktop workflow can select one platform for checking, with an
+optional Windows test installer. Formal Release builds remain tag-driven.
 
 Advanced verification commands:
 

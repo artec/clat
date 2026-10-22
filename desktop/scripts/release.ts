@@ -1,13 +1,14 @@
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { createArchive, safeExtract } from './archive';
+import { sourceCommit, verifyBackend } from './backend';
 import { checksum, DESKTOP, digest, json, ROOT, run, type Runner, withTemp, writeJson, decodeWrapper } from './common';
 
 export interface AssetRecord { os: string; target: string; platform?: string; label?: string }
 export type AssetKind = 'cli' | 'desktop';
 const MATRIX = json<Record<AssetKind, AssetRecord[]>>(join(DESKTOP, 'assets.json'));
-export interface BuildOptions { release?: boolean; official?: boolean }
+export interface BuildOptions { release?: boolean; official?: boolean; appOnly?: boolean; backend?: string; runId?: string }
 
 export class DesktopRelease {
   constructor(readonly root = ROOT, readonly execute: Runner = run) {}
@@ -40,14 +41,23 @@ export class DesktopRelease {
   }
   stageBackend(target: string, options: BuildOptions = {}): void {
     this.records('desktop').find(r => r.target === target) ?? (() => { throw new Error('unsupported desktop target'); })();
-    const args = ['cargo', 'build', '-p', 'clat', '--locked', '--target', target];
-    if (options.release) args.push('--release');
-    this.execute(args, { cwd: this.root, env: this.buildEnv(target, options.official) });
-    const source = join(this.targetDirectory(), target, options.release ? 'release' : 'debug', target.includes('windows') ? 'clat.exe' : 'clat');
+    let source: string;
+    if (options.backend) {
+      if (!options.release || !options.official) throw new Error('prebuilt backend requires an official release build');
+      source = verifyBackend(options.backend, { commit: sourceCommit(this.root, this.execute), version: this.version(), target, runId: options.runId ?? process.env.GITHUB_RUN_ID ?? '' });
+      console.log('✓ 复用已验证的 CLI 后端：' + target);
+    } else {
+      const args = ['cargo', 'build', '-p', 'clat', '--locked', '--target', target];
+      if (options.release) args.push('--release');
+      this.execute(args, { cwd: this.root, env: this.buildEnv(target, options.official) });
+      source = join(this.targetDirectory(), target, options.release ? 'release' : 'debug', target.includes('windows') ? 'clat.exe' : 'clat');
+    }
     const resources = join(this.desktop, 'resources');
     mkdirSync(resources, { recursive: true });
     for (const name of readdirSync(resources).filter(n => n.startsWith('clat-backend'))) unlinkSync(join(resources, name));
-    copyFileSync(source, join(resources, target.includes('windows') ? 'clat-backend.exe' : 'clat-backend'));
+    const staged = join(resources, target.includes('windows') ? 'clat-backend.exe' : 'clat-backend');
+    copyFileSync(source, staged);
+    if (process.platform !== 'win32') chmodSync(staged, 0o755);
     this.backendManifest(resources, target, !!options.official);
   }
   backendManifest(directory: string, target: string, official: boolean): void {
@@ -61,7 +71,7 @@ export class DesktopRelease {
     if (!options.release) args.push('--debug');
     args.push('--', '--locked');
     this.execute(args, { cwd: this.desktop, env: this.buildEnv(target, options.official) });
-    if (target.includes('apple-darwin')) {
+    if (target.includes('apple-darwin') && !options.appOnly) {
       const bundle = join(this.targetDirectory(), target, options.release ? 'release' : 'debug', 'bundle');
       const app = this.single(join(bundle, 'macos'), '.app');
       const arch = target.startsWith('aarch64-') ? 'aarch64' : 'x64';
@@ -82,7 +92,7 @@ export class DesktopRelease {
       this.execute(['hdiutil', 'create', '-volname', 'CLAT Desktop', '-srcfolder', image, '-ov', '-format', 'UDZO', destination]);
     });
   }
-  package(target: string, output: string): void {
+  package(target: string, output: string, appOnly = false): void {
     const record = this.records('desktop').find(r => r.target === target);
     if (!record) throw new Error('unsupported desktop target');
     const bundle = join(this.targetDirectory(), target, 'release/bundle');
@@ -93,9 +103,12 @@ export class DesktopRelease {
       files.push(join(output, stem + '-setup.exe'));
       copyFileSync(this.single(join(bundle, 'nsis'), '.exe'), files[0]!);
     } else {
-      files.push(join(output, stem + '.dmg'), join(output, stem + '.app.tar.gz'));
-      copyFileSync(this.single(join(bundle, 'dmg'), '.dmg'), files[0]!);
-      createArchive(this.single(join(bundle, 'macos'), '.app'), files[1]!);
+      if (!appOnly) {
+        files.push(join(output, stem + '.dmg'));
+        copyFileSync(this.single(join(bundle, 'dmg'), '.dmg'), files[0]!);
+      }
+      files.push(join(output, stem + '.app.tar.gz'));
+      createArchive(this.single(join(bundle, 'macos'), '.app'), files.at(-1)!);
     }
     files.forEach(checksum);
   }
@@ -139,7 +152,9 @@ export class DesktopRelease {
       this.notarize(submission);
       this.execute(['xcrun', 'stapler', 'staple', app]); this.execute(['xcrun', 'stapler', 'validate', app]);
       createArchive(app, archive);
-      const dmg = join(directory, stem + '.dmg'); unlinkSync(dmg); unlinkSync(submission);
+      const dmg = join(directory, stem + '.dmg');
+      if (existsSync(dmg)) unlinkSync(dmg);
+      unlinkSync(submission);
       await this.makeDmg(app, dmg);
       this.execute(['codesign', '--force', '--timestamp', '--sign', identity, dmg]); this.notarize(dmg);
       this.execute(['xcrun', 'stapler', 'staple', dmg]); this.execute(['xcrun', 'stapler', 'validate', dmg]);
@@ -166,14 +181,14 @@ export class DesktopRelease {
     if (!this.execute(['security', 'find-identity', '-v', '-p', 'codesigning']).includes(identity)) throw new Error('configured Developer ID identity is not available');
     await withTemp('clat-desktop-key-check-', async folder => { const probe = join(folder, 'probe'); writeFileSync(probe, 'CLAT Desktop local signing preflight\n'); await this.signFile(probe, tag); });
   }
-  async finalize(directory: string, tag: string): Promise<void> {
+  async finalize(directory: string, tag: string, signedMacos = false): Promise<void> {
     if (tag !== 'v' + this.version()) throw new Error('tag does not match workspace version');
     for (const name of this.names('desktop', tag)) {
       const path = join(directory, name), manifest = path + '.sha256';
       if (!existsSync(path) || !existsSync(manifest) || readFileSync(manifest, 'utf8').split(/\s/)[0] !== digest(path)) throw new Error('missing or mismatched draft asset: ' + name);
     }
     await this.preflightSigning(tag);
-    for (const record of this.records('desktop')) if (record.platform!.startsWith('darwin')) await this.signMacos(directory, record, tag);
+    if (!signedMacos) for (const record of this.records('desktop')) if (record.platform!.startsWith('darwin')) await this.signMacos(directory, record, tag);
     const platforms: Record<string, { url: string; signature: string }> = {};
     for (const record of this.records('desktop')) {
       const suffix = record.platform!.startsWith('darwin') ? '.app.tar.gz' : '-setup.exe';
@@ -192,14 +207,19 @@ export class DesktopRelease {
 export async function releaseMain(args = process.argv.slice(2)): Promise<void> {
   const { positionals, values } = parseArgs({ args, allowPositionals: true, options: {
     kind: { type: 'string', default: 'desktop' }, target: { type: 'string' }, tag: { type: 'string' }, output: { type: 'string', default: join(ROOT, 'dist-desktop') },
-    release: { type: 'boolean' }, official: { type: 'boolean' }, help: { type: 'boolean' },
+    release: { type: 'boolean' }, official: { type: 'boolean' }, ci: { type: 'boolean' }, help: { type: 'boolean' }, backend: { type: 'string' },
   } });
   const release = new DesktopRelease(), command = positionals[0];
-  if (values.help) { console.log('release.ts matrix|names|stage|build|package|finalize [--kind cli|desktop] [--target TARGET] [--release --official]'); return; }
+  if (values.help) { console.log('release.ts matrix|names|stage|build|package|finalize [--kind cli|desktop] [--target TARGET] [--release --official] [matrix: --ci]'); return; }
   if (['stage', 'build', 'package'].includes(command ?? '') && !values.target) throw new Error('--target is required');
   const kind = values.kind as AssetKind, tag = values.tag ?? 'v' + release.version();
   switch (command) {
-    case 'matrix': console.log(JSON.stringify({ include: release.records(kind) })); break;
+    case 'matrix': {
+      const include = release.records(kind).filter(r => (!values.target || values.target === 'all' || r.target === values.target)
+        && (!values.ci || kind !== 'desktop' || r.platform!.startsWith('windows')));
+      if (!include.length) throw new Error('no supported targets selected');
+      console.log(JSON.stringify({ include })); break;
+    }
     case 'names': console.log(release.names(kind, tag).join('\n')); break;
     case 'stage': release.stageBackend(values.target!, values); break;
     case 'build': await release.build(values.target!, values); break;

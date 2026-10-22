@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { checksum, DESKTOP, digest, json, nativeTarget, ROOT } from './common';
 import { OwnerRelease } from './owner-release';
+import { LocalMacos } from './local-macos';
 import { DesktopRelease } from './release';
 import { build, start, startArgs } from './workflow';
 import { fixture, fixtureIndex, generateKey, remote, sign } from './test-support';
@@ -99,10 +100,11 @@ test('manifest binds exact filename and bytes', async () => {
     }
   });
 });
-test.skipIf(process.platform !== 'darwin')('partial draft fails before asking password or signing', async () => {
+test.skipIf(process.platform !== 'darwin')('invalid source fails before asking password or signing', async () => {
   await fixture(async (release, owner) => {
     await withoutLock(owner); spyOn(owner, 'draft').mockReturnValue({ ...remote(owner), assets: [] });
-    const signing = spyOn(release, 'finalize'); await expect(owner.prepare()).rejects.toThrow('CI'); expect(signing).not.toHaveBeenCalled();
+    spyOn(LocalMacos.prototype, 'source').mockImplementation(() => { throw new Error('source mismatch'); });
+    const signing = spyOn(release, 'finalize'); await expect(owner.prepare()).rejects.toThrow('source mismatch'); expect(signing).not.toHaveBeenCalled();
   });
 });
 test('changed remote bytes block publication', async () => {

@@ -59,6 +59,7 @@ docs/tui/
 /desktop/scripts/__pycache__/
 
 /dist-release/
+/dist-backend/
 
 # Playwright e2e local run artifacts (desktop shell spec)
 test-results/

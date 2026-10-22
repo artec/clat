@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { json, ROOT } from './common';
 
-type Step = { uses?: string; run?: string; name?: string; with?: Record<string, string | number> };
+type Step = { uses?: string; run?: string; name?: string; if?: string; with?: Record<string, string | number | boolean> };
 type Workflow = { jobs: Record<string, { steps?: Step[] }> };
 function source(path: string): string { return readFileSync(join(ROOT, path), 'utf8').replaceAll('\r\n', '\n'); }
 function workflow(path: string): Workflow { return Bun.YAML.parse(source(path)) as Workflow; }
@@ -19,7 +19,7 @@ test('CI and Docker share the pinned Bun runtime before desktop tooling', () => 
   pinnedBefore(desktop.jobs.plan!.steps!, 'release.ts matrix');
   pinnedBefore(release.jobs.plan!.steps!, 'release.ts matrix');
   pinnedBefore(desktop.jobs.native!.steps!, 'bun install');
-  pinnedBefore(release.jobs.desktop!.steps!, 'bun install');
+  pinnedBefore(release.jobs.build!.steps!, 'bun install');
   pinnedBefore(workflow('.github/workflows/ci.yml').jobs.check!.steps!, 'scripts/gates.sh');
   expect(source('scripts/ci-box/Dockerfile')).toContain('npm install --global bun@1.3.14');
   const gates = source('scripts/gates.sh'); expect(gates).toContain('bun test desktop/scripts --timeout 60000'); expect(gates).toContain('typescript/bin/tsc');
@@ -33,4 +33,36 @@ test('desktop has one Bun lockfile and all tool dependencies stay development-on
   expect(root.packageManager).toBe('bun@1.3.14'); expect(desktop.packageManager).toBe('bun@1.3.14'); expect(desktop.dependencies).toBeUndefined();
   expect(existsSync(join(ROOT, 'desktop/bun.lock'))).toBe(true); expect(existsSync(join(ROOT, 'desktop/package-lock.json'))).toBe(false);
   for (const [name, version] of Object.entries(desktop.devDependencies)) expect(source('desktop/bun.lock')).toContain(`"${name}": "${version}"`);
+});
+test('ordinary desktop pushes check native code without producing release installers', () => {
+  const desktop = workflow('.github/workflows/desktop.yml');
+  const steps = desktop.jobs.native!.steps!;
+  const commands = steps.filter(s => !s.if).map(s => s.run ?? '').join('\n');
+  expect(commands).toContain('cargo test -p clat-desktop');
+  expect(commands).not.toContain('release.ts build');
+  expect(commands).not.toContain('release.ts package');
+  expect(desktop.jobs.native!.steps!.find(s => s.uses?.startsWith('Swatinem/rust-cache'))!.with!['cache-on-failure']).toBe(true);
+  for (const step of steps.filter(s => s.run?.includes('release.ts build') || s.run?.includes('release.ts package'))) {
+    expect(step.if).toContain("github.event_name == 'workflow_dispatch'");
+    expect(step.if).toContain('inputs.installer');
+    expect(step.if).toContain("startsWith(matrix.platform, 'windows')");
+  }
+});
+test('formal CI builds Windows desktops in CLI jobs; macOS is owner-built', () => {
+  const release = workflow('.github/workflows/release.yml');
+  const builds = release.jobs.build!.steps!.filter(s => s.run?.includes('release.ts build'));
+  expect(builds).toHaveLength(1);
+  expect(builds[0]!.if).toContain("contains(matrix.target, 'windows')");
+  expect(source('.github/workflows/desktop.yml')).toContain('cancel-in-progress: true');
+});
+test('Windows installer consumes the CLI built in its own platform job', () => {
+  const release = workflow('.github/workflows/release.yml');
+  expect(release.jobs.desktop).toBeUndefined();
+  const steps = release.jobs.build!.steps!;
+  const cli = steps.findIndex(s => s.run?.includes('cargo build --release'));
+  const receipt = steps.findIndex(s => s.run?.includes('backend.ts record'));
+  const installer = steps.findIndex(s => s.run?.includes('release.ts build'));
+  expect(receipt).toBeGreaterThan(cli); expect(installer).toBeGreaterThan(receipt);
+  expect(steps[installer]!.run).toContain('--backend dist-backend');
+  expect(steps[installer]!.if).toContain("contains(matrix.target, 'windows')");
 });
