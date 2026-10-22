@@ -100,16 +100,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-latest
+          - os: macos-15
             target: aarch64-apple-darwin
             measure: true
-          - os: macos-latest
+          - os: macos-15-intel
             target: x86_64-apple-darwin
             measure: false
-          - os: windows-latest
+          - os: windows-2022
             target: x86_64-pc-windows-msvc
             measure: true
-          - os: windows-latest
+          - os: windows-11-arm
             target: aarch64-pc-windows-msvc
             measure: false
           - os: ubuntu-24.04
@@ -124,7 +124,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2.9.2
       # I4（2026-10-05，登记簿在案）：rust-toolchain.toml 钉版后，
       # cargo 经 rustup 代理用钉版工具链；dtolnay 的 targets 装进
       # stable 而非钉版 channel，交叉目标须显式补装（release.yml
@@ -134,14 +133,38 @@ jobs:
         run: |
           channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
           rustup target add --toolchain "$channel" "${{ matrix.target }}"
+      - uses: Swatinem/rust-cache@v2.9.2
+        id: product-cache
+        with:
+          prefix-key: v2-product-release
+          shared-key: product-${{ matrix.target }}
+          # Only successful default-branch runs publish the shared warm cache.
+          save-if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+          cache-on-failure: false
       - name: Compile the complete target surface
         run: cargo check --locked --all-targets --all-features --target ${{ matrix.target }}
       - name: Test authenticated compiler cache
         if: matrix.measure
-        run: cargo test --locked -p clat-wasm-net --lib compiled_cache
+        run: cargo test --locked --target ${{ matrix.target }} -p clat-wasm-net --lib compiled_cache
       - name: Repeated SHA comparison (debug)
         if: matrix.measure
-        run: cargo test --locked -p clat-wasm-net --lib perf_sha_samples -- --ignored --nocapture
+        run: cargo test --locked --target ${{ matrix.target }} -p clat-wasm-net --lib perf_sha_samples -- --ignored --nocapture
       - name: Repeated SHA comparison (release)
         if: matrix.measure
-        run: cargo test --locked --release -p clat-wasm-net --lib perf_sha_samples -- --ignored --nocapture
+        run: cargo test --locked --release --target ${{ matrix.target }} -p clat-wasm-net --lib perf_sha_samples -- --ignored --nocapture
+      # A debug/check build has no release .rlib files. Prepare the expensive
+      # product dependency graph once per compiler/manifest/configuration key,
+      # using the same explicit target and optimization profile as Release.
+      - name: Warm release core dependencies
+        if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && steps.product-cache.outputs.cache-hit != 'true'
+        timeout-minutes: 30
+        env:
+          CLAT_OFFICIAL_RELEASE: '1'
+        run: cargo build -p clat-core --release --locked --target ${{ matrix.target }}
+      - name: Warm release Windows GUI dependencies
+        if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && steps.product-cache.outputs.cache-hit != 'true' && contains(matrix.target, 'windows')
+        timeout-minutes: 30
+        env:
+          CARGO_BUILD_JOBS: 2
+          CLAT_OFFICIAL_RELEASE: '1'
+        run: cargo build -p clat-desktop --release --locked --target ${{ matrix.target }} --features tauri/custom-protocol

@@ -453,6 +453,34 @@ select the version tag, rather than a branch. This parallelizes local desktop
 work with remaining remote builds; it does not remove compilation of the GUI or
 promise a particular cold-build duration.
 
+### Release dependency cache
+
+The six-platform `plugin-performance` CI matrix uses the same native runner
+labels as the release inventory. It and Release use the same rust-cache prefix
+`v2-product-release` and shared key `product-<target>`. Compiler/environment and
+Cargo manifest/lockfile hashes remain enabled; operating systems, architectures,
+toolchains and incompatible flags are not mixed to force a hit. This replaces
+the unrelated job-based cache keys that previously isolated CI from Release.
+
+Only successful default-branch CI runs write this shared cache. On an exact
+cache miss, including configuration changes restored through a fallback, those
+jobs build the optimized core library and, on Windows, the desktop executable
+with `tauri/custom-protocol`. They create no installers or release assets and
+use no signing credentials. Exact hits skip these extra builds. Existing SHA
+checks now use the same explicit target directory as Release, avoiding a second
+host-default release directory. The cache action retains dependency artifacts,
+not workspace binaries; real release code is still compiled and validated.
+
+Tag releases restore the default branch's cache without saving another six
+large copies under each tag. Tags cannot read caches from different tags.
+Initially, let the default-branch CI finish warming before creating the next
+tag. After dependency/toolchain changes, warming may be needed again. If a tag
+starts first, or GitHub evicts the cache, the build still performs an ordinary
+cold compilation; release validation and artifact identity checks are unchanged.
+Source-only pushes with an exact key do not repeatedly warm optimized binaries.
+This reduces repeated dependency work rather than the cost of all linking/LTO;
+actual cache-hit rates and end-to-end savings require remote measurements.
+
 Ordinary Desktop push/PR jobs run clippy and tests on all four native platforms,
 without optimized builds or installer generation. New pushes cancel superseded
 Desktop runs, and Rust caches are saved on failure. For an isolated Windows test

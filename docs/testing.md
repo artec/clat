@@ -452,6 +452,18 @@ with `cargo test -p clat-wasm-net --lib perf_sha_samples -- --ignored --nocaptur
 SHA-256 results. x86 deliberately retains the existing backend. Compilation
 checks and CPU comparisons do not establish host startup or device acceptance.
 
+This matrix also warms shared Release dependencies on default-branch cache
+misses. Native runners, explicit target directories and cache identities match
+the release inventory; PRs and tags do not publish the shared cache. Extra warm
+builds are skipped on exact hits and never package or publish artifacts.
+`bun test desktop/scripts/ci-contract.test.ts desktop/scripts/cache-reuse.test.ts`
+checks that contract and runs a disposable, offline Cargo workspace experiment:
+release-library warming survives a product version bump, while debug artifacts
+remain distinct. The experiment honors `rust-toolchain.toml` and does not use
+the user's target directory. It verifies local Cargo reuse, not GitHub cache
+access or a promised speedup. These cache preparation steps belong to the
+parallel platform jobs; the sequential Linux/container gates stay unchanged.
+
 For an idle local host, with explicit permission to disconnect its frontends,
 `scripts/measure-plugin-startup.py --allow-stop-host --binary before=/absolute/old/clat
 --binary after=/absolute/new/clat --output output/perf1/startup.json` measures five

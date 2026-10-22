@@ -3,8 +3,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { json, ROOT } from './common';
 
-type Step = { uses?: string; run?: string; name?: string; if?: string; with?: Record<string, string | number | boolean> };
-type Workflow = { jobs: Record<string, { steps?: Step[] }> };
+type Step = { uses?: string; run?: string; name?: string; id?: string; if?: string; with?: Record<string, string | number | boolean> };
+type Workflow = { jobs: Record<string, { steps?: Step[]; strategy?: { matrix: { include: { os: string; target: string }[] } } }> };
 function source(path: string): string { return readFileSync(join(ROOT, path), 'utf8').replaceAll('\r\n', '\n'); }
 function workflow(path: string): Workflow { return Bun.YAML.parse(source(path)) as Workflow; }
 function pinnedBefore(steps: Step[], command: string): void {
@@ -65,4 +65,43 @@ test('Windows installer consumes the CLI built in its own platform job', () => {
   expect(receipt).toBeGreaterThan(cli); expect(installer).toBeGreaterThan(receipt);
   expect(steps[installer]!.run).toContain('--backend dist-backend');
   expect(steps[installer]!.if).toContain("contains(matrix.target, 'windows')");
+});
+test('main CI and Release share native runners and dependency cache identities', () => {
+  const ci = workflow('.github/workflows/ci.yml').jobs['plugin-performance']!;
+  const release = workflow('.github/workflows/release.yml').jobs.build!;
+  const assets = json<{ cli: { os: string; target: string }[] }>(join(ROOT, 'desktop/assets.json'));
+  expect(ci.strategy!.matrix.include.map(({ os, target }) => ({ os, target }))).toEqual(assets.cli);
+  const cache = (steps: Step[]) => steps.find(s => s.uses === 'Swatinem/rust-cache@v2.9.2')!;
+  const warm = cache(ci.steps!), consume = cache(release.steps!);
+  expect(warm.with!['shared-key']).toBe('product-${{ matrix.target }}');
+  expect(consume.with!['shared-key']).toBe(warm.with!['shared-key']);
+  expect(consume.with!['prefix-key']).toBe(warm.with!['prefix-key']);
+  expect(warm.with!['prefix-key']).toBe('v2-product-release');
+  expect(warm.with!['save-if']).toContain('github.event.repository.default_branch');
+  expect(consume.with!['save-if']).toBe(false);
+  expect(warm.with!['cache-on-failure']).toBe(false);
+  for (const cache of [warm, consume]) {
+    expect(cache.with!['add-rust-environment-hash-key']).not.toBe(false);
+    expect(cache.with!['cache-workspace-crates']).not.toBe(true);
+  }
+});
+test('release dependency warming is bounded to main cache misses without packaging', () => {
+  const steps = workflow('.github/workflows/ci.yml').jobs['plugin-performance']!.steps!;
+  const warm = steps.filter(s => s.name?.startsWith('Warm release'));
+  expect(warm).toHaveLength(2);
+  for (const step of warm) {
+    expect(step.if).toContain('github.event.repository.default_branch');
+    expect(step.if).toContain("steps.product-cache.outputs.cache-hit != 'true'");
+    expect(step.run).toContain('--release --locked --target ${{ matrix.target }}');
+    expect(step.run).not.toMatch(/release\.ts|\bpackage\b|\bpublish\b|tauri\.js/);
+  }
+  expect(warm[0]!.run).toContain('-p clat-core');
+  expect(warm[1]!.run).toContain('-p clat-desktop');
+  expect(warm[1]!.run).toContain('--features tauri/custom-protocol');
+  expect(warm[1]!.if).toContain("contains(matrix.target, 'windows')");
+  const pinned = steps.findIndex(s => s.name === 'Add the pinned toolchain cross target');
+  expect(steps.findIndex(s => s.id === 'product-cache')).toBeGreaterThan(pinned);
+  for (const step of steps.filter(s => s.name?.startsWith('Repeated SHA') || s.name === 'Test authenticated compiler cache')) {
+    expect(step.run).toContain('--target ${{ matrix.target }}');
+  }
 });
