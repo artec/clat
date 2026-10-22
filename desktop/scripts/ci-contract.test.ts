@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { json, ROOT } from './common';
 
 type Step = { uses?: string; run?: string; name?: string; id?: string; if?: string; with?: Record<string, string | number | boolean> };
-type Workflow = { jobs: Record<string, { steps?: Step[]; strategy?: { matrix: { include: { os: string; target: string }[] } } }> };
+type Workflow = { jobs: Record<string, { if?: string; needs?: string | string[]; env?: Record<string, string>; outputs?: Record<string, string>; steps?: Step[]; strategy?: { matrix: { include: { os: string; target: string }[] } } }> };
 function source(path: string): string { return readFileSync(join(ROOT, path), 'utf8').replaceAll('\r\n', '\n'); }
 function workflow(path: string): Workflow { return Bun.YAML.parse(source(path)) as Workflow; }
 function pinnedBefore(steps: Step[], command: string): void {
@@ -34,15 +34,24 @@ test('desktop has one Bun lockfile and all tool dependencies stay development-on
   expect(existsSync(join(ROOT, 'desktop/bun.lock'))).toBe(true); expect(existsSync(join(ROOT, 'desktop/package-lock.json'))).toBe(false);
   for (const [name, version] of Object.entries(desktop.devDependencies)) expect(source('desktop/bun.lock')).toContain(`"${name}": "${version}"`);
 });
-test('ordinary desktop pushes check native code without producing release installers', () => {
+test('ordinary desktop pushes check native code once in CI without producing release installers', () => {
   const desktop = workflow('.github/workflows/desktop.yml');
-  const steps = desktop.jobs.native!.steps!;
+  const ci = workflow('.github/workflows/ci.yml').jobs['plugin-performance']!;
+  const steps = ci.steps!;
   const commands = steps.filter(s => !s.if).map(s => s.run ?? '').join('\n');
-  expect(commands).toContain('cargo test -p clat-desktop');
   expect(commands).not.toContain('release.ts build');
   expect(commands).not.toContain('release.ts package');
-  expect(desktop.jobs.native!.steps!.find(s => s.uses?.startsWith('Swatinem/rust-cache'))!.with!['cache-on-failure']).toBe(true);
-  for (const step of steps.filter(s => s.run?.includes('release.ts build') || s.run?.includes('release.ts package'))) {
+  expect(desktop.jobs.native!.if).toBe("github.event_name == 'workflow_dispatch'");
+  expect(ci.needs).toContain('desktop-plan');
+  for (const command of ['cargo clippy -p clat-desktop', 'cargo test -p clat-desktop']) {
+    const check = steps.find(s => s.run?.startsWith(command))!;
+    expect(check).toBeDefined();
+    expect(check.if).toContain("needs.desktop-plan.outputs.native == 'true'");
+    expect(check.if).toContain("contains(matrix.target, 'apple-darwin') || contains(matrix.target, 'windows')");
+    expect(check.run).toContain('--locked'); expect(check.run).toContain('--target ${{ matrix.target }}');
+    expect(check.run!.trim().split('\n')).toHaveLength(1);
+  }
+  for (const step of desktop.jobs.native!.steps!.filter(s => s.run?.includes('release.ts build') || s.run?.includes('release.ts package'))) {
     expect(step.if).toContain("github.event_name == 'workflow_dispatch'");
     expect(step.if).toContain('inputs.installer');
     expect(step.if).toContain("startsWith(matrix.platform, 'windows')");
@@ -76,8 +85,9 @@ test('main CI and Release share native runners and dependency cache identities',
   expect(warm.with!['shared-key']).toBe('product-${{ matrix.target }}');
   expect(consume.with!['shared-key']).toBe(warm.with!['shared-key']);
   expect(consume.with!['prefix-key']).toBe(warm.with!['prefix-key']);
-  expect(warm.with!['prefix-key']).toBe('v2-product-release');
+  expect(warm.with!['prefix-key']).toBe('v3-product-native');
   expect(warm.with!['save-if']).toContain('github.event.repository.default_branch');
+  expect(warm.with!['save-if']).toContain("needs.desktop-plan.outputs.native == 'true'");
   expect(consume.with!['save-if']).toBe(false);
   expect(warm.with!['cache-on-failure']).toBe(false);
   for (const cache of [warm, consume]) {
@@ -91,6 +101,7 @@ test('release dependency warming is bounded to main cache misses without packagi
   expect(warm).toHaveLength(2);
   for (const step of warm) {
     expect(step.if).toContain('github.event.repository.default_branch');
+    expect(step.if).toContain("needs.desktop-plan.outputs.native == 'true'");
     expect(step.if).toContain("steps.product-cache.outputs.cache-hit != 'true'");
     expect(step.run).toContain('--release --locked --target ${{ matrix.target }}');
     expect(step.run).not.toMatch(/release\.ts|\bpackage\b|\bpublish\b|tauri\.js/);
@@ -104,4 +115,56 @@ test('release dependency warming is bounded to main cache misses without packagi
   for (const step of steps.filter(s => s.name?.startsWith('Repeated SHA') || s.name === 'Test authenticated compiler cache')) {
     expect(step.run).toContain('--target ${{ matrix.target }}');
   }
+});
+test('only the four desktop platforms use shared Release caches and extra warming', () => {
+  const ci = workflow('.github/workflows/ci.yml').jobs['plugin-performance']!;
+  const release = workflow('.github/workflows/release.yml').jobs.build!;
+  const predicate = "contains(matrix.target, 'apple-darwin') || contains(matrix.target, 'windows')";
+  for (const job of [ci, release]) {
+    const caches = job.steps!.filter(s => s.with?.['prefix-key'] === 'v3-product-native');
+    expect(caches).toHaveLength(1); expect(caches[0]!.if).toContain(predicate);
+  }
+  const coreWarm = ci.steps!.find(s => s.name === 'Warm release core dependencies')!;
+  expect(coreWarm.if).toContain(predicate);
+  expect(ci.strategy!.matrix.include.filter(r => r.target.includes('unknown-linux-gnu'))).toHaveLength(2);
+  expect(ci.steps!.find(s => s.name === 'Compile the complete target surface')!.if).toBeUndefined();
+  expect(ci.steps!.find(s => s.name === 'Repeated SHA comparison (release)')!.if).toBe('matrix.measure');
+});
+test('native checking and Release share explicit targets and compact CI profiles with one cache writer', () => {
+  const ci = workflow('.github/workflows/ci.yml').jobs['plugin-performance']!;
+  const manual = workflow('.github/workflows/desktop.yml').jobs.native!;
+  const release = workflow('.github/workflows/release.yml').jobs.build!;
+  const writer = ci.steps!.find(s => s.id === 'product-cache')!;
+  for (const job of [ci, manual, release]) {
+    expect(job.env?.CARGO_PROFILE_DEV_DEBUG).toBe('0');
+    expect(job.env?.CARGO_PROFILE_TEST_DEBUG).toBe('0');
+    const cache = job.steps!.find(s => s.uses === 'Swatinem/rust-cache@v2.9.2')!;
+    expect(cache.with!['prefix-key']).toBe(writer.with!['prefix-key']);
+    expect(cache.with!['shared-key']).toBe(writer.with!['shared-key']);
+    expect(cache.with!['add-rust-environment-hash-key']).not.toBe(false);
+    expect(cache.with!['cache-workspace-crates']).not.toBe(true);
+    if (job !== ci) expect(cache.with!['save-if']).toBe(false);
+    for (const check of job.steps!.filter(s => s.run?.startsWith('cargo clippy -p clat-desktop') || s.run?.startsWith('cargo test -p clat-desktop'))) {
+      expect(check.run).toContain('--target ${{ matrix.target }}');
+      expect(check.run).not.toContain('--release');
+    }
+  }
+  expect(source('Cargo.toml')).not.toContain('[profile.dev]\ndebug = 0');
+});
+test('path planning guards native checks and retains cross-platform tooling without native compilation', () => {
+  const ci = workflow('.github/workflows/ci.yml');
+  const desktop = workflow('.github/workflows/desktop.yml');
+  for (const plan of [ci.jobs['desktop-plan']!, desktop.jobs.plan!]) {
+    expect(plan.outputs!.native).toContain('steps.changes.outputs.native');
+    const checkout = plan.steps!.find(s => s.uses === 'actions/checkout@v5')!;
+    expect(checkout.with!['fetch-depth']).toBe(0);
+    expect(plan.steps!.find(s => s.id === 'changes')!.run).toBe('bun desktop/scripts/check-plan.ts');
+  }
+  const native = ci.jobs['plugin-performance']!.steps!;
+  pinnedBefore(native, 'bun install');
+  const scripts = native.find(s => s.run === 'bun test desktop/scripts --timeout 60000')!;
+  expect(scripts.if).toContain("needs.desktop-plan.outputs.tooling == 'true'");
+  expect(scripts.if).toContain("contains(matrix.target, 'apple-darwin') || contains(matrix.target, 'windows')");
+  expect(desktop.jobs['web-shell']!.if).toContain("needs.plan.outputs.web == 'true'");
+  expect(desktop.jobs.tooling!.if).toContain("needs.plan.outputs.tooling == 'true'");
 });

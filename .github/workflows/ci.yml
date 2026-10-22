@@ -13,6 +13,21 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  desktop-plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      native: ${{ steps.changes.outputs.native }}
+      tooling: ${{ steps.changes.outputs.tooling }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - id: changes
+        run: bun desktop/scripts/check-plan.ts
+
   check:
     name: Format, lint, test
     # 钉版（同 release.yml 先例）：ubuntu-latest 将于 2026-10-19 迁往
@@ -96,6 +111,12 @@ jobs:
 
   plugin-performance:
     name: Plugin performance (${{ matrix.target }})
+    needs: desktop-plan
+    env:
+      # CI needs assertions and real native links, not full variable/type DWARF.
+      # Match Release/manual readers so profile flags do not split cache keys.
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
     strategy:
       fail-fast: false
       matrix:
@@ -124,6 +145,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+          components: clippy
       # I4（2026-10-05，登记簿在案）：rust-toolchain.toml 钉版后，
       # cargo 经 rustup 代理用钉版工具链；dtolnay 的 targets 装进
       # stable 而非钉版 channel，交叉目标须显式补装（release.yml
@@ -135,14 +157,42 @@ jobs:
           rustup target add --toolchain "$channel" "${{ matrix.target }}"
       - uses: Swatinem/rust-cache@v2.9.2
         id: product-cache
+        if: contains(matrix.target, 'apple-darwin') || contains(matrix.target, 'windows')
         with:
-          prefix-key: v2-product-release
+          prefix-key: v3-product-native
           shared-key: product-${{ matrix.target }}
-          # Only successful default-branch runs publish the shared warm cache.
-          save-if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+          # One writer owns native-check AND release dependencies. Script-only
+          # runs must not publish an incomplete immutable cache on a cold key.
+          save-if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && needs.desktop-plan.outputs.native == 'true' }}
           cache-on-failure: false
       - name: Compile the complete target surface
         run: cargo check --locked --all-targets --all-features --target ${{ matrix.target }}
+      # Reuse this job's core dependency graph instead of launching four more
+      # native builds in Desktop. Keep the actual clippy/test commands separate.
+      - name: Clippy desktop
+        if: needs.desktop-plan.outputs.native == 'true' && (contains(matrix.target, 'apple-darwin') || contains(matrix.target, 'windows'))
+        env:
+          CARGO_BUILD_JOBS: 2
+        run: cargo clippy -p clat-desktop --all-targets --locked --target ${{ matrix.target }} -- -D warnings
+      - name: Test desktop
+        if: needs.desktop-plan.outputs.native == 'true' && (contains(matrix.target, 'apple-darwin') || contains(matrix.target, 'windows'))
+        env:
+          CARGO_BUILD_JOBS: 2
+        run: cargo test -p clat-desktop --locked --target ${{ matrix.target }}
+      - uses: actions/setup-node@v5
+        if: needs.desktop-plan.outputs.tooling == 'true' && (contains(matrix.target, 'apple-darwin') || contains(matrix.target, 'windows'))
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+        if: needs.desktop-plan.outputs.tooling == 'true' && (contains(matrix.target, 'apple-darwin') || contains(matrix.target, 'windows'))
+        with:
+          bun-version: 1.3.14
+      - name: Install desktop tooling
+        if: needs.desktop-plan.outputs.tooling == 'true' && (contains(matrix.target, 'apple-darwin') || contains(matrix.target, 'windows'))
+        run: bun install --cwd desktop --frozen-lockfile --ignore-scripts
+      - name: Test desktop tooling on native platforms
+        if: needs.desktop-plan.outputs.tooling == 'true' && (contains(matrix.target, 'apple-darwin') || contains(matrix.target, 'windows'))
+        run: bun test desktop/scripts --timeout 60000
       - name: Test authenticated compiler cache
         if: matrix.measure
         run: cargo test --locked --target ${{ matrix.target }} -p clat-wasm-net --lib compiled_cache
@@ -156,13 +206,13 @@ jobs:
       # product dependency graph once per compiler/manifest/configuration key,
       # using the same explicit target and optimization profile as Release.
       - name: Warm release core dependencies
-        if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && steps.product-cache.outputs.cache-hit != 'true'
+        if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && needs.desktop-plan.outputs.native == 'true' && steps.product-cache.outputs.cache-hit != 'true' && (contains(matrix.target, 'apple-darwin') || contains(matrix.target, 'windows'))
         timeout-minutes: 30
         env:
           CLAT_OFFICIAL_RELEASE: '1'
         run: cargo build -p clat-core --release --locked --target ${{ matrix.target }}
       - name: Warm release Windows GUI dependencies
-        if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && steps.product-cache.outputs.cache-hit != 'true' && contains(matrix.target, 'windows')
+        if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && needs.desktop-plan.outputs.native == 'true' && steps.product-cache.outputs.cache-hit != 'true' && contains(matrix.target, 'windows')
         timeout-minutes: 30
         env:
           CARGO_BUILD_JOBS: 2

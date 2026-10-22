@@ -30,6 +30,10 @@ jobs:
     needs: plan
     env:
       CLAT_OFFICIAL_RELEASE: "1"
+      # Same check-profile flags as the single default-branch cache writer.
+      # Release optimization/LTO are unchanged.
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -78,8 +82,9 @@ jobs:
       # rust-cache 钉 v2.9.2：v2.9.0 起才是 node24 运行时，浮动 @v2
       # 无法保证不回落到 node20 构建并触发弃用警告（与 ci.yml 一致）。
       - uses: Swatinem/rust-cache@v2.9.2
+        if: contains(matrix.target, 'apple-darwin') || contains(matrix.target, 'windows')
         with:
-          prefix-key: v2-product-release
+          prefix-key: v3-product-native
           shared-key: product-${{ matrix.target }}
           # New tags restore the default branch's dependency cache. Do not
           # duplicate six large caches in an isolated scope for every version.

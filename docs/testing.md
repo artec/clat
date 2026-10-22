@@ -452,8 +452,11 @@ with `cargo test -p clat-wasm-net --lib perf_sha_samples -- --ignored --nocaptur
 SHA-256 results. x86 deliberately retains the existing backend. Compilation
 checks and CPU comparisons do not establish host startup or device acceptance.
 
-This matrix also warms shared Release dependencies on default-branch cache
-misses. Native runners, explicit target directories and cache identities match
+The four macOS/Windows targets also warm shared Release dependencies on
+default-branch cache misses. The two Linux targets skip shared-cache restore/save
+and extra warming;
+their existing checks and six-platform release inventory are retained.
+Native runners, explicit target directories and cache identities match
 the release inventory; PRs and tags do not publish the shared cache. Extra warm
 builds are skipped on exact hits and never package or publish artifacts.
 `bun test desktop/scripts/ci-contract.test.ts desktop/scripts/cache-reuse.test.ts`
@@ -733,7 +736,9 @@ CLI/core gates. Run targeted `scripts/gates.sh serve:: host_client:: upgrade::te
 for shared Host/cache/upgrade changes and the architecture boundary test. Desktop
 native checks are `cargo test -p clat-desktop --locked` and
 `cargo clippy -p clat-desktop --all-targets --locked -- -D warnings` on macOS/Windows.
-The dedicated desktop workflow builds all four supported native targets.
+Automatic native verification runs in CI's existing four macOS/Windows platform
+jobs with an explicit `--target`; the dedicated Desktop workflow retains manual
+single-target/all-target native checks and optional Windows test installers.
 
 `bun app:test` covers typed
 assets, archive fencing, version authority, signing environment isolation and
@@ -786,8 +791,29 @@ and signing checks require Minisign and report skips explicitly when unavailable
 macOS-only DMG/owner-platform checks and POSIX flock checks are platform-gated.
 The existing unrelated Python Rust-test fixtures remain in their own domains.
 
-Desktop push/PR checks cover all four native platforms without running optimized
-installer builds. `bun app:test` also verifies this workflow boundary, the
+Desktop push/PR verification covers all four native platforms in CI without a
+second set of native build jobs or installer generation. CI and Desktop use
+`desktop/scripts/check-plan.ts` to classify the complete push or PR merge diff.
+Rust/shared-core, native resources/configuration, toolchain/workflow and unknown
+changes retain native clippy/tests; scripts select tooling, pages select web
+tests, and docs-only changes add no desktop work. Multi-commit pushes, deletion,
+rename and NUL-separated paths are covered; missing/invalid history selects all
+checks. Tooling still runs on all four native platforms when relevant; fast
+Linux tooling/type checks and browser tests stay in Desktop, and the ordinary
+Linux/container and Windows product gates are retained.
+
+Native CI jobs share one target tree/cache for core, desktop and Release
+preparation. Only successful main native-input runs save complete snapshots;
+PRs, script-only runs, manual Desktop checks and Release do not save them.
+`CARGO_PROFILE_DEV_DEBUG=0` / `CARGO_PROFILE_TEST_DEBUG=0` apply only to platform
+CI and matching cache readers. Assertions, overflow checks, optimization and
+local developer profiles are unchanged. The isolated Cargo test exercises real
+linking/reuse and executes assertion/overflow cases, rather than inferring safety
+from workflow text. Validate routing/profiles with
+`bun test desktop/scripts/check-plan.test.ts desktop/scripts/ci-contract.test.ts desktop/scripts/cache-reuse.test.ts`.
+These local contracts do not establish a remote cache hit or a timing result.
+
+`bun app:test` also verifies this workflow boundary, the
 Windows-only formal CI matrix, and local macOS staging contracts: clean/tag-bound
 source, interrupted signing reuse, changed-byte rejection and rejection of source
 changes during a build. Stage tests use disposable files and injected build/sign

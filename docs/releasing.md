@@ -456,22 +456,31 @@ promise a particular cold-build duration.
 ### Release dependency cache
 
 The six-platform `plugin-performance` CI matrix uses the same native runner
-labels as the release inventory. It and Release use the same rust-cache prefix
-`v2-product-release` and shared key `product-<target>`. Compiler/environment and
+labels as the release inventory. Its four macOS/Windows targets and Release use
+the same rust-cache prefix `v3-product-native` and shared key `product-<target>`.
+Compiler/environment and
 Cargo manifest/lockfile hashes remain enabled; operating systems, architectures,
 toolchains and incompatible flags are not mixed to force a hit. This replaces
 the unrelated job-based cache keys that previously isolated CI from Release.
 
-Only successful default-branch CI runs write this shared cache. On an exact
-cache miss, including configuration changes restored through a fallback, those
-jobs build the optimized core library and, on Windows, the desktop executable
+Linux targets skip this shared cache and its extra warming in both CI and Release;
+their CLI builds and existing checks remain enabled. Ordinary Linux test-job
+caches are separate and retain their existing policy. This reserves the shared
+cache capacity for the four desktop targets.
+
+Only successful default-branch CI runs with native input changes write this
+shared cache. Those jobs run desktop clippy/tests and tooling checks on all four
+native platforms before saving; script-only runs cannot publish an incomplete
+immutable snapshot. On an exact cache miss in those native-input runs, including
+configuration changes restored through a fallback, those jobs build the
+optimized core library and, on Windows, the desktop executable
 with `tauri/custom-protocol`. They create no installers or release assets and
 use no signing credentials. Exact hits skip these extra builds. Existing SHA
 checks now use the same explicit target directory as Release, avoiding a second
 host-default release directory. The cache action retains dependency artifacts,
 not workspace binaries; real release code is still compiled and validated.
 
-Tag releases restore the default branch's cache without saving another six
+Tag releases restore the default branch's cache without saving another four
 large copies under each tag. Tags cannot read caches from different tags.
 Initially, let the default-branch CI finish warming before creating the next
 tag. After dependency/toolchain changes, warming may be needed again. If a tag
@@ -481,10 +490,26 @@ Source-only pushes with an exact key do not repeatedly warm optimized binaries.
 This reduces repeated dependency work rather than the cost of all linking/LTO;
 actual cache-hit rates and end-to-end savings require remote measurements.
 
-Ordinary Desktop push/PR jobs run clippy and tests on all four native platforms,
-without optimized builds or installer generation. New pushes cancel superseded
-Desktop runs, and Rust caches are saved on failure. For an isolated Windows test
-installer, use the Desktop workflow's manual Run workflow entry, select a target
+Automatic desktop clippy/tests now run inside CI's existing four macOS/Windows
+platform jobs, using the same explicit target directory and cache as the core
+checks and Release preparation. Desktop no longer starts four duplicate native
+jobs for a push/PR. Its workflow provides web-shell and fast tooling feedback;
+the native entry is manual-only. Both workflows plan from the complete push diff
+or PR base-to-tested-merge diff. Rust/core, native resources/configuration,
+toolchain/workflow and unknown inputs retain all four native checks; webpage-only
+changes select web tests, and script-only changes select tooling (including all
+four native-platform Bun suites in CI). Missing history selects all checks.
+Ordinary Linux and Windows product gates and the six-platform compile/performance
+matrix are unchanged. Native checks do not generate installers.
+
+CI native-platform jobs, manual Desktop checks and Release cache readers agree on
+`CARGO_PROFILE_DEV_DEBUG=0` and `CARGO_PROFILE_TEST_DEBUG=0`. This reduces debug
+metadata and cache/linking overhead; optimization, assertions, overflow checks,
+test selection and local developer profiles are unchanged. A fresh cache generation
+is necessary once after this change; actual savings must be measured remotely.
+Manual checks and tag builds only read the default-branch cache. New pushes cancel
+superseded CI/Desktop runs. For an isolated Windows test installer, use the
+Desktop workflow's manual Run workflow entry, select a target
 and enable `installer`; its artifacts are not formal release inputs. For macOS
 use `bun app:build` locally. Tagged Release builds still require the full formal
 asset inventory before `./publish` makes the draft public. Re-run failed jobs to

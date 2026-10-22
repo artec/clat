@@ -11,11 +11,11 @@ on:
         description: Build unsigned Windows test installer (macOS uses bun app:build locally)
         type: boolean
         default: false
+  # Plan from the complete diff. Workflow-level path lists used to omit shared
+  # core/toolchain inputs; the planner also handles multi-commit pushes/renames.
   push:
     branches: [main]
-    paths: ['package.json', 'publish', 'desktop/**', 'src/host_client/**', 'src/serve/**', 'src/serve.rs', 'src/client_ports.rs', 'web/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/desktop.yml']
   pull_request:
-    paths: ['package.json', 'publish', 'desktop/**', 'src/host_client/**', 'src/serve/**', 'src/serve.rs', 'src/client_ports.rs', 'web/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/desktop.yml']
 permissions:
   contents: read
 concurrency:
@@ -23,6 +23,8 @@ concurrency:
   cancel-in-progress: true
 jobs:
   web-shell:
+    needs: plan
+    if: needs.plan.outputs.web == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
@@ -38,21 +40,45 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       matrix: ${{ steps.assets.outputs.matrix }}
+      native: ${{ steps.changes.outputs.native }}
+      tooling: ${{ steps.changes.outputs.tooling }}
+      web: ${{ steps.changes.outputs.web }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.14
+      - id: changes
+        run: bun desktop/scripts/check-plan.ts
       - run: bun install --cwd desktop --frozen-lockfile --ignore-scripts
       - id: assets
         env:
           DESKTOP_TARGET: ${{ inputs.target || 'all' }}
         run: echo "matrix=$(bun desktop/scripts/release.ts matrix --kind desktop --target "$DESKTOP_TARGET")" >> "$GITHUB_OUTPUT"
+  tooling:
+    needs: plan
+    if: needs.plan.outputs.tooling == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - run: bun install --cwd desktop --frozen-lockfile --ignore-scripts
+      - run: bun test desktop/scripts --timeout 60000
+      - run: bun desktop/node_modules/typescript/bin/tsc --project desktop/tsconfig.json
   native:
+    # Automatic native validation lives in CI's existing platform jobs. This
+    # entry remains available for an explicitly requested standalone check.
+    if: github.event_name == 'workflow_dispatch'
     needs: plan
     runs-on: ${{ matrix.os }}
     env:
-      CARGO_BUILD_JOBS: 2
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
@@ -61,6 +87,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
+          targets: ${{ matrix.target }}
+      - name: Install the pinned native target
+        shell: bash
+        run: |
+          channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
+          rustup target add --toolchain "$channel" "${{ matrix.target }}"
       - uses: actions/setup-node@v5
         with:
           node-version: 22
@@ -69,17 +101,23 @@ jobs:
           bun-version: 1.3.14
       - uses: Swatinem/rust-cache@v2.9.2
         with:
-          key: desktop-${{ matrix.target }}
-          cache-on-failure: true
+          prefix-key: v3-product-native
+          shared-key: product-${{ matrix.target }}
+          save-if: false
       - run: bun install --cwd desktop --frozen-lockfile --ignore-scripts
-      - run: cargo clippy -p clat-desktop --all-targets --locked -- -D warnings
-      - run: cargo test -p clat-desktop --locked
+      - run: cargo clippy -p clat-desktop --all-targets --locked --target ${{ matrix.target }} -- -D warnings
+        env:
+          CARGO_BUILD_JOBS: 2
+      - run: cargo test -p clat-desktop --locked --target ${{ matrix.target }}
+        env:
+          CARGO_BUILD_JOBS: 2
       - run: bun test desktop/scripts --timeout 60000
       - run: bun desktop/node_modules/typescript/bin/tsc --project desktop/tsconfig.json
-      # Push/PR feedback retains all four native faces without release builds.
       # Manual Windows installers are test artifacts, never release inputs.
       - name: Optional Windows test installer
         if: github.event_name == 'workflow_dispatch' && inputs.installer && startsWith(matrix.platform, 'windows')
+        env:
+          CARGO_BUILD_JOBS: 2
         run: |
           bun desktop/scripts/release.ts build --target ${{ matrix.target }} --release --official
           bun desktop/scripts/release.ts package --target ${{ matrix.target }} --output dist-desktop
