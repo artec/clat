@@ -798,6 +798,10 @@ contracts check read-only `--check`, already-current/offline/missing-trust-asset
 paths, rejection before extraction, executable validation, real fixture extraction
 and success only after replacement of a disposable binary. The compressed fixture
 is pinned `-text` in .gitattributes. No live executable or Host is replaced.
+The extraction test also checks gzip framing before invoking the real extractor:
+BSD tar may accept a plain tar mislabeled `.tar.gz`, while GNU tar rejects it.
+The fixture must be genuinely gzip-compressed with the same executable payload;
+Linux container coverage uses GNU tar rather than relying on a macOS-only pass.
 `cargo test -p clat --bin clat upgrade_cli:: --locked` verifies CLI line rendering
 and terminal outcomes independently of the core observer. Tests do not download a
 real release or establish remote update acceptance.

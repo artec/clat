@@ -42,13 +42,14 @@ fn upgrade_bad_signature_never_extracts_or_reports_verified() {
 
 #[test]
 fn upgrade_archive_reports_extraction_before_verified_executable() {
+    let fixture = include_bytes!("../../../tests/fixtures/upgrade-progress.tar.gz");
+    assert!(
+        fixture.starts_with(&[0x1f, 0x8b, 0x08]),
+        "the .tar.gz fixture must contain gzip bytes; permissive tar implementations can hide a mislabeled plain tar"
+    );
     let folder = upgrade_temp("progress-extract");
     let archive = folder.join("clat-test.tar.gz");
-    fs::write(
-        &archive,
-        include_bytes!("../../../tests/fixtures/upgrade-progress.tar.gz"),
-    )
-    .unwrap();
+    fs::write(&archive, fixture).unwrap();
     let mut phases = vec![];
     let binary = prepare_downloaded_asset(
         &asset("clat-test.tar.gz"),
