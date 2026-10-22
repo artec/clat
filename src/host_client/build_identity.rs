@@ -28,6 +28,40 @@ pub(crate) fn current() -> Result<&'static str, String> {
 pub(super) fn verify_advertised(
     description: &serde_json::Value,
 ) -> Result<(), super::discovery::DiscoveryFailure> {
+    verify_for(
+        description,
+        current().map_err(super::discovery::DiscoveryFailure::Incompatible)?,
+        official_release(),
+    )
+}
+
+pub(crate) fn official_release() -> bool {
+    option_env!("CLAT_OFFICIAL_RELEASE") == Some("1")
+}
+
+pub(super) fn verify_for(
+    description: &serde_json::Value,
+    fingerprint: &str,
+    official: bool,
+) -> Result<(), super::discovery::DiscoveryFailure> {
+    if official && description["build_kind"] == "official" {
+        let compatible = description["native_client_compatibility"] == 1
+            && description["capabilities"].as_array().is_some_and(|caps| {
+                ["desktop-workbench-v1", "host.runtime_status"]
+                    .iter()
+                    .all(|cap| caps.iter().any(|v| v == cap))
+            });
+        if !compatible
+            || description["product_version"]
+                .as_str()
+                .is_none_or(|v| semver::Version::parse(v).is_err())
+        {
+            return Err(super::discovery::DiscoveryFailure::Incompatible(
+                "incompatible native host capabilities".into(),
+            ));
+        }
+        return Ok(());
+    }
     let Some(advertised) = description.get("build_fingerprint") else {
         // Additive rollout: hosts predating build fingerprints remain attachable.
         return Ok(());
@@ -37,8 +71,7 @@ pub(super) fn verify_advertised(
             "host build fingerprint is invalid; stop that host explicitly".into(),
         )
     })?;
-    let current = current().map_err(super::discovery::DiscoveryFailure::Incompatible)?;
-    if advertised == current {
+    if advertised == fingerprint {
         return Ok(());
     }
 
@@ -66,9 +99,11 @@ pub(super) fn verify_advertised(
 }
 
 fn compute() -> Result<String, String> {
-    let executable = std::env::current_exe()
-        .map_err(|error| format!("cannot locate this CLAT build: {error}"))?;
-    let metadata = std::fs::metadata(&executable)
+    fingerprint_for(&std::env::current_exe().map_err(|error| error.to_string())?)
+}
+
+pub(super) fn fingerprint_for(executable: &std::path::Path) -> Result<String, String> {
+    let metadata = std::fs::metadata(executable)
         .map_err(|error| format!("cannot inspect this CLAT build: {error}"))?;
     let modified = metadata
         .modified()
@@ -155,5 +190,18 @@ mod tests {
             Err(super::super::discovery::DiscoveryFailure::Incompatible(message))
                 if message.contains("newer CLAT 999.0.0 host")
         ));
+    }
+    #[test]
+    fn official_clients_share_only_declared_compatible_hosts() {
+        let mut description = serde_json::json!({"build_kind":"official", "native_client_compatibility":1,
+            "capabilities":["desktop-workbench-v1","host.runtime_status"],
+            "build_fingerprint":"different", "product_version":product_version()});
+        assert!(verify_for(&description, "client", true).is_ok());
+        assert!(verify_for(&description, "client", false).is_err());
+        description["native_client_compatibility"] = serde_json::json!(2);
+        assert!(verify_for(&description, "client", true).is_err());
+        description["native_client_compatibility"] = serde_json::json!(1);
+        description["capabilities"] = serde_json::json!([]);
+        assert!(verify_for(&description, "client", true).is_err());
     }
 }

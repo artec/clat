@@ -92,8 +92,16 @@ impl HostClient {
             .map_err(DiscoveryFailure::message)
     }
 
+    #[cfg(test)]
     pub(super) fn discover_for_startup(root: &Path) -> Result<StartupDiscovery, String> {
-        match Self::discover_checked(root, BuildMatchPolicy::RequireIfAdvertised) {
+        Self::discover_startup_with(root, BuildMatchPolicy::RequireIfAdvertised)
+    }
+
+    pub(super) fn discover_startup_with(
+        root: &Path,
+        policy: BuildMatchPolicy,
+    ) -> Result<StartupDiscovery, String> {
+        match Self::discover_checked(root, policy) {
             Ok(client) => Ok(StartupDiscovery::Compatible(client)),
             Err(DiscoveryFailure::Unavailable(_)) => Ok(StartupDiscovery::Missing),
             Err(DiscoveryFailure::Upgradeable { host_version }) => {
@@ -107,7 +115,7 @@ impl HostClient {
         Self::discover_checked(root, BuildMatchPolicy::Ignore).map_err(DiscoveryFailure::message)
     }
 
-    fn discover_checked(
+    pub(super) fn discover_checked(
         root: &Path,
         build_policy: BuildMatchPolicy,
     ) -> Result<Self, DiscoveryFailure> {

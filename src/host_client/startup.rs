@@ -26,7 +26,7 @@ impl HostClient {
         ))
     }
 
-    fn browser_url(&self) -> String {
+    pub fn browser_url(&self) -> String {
         let workspace = self
             .prefix
             .strip_prefix("/workspace/")
@@ -47,19 +47,39 @@ impl HostClient {
     }
 
     fn start_or_attach(project: &Project, trust: bool, open: bool) -> Result<Self, String> {
+        let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+        Self::start_with_backend(
+            project,
+            trust,
+            open,
+            &executable,
+            super::BuildMatchPolicy::RequireIfAdvertised,
+        )
+    }
+
+    pub(super) fn start_with_backend(
+        project: &Project,
+        trust: bool,
+        open: bool,
+        executable: &Path,
+        policy: super::BuildMatchPolicy,
+    ) -> Result<Self, String> {
         if Self::project_needs_trust(project)? && !trust {
             return Err("project is not trusted; explicit consent is required".into());
         }
         let root = crate::control_storage::sentinel::default_storage_root()?;
         super::discovery::validate_existing(&root)?;
-        let executable = std::env::current_exe().map_err(|error| error.to_string())?;
         let deadline = Instant::now() + Duration::from_secs(30);
         let mut child = None;
         let mut attempted = false;
         let mut takeover_from = None;
         loop {
-            let host_missing = match Self::discover_for_startup(&root) {
+            let host_missing = match Self::discover_startup_with(&root, policy.clone()) {
                 Ok(super::discovery::StartupDiscovery::Compatible(client)) => {
+                    if !attempted && takeover_from.is_none() && upgrade_idle_compatible(&client)? {
+                        takeover_from = Some("compatible host".into());
+                        continue;
+                    }
                     reap_host_child(child.take());
                     let client = client.open_project(project.root(), trust)?;
                     if attempted && open {
@@ -86,7 +106,7 @@ impl HostClient {
                 if let Some(lease) = lease {
                     ensure_background_port_available()?;
                     drop(lease);
-                    child = Some(spawn_host(&executable, project.root(), trust)?);
+                    child = Some(spawn_host(executable, project.root(), trust)?);
                     attempted = true;
                 }
             }
@@ -115,6 +135,38 @@ impl HostClient {
             }
             std::thread::sleep(Duration::from_millis(100));
         }
+    }
+}
+
+fn upgrade_idle_compatible(client: &HostClient) -> Result<bool, String> {
+    let description = client.description()?;
+    if description["build_kind"] != "official" {
+        return Ok(false);
+    }
+    let version = description["product_version"]
+        .as_str()
+        .ok_or("host version missing")?;
+    if super::build_identity::compare_product_versions(
+        super::build_identity::product_version(),
+        version,
+    )
+    .ok()
+        != Some(std::cmp::Ordering::Greater)
+    {
+        return Ok(false);
+    }
+    if client.runtime_status()?["ready"] != true {
+        return Ok(false);
+    }
+    // The readiness read is advisory. The host rechecks atomically; losing a
+    // race leaves the current host running and the caller attaches normally.
+    match client.call(
+        "host.takeover",
+        &serde_json::json!({"expected_instance_id":client.instance_id(),
+        "replacement_product_version":super::build_identity::product_version()}),
+    ) {
+        Ok(value) => Ok(value["stopping"] == true),
+        Err(_) => Ok(false),
     }
 }
 

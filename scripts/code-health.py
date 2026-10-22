@@ -20,13 +20,15 @@ def main():
     args = parser.parse_args()
     if args.revision:
         paths = subprocess.check_output(
-            ["git", "ls-tree", "-r", "--name-only", args.revision, "src"],
+            ["git", "ls-tree", "-r", "--name-only", args.revision, "src", "desktop/src"],
             cwd=ROOT, text=True).splitlines()
         sources = {p: subprocess.check_output(["git", "show", f"{args.revision}:{p}"],
                                              cwd=ROOT, text=True)
                    for p in paths if p.endswith(".rs")}
     else:
-        sources = {str(p.relative_to(ROOT)): p.read_text() for p in (ROOT / "src").rglob("*.rs")}
+        sources = {str(p.relative_to(ROOT)): p.read_text()
+                   for base in (ROOT / "src", ROOT / "desktop/src")
+                   for p in base.rglob("*.rs")}
     production = {}
     for path, source in sources.items():
         if ("test_support" in path or "tests" in pathlib.Path(path).stem

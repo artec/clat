@@ -24,6 +24,7 @@ mod auth;
 mod http;
 mod models;
 mod next_turn;
+mod notifications;
 mod plugins;
 pub(crate) mod protocol;
 mod questions;
@@ -496,6 +497,7 @@ where
         build_fingerprint,
         Arc::clone(&shutdown),
     );
+    host.pin_runtime()?;
     let shared = host.route("default").expect("default project");
     let app = Arc::clone(&shared.app);
     start_wechat_bridge(&shared, &app, &shutdown, wechat_credentials)?;
@@ -865,6 +867,7 @@ fn handle_connection(mut stream: TcpStream, shared: Arc<state::ServeShared>) {
     match request.method.as_str() {
         "GET" => match request.path.as_str() {
             "/api/events" => sse::handle(&mut stream, &shared),
+            "/api/notifications" => notifications::handle(&mut stream, &shared),
             path => {
                 let _ = write_json(
                     &mut stream,

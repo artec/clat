@@ -164,7 +164,7 @@ session as the artifacts.
 
 Publishing requires:
 
-- a POSIX shell with Bash and the normal repository build toolchain;
+- a POSIX shell with Bash, Bun 1.3.14 and the normal repository build toolchain;
 - `gh`, authenticated as an account allowed to edit releases in `artec/clat`;
 - `minisign`, supporting `-S`, `-R`, and `-V`;
 - the encrypted private key at `.release-secrets/clat-minisign.key`;
@@ -182,8 +182,12 @@ chmod 600 .release-secrets/clat-minisign.key
 ```
 
 Run `./publish` from the repository root on the maintainer-controlled machine.
-The script checks command/key/workflow presence and performs browser login when
-the GitHub CLI credential store is empty.
+The command selects the exact workspace-version draft, checks the complete
+artifact set, and performs browser login when the GitHub CLI credential store is
+empty. The desktop addition does not require a separate publication command.
+`./publish` delegates directly to Bun/TypeScript; desktop build, packaging,
+signing and key-password tools have no Python dependency. Dependencies are
+installed from the single `desktop/bun.lock` with frozen resolution.
 
 ## Private key handling
 
@@ -248,13 +252,22 @@ Run from the maintainer machine:
 
 The script:
 
-1. locates the draft release;
-2. derives the complete expected asset set from the workflow matrix;
+1. selects the draft matching the root Cargo.toml version;
+2. derives the complete expected CLI/desktop set from `desktop/assets.json`;
 3. refuses to continue while an archive or manifest is missing;
-4. downloads manifests;
-5. signs and locally verifies each one;
-6. uploads signatures;
-7. publishes the release only after all signatures succeed.
+4. downloads all archives/manifests and checks exact names and bytes;
+5. signs/notarizes desktop assets locally, creates the signed updater index,
+   then signs all checksum manifests with the CLI key;
+6. verifies both trust roots, version bindings and all four index destinations;
+7. uploads only the expected files, downloads them again to compare with the
+   verified local copies, and publishes only after all checks succeed.
+
+An interrupted upload/publication can be retried with the same `./publish`.
+Verified local files under `dist-release/<tag>/prepared/` are reused, avoiding
+repeat signing/notarization. To intentionally rebuild a prepared version, move
+that version's `prepared/` directory aside first. These local directories are
+Git-ignored and contain release assets, not private keys. A published release is
+never silently edited as though it were still a draft.
 
 If GitHub CLI has no stored credential, the script opens device login and
 copies the one-time code to the clipboard. Inside its child processes it
@@ -339,3 +352,73 @@ Before announcing a release, confirm:
 - a tampered archive, manifest, tag binding, or signature is rejected in test;
 - first-install scripts still verify the SHA-256 manifest;
 - README platform claims match the workflow matrix.
+
+## Desktop-enabled formal releases
+
+From the first desktop release, every formal release includes six CLI targets and
+four desktop targets. `desktop/assets.json` is the typed inventory used by CI and
+`publish`; target strings must never be scraped indiscriminately from workflow
+YAML. Desktop filenames omit full CLI Rust target triples so older CLI selectors
+cannot mistake installers for CLI executables. There is no preview update channel.
+
+The root workspace Cargo.toml remains the only manually maintained version.
+CI marks release builds with CLAT_OFFICIAL_RELEASE=1, stages private backends and
+unsigned desktop bundles, and waits for all CLI/desktop jobs before creating the
+same draft Release. Versioned cache runtimes keep running independently of the
+installation directory. Build tools do not become CLI runtime dependencies.
+
+Before owner-side publication, install desktop build tools with
+`bun install --cwd desktop --frozen-lockfile --ignore-scripts`. The separate desktop private key is
+`.release-secrets/clat-desktop.key`; the compiled public key is `desktop/updater.pub`.
+The initial key has been generated locally with owner-only file permissions.
+Back up the private key securely before distribution. It is never uploaded to CI.
+To protect the existing key without rotating the public key, run
+`bun desktop/scripts/protect-key.ts` in your local interactive terminal.
+The old password is initially empty (press Enter). The script hides password
+input, refuses an empty new password, verifies the unchanged public identity,
+and atomically saves the encrypted Tauri-format key with permissions 0600 only
+after verification. Failure leaves the original key intact. Back up the protected
+key and keep its password separately; losing either prevents future signing.
+
+`./publish` asks for the desktop key password using hidden terminal input;
+Minisign then asks for the CLI key password once for all checksum manifests.
+Passwords never need to be typed into a command or placed in shell history.
+An existing CLAT_DESKTOP_KEY_PASSWORD environment value remains supported.
+
+The desktop signer passes the password through its child environment rather than
+process arguments. Do not reuse another application's Tauri signing variables or
+the CLI Minisign key.
+
+The owner still runs just `./publish` on macOS after pushing the signed tag and
+waiting for CI. No separate Bun release/upload/publish commands are required.
+It downloads and validates
+the complete draft desktop asset set, then finalizes in this order:
+
+1. Sign each nested backend using the local Developer ID Application identity and
+   backend-only WASM/JIT entitlements; refresh its post-signing digest manifest.
+2. Sign the App with hardened runtime, notarize it and staple/validate its ticket.
+3. Build the final DMG with the App and Applications shortcut, sign/notarize it,
+   then staple/validate it. Make updater archives from the stapled App.
+4. Sign Windows installers and macOS updater archives with the independent desktop
+   key and an explicit signed app version; verify signatures locally.
+5. Generate/sign `desktop-latest.json`, recalculate final checksums, sign checksum
+   manifests with the existing CLI release root, then upload and publish together.
+
+The available local identity is `Developer ID Application: Artec Inc. (VJUBRKV7K9)`.
+APPLE_SIGNING_IDENTITY can select another authorized identity. CLAT_NOTARY_PROFILE
+uses a Keychain notarytool profile; otherwise the finalizer accepts the existing
+APPLE_ID, APPLE_TEAM_ID and APPLE_APP_SPECIFIC_PASSWORD/APPLE_PASSWORD environment
+configuration. Arguments containing secrets are not logged. Build subprocesses
+strip inherited Apple/Tauri signing variables; only the explicit local finalizer
+performs production signing. Never finalize partially built releases.
+The finalizer preflights tools, the local certificate, notarization configuration
+and the desktop key pair before modifying artifacts. DMGs use a simple
+App/Applications layout produced by hdiutil, without Finder automation.
+
+Windows initially uses per-user NSIS installers without Authenticode. All desktop
+updates still require signatures. The updater validates a signed, version-fixed
+index, exact repository/platform URLs and signed package versions, with downgrades
+disabled. CLI `clat upgrade` only selects CLI assets and retains its existing trust
+root. Desktop and CLI installation/update actions are independent; release versions
+and batches are shared. Private-key loss requires a manual recovery install; key
+rotation requires a transition release signed by the old trusted key.

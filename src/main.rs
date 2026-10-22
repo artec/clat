@@ -18,6 +18,9 @@ const TAGLINE: &str = "command-line agent";
 #[path = "cli/host.rs"]
 mod host_cli;
 use host_cli::run_host_command;
+#[path = "cli/upgrade.rs"]
+mod upgrade_cli;
+use upgrade_cli::run_upgrade;
 
 fn main() -> ExitCode {
     #[cfg(windows)]
@@ -461,34 +464,6 @@ fn run_demo() -> ExitCode {
         }
         Err(error) => {
             eprintln!("clat: {error}");
-            ExitCode::FAILURE
-        }
-    }
-}
-
-/// `clat upgrade [--check]`：检查并安装 GitHub 最新 release。
-/// `--check` 只报告不安装；已是最新输出提示并以 0 退出。
-fn run_upgrade(check_only: bool) -> ExitCode {
-    use clat::upgrade::UpgradeOutcome;
-    match clat::upgrade::upgrade(check_only) {
-        Ok(UpgradeOutcome::UpToDate { latest }) => {
-            println!(
-                "{NAME} {} is up to date (latest release {latest})",
-                env!("CARGO_PKG_VERSION")
-            );
-            ExitCode::SUCCESS
-        }
-        Ok(UpgradeOutcome::Available { tag }) => {
-            println!("{NAME} {} → {tag} available", env!("CARGO_PKG_VERSION"));
-            println!("Run `clat upgrade` to install {tag}.");
-            ExitCode::SUCCESS
-        }
-        Ok(UpgradeOutcome::Installed { tag }) => {
-            println!("{NAME} upgraded to {tag}");
-            ExitCode::SUCCESS
-        }
-        Err(error) => {
-            eprintln!("clat: upgrade failed: {error}");
             ExitCode::FAILURE
         }
     }

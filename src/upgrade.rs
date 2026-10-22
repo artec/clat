@@ -15,6 +15,10 @@ use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use ureq::Agent;
 
+mod download;
+mod progress;
+pub use progress::{UpgradeProgress, upgrade, upgrade_with_progress};
+
 const RELEASE_PUBLIC_KEY_FILE: &str = include_str!("../release/minisign.pub");
 const MAX_CHECKSUM_BYTES: usize = 4 * 1024;
 const MAX_SIGNATURE_BYTES: usize = 16 * 1024;
@@ -154,15 +158,24 @@ fn parse_release(body: &str) -> Result<Release, String> {
 /// 可执行资产，排除。
 pub fn select_asset(assets: &[ReleaseAsset]) -> Option<&ReleaseAsset> {
     let triple = target_triple();
-    let matches = assets.iter().filter(|asset| {
-        asset.name.contains(triple)
-            && !asset.name.ends_with(".sha256")
-            && !asset.name.ends_with(".minisig")
-    });
+    let matches = assets
+        .iter()
+        .filter(|asset| cli_asset_matches(&asset.name, triple));
     matches
         .clone()
         .find(|asset| is_bare_binary(&asset.name))
         .or_else(|| matches.into_iter().next())
+}
+
+fn cli_asset_matches(name: &str, triple: &str) -> bool {
+    let Some(rest) = name.strip_prefix("clat-v") else {
+        return false;
+    };
+    let Some((version, suffix)) = rest.split_once(&format!("-{triple}")) else {
+        return false;
+    };
+    semver::Version::parse(version).is_ok()
+        && matches!(suffix, "" | ".exe" | ".tar.gz" | ".tgz" | ".zip")
 }
 
 fn is_bare_binary(name: &str) -> bool {
@@ -344,149 +357,6 @@ fn verify_executable_file(path: &Path) -> Result<(), String> {
         ));
     }
     Ok(())
-}
-
-/// 下载资产到临时文件；压缩包用系统 `tar`/`unzip` 解出二进制。
-/// 返回待安装二进制的临时路径。
-///
-/// 完整性（A-10）：
-/// - URL 主机必须在 GitHub 白名单内（防元数据被篡改后拉取任意站）；
-/// - `{asset}.sha256` 及其 `.minisig` 签名均为必需资产；先用内置公钥
-///   验签清单，再按清单核对 SHA-256，任一步失败都中止；
-/// - 解包前验证所有 entry 路径，解包后拒绝任意符号链接；
-/// - 替换前验证产物带可执行魔数（ELF/Mach-O/PE）。
-fn download_asset(
-    asset: &ReleaseAsset,
-    checksum_asset: &ReleaseAsset,
-    signature_asset: &ReleaseAsset,
-    work_dir: &Path,
-    release_tag: &str,
-) -> Result<PathBuf, String> {
-    validate_asset_name(&asset.name)?;
-    validate_asset_name(&checksum_asset.name)?;
-    validate_asset_name(&signature_asset.name)?;
-    if !is_allowed_download_host(&asset.url) {
-        let url = &asset.url;
-        return Err(format!(
-            "download {}: host not in the GitHub allowlist ({url})",
-            asset.name
-        ));
-    }
-    let response = agent()
-        .get(&asset.url)
-        .header("User-Agent", format!("clat/{}", env!("CARGO_PKG_VERSION")))
-        .call()
-        .map_err(|error| format!("download {}: {error}", asset.name))?;
-    if !response.status().is_success() {
-        return Err(format!(
-            "download {}: HTTP {}",
-            asset.name,
-            response.status()
-        ));
-    }
-    // FP-07：Content-Length 早期 sanity（仅 sanity——真实上限由读取
-    // 时的累计帽执行，分块传输/无长度头不受骗）。
-    const MAX_ASSET_BYTES: u64 = 256 * 1024 * 1024;
-    if response
-        .headers()
-        .get("Content-Length")
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<u64>().ok())
-        .is_some_and(|length| length > MAX_ASSET_BYTES)
-    {
-        return Err(format!(
-            "download {}: asset larger than {MAX_ASSET_BYTES} bytes",
-            asset.name
-        ));
-    }
-    // FP-07：流式下载到 work_dir + 增量哈希——签名/哈希保护完整性，
-    // 不保护 pre-verification 资源消耗；旧实现 read_to_end 全量入内存
-    // 后才发现哈希不匹配，被攻陷 CDN 可先 OOM 再谈验签。
-    let slot = if is_bare_binary(&asset.name) {
-        work_dir.join("clat-download")
-    } else {
-        work_dir.join(&asset.name)
-    };
-    let mut file = fs::File::create(&slot)
-        .map_err(|error| format!("stage download {}: {error}", asset.name))?;
-    let (_, mut body) = response.into_parts();
-    let actual =
-        match stream_body_to_file(body.as_reader(), &mut file, MAX_ASSET_BYTES, &asset.name) {
-            Ok(hash) => hash,
-            Err(error) => {
-                let _ = fs::remove_file(&slot);
-                return Err(error);
-            }
-        };
-    drop(file);
-
-    // 哈希校验文件是发布契约的一部分；缺失由调用方在下载前拒绝。
-    verify_checksum(
-        checksum_asset,
-        signature_asset,
-        &actual,
-        &asset.name,
-        release_tag,
-    )?;
-
-    if is_bare_binary(&asset.name) {
-        verify_executable_file(&slot)?;
-        return Ok(slot);
-    }
-
-    // 压缩资产：已流式落盘（slot 即 archive），用系统工具解包。zip 在
-    // Windows 上用系统自带的 bsdtar（Windows 10+ 预装，可解 zip），
-    // Unix 上用 unzip。
-    let archive = slot;
-    validate_archive(&archive, &asset.name)?;
-    let output = if asset.name.ends_with(".zip") && !cfg!(windows) {
-        Command::new("unzip")
-            .arg("-o")
-            .arg(&archive)
-            .arg("-d")
-            .arg(work_dir)
-            .output()
-    } else if asset.name.ends_with(".zip") {
-        Command::new("tar")
-            .arg("-xf")
-            .arg(&archive)
-            .arg("-C")
-            .arg(work_dir)
-            .output()
-    } else {
-        Command::new("tar")
-            .arg("-xzf")
-            .arg(&archive)
-            .arg("-C")
-            .arg(work_dir)
-            .output()
-    }
-    .map_err(|error| format!("launch extractor for {}: {error}", asset.name))?;
-    if !output.status.success() {
-        return Err(format!(
-            "extract {}: {}",
-            asset.name,
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    reject_extracted_links(work_dir)?;
-    // 解包后的二进制叫 clat / clat.exe，或与资产同名去扩展名。
-    // 符号链接一律拒绝：压缩包可携带指向任意目标的链接。
-    let stem = asset.name.split('.').next().unwrap_or("clat");
-    for candidate in ["clat.exe", "clat", stem] {
-        let path = work_dir.join(candidate);
-        let is_regular_file = fs::symlink_metadata(&path)
-            .map(|metadata| metadata.is_file())
-            .unwrap_or(false);
-        if is_regular_file {
-            verify_executable_file(&path)?;
-            return Ok(path);
-        }
-    }
-    Err(format!(
-        "extract {}: binary not found in archive",
-        asset.name
-    ))
 }
 
 /// FP-07：流式下载到文件 + 增量 SHA-256（64KiB 块 + 累计字节帽）。
@@ -918,86 +788,6 @@ pub enum UpgradeOutcome {
     Installed { tag: String },
 }
 
-/// 完整升级流程：查最新 release → 比较版本 →（除非 check_only）
-/// 下载资产并原子替换当前可执行文件。
-pub fn upgrade(check_only: bool) -> Result<UpgradeOutcome, String> {
-    let token = std::env::var("GITHUB_TOKEN").ok();
-    let release = fetch_latest_release(token.as_deref())?;
-    let current = env!("CARGO_PKG_VERSION");
-    if !is_newer(&release.tag, current) {
-        return Ok(UpgradeOutcome::UpToDate {
-            latest: release.tag,
-        });
-    }
-    if check_only {
-        return Ok(UpgradeOutcome::Available { tag: release.tag });
-    }
-    let Some(asset) = select_asset(&release.assets) else {
-        // 只支持二进制更新：release 未提供当前平台的产物即失败。
-        return Err(format!(
-            "release {} has no {} binary asset",
-            release.tag,
-            target_triple()
-        ));
-    };
-    // 校验文件与资产同名加 `.sha256`（release 工作流随资产发布）。
-    // 在创建临时目录/发起下载前即 fail closed。
-    let checksum_name = format!("{}.sha256", asset.name);
-    let checksum_asset = release
-        .assets
-        .iter()
-        .find(|candidate| candidate.name == checksum_name)
-        .ok_or_else(|| {
-            format!(
-                "release {} is missing required checksum asset {checksum_name}",
-                release.tag
-            )
-        })?;
-    let signature_name = format!("{checksum_name}.minisig");
-    let signature_asset = release
-        .assets
-        .iter()
-        .find(|candidate| candidate.name == signature_name)
-        .ok_or_else(|| {
-            format!(
-                "release {} is missing required signature asset {signature_name}",
-                release.tag
-            )
-        })?;
-    let exe = std::env::current_exe().map_err(|error| format!("locate clat binary: {error}"))?;
-    // 临时目录带纳秒级随机后缀并以独占方式创建：同用户进程无法
-    // 预建目录/符号链接制造竞争（A-10）。碰撞时换名重试。
-    let mut work_dir = None;
-    for attempt in 0..5 {
-        let candidate = std::env::temp_dir().join(format!(
-            "clat-upgrade-{}-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|duration| duration.as_nanos())
-                .unwrap_or(attempt as u128),
-            attempt
-        ));
-        if fs::create_dir(&candidate).is_ok() {
-            work_dir = Some(candidate);
-            break;
-        }
-    }
-    let Some(work_dir) = work_dir else {
-        return Err("create work dir: all attempts failed".into());
-    };
-    let result = download_asset(
-        asset,
-        checksum_asset,
-        signature_asset,
-        &work_dir,
-        &release.tag,
-    )
-    .and_then(|binary| replace_binary(&binary, &exe));
-    let _ = fs::remove_dir_all(&work_dir);
-    result.map(|()| UpgradeOutcome::Installed { tag: release.tag })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1006,7 +796,7 @@ mod tests {
     // 删除回滚段 → restore/manual-recovery 两测试红（新函数前置编译
     // 不可达，按惯例文档化）。
 
-    fn upgrade_temp(tag: &str) -> std::path::PathBuf {
+    pub(super) fn upgrade_temp(tag: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "clat-upgrade-test-{tag}-{}-{}",
             std::process::id(),
@@ -1478,5 +1268,25 @@ mod tests {
         // 仓库无 release：GitHub 返回 message。
         let missing = parse_release(r#"{"message":"Not Found"}"#).unwrap_err();
         assert!(missing.contains("Not Found"));
+    }
+    #[test]
+    fn desktop_assets_never_shadow_cli_archives() {
+        let triple = target_triple();
+        let assets = vec![
+            ReleaseAsset {
+                name: format!("clat-desktop-v2.2.0-{triple}-setup.exe"),
+                url: String::new(),
+            },
+            ReleaseAsset {
+                name: format!("unrelated-{triple}.json"),
+                url: String::new(),
+            },
+            ReleaseAsset {
+                name: format!("clat-v2.2.0-{triple}.zip"),
+                url: String::new(),
+            },
+        ];
+        assert_eq!(select_asset(&assets).unwrap().name, assets[2].name);
+        assert!(select_asset(&assets[..2]).is_none());
     }
 }

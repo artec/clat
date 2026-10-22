@@ -9,36 +9,39 @@ permissions:
   contents: read
 
 jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      cli: ${{ steps.assets.outputs.cli }}
+      desktop: ${{ steps.assets.outputs.desktop }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - run: bun install --cwd desktop --frozen-lockfile --ignore-scripts
+      - id: assets
+        shell: bash
+        run: |
+          echo "cli=$(bun desktop/scripts/release.ts matrix --kind cli)" >> "$GITHUB_OUTPUT"
+          echo "desktop=$(bun desktop/scripts/release.ts matrix --kind desktop)" >> "$GITHUB_OUTPUT"
+
   build:
     name: ${{ matrix.target }}
+    needs: plan
+    env:
+      CLAT_OFFICIAL_RELEASE: "1"
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
-      matrix:
-        # 资产矩阵：macOS 与 Windows 各两组，与 `clat upgrade` 的
-        # target_triple 识别一一对应。Linux 钉在 ubuntu-24.04（GitHub
-        # 当前最低规范基线），不用 -latest：产物要求 glibc 2.39+
-        # （Ubuntu 24.04 同代及以上）；更老的发行版请从源码构建。
-        include:
-          - os: macos-latest
-            target: aarch64-apple-darwin
-          - os: macos-latest
-            target: x86_64-apple-darwin
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-          - os: windows-latest
-            target: aarch64-pc-windows-msvc
-          - os: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-          - os: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
+      matrix: ${{ fromJSON(needs.plan.outputs.cli) }}
     steps:
       - uses: actions/checkout@v5
 
       # 发布身份守卫（2026-09-21 v1.4.1 事故）：tag 与 workspace 版本
       # 不一致即拒绝出产物。说谎的发布（tag 1.4.1 / 二进制自报 1.4.0）
       # 会让升级链与宿主接管（MF-1c 按二进制自报版本比较）全部失真。
-      # 版本唯一权威在 Cargo.toml [workspace.package]（两包继承）。
+      # 版本唯一权威在 Cargo.toml [workspace.package]（发布包继承）。
       - name: Refuse tags that do not match the workspace version
         if: startsWith(github.ref, 'refs/tags/')
         # shell 必须显式 bash：Windows runner 的 run: 默认 pwsh，
@@ -111,9 +114,47 @@ jobs:
           path: clat-${{ github.ref_name }}-${{ matrix.target }}.*
           if-no-files-found: error
 
+  desktop:
+    name: Desktop ${{ matrix.platform }}
+    needs: plan
+    runs-on: ${{ matrix.os }}
+    env:
+      CARGO_BUILD_JOBS: 2
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.desktop) }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - uses: Swatinem/rust-cache@v2.9.2
+        with:
+          key: desktop-${{ matrix.target }}
+      - name: Install pinned target
+        shell: bash
+        run: |
+          channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
+          rustup target add --toolchain "$channel" "${{ matrix.target }}"
+      - name: Install build tools
+        run: bun install --cwd desktop --frozen-lockfile --ignore-scripts
+      - name: Build unsigned desktop bundle
+        run: bun desktop/scripts/release.ts build --target ${{ matrix.target }} --release --official
+      - name: Collect typed assets
+        run: bun desktop/scripts/release.ts package --target ${{ matrix.target }} --output dist-desktop
+      - uses: actions/upload-artifact@v6
+        with:
+          name: release-desktop-${{ matrix.platform }}
+          path: dist-desktop/*
+          if-no-files-found: error
+
   stage-draft:
     name: Stage unsigned draft
-    needs: build
+    needs: [build, desktop]
     # 钉版（同 ci.yml 与资产矩阵先例）：ubuntu-latest 将于 2026-10-19
     # 迁往 Ubuntu 26；平台变更须显式验证后再切换，不随 label 漂移。
     runs-on: ubuntu-24.04

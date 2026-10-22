@@ -484,11 +484,14 @@ fn host_description_golden_is_additive_and_http_clients_need_no_build_identity()
         "instance_id": instance,
         "storage_root": described_root,
         "methods": ["plugin.list", "plugin.market", "plugin.prepare", "plugin.commit", "plugin.cancel", "plugin.remove",
-            "host.describe", "host.stop", "host.takeover", "workspace.list", "workspace.open"],
+            "host.describe", "host.runtime_status", "host.stop", "host.takeover", "workspace.list", "workspace.open"],
         "wire_version": crate::wire::WIRE_VERSION,
         "journal_version": crate::session::compat::SESSION_FORMAT_VERSION,
         "product_version": crate::host_client::build_identity::product_version(),
         "build_fingerprint": crate::host_client::build_identity::current().unwrap(),
+        "build_kind": if crate::host_client::build_identity::official_release() {"official"} else {"development"},
+        "native_client_compatibility": 1,
+        "capabilities": ["desktop-workbench-v1", "host.runtime_status"],
     });
     assert_eq!(
         serde_json::to_string(&description).unwrap(),

@@ -15,11 +15,16 @@ mod error;
 mod info;
 mod lifecycle;
 pub use lifecycle::HostManagementArgs;
+pub(crate) mod backend;
 mod models;
 mod sessions;
 mod startup;
+pub use backend::PackagedBackend;
+mod desktop;
+mod notification;
 pub use error::HostCallError;
 pub use models::HostModelChoices;
+pub use notification::HostNotification;
 mod events;
 mod transport;
 pub use events::{HostEvent, decode_host_approval, decode_host_event};
@@ -31,10 +36,11 @@ pub const HOST_PROTOCOL_VERSION: u64 = 1;
 /// Stable loopback port used by automatic background-host startup.
 pub const DEFAULT_HOST_PORT: u16 = 2691;
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) enum BuildMatchPolicy {
     RequireIfAdvertised,
     Ignore,
+    Backend { fingerprint: String, official: bool },
 }
 
 #[derive(Clone)]
@@ -149,8 +155,15 @@ impl HostClient {
             return Err("host endpoint instance changed; reconnect explicitly".into());
         }
         client.verify_description(&description)?;
-        if matches!(build_policy, BuildMatchPolicy::RequireIfAdvertised) {
-            build_identity::verify_advertised(&description)?;
+        match build_policy {
+            BuildMatchPolicy::RequireIfAdvertised => {
+                build_identity::verify_advertised(&description)?
+            }
+            BuildMatchPolicy::Backend {
+                fingerprint,
+                official,
+            } => build_identity::verify_for(&description, &fingerprint, official)?,
+            BuildMatchPolicy::Ignore => {}
         }
         Ok(client)
     }

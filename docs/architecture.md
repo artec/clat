@@ -22,7 +22,7 @@ CLAT is organized around a small set of non-negotiable boundaries:
    protocol defines the agent algorithm.
 6. **Lifetimes are explicit.** Bootstrap, trusted-project, and run resources
    close in a defined order and background workers have owners.
-7. **One binary remains the product boundary.** Rust implementations and
+7. **The core CLI remains one binary.** Rust implementations and
    explicitly configured WASM components do not require a user-side language
    runtime.
 
@@ -1301,3 +1301,48 @@ credential values in transport state and supplies private predicates to this
 boundary. Model definitions and both discovery domains then share the stored
 public definition; no fragment-level cleanup or extra query-time callback is
 needed. The source tool's original call contract remains available internally.
+
+## Native desktop client
+
+The optional `clat-desktop` workspace member lives in `desktop/` and is excluded
+from default CLI/core gates. Tauri and system WebView integrations belong only
+there. Its installer carries a private CLI backend, while core owns validated
+cache staging, leases, discovery, project trust and process startup. The GUI
+never constructs Application, writes shared state or spawns business processes.
+Native installation/update and window preferences are frontend-local OS concerns.
+
+The shell loads the verified Host's existing workbench origin and uses a narrowly
+scoped native bridge. Permissions still go through the Host. Window close hides;
+GUI quit leaves the detached, leased backend alive. One Host owns one storage root
+across CLI/TUI/PWA/desktop. See [CLAT Desktop](desktop.md).
+
+`host.describe` advertises native-client compatibility generation 1, build kind
+and capabilities. Published compatible builds can share a Host despite different
+file fingerprints; development builds stay strict. Version preference is separate
+from compatibility: only a strictly newer backend may request the existing idle,
+instance-fenced takeover. Readiness is observed through `host.runtime_status`;
+the takeover owner rechecks atomically. Root identity/authentication and exact
+Host/wire/journal compatibility checks precede build compatibility.
+
+`GET /api/notifications` is an authenticated, bounded, host-wide SSE metadata
+projection. It adds no variant to `/api/events` and no journal vocabulary. It
+avoids a project connection per subscription, so idle project reclamation stays
+possible. An attached desktop can receive pending approval/question notices in
+background projects; decisions still require the ordinary permission/answer RPC.
+`RunHandle::session_id()` freezes notification routing at admission. Notification
+failure never changes execution facts or retries a business operation.
+
+Source map: `src/host_client/backend.rs` owns packaged-runtime validation/cache;
+`src/host_client/notification.rs` owns the native notification client port;
+`src/serve/notifications.rs` owns the transient Host projection; `desktop/src/`
+owns native windows, curated IPC and desktop updates.
+
+The desktop-workbench-v1 capability also covers the workbench composer contract
+(`#prompt`) used by the native draft guard. A DOM or behavior change that breaks
+that guard requires a compatible adapter or a new native-client generation.
+
+Desktop author tooling lives in `desktop/scripts/` as TypeScript executed by
+Bun. It stages the private Rust backend, invokes the pinned Tauri CLI through
+Bun, and handles owner-side packaging/signing/publication. The tooling is outside
+the Cargo runtime graph, consumes the root version and typed asset inventory,
+and adds no runtime dependency to CLI/core or installed desktop applications.

@@ -278,3 +278,149 @@ fn live_drafts_and_attached_handles_prevent_eviction_until_released() {
     crate::test_support::cleanup_tree(&storage);
     crate::test_support::cleanup_tree(&project);
 }
+
+#[test]
+fn runtime_status_observes_all_projects_without_stopping_or_consuming_work() {
+    let (host, storage, project) = fixture("desktop-runtime-status");
+    assert_eq!(
+        host.dispatch("host.runtime_status", &json!({})).unwrap()["ready"],
+        true
+    );
+    let route = host.route("default").unwrap();
+    let upload = route.try_upload_permit().unwrap();
+    for _ in 0..2 {
+        let status = host.dispatch("host.runtime_status", &json!({})).unwrap();
+        assert_eq!(status["ready"], false);
+        assert_eq!(status["busy_workspaces"], json!(["default"]));
+        assert!(!host.shutdown.load(Ordering::SeqCst));
+    }
+    drop(upload);
+    assert_eq!(
+        host.dispatch("host.runtime_status", &json!({})).unwrap()["ready"],
+        true
+    );
+    drop(route);
+    host.close().unwrap();
+    drop(host);
+    crate::test_support::cleanup_tree(&storage);
+    crate::test_support::cleanup_tree(&project);
+}
+
+#[test]
+fn host_notification_observer_does_not_pin_idle_project_domains() {
+    let (host, storage, project) = fixture("desktop-observer-reclaim");
+    let (_, _queue, _initial) = host.notifications.subscribe();
+    assert_eq!(
+        host.route("default").unwrap().subscriber_count(),
+        1,
+        "a background desktop can receive approval/question notices without pinning every project"
+    );
+    for index in 0..20 {
+        let root = project.join(format!("project-{index}"));
+        std::fs::create_dir_all(&root).unwrap();
+        host.dispatch("workspace.open", &json!({"root":root,"trust":true}))
+            .expect("a host-wide notification observer must not consume project capacity");
+    }
+    assert!(host.projects.lock().unwrap().routes.len() <= MAX_MOUNTED_PROJECTS);
+    host.close().unwrap();
+    drop(host);
+    crate::test_support::cleanup_tree(&storage);
+    crate::test_support::cleanup_tree(&project);
+}
+
+#[test]
+fn completion_notification_carries_the_admitted_session_without_transcript() {
+    let (host, storage, project) = fixture("desktop-notification-scope");
+    let (_, queue, initial) = host.notifications.subscribe();
+    drop(initial);
+    let route = host.route("default").unwrap();
+    super::super::protocol::dispatch(
+        "prompt.send",
+        &json!({"text":"private fixture prompt"}),
+        &route,
+    )
+    .unwrap();
+    let notice = queue
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("completion notice");
+    assert_eq!(notice.kind, "completed");
+    assert_eq!(notice.workspace_id, "default");
+    assert_eq!(notice.project_root, project);
+    assert_eq!(
+        notice.session_id,
+        route
+            .app
+            .lock()
+            .unwrap()
+            .current_session_id()
+            .map(|id| id.as_str().to_owned())
+    );
+    let payload = serde_json::to_string(&notice).unwrap();
+    assert!(!payload.contains("private fixture prompt"));
+    assert!(!payload.contains("output"));
+    drop(route);
+    host.close().unwrap();
+    drop(host);
+    crate::test_support::cleanup_tree(&storage);
+    crate::test_support::cleanup_tree(&project);
+}
+
+#[test]
+fn background_observer_receives_approval_and_question_and_run_continues() {
+    let asker = Arc::new(crate::test_support::ScriptedAsker {
+        selected: "stable".into(),
+        asked: Mutex::new(Vec::new()),
+    });
+    for (label, behavior, kind) in [
+        ("desktop-approval", TestBehavior::WriteFile, "approval"),
+        ("desktop-question", TestBehavior::AskUser(asker), "question"),
+    ] {
+        let (host, storage, project) = fixture_with_behavior(label, behavior);
+        let (_, queue, initial) = host.notifications.subscribe();
+        drop(initial);
+        let route = host.route("default").unwrap();
+        let outcome = (|| -> Result<(), String> {
+            super::super::protocol::dispatch(
+                "prompt.send",
+                &json!({"text":"private prompt"}),
+                &route,
+            )
+            .map_err(|e| format!("prompt: {e:?}"))?;
+            let notice = queue
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .map_err(|e| e.to_string())?;
+            if notice.kind != kind || notice.session_id.is_none() || notice.project_root != project
+            {
+                return Err(format!("wrong notification metadata: {notice:?}"));
+            }
+            let id = notice
+                .id
+                .rsplit(':')
+                .next()
+                .ok_or("notification id missing")?;
+            let (method, params) = if kind == "approval" {
+                ("approval.respond", json!({"rpcId":id,"decision":"deny"}))
+            } else {
+                (
+                    "question.respond",
+                    json!({"rpcId":id,"answer":{"kind":"declined"}}),
+                )
+            };
+            super::super::protocol::dispatch(method, &params, &route)
+                .map_err(|e| format!("respond: {e:?}"))?;
+            let completed = queue
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .map_err(|e| e.to_string())?;
+            if completed.kind != "completed" || completed.session_id != notice.session_id {
+                return Err("a rejected tool/question must still finish the same run".into());
+            }
+            Ok(())
+        })();
+        drop(route);
+        host.close().unwrap();
+        drop(host);
+        crate::test_support::cleanup_tree(&storage);
+        crate::test_support::cleanup_tree(&project);
+        outcome.unwrap();
+    }
+}

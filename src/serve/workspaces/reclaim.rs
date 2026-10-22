@@ -49,6 +49,10 @@ impl WorkspaceHost {
                 .attach(Project::new(root))
                 .map_err(|error| RpcError::internal(error.to_string()))?;
             let shared = self.shared_for(projects, app);
+            *shared
+                .notification_scope
+                .lock()
+                .expect("notification scope") = id.clone();
             projects.routes.insert(id, shared);
         }
         Err(RpcError::busy(

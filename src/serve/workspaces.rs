@@ -22,6 +22,7 @@ pub(crate) const HOST_METHODS: &[&str] = &[
     "plugin.cancel",
     "plugin.remove",
     "host.describe",
+    "host.runtime_status",
     "host.stop",
     "host.takeover",
     "workspace.list",
@@ -38,6 +39,8 @@ pub(crate) struct WorkspaceHost {
     instance: String,
     build_fingerprint: String,
     shutdown: Arc<AtomicBool>,
+    _runtime_lease: Mutex<Option<std::fs::File>>,
+    pub(super) notifications: super::notifications::Notifications,
 }
 
 impl Drop for WorkspaceHost {
@@ -48,6 +51,28 @@ impl Drop for WorkspaceHost {
 }
 
 impl WorkspaceHost {
+    pub(super) fn is_stopping(&self) -> bool {
+        self.shutdown.load(Ordering::Acquire)
+    }
+    pub(super) fn pending_notifications(&self) -> Vec<crate::host_client::HostNotification> {
+        self.projects
+            .lock()
+            .expect("host projects")
+            .routes
+            .values()
+            .flat_map(|shared| shared.pending_notifications())
+            .collect()
+    }
+
+    pub(crate) fn pin_runtime(&self) -> Result<(), String> {
+        *self
+            ._runtime_lease
+            .lock()
+            .map_err(|_| "runtime lease lock poisoned")? =
+            crate::host_client::backend::hold_current_runtime()?;
+        Ok(())
+    }
+
     pub(crate) fn publish_endpoint(&self, root: &Path, port: u16) -> Result<(), String> {
         crate::host_client::discovery::publish(root, port, &self.instance)
     }
@@ -77,6 +102,8 @@ impl WorkspaceHost {
             }),
             instance: uuid::Uuid::new_v4().to_string(),
             build_fingerprint,
+            _runtime_lease: Mutex::new(None),
+            notifications: Default::default(),
             shutdown,
         });
         *shared.host.lock().expect("host link") = Arc::downgrade(&host);
@@ -125,7 +152,21 @@ impl WorkspaceHost {
                 "wire_version": crate::wire::WIRE_VERSION,
                 "journal_version": crate::session::compat::SESSION_FORMAT_VERSION,
                 "product_version": crate::host_client::build_identity::product_version(),
-                "build_fingerprint": self.build_fingerprint})),
+                "build_fingerprint": self.build_fingerprint,
+                "build_kind": if crate::host_client::build_identity::official_release() {"official"} else {"development"},
+                "native_client_compatibility": 1,
+                "capabilities": ["desktop-workbench-v1", "host.runtime_status"]})),
+            "host.runtime_status" => {
+                let busy = projects
+                    .routes
+                    .iter()
+                    .filter(|(_, shared)| !shared.is_idle_for_takeover())
+                    .map(|(id, _)| id)
+                    .collect::<Vec<_>>();
+                Ok(json!({"instance_id": self.instance,
+                    "product_version": crate::host_client::build_identity::product_version(),
+                    "ready": busy.is_empty(), "busy_workspaces": busy}))
+            }
             "workspace.list" => Ok(
                 json!({"workspaces": projects.routes.iter().map(|(id, shared)| {
                 let app = shared.app.lock().expect("application lock");
@@ -246,6 +287,10 @@ impl WorkspaceHost {
         .map_err(|error| RpcError::bad_request(error.to_string()))?;
         let shared = self.shared_for(projects, app);
         let id = uuid::Uuid::new_v4().to_string();
+        *shared
+            .notification_scope
+            .lock()
+            .expect("notification scope") = id.clone();
         projects.routes.insert(id.clone(), shared);
         Ok(json!({"id": id, "api_prefix": format!("/workspace/{id}")}))
     }

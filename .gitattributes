@@ -72,3 +72,13 @@ tests/fixtures/task-state.json text eol=lf
 tests/fixtures/task-acceptance-v1.json text eol=lf
 tests/fixtures/task-text-contract.json text eol=lf
 tests/fixtures/task-execution-identity-v1.json text eol=lf
+# Desktop updater fixtures are signed byte-for-byte; Windows must not rewrite them.
+desktop/fixtures/** -text
+
+# CLI upgrade progress fixture is a byte-exact compressed archive.
+tests/fixtures/upgrade-progress.tar.gz -text
+
+# Desktop application and status-bar artwork is binary.
+desktop/icons/*.png -text
+desktop/icons/*.icns -text
+desktop/icons/*.ico -text

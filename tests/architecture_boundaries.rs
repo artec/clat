@@ -297,9 +297,7 @@ fn crate_root_does_not_reexport_terminal_frontend_types() {
     }
 }
 
-#[test]
-fn workspace_enforces_terminal_dependency_direction_and_single_binary() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+fn workspace_metadata(root: &Path) -> serde_json::Value {
     let output = std::process::Command::new("cargo")
         .args([
             "metadata",
@@ -312,7 +310,13 @@ fn workspace_enforces_terminal_dependency_direction_and_single_binary() {
         .output()
         .expect("cargo metadata");
     assert!(output.status.success(), "metadata failed");
-    let metadata: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+#[test]
+fn workspace_enforces_terminal_dependency_direction_and_single_binary() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let metadata = workspace_metadata(root);
     let packages = metadata["packages"].as_array().unwrap();
     let core = packages.iter().find(|p| p["name"] == "clat-core").unwrap();
     let app = packages.iter().find(|p| p["name"] == "clat").unwrap();
@@ -359,6 +363,58 @@ fn workspace_enforces_terminal_dependency_direction_and_single_binary() {
         .collect::<Vec<_>>();
     assert_eq!(bins.len(), 1);
     assert_eq!(bins[0]["name"], "clat");
+}
+
+#[test]
+fn desktop_is_an_optional_native_client_with_no_business_writer() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let metadata = workspace_metadata(root);
+    let packages = metadata["packages"].as_array().unwrap();
+    let desktop = packages
+        .iter()
+        .find(|p| p["name"] == "clat-desktop")
+        .unwrap();
+    let core = packages.iter().find(|p| p["name"] == "clat-core").unwrap();
+    assert_eq!(desktop["version"], core["version"]);
+    assert!(
+        !metadata["workspace_default_members"]
+            .as_array()
+            .unwrap()
+            .contains(&desktop["id"])
+    );
+    assert!(
+        !core["dependencies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|d| d["name"].as_str().unwrap().starts_with("tauri"))
+    );
+    assert!(
+        !desktop["dependencies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|d| d["name"] == "clat")
+    );
+    for entry in fs::read_dir(root.join("desktop/src")).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|ext| ext == "rs") {
+            let source = fs::read_to_string(&path).unwrap();
+            for forbidden in [
+                "TrustedProjectApplication",
+                "BootstrapApplication",
+                "std::process::Command",
+                "clat_core::application",
+                "clat_core::session",
+            ] {
+                assert!(
+                    !source.contains(forbidden),
+                    "{} bypasses client ports via {forbidden}",
+                    path.display()
+                );
+            }
+        }
+    }
 }
 
 #[test]

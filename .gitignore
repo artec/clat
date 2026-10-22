@@ -48,3 +48,18 @@ docs/research/
 docs/audit/
 docs/todo/
 docs/tui/
+
+# Desktop generated resources and local build tools
+/desktop/node_modules/
+/desktop/gen/
+/desktop/resources/*
+!/desktop/resources/.gitkeep
+
+/dist-desktop/
+/desktop/scripts/__pycache__/
+
+/dist-release/
+
+# Playwright e2e local run artifacts (desktop shell spec)
+test-results/
+playwright-report/

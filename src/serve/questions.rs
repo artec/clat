@@ -72,6 +72,7 @@ impl UserAsker for ServeAsker {
             };
             let frame = entry.frame(&id);
             pending.insert(id.clone(), entry);
+            shared.publish_notification("question", Some(&id));
             shared.broadcast(frame);
         }
         loop {

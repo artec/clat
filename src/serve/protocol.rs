@@ -27,6 +27,7 @@ pub(crate) const RPC_METHODS: &[&str] = &[
     "plugin.cancel",
     "plugin.remove",
     "host.describe",
+    "host.runtime_status",
     "host.stop",
     "host.takeover",
     "workspace.list",
@@ -1518,6 +1519,7 @@ fn workbench_info(shared: &Arc<ServeShared>) -> Result<Value, RpcError> {
         RPC_METHODS,
     );
     value["next_turn_queue"] = super::next_turn::value(shared)["items"].clone();
+    value["selection_generation"] = json!(shared.selection_generation());
     Ok(value)
 }
 

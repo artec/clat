@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "desktop-main",
+  "description": "Only the main welcome page and verified loopback workbench get the curated bridge",
+  "windows": ["main"],
+  "remote": {"urls": ["http://127.0.0.1:2691/*"]},
+  "permissions": [
+    "allow-desktop-info", "allow-desktop-open-project", "allow-desktop-check-update",
+    "allow-desktop-download-update", "allow-desktop-install-update", "allow-desktop-cancel-update",
+    "allow-desktop-preferences", "allow-desktop-quit", "allow-desktop-stop-host"
+  ]
+}

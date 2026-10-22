@@ -116,9 +116,9 @@ below was paid for by a real incident; the dates name them.
 
 The codebase is a UI-independent core (the `clat-core` crate) and thin
 frontends (TUI, dsh terminal integration, the binary — the root `clat`
-package). A future desktop app (and IDE/remote clients) will reuse the
-core as-is; every violation of these rules is migration debt for that
-day.
+package), plus the optional `desktop/` Tauri client. Desktop consumes the
+same core through client ports; default CLI builds do not include native GUI
+dependencies. IDE/remote clients must preserve this boundary too.
 
 - **The core never depends on the frontend — enforced physically.**
   The core→frontend edge does not exist in the cargo graph, and

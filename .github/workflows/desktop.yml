@@ -1,0 +1,63 @@
+name: Desktop
+on:
+  push:
+    branches: [main]
+    paths: ['package.json', 'publish', 'desktop/**', 'src/host_client/**', 'src/serve/**', 'src/serve.rs', 'src/client_ports.rs', 'web/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/desktop.yml']
+  pull_request:
+    paths: ['package.json', 'publish', 'desktop/**', 'src/host_client/**', 'src/serve/**', 'src/serve.rs', 'src/client_ports.rs', 'web/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/desktop.yml']
+permissions:
+  contents: read
+jobs:
+  web-shell:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - run: npm ci --prefix web/e2e --ignore-scripts
+      - run: npx playwright install --with-deps chromium
+        working-directory: web/e2e
+      - run: npx playwright test --config playwright.desktop.config.js
+        working-directory: web/e2e
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.assets.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - run: bun install --cwd desktop --frozen-lockfile --ignore-scripts
+      - id: assets
+        run: echo "matrix=$(bun desktop/scripts/release.ts matrix --kind desktop)" >> "$GITHUB_OUTPUT"
+  native:
+    needs: plan
+    runs-on: ${{ matrix.os }}
+    env:
+      CARGO_BUILD_JOBS: 2
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - uses: Swatinem/rust-cache@v2.9.2
+        with:
+          key: desktop-${{ matrix.target }}
+      - run: bun install --cwd desktop --frozen-lockfile --ignore-scripts
+      - run: cargo clippy -p clat-desktop --all-targets --locked -- -D warnings
+      - run: cargo test -p clat-desktop --locked
+      - run: bun test desktop/scripts --timeout 60000
+      - run: bun desktop/node_modules/typescript/bin/tsc --project desktop/tsconfig.json
+      - run: bun desktop/scripts/release.ts build --target ${{ matrix.target }} --release --official
+      - run: bun desktop/scripts/release.ts package --target ${{ matrix.target }} --output dist-desktop

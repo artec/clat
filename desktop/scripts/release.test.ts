@@ -1,0 +1,111 @@
+import { afterEach, expect, mock, spyOn, test } from 'bun:test';
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, readlinkSync, statSync, writeFileSync } from 'node:fs';
+import { basename, join } from 'node:path';
+import * as tar from 'tar';
+import { createArchive, safeExtract } from './archive';
+import { cleanEnv, DESKTOP, digest, json, redact, run, withTemp } from './common';
+import { DesktopRelease } from './release';
+import { fixture } from './test-support';
+
+afterEach(() => mock.restore());
+test('four desktop and six CLI targets are isolated', () => {
+  const release = new DesktopRelease(), cli = release.names('cli', 'v2.2.0'), desktop = release.names('desktop', 'v2.2.0');
+  expect(release.records('desktop')).toHaveLength(4); expect(release.records('cli')).toHaveLength(6);
+  expect(cli).toHaveLength(6); expect(desktop).toHaveLength(6);
+  for (const name of desktop) for (const record of release.records('cli')) expect(name).not.toContain(record.target);
+  expect(() => release.names('cli', '../../escape')).toThrow('unsafe');
+});
+test('build environment never inherits another product’s signing key', () => {
+  const env = cleanEnv({ CLAT_OFFICIAL_RELEASE: '1' }, { PATH: '/bin', TAURI_SIGNING_PRIVATE_KEY: 'fixture', APPLE_PASSWORD: 'fixture', CLAT_DESKTOP_KEY_PASSWORD: 'fixture', GH_TOKEN: 'fixture' });
+  expect(env).toEqual({ PATH: '/bin', CLAT_OFFICIAL_RELEASE: '1' });
+});
+test('signing password is not a process argument', async () => {
+  await fixture(async release => {
+    const calls: { args: string[]; password?: string }[] = [];
+    const signing = new DesktopRelease(release.root, (args, options) => { calls.push({ args, password: options?.env?.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }); return ''; });
+    writeFileSync(join(release.root, '.release-secrets/clat-desktop.key'), 'not-a-real-key');
+    writeFileSync(join(release.desktop, 'updater.pub'), Buffer.from('fixture-public').toString('base64'));
+    const path = join(release.root, 'package'); writeFileSync(path + '.sig', Buffer.from('fixture-signature').toString('base64'));
+    const previous = process.env.CLAT_DESKTOP_KEY_PASSWORD;
+    try { process.env.CLAT_DESKTOP_KEY_PASSWORD = 'fixture-password'; await signing.signFile(path, 'v2.0.0'); }
+    finally { if (previous === undefined) delete process.env.CLAT_DESKTOP_KEY_PASSWORD; else process.env.CLAT_DESKTOP_KEY_PASSWORD = previous; }
+    expect(calls[0]!.args).not.toContain('fixture-password'); expect(calls[0]!.password).toBe('fixture-password');
+  });
+});
+function archiveEntry(path: string, type = '0', link = '', size = 0): Buffer {
+  const header = Buffer.alloc(512); header.write(path); header.write('0000644\0', 100); header.write('0000000\0', 108); header.write('0000000\0', 116);
+  header.write(size.toString(8).padStart(11, '0') + '\0', 124); header.write('00000000000\0', 136); header.fill(32, 148, 156); header.write(type, 156); header.write(link, 157);
+  header.write('ustar\0', 257); header.write('00', 263); const sum = header.reduce((a, b) => a + b, 0); header.write(sum.toString(8).padStart(6, '0') + '\0 ', 148);
+  return Buffer.concat([header, Buffer.alloc(1024)]);
+}
+test('archive path fence and links reject before writes', async () => {
+  await withTemp('archive-contract-', folder => {
+    for (const [name, type, link] of [['../outside', '0', ''], ['/outside', '0', ''], ['app/link', '2', '../../outside'], ['C:/outside', '0', ''], ['app/hardlink', '1', 'other']]) {
+      const path = join(folder, 'bad.tar'); writeFileSync(path, archiveEntry(name!, type, link));
+      const destination = join(folder, 'unpack'); expect(() => safeExtract(path, destination)).toThrow(); expect(existsSync(destination)).toBe(false);
+    }
+  });
+});
+test('version and public key have one authority', () => {
+  const config = json<any>(join(DESKTOP, 'tauri.conf.json'));
+  expect(config.version).toBeUndefined(); expect(config.plugins.updater.pubkey).toBe(readFileSync(join(DESKTOP, 'updater.pub'), 'utf8').trim());
+  expect(config.plugins.updater.requireSignedVersion).toBe(true); expect(config.plugins.updater.allowDowngrades).toBe(false);
+  expect(new DesktopRelease().version()).toMatch(/^\d+\.\d+\.\d+$/);
+});
+test('finalization refuses partial release without signing', async () => {
+  await fixture(async release => { const check = spyOn(release, 'preflightSigning'); await expect(release.finalize(release.root, 'v2.0.0')).rejects.toThrow('missing or mismatched'); expect(check).not.toHaveBeenCalled(); });
+});
+test.skipIf(process.platform === 'win32')('DMG contains only App and Applications shortcut', async () => {
+  await fixture(async release => {
+    const app = join(release.root, 'CLAT Desktop.app'); mkdirSync(app); const seen: string[] = [];
+    const packaging = new DesktopRelease(release.root, args => {
+      seen.push(args[0]!);
+      if (args[0] === 'ditto') cpSync(args[1]!, args[2]!, { recursive: true });
+      else if (args[0] === 'hdiutil') { const image = args[args.indexOf('-srcfolder') + 1]!; expect(readdirSync(image).sort()).toEqual(['Applications', 'CLAT Desktop.app']); expect(readlinkSync(join(image, 'Applications'))).toBe('/Applications'); }
+      else throw new Error('unexpected process');
+      return '';
+    });
+    await packaging.makeDmg(app, join(release.root, 'output.dmg')); expect(seen).toEqual(['ditto', 'hdiutil']);
+  });
+});
+test('archive round trip preserves nested executable bytes and permissions', async () => {
+  await withTemp('archive-roundtrip-', folder => {
+    const app = join(folder, 'Example.app'); mkdirSync(join(app, 'Contents/MacOS'), { recursive: true });
+    const binary = join(app, 'Contents/MacOS/runner'); writeFileSync(binary, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    const archive = join(folder, 'app.tar.gz'); createArchive(app, archive);
+    const output = join(folder, 'output'); safeExtract(archive, output); const result = join(output, basename(app), 'Contents/MacOS/runner');
+    expect(digest(result)).toBe(digest(binary)); if (process.platform !== 'win32') expect(statSync(result).mode & 0o777).toBe(0o755);
+  });
+});
+test('archive supports existing PAX app packages and rejects oversized inventory', async () => {
+  await withTemp('pax-roundtrip-', folder => {
+    const name = 'long/'.repeat(35) + 'file'; mkdirSync(join(folder, 'input', name, '..'), { recursive: true }); writeFileSync(join(folder, 'input', name), 'PAX bytes');
+    tar.c({ file: join(folder, 'pax.tar'), cwd: join(folder, 'input'), sync: true }, [name]);
+    safeExtract(join(folder, 'pax.tar'), join(folder, 'out')); expect(readFileSync(join(folder, 'out', name), 'utf8')).toBe('PAX bytes');
+    const huge = join(folder, 'huge.tar'); writeFileSync(huge, archiveEntry('huge', '0', '', 2 * 1024 ** 3 + 1));
+    expect(() => safeExtract(huge, join(folder, 'huge-output'))).toThrow('too large');
+  });
+});
+test('captured diagnostics redact inherited and explicitly supplied credentials', () => {
+  expect(redact('fixture-secret', [{ PRIVATE_KEY_PASSWORD: 'fixture-secret' }])).toBe('[redacted]');
+  const previous = process.env.CLAT_DESKTOP_KEY_PASSWORD;
+  try { process.env.CLAT_DESKTOP_KEY_PASSWORD = 'fixture-hidden'; expect(run([process.execPath, '-e', 'console.log(process.env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD)'], { quiet: true, env: { TAURI_SIGNING_PRIVATE_KEY_PASSWORD: 'fixture-hidden' } })).toBe('[redacted]\n'); }
+  finally { if (previous === undefined) delete process.env.CLAT_DESKTOP_KEY_PASSWORD; else process.env.CLAT_DESKTOP_KEY_PASSWORD = previous; }
+});
+test('Bun directly invokes installed Tauri CLI', () => {
+  expect(run([process.execPath, join(DESKTOP, 'node_modules/@tauri-apps/cli/tauri.js'), '--version'], { quiet: true })).toContain('tauri-cli 2.12.4');
+});
+test.skipIf(!Bun.which('minisign'))('Bun Tauri signer accepts password-protected existing-format keys', async () => {
+  const { generateKey } = await import('./test-support'); const { minisign } = await import('./protect-key');
+  await fixture(async release => {
+    const raw = join(release.root, 'raw.key'), publicKey = join(release.desktop, 'raw.pub'); generateKey(raw, publicKey);
+    minisign(['-C', '-s', raw], ['fixture-protected', 'fixture-protected']);
+    writeFileSync(join(release.root, '.release-secrets/clat-desktop.key'), readFileSync(raw).toString('base64'), { mode: 0o600 });
+    writeFileSync(join(release.desktop, 'updater.pub'), readFileSync(publicKey).toString('base64'));
+    const signing = new DesktopRelease(release.root, (args, options) => run(args[1]?.endsWith('tauri.js') ? [args[0]!, join(DESKTOP, 'node_modules/@tauri-apps/cli/tauri.js'), ...args.slice(2)] : args, { ...options, quiet: true }));
+    const path = join(release.root, 'package.bin'); writeFileSync(path, 'test-only package'); const previous = process.env.CLAT_DESKTOP_KEY_PASSWORD;
+    try { process.env.CLAT_DESKTOP_KEY_PASSWORD = 'fixture-protected'; await signing.signFile(path, 'v2.0.0'); }
+    finally { if (previous === undefined) delete process.env.CLAT_DESKTOP_KEY_PASSWORD; else process.env.CLAT_DESKTOP_KEY_PASSWORD = previous; }
+    expect(existsSync(path + '.sig')).toBe(true);
+  });
+}, 60000);

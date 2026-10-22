@@ -8,6 +8,8 @@ pub use crate::session::use_cases::SessionSummary;
 // 崩溃文案等）补同一道闸，跨端一致、不另立词表。
 pub use crate::redact::redact_secrets;
 pub mod host {
+    pub use crate::host_client::HostNotification;
+    pub use crate::host_client::PackagedBackend;
     pub fn journal_format_version() -> u32 {
         crate::session::compat::SESSION_FORMAT_VERSION
     }
@@ -54,4 +56,8 @@ pub mod session {
     pub mod attachments {
         pub use crate::session::attachments::{MAX_IMAGES_PER_MESSAGE, MAX_RAW_BATCH_BYTES};
     }
+}
+
+pub mod upgrade {
+    pub use crate::upgrade::{UpgradeOutcome, UpgradeProgress, upgrade_with_progress};
 }

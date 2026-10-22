@@ -45,6 +45,7 @@ impl PermissionApprover for ServeApprover {
                     requested_data: data.clone(),
                 },
             );
+            self.shared.publish_notification("approval", Some(&rpc_id));
             self.shared.broadcast(super::state::SseFrame {
                 event: "approval.requested",
                 data,

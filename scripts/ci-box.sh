@@ -8,7 +8,7 @@
 #
 # 形态：
 #   - scripts/ci-box/Dockerfile：官方 rust:<rust-toolchain.toml 钉版>-
-#     bookworm + python3 + node 22 + 非 root 用户 ci（root 会绕过 chmod
+#     bookworm + python3 + node 22 + Bun 1.3.14 + 非 root 用户 ci（root 会绕过 chmod
 #     只读目录制造假红；GitHub runner 是非特权用户——2026-09-07 首跑
 #     实证后定形）
 #   - 默认 --cpus=2 模拟 runner 竞争；--cpus N 可调

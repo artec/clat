@@ -53,6 +53,8 @@ pub(crate) struct ActiveRun {
     pub started_ms: i64,
     buffer: Vec<String>,
     replay_before_seq: Option<u64>,
+    pub(super) session_id: Option<String>,
+    pub(super) notifications: Vec<(String, String)>,
 }
 
 pub(crate) struct RunReplayPrefix {
@@ -60,9 +62,9 @@ pub(crate) struct RunReplayPrefix {
     pub before_seq: Option<u64>,
 }
 
-struct ServeInner {
+pub(super) struct ServeInner {
     subscribers: Vec<Subscriber>,
-    active_run: Option<ActiveRun>,
+    pub(super) active_run: Option<ActiveRun>,
 }
 
 struct ActiveCompaction {
@@ -103,7 +105,9 @@ pub(crate) struct ServeShared {
     /// 调小以确定性触发 INV-S7 的溢出摘除——内核发送缓冲会吸收可观
     /// 流量，容量 1024 在网络层难以确定性打满）。
     pub(crate) queue_frames: usize,
-    inner: Mutex<ServeInner>,
+    pub(super) inner: Mutex<ServeInner>,
+    pub(super) notification_scope: Mutex<String>,
+    pub(super) notification_root: std::path::PathBuf,
     pending_steering: Mutex<HashMap<String, PendingSteeringReceipt>>,
     pub pending: Mutex<HashMap<String, PendingApproval>>,
     pub(super) questions: super::questions::Questions,
@@ -148,8 +152,16 @@ impl ServeShared {
         port: u16,
     ) -> Self {
         let drafts = app.lock().expect("application lock").draft_image_store();
+        let notification_root = app
+            .lock()
+            .expect("application lock")
+            .project()
+            .root()
+            .to_path_buf();
         Self {
             rpc_mutations: Mutex::new(()),
+            notification_scope: Mutex::new("default".into()),
+            notification_root,
             app,
             host: Mutex::new(std::sync::Weak::new()),
             drafts,
@@ -379,14 +391,17 @@ impl ServeShared {
     /// Called before releasing Application after successful admission, before
     /// a settler can release this claim. All prompt entry points share it.
     pub(crate) fn publish_run_boundary(&self, handle: &crate::RunHandle) {
-        if let Some(run) = self
-            .inner
-            .lock()
-            .expect("serve inner lock")
-            .active_run
-            .as_mut()
-        {
+        let pending = {
+            let mut inner = self.inner.lock().expect("serve inner lock");
+            let Some(run) = inner.active_run.as_mut() else {
+                return;
+            };
             run.replay_before_seq = handle.replay_before_seq();
+            run.session_id = handle.session_id().map(|id| id.as_str().to_owned());
+            std::mem::take(&mut run.notifications)
+        };
+        for (kind, key) in pending {
+            self.publish_notification(&kind, Some(&key));
         }
     }
 
@@ -409,11 +424,19 @@ impl ServeShared {
     }
 
     pub(crate) fn subscriber_count(&self) -> usize {
-        self.inner
+        let project = self
+            .inner
             .lock()
             .expect("serve inner lock")
             .subscribers
-            .len()
+            .len();
+        let desktop = self
+            .host
+            .lock()
+            .expect("host link")
+            .upgrade()
+            .is_some_and(|host| host.notifications.has_subscribers());
+        project + usize::from(desktop)
     }
 
     /// 控制帧广播（approval.requested / prompt.settled / notice / …）：
@@ -433,6 +456,12 @@ impl ServeShared {
     /// 实时族（INV-S2 零转译）：`envelope_line` 去掉行尾换行的原文，
     /// 同一锁内追加 run 缓冲 + 广播。
     pub(crate) fn fanout_run_event(&self, event: &RunEvent) {
+        if matches!(
+            event,
+            RunEvent::RunCompleted { .. } | RunEvent::RunFailed { .. }
+        ) {
+            self.publish_notification("completed", None);
+        }
         if let RunEvent::SteeringApplied {
             client_message_id: Some(client_message_id),
             ..
@@ -486,6 +515,8 @@ impl ServeShared {
             started_ms,
             buffer: Vec::new(),
             replay_before_seq: None,
+            session_id: None,
+            notifications: Vec::new(),
         });
         true
     }

@@ -41,15 +41,22 @@ clat upgrade --check
 | 终端 UI | 日常交互式仓库开发 | `clat` |
 | 无头运行器 | 脚本、CI、git hook、编辑器集成 | `clat exec` |
 | Web 工作台 | 可安装的本地 PWA 与 HTTP+SSE 客户端 | `clat serve` |
+| 原生桌面 | 自带后端、独立升级的 macOS/Windows 应用 | [CLAT Desktop](docs/desktop.md) |
 | 微信远程控制 | 官方 iLink 文本、图片、插话与审批 | `clat serve --im wechat` |
 | DSH 客户端 | 用 CLAT TUI 连接本地 DeepSeek Harness 宿主 | `clat dsh` |
 | 插件管理器 | 浏览签名市场，安装、更新、审计或回滚插件包 | `clat plugin` / [pi.at.cn](https://pi.at.cn) |
 | 离线演示 | 无凭据验证核心循环 | `clat demo` |
 
+桌面本地调试使用 `bun start`，生成本机测试安装包使用 `bun app:build`。
+桌面开发与发布脚本由 Bun 直接执行 TypeScript，无需 Python。
+正式发布仍保持“推送签名标签 → CI 构建 → `./publish`”的流程。
+
 `clat serve` 默认只绑定 `127.0.0.1:2691`，并自动用默认浏览器打开
 响应式 PWA。本地通过 Host/Origin/Fetch Metadata 三查后无感进入；远程
 authority 必须持有效凭据。浏览器只保存私有 HttpOnly 会话，凭据不进入
 URL。使用 `--no-open` 可关闭自动打开浏览器。
+桌面首发起，同一 Release 同时提供 CLI 压缩包和桌面安装包。
+桌面与 CLI/PWA 共用 Host 数据，各自独立更新；无需预装 CLI、Node.js 或 Python。
 可选的微信前端只走官方 iLink；必须显式扫码绑定、配对用户，并以
 带 `--im wechat` 的 `serve` 启动，否则保持关闭。
 
@@ -120,6 +127,7 @@ irm https://raw.githubusercontent.com/artec/clat/main/install.ps1 | iex
 | 目标 | 文档 |
 |---|---|
 | 使用 TUI、`exec`、`serve` 或 `dsh` | [CLAT 使用指南](docs/usage.md) |
+| 安装并更新原生桌面版 | [CLAT Desktop](docs/desktop.md) |
 | 配置预设或自定义模型 | [模型编辑器](docs/model-editor.md) |
 | 理解审批、权限档位与路径边界 | [权限](docs/permissions.md) |
 | 配置 MCP server | [MCP 集成](docs/mcp.md) |

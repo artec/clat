@@ -1,10 +1,14 @@
 # Using CLAT
 
 This guide is for people running CLAT. It covers the terminal UI, headless
-runner, local web workbench, and DSH client. Configuration internals belong in
+runner, local web workbench, native desktop, and DSH client. Configuration internals belong in
 [Model editor](model-editor.md), security semantics in
 [Permissions](permissions.md), and persistence details in
 [Persistent state](storage.md).
+
+CLAT Desktop provides a self-contained macOS/Windows installer, shares the
+existing Host and data, and updates independently of the CLI. See
+[desktop installation, background behavior and updates](desktop.md).
 
 ## Choose an interface
 
@@ -179,6 +183,28 @@ An installed binary can check or install the newest GitHub release:
 clat upgrade --check   # report availability without changing the binary
 clat upgrade           # verify and install the newest release
 ```
+
+The command prints live phase lines for checking, version discovery, downloading,
+signature/checksum verification, extraction (archives only), and installation.
+For example (illustrative versions):
+
+```text
+⟳ Checking for upgrade... (current version 2.1.0)
+✓ Found new version v2.2.0.
+⟳ Downloading upgrade...
+⟳ Verifying signature and checksum...
+⟳ Extracting files...
+✓ Verification successful.
+⟳ Installing upgrade...
+✓ Upgrade successful! CLAT v2.2.0 is installed.
+Restart running CLAT processes to use the new version.
+```
+
+`--check` stops after discovery and prints the install command. An up-to-date
+installation gets its own confirmation. Failure prints an error and no upgrade
+success line. Output uses ordinary newline-separated text, so redirected logs
+contain no spinner control codes. This command updates the CLI executable;
+Desktop retains its independent updater.
 
 Upgrades authenticate the asset manifest with the Minisign public key embedded
 in the current binary, verify the SHA-256 digest and release-tag binding, then

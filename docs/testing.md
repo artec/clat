@@ -713,3 +713,76 @@ output until readiness is received, then requires that output to be consumed
 through EOF. Child stderr is inherited so a future reset exposes Host panics
 instead of hiding them behind an SSE error. No reconnection retry masks the
 first failed subscription.
+
+## Desktop verification
+
+Desktop is an optional native client and does not add GUI dependencies to default
+CLI/core gates. Run targeted `scripts/gates.sh serve:: host_client:: upgrade::tests::`
+for shared Host/cache/upgrade changes and the architecture boundary test. Desktop
+native checks are `cargo test -p clat-desktop --locked` and
+`cargo clippy -p clat-desktop --all-targets --locked -- -D warnings` on macOS/Windows.
+The dedicated desktop workflow builds all four supported native targets.
+
+`bun app:test` covers typed
+assets, archive fencing, version authority, signing environment isolation and
+partial-release rejection. `npm --prefix web/e2e test --
+--config=playwright.desktop.config.js` runs isolated shell UI tests through the
+existing Playwright dependency. These tests mock native commands and do not start
+a real Host, contact a model or install updates.
+
+Rust update tests use an independently generated throwaway key and signed fixtures
+pinned `-text` in .gitattributes. They exercise the official updater verifier,
+package tampering, version inflation/downgrades, wrong targets, index tampering and
+production/fixture trust-root separation. On macOS one test uses the real native
+installer to replace a disposable dummy bundle, verifying that the separate CLI
+and leased backend remain untouched. It never updates an actual installation.
+Host regressions verify observer subscriptions do not exhaust project capacity,
+notification session routing is frozen at admission, readiness reads are inert,
+and cache leases protect executing runtime slots.
+Desktop release-script tests also run inside the shared full/CI gate; Linux does
+not build the native shell. ARM64 xwin checks require `--cross-compiler clang`
+for ring's ARM assembly; the default clang-cl path mixes incompatible include flags.
+
+Use debug CLAT_DESKTOP_SMOKE=1 for isolated native-window checks. Native Chinese
+IME/clipboard/drag-drop/scaling, Windows installation, real N-to-N+1 installation,
+Apple notarization and final signed artifacts require their own platform evidence;
+browser tests, mock-runtime verification and xwin compilation do not establish
+those conclusions. Record exact checks and unverified faces at handoff.
+
+Source-shape statistics include desktop/src as production code. Compare against
+the same script's --revision HEAD result; no new >=80-line production function
+and no extension of an existing giant is accepted.
+
+
+### Desktop local commands
+
+From the root, `bun start` stages the private backend and opens native desktop
+development mode; `bun app:build` packages this machine's test installer without
+production signing or upload. `bun app:test` runs desktop tooling contracts,
+including architecture detection, exact release inventories, checksum/path
+binding, upload/publication ordering and rejection of replaced remote files.
+Signing-key fixtures are temporary and never read the owner's real private keys.
+These checks do not establish native installer, Apple notarization, Windows UI,
+or remote GitHub release acceptance. The owner's existing `./publish` is the
+single formal signing/upload/publication entry and is not a test command.
+
+Desktop tooling contracts are Bun/TypeScript tests (`*.test.ts`) and replace all
+26 earlier Python desktop-tool contracts. Type checking runs with
+`bun desktop/node_modules/typescript/bin/tsc --project desktop/tsconfig.json`.
+CI and the Linux container pin Bun 1.3.14. Real temporary Minisign encryption
+and signing checks require Minisign and report skips explicitly when unavailable;
+macOS-only DMG/owner-platform checks and POSIX flock checks are platform-gated.
+The existing unrelated Python Rust-test fixtures remain in their own domains.
+
+
+### CLI self-update progress
+
+`scripts/gates.sh upgrade::` covers signed-manifest/hash checks, extraction
+fences, atomic replacement/rollback and progress phase ordering. New progress
+contracts check read-only `--check`, already-current/offline/missing-trust-asset
+paths, rejection before extraction, executable validation, real fixture extraction
+and success only after replacement of a disposable binary. The compressed fixture
+is pinned `-text` in .gitattributes. No live executable or Host is replaced.
+`cargo test -p clat --bin clat upgrade_cli:: --locked` verifies CLI line rendering
+and terminal outcomes independently of the core observer. Tests do not download a
+real release or establish remote update acceptance.

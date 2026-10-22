@@ -57,6 +57,7 @@ pub(super) struct RunExecutionEngine;
 
 #[derive(Clone)]
 pub struct RunHandle {
+    session_id: Option<crate::SessionId>,
     replay_before_seq: Option<u64>,
     cancel: CancelToken,
     busy: Arc<AtomicBool>,
@@ -71,12 +72,18 @@ impl RunHandle {
         steering: crate::run::SteeringQueue,
     ) -> Self {
         Self {
+            session_id: None,
             replay_before_seq: None,
             cancel,
             busy,
             join: Arc::new(Mutex::new(None)),
             steering,
         }
+    }
+
+    /// Admitted session, frozen before execution and any goal continuation.
+    pub fn session_id(&self) -> Option<&crate::SessionId> {
+        self.session_id.as_ref()
     }
 
     /// Exclusive journal cursor for rebuilding history before this execution.
@@ -291,6 +298,7 @@ impl WaitingRunExecution {
         asker: Option<Arc<dyn crate::interaction::UserAsker>>,
     ) -> Result<RunHandle, RunActivationError> {
         self.handle.replay_before_seq = Some(start.prepared.replay_before_seq);
+        self.handle.session_id = Some(start.prepared.session_id.clone());
         self.slots
             .tool_access
             .install(start.context.tool_access.clone());
